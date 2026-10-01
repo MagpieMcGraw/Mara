@@ -27,8 +27,8 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
-    f: ^Graph_Fuse
-    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
+    f: ^Graph_Body
+    if k.gb != nil { f = graph_body_begin(k.gb, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
     // (A fun's definitions are checked before its code; a struct's once its
     // fields are known: its methods read them.)
     if !is_struct { tc_check_defs(k, sc) }
@@ -47,8 +47,8 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // (A default param's width the body left open: settled.)
     solidify_param_defaults(k.c, ts)
     if f != nil {
-        if k.c.errors > 0 { graph_fuse_fail(k.gb, f, "errors") }
-        graph_fuse_end(k.gb, f)
+        if k.c.errors > 0 { graph_body_fail(k.gb, f, "errors") }
+        graph_body_end(k.gb, f)
     }
     if is_struct { tc_check_defs(k, sc) }
 }
@@ -70,7 +70,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
     // (A body's constants, checked with it: their declarations, settled.)
     if b := tc_building(k); b != nil && top {
         for s in stmts {
-            if t.tag[s] == .Define && t.b[s] != 0 && !tc_is_definition(t.tag[t.b[s]]) { graph_fuse_def_settled(b, tc_graph_decl(k, s)) }
+            if t.tag[s] == .Define && t.b[s] != 0 && !tc_is_definition(t.tag[t.b[s]]) { graph_build_def_settled(b, tc_graph_decl(k, s)) }
         }
     }
     for s in stmts {
@@ -78,15 +78,15 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
             // (A body's definitions are registered and checked with it: built
             // by the builder from where each is written.)
             if !top { tc_unsupported(k, s, "a definition in a block") }
-            if b := tc_building(k); b != nil && top { graph_fuse_def(b, tc_graph_decl(k, s)) }
+            if b := tc_building(k); b != nil && top { graph_build_def(b, tc_graph_decl(k, s)) }
             continue
         }
         b := tc_building(k)
         saved: i32
         if b != nil {
             span := tree_span(t, s)
-            graph_fuse_body_stmt(b, span, true)
-            saved = graph_fuse_stmt(b, tc_sid(k, s), span, tc_stmt_kind(k, s), fresh = true)
+            graph_build_body_stmt(b, span, true)
+            saved = graph_build_stmt(b, tc_sid(k, s), span, tc_stmt_kind(k, s), fresh = true)
         }
         if t.tag[s] == .Using && fields_of != nil {
             tc_using(k, s, env, fields_of)
@@ -95,7 +95,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
         } else {
             tc_stmt(k, s, env)
         }
-        if b != nil { graph_fuse_stmt_end(b, saved) }
+        if b != nil { graph_build_stmt_end(b, saved) }
     }
 }
 
@@ -130,7 +130,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     case .Match:
         tc_match(k, s, env)
     case .Break, .Continue:
-        if b := tc_building(k); b != nil { graph_fuse_loop_exit(b, span, is_break = t.tag[s] == .Break) }
+        if b := tc_building(k); b != nil { graph_build_loop_exit(b, span, is_break = t.tag[s] == .Break) }
     case:
         tc_unsupported(k, s, "this statement")
     }
@@ -151,7 +151,7 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
         if b := tc_building(k); b != nil && fields_of != nil {
             names := make([]string, len(v.targets), context.temp_allocator)
             for tg, i in v.targets { names[i] = tc_name(k, tg) }
-            graph_fuse_fields(b, names, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
+            graph_build_fields(b, names, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
         }
         tc_destructure(k, s, v.targets, v.values[0], true, v.type_, env, fields_of)
         return
@@ -180,7 +180,7 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
             inits := make([]Span, len(v.values), context.temp_allocator)
             for tg, i in v.targets { names[i], ids[i] = tc_name(k, tg), tc_sid(k, tg) }
             for val, i in v.values { inits[i] = tree_span(t, val) }
-            graph_fuse_fields(b, names, span, ids, inits, false)
+            graph_build_fields(b, names, span, ids, inits, false)
         }
     }
     for tg, i in v.targets {
@@ -231,18 +231,18 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     prefixed := false
     if b != nil {
         decl = tc_field_decl(k, fields_of, name, target, value, span)
-        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+        if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
         // Text fills only a prefix of a new partial array: it is zero first
         // — kept once the value's type says so.
         #partial switch t.tag[value] {
         case .String, .Ident, .Field:
-            if is_untyped(ann) { prefix, prefixed = graph_fuse_prefix(b, name, decl, span), true }
+            if is_untyped(ann) { prefix, prefixed = graph_build_prefix(b, name, decl, span), true }
         }
-        if !prefixed && is_partial_array(ann) { prefix, prefixed = graph_fuse_prefix(b, name, decl, span), true }
+        if !prefixed && is_partial_array(ann) { prefix, prefixed = graph_build_prefix(b, name, decl, span), true }
     }
     k.hint = ann
     errors_before := k.c.errors
-    want := Fuse_Want.Into if b != nil else .None
+    want := Build_Want.Into if b != nil else .None
     // (A struct's field: its `all v` is its field's.)
     saved_field := k.field_default
     k.field_default = {}
@@ -313,17 +313,17 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
-    graph_fuse_typed(b, decl, final)
+    graph_build_typed(b, decl, final)
     wrote, zeroed := tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
     if prefixed {
         fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
-        graph_fuse_prefix_end(b, prefix, zeroed || wrote && fills, final)
+        graph_build_prefix_end(b, prefix, zeroed || wrote && fills, final)
     }
     if zeroed && !prefixed { tc_fail(k, "a new partial array read from bytes") }
     // (An array of untyped elements held as itself — `a := [1, 2, 3]`, an if
     // of such — built at its own type: its nodes, the store's too, settled.)
     if va, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(va.elem) && fields_of == nil {
-        graph_fuse_retype_literal(b, int(decl), b.nodes, final)
+        graph_build_retype_literal(b, int(decl), b.nodes, final)
     }
 }
 
@@ -374,15 +374,15 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     // (Its local, then its constructor's arguments — its params' defaults.)
     decl := field
     if decl == NO_NODE {
-        decl = graph_fuse_decl(b, name, span)
-        graph_fuse_typed(b, decl, ann)
+        decl = graph_build_decl(b, name, span)
+        graph_build_typed(b, decl, ann)
     } else if b.g.type_[decl] == nil {
-        graph_fuse_typed(b, decl, ann)
+        graph_build_typed(b, decl, ann)
     }
     args: []Operand
     if st != nil && constructs_bare(st) { args = tc_ctor_args(k, st, span) }
     if b = tc_building(k); b == nil { return }
-    graph_fuse_bare(b, decl, ann, nil, args, span)
+    graph_build_bare(b, decl, ann, nil, args, span)
 }
 
 
@@ -439,16 +439,16 @@ tc_bare_construction :: proc(k: ^TC, name: string, t: Type, env: ^Type_Scope, sp
 tc_decl_sized :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field: Node_Id, cap_n: Tree_Id) {
     b := tc_building(k)
     decl := field
-    if b != nil && decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+    if b != nil && decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     ct, r := tc_expr(k, cap_n, env, .Value if b != nil else .None)
     if !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
     if b = tc_building(k); b == nil { return }
     if field != NO_NODE {
-        graph_fuse_bare(b, decl, b.g.type_[decl], nil, nil, span)
+        graph_build_bare(b, decl, b.g.type_[decl], nil, nil, span)
         return
     }
-    graph_fuse_typed(b, decl, ann)
-    graph_fuse_bare(b, decl, ann, r.v, nil, span)
+    graph_build_typed(b, decl, ann)
+    graph_build_bare(b, decl, ann, r.v, nil, span)
 }
 
 // The struct a bare declaration of the type constructs: its own, or its
@@ -476,10 +476,10 @@ tc_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, valu
     b := tc_building(k)
     if fields_of == nil || b == nil { return NO_NODE }
     key := tc_sid(k, target)
-    if d, made := b.fuse.fields[key]; made { return d }   // (made with the others declared with it)
+    if d, made := b.body.fields[key]; made { return d }   // (made with the others declared with it)
     inits := []Span{tree_span(k.t, value)} if value != 0 else nil
-    graph_fuse_fields(b, {name}, span, {key}, inits, false)
-    return b.fuse.fields[key]
+    graph_build_fields(b, {name}, span, {key}, inits, false)
+    return b.body.fields[key]
 }
 
 // A name already declared where a declaration would declare it: below the
@@ -512,11 +512,11 @@ is_slice_type :: proc(t: Type) -> bool {
 
 // A built value stored where it goes: at the destination's type (a number
 // widened to it).
-tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote, zeroed: bool) {
+tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, d: Dest, span: Span, settle := false) -> (wrote, zeroed: bool) {
     b := tc_building(k)
     if b == nil || r.into { return }
     if r.temp {
-        graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
+        graph_build_write_at(b, graph_dest_place(b, d, span), r.v, span)
         return true, false
     }
     if tc_builds_into(k, e) {
@@ -529,7 +529,7 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
     if to_ptr == from_ptr && graph_header_of(dt) && graph_partial_of(t) {
         // A partial array seen as a slice's header.
         v := graph_op_value(b, .Cast, .Implied, span, dt, type_name(dt), tc_value(k, r, e, t))
-        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
+        graph_build_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
     _, to_slice := distinct_base(dt).(^Type_Slice)
@@ -540,7 +540,7 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
             return
         }
         v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
-        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
+        graph_build_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
     // (Bytes read as the destination's type: tc_store_bytes, tc_store_span.)
@@ -550,8 +550,8 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
         case .Slice: return tc_store_span(k, e, r, d, dt, span)
         }
     }
-    val := graph_fuse_widen(b, tc_value(k, r, e, t), span, {to = dt, settle_to = settle})
-    graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+    val := graph_build_widen(b, tc_value(k, r, e, t), span, {to = dt, settle_to = settle})
+    graph_build_write_at(b, graph_dest_place(b, d, span), val, span)
     return true, false
 }
 
@@ -611,7 +611,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     if tc_is_void(k, value) {
         // (`x = void` de-initializes: the void value written, unchecked.)
         tc_check(k, value, env)
-        if b := tc_building(k); b != nil { graph_fuse_void_assign(b, name, distinct_base(existing), span, tree_span(t, value)) }
+        if b := tc_building(k); b != nil { graph_build_void_assign(b, name, distinct_base(existing), span, tree_span(t, value)) }
         return
     }
     if loc != nil && loc.kind == .Struct {
@@ -620,7 +620,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     }
     k.hint = existing if !is_untyped(existing) else nil
     b := tc_building(k)
-    want := Fuse_Want.Into if b != nil else .None
+    want := Build_Want.Into if b != nil else .None
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
     val_type, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
     tc_check_write(k, value, val_type, existing, name, span)
@@ -679,20 +679,20 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if b := tc_building(k); b != nil && is_partial_array(want) {
                 if t.tag[tc_unparen(k, val)] == .String {
                     text, slot = true, graph_slot(b, "temp", want, span)
-                    graph_fuse_zero_var(b, slot, want, span)
+                    graph_build_zero_var(b, slot, want, span)
                 } else {
-                    text_held = graph_fuse_later(b)
+                    text_held = graph_build_later(b)
                 }
             }
             use, at := tc_use_type(k, val, want, span)
             held: Graph_Later
-            if b := tc_building(k); b != nil && is_slice_type(want) { held = graph_fuse_later(b) }
+            if b := tc_building(k); b != nil && is_slice_type(want) { held = graph_build_later(b) }
             vt, r := tc_expr(k, val, env, .Either if tc_building(k) != nil else .None, dest = use, temp_span = at)
-            if b := tc_building(k); b != nil && text_held.reserved && fuse_is_text_constant(b, r) {
-                graph_fuse_later_begin(b, &text_held)
+            if b := tc_building(k); b != nil && text_held.reserved && built_is_text_constant(b, r) {
+                graph_build_later_begin(b, &text_held)
                 text, slot = true, graph_slot(b, "temp", want, span)
-                graph_fuse_zero_var(b, slot, want, span)
-                if !graph_fuse_later_end(b, &text_held) { tc_fail(k, "a text constant returned across runs") }
+                graph_build_zero_var(b, slot, want, span)
+                if !graph_build_later_end(b, &text_held) { tc_fail(k, "a text constant returned across runs") }
             }
             if b := tc_building(k); b != nil && !text {
                 append(&vals, tc_value_as(k, val, vt, r, want, span, {to = want}, &held))
@@ -712,7 +712,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if is_infer(vt) { tc_literal_overflow(k, val, want, span) }
         }
     }
-    if b := tc_building(k); b != nil { graph_fuse_return(b, vals[:], span) }
+    if b := tc_building(k); b != nil { graph_build_return(b, vals[:], span) }
 }
 
 // `if c {…} elif d {…} else {…}`: the branch, then each block as it is
@@ -730,11 +730,11 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
     b := tc_building(k)
     fi: Graph_If
-    if b != nil { fi = graph_fuse_if(b, cond.v, span, len(v.else_) > 0) }
+    if b != nil { fi = graph_build_if(b, cond.v, span, len(v.else_) > 0) }
     tc_scope(k, v.then, new_block_scope(env))
-    if b != nil { graph_fuse_else(b, &fi, span) }
+    if b != nil { graph_build_else(b, &fi, span) }
     if len(v.else_) > 0 { tc_scope(k, v.else_, new_block_scope(env)) }
-    if b != nil { graph_fuse_if_end(b, &fi) }
+    if b != nil { graph_build_if_end(b, &fi) }
 }
 
 // What builds where it goes (a literal, an array, a construction): never
@@ -763,13 +763,13 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     b := tc_building(k)
     fl: Graph_For
     if b != nil {
-        fl = graph_fuse_for(b, {span = span, var_name = tc_text(v.var) if v.var != 0 else "",
+        fl = graph_build_for(b, {span = span, var_name = tc_text(v.var) if v.var != 0 else "",
                                 elem_name = tc_text(v.elem) if v.elem != 0 else "",
                                 index_name = tc_text(v.index) if v.index != 0 else "",
                                 is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
                                 end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number})
     }
-    defer if b != nil { graph_fuse_for_end(b, &fl) }
+    defer if b != nil { graph_build_for_end(b, &fl) }
     #partial switch tag {
     case .For_Each:
         // (A plain place: walked where the loop needs it. Anything else is
@@ -779,7 +779,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if b != nil && !tc_pure_place(k, v.collection) {
             ct = tc_loop_items(k, &fl, v.collection, child)
         } else if b != nil {
-            r: Fused
+            r: Built
             ct, r = tc_expr(k, v.collection, child, .Place)
             coll = r.v
         } else {
@@ -797,24 +797,24 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if v.elem != 0 { scope_bind(child, tc_text(v.elem), elem) }
         if v.index != 0 { scope_bind(child, tc_text(v.index), slice_header_width_type) }
         if b := tc_building(k); b != nil {
-            graph_fuse_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
+            graph_build_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         }
         tc_scope(k, v.body, child)
     case .For_Range:
         // The counter first, then each bound at its type (known once both
         // are checked).
         bounds := [2]int{-1, -1}
-        if b != nil { graph_fuse_range_counter(b, &fl) }
+        if b != nil { graph_build_range_counter(b, &fl) }
         lt, lo := tc_expr(k, v.lo, child, .Value if b != nil else .None)
         if b := tc_building(k); b != nil {
-            bounds[0] = len(b.fuse.checks)
-            fl.lo = graph_fuse_range_bound(b, lo.v, lt, span)
+            bounds[0] = len(b.body.checks)
+            fl.lo = graph_build_range_bound(b, lo.v, lt, span)
         }
         ht, hi := tc_expr(k, v.hi, child, .Value if b != nil else .None)
         if b := tc_building(k); b != nil {
             fl.high = hi.v
-            bounds[1] = len(b.fuse.checks)
-            fl.hi = graph_fuse_range_bound(b, hi.v, ht, span)
+            bounds[1] = len(b.body.checks)
+            fl.hi = graph_build_range_bound(b, hi.v, ht, span)
         }
         it: Type
         if v.type_ != 0 {
@@ -831,20 +831,20 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         hc, hc_ok := tc_comptime_int(k, v.hi, child)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
         scope_bind(child, tc_text(v.var), it)
-        if b := tc_building(k); b != nil { graph_fuse_range(b, &fl, bounds, distinct_base(it)) }
+        if b := tc_building(k); b != nil { graph_build_range(b, &fl, bounds, distinct_base(it)) }
         tc_scope(k, v.body, child)
     case:
         if v.init != 0 { tc_stmt_entry(k, v.init, child) }
-        if b := tc_building(k); b != nil { graph_fuse_for_runs(b, &fl) }
+        if b := tc_building(k); b != nil { graph_build_for_runs(b, &fl) }
         ct, cond := tc_expr(k, v.cond, child, .Value if tc_building(k) != nil else .None)
-        if b := tc_building(k); b != nil { graph_fuse_for_cond(b, &fl, cond.v) }
+        if b := tc_building(k); b != nil { graph_build_for_cond(b, &fl, cond.v) }
         if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
         if v.post != 0 {
             // (Built into the step's run, put after the body, where it runs.)
             step: Graph_Step
-            if b := tc_building(k); b != nil { step = graph_fuse_step(b, &fl) }
+            if b := tc_building(k); b != nil { step = graph_build_step(b, &fl) }
             tc_stmt_entry(k, v.post, child)
-            if b := tc_building(k); b != nil { graph_fuse_step_end(b, &fl, step) }
+            if b := tc_building(k); b != nil { graph_build_step_end(b, &fl, step) }
         }
         tc_scope(k, v.body, child)
     }
@@ -855,24 +855,24 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 tc_stmt_entry :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     b := tc_building(k)
     saved: i32
-    if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), tree_span(k.t, s), tc_stmt_kind(k, s)) }
+    if b != nil { saved = graph_build_stmt(b, tc_sid(k, s), tree_span(k.t, s), tc_stmt_kind(k, s)) }
     tc_stmt(k, s, env)
-    if b != nil { graph_fuse_stmt_end(b, saved) }
+    if b != nil { graph_build_stmt_end(b, saved) }
 }
 
 // A loop's collection that is no plain place: held in the loop's own local
 // (a literal built there, its elements settled), or viewed.
 tc_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id, env: ^Type_Scope) -> Type {
     b := tc_building(k)
-    gi := graph_fuse_items(b, fl)
+    gi := graph_build_items(b, fl)
     #partial switch k.t.tag[tc_unparen(k, e)] {
     case .Array, .Literal:
         from := b.nodes
         t := solidify_type(tc_store_into(k, e, env, graph_dest_var("items", fl.coll_slot, nil), fl.span))
         if b := tc_building(k); b != nil {
             if graph_loop_view_of(t) != nil { tc_fail(k, "a literal loop over its view") }
-            graph_fuse_retype_literal(b, from, b.nodes, t)
-            graph_fuse_typed(b, fl.coll_slot, t)
+            graph_build_retype_literal(b, from, b.nodes, t)
+            graph_build_typed(b, fl.coll_slot, t)
         }
         return t
     }
@@ -880,9 +880,9 @@ tc_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id, env: ^Type_Scope) -> T
     if b := tc_building(k); b != nil {
         if view := graph_loop_view_of(t); view != nil {
             fills := is_partial_array(t) && (k.t.tag[tc_unparen(k, e)] == .String || is_slice_type(t))
-            graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, tc_is_self(k, e), fills)
+            graph_build_items_view(b, fl, &gi, r.v, r.place, t, view, tc_is_self(k, e), fills)
         } else {
-            graph_fuse_typed(b, fl.coll_slot, t)
+            graph_build_typed(b, fl.coll_slot, t)
             tc_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
         }
     }
@@ -910,9 +910,9 @@ tc_defer :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(k.t, s)
     b := tc_building(k)
     gd: Graph_Defer
-    if b != nil { gd = graph_fuse_defer(b, span) }
+    if b != nil { gd = graph_build_defer(b, span) }
     tc_scope(k, tree_list(k.t, k.t.a[s]), new_block_scope(env))
-    if b != nil { graph_fuse_defer_end(b, gd) }
+    if b != nil { graph_build_defer_end(b, gd) }
 }
 
 // `x op= v`: `x = x op v`, the operation at the `op=`; a field's or an
@@ -955,7 +955,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // A compound assignment's operation: its target (read, or through the place
 // already built: `k.compound`) op its value.
-tc_compound_value :: proc(k: ^TC, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Fuse_Want) -> (Type, Fused) {
+tc_compound_value :: proc(k: ^TC, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Build_Want) -> (Type, Built) {
     op, _ := compound_assign_op(build_tokens[op_tok].kind)
     t, r := tc_binary_op(k, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
     if want != .None && !r.ok { tc_fail(k, "a compound assignment's operation") }
@@ -1103,20 +1103,20 @@ tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     decl := NO_NODE
     if b != nil {
         decl = tc_field_decl(k, fields_of, name, target, value, span)
-        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+        if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     }
     scope_bind(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
-    graph_fuse_typed(b, decl, ann)
+    graph_build_typed(b, decl, ann)
     if fields_of != nil {
         // (A field's `= void`: its declaration's, as written — the value
         // stored, unchecked.)
-        val := graph_fuse_void(b, ann, b.fuse.field_inits[tc_sid(k, target)])
-        graph_fuse_write_at(b, graph_var(b, name, decl, ann, span), val, span)
+        val := graph_build_void(b, ann, b.body.field_inits[tc_sid(k, target)])
+        graph_build_write_at(b, graph_var(b, name, decl, ann, span), val, span)
         return
     }
-    graph_fuse_void_decl(b, decl, ann, span, span)
+    graph_build_void_decl(b, decl, ann, span, span)
 }
 
 // A declaration of a block, for its size guard.
@@ -1160,9 +1160,9 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if b != nil && !tc_pure_place(k, subj) {
         slot = graph_slot(b, "subject", nil, span)
         st = tc_store_into(k, subj, env, graph_dest_var("subject", slot, nil), span)
-        if tc_building(k) != nil { graph_fuse_typed(b, slot, st) }
+        if tc_building(k) != nil { graph_build_typed(b, slot, st) }
     } else if b != nil {
-        r: Fused
+        r: Built
         st, r = tc_expr(k, subj, env, .Place)
         subject = r.v
     } else {
@@ -1173,27 +1173,27 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     _, is_err := st.(Type_Err)
     gm: ^Graph_Match
     if b != nil && tc_building(k) != nil {
-        gm = graph_fuse_match_begin(b, span, len(arms), slot, subject, st, tr.tag[tc_unparen(k, subj)] == .Self)
+        gm = graph_build_match_begin(b, span, len(arms), slot, subject, st, tr.tag[tc_unparen(k, subj)] == .Self)
         for arm, i in arms {
             tag := tr.tag[arm]
             if tag == .Arm_Else { continue }
             if gm.is_union || tag != .Arm_Value {
-                graph_fuse_match_tag(b, gm, span, i)
+                graph_build_match_tag(b, gm, span, i)
                 continue
             }
             // (An enum's variant named bare matches as `.Variant` does.)
             value := Tree_Id(tr.a[arm])
             if tr.tag[value] == .Ident && is_enum && tc_name(k, value) in et.variants {
-                graph_fuse_match_tag(b, gm, span, i)
+                graph_build_match_tag(b, gm, span, i)
                 continue
             }
             _, v := tc_expr(k, value, env)
-            if bb := tc_building(k); bb != nil { graph_fuse_match_value(bb, gm, v.v) }
+            if bb := tc_building(k); bb != nil { graph_build_match_value(bb, gm, v.v) }
             prechecked[i] = true
         }
-        if bb := tc_building(k); bb != nil { graph_fuse_match_switch(bb, gm, span) }
+        if bb := tc_building(k); bb != nil { graph_build_match_switch(bb, gm, span) }
     }
-    defer if gm != nil { graph_fuse_match_end(b, gm) }
+    defer if gm != nil { graph_build_match_end(b, gm) }
     if !is_union && !is_enum && !is_err {
         tc_error(k, span, TYPE_MATCH_REQUIRES_UNION, type_name(st))
         return
@@ -1268,9 +1268,9 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         }
         bb := b if gm != nil else nil
         blk: Graph_Block
-        if bb != nil { blk = graph_fuse_arm(bb, gm, ra^, i) }
+        if bb != nil { blk = graph_build_arm(bb, gm, ra^, i) }
         tc_scope(k, body, child)
-        if bb != nil { graph_fuse_arm_end(bb, gm, blk) }
+        if bb != nil { graph_build_arm_end(bb, gm, blk) }
     }
     // (Every variant covered, unless an else says otherwise.)
     if has_else || !(is_enum || is_union) { return }
@@ -1460,20 +1460,20 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     decl := NO_NODE
     if b != nil {
         decl = tc_field_decl(k, fields_of, name, target, 0, span)
-        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+        if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     }
     k.hint = ann
     vt, r := tc_shape_literal(k, s, ann, bindings, env, .Into if b != nil else .None, graph_dest_var(name, decl, ann))
     scope_bind(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
-    graph_fuse_typed(b, decl, ann)
+    graph_build_typed(b, decl, ann)
     tc_store(k, 0, vt, r, graph_dest_var(name, decl, ann), span, settle = true)
 }
 
 // `{inner = Box(5)}` of the shape shortcut, at its type: its construction
 // where it goes, then each field given its call.
-tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, env: ^Type_Scope, want: Fuse_Want, dest: Dest) -> (Type, Fused) {
+tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, env: ^Type_Scope, want: Build_Want, dest: Dest) -> (Type, Built) {
     span := tree_span(k.t, s)
     ts, is_scope := t.(^Type_Scope)
     if !is_scope || ts.kind != .Struct {
@@ -1486,7 +1486,7 @@ tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, en
     if b := tc_building(k); want != .None && b != nil {
         args := tc_ctor_args(k, ts, span)
         if b = tc_building(k); b == nil { return t, {} }
-        gl = graph_fuse_literal(b, span, "", false, t, dest, args)
+        gl = graph_build_literal(b, span, "", false, t, dest, args)
         if gl == nil { tc_fail(k, "a literal the graph builds no way") }
     }
     for bd in bindings {

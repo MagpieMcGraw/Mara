@@ -177,7 +177,7 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
 }
 
 // An enum's variant, as a value: its tag, known.
-tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Fuse_Want, w: Written) -> Fused {
+tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written) -> Built {
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return {} }
     return {v = graph_const(b, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
@@ -186,17 +186,17 @@ tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span:
 // A union's variant as a value (`.Circle`, `Shape.Circle`, `Circle` where a
 // Shape is expected): the variant constructed where it goes — else in a
 // temporary made first, read — then its fields' defaults.
-tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Fuse_Want, w: Written,
-                         dest: Dest, temp: bool, temp_span: Span) -> Fused {
+tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
+                         dest: Dest, temp: bool, temp_span: Span) -> Built {
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return {} }
     if want == .Into {
         d := dest
-        if temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
+        if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }
         tc_variant_build(k, ut, name, d, span)
         return tc_built(k, want, temp, temp, d, ut, temp_span, false)
     }
-    d := graph_fuse_temp(b, span, ut)
+    d := graph_build_temp(b, span, ut)
     tc_variant_build(k, ut, name, d, span)
     if b = tc_building(k); b == nil { return {} }
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
@@ -206,7 +206,7 @@ tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want
 tc_variant_build :: proc(k: ^TC, t: Type, name: string, d: Dest, span: Span) {
     b := tc_building(k)
     if b == nil { return }
-    st := graph_fuse_variant(b, t, name, d, span)
+    st := graph_build_variant(b, t, name, d, span)
     dd := d
     tc_variant_defaults(k, st, nil, Dest{kind = .Variant, name = name, type_ = st, parent = &dd}, span)
 }
@@ -218,13 +218,13 @@ tc_variant_defaults :: proc(k: ^TC, st: ^Type_Scope, given: map[string]bool, d: 
     for f in st.fields {
         if f.default_node == 0 || f.name in given { continue }
         v := tc_default(k, f.default_node, f.type_, st, span, {to = f.type_})
-        if b := tc_building(k); b != nil { graph_fuse_field_default(b, d, f.name, f.type_, v, span) }
+        if b := tc_building(k); b != nil { graph_build_field_default(b, d, f.name, f.type_, v, span) }
     }
 }
 
 // A variant as a value: an enum's its tag; a union's constructed.
-tc_variant_of :: proc(k: ^TC, t: Type, value: int, name: string, span: Span, want: Fuse_Want, w: Written,
-                      dest: Dest, temp: bool, temp_span: Span) -> Fused {
+tc_variant_of :: proc(k: ^TC, t: Type, value: int, name: string, span: Span, want: Build_Want, w: Written,
+                      dest: Dest, temp: bool, temp_span: Span) -> Built {
     if ut, is_union := t.(^Type_Union); is_union { return tc_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
     return tc_variant_value(k, t.(^Type_Enum), value, name, span, want, w)
 }

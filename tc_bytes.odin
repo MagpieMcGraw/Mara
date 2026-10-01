@@ -65,7 +65,7 @@ tc_check_big_endian :: proc(k: ^TC, value: Tree_Id, span: Span) {
 // partial array filled by a byte read; else the bytes there seen as the
 // destination's type, read, written. (`zeroed`: a new partial array it fills
 // was zero first.)
-tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
+tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Built, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
     b := tc_building(k)
     _, big := tc_byte_node(k, e)
     if !r.place {
@@ -73,13 +73,13 @@ tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Sp
         return
     }
     if is_slice_type(dt) || is_partial_array(dt) {
-        buf, off := graph_fuse_byte_operands(b, r.v, span)
+        buf, off := graph_build_byte_operands(b, r.v, span)
         graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if big else "", graph_dest_place(b, d, span), buf, off)
         return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
     }
-    graph_fuse_view(b, r.v, dt, big, span)
+    graph_build_view(b, r.v, dt, big, span)
     val := graph_read(b, r.v, dt, span)
-    graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+    graph_build_write_at(b, graph_dest_place(b, d, span), val, span)
     return true, false
 }
 
@@ -87,7 +87,7 @@ tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Sp
 // bounds, as its slice built them; a register value the bytes at its start
 // seen as it, read, else a byte read — at the span, where its failures say
 // it is. (A new partial array is zero first.)
-tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
+tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Built, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
     b := tc_building(k)
     m, big := tc_byte_node(k, e)
     if r.v.op == NO_NODE || r.v.op != k.span_read.op || k.span_read.scalar == graph_aggregate(dt) {
@@ -95,11 +95,11 @@ tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Spa
         return
     }
     if k.span_read.scalar {
-        val := graph_read(b, graph_fuse_span_view(b, r.v, dt, big, span), dt, span)
-        graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+        val := graph_read(b, graph_build_span_view(b, r.v, dt, big, span), dt, span)
+        graph_build_write_at(b, graph_dest_place(b, d, span), val, span)
         return true, false
     }
-    buf, lo, hi := graph_fuse_span_operands(b, r.v, span)
+    buf, lo, hi := graph_build_span_operands(b, r.v, span)
     graph_op(b, .Byte_Read, .Explicit, tree_span(k.t, m), d.type_, "#big_endian" if big else "", graph_dest_place(b, d, span), buf, lo, hi)
     return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
 }
@@ -114,7 +114,7 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
     }
     b := tc_building(k)
     vt: Type
-    r: Fused
+    r: Built
     d: Dest
     if b != nil && place != NO_VALUE {
         pt := b.g.type_[place.op] if place.op != NO_NODE else nil
@@ -139,7 +139,7 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
     check_byte_write(k.c, vt, span)
     if b = tc_building(k); b == nil || place == NO_VALUE { return }
     _, big := tc_byte_node(k, target)
-    graph_fuse_view(b, place, solidify_type(vt), big, span)
+    graph_build_view(b, place, solidify_type(vt), big, span)
     tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
 
@@ -155,7 +155,7 @@ tc_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
     ops, built := k.byte_addrs[tc_sid(k, u)]
     if !built { return }
     _, big := tc_byte_node(k, Tree_Id(k.t.a[u]))
-    graph_fuse_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
+    graph_build_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
     b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
 }
 
@@ -184,7 +184,7 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
 // The write into bytes: the target the value's type says — the view at lo,
 // as that type (`view`), else the span — then the value into it, at the
 // bytes' type.
-tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Fused, gs: ^Graph_Span_Target, tt, view: Type,
+tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Built, gs: ^Graph_Span_Target, tt, view: Type,
                            void: bool, span: Span) {
     b := tc_building(k)
     if b == nil { return }
@@ -192,7 +192,7 @@ tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Fused, gs: ^Grap
         tc_fail(k, "void written into bytes")
         return
     }
-    place, ok := graph_fuse_span_target_end(b, gs, view, span)
+    place, ok := graph_build_span_target_end(b, gs, view, span)
     if !ok {
         tc_fail(k, "a span's end that branches, viewed")
         return

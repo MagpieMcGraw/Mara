@@ -50,7 +50,7 @@ TC :: struct {
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
     byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
-    span_read:     Fuse_Span_Read,    // the span of bytes last built to be read as its destination's type
+    span_read:     Built_Span_Read,    // the span of bytes last built to be read as its destination's type
     dot_bases:     map[Tree_Id]Tree_Id,   // each `.len` in a subscript: the subscript's base
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
@@ -121,12 +121,12 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 // nothing has stopped it.
 tc_building :: proc(k: ^TC) -> ^Graph_Builder {
     b := k.gb
-    if b == nil || b.fuse == nil || b.fuse.failed != "" || k.c.errors > 0 { return nil }
+    if b == nil || b.body == nil || b.body.failed != "" || k.c.errors > 0 { return nil }
     return b
 }
 
 tc_fail :: proc(k: ^TC, reason: string) {
-    if b := tc_building(k); b != nil { graph_fuse_fail(b, b.fuse, reason) }
+    if b := tc_building(k); b != nil { graph_body_fail(b, b.body, reason) }
 }
 
 // --- the program --------------------------------------------------------------

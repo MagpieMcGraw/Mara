@@ -19,8 +19,8 @@ tc_struct_of :: proc(k: ^TC, t: Type) -> ^Scope_Body {
 
 // `x.f`: a struct's field (through a pointer, what it points at); an
 // array's length or swizzle; a slice's or partial array's header field.
-tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                 dest: Dest = {}, temp := false, temp_span := Span{}) -> (Type, Fused) {
+tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written,
+                 dest: Dest = {}, temp := false, temp_span := Span{}) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     base := Tree_Id(tr.a[n])
@@ -40,11 +40,11 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         }
     }
     build := want != .None && tc_building(k) != nil
-    ask := Fuse_Want.None
+    ask := Build_Want.None
     mark: Graph_Mark
     if build {
         ask = .Place if tc_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
-        mark = graph_fuse_mark(tc_building(k))
+        mark = graph_build_mark(tc_building(k))
     }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
@@ -54,7 +54,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has {
             k.variant_nodes[n] = true
-            if b := tc_building(k); build && b != nil { graph_fuse_drop_since(b, mark) }
+            if b := tc_building(k); build && b != nil { graph_build_drop_since(b, mark) }
             return ut, tc_union_variant(k, ut, field, span, want if build else .None, w, dest, temp, temp_span)
         }
     }
@@ -65,7 +65,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         // (A length known — a fixed array's, a text constant's: its value;
         // its base, built, left out.)
         b := tc_building(k)
-        graph_fuse_drop_since(b, mark)
+        graph_build_drop_since(b, mark)
         if want == .Place { return t, {} }
         return t, {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
@@ -73,7 +73,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     // function; its base, built, left out.)
     if fun, is_fun := t.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun {
         b := tc_building(k)
-        graph_fuse_drop_since(b, mark)
+        graph_build_drop_since(b, mark)
         if want == .Place { return t, {} }
         return t, {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
     }
@@ -179,7 +179,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
 
 // A member's place: its base's (through a pointer, what it points at), then
 // the field — or an array's swizzle.
-tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Fused, bt: Type, t: Type, self := false) -> Operand {
+tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Built, bt: Type, t: Type, self := false) -> Operand {
     b := tc_building(k)
     if b == nil { return NO_VALUE }
     if !base.ok || !base.place {
@@ -272,7 +272,7 @@ tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, sp
     if tc_is_void(k, value) {
         // (`= void`: the uninitialized value written, of the place's type.)
         vt := tc_check(k, value, env)
-        if b = tc_building(k); b != nil { graph_fuse_write_at(b, place, graph_fuse_void(b, pt, tree_span(k.t, value)), span) }
+        if b = tc_building(k); b != nil { graph_build_write_at(b, place, graph_build_void(b, pt, tree_span(k.t, value)), span) }
         return vt
     }
     vt, r := tc_expr(k, value, env, .Into, dest = d, temp = true, temp_span = span)
@@ -314,8 +314,8 @@ tc_write_root_param :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (string, bo
 
 // `Foo{…}`, `Foo{0}`, `{…}` (typed by its use): its construction where it goes
 // (else in a temporary), then each field given stored as it is checked.
-tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                   dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written,
+                   dest: Dest, temp: bool, temp_span: Span) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     ty := Tree_Id(tr.a[n])
@@ -433,23 +433,23 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     gl: ^Graph_Literal
     broadcast := (fa != nil || fd != nil) && tc_is_broadcast(k, n)
     if build {
-        if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
+        if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
         if fa != nil || fd != nil {
             // (An array: zero, then each element into its slot; a broadcast,
             // its value then the fill.)
-            if !broadcast { gl = graph_fuse_literal(b, span, name, zero, t, d) }
+            if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
         } else if empty {
-            gl = graph_fuse_literal(b, span, name, zero, t, d)
+            gl = graph_build_literal(b, span, name, zero, t, d)
         } else if vst != nil {
             // (A variant: its construction, then its defaults the literal doesn't give.)
-            gl = graph_fuse_literal(b, span, name, zero, t, d)
+            gl = graph_build_literal(b, span, name, zero, t, d)
             if gl != nil { tc_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
         } else {
             // (Its constructor's arguments — its params' defaults — then it.)
             args: []Operand
             if !zero { args = tc_ctor_args(k, ts, span) }
             if b = tc_building(k); b == nil { return t, {} }
-            gl = graph_fuse_literal(b, span, name, zero, t, d, args)
+            gl = graph_build_literal(b, span, name, zero, t, d, args)
             // (A variant's struct, named: its defaults the literal doesn't give.)
             if gl != nil && gl.variant != nil { tc_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
         }
@@ -503,9 +503,9 @@ tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, 
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 { k.hint = elem }
     vt: Type
     if fill && tc_building(k) != nil {
-        r: Fused
+        r: Built
         vt, r = tc_expr(k, value, env)
-        if b := tc_building(k); b != nil { graph_fuse_fill(b, span, lit_t, d, r.v) }
+        if b := tc_building(k); b != nil { graph_build_fill(b, span, lit_t, d, r.v) }
     } else {
         vt = tc_check(k, value, env)
     }
@@ -558,7 +558,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
             hint_for(k, e, fa.elem)
             vt: Type
             if gl != nil && tc_building(k) != nil {
-                vt = tc_store_into(k, e, env, graph_fuse_literal_elem(gl, i, elem_t), span)
+                vt = tc_store_into(k, e, env, graph_build_literal_elem(gl, i, elem_t), span)
             } else {
                 vt = tc_check(k, e, env)
             }
@@ -583,7 +583,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         hint_for(k, value, fa.elem)
         vt: Type
         if gl != nil && tc_building(k) != nil {
-            vt = tc_store_into(k, value, env, graph_fuse_literal_elem(gl, idx, elem_t), span)
+            vt = tc_store_into(k, value, env, graph_build_literal_elem(gl, idx, elem_t), span)
         } else {
             vt = tc_check(k, value, env)
         }
@@ -604,7 +604,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         gl := gl
         probed: Type
         if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
-            spread: Fused
+            spread: Built
             if gl != nil {
                 probed, spread = tc_expr(k, entries[0], env, .Value)
             } else {
@@ -616,7 +616,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
                 if fits && types_incompatible(f.type_, returns[i]) { fits = false }
             }
             if fits {
-                if b := tc_building(k); b != nil && gl != nil && !graph_fuse_spread(b, gl, span, spread.v) {
+                if b := tc_building(k); b != nil && gl != nil && !graph_build_spread(b, gl, span, spread.v) {
                     tc_fail(k, "a spread literal of no call")
                 }
                 return
@@ -655,7 +655,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
     if probed != nil {
         vt = probed   // (checked as a spread that wasn't)
     } else if gl != nil && tc_building(k) != nil {
-        d := graph_fuse_literal_field(gl, name, i)
+        d := graph_build_literal_field(gl, name, i)
         t, r := tc_expr(k, value, env, .Into, dest = d, temp_span = span)
         tc_store(k, value, t, r, d, span)
         vt = t
@@ -674,8 +674,8 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
 }
 
 // `Foo(args)`: its constructor run where it goes (else in a temporary).
-tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: Fuse_Want, w: Written,
-                     dest: Dest, temp: bool, temp_span: Span, made := false, overrides := Tree_Id(0), env: ^Type_Scope = nil) -> Fused {
+tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: Build_Want, w: Written,
+                     dest: Dest, temp: bool, temp_span: Span, made := false, overrides := Tree_Id(0), env: ^Type_Scope = nil) -> Built {
     b := tc_building(k)
     if b == nil { return {} }
     span := tree_span(k.t, n)
@@ -686,13 +686,13 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     // (`made`: the temporary it is built in, made before its arguments.)
     at: Dest
     if want == .Into && temp && !made {
-        at = graph_fuse_temp(b, temp_span, fuse_temp_type(dest))
+        at = graph_build_temp(b, temp_span, build_temp_type(dest))
     } else if want == .Into {
         at = dest
     } else {
         at = graph_dest_var("temp", graph_slot(b, "temp", ts, span), ts)
     }
-    gl := graph_fuse_construct(b, ts, ts, at, ops, w, span)
+    gl := graph_build_construct(b, ts, ts, at, ops, w, span)
     // (Its override block's fields, each written into what it constructed.)
     if overrides != 0 {
         tc_literal_fields(k, overrides, tree_list(k.t, k.t.b[overrides]), &ts.sd, env, gl)
@@ -701,7 +701,7 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     switch {
     case want == .Into && temp:
         tt: Type = at.type_ if at.type_ != nil else Type(ts)
-        p := graph_fuse_temp_end(b, at, tt, temp_span)
+        p := graph_build_temp_end(b, at, tt, temp_span)
         return {v = graph_read(b, p, tt, temp_span), ok = true, temp = true}
     case want == .Into:
         return {v = NO_VALUE, ok = true, into = true}
@@ -718,13 +718,13 @@ tc_is_broadcast :: proc(k: ^TC, lit: Tree_Id) -> bool {
 
 // `s.len = n`, `a.xy = v`: a slice's or partial array's header field, an
 // array's swizzle (through a pointer, what it points at), then the value.
-tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Fused, field: string,
+tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Built, field: string,
                          env: ^Type_Scope, op_tok: Token_Id) {
     span := tree_span(k.t, s)
     diag := value if op_tok == 0 else 0
     place := NO_VALUE
     if tc_building(k) != nil {
-        if ft := fuse_target_field_type(bt, field); ft != nil {
+        if ft := build_target_field_type(bt, field); ft != nil {
             place = tc_member_place(k, target, field, br, bt, ft)
         } else {
             tc_fail(k, "a write to an unknown field")
@@ -789,8 +789,8 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Fused,
 // `m.X`, m a module: its constant (a value of its own: the base, built, left
 // out), an enum's variant it holds, or its member (a type, a fun — the base
 // of a further access).
-tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, br: Fused, mark: Graph_Mark,
-                         build: bool, want: Fuse_Want, w: Written) -> (Type, Fused) {
+tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, br: Built, mark: Graph_Mark,
+                         build: bool, want: Build_Want, w: Written) -> (Type, Built) {
     span := tree_span(k.t, n)
     msc := sd_module_scope(sd)
     t, found := scope_lookup(msc, field)
@@ -799,7 +799,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
             if et, is_enum := mt.(^Type_Enum); is_enum {
                 if val, has := et.variants[field]; has {
                     k.variant_nodes[n] = true
-                    if b := tc_building(k); build && b != nil { graph_fuse_drop_since(b, mark) }
+                    if b := tc_building(k); build && b != nil { graph_build_drop_since(b, mark) }
                     return et, tc_variant_value(k, et, val, field, span, want if build else .None, w)
                 }
             } else if ut, is_union := mt.(^Type_Union); is_union {
@@ -816,7 +816,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
         k.const_nodes[n] = true
         b := tc_building(k)
         if !build || b == nil { return t, {} }
-        graph_fuse_drop_since(b, mark)
+        graph_build_drop_since(b, mark)
         return t, tc_const_use(k, kc, n, t, want, w)
     }
     b := tc_building(k)
@@ -868,7 +868,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     if sd == nil { return false }
     tc_set_type(k, e, vt)
     gl: ^Graph_Literal
-    if b := tc_building(k); b != nil { gl = graph_fuse_override(b, graph_dest_var(name, NO_NODE, vt), sd) }
+    if b := tc_building(k); b != nil { gl = graph_build_override(b, graph_dest_var(name, NO_NODE, vt), sd) }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env, gl)
     return true
 }
@@ -876,7 +876,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
 // A literal of a name no type or union owns: a variant's two unions have
 // (ambiguous: said so), else an unknown type — unless a variant's or a
 // local's (what takes it checks it) — its fields' values checked.
-tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id, env: ^Type_Scope) -> (Type, Fused) {
+tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id, env: ^Type_Scope) -> (Type, Built) {
     span := tree_span(k.t, n)
     owner, is_variant := k.table.variant_to_enum[name]
     if is_variant && owner == "" {

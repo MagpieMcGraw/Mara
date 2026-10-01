@@ -48,9 +48,9 @@ tc_path :: proc(k: ^TC, imp: Tree_Id) -> string {
 // cycle.
 tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     // (Checked from outside any body being built: what it builds is its own.)
-    outer: ^Graph_Fuse
-    if k.gb != nil { outer, k.gb.fuse = k.gb.fuse, nil }
-    defer if k.gb != nil { k.gb.fuse = outer }
+    outer: ^Graph_Body
+    if k.gb != nil { outer, k.gb.body = k.gb.body, nil }
+    defer if k.gb != nil { k.gb.body = outer }
     if m, done := k.checked_modules[name]; done { return m }
     if name in k.in_progress {
         tc_error(k, span, TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED, name)

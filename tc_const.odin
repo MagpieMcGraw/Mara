@@ -44,7 +44,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     t := k.t
     span := tree_span(t, kc.def)
     b := k.gb
-    f: ^Graph_Fuse
+    f: ^Graph_Body
     if b != nil && k.c.errors == 0 && tc_sid(k, kc.def) not_in b.const_segs {
         f = graph_const_begin(b, tc_graph_decl(k, kc.def))
     }
@@ -54,7 +54,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     if kc.ann != 0 { ann = tc_type(k, kc.ann, kc.env, span) }
     k.hint = ann if !is_any(ann) else nil
     vt: Type
-    r: Fused
+    r: Built
     if f != nil && tc_building(k) != nil {
         at := graph_dest_var(kc.name, f.root, nil if is_untyped(ann) else ann)
         vt, r = tc_expr(k, kc.value, kc.env, .Into, dest = at, temp_span = span)
@@ -73,7 +73,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     scope_bind(kc.pub, kc.name, final)
     if f != nil {
         if k.c.errors > 0 {
-            graph_fuse_fail(b, f, "errors")
+            graph_body_fail(b, f, "errors")
         } else if tc_building(k) != nil {
             tc_store(k, kc.value, vt, r, graph_dest_var(kc.name, f.root, final), span, settle = true)
         }
@@ -119,7 +119,7 @@ tc_const_ref :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> (^TC
 
 // A use of a constant: its value (a table's global, read; asked its place, the
 // global itself).
-tc_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Fuse_Want, w: Written) -> Fused {
+tc_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Want, w: Written) -> Built {
     b := tc_building(k)
     if b == nil || want == .None { return {} }
     span := tree_span(k.t, n)

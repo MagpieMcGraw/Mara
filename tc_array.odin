@@ -4,7 +4,7 @@ package mara
 
 // `a[i]`: the element's place — its collection's (through a pointer, what it
 // points at), the index at the header's width — read, or itself.
-tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
@@ -26,7 +26,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
     it, ir := tc_expr(k, idx_n, env, .Value if build else .None, .Explicit)
     index := NO_VALUE
-    if b := tc_building(k); build && b != nil { index = fuse_index_value(b, ir.v, it, span) }
+    if b := tc_building(k); build && b != nil { index = build_index_value(b, ir.v, it, span) }
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -82,7 +82,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     it, ir := tc_expr(k, idx_n, env, .Value if tc_building(k) != nil else .None)
     place := NO_VALUE
     if b = tc_building(k); b != nil {
-        place = graph_op_value(b, .Index, .Explicit, ix_span, elem, "", base, fuse_index_value(b, ir.v, it, ix_span))
+        place = graph_op_value(b, .Index, .Explicit, ix_span, elem, "", base, build_index_value(b, ir.v, it, ix_span))
     }
     #partial switch v in tt {
     case ^Type_Fixed_Array:   k.hint = v.elem
@@ -149,8 +149,8 @@ tc_plain_name :: proc(k: ^TC, n: Tree_Id) -> bool {
 // `[a, b, c]`: zero where it goes (else in a temporary), then each element
 // into its slot — the first's type the literal's element type, when where it
 // goes gives none.
-tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                         dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written,
+                         dest: Dest, temp: bool, temp_span: Span) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
@@ -169,21 +169,21 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, 
     placed := want != .Into && temp_span != {}
     at := temp_span if temp || placed else span
     d := dest
-    if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-    ga := graph_fuse_array(b, span, d)
+    if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
+    ga := graph_build_array(b, span, d)
     et: Type
     if ga.elem_t == nil {
-        r: Fused
+        r: Built
         et, r = tc_expr(k, elems[0], env, .Either)
         lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
-        if b = tc_building(k); b != nil { tc_store(k, elems[0], et, r, graph_fuse_array_elem(b, ga, 0, et, lit_t), span) }
+        if b = tc_building(k); b != nil { tc_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span) }
     } else {
-        et = tc_store_into(k, elems[0], env, graph_fuse_array_elem(b, ga, 0, nil, nil), span)
+        et = tc_store_into(k, elems[0], env, graph_build_array_elem(b, ga, 0, nil, nil), span)
     }
     for e, i in elems[1:] {
         t: Type
         if b = tc_building(k); b != nil {
-            t = tc_store_into(k, e, env, graph_fuse_array_elem(b, ga, i + 1, nil, nil), span)
+            t = tc_store_into(k, e, env, graph_build_array_elem(b, ga, i + 1, nil, nil), span)
         } else {
             t = tc_check(k, e, env)
         }
@@ -207,12 +207,12 @@ tc_store_into :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope, d: Dest, span: Span,
 
 // What building a value in place gives its use: nothing more (built into
 // where it goes); else its temporary, typed — read, or its place.
-tc_built :: proc(k: ^TC, want: Fuse_Want, in_temp, into_temp: bool, d: Dest, t: Type, span: Span, placed: bool) -> Fused {
+tc_built :: proc(k: ^TC, want: Build_Want, in_temp, into_temp: bool, d: Dest, t: Type, span: Span, placed: bool) -> Built {
     b := tc_building(k)
     if b == nil { return {} }
     if !in_temp { return {v = NO_VALUE, ok = true, into = true} }
     tt := d.type_ if d.type_ != nil else t
-    p := graph_fuse_temp_end(b, d, tt, span)
+    p := graph_build_temp_end(b, d, tt, span)
     switch {
     case into_temp:                return {v = graph_read(b, p, tt, span), ok = true, temp = true}
     case want == .Place || placed: return {v = p, place = true, ok = true}
@@ -224,7 +224,7 @@ tc_built :: proc(k: ^TC, want: Fuse_Want, in_temp, into_temp: bool, d: Dest, t: 
 // — a plain place checked first and built after them, as the builder walks
 // it; any other base built as it is checked (held, when it has no place)
 // and put after the bounds — then the slice.
-tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, dest: Dest) -> (Type, Fused) {
+tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written, dest: Dest) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     base_n := Tree_Id(tr.a[n])
@@ -241,9 +241,9 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     base, plain := NO_VALUE, NO_VALUE
     plain_t, tt: Type
     if build && !tc_pure_place(k, base_n) {
-        held, early = true, graph_fuse_early_begin(b)
+        held, early = true, graph_build_early_begin(b)
         if tc_is_place_form(k, base_n) {
-            r: Fused
+            r: Built
             tt, r = tc_expr(k, base_n, env, .Place, temp_span = span)
             base = r.v
         } else {
@@ -253,10 +253,10 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             if pt, is_ptr := distinct_base(tt).(^Type_Ptr); is_ptr && base != NO_VALUE {
                 base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base)
             }
-            graph_fuse_early_end(b, &early)
+            graph_build_early_end(b, &early)
         }
     } else if build {
-        r: Fused
+        r: Built
         tt, r = tc_expr(k, base_n, env, .Place)
         plain, plain_t = r.v, tt
     } else {
@@ -322,12 +322,12 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = v, ok = true}
     }
     if held {
-        if !graph_fuse_early_place(b, &early) {
+        if !graph_build_early_place(b, &early) {
             tc_fail(k, "a slice's bounds that branch, of a value")
             return t, {}
         }
     } else {
-        base = graph_fuse_base_place(b, plain, plain_t, tc_is_self(k, base_n), span)
+        base = graph_build_base_place(b, plain, plain_t, tc_is_self(k, base_n), span)
     }
     return t, {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
@@ -338,7 +338,7 @@ tc_bound :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, w: Written, span: Span, b
     b := tc_building(k)
     if !build || b == nil { return t, NO_VALUE }
     if raw { return t, r.v }
-    return t, graph_fuse_widen(b, r.v, span, {to = slice_header_width_type})
+    return t, graph_build_widen(b, r.v, span, {to = slice_header_width_type})
 }
 
 // A place however its base is reached: a field, an element, what a pointer
@@ -371,7 +371,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     coll, from := NO_VALUE, 0
     if b != nil {
         from = b.nodes
-        r: Fused
+        r: Built
         tt, r = tc_expr(k, base_n, env, .Place)
         coll = r.v
     } else {
@@ -385,20 +385,20 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     build := b != nil
     bytes := build && tc_building(k) != nil && is_byte_buffer(tt)
     gs: Graph_Span_Target
-    if bytes { gs = graph_fuse_span_target(b, coll, tt, tc_is_self(k, base_n), from, span) }
+    if bytes { gs = graph_build_span_target(b, coll, tt, tc_is_self(k, base_n), from, span) }
     lt, ht: Type = Type_Any{}, Type_Any{}
     lo, hi := NO_VALUE, NO_VALUE
     if lo_n != 0 { lt, lo = tc_bound(k, lo_n, env, .Explicit, sl_span, build, raw = bytes) }
-    if bytes && tc_building(k) != nil { graph_fuse_span_target_hi(b, &gs, lo, sl_span) }
+    if bytes && tc_building(k) != nil { graph_build_span_target_hi(b, &gs, lo, sl_span) }
     if hi_n != 0 { ht, hi = tc_bound(k, hi_n, env, .Explicit, sl_span, build) }
     place := NO_VALUE
     if b = tc_building(k); bytes && b != nil {
-        graph_fuse_span_target_ops(b, &gs, hi, st, false, sl_span, span)
+        graph_build_span_target_ops(b, &gs, hi, st, false, sl_span, span)
     } else if build && b != nil {
-        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_fuse_base_place(b, coll, tt, tc_is_self(k, base_n), sl_span), lo, hi)
+        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_build_base_place(b, coll, tt, tc_is_self(k, base_n), sl_span), lo, hi)
     }
     vt: Type
-    r: Fused
+    r: Built
     void := false
     if bytes {
         // (The value first, of no place yet: what builds in place, in a

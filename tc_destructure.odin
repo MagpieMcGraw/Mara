@@ -23,8 +23,8 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     mark: Graph_Mark
     mr: Graph_Destructure
     if b != nil {
-        mark = graph_fuse_mark(b)
-        if is_try || of_call { mr = graph_fuse_destructure(b, tc_sid(k, s), span, names, stores, is_decl) }
+        mark = graph_build_mark(b)
+        if is_try || of_call { mr = graph_build_destructure(b, tc_sid(k, s), span, names, stores, is_decl) }
     }
     returns: []Type
     call := value
@@ -57,13 +57,13 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         // built in each target's copy — a call's, built before that was
         // known, left out.)
         vt: Type
-        r: Fused
+        r: Built
         if of_call { vt, r = tc_expr(k, value, env, .Value if b != nil else .None) } else { vt = tc_check(k, value, env) }
         mr.call = r.v
         returns = tc_call_returns(k, value, env)
         if returns == nil {
             if b = tc_building(k); b != nil && mr.on {
-                graph_fuse_drop_since(b, mark)
+                graph_build_drop_since(b, mark)
                 mr.on = false
             }
             if is_any(vt) {
@@ -110,7 +110,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(tt))
             }
         }
-        if b = tc_building(k); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, i, distinct_base(rt)) }
+        if b = tc_building(k); b != nil && mr.on { graph_build_destructure_write(b, &mr, i, distinct_base(rt)) }
     }
 }
 
@@ -120,16 +120,16 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
 tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
-    if b := tc_building(k); b != nil { graph_fuse_stmt_kind(b, .Other) }
+    if b := tc_building(k); b != nil { graph_build_stmt_kind(b, .Other) }
     for tg in targets {
         // (A declaration's bare names declared; a place, stored.)
         declares := is_decl && t.tag[tg] == .Ident
         kind := Stmt_Kind.Decl if declares else tc_assign_kind(k, tg)
         b := tc_building(k)
         saved: i32
-        if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), span, kind, fresh = true) }
+        if b != nil { saved = graph_build_stmt(b, tc_sid(k, s), span, kind, fresh = true) }
         if declares { tc_decl_one(k, s, tg, value, 0, env, nil) } else { tc_assign_one(k, s, tg, value, env) }
-        if b != nil { graph_fuse_stmt_end(b, saved) }
+        if b != nil { graph_build_stmt_end(b, saved) }
     }
 }
 
@@ -154,16 +154,16 @@ tc_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id, env: 
     for tg, i in targets {
         b := tc_building(k)
         saved_stmt: i32
-        if b != nil { saved_stmt = graph_fuse_stmt(b, tc_sid(k, s), span, tc_assign_kind(k, tg), fresh = true) }
+        if b != nil { saved_stmt = graph_build_stmt(b, tc_sid(k, s), span, tc_assign_kind(k, tg), fresh = true) }
         tc_assign_one(k, s, tg, values[i], env)
-        if b != nil { graph_fuse_stmt_end(b, saved_stmt) }
+        if b != nil { graph_build_stmt_end(b, saved_stmt) }
     }
     k.parallel = saved
     b := tc_building(k)
     if !parallel || b == nil { return }
     for h in held {
         v := graph_read(b, graph_var(b, "parallel", h.slot, h.t, h.span), h.t, h.span)
-        graph_fuse_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
+        graph_build_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
     }
 }
 

@@ -7,7 +7,7 @@ package mara
 
 // Built: the count at the header's width, then the storage it carves from (a
 // plain place, built where the carve is), then the carve.
-tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
     t := k.t
     span := tree_span(t, n)
     ty, storage := Tree_Id(t.a[n]), Tree_Id(t.b[n])
@@ -55,7 +55,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writte
     su := tc_unparen(k, storage)
     addressed := t.tag[su] == .Unary
     if b != nil {
-        r: Fused
+        r: Built
         st, r = tc_expr(k, storage, env, .Value if addressed else .Place)
         from = r.v
         if addressed { delete_key(&k.byte_addrs, tc_sid(k, su)) }
@@ -76,7 +76,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writte
     if !cursor && !at_byte && !is_any(st) { tc_error(k, span, TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM, type_name(st)) }
     if b = tc_building(k); b == nil || want == .None { return taken, {} }
     keyword := tc_text(t.main[n])
-    v := graph_fuse_carve(b, span, keyword, taken, from, st, addressed, t.tag[su] == .Self, count_op, w)
+    v := graph_build_carve(b, span, keyword, taken, from, st, addressed, t.tag[su] == .Self, count_op, w)
     return taken, {v = v, ok = true}
 }
 
@@ -100,10 +100,10 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     if b != nil {
         decl = tc_field_decl(k, fields_of, name, target, value, span)
         field = decl != NO_NODE
-        if !field { decl = graph_fuse_decl(b, name, span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
+        if !field { decl = graph_build_decl(b, name, span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     }
     vt: Type
-    r: Fused
+    r: Built
     if b != nil {
         vt, r = tc_expr(k, value, env, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
     } else {
@@ -118,6 +118,6 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
     if field { final = b.g.type_[decl] }   // (a field: its struct's type)
-    graph_fuse_typed(b, decl, final)
+    graph_build_typed(b, decl, final)
     tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
 }

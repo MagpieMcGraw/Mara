@@ -8,8 +8,8 @@ package mara
 // receiver's build dropped where it is no argument. (`addressed`: the `&`
 // written around the call — `&x.f()`, x's address the receiver, a value.)
 
-tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                       dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> (Type, Fused) {
+tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written,
+                       dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     mv := method_view(tr, n)
@@ -26,7 +26,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
     b := tc_building(k)
     build := want != .None && b != nil
     mark: Graph_Mark
-    if build { mark = graph_fuse_mark(b) }
+    if build { mark = graph_build_mark(b) }
     recv := mv.receiver
     arg := addressed if addressed != 0 else recv   // (the receiver, as an argument)
     args := mv.args
@@ -84,9 +84,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
     }
     if !resolved {
         // (A value: a method of its struct's, else `f(x, args)`.)
-        ask: Fuse_Want = .Either if build else .None
+        ask: Build_Want = .Either if build else .None
         qt: Type
-        qr: Fused
+        qr: Built
         if addressed != 0 { qt, qr = tc_unary(k, addressed, env, ask, w, of = recv) } else { qt, qr = tc_expr(k, recv, env, ask, w) }
         k.recv = {node = arg, t = qt, r = qr}
         tc_struct_of(k, qt)
@@ -100,7 +100,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
         if !resolved { args = tc_with_receiver(arg, args) }
     }
     if build && k.recv.r.ok && (len(args) == 0 || args[0] != arg) {
-        if bb := tc_building(k); bb != nil { graph_fuse_drop_since(bb, mark) }
+        if bb := tc_building(k); bb != nil { graph_build_drop_since(bb, mark) }
     }
     if failed { return Type_Error{}, {} }
     callee_name := tc_call_name(k, n)

@@ -10,7 +10,7 @@ import "core:strings"
 // its param's type once the function is chosen), the one member they fit
 // chosen, then the call.
 tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]string, args: []Tree_Id,
-                         env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+                         env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
     tr := k.t
     span := tree_span(tr, n)
     b := tc_building(k) if want != .None else nil
@@ -26,13 +26,13 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     vals := make([dynamic]Operand, context.temp_allocator)
     widens := make([dynamic]int, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
-    literals := make([dynamic]Fuse_Literal_Arg, context.temp_allocator)
+    literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     arg_types := make([dynamic]Type, context.temp_allocator)
     for a, i in args {
         if underscore[i] {
             append(&arg_types, nil)
             if b != nil && tc_building(k) != nil {
-                laters[i] = graph_fuse_later(b)
+                laters[i] = graph_build_later(b)
                 append(&vals, NO_VALUE)
                 append(&widens, -1)
                 append(&array_values, false)
@@ -49,11 +49,11 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
                 tc_fail(k, "bytes as a dispatch's argument")
                 continue
             }
-            v, wi := graph_fuse_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
+            v, wi := graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
             append(&vals, v)
             append(&widens, wi)
             append(&array_values, is_array && !r.place)
-            if tr.tag[u] == .Array { append(&literals, Fuse_Literal_Arg{i, from, b.nodes, t}) }
+            if tr.tag[u] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
         } else {
             append(&arg_types, k.recv.t if a == k.recv.node else tc_check(k, a, env))
         }
@@ -96,7 +96,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     // where the call is.)
     callee := callee_def_scope(ft)
     if callee == nil { callee = env }
-    default_at :: proc(k: ^TC, def: Tree_Id, env, callee: ^Type_Scope, want: Fuse_Want, w: Written, at: Span) -> (Type, Fused) {
+    default_at :: proc(k: ^TC, def: Tree_Id, env, callee: ^Type_Scope, want: Build_Want, w: Written, at: Span) -> (Type, Built) {
         if k.t.tag[def] == .Hash_Name { return tc_hash_name(k, def, env, want, w, at) }
         return tc_expr(k, def, callee, want, .Implied)
     }
@@ -108,10 +108,10 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
             default_at(k, def, env, callee, .None, w, tree_span(tr, a))
             continue
         }
-        graph_fuse_later_begin(b, &laters[i])
+        graph_build_later_begin(b, &laters[i])
         t, r := default_at(k, def, env, callee, .Either, w, tree_span(tr, a))
         if tc_building(k) != nil { vals[i] = tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}) }
-        if !graph_fuse_later_end(b, &laters[i]) { tc_fail(k, "a default for `_` across runs") }
+        if !graph_build_later_end(b, &laters[i]) { tc_fail(k, "a default for `_` across runs") }
     }
     for i := len(args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_node
@@ -125,16 +125,16 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     b = tc_building(k) if b != nil else nil
     if b == nil { return ret, {} }
     for wi, i in widens {
-        if wi >= 0 { b.fuse.widens[wi].sig, b.fuse.widens[wi].param = ft, i }
+        if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, i }
     }
-    if fuse_views_value(ft, array_values[:]) {
+    if build_views_value(ft, array_values[:]) {
         tc_fail(k, "an array's value viewed by a dispatch's param")
         return ret, {}
     }
     for la in literals {
         if la.arg >= len(ft.params) { continue }
         pt := ft.params[la.arg].type_
-        if graph_aggregate(pt) && pt != la.t { graph_fuse_retype_literal(b, la.from, la.to, pt) }
+        if graph_aggregate(pt) && pt != la.t { graph_build_retype_literal(b, la.from, la.to, pt) }
     }
     return ret, {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
 }

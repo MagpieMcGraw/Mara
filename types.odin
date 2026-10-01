@@ -1742,11 +1742,11 @@ cast_target_same_as_operand :: proc(src_raw: Type, target: Type) -> bool {
 // What the walk building the graph asks of an expression (fuse_expr): its
 // value; its place — a variable, a field, an element; or its place when it
 // has one, else its value (its consumer decides: a view, a read).
-Fuse_Want :: enum u8 { None, Value, Place, Either, Into }
+Build_Want :: enum u8 { None, Value, Place, Either, Into }
 
 // What the checker built for an expression: a value, or a place — or
 // nothing, built into the destination it was given (.Into: else, as .Either).
-Fused :: struct {
+Built :: struct {
     v:     Operand,
     place: bool,
     ok:    bool,
@@ -1756,7 +1756,7 @@ Fused :: struct {
 
 // Whether what was built is a text constant: its global (a table's is no
 // partial array; a string literal is built as one of its own).
-fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
+built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
     if b == nil || r.v.op == NO_NODE { return false }
     op := r.v.op
     if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
@@ -1764,14 +1764,14 @@ fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
 }
 
 // A dispatch's array literal argument: its position, its nodes, its type.
-Fuse_Literal_Arg :: struct {
+Build_Literal_Arg :: struct {
     arg, from, to: int,
     t:             Type,
 }
 
 // Whether a function's param would view an argument that is an array's
 // value (graph_view: its place, a temporary) — a slice over it.
-fuse_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
+build_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
     for is_value, i in array_values {
         if !is_value || i >= len(ft.params) { continue }
         if _, to_slice := distinct_base(ft.params[i].type_).(^Type_Slice); to_slice { return true }
@@ -1781,7 +1781,7 @@ fuse_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
 
 // Whether a use of a `from` as a `to` views it (graph_view): a fixed array
 // as a slice; a partial array, or a pointer to one, as a slice's header.
-fuse_views :: proc(to, from: Type) -> bool {
+build_views :: proc(to, from: Type) -> bool {
     if to == nil || from == nil { return false }
     _, to_ptr := distinct_base(to).(^Type_Ptr)
     _, from_ptr := distinct_base(from).(^Type_Ptr)
@@ -1829,14 +1829,14 @@ variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
 // before it — typed as the storage it is then written to (graph_assign), as
 // the use that takes it (fuse_use_type), or as itself — read (as a value) or
 // its place.
-fuse_temp_type :: proc(d: Dest) -> Type {
+build_temp_type :: proc(d: Dest) -> Type {
     if d.type_ != nil && !is_infer(d.type_) { return d.type_ }
     return nil
 }
 
 // The type of a written field that is no struct's (as check_field_assign
 // finds it after the value): a header's len, cap or ptr; an array's swizzle.
-fuse_target_field_type :: proc(obj_type: Type, field: string) -> Type {
+build_target_field_type :: proc(obj_type: Type, field: string) -> Type {
     t := obj_type
     if pt, ok := t.(^Type_Ptr); ok { t = pt.elem }
     t = distinct_base(t)
@@ -1860,11 +1860,11 @@ fuse_target_field_type :: proc(obj_type: Type, field: string) -> Type {
 
 // An index at the header's width (graph_index_value): an enum's value is its
 // tag, taken as a number; a narrower number widens.
-fuse_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) -> Operand {
+build_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) -> Operand {
     if _, is_enum := distinct_base(t).(^Type_Enum); is_enum {
         return graph_op_value(b, .Cast, .Implied, span, slice_header_width_type, type_name(slice_header_width_type), at)
     }
-    return graph_fuse_widen(b, at, span, {to = slice_header_width_type})
+    return graph_build_widen(b, at, span, {to = slice_header_width_type})
 }
 
 // When promote_numeric leaves a binary result as an infer type, adopt the
@@ -2003,7 +2003,7 @@ fn_params_desc :: proc(ft: ^Type_Scope) -> string {
 // A span of bytes read as its destination's type (graph_store): the bytes'
 // place, built first, then its bounds as they are (a register value's start
 // only), gathered in a slice the store takes apart (fuse_store_finish).
-Fuse_Span_Read :: struct {
+Built_Span_Read :: struct {
     op:     Node_Id,
     scalar: bool,
 }
