@@ -8,10 +8,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     tr := k.t
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
-    if tc_has_dot_ref(k, idx_n) {
-        tc_unsupported(k, n, "`.len` in a subscript")
-        return Type_Error{}, {}
-    }
+    tc_lower_dots(k, base_n, idx_n)
     build := want != .None && tc_building(k) != nil
     bt, br := tc_expr(k, base_n, env, .Place if build else .None, temp_span = span)
     base := br.v
@@ -66,10 +63,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     span := tree_span(tr, s)
     ix_span := tree_span(tr, target)
     base_n, idx_n := Tree_Id(tr.a[target]), Tree_Id(tr.b[target])
-    if tc_has_dot_ref(k, idx_n) {
-        tc_unsupported(k, target, "`.len` in a subscript")
-        return
-    }
+    tc_lower_dots(k, base_n, idx_n)
     if tr.tag[base_n] == .Ident && tc_name(k, base_n) in k.table.constants {
         name := tc_name(k, base_n)
         tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
@@ -126,13 +120,28 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if is_infer(vt) { tc_literal_overflow(k, diag, elem, span) }
 }
 
-// Whether a subscript holds a `.len` / `.cap` (its base's).
-tc_has_dot_ref :: proc(k: ^TC, n: Tree_Id) -> bool {
-    if n == 0 { return false }
-    if k.t.tag[n] == .Dot_Ident { return true }
+// `.len`, `.cap` in a subscript of a plain name (`a.b[.len - 1]`): its
+// base's — checked as `base.len` where it is written (tc_field).
+tc_lower_dots :: proc(k: ^TC, base, sub: Tree_Id) {
+    if sub == 0 || !tc_plain_name(k, base) { return }
+    t := k.t
+    #partial switch t.tag[sub] {
+    case .Dot_Ident:
+        name := tc_text(Token_Id(t.a[sub]))
+        if (name == "len" || name == "cap") && sub not_in k.dot_bases { k.dot_bases[sub] = base }
+    case .Binary:
+        tc_lower_dots(k, base, Tree_Id(t.a[sub]))
+        tc_lower_dots(k, base, Tree_Id(t.b[sub]))
+    case .Unary, .Deref, .Paren:
+        tc_lower_dots(k, base, Tree_Id(t.a[sub]))
+    }
+}
+
+// A name, or a field of one (`a.b.c`): walked again, the same place.
+tc_plain_name :: proc(k: ^TC, n: Tree_Id) -> bool {
     #partial switch k.t.tag[n] {
-    case .Binary: return tc_has_dot_ref(k, Tree_Id(k.t.a[n])) || tc_has_dot_ref(k, Tree_Id(k.t.b[n]))
-    case .Unary, .Paren: return tc_has_dot_ref(k, Tree_Id(k.t.a[n]))
+    case .Ident: return true
+    case .Field: return tc_plain_name(k, Tree_Id(k.t.a[n]))
     }
     return false
 }
@@ -220,10 +229,8 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     span := tree_span(tr, n)
     base_n := Tree_Id(tr.a[n])
     lo_n, hi_n := tree_pair(tr, n)
-    if tc_has_dot_ref(k, lo_n) || tc_has_dot_ref(k, hi_n) {
-        tc_unsupported(k, n, "`.len` in a subscript")
-        return Type_Error{}, {}
-    }
+    tc_lower_dots(k, base_n, lo_n)
+    tc_lower_dots(k, base_n, hi_n)
     b := tc_building(k)
     build := want != .None && b != nil
     read_as: Type
@@ -353,10 +360,8 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     sl_span := tree_span(tr, target)
     base_n := Tree_Id(tr.a[target])
     lo_n, hi_n := tree_pair(tr, target)
-    if tc_has_dot_ref(k, lo_n) || tc_has_dot_ref(k, hi_n) {
-        tc_unsupported(k, target, "`.len` in a subscript")
-        return
-    }
+    tc_lower_dots(k, base_n, lo_n)
+    tc_lower_dots(k, base_n, hi_n)
     b := tc_building(k)
     if b != nil && !tc_pure_place(k, base_n) {
         tc_fail(k, "a slice of no plain place")

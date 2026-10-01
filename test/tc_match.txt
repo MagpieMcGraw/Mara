@@ -71,6 +71,7 @@ defertest
 defscope
 discard_mixed
 disttest
+dottest
 emptystruct
 err_bool
 erruse_neg
@@ -160,6 +161,7 @@ nestty
 nrvo_zero
 operator_calls
 pa_array_stamp
+pafield
 pafieldctor
 pafill
 param_reassign_neg

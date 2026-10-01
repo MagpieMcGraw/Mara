@@ -23,7 +23,13 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     tr := k.t
     span := tree_span(tr, n)
     base := Tree_Id(tr.a[n])
-    field := tc_text(Token_Id(tr.b[n]))
+    field: string
+    if tr.tag[n] == .Dot_Ident {
+        // (`.len` in a subscript: its base's — tc_lower_dots.)
+        base, field = k.dot_bases[n], tc_text(Token_Id(tr.a[n]))
+    } else {
+        field = tc_text(Token_Id(tr.b[n]))
+    }
     // (`pkg.X` inside pkg: its own constant — its value's type.)
     if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
         if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok {
@@ -51,7 +57,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             return ut, tc_union_variant(k, ut, field, span, want if build else .None, w, dest, temp, temp_span)
         }
     }
-    t, is_member, known, known_ok := tc_field_type(k, n, bt, field, span)
+    t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
     if _, is_enum := t.(^Type_Enum); is_enum && known_ok { k.variant_nodes[n] = true }
     if !build || tc_building(k) == nil { return t, {} }
     if known_ok {
@@ -63,7 +69,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
     if !is_member { return t, {} }
-    p := tc_member_place(k, n, br, bt, t)
+    p := tc_member_place(k, n, field, br, bt, t)
     if p == NO_VALUE { return t, {} }
     if want == .Value { return t, {v = graph_read(tc_building(k), p, t, span), ok = true} }
     return t, {v = p, place = true, ok = true}
@@ -71,7 +77,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
 
 // A field's type: whether it names part of the value (a member), or a
 // fixed array's length (its value, else -1).
-tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, known: i128, known_ok: bool) {
+tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, known: i128, known_ok: bool) {
     // (An enum's variant: its value, known. A union's tag or pad: part of the
     // value; its variant: a value of its own.)
     #partial switch v in bt {
@@ -147,8 +153,8 @@ tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -
         case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, 0, false
         case "len", "cap":
             // (A text constant's: its length, known.)
-            if base := tc_unparen(k, Tree_Id(k.t.a[n])); k.t.tag[base] == .Ident {
-                if kc, ok := k.consts[tc_name(k, base)]; ok && k.t.tag[kc.value] == .String {
+            if b := tc_unparen(k, base); k.t.tag[b] == .Ident {
+                if kc, ok := k.consts[tc_name(k, b)]; ok && k.t.tag[kc.value] == .String {
                     return slice_header_width_type, false, i128(len(tc_text(k.t.main[kc.value]))), true
                 }
             }
@@ -163,7 +169,7 @@ tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -
 
 // A member's place: its base's (through a pointer, what it points at), then
 // the field — or an array's swizzle.
-tc_member_place :: proc(k: ^TC, n: Tree_Id, base: Fused, bt: Type, t: Type) -> Operand {
+tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Fused, bt: Type, t: Type) -> Operand {
     b := tc_building(k)
     if b == nil { return NO_VALUE }
     if !base.ok || !base.place {
@@ -176,7 +182,7 @@ tc_member_place :: proc(k: ^TC, n: Tree_Id, base: Fused, bt: Type, t: Type) -> O
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
     }
     _, is_array := distinct_base(graph_pointee(bt)).(^Type_Fixed_Array)
-    return graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, span, t, tc_text(Token_Id(k.t.b[n])), p)
+    return graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, span, t, field, p)
 }
 
 // `x.f = v`: the field's place, then the value into it.
@@ -205,7 +211,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if ft != nil {
         k.hint = ft
         tc_set_type(k, target, ft)
-        if tc_building(k) != nil { place = tc_member_place(k, target, br, bt, ft) }
+        if tc_building(k) != nil { place = tc_member_place(k, target, field, br, bt, ft) }
     } else if tc_building(k) != nil {
         tc_fail(k, "a write to an unknown field")
     }
@@ -618,7 +624,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Fused,
     place := NO_VALUE
     if tc_building(k) != nil {
         if ft := fuse_target_field_type(bt, field); ft != nil {
-            place = tc_member_place(k, target, br, bt, ft)
+            place = tc_member_place(k, target, field, br, bt, ft)
         } else {
             tc_fail(k, "a write to an unknown field")
         }
@@ -714,7 +720,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
     }
     b := tc_building(k)
     if !build || b == nil { return t, {} }
-    p := tc_member_place(k, n, br, bt, t)
+    p := tc_member_place(k, n, field, br, bt, t)
     if p == NO_VALUE { return t, {} }
     if want == .Value { return t, {v = graph_read(b, p, t, span), ok = true} }
     return t, {v = p, place = true, ok = true}

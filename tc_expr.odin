@@ -96,6 +96,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     case .Try:
         return tc_try(k, n, env, want, w)
     case .Dot_Ident:
+        if n in k.dot_bases { return tc_field(k, n, env, want, w, dest, temp, temp_span) }
         name := tc_text(Token_Id(k.t.a[n]))
         hint := k.hint
         k.hint = nil
