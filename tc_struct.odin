@@ -319,6 +319,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     // partial; said at the struct when it is none.)
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
+    empty := false   // (`[..N]T{}`: its zero — len 0, where it goes)
     switch {
     case fd != nil:
         #partial switch _ in distinct_base(fd.t) {
@@ -359,10 +360,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
                 tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
                 return Type_Error{}, {}
             }
-            tc_unsupported(k, n, "an empty partial array's literal")
-            return Type_Error{}, {}
-        }
-        if !tc_is_fixed_array(t) || tc_is_distinct(t) {
+            empty = true
+        } else if !tc_is_fixed_array(t) || tc_is_distinct(t) {
             tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
             return Type_Error{}, {}
         }
@@ -372,7 +371,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     ts, is_scope := t.(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = k.table.structs[t.(^Type_Union).variant_structs[variant]] }
-    if fa == nil && vst == nil && fd == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
+    if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}
     }
@@ -380,7 +379,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil {
+    } else if fa == nil && fd == nil && !empty {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
         if !zero {
@@ -407,6 +406,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             // (An array: zero, then each element into its slot; a broadcast,
             // its value then the fill.)
             if !broadcast { gl = graph_fuse_literal(b, span, name, zero, t, d) }
+        } else if empty {
+            gl = graph_fuse_literal(b, span, name, zero, t, d)
         } else if vst != nil {
             // (A variant: its construction, then its defaults the literal doesn't give.)
             gl = graph_fuse_literal(b, span, name, zero, t, d)
@@ -424,7 +425,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, env, d, build, fd)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name, env, gl, d, build && broadcast)
-    } else if !zero {
+    } else if !zero && !empty {
         tc_literal_fields(k, n, entries, sd, env, gl)
     }
     b = tc_building(k)

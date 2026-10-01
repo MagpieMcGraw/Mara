@@ -180,6 +180,7 @@ nichetest
 nrvo_zero
 operator_calls
 pa_array_stamp
+pa_literal_zero
 pafield
 pafieldctor
 pafill
