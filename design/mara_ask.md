@@ -28,6 +28,12 @@ inputs in Pounce.)
 > | `fun_return_arg_set` "SymbolTable cache, `-1` cycles" | query over `Checked_Program.call_graph.return_args` (SCC fixpoint) |
 >
 > The call graph in §12 is no longer "future" — it's built.
+>
+> Since the graph retrofit (2026-09/10) the table is itself history: the syntax tree is
+> flat (no AST nodes, no `type_checker.odin`), and every analysis reads the program
+> graph. The flow views are def-use over the graph (defuse.odin) sliced by slice.odin and
+> lineage.odin; escape is escape.odin's dataflow over runs (dataflow.odin); the
+> return-dependency summary is slice.odin's `slice_return_deps`.
 
 A small query command over a checked program: "what feeds this function?", "what
 contributes to this value?", "what depends on this struct?". The motivating session

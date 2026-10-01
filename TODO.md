@@ -6,7 +6,7 @@ Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
 
-Modules are not structs. See register_and_check_declarations vs register scope defs for examples.
+Modules are not structs.
 
 When lexing, save file sizes, pass them on to the parser, to know roughly how much memory to allocate.
 
@@ -38,20 +38,14 @@ Validate top level statements investigation. Do we actually need it?
 
 Type checking of unions and distinct is fucked up for some reason.
 
-Maybe it's time to abandon the typed AST idea? Should a stack of type scope be the new typed AST?
-
 🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
 
 🚩 (the genuine {}/() merge)
 
 🚩 Why do we track which module is the main module?
 
-🚩 class_scope / fun_scope — == scope for ns-envs (both set to the same ft at 8182/8211). Their marker role ("am I inside a class/fun?") is just "nearest .Struct/.Fun walking up scope.parent_scope." Derivable — even the defs-parent walk at 8200 is a scope-chain walk wearing an env costume.
-
 Fix FFI functions for mara ask. Probably some array on type scope was skipped?
 
-
-🚩 trawl or any mention of type env. We removed the struct, did we get all the remnants?
 
 # Analyzer — mara ask
 

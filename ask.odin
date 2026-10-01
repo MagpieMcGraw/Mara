@@ -676,8 +676,8 @@ ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
 
 ask_canon_dir :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
-    case "above": return "above", true
-    case "below": return "below", true
+    case "above", "bfor": return "above", true
+    case "below", "aftr": return "below", true
     }
     return "", false
 }

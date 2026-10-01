@@ -125,7 +125,7 @@ Walking start → check → body → check → … → done is running `total`; 
 | refers to | a use of a name → its declaration | name resolution (the scope stack) | underlies everything |
 | has type | a declaration or operation → its type | the type checker | `mara ask` type |
 | calls | a call operation → the function it calls | building the graph, where hidden calls become explicit | `mara ask` call |
-| flows | a value moves from one place to another | building the graph, where defaults and method receivers become explicit | `mara ask` flow |
+| flows | a value moves from one place to another | the operations' operands (no stored edge: see Storage) | `mara ask` flow |
 | then | an operation → the one that runs next | building the graph, where loops and branches become explicit | execution order; code generation walks it |
 
 ## Storage
@@ -153,33 +153,27 @@ Every node is a numbered id, and each kind of connection is stored by its shape:
 
 **One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`, and the `sum` in `return sum` has `refers_to = 5`. The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
 
-**Many-to-many (calls, flows): one edge table.** Each connection is a record:
+**Many-to-many (calls): one edge table.** Each connection is a record:
 
 ```
 Edge :: struct {
 	from:    Node_Id
 	to:      Node_Id
-	kind:    Edge_Kind   // Calls or Flows
-	site:    Node_Id     // where it is written: the call, the argument
+	kind:    Edge_Kind   // Calls, Runs (a run-defer → its block) or Then
 	written: Written     // Explicit, Implied or Synthetic
 }
 ```
 
-| kind | from → to | site | written |
-| --- | --- | --- | --- |
-| Calls | main → total | `total(cart[:])` | Explicit |
-| Calls | main → print | `print(t)` | Explicit |
-| Flows | cart → items | `cart[:]`, argument to parameter | Explicit |
-| Flows | items → it | `for it in items` | Explicit |
-| Flows | it → sum | `sum += it.price` | Explicit |
-| Flows | sum → result | `return sum` | Explicit |
-| Flows | result → t | `t := total(…)` | Explicit |
+| kind | from → to | written |
+| --- | --- | --- |
+| Calls | `total(cart[:])` → total | Explicit |
+| Calls | `print(t)` → print | Explicit |
 
 The table is sorted by `from`, with two indexes beside it: *outgoing* (for each node, where its run of edges starts) and *incoming* (edge numbers sorted by `to`). A node's list of connections is its slice of the table, one slice per direction.
 
 Why not an array stored on each node: it would need two arrays per node (one per direction), copy each edge's data onto both ends, and mean thousands of small allocations rebuilt on every keystroke. One table built in a single pass is simpler and faster.
 
-**Operations: in order, in runs.** Each function's operations are stored in execution order, cut into straight runs (`start`, `check`, `body`, `done` above). A run stores its `then` edges: one, or two after a branch. An operation lists its inputs directly, which are its incoming flows at the finest zoom. The named-level flow edges in the table above are those chains zoomed out, kept as an index.
+**Operations: in order, in runs.** Each function's operations are stored in execution order, cut into straight runs (`start`, `check`, `body`, `done` above). A run stores its `then` edges: one, or two after a branch. An operation lists its inputs directly: they are its incoming flows. Flows at the named level (`cart → items → it → sum → result → t`) are those chains zoomed out; they were once stored as Flows edges too, an index nothing read (dropped 2026-10-01) — `mara ask`'s flow views work them out from the operations (def-use, defuse.odin).
 
 ## Operations
 

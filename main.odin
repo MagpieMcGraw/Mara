@@ -968,8 +968,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     (no name)      module map — every module in the project at a glance
     <name>         the subject's natural view, both directions — a type's structure,
                    a function's calls, a variable's flow (add types|call|flow to switch)
-    above          only the sources — what <name> is built from / what feeds it
-    below          only the consumers — what depends on <name> / what it feeds
+    above (bfor)   only the sources — what <name> is built from / what feeds it
+    below (aftr)   only the consumers — what depends on <name> / what it feeds
     types          only the type graph — a struct's fields/embeds; a function's
                    parameter types (above) and return types (below)
     call           only the call graph — a function's callees (above) / callers

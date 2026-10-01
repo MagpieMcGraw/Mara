@@ -4,8 +4,8 @@
 # of first appearance (%v0, %v1, ...); string globals are replaced by their
 # contents. Named types (%class.X = type ...) are left alone.
 #
-# Before renaming, each function drops what can't change what it does (phase 3
-# compares two emitters, design/graph_retrofit.md), one rule each:
+# Before renaming, each function drops what can't change what it does, one
+# rule each:
 #   - a block no branch reaches from the entry;
 #   - a store the next instruction overwrites: same type, same pointer (after
 #     only address arithmetic);
@@ -25,9 +25,6 @@
 #     nothing uses;
 #   - the order of the entry block's allocas, and of any block's leading run of
 #     them (by first use);
-#   - the name a bounds failure reports for the place it indexes: the graph's
-#     emitter names it as written (`o.cells`, `grid[i]`), the old one by its
-#     last name or as `array` (a message change, made on purpose);
 #   - then, a string constant nothing references, and their order.
 # Usage: irnorm.pl file.ll > file.norm
 use strict; use warnings;
@@ -107,7 +104,7 @@ sub clean {
         next unless $seen{$i};
         push @kept, @{ $blocks[$i]{lines} };
     }
-    s/(call void \@__mara_bounds_fail\(.*, )ptr \@[-\w.\$]+\)$/${1}ptr NAME)/ for @kept;
+
     my @l = drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept))));
     # A slot's one store, once the stores overwritten are gone; what it
     # forwards may fold, and leaves the slot unread.
