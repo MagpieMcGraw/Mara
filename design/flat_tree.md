@@ -182,27 +182,24 @@ It keeps the type representation and replaces the checking.
       words of lists and records, 0 problems. hittest moves at the switch (stage 4): its
       labels change with the tree, and the point-query corpus stays a fixed gate through
       stage 3.
-- [ ] 3. The new checker: every program's IR, runs and diagnostics identical
+- [x] 3. The new checker: every program's IR, runs and diagnostics identical
   - [x] Scaffolding (2026-09-30: d83ff08, e916025): `MARA_CHECKER=new`, the builder keyed
         by `Syntax_Id`, `test/tcdiff.sh` — every program built by both checkers, a program
         matching when its diagnostics, IR and run do; the matches are recorded in
         `test/tc_match.txt` and a lost one fails the run. Any form not yet checked is an
         error saying so (`tc: … is not supported yet`), so a program fails visibly rather
         than differently.
-  - [x] Functions over integers, locals, control flow, calls, print (e3f8af0, 45b1397);
-        `#if` still to do
-  - [ ] Structs, fields, arrays, slices, text, constants — structs, fields, literals,
-        constructors, casts, indexing, slices, module constants done (c725a98, 480ce15,
-        2e9a609, 1bf175a); local constants to do
-  - [ ] Unions and match, defaults and constructors — param defaults done (ae408b5)
-  - [ ] Generics, modules and imports — modules and `use`, aliases, dispatch and
-        overloads, generic funs, methods done (ec78de1, 525d151); generic structs to do
-  - [ ] Byte views, takes, the arena, the rest
-  - Progress (2026-10-01): 264 of 288 programs match; 2 more differ as explained
-    (`test/tc_explained.txt`). Done since 203: method calls (`&x.f()` addresses the
-    receiver), the program's arena, spans of bytes read and written, takes, fallible
-    constructors, qualified type names, `.len` in subscripts, sized slices, named results,
-    broadcast assignment, call-site defaults, `#self`, function types and values, `all v`.
-    To do: generic structs and unions, override blocks, parallel assignment, `using`,
-    `#expose`, and a few one-offs.
+  - [x] Functions over integers, locals, control flow, calls, print (e3f8af0, 45b1397)
+  - [x] Structs, fields, arrays, slices, text, constants
+  - [x] Unions and match, defaults and constructors
+  - [x] Generics, modules and imports — generic funs, structs and unions
+  - [x] Byte views, takes, the arena, the rest
+  - Done (2026-10-01, 1bb6cf2): 286 of 288 programs match — byte-identical IR, the same
+    diagnostics, the same runs — and the other 2 differ as explained
+    (`test/tc_explained.txt`), awaiting a ruling. Forms the tree keeps as written and the
+    old parser lowered are given that meaning in the checker: `&x.f()` (f's receiver
+    addressed), `x in lo..hi`, `[]T(n)`, the shape shortcut, `#expose`, param tuple
+    defaults. Old-checker quirks mirrored for parity, to revisit after the switch: a
+    fun's name is a value only when it has params; a broadcast declaration's copies drop
+    its annotation; field-broadcast and `using` errors are said at the struct.
 - [ ] 4. The switch
