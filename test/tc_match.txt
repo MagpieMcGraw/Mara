@@ -18,6 +18,7 @@ assertp
 assertu
 audittest
 autowiden
+bare_ctor_fails_neg
 bigstack_neg
 bigstack_ok
 booltest
@@ -60,7 +61,9 @@ crashfix
 crossfile_fields
 ctor_expr_defaults
 ctor_zero
+ctorerr
 ctorstr
+ctorvals
 curtest
 defer_changes_returned_neg
 defertest
@@ -104,6 +107,7 @@ escape_unknown_char_neg
 escape_unknown_neg
 escapeparam
 escapes
+fallible_ctor_zero
 field_default_types
 fielddefer
 fixed_decay_neg
@@ -129,6 +133,8 @@ init_shapes_neg
 leak_consumer
 let_big_view
 literal_ctor_args_neg
+literal_ctor_defaults
+literal_ctor_fails_neg
 localstruct
 mandelbrot
 mandelbrot_bench

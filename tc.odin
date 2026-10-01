@@ -461,11 +461,8 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
         append(&k.scopes, new_clone(TC_Scope{def = def, node = node, env = env}))
         return
     }
-    switch {
-    case is_struct && len(v.returns) > 0:
-        tc_unsupported(k, def, "a struct's results")
-        return
-    }
+    // (A struct's constructor may fail: one of no params has none.)
+    if is_struct && len(v.returns) > 0 && len(v.params) == 0 { tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name) }
     flat := make_flat_name(k.pkg, name)
     if is_struct && (flat in k.table.structs || flat in k.table.funs) {
         tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED, name)
@@ -514,6 +511,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
         }
     }
     build_param_map(ts)
+    if ts.kind == .Struct && len(v.params) == 0 { return }   // (no constructor: no results)
     for r in v.returns {
         if t.tag[r] == .Param_Group {
             tc_unsupported(k, r, "a named result")

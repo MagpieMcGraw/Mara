@@ -1,5 +1,7 @@
 package mara
 
+import "core:strings"
+
 // Bodies, checked and built statement by statement in the order they run
 // (the graph is built as they are checked, through the builder): a fun's
 // code; a struct's constructor, whose field declarations are its fields —
@@ -312,6 +314,7 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     defer type_env_set(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
+    tc_bare_construction(k, name, ann, env, span)
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
     b := tc_building(k)
     if b == nil { return }
@@ -329,6 +332,54 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
         graph_fuse_typed(b, decl, ann)
     }
     graph_fuse_bare(b, decl, ann, nil, args, span)
+}
+
+
+// A bare declaration of a struct its constructor's arguments make — or an
+// array of them: each must have a default, and the constructor can't fail
+// (nothing would take its err). An array's elements that can't be built so
+// are left zero: said so. (A body's own declarations, as the old checker's
+// registration saw them: no nested block's.)
+tc_bare_construction :: proc(k: ^TC, name: string, t: Type, env: ^Type_Scope, span: Span) {
+    if env.kind == .Block && env.parent_scope != nil && env.parent_scope.kind == .Block { return }
+    elem, is_array := t, false
+    for {
+        #partial switch v in distinct_base(elem) {
+        case ^Type_Fixed_Array:
+            elem, is_array = v.elem, true
+            continue
+        case ^Type_Partial_Array:
+            elem, is_array = v.elem, true
+            continue
+        }
+        break
+    }
+    st, is_scope := elem.(^Type_Scope)
+    if !is_scope || st.kind != .Struct || len(st.params) == 0 { return }
+    shown := st.source_name if st.source_name != "" else st.name
+    if is_array && !constructs_bare(st) {
+        check_warning(k.c, span, TYPE_WON_GET_AUTO_CONSTRUCTED_DECLARED, shown, name)
+        return
+    }
+    for p in st.params {
+        if field_has_default(p) { continue }
+        // (Its signature, to show what to pass.)
+        sig := strings.builder_make(context.temp_allocator)
+        strings.write_string(&sig, shown)
+        strings.write_string(&sig, "(")
+        for pp, i in st.params {
+            if i > 0 { strings.write_string(&sig, ", ") }
+            strings.write_string(&sig, pp.name)
+            if pp.type_ != nil {
+                strings.write_string(&sig, ": ")
+                strings.write_string(&sig, type_name(pp.type_))
+            }
+        }
+        strings.write_string(&sig, ")")
+        tc_error(k, span, TYPE_TYPE_SELF_CONSTRUCTING_CALL_LIKE, name, shown, strings.to_string(sig), name, shown, shown)
+        return
+    }
+    if len(st.return_types) > 0 { tc_error(k, span, TYPE_BARE_CAN_FAIL, name, shown, name, shown) }
 }
 
 // The struct a bare declaration of the type constructs: its own, or its
