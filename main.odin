@@ -1246,25 +1246,14 @@ main :: proc() {
 
     perf_timer_mark(&perf, "type check")
     checked: ^Checked_Program
-    if tc_mode() == "new" {
-        // The new checker, on the flat tree (design/flat_tree.md, stage 3).
-        for f in build_files { tree_parse_file(f) }
-        checked = tc_check_program(&build_tree, tc_modules(), args.pkg_name,
-                                   web           = args.web,
-                                   shared        = pkg_shared,
-                                   target_os     = target_os,
-                                   analysis_only = args.ask,
-                                   perf          = &perf)
-    } else {
-        checked = check_program(programs, args.pkg_name,
-                                compiler_dir  = args.compiler_dir,
-                                search_dir    = args.search_dir,
-                                web           = args.web,
-                                shared        = pkg_shared,
-                                target_os     = target_os,
-                                analysis_only = args.ask,
-                                perf          = &perf)
-    }
+    // The checker, on the flat tree (design/flat_tree.md).
+    for f in build_files { tree_parse_file(f) }
+    checked = tc_check_program(&build_tree, tc_modules(), args.pkg_name,
+                               web           = args.web,
+                               shared        = pkg_shared,
+                               target_os     = target_os,
+                               analysis_only = args.ask,
+                               perf          = &perf)
     if checked.errors > 0 {
         perf_timer_end(&perf)
         flush_diagnostics()

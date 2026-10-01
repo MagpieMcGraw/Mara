@@ -360,12 +360,10 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     }
     b := tc_building(k)
     if b == nil { return }
-    args: []Operand
-    if st := tc_bare_struct(ann); st != nil {
-        tc_struct_ensure(k, st)
-        if constructs_bare(st) { args = tc_ctor_args(k, st, span) }
-    }
+    st := tc_bare_struct(ann)
+    if st != nil { tc_struct_ensure(k, st) }
     if b = tc_building(k); b == nil { return }
+    // (Its local, then its constructor's arguments — its params' defaults.)
     decl := field
     if decl == NO_NODE {
         decl = graph_fuse_decl(b, name, span)
@@ -373,6 +371,9 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     } else if b.g.type_[decl] == nil {
         graph_fuse_typed(b, decl, ann)
     }
+    args: []Operand
+    if st != nil && constructs_bare(st) { args = tc_ctor_args(k, st, span) }
+    if b = tc_building(k); b == nil { return }
     graph_fuse_bare(b, decl, ann, nil, args, span)
 }
 
@@ -621,7 +622,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
     val_type, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
     tc_check_write(k, value, val_type, existing, name, span)
-    tc_store(k, value, val_type, r, tc_parallel_hold(k, graph_dest_var(name, NO_NODE, existing), span), span)
+    tc_store(k, value, val_type, r, tc_parallel_hold(k, graph_dest_var(name, NO_NODE, distinct_base(existing)), span), span)
 }
 
 // `return a, b`: each value at its result's type (trailing errs implied `.Ok`).
@@ -932,7 +933,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, target, value)
     }
-    tc_store(k, 0, vt, fr, graph_dest_var(name, NO_NODE, existing), span)
+    tc_store(k, 0, vt, fr, graph_dest_var(name, NO_NODE, distinct_base(existing)), span)
 }
 
 // A compound assignment's operation: its target (read, or through the place

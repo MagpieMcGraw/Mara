@@ -194,8 +194,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     // checker resolved them.)
     if ts, is_scope := t.(^Type_Scope); is_scope && len(ts.params) > 0 && name in k.c.declared_funs {
         if want == .None || want == .Place { return t, {} }
-        flat := make_flat_name(resolve_fn_home(k.c, env, name), name)
-        return t, {v = graph_op_value(b, .Global, w, span, t, flat), ok = true}
+        return t, {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
     }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant Ã¢ÂÂ a function sees no module's variables.)

@@ -294,8 +294,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     ft.kind = .Fun
     ft.home_package = tmpl.pkg
     ft.node = tmpl.node
-    ft.name = make_flat_name(tmpl.pkg, mangled)
-    ft.source_name = mangled
+    ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one, as the old checker's were)
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
     defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg

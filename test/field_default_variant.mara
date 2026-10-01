@@ -1,0 +1,16 @@
+module field_default_variant
+//@ expect-output: true
+
+// `.Big` names a variant without saying which enum: the one visible enum that
+// has it, Kind, is the field's type — as a local declared `k := .Big` takes it.
+
+Kind :: union { Small, Big }
+
+N :: struct {
+	k := .Big
+}
+
+main :: fun() {
+	n := N{}
+	print(n.k == .Big)
+}

@@ -7,9 +7,9 @@ import "core:strings"
 
 // The type checker on the flat tree (design/flat_tree.md, stage 3), beside
 // the old one until the switch: MARA_CHECKER=new runs it instead. It fills
-// the same Checked_Program â the symbol table, the Type_Scopes, the program
+// the same Checked_Program Ã¢ÂÂ the symbol table, the Type_Scopes, the program
 // graph (built as each body is checked, through the builder), the
-// diagnostics â from the tree as written: nothing lowered, nothing cloned.
+// diagnostics Ã¢ÂÂ from the tree as written: nothing lowered, nothing cloned.
 //
 // What checking an expression builds is what it returns (tc_expr: its type
 // and what it built), not a side channel. What the checker finds about a node
@@ -211,7 +211,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.pkg, c.current_package = main_package, main_package
     main := tc_check_module_files(k, files, main_mod)
 
-    // (Generic structs' instances: their methods, their inits — before the
+    // (Generic structs' instances: their methods, their inits â before the
     // main module's, as the old checker extracted them.)
     for i in k.struct_instances { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
     tc_extract(k, main, main_package, is_main = true)
@@ -275,7 +275,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s, envs[i], mod) }
     }
     mine := list[:]
-    // (Signatures first: a constant's value may call a fun â an error, but
+    // (Signatures first: a constant's value may call a fun Ã¢ÂÂ an error, but
     // one found at its call, as the old checker's were on demand.)
     for i in mine { tc_signature(k, k.scopes[i]) }
     for f, i in files {
@@ -317,7 +317,7 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
 
 // A module statement's declaration, registered: a fun's name, its type made.
 // A module statement's names, the first pass (the old checker's 1a): its
-// funs, structs, types and unions declared, its constants listed â before
+// funs, structs, types and unions declared, its constants listed Ã¢ÂÂ before
 // any `use` in the module checks another.
 tc_register_types :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     t := k.t
@@ -477,8 +477,8 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
         if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, lo = tc_subtree_lo(k, node), env = env, pkg = k.pkg} }
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
-        // binds a type to is that type's declaration â mara.core's `Program`
-        // is the compiler's program struct â extracted there: tc_extract.)
+        // binds a type to is that type's declaration Ã¢ÂÂ mara.core's `Program`
+        // is the compiler's program struct Ã¢ÂÂ extracted there: tc_extract.)
         append(k.mine, len(k.scopes))
         append(&k.scopes, new_clone(TC_Scope{def = def, node = node, env = env}))
         return
@@ -722,7 +722,12 @@ tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
     case .Using:    return tc_stmt_kind(k, Tree_Id(k.t.a[s]))   // (its declaration's)
     case .Expr_Stmt:
         if k.t.tag[k.t.a[s]] == .Import { return .Decl }
-    case .Decl:     return .Decl
+    case .Decl:
+        // (Several names from one value: a destructure — a broadcast's, its
+        // copies': tc_broadcast.)
+        v := decl_view(k.t, s)
+        if len(v.targets) > 1 && len(v.values) == 1 { return .Destructure }
+        return .Decl
     case .Assign:
         targets := tree_list(k.t, k.t.a[s])
         if len(targets) > 1 && len(targets) == len(tree_list(k.t, k.t.b[s])) { return .Other }   // (its assignments')
@@ -743,7 +748,7 @@ tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
     return .Other
 }
 
-// The modules the build parsed, each its files' roots in path order â the
+// The modules the build parsed, each its files' roots in path order Ã¢ÂÂ the
 // new checker's input (main.odin, under MARA_CHECKER=new).
 tc_modules :: proc() -> map[string][]Tree_Id {
     by_module := make(map[string][dynamic]^Source_File, context.temp_allocator)
@@ -773,7 +778,7 @@ tc_mode :: proc() -> string {
 _ :: fmt
 
 // Whether a definition's value is a definition of its own (a fun, a type, an
-// import, â¦), not a constant's value.
+// import, Ã¢ÂÂ¦), not a constant's value.
 tc_is_definition :: proc(tag: Tree_Tag) -> bool {
     #partial switch tag {
     case .Fun_Def, .Struct_Def, .Import, .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def, .Intrinsic_Body:
@@ -782,7 +787,7 @@ tc_is_definition :: proc(tag: Tree_Tag) -> bool {
     return false
 }
 
-// A param's type: as written; else its default's â a whole number's width
+// A param's type: as written; else its default's Ã¢ÂÂ a whole number's width
 // the one the body uses it at (a cell, settled once the body is checked), a
 // fraction f64, anything else its checked type.
 tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scope, span: Span, slot: Maybe(int) = nil) -> Type {
