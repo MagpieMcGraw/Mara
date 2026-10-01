@@ -70,7 +70,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
         final = ann
     }
     kc.t = final
-    type_env_set(kc.pub, kc.name, final)
+    scope_bind(kc.pub, kc.name, final)
     if f != nil {
         if k.c.errors > 0 {
             graph_fuse_fail(b, f, "errors")
@@ -172,9 +172,9 @@ tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope, body: ^Type_Scope) {
     for kc in sc.consts {
         kc.env, kc.pub = body, body
         tc_check_const(k, kc)
-        type_env_set(body, kc.mangled, kc.t)
-        type_env_set(sc.ts, kc.mangled, kc.t)
-        type_env_set(sc.ts, kc.name, kc.t)
+        scope_bind(body, kc.mangled, kc.t)
+        scope_bind(sc.ts, kc.mangled, kc.t)
+        scope_bind(sc.ts, kc.name, kc.t)
         (&k.scope_consts[body])[kc.name] = kc
     }
 }

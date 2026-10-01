@@ -73,8 +73,8 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
             for v in variants { et.variants[v.name] = v.tag }
         }
         k.table.enums[flat] = et
-        type_env_set(mod, name, et)
-        register_enum_variants(k.c, et, env, flat)
+        scope_bind(mod, name, et)
+        register_enum_variants(k.c, et, flat)
         return
     }
     if flat in k.table.unions {
@@ -89,7 +89,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = k.pkg, tag_type, span, true
     for v in variants { tag_et.variants[v.name] = v.tag }
     k.table.enums[tag_et.name] = tag_et
-    register_enum_variants(k.c, tag_et, env, tag_et.name)
+    register_enum_variants(k.c, tag_et, tag_et.name)
     ut.tag_enum = tag_et
     for v in variants {
         vst := new(Type_Scope)
@@ -101,7 +101,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
         ut.variant_structs[v.name] = vst
     }
     k.table.unions[flat] = ut
-    type_env_set(mod, name, ut)
+    scope_bind(mod, name, ut)
 }
 
 TC_Variant :: struct {
@@ -335,6 +335,6 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     finalize_union_variant_headers(k.c, ut)
     k.table.unions[ut.name] = ut
     k.table.mono_union_cache[mangled] = ut
-    type_env_set(k.root, mangled, ut)
+    scope_bind(k.root, mangled, ut)
     return ut
 }

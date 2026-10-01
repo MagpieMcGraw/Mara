@@ -19,10 +19,10 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     defer k.hint = hint
     tc_register_defs(k, sc)
     if is_struct { tc_early_self(k, v.body) }
-    body := type_env_block_child(ts)
+    body := new_block_scope(ts)
     // (A struct's params its constants may use; its and a fun's constants
     // checked, and built, before its code.)
-    if is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
+    if is_struct { for p in ts.params { scope_bind(body, p.name, p.type_) } }
     tc_check_local_consts(k, sc, body)
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
@@ -33,10 +33,10 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // fields are known: its methods read them.)
     if !is_struct { tc_check_defs(k, sc) }
     if v.intrinsic == 0 {
-        if !is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
+        if !is_struct { for p in ts.params { scope_bind(body, p.name, p.type_) } }
         // (Named results: locals.)
-        for name, i in ts.return_binding_names { type_env_set(body, name, ts.return_types[i]) }
-        for name, bt in sc.subst { type_env_set(body, name, bt) }
+        for name, i in ts.return_binding_names { scope_bind(body, name, ts.return_types[i]) }
+        for name, bt in sc.subst { scope_bind(body, name, bt) }
         tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
     }
     if is_struct {
@@ -253,7 +253,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     vt, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
     k.field_default = saved_field
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
-        type_env_set(env, name, Type_Error{})
+        scope_bind(env, name, Type_Error{})
         return
     }
     // (A sized slice's text is copied into what it allocates.)
@@ -262,7 +262,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     if returns := tc_call_returns(k, value, env); len(returns) > 1 {
         // (One name for several results: `a, b := f()` takes them.)
         tc_error(k, span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE, 1, len(returns))
-        type_env_set(env, name, Type_Error{})
+        scope_bind(env, name, Type_Error{})
         return
     }
     final: Type
@@ -309,7 +309,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         }
         if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
-    type_env_set(env, name, final)
+    scope_bind(env, name, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
@@ -335,7 +335,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
         tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
         return false
     }
-    if !env_is_module(env) && parent_struct_scope(env) == nil {
+    if (env == nil || !env.is_module) && parent_struct_scope(env) == nil {
         // Past a function's boundary a block's locals are out of sight.
         crossed := false
         for sc := env.parent_scope; sc != nil && !sc.is_module; sc = sc.parent_scope {
@@ -357,7 +357,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each). `field`: its node, when it is a struct's field.
 tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE, cap_n := Tree_Id(0)) {
-    defer type_env_set(env, name, ann)
+    defer scope_bind(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
     tc_bare_construction(k, name, ann, env, span)
@@ -489,7 +489,7 @@ tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (
         t, ok := env.types[name]
         return t, ok
     }
-    t, _, ok := type_env_locate_below_module(env, name)
+    t, _, ok := scope_find(env, name, below_module = true)
     return t, ok
 }
 
@@ -632,10 +632,10 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
 // it can't be written (reported).
 tc_name_write :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, loc: ^Type_Scope, ok: bool) {
     found: bool
-    existing, loc, found = type_env_locate(env, name)
+    existing, loc, found = scope_find(env, name)
     if !found && name not_in k.consts {
         report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
-        type_env_set(env, name, Type_Error{})
+        scope_bind(env, name, Type_Error{})
         return nil, nil, false
     }
     if (loc == nil || loc.kind == .Struct) && name in k.consts {
@@ -731,9 +731,9 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     b := tc_building(k)
     fi: Graph_If
     if b != nil { fi = graph_fuse_if(b, cond.v, span, len(v.else_) > 0) }
-    tc_scope(k, v.then, type_env_block_child(env))
+    tc_scope(k, v.then, new_block_scope(env))
     if b != nil { graph_fuse_else(b, &fi, span) }
-    if len(v.else_) > 0 { tc_scope(k, v.else_, type_env_block_child(env)) }
+    if len(v.else_) > 0 { tc_scope(k, v.else_, new_block_scope(env)) }
     if b != nil { graph_fuse_if_end(b, &fi) }
 }
 
@@ -759,7 +759,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(t, s)
     v := for_view(t, s)
     tag := t.tag[s]
-    child := type_env_block_child(env)
+    child := new_block_scope(env)
     b := tc_building(k)
     fl: Graph_For
     if b != nil {
@@ -794,8 +794,8 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         case:                     tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
         }
         if v.type_ != 0 { elem = tc_type(k, v.type_, env, span) }
-        if v.elem != 0 { type_env_set(child, tc_text(v.elem), elem) }
-        if v.index != 0 { type_env_set(child, tc_text(v.index), slice_header_width_type) }
+        if v.elem != 0 { scope_bind(child, tc_text(v.elem), elem) }
+        if v.index != 0 { scope_bind(child, tc_text(v.index), slice_header_width_type) }
         if b := tc_building(k); b != nil {
             graph_fuse_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         }
@@ -830,7 +830,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         lc, lc_ok := tc_comptime_int(k, v.lo, child)
         hc, hc_ok := tc_comptime_int(k, v.hi, child)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
-        type_env_set(child, tc_text(v.var), it)
+        scope_bind(child, tc_text(v.var), it)
         if b := tc_building(k); b != nil { graph_fuse_range(b, &fl, bounds, distinct_base(it)) }
         tc_scope(k, v.body, child)
     case:
@@ -911,7 +911,7 @@ tc_defer :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     b := tc_building(k)
     gd: Graph_Defer
     if b != nil { gd = graph_fuse_defer(b, span) }
-    tc_scope(k, tree_list(k.t, k.t.a[s]), type_env_block_child(env))
+    tc_scope(k, tree_list(k.t, k.t.a[s]), new_block_scope(env))
     if b != nil { graph_fuse_defer_end(b, gd) }
 }
 
@@ -1094,7 +1094,7 @@ tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     if is_any(ann) {
         if _, shadowed := tc_declared_before(env, name, fields_of != nil); !shadowed {
             tc_error(k, span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, name, name)
-            type_env_set(env, name, Type_Error{})
+            scope_bind(env, name, Type_Error{})
         }
         return
     }
@@ -1105,7 +1105,7 @@ tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
         decl = tc_field_decl(k, fields_of, name, target, value, span)
         if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
     }
-    type_env_set(env, name, ann)
+    scope_bind(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
     graph_fuse_typed(b, decl, ann)
@@ -1215,7 +1215,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         ra.is_else, ra.is_union = tag == .Arm_Else, tag == .Arm_Variant
         body_of := Tree_Id(0)
         body: []Tree_Id
-        child := type_env_block_child(env)
+        child := new_block_scope(env)
         #partial switch tag {
         case .Arm_Dot:
             name := tc_text(tr.main[arm])
@@ -1246,7 +1246,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if is_union {
                 if vs := variant_struct(k, ut, name); vs != nil {
                     ra.payload = vs
-                    if ra.bound != "" { type_env_set(child, ra.bound, vs) }
+                    if ra.bound != "" { scope_bind(child, ra.bound, vs) }
                 }
             }
         case .Arm_Else:
@@ -1466,7 +1466,7 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     }
     k.hint = ann
     vt, r := tc_shape_literal(k, s, ann, bindings, env, .Into if b != nil else .None, graph_dest_var(name, decl, ann))
-    type_env_set(env, name, ann)
+    scope_bind(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
     graph_fuse_typed(b, decl, ann)

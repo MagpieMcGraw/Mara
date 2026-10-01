@@ -25,7 +25,7 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
         }
         for r in v.returns { append(&ft.return_types, tc_type(k, r, env, span)) }
         build_param_map(ft)
-        type_env_set(mod, name, ft)
+        scope_bind(mod, name, ft)
         k.c.declared_funs[name] = true
         k.table.fun_homes[name] = k.pkg
         if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }
@@ -43,7 +43,7 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, module: string)
     k.checked.foreign_libs[library] = true
     for ff in fv.funs {
         name := tc_text(foreign_fun_view(t, ff).name)
-        found, _ := type_env_get(env, name)
+        found, _ := scope_lookup(env, name)
         ft, is_scope := found.(^Type_Scope)
         if !is_scope { continue }
         span := tree_span(t, ff)

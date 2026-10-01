@@ -159,7 +159,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     }
     // (A constant: the one a scope around it declares — it shadows a
     // module's — else its own module's, or one it uses' — two is ambiguous.)
-    t, loc_scope, ok := type_env_locate(env, name)
+    t, loc_scope, ok := scope_find(env, name)
     kc := tc_local_const(k, env, loc_scope, name) if ok else nil
     if kc == nil {
         unambiguous: bool
@@ -578,7 +578,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             return tc_generic_call(k, n, name, tmpl, args, env, want if build else .None, w)
         }
     }
-    ft_raw, found := type_env_get(env, name)
+    ft_raw, found := scope_lookup(env, name)
     if qual != nil { ft_raw, found = qual, true }
     if !found {
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
@@ -1004,7 +1004,7 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
     callee := k.callees[m] or_else nil
     if callee == nil && env != nil {
         // (Not checked yet: the fun its name names.)
-        if t, ok := type_env_get(env, tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
+        if t, ok := scope_lookup(env, tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }

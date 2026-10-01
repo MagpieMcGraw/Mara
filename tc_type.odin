@@ -219,7 +219,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
         if !names || env == nil || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
-        bt, ok := type_env_get(env, tc_name(k, base))
+        bt, ok := scope_lookup(env, tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {
         case ^Type_Partial_Array: if field == "cap" && a.size > 0 { return i64(a.size), true }
@@ -261,7 +261,7 @@ tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
         parent = &st.sd
     } else if st, ok := k.table.funs[alias_flat]; ok {
         parent = &st.sd
-    } else if at, ok := type_env_get(env, alias); ok {
+    } else if at, ok := scope_lookup(env, alias); ok {
         parent = as_scope_body(at)   // (a parent a fun's body defines)
     }
     if parent != nil {
@@ -281,7 +281,7 @@ tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
         if inner, has := parent.types[last]; has { return inner }
         if fn, has := parent.functions[last]; has && fn != nil { return fn }
     }
-    if vt, ok := type_env_get(env, alias); ok {
+    if vt, ok := scope_lookup(env, alias); ok {
         if sd := as_scope_body(vt); sd != nil {
             if fn, has := sd.functions[rest]; has && fn != nil { return fn }
         }
@@ -310,7 +310,7 @@ tc_scope_defs :: proc(k: ^TC, sd: ^Scope_Body) {
 tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) -> Type {
     name := tc_dotted(parts)
     if len(parts) == 1 {
-        if vt, ok := type_env_get(env, name); ok {
+        if vt, ok := scope_lookup(env, name); ok {
             if ft, is_scope := vt.(^Type_Scope); is_scope && ft.kind == .Fun { return ft }
             tc_error(k, span, TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME, name, name, type_name(vt))
             return Type_Error{}
@@ -323,7 +323,7 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
     if flat := resolve_type_name(k.c, bare, alias, env); flat != "" {
         if ft, ok := k.table.funs[flat]; ok && ft.kind == .Fun { return ft }
     }
-    if vt, ok := type_env_get(env, alias); ok {
+    if vt, ok := scope_lookup(env, alias); ok {
         if sd := as_scope_body(vt); sd != nil {
             if fn, has := sd.functions[bare]; has && fn != nil && fn.kind == .Fun { return fn }
         }
@@ -358,11 +358,11 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
             return Type_Error{}
         }
         if st, ok := k.table.structs[flat]; ok { return st }
-        if found, ok := type_env_get(env, name); ok {
+        if found, ok := scope_lookup(env, name); ok {
             if _, is_scope := found.(^Type_Scope); is_scope { return found }
         }
     }
-    if found, ok := type_env_get(env, name); ok {
+    if found, ok := scope_lookup(env, name); ok {
         if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && len(ts.params) > 0 {
             tc_error(k, span, TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC, name, name, name, name)
             return Type_Error{}
@@ -398,7 +398,7 @@ tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> Typ
         if s := enclosing_callable_scope(env); s != nil { return s }
     } else {
         // (Its own, else the one a module it uses has — two such: ambiguous.)
-        found, ok, owners := resolve_with_ambiguity(k.c, env, name)
+        found, ok, owners := resolve_with_ambiguity(env, name)
         if ok { return found }
         if len(owners) > 1 {
             tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))

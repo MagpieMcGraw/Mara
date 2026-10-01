@@ -18,12 +18,12 @@ tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := "") -> ^Typ
     }
     m := tc_check_module(k, path, span)
     if m == nil { return nil }
-    flatten_module_exports(k.c, env, &m.sd, path, is_aliased = alias != "", is_sealed = sealed)
+    flatten_module_exports(k.c, env, &m.sd, is_sealed = sealed)
     if reexport && mod != env {
-        flatten_module_exports(k.c, mod, &m.sd, path, is_aliased = alias != "", is_sealed = sealed)
+        flatten_module_exports(k.c, mod, &m.sd, is_sealed = sealed)
     }
-    type_env_set(env, alias if alias != "" else tc_use_name(k, imp), m)
-    type_env_set(k.root, path, m)
+    scope_bind(env, alias if alias != "" else tc_use_name(k, imp), m)
+    scope_bind(k.root, path, m)
     return m
 }
 
@@ -64,10 +64,10 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.is_module = true
     // (The build's own names — the program, std, void — every module sees.)
     for builtin in ([]string{"this_program", "Program", "std", "void"}) {
-        if bt, ok := scope_defines(k.root, builtin); ok { type_env_set(m, builtin, bt) }
+        if bt, ok := scope_defines(k.root, builtin); ok { scope_bind(m, builtin, bt) }
     }
     if _, has_void := scope_defines(m, "void"); !has_void {
-        type_env_set(m, "void", new_clone(Type_Ptr{elem = Type_Any{}}))
+        scope_bind(m, "void", new_clone(Type_Ptr{elem = Type_Any{}}))
     }
     saved_pkg, saved_hint := k.pkg, k.hint
     saved_dispatch, saved_overloads := k.c.dispatch_groups, k.c.operator_overloads
@@ -84,9 +84,9 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     k.table.funs[name] = m
     // (A stdlib module is `std`'s member by its last name: `math.sin`.)
     if strings.has_prefix(name, "mara.") {
-        type_env_set(k.std, name[len("mara."):], m)
+        scope_bind(k.std, name[len("mara."):], m)
     } else {
-        type_env_set(k.root, name, m)
+        scope_bind(k.root, name, m)
     }
     return m
 }
@@ -103,6 +103,6 @@ tc_module_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     for tg, i in v.targets {
         vt: Type = Type_Error{}
         if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i], env)) }
-        type_env_set(env, tc_name(k, tg), ann if ann != nil else vt)
+        scope_bind(env, tc_name(k, tg), ann if ann != nil else vt)
     }
 }

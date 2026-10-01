@@ -68,7 +68,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             }
             if is_any(vt) {
                 // (Of no type, reported: its names none either.)
-                for name in names { if name != "" { type_env_set(env, name, Type_Error{}) } }
+                for name in names { if name != "" { scope_bind(env, name, Type_Error{}) } }
                 return
             }
             tc_broadcast(k, s, targets, value, is_decl, env)
@@ -95,7 +95,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                     tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
             } else {
-                type_env_set(env, name, rt)
+                scope_bind(env, name, rt)
             }
             // (A struct's field: its value its slot of the call's.)
             if fields_of != nil && name != "_" { tc_add_field(fields_of, name, rt, value, i) }

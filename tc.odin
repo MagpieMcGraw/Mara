@@ -164,7 +164,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.name = "std"
     std_fun.home_package = "std"
     std_fun.kind = .Struct
-    type_env_set(main_mod, "std", std_fun)
+    scope_bind(main_mod, "std", std_fun)
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
@@ -196,12 +196,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.field_map["args"] = len(prog_type.fields)
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
         table.funs["Program"] = prog_type
-        type_env_set(main_mod, "this_program", prog_type)
-        type_env_set(main_mod, "Program", prog_type)
+        scope_bind(main_mod, "this_program", prog_type)
+        scope_bind(main_mod, "Program", prog_type)
     }
     void_type := new(Type_Ptr)
     void_type.elem = Type_Any{}
-    type_env_set(main_mod, "void", void_type)
+    scope_bind(main_mod, "void", void_type)
 
     k.pkg, c.current_package = main_package, main_package
     main := tc_check_module_files(k, files, main_mod)
@@ -402,7 +402,7 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
-    type_env_set(mod, name, dt)
+    scope_bind(mod, name, dt)
 }
 
 // What a module statement leaves for every name to be known: a distinct
@@ -445,7 +445,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         name := tc_name(k, s)
         for tok in tree_token_list(t, t.a[value]) {
             f := tc_text(tok)
-            if found, ok := type_env_get(env, f); ok {
+            if found, ok := scope_lookup(env, f); ok {
                 if tf, is_scope := found.(^Type_Scope); !is_scope || len(tf.params) == 0 {
                     tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION, name, f)
                 }
@@ -499,7 +499,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     // (A struct with params is constructed by a call, as a fun is.)
     callable := !is_struct || len(v.params) > 0
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
-    type_env_set(mod, name, ts)
+    scope_bind(mod, name, ts)
     k.table.fun_homes[name] = k.pkg
     if callable {
         k.c.declared_funs[name] = true
@@ -559,7 +559,7 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
             // A template, extracted as the type its module's scope binds its
             // name to (mara.core's `Program`: the compiler's), when one does.
             name := tc_name(k, sc.def)
-            found, _ := type_env_get(sc.env, name)
+            found, _ := scope_lookup(sc.env, name)
             if ft = found.(^Type_Scope) or_else nil; ft == nil { continue }
             key := make_flat_name(module, name)
             ft.origin = Origin_Source{}
@@ -787,7 +787,7 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
     // (A slot of a call's results: that result's type; else the value's.)
     if at, is_slot := slot.?; is_slot {
         if call := tc_unparen(k, def); tc_is_call(k, call) {
-            if t, ok := type_env_get(env, tc_call_name(k, call)); ok {
+            if t, ok := scope_lookup(env, tc_call_name(k, call)); ok {
                 if ft, is_scope := t.(^Type_Scope); is_scope && ft.kind == .Fun && at < len(ft.return_types) { return ft.return_types[at] }
             }
         }

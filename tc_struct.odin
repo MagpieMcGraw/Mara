@@ -352,7 +352,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
         }
         t = hint
     case tr.tag[ty] == .Ident:
-        found, ok := type_env_get(env, name)
+        found, ok := scope_lookup(env, name)
         if !ok {
             // (A union's variant: the union expected's, or the one union with it.)
             vut, ambiguous := tc_variant_union(k, name)
@@ -793,7 +793,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
                          build: bool, want: Fuse_Want, w: Written) -> (Type, Fused) {
     span := tree_span(k.t, n)
     msc := sd_module_scope(sd)
-    t, found := type_env_get(msc, field)
+    t, found := scope_lookup(msc, field)
     if !found {
         for _, mt in sd.types {
             if et, is_enum := mt.(^Type_Enum); is_enum {
@@ -862,7 +862,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     ty := Tree_Id(tr.a[e])
     if ty == 0 || tr.tag[ty] != .Ident { return false }
     name := tc_name(k, ty)
-    vt, _, found := type_env_locate(env, name)
+    vt, _, found := scope_find(env, name)
     if !found { return false }
     sd := resolve_to_struct_type(k.c, vt)
     if sd == nil { return false }
@@ -891,7 +891,7 @@ tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id,
         return Type_Error{}, {}
     }
     if !is_variant {
-        if _, _, bound := type_env_locate(env, name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+        if _, _, bound := scope_find(env, name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e, env) }
     return Type_Error{}, {}

@@ -61,7 +61,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     matched := make([dynamic]string, context.temp_allocator)
     matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
     candidates: for f in members {
-        found, ok := type_env_get(env, f)
+        found, ok := scope_lookup(env, f)
         if !ok { continue }
         ft, is_scope := found.(^Type_Scope)
         if !is_scope || len(ft.params) < len(arg_types) { continue }
@@ -151,7 +151,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
         members, is_dispatch := find_dispatch(k.c, env, group)
         if !is_dispatch { continue }
         for f in members {
-            if found, ok := type_env_get(env, f); ok {
+            if found, ok := scope_lookup(env, f); ok {
                 ft, is_scope := found.(^Type_Scope)
                 if !is_scope || len(ft.params) != 2 { continue }
                 if types_incompatible(ft.params[0].type_, lt) || types_incompatible(ft.params[1].type_, rt) { continue }
@@ -226,7 +226,7 @@ tc_unary_overload :: proc(k: ^TC, t: Type, env: ^Type_Scope) -> ^Type_Scope {
         members, is_dispatch := find_dispatch(k.c, env, group)
         if !is_dispatch { continue }
         for f in members {
-            found, ok := type_env_get(env, f)
+            found, ok := scope_lookup(env, f)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)
             if !is_scope || len(ft.params) != 1 || types_incompatible(ft.params[0].type_, t) { continue }

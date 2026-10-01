@@ -322,8 +322,8 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
         append(&ft.return_types, tc_type(k, r, tmpl.env, span))
     }
     build_param_map(ft)
-    type_env_set(k.root, mangled, ft)
-    if env != k.root { type_env_set(env, mangled, ft) }
+    scope_bind(k.root, mangled, ft)
+    if env != k.root { scope_bind(env, mangled, ft) }
     k.instances[mangled] = ft
     append(&k.instance_order, mangled)
     ft.parent_scope = env
@@ -504,8 +504,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     st.is_packed = v.packed != 0
     k.table.mono_cache[mangled] = st
     k.table.funs[st.name] = st
-    type_env_set(k.root, mangled, st)
-    for name, bound in subst { type_env_set(st, name, bound) }
+    scope_bind(k.root, mangled, st)
+    for name, bound in subst { scope_bind(st, name, bound) }
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
     defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg

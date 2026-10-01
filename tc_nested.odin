@@ -59,7 +59,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
         owner.types[name] = ts
     }
     // (Its mangled name the module's, where codegen and a qualified use find it.)
-    register_on_module(module_scope(owner), mangled, ts)
+    scope_bind(module_scope(owner), mangled, ts)
     if callable {
         k.c.declared_funs[mangled] = true
         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }

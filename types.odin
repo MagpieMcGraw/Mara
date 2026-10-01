@@ -179,11 +179,10 @@ Scope_Body :: struct {
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise
     generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance — for reverse inference
 
-    // --- Codegen unit (formerly the separate Checked_Scope bundle) -----------
-    // A Type_Scope IS what codegen emits: the typed signature/layout PLUS its
-    // body. checked.functions points straight at the ^Type_Scope — no wrapper
-    // carrying a parallel copy of the AST. Populated at extract time (check
-    // phase, stable allocator) so codegen reads them directly.
+    // --- What codegen emits ------------------------------------------------
+    // checked.functions points straight at each ^Type_Scope. Populated at
+    // extract time (check phase, stable allocator) so codegen reads them
+    // directly.
 
     origin:               Function_Origin,  // Source / Intrinsic / Foreign — codegen dispatch
     body_span:            Span,             // span of the declaring statement (diagnostics)
@@ -224,29 +223,15 @@ populate_cg_signature :: proc(ft: ^Type_Scope) {
     }
 }
 
-// Unified scope type — holds struct/class definitions and callable funs.
-// The `kind` tag (set by the parser from the source keyword) tells codegen
-// whether to emit a data layout or a function body:
-//   .Struct → data/struct layout (pure struct, class with or without ctor)
-//   .Fun    → callable function body
-// Structural combinations:
-//   .Struct, no params:   struct / class without constructor args
-//   .Struct, with params: class with constructor args (`class Foo(a: int)`)
-//   .Fun,    with params: regular function (`fun add(x,y: int) -> int`)
-//   .Fun,    no params:   nullary function (`fun hello() { ... }`)
-//
-// ARCHITECTURE — the DURABLE half of the checker's analysis split (see Type_Env
-// for the transient half). Type_Scope is the typed-AST node: one per
-// declaration, it persists past checking and is what codegen consumes. Every
-// fact that is FIXED-at-declaration or MONOTONE-ACCUMULATING over a body belongs
-// here — the signature, body, members/layout, the per-declaration analysis facts
-// (is_param, `read`, ...), and the per-function interprocedural summaries
-// (purity, arg-sets). The symbol table and per-decl facts that Type_Env still
-// MIRRORS are migrating onto this struct / the durable scope graph.
-//
-// It must NOT hold point-sensitive flow state: "is x initialized HERE" has a
-// different value at every program point and forks at branches, so it can't live
-// on a single per-declaration record — that's Type_Env's job.
+// A scope: a struct, a fun, a block, a file or a module — one per
+// declaration, persisting past checking, what codegen consumes. The `kind`
+// tells codegen whether to emit a data layout or a function body:
+//   .Struct, no params:   a struct without a constructor
+//   .Struct, with params: a struct with constructor args (`Foo :: struct(a: i64)`)
+//   .Fun:                 a function
+// It holds what is fixed at its declaration — its signature, members and
+// layout, its body's place — never point-sensitive flow state ("is x
+// initialized HERE" differs at every program point: the graph's analyses').
 Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
@@ -1480,7 +1465,7 @@ is_param :: proc(env: ^Type_Scope, name: string) -> bool {
 // reference types at the ABI), making slices the odd one out.
 is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
     if !is_param(env, name) { return false }
-    t, ok := type_env_get(env, name)
+    t, ok := scope_lookup(env, name)
     if !ok { return false }
     base := distinct_base(t)
     if _, is_ptr := base.(^Type_Ptr); is_ptr { return false }

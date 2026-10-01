@@ -35,7 +35,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
     resolved, failed := false, false
     if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
-        if qt, found := type_env_get(env, qname); found {
+        if qt, found := scope_lookup(env, qname); found {
             if qsd := as_scope_body(qt); qsd != nil {
                 if fn, has := qsd.functions[name]; has && fn != nil {
                     // (Named by its type, a static call; by a value of it,
@@ -146,7 +146,7 @@ tc_type_path_scope :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> ^Scope_Body 
     #partial switch tr.tag[q] {
     case .Ident:
         name := tc_name(k, q)
-        if t, found := type_env_get(env, name); found {
+        if t, found := scope_lookup(env, name); found {
             if sd := as_scope_body(t); sd != nil { return sd }
         }
         flat := resolve_type_name(k.c, name, "", env)
