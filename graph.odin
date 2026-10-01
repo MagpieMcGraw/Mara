@@ -298,10 +298,10 @@ Graph_Builder :: struct {
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
-    // The calls waiting for their callee's node: a call can come before its
-    // callee in written order.
-    calls:      [dynamic]Pending_Call,
-    callee_of:  map[Node_Id]^Type_Scope,   // each call's or construction's, as built
+    // Each call's or construction's callee. Its Calls edge waits for the
+    // callee's node (a call can come before its callee in written order),
+    // its name for an instance's (known once checking is done).
+    callee_of:  map[Node_Id]^Type_Scope,
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run made, freed at the end
     nodes:      int,             // how many nodes exist; the columns run ahead
@@ -428,11 +428,6 @@ graph_frame_pop :: proc(b: ^Graph_Builder) {
     resize(&b.names, pop(&b.frames))
 }
 
-@(private="file")
-Pending_Call :: struct {
-    op:     Node_Id,
-    callee: ^Type_Scope,
-}
 
 // The code being built: a fun's body, a struct's field initializers, a defer's
 // block. Saved and restored around a nested definition.
@@ -562,7 +557,6 @@ graph_module_build :: proc(b: ^Graph_Builder, ms: ^Graph_Module_Stmt) {
 graph_builder_free :: proc(b: ^Graph_Builder) {
     for _, list in b.by_span { delete(list) }
     delete(b.by_span)
-    delete(b.calls)
     delete(b.callee_of)
     for r in b.runs {
         delete(r.ops)
@@ -622,6 +616,12 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
         for d in b.drops { b.repl[d[0].op] = d[1] }
     }
     for f in b.bodies { graph_body_settle(b, f) }
+    // (Each call named for its callee, an instance's now known.)
+    for op, callee in b.callee_of {
+        braces := strings.has_suffix(g.name[op], "{}")   // a literal's construction, as written
+        g.name[op] = graph_call_name(callee)
+        if braces { g.name[op] = strings.concatenate({g.name[op], "{}"}) }
+    }
     graph_resize(g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
@@ -859,11 +859,10 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for id, s in g.assert_sides { if kept(new_id, id) { ng.assert_sides[new_id[id]] = s } }
 
     // What the builder still holds by id.
-    calls := 0
-    for c in b.calls {
-        if kept(new_id, c.op) { b.calls[calls] = {new_id[c.op], c.callee}; calls += 1 }
-    }
-    resize(&b.calls, calls)
+    callee_of := make(map[Node_Id]^Type_Scope, len(b.callee_of))
+    for op, callee in b.callee_of { if kept(new_id, op) { callee_of[new_id[op]] = callee } }
+    delete(b.callee_of)
+    b.callee_of = callee_of
     tables := 0
     for t in b.tables {
         if kept(new_id, t.global) { b.tables[tables] = {new_id[t.global], t.value}; tables += 1 }
@@ -1700,10 +1699,7 @@ graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
 // A call or construct operation, with a Calls edge to what it runs.
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
     op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)
-    append(&b.calls, Pending_Call{op = op, callee = callee})
     b.callee_of[op] = callee
-    // (An instance's name is known once checking is done.)
-    if f := b.body; f != nil { append(&f.calls, Pending_Call{op = op, callee = callee}) }
     return op
 }
 
@@ -1813,9 +1809,7 @@ graph_token_text :: proc(op: Token_Kind) -> string {
 @(private="file")
 graph_settle_literals :: proc(b: ^Graph_Builder) {
     g := b.g
-    callee: map[Node_Id]^Type_Scope
-    defer delete(callee)
-    for c in b.calls { callee[c.op] = c.callee }
+    callee := b.callee_of
     for i := b.nodes - 1; i >= 0; i -= 1 {
         id := Node_Id(i)
         if g.kind[id] != .Op { continue }
@@ -1880,10 +1874,10 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
 // Every call's edge, once all the funs and structs have nodes.
 @(private="file")
 graph_link_calls :: proc(b: ^Graph_Builder) {
-    for c in b.calls {
-        to, ok := b.g.scope_node[c.callee]
-        if !ok { graph_fatal(b.g.origin[c.op], "'%s' calls '%s', which has no node", b.g.name[c.op], c.callee.name) }
-        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op]})
+    for op, callee in b.callee_of {
+        to, ok := b.g.scope_node[callee]
+        if !ok { graph_fatal(b.g.origin[op], "'%s' calls '%s', which has no node", b.g.name[op], callee.name) }
+        append(&b.g.edges, Edge{from = op, to = to, kind = .Calls, written = b.g.written[op]})
     }
 }
 
@@ -2197,7 +2191,6 @@ Graph_Body :: struct {
     marks:      [dynamic]Graph_Arena,
     allocs:     [dynamic]Graph_Alloc,
     returns:    [dynamic]Node_Id,        // its returns: what the local every one returns is
-    calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
     steps:      [dynamic]int,            // its loops' steps' segments
     // A struct's: each field declaration's lowered assignment, and its field.
     fields:     map[Syntax_Id]Node_Id,
@@ -2300,7 +2293,7 @@ graph_body_free :: proc(f: ^Graph_Body) {
     delete(f.consts)
     delete(f.widens)
     delete(f.checks)
-    delete(f.calls)
+
     delete(f.steps)
     for m in f.marks { delete(m.resets) }
     delete(f.marks)
@@ -3609,11 +3602,7 @@ graph_body_settle :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
         graph_drop(b, m.mark, NO_VALUE)
         for r in m.resets { graph_drop(b, r, NO_VALUE) }
     }
-    for pc in f.calls {
-        braces := strings.has_suffix(g.name[pc.op], "{}")   // a literal's construction, as written
-        g.name[pc.op] = graph_call_name(pc.callee)
-        if braces { g.name[pc.op] = strings.concatenate({g.name[pc.op], "{}"}) }
-    }
+
     // A range's bounds cast to the counter's type where theirs differs; the
     // check that it counts up where a bound is no constant.
     resolve :: proc(b: ^Graph_Builder, o: Operand) -> Operand {
