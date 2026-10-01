@@ -14,10 +14,6 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
     span := tree_span(tr, n)
     mv := method_view(tr, n)
     name := tc_text(mv.name)
-    if mv.overrides != 0 {
-        tc_unsupported(k, n, "an override block")
-        return Type_Error{}, {}
-    }
     saved := k.recv
     k.recv = {}
     defer k.recv = saved

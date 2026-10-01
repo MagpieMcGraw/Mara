@@ -152,6 +152,7 @@ let_big_view
 literal_ctor_args_neg
 literal_ctor_defaults
 literal_ctor_fails_neg
+literal_self_reference
 localstruct
 mandelbrot
 mandelbrot_bench

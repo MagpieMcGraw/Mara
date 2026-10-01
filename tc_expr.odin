@@ -564,8 +564,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }
-    if tr.tag[n] == .Call && tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
     is_struct := ft.kind == .Struct
+    // (`Foo(args) {f = v}`: its fields written once it is constructed.)
+    overrides := Tree_Id(tr.b[n]) if tr.tag[n] == .Call else method_view(tr, n).overrides
+    if overrides != 0 && !is_struct { tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, name) }
     k.callees[n] = ft
     if is_struct { tc_struct_ensure(k, ft) }
     // (Built into storage that holds a value: a temporary made first.)
@@ -651,11 +653,14 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         if is_infer(at) { tc_literal_overflow(k, a, pt, span) }
     }
     if is_struct {
-        if !build || tc_building(k) == nil { return ft, {} }
-        if into_temp {
-            return ft, tc_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true)
+        if !build || tc_building(k) == nil {
+            if overrides != 0 { tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), &ft.sd, env, nil) }
+            return ft, {}
         }
-        return ft, tc_construct(k, n, ft, ops[:], want, w, dest, false, temp_span)
+        if into_temp {
+            return ft, tc_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true, overrides = overrides, env = env)
+        }
+        return ft, tc_construct(k, n, ft, ops[:], want, w, dest, false, temp_span, overrides = overrides, env = env)
     }
     ret := fn_primary_return(ft)
     if !build { return ret, {} }

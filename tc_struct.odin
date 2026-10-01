@@ -626,7 +626,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
 
 // `Foo(args)`: its constructor run where it goes (else in a temporary).
 tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: Fuse_Want, w: Written,
-                     dest: Dest, temp: bool, temp_span: Span, made := false) -> Fused {
+                     dest: Dest, temp: bool, temp_span: Span, made := false, overrides := Tree_Id(0), env: ^Type_Scope = nil) -> Fused {
     b := tc_building(k)
     if b == nil { return {} }
     span := tree_span(k.t, n)
@@ -643,7 +643,12 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     } else {
         at = graph_dest_var("temp", graph_slot(b, "temp", ts, span), ts)
     }
-    graph_fuse_construct(b, ts, ts, at, ops, w, span)
+    gl := graph_fuse_construct(b, ts, ts, at, ops, w, span)
+    // (Its override block's fields, each written into what it constructed.)
+    if overrides != 0 {
+        tc_literal_fields(k, overrides, tree_list(k.t, k.t.b[overrides]), &ts.sd, env, gl)
+        if b = tc_building(k); b == nil { return {} }
+    }
     switch {
     case want == .Into && temp:
         tt: Type = at.type_ if at.type_ != nil else Type(ts)
