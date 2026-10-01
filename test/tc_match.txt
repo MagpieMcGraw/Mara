@@ -29,6 +29,7 @@ bare_variant_values
 bigstack_neg
 bigstack_ok
 booltest
+bracetest
 branchok
 broadcast_clones
 broadcast_field
@@ -260,6 +261,7 @@ usedef
 utag
 utof
 variant_positional
+variantanno
 vec_elements
 void_ptr_deinit_neg
 void_ptr_legal

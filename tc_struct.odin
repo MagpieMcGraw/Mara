@@ -350,8 +350,21 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             t = found
         }
     case tr.tag[ty] == .Field:
-        tc_unsupported(k, n, "this literal's type")
-        return Type_Error{}, {}
+        // (`Outer.Inner{…}`, `mod.T{…}`, `Union.Variant{…}` — the variant's
+        // struct: as a type is named.)
+        parts := make([dynamic]Token_Id, context.temp_allocator)
+        if !tc_name_parts(k, ty, &parts) {
+            tc_unsupported(k, n, "this literal's type")
+            return Type_Error{}, {}
+        }
+        dotted := tc_dotted(parts[:])
+        qt := tc_qualified_type(k, parts[:], env)
+        if qt == nil { tc_error(k, span, TYPE_UNKNOWN_TYPE, dotted) }
+        if as_scope_body(qt) == nil {
+            tc_error(k, span, TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT, dotted, dotted)
+            return Type_Error{}, {}
+        }
+        t = qt
     case:
         // (A typed array's: `[3]f32{…}`, an empty `[..N]T{}`.)
         t = tc_type(k, ty, env, span)
@@ -371,7 +384,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     ts, is_scope := t.(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = k.table.structs[t.(^Type_Union).variant_structs[variant]] }
-    if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
+    if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}
     }
@@ -418,6 +431,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             if !zero { args = tc_ctor_args(k, ts, span) }
             if b = tc_building(k); b == nil { return t, {} }
             gl = graph_fuse_literal(b, span, name, zero, t, d, args)
+            // (A variant's struct, named: its defaults the literal doesn't give.)
+            if gl != nil && gl.variant != nil { tc_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
         }
         if gl == nil && !broadcast { tc_fail(k, "a literal the graph builds no way") }
     }
@@ -431,6 +446,21 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     b = tc_building(k)
     if !build || b == nil || (gl == nil && !broadcast) { return t, {} }
     return t, tc_built(k, want, in_temp, into_temp, d, t, at, placed)
+}
+
+// A dotted name's parts (`a.b.c`): false when it is no plain name's.
+tc_name_parts :: proc(k: ^TC, n: Tree_Id, parts: ^[dynamic]Token_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Ident:
+        append(parts, t.main[n])
+        return true
+    case .Field:
+        if !tc_name_parts(k, Tree_Id(t.a[n]), parts) { return false }
+        append(parts, Token_Id(t.b[n]))
+        return true
+    }
+    return false
 }
 
 // A struct field whose value is being checked (its `all v` is its own).
