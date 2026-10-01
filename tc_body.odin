@@ -30,6 +30,8 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if !is_struct { tc_check_defs(k, sc) }
     if v.intrinsic == 0 {
         if !is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
+        // (Named results: locals.)
+        for name, i in ts.return_binding_names { type_env_set(body, name, ts.return_types[i]) }
         for name, bt in sc.subst { type_env_set(body, name, bt) }
         tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
     }

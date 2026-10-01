@@ -518,7 +518,13 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
     if ts.kind == .Struct && len(v.params) == 0 { return }   // (no constructor: no results)
     for r in v.returns {
         if t.tag[r] == .Param_Group {
-            tc_unsupported(k, r, "a named result")
+            // (Named: locals its body binds.)
+            pv := params_view(t, r)
+            rt := tc_type(k, pv.type_, sc.env, span)
+            for name in pv.names {
+                append(&ts.return_types, rt)
+                append(&ts.return_binding_names, tc_text(name))
+            }
             continue
         }
         append(&ts.return_types, tc_type(k, r, sc.env, span))

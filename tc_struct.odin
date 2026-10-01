@@ -195,6 +195,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     field := tc_text(Token_Id(tr.b[target]))
     b := tc_building(k)
     bt, br := tc_expr(k, base, env, .Either if b != nil else .None)
+    tc_struct_of(k, bt)   // (its fields known: a nested struct's, checked first)
     sd := as_scope_body(bt)
     if sd == nil || len(sd.fields) == 0 {
         sd = nil
