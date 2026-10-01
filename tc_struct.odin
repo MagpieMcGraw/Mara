@@ -309,11 +309,25 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     span := tree_span(tr, n)
     ty := Tree_Id(tr.a[n])
     entries := tree_list(tr, tr.b[n])
+    // (`all v`, bare: an anonymous `{all v}`.)
+    if tr.tag[n] == .Broadcast { ty, entries = 0, slice.clone([]Tree_Id{n}, context.temp_allocator) }
     name := tc_name(k, ty) if ty != 0 && tr.tag[ty] == .Ident else ""
     // Its type: written (`Foo{…}`, `[3]f32{…}`, `Vec3{…}`), or its use's.
     t: Type
     variant: string   // (a union's variant's literal: its name)
+    // (A struct field's `all v`: its field's type, an array — fixed or
+    // partial; said at the struct when it is none.)
+    fd: ^TC_Field_Default
+    if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     switch {
+    case fd != nil:
+        #partial switch _ in distinct_base(fd.t) {
+        case ^Type_Fixed_Array, ^Type_Partial_Array:
+            t = fd.t
+        case:
+            tc_error(k, fd.span, TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES, fd.name, type_name(fd.t))
+            return Type_Error{}, {}
+        }
     case ty == 0:
         hint := k.hint
         if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint)) {
@@ -358,7 +372,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     ts, is_scope := t.(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = k.table.structs[t.(^Type_Union).variant_structs[variant]] }
-    if fa == nil && vst == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
+    if fa == nil && vst == nil && fd == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}
     }
@@ -366,7 +380,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil {
+    } else if fa == nil && fd == nil {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
         if !zero {
@@ -386,10 +400,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     placed := want != .Into && temp_span != {}
     at := temp_span if into_temp || placed else span
     gl: ^Graph_Literal
-    broadcast := fa != nil && tc_is_broadcast(k, n)
+    broadcast := (fa != nil || fd != nil) && tc_is_broadcast(k, n)
     if build {
         if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-        if fa != nil {
+        if fa != nil || fd != nil {
             // (An array: zero, then each element into its slot; a broadcast,
             // its value then the fill.)
             if !broadcast { gl = graph_fuse_literal(b, span, name, zero, t, d) }
@@ -406,7 +420,9 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
         }
         if gl == nil && !broadcast { tc_fail(k, "a literal the graph builds no way") }
     }
-    if fa != nil {
+    if fd != nil {
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, env, d, build, fd)
+    } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name, env, gl, d, build && broadcast)
     } else if !zero {
         tc_literal_fields(k, n, entries, sd, env, gl)
@@ -414,6 +430,48 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     b = tc_building(k)
     if !build || b == nil || (gl == nil && !broadcast) { return t, {} }
     return t, tc_built(k, want, in_temp, into_temp, d, t, at, placed)
+}
+
+// A struct field whose value is being checked (its `all v` is its own).
+TC_Field_Default :: struct {
+    value: Tree_Id,
+    name:  string,
+    t:     Type,
+    span:  Span,   // (its struct's: where its broadcast's failures are said)
+}
+
+// `all v` into an array (`lit_t`): v checked against its element — built,
+// then the fill. (A struct field's, `fd`: said as the field's.)
+tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, env: ^Type_Scope, d: Dest, fill: bool,
+                          fd: ^TC_Field_Default = nil) {
+    span := tree_span(k.t, n)
+    elem: Type
+    #partial switch v in distinct_base(lit_t) {
+    case ^Type_Fixed_Array:   elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
+    }
+    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 { k.hint = elem }
+    vt: Type
+    if fill && tc_building(k) != nil {
+        r: Fused
+        vt, r = tc_expr(k, value, env)
+        if b := tc_building(k); b != nil { graph_fuse_fill(b, span, lit_t, d, r.v) }
+    } else {
+        vt = tc_check(k, value, env)
+    }
+    if fd != nil {
+        if !is_any(vt) && types_incompatible(elem, vt) {
+            tc_error(k, fd.span, TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED, fd.name, type_name(vt), type_name(elem), type_name(lit_t))
+            return
+        }
+        if is_infer(vt) { tc_literal_overflow(k, value, elem, fd.span) }
+        return
+    }
+    if types_incompatible(elem, vt) {
+        tc_error(k, span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED, name, type_name(vt), type_name(elem))
+        return
+    }
+    if is_infer(vt) { tc_literal_overflow(k, value, elem, span) }
 }
 
 tc_is_fixed_array :: proc(t: Type) -> bool {
@@ -434,21 +492,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
     span := tree_span(tr, n)
     elem_t := graph_elem_type(lit_t) if gl != nil else nil
     if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {
-        value := Tree_Id(tr.a[entries[0]])
-        if v := tc_unparen(k, value); tr.tag[v] == .Literal && tr.a[v] == 0 { k.hint = fa.elem }
-        vt: Type
-        if fill && tc_building(k) != nil {
-            r: Fused
-            vt, r = tc_expr(k, value, env)
-            if b := tc_building(k); b != nil { graph_fuse_fill(b, span, lit_t, d, r.v) }
-        } else {
-            vt = tc_check(k, value, env)
-        }
-        if types_incompatible(fa.elem, vt) {
-            tc_error(k, span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED, name, type_name(vt), type_name(fa.elem))
-            return
-        }
-        if is_infer(vt) { tc_literal_overflow(k, value, fa.elem, span) }
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), lit_t, name, env, d, fill)
         return
     }
     if len(entries) == 0 || len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0" { return }
@@ -612,6 +656,7 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
 
 // `{all v}`: a literal of one value, every slot's.
 tc_is_broadcast :: proc(k: ^TC, lit: Tree_Id) -> bool {
+    if k.t.tag[lit] == .Broadcast { return true }
     entries := tree_list(k.t, k.t.b[lit])
     return len(entries) == 1 && k.t.tag[entries[0]] == .Broadcast
 }

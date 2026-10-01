@@ -5,11 +5,13 @@ ambigvar
 arena_cursor
 args_value
 array_field_loop
+array_literal_elems
 array_param_swizzle_neg
 array_param_write_neg
 array_params
 array_value_sources
 arrayctor
+askedges
 askflow
 askmod
 assertb
@@ -28,6 +30,7 @@ bigstack_ok
 booltest
 branchok
 broadcast_clones
+broadcast_field
 bug1
 bug2
 byte_carve_count

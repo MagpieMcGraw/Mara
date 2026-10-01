@@ -227,7 +227,15 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     k.hint = ann
     errors_before := k.c.errors
     want := Fuse_Want.Into if b != nil else .None
+    // (A struct's field: its `all v` is its field's.)
+    saved_field := k.field_default
+    k.field_default = {}
+    if fields_of != nil {
+        sc := k.scopes[k.scope_of[fields_of]]
+        k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
+    }
     vt, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
+    k.field_default = saved_field
     // (A sized slice's text is copied into what it allocates.)
     if cap_n == 0 { tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span) }
     tc_check_big_endian(k, value, span)

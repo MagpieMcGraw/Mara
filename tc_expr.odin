@@ -114,7 +114,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
     case .Field:
         return tc_field(k, n, env, want, w, dest, temp, temp_span)
-    case .Literal:
+    case .Literal, .Broadcast:   // (`all v`: `{all v}`)
         return tc_literal(k, n, env, want, w, dest, temp, temp_span)
     case .Index:
         return tc_index(k, n, env, want, w)

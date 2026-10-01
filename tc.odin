@@ -55,6 +55,7 @@ TC :: struct {
     byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
     span_read:     Fuse_Span_Read,    // the span of bytes last built to be read as its destination's type
     dot_bases:     map[Tree_Id]Tree_Id,   // each `.len` in a subscript: the subscript's base
+    field_default: TC_Field_Default,  // the struct field whose value is being checked
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
