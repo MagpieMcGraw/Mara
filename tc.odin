@@ -59,6 +59,7 @@ TC :: struct {
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     union_templates: map[string]TC_Template,   // each generic union, by name
     parallel:      ^[dynamic]TC_Held, // assigned together (`a, b = b, a`): each store, held
+    exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
@@ -172,6 +173,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.checked_modules[main_package] = main_mod
 
     tc_scan_allocator(k)
+    // (A DLL with an entry `#expose` marks: its host passes the context.)
+    if shared {
+        for f in files {
+            for s in tc_live(k, tree_list(t, t.a[f])) { if k.exposed[s] { table.context_expected_at_runtime = true } }
+        }
+    }
     k.gb = graph_builder_new(checked, tc_module_graph_decls(k))
     c.gb = k.gb
 
@@ -493,6 +500,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     ts.node, ts.decl_env, ts.parent_scope = node, env, env
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
+    ts.is_exposed = k.exposed[def]
     // (A struct with params is constructed by a call, as a fun is.)
     callable := !is_struct || len(v.params) > 0
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
@@ -612,6 +620,16 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
     for i in main {
         sc := k.scopes[i]
         fn := sc.ts
+        // (A DLL's entry takes the host's context first: a ^Program.)
+        if fn != nil && fn.is_exposed {
+            ok := false
+            if len(fn.params) > 0 {
+                if pt, is_ptr := fn.params[0].type_.(^Type_Ptr); is_ptr {
+                    if ps, is_scope := pt.elem.(^Type_Scope); is_scope && ps.name == "Program" { ok = true }
+                }
+            }
+            if !ok { tc_error(k, tree_span(k.t, sc.def), TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, fn.source_name) }
+        }
         if fn == nil || fn.kind != .Fun || fn.source_name != "main" { continue }
         found = true
         span := tree_span(k.t, sc.def)

@@ -84,6 +84,7 @@ defertest
 defscope
 discard_mixed
 disttest
+dll_smoke
 dottest
 emptystruct
 err_bool

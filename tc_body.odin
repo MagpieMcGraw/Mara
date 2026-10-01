@@ -1002,11 +1002,18 @@ tc_live :: proc(k: ^TC, stmts: []Tree_Id) -> []Tree_Id {
     t := k.t
     folds := false
     for s in stmts {
-        if t.tag[s] == .If && if_view(t, s).hash != 0 { folds = true; break }
+        if t.tag[s] == .If && if_view(t, s).hash != 0 || t.tag[s] == .Expose { folds = true; break }
     }
     if !folds { return stmts }
     out := make([dynamic]Tree_Id, 0, len(stmts), context.temp_allocator)
     for s in stmts {
+        // (`#expose`: the definition it marks — a DLL's entry.)
+        if t.tag[s] == .Expose {
+            inner := Tree_Id(t.a[s])
+            k.exposed[inner] = true
+            append(&out, inner)
+            continue
+        }
         if t.tag[s] != .If || if_view(t, s).hash == 0 {
             append(&out, s)
             continue
