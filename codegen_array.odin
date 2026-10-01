@@ -21,7 +21,7 @@ emit_slice_gep :: proc(g: ^Codegen, result: string, src: string, field: int) {
 }
 
 emit_slice_alloca :: proc(g: ^Codegen, result: string) {
-    emit_raw(g, strings.concatenate({"  ", result, " = alloca ", SLICE_IR_TYPE}))
+    emit_alloca(g, result, SLICE_IR_TYPE)
 }
 
 // Store an i64 value (SSA name or literal like "0", "42") into the slot
@@ -77,7 +77,7 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
     }
     sd := as_struct_body(base)
     if sd == nil { return }
-    llvm_name := struct_llvm_name(struct_key(sd))
+    llvm_name := struct_llvm_name(sd.name)
     for &f, i in sd.fields {
         if !value_has_partial_array(g, f.type_) { continue }
         #partial switch _ in distinct_base(f.type_) {
@@ -93,7 +93,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
     if !value_has_partial_array(g, t) { return }
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil {
-        llvm_name := struct_llvm_name(struct_key(sd))
+        llvm_name := struct_llvm_name(sd.name)
         for &f, i in sd.fields {
             if !value_has_partial_array(g, f.type_) { continue }
             gep := fresh_tmp(g)
@@ -127,7 +127,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
         }
     case ^Type_Union:
         // Only the live variant's fields exist: dispatch on the tag.
-        ukey := union_key(v)
+        ukey := v.name
         tag_ir := union_tag_ir_type(v)
         tag_ptr := fresh_tmp(g)
         emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, union_llvm_name(ukey), ptr)
@@ -349,7 +349,7 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string,
     base := distinct_base(ty)
 
     if sd := as_struct_body(base); sd != nil {
-        st_llvm := struct_llvm_name(struct_key(sd))
+        st_llvm := struct_llvm_name(sd.name)
         for &f, idx in sd.fields {
             field_ir := field_ir_type(&f)
             field_gep := fresh_tmp(g)
@@ -699,7 +699,7 @@ emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string
     w := SLICE_LEN_IR
     elem_ir := llvm_type_from_checker(elem_ty)
     idx_slot := fresh_tmp(g)
-    emit(g, "  %s = alloca %s", idx_slot, w)
+    emit_alloca(g, idx_slot, w)
     emit_typed_store_len(g, "0", idx_slot)
     loop_lbl := fresh_label(g, "bswap.loop")
     body_lbl := fresh_label(g, "bswap.body")

@@ -1785,7 +1785,7 @@ graph_token_text :: proc(op: Token_Kind) -> string {
     case .Tilde:         return "~"
     case .Shift_Left:    return "<<"
     case .Shift_Right:   return ">>"
-    case .Not, .Bang:    return "not"
+    case .Not:           return "not"
     }
     return "?"
 }

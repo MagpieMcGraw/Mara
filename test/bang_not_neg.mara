@@ -1,0 +1,12 @@
+module bang_not_neg
+//@ expect-fail: `!` is no operator in Mara: negate with `not`
+
+// C's `!x` is `not x` here. It was lexed as a token nothing parsed: the
+// error named the token and stopped.
+
+use mara.core
+
+main :: fun() {
+	x := true
+	if !x { print("no") }
+}

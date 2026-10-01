@@ -243,55 +243,16 @@ span_loc :: proc(span: Span) -> string {
     return fmt.tprintf("[%s]", span_location(span))
 }
 
-// Helper: extract the alloca name (e.g., "%r_36") from a line like "  %r_36 = alloca i32"
-extract_alloca_name :: proc(line: string) -> string {
-    trimmed := strings.trim_left_space(line)
-    eq_pos := strings.index(trimmed, " = alloca ")
-    if eq_pos < 0 { return "" }
-    return trimmed[:eq_pos]
-}
-
-// Helper: extract the alloca type (e.g., "i32") from a line like "  %r_36 = alloca i32"
-extract_alloca_type :: proc(line: string) -> string {
-    trimmed := strings.trim_left_space(line)
-    marker := " = alloca "
-    eq_pos := strings.index(trimmed, marker)
-    if eq_pos < 0 { return "" }
-    return trimmed[eq_pos + len(marker):]
-}
-
-// Write a single line to the output, handling alloca hoisting.
-emit_line :: proc(g: ^Codegen, line: string) {
-    if g.hoist_allocas {
-        if strings.contains(line, "= alloca ") {
-            // Skip duplicate allocas (e.g., same var declared in both if and else branches)
-            name := extract_alloca_name(line)
-            if name != "" && alloca_exists(g, name, extract_alloca_type(line)) {
-                return  // duplicate — already emitted
-            }
-            if name != "" { g.emitted_allocas[name] = extract_alloca_type(line) }
-            strings.write_string(&g.alloca_buf, line)
-            strings.write_byte(&g.alloca_buf, '\n')
-        } else {
-            strings.write_string(&g.body_buf, line)
-            strings.write_byte(&g.body_buf, '\n')
-        }
-        return
-    }
-    strings.write_string(&g.out, line)
-    strings.write_byte(&g.out, '\n')
+// Write a line of a function's code (its body, while its allocas are
+// hoisted: emit_alloca).
+emit_raw :: proc(g: ^Codegen, line: string) {
+    b := &g.body_buf if g.hoist_allocas else &g.out
+    strings.write_string(b, line)
+    strings.write_byte(b, '\n')
 }
 
 emit :: proc(g: ^Codegen, s: string, args: ..any) {
-    if len(args) == 0 {
-        emit_line(g, s)
-    } else {
-        emit_line(g, fmt.tprintf(s, ..args))
-    }
-}
-
-emit_raw :: proc(g: ^Codegen, s: string) {
-    emit_line(g, s)
+    emit_raw(g, s if len(args) == 0 else fmt.tprintf(s, ..args))
 }
 
 // ---------------------------------------------------------------------------
@@ -967,24 +928,8 @@ begin_alloca_hoist :: proc(g: ^Codegen) {
 }
 
 // ---------------------------------------------------------------------------
-// Codegen keys for types
+// IR names for types (a type's name is flat already: the checker's)
 // ---------------------------------------------------------------------------
-
-// Codegen key for a struct type — names are already flat (flattened during type-checking).
-struct_key_fun :: proc(st: ^Type_Scope) -> string {
-    return st.name
-}
-
-struct_key_sd :: proc(sd: ^Scope_Body) -> string {
-    return sd.name
-}
-
-struct_key :: proc { struct_key_fun, struct_key_sd }
-
-// Codegen key for a union type.
-union_key :: proc(ut: ^Type_Union) -> string {
-    return ut.name
-}
 
 // Get the LLVM type name for a struct, e.g. "%class.Point"
 struct_llvm_name :: proc(key: string) -> string {
@@ -1007,34 +952,14 @@ program_ir_name :: proc(checked: ^Checked_Program) -> string {
     return "%class.Program"
 }
 
-// Look up a struct from checked data (returns the Scope_Body from either the structs or funs table).
-lookup_struct :: proc(g: ^Codegen, name: string) -> (^Scope_Body, bool) {
-    return checked_struct(g.checked, name)
-}
-
-checked_struct :: proc(checked: ^Checked_Program, name: string) -> (^Scope_Body, bool) {
-    if ss, ss_ok := checked.table.structs[name]; ss_ok {
-        return &ss.sd, true
-    }
-    if sf, sf_ok := checked.table.funs[name]; sf_ok {
-        return &sf.sd, true
-    }
-    return nil, false
-}
-
 // Get the LLVM field index of a named field. Returns -1 if not found.
-struct_field_index_sd :: proc(st: ^Scope_Body, field_name: string) -> int {
+struct_field_index :: proc(st: ^Scope_Body, field_name: string) -> int {
     for _, i in st.fields {
         if st.fields[i].name == field_name { return i }
     }
     return -1
 }
 
-struct_field_index_fun :: proc(st: ^Type_Scope, field_name: string) -> int {
-    return struct_field_index_sd(&st.sd, field_name)
-}
-
-struct_field_index :: proc { struct_field_index_sd, struct_field_index_fun }
 
 // Get the LLVM IR type string for a struct field.
 field_ir_type :: proc(f: ^Struct_Type_Field) -> string {
@@ -1134,7 +1059,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case ^Type_Ptr:         return "ptr"
     case ^Type_Scope:
         if v.kind == .Struct {
-            return fmt.tprintf("%%class.%s", struct_key(v))
+            return fmt.tprintf("%%class.%s", v.name)
         }
         return "ptr" // callable fun (function pointer)
     case ^Type_Fixed_Array:
@@ -1147,7 +1072,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case ^Type_Enum:
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
         return "i64"
-    case ^Type_Union:       return fmt.tprintf("%%union.%s", union_key(v))
+    case ^Type_Union:       return fmt.tprintf("%%union.%s", v.name)
     case ^Type_Distinct:    return llvm_type_from_checker(v.base_type)
     // The following three never legitimately reach codegen as a value type:
     // codegen only runs when the checker reported zero errors (see main.odin),
@@ -1161,7 +1086,8 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case Type_Any:
         panic("llvm_type_from_checker: Type_Any reached codegen as a value type — the checker minted an untyped value without a diagnostic. Type_Any is only valid as an opaque-pointer element (^Type_Ptr.elem)")
     case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
-    case Type_Error:        return "i64" // error recovery default
+    case Type_Error:
+        panic("llvm_type_from_checker: Type_Error reached codegen — codegen runs only on a clean check")
     case Type_Err:          return "i32" // open error type — u32 (set_id<<16 | tag)
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
@@ -1392,7 +1318,7 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
     return strings.to_string(b)
 }
 
-emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}, w_override: string = "") {
+emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}) {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
     // entirely. Covers `arr[3]` against a fixed-size array and other
@@ -1404,12 +1330,8 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     ok_label   := fresh_label(g, "bounds.ok")
     fail_label := fresh_label(g, "bounds.fail")
 
-    // idx and len_val are both at width `w`. Default is the slice header
-    // width (i32); gen_checked_index passes "i64" when the index is a wide
-    // integer so the comparison happens before any narrowing (a large value
-    // that would wrap into a valid-looking i32 traps here instead).
+    // idx and len_val are both at the slice header's width.
     w := SLICE_LEN_IR
-    if w_override != "" { w = w_override }
     neg_cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, idx)
     upper_cmp := fresh_tmp(g)
@@ -1422,21 +1344,8 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     loc := span_location(span)
     loc_global,  _ := get_string_literal(g, loc)
     name_global, _ := get_string_literal(g, name)
-    // __mara_bounds_fail takes i32 idx/len (diagnostic only). When the compare
-    // ran wider, truncate for the message — we're on the abort path, and the
-    // i64-width comparison above already decided the trap.
-    fail_idx := idx
-    fail_len := len_val
-    if w != SLICE_LEN_IR {
-        fi := fresh_tmp(g)
-        emit(g, "  %s = trunc %s %s to %s", fi, w, idx, SLICE_LEN_IR)
-        fail_idx = fi
-        fl := fresh_tmp(g)
-        emit(g, "  %s = trunc %s %s to %s", fl, w, len_val, SLICE_LEN_IR)
-        fail_len = fl
-    }
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
-        __MARA_BOUNDS_FAIL, loc_global, SLICE_LEN_IR, fail_idx, SLICE_LEN_IR, fail_len, name_global)
+        __MARA_BOUNDS_FAIL, loc_global, w, idx, w, len_val, name_global)
     emit(g, "  unreachable")
 
     emit_label(g, ok_label)
@@ -2560,7 +2469,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
         // Counter is i32 to match argc and the slice header — no widen/trunc.
         loop_i := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", loop_i, " = alloca i32"}))
+        emit_alloca(g, loop_i, "i32")
         emit_raw(g, strings.concatenate({"  store i32 0, ptr ", loop_i}))
         loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
         body_lbl := fmt.tprintf("args_body_%d", g.label_counter)

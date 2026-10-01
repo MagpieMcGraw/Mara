@@ -211,7 +211,7 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case "include":  return .Include, true
     case "sealed":   return .Sealed, true
     case "module":   return .Module, true
-    case "package":  return .Module, true  // deprecated — accepted for backward compat
+
     case "return":   return .Return, true
     case "for":      return .For, true
     case "in":       return .In, true

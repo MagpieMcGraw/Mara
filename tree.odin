@@ -107,7 +107,7 @@ Tree_Tag :: enum u8 {
     False,
     Ident,
     Dot_Ident,      // `.Variant`: main: `.`; a: the name
-    Type_Value,     // a type keyword as a value (`Array(byte, 64)`): main: the keyword
+
     Unary,          // `-x`, `-%x`, `not x`, `~x`, `&x`: main: the operator; a: the operand
     Deref,          // `x^`: main: `^` (an assignment target's: its first token); a: the
                     // operand; b: the `^`
@@ -213,7 +213,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .False          = {},
     .Ident          = {},
     .Dot_Ident      = {a = .Token},
-    .Type_Value     = {},
+
     .Unary          = {a = .Node},
     .Deref          = {a = .Node, b = .Token},
     .Try            = {a = .Node},

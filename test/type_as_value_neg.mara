@@ -1,12 +1,12 @@
 module type_as_value_neg
-//@ expect-fail: 'P' is a type, not a value
+//@ expect-fail: the type 'u8' is no value
 
-// A type's name where a value goes: an error at the checker, not a
-// codegen failure.
+// A type keyword where a value goes was parsed as a node only the checker
+// refused ("not supported yet"). It is a parse error that says so.
 
-P :: struct { x: i64 }
+use mara.core
 
 main :: fun() {
-	p := P
-	print(1)
+	x := u8
+	print(size_of(u8))
 }

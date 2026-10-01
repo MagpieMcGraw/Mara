@@ -80,9 +80,9 @@ Source_File :: struct {
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
 }
 
-// Read just enough of `source` to know which `module <name>` (or `package
-// <name>`) it declares. Returns "" when the source doesn't start with a
-// module/package declaration. Skips leading whitespace + // line comments.
+// Read just enough of `source` to know which `module <name>` it declares.
+// Returns "" when the source doesn't start with a module declaration. Skips
+// leading whitespace + // line comments.
 extract_package_name :: proc(source: string) -> string {
     i := 0
     for i < len(source) && (source[i] == ' ' || source[i] == '\t' || source[i] == '\r' || source[i] == '\n') {
@@ -95,10 +95,8 @@ extract_package_name :: proc(source: string) -> string {
         }
     }
     rest := source[i:]
-    is_package := strings.has_prefix(rest, "package ") || strings.has_prefix(rest, "package\t")
-    is_module  := strings.has_prefix(rest, "module ")  || strings.has_prefix(rest, "module\t")
-    if !is_package && !is_module { return "" }
-    j := 7 if is_package else 6
+    if !strings.has_prefix(rest, "module ") && !strings.has_prefix(rest, "module\t") { return "" }
+    j := 6
     for j < len(rest) && (rest[j] == ' ' || rest[j] == '\t') { j += 1 }
     name_start := j
     // Module names may be dotted (`module mara.math`); accept dots/underscores
@@ -146,7 +144,7 @@ extract_imports :: proc(source: string) -> [dynamic]string {
         line := strings.trim_space(source[line_start:i])
 
         // Module declaration — skip
-        if strings.has_prefix(line, "module ") || strings.has_prefix(line, "package ") {
+        if strings.has_prefix(line, "module ") {
             continue
         }
 
@@ -945,7 +943,6 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
 
 CLI_Args :: struct {
     pkg_name:     string,
-    search_dir:   string,
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
@@ -1044,7 +1041,6 @@ ask_parse_at :: proc(loc: string) -> (file: string, line: int, ok: bool) {
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
     args.compiler_dir = get_compiler_dir()
-    args.search_dir   = "."
 
     if len(os.args) < 2 {
         fmt.println(USAGE)
@@ -1142,7 +1138,7 @@ main :: proc() {
     perf.quiet = args.ask   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
 
-    all_files := discover_all_files(args.compiler_dir, args.search_dir)
+    all_files := discover_all_files(args.compiler_dir, ".")   // (the project: the current directory)
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise. `ask` defaults

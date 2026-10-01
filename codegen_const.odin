@@ -265,7 +265,7 @@ const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: 
     if v.variant == nil || is_niche_layout(g, ut) { const_fail(cx) }
     vsd := as_struct_body(distinct_base(v.variant))
     if vsd == nil { const_fail(cx) }
-    vname := struct_llvm_name(struct_key(vsd))
+    vname := struct_llvm_name(vsd.name)
     tail := type_size(ut) - struct_layout(vsd).size
     if tail <= 0 {
         cx.gtype = vname

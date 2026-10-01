@@ -1829,6 +1829,11 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
     case .Wrap_Minus, .Not, .Tilde:
         op := tp_advance(p)
         result = tp_node(p, .Unary, op, start, u32(tp_primary(p)))
+    case .Bang:
+        // (C's `!x`: said as Mara says it, parsed on as one.)
+        op := tp_advance(p)
+        tp_error(p, op, PARSE_BANG_NOT)
+        result = tp_node(p, .Unary, op, start, u32(tp_primary(p)))
     case .Ampersand:
         op := tp_advance(p)
         result = tp_node(p, .Unary, op, start, u32(tp_primary(p, allow_dot = true)))
@@ -1849,7 +1854,9 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
             args := tp_call_args(p)
             result = tp_node(p, .Call, kw, start, args)
         } else {
-            result = tp_leaf(p, .Type_Value, kw)
+            // (A type is no value: `size_of(u8)` takes one as its own.)
+            tp_error(p, kw, PARSE_TYPE_AS_VALUE, token_text(build_tokens[kw]))
+            result = tp_leaf(p, .Ident, kw)
         }
     case .Hash:
         hash := tp_advance(p)

@@ -574,9 +574,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
         return
     }
     if sd := as_struct_body(distinct_base(ty)); sd != nil {
-        if print_st, ok := lookup_struct(g, sd.name); ok {
-            gen_print_struct(g, addr, print_st)
-        }
+        gen_print_struct(g, addr, sd)
         return
     }
     bt := distinct_base(ty)
@@ -639,7 +637,7 @@ gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "")
         emit_string_gep(g, ptr, n, name)
         emit_printf_void(g, ptr)
     }
-    st_llvm := struct_llvm_name(struct_key(st))
+    st_llvm := struct_llvm_name(st.name)
     first := first_user_field(st)
     if name != "" {
         say(g, name)
