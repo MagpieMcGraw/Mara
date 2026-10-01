@@ -140,7 +140,7 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, ct, tt:
     if b = tc_building(k); b == nil || place == NO_VALUE { return }
     _, big := tc_byte_node(k, target)
     graph_fuse_view(b, place, solidify_type(vt), big, span)
-    tc_store(k, value, vt, r, Dest{kind = .At, at = place, type_ = tt}, span, settle = true)
+    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
 
 // `&bytes[i]` where a pointer to another type takes it: a view of the bytes
@@ -197,5 +197,5 @@ tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Fused, gs: ^Grap
         tc_fail(k, "a span's end that branches, viewed")
         return
     }
-    tc_store(k, value, vt, r, Dest{kind = .At, at = place, type_ = tt}, span, settle = true)
+    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }

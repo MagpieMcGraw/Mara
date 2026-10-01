@@ -58,6 +58,7 @@ TC :: struct {
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     union_templates: map[string]TC_Template,   // each generic union, by name
+    parallel:      ^[dynamic]TC_Held, // assigned together (`a, b = b, a`): each store, held
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
@@ -702,6 +703,7 @@ tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
     case .Decl:     return .Decl
     case .Assign:
         targets := tree_list(k.t, k.t.a[s])
+        if len(targets) > 1 && len(targets) == len(tree_list(k.t, k.t.b[s])) { return .Other }   // (its assignments')
         if len(targets) == 1 {
             if k.t.tag[targets[0]] != .Ident { return .Write }
             name := tc_name(k, targets[0])

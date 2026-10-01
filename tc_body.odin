@@ -537,6 +537,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_destructure(k, s, targets, values[0], false, 0, env)
         return
     }
+    if len(targets) > 1 && len(targets) == len(values) {
+        tc_parallel_assign(k, s, targets, values, env)
+        return
+    }
     if len(targets) != 1 || len(values) != 1 {
         tc_unsupported(k, s, "this assignment")
         return
@@ -598,7 +602,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
     val_type, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
     tc_check_write(k, value, val_type, existing, name, span)
-    tc_store(k, value, val_type, r, graph_dest_var(name, NO_NODE, existing), span)
+    tc_store(k, value, val_type, r, tc_parallel_hold(k, graph_dest_var(name, NO_NODE, existing), span), span)
 }
 
 // `return a, b`: each value at its result's type (trailing errs implied `.Ok`).

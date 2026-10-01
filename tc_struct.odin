@@ -255,7 +255,7 @@ tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, sp
         k.compound = {target, place}
         vt, r := tc_compound_value(k, op_tok, target, value, env, .Into)
         k.compound = saved
-        tc_store(k, 0, vt, r, d, span, settle = true)
+        tc_store(k, 0, vt, r, tc_parallel_hold(k, d, span), span, settle = true)
         return vt
     }
     if tc_is_void(k, value) {
@@ -265,7 +265,7 @@ tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, sp
         return vt
     }
     vt, r := tc_expr(k, value, env, .Into, dest = d, temp = true, temp_span = span)
-    tc_store(k, value, vt, r, d, span, settle = true)
+    tc_store(k, value, vt, r, tc_parallel_hold(k, d, span), span, settle = true)
     return vt
 }
 

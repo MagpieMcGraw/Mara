@@ -187,6 +187,7 @@ pa_literal_zero
 pafield
 pafieldctor
 pafill
+parallel_assign
 param_reassign_neg
 param_result_alias
 parenless_fun
@@ -244,6 +245,7 @@ test_multi_assign
 text_constant_views
 text_partial_array
 text_view_print
+tnameprobe
 try_runs_defers
 tuple_union
 u64dec

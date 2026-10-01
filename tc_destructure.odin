@@ -117,18 +117,63 @@ tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     span := tree_span(t, s)
     if b := tc_building(k); b != nil { graph_fuse_stmt_kind(b, .Other) }
     for tg in targets {
-        kind := Stmt_Kind.Decl
-        if !is_decl {
-            switch {
-            case t.tag[tg] != .Ident: kind = .Write
-            case tc_name(k, tg) == "_" || tc_name(k, tg) == "this_program": kind = .Other
-            case: kind = .Assign
-            }
-        }
+        kind := Stmt_Kind.Decl if is_decl else tc_assign_kind(k, tg)
         b := tc_building(k)
         saved: i32
         if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), span, kind, fresh = true) }
         if is_decl { tc_decl_one(k, s, tg, value, 0, env, nil) } else { tc_assign_one(k, s, tg, value, env) }
         if b != nil { graph_fuse_stmt_end(b, saved) }
     }
+}
+
+// An assignment's statement kind, by its target: a place's a write; `_`'s
+// and this_program's no assignment.
+tc_assign_kind :: proc(k: ^TC, target: Tree_Id) -> Stmt_Kind {
+    if k.t.tag[target] != .Ident { return .Write }
+    if name := tc_name(k, target); name == "_" || name == "this_program" { return .Other }
+    return .Assign
+}
+
+// `a, b = c, d`: each assignment checked in turn, a statement of its own.
+// Reassigned together, every value goes in first — each store held in a
+// temporary at its target's type (tc_parallel_hold) — then each target is
+// written from its own.
+tc_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id, env: ^Type_Scope) {
+    span := tree_span(k.t, s)
+    held := make([dynamic]TC_Held, context.temp_allocator)
+    parallel := tc_building(k) != nil
+    saved := k.parallel
+    if parallel { k.parallel = &held }
+    for tg, i in targets {
+        b := tc_building(k)
+        saved_stmt: i32
+        if b != nil { saved_stmt = graph_fuse_stmt(b, tc_sid(k, s), span, tc_assign_kind(k, tg), fresh = true) }
+        tc_assign_one(k, s, tg, values[i], env)
+        if b != nil { graph_fuse_stmt_end(b, saved_stmt) }
+    }
+    k.parallel = saved
+    b := tc_building(k)
+    if !parallel || b == nil { return }
+    for h in held {
+        v := graph_read(b, graph_var(b, "parallel", h.slot, h.t, h.span), h.t, h.span)
+        graph_fuse_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
+    }
+}
+
+TC_Held :: struct {
+    d:    Dest,
+    slot: Node_Id,
+    t:    Type,
+    span: Span,
+}
+
+// A store assigned together with others: into a temporary of its own, at
+// its target's type (tc_parallel_assign writes the target from it).
+tc_parallel_hold :: proc(k: ^TC, d: Dest, span: Span) -> Dest {
+    b := tc_building(k)
+    if b == nil || k.parallel == nil { return d }
+    t := graph_dest_type(b, d)
+    slot := graph_slot(b, "parallel", t, span)
+    append(k.parallel, TC_Held{d, slot, t, span})
+    return graph_dest_var("parallel", slot, t)
 }
