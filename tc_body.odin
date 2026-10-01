@@ -708,7 +708,8 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(t, s)
     v := if_view(t, s)
     if v.hash != 0 {
-        tc_unsupported(k, s, "`#if`")
+        // (One whose condition is known is folded away: tc_live.)
+        tc_error(k, tree_span(t, v.cond), TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
         return
     }
     ct, cond := tc_expr(k, v.cond, env, .Value if tc_building(k) != nil else .None)

@@ -69,6 +69,14 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if want == .Place { return t, {} }
         return t, {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
+    // (A struct's function, named as a value — `S.get`, `s.get`: the
+    // function; its base, built, left out.)
+    if fun, is_fun := t.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun {
+        b := tc_building(k)
+        graph_fuse_drop_since(b, mark)
+        if want == .Place { return t, {} }
+        return t, {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
+    }
     if !is_member { return t, {} }
     p := tc_member_place(k, n, field, br, bt, t, tc_is_self(k, base))
     if p == NO_VALUE { return t, {} }
@@ -122,10 +130,8 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             }
         }
         if ft := resolve_struct_field(sd, field, k.table); ft != nil { return ft, true, 0, false }
-        if sd.functions != nil && field in sd.functions {
-            tc_unsupported(k, n, "a struct's function as a value")
-            return Type_Error{}, false, 0, false
-        }
+        // (Its function: a value of its own, tc_field's to build.)
+        if fun, has := sd.functions[field]; has { return fun, false, 0, false }
         tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
         return Type_Error{}, false, 0, false
     }

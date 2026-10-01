@@ -81,10 +81,10 @@ tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
     check_error(k.c, span, msg, ..args)
 }
 
-// What this checker doesn't check yet: an error, so the program fails
+// What the checker doesn't check yet: an error, so the program fails
 // visibly rather than differently.
 tc_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) {
-    tc_error(k, tree_span(k.t, n), "tc: %s is not supported yet (%v)", what, k.t.tag[n])
+    tc_error(k, tree_span(k.t, n), "%s is not supported yet (%v)", what, k.t.tag[n])
 }
 
 tc_node_type :: proc(k: ^TC, n: Tree_Id) -> Type {

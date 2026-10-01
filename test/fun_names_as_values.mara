@@ -1,0 +1,34 @@
+module fun_names_as_values
+
+//@ expect-output: module fun 2
+//@ expect-output: no params 7
+//@ expect-output: local fun 11
+//@ expect-output: method by type 5
+//@ expect-output: method by value 5
+
+// A fun's name, written without a call, is the fun: a module's, one taking
+// no params, a body's own, and a struct's (named through the type or
+// through a value of it).
+
+inc :: fun(a: i64) -> i64 { return a + 1 }
+seven :: fun() -> i64 { return 7 }
+
+S :: struct {
+	x: i64 = 5
+	get :: fun(s: ^Self) -> i64 { return s.x }
+}
+
+main :: fun() {
+	f := inc
+	print("module fun", f(1))
+	g := seven
+	print("no params", g())
+	add_ten :: fun(a: i64) -> i64 { return a + 10 }
+	h := add_ten
+	print("local fun", h(1))
+	s : S
+	by_type := S.get
+	print("method by type", by_type(&s))
+	by_value := s.get
+	print("method by value", by_value(&s))
+}

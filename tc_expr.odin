@@ -188,23 +188,18 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
     if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
-    // (A fun's name, as a value: the fun — one taking params, as the old
-    // checker resolved them.)
-    if ts, is_scope := t.(^Type_Scope); is_scope && len(ts.params) > 0 && name in k.c.declared_funs {
-        if want == .None || want == .Place { return t, {} }
-        return t, {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
-    }
-    // (A local is found in no scope: what a scope holds is a fun, a type, a
-    // constant — a function sees no module's variables.)
-    if loc_scope != nil {
-        if ts, is_scope := t.(^Type_Scope); is_scope && ts.kind == .Fun {
-            tc_unsupported(k, n, "a fun as a value")
-            return t, {}
+    // (A fun's name, as a value: the fun — a module's, or a body's own (a
+    // local is found in no scope); a struct's taking params: its
+    // constructor.)
+    if ts, is_scope := t.(^Type_Scope); is_scope && !ts.is_module {
+        declared := name in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0)
+        if declared || loc_scope != nil && ts.kind == .Fun {
+            if want == .None || want == .Place { return t, {} }
+            return t, {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
         }
-        // (A type's name, a module's: built as a name it resolved to nothing
-        // — a variable's — which a field access of it, its
-        // one use, leaves out.)
     }
+    // (A type's name, a module's: built as a name it resolved to nothing — a
+    // variable's — which a field access of it, its one use, leaves out.)
     if want == .None { return t, {} }
     place := graph_var(b, name, NO_NODE, t, span)
     if want == .Value { return t, {v = graph_read(b, place, t, span), ok = true} }

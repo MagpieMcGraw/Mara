@@ -1,0 +1,9 @@
+module hash_if_runtime_neg
+//@ expect-fail: #if condition must be a comptime-known boolean
+
+// `#if` picks a branch at compile time: its condition must be known then.
+
+main :: fun() {
+	x := 3
+	#if x == 3 { print(1) }
+}
