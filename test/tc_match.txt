@@ -1,6 +1,7 @@
 addrfixedarr
 aliasprobe
 alloff
+ambigvar
 arena_cursor
 args_value
 array_field_loop
@@ -232,6 +233,7 @@ uninitptr
 union_decl
 union_elements
 union_value
+unknownstructlit
 unreachable_neg
 untyped_array_literals
 use_before_decl_neg

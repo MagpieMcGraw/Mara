@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // Structs in the new checker: a field read or written, a struct built (a
@@ -327,8 +328,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             vut, ambiguous := tc_variant_union(k, name)
             if ambiguous { return Type_Error{}, {} }
             if vut == nil {
-                tc_unsupported(k, n, "a literal of an unknown name")
-                return Type_Error{}, {}
+                return tc_unknown_literal(k, n, name, entries, env)
             }
             t, variant = vut, name
         } else {
@@ -771,4 +771,28 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     if b := tc_building(k); b != nil { gl = graph_fuse_override(b, graph_dest_var(name, NO_NODE, vt), sd) }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env, gl)
     return true
+}
+
+// A literal of a name no type or union owns: a variant's two unions have
+// (ambiguous: said so), else an unknown type — unless a variant's or a
+// local's (what takes it checks it) — its fields' values checked.
+tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id, env: ^Type_Scope) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    owner, is_variant := k.table.variant_to_enum[name]
+    if is_variant && owner == "" {
+        // (The unions that own it: a literal builds a payload.)
+        owners := make([dynamic]string, context.temp_allocator)
+        for _, ut in k.table.unions {
+            if name in ut.tag_map { append(&owners, ut.source_name if ut.source_name != "" else ut.name) }
+        }
+        slice.sort(owners[:])
+        first := owners[0] if len(owners) > 0 else name
+        tc_error(k, span, TYPE_AMBIGUOUS_VARIANT_LITERAL, name, strings.join(owners[:], ", ", context.temp_allocator), first, name)
+        return Type_Error{}, {}
+    }
+    if !is_variant {
+        if _, _, bound := type_env_locate(env, name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+    }
+    for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e, env) }
+    return Type_Error{}, {}
 }
