@@ -3,9 +3,8 @@ package mara
 import "core:fmt"
 import "core:strings"
 
-// What the new checker's diagnostics say about the source: a name for an
-// expression, the operands a mismatch traces to. (Parens are seen through:
-// the pointer tree had none.)
+// What the checker's diagnostics say about the source: a name for an
+// expression, the operands a mismatch traces to. (Parens are seen through.)
 
 // "a.b[i]", "f()", or "" when the expression has no nameable form.
 tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {

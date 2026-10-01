@@ -2,7 +2,7 @@ package mara
 
 import "core:strings"
 
-// Modules in the new checker: `use m` checks m (once, where it is first
+// Modules in the checker: `use m` checks m (once, where it is first
 // used — its own uses first), then makes its names visible in the file
 // that uses it (`include m`: in its module too); `name :: use m` names it.
 

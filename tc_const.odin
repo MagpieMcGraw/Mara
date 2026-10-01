@@ -2,7 +2,7 @@ package mara
 
 import "core:strings"
 
-// Constants in the new checker: `X :: v`, `X : T : v`. Each is its value,
+// Constants in the checker: `X :: v`, `X : T : v`. Each is its value,
 // checked once — in its module's order, or sooner by a use — and built as
 // its own code (graph_const_begin); a use is the constant's value (a table's
 // global, when it is an aggregate), named by its value's node.
@@ -12,7 +12,7 @@ TC_Const :: struct {
     name:  string,          // as written
     mangled: string,        // a body's: named for its owner
     sid:   Syntax_Id,       // its value's, as the builder keys it (an instance's its own)
-    local: bool,            // a body's (its type its value's, as the old checker had it)
+    local: bool,            // a body's (its type its value's)
     env:   ^Type_Scope,     // where its value is checked
     pub:   ^Type_Scope,     // where its name is bound
     pkg:   string,

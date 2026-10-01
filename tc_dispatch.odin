@@ -2,7 +2,7 @@ package mara
 
 import "core:strings"
 
-// Dispatch groups and operator overloads in the new checker: `add(a, b)`
+// Dispatch groups and operator overloads in the checker: `add(a, b)`
 // calls the one function of the group its argument types fit; `a + b` with
 // an operand no number calls the best fit of the groups `overload +` names.
 
@@ -167,7 +167,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
                 continue
             }
             // (A generic member is instantiated whether or not a better fit is
-            // found: its instance exists, as the old checker made it.)
+            // found: its instance exists.)
             tmpl, is_template := k.templates[f]
             if !is_template { continue }
             if inst := tc_overload_instance(k, f, tmpl, lt, rt, env); inst != nil && best_score < 1 { best, best_score = inst, 1 }

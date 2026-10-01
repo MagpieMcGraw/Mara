@@ -2,8 +2,8 @@ package mara
 
 import "core:strings"
 
-// Unions and enums in the new checker. `Name :: union { A, B = 5 }` with no
-// variant holding fields is an enum; one with fields a union â its tag an
+// Unions and enums in the checker. `Name :: union { A, B = 5 }` with no
+// variant holding fields is an enum; one with fields a union — its tag an
 // enum of its own (`Name_Tag`), each variant a struct (`Name_A`) whose first
 // field is the tag. `Name :: error { A, B }` is an enum of the global error
 // set (each variant's value its set's id and its place in it).
@@ -135,7 +135,7 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
 }
 
 // A variant named by itself (`.Red`, or `Red` where an enum is expected):
-// the variant of the enum expected, or â `.Red` â the one enum visible that
+// the variant of the enum expected, or — `.Red` — the one enum visible that
 // has it.
 tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot: bool, span: Span) -> (Type, int, bool) {
     if hint != nil {
@@ -184,8 +184,8 @@ tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span:
 }
 
 // A union's variant as a value (`.Circle`, `Shape.Circle`, `Circle` where a
-// Shape is expected): the variant constructed where it goes â else in a
-// temporary made first, read â then its fields' defaults.
+// Shape is expected): the variant constructed where it goes — else in a
+// temporary made first, read — then its fields' defaults.
 tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Fuse_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Fused {
     b := tc_building(k)
@@ -260,9 +260,9 @@ tc_union_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
     return false
 }
 
-// `Name(args)`, Name a generic union: its instance â its params bound to the
+// `Name(args)`, Name a generic union: its instance — its params bound to the
 // arguments, its tag enum and its variants' structs made for them (once). A
-// niche â `Maybe(^T)`: the pointer, None its null â is decided as a union's
+// niche — `Maybe(^T)`: the pointer, None its null — is decided as a union's
 // is (finalize_union_variant_headers).
 tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scope, span: Span) -> Type {
     t := k.t

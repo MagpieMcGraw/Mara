@@ -104,6 +104,15 @@ Resolution_State :: enum {
     Resolved,
 }
 
+// Scope_Kind distinguishes struct-shape scopes (data layout) from fun-shape
+// scopes (callable body). Set from the declaration's keyword:
+//   `struct` / `class`  → .Struct
+//   `fun`               → .Fun
+// Only codegen cares about the distinction — the type checker treats both
+// kinds of scope the same (same field resolution, same name lookup, same
+// Self binding, etc.). See project_mara_history.md for the design rationale.
+Scope_Kind :: enum { Struct, Fun, Block }   // Block = an if/for/defer body — locals only (in .types), no members/params/returns
+
 // The body of a Type_Scope — embedded via `using sd: Scope_Body`.
 // Holds the fields, nested defs, methods, and other content shared
 // between data-layout scopes (struct/class) and callable scopes (fun).
@@ -2047,14 +2056,14 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //     reserves the budget explicitly, most commonly via a `size: [N]byte`
 //     filler field).
 // Each shortcoming surfaces as its own diagnostic at `span`.
-check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, home_package: string, span: Span) {
+check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, arg: Type, home_package: string, span: Span) {
     // `void` is the universal subtype for shape constraints — used as the
     // default type-arg when the user writes `p : Program` (no arena).
     // Trivially satisfies any `~T` requirement (no API to miss, zero size
     // to budget). Reads / method calls on the resulting void slot are
     // gated separately (see field access and call sites).
     if _, is_void := arg.(Type_Void); is_void { return }
-    constraint_name := param.shape_constraint
+
     // Resolve the constraint type by name. The bare identifier in `~T` is
     // looked up against the home package of the template that declared the
     // constraint — that's the only module the parser could have referenced
@@ -2072,14 +2081,14 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         // a typo or unimported module slips through to here. Bail loud.
         check_error(c, span,
             TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD,
-            constraint_name, param.name)
+            constraint_name, param_name)
         return
     }
     arg_scope, arg_ok := distinct_base(arg).(^Type_Scope)
     if !arg_ok || arg_scope.kind != .Struct {
         check_error(c, span,
             TYPE_GENERIC_ARGUMENT_CONCRETE_STRUCT_CLASS,
-            param.name, constraint_name, type_name(arg))
+            param_name, constraint_name, type_name(arg))
         return
     }
     for fn_name, ct_fn in ct.functions {

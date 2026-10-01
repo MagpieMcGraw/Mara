@@ -3,10 +3,8 @@ package mara
 import "core:fmt"
 import "core:os"
 
-// The flat tree's parser (tree.odin): the grammar the pointer tree's parser
-// reads, recorded as written — no lowering, no desugaring, names and literals
-// their tokens. Each node's report point is the one that parser gives the
-// same construct, so what is checked lands where it always did.
+// The flat tree's parser (tree.odin): the grammar, recorded as written — no
+// lowering, no desugaring, names and literals their tokens.
 //
 // Nodes are appended children first; a production that backtracks drops what
 // it appended (tp_mark / tp_reset).
@@ -77,8 +75,7 @@ tp_expect :: proc(p: ^Tree_Parser, kind: Token_Kind) -> Token_Id {
     return tp_advance(p)
 }
 
-// The flat tree's parse errors go to stderr, beside the pointer tree's: the
-// build's diagnostics are still that parser's.
+// A parse error, reported.
 tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
     tok := build_tokens[at]

@@ -992,13 +992,12 @@ graph_index :: proc(b: ^Graph_Builder) {
 
 // --- statements ---------------------------------------------------------------
 
-// What the builder keys a statement or an expression by: an id of whichever
-// tree the checker reads (the pointer tree's Stmt_Id or Expr_Id, the flat
-// tree's Tree_Id). 0 is none.
-Syntax_Id :: distinct u64   // (the new checker salts an instance's body ids: tc_sid)
+// What the builder keys a statement or an expression by: its node in the
+// tree, salted in a generic's instance (tc_sid). 0 is none.
+Syntax_Id :: distinct u64
 
 // What a statement outside any body declares — a module's, a body's
-// definition — as the checker reads it (from whichever tree), for the builder
+// definition — as the checker reads it, for the builder
 // to build where it goes (graph_decl_stmt).
 Graph_Decl :: struct {
     id:      Syntax_Id,

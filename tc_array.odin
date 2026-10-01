@@ -1,6 +1,6 @@
 package mara
 
-// Arrays in the new checker: an element read or written, an array literal.
+// Arrays in the checker: an element read or written, an array literal.
 
 // `a[i]`: the element's place — its collection's (through a pointer, what it
 // points at), the index at the header's width — read, or itself.

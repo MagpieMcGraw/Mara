@@ -114,7 +114,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
 
 // `a, b = v`, `x, y := v`: v to each target — the statement's copies, one a
 // target, each a statement of its own, v checked in each. (A declaration's
-// copies take no annotation: the old checker's desugaring left it off.)
+// copies take no annotation.)
 tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)

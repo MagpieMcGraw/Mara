@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-// Structs in the new checker: a field read or written, a struct built (a
+// Structs in the checker: a field read or written, a struct built (a
 // literal, a call of its constructor).
 
 // The struct a type is, or points at (its fields found first).

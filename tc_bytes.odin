@@ -1,6 +1,6 @@
 package mara
 
-// Bytes in the new checker: a value read out of a byte buffer as another
+// Bytes in the checker: a value read out of a byte buffer as another
 // type (`h : Head = bytes[off]`), or written into one (`bytes[off] = v`), is
 // its raw bytes — the element's place a view of them as that type.
 

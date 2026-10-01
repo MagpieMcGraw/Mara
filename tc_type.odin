@@ -191,7 +191,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
     return 0, false
 }
 
-// A number as written â or an operation of numbers â its value: no
+// A number as written — or an operation of numbers — its value: no
 // constant's name (a span's bounds, its size checked when they are numbers).
 tc_number_int :: proc(k: ^TC, n: Tree_Id) -> (int, bool) {
     t := k.t

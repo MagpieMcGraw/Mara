@@ -1,10 +1,10 @@
 package mara
 
-// Generics in the new checker. A definition is a template when its signature
+// Generics in the checker. A definition is a template when its signature
 // names a type it is given (`$T`), a struct's param is a shape (`~T`), or a
-// struct's param is used in its fields' types (`[n]T`): the old parser
-// lowered these into generic params; the tree keeps them as written, and the
-// checker reads them off it. A template is checked only as its instances.
+// struct's param is used in its fields' types (`[n]T`): the tree keeps
+// them as written, and the checker reads them off it. A template is
+// checked only as its instances.
 
 TC_Template :: struct {
     def, node: Tree_Id,
@@ -283,8 +283,8 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
 }
 
 // An instance of a generic fun: its signature at the bindings, its body the
-// template's own checked again with them bound — its scope the call's (as
-// the old checker's instances were), its graph its own.
+// template's own checked again with them bound — its scope the call's, its
+// graph its own.
 tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string, env: ^Type_Scope) -> ^Type_Scope {
     outer: ^Graph_Fuse
     if k.gb != nil { outer, k.gb.fuse = k.gb.fuse, nil }
@@ -294,7 +294,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     ft.kind = .Fun
     ft.home_package = tmpl.pkg
     ft.node = tmpl.node
-    ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one, as the old checker's were)
+    ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one)
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
     defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg
@@ -336,7 +336,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     return ft
 }
 
-// A generic struct's params, as the old parser lowered them: its `$T: type`
+// A generic struct's params: its `$T: type`
 // and `$N: int` first; then each param that is a type (`item: $T`), a shape
 // (`a: ~Arena`), or a value its fields' types use (`n: i64` in `[n]T`), by
 // the param's name; then any other `$T` its params or fields name. The rest
@@ -475,7 +475,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
     if st, made := k.table.mono_cache[mangled]; made { return st }
     // (A shape's argument has what its constraint has: checked once.)
     for gp, i in gps {
-        if gp.shape != "" { check_shape_constraint(k.c, Generic_Param{name = gp.name, shape_constraint = gp.shape}, targs[i], tmpl.pkg, span) }
+        if gp.shape != "" { check_shape_constraint(k.c, gp.name, gp.shape, targs[i], tmpl.pkg, span) }
     }
     subst := make(map[string]Type)
     for gp, i in gps { subst[gp.name] = targs[i] }

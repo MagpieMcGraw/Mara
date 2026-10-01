@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 
 Token_Kind :: enum u8 {
@@ -621,3 +622,217 @@ peek :: proc(l: ^Lexer, offset: int = 0) -> u8 {
     }
     return 0
 }
+// ---------------------------------------------------------------------------
+// Source locations and token text
+// ---------------------------------------------------------------------------
+
+// A source location, as tokens (ids in build_tokens). `at` is the REPORT POINT
+// every diagnostic prints (its file, line and column: span_location). `tok` to
+// `end` is a half-open range of tokens — the EXTENT, which a start point alone
+// cannot express.
+//
+// The two are independent on purpose. A node's report point is not always its
+// first token: a Binary anchors on its operator so an error lands on the
+// `==` rather than the left operand. The extent still has to begin at the
+// leftmost token, so `m == void` reports at the `==` but covers `m`.
+//
+// Extents exist for the editor queries: resolving a cursor to a node means
+// asking which nodes contain a position. With token ids that is integer
+// containment (tok <= i < end) rather than comparing (line, col) pairs, and
+// the innermost node is simply the smallest containing range.
+//
+// A Span{} is no place: no report point (at = 0), and no extent (end <= tok).
+// Every node of the tree has a real extent: tree_span.
+Span :: struct {
+    at:  Token_Id,
+    tok: Token_Id,
+    end: Token_Id,
+}
+
+span_file :: proc(s: Span) -> string {
+    return build_files[build_tokens[s.at].file].path if s.at != 0 else ""
+}
+
+span_line :: proc(s: Span) -> int {
+    return token_line(build_tokens[s.at]) if s.at != 0 else 0
+}
+
+span_col :: proc(s: Span) -> int {
+    return token_col(build_tokens[s.at]) if s.at != 0 else 0
+}
+
+// "file:line:col" of a span's report point.
+span_location :: proc(s: Span) -> string {
+    return format_location(span_file(s), span_line(s), span_col(s))
+}
+
+// Format a source location as "file:line:col" or "line:col".
+format_location :: proc(file: string, line: int, col: int) -> string {
+    if file != "" {
+        return fmt.tprintf("%s:%d:%d", file, line, col)
+    }
+    return fmt.tprintf("%d:%d", line, col)
+}
+
+// A token's span: its extent the token itself.
+token_span :: proc(tok: Token) -> Span {
+    return Span{at = tok.id, tok = tok.id, end = tok.id + 1}
+}
+
+// Map compound assignment tokens to their binary operator
+compound_assign_op :: proc(kind: Token_Kind) -> (Token_Kind, bool) {
+    #partial switch kind {
+    case .Plus_Equal:        return .Plus, true
+    case .Minus_Equal:       return .Minus, true
+    case .Mul_Equal:         return .Star, true
+    case .Div_Equal:         return .Slash, true
+    case .Mod_Equal:         return .Modulo, true
+    case .And_Equal:         return .Ampersand, true
+    case .Or_Equal:          return .Pipe, true
+    case .Xor_Equal:         return .Tilde, true
+    case .Shift_Left_Equal:  return .Shift_Left, true
+    case .Shift_Right_Equal: return .Shift_Right, true
+    }
+    return .EOF, false
+}
+
+// Re-escape processed literal text for display: the lexer stores '\n' as the
+// raw byte, but a failure message must show the source spelling, not emit a
+// real newline mid-line. Mirrors the lexer's escape set; `quote` is the
+// enclosing quote character, escaped when it appears in the content.
+assert_escape_literal :: proc(text: string, quote: u8) -> string {
+    sb := strings.builder_make()
+    for i in 0..<len(text) {
+        c := text[i]
+        switch {
+        case c == '\n':  strings.write_string(&sb, "\\n")
+        case c == '\t':  strings.write_string(&sb, "\\t")
+        case c == '\r':  strings.write_string(&sb, "\\r")
+        case c == '\\':  strings.write_string(&sb, "\\\\")
+        case c == 0:     strings.write_string(&sb, "\\0")
+        case c == quote: strings.write_byte(&sb, '\\'); strings.write_byte(&sb, quote)
+        case:            strings.write_byte(&sb, c)
+        }
+    }
+    return strings.to_string(sb)
+}
+
+// Display form of one token: char/string literals get their quotes back and
+// their content re-escaped (each lexer escape was 2 source chars and
+// re-escapes to 2 chars, so the display width matches the source width —
+// which the spacing math below relies on).
+assert_token_display :: proc(tok: Token) -> string {
+    #partial switch tok.kind {
+    case .Char:
+        return strings.concatenate({"'", assert_escape_literal(token_text(tok), '\''), "'"})
+    case .String:
+        return strings.concatenate({"\"", assert_escape_literal(token_text(tok), '"'), "\""})
+    }
+    return token_text(tok)
+}
+
+token_range_text :: proc(lo, hi: int) -> string {
+    sb := strings.builder_make()
+    for i in lo..<hi {
+        if i > lo {
+            prev := build_tokens[i - 1]
+            cur  := build_tokens[i]
+            if token_line(cur) != token_line(prev) || token_col(cur) > token_col(prev) + len(assert_token_display(prev)) {
+                strings.write_byte(&sb, ' ')
+            }
+        }
+        strings.write_string(&sb, assert_token_display(build_tokens[i]))
+    }
+    return strings.clone(strings.to_string(sb))
+}
+
+// Outcome of parsing a Number token's text.
+Number_Parse_Error :: enum {
+    None,
+    Invalid,        // malformed text (empty hex digits, garbage)
+    Hex_Overflow,   // well-formed hex but > u64 max — beyond the simple wide-literal tier
+    Dec_Overflow,   // well-formed decimal integer but > u64 max — same tier as Hex_Overflow
+    Bin_Overflow,   // well-formed binary but > u64 max (more than 64 significant bits)
+}
+
+// Parse a Number token's text into both an f64 and an i128 form. Hex literals
+// (`0x...`) and decimal-without-dot integers fill the i128 form exactly;
+// floats fill only the f64 form (i128 is set to the truncating cast for
+// fallback but should never be read when is_float is true). Integer values
+// up to u64 max (`0xFFFFFFFFFFFFFFFF` / `18446744073709551615`) round-trip
+// exactly; anything wider is flagged as Hex_Overflow/Dec_Overflow.
+parse_number_text :: proc(text_in: string) -> (f_val: f64, i_val: i128, err: Number_Parse_Error) {
+    // Strip digit-group separators (`1_000`, `0xFF_FF`, `0b1010_0000`) once, up
+    // front, so every base below parses clean digits.
+    text := text_in
+    has_sep := false
+    for i := 0; i < len(text_in); i += 1 {
+        if text_in[i] == '_' { has_sep = true; break }
+    }
+    if has_sep {
+        b: strings.Builder
+        for i := 0; i < len(text_in); i += 1 {
+            if text_in[i] != '_' { strings.write_byte(&b, text_in[i]) }
+        }
+        text = strings.to_string(b)
+    }
+    if len(text) > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
+        digits := text[2:]
+        // More than 16 significant hex digits doesn't fit in u64. Strip leading
+        // zeros first so `0x000…FFFF...F` isn't false-flagged.
+        clean := digits
+        for len(clean) > 0 && clean[0] == '0' { clean = clean[1:] }
+        if len(clean) > 16 {
+            return 0, 0, .Hex_Overflow
+        }
+        n, parse_ok := strconv.parse_u64_of_base(digits, 16)
+        if !parse_ok {
+            return 0, 0, .Invalid
+        }
+        return f64(n), i128(n), .None
+    }
+    if len(text) > 2 && text[0] == '0' && (text[1] == 'b' || text[1] == 'B') {
+        digits := text[2:]
+        // More than 64 significant binary digits doesn't fit in u64.
+        clean := digits
+        for len(clean) > 0 && clean[0] == '0' { clean = clean[1:] }
+        if len(clean) > 64 {
+            return 0, 0, .Bin_Overflow
+        }
+        n, parse_ok := strconv.parse_u64_of_base(digits, 2)
+        if !parse_ok {
+            return 0, 0, .Invalid
+        }
+        return f64(n), i128(n), .None
+    }
+    // Decimal: all-digits text is an integer literal — accumulate it in i128
+    // so values up to u64 max round-trip exactly (strconv.parse_int caps at
+    // i64 and silently wraps, which turned 18446744073709551615 into -1).
+    // Anything past u64 max is Dec_Overflow, the same precision tier as hex.
+    // Non-digit text (has `.`) falls back to parse_f64 — int_value gets a
+    // truncating cast that shouldn't be read for is_float = true anyway.
+    is_int := len(text) > 0
+    for i := 0; i < len(text); i += 1 {
+        if !(text[i] >= '0' && text[i] <= '9') {
+            is_int = false
+            break
+        }
+    }
+    if is_int {
+        DEC_U64_MAX :: i128(max(u64))
+        n: i128
+        for i := 0; i < len(text); i += 1 {
+            n = n * 10 + i128(text[i] - '0')
+            if n > DEC_U64_MAX {
+                return 0, 0, .Dec_Overflow
+            }
+        }
+        return f64(n), n, .None
+    }
+    f, f_ok := strconv.parse_f64(text)
+    if !f_ok {
+        return 0, 0, .Invalid
+    }
+    return f, i128(f), .None
+}
+
