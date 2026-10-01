@@ -1,6 +1,7 @@
 addrfixedarr
 aliasprobe
 alloff
+arena_cursor
 args_value
 array_field_loop
 array_param_swizzle_neg
@@ -39,6 +40,7 @@ byte_view_wide_neg
 byte_views
 bytewrite_neg
 cachetest
+callername
 callgraph_probe
 capsize
 capsize_neg

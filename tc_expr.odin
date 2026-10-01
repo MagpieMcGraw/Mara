@@ -89,6 +89,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_assert(k, n, env, want, w)
     case .Take:
         return tc_take(k, n, env, want, w)
+    case .Hash_Name:
+        return tc_hash_name(k, n, env, want, w, span)
     case .Size_Of:
         return tc_size_of(k, n, env, want, w)
     case .If_Expr:
@@ -578,14 +580,15 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // defining scope, run at the call.)
     items := make([dynamic]TC_Arg, 0, len(ft.params), context.temp_allocator)
     if len(args) >= count_required_params(ft) && len(args) <= len(ft.params) {
-        for a in args { append(&items, TC_Arg{a, env, w}) }
+        for a in args { append(&items, TC_Arg{a, env, w, {}}) }
         for i := len(args); i < len(ft.params); i += 1 {
             def := ft.params[i].default_node
             if k.t.tag[def] == .Hash_Name {
-                tc_unsupported(k, def, "a default the call site gives")
-                return Type_Error{}, {}
+                // (`#caller_name`: the call site's, written there.)
+                append(&items, TC_Arg{def, env, w, span})
+                continue
             }
-            append(&items, TC_Arg{def, callee_def_scope(ft), .Implied})
+            append(&items, TC_Arg{def, callee_def_scope(ft), .Implied, {}})
         }
     }
     for item, i in items {
@@ -605,9 +608,15 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
                 at, r = k.recv.t, k.recv.r
                 if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i})) }
             } else {
-                at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
+                if item.at != {} {
+                    at, r = tc_hash_name(k, a, a_env, .Either, item.w, item.at)
+                } else {
+                    at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
+                }
                 if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held)) }
             }
+        } else if item.at != {} {
+            at, _ = tc_hash_name(k, a, a_env, .None, item.w, item.at)
         } else {
             at = k.recv.t if a == k.recv.node else tc_check(k, a, a_env)
         }
@@ -942,6 +951,33 @@ TC_Arg :: struct {
     node: Tree_Id,
     env:  ^Type_Scope,
     w:    Written,
+    at:   Span,   // (a default the call site gives: the call's)
+}
+
+// `#caller_name`, `#caller_span`: text — the enclosing fun's name, where it
+// is (a default's: the call's, `span`); `#web` and the targets: a bool.
+tc_hash_name :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, span: Span) -> (Type, Fused) {
+    name := tc_text(Token_Id(k.t.a[n]))
+    b := tc_building(k)
+    if want == .Place || want == .None { b = nil }
+    flag: bool
+    switch name {
+    case "caller_name", "caller_span":
+        t := new_clone(Type_Ptr{elem = Type_Byte{}})
+        if b == nil { return t, {} }
+        text := strings.clone(enclosing_fn_name(env) if name == "caller_name" else span_location(span))
+        return t, {v = graph_text(b, graph_op_value(b, .Global, w, span, t), Const_Value{text = text, is_text = true}), ok = true}
+    case "web":     flag = k.c.target_web
+    case "native":  flag = !k.c.target_web
+    case "windows": flag = k.c.target_os == .Windows
+    case "linux":   flag = k.c.target_os == .Linux
+    case "mac":     flag = k.c.target_os == .Mac
+    case:
+        tc_unsupported(k, n, "this compiler name")
+        return Type_Error{}, {}
+    }
+    if b == nil { return Type_Bool{}, {} }
+    return Type_Bool{}, {v = graph_const(b, w, span, Type_Bool{}, "", Const_Value{int = 1 if flag else 0}), ok = true}
 }
 
 // A construction's arguments: its constructor's params' defaults (a missing
