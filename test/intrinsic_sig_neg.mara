@@ -1,0 +1,12 @@
+module intrinsic_sig_neg
+//@ expect-fail: requires a signed integer type suffix
+
+// An intrinsic's declared signature must fit the LLVM intrinsic it names:
+// `smin` takes signed integers, so an `f32` suffix is rejected here, not by
+// clang. (The checker on the flat tree lost this check at the switch.)
+
+my_min :: fun(a: i64, b: i64) -> i64 { @llvm.smin.f32 }
+
+main :: fun() {
+	print(my_min(1, 2))
+}

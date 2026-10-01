@@ -158,7 +158,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
                 score := 3 if types_name_equal(ft.params[0].type_, lt) && types_name_equal(ft.params[1].type_, rt) else 2
                 if score > best_score {
                     actual := [2]Type{lt, rt}
-                    if mono, _ := auto_monomorphize_for_struct(k.c, f, ft, actual[:], env); mono != "" {
+                    if tc_respecializes(ft, actual[:]) {
                         tc_unsupported_at(k, "an overload specialized to a generic struct's instance")
                         return nil, false
                     }
@@ -235,4 +235,21 @@ tc_unary_overload :: proc(k: ^TC, t: Type, env: ^Type_Scope) -> ^Type_Scope {
         }
     }
     return best
+}
+
+// Whether a fun is called with another instance of a generic struct its
+// param points at (`add(^String(256))` given a ^String(64)): what the old
+// checker specialized the fun for.
+tc_respecializes :: proc(ft: ^Type_Scope, actual: []Type) -> bool {
+    for p, i in ft.params {
+        if i >= len(actual) { break }
+        pt, is_ptr := p.type_.(^Type_Ptr)
+        if !is_ptr { continue }
+        want := as_scope_body(pt.elem)
+        if want == nil || want.generic_base == "" { continue }
+        at, at_ptr := actual[i].(^Type_Ptr)
+        if !at_ptr { continue }
+        if got := as_scope_body(at.elem); got != nil && got.name != want.name && got.generic_base == want.generic_base { return true }
+    }
+    return false
 }

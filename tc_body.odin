@@ -24,6 +24,9 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // checked, and built, before its code.)
     if is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
     tc_check_local_consts(k, sc, body)
+    // (An intrinsic's body is the compiler's: its signature, the LLVM
+    // intrinsic's shape.)
+    if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
     f: ^Graph_Fuse
     if k.gb != nil { f = graph_fuse_begin(k.gb, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
     // (A fun's definitions are checked before its code; a struct's once its

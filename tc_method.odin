@@ -103,8 +103,8 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w:
         if bb := tc_building(k); bb != nil { graph_fuse_drop_since(bb, mark) }
     }
     if failed { return Type_Error{}, {} }
-    call_name := tc_call_name(k, n)
-    return tc_call_core(k, n, call_name, args, env, want, w, dest, temp, temp_span, qual, qual_dispatch)
+    callee_name := tc_call_name(k, n)
+    return tc_call_core(k, n, callee_name, args, env, want, w, dest, temp, temp_span, qual, qual_dispatch)
 }
 
 // An instance's method: x its first argument, when the method takes Self (a
