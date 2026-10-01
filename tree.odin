@@ -472,10 +472,9 @@ tree_pair :: proc(t: ^Tree, n: Tree_Id) -> (Tree_Id, Tree_Id) {
     return Tree_Id(r[0]), Tree_Id(r[1])
 }
 
-// --- the dump and the check ----------------------------------------------
+// --- the dump ----------------------------------------------------------------
 
 // MARA_TREE=dump: each file's tree, one node a line, indented by depth.
-// MARA_TREE=check: that the tree loses nothing (tree_check).
 tree_mode :: proc() -> string {
     return os.get_env("MARA_TREE", context.temp_allocator)
 }

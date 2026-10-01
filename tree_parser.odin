@@ -1,7 +1,5 @@
 package mara
 
-import "core:fmt"
-import "core:os"
 
 // The flat tree's parser (tree.odin): the grammar, recorded as written — no
 // lowering, no desugaring, names and literals their tokens.

@@ -27,8 +27,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
-# The sides, each `name:compiler` (another differential names its own:
-# tcdiff.sh).
+# The sides, each `name:compiler` (another differential can name its own).
 if [ -z "$SIDES" ]; then
   SIDES="old:$BASE new:$WORK"
   [ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }

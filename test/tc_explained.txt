@@ -1,5 +1,0 @@
-# Programs whose build under the new checker differs from the old one's, each
-# difference explained (tcdiff.sh counts them apart from the matches). One per
-# line: the program, then why.
-ctor_param_infer  A field initialized from an untyped ctor param (`origin := cell`) takes the width the body settles the param at (i32), as the test's comment says; the old checker fixed field types before checking the body, so origin was i64.
-field_default_infer_neg  A field declared `k := .Big` takes the type of the one visible enum with that variant, as a local declared so does; the old checker guessed field types from their defaults and couldn't, so it rejected the field (this expect-fail test would change at the switch).

@@ -1,7 +1,6 @@
 package mara
 
 import "core:fmt"
-import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -824,3 +823,137 @@ tc_subtree_lo :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
     for c in kids { lo = min(lo, tc_subtree_lo(k, c)) }
     return lo
 }
+
+// ---------------------------------------------------------------------------
+// What checking produces (Checked_Program), the symbol table it fills, and
+// the state the checker shares with the passes after it (Checker).
+// ---------------------------------------------------------------------------
+
+// The complete output of check_program. Captures everything the type checker
+// knows about the program — type definitions, function signatures, variable
+// types, package info. Downstream consumers (codegen, tools) can read this
+// instead of re-walking the raw AST.
+Checked_Program :: struct {
+    // Shared symbol table (type definitions, constants, generics, etc.)
+    table:          ^SymbolTable,
+
+    errors:         int,
+
+    // Functions — source, foreign, and intrinsic all live here, distinguished
+    // by Checked_Scope.origin. Codegen iterates this map and dispatches on the
+    // origin variant when emitting bodies, declares, and the dynamic loader.
+    functions:      map[string]^Type_Scope,
+    foreign_libs:   map[string]bool,
+
+    // Ordered list of main-package function names (preserves AST order for emission)
+    function_order: [dynamic]string,
+
+    // Materialized call graph (nodes = callable scopes, edges = resolved calls,
+    // + strongly-connected components): an index over the program graph's calls.
+    // See callgraph.odin / design/mara_ask.md §12.
+    call_graph:     Call_Graph,
+
+    // The program graph (graph.odin): built as the program is checked, the
+    // analyses' and the emitter's input.
+    graph:          Program_Graph,
+
+    // Target platform — drives ABI lowering for .C-convention functions.
+    // Inherited from the checker; stamped at check completion.
+    target_os:      Target_OS,
+
+    // The main package name (e.g. "Pounce" or "test_1M"). Used by codegen as
+    // the default home for symbols not attributable to any specific module
+    // — compiler-synthesized helpers, @main, etc. — so per-module emission
+    // has a single canonical "main TU" to drop them into.
+    main_package:   string,
+
+    // Def-use over the program graph (defuse.odin), built per function on the
+    // first `mara ask` flow query that needs it: what the flow views slice.
+    du:             Def_Use,
+}
+
+// ---------------------------------------------------------------------------
+// Symbol table — single source of truth for all type/symbol information.
+// Persists across checking phases; shared between Checker and Checked_Program.
+// ---------------------------------------------------------------------------
+
+SymbolTable :: struct {
+    // Type registries
+    structs:        map[string]^Type_Scope,      // data-layout scopes (struct/class with or without params)
+    funs:           map[string]^Type_Scope,      // callable funs and struct constructors (kind=.Struct + params, or kind=.Fun)
+    enums:          map[string]^Type_Enum,
+    unions:         map[string]^Type_Union,
+    distinct_types: map[string]^Type_Distinct,
+
+    // Error_kind set ID assignment counter — incremented as each
+    // `Name :: error { ... }` is registered. Encoded as the high 16 bits of
+    // each variant's u32 tag so any error_kind variant fits in the open
+    // `err` type with a globally unique value.
+    error_set_counter: int,
+
+    // Name resolution helpers
+    variant_to_enum: map[string]string,
+
+    // Monomorphization cache
+    mono_cache:       map[string]^Type_Scope,        // unified: both data and callable monomorphizations
+    mono_union_cache: map[string]^Type_Union,        // monomorphized union templates (Maybe(int) -> ^Type_Union)
+    fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
+
+    // Config
+    has_scope_allocator: bool,
+    scope_allocator_name: string,        // bare name from source ("Arena_Basic")
+    scope_allocator_type: ^Type_Scope,     // resolved allocator fun (Arena_Basic, Arena_Debug, etc.)
+
+    scope_allocator_size: Maybe(i64),    // the first: the arena's size (a constant: nothing but constants exists before main runs)
+
+    // Shared (DLL/SO) build with `#expose` fn(s) present: the host promises
+    // to pass a real Context at runtime, so arena-using constructs (`var`,
+    // big-array auto-promotion) are permitted inside the DLL without a local
+    // `context.scope_allocator = X` declaration. Gated separately from
+    // has_scope_allocator so the *codegen* path still requires the type to
+    // be declared (errors at codegen if arena calls would be emitted).
+    context_expected_at_runtime: bool,
+
+    // Root type environment (top-level scope)
+    root_env: ^Type_Scope,
+}
+
+// ---------------------------------------------------------------------------
+// Checker state: the shared SymbolTable, what checking produces, and the
+// build's settings. (The checker's own walk state is TC's: tc.odin.)
+// ---------------------------------------------------------------------------
+
+Checker :: struct {
+    table:           ^SymbolTable,
+    checked:         ^Checked_Program,        // output: codegen-ready data
+    errors:          int,
+    current_package: string,
+    target_web:      bool,                // -web build flag, drives #web / #native intrinsics
+    target_shared:   bool,                // -shared build flag — package compiles to a DLL/SO; no `main` required
+    target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
+    analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
+    declared_funs:   map[string]bool,  // bare names of fun declarations (direct calls vs variables)
+    // The materialized call graph (set post-check, after build_call_graph) — its
+    // bottom-up summaries back the escape pass and the `ask` slicer. Points at
+    // checked.call_graph.
+    cg:              ^Call_Graph,
+    // True while resolving a `foreign` declaration's signature — the only
+    // context where `cstring` may be named as a type.
+    in_foreign_sig: bool,
+    // Dispatch and operator overloading (per-package, saved/restored on module boundaries)
+    dispatch_groups:    map[string][dynamic]string,
+    operator_overloads: map[Token_Kind][dynamic]string,
+}
+
+check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
+    // Once per place: two checks can reach one node (a declaration's
+    // literal is checked as a value and as what the declaration holds).
+    if emit_diagnostic_once(.Type_Error, span_location(span), msg, ..args) {
+        c.errors += 1
+    }
+}
+
+check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
+    emit_diagnostic(.Warning, span_location(span), msg, ..args)
+}
+

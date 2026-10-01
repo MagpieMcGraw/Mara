@@ -1,7 +1,6 @@
 package mara
 
 import "core:fmt"
-import "core:strings"
 
 // ============================================================
 // Diagnostic queue — buffered emission with explicit flush
