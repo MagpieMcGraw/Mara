@@ -1468,11 +1468,11 @@ Ask_Module_Info :: struct {
 // counts, local modules first (a stranger's entry point), stdlib after. Modules
 // carrying a `main` are flagged: the cwd's entry points. The hint teaches the
 // next drill-down step.
-ask_module_map :: proc(checked: ^Checked_Program, programs: map[string]^Program, all_files: map[string][dynamic]^Source_File, compiler_dir, root_pkg: string) -> string {
+ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic]^Source_File, compiler_dir, root_pkg: string) -> string {
     // One pass over the deduped definitions -> per-module (flat) counts + a
     // representative file for the local/stdlib split. Tables hold every CHECKED
     // module — local AND the stdlib modules actually pulled in — so this is the
-    // authoritative module set (`programs` carries only the local ones).
+    // authoritative module set.
     Counts :: struct { types, funs: int, file: string }
     by_home: map[string]Counts
     for m in ask_all_definitions(checked.table, "", checked.functions) {
@@ -1486,15 +1486,15 @@ ask_module_map :: proc(checked: ^Checked_Program, programs: map[string]^Program,
     }
 
     // `home_package` IS the module name (`mara.math`, `camera`) — the same key
-    // `all_files` and `programs` use. A home that names no discovered module is
-    // an internal/synthetic package (skip it).
+    // `all_files` uses. A home that names no discovered module is an
+    // internal/synthetic package (skip it).
     infos: [dynamic]Ask_Module_Info
     for hp, c in by_home {
         if hp not_in all_files { continue }
-        prog, in_programs := programs[hp]
+        has_main, _ := module_entries(hp)
         append(&infos, Ask_Module_Info{
             name = hp, types = c.types, funs = c.funs,
-            has_main = in_programs && pkg_has_main(prog),
+            has_main = has_main,
             stdlib   = ask_file_is_stdlib(c.file, compiler_dir),
         })
     }

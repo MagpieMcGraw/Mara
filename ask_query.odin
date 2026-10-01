@@ -167,7 +167,6 @@ ask_scopes :: proc(q: Ask_Query, all_files, files: map[string][dynamic]^Source_F
 // What queries are answered against: the program, checked once.
 Ask_Session :: struct {
     checked:      ^Checked_Program,
-    programs:     map[string]^Program,
     all_files:    map[string][dynamic]^Source_File,
     files:        map[string][dynamic]^Source_File,   // the use-closure: the program's
     compiler_dir: string,
@@ -179,13 +178,13 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // Bare `mara ask` — the module map (the project at a glance). `at`
     // identifies a variable without a name, so it is not the bare form.
     if q.target == "" && q.at == "" {
-        return ask_module_map(s.checked, s.programs, s.all_files, s.compiler_dir, s.pkg), true
+        return ask_module_map(s.checked, s.all_files, s.compiler_dir, s.pkg), true
     }
     // `at <file>:<line>:<col>` with no name — the position query. A point in
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.
     if q.target == "" && strings.count(q.at, ":") == 2 {
-        return ask_at_point(s.programs, s.all_files, &s.checked.graph, q.at)
+        return ask_at_point(&build_tree, s.all_files, &s.checked.graph, q.at)
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)

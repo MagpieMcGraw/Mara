@@ -6,199 +6,33 @@ import "core:strings"
 import "core:path/filepath"
 
 // ---------------------------------------------------------------------------
-// Position → AST node. The lookup behind `mara ask at <file>:<line>:<col>`, and
-// the addressing primitive the other queries should eventually hang off: a name
-// is ambiguous (a module, a struct and three locals can share one), but a point
-// in the source names exactly one node.
+// Position → syntax node. The lookup behind `mara ask at <file>:<line>:<col>`,
+// and the addressing primitive the other queries should eventually hang off:
+// a name is ambiguous (a module, a struct and three locals can share one), but
+// a point in the source names exactly one node.
 //
-// Three steps. Resolve the cursor to a token index (binary search, since the
-// token array is ordered by position). Walk the AST collecting every node whose
-// token extent contains that index. Sort by width — containment is nested, so
-// the narrowest match is the innermost node and the list reads outermost-in.
+// Resolve the cursor to a token index (binary search, since the token array is
+// ordered by position), then take each node of the flat tree whose token
+// extent [first, end) holds it — the tree is a table, so one pass, no walk —
+// widest first: containment is nested, so the list reads outermost → innermost.
 //
-// Extents come from Span.tok/end, recorded by the parser (see cover_span).
-// That is why this works in token indices rather than (line, col) pairs:
-// containment is an integer compare, and token indices carry no text encoding.
-//
-// NOT walked: what the checker lowers a declaration into — its copies are
-// checker-synthesized nodes, not source the user can point at; the cursor
-// lands on the original, which is what it was aimed at.
-// Type_Exprs are also skipped: a separate union, and no extents on it yet.
+// Not listed: a type as written, and a list's part (a param group, a literal's
+// named entry) — the cursor names the statement, definition or expression
+// around them.
 //
 // An expression's type is the graph's: of the operation built where it is
 // written (hit_type). What builds none — a constant's value, a module's or a
 // type's name — shows none.
 // ---------------------------------------------------------------------------
 
-Hit :: struct {
-    label: string,   // node kind, e.g. "Expr_Binary"
-    span:  Span,
-    expr:  Expr,     // set for expression nodes, nil otherwise
-    stmt:  Stmt,     // set for statement nodes, nil otherwise
-}
-
+// Whether a node is one a cursor names.
 @(private="file")
-contains :: proc(s: Span, i: int) -> bool {
-    return s.end > s.tok && int(s.tok) <= i && i < int(s.end)
-}
-
-@(private="file")
-add_expr :: proc(out: ^[dynamic]Hit, label: string, e: Expr, i: int) {
-    if sp := expr_span(e); sp != nil && contains(sp^, i) {
-        append(out, Hit{label = label, span = sp^, expr = e})
+hit_listed :: proc(tag: Tree_Tag) -> bool {
+    #partial switch tag {
+    case .File, .Param_Group, .Generic_Param, .Union_Tag, .Union_Pad, .Union_Size, .Named_Entry:
+        return false
     }
-}
-
-// --- the walk ---------------------------------------------------------------
-//
-// Both switches are exhaustive on purpose: a new AST variant fails to compile
-// here until it is handled, rather than silently becoming a hole the cursor
-// falls through. Children are visited unconditionally rather than only when the
-// parent matched — a node built outside the four parse dispatch points may not
-// have been widened to cover its children, and a missed node is worse than a
-// few wasted comparisons on a one-shot query.
-
-hit_expr :: proc(e: Expr, i: int, out: ^[dynamic]Hit) {
-    if e == nil { return }
-    switch v in e {
-    case ^Expr_Number:           add_expr(out, "Expr_Number", e, i)
-    case ^Expr_String:           add_expr(out, "Expr_String", e, i)
-    case ^Expr_Char:             add_expr(out, "Expr_Char", e, i)
-    case ^Expr_Ident:            add_expr(out, "Expr_Ident", e, i)
-    case ^Expr_Bool:             add_expr(out, "Expr_Bool", e, i)
-    case ^Expr_Skip_Constructor: add_expr(out, "Expr_Skip_Constructor", e, i)
-    case ^Expr_Compiler_Intrinsic: add_expr(out, "Expr_Compiler_Intrinsic", e, i)
-    case ^Expr_Include:          add_expr(out, "Expr_Include", e, i)
-    case ^Expr_Type_Name:        add_expr(out, "Expr_Type_Name", e, i)
-    case ^Expr_Self:             add_expr(out, "Expr_Self", e, i)
-    case ^Expr_Size_Of:          add_expr(out, "Expr_Size_Of", e, i)   // type_expr child skipped
-
-    case ^Expr_Unary:
-        add_expr(out, "Expr_Unary", e, i)
-        hit_expr(v.operand, i, out)
-    case ^Expr_Binary:
-        add_expr(out, "Expr_Binary", e, i)
-        hit_expr(v.left, i, out); hit_expr(v.right, i, out)
-    case ^Expr_Call:
-        add_expr(out, "Expr_Call", e, i)
-        hit_expr(v.qualifier, i, out)
-        for a in v.args { hit_expr(a, i, out) }
-        if v.overrides != nil { hit_expr(v.overrides, i, out) }
-    case ^Expr_Array:
-        add_expr(out, "Expr_Array", e, i)
-        for el in v.elements { hit_expr(el, i, out) }
-    case ^Expr_Index:
-        add_expr(out, "Expr_Index", e, i)
-        hit_expr(v.expr, i, out); hit_expr(v.index, i, out)
-    case ^Expr_Slice:
-        add_expr(out, "Expr_Slice", e, i)
-        hit_expr(v.expr, i, out); hit_expr(v.low, i, out); hit_expr(v.high, i, out)
-    case ^Expr_Struct_Literal:
-        add_expr(out, "Expr_Struct_Literal", e, i)
-        for f in v.fields { hit_expr(f.value, i, out) }
-        hit_expr(v.broadcast_value, i, out)
-    case ^Expr_Field_Access:
-        add_expr(out, "Expr_Field_Access", e, i)
-        hit_expr(v.expr, i, out)
-    case ^Expr_Assert:
-        add_expr(out, "Expr_Assert", e, i)
-        hit_expr(v.cond, i, out)
-    case ^Expr_Take:
-        add_expr(out, "Expr_Take", e, i)
-        hit_expr(v.storage, i, out); hit_expr(v.count_expr, i, out)
-    case ^Expr_If:
-        add_expr(out, "Expr_If", e, i)
-        hit_expr(v.condition, i, out); hit_expr(v.then_expr, i, out); hit_expr(v.else_expr, i, out)
-    case ^Expr_Tuple_Default:
-        add_expr(out, "Expr_Tuple_Default", e, i)
-        hit_expr(v.source, i, out)
-    case ^Expr_Try:
-        add_expr(out, "Expr_Try", e, i)
-        hit_expr(v.inner, i, out)
-    }
-}
-
-hit_stmt :: proc(s: Stmt, i: int, out: ^[dynamic]Hit) {
-    if s == nil { return }
-    label: string
-    switch v in s {
-    case ^Stmt_Assign:              label = "Stmt_Assign"
-    case ^Stmt_Multi_Assign:        label = "Stmt_Multi_Assign"
-    case ^Stmt_Multi_Return_Assign: label = "Stmt_Multi_Return_Assign"
-    case ^Stmt_Decl:                label = "Stmt_Decl"
-    case ^Stmt_Define:              label = "Stmt_Define"
-    case Stmt_Call:                 label = "Stmt_Call"
-    case ^Stmt_If:                  label = "Stmt_If"
-    case ^Stmt_For:                 label = "Stmt_For"
-    case ^Stmt_Scope:               label = "Stmt_Scope"
-    case Stmt_Return:               label = "Stmt_Return"
-    case Stmt_Break:                label = "Stmt_Break"
-    case Stmt_Continue:             label = "Stmt_Continue"
-    case ^Stmt_Defer:               label = "Stmt_Defer"
-    case ^Stmt_Match:               label = "Stmt_Match"
-    case ^Stmt_Foreign:             label = "Stmt_Foreign"
-    case ^Stmt_Union_Def:           label = "Stmt_Union_Def"
-    case ^Stmt_Distinct_Def:        label = "Stmt_Distinct_Def"
-    case ^Stmt_Dispatch_Def:        label = "Stmt_Dispatch_Def"
-    case Stmt_Overload:             label = "Stmt_Overload"
-    case Stmt_Module:               label = "Stmt_Module"
-    }
-    sp := stmt_span(s)
-    if contains(sp, i) {
-        append(out, Hit{label = label, span = sp, stmt = s})
-    }
-
-    // Children. Second switch so the label pass above stays a flat table.
-    #partial switch v in s {
-    case ^Stmt_Assign:
-        hit_expr(v.value, i, out); hit_expr(v.target, i, out); hit_expr(v.slice_cap_expr, i, out)
-    case ^Stmt_Multi_Assign:
-        for a in v.assigns { hit_stmt(a, i, out) }
-    case ^Stmt_Multi_Return_Assign:
-        for t in v.targets { hit_expr(t, i, out) }
-        for e in v.values  { hit_expr(e, i, out) }
-    case ^Stmt_Decl:
-        for e in v.init_values { hit_expr(e, i, out) }
-        hit_expr(v.slice_cap_expr, i, out)
-    case ^Stmt_Define:
-        hit_expr(v.value, i, out)
-    case Stmt_Call:
-        hit_expr(v.expr, i, out)
-    case ^Stmt_If:
-        hit_expr(v.condition, i, out)
-        for b in v.body      { hit_stmt(b, i, out) }
-        for b in v.else_body { hit_stmt(b, i, out) }
-    case ^Stmt_For:
-        hit_stmt(v.init, i, out); hit_stmt(v.post, i, out)
-        hit_expr(v.condition, i, out)
-        hit_expr(v.range_low, i, out); hit_expr(v.range_high, i, out)
-        hit_expr(v.collection, i, out)
-        for b in v.body { hit_stmt(b, i, out) }
-    case ^Stmt_Scope:
-        for b in v.typed_params { hit_expr(b.default_value, i, out) }
-        for b in v.body { hit_stmt(b, i, out) }
-        for d in v.defs { hit_stmt(d, i, out) }   // may overlap body; deduped at output
-    case Stmt_Return:
-        for e in v.values { hit_expr(e, i, out) }
-    case ^Stmt_Defer:
-        for b in v.body { hit_stmt(b, i, out) }
-    case ^Stmt_Match:
-        hit_expr(v.subject, i, out)
-        for arm in v.arms {
-            hit_expr(arm.value, i, out)
-            for b in arm.body { hit_stmt(b, i, out) }
-        }
-    case ^Stmt_Foreign:
-        for d in v.decls {
-            for prm in d.typed_params { hit_expr(prm.default_value, i, out) }
-        }
-    case ^Stmt_Union_Def:
-        for variant in v.variants {
-            for f in variant.fields { hit_expr(f.default_value, i, out) }
-        }
-    case ^Stmt_Distinct_Def:
-        hit_expr(v.default_cap_expr, i, out)
-    }
+    return tag < .Type_Name || tag > .Type_Paren
 }
 
 // --- cursor → token ---------------------------------------------------------
@@ -269,10 +103,10 @@ hit_type :: proc(g: ^Program_Graph, s: Span) -> Type {
     return nil
 }
 
-// Resolve `<file>:<line>:<col>` to the chain of AST nodes containing it.
-// Returns rendered text and whether anything was found.
-ask_at_point :: proc(programs: map[string]^Program,
-                     all_files: map[string][dynamic]^Source_File,
+
+// Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
+// rendered text and whether anything was found.
+ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
                      g: ^Program_Graph, spec: string) -> (string, bool) {
     parts := strings.split(spec, ":")
     defer delete(parts)
@@ -299,28 +133,32 @@ ask_at_point :: proc(programs: map[string]^Program,
     }
 
     // (Token positions print from the file's first.)
-    base := src_file.first_token
-    tokens := build_tokens[base:src_file.end_token]
+    base := int(src_file.first_token)
+    tokens := build_tokens[src_file.first_token:src_file.end_token]
     tok_i, found := token_index_at(tokens, line, col)
     if !found {
         return fmt.tprintf("mara ask: nothing at %s:%d:%d\n", want, line, col), false
     }
 
-    hits: [dynamic]Hit
-    defer delete(hits)
-    for _, prog in programs {
-        for s in prog { if span_file(stmt_span(s)) == src_file.path { hit_stmt(s, int(base) + tok_i, &hits) } }
+    // (The file's nodes holding the cursor; the widest first — an equal one,
+    // the parent: made after its children.)
+    at := base + tok_i
+    hits := make([dynamic]Tree_Id, context.temp_allocator)
+    for i in 1 ..< len(t.tag) {
+        n := Tree_Id(i)
+        first, end := int(t.first[n]), int(t.end[n])
+        if first < base || first >= int(src_file.end_token) || !hit_listed(t.tag[n]) { continue }
+        if first <= at && at < end { append(&hits, n) }
     }
     if len(hits) == 0 {
-        return fmt.tprintf("%s:%d:%d — token '%s', but no AST node covers it\n",
+        return fmt.tprintf("%s:%d:%d — token '%s', but no node covers it\n",
                            want, line, col, token_text(tokens[tok_i])), false
     }
-
-    // Widest first: containment is nested, so this reads outermost → innermost.
+    width :: proc(t: ^Tree, n: Tree_Id) -> int { return int(t.end[n] - t.first[n]) }
     for a in 1 ..< len(hits) {
         h := hits[a]
         b := a - 1
-        for b >= 0 && (hits[b].span.end - hits[b].span.tok) < (h.span.end - h.span.tok) {
+        for b >= 0 && (width(t, hits[b]) < width(t, h) || width(t, hits[b]) == width(t, h) && hits[b] < h) {
             hits[b + 1] = hits[b]; b -= 1
         }
         hits[b + 1] = h
@@ -329,19 +167,19 @@ ask_at_point :: proc(programs: map[string]^Program,
     sb := strings.builder_make()
     fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n\n", want, line, col, token_text(tokens[tok_i]))
     prev: Span
-    for h in hits {
-        if h.span.tok == prev.tok && h.span.end == prev.end { continue }  // defs/body overlap
-        prev = h.span
-        t := ""
-        if h.expr != nil {
+    for n in hits {
+        span := tree_span(t, n)
+        if span.tok == prev.tok && span.end == prev.end { continue }   // (a node and the one it wraps)
+        prev = span
+        ty := ""
+        if t.tag[n] >= .Number {
             // (A `?`'s value is its call's.)
-            at := h.span
-            if try, is_try := h.expr.(^Expr_Try); is_try { at = expr_span(try.inner)^ }
-            t = ask_label(hit_type(g, at))
+            of := span if t.tag[n] != .Try else tree_span(t, Tree_Id(t.a[n]))
+            ty = ask_label(hit_type(g, of))
         }
-        fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", h.label, h.span.tok - base, h.span.end - base,
-                     span_text(src_file.source, h.span))
-        if t != "" { fmt.sbprintf(&sb, "   : %s", t) }
+        fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", fmt.tprint(t.tag[n]), int(span.tok) - base, int(span.end) - base,
+                     span_text(src_file.source, span))
+        if ty != "" { fmt.sbprintf(&sb, "   : %s", ty) }
         fmt.sbprint(&sb, "\n")
     }
     return strings.to_string(sb), true

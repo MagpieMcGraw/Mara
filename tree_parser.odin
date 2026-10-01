@@ -81,8 +81,8 @@ tp_expect :: proc(p: ^Tree_Parser, kind: Token_Kind) -> Token_Id {
 // build's diagnostics are still that parser's.
 tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
-    fmt.eprintf("[%s] tree parse error: ", span_location(Span{at = at}))
-    fmt.eprintfln(msg, ..args)
+    tok := build_tokens[at]
+    emit_diagnostic(.Parse_Error, format_location(p.file, token_line(tok), token_col(tok)), msg, ..args)
 }
 
 tp_skip_newlines :: proc(p: ^Tree_Parser) {

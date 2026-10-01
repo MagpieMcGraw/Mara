@@ -298,25 +298,34 @@ lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
 // Stage 3: parse the cached token streams into per-module merged Programs.
 // ---------------------------------------------------------------------------
 
-parse_target_files :: proc(files: map[string][dynamic]^Source_File) -> (programs: map[string]^Program, errors: map[string]int) {
-    for module, module_files in files {
-        // Sort per-module files by path so the merged program has stable
-        // statement ordering across builds.
-        ordered := slice.clone(module_files[:])
-        slice.sort_by(ordered, proc(a, b: ^Source_File) -> bool { return a.path < b.path })
-
-        merged := new(Program)
-        module_errors := 0
-        for f in ordered {
-            p := parser_init(f)
-            parsed := parse_program(p)
-            for stmt in parsed^ { append(merged, stmt) }
-            module_errors += p.errors + f.lex_errors
-        }
-        programs[module] = merged
-        if module_errors > 0 { errors[module] = module_errors }
+// Every file the build reads, parsed into the flat tree (build_tree: a root
+// per file, in build_files' order); each module's parse errors, its lexer's
+// counted as its files'.
+parse_target_files :: proc() -> (errors: map[string]int) {
+    for f in build_files {
+        _, n := tree_parse_file(f)
+        if n += f.lex_errors; n > 0 { errors[f.module] += n }
     }
-    return programs, errors
+    return
+}
+
+// What kind of build a module is: one defining `main` is an executable's,
+// one exposing a fun (`#expose`) a DLL's.
+module_entries :: proc(module: string) -> (has_main, has_expose: bool) {
+    t := &build_tree
+    for f, i in build_files {
+        if f.module != module { continue }
+        for s in tree_list(t, t.a[t.files[i]]) {
+            #partial switch t.tag[s] {
+            case .Define:
+                value := Tree_Id(t.b[s])
+                if token_text(build_tokens[t.main[s]]) == "main" && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) { has_main = true }
+            case .Expose:
+                has_expose = true
+            }
+        }
+    }
+    return
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,9 +1195,9 @@ main :: proc() {
     lex_target_files(files)
 
     perf_timer_mark(&perf, "parse")
-    programs, parse_errors := parse_target_files(files)
-    // MARA_TREE: the flat tree beside it (design/flat_tree.md), dumped or checked.
-    if mode := tree_mode(); mode != "" { tree_build_and_check(files, parse_errors, mode) }
+    parse_errors := parse_target_files()
+    // MARA_TREE=dump: the flat tree, as parsed.
+    if tree_mode() == "dump" { tree_dump(&build_tree) }
 
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
@@ -1221,34 +1230,22 @@ main :: proc() {
 
     // A build needs an entry point — `main` for an exe or an `#expose`
     // function for a DLL. A package with neither is typically a user
-    // mistake; bail with a hint.
-    pkg_has_expose :: proc(program: ^Program) -> bool {
-        for stmt in program^ {
-            if scope, ok := stmt.(^Stmt_Scope); ok && scope.is_exposed {
-                return true
-            }
-        }
-        return false
-    }
-    // `ask` is read-only static analysis — it has no entry-point requirement
-    // (a library package is a perfectly valid thing to query).
-    if !args.shared && !args.ask {
-        if !pkg_has_main(programs[args.pkg_name]) && !pkg_has_expose(programs[args.pkg_name]) {
-            perf_timer_end(&perf)
-            flush_diagnostics()
-            fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
-            os.exit(1)
-        }
+    // mistake; bail with a hint. (`ask` is read-only static analysis: a
+    // library package is a perfectly valid thing to query.)
+    has_main, has_expose := module_entries(args.pkg_name)
+    if !args.shared && !args.ask && !has_main && !has_expose {
+        perf_timer_end(&perf)
+        flush_diagnostics()
+        fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
+        os.exit(1)
     }
 
     // DLL when the package has no main (or -shared was requested).
-    pkg_shared := args.shared || !pkg_has_main(programs[args.pkg_name])
+    pkg_shared := args.shared || !has_main
 
     perf_timer_mark(&perf, "type check")
-    checked: ^Checked_Program
     // The checker, on the flat tree (design/flat_tree.md).
-    for f in build_files { tree_parse_file(f) }
-    checked = tc_check_program(&build_tree, tc_modules(), args.pkg_name,
+    checked := tc_check_program(&build_tree, tc_modules(), args.pkg_name,
                                web           = args.web,
                                shared        = pkg_shared,
                                target_os     = target_os,
@@ -1264,7 +1261,7 @@ main :: proc() {
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()
-        s := Ask_Session{checked, programs, all_files, files, args.compiler_dir, args.pkg_name}
+        s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
         if args.ask_stdin {
             ask_serve(&s)
             return
