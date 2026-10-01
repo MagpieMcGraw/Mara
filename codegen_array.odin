@@ -134,8 +134,8 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
         tag := fresh_tmp(g)
         emit_load_into(g, tag, tag_ir, tag_ptr)
         for name in v.variants {
-            vst, ok := lookup_struct(g, v.variant_structs[name] or_else name)
-            if !ok || !value_has_partial_array(g, sd_type_scope(vst)) { continue }
+            vst := v.variant_structs[name]
+            if vst == nil || !value_has_partial_array(g, vst) { continue }
             is_it := fresh_tmp(g)
             emit(g, "  %s = icmp eq %s %s, %d", is_it, tag_ir, tag, v.tag_map[name])
             fix_label := fresh_label(g, "reanchor.variant")
@@ -210,7 +210,7 @@ value_has_partial_array :: proc(g: ^Codegen, t: Type) -> bool {
         return value_has_partial_array(g, v.elem)
     case ^Type_Union:
         for name in v.variants {
-            if vst, ok := lookup_struct(g, v.variant_structs[name] or_else name); ok && value_has_partial_array(g, sd_type_scope(vst)) {
+            if vst := v.variant_structs[name]; vst != nil && value_has_partial_array(g, vst) {
                 return true
             }
         }

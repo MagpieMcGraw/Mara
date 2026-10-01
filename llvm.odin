@@ -1644,9 +1644,8 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             if pg.name[op] != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
             return true
         }
-        sname, has := ut.variant_structs[pg.name[op]]
-        st, found := g.checked.table.structs[sname]
-        if !has || !found { return false }
+        st := ut.variant_structs[pg.name[op]]
+        if st == nil { return false }
         emit_memset_zero(g, at, llvm_size(e, pg.type_[dest]))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)

@@ -403,8 +403,8 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
     if ts == nil {
         u, is_union := distinct_base(g.type_[id]).(^Type_Union)
         if !is_union { return fold_fail(fo) != nil }
-        st, has := fo.checked.table.structs[u.variant_structs[g.name[id]] or_else ""]
-        if !has { return fold_fail(fo) != nil }
+        st := u.variant_structs[g.name[id]]
+        if st == nil { return fold_fail(fo) != nil }
         dst.variant = st
         return true
     }

@@ -1315,9 +1315,7 @@ tc_ensure_layout :: proc(k: ^TC, t: Type) {
     case ^Type_Partial_Array: tc_ensure_layout(k, v.elem)
     case ^Type_Distinct:      tc_ensure_layout(k, v.base_type)
     case ^Type_Union:
-        for _, flat in v.variant_structs {
-            if st, ok := k.table.structs[flat]; ok { tc_ensure_layout(k, st) }
-        }
+        for _, st in v.variant_structs { tc_ensure_layout(k, st) }
     }
 }
 

@@ -911,8 +911,8 @@ esc_has_refs :: proc(c: ^Checker, t: Type) -> bool {
     case ^Type_Partial_Array:
         return esc_has_refs(c, bt.elem)
     case ^Type_Union:
-        for _, sname in bt.variant_structs {
-            if st, ok := c.table.structs[sname]; ok && esc_has_refs(c, st) { return true }
+        for _, st in bt.variant_structs {
+            if esc_has_refs(c, st) { return true }
         }
     case ^Type_Scope:
         sd := as_struct_body(bt)

@@ -407,7 +407,7 @@ Type_Union :: struct {
     tag_pad:         Type,               // type of padding between tag and payload (nil = none); reachable as `value.pad`
     variants:        [dynamic]string,    // variant names in declaration order
     tag_map:         map[string]int,     // variant name -> tag value
-    variant_structs: map[string]string,  // variant name -> struct name
+    variant_structs: map[string]^Type_Scope,   // each variant's struct, by its name
     tag_enum:        ^Type_Enum,         // the <Name>_Tag enum; type of each variant struct's prepended tag field
     // Set by the checker when the union is niche-laid-out: the variant whose
     // single pointer IS the union's storage — null means the other, fieldless
@@ -427,8 +427,8 @@ union_niche_variant :: proc(c: ^Checker, ut: ^Type_Union) -> string {
     if ut.tag_type != "" || ut.tag_pad != nil || ut.min_size > 0 { return "" }
     some, has_empty := "", false
     for vname in ut.variants {
-        vst, ok := c.table.structs[ut.variant_structs[vname]]
-        if !ok { return "" }
+        vst := ut.variant_structs[vname]
+        if vst == nil { return "" }
         switch len(vst.fields) {
         case 0:
             has_empty = true
@@ -454,8 +454,8 @@ finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
     ut.niche_some = union_niche_variant(c, ut)
     if ut.niche_some != "" { return }
     for vname in ut.variants {
-        vst, ok := c.table.structs[ut.variant_structs[vname]]
-        if !ok || vst.is_union_variant { continue }   // idempotent
+        vst := ut.variant_structs[vname]
+        if vst == nil || vst.is_union_variant { continue }   // idempotent
         vst.is_union_variant = true
         vst.union_variant_tag = i64(ut.tag_map[vname])
         with_header := make([dynamic]Struct_Type_Field)
@@ -1254,10 +1254,8 @@ byte_slice_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
     case ^Type_Partial_Array:
         return byte_slice_reason(c, v.elem, fmt.tprintf("%s[i]", path))
     case ^Type_Union:
-        for vname, sname in v.variant_structs {
-            if st, ok := c.table.structs[sname]; ok {
-                if r := byte_slice_reason(c, st, path == "" ? vname : fmt.tprintf("%s.%s", path, vname)); r != "" { return r }
-            }
+        for vname, st in v.variant_structs {
+            if r := byte_slice_reason(c, st, path == "" ? vname : fmt.tprintf("%s.%s", path, vname)); r != "" { return r }
         }
     case ^Type_Scope:
         sd := as_struct_body(v)

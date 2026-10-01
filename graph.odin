@@ -1634,9 +1634,7 @@ graph_spread_results :: proc(b: ^Graph_Builder, span: Span, sd: ^Scope_Body, par
 graph_variant_struct :: proc(b: ^Graph_Builder, t: Type, name: string) -> ^Type_Scope {
     ut, is_union := distinct_base(t).(^Type_Union)
     if !is_union || name == "" { return nil }
-    sname, has := ut.variant_structs[name]
-    if !has { return nil }
-    return b.checked.table.structs[sname] or_else nil
+    return ut.variant_structs[name]
 }
 
 // An array's element type.
@@ -4005,8 +4003,8 @@ graph_union :: proc(b: ^Graph_Builder, v: Graph_Decl, parent: Node_Id) {
             name := v.name if !generic else ask_demangle(u.name, u.home_package)
             n := graph_node(b, .Union, written, parent, name, u, v.span)
             for variant in u.variants {
-                st, st_ok := b.checked.table.structs[u.variant_structs[variant]]
-                if !st_ok { graph_fatal(v.span, "variant '%s' of '%s' has no struct", variant, v.name) }
+                st := u.variant_structs[variant]
+                if st == nil { graph_fatal(v.span, "variant '%s' of '%s' has no struct", variant, v.name) }
                 vn := graph_node(b, .Struct, .Explicit, n, variant, st, st.body_span)
                 b.g.scope_node[st] = vn
                 for f in st.fields {

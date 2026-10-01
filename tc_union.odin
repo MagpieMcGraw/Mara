@@ -98,7 +98,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
         k.table.structs[vst.name] = vst
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
-        ut.variant_structs[v.name] = vst.name
+        ut.variant_structs[v.name] = vst
     }
     k.table.unions[flat] = ut
     type_env_set(mod, name, ut)
@@ -123,8 +123,8 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
         if t.tag[opt] == .Union_Pad { ut.tag_pad = tc_type(k, Tree_Id(t.a[opt]), env, span) }
     }
     for vn in tree_list(t, t.b[node]) {
-        vst, found := k.table.structs[ut.variant_structs[tc_name(k, vn)]]
-        if !found { continue }
+        vst := ut.variant_structs[tc_name(k, vn)]
+        if vst == nil { continue }
         for f in tree_list(t, t.b[vn]) {
             ft := tc_type(k, Tree_Id(t.a[f]), env, span)
             append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), type_ = ft, default_node = Tree_Id(t.b[f])})
@@ -330,7 +330,7 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
         k.table.structs[vst.name] = vst
         append(&ut.variants, vname)
         ut.tag_map[vname] = tags[i]
-        ut.variant_structs[vname] = vst.name
+        ut.variant_structs[vname] = vst
     }
     finalize_union_variant_headers(k.c, ut)
     k.table.unions[ut.name] = ut

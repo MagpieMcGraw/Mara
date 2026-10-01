@@ -1205,9 +1205,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if tr.tag[arm] == .Arm_Else && i != len(arms) - 1 { tc_error(k, span, TYPE_LAST_ARM_MATCH) }
     }
     variant_struct :: proc(k: ^TC, ut: ^Type_Union, name: string) -> Type {
-        sn := ut.variant_structs[name] or_else name
-        if vs, ok := k.table.structs[sn]; ok { return vs }
-        if vs, ok := k.table.funs[sn]; ok { return vs }
+        if vs := ut.variant_structs[name]; vs != nil { return vs }
         return nil
     }
     resolved := make([]Graph_Arm, len(arms), context.temp_allocator)

@@ -490,10 +490,10 @@ ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge)
     case ^Type_Distinct:
         add(out, v.base_type, .Base, "")
     case ^Type_Union:
-        // A union depends on its variant structs (looked up via variant_structs).
+        // A union depends on its variant structs.
         for vn in v.variants {
-            sname, ok := v.variant_structs[vn]; if !ok { continue }
-            st, ok2 := table.structs[sname];    if !ok2 { continue }
+            st := v.variant_structs[vn]
+            if st == nil { continue }
             append(out, Ask_Out_Edge{ core = Type(st), kind = .Contains, via = vn, wrap = "" })
         }
     }

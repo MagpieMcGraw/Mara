@@ -402,7 +402,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     ts, is_scope := t.(^Type_Scope)
     vst: ^Type_Scope
-    if variant != "" { vst = k.table.structs[t.(^Type_Union).variant_structs[variant]] }
+    if variant != "" { vst = t.(^Type_Union).variant_structs[variant] }
     if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}

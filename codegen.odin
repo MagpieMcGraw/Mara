@@ -1920,11 +1920,9 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
 union_payload_bytes :: proc(checked: ^Checked_Program, ut: ^Type_Union) -> int {
     tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
     max_bytes := 0
-    for _, sname in ut.variant_structs {
-        if st, ok := checked_struct(checked, sname); ok {
-            size := struct_byte_size_sd(st, checked) - tag_area
-            if size > max_bytes { max_bytes = size }
-        }
+    for _, st in ut.variant_structs {
+        size := struct_byte_size_sd(&st.sd, checked) - tag_area
+        if size > max_bytes { max_bytes = size }
     }
     if ut.min_size > 0 && ut.min_size - tag_area > max_bytes {
         max_bytes = ut.min_size - tag_area

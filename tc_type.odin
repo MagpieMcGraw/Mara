@@ -241,10 +241,7 @@ tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
     }
     alias_flat := resolve_type_name(k.c, alias, "", env)
     if ut, ok := k.table.unions[alias_flat]; ok {
-        if key, has := ut.variant_structs[rest]; has {
-            if st, found := k.table.structs[key]; found { return st }
-            if st, found := k.table.funs[key]; found { return st }
-        }
+        if st := ut.variant_structs[rest]; st != nil { return st }
     }
     parent: ^Scope_Body
     if st, ok := k.table.structs[alias_flat]; ok {

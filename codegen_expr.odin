@@ -683,7 +683,7 @@ gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
     for vname, i in ut.variants {
         emit_label(g, arms[i])
         // (Each variant overlays the union's storage at its start.)
-        if vst, found := g.checked.table.structs[ut.variant_structs[vname]]; found {
+        if vst := ut.variant_structs[vname]; vst != nil {
             gen_print_struct(g, addr, &vst.sd, vname)
         } else {
             codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ut))
