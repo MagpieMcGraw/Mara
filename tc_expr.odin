@@ -87,6 +87,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
         return tc_assert(k, n, env, want, w)
+    case .Take:
+        return tc_take(k, n, env, want, w)
     case .Size_Of:
         return tc_size_of(k, n, env, want, w)
     case .If_Expr:

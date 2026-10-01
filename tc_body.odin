@@ -191,6 +191,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         return
     }
     if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ann, value) }
+    if value != 0 && t.tag[tc_unparen(k, value)] == .Take {
+        tc_decl_take(k, s, target, value, name, ann, env, fields_of)
+        return
+    }
     if value == 0 {
         tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span))
         return

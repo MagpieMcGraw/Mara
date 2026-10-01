@@ -25,6 +25,7 @@ branchok
 broadcast_clones
 bug1
 bug2
+byte_carve_count
 byte_fill_bounds
 byte_slice_index_neg
 byte_slice_read_neg
@@ -83,12 +84,14 @@ esc_defer_neg
 esc_destructure_neg
 esc_flow_ok
 esc_index_param_neg
+esc_let_view_neg
 esc_local_alias_neg
 esc_loop_carried_neg
 esc_loop_return_neg
 esc_match_bind_neg
 esc_match_return_neg
 esc_nested_field_neg
+esc_ok
 esc_param_alias_neg
 esc_param_reassign_neg
 esc_reassign_neg
@@ -96,6 +99,7 @@ esc_recursive_neg
 esc_slice_copy_neg
 esc_slice_field_neg
 escape_struct_lit_neg
+escape_struct_ok
 escape_unknown_char_neg
 escape_unknown_neg
 escapeparam
@@ -123,6 +127,7 @@ init_alias_neg
 init_outparam
 init_shapes_neg
 leak_consumer
+let_big_view
 literal_ctor_args_neg
 localstruct
 mandelbrot
