@@ -198,9 +198,11 @@ It keeps the type representation and replaces the checking.
   - [ ] Generics, modules and imports — modules and `use`, aliases, dispatch and
         overloads, generic funs, methods done (ec78de1, 525d151); generic structs to do
   - [ ] Byte views, takes, the arena, the rest
-  - Progress (2026-09-30): 203 of 288 programs match; 2 more differ as explained
-    (`test/tc_explained.txt`). Done since: enums, unions and match; constants (module
-    and local); byte views; destructures and `?`; foreign blocks; `#if`; if-expressions.
-    To do: `this_program = Program(...)`, method calls, spans of bytes read as types,
-    takes, fallible constructors, generic unions and structs.
+  - Progress (2026-10-01): 264 of 288 programs match; 2 more differ as explained
+    (`test/tc_explained.txt`). Done since 203: method calls (`&x.f()` addresses the
+    receiver), the program's arena, spans of bytes read and written, takes, fallible
+    constructors, qualified type names, `.len` in subscripts, sized slices, named results,
+    broadcast assignment, call-site defaults, `#self`, function types and values, `all v`.
+    To do: generic structs and unions, override blocks, parallel assignment, `using`,
+    `#expose`, and a few one-offs.
 - [ ] 4. The switch
