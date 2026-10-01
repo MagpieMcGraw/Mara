@@ -625,39 +625,52 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     emit_print_value(g, val, ty)
 }
 
+// A struct printed: `P { x: 4, y: 5 }` — its name as written; a union
+// variant's, its tag's (the variant's name), the tag itself not a field.
 gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body) {
+    say :: proc(g: ^Codegen, text: string) {
+        name, n := get_string_literal(g, text)
+        ptr := fresh_tmp(g)
+        emit_string_gep(g, ptr, n, name)
+        emit_printf_void(g, ptr)
+    }
     st_llvm := struct_llvm_name(struct_key(st))
-    // Print "StructName { "
-    header_name, header_len := get_string_literal(g, fmt.tprintf("%s {{ ", struct_key(st)))
-    header_ptr := fresh_tmp(g)
-    emit_string_gep(g, header_ptr, header_len, header_name)
-    emit_printf_void(g, header_ptr)
-
-    for &f, fi in st.fields {
-        if fi > 0 {
-            sep_name, sep_len := get_string_literal(g, ", ")
-            sep_ptr := fresh_tmp(g)
-            emit_string_gep(g, sep_ptr, sep_len, sep_name)
-            emit_printf_void(g, sep_ptr)
-        }
-        // Print "fieldname: "
-        label_name, label_len := get_string_literal(g, fmt.tprintf("%s: ", f.name))
-        label_ptr := fresh_tmp(g)
-        emit_string_gep(g, label_ptr, label_len, label_name)
-        emit_printf_void(g, label_ptr)
-
+    first := first_user_field(st)
+    if st.is_union_variant {
+        tag := fresh_tmp(g)
+        emit_field_gep_into(g, tag, st_llvm, addr, 0)
+        emit_print_at_addr(g, tag, st.fields[0].type_)
+    } else {
+        say(g, print_struct_name(st))
+    }
+    user := st.fields[first:]
+    say(g, " {}" if len(user) == 0 else " { ")
+    for &f, i in user {
+        if i > 0 { say(g, ", ") }
+        say(g, fmt.tprintf("%s: ", f.name))
         gep := fresh_tmp(g)
-        emit_field_gep_into(g, gep, st_llvm, addr, fi)
+        emit_field_gep_into(g, gep, st_llvm, addr, first + i)
         // One field, by its Mara type — scalar, nested struct, or array, each
         // rendered identically to a bare print(field).
         emit_print_at_addr(g, gep, f.type_)
     }
+    if len(user) > 0 { say(g, " }") }
+}
 
-    // Print " }"
-    close_name, close_len := get_string_literal(g, " }")
-    close_ptr := fresh_tmp(g)
-    emit_string_gep(g, close_ptr, close_len, close_name)
-    emit_printf_void(g, close_ptr)
+// A struct's name as print shows it: as written — `P`, `Box(i64)`.
+print_struct_name :: proc(sd: ^Scope_Body) -> string {
+    if sd.generic_base == "" { return sd.source_name if sd.source_name != "" else sd.name }
+    args := make([dynamic]string, 0, len(sd.generic_args), context.temp_allocator)
+    for a in sd.generic_args {
+        if c, is_const := a.(Type_Const_Int); is_const {
+            append(&args, fmt.tprintf("%d", c.value))
+        } else if ab := as_struct_body(a); ab != nil {
+            append(&args, print_struct_name(ab))
+        } else {
+            append(&args, type_name(a))
+        }
+    }
+    return fmt.tprintf("%s(%s)", sd.generic_base, strings.join(args[:], ", ", context.temp_allocator))
 }
 
 // Inline switch that prints the variant name matching `val`, or

@@ -1,0 +1,47 @@
+module print_struct_names
+
+//@ expect-output: P { x: 4 }
+//@ expect-output: Outer { p: P { x: 4 }, inner: Inner { y: 6 } }
+//@ expect-output: L { z: 8 }
+//@ expect-output: Box(i64) { v: 0 }
+//@ expect-output: Rect { w: 2 }
+//@ expect-output: Dot {}
+//@ expect-output: A { x: 9 }
+
+// A printed struct shows its name as written — not its module-qualified
+// one: a nested struct's, a body's own, a generic instance's with its type
+// arguments, a union variant's (its tag, which is no field).
+
+P :: struct { x: i64 = 4 }
+Outer :: struct {
+	p: P
+	Inner :: struct { y: i64 = 6 }
+	inner: Inner
+}
+Box :: struct($T: type) { v: T }
+Shape :: union {
+	Rect { w: i64 = 2 }
+	Dot
+}
+Padded :: union(tag u8, pad [7]u8) {
+	A { x: i64 = 9 }
+	B
+}
+
+main :: fun() {
+	p := P{}
+	print(p)
+	o : Outer
+	print(o)
+	L :: struct { z: i64 = 8 }
+	l : L
+	print(l)
+	b : Box(i64)
+	print(b)
+	r := Shape.Rect{}
+	print(r)
+	d := Shape.Dot{}
+	print(d)
+	a := Padded.A{}
+	print(a)
+}
