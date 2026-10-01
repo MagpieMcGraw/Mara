@@ -914,12 +914,12 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
 
 // Web link step: emcc consumes the .ll directly. EMSDK_PYTHON is set inline
 // so the user's shell environment doesn't need emsdk_env.bat to have run.
-link_web :: proc(ll_path, exe_name: string, checked: ^Checked_Program) -> bool {
+link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program) -> bool {
     lf := build_link_flags(checked, web = true)
     if !lf.ok { return false }
     cmd := strings.concatenate({
         "set EMSDK_PYTHON=", EMSDK_PYTHON, " && ",
-        EMCC_PATH, " ", ll_path, lf.extra_inputs,
+        EMCC_PATH, " ", strings.join(ll_paths, " "), lf.extra_inputs,
         " -o ", exe_name,
         " -Wno-override-module",
         // Pounce's arena alone wants 192MB; let the heap grow rather than
@@ -1278,11 +1278,7 @@ main :: proc() {
 
     perf_timer_mark(&perf, "clang")
     if args.web {
-        // emcc currently invoked with the first .ll only; per-module web
-        // builds aren't supported yet. Falls back to single-file behavior
-        // if there's just one module, which is the common case for the
-        // wasm32 targets we test.
-        if !link_web(ll_paths[0], out_name, checked) { os.exit(1) }
+        if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
         if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { os.exit(1) }
     }
