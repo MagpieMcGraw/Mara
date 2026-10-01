@@ -25,6 +25,7 @@ assertu
 audittest
 autowiden
 bare_ctor_fails_neg
+bare_variant_values
 bigstack_neg
 bigstack_ok
 booltest
@@ -173,6 +174,9 @@ nested_fwd_field
 nested_fwd_fun
 nested_struct_fields
 nestty
+niche_match_forms
+nicheexpr
+nichetest
 nrvo_zero
 operator_calls
 pa_array_stamp

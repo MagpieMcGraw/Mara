@@ -351,6 +351,7 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
 tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
     t := k.t
     if tmpl, is_template := k.templates[tc_name(k, n)]; is_template { return tc_struct_instance(k, n, tmpl, env, span) }
+    if tmpl, is_union := k.union_templates[tc_name(k, n)]; is_union { return tc_union_instance(k, n, tmpl, env, span) }
     for a in tree_list(t, t.a[n]) {
         if tc_is_type_tag(t.tag[a]) { tc_type(k, a, env, span) }
     }

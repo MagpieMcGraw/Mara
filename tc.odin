@@ -57,6 +57,7 @@ TC :: struct {
     dot_bases:     map[Tree_Id]Tree_Id,   // each `.len` in a subscript: the subscript's base
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
+    union_templates: map[string]TC_Template,   // each generic union, by name
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
@@ -668,6 +669,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
             d.form, d.settles = .Dispatch, false
         case value != 0 && t.tag[value] == .Union_Def:
             d.form, d.settles = .Union, false
+            d.generic = tc_union_is_generic(k, value)
             variants := tree_list(t, t.b[value])
             parts := make([]Graph_Decl_Part, len(variants))
             for vn, i in variants { parts[i] = {tc_name(k, vn), tree_span(t, vn)} }
