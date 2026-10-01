@@ -701,6 +701,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
 // table has it.
 tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
     #partial switch k.t.tag[s] {
+    case .Using:    return tc_stmt_kind(k, Tree_Id(k.t.a[s]))   // (its declaration's)
     case .Expr_Stmt:
         if k.t.tag[k.t.a[s]] == .Import { return .Decl }
     case .Decl:     return .Decl

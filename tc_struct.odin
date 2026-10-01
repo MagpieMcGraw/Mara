@@ -112,10 +112,13 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             tc_unsupported(k, n, "a module's member")
             return Type_Error{}, false, 0, false
         }
-        for f in sd.fields {
-            if f.is_using {
-                tc_unsupported(k, n, "a field of a `using` field's struct")
-                return Type_Error{}, false, 0, false
+        // (Its own field, else one a `using` field's struct has.)
+        if field not_in sd.field_map {
+            for f in sd.fields {
+                if f.is_using {
+                    tc_unsupported(k, n, "a field of a `using` field's struct")
+                    return Type_Error{}, false, 0, false
+                }
             }
         }
         if ft := resolve_struct_field(sd, field, k.table); ft != nil { return ft, true, 0, false }
