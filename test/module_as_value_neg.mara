@@ -1,0 +1,10 @@
+module module_as_value_neg
+//@ expect-fail: 'math' is a module, not a value
+
+// A module's name is no value.
+
+use mara.math
+
+main :: fun() {
+	print(math)
+}

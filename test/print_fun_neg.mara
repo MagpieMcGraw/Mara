@@ -1,0 +1,10 @@
+module print_fun_neg
+//@ expect-fail: can't print 'inc': it is a fun
+
+// A fun is a value, but not one print can show: call it to print its result.
+
+inc :: fun(a: i64) -> i64 { return a + 1 }
+
+main :: fun() {
+	print(inc)
+}

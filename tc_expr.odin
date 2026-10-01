@@ -887,6 +887,7 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type
     switch name {
     case "print":
         each(k, args, env, ask, w, span, &vals, &types)
+        for a, i in args { tc_is_value(k, a, types[i], tree_span(k.t, a), printed = true) }
         tc_print_format(k, args, span)
         return Type_Error{}, tc_builtin_op(k, .Print, name, vals[:], want, w, span), true
     case "crash":
@@ -936,6 +937,45 @@ tc_builtin_op :: proc(k: ^TC, op: Op_Kind, name: string, vals: []Operand, want: 
     }
     graph_op(b, op, w, span, nil, name, ..vals)
     return {v = NO_VALUE, ok = true}
+}
+
+// Whether `n`, checked as `t`, is a value where one goes with no type to
+// meet it (a `:=`, print's arguments) — said when it is none: a type's
+// name, a module's, a call that returns nothing; a fun, when printed.
+tc_is_value :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span, printed := false) -> bool {
+    m := tc_unparen(k, n)
+    name := tc_diag_name(k, m)
+    ts, is_scope := t.(^Type_Scope)
+    if is_scope && ts.is_module {
+        tc_error(k, span, TYPE_MODULE_NOT_VALUE, name)
+        return false
+    }
+    // (A type's own name: no local can share it — tc_declarable.)
+    if k.t.tag[m] == .Ident && tc_type_source_name(t) == name {
+        if printed { tc_error(k, span, TYPE_TYPE_NOT_VALUE, name) } else { tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name) }
+        return false
+    }
+    if _, is_void := t.(Type_Void); tc_is_call(k, m) && (t == nil || is_void) {
+        tc_error(k, span, TYPE_CALL_NO_VALUE, name)
+        return false
+    }
+    if printed && is_scope && ts.kind == .Fun {
+        tc_error(k, span, TYPE_PRINT_FUN, name)
+        return false
+    }
+    return true
+}
+
+// The name a type is written by: a struct's, an enum's, a union's, a
+// distinct type's; "" for any other.
+tc_type_source_name :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    if v.kind == .Struct && !v.is_module { return v.source_name }
+    case ^Type_Enum:     return v.source_name
+    case ^Type_Union:    return v.source_name
+    case ^Type_Distinct: return v.source_name
+    }
+    return ""
 }
 
 // print's format: its `%`s, one per value after it.

@@ -1,0 +1,11 @@
+module call_no_value_neg
+//@ expect-fail: 'nothing()' returns no value
+
+// A call to a fun with no results has no value to declare.
+
+nothing :: fun() { }
+
+main :: fun() {
+	x := nothing()
+	print(1)
+}

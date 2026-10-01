@@ -1,0 +1,12 @@
+module type_as_value_neg
+//@ expect-fail: 'P' is a type, not a value
+
+// A type's name where a value goes: an error at the checker, not a
+// codegen failure.
+
+P :: struct { x: i64 }
+
+main :: fun() {
+	p := P
+	print(1)
+}
