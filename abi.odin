@@ -3,23 +3,16 @@ package mara
 import "core:strings"
 
 // =============================================================================
-// ABI calling convention and per-platform lowering.
+// The C calling convention, per platform: how a foreign function's arguments
+// and result cross the boundary — Linux and macOS by SysV AMD64, Windows by
+// Win64. (A Mara function takes its aggregates by address and returns them
+// through a hidden slot on every platform: the emitter's own rule.)
 //
-// Two axes:
-//   - Convention: .Mara (default) vs .C (cross-language boundary)
-//   - Platform:   Linux (SysV AMD64), Windows (Win64), Web (wasm32)
-//
-// classify_arg / classify_ret are the entry points. They dispatch by
-// convention, then (for .C) by platform.
-//
-// Phase 1: pure functions over `Type`. No callers yet — the codegen layers
-// that consume Lowering live in later phases.
+// classify is the entry point: pure, over `Type`.
 // =============================================================================
 
+// A function's convention: Mara's, or C's (a foreign one's).
 Calling_Conv :: enum { Mara, C }
-
-// Target_OS is defined in type_checker.odin: { Windows, Linux, Mac }.
-// macOS uses SysV AMD64 (same as Linux on x86-64).
 
 // Per-eightbyte classification, SysV style. Win64 has no analogue —
 // its rule is purely size-based.
@@ -49,57 +42,12 @@ Lowering_Indirect :: struct {
 }
 
 // -----------------------------------------------------------------------------
-// Public entry points
+// The entry point. Arguments and results share the rules on both SysV and
+// Win64; their IR differs (an Indirect result is an sret param and void, an
+// Indirect argument a byval ptr), not their classification.
 // -----------------------------------------------------------------------------
 
-classify_arg :: proc(t: Type, conv: Calling_Conv, os: Target_OS) -> Lowering {
-    return classify(t, conv, os)
-}
-
-// Returns and args share classification rules on both SysV and Win64.
-// IR emission differs (Indirect return → sret param + void; Indirect arg →
-// byval ptr param), but the classifier itself doesn't care.
-classify_ret :: proc(t: Type, conv: Calling_Conv, os: Target_OS) -> Lowering {
-    return classify(t, conv, os)
-}
-
-classify :: proc(t: Type, conv: Calling_Conv, os: Target_OS) -> Lowering {
-    switch conv {
-    case .Mara: return classify_mara(t, os)
-    case .C:    return classify_c(t, os)
-    }
-    return Lowering_Direct{}
-}
-
-// -----------------------------------------------------------------------------
-// .Mara convention: everything by pointer / sret.
-//
-// Same on all platforms today. Per-platform branches are reserved here so
-// that we can later specialize (e.g. pack small structs into registers on
-// Linux for faster internal calls) without restructuring the dispatch.
-// -----------------------------------------------------------------------------
-
-classify_mara :: proc(t: Type, os: Target_OS) -> Lowering {
-    switch os {
-    case .Linux:   return classify_mara_uniform(t)
-    case .Windows: return classify_mara_uniform(t)
-    case .Mac:     return classify_mara_uniform(t)
-    }
-    return classify_mara_uniform(t)
-}
-
-classify_mara_uniform :: proc(t: Type) -> Lowering {
-    if is_aggregate(t) {
-        return Lowering_Indirect{}
-    }
-    return Lowering_Direct{parts = scalar_parts(t)}
-}
-
-// -----------------------------------------------------------------------------
-// .C convention: platform dispatch.
-// -----------------------------------------------------------------------------
-
-classify_c :: proc(t: Type, os: Target_OS) -> Lowering {
+classify :: proc(t: Type, os: Target_OS) -> Lowering {
     switch os {
     case .Linux:   return classify_sysv(t)
     case .Mac:     return classify_sysv(t)  // macOS on x86-64 uses SysV
@@ -381,9 +329,6 @@ direct_single :: proc(ir: string) -> Lowering {
 //   - Arg Direct[2 parts]     → `<p0>, <p1>` (two positional args)
 //   - Arg Indirect            → `ptr byval(<argty>)` (caller-allocated copy)
 build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> string {
-    conv := Calling_Conv.C
-    if cs != nil { conv = cs.calling_conv }
-
     parts: [dynamic]string
     defer delete(parts)
 
@@ -394,7 +339,7 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     if !has_void_return { ret_single = cs.cg_returns[0] }
     if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     if !has_void_return {
-        ret_low := classify_ret(ret_single, conv, os)
+        ret_low := classify(ret_single, os)
         switch r in ret_low {
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
@@ -407,7 +352,7 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
 
     // Argument lowering.
     for p in cs.cg_params {
-        plow := classify_arg(p.type_, conv, os)
+        plow := classify(p.type_, os)
         switch pp in plow {
         case Lowering_Direct:
             for part in pp.parts {

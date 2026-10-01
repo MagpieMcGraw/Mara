@@ -2659,7 +2659,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
 @(private="file")
 llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
     g := e.g
-    conv, os := callee.calling_conv, g.checked.target_os
+    os := g.checked.target_os
     if len(ops) != len(callee.cg_params) { e.note = "a foreign call's variadic arguments"; return false }
     args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
     // The result: none, returned, or in a hidden slot (first).
@@ -2670,7 +2670,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
     ret_low: Lowering
     if result != nil {
         if !llvm_scalar(result) && !llvm_aggregate(result) { e.note = "result type"; return false }
-        ret_low = classify_ret(result, conv, os)
+        ret_low = classify(result, os)
         switch r in ret_low {
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
@@ -2695,7 +2695,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             }
             if !ok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
         }
-        switch pl in classify_arg(pt, conv, os) {
+        switch pl in classify(pt, os) {
         case Lowering_Direct:
             if is_aggregate(pt) {
                 for part, k in pl.parts {
