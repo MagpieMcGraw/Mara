@@ -336,3 +336,184 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     tc_extract(k, sc.nested[:], tmpl.pkg, false, nested = true)
     return ft
 }
+
+// A generic struct's params, as the old parser lowered them: its `$T: type`
+// and `$N: int` first; then each param that is a type (`item: $T`), a shape
+// (`a: ~Arena`), or a value its fields' types use (`n: i64` in `[n]T`), by
+// the param's name; then any other `$T` its params or fields name. The rest
+// are its constructor's.
+TC_Generic_Param :: struct {
+    name:  string,
+    value: bool,      // a value (`n: i64`, `$N: int`), not a type
+    shape: bool,      // `~T`
+    def:   Tree_Id,   // its default
+}
+
+tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_Param, promoted: map[string]bool) {
+    t := k.t
+    v := scope_view(t, node)
+    has :: proc(gps: []TC_Generic_Param, name: string) -> bool {
+        for g in gps { if g.name == name { return true } }
+        return false
+    }
+    for g in v.generics {
+        append(&gps, TC_Generic_Param{name = tc_name(k, g), value = tc_text(Token_Id(t.a[g])) != "type"})
+    }
+    dropped := make(map[string]bool, context.temp_allocator)   // (a `$T` a param named)
+    for g in v.params {
+        pv := params_view(t, g)
+        if pv.type_ == 0 { continue }
+        for name, i in pv.names {
+            pn := tc_text(name)
+            def := pv.values[i] if i < len(pv.values) else 0
+            #partial switch t.tag[pv.type_] {
+            case .Type_Tilde:
+                append(&gps, TC_Generic_Param{name = pn, shape = true, def = def})
+                promoted[pn] = true
+            case .Type_Dollar:
+                append(&gps, TC_Generic_Param{name = pn})
+                dropped[tc_text(Token_Id(t.a[pv.type_]))] = true
+                promoted[pn] = true
+            case .Type_Name, .Type_Keyword:
+                for s in v.body {
+                    if t.tag[s] == .Decl && tc_type_refs(k, decl_view(t, s).type_, pn) {
+                        append(&gps, TC_Generic_Param{name = pn, value = true, def = def})
+                        promoted[pn] = true
+                        break
+                    }
+                }
+            }
+        }
+    }
+    // (A `$T` written anywhere else in its params or fields.)
+    dollars :: proc(k: ^TC, n: Tree_Id, gps: ^[dynamic]TC_Generic_Param, dropped: map[string]bool) {
+        if n == 0 { return }
+        t := k.t
+        #partial switch t.tag[n] {
+        case .Type_Dollar:
+            name := tc_text(Token_Id(t.a[n]))
+            if !dropped[name] && !has(gps[:], name) { append(gps, TC_Generic_Param{name = name}) }
+        case .Type_Pointer, .Type_Paren:
+            dollars(k, Tree_Id(t.a[n]), gps, dropped)
+        case .Type_Slice, .Type_Partial, .Type_Array:
+            dollars(k, Tree_Id(t.b[n]), gps, dropped)
+        case .Type_Generic:
+            for a in tree_list(t, t.a[n]) { dollars(k, a, gps, dropped) }
+        }
+    }
+    for g in v.params { dollars(k, params_view(t, g).type_, &gps, dropped) }
+    for s in v.body { if t.tag[s] == .Decl { dollars(k, decl_view(t, s).type_, &gps, dropped) } }
+    return
+}
+
+// `Name(args)`, Name a generic struct: its instance — its params bound to
+// the arguments (a value's, a constant), made once.
+tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scope, span: Span) -> Type {
+    t := k.t
+    name := tc_name(k, n)
+    if t.tag[tmpl.node] != .Struct_Def {
+        tc_unsupported(k, n, "a generic fun named as a type")
+        return Type_Error{}
+    }
+    gps, promoted := tc_struct_generics(k, tmpl.node)
+    args := tree_list(t, t.a[n])
+    targs := make([dynamic]Type, context.temp_allocator)
+    for a, i in args {
+        if i >= len(gps) { break }
+        gp := gps[i]
+        if gp.shape {
+            tc_unsupported(k, a, "a shape's argument")
+            return Type_Error{}
+        }
+        if !gp.value {
+            append(&targs, tc_type(k, a, env, span))
+            continue
+        }
+        // (A value: a number, a constant, an operation of them.)
+        at := a
+        if t.tag[a] == .Type_Name {
+            kc := k.consts[tc_name(k, a)] or_else nil
+            if kc == nil {
+                tc_unsupported(k, a, "a generic's size known at run time")
+                return Type_Error{}
+            }
+            at = kc.value
+        }
+        v, known := tc_comptime_int(k, at, env)
+        if !known {
+            tc_unsupported(k, a, "a generic's size known at run time")
+            return Type_Error{}
+        }
+        append(&targs, Type_Const_Int{value = int(v)})
+    }
+    // (The params it leaves off: their defaults.)
+    for i := len(targs); i < len(gps); i += 1 {
+        gp := gps[i]
+        if gp.def == 0 { break }
+        if !gp.value {
+            tc_unsupported(k, gp.def, "a generic type param's default")
+            return Type_Error{}
+        }
+        v, known := tc_comptime_int(k, gp.def, env)
+        if !known { break }
+        append(&targs, Type_Const_Int{value = int(v)})
+    }
+    if len(targs) != len(gps) || len(args) > len(gps) {
+        tc_error(k, span, TYPE_EXPECTS_TYPE_ARGUMENT, name, len(gps), len(args))
+        return Type_Error{}
+    }
+    mangled := mangle_generic_name(name, targs[:])
+    if st, made := k.table.mono_cache[mangled]; made { return st }
+    subst := make(map[string]Type)
+    for gp, i in gps { subst[gp.name] = targs[i] }
+    return tc_instantiate_struct(k, tmpl, subst, targs[:], promoted, mangled)
+}
+
+// A generic struct's instance: its type (named for its arguments), its
+// params bound in it; then its body — its fields, its methods — checked as
+// its own (its nodes salted: tc_sid), its graph built apart from where it is
+// named. Its init and methods are extracted with the main module's.
+tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, targs: []Type,
+                              promoted: map[string]bool, mangled: string) -> ^Type_Scope {
+    outer: ^Graph_Fuse
+    if k.gb != nil { outer, k.gb.fuse = k.gb.fuse, nil }
+    defer if k.gb != nil { k.gb.fuse = outer }
+    tr := k.t
+    v := scope_view(tr, tmpl.node)
+    span := tree_span(tr, tmpl.def)
+    st := new(Type_Scope)
+    st.name, st.source_name, st.home_package = make_flat_name(tmpl.pkg, mangled), mangled, tmpl.pkg
+    st.kind, st.node = .Struct, tmpl.node
+    st.generic_base = tc_name(k, tmpl.def)
+    append(&st.generic_args, ..targs)
+    st.parent_scope, st.decl_env = tmpl.env, tmpl.env
+    st.has_parens = build_tokens[tr.main[tmpl.node] + 1].kind == .Left_Paren
+    st.is_packed = v.packed != 0
+    k.table.mono_cache[mangled] = st
+    k.table.funs[st.name] = st
+    type_env_set(k.root, mangled, st)
+    for name, bound in subst { type_env_set(st, name, bound) }
+    saved_subst, saved_pkg := k.subst, k.pkg
+    k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
+    defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg
+    saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
+    k.instance_count += 1
+    k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
+    defer k.salt, k.salt_lo, k.salt_hi = saved_salt, saved_lo, saved_hi
+    // (Its constructor's params: those no generic's.)
+    for g in v.params {
+        pv := params_view(tr, g)
+        for pn, i in pv.names {
+            if promoted[tc_text(pn)] { continue }
+            def := pv.values[i] if i < len(pv.values) else 0
+            pt := tc_param_type(k, tc_text(pn), pv.type_, def, tmpl.env, span)
+            append(&st.params, Struct_Type_Field{name = tc_text(pn), type_ = pt, default_node = def})
+        }
+    }
+    build_param_map(st)
+    k.scope_of[st] = len(k.scopes)
+    append(&k.struct_instances, len(k.scopes))
+    append(&k.scopes, new_clone(TC_Scope{ts = st, def = tmpl.def, node = tmpl.node, env = tmpl.env, subst = subst, synthetic = true}))
+    tc_struct_ensure(k, st)
+    return st
+}

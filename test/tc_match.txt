@@ -129,6 +129,7 @@ for_each_elements
 fordo
 generic_local_const
 generic_nested_funs
+generic_struct_methods
 generic_untyped_args
 hoisttest
 idxelem
