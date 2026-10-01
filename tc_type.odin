@@ -200,7 +200,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
     case .Size_Of:
         st, measured := k.size_of[n]
         if !names || !measured { return 0, false }
-        return i64(elem_byte_size(llvm_type_from_checker(st), k.checked)), true
+        return i64(type_size(st)), true
     case .Field:
         // (An array's capacity is its type's; a fixed one's length too.)
         field := tc_text(Token_Id(t.b[n]))

@@ -119,7 +119,7 @@ classify_win64 :: proc(t: Type) -> Lowering {
     if !is_aggregate(t) {
         return Lowering_Direct{parts = scalar_parts(t)}
     }
-    size := checker_type_byte_size(t)
+    size := type_size(t)
     switch size {
     case 1: return direct_single("i8")
     case 2: return direct_single("i16")
@@ -140,7 +140,7 @@ classify_sysv :: proc(t: Type) -> Lowering {
     if !is_aggregate(t) {
         return Lowering_Direct{parts = scalar_parts(t)}
     }
-    size := checker_type_byte_size(t)
+    size := type_size(t)
     if size > 16 {
         return Lowering_Indirect{}
     }
@@ -191,23 +191,18 @@ walk_leaf_fields :: proc(t: Type, start, length: int, base_offset: int, cls: ^AB
     #partial switch v in t {
     case ^Type_Scope:
         if v.kind == .Struct {
-            offset := base_offset
+            l := Layout{0, 1}
             for &f in v.fields {
-                ft := f.type_
-                a := type_alignment(ft)
-                if !v.is_packed && a > 0 && offset % a != 0 {
-                    offset += a - (offset % a)
+                fl := type_layout(f.type_)
+                offset := base_offset + layout_field(&l, fl, v.is_packed)
+                if offset < eb_end && offset + fl.size > start {
+                    walk_leaf_fields(f.type_, start, length, offset, cls)
                 }
-                fsize := checker_type_byte_size(ft)
-                if offset < eb_end && offset + fsize > start {
-                    walk_leaf_fields(ft, start, length, offset, cls)
-                }
-                offset += fsize
             }
             return
         }
     case ^Type_Fixed_Array:
-        elem_size := checker_type_byte_size(v.elem)
+        elem_size := type_size(v.elem)
         if elem_size == 0 { return }
         for i in 0..<v.size {
             elem_off := base_offset + i * elem_size
@@ -301,25 +296,20 @@ count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (
     #partial switch v in t {
     case ^Type_Scope:
         if v.kind == .Struct {
-            offset := base_offset
+            l := Layout{0, 1}
             for &f in v.fields {
-                ft := f.type_
-                a := type_alignment(ft)
-                if !v.is_packed && a > 0 && offset % a != 0 {
-                    offset += a - (offset % a)
-                }
-                fsize := checker_type_byte_size(ft)
-                if offset < eb_end && offset + fsize > start {
-                    fc, dc := count_floats_doubles(ft, start, length, offset)
+                fl := type_layout(f.type_)
+                offset := base_offset + layout_field(&l, fl, v.is_packed)
+                if offset < eb_end && offset + fl.size > start {
+                    fc, dc := count_floats_doubles(f.type_, start, length, offset)
                     floats  += fc
                     doubles += dc
                 }
-                offset += fsize
             }
             return
         }
     case ^Type_Fixed_Array:
-        elem_size := checker_type_byte_size(v.elem)
+        elem_size := type_size(v.elem)
         if elem_size == 0 { return }
         for i in 0..<v.size {
             elem_off := base_offset + i * elem_size
@@ -442,39 +432,3 @@ direct_ir_for_return :: proc(parts: []string) -> string {
     return strings.concatenate({"{ ", joined, " }"})
 }
 
-// Natural alignment for a checker type. Mirrors C/LLVM rules.
-type_alignment :: proc(t: Type) -> int {
-    #partial switch v in t {
-    case Type_F64, Type_Infer_Float:
-        return 8
-    case Type_Numeric:
-        if v.bits == 0 { return 8 }
-        return v.bits / 8
-    case Type_Infer_Int, ^Type_Ptr, Type_CString,
-         Type_Const_Int,
-         ^Type_Union, Type_Any, Type_Error:
-        return 8
-    case Type_Bool, Type_Utf8, Type_Byte:
-        return 1
-    case ^Type_Slice, ^Type_Partial_Array:
-        return slice_header_align
-    case ^Type_Scope:
-        if v.kind == .Struct {
-            if v.is_packed { return 1 }  // #packed — byte-aligned, no padding
-            max_a := 1
-            for &f in v.fields {
-                a := type_alignment(f.type_)
-                if a > max_a { max_a = a }
-            }
-            return max_a
-        }
-        return 8
-    case ^Type_Fixed_Array:
-        return type_alignment(v.elem)
-    case ^Type_Enum:
-        return checker_type_byte_size(t)
-    case ^Type_Distinct:
-        return type_alignment(v.base_type)
-    }
-    return 8
-}

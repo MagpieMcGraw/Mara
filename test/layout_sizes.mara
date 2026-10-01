@@ -1,0 +1,48 @@
+module layout_sizes
+//@ expect-output: small 2
+//@ expect-output: holder 48
+//@ expect-output: names 96
+//@ expect-output: outer 6
+
+// One layout for every size: LLVM's. The checker's own counted every union
+// as 8 bytes (a struct holding a u8-tagged one was 16, not 2; a byte view of
+// a 48-byte struct was bounds-checked as 16). Codegen's skipped a partial
+// array's end padding (three `[..5]u8` were 87 bytes, not 96) and aligned a
+// #packed struct by its fields, not to a byte.
+
+use mara.core
+
+Color :: union(tag u8) { Red = 1 Green = 2 Blue = 3 }
+
+Small :: struct {
+	a: u8
+	c: Color
+}
+
+Big :: union(tag u8) { A = 1 { a: i64 b: i64 c: i64 d: i64 } B = 2 { x: i64 } }
+
+Holder :: struct {
+	n: i64
+	u: Big
+}
+
+Names :: struct {
+	all: [3][..5]u8
+}
+
+Inner :: #packed struct {
+	a: u8
+	b: u32
+}
+
+Outer :: struct {
+	c: u8
+	i: Inner
+}
+
+main :: fun() {
+	print("small %", size_of(Small))
+	print("holder %", size_of(Holder))
+	print("names %", size_of(Names))
+	print("outer %", size_of(Outer))
+}

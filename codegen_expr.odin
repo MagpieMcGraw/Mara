@@ -200,7 +200,7 @@ is_ir_float :: proc(t: string) -> bool {
 // len == cap: the LAST byte [cap-1] must be 0 (and cap > 0). No terminator: a
 // loud crash with the location. The data pointer, checked.
 emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span: Span) -> string {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     at_len_lbl  := fresh_label(g, "cstring.at_len")
     at_end_lbl  := fresh_label(g, "cstring.at_end")
     end_ok_lbl  := fresh_label(g, "cstring.end_ok")
@@ -864,7 +864,7 @@ gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
     emit_printf_void(g, emit_fmt_ptr(g, "["))
     data := emit_array_data(g, h)
     n := emit_array_len(g, h)
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     elem_ir := llvm_type_from_checker(elem_ty)
 
     idx_ptr := fresh_tmp(g)

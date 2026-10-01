@@ -1,0 +1,23 @@
+module byte_view_union_bounds
+
+// A byte view's bounds check is the viewed type's whole size. A struct
+// holding a union was sized by the checker's own table, which counted every
+// union as 8 bytes: a 48-byte Holder read from a 16-byte buffer passed a
+// check for 16 and copied 48. Ends at the failure (the run differential
+// compares it).
+
+use mara.core
+
+Big :: union(tag u8) { A = 1 { a: i64 b: i64 c: i64 d: i64 } B = 2 { x: i64 } }
+
+Holder :: struct {
+	n: i64
+	u: Big
+}
+
+main :: fun() {
+	bytes : [..16]byte
+	bytes.len = 16
+	h : Holder = bytes[0]
+	print("unreached: n=%", h.n)
+}

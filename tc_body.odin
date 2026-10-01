@@ -1132,12 +1132,12 @@ tc_note_decl :: proc(k: ^TC, name: string, t: Type, span: Span, take: bool) {
 }
 
 // A value too big for the stack, with no scope arena to hold it: an error
-// (check_storage_sizes). Analysis alone runs no code.
+// Analysis alone runs no code.
 tc_storage_sizes :: proc(k: ^TC, decls: []TC_Decl_Note) {
     if k.c.analysis_only || k.table.has_scope_allocator || k.table.context_expected_at_runtime { return }
     for d in decls {
         if !d.take && routes_to_arena(d.t) {
-            tc_error(k, d.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, d.name, checker_type_byte_size(d.t))
+            tc_error(k, d.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, d.name, type_size(d.t))
         }
     }
 }

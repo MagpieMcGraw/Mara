@@ -29,26 +29,26 @@ emit_slice_alloca :: proc(g: ^Codegen, result: string) {
 // narrower than i64. The caller does the GEP and passes the result here;
 // this lets sites that reuse the gep continue to do so.
 // Store at the slice header's natural len/cap width. Caller must pass
-// the value already at slice_layout.len_ir / cap_ir width. Integer
+// the value already at SLICE_LEN_IR / cap_ir width. Integer
 // literals are width-agnostic in IR so they pass through unchanged.
 emit_typed_store_len :: proc(g: ^Codegen, val: string, field_gep: string) {
-    emit_store(g, slice_layout.len_ir, val, field_gep)
+    emit_store(g, SLICE_LEN_IR, val, field_gep)
 }
 
 emit_typed_store_cap :: proc(g: ^Codegen, val: string, field_gep: string) {
-    emit_store(g, slice_layout.cap_ir, val, field_gep)
+    emit_store(g, SLICE_LEN_IR, val, field_gep)
 }
 
 // Load len/cap from `field_gep` at natural width — no zext to i64.
-// Callers operate at slice_layout.len_ir / cap_ir (today: i32). Sites
+// Callers operate at SLICE_LEN_IR / cap_ir (today: i32). Sites
 // that genuinely need a wider arithmetic context insert an explicit
 // conversion at use rather than paying for the round-trip here.
 emit_typed_load_len :: proc(g: ^Codegen, result: string, field_gep: string) {
-    emit_load_into(g, result, slice_layout.len_ir, field_gep)
+    emit_load_into(g, result, SLICE_LEN_IR, field_gep)
 }
 
 emit_typed_load_cap :: proc(g: ^Codegen, result: string, field_gep: string) {
-    emit_load_into(g, result, slice_layout.cap_ir, field_gep)
+    emit_load_into(g, result, SLICE_LEN_IR, field_gep)
 }
 
 // After a raw copy of a `t` value to `ptr`, point every partial array inside it
@@ -152,7 +152,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
 // reanchor_partial_arrays over `count` consecutive `elem` slots of array type
 // `arr_ir` at `base` — a runtime loop, so a big array doesn't unroll.
 reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: string, base: string, count: string) {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     idx_ptr := fresh_tmp(g)
     emit_alloca(g, idx_ptr, w)
     emit_store(g, w, "0", idx_ptr)
@@ -257,7 +257,7 @@ emit_slice_header_at :: proc(g: ^Codegen, at: string, data_ptr: string, len_val:
 // The address of `count` elements of `size` bytes at byte `offset` of the
 // buffer at data_ptr, cap_val bytes long — checked to lie within it.
 emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: string, size: int, label: string) -> string {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, offset, count, cap_val, size)
@@ -283,10 +283,10 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: strin
 // buffer of cap_val bytes: off past the cap, or n more than fit in the room
 // after it. Compared unsigned, a negative offset or count is outside too,
 // and nothing wraps — no `off + n * size`, which let -1 + 4 through and a
-// huge count's product wrap small. All at slice_layout.len_ir. The i1 is
+// huge count's product wrap small. All at SLICE_LEN_IR. The i1 is
 // true when outside.
 emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) -> string {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     past := fresh_tmp(g)
     emit(g, "  %s = icmp ugt %s %s, %s", past, w, off, cap_val)
     room := fresh_tmp(g)
@@ -304,10 +304,10 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) 
 }
 
 // Bounds check for byte-buffer access at offset [low, low+size). Operates
-// at slice_layout.len_ir — caller has already normalised low and cap_val
+// at SLICE_LEN_IR — caller has already normalised low and cap_val
 // to that width via emit_byte_offset_ptr / resolve_byte_target.
 emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, low, fmt.tprintf("%d", size), cap_val)
@@ -327,7 +327,7 @@ emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, s
 // (an integer of 16 bits or more; anything else is itself).
 emit_bswap_value :: proc(g: ^Codegen, val: string, t: Type) -> string {
     if !is_swappable_integer(t) { return val }
-    bits := checker_type_byte_size(t) * 8
+    bits := type_size(t) * 8
     if bits < 16 { return val }
     g.bswap_intrinsics[bits] = true
     swapped := fresh_tmp(g)
@@ -341,7 +341,7 @@ emit_bswap_value :: proc(g: ^Codegen, val: string, t: Type) -> string {
 //
 // `base_ir_type` is the LLVM aggregate type at `base_ptr` (used for struct/
 // array GEPs). For scalar leaves it's unused — the bit width comes from
-// checker_type_byte_size.
+// type_size.
 //
 // Skipped leaves: 1-byte primitives (byte/utf8/c8/u8/i8/bool — already in
 // order); floats, pointers, slices, partial arrays (bswap is meaningless).
@@ -360,7 +360,7 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string,
     }
 
     if fa, ok := base.(^Type_Fixed_Array); ok {
-        elem_bytes := checker_type_byte_size(fa.elem)
+        elem_bytes := type_size(fa.elem)
         if elem_bytes <= 1 { return }
         elem_ir := llvm_type_from_checker(fa.elem)
         // Bounded unroll: large fixed arrays (e.g. `[65536]u32` for a TTF loca
@@ -388,7 +388,7 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string,
     }
 
     if !is_swappable_integer(base) { return }
-    bits := checker_type_byte_size(base) * 8
+    bits := type_size(base) * 8
     if bits < 16 { return }
     intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
     g.bswap_intrinsics[bits] = true
@@ -511,7 +511,7 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
 // handful of instructions, not 256 unrolled ones.
 emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, each: proc(g: ^Codegen, ptr: string, t: Type, args: []string), args: []string = nil) {
     elem_ir := llvm_type_from_checker(elem)
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     cond_label := fresh_label(g, "ctor.cond")
     body_label := fresh_label(g, "ctor.body")
     end_label  := fresh_label(g, "ctor.end")
@@ -565,7 +565,7 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Arr
     elements_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
     if !stamp { return elements_ptr }
-    if zero { emit_memset_zero(g, elements_ptr, pa.size * elem_byte_size(elem_t, g.checked)) }
+    if zero { emit_memset_zero(g, elements_ptr, pa.size * type_size(pa.elem)) }
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
     emit_store(g, "ptr", elements_ptr, ptr_gep)
@@ -595,7 +595,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     cap_n := pa.size
     alloc_cap := cap_n
     ir_type := partial_array_ir_type(elem_t, alloc_cap)
-    elem_bytes := elem_byte_size(elem_t, g.checked)
+    elem_bytes := type_size(pa.elem)
 
     // Initialise header: ptr → elements, len → 0 (auto-add at the end),
     // cap → N. Mirrors the literal init helper.
@@ -611,7 +611,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
     emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
 
     // Runtime check 0: the span within the source buffer.
     src_ok := fresh_label(g, "byte.view.ok")
@@ -696,7 +696,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
 emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string, elem_ty: Type) {
     if !type_has_swappable_leaf(elem_ty) { return }
 
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     elem_ir := llvm_type_from_checker(elem_ty)
     idx_slot := fresh_tmp(g)
     emit(g, "  %s = alloca %s", idx_slot, w)
@@ -737,7 +737,7 @@ type_has_swappable_leaf :: proc(ty: Type) -> bool {
         return type_has_swappable_leaf(fa.elem)
     }
     if !is_swappable_integer(base) { return false }
-    return checker_type_byte_size(base) >= 2
+    return type_size(base) >= 2
 }
 
 // Runtime-sized memcpy. Used when the byte count is an SSA value, not a
@@ -745,7 +745,7 @@ type_has_swappable_leaf :: proc(ty: Type) -> bool {
 // source span size is computed from runtime slice bounds. `bytes` is at
 // slice header width (i32); the memcpy intrinsic takes i64, so we zext.
 emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: string) {
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     n64 := bytes
     if w != "i64" {
         n64 = fresh_tmp(g)
@@ -780,7 +780,7 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
     cap_val := fresh_tmp(g)
     emit_typed_load_cap(g, cap_val, cap_gep)
 
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     ok_label   := fresh_label(g, "slice_len.ok")
     fail_label := fresh_label(g, "slice_len.fail")
 

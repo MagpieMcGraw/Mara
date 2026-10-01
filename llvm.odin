@@ -334,7 +334,7 @@ llvm_into_fields :: proc(e: ^Llvm, on: bool) {
 // copy's own elements.
 @(private="file")
 llvm_copy :: proc(e: ^Llvm, dest, src: string, t: Type) {
-    emit_memcpy(e.g, dest, src, llvm_size(e, t))
+    emit_memcpy(e.g, dest, src, type_size(t))
     reanchor_partial_arrays(e.g, t, dest)
 }
 
@@ -836,7 +836,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // Into a fixed utf8 array, text: the array zeroed, then its bytes.
         if fa := llvm_array(t); fa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
             if text, is_text := llvm_text(e, ops[1].op); is_text && llvm_type_from_checker(fa.elem) == "i8" {
-                emit_text_into_array(g, e.value[place - e.node], text, llvm_size(e, t))
+                emit_text_into_array(g, e.value[place - e.node], text, type_size(t))
                 return true
             }
         }
@@ -869,7 +869,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if r := ops[1].op; pg.op[r] == .Read { from = graph_operands(pg, r)[0].op }
             if val != e.value[place - e.node] {
                 if from != NO_NODE && pg.op[from] == .View {
-                    emit_memcpy(g, e.value[place - e.node], val, llvm_size(e, t))
+                    emit_memcpy(g, e.value[place - e.node], val, type_size(t))
                 } else {
                     llvm_copy(e, e.value[place - e.node], val, t)
                 }
@@ -919,7 +919,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             case "pad":
                 if ut.tag_pad == nil { return false }
                 pad := fresh_tmp(g)
-                emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad, at, elem_byte_size(union_tag_ir_type(ut)))
+                emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad, at, tag_bytes(ut.tag_type))
                 e.value[op - e.node] = pad
             case: return false
             }
@@ -968,7 +968,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), e.value[place - e.node])
         case llvm_partial(t) != nil: emit_partial_array_zero(g, e.value[place - e.node], llvm_partial(t))
         case llvm_aggregate(t):
-            emit_memset_zero(g, e.value[place - e.node], llvm_size(e, t))
+            emit_memset_zero(g, e.value[place - e.node], type_size(t))
             stamp_zero_partial_arrays(g, e.value[place - e.node], t)
         case:                   return false
         }
@@ -1206,7 +1206,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // scope is left).
         d := pg.refers[ops[0].op]
         if d <= e.node || d > pg.last[e.node] || pg.kind[d] != .Local { return false }
-        e.value[d - e.node] = emit_arena_bump(g, llvm_size(e, pg.type_[op]), pg.name[d], span_location(span))
+        e.value[d - e.node] = emit_arena_bump(g, type_size(pg.type_[op]), pg.name[d], span_location(span))
     }
     return true
 }
@@ -1331,7 +1331,7 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
         // A declared local struct is zero (a constructor's field is left as
         // it is, in Self zeroed already).
         local := pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local
-        if decl && local { emit_memset_zero(g, e.value[place - e.node], llvm_size(e, t)) }
+        if decl && local { emit_memset_zero(g, e.value[place - e.node], type_size(t)) }
     case llvm_aggregate(t):
     case:
         return false
@@ -1646,7 +1646,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
         st := ut.variant_structs[pg.name[op]]
         if st == nil { return false }
-        emit_memset_zero(g, at, llvm_size(e, pg.type_[dest]))
+        emit_memset_zero(g, at, type_size(pg.type_[dest]))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
         emit_store(g, union_tag_ir_type(ut), fmt.tprintf("%d", ut.tag_map[pg.name[op]]), tag)
@@ -1676,7 +1676,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // 0, its partial arrays' headers (its defaults are the writes after).
         if len(ops) != 1 { return false }
         at := e.value[dest - e.node]
-        emit_memset_zero(g, at, llvm_size(e, t))
+        emit_memset_zero(g, at, type_size(t))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
         emit_store(g, field_ir_type(&callee.fields[0]), fmt.tprintf("%d", callee.union_variant_tag), tag)
@@ -1686,7 +1686,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if _, has_init := g.checked.functions[callee.name]; !has_init && len(ops) == 1 {
         // Nothing to run — no defaults, no partial arrays (a generic instance
         // whose fields a shape shortcut fills): its zero.
-        if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, e.value[dest - e.node], llvm_size(e, t)) }
+        if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, e.value[dest - e.node], type_size(t)) }
         return true
     }
     if _, src := callee.origin.(Origin_Source); !src { return false }
@@ -1709,7 +1709,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         e.outs[op], e.out_run[op] = outs, e.run
     }
     // A bare field of a constructor is already zero; a literal is a fresh value anywhere.
-    if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, at, llvm_size(e, t)) }
+    if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, at, type_size(t)) }
     emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, callee.name), "(",
         strings.join(args[:], ", ", context.temp_allocator), ")"}))
     return true
@@ -1745,7 +1745,7 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
         emit_bounds_check(g, i, cap_val, name if name != "" else "slice", span)
     }
     tmp := fresh_tmp(g)
-    emit_elem_gep(g, tmp, llvm_type_from_checker(elem), data, i, slice_layout.len_ir)
+    emit_elem_gep(g, tmp, llvm_type_from_checker(elem), data, i, SLICE_LEN_IR)
     e.value[op - e.node] = tmp
     return true
 }
@@ -1818,14 +1818,14 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if hi == "" { hi = fmt.tprintf("%d", len(text)) }
         if lo != "" {
             data = fresh_tmp(g)
-            emit_elem_gep(g, data, "i8", at, lo, slice_layout.len_ir)
+            emit_elem_gep(g, data, "i8", at, lo, SLICE_LEN_IR)
         }
     } else if fa := llvm_array(bt); fa != nil {
         data = at
         if hi == "" { hi = fmt.tprintf("%d", fa.size) }
         if lo != "" {
             data = fresh_tmp(g)
-            emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, slice_layout.len_ir)
+            emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, SLICE_LEN_IR)
         }
     } else if elem := llvm_header_elem(bt); elem != nil {
         data_gep := fresh_tmp(g)
@@ -1841,7 +1841,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if lo != "" {
             from := data
             data = fresh_tmp(g)
-            emit_elem_gep(g, data, llvm_type_from_checker(elem), from, lo, slice_layout.len_ir)
+            emit_elem_gep(g, data, llvm_type_from_checker(elem), from, lo, SLICE_LEN_IR)
         }
     } else {
         return false   // a partial array (later)
@@ -1849,7 +1849,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     n := hi
     if lo != "" {
         n = fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, %s", n, slice_layout.len_ir, hi, lo)
+        emit(g, "  %s = sub %s %s, %s", n, SLICE_LEN_IR, hi, lo)
     }
     // Written to a held view: its values, no header in memory.
     if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write {
@@ -1884,9 +1884,9 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
     data, bound := llvm_bytes(e, base) or_return
-    emit_byte_size_bounds_check(g, bound, off, checker_type_byte_size(t), "view")
+    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view")
     tmp := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", tmp, data, slice_layout.len_ir, off)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", tmp, data, SLICE_LEN_IR, off)
     e.value[op - e.node] = tmp
     return true
 }
@@ -1922,14 +1922,14 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             b_gep := fresh_tmp(g)
             emit_slice_gep(g, b_gep, addr, bound_field)
             s.bound = fresh_tmp(g)
-            emit_load_into(g, s.bound, slice_layout.len_ir, b_gep)
+            emit_load_into(g, s.bound, SLICE_LEN_IR, b_gep)
         }
         return s, true
     }
     dst := side(e, base, SLICE.cap) or_return
     from := side(e, src, -1) or_return
     if !llvm_same_type(dst.elem, from.elem) { return false }
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     if hi == "" {
         n := fmt.tprintf("%d", from.fixed)
         if from.fixed == 0 {
@@ -2031,8 +2031,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
 llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, src: Node_Id) -> bool {
     g, pg := e.g, e.pg
     if !llvm_same_type(llvm_slice(pg.type_[src]).elem, pa.elem) { return false }
-    w := slice_layout.len_ir
-    elem_ir := llvm_type_from_checker(pa.elem)
+    w := SLICE_LEN_IR
     at, hdr := e.value[place - e.node], e.value[src - e.node]
     dptr := fresh_tmp(g); emit_slice_gep(g, dptr, hdr, SLICE.ptr)
     data := fresh_tmp(g); emit_load_into(g, data, "ptr", dptr)
@@ -2041,7 +2040,7 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, n0, pa.size)
     n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, n0, w, pa.size)
     elements := emit_partial_array_zero(g, at, pa, stamp = false)
-    nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, elem_byte_size(elem_ir, g.checked))
+    nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, type_size(pa.elem))
     emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", elements, data, nbytes)
     plen := fresh_tmp(g); emit_slice_gep(g, plen, at, SLICE.len)
     emit_typed_store_len(g, n, plen)
@@ -2090,10 +2089,10 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
     hi := ""
     if spanned && ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
     data, bound := llvm_bytes(e, ops[1].op) or_return
-    bytes := fmt.tprintf("%d", pa.size * elem_byte_size(llvm_type_from_checker(pa.elem), g.checked))
+    bytes := fmt.tprintf("%d", pa.size * type_size(pa.elem))
     if spanned {
         if hi == "" { hi = bound }
-        w := slice_layout.len_ir
+        w := SLICE_LEN_IR
         inv_ok, inv_err := fresh_label(g, "pa.inv.ok"), fresh_label(g, "pa.inv.err")
         inv_cmp := fresh_tmp(g)
         emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, hi, lo)
@@ -2130,9 +2129,9 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     if ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
     data, bound := llvm_bytes(e, ops[1].op) or_return
     if hi == "" { hi = bound }
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     loc := span_location(span)
-    size := checker_type_byte_size(t)
+    size := type_size(t)
     n := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
     src_ok, src_err := fresh_label(g, "span.src.ok"), fresh_label(g, "span.src.err")
@@ -2178,9 +2177,9 @@ llvm_sized_slice :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     sl := llvm_slice(pg.type_[dest])
     if sl == nil || pg.op[dest] != .Var || llvm_direct(e, dest) { return false }
     n := llvm_operand(e, ops[1], slice_header_width_type) or_return
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     elem_ir := llvm_type_from_checker(sl.elem)
-    size := elem_byte_size(elem_ir, g.checked)
+    size := type_size(sl.elem)
     name := fmt.tprintf("%%%s.data", pg.name[pg.refers[dest]])
     for k := 2; e.used[name]; k += 1 { name = fmt.tprintf("%%%s.data.%d", pg.name[pg.refers[dest]], k) }
     e.used[name] = true
@@ -2237,7 +2236,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         vops := graph_operands(pg, storage)
         off := llvm_operand(e, vops[1], slice_header_width_type) or_return
         data, bound := llvm_bytes(e, vops[0].op) or_return
-        at := emit_byte_count_ptr(g, data, bound, off, n, elem_byte_size(llvm_type_from_checker(sl.elem), g.checked), "slice")
+        at := emit_byte_count_ptr(g, data, bound, off, n, type_size(sl.elem), "slice")
         llvm_carve_header(e, op, at, n)
         return true
     }
@@ -2255,9 +2254,8 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         elem = sl.elem
         count = llvm_operand(e, ops[1], slice_header_width_type) or_return
     }
-    w := slice_layout.len_ir
-    elem_ir := llvm_type_from_checker(elem)
-    size, align := elem_byte_size(elem_ir, g.checked), elem_alignment(elem_ir, g.checked)
+    w := SLICE_LEN_IR
+    size, align := type_size(elem), type_align(elem)
     hdr := e.value[storage - e.node]
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
@@ -3112,11 +3110,6 @@ llvm_same_type :: proc(a, b: Type) -> bool {
     return llvm_type_from_checker(a) == llvm_type_from_checker(b)
 }
 
-// A type's size in bytes, as its IR type lays it out.
-@(private="file")
-llvm_size :: proc(e: ^Llvm, t: Type) -> int {
-    return elem_byte_size(llvm_type_from_checker(t), e.g.checked)
-}
 
 // A register value's zero.
 @(private="file")

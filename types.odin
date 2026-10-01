@@ -477,12 +477,6 @@ first_user_field :: proc(sd: ^Scope_Body) -> int {
     return 1
 }
 
-// Byte size of a union's tag_pad field. Returns 0 when no pad was declared.
-union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
-    if ut.tag_pad == nil { return 0 }
-    return checker_type_byte_size(ut.tag_pad)
-}
-
 Type_Distinct :: struct {
     name:             string,  // C-ified flat name
     source_name:      string,  // user-written bare name for diagnostics ("" falls back to name)
@@ -989,7 +983,7 @@ is_wrap_operand :: proc(t: Type) -> bool {
     return false
 }
 
-// Slice header width — kept in sync with codegen's slice_layout.len_ir.
+// Slice header width — kept in sync with codegen's SLICE_LEN_IR.
 // Currently i32; flip both sides together when widening to i64.
 slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 
@@ -1278,69 +1272,6 @@ check_byte_write :: proc(c: ^Checker, val_type: Type, span: Span) {
     }
 }
 
-// Compute struct byte size with alignment padding (matches LLVM/C layout).
-checker_struct_data_byte_size :: proc(sd: ^Scope_Body) -> int {
-    offset := 0
-    max_align := 1
-    for &f in sd.fields {
-        a := checker_type_alignment(f.type_)
-        if a > max_align { max_align = a }
-        if !sd.is_packed && offset % a != 0 {
-            offset += a - (offset % a)
-        }
-        offset += checker_type_byte_size(f.type_)
-    }
-    if !sd.is_packed && max_align > 0 && offset % max_align != 0 {
-        offset += max_align - (offset % max_align)
-    }
-    return offset
-}
-
-checker_struct_byte_size :: proc(st: ^Type_Scope) -> int {
-    return checker_struct_data_byte_size(&st.sd)
-}
-
-// Alignment of a checker Type (matches LLVM defaults).
-checker_type_alignment :: proc(t: Type) -> int {
-    switch v in t {
-    case Type_F64, Type_Infer_Int, Type_Infer_Float,
-         Type_CString, ^Type_Ptr, ^Type_Slice, ^Type_Partial_Array,
-         ^Type_Enum, ^Type_Union,
-         Type_Const_Int,
-         Type_Any, Type_Error:
-        return 8
-    case Type_Err:
-        return 4   // u32 (set_id<<16 | tag)
-    case Type_Void:
-        return 1
-    case Type_Numeric:
-        switch v.bits {
-        case 128: return 16
-        case 64: return 8
-        case 32: return 4
-        case 16: return 2
-        case 8:  return 1
-        }
-    case Type_Bool, Type_Utf8, Type_Byte:
-        return 1
-    case ^Type_Fixed_Array:
-        return checker_type_alignment(v.elem)
-    case ^Type_Scope:
-        if len(v.fields) > 0 {
-            max_a := 1
-            for &f in v.fields {
-                a := checker_type_alignment(f.type_)
-                if a > max_a { max_a = a }
-            }
-            return max_a
-        }
-        return 8  // callable fun (function pointer)
-    case ^Type_Distinct:
-        return checker_type_alignment(v.base_type)
-    }
-    return 8
-}
-
 // True when two types are genuinely incompatible — neither is untyped
 // (Type_Any, Type_Error, opaque pointer) and they don't match.
 // Strict nominal equality: checks struct/enum/union names match exactly.
@@ -1504,48 +1435,13 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
                 arg_scope.name, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
         }
     }
-    ct_size  := checker_struct_byte_size(ct)
-    arg_size := checker_struct_byte_size(arg_scope)
+    ct_size  := type_size(ct)
+    arg_size := type_size(arg_scope)
     if arg_size > ct_size {
         check_error(c, span,
             TYPE_TYPE_FIT_SIZE_BUDGET_NEEDS,
             arg_scope.name, constraint_name, arg_size, ct_size)
     }
-}
-
-// Byte size of a checker type (for big-array threshold checks).
-checker_type_byte_size :: proc(t: Type) -> int {
-    switch v in t {
-    case Type_Infer_Int, Type_F64, Type_Infer_Float,
-         ^Type_Ptr, Type_CString,
-         ^Type_Union,
-         Type_Const_Int,
-         Type_Any, Type_Error, nil:
-        return 8
-    case Type_Err:         return 4
-    case Type_Void:
-        return 0
-    case Type_Numeric:     return v.bits / 8
-    case Type_Utf8, Type_Byte, Type_Bool:
-        return 1
-    case ^Type_Slice:      return slice_header_bytes
-    case ^Type_Partial_Array:
-        // { len, cap, ptr, [N x T] } — slice_header_bytes for the header,
-        // followed by N * sizeof(elem) backing storage.
-        return slice_header_bytes + v.size * checker_type_byte_size(v.elem)
-    case ^Type_Scope:      return checker_struct_byte_size(v)
-    case ^Type_Fixed_Array:
-        return v.size * checker_type_byte_size(v.elem)
-    case ^Type_Enum:
-        switch v.tag_type {
-        case "u8", "i8":   return 1
-        case "u16", "i16": return 2
-        case "u32", "i32": return 4
-        }
-        return 8  // default i64
-    case ^Type_Distinct:   return checker_type_byte_size(v.base_type)
-    }
-    return 8
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,13 +1450,13 @@ checker_type_byte_size :: proc(t: Type) -> int {
 // Every value's size is knowable at compile time (no runtime-sized types), so
 // the whole "stack vs arena" decision reduces to two operations:
 //
-//   1. Find the value's size       — checker_type_byte_size, above. It returns
-//      the TOTAL inline footprint: struct padding, fixed-array storage, and
-//      partial-array backing are all counted; a slice is just its header (its
-//      backing is a separate allocation, routed on its own).
+//   1. Find the value's size       — type_size (layout.odin). It is the
+//      TOTAL inline footprint: struct padding, fixed-array storage, and
+//      partial-array elements are all counted; a slice is just its header
+//      (its elements are a separate allocation, routed on their own).
 //   2. Route it to the right store — routes_to_arena, below.
 //
-// Both the type checker (check_storage_sizes — the early "declare an allocator"
+// Both the type checker (tc_storage_sizes — the early "declare an allocator"
 // error) and codegen (alloca vs arena_bump) gate on routes_to_arena, so the
 // threshold lives in exactly one place and the two stages can't drift.
 
@@ -1569,7 +1465,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
 ARENA_THRESHOLD :: 1024
 
 routes_to_arena :: proc(t: Type) -> bool {
-    return checker_type_byte_size(t) >= ARENA_THRESHOLD
+    return type_size(t) >= ARENA_THRESHOLD
 }
 
 // Check if a variable name is a function parameter (walks env chain).

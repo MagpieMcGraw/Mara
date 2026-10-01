@@ -1782,15 +1782,10 @@ graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, n
     return o
 }
 
-// A type's size in bytes, by Mara's layout (a union's by its variants', which
-// the program's structs give).
-graph_size_of :: proc(t: Type, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
+// A type's size in bytes.
+graph_size_of :: proc(t: Type) -> Maybe(Const_Value) {
     if t == nil { return nil }
-    if _, is_union := distinct_base(t).(^Type_Union); is_union {
-        if checked == nil { return nil }
-        return Const_Value{int = i128(elem_byte_size(llvm_type_from_checker(t), checked))}
-    }
-    return Const_Value{int = i128(checker_type_byte_size(t))}
+    return Const_Value{int = i128(type_size(t))}
 }
 
 

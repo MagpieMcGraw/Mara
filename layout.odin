@@ -1,0 +1,143 @@
+package mara
+
+// The layout of a value: its size and alignment in bytes, as LLVM lays out
+// the IR type the emitter gives it (llvm_type_from_checker) on the target —
+// x86-64, or wasm32 for a web build. The one table everything reads: the
+// checker's storage routing and byte views, size_of, the constant folder, the
+// C ABI and the emitter.
+
+// A web build's target: 32-bit words and pointers. Set once, before checking.
+word_size_is_32: bool
+
+Layout :: struct {
+    size, align: int,
+}
+
+type_size  :: proc(t: Type) -> int { return type_layout(t).size }
+type_align :: proc(t: Type) -> int { return type_layout(t).align }
+
+type_layout :: proc(t: Type) -> Layout {
+    switch v in resolve_infer(t) {
+    case Type_Bool, Type_Utf8, Type_Byte:
+        return {1, 1}
+    case Type_F64, Type_Infer_Int, Type_Infer_Float:
+        return {8, 8}
+    case Type_Numeric:
+        n := word_bytes() if v.bits == 0 else v.bits / 8
+        return {n, n}
+    case Type_Err:
+        return {4, 4}   // an i32: its set's id and its tag
+    case Type_Void:
+        return {0, 1}   // `{}`
+    case Type_CString, ^Type_Ptr:
+        return {word_bytes(), word_bytes()}
+    case ^Type_Scope:
+        if v.kind != .Struct { return {word_bytes(), word_bytes()} }   // a fun value: its address
+        return struct_layout(&v.sd)
+    case ^Type_Fixed_Array:
+        e := type_layout(v.elem)
+        return {v.size * e.size, e.align}
+    case ^Type_Slice:
+        return slice_header_layout()
+    case ^Type_Partial_Array:
+        // `{ len, cap, ptr, [N x T] }`: a slice header over its own elements.
+        l := slice_header_fields()
+        e := type_layout(v.elem)
+        layout_field(&l, {v.size * e.size, e.align})
+        return layout_close(l)
+    case ^Type_Enum:
+        n := tag_bytes(v.tag_type)
+        return {n, n}
+    case ^Type_Union:
+        return union_layout(v)
+    case ^Type_Distinct:
+        return type_layout(v.base_type)
+    case Type_Const_Int, Type_Any, Type_Error, nil:
+        // (No value's type: what checking reports. Sized as a word.)
+        return {8, 8}
+    }
+    return {8, 8}
+}
+
+word_bytes :: proc() -> int {
+    return 4 if word_size_is_32 else 8
+}
+
+// A union tag's width: its declared type's, or an i64's.
+tag_bytes :: proc(tag_type: string) -> int {
+    switch tag_type {
+    case "i8", "u8":   return 1
+    case "i16", "u16": return 2
+    case "i32", "u32": return 4
+    }
+    return 8
+}
+
+// A struct: its fields in order, each at its alignment (packed: none, and
+// aligned to a byte), padded at the end to the struct's alignment.
+struct_layout :: proc(sd: ^Scope_Body) -> Layout {
+    l := Layout{0, 1}
+    for &f in sd.fields { layout_field(&l, type_layout(f.type_), sd.is_packed) }
+    return layout_close(l)
+}
+
+// A record's next field, placed: its offset.
+layout_field :: proc(l: ^Layout, f: Layout, packed := false) -> (offset: int) {
+    if !packed {
+        l.size = round_up(l.size, f.align)
+        l.align = max(l.align, f.align)
+    }
+    offset = l.size
+    l.size += f.size
+    return
+}
+
+// A record's size: its fields' end, padded to its alignment.
+layout_close :: proc(l: Layout) -> Layout {
+    return {round_up(l.size, l.align), l.align}
+}
+
+round_up :: proc(n, align: int) -> int {
+    return (n + align - 1) / align * align
+}
+
+// A slice's header, `{ len, cap, ptr }`: its fields, still open (a partial
+// array's elements follow them).
+slice_header_fields :: proc() -> Layout {
+    l := Layout{0, 1}
+    layout_field(&l, {8, 8})
+    layout_field(&l, {8, 8})
+    layout_field(&l, {word_bytes(), word_bytes()})
+    return l
+}
+
+slice_header_layout :: proc() -> Layout {
+    return layout_close(slice_header_fields())
+}
+
+// A union: its tag (and declared pad), then room for its largest variant —
+// `{ tag, [N x i8] }`, or with a pad `{ [tag+pad x i8], [N x i8] }`, aligned
+// to a byte. A niche union is its Some variant's pointer.
+union_layout :: proc(ut: ^Type_Union) -> Layout {
+    if ut.niche_some != "" { return {word_bytes(), word_bytes()} }
+    tag := tag_bytes(ut.tag_type)
+    area := tag + union_tag_pad_bytes(ut)
+    payload := union_payload_bytes(ut)
+    if area > tag { return {area + payload, 1} }
+    return layout_close({tag + payload, tag})
+}
+
+// A (tagged) union's payload: its largest variant past the tag and pad each
+// variant's struct begins with, at least its declared size's.
+union_payload_bytes :: proc(ut: ^Type_Union) -> int {
+    area := tag_bytes(ut.tag_type) + union_tag_pad_bytes(ut)
+    n := 0
+    for _, st in ut.variant_structs { n = max(n, type_size(st) - area) }
+    if ut.min_size > 0 { n = max(n, ut.min_size - area) }
+    return n
+}
+
+union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
+    if ut.tag_pad == nil { return 0 }
+    return type_size(ut.tag_pad)
+}

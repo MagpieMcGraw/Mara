@@ -1301,7 +1301,7 @@ tc_size_of :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     k.size_of[n] = t
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return Type_Infer_Int{}, {} }
-    return Type_Infer_Int{}, {v = graph_const(b, w, span, Type_Infer_Int{}, "size_of", graph_size_of(t, b.checked)), ok = true}
+    return Type_Infer_Int{}, {v = graph_const(b, w, span, Type_Infer_Int{}, "size_of", graph_size_of(t)), ok = true}
 }
 
 // A type's layout known: each struct in it checked (its fields found).

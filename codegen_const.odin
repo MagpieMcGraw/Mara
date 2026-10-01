@@ -239,7 +239,7 @@ const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elem
         fmt.tprintf(", i32 %d)", PARTIAL_ELEMENTS_FIELD),
     })
     return fmt.tprintf("{{ %s %d, %s %d, ptr %s, [%d x %s] %s }}",
-        slice_layout.len_ir, n, slice_layout.cap_ir, pa.size, self, pa.size, elem_ir, elems)
+        SLICE_LEN_IR, n, SLICE_LEN_IR, pa.size, self, pa.size, elem_ir, elems)
 }
 
 // A slice field: a view of a string (its bytes in a private global, len =
@@ -253,7 +253,7 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> string {
     fmt.sbprintf(&cx.extras, "%s = private unnamed_addr constant [%d x i8] %s\n",
         name, len(s) + 1, const_bytes(cx, s, len(s) + 1))
     return fmt.tprintf("{{ %s %d, %s %d, ptr %s }}",
-        slice_layout.len_ir, len(s), slice_layout.cap_ir, len(s) + 1, name)
+        SLICE_LEN_IR, len(s), SLICE_LEN_IR, len(s) + 1, name)
 }
 
 // A union constant's table: the variant's struct (tag included) padded out to
@@ -266,7 +266,7 @@ const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: 
     vsd := as_struct_body(distinct_base(v.variant))
     if vsd == nil { const_fail(cx) }
     vname := struct_llvm_name(struct_key(vsd))
-    tail := union_byte_size(g.checked, ut) - struct_byte_size_sd(vsd, g.checked)
+    tail := type_size(ut) - struct_layout(vsd).size
     if tail <= 0 {
         cx.gtype = vname
         return vname, const_struct(cx, vsd, v)

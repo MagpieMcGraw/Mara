@@ -1136,6 +1136,7 @@ main :: proc() {
 
     args := parse_args()
     if !args.ok { os.exit(1) }
+    word_size_is_32 = args.web   // (the target's layout, for the checker and codegen alike)
 
     perf: Performance_Timer
     perf.quiet = args.ask   // `ask` keeps stdout clean for machine/AI consumption

@@ -18,62 +18,13 @@ import os_old "core:os/old"
 // (llvm.odin), in parallel by module.
 // ---------------------------------------------------------------------------
 
-// Slice / partial-array header layout.
-//
-// Slices and partial arrays share a { len, cap, ptr } header. Each field's
-// width is controlled by Slice_Layout so the layout can be retargeted
-// (16-byte slices on 64-bit, 32-bit ptr on embedded, etc.) without touching
-// every codegen site.
-//
-// Defaults are set at package init for 64-bit / i32 len+cap (slice = 16
-// bytes). `init_slice_layout` in generate_program updates ptr_size and the
-// derived strings for the actual target.
-Slice_Layout :: struct {
-    len_ir:   string,  // LLVM IR scalar for len  (e.g. "i64", "i32")
-    cap_ir:   string,  // LLVM IR scalar for cap
-    len_size: int,     // bytes
-    cap_size: int,     // bytes
-    ptr_size: int,     // bytes (target-dependent — 4 on wasm32 etc.)
-}
+// A slice's header, `{ len, cap, ptr }`, its length and capacity i64s on
+// every target; a partial array is the header with its elements after.
+SLICE_IR_TYPE :: "{ i64, i64, ptr }"
+SLICE_LEN_IR  :: "i64"   // a header's len's and cap's IR type
 
-slice_layout: Slice_Layout = {
-    len_ir   = "i64",
-    cap_ir   = "i64",
-    len_size = 8,
-    cap_size = 8,
-    ptr_size = 8,
-}
-
-// Derived strings and sizes. Set together with slice_layout in
-// init_slice_layout; defaults below cover the default 64-bit / i32+i32+ptr
-// case (16-byte header) so the type checker (which runs before
-// init_slice_layout) sees sensible values.
-SLICE_IR_TYPE:               string = "{ i64, i64, ptr }"
-PARTIAL_ARRAY_HEADER_PREFIX: string = "{ i64, i64, ptr,"
-slice_header_bytes:          int    = 24
-slice_header_align:          int    = 8
-
-// Update slice_layout and derived strings for the current target. Called
-// once per program at the top of generate_program after word_size_is_32
-// is set.
-init_slice_layout :: proc() {
-    slice_layout.ptr_size = 4 if word_size_is_32 else 8
-    SLICE_IR_TYPE = strings.concatenate({
-        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr }",
-    })
-    PARTIAL_ARRAY_HEADER_PREFIX = strings.concatenate({
-        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr,",
-    })
-    slice_header_bytes = slice_layout.len_size + slice_layout.cap_size + slice_layout.ptr_size
-    a := slice_layout.len_size
-    if slice_layout.cap_size > a { a = slice_layout.cap_size }
-    if slice_layout.ptr_size > a { a = slice_layout.ptr_size }
-    slice_header_align = a
-}
-
-// Slice header field positions. Partial arrays share these for their first
-// `slice_header_bytes` bytes; the elements field follows at
-// PARTIAL_ELEMENTS_FIELD.
+// Slice header field positions. A partial array's elements follow the
+// header at PARTIAL_ELEMENTS_FIELD.
 Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
@@ -81,7 +32,7 @@ PARTIAL_ELEMENTS_FIELD :: 3
 // Build the LLVM IR type for a `[..N]T` partial array.
 partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
     return strings.concatenate({
-        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr, [",
+        "{ ", SLICE_LEN_IR, ", ", SLICE_LEN_IR, ", ptr, [",
         fmt.tprintf("%d", cap), " x ", elem_ir, "] }",
     })
 }
@@ -425,7 +376,7 @@ emit_array_gep_const :: proc(g: ^Codegen, dst, arr_type, base: string, idx: int)
 
 // `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, <idx_ir> <idx>\n`
 // Variable-index array GEP — `idx` is an SSA name string, not a constant.
-// `idx_ir` is the LLVM IR type of `idx`; callers pass slice_layout.len_ir
+// `idx_ir` is the LLVM IR type of `idx`; callers pass SLICE_LEN_IR
 // when the index comes from a user expression / slice header, "i32" when
 // it comes from a fixed-position counter, etc. No default — every call
 // site states the index width explicitly so the slice-header width flip
@@ -1291,7 +1242,7 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // ---------------------------------------------------------------------------
 
 // Emit a runtime bounds check: if idx < 0 or idx >= len, print error and exit(1).
-// Both `idx` and `len` are at slice header width (slice_layout.len_ir).
+// Both `idx` and `len` are at slice header width (SLICE_LEN_IR).
 // `name` is the variable name for the error message.
 // Module-level helpers for the runtime fail blocks. Emitted once per module;
 // per-site fail blocks shrink to `call helper(...) + unreachable`. `loc` and
@@ -1458,7 +1409,7 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     // width (i32); gen_checked_index passes "i64" when the index is a wide
     // integer so the comparison happens before any narrowing (a large value
     // that would wrap into a valid-looking i32 traps here instead).
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     if w_override != "" { w = w_override }
     neg_cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, idx)
@@ -1477,16 +1428,16 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     // i64-width comparison above already decided the trap.
     fail_idx := idx
     fail_len := len_val
-    if w != slice_layout.len_ir {
+    if w != SLICE_LEN_IR {
         fi := fresh_tmp(g)
-        emit(g, "  %s = trunc %s %s to %s", fi, w, idx, slice_layout.len_ir)
+        emit(g, "  %s = trunc %s %s to %s", fi, w, idx, SLICE_LEN_IR)
         fail_idx = fi
         fl := fresh_tmp(g)
-        emit(g, "  %s = trunc %s %s to %s", fl, w, len_val, slice_layout.len_ir)
+        emit(g, "  %s = trunc %s %s to %s", fl, w, len_val, SLICE_LEN_IR)
         fail_len = fl
     }
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
-        __MARA_BOUNDS_FAIL, loc_global, slice_layout.len_ir, fail_idx, slice_layout.len_ir, fail_len, name_global)
+        __MARA_BOUNDS_FAIL, loc_global, SLICE_LEN_IR, fail_idx, SLICE_LEN_IR, fail_len, name_global)
     emit(g, "  unreachable")
 
     emit_label(g, ok_label)
@@ -1630,165 +1581,6 @@ can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
 // Context system: automatic scope-based arena mark/reset
 // ---------------------------------------------------------------------------
 
-// Element size in bytes for a given LLVM type string.
-elem_byte_size :: proc(elem_type: string, checked: ^Checked_Program = nil) -> int {
-    ptr_size := 4 if word_size_is_32 else 8
-    switch elem_type {
-    case "i128":        return 16
-    case "i64":         return 8
-    case "double":      return 8
-    case "ptr":         return ptr_size
-    case "i32":         return 4
-    case "float":       return 4
-    case "i16":         return 2
-    case "half":        return 2
-    case "i8":          return 1
-    case "i1":          return 1
-    case SLICE_IR_TYPE: return slice_header_bytes
-    }
-    // Handle embedded struct types like %class.Point
-    if strings.has_prefix(elem_type, "%class.") {
-        sname := elem_type[len("%class."):]
-        if checked != nil {
-            if st, ok := checked.table.structs[sname]; ok {
-                return struct_byte_size_sd(&st.sd, checked)
-            }
-            if st, ok := checked.table.funs[sname]; ok {
-                return struct_byte_size(st, checked)
-            }
-        }
-    }
-    // A union value: tag area plus its largest payload, rounded up to the
-    // union's alignment the way LLVM sizes its `%union.X` type. This used to
-    // fall through to the pointer default — every union 8 bytes — undersizing
-    // `size_of` and any struct that holds a union.
-    if ut, ok := ir_union(elem_type, checked); ok {
-        size, align := union_byte_size(checked, ut), elem_alignment(elem_type, checked)
-        return (size + align - 1) / align * align
-    }
-    // Handle array types like [512 x i1]
-    if strings.has_prefix(elem_type, "[") {
-        cap, elem, arr_ok := parse_array_ir_type(elem_type)
-        if arr_ok {
-            return cap * elem_byte_size(elem, checked)
-        }
-    }
-    // Partial-array IR shape: `{ i32, i32, ptr, [N x T] }`. The first three
-    // slots are the slice header (size = slice_header_bytes); the trailing
-    // [N x T] is the inline storage. Without this branch, the type falls
-    // through to ptr_size and a struct holding such a field is sized as if
-    // the field were 8 bytes — undersized memsets clobber the storage and
-    // leave field headers (ptr/cap) zero. Bit me on String fields.
-    if strings.has_prefix(elem_type, PARTIAL_ARRAY_HEADER_PREFIX) {
-        cap, elem, ok := parse_partial_array_ir_type(elem_type)
-        if ok {
-            return slice_header_bytes + cap * elem_byte_size(elem, checked)
-        }
-    }
-    return ptr_size // default for struct pointers, etc.
-}
-
-// Parse `{ i32, i32, ptr, [N x T] }` (a partial-array IR type) into N and T.
-// Returns ok=false for any other shape, including bare slice headers.
-parse_partial_array_ir_type :: proc(ir: string) -> (cap: int, elem: string, ok: bool) {
-    if !strings.has_prefix(ir, PARTIAL_ARRAY_HEADER_PREFIX) { return 0, "", false }
-    rest := strings.trim_space(ir[len(PARTIAL_ARRAY_HEADER_PREFIX):])
-    // rest now starts with `[N x T] }`; drop the trailing brace before parsing.
-    end := strings.last_index_byte(rest, '}')
-    if end < 0 { return 0, "", false }
-    return parse_array_ir_type(strings.trim_space(rest[:end]))
-}
-
-// Alignment of an LLVM type (matches LLVM's default data layout)
-elem_alignment :: proc(elem_type: string, checked: ^Checked_Program = nil) -> int {
-    ptr_align := 4 if word_size_is_32 else 8
-    switch elem_type {
-    case "i64":         return 8
-    case "double":      return 8
-    case "ptr":         return ptr_align
-    case "i32":         return 4
-    case "float":       return 4
-    case "i16":         return 2
-    case "i8":          return 1
-    case "i1":          return 1
-    case SLICE_IR_TYPE: return slice_header_align
-    }
-    // Handle embedded struct types — alignment is max alignment of inner fields
-    if strings.has_prefix(elem_type, "%class.") {
-        sname := elem_type[len("%class."):]
-        if checked != nil {
-            sd: ^Scope_Body
-            if ss, ss_ok := checked.table.structs[sname]; ss_ok {
-                sd = &ss.sd
-            } else if sf, sf_ok := checked.table.funs[sname]; sf_ok {
-                sd = &sf.sd
-            }
-            if sd != nil {
-                max_a := 1
-                for &f in sd.fields {
-                    a := elem_alignment(field_ir_type(&f), checked)
-                    if a > max_a { max_a = a }
-                }
-                return max_a
-            }
-        }
-    }
-    // A union aligns like the LLVM type register_union_type emits for it:
-    // `{ tag, [N x i8] }` as its tag, `{ [k x i8], [N x i8] }` (declared
-    // padding) as bytes, a niche union's `{ ptr }` as a pointer.
-    if ut, ok := ir_union(elem_type, checked); ok {
-        if ut.niche_some != ""          { return ptr_align }
-        if union_tag_pad_bytes(ut) > 0 { return 1 }
-        return elem_alignment(union_tag_ir_type(ut))
-    }
-    // Handle array types like [512 x i1] — alignment is element alignment
-    if strings.has_prefix(elem_type, "[") {
-        _, elem, arr_ok := parse_array_ir_type(elem_type)
-        if arr_ok {
-            return elem_alignment(elem, checked)
-        }
-    }
-    // Partial-array IR: alignment is max(slice header align, inner elem align).
-    if strings.has_prefix(elem_type, PARTIAL_ARRAY_HEADER_PREFIX) {
-        _, elem, ok := parse_partial_array_ir_type(elem_type)
-        if ok {
-            a := slice_header_align
-            ea := elem_alignment(elem, checked)
-            if ea > a { a = ea }
-            return a
-        }
-    }
-    return ptr_align
-}
-
-// Compute the byte size of a struct including alignment padding (matches C/LLVM layout).
-// Reads directly from Type_Scope fields.
-struct_byte_size_sd :: proc(sd: ^Scope_Body, checked: ^Checked_Program = nil) -> int {
-    offset := 0
-    max_align := 1
-    for &f in sd.fields {
-        ft := field_ir_type(&f)
-        a := elem_alignment(ft, checked)
-        if a > max_align { max_align = a }
-        // Align the current offset (skipped for #packed — no inter-field pad)
-        if !sd.is_packed && offset % a != 0 {
-            offset += a - (offset % a)
-        }
-        offset += elem_byte_size(ft, checked)
-    }
-    // Pad to struct alignment (skipped for #packed — alignment is 1)
-    if !sd.is_packed && offset % max_align != 0 {
-        offset += max_align - (offset % max_align)
-    }
-    return offset
-}
-
-struct_byte_size_fun :: proc(st: ^Type_Scope, checked: ^Checked_Program = nil) -> int {
-    return struct_byte_size_sd(&st.sd, checked)
-}
-
-struct_byte_size :: proc { struct_byte_size_fun, struct_byte_size_sd }
-
 // Load the context's arena pointer (field 0 of Context struct).
 get_context_arena_ptr :: proc(g: ^Codegen) -> string {
     ctx_ptr := fresh_tmp(g)
@@ -1852,7 +1644,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
     // alloc hands back a `[]byte`, the size shares the slice header width.
     alloc_ir := mara_fn_name(g, g.arena_alloc_name)
-    w := slice_layout.len_ir
+    w := SLICE_LEN_IR
     if g.arena_alloc_has_debug {
         emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", name_ptr, ", ptr ", span_ptr, ", ptr ", tmp_slice, ")"}))
     } else {
@@ -1913,32 +1705,6 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
     register_struct_decl_sd(g, &st.sd)
 }
 
-// The user-field payload size of a (non-niche) union: the largest variant's
-// size minus the tag+pad area each variant struct now carries, floored by the
-// declared min_size. Shared by register_union_type (type emission) and
-// union_byte_size so the two can't drift.
-union_payload_bytes :: proc(checked: ^Checked_Program, ut: ^Type_Union) -> int {
-    tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
-    max_bytes := 0
-    for _, st in ut.variant_structs {
-        size := struct_byte_size_sd(&st.sd, checked) - tag_area
-        if size > max_bytes { max_bytes = size }
-    }
-    if ut.min_size > 0 && ut.min_size - tag_area > max_bytes {
-        max_bytes = ut.min_size - tag_area
-    }
-    return max_bytes
-}
-
-// Total in-memory size of a union value (tag area + payload). Niche unions are
-// just a bare pointer. Used to size the union temp the materialize path allocas
-// so a union value is safe to copy/load at any boundary.
-union_byte_size :: proc(checked: ^Checked_Program, ut: ^Type_Union) -> int {
-    if ut.niche_some != "" { return 8 }
-    tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
-    return tag_area + union_payload_bytes(checked, ut)
-}
-
 // Register a union's LLVM type declaration and compute its payload size.
 //
 // Layout produced:
@@ -1962,12 +1728,10 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     }
 
     tag_ir := union_tag_ir_type(ut)
-    tag_bytes := elem_byte_size(tag_ir)
     pad_bytes := union_tag_pad_bytes(ut)
-    tag_area_bytes := tag_bytes + pad_bytes
+    tag_area_bytes := tag_bytes(ut.tag_type) + pad_bytes
 
-    max_bytes := union_payload_bytes(g.checked, ut)
-    payload_str := fmt.tprintf("[%d x i8]", max_bytes)
+    payload_str := fmt.tprintf("[%d x i8]", union_payload_bytes(ut))
     tag_field: string
     if pad_bytes > 0 {
         tag_field = fmt.tprintf("[%d x i8]", tag_area_bytes)
@@ -1977,13 +1741,6 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     type_decl := strings.concatenate({llvm_name, " = type { ", tag_field, ", ", payload_str, " }"})
     append(&g.struct_decls, type_decl)
 }
-
-// Module-local target flag, set at the start of generate_program. Read by
-// llvm_type_from_checker (and similar context-free helpers) so word-sized
-// types (usize/isize) emit the right width without threading `web` through
-// ~60 call sites. Reset to false at the end of generate_program so back-to-
-// back native/web invocations don't carry stale state.
-@(private) word_size_is_32: bool
 
 // Emit LLVM IR for the checked program. Every visible function gets
 // emitted; the linker drops unreachable code. Returns the list of per-
@@ -1997,8 +1754,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.release = release
     g.no_assert = no_assert
     g.run_starts = graph_run_starts(&checked.graph)
-    word_size_is_32 = web
-    init_slice_layout()
 
     // g.out is now a swap target driven by switch_to_module; each per-module
     // buffer is pre-sized to 4MB on first creation. No global pre-size here.
@@ -2837,16 +2592,12 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
         argc_min := "%argc" // every argument fits from here on
 
-        // Store len at field 0. The header len is at slice_layout.len_ir;
-        // argc_min is i32 (matches argc + the i32 loop counter below), so widen
-        // it for the store when the header is wider.
+        // Store len at field 0: argc_min is i32 (matches argc + the i32 loop
+        // counter below), widened to the header's i64.
         len_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
-        len_store_val := argc_min
-        if slice_layout.len_ir != "i32" {
-            len_store_val = fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", slice_layout.len_ir}))
-        }
+        len_store_val := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", SLICE_LEN_IR}))
         emit_typed_store_len(g, len_store_val, len_ptr)
 
         // Store cap = 64 at field 1
@@ -2886,25 +2637,15 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
         argv_i := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
-        // strlen returns size_t (i64 native / i32 on web). Coerce to the slice
-        // header width for the len/cap store — argv strings fit trivially.
+        // strlen returns size_t (i64 native, i32 on web), widened to the
+        // header's i64 for the len/cap store.
         str_len := fresh_tmp(g)
         if g.web {
-            if slice_layout.len_ir == "i32" {
-                emit_raw(g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
-            } else {
-                str_len_32 := fresh_tmp(g)
-                emit_raw(g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
-                emit_raw(g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", slice_layout.len_ir}))
-            }
+            str_len_32 := fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
+            emit_raw(g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", SLICE_LEN_IR}))
         } else {
-            if slice_layout.len_ir == "i64" {
-                emit_raw(g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
-            } else {
-                str_len_64 := fresh_tmp(g)
-                emit_raw(g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
-                emit_raw(g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to ", slice_layout.len_ir}))
-            }
+            emit_raw(g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
         }
         // elements[i] is a slice — write len, cap, ptr. cap counts argv's
         // terminating 0 (as a string literal's does), so cstring(arg) finds it
@@ -2915,7 +2656,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_slice_gep(g, slen_ptr, elem_ptr, SLICE.len)
         emit_typed_store_len(g, str_len, slen_ptr)
         str_cap := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", slice_layout.cap_ir, " ", str_len, ", 1"}))
+        emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", SLICE_LEN_IR, " ", str_len, ", 1"}))
         scap_ptr := fresh_tmp(g)
         emit_slice_gep(g, scap_ptr, elem_ptr, SLICE.cap)
         emit_typed_store_cap(g, str_cap, scap_ptr)
