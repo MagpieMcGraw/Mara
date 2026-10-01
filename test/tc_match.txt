@@ -116,6 +116,7 @@ field_default_types
 fielddefer
 fixed_decay_neg
 fixed_to_slice
+font_test
 for_each_elements
 fordo
 generic_local_const
@@ -214,6 +215,7 @@ test_bswap
 test_empty_foreign
 test_fail
 test_match_indexed
+test_multi_assign
 text_constant_views
 text_partial_array
 text_view_print
@@ -221,6 +223,7 @@ try_runs_defers
 tuple_union
 u64dec
 u8print
+undeclared_assign_fail
 uninitbranch
 uninitfield
 uninitptr

@@ -17,13 +17,14 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     _ = ann_t
     v := tc_unparen(k, value)
     is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))
-    if !is_try && !tc_is_call(k, v) {
-        tc_unsupported(k, s, "one value given to several targets")
-        return
-    }
+    of_call := tc_is_call(k, v)
     b := tc_building(k)
+    mark: Graph_Mark
     mr: Graph_Destructure
-    if b != nil { mr = graph_fuse_destructure(b, tc_sid(k, s), span, names, stores, is_decl) }
+    if b != nil {
+        mark = graph_fuse_mark(b)
+        if is_try || of_call { mr = graph_fuse_destructure(b, tc_sid(k, s), span, names, stores, is_decl) }
+    }
     returns: []Type
     call := value
     if is_try {
@@ -51,11 +52,25 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         returns = rets[:len(rets) - 1]
         tc_set_type(k, v, returns[0] if len(returns) > 0 else Type(Type_Void{}))
     } else {
-        _, r := tc_expr(k, value, env, .Value if b != nil else .None)
+        // (One value no call of several results: a broadcast, its value
+        // built in each target's copy — a call's, built before that was
+        // known, left out.)
+        vt: Type
+        r: Fused
+        if of_call { vt, r = tc_expr(k, value, env, .Value if b != nil else .None) } else { vt = tc_check(k, value, env) }
         mr.call = r.v
         returns = tc_call_returns(k, value, env)
         if returns == nil {
-            tc_unsupported(k, s, "one value given to several targets")
+            if b = tc_building(k); b != nil && mr.on {
+                graph_fuse_drop_since(b, mark)
+                mr.on = false
+            }
+            if is_any(vt) {
+                // (Of no type, reported: its names none either.)
+                for name in names { if name != "" { type_env_set(env, name, Type_Error{}) } }
+                return
+            }
+            tc_broadcast(k, s, targets, value, is_decl, env)
             return
         }
     }
@@ -91,5 +106,29 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             }
         }
         if b = tc_building(k); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, i, distinct_base(rt)) }
+    }
+}
+
+// `a, b = v`, `x, y := v`: v to each target — the statement's copies, one a
+// target, each a statement of its own, v checked in each. (A declaration's
+// copies take no annotation: the old checker's desugaring left it off.)
+tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, env: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
+    if b := tc_building(k); b != nil { graph_fuse_stmt_kind(b, .Other) }
+    for tg in targets {
+        kind := Stmt_Kind.Decl
+        if !is_decl {
+            switch {
+            case t.tag[tg] != .Ident: kind = .Write
+            case tc_name(k, tg) == "_" || tc_name(k, tg) == "this_program": kind = .Other
+            case: kind = .Assign
+            }
+        }
+        b := tc_building(k)
+        saved: i32
+        if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), span, kind, fresh = true) }
+        if is_decl { tc_decl_one(k, s, tg, value, 0, env, nil) } else { tc_assign_one(k, s, tg, value, env) }
+        if b != nil { graph_fuse_stmt_end(b, saved) }
     }
 }

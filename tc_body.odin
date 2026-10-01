@@ -519,35 +519,40 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
 // `x = v`: the value, then the write, at the variable's type.
 tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
-    span := tree_span(t, s)
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
     if len(targets) > 1 && len(values) == 1 {
         tc_destructure(k, s, targets, values[0], false, 0, env)
         return
     }
-    if len(targets) == 1 && len(values) == 1 {
-        target := targets[0]
-        #partial switch t.tag[target] {
-        case .Field: tc_field_assign(k, s, target, values[0], env)
-        case .Index: tc_index_assign(k, s, target, values[0], env)
-        case .Slice: tc_slice_assign(k, s, target, values[0], env)
-        case .Deref: tc_deref_assign(k, s, target, values[0], env)
-        }
-        #partial switch t.tag[target] {
-        case .Field, .Index, .Slice, .Deref:
-            // (Into a constant: its storage is read-only.)
-            if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
-            return
-        }
-    }
-    if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {
-        if len(targets) == 1 { tc_unsupported(k, targets[0], "this assignment target"); return }
+    if len(targets) != 1 || len(values) != 1 {
         tc_unsupported(k, s, "this assignment")
         return
     }
-    name := tc_name(k, targets[0])
-    value := values[0]
+    tc_assign_one(k, s, targets[0], values[0], env)
+}
+
+// One target's assignment (a broadcast's copies are each one).
+tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
+    #partial switch t.tag[target] {
+    case .Field: tc_field_assign(k, s, target, value, env)
+    case .Index: tc_index_assign(k, s, target, value, env)
+    case .Slice: tc_slice_assign(k, s, target, value, env)
+    case .Deref: tc_deref_assign(k, s, target, value, env)
+    }
+    #partial switch t.tag[target] {
+    case .Field, .Index, .Slice, .Deref:
+        // (Into a constant: its storage is read-only.)
+        if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+        return
+    case .Ident:
+    case:
+        tc_unsupported(k, target, "this assignment target")
+        return
+    }
+    name := tc_name(k, target)
     if name == "_" {
         // A discard: the value checked (and built) for its own sake.
         k.hint = nil
