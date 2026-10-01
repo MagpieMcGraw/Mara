@@ -61,7 +61,6 @@ Edge_Kind :: enum u8 {
     Calls,  // a call or construct operation → the fun or struct it runs
     Runs,   // a run-defer operation → the defer block it runs
     Then,   // a run's last operation, or a scope for its entry → a run's first operation
-    Flows,  // a declaration → one its value moves into (the index of the operations' flows)
 }
 
 Edge :: struct {
@@ -69,7 +68,6 @@ Edge :: struct {
     to:      Node_Id,
     kind:    Edge_Kind,
     written: Written,
-    site:    Node_Id,   // the operation where it happens: for a flow, the write, call or return
 }
 
 // An operation's input: another operation's output. A call has one output per
@@ -622,7 +620,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     graph_link_constants(b)
     graph_settle_literals(b)
     graph_resolve_defs(b)
-    graph_link_flows(b)
+
     graph_find_consumes(g)
     // A `then` into a run that never got an operation leads nowhere.
     kept := 0
@@ -839,7 +837,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
             to = next_kept[to] or_else NO_NODE
             if to != NO_NODE { written = g.written[to] }
         }
-        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, to), kind = e.kind, written = written, site = re(new_id, e.site)})
+        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, to), kind = e.kind, written = written})
     }
     for old in stmts { append(&ng.stmts, g.stmts[old]) }
     for old in unreach { append(&ng.unreachable, g.unreachable[old]) }
@@ -1328,7 +1326,7 @@ graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
         s := &b.code.scopes[i]
         for j := len(s.defers) - 1; j >= 0; j -= 1 {
             op := graph_op(b, .Run_Defer, .Synthetic, span)
-            append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic, site = op})
+            append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic})
         }
         if s.tentative >= 0 { append(&b.fuse.marks[s.tentative].resets, graph_op(b, .Arena_Reset, .Synthetic, span)) }
     }
@@ -1386,12 +1384,12 @@ graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
 graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written) {
     if len(to.ops) > 0 {
         w := b.g.written[to.ops[0]] if to.early else written   // (as when its operation came after)
-        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = w, site = from})
+        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = w})
     } else {
         // Its place among the edges now — a branch's targets keep their order
         // (yes, then no) — and its target once the run has an operation.
         append(&to.waiting, i32(len(b.g.edges)))
-        append(&b.g.edges, Edge{from = from, to = NO_NODE, kind = .Then, written = written, site = from})
+        append(&b.g.edges, Edge{from = from, to = NO_NODE, kind = .Then, written = written})
     }
 }
 
@@ -1892,7 +1890,7 @@ graph_link_calls :: proc(b: ^Graph_Builder) {
     for c in b.calls {
         to, ok := b.g.scope_node[c.callee]
         if !ok { graph_fatal(b.g.origin[c.op], "'%s' calls '%s', which has no node", b.g.name[c.op], c.callee.name) }
-        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op], site = c.op})
+        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op]})
     }
 }
 
@@ -1956,122 +1954,6 @@ graph_link_constants :: proc(b: ^Graph_Builder) {
     for t in b.tables {
         if d, ok := b.const_decls[t.value]; ok { b.g.refers[t.global] = d }
     }
-}
-
-// The flow index: a Flows edge from each declaration a value is read from to
-// the declaration it moves into, at the operation that moves it — a write
-// (or fill, byte read), a call's arguments into its callee's params, a return
-// into its fun's results, a match arm's binding. Field-insensitive: `p.x = v`
-// flows into p.
-@(private="file")
-graph_link_flows :: proc(b: ^Graph_Builder) {
-    g := b.g
-    // Each fun's and struct's params and results, in order, and each call's callee.
-    params, results: map[Node_Id][dynamic]Node_Id
-    callee: map[Node_Id]Node_Id
-    defer {
-        for _, l in params { delete(l) }
-        for _, l in results { delete(l) }
-        delete(params)
-        delete(results)
-        delete(callee)
-    }
-    for k, id in g.kind {
-        if k != .Param && k != .Result { continue }
-        list := &params if k == .Param else &results
-        p := g.parent[id]
-        if p not_in list { list[p] = {} }
-        append(&list[p], Node_Id(id))
-    }
-    for c in b.calls { callee[c.op] = b.g.scope_node[c.callee] }
-
-    srcs: [dynamic]Node_Id
-    defer delete(srcs)
-    flow :: proc(g: ^Program_Graph, srcs: []Node_Id, to: Node_Id, site: Node_Id) {
-        if to == NO_NODE { return }
-        for s in srcs { append(&g.edges, Edge{from = s, to = to, kind = .Flows, written = g.written[site], site = site}) }
-    }
-    for id in 0 ..< b.nodes {
-        if g.kind[id] != .Op { continue }
-        op := Node_Id(id)
-        ops := graph_operands(g, op)
-        #partial switch g.op[id] {
-        case .Write, .Fill, .Byte_Read:
-            clear(&srcs)
-            for o in ops[1:] { graph_sources(g, callee, results, o, &srcs) }
-            flow(g, srcs[:], graph_root(g, ops[0]), op)
-        case .Call, .Construct:
-            to, ok := callee[op]
-            if !ok { continue }
-            ps := params[to]
-            args := ops[1:] if g.op[id] == .Construct else ops   // a construction's first operand is its destination
-            for a, i in args {
-                if i >= len(ps) { break }
-                clear(&srcs)
-                graph_sources(g, callee, results, a, &srcs)
-                flow(g, srcs[:], ps[i], op)
-            }
-        case .Return:
-            fun := graph_code_owner(g, op)
-            rs := results[fun]
-            for o, i in ops {   // (an operand for each result)
-                if i >= len(rs) { break }
-                clear(&srcs)
-                graph_sources(g, callee, results, o, &srcs)
-                flow(g, srcs[:], rs[i], op)
-            }
-        case .Variant:
-            if bound := g.refers[id]; bound != NO_NODE {
-                clear(&srcs)
-                if s := graph_root(g, ops[0]); s != NO_NODE { append(&srcs, s) }
-                flow(g, srcs[:], bound, op)
-            }
-        }
-    }
-}
-
-// The declarations a value is read from: each variable in it (a place's own
-// operands included, so `a[i]` reads a and i), and a call's result for a
-// call's output. Constants and globals name no declaration.
-@(private="file")
-graph_sources :: proc(g: ^Program_Graph, callee: map[Node_Id]Node_Id, results: map[Node_Id][dynamic]Node_Id,
-                      o: Operand, out: ^[dynamic]Node_Id) {
-    if o.op == NO_NODE { return }
-    #partial switch g.op[o.op] {
-    case .Var:
-        if r := g.refers[o.op]; r != NO_NODE && !slice.contains(out[:], r) { append(out, r) }
-    case .Call, .Construct:
-        // A call's value is its callee's result; its arguments flow into the
-        // callee's params, not into this value. (A construction's outputs are
-        // Self, then its declared results.)
-        k := int(o.out)
-        if g.op[o.op] == .Construct { k -= 1 }
-        if c, ok := callee[o.op]; ok && k >= 0 {
-            if rs, has := results[c]; has && k < len(rs) && !slice.contains(out[:], rs[k]) {
-                append(out, rs[k])
-            }
-        }
-    case .Const, .Global:
-    case:
-        for x in graph_operands(g, o.op) { graph_sources(g, callee, results, x, out) }
-    }
-}
-
-// The declaration a place belongs to: its variable, through fields,
-// elements and one pointer (field-insensitive).
-@(private="file")
-graph_root :: proc(g: ^Program_Graph, p: Operand) -> Node_Id {
-    for id := p.op; id != NO_NODE; {
-        #partial switch g.op[id] {
-        case .Var:
-            return g.refers[id]
-        case .Field, .Index, .View, .Swizzle, .Variant, .Slice, .Deref:
-            id = graph_operands(g, id)[0].op
-        case:
-            return NO_NODE
-        }
-    }
-    return NO_NODE
 }
 
 // A place as the source writes it: `o.inner.p`, `a[i]`. A temporary, or a
@@ -4319,7 +4201,7 @@ graph_dump_full :: proc(g: ^Program_Graph) {
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))
     }
-    for e in g.edges { fmt.printfln("e %d -> %d %v %v site%d", e.from, e.to, e.kind, e.written, e.site) }
+    for e in g.edges { fmt.printfln("e %d -> %d %v %v", e.from, e.to, e.kind, e.written) }
     for r in 0 ..< len(g.run_first) - 1 {
         b := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&b, "r %d:", r)
@@ -4365,10 +4247,6 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
             case .Field, .Param, .Result, .Local, .Const, .Import, .Type_Def:
                 fmt.sbprintf(&b, " : %s", type_name(t))
             }
-        }
-        // Where its value flows: to a declaration, at an operation.
-        for e in graph_out(g, id) {
-            if e.kind == .Flows { fmt.sbprintf(&b, "  ⇒ %d@%d", e.to, e.site) }
         }
     }
     if o := g.origin[id]; span_file(o) != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(span_file(o)), span_line(o)) }
