@@ -106,7 +106,7 @@ tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Spa
 
 // `bytes[i] = v`: the element's place, v into it — v's raw bytes: the
 // place a view of them as v's type.
-tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, ct, tt: Type, it: Type, env: ^Type_Scope, op_tok: Token_Id) {
+tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Type, it: Type, env: ^Type_Scope, op_tok: Token_Id) {
     span := tree_span(k.t, s)
     if op_tok != 0 {
         tc_unsupported(k, s, "a compound assignment into bytes")

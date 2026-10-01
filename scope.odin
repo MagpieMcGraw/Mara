@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -256,10 +257,11 @@ make_flat_name :: proc(prefix, name: string) -> string {
     return strings.concatenate({flat_prefix, "_", name})
 }
 
-// Resolve a user-written type name to its canonical flat map key.
-// If qualifier is non-empty, looks up the import alias to find the package.
-// Returns "" when qualifier is not an import alias (caller handles union inner types etc.).
-resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
+// A type name as written, resolved to its flat key in the table: through
+// `qualifier`, a module alias ("" when it is none — the caller handles union
+// inner types etc.); else the module that defines or exports it, from env;
+// else module pkg's.
+resolve_type_name :: proc(pkg: string, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
     if qualifier != "" {
         // Try module-qualified resolution: look up qualifier in env
         if env != nil {
@@ -280,7 +282,7 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
         for s := env; s != nil; s = s.parent_scope {
             if s.is_module {
                 if _, found := scope_defines(s, bare_name); found {
-                    return make_flat_name(c.current_package, bare_name)
+                    return make_flat_name(pkg, bare_name)
                 }
             }
             for inc in s.includes {
@@ -293,8 +295,8 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
         }
     }
     // Local fallback for purely-local names (callers without env, or names
-    // declared in the current package itself).
-    return make_flat_name(c.current_package, bare_name)
+    // declared in the module itself).
+    return make_flat_name(pkg, bare_name)
 }
 
 // Resolve a type to its underlying Scope_Body, handling pointers (auto-deref).
@@ -312,50 +314,31 @@ resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
     return nil
 }
 
-// A function's home module, reporting ambiguity when two or more used
-// modules export it — resolve_with_ambiguity's rules, for functions.
-resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> (home: string, ok: bool, ambiguous_owners: [dynamic]string) {
-    // Phase 1: own definitions in any enclosing module (always unambiguous).
-    if env != nil {
-        for s := env; s != nil; s = s.parent_scope {
-            if s.is_module {
-                if t, found := scope_defines(s, name); found {
-                    if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
-                        return c.current_package, true, nil
-                    }
-                }
-                break
-            }
+// The used modules that export function `name`, when two or more do and the
+// module itself doesn't define it: a call of it is ambiguous. (nil: it isn't.)
+fn_ambiguous_owners :: proc(env: ^Type_Scope, name: string) -> [dynamic]string {
+    // (The module's own definition is unambiguous.)
+    for s := env; s != nil; s = s.parent_scope {
+        if !s.is_module { continue }
+        if t, found := scope_defines(s, name); found {
+            if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun { return nil }
         }
+        break
     }
-    // Phase 2: gather distinct include owners exposing this fn.
-    distinct_owners: map[string]bool
-    owner_list: [dynamic]string
-    if env != nil {
-        for s := env; s != nil; s = s.parent_scope {
-            for inc in s.includes {
-                if inc == nil { continue }
-                if t, found := include_lookup(inc, name); found {
-                    if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
-                        owner := inc.name
-                        if owner not_in distinct_owners {
-                            distinct_owners[owner] = true
-                            append(&owner_list, owner)
-                        }
-                    }
+    owners: [dynamic]string
+    for s := env; s != nil; s = s.parent_scope {
+        for inc in s.includes {
+            if inc == nil { continue }
+            if t, found := include_lookup(inc, name); found {
+                if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun && !slice.contains(owners[:], inc.name) {
+                    append(&owners, inc.name)
                 }
             }
-            if s.is_module { break }
         }
+        if s.is_module { break }
     }
-    if len(owner_list) == 0 {
-        // Fall back to fun_homes (registration-time table) for sites that
-        // couldn't reach the right env, then to current_package.
-        if h, found := c.table.fun_homes[name]; found && h != "" { return h, true, nil }
-        return c.current_package, true, nil
-    }
-    if len(owner_list) == 1 { return owner_list[0], true, nil }
-    return "", false, owner_list
+    if len(owners) < 2 { return nil }
+    return owners
 }
 
 // Populate a fun's field_map from its fields array for O(1) field lookup.

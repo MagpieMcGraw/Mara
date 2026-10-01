@@ -296,8 +296,8 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     ft.node = tmpl.node
     ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one)
     saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
-    defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg
+    k.subst, k.pkg = subst, tmpl.pkg
+    defer k.subst, k.pkg = saved_subst, saved_pkg
     // (Its body's nodes its own: tc_sid.)
     saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
     k.instance_count += 1
@@ -507,8 +507,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     scope_bind(k.root, mangled, st)
     for name, bound in subst { scope_bind(st, name, bound) }
     saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
-    defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg
+    k.subst, k.pkg = subst, tmpl.pkg
+    defer k.subst, k.pkg = saved_subst, saved_pkg
     saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
     k.instance_count += 1
     k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node

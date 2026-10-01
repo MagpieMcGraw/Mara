@@ -245,14 +245,14 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
 tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
     alias := tc_text(parts[0])
     rest := tc_dotted(parts[1:])
-    if flat := resolve_type_name(k.c, rest, alias, env); flat != "" {
+    if flat := resolve_type_name(k.pkg, rest, alias, env); flat != "" {
         if st, ok := k.table.structs[flat]; ok { return st }
         if st, ok := k.table.funs[flat]; ok { return st }
         if ut, ok := k.table.unions[flat]; ok { return ut }
         if et, ok := k.table.enums[flat]; ok { return et }
         if dt, ok := k.table.distinct_types[flat]; ok { return dt }
     }
-    alias_flat := resolve_type_name(k.c, alias, "", env)
+    alias_flat := resolve_type_name(k.pkg, alias, "", env)
     if ut, ok := k.table.unions[alias_flat]; ok {
         if st := ut.variant_structs[rest]; st != nil { return st }
     }
@@ -315,12 +315,12 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
             tc_error(k, span, TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME, name, name, type_name(vt))
             return Type_Error{}
         }
-        if ft, ok := k.table.funs[resolve_type_name(k.c, name, "", env)]; ok && ft.kind == .Fun { return ft }
+        if ft, ok := k.table.funs[resolve_type_name(k.pkg, name, "", env)]; ok && ft.kind == .Fun { return ft }
         tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
         return Type_Error{}
     }
     alias, bare := tc_text(parts[0]), tc_dotted(parts[1:])
-    if flat := resolve_type_name(k.c, bare, alias, env); flat != "" {
+    if flat := resolve_type_name(k.pkg, bare, alias, env); flat != "" {
         if ft, ok := k.table.funs[flat]; ok && ft.kind == .Fun { return ft }
     }
     if vt, ok := scope_lookup(env, alias); ok {
@@ -352,7 +352,7 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
     t := k.t
     name := tc_name(k, n)
     if len(tree_list(t, t.a[n])) == 1 {
-        flat := resolve_type_name(k.c, name, "", env)
+        flat := resolve_type_name(k.pkg, name, "", env)
         if dt, ok := k.table.distinct_types[flat]; ok && is_slice_type(dt.base_type) {
             tc_error(k, tree_span(t, n), TYPE_SLICE_ALIAS_CAPACITY)
             return Type_Error{}

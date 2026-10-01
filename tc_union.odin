@@ -292,8 +292,8 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     subst := make(map[string]Type)
     for p, i in params { subst[p] = targs[i] }
     saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg, k.c.current_package = subst, tmpl.pkg, tmpl.pkg
-    defer k.subst, k.pkg, k.c.current_package = saved_subst, saved_pkg, saved_pkg
+    k.subst, k.pkg = subst, tmpl.pkg
+    defer k.subst, k.pkg = saved_subst, saved_pkg
     def_span := tree_span(t, tmpl.def)
     ut := new(Type_Union)
     ut.name, ut.source_name, ut.home_package, ut.span = make_flat_name(tmpl.pkg, mangled), mangled, tmpl.pkg, def_span

@@ -129,7 +129,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
                 }
             }
         }
-        if ft := resolve_struct_field(sd, field, k.table); ft != nil { return ft, true, 0, false }
+        if ft := resolve_struct_field(sd, field); ft != nil { return ft, true, 0, false }
         // (Its function: a value of its own, tc_field's to build.)
         if fun, has := sd.functions[field]; has { return fun, false, 0, false }
         tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
@@ -217,7 +217,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         tc_header_assign(k, s, target, value, bt, br, field, env, op_tok)
         return
     }
-    ft := resolve_struct_field(sd, field, k.table)
+    ft := resolve_struct_field(sd, field)
     place := NO_VALUE
     if ft != nil {
         k.hint = ft

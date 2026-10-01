@@ -142,7 +142,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
 // The function `l op r` calls, when an operand is no number: of the groups
 // `overload op` names, the member that fits best — its params the operands'
 // types exactly, then structurally, then a generic one's instance.
-tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Scope) -> (^Type_Scope, bool) {
+tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Scope, span: Span) -> (^Type_Scope, bool) {
     groups, has := find_operator_overload(k.c, env, op)
     if !has { return nil, false }
     best: ^Type_Scope
@@ -159,7 +159,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
                 if score > best_score {
                     actual := [2]Type{lt, rt}
                     if tc_respecializes(ft, actual[:]) {
-                        tc_unsupported_at(k, "an overload specialized to a generic struct's instance")
+                        tc_error(k, span, "an overload specialized to a generic struct's instance is not supported yet")
                         return nil, false
                     }
                     best, best_score = ft, score
@@ -210,10 +210,6 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     return ft
 }
 
-// (What this checker doesn't check yet, where no node says where.)
-tc_unsupported_at :: proc(k: ^TC, what: string) {
-    tc_error(k, {}, "tc: %s is not supported yet", what)
-}
 
 // The function `-x` calls, when x is no number: of the groups `overload -`
 // names, the one-param member that fits best.

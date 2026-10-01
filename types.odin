@@ -2011,7 +2011,7 @@ Fuse_Span_Read :: struct {
 // Resolve a field name on a struct, searching direct fields first, then
 // recursively into using-marked embedded struct fields.
 // Returns the field type, or nil if not found.
-resolve_struct_field :: proc(st: ^Scope_Body, field_name: string, table: ^SymbolTable = nil) -> Type {
+resolve_struct_field :: proc(st: ^Scope_Body, field_name: string) -> Type {
     // O(1) direct field lookup via field_map
     if idx, ok := st.field_map[field_name]; ok {
         return st.fields[idx].type_
@@ -2026,7 +2026,7 @@ resolve_struct_field :: proc(st: ^Scope_Body, field_name: string, table: ^Symbol
     for f in st.fields {
         if f.is_using {
             if inner_sd := as_scope_body(f.type_); inner_sd != nil && len(inner_sd.fields) > 0 {
-                result := resolve_struct_field(inner_sd, field_name, table)
+                result := resolve_struct_field(inner_sd, field_name)
                 if result != nil {
                     return result
                 }

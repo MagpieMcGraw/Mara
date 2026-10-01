@@ -91,7 +91,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     }
     if is_byte_buffer(ct) {
         // (Into bytes: the value's raw bytes, the element's place a view.)
-        tc_byte_write(k, s, target, value, place, ct, tt, it, env, op_tok)
+        tc_byte_write(k, s, target, value, place, tt, it, env, op_tok)
         return
     }
     vt := tc_store_at(k, value, place, env, span, op_tok, target)

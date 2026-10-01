@@ -181,7 +181,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     }
     if !ok {
         // (A type named as a value: said so.)
-        flat := resolve_type_name(k.c, name, "", env)
+        flat := resolve_type_name(k.pkg, name, "", env)
         if flat in k.table.funs || flat in k.table.enums || flat in k.table.unions {
             tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name)
         } else {
@@ -422,7 +422,7 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     }
     // (An operand no number: an `overload`'s function, when one fits.)
     if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
-        if callee, found := tc_operator_overload(k, op, lt, rt, env); found {
+        if callee, found := tc_operator_overload(k, op, lt, rt, env, span); found {
             ret := fn_primary_return(callee)
             if !build { return ret, {} }
             if b = tc_building(k); b == nil { return ret, {} }
@@ -598,7 +598,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     }
     // (A fun two modules it uses have: ambiguous.)
     if qual == nil && name in k.c.declared_funs && ft.name != "" {
-        if _, home_ok, owners := resolve_fn_home_with_ambiguity(k.c, env, name); !home_ok && len(owners) > 1 {
+        if owners := fn_ambiguous_owners(env, name); owners != nil {
             tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
             return Type_Error{}, {}
         }

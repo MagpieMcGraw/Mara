@@ -203,7 +203,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     void_type.elem = Type_Any{}
     scope_bind(main_mod, "void", void_type)
 
-    k.pkg, c.current_package = main_package, main_package
+    k.pkg = main_package
     main := tc_check_module_files(k, files, main_mod)
 
     // (Generic structs' instances: their methods, their inits — before the
@@ -766,7 +766,6 @@ tc_modules :: proc() -> map[string][]Tree_Id {
     return out
 }
 
-_ :: fmt
 
 // Whether a definition's value is a definition of its own (a fun, a type, an
 // import, …), not a constant's value.
@@ -924,7 +923,7 @@ SymbolTable :: struct {
 Checker :: struct {
     table:           ^SymbolTable,
     errors:          int,
-    current_package: string,
+
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
 
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics

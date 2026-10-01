@@ -1213,7 +1213,6 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         ra := &resolved[i]
         tag := tr.tag[arm]
         ra.is_else, ra.is_union = tag == .Arm_Else, tag == .Arm_Variant
-        body_of := Tree_Id(0)
         body: []Tree_Id
         child := new_block_scope(env)
         #partial switch tag {
@@ -1267,7 +1266,6 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             }
             if ra.variant == "" && !prechecked[i] { tc_check(k, value, env) }
         }
-        _ = body_of
         bb := b if gm != nil else nil
         blk: Graph_Block
         if bb != nil { blk = graph_fuse_arm(bb, gm, ra^, i) }
