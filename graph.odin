@@ -319,14 +319,14 @@ Graph_Builder :: struct {
     segs:    [dynamic]Graph_Segment,
     seg:     int,
     // The bodies the checker built as it checked them, by their scope, each a
-    // segment: the builder puts them in place. Why one it began failed; the
-    // body being built; MARA_FUSE=log.
+    // segment: the builder puts them in place. The body being built; the
+    // first the checker couldn't build (an internal error, reported once the
+    // check is found clean).
     fused:    map[^Type_Scope]int,
-    failed:   map[^Type_Scope]string,
     scope_of: map[Syntax_Id]^Type_Scope,   // each scope statement's, as the checker built it
     fuses:    [dynamic]^Graph_Fuse,
     fuse:     ^Graph_Fuse,
-    fuse_log: bool,
+    failure:  struct { name, reason: string, span: Span },
     // Operations made before whether they are needed was known, found not
     // to be: each is left out, and what it stood for used in its place —
     // by node, once the graph is put together (repl; KEPT where it is not),
@@ -469,9 +469,6 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     b.checked = checked
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
-    // MARA_FUSE=log: why the checker didn't build a body (one checked with
-    // errors), and how many it built.
-    b.fuse_log = os.get_env("MARA_FUSE", context.temp_allocator) == "log"
     append(&b.segs, Graph_Segment{root = NO_NODE})   // the program's own: its modules' declarations
     graph_piece_begin(b, 0)
     graph_modules(b, modules)
@@ -572,7 +569,6 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     }
     delete(b.segs)
     delete(b.fused)
-    delete(b.failed)
     delete(b.scope_of)
     for f in b.fuses { graph_fuse_free(f) }
     delete(b.fuses)
@@ -584,6 +580,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
 
 build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     defer graph_builder_free(b)
+    if f := b.failure; f.reason != "" { graph_fatal(f.span, "the checker built no graph of '%s': %s", f.name, f.reason) }
     g, checked := b.g, b.checked
     graph_index(b)
 
@@ -611,7 +608,6 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
         for d in b.drops { b.repl[d[0].op] = d[1] }
     }
     for f in b.fuses { graph_fuse_settle(b, f) }
-    if b.fuse_log { fmt.eprintfln("fuse: %d bodies built as they were checked", len(b.fused)) }
     graph_resize(g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
@@ -1008,7 +1004,6 @@ Graph_Decl :: struct {
     value:   Syntax_Id,            // .Const: its value (0: none), which its uses find it by
     generic: bool,               // .Scope, .Union: a generic's, built for each instance
     parts:   []Graph_Decl_Part,  // .Foreign: its funs; .Union: an enum's variants
-    group:   []Graph_Decl,       // .Group: each statement's own; .Block: its statements'
 }
 
 Graph_Decl_Part :: struct {
@@ -1022,8 +1017,6 @@ Graph_Decl_Form :: enum u8 {
     Import,
     Const,
     Scope,      // a fun or a struct
-    Block,
-    Group,      // several statements written as one (`a, b := 1, 2`)
     Foreign,
     Union,      // or an enum
     Type,       // a distinct type or an alias
@@ -1062,16 +1055,6 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, d: Graph_Decl, parent: Node_Id, site:
         // (A constant the checker didn't build.)
         n := graph_node(b, .Const, .Explicit, parent, d.name, type_at(declared, 0), d.span)
         if d.value != 0 { b.const_decls[d.value] = n }
-    case .Group:
-        for one, i in d.group {
-            each := declared
-            each.types = declared.types[i:i + 1] if i < len(declared.types) else nil
-            graph_decl_stmt(b, one, parent, site, each)
-        }
-    case .Block:
-        n := graph_node(b, .Block, .Explicit, parent, "block", nil, d.span)
-        for st in d.group { graph_decl_stmt(b, st, n, {kind = .Local}) }
-        graph_close(b, n)
     case .Scope:
         graph_scope_def(b, d, parent)
     case .Foreign:
@@ -1509,15 +1492,13 @@ graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Op
 }
 
 // A synthetic local of the current block, for a value that outlives a run.
+// (Storage no use types — an if-expression's of a bare literal — settles
+// with its body's: an unsettled width takes the default, as behind a
+// pointer.)
 graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node_Id {
-    // Storage no use types (an if-expression's of a bare literal): an
-    // unsettled width takes the default, as behind a pointer.
-    if f := b.fuse; f != nil {
-        id := graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
-        append(&f.slots, id)
-        return id
-    }
-    return graph_node(b, .Local, .Synthetic, b.code.block, name, graph_settled(t, pointee = true), span)
+    id := graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
+    append(&b.fuse.slots, id)
+    return id
 }
 
 // A plain place walked once more (another run): the operations that name it
@@ -1726,11 +1707,8 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
 @(private="file")
 graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
     if !is_infer(t) { return }
-    if f := b.fuse; f != nil {
-        append(&f.consts, id)   // its width is known when its body's are
-    } else if !is_infer(b.g.type_[id]) {
-        append(&b.g.settled, id)   // a width its `:=` adopted
-    }
+    if b.fuse == nil { graph_fatal(b.g.origin[id], "a constant of open width outside any body") }
+    append(&b.fuse.consts, id)   // its width is known when its body's are
 }
 
 // A constant operation, with its value when it has one.
@@ -2151,10 +2129,7 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, name: string, span:
     // Built by the checker: put in place. (The graph is built from a clean
     // check: every body was.)
     si, fused := b.fused[ts]
-    if !fused {
-        why, began := b.failed[ts]
-        graph_fatal(span, "the checker built no graph of '%s'%s", graph_scope_name(ts, name, written), fmt.tprintf(": %s", why) if began else "")
-    }
+    if !fused { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
     graph_fuse_place(b, si, parent, graph_scope_name(ts, name, written))
 }
 
@@ -2273,9 +2248,14 @@ graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
 }
 
 // What the checker couldn't build: the rest of the body is checked without
-// building, its segment is dropped, and the builder stops at its scope.
+// building, and its segment dropped. A clean check's graph is never built
+// then: the first such body is reported instead.
 graph_fuse_fail :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, reason: string) {
-    if f.failed == "" { f.failed = reason }
+    if f.failed != "" { return }
+    f.failed = reason
+    if b.failure.reason == "" {
+        b.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else b.g.name[f.root], reason, b.g.origin[f.root]}
+    }
 }
 
 // The body is checked: finish it, settle its types and keep it for the
@@ -2296,10 +2276,6 @@ graph_fuse_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
         append(&b.fuses, f)   // settled when the graph is put together
         return
     }
-    if b.fuse_log {
-        fmt.eprintfln("fuse no: %s: %s", f.ts.name if f.ts.name != "" else b.g.name[f.root], f.failed)
-    }
-    b.failed[f.ts] = f.failed
     graph_fuse_free(f)
 }
 
@@ -3770,8 +3746,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Fuse {
 }
 
 // Its value checked, of type t: its code ends, and it waits to be put where
-// it is written. One not built (its check found errors) is left out: its
-// declaration is made where it is written, as a bare one.
+// it is written. One not built is left out (graph_fuse_fail).
 graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, t: Type) {
     d := f.const_decl
     if f.failed == "" { graph_fuse_typed(b, f.root, t) }
@@ -3788,7 +3763,6 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, t: Type) {
         append(&b.fuses, f)   // settled when the graph is put together
         return
     }
-    if f.failed != "errors" { graph_fatal(d.span, "the checker built no graph of the constant '%s': %s", d.name, f.failed) }
     delete_key(&b.const_decls, d.value)
     graph_fuse_free(f)
 }
