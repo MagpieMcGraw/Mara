@@ -118,6 +118,10 @@ tc_validate_allocator :: proc(k: ^TC) {
         }
     }
     k.table.scope_allocator_type = alloc
+    // (The program's struct holds it: its field, a placeholder until now.)
+    if prog, ok := k.table.funs["Program"]; ok && len(prog.fields) > 0 && prog.fields[0].name == "scope_allocator" {
+        prog.fields[0].type_ = alloc
+    }
     if k.arena_size == 0 { return }
     env := k.arena_env if k.arena_env != nil else k.root
     if n, is_const := tc_comptime_int(k, k.arena_size, env); is_const {

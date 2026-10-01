@@ -190,6 +190,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.home_package = main_package
         prog_type.kind = .Struct
         if table.has_scope_allocator {
+            // (Its type the arena's, once that is found: tc_validate_allocator.)
             append(&prog_type.fields, Struct_Type_Field{name = "scope_allocator", type_ = Type_Any{}})
             prog_type.field_map["scope_allocator"] = 0
         }

@@ -250,8 +250,9 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             if pg.written[id] == .Synthetic && llvm_scalar(t) && llvm_holds(e, id) { e.held[id - e.node] = true }
             if pg.written[id] == .Synthetic && llvm_slice(t) != nil && llvm_holds_header(e, id) { e.hdr[id] = {} }
         case .Field:
-            // The program's struct is set up by main's entry, never
-            // constructed (graph: Code.managed): its fields, nothing.
+            // The program's struct is set up by main's entry (`this_program =
+            // Program(…)` names the arena), never constructed: its fields,
+            // nothing.
             if e.ctor && e.ft == (e.g.checked.table.funs["Program"] or_else nil) { continue }
             // A constructor's field: its place in Self, first thing in the entry.
             t := pg.type_[id]

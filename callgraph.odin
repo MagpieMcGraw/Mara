@@ -42,11 +42,6 @@ Call_Graph :: struct {
     scc_of:    [dynamic]int,
     sccs:      [dynamic][dynamic]int,
 
-    // Reachable from the program entry (`main`) via resolved/dispatch edges.
-    // reachable[n] == false on a source function = dead-code candidate. (Library
-    // functions live in the graph too, so "dead in this program" is a per-build
-    // property, not "delete it" — a warning would gate on the main package.)
-    reachable: [dynamic]bool,
 
     // Purity summary (cg_compute_purity): pure[n] == false means the function
     // directly or transitively hits the outside world (IO / foreign). The first
@@ -108,54 +103,19 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         if k != .Op || pg.op[id] != .Print { continue }
         if caller := graph_caller(pg, Node_Id(id)); caller != nil { effectful[caller] = true }
     }
-    // Completeness: intern every source function as a node, so a call-free
-    // function (neither calls nor is called) is still a node — reachability/DCE
-    // needs it (uncalled IS the thing DCE flags). Foreign/intrinsic have no body
-    // to analyze and are reachable by definition (external entry), so skip them.
+    // Every source function a node, a call-free one (neither calls nor is
+    // called) too: the purity count is of all of them. Foreign and intrinsic
+    // ones have no body to analyze.
     for _, cs in checked.functions {
         if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
             cg_node(&g, cs)
         }
     }
     cg_compute_sccs(&g)
-    cg_compute_reachability(&g)
+
     cg_compute_purity(&g, effectful)
     cg_dump_purity(&g)
     return g
-}
-
-// Mark every node reachable from the program entry (`main`) by a forward walk
-// over the resolved/dispatch call edges. Leaves all-false when there's no `main`
-// (a library / -shared build).
-//
-// CALL-reachability is NOT liveness — remaining seams make a LIVE function read
-// as call-unreachable, so this is a building block, not a drop-in DCE:
-//   1. opaque calls (fn-typed-param / indirect) aren't edges (§12 "honest seam").
-//   2. byte-read placement (`x : Head = #big_endian bytes[off]`) reinterprets a
-//      struct from bytes WITHOUT running its constructor — correctly no edge, but
-//      the struct is still TYPE-used (that's the type-dependency graph, not this).
-// (Bracket default-init `Foo{}` DOES run the ctor and IS an edge: a construct
-// operation. That was the Megastruct/Camera gap on Pounce.mara:83.)
-cg_compute_reachability :: proc(g: ^Call_Graph) {
-    resize(&g.reachable, len(g.nodes))
-    root := -1
-    for s, i in g.nodes {
-        if s.source_name == "main" { root = i; break }
-    }
-    if root < 0 { return }
-    stack: [dynamic]int
-    defer delete(stack)
-    append(&stack, root)
-    g.reachable[root] = true
-    for len(stack) > 0 {
-        v := pop(&stack)
-        for w in g.out_edges[v] {
-            if !g.reachable[w] {
-                g.reachable[w] = true
-                append(&stack, w)
-            }
-        }
-    }
 }
 
 // True when node `n` is recursive: it's in a multi-node SCC (mutual recursion)

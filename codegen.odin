@@ -102,7 +102,7 @@ Codegen :: struct {
     arena_reset_name: string,                     // flat name for the arena reset function
     arena_new_name:   string,                     // flat name for the arena new function
     arena_alloc_has_debug: bool,                  // true if alloc() takes name/span debug params
-    ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
+
     // Overflow-checking intrinsics used (for declaration at end of module)
     overflow_intrinsics: map[string]bool,
     // `llvm.bswap.iN` widths used by `#big_endian` byte-buffer reads.
@@ -654,7 +654,6 @@ Module_Task :: struct {
 
     // Outputs — populated by the worker proc
     out:                 strings.Builder,
-    string_literals:     map[string]string,
     string_decls:        [dynamic]string,
     overflow_intrinsics: map[string]bool,
     bswap_intrinsics:    map[int]bool,
@@ -700,7 +699,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     if buf, ok := local.module_outs[task.module_name]; ok {
         task.out = buf
     }
-    task.string_literals     = local.string_literals
+
     task.string_decls        = local.string_decls
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
@@ -1764,72 +1763,16 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     //     will pass a Context at runtime).
     g.context_enabled = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
     if g.context_enabled && checked.table.scope_allocator_type != nil {
+        // The arena: a struct constructed with its size (`Arena_Debug(cap)`),
+        // what an arena does its functions.
         alloc_type := checked.table.scope_allocator_type
-        // Find the arena (the struct that holds the bump offset / base buffer).
-        //
-        // Two forms supported:
-        //   - Legacy nested: allocator has types["Arena"] → inner arena struct.
-        //   - Flat (Zig-style): the allocator class itself IS the arena.
-        arena_key: string
-        arena_sd: ^Scope_Body
-        arena_ft: ^Type_Scope // only set if arena is a Type_Scope (has params)
-        if inner_t, has_inner := alloc_type.types["Arena"]; has_inner {
-            arena_key = type_flat_name(inner_t)
-            if inner_ts, inner_ts_ok := inner_t.(^Type_Scope); inner_ts_ok {
-                arena_sd = &inner_ts.sd
-                arena_ft = inner_ts
-            } else if arena_ss, arena_ss_ok := checked.table.structs[arena_key]; arena_ss_ok {
-                arena_sd = &arena_ss.sd
-            } else if arena_sf, arena_sf_ok := checked.table.funs[arena_key]; arena_sf_ok {
-                arena_sd = &arena_sf.sd
-                arena_ft = arena_sf
-            }
-        } else {
-            // Flat form: allocator class is the arena itself
-            arena_key = alloc_type.name
-            arena_sd = &alloc_type.sd
-            arena_ft = alloc_type
-        }
-        _ = arena_sd // keep as reference; codegen may read it elsewhere via the key
-
-        // Get function names from the allocator's functions
+        g.arena_new_name = alloc_type.name
         if fn, ok := alloc_type.functions["alloc"]; ok && fn != nil { g.arena_alloc_name = fn.name }
         if fn, ok := alloc_type.functions["mark"];  ok && fn != nil { g.arena_mark_name  = fn.name }
         if fn, ok := alloc_type.functions["reset"]; ok && fn != nil { g.arena_reset_name = fn.name }
-        // Constructor: either new() function, or the Arena type itself if it has params
-        if new_fn, ok := alloc_type.functions["new"]; ok && new_fn != nil {
-            g.arena_new_name = new_fn.name
-        } else if arena_ft != nil && len(arena_ft.params) > 0 {
-            g.arena_new_name = arena_key  // Arena constructor (e.g. Arena_Debug(cap))
-        } else {
-            g.arena_new_name = alloc_type.name
-        }
-
-        // Check if alloc() takes debug params (name/span) beyond (arena, size)
+        // (alloc() may take debug params, name and span, past (arena, size).)
         if alloc_cf, af_ok := checked.functions[g.arena_alloc_name]; af_ok {
             g.arena_alloc_has_debug = len(alloc_cf.cg_params) > 2
-        }
-    }
-
-    // Patch the synthesized Program global's scope_allocator field with the
-    // concrete arena type (checker stamped Type_Any as a placeholder; we now
-    // have the resolved allocator type from validate_scope_allocator). The
-    // LLVM struct layout reads the field types straight from this scope, so
-    // the patched type drives the global's storage size.
-    if g.context_enabled && checked.table.scope_allocator_type != nil {
-        if prog_st, prog_ok := checked.table.funs["Program"]; prog_ok {
-            alloc_type := checked.table.scope_allocator_type
-            arena_type: Type
-            if inner_t, has_inner := alloc_type.types["Arena"]; has_inner {
-                arena_type = inner_t
-            } else {
-                // Flat form: allocator type IS the arena type
-                arena_type = alloc_type
-            }
-            // Field 0 is "scope_allocator" — replace the Type_Any placeholder.
-            if len(prog_st.fields) > 0 && prog_st.fields[0].name == "scope_allocator" {
-                prog_st.fields[0].type_ = arena_type
-            }
         }
     }
 
@@ -2551,7 +2494,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
     {
         ctx_alloca := "@__mara_program_storage"
         emit_raw(g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
-        g.ctx_alloca = ctx_alloca
+
 
 
         // Arena init (if scope allocator is active).

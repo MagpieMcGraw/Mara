@@ -430,7 +430,6 @@ Code :: struct {
     loops:  [dynamic]Loop,
     tuples: map[Syntax_Id]Node_Id,   // a default's shared source call → its operation
     constructed: Node_Id,         // the last construction's operation (its outputs past Self: a fallible one's err)
-    managed: bool,                // Program's: main sets up its storage, its fields build no code
 }
 
 @(private="file")
@@ -3792,10 +3791,6 @@ graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, int
     // An intrinsic's body is generated at each call: no code of its own.
     if intrinsic { return gc }
     gc.code = graph_code_begin(b, n)
-    // The program's struct is the compiler's: main's entry sets up its
-    // storage (`this_program = Program(…)` names the arena), and nothing
-    // constructs it.
-    b.code.managed = kind == .Struct && ts == (b.checked.table.funs["Program"] or_else nil)
     graph_scope_open(b, n, span)
     return gc
 }
