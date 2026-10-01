@@ -1,0 +1,17 @@
+module cstring_field_neg
+//@ expect-fail: `cstring` is the C boundary type
+
+// `cstring` is for foreign signatures only. Since the old checker went, only
+// a local declaration was refused: a struct field or a Mara fun's param or
+// result of it compiled.
+
+use mara.core
+
+Holder :: struct {
+	s: cstring
+}
+
+main :: fun() {
+	h : Holder
+	print(h.s == h.s)
+}
