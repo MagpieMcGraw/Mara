@@ -1,5 +1,7 @@
 package mara
 
+import "core:strings"
+
 // Types as written (the flat tree's type nodes), resolved: a keyword to its
 // primitive, a name through the scope and the table, a pointer, an array.
 
@@ -191,6 +193,46 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         }
     case .Ident:
         if kc, ok := k.consts[tc_name(k, n)]; ok { return tc_comptime_int(k, kc.value, env) }
+    }
+    return 0, false
+}
+
+// A number as written — or an operation of numbers — its value: no
+// constant's name (a span's bounds, its size checked when they are numbers).
+tc_number_int :: proc(k: ^TC, n: Tree_Id) -> (int, bool) {
+    t := k.t
+    if n == 0 { return 0, false }
+    #partial switch t.tag[n] {
+    case .Number:
+        text := tc_text(t.main[n])
+        if strings.index_byte(text, '.') >= 0 { return 0, false }
+        _, i, err := parse_number_text(text)
+        return int(i), err == .None
+    case .Paren:
+        return tc_number_int(k, Tree_Id(t.a[n]))
+    case .Unary:
+        v, ok := tc_number_int(k, Tree_Id(t.a[n]))
+        if !ok { return 0, false }
+        #partial switch build_tokens[t.main[n]].kind {
+        case .Minus: return -v, true
+        case .Tilde: return ~v, true
+        }
+    case .Binary:
+        l, l_ok := tc_number_int(k, Tree_Id(t.a[n]))
+        r, r_ok := tc_number_int(k, Tree_Id(t.b[n]))
+        if !l_ok || !r_ok { return 0, false }
+        #partial switch build_tokens[t.main[n]].kind {
+        case .Plus:        return l + r, true
+        case .Minus:       return l - r, true
+        case .Star:        return l * r, true
+        case .Slash:       if r != 0 { return l / r, true }
+        case .Modulo:      if r != 0 { return l % r, true }
+        case .Shift_Left:  if r >= 0 { return l << uint(r), true }
+        case .Shift_Right: if r >= 0 { return l >> uint(r), true }
+        case .Ampersand:   return l & r, true
+        case .Pipe:        return l | r, true
+        case .Tilde:       return l ~ r, true
+        }
     }
     return 0, false
 }

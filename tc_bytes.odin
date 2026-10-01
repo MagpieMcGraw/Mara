@@ -158,3 +158,44 @@ tc_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
     graph_fuse_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
     b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
 }
+
+// Into a span of bytes: a value no array is its raw bytes — plain data, as
+// many as the span has when its bounds are numbers — and the view's type is
+// its own; an array's elements are copied (of a width: no untyped ones).
+tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Span) -> Type {
+    shaped := is_array_shaped(vt)
+    if !shaped {
+        if why := byte_slice_reason(k.c, vt); why != "" { tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why) }
+    }
+    if fa, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+        tc_error(k, span, TYPE_BYTE_BUFFER_COPY_UNTYPED, fa.size)
+    }
+    if shaped { return nil }
+    view := solidify_type(vt)
+    lo, lo_ok := tc_number_int(k, lo_n)
+    hi, hi_ok := tc_number_int(k, hi_n)
+    if size := checker_type_byte_size(view); lo_ok && hi_ok && hi - lo != size {
+        msg := TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE if is_byte_fixed_array(tt) else TYPE_BYTE_SLICE_WRITE_BYTES_SLICE
+        tc_error(k, span, msg, type_name(view), size, hi - lo)
+    }
+    return view
+}
+
+// The write into bytes: the target the value's type says — the view at lo,
+// as that type (`view`), else the span — then the value into it, at the
+// bytes' type.
+tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Fused, gs: ^Graph_Span_Target, tt, view: Type,
+                           void: bool, span: Span) {
+    b := tc_building(k)
+    if b == nil { return }
+    if void {
+        tc_fail(k, "void written into bytes")
+        return
+    }
+    place, ok := graph_fuse_span_target_end(b, gs, view, span)
+    if !ok {
+        tc_fail(k, "a span's end that branches, viewed")
+        return
+    }
+    tc_store(k, value, vt, r, Dest{kind = .At, at = place, type_ = tt}, span, settle = true)
+}

@@ -345,6 +345,8 @@ tc_is_place_form :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 // `a[lo:hi] = v`: the target's slice — its collection's place (a plain
 // place, checked first), its bounds — then the value into its elements.
+// Into bytes, a value no array is written as its own type at lo — a view —
+// known once it is checked: both built, one left out (tc_byte_span_write).
 tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     tr := k.t
     span := tree_span(tr, s)
@@ -361,17 +363,14 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         b = nil
     }
     tt: Type
-    coll := NO_VALUE
+    coll, from := NO_VALUE, 0
     if b != nil {
+        from = b.nodes
         r: Fused
         tt, r = tc_expr(k, base_n, env, .Place)
         coll = r.v
     } else {
         tt = tc_check(k, base_n, env)
-    }
-    if is_byte_buffer(tt) {
-        tc_unsupported(k, target, "a write into a span of bytes")
-        return
     }
     st: Type
     if elem := index_elem_type(tt); elem != nil {   // (the target names a run of elements)
@@ -379,15 +378,34 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_set_type(k, target, st)
     }
     build := b != nil
+    bytes := build && tc_building(k) != nil && is_byte_buffer(tt)
+    gs: Graph_Span_Target
+    if bytes { gs = graph_fuse_span_target(b, coll, tt, false, from, span) }
     lt, ht: Type = Type_Any{}, Type_Any{}
     lo, hi := NO_VALUE, NO_VALUE
-    if lo_n != 0 { lt, lo = tc_bound(k, lo_n, env, .Explicit, sl_span, build) }
+    if lo_n != 0 { lt, lo = tc_bound(k, lo_n, env, .Explicit, sl_span, build, raw = bytes) }
+    if bytes && tc_building(k) != nil { graph_fuse_span_target_hi(b, &gs, lo, sl_span) }
     if hi_n != 0 { ht, hi = tc_bound(k, hi_n, env, .Explicit, sl_span, build) }
     place := NO_VALUE
-    if b = tc_building(k); build && b != nil {
+    if b = tc_building(k); bytes && b != nil {
+        graph_fuse_span_target_ops(b, &gs, hi, st, false, sl_span, span)
+    } else if build && b != nil {
         place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_fuse_base_place(b, coll, tt, false, sl_span), lo, hi)
     }
-    vt := tc_store_at(k, value, place, env, span)
+    vt: Type
+    r: Fused
+    void := false
+    if bytes {
+        // (The value first, of no place yet: what builds in place, in a
+        // temporary.)
+        if void = tc_is_void(k, value); void || tc_building(k) == nil {
+            vt = tc_check(k, value, env)
+        } else {
+            vt, r = tc_expr(k, value, env, .Into, dest = Dest{kind = .At, at = NO_VALUE}, temp = true, temp_span = span)
+        }
+    } else {
+        vt = tc_store_at(k, value, place, env, span)
+    }
     if !is_numeric(lt) && !is_any(lt) {
         tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))
     } else if !coerces_to_slice_width(lt) {
@@ -400,6 +418,11 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     }
     if pname, immutable := tc_write_root_param(k, target, env); immutable {
         tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
+    }
+    if is_byte_buffer(tt) {
+        view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span)
+        if bytes { tc_byte_span_write(k, value, vt, r, &gs, tt, view, void, span) }
+        if view != nil { return }
     }
     fa, is_array := tt.(^Type_Fixed_Array)
     if !is_array { return }

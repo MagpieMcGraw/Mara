@@ -24,10 +24,13 @@ booltest
 branchok
 broadcast_clones
 bug1
+bug2
 byte_fill_bounds
 byte_slice_index_neg
 byte_slice_read_neg
 byte_slice_write_neg
+byte_span_literal
+byte_span_untyped_neg
 byte_view_negative
 byte_view_wide_neg
 byte_views
