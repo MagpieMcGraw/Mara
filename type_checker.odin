@@ -29,7 +29,7 @@ Type :: union {
     ^Type_Union,
     ^Type_Distinct,   // named wrapper around another type (same layout, different identity)
     Type_Const_Int,      // compile-time integer value — used as const generic param (e.g., n=256)
-    Type_Runtime_Size,   // runtime-sized const generic param (e.g., String(n) where n is a variable)
+
     Type_Any,            // for opaque pointer elements only (ptr → ^Type_Ptr{elem=Type_Any{}})
     Type_Void,           // zero-sized "nothing here" — used as the default for `~T`
                          //   shape-constrained generic params. Satisfies any `~T`
@@ -49,9 +49,7 @@ Type_Byte :: struct {}
 Type_Const_Int :: struct {
     value: int,  // compile-time integer value used as const generic parameter
 }
-Type_Runtime_Size :: struct {
-    expr: Expr,  // runtime expression for size (evaluated at codegen time)
-}
+
 Type_Any :: struct {}
 Type_Void :: struct {}
 Type_Error :: struct {}
@@ -89,8 +87,7 @@ Type_Partial_Array :: struct {
 Struct_Type_Field :: struct {
     name:          string,
     type_:         Type,
-    default_value: Expr, // nil if no default
-    default_node:  Tree_Id, // the new checker's (tc.odin): its default in the flat tree; 0 if none
+    default_node:  Tree_Id, // its default in the flat tree; 0 if none
     default_slot:  Maybe(int), // ... one of a group's one value (`x, y := f()`): f's result there, else the value
     is_using:      bool,
 }
@@ -145,14 +142,9 @@ Scope_Body :: struct {
                              // headers point at &struct.backing[offset] using the struct's
                              // own address (correct under RVO; stale after a downstream copy).
 
-    // Back-reference to the declaring AST node (the `fun`/`struct`/`class`
-    // statement). Set at registration alongside the fun_asts entry. nil for
-    // types with no single source statement (foreign decls, the synthetic
-    // Program global, etc.). Lets a resolved call reach the callee's body by
-    // pointer instead of re-keying fun_asts by name.
-    ast:            ^Stmt_Scope,
-    // Its definition in the flat tree (a Fun_Def, a Struct_Def), when the
-    // new checker made it (tc.odin). 0 otherwise.
+    // Its definition in the flat tree (a Fun_Def, a Struct_Def). 0 for types
+    // with no single source statement (foreign decls, the synthetic Program
+    // global, etc.).
     node:           Tree_Id,
 
     // Signature (field) resolution state — memoizes check_scope_body's
@@ -182,9 +174,6 @@ Scope_Body :: struct {
     // env-pointer cleanup.)
     functions:      map[string]^Type_Scope, // bare name -> callable fun/struct
     types:    map[string]Type,         // bare name -> nested type (struct/enum/union/distinct)
-    // Class-internal `name :: value` constants. Tracked separately from
-    // functions because constants are AST-level values, not Types.
-    consts:         map[string]^Stmt_Define,
 
     // Bare-`include`d modules' durable scopes, visible from this scope (a file
     // scope holds that file's private includes; a module scope holds re-exports).
@@ -205,7 +194,7 @@ Scope_Body :: struct {
     // body. checked.functions points straight at the ^Type_Scope — no wrapper
     // carrying a parallel copy of the AST. Populated at extract time (check
     // phase, stable allocator) so codegen reads them directly.
-    body:                 [dynamic]Stmt,    // the scope's runtime statements (a struct's are its field decls)
+
     origin:               Function_Origin,  // Source / Intrinsic / Foreign — codegen dispatch
     body_span:            Span,             // span of the declaring statement (diagnostics)
     is_exposed:           bool,             // `#expose` → dllexport linkage + unmangled symbol
@@ -294,31 +283,29 @@ Type_Scope :: struct {
 
 // Whether a param or a field has a default.
 field_has_default :: proc(f: Struct_Type_Field) -> bool {
-    return f.default_value != nil || f.default_node != 0
+    return f.default_node != 0
 }
 
 // Whether a scope is written in the source — a fun, a struct, an intrinsic, an
 // instance of one: what the analyses can follow into.
 scope_is_written :: proc(ts: ^Type_Scope) -> bool {
-    return ts.ast != nil || ts.node != 0
+    return ts.node != 0
 }
 
 // Whether a scope is an intrinsic: its body generated at each call.
 scope_is_intrinsic :: proc(ts: ^Type_Scope) -> bool {
-    if ts.node != 0 { return scope_view(&build_tree, ts.node).intrinsic != 0 }
-    return ts.ast != nil && ts.ast.is_intrinsic
+    return ts.node != 0 && scope_view(&build_tree, ts.node).intrinsic != 0
 }
 
 // Whether a scope's body is written empty.
 scope_body_is_empty :: proc(ts: ^Type_Scope) -> bool {
-    if ts.node != 0 { return len(scope_view(&build_tree, ts.node).body) == 0 }
-    return len(ts.body) == 0
+    return ts.node == 0 || len(scope_view(&build_tree, ts.node).body) == 0
 }
 
 // Whether a distinct slice type sizes its own storage (`String ::
-// type([, 0]utf8(128))`: its default capacity).
+// distinct [:128]utf8`: its default capacity).
 distinct_is_sized :: proc(dt: ^Type_Distinct) -> bool {
-    return dt.default_cap_expr != nil
+    return dt.default_cap > 0
 }
 
 // Primary return type — the only return for single-return funs, the first for
@@ -508,8 +495,7 @@ Type_Distinct :: struct {
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     span:             Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     base_type:        Type,    // the underlying type (transparent at codegen level)
-    default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
-    default_cap:      int,     // ... its value, once checking is done
+    default_cap:      int,     // a sized-slice alias's capacity when a declaration omits `(N)`; 0: none
     is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
 }
 
@@ -525,85 +511,6 @@ Target_OS :: enum {
 // ---------------------------------------------------------------------------
 // Generic templates — stored during registration, instantiated on use
 // ---------------------------------------------------------------------------
-
-Generic_Template :: struct {
-    name:           string,
-    generic_params: [dynamic]Generic_Param,
-    ast:            ^Stmt_Scope,
-    home_package:   string,
-    env:            ^Type_Scope,   // where it is defined: a struct instance's body is checked there
-}
-
-Broadcast_Field :: struct {
-    name: string,
-    span: Span,
-}
-
-// A generic struct's instance, its body waiting to be checked
-// (check_struct_instances).
-Struct_Instance :: struct {
-    tmpl:  Generic_Template,
-    st:    ^Type_Scope,
-    subst: map[string]Type,
-    defs:  [dynamic]Stmt,   // its methods (and nested types): its own copies
-}
-
-// Parallel template for `Name :: union($T: type) { ... }`. Kept separate from
-// Generic_Template so the existing struct/fun monomorphization path stays
-// untouched; instantiate_generic_union handles unions independently.
-Generic_Union_Template :: struct {
-    name:           string,
-    generic_params: [dynamic]Generic_Param,
-    ast:            ^Stmt_Union_Def,
-    home_package:   string,
-}
-
-// ---------------------------------------------------------------------------
-// Resolved names — the result of name resolution
-// ---------------------------------------------------------------------------
-
-Resolved_Name :: union {
-    Resolved_Enum_Variant,
-    Resolved_Union_Variant,
-    Resolved_Union_Tag,
-    Resolved_Union_Pad,
-    Resolved_Constant,
-    Resolved_Func,
-}
-
-Resolved_Enum_Variant :: struct {
-    enum_name: string,    // "Color"
-    variant:   string,    // "Red"
-    value:     int,       // 0
-}
-
-Resolved_Union_Variant :: struct {
-    union_name:  string,  // "Shape"
-    variant:     string,  // "Circle"
-    tag_value:   int,     // 0
-    struct_name: string,  // "Shape_Circle"
-}
-
-// `union_value.tag` accessor — reads the discriminant of a union value as
-// its corresponding `<Union>_Tag` enum value.
-Resolved_Union_Tag :: struct {
-    union_name: string,  // flat name, e.g. "mara_sdl_Event"
-}
-
-// `union_value.pad` accessor — reads the typed padding bytes between the tag
-// and the payload, as the type declared by `union(... pad T ...)`. Useful for
-// inspecting reserved bytes the host writes (e.g. SDL3's reserved u32).
-Resolved_Union_Pad :: struct {
-    union_name: string,
-}
-
-// A reference (however spelled — bare `X`, `Module.X`, `Self.X`) that the checker
-// has resolved to a single constant. Codegen just inlines `value_expr`; it never
-// looks a constant up by name or knows anything about module qualifiers.
-Resolved_Constant :: struct {
-    value_expr: Expr,   // the constant's value expression — inline this
-    int_value:  int,    // computed integer (fixed-array .len/.cap) when value_expr == nil
-}
 
 Resolved_Func :: struct {
     name:         string,        // flat name: "add" or "math_add" — the codegen symbol key
@@ -1185,34 +1092,19 @@ SymbolTable :: struct {
     // `err` type with a globally unique value.
     error_set_counter: int,
 
-    // Generic templates (unified — data-type and callable)
-    generic_templates:       map[string]Generic_Template,
-    generic_union_templates: map[string]Generic_Union_Template,
-
-    // Constants
-    constants:       map[string]Expr,
-    // bare-name -> owning module (flat package name), or "" if multiple
-    // modules define the same bare constant name. Bare-name uses error when
-    // this maps to "" — the user must qualify with `Module.const_name`.
-    constant_owners: map[string]string,
-
     // Name resolution helpers
     variant_to_enum: map[string]string,
 
     // Monomorphization cache
     mono_cache:       map[string]^Type_Scope,        // unified: both data and callable monomorphizations
     mono_union_cache: map[string]^Type_Union,        // monomorphized union templates (Maybe(int) -> ^Type_Union)
-    mono_fun_cache:   map[string]string,
-    mono_fun_bodies: map[string][dynamic]Stmt,    // cloned AST bodies per monomorphization
-    fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
-    def_names:      map[Stmt_Id]string,              // a nested def (scope, constant) -> the `<Parent>_<name>` it registers under
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
     // Config
     has_scope_allocator: bool,
     scope_allocator_name: string,        // bare name from source ("Arena_Basic")
     scope_allocator_type: ^Type_Scope,     // resolved allocator fun (Arena_Basic, Arena_Debug, etc.)
-    scope_allocator_args: [dynamic]Expr, // constructor args from Arena_Basic(192 * MB)
+
     scope_allocator_size: Maybe(i64),    // the first: the arena's size (a constant: nothing but constants exists before main runs)
 
     // Shared (DLL/SO) build with `#expose` fn(s) present: the host promises
@@ -1228,108 +1120,30 @@ SymbolTable :: struct {
 }
 
 // ---------------------------------------------------------------------------
-// Checker state — transient state used during a single checking pass.
-// Holds a pointer to the shared SymbolTable plus per-check mutable state.
+// Checker state: the shared SymbolTable, what checking produces, and the
+// build's settings. (The checker's own walk state is TC's: tc.odin.)
 // ---------------------------------------------------------------------------
 
 Checker :: struct {
-    // MARA_CHECK_ONCE=1 (debug builds): each statement of a body's code is
-    // numbered, and an expression checked twice within one is reported — the
-    // walk that builds the graph must meet each once (design/graph_retrofit.md,
-    // phase 4).
-    once_stmt:       int,
-    once_seen:       map[Expr_Id][2]int,   // an expression → the statement it was last checked in, and how often
-    once_on:         bool,
-    // A method call's receiver, checked to find its struct: the argument it
-    // becomes is not checked again (check_call_args), one check per node.
-    receiver:        Expr,
-    receiver_type:   Type,
-    receiver_fused:  Fused,              // (building) what its check built
-    receiver_want:   Maybe(Written),     // (building) a qualified call's: build its receiver
-    // The program graph's builder, made before checking: the bodies it can,
-    // the checker builds as it checks them (graph_fuse_begin). What the walk
-    // asks of the next expression it checks (fuse_expr), what the one being
-    // checked was asked (fuse_asked), what it built; the call whose arguments
-    // are being checked.
-    gb:              ^Graph_Builder,
-    want:            Fuse_Want,
-    want_written:    Written,
-    want_dest:       Dest,
-    want_temp:       bool,             // (with .Into) the destination holds a value: build in a temporary
-    want_span:       Span,             // … at the store's span
-    asked:           Fuse_Want,
-    asked_written:   Written,
-    asked_dest:      Dest,
-    asked_temp:      bool,
-    asked_span:      Span,
-    lit:             ^Fuse_Lit,        // the literal whose fields are being built
-    fused:           Fused,
-    call:            ^Fuse_Call,
-    compound:        Graph_Compound,   // a compound assignment's target and the place built for it
-    byte_addrs:      map[Expr_Id][2]Node_Id,   // `&bytes[i]` built: its address and element operations
-    size_of_types:   map[Expr_Id]Type,  // each size_of's measured type, as checked
-    overrides:       map[Expr_Id]bool,   // `var{...}` statements: a variable's fields written in place
-    // What a dot-ref stands for when it is not a variant — `.len` / `.cap` in
-    // a subscript is the base's own field (`a.fonts[.len]` → `a.fonts.len`),
-    // checked and built in the ident's place (lower_subscript_dots).
-    dot_refs:        map[Expr_Id]Expr,
-    assign_types:    map[Stmt_Id]^Assign_Types,   // what each assignment's check found
-    define_types:    map[Stmt_Id]^Assign_Types,   // ... each constant's (its var and env types)
-    destructure_types: map[Stmt_Id]^[dynamic]Type,   // ... each destructure's, per name
-    decls:           map[Stmt_Id]^Decl_Lowered,   // each declaration as the checker reads it
-    broadcasts:      map[Stmt_Id]^[dynamic]Stmt,   // a broadcast's copies, one per target
-    calls:           map[Expr_Id]^Call_Lowered,   // each call as the checker resolved it
-    resolutions:     map[Expr_Id]Resolved_Name,   // what each name or member access stands for (resolution)
-    types:           [dynamic]Type,   // each expression's type, as checked, by its id (expr_type)
-    struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
-    parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
-    broadcast_fields: map[Expr_Id]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
-    span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
+    checked:         ^Checked_Program,        // output: codegen-ready data
     errors:          int,
     current_package: string,
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
     target_shared:   bool,                // -shared build flag — package compiles to a DLL/SO; no `main` required
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
-    type_params:     map[string]Type,
-    top_env:         ^Type_Scope,
-    declared_funs:   map[string]bool,  // bare names of Stmt_Scope declarations (direct calls vs variables)
+    declared_funs:   map[string]bool,  // bare names of fun declarations (direct calls vs variables)
     // The materialized call graph (set post-check, after build_call_graph) — its
     // bottom-up summaries back the escape pass and the `ask` slicer. Points at
     // checked.call_graph.
     cg:              ^Call_Graph,
-    // True during the register-pass scan over a function's body fields.
-    // Field types are resolved in declaration order, so annotations like
-    // `h : fn g` may reference locals not yet added to env. Unresolved names
-    // in this pass return Type_Error{} silently; the body-check pass re-runs
-    // resolution with all locals in scope and emits real errors then.
-    in_register_pass: bool,
     // True while resolving a `foreign` declaration's signature — the only
-    // context where `cstring` may be named as a type (see resolve_type_expr).
+    // context where `cstring` may be named as a type.
     in_foreign_sig: bool,
     // Dispatch and operator overloading (per-package, saved/restored on module boundaries)
     dispatch_groups:    map[string][dynamic]string,
     operator_overloads: map[Token_Kind][dynamic]string,
-    // Module system — all modules are pre-discovered, lexed, and parsed before
-    // check_program runs. The checker is a pure consumer of `programs`.
-    checked:              ^Checked_Program,        // output: codegen-ready data
-    checked_modules:      map[string]^Type_Scope,  // cache: flat name -> checked module-struct
-    modules_in_progress:  map[string]bool,         // circular dependency detection
-    pre_registered_stmts: map[Stmt_Id]bool,         // stmts whose type allocation was done by register_type_names; Pass 1b finds existing entries and skips re-allocation
-    programs:             map[string]^Program,     // every parsed module: dotted name -> merged Program
-    compiler_dir:         string,                  // compiler exe dir (kept for diagnostics)
-    search_dir:           string,                  // user source dir (kept for diagnostics)
-    // Program structure: mara :: fun { std :: fun { ... }, user_modules... }
-    mara_env:             ^Type_Scope,               // root scope (contains std + user modules)
-    std_fun:              ^Type_Scope,               // std module (contains stdlib modules)
-    // Expected type hint for the next check_expr call. Set by sites that know
-    // the target type (function args, typed assignments, return statements,
-    // index expressions). Lets a bare identifier `Video` resolve as
-    // `Init_Flags.Video` when the param expects `Init_Flags`, and lets
-    // `.Core` find its owner union by name when the expected type isn't a
-    // union/enum. Push with `with_expected_hint`; the helper restores after.
-    expected_hint: Type,
 }
 
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
@@ -1617,10 +1431,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Const int values are equal when they have the same value
         if vb, ok := b.(Type_Const_Int); ok { return va.value == vb.value }
         return false
-    case Type_Runtime_Size:
-        // All runtime sizes are considered the same type (mangled as "vla")
-        if _, ok := b.(Type_Runtime_Size); ok { return true }
-        return false
+
     case Type_Any:
         // Type_Any no longer acts as a wildcard — only used as opaque ptr element.
         // Matching Type_Any with Type_Any is OK (e.g. two opaque ptrs).
@@ -1721,7 +1532,7 @@ type_name :: proc(t: Type) -> string {
         if v.is_alias { return disp }
         return fmt.tprintf("distinct %s", disp)
     case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
-    case Type_Runtime_Size: return "vla"
+
     case Type_Any:          return "any"
     case Type_Void:         return "void"
     case Type_Error:        return "<error>"
@@ -2131,7 +1942,7 @@ checker_type_alignment :: proc(t: Type) -> int {
     case Type_F64, Type_Infer_Int, Type_Infer_Float,
          Type_CString, ^Type_Ptr, ^Type_Slice, ^Type_Partial_Array,
          ^Type_Enum, ^Type_Union,
-         Type_Const_Int, Type_Runtime_Size,
+         Type_Const_Int,
          Type_Any, Type_Error:
         return 8
     case Type_Err:
@@ -2291,7 +2102,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         }
         extras_ok := true
         for i in len(ct_fn.params)..<len(arg_fn.params) {
-            if arg_fn.params[i].default_value == nil {
+            if !field_has_default(arg_fn.params[i]) {
                 check_error(c, span,
                     TYPE_TYPE_SATISFY_METHOD_EXTRA_PARAM,
                     arg_scope.name, constraint_name, fn_name, arg_fn.params[i].name)
@@ -2344,7 +2155,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
     case Type_Infer_Int, Type_F64, Type_Infer_Float,
          ^Type_Ptr, Type_CString,
          ^Type_Union,
-         Type_Const_Int, Type_Runtime_Size,
+         Type_Const_Int,
          Type_Any, Type_Error, nil:
         return 8
     case Type_Err:         return 4
@@ -2720,36 +2531,6 @@ Fused :: struct {
     temp:  bool,   // built in a temporary, as storage that holds a value is written (read)
 }
 
-// A call being built: its operands (check_call_arg) — each at its param's
-// type, or a builtin's as they are.
-Fuse_Call :: struct {
-    w:      Written,
-    ops:    [dynamic]Operand,
-    params: bool,
-    // A builtin's: its operands as built (a place, for len and cap), their
-    // types, and where the build stood before them.
-    args:   [dynamic]Fused,
-    types:  [dynamic]Type,
-    want:   Fuse_Want,
-    mark:   Graph_Mark,
-    span:   Span,   // the call's: where a builtin's operand with no place is held
-}
-
-// Several reassigned together (`a, b = b, a`, `a[0], a[1] = a[1], a[0]`):
-// each assignment's store held in a temporary at its target's type — its
-// value, and a target's place, built as it is checked — then, every value
-// in, each target written from its own.
-Fuse_Parallel :: struct {
-    held: [dynamic]Fuse_Held,
-}
-
-Fuse_Held :: struct {
-    d:    Dest,
-    slot: Node_Id,
-    t:    Type,
-    span: Span,
-}
-
 // Whether what was built is a text constant: its global (a table's is no
 // partial array; a string literal is built as one of its own).
 fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
@@ -2757,70 +2538,6 @@ fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
     op := r.v.op
     if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
     return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
-}
-
-// What the checker found of an assignment or declaration: the variable's
-// type (distinct unwrapped) and its env type (distinct kept); a store's
-// target's (a field's, a container's, a pointee's), and the type bytes are
-// written as (a byte buffer's).
-Assign_Types :: struct {
-    var, env, target, value: Type,
-}
-
-assign_types :: proc(c: ^Checker, s: ^Stmt_Assign) -> ^Assign_Types {
-    if t, ok := c.assign_types[s.id]; ok { return t }
-    t := new(Assign_Types)
-    c.assign_types[s.id] = t
-    return t
-}
-
-// A declaration as the checker reads it, its sugar resolved — read through
-// decl_type / decl_init / decl_cap, which fall back to the source where
-// nothing was lowered:
-//   p : Foo(Bar(args))  → type Foo(Bar), init `{ field = Bar(args) }`
-//   s : String2(N)      → type String2, cap N   (distinct slice alias)
-//   s : []T(N)          → type []T, cap N
-//   s : String          → cap: String's default capacity
-// — and the statements it is checked as: one Stmt_Assign per name, or a
-// Stmt_Multi_Return_Assign for a tuple destructure.
-Decl_Lowered :: struct {
-    type_: Type_Expr,
-    init:  [dynamic]Expr,
-    cap:   Expr,
-    stmts: [dynamic]Stmt,
-}
-
-// A call as the checker resolved it — read through call_name / call_args /
-// call_qualifier, which fall back to the source until a lowering is written:
-//   name:             the target after resolution (dispatch pick, generic
-//                     instance, module-flattened or method name)
-//   args:             the arguments as the callee receives them — a method's
-//                     receiver first, `_` and missing trailing args filled
-//                     with defaults; valid when args_lowered
-//   qualifier_folded: the qualifier was folded into the name or the args
-//   resolved:         what it runs (UFCS, package resolution)
-//   fn_value:         a function value's signature, when the callee is one
-Call_Lowered :: struct {
-    name:             string,
-    args:             [dynamic]Expr,
-    args_lowered:     bool,
-    qualifier_folded: bool,
-    resolved:         Maybe(Resolved_Func),
-    fn_value:         ^Type_Scope,
-}
-
-define_types :: proc(c: ^Checker, s: ^Stmt_Define) -> ^Assign_Types {
-    if t, ok := c.define_types[s.id]; ok { return t }
-    t := new(Assign_Types)
-    c.define_types[s.id] = t
-    return t
-}
-
-destructure_types :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Type {
-    if t, ok := c.destructure_types[s.id]; ok { return t }
-    t := new([dynamic]Type)
-    c.destructure_types[s.id] = t
-    return t
 }
 
 // A dispatch's array literal argument: its position, its nodes, its type.
@@ -3009,16 +2726,6 @@ variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
         }
     }
     return nil
-}
-
-// A literal, built where it goes (graph_into): into its destination, or —
-// as a value — into a temporary made before it. Its fields are built as
-// check_struct_literal_fields checks them.
-Fuse_Lit :: struct {
-    e:     rawptr,
-    dest:  Dest,
-    built: bool,
-    gl:    ^Graph_Literal,   // an override block's: the construction's
 }
 
 // Where a value built in place goes: its destination; else a temporary made

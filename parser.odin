@@ -780,13 +780,6 @@ Stmt_Foreign :: struct {
     span:       Span,
 }
 
-// A program is just a list of statements
-Program :: [dynamic]Stmt
-
-// ---------------------------------------------------------------------------
-// Parser state — now operates on a pre-built token array
-// ---------------------------------------------------------------------------
-
 Parser :: struct {
     tokens: []Token,   // the build's, to the end of this file (positions are token ids)
     file:   string,    // source file these tokens came from

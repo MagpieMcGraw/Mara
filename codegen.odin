@@ -1401,8 +1401,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     // fallbacks": emit and abort, don't continue.
     case Type_Const_Int:
         panic("llvm_type_from_checker: Type_Const_Int reached codegen — a const generic parameter should have been substituted to a concrete value before codegen")
-    case Type_Runtime_Size:
-        panic("llvm_type_from_checker: Type_Runtime_Size reached codegen — a runtime-size generic parameter should not appear as a value or field type")
+
     case Type_Any:
         panic("llvm_type_from_checker: Type_Any reached codegen as a value type — the checker minted an untyped value without a diagnostic. Type_Any is only valid as an opaque-pointer element (^Type_Ptr.elem)")
     case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces

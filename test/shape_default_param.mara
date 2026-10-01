@@ -1,0 +1,27 @@
+module shape_default_param
+
+//@ expect-output: scaled 10
+
+// A type satisfies a shape with a method that takes more params than the
+// shape's, so long as each extra one has a default: a caller using the
+// shape's signature omits them.
+
+Shape :: struct {
+	n: i64
+	get :: fun(b: ^Self) -> i64 { return 0 }
+}
+
+Box :: struct(start: i64) {
+	n: i64 = start
+	get :: fun(b: ^Self, scale: i64 = 2) -> i64 { return b.n * scale }
+}
+
+Holder :: struct(S: ~Shape = void) {
+	inner: S
+}
+
+main :: fun() {
+	h : Holder(Box(5))
+	p := &h.inner
+	print("scaled", p.get())
+}

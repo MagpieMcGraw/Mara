@@ -180,7 +180,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         }
     }
     k.gb = graph_builder_new(checked, tc_module_graph_decls(k))
-    c.gb = k.gb
 
     // The program's struct (the compiler-managed global): its args, as the
     // old checker makes it (an arena when `this_program = Program(...)`).
@@ -241,7 +240,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         graph_builder_free(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
     }
-    k.gb, c.gb = nil, nil
+    k.gb = nil
     void_defaults: map[Span]bool
     if len(checked.graph.kind) > 0 { void_defaults = tc_void_defaults(k, checked) }
     flow_analyze_program(c, checked, void_defaults)

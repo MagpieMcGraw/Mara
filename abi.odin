@@ -236,7 +236,7 @@ classify_leaf :: proc(t: Type) -> ABI_Class {
         return .Integer
     case Type_Infer_Int, Type_Bool, Type_Utf8, Type_Byte,
          Type_CString, ^Type_Ptr, ^Type_Enum,
-         Type_Const_Int, Type_Runtime_Size, Type_Any:
+         Type_Const_Int, Type_Any:
         return .Integer
     case ^Type_Slice, ^Type_Partial_Array, ^Type_Union:
         // These exceed an eightbyte on their own; landing here as a sub-field
@@ -452,7 +452,7 @@ type_alignment :: proc(t: Type) -> int {
         if v.bits == 0 { return 8 }
         return v.bits / 8
     case Type_Infer_Int, ^Type_Ptr, Type_CString,
-         Type_Const_Int, Type_Runtime_Size,
+         Type_Const_Int,
          ^Type_Union, Type_Any, Type_Error:
         return 8
     case Type_Bool, Type_Utf8, Type_Byte:

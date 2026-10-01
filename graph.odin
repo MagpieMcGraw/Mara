@@ -377,8 +377,6 @@ Graph_Anchor :: struct {
 @(private="file")
 STMT_ANCHOR :: i32(-2)
 
-Graph_Compound :: struct { key: Syntax_Id, place: Operand }
-
 @(private="file")
 Graph_Table :: struct {
     global: Node_Id,
