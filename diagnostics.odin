@@ -92,13 +92,8 @@ flush_diagnostics :: proc() {
 // need to change when wording shifts.
 
 // ============================================================
-// Parser-AST formatting helpers — quote source back at the user
+// Operators as written — quoting source back at the user
 // ============================================================
-//
-// Used by check_error sites that need to reformat a parsed expression
-// or type back into source-shape text (e.g. the comparison-chain
-// reformatter at type_checker.odin's chained-comparison handling
-// turns `a < b < c` into `(a < b) and (b < c)` for the diagnostic).
 
 // Source-level representation of a binary/unary operator token.
 op_str :: proc(op: Token_Kind) -> string {
@@ -142,7 +137,6 @@ PARSE_EXPECTED_TOKEN              :: "expected %v, got %v \"%s\""
 PARSE_EXPECTED_INTRINSIC_AFTER_AT :: "expected intrinsic name part after `@`, got `%s`"
 PARSE_EXPECTED_INTRINSIC_AFTER_DOT :: "expected intrinsic name part after `.`, got `%s`"
 PARSE_BARE_INTRINSIC_REMOVED      :: "bare `intrinsic` body is no longer supported — use `{{ @llvm.<name> }}` instead"
-PARSE_MALFORMED_USE_INCLUDE       :: "malformed use/include statement"
 PARSE_EXPOSE_NEEDS_FUN_DECL       :: "`#expose` must precede a `name :: fun(...)` declaration"
 PARSE_PACKED_NEEDS_STRUCT_DECL    :: "`#packed` goes after '::', as in `Name :: #packed struct`"
 PARSE_SENTINEL_REMOVED            :: "sentinel arrays were removed — use the plain array/slice type; cstring conversion writes the terminator at the FFI boundary"
@@ -185,7 +179,7 @@ PARSE_STRAY_ELSE                  :: "stray `else` — braces go around the enti
 PARSE_AMBIGUOUS_AMPERSAND         :: "ambiguous '&' — spaced like the start of a new statement (`&name`) but it parses as binary AND continuing the previous expression. Start the address-of/append on its own line, or space it as `a & b` if AND was meant."
 
 // ============================================================
-// Type-checker errors and warnings — populated in next pass.
+// Type-checker errors and warnings
 // ============================================================
 
 TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS :: "'.%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s"
@@ -252,15 +246,12 @@ TYPE_BYTE_WRITE_REFERENCE :: "cannot write a `%s` into bytes: %s — its bytes a
 TYPE_VOID_INTO_POINTER :: "cannot store `void` in %s, a `%s`: a pointer always points at something — `void` only de-initializes a variable, or passes a C function a null"
 TYPE_BYTE_VIEW_WIDE_ELEM :: "a range of bytes can only be viewed as a slice of byte / utf8 / u8 / i8, not as `%s` — to view the bytes as %s, use slice([:n]%s, &bytes[lo])"
 TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER :: "#big_endian requires a byte-buffer source, got `%s`"
-TYPE_TYPE_SKIP_CONSTRUCTOR_REQUIRES_EXPLICIT :: "'%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
 TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING :: "variable '%s' has no concrete type (type checking bypassed)"
 TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE :: "multi-return assign: left side has %d names but right side returns %d values"
 TYPE_CANNOT_ASSIGN_MULTI_RETURN :: "cannot assign %s to %s in multi-return"
-TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION :: "multi-return assign requires a function returning multiple values, got %s"
 TYPE_MULTI_RETURN_AS_ARG :: "a call returning %d values can't be used as a single argument — destructure it first (e.g. `a, b := f()`)"
 TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES :: "broadcast literal '{{all ...}}' for field '%s' requires an array type, got %s"
 TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED :: "broadcast value for field '%s' has type %s, expected %s (element of %s)"
-TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES :: "field '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
 TYPE_USING_FIELD_STRUCT_FIXED_ARRAY :: "using field '%s' must be a struct or fixed-array type"
 TYPE_FUNCTION_MISSING_RETURN_ALL_CODE :: "function '%s' missing return on all code paths"
 TYPE_UNREACHABLE_CODE :: "unreachable code: it follows a return, break or continue"
@@ -329,7 +320,6 @@ TYPE_MATCH_REQUIRES_UNION :: "match requires a union value, got `%s` — match i
 TYPE_TRY_OPERAND_MUST_BE_CALL :: "`?` propagation can only be applied to a call expression"
 TYPE_TRY_REQUIRES_ERR_RETURN :: "`?` requires the called function's trailing return slot to be an error type"
 TYPE_TRY_OUTSIDE_ERR_FUNCTION :: "`?` can only be used inside a function whose trailing return slot is an error type"
-TYPE_TRY_TOO_MANY_VALUES :: "`?` on a call with %d non-error return values isn't supported yet (only single-value or err-only)"
 TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED :: "circular include: module '%s' is already being checked"
 TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY :: "foreign symbol '%s' is already declared in library '%s' (first declaration at %s); each external symbol may be bound by at most one foreign block"
 TYPE_PROGRAM_GLOBAL_REQUIRES_ALLOCATOR_TYPE :: "program global requires an allocator type (e.g. `program = Program(Arena_Basic(<args>))`)"
@@ -338,7 +328,6 @@ TYPE_PROGRAM_SCOPE_ALLOCATOR_MISSING_REQUIRED :: "program scope allocator: '%s' 
 TYPE_FUN_MAIN_RETURN_INT_RETURN :: "fun main() must return int or have no return type"
 TYPE_FUN_MAIN_TAKE_PARAMETERS :: "fun main() must take no parameters"
 TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER :: "#expose function '%s' must take its first parameter as `^Program`"
-TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN :: "executable statements must be inside fun main()"
 TYPE_VISIBLE_ENUM_UNION_VARIANT :: "no visible enum or union has variant '.%s'"
 TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "constant '%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s"
 TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE :: "variable '%s' is used before being assigned a value"
@@ -437,98 +426,25 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 WARN_REDUNDANT_CAST :: "redundant cast to %s — %s already has that type, drop the `%s(...)`"
 
 // ============================================================
-// Codegen fatals — populated in next pass.
+// Codegen fatals
 // ============================================================
 
 CODE_DLL_EXPOSE_FN_USES_ARENA :: "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)"
 CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested but no scope_allocator declared"
-CODE_ARRAY :: "'%s' is not an array"
-CODE_INDEX_ASSIGNMENT_TARGET_VARIABLE :: "index assignment target must be a variable"
-CODE_SLICE_ASSIGNMENT_TARGET_VARIABLE :: "slice assignment target must be a variable"
-CODE_ARRAY_ARRAY_CLASS_SLICE :: "'%s' is not an array, array class, or slice"
-CODE_ARRAY_SLICE :: "'%s' is not an array or slice"
-CODE_SLICE_RHS_NAMED_ARRAY_SLICE :: "slice RHS must be a named array, slice, or array literal"
-CODE_INDEX_TARGET_VARIABLE :: "index target must be a variable"
-CODE_CANNOT_TAKE_ADDRESS_INDEX_EXPRESSION :: "cannot take address of this index expression"
-CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE :: "positional let/slice requires a &buf[i] source (byte slice or [N]byte) so the carve can be bounds-checked"
-CODE_TAKE_STORAGE_SLICE_VAR_SLICE :: "let/slice storage must be &slice_var or a slice-pointer parameter"
-CODE_TAKE_SLICE_VARIABLE :: "let/slice: '%s' is not a slice variable"
-CODE_SLICE_TARGET_VARIABLE :: "slice target must be a variable"
-CODE_SLICE_TARGET_ARRAY_SLICE :: "slice target is not an array or slice"
-CODE_BYTE_VIEW_SOURCE_BYTE_SLICE :: "byte view source must be a byte slice or [N]byte"
-CODE_BYTE_BUFFER_WRITE_TARGET_BYTE :: "byte buffer write target must be a byte slice or [N]byte"
-CODE_BYTE_BUFFER_READ_SOURCE_BYTE :: "byte buffer read source must be a byte slice or [N]byte"
-CODE_COLLECTION_REQUIRES_IDENTIFIER_FIELD_ACCESS :: "collection-for requires an identifier or field access"
-CODE_UNKNOWN_COLLECTION_VARIABLE :: "unknown collection variable '%s'"
-CODE_UNDEFINED_VARIABLE :: "undefined variable '%s'"
 CODE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"
 CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP :: "cannot take the address of a temporary slice — `buf[a:b]` builds a fresh slice header with no address to point at. To pass it to a `^[]T` parameter, bind it first (`s := buf[a:b]; f(&s)`), or — if the callee only reads it — make the parameter `[]T` and pass the slice directly (no `&`)"
-CODE_TUPLE_DEFAULT_INDEX_OUT_RANGE :: "tuple-default index %d out of range"
-CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO :: "call to unknown function '%s' — no fun_info and no function-pointer variable"
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
-CODE_PRINT_ARRAY_EXPRESSION_DID_RESOLVE :: "print: array expression did not resolve to an Array_Var"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
-CODE_CANNOT_MATCH_KIND_UNION_EXPRESSION :: "cannot match on this kind of union expression"
-CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL :: "partial array '%s' initializer must be a string literal or another partial array, got %s"
-CODE_BREAK_OUTSIDE_LOOP :: "break outside of loop"
-CODE_CONTINUE_OUTSIDE_LOOP :: "continue outside of loop"
-CODE_DEFER_OUTSIDE_ANY_SCOPE :: "defer outside of any scope"
-CODE_MULTI_ASSIGN_RHS_VALUES :: "multi-assign has no RHS values"
-CODE_MULTI_ASSIGN_RHS_FUNCTION_CALL :: "multi-assign RHS must be a function call"
-CODE_MULTI_ASSIGN_CALL_DID_PRODUCE :: "multi-assign call did not produce tuple results"
-CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION :: "struct in multi-return can't target an expression yet"
-CODE_MULTI_RETURN_TARGET_FIELD_ACCESS :: "multi-return target field access — cannot resolve struct"
-CODE_STRUCT_FIELD :: "struct '%s' has no field '%s'"
-CODE_INDEX_TARGET_MULTI_RETURN_ASSIGN :: "index target in multi-return assign not yet supported"
-CODE_UNARY_OP_VALID_MULTI_RETURN :: "unary op '%v' is not a valid multi-return target"
-CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION :: "unsupported multi-return target expression"
 CODE_GRAPH_DECLINED :: "can't lower '%s' from the program graph: its %s '%s'%s"
 CODE_GRAPH_NO_SCOPE :: "'%s' has no scope in the program graph"
 CODE_GRAPH_NO_CODE :: "'%s' has no code in the program graph"
 CODE_TEXT_LONGER_THAN_ARRAY :: "text of %d bytes into an array of %d"
-CODE_BARE_CONSTRUCTION_DEFAULT :: "'%s' is built as an array's element, but its param '%s' defaults to no constant"
 TYPE_ARENA_SIZE_CONSTANT :: "the program's arena size must be a constant"
-TYPE_SLICE_DEFAULT_CAP_CONSTANT :: "a sized slice's default capacity must be a constant"
 CODE_BARE_CONSTRUCTION_ARGUMENT :: "'%s' is built without arguments, but its param '%s' has no default"
-CODE_SPREAD_SET_LIT_FIELDS_CALL :: "is_spread set but lit.fields[0] is not a call"
 CODE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
 TYPE_CONST_NOT_COMPILE_TIME :: CODE_CONST_NOT_COMPILE_TIME
 CODE_CONST_TABLE_UNNAMED :: "internal: aggregate constant has no entry in the constant table"
 CODE_CONST_TABLE_SHAPE :: "internal: a constant table of a shape the emitter can't lay out"
-CODE_STRUCT_LITERAL_UNTYPED_EXPR ::"struct literal in expression position has no resolved struct type — codegen cannot materialize it (would otherwise silently pass a null pointer)"
-CODE_SPREAD_CALL_TUPLE_RETURN_INFO :: "spread call has no tuple return info"
-CODE_ADDRESS_CHAIN_ENDED_SLICE_STEPS :: "address chain ended at .Slice with no steps — cannot determine elem type"
-CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST :: "address chain ended at .Slice but last step is not a field — cannot determine elem type"
-CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST_2 :: "address chain ended at .Slice but last field is neither Type_Slice nor Type_Partial_Array"
-CODE_FIELD_ARRAY_ELEMENT_VALID_SWIZZLE :: "field '.%s' on array element is not a valid swizzle and not a struct field"
-CODE_FIELD_ACCESS_INDEXED_ELEMENT_UNKNOWN :: "field access '.%s' on indexed element of unknown shape"
-CODE_FIELD_ACCESS_TARGET_VARIABLE :: "field access target must be a variable"
-CODE_FIELD_ACCESS_UNRESOLVED :: "field access '.%s' has no codegen for this value's shape"
-CODE_STRUCT_POINTER_STRUCT :: "'%s' is not a struct or pointer to struct"
-CODE_CLASS_FIELD :: "class '%s' has no field '%s'"
-CODE_GEN_STRUCT_STORE_UNKNOWN_STRUCT :: "gen_struct_store_at: unknown struct '%s'"
-CODE_GEN_STORE_ARRAY_UNHANDLED_RHS :: "gen_store_array_into: unhandled RHS expression shape — codegen has no path for this kind of value flowing into a fixed-array destination"
-CODE_GEN_RETURN_ARRAY_UNHANDLED_VALUE :: "gen_return_array: unhandled return value shape for a fixed-array return — codegen has no path to materialize this value into the return slot (would otherwise silently return a zeroed array)"
-CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY :: "cannot assign to slice field '.%s' (only .len and .cap)"
-CODE_ARRAY_VALID_SWIZZLE_USE_XYZW :: "'%s' is an array — '.%s' is not a valid swizzle (use xyzw/rgba, indices 0-3)"
-CODE_FIELD_STRUCT_ARRAY :: "'%s' has no field '%s' (not a struct or array)"
-CODE_FIELD_ASSIGNMENT_TARGET_STRUCT_POINTER :: "field assignment target must be a struct or pointer to struct"
-CODE_MULTI_COMPONENT_SWIZZLE_WRITE_REQUIRES :: "multi-component swizzle write requires array source"
-CODE_UNION_ASSIGNMENT_REQUIRES_NAMED_STRUCT :: "union assignment requires named struct literal"
-CODE_VARIANT_UNION :: "'%s' is not a variant of union '%s'"
-
-
-// ============================================================
-// Build / orchestration messages (main.odin, dump.odin)
-//
-// Different shape from the rest — no Span, no error counter. Each
-// constant is the FULL string passed to fmt.printf at the call site
-// (prefix, format placeholders, trailing newline). The convention
-// is "Error: " for hard failures and "Found ... Aborting." for
-// summary counts; both styles are kept verbatim until the user
-// rewrites them.
-// ============================================================
-
 BUILD_CLANG_FAILED                :: "Error: clang failed to compile '%s'\n"
 BUILD_ARCHIVE_FAILED              :: "Error: archive creation failed for '%s'\n"
 BUILD_FOREIGN_FILE_NOT_FOUND      :: "Error: foreign file '%s' not found under %s\n"

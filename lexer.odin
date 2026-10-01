@@ -339,7 +339,6 @@ next_token :: proc(l: ^Lexer) -> Token {
 
     // Newlines
     if ch == '\n' || ch == '\r' {
-        start := l.pos
         // Consume \r\n as a single newline
         if ch == '\r' && peek(l, 1) == '\n' {
             lexer_advance(l, 2)
@@ -437,7 +436,6 @@ next_token :: proc(l: ^Lexer) -> Token {
     // (e.g. `0xFFFF_FFFF`). Hex tokens keep the `0x` prefix in their text so
     // the parser can route to base-16 parsing.
     if is_digit(ch) {
-        start := l.pos
         if ch == '0' && (peek(l, 1) == 'x' || peek(l, 1) == 'X') {
             lexer_advance(l) // '0'
             lexer_advance(l) // 'x'

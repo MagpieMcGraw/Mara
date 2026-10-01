@@ -86,96 +86,6 @@ partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
     })
 }
 
-// Open design note: partial arrays reuse the slice layout via pointer-pun on
-// the first slice_header_bytes, which lets one set of field-access codegen paths serve
-// both. Cost: shared code concentrates bugs (see the stale-index bug fixed
-// in gen_slice_field_store — it survived because there's no parallel
-// partial-array writer to disagree), and the address chain collapses both
-// into final_kind=.Slice, losing the distinction. The end-state handler in
-// gen_field_access has to re-discriminate via type cast to recover
-// elem info. Fine while no behaviour needs to branch on slice-vs-partial-
-// array, but if per-shape features show up later, tag the chain (e.g.
-// .Slice_Header with a source enum) or split the kinds. Revisit when that
-// pressure appears.
-
-// Info about a scalar variable in codegen (simple alloca)
-Scalar_Var :: struct {
-    alloca: string, // %varname
-}
-
-// Info about an array variable in codegen
-Array_Var :: struct {
-    alloca:       string, // alloca name / data pointer for the array
-    capacity:     int,    // compile-time capacity N (0 for VLAs)
-    capacity_val: string, // LLVM IR value for runtime capacity (VLA only, "" for fixed)
-    elem_type:    string, // LLVM element type: "i64", "double", "ptr", etc.
-    is_utf8:      bool,   // true for utf8 arrays — drives string-vs-array print formatting
-    zeroed:       bool,   // storage its caller zeroed (a constructor's field): a bare decl skips the zero-fill
-}
-
-// Info about a slice variable in codegen
-// A slice is a fat pointer: { ptr data, <len_ir> len, <cap_ir> cap }
-// (widths configured via slice_layout — see codegen.odin top of file).
-Slice_Var :: struct {
-    alloca:       string, // alloca for the slice header struct
-    elem_type:    string, // LLVM element type: "i64", "double", etc.
-    is_utf8:      bool,   // true for []utf8 slices — drives string-vs-array print formatting
-}
-
-// Info about a struct variable in codegen
-Struct_Var :: struct {
-    alloca:      string,     // %varname
-    struct_name: string,     // class name (e.g. "Point")
-}
-
-// No shadow Struct_Def — codegen reads directly from checked.table.funs (Type_Scope).
-// Helper functions compute LLVM-specific info on the fly.
-
-// Info about a union variable in codegen
-Union_Var :: struct {
-    alloca:     string,
-    union_name: string,
-}
-
-// Synthetic binding to a precomputed SSA value (no alloca). Used by compound
-// assignment to hold the pre-loaded LHS value without paying for an
-// alloca/store/load triple — gen_expr on an Expr_Ident bound to one of these
-// returns the SSA directly. The synthetic name lives only as long as its
-// surrounding statement; nothing else should produce these.
-SSA_Var :: struct {
-    ssa:     string, // SSA name, e.g. "%t42"
-    ir_type: string, // LLVM type of the value, e.g. "i64" or "[4 x float]"
-}
-
-// Unified variable entry — each codegen variable is exactly one of these kinds.
-Var_Entry :: union {
-    Scalar_Var,
-    Array_Var,
-    Struct_Var,
-    Union_Var,
-    Slice_Var,
-    SSA_Var,
-}
-
-// ---------------------------------------------------------------------------
-// Address chain — unified address resolution for field access and indexing
-// ---------------------------------------------------------------------------
-
-// Info about a user-defined function's signature for struct-aware calling
-Fun_Info :: struct {
-    ret_type:          string,            // LLVM type: "i64", "double", "i1", "ptr", "void"
-    ret_struct:        string,            // "" for non-struct, or struct name (e.g. "Point")
-    ret_array_cap:     int,              // >0 if returning a fixed array (sret convention)
-    ret_array_elem:    string,           // LLVM element type (e.g. "i64", "double")
-    ret_types:         []Type,           // multi-return list (len > 1 → multi-return via sret)
-    ret_slice_elem:    string,           // non-"" if returning a slice (sret convention)
-    ret_partial_elem:  string,           // non-"" if returning a partial array (sret convention)
-    ret_partial_cap:   int,              // partial-array capacity (sret convention)
-    param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
-    param_structs:     [dynamic]string,   // "" or struct name per param
-    param_arrays:      [dynamic]^Type_Fixed_Array, // non-nil: fixed array, passed by immutable pointer
-}
-
 Codegen :: struct {
     out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
@@ -218,7 +128,6 @@ Codegen :: struct {
     tmp_counter: int,              // bumped per fresh_tmp (and a few inline temp names)
     tmp_pool:    []string,         // pre-formatted "%.tN" names; indexed by tmp_counter
     label_counter: int,            // label numbering
-    all_vars:    map[string]Var_Entry,    // unified variable registry (scalars, arrays, structs, unions, slices)
     // Type info from the type checker
     checked:     ^Checked_Program,       // resolved type info from type checker
     // String literal table: value -> global name
@@ -243,12 +152,6 @@ Codegen :: struct {
     arena_new_name:   string,                     // flat name for the arena new function
     arena_alloc_has_debug: bool,                  // true if alloc() takes name/span debug params
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
-    ret_partial_cap:  int,
-    ret_partial_elem: string,
-    // Multi-return: list of return types for current function (empty if not multi-return)
-    ret_types:        []Type,
-    // Fun_Info cache: avoids re-deriving from the checked scope on every call
-    fun_info_cache:   map[string]Fun_Info,
     // Overflow-checking intrinsics used (for declaration at end of module)
     overflow_intrinsics: map[string]bool,
     // `llvm.bswap.iN` widths used by `#big_endian` byte-buffer reads.
@@ -375,93 +278,13 @@ mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
     return fmt.tprintf("@mara_%s", name)
 }
 
-// Derive Fun_Info from a checked ^Type_Scope, with caching.
-// Returns the info and true if found, or zero value and false if not.
-lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
-    // Check cache first
-    if cached, cached_ok := g.fun_info_cache[fn_name]; cached_ok {
-        return cached, true
-    }
-
-    // All functions are in checked.functions with flat keys (flattened during type-checking)
+// The struct a function returns through its sret slot, when its one
+// result is one: "" otherwise.
+fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
     cf, found := g.checked.functions[fn_name]
-    if !found { return {}, false }
-    info := fun_info_of(g, cf)
-    g.fun_info_cache[fn_name] = info
-    return info, true
-}
-
-// The call ABI of a function signature: how its params and returns cross the
-// call boundary. Shared by direct calls (via lookup_fun_info) and indirect
-// calls through a function value, whose type is a signature with no body.
-fun_info_of :: proc(g: ^Codegen, cf: ^Type_Scope) -> Fun_Info {
-    // The checker fills every signature's lowered caches: declarations in the
-    // signature pass, structural fn types (`fn(a: T -> R)`) where they resolve.
-    // Filling one here would write a shared Type_Scope from parallel workers.
-    if (len(cf.cg_params) == 0 && len(cf.params) > 0) ||
-       (len(cf.cg_returns) == 0 && len(cf.return_types) > 0) {
-        codegen_fatal(g, cf.body_span, "internal: signature '%s' reached codegen without its lowered params/returns", cf.name)
-    }
-    info := Fun_Info{}
-
-    // Return type: struct/array/multi-return/slice returns use void + sret convention
-    if len(cf.cg_returns) > 1 {
-        info.ret_type = "void"
-        info.ret_types = cf.cg_returns[:]
-    } else if len(cf.cg_returns) == 0 {
-        info.ret_type = "void"
-    } else {
-        single := cf.cg_returns[0]
-        if sd := as_struct_body(single); sd != nil {
-            info.ret_type = "void"
-            info.ret_struct = sd.name
-        } else if fa, fa_ok := single.(^Type_Fixed_Array); fa_ok {
-            info.ret_type = "void"
-            info.ret_array_cap = fa.size
-            info.ret_array_elem = llvm_type_from_checker(fa.elem)
-        } else if sl, sl_ok := single.(^Type_Slice); sl_ok {
-            info.ret_type = "void"
-            info.ret_slice_elem = llvm_type_from_checker(sl.elem)
-        } else if pa, pa_ok := distinct_base(single).(^Type_Partial_Array); pa_ok {
-            info.ret_type = "void"
-            info.ret_partial_elem = llvm_type_from_checker(pa.elem)
-            info.ret_partial_cap = pa.size
-        } else if single == nil || is_untyped(single) {
-            info.ret_type = "void"
-        } else {
-            info.ret_type = llvm_type_from_checker(single)
-        }
-    }
-
-    // Parameter types
-    for p in cf.cg_params {
-        fa, is_fa := distinct_base(p.type_).(^Type_Fixed_Array)
-        append(&info.param_arrays, is_fa ? fa : nil)
-        if is_fa {
-            // Fixed array: by immutable pointer, like a struct — the caller
-            // passes its storage (or a temp for a literal), never a copy.
-            append(&info.param_types, "ptr")
-            append(&info.param_structs, "")
-        } else if sd := as_struct_body(p.type_); sd != nil {
-            append(&info.param_types, "ptr")
-            append(&info.param_structs, sd.name)
-        } else if ut, ut_ok := p.type_.(^Type_Union); ut_ok {
-            append(&info.param_types, "ptr")
-            append(&info.param_structs, union_key(ut))
-        } else if _, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
-            // Partial-array param: same fat-pointer-ref ABI as slices. Mark
-            // with SLICE_IR_TYPE so the call-site uses gen_slice_param_arg,
-            // which passes a pointer to the partial-array's header. The
-            // function declaration receives `ptr` (set in codegen_fn.odin).
-            append(&info.param_types, SLICE_IR_TYPE)
-            append(&info.param_structs, "")
-        } else {
-            append(&info.param_types, llvm_type_from_checker(p.type_))
-            append(&info.param_structs, "")
-        }
-    }
-
-    return info
+    if !found || len(cf.cg_returns) != 1 { return "" }
+    if sd := as_struct_body(cf.cg_returns[0]); sd != nil { return sd.name }
+    return ""
 }
 
 // Format a span as "[file:line:col]" or "[line:col]" prefix for error messages
@@ -859,7 +682,7 @@ switch_to_module :: proc(g: ^Codegen, home_package: string) {
 //
 // Workers run a stripped-down Codegen with the same read-only state as the
 // main thread (checked, target settings, registered struct types) but
-// private mutable state (tmp_pool, all_vars, string_decls, etc.). After
+// private mutable state (tmp_pool, string_decls, etc.). After
 // pool_finish, the main thread copies each task's outputs into main_g and
 // continues with the sequential @main + .ll write phases.
 
@@ -896,7 +719,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     task := cast(^Module_Task)t.data
 
     // Each worker gets its own arena. Allocations (string interning,
-    // tmp-pool buffers, all_vars maps, AST clone bookkeeping, etc.) all
+    // tmp-pool buffers, etc.) all
     // land here. Outputs we want to survive into the main thread are
     // built directly in this arena; they remain valid as long as the
     // arena does, which is the lifetime of generate_program.
@@ -935,7 +758,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
 // Build a Codegen suitable for one worker. Read-only fields (checked,
 // target flags, arena_*_name, registered struct decls) come straight from
-// main_g. Mutable per-function state (tmp_pool, all_vars, …) starts empty
+// main_g. Mutable per-function state (tmp_pool, …) starts empty
 // and lives in the worker's arena.
 @(private="file")
 init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
@@ -1194,19 +1017,7 @@ begin_alloca_hoist :: proc(g: ^Codegen) {
 }
 
 // ---------------------------------------------------------------------------
-// Var_Entry accessors — typed access to the unified variable registry
-// ---------------------------------------------------------------------------
-
-is_array :: proc(g: ^Codegen, name: string) -> bool {
-    if entry, ok := g.all_vars[name]; ok {
-        _, av_ok := entry.(Array_Var)
-        return av_ok
-    }
-    return false
-}
-
-// ---------------------------------------------------------------------------
-// Temp result helpers — typed replacements for magic __call_result etc.
+// Codegen keys for types
 // ---------------------------------------------------------------------------
 
 // Codegen key for a struct type — names are already flat (flattened during type-checking).
@@ -1219,11 +1030,6 @@ struct_key_sd :: proc(sd: ^Scope_Body) -> string {
 }
 
 struct_key :: proc { struct_key_fun, struct_key_sd }
-
-// Codegen key for an enum type.
-enum_key :: proc(et: ^Type_Enum) -> string {
-    return et.name
-}
 
 // Codegen key for a union type.
 union_key :: proc(ut: ^Type_Union) -> string {
@@ -1999,9 +1805,9 @@ get_context_arena_ptr :: proc(g: ^Codegen) -> string {
 emit_arena_mark :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
     mark_ir := mara_fn_name(g, g.arena_mark_name)
-    if info, ok := lookup_fun_info(g, g.arena_mark_name); ok && info.ret_struct != "" {
+    if ret := fn_ret_struct(g, g.arena_mark_name); ret != "" {
         dummy := fresh_tmp(g)
-        emit_alloca(g, dummy, struct_llvm_name(info.ret_struct))
+        emit_alloca(g, dummy, struct_llvm_name(ret))
         emit_raw(g, strings.concatenate({"  call void ", mark_ir, "(ptr ", arena_ptr, ", ptr ", dummy, ")"}))
     } else {
         emit_raw(g, strings.concatenate({"  call void ", mark_ir, "(ptr ", arena_ptr, ")"}))
@@ -2068,9 +1874,9 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
 emit_arena_reset :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
     reset_ir := mara_fn_name(g, g.arena_reset_name)
-    if info, ok := lookup_fun_info(g, g.arena_reset_name); ok && info.ret_struct != "" {
+    if ret := fn_ret_struct(g, g.arena_reset_name); ret != "" {
         dummy := fresh_tmp(g)
-        emit_alloca(g, dummy, struct_llvm_name(info.ret_struct))
+        emit_alloca(g, dummy, struct_llvm_name(ret))
         emit_raw(g, strings.concatenate({"  call void ", reset_ir, "(ptr ", arena_ptr, ", ptr ", dummy, ")"}))
     } else {
         emit_raw(g, strings.concatenate({"  call void ", reset_ir, "(ptr ", arena_ptr, ")"}))
@@ -2441,7 +2247,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.out = main_builder
     g.tmp_counter = 0
     g.label_counter = 0
-    g.all_vars = {}
     g.emitted_allocas = {}
     // On web (wasm32), the C entry point's `int` is i32, not i64. We keep
     // Mara's main internally as i64 so user `return X` and the args-setup
@@ -3025,8 +2830,6 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
         g.ctx_alloca = ctx_alloca
 
-        // Register 'context' as a struct var so field access works normally
-        g.all_vars["context"] = Struct_Var{alloca = ctx_alloca, struct_name = "Context"}
 
         // Arena init (if scope allocator is active).
         if g.context_enabled {

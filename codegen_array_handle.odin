@@ -20,16 +20,12 @@ import "core:fmt"
 //                  arrays.
 // Exactly one of the two is set on a valid handle.
 //
-// For fixed arrays, `static_cap` is the capacity (matching
-// `Array_Var.capacity`). For slices and partial arrays, cap is held in the
+// For fixed arrays, `static_cap` is the capacity. For slices and partial arrays, cap is held in the
 // header and read at runtime — static_cap stays 0.
 Array_Handle :: struct {
     header_ptr:     string,
     fixed_alloca:   string,
-    elem_type:      string,
     static_cap:     int,
-    static_cap_str: string, // SSA value of cap for VLA fixed arrays; "" otherwise
-    is_utf8:        bool,
 }
 
 handle_is_fixed :: proc(h: ^Array_Handle) -> bool { return h.fixed_alloca != "" }
@@ -38,7 +34,6 @@ handle_is_fixed :: proc(h: ^Array_Handle) -> bool { return h.fixed_alloca != "" 
 // Fixed arrays don't have a separate len field — for them len == capacity.
 emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     if handle_is_fixed(h) {
-        if h.static_cap_str != "" { return h.static_cap_str }
         return fmt.tprintf("%d", h.static_cap)
     }
     len_gep := fresh_tmp(g)

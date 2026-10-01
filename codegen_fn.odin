@@ -7,19 +7,6 @@ import "core:strings"
 // Function definition codegen
 // ---------------------------------------------------------------------------
 
-// Same as slice_through_distinct_and_ptr but for partial-array params. The
-// first slice_header_bytes of a partial array's layout match a slice header, so the
-// fat-pointer-ref ABI works identically: `dst: ^String` where String is a
-// `type([..N, 0]utf8)` partial array binds as a Slice_Var with the same
-// access shape as a slice param.
-partial_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Partial_Array, bool) {
-    cur := t
-    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
-    if dt, ok := cur.(^Type_Distinct); ok { cur = dt.base_type }
-    if pa, ok := cur.(^Type_Partial_Array); ok { return pa, true }
-    return nil, false
-}
-
 // Stamp a valid partial-array header at `addr` over a zero-filled slot:
 // ptr → &inline elements, cap = N. A flat zero-fill leaves cap=0 / ptr=null —
 // an unusable partial array, even though the static capacity is right there in

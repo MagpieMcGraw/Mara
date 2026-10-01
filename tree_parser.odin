@@ -73,6 +73,19 @@ tp_expect :: proc(p: ^Tree_Parser, kind: Token_Kind) -> Token_Id {
     return tp_advance(p)
 }
 
+// A number that doesn't parse: why — past u64, or not a number.
+tp_number :: proc(p: ^Tree_Parser, tok: Token_Id) {
+    text := token_text(build_tokens[tok])
+    _, _, err := parse_number_text(text)
+    switch err {
+    case .None:
+    case .Invalid:      tp_error(p, tok, PARSE_INVALID_NUMBER, text)
+    case .Hex_Overflow: tp_error(p, tok, PARSE_HEX_OVERFLOWS_U64, text)
+    case .Dec_Overflow: tp_error(p, tok, PARSE_DECIMAL_OVERFLOWS_U64, text)
+    case .Bin_Overflow: tp_error(p, tok, PARSE_BINARY_OVERFLOWS_U64, text)
+    }
+}
+
 // A parse error, reported.
 tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
@@ -1705,9 +1718,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
     #partial switch tp_kind(p) {
     case .Number:
         tok := tp_advance(p)
-        if _, _, err := parse_number_text(token_text(build_tokens[tok])); err != .None {
-            tp_error(p, tok, PARSE_INVALID_NUMBER, token_text(build_tokens[tok]))
-        }
+        tp_number(p, tok)
         result = tp_leaf(p, .Number, tok)
     case .Identifier:
         tok := tp_advance(p)
@@ -1809,9 +1820,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
         operand: Tree_Id
         if tp_kind(p) == .Number {
             num := tp_advance(p)
-            if _, _, err := parse_number_text(token_text(build_tokens[num])); err != .None {
-                tp_error(p, num, PARSE_INVALID_NUMBER, token_text(build_tokens[num]))
-            }
+            tp_number(p, num)
             operand = tp_leaf(p, .Number, num)
         } else {
             operand = tp_primary(p)

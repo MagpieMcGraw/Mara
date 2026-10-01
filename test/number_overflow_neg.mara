@@ -1,0 +1,9 @@
+module number_overflow_neg
+//@ expect-fail: integer literal '18446744073709551616' overflows u64
+
+// An integer literal past u64 says so (not just "invalid number").
+
+main :: fun() {
+	b := 18446744073709551616
+	print(b)
+}

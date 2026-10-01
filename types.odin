@@ -206,18 +206,17 @@ Scope_Body :: struct {
     return_binding_names: [dynamic]string,  // named-return locals (`fun() -> (fwd, up: Vec3)`)
     // Codegen-facing signature caches (see populate_cg_signature). cg_returns
     // prepends a struct ctor's Self (sret slot 0); both pre-unwrap distinct.
-    // Built at CHECK time so they stay stable when aliased into the cached
-    // Fun_Info. Replace the deleted Checked_Scope.return_types / .params.
+    // Built at CHECK time: codegen's parallel workers read them, and must
+    // not write a shared Type_Scope.
     cg_returns:           [dynamic]Type,
     cg_params:            [dynamic]Struct_Type_Field,
 }
 
 // Build the codegen-facing signature caches (cg_returns + cg_params) into ft.
 // Both pre-unwrap distinct wrappers; cg_returns Self-prepends a struct ctor's
-// sret slot 0. Runs at CHECK time so the slices stay stable when codegen aliases
-// them into the cached Fun_Info — computing them during codegen under a transient
-// arena dangles. These are the exact transforms the deleted Checked_Scope caches
-// used, relocated onto the Type_Scope.
+// sret slot 0. Runs at CHECK time: computing them during codegen, under a
+// worker's transient arena, would dangle — and write a shared Type_Scope from
+// parallel workers.
 populate_cg_signature :: proc(ft: ^Type_Scope) {
     clear(&ft.cg_returns)
     if len(ft.return_types) == 0 && ft.kind == .Struct {
@@ -514,19 +513,8 @@ Target_OS :: enum {
 }
 
 // ---------------------------------------------------------------------------
-// Functions: a call resolved, a function's origin
+// Functions: where each comes from
 // ---------------------------------------------------------------------------
-
-Resolved_Func :: struct {
-    name:         string,        // flat name: "add" or "math_add" — the codegen symbol key
-    // Resolved callee signature (pointer identity). Set for direct function /
-    // constructor calls AND operator-overload edges so consumers use the pointer
-    // instead of re-deriving from `name`: codegen reads the symbol off
-    // `callee.name`, and the program graph links the call to its callee's node
-    // with it. nil only for non-function resolutions (distinct-type casts) and
-    // un-annotated / foreign calls with no callee Type_Scope.
-    callee:       ^Type_Scope,
-}
 
 // Where this function comes from. Codegen branches on the variant:
 //   Source    → emit a normal function body in IR
@@ -1158,14 +1146,6 @@ tag_type_matches_slice_width :: proc(tag: string) -> bool {
     return false
 }
 
-// Check if the checker is currently processing a given package. Accepts the
-// bare name (e.g. "os") and matches when current_package is either the bare
-// name (user packages) or its dotted stdlib form ("mara.os").
-is_package :: proc(c: ^Checker, name: string) -> bool {
-    return c.current_package == name ||
-           c.current_package == strings.concatenate({"mara.", name})
-}
-
 is_comparison_op :: proc(op: Token_Kind) -> bool {
     #partial switch op {
     case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
@@ -1220,8 +1200,7 @@ is_infer :: proc(t: Type) -> bool {
 }
 
 // True when a type is a byte slice ([]byte). Auto-derefs one level of ^Ptr
-// (so `^[]byte` is recognized — codegen already binds it as a Slice_Var via
-// slice_through_distinct_and_ptr) and unwraps distinct/alias wrappers so
+// (so `^[]byte` is recognized) and unwraps distinct/alias wrappers so
 // user-named byte containers (`Block :: type [16]byte`, etc.) get the
 // reinterpret-read/write machinery too.
 is_byte_slice :: proc(t: Type) -> bool {

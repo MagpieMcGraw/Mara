@@ -172,29 +172,6 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
 // Type cast codegen: i32(x), f64(x), etc.
 // ---------------------------------------------------------------------------
 
-cast_target_ir_type :: proc(name: string) -> (ir_type: string, is_float: bool, is_ptr: bool, ok: bool) {
-    switch name {
-    case "int", "i64":  return "i64", false, false, true
-    case "uint", "u64": return "i64", false, false, true
-    case "i128":        return "i128", false, false, true
-    case "u128":        return "i128", false, false, true
-    case "i32":         return "i32", false, false, true
-    case "i16":         return "i16", false, false, true
-    case "i8", "utf8": return "i8", false, false, true
-    case "u32":         return "i32", false, false, true
-    case "u16":         return "i16", false, false, true
-    case "u8":          return "i8", false, false, true
-    case "usize", "isize":
-        // Word-sized: same flag the codegen uses for llvm_type_from_checker.
-        return "i32" if word_size_is_32 else "i64", false, false, true
-    case "f64":         return "double", true, false, true
-    case "f32":         return "float", true, false, true
-    case "f16":         return "half", true, false, true
-    case "bool":        return "i1", false, false, true
-    }
-    return "", false, false, false
-}
-
 ir_type_bits :: proc(t: string) -> int {
     switch t {
     case "i1":     return 1
@@ -395,7 +372,7 @@ emit_print_raw :: proc(g: ^Codegen, spec, ir, val: string) {
 
 // Text of `n` bytes at `data`, printed.
 emit_print_text_at :: proc(g: ^Codegen, data: string, n: int) {
-    h := Array_Handle{fixed_alloca = data, elem_type = "i8", static_cap = n, is_utf8 = true}
+    h := Array_Handle{fixed_alloca = data, static_cap = n}
     emit_array_print(g, &h)
 }
 
@@ -594,8 +571,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
 emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     if sd := as_struct_body(distinct_base(ty)); sd != nil {
         if print_st, ok := lookup_struct(g, sd.name); ok {
-            sv := Struct_Var{alloca = addr, struct_name = sd.name}
-            gen_print_struct(g, &sv, print_st)
+            gen_print_struct(g, addr, print_st)
         }
         return
     }
@@ -608,25 +584,25 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     #partial switch t in bt {
     case ^Type_Fixed_Array:
         if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{fixed_alloca = addr, elem_type = "i8", static_cap = t.size, is_utf8 = true}
+            h := Array_Handle{fixed_alloca = addr, static_cap = t.size}
             emit_array_print(g, &h)
             return
         }
     case ^Type_Slice:
         if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
+            h := Array_Handle{header_ptr = addr}
             emit_array_print(g, &h)
         } else {
-            h := Array_Handle{header_ptr = addr, elem_type = llvm_type_from_checker(t.elem)}
+            h := Array_Handle{header_ptr = addr}
             gen_print_array_handle(g, &h, t.elem)
         }
         return
     case ^Type_Partial_Array:
         if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
+            h := Array_Handle{header_ptr = addr}
             emit_array_print(g, &h)
         } else {
-            h := Array_Handle{header_ptr = addr, elem_type = llvm_type_from_checker(t.elem)}
+            h := Array_Handle{header_ptr = addr}
             gen_print_array_handle(g, &h, t.elem)
         }
         return
@@ -649,7 +625,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     emit_print_value(g, val, ty)
 }
 
-gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
+gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body) {
     st_llvm := struct_llvm_name(struct_key(st))
     // Print "StructName { "
     header_name, header_len := get_string_literal(g, fmt.tprintf("%s {{ ", struct_key(st)))
@@ -671,7 +647,7 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
         emit_printf_void(g, label_ptr)
 
         gep := fresh_tmp(g)
-        emit_field_gep_into(g, gep, st_llvm, stv.alloca, fi)
+        emit_field_gep_into(g, gep, st_llvm, addr, fi)
         // One field, by its Mara type — scalar, nested struct, or array, each
         // rendered identically to a bare print(field).
         emit_print_at_addr(g, gep, f.type_)

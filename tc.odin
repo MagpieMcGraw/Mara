@@ -29,7 +29,6 @@ TC :: struct {
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
     mine:          ^[dynamic]int,     // the ones the module being checked registered
-    by_module:     map[string][]int,  // each module's, once checked
     checked_modules: map[string]^Type_Scope,
     in_progress:   map[string]bool,
     std:           ^Type_Scope,
@@ -258,7 +257,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     k.mine = &list
     defer k.mine = saved
     envs := make([]^Type_Scope, len(files), context.temp_allocator)
-    for f, i in files {
+    for _, i in files {
         fe := new(Type_Scope)
         fe.kind = .Block
         fe.home_package = mod.home_package

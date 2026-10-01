@@ -1705,18 +1705,6 @@ graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
     return len(callee.return_types)
 }
 
-
-
-// The fun or struct a resolved call runs. Casts and distinct conversions
-// resolve to none: they are no call.
-graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
-    if rf.callee != nil || rf.name == "" { return rf.callee }
-    // Resolved by name only (qualified, UFCS, dispatch): look the name up.
-    if ft, ok := b.checked.table.funs[rf.name]; ok    { return ft }
-    if st, ok := b.checked.table.structs[rf.name]; ok { return st }
-    return nil
-}
-
 // A call or construct operation, with a Calls edge to what it runs.
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
     op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)

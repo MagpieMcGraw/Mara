@@ -66,22 +66,3 @@ perf_timer_end :: proc(timer: ^Performance_Timer) {
     fmt.println("===================")
 }
 
-// Get time for a specific phase by index
-perf_timer_get :: proc(timer: ^Performance_Timer, index: int) -> f64 {
-    if index < 0 || index >= timer.count {
-        return 0
-    }
-    return timer.times[index]
-}
-
-// Get total time
-perf_timer_total :: proc(timer: ^Performance_Timer) -> f64 {
-    if timer.count == 0 {
-        return 0
-    }
-    total: f64 = 0
-    for i in 0..<timer.count {
-        total += timer.times[i]
-    }
-    return total
-}

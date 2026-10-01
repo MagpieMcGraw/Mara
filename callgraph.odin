@@ -249,12 +249,6 @@ cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     return true
 }
 
-// Query a scope's purity verdict (false if it isn't a graph node).
-cg_is_pure :: proc(g: ^Call_Graph, s: ^Type_Scope) -> bool {
-    if i, ok := g.index_of[s]; ok { return g.pure[i] }
-    return false
-}
-
 // Pure vs total over SOURCE functions (the ones with bodies — foreign/external
 // nodes are impure by definition and aren't "the program's code"). The numbers
 // behind the purity quotient printed on a successful build.

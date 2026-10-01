@@ -333,7 +333,6 @@ module_entries :: proc(module: string) -> (has_main, has_expose: bool) {
 
 // emcc is a Python script (emcc.bat -> emcc.py); its launcher needs
 // EMSDK_PYTHON to find the bundled Python under emsdk/python/.
-EMSDK_DIR    :: `C:\Apps\Emscripten`
 EMCC_PATH    :: `"C:\Apps\Emscripten\upstream\emscripten\emcc.bat"`
 EMSDK_PYTHON :: `"C:\Apps\Emscripten\python\3.13.3_64bit\python.exe"`
 
