@@ -1,5 +1,6 @@
 addrfixedarr
 aliasprobe
+all
 alloff
 ambigvar
 arena_cursor
@@ -232,6 +233,7 @@ structlitarg
 tailfns
 temp_address_neg
 ternary_values
+test
 test_big_endian
 test_bswap
 test_empty_foreign

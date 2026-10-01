@@ -91,6 +91,7 @@ Struct_Type_Field :: struct {
     type_:         Type,
     default_value: Expr, // nil if no default
     default_node:  Tree_Id, // the new checker's (tc.odin): its default in the flat tree; 0 if none
+    default_slot:  Maybe(int), // ... one of a group's one value (`x, y := f()`): f's result there, else the value
     is_using:      bool,
 }
 

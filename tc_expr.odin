@@ -83,6 +83,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_deref(k, n, env, want, w)
     case .Binary:
         return tc_binary(k, n, env, want, w)
+    case .In_Range:
+        return tc_in_range(k, n, env, want, w)
     case .Call, .Method_Call:
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
@@ -333,10 +335,38 @@ tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writ
     return tc_binary_op(k, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]), env, want, w)
 }
 
+// `x in lo..hi`: `x >= lo and x < hi` — `not in`, its negation — x walked
+// twice, each part at the `in`, as the old parser lowered it.
+TC_In_Range :: struct {
+    value, lo, hi: Tree_Id,
+    span:          Span,
+}
+
+tc_in_range :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    lo, hi := tree_pair(tr, n)
+    rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
+    if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, .And, span, 0, 0, env, want, w, &rng) }
+    if want == .Place { tc_fail(k, "a unary's place") }
+    ask: Fuse_Want = .None if want == .None || want == .Place else .Value
+    ot, r := tc_binary_op(k, .And, span, 0, 0, env, ask, w, &rng)
+    if _, is_bool := ot.(Type_Bool); !is_bool && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
+    b := tc_building(k)
+    if want == .None || want == .Place || b == nil { return Type_Bool{}, {} }
+    return Type_Bool{}, {v = graph_op_value(b, .Unary, w, span, Type_Bool{}, graph_token_text(.Not), r.v), ok = true}
+}
+
 // `left op right`, where `span` is: a Binary's, or a compound assignment's
 // (`x += v` is `x = x + v`, at the `+=`).
 tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, env: ^Type_Scope,
-                     want: Fuse_Want, w: Written) -> (Type, Fused) {
+                     want: Fuse_Want, w: Written, in_range: ^TC_In_Range = nil) -> (Type, Fused) {
+    // (A side: its expression; an `in`'s, its comparison.)
+    side_of :: proc(k: ^TC, rng: ^TC_In_Range, i: int, side: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+        if rng == nil { return tc_expr(k, side, env, want, w) }
+        if i == 0 { return tc_binary_op(k, .Greater_Equal, rng.span, rng.value, rng.lo, env, want, w) }
+        return tc_binary_op(k, .Less, rng.span, rng.value, rng.hi, env, want, w)
+    }
     tr := k.t
     op := tok
     wrapping := false
@@ -362,11 +392,11 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     for side, i in ([2]Tree_Id{left, right}) {
         k.hint = hint
         if !build {
-            types[i] = tc_check(k, side, env)
+            types[i], _ = side_of(k, in_range, i, side, env, .None, w)
             continue
         }
         if and_or {
-            st, r := tc_expr(k, side, env, .Value, w)
+            st, r := side_of(k, in_range, i, side, env, .Value, w)
             types[i] = st
             if b = tc_building(k); b == nil { build = false; continue }
             sides[i] = r.v
@@ -596,16 +626,25 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // defining scope, run at the call.)
     items := make([dynamic]TC_Arg, 0, len(ft.params), context.temp_allocator)
     if len(args) >= count_required_params(ft) && len(args) <= len(ft.params) {
-        for a in args { append(&items, TC_Arg{a, env, w, {}}) }
-        for i := len(args); i < len(ft.params); i += 1 {
-            def := ft.params[i].default_node
-            if k.t.tag[def] == .Hash_Name {
-                // (`#caller_name`: the call site's, written there.)
-                append(&items, TC_Arg{def, env, w, span})
-                continue
-            }
-            append(&items, TC_Arg{def, callee_def_scope(ft), .Implied, {}})
+        // (A param's default: run at the call, checked in its fun's scope;
+        // `#caller_name`, the call site's, written there.)
+        default_arg :: proc(k: ^TC, p: Struct_Type_Field, ft: ^Type_Scope, env: ^Type_Scope, w: Written, at: Span) -> TC_Arg {
+            if k.t.tag[p.default_node] == .Hash_Name { return TC_Arg{p.default_node, env, w, at, nil} }
+            return TC_Arg{p.default_node, callee_def_scope(ft), .Implied, {}, p.default_slot}
         }
+        for a, i in args {
+            // (`_`: its param's default — said so when it has none.)
+            if tr.tag[a] == .Ident && tc_name(k, a) == "_" && i < len(ft.params) {
+                if ft.params[i].default_node == 0 {
+                    tc_error(k, span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER, i + 1, name, ft.params[i].name)
+                } else {
+                    append(&items, default_arg(k, ft.params[i], ft, env, w, tree_span(tr, a)))
+                    continue
+                }
+            }
+            append(&items, TC_Arg{a, env, w, {}, nil})
+        }
+        for i := len(args); i < len(ft.params); i += 1 { append(&items, default_arg(k, ft.params[i], ft, env, w, span)) }
     }
     for item, i in items {
         a, a_env := item.node, item.env
@@ -626,6 +665,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             } else {
                 if item.at != {} {
                     at, r = tc_hash_name(k, a, a_env, .Either, item.w, item.at)
+                } else if slot, is_slot := item.slot.?; is_slot {
+                    at, r = tc_tuple_default(k, a, slot, a_env, .Either, item.w, span)
                 } else {
                     at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
                 }
@@ -633,6 +674,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             }
         } else if item.at != {} {
             at, _ = tc_hash_name(k, a, a_env, .None, item.w, item.at)
+        } else if slot, is_slot := item.slot.?; is_slot {
+            at, _ = tc_tuple_default(k, a, slot, a_env, .None, item.w, span)
         } else {
             at = k.recv.t if a == k.recv.node else tc_check(k, a, a_env)
         }
@@ -996,6 +1039,42 @@ TC_Arg :: struct {
     env:  ^Type_Scope,
     w:    Written,
     at:   Span,   // (a default the call site gives: the call's)
+    slot: Maybe(int),   // (a default one of a group's one value: its slot)
+}
+
+// A param's default that is a slot of its group's one value (`x, y :=
+// f()`): f's result there — f built at the first slot, once, each other its
+// output; a value no call of several results, a broadcast: built again.
+tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, env: ^Type_Scope, want: Fuse_Want, w: Written, span: Span) -> (Type, Fused) {
+    shared := slot > 0 && len(tc_call_returns(k, src, env)) > 1
+    st: Type
+    r: Fused
+    if want != .None && !shared { st, r = tc_expr(k, src, env, .Value, w) } else { st = tc_check(k, src, env) }
+    out: Fused
+    if b := tc_building(k); b != nil && want != .None {
+        multi := len(tc_call_returns(k, src, env)) > 1
+        switch {
+        case !multi: out = r
+        case slot == 0:
+            graph_fuse_tuple_set(b, tc_sid(k, src), r.v.op)
+            out = r
+        case:
+            if op, made := graph_fuse_tuple_get(b, tc_sid(k, src)); made {
+                out = {v = {op, i32(slot)}, ok = true}
+            } else {
+                tc_fail(k, "a default's slot before its call")
+            }
+        }
+    }
+    if _, is_err := st.(Type_Error); is_err { return Type_Error{}, {} }
+    if returns := tc_call_returns(k, src, env); len(returns) > 1 {
+        if slot >= len(returns) {
+            tc_error(k, span, TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE, slot, len(returns))
+            return Type_Error{}, {}
+        }
+        return returns[slot], out
+    }
+    return st, out
 }
 
 // `#caller_name`, `#caller_span`: text â the enclosing fun's name, where it

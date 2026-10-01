@@ -18,6 +18,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     hint := k.hint
     defer k.hint = hint
     tc_register_defs(k, sc)
+    if is_struct { tc_early_self(k, v.body) }
     body := type_env_block_child(ts)
     // (A struct's params its constants may use; its and a fun's constants
     // checked, and built, before its code.)
@@ -1238,4 +1239,108 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, name) }
         }
     }
+}
+
+// A struct's field initializer handing `#self` to anything — a call, an
+// expression — while field declarations follow it: what it reads may not be
+// written yet. Warned, as the old check_early_self_decls did.
+tc_early_self :: proc(k: ^TC, body: []Tree_Id) {
+    t := k.t
+    stmts := tc_live(k, body)
+    decl_after := make([]bool, len(stmts), context.temp_allocator)
+    seen := false
+    for i := len(stmts) - 1; i >= 0; i -= 1 {
+        decl_after[i] = seen
+        if t.tag[stmts[i]] == .Decl { seen = true }
+    }
+    for s, i in stmts {
+        if t.tag[s] != .Decl || !decl_after[i] { continue }
+        v := decl_view(t, s)
+        for value in v.values {
+            if name, found := tc_self_call(k, value); found {
+                check_warning(k.c, tree_span(t, s), TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS, name)
+                break
+            }
+            if tc_has_self(k, value) {
+                names := make([dynamic]string, context.temp_allocator)
+                for tg in v.targets { append(&names, tc_name(k, tg)) }
+                check_warning(k.c, tree_span(t, s), TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS, strings.join(names[:], ", ", context.temp_allocator))
+                break
+            }
+        }
+    }
+}
+
+// The call an expression hands `#self` to, by name — the innermost.
+tc_self_call :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
+    if n == 0 { return "", false }
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Call, .Method_Call:
+        args := tree_list(t, t.a[n]) if t.tag[n] == .Call else method_view(t, n).args
+        for a in args {
+            if name, found := tc_self_call(k, a); found { return name, true }
+        }
+        for a in args {
+            if tc_is_self(k, a) { return tc_call_name(k, n), true }
+        }
+    case .Binary:
+        if name, found := tc_self_call(k, Tree_Id(t.a[n])); found { return name, true }
+        return tc_self_call(k, Tree_Id(t.b[n]))
+    case .Unary, .Deref, .Paren, .Field, .Broadcast, .Take:
+        sub := Tree_Id(t.b[n]) if t.tag[n] == .Take else Tree_Id(t.a[n])
+        return tc_self_call(k, sub)
+    case .Index:
+        if name, found := tc_self_call(k, Tree_Id(t.a[n])); found { return name, true }
+        return tc_self_call(k, Tree_Id(t.b[n]))
+    case .Slice:
+        lo, hi := tree_pair(t, n)
+        for p in ([3]Tree_Id{Tree_Id(t.a[n]), lo, hi}) {
+            if name, found := tc_self_call(k, p); found { return name, true }
+        }
+    case .Literal:
+        for e in tree_list(t, t.b[n]) {
+            if name, found := tc_self_call(k, Tree_Id(t.a[e]) if t.tag[e] == .Named_Entry else e); found { return name, true }
+        }
+    case .Array:
+        for e in tree_list(t, t.a[n]) {
+            if name, found := tc_self_call(k, e); found { return name, true }
+        }
+    case .If_Expr:
+        then_, else_ := tree_pair(t, n)
+        if name, found := tc_self_call(k, then_); found { return name, true }
+        return tc_self_call(k, else_)
+    }
+    return "", false
+}
+
+// Whether `#self` is anywhere in an expression.
+tc_has_self :: proc(k: ^TC, n: Tree_Id) -> bool {
+    if n == 0 { return false }
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Self: return true
+    case .Call, .Method_Call:
+        args := tree_list(t, t.a[n]) if t.tag[n] == .Call else method_view(t, n).args
+        for a in args { if tc_has_self(k, a) { return true } }
+    case .Binary, .Index:
+        return tc_has_self(k, Tree_Id(t.a[n])) || tc_has_self(k, Tree_Id(t.b[n]))
+    case .Unary, .Deref, .Paren, .Field, .Broadcast:
+        return tc_has_self(k, Tree_Id(t.a[n]))
+    case .Take:
+        return tc_has_self(k, Tree_Id(t.b[n]))
+    case .Slice:
+        lo, hi := tree_pair(t, n)
+        return tc_has_self(k, Tree_Id(t.a[n])) || tc_has_self(k, lo) || tc_has_self(k, hi)
+    case .Literal:
+        for e in tree_list(t, t.b[n]) {
+            if tc_has_self(k, Tree_Id(t.a[e]) if t.tag[e] == .Named_Entry else e) { return true }
+        }
+    case .Array:
+        for e in tree_list(t, t.a[n]) { if tc_has_self(k, e) { return true } }
+    case .If_Expr:
+        then_, else_ := tree_pair(t, n)
+        return tc_has_self(k, Tree_Id(t.a[n])) || tc_has_self(k, then_) || tc_has_self(k, else_)
+    }
+    return false
 }

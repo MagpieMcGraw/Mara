@@ -517,8 +517,11 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
         pv := params_view(t, g)
         for name, i in pv.names {
             def := pv.values[i] if i < len(pv.values) else 0
-            pt := tc_param_type(k, tc_text(name), pv.type_, def, sc.env, span)
-            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt, default_node = def})
+            // (`x, y := f()`, `a, b: i64 = 7`: one value, each its slot.)
+            slot: Maybe(int)
+            if len(pv.values) == 1 && len(pv.names) > 1 { def, slot = pv.values[0], i }
+            pt := tc_param_type(k, tc_text(name), pv.type_, def, sc.env, span, slot)
+            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt, default_node = def, default_slot = slot})
         }
     }
     build_param_map(ts)
@@ -758,9 +761,18 @@ tc_is_definition :: proc(tag: Tree_Tag) -> bool {
 // A param's type: as written; else its default's â a whole number's width
 // the one the body uses it at (a cell, settled once the body is checked), a
 // fraction f64, anything else its checked type.
-tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scope, span: Span, slot: Maybe(int) = nil) -> Type {
     if type_ != 0 { return tc_type(k, type_, env, span) }
     if def == 0 { return Type_Error{} }
+    // (A slot of a call's results: that result's type; else the value's.)
+    if at, is_slot := slot.?; is_slot {
+        if call := tc_unparen(k, def); tc_is_call(k, call) {
+            if t, ok := type_env_get(env, tc_call_name(k, call)); ok {
+                if ft, is_scope := t.(^Type_Scope); is_scope && ft.kind == .Fun && at < len(ft.return_types) { return ft.return_types[at] }
+            }
+        }
+        return solidify_type(tc_check(k, def, env))
+    }
     if k.t.tag[def] == .Number {
         if strings.index_byte(tc_text(k.t.main[def]), '.') >= 0 { return Type_F64{} }
         cell := new(Infer_Cell)
