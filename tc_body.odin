@@ -197,9 +197,15 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         tc_decl_take(k, s, target, value, name, ann, env, fields_of)
         return
     }
+    // (`[:n]T`: n its capacity.)
+    cap_n := Tree_Id(0)
+    if ann_node != 0 && t.tag[ann_node] == .Type_Slice { cap_n = Tree_Id(t.a[ann_node]) }
     if value == 0 {
-        tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span))
+        tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
+    }
+    if cap_n != 0 {
+        if ct := tc_check(k, cap_n, env); !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
     }
     b := tc_building(k)
     decl := NO_NODE
@@ -220,7 +226,8 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     errors_before := k.c.errors
     want := Fuse_Want.Into if b != nil else .None
     vt, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
-    tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span)
+    // (A sized slice's text is copied into what it allocates.)
+    if cap_n == 0 { tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span) }
     tc_check_big_endian(k, value, span)
     if returns := tc_call_returns(k, value, env); len(returns) > 1 {
         // (One name for several results: `a, b := f()` takes them.)
@@ -310,12 +317,16 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
 
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each). `field`: its node, when it is a struct's field.
-tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE) {
+tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE, cap_n := Tree_Id(0)) {
     defer type_env_set(env, name, ann)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
     tc_bare_construction(k, name, ann, env, span)
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
+    if cap_n != 0 {
+        tc_decl_sized(k, name, ann, env, span, field, cap_n)
+        return
+    }
     b := tc_building(k)
     if b == nil { return }
     args: []Operand
@@ -380,6 +391,23 @@ tc_bare_construction :: proc(k: ^TC, name: string, t: Type, env: ^Type_Scope, sp
         return
     }
     if len(st.return_types) > 0 { tc_error(k, span, TYPE_BARE_CAN_FAIL, name, shown, name, shown) }
+}
+
+// `s : [:n]T`: its local, then its capacity — n of T allocated for it. (A
+// field's is its struct's to give: checked, built, left out.)
+tc_decl_sized :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field: Node_Id, cap_n: Tree_Id) {
+    b := tc_building(k)
+    decl := field
+    if b != nil && decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+    ct, r := tc_expr(k, cap_n, env, .Value if b != nil else .None)
+    if !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
+    if b = tc_building(k); b == nil { return }
+    if field != NO_NODE {
+        graph_fuse_bare(b, decl, b.g.type_[decl], nil, nil, span)
+        return
+    }
+    graph_fuse_typed(b, decl, ann)
+    graph_fuse_bare(b, decl, ann, r.v, nil, span)
 }
 
 // The struct a bare declaration of the type constructs: its own, or its

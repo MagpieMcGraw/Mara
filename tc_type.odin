@@ -52,10 +52,7 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
     case .Type_Paren:
         return tc_type(k, Tree_Id(t.a[n]), env, span)
     case .Type_Slice:
-        if t.a[n] != 0 {
-            tc_unsupported(k, n, "a sized slice")
-            return Type_Error{}
-        }
+        // (`[:n]T`: n a declaration's capacity — tc_decl_sized; the type []T.)
         sl := new(Type_Slice)
         sl.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
         return sl

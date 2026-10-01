@@ -101,6 +101,7 @@ esc_param_alias_neg
 esc_param_reassign_neg
 esc_reassign_neg
 esc_recursive_neg
+esc_sized_slice_neg
 esc_slice_copy_neg
 esc_slice_field_neg
 escape_struct_lit_neg
@@ -193,6 +194,7 @@ scope
 scope_constants
 seektest
 settled_literal_range_neg
+sibling_locals
 slerp
 slice_loop_view
 slice_param_header_neg
@@ -241,3 +243,4 @@ walkmatch
 widenneg
 wrapfail
 wraptest
+zinit

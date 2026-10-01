@@ -413,6 +413,9 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
     if dt, ok := k.table.distinct_types[make_flat_name(k.pkg, tc_name(k, s))]; ok && dt.base_type == nil {
+        if base := Tree_Id(t.a[value]); t.tag[base] == .Type_Slice && t.a[base] != 0 {
+            tc_unsupported(k, base, "a sized slice alias")   // (its capacity each bare declaration's)
+        }
         dt.base_type = tc_type(k, Tree_Id(t.a[value]), env, tree_span(t, s))
     }
 }
