@@ -18,19 +18,26 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         tc_fail(k, "a call's place")
         b = nil
     }
-    for a in args {
-        if tr.tag[a] == .Ident && tc_name(k, a) == "_" {
-            tc_unsupported(k, a, "a `_` argument")
-            return Type_Error{}, {}
-        }
-    }
+    // (A `_`: the default the chosen function has there — its place in the
+    // arguments reserved, its value built once it is chosen.)
+    underscore := make([]bool, len(args), context.temp_allocator)
+    for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
+    laters := make([]Graph_Later, len(args), context.temp_allocator)
     vals := make([dynamic]Operand, context.temp_allocator)
     widens := make([dynamic]int, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
     literals := make([dynamic]Fuse_Literal_Arg, context.temp_allocator)
     arg_types := make([dynamic]Type, context.temp_allocator)
     for a, i in args {
-        if b != nil && tc_building(k) != nil {
+        if underscore[i] {
+            append(&arg_types, nil)
+            if b != nil && tc_building(k) != nil {
+                laters[i] = graph_fuse_later(b)
+                append(&vals, NO_VALUE)
+                append(&widens, -1)
+                append(&array_values, false)
+            }
+        } else if b != nil && tc_building(k) != nil {
             from := b.nodes
             t, r := tc_arg(k, a, env, .Either, w)
             append(&arg_types, t)
@@ -62,6 +69,10 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
             if !field_has_default(ft.params[i]) { continue candidates }
         }
         for at, i in arg_types {
+            if underscore[i] {
+                if !field_has_default(ft.params[i]) { continue candidates }
+                continue
+            }
             if types_incompatible(ft.params[i].type_, at) { continue candidates }
         }
         append(&matched, f)
@@ -69,7 +80,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     }
     if len(matched) == 0 {
         names := make([dynamic]string, context.temp_allocator)
-        for at in arg_types { append(&names, type_name(at)) }
+        for at, i in arg_types { append(&names, "_" if underscore[i] else type_name(at)) }
         tc_error(k, span, TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT, name, strings.join(names[:], ", "))
         return Type_Error{}, {}
     }
@@ -78,12 +89,39 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         return Type_Error{}, {}
     }
     ft := matched_fts[0]
-    if len(args) < len(ft.params) {
-        tc_unsupported(k, n, "a dispatch's call leaving params to their defaults")
-        return Type_Error{}, {}
-    }
     k.callees[n] = ft
     ret := fn_primary_return(ft)
+    // (Its defaults — a `_`'s, then the params it leaves off: each in its
+    // function's defining scope, run at the call; a call site's (`#caller_name`)
+    // where the call is.)
+    callee := callee_def_scope(ft)
+    if callee == nil { callee = env }
+    default_at :: proc(k: ^TC, def: Tree_Id, env, callee: ^Type_Scope, want: Fuse_Want, w: Written, at: Span) -> (Type, Fused) {
+        if k.t.tag[def] == .Hash_Name { return tc_hash_name(k, def, env, want, w, at) }
+        return tc_expr(k, def, callee, want, .Implied)
+    }
+    for a, i in args {
+        if !underscore[i] { continue }
+        def := ft.params[i].default_node
+        built := b != nil && tc_building(k) != nil
+        if !built {
+            default_at(k, def, env, callee, .None, w, tree_span(tr, a))
+            continue
+        }
+        graph_fuse_later_begin(b, &laters[i])
+        t, r := default_at(k, def, env, callee, .Either, w, tree_span(tr, a))
+        if tc_building(k) != nil { vals[i] = tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}) }
+        if !graph_fuse_later_end(b, &laters[i]) { tc_fail(k, "a default for `_` across runs") }
+    }
+    for i := len(args); i < len(ft.params); i += 1 {
+        def := ft.params[i].default_node
+        if b == nil || tc_building(k) == nil {
+            default_at(k, def, env, callee, .None, w, span)
+            continue
+        }
+        t, r := default_at(k, def, env, callee, .Either, w, span)
+        if tc_building(k) != nil { append(&vals, tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i})) }
+    }
     b = tc_building(k) if b != nil else nil
     if b == nil { return ret, {} }
     for wi, i in widens {
