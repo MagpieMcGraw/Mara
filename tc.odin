@@ -53,6 +53,7 @@ TC :: struct {
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
     byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
+    span_read:     Fuse_Span_Read,    // the span of bytes last built to be read as its destination's type
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built

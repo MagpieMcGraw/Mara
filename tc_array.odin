@@ -228,6 +228,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     build := want != .None && b != nil
     read_as: Type
     if build && (want == .Into || dest.type_ != nil) { read_as = graph_dest_type(b, dest) }
+    view := want != .Into && dest.type_ != nil   // (asked at a use's type)
     held := false
     early: Graph_Early
     base, plain := NO_VALUE, NO_VALUE
@@ -271,14 +272,25 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             return Type_Error{}, {}
         }
     }
-    if build && read_as != nil && elem != nil && is_byte_buffer(target) {
-        tc_unsupported(k, n, "a span of bytes read as a type")
-        return Type_Error{}, {}
+    // (Bytes read as the destination's type: their place, as it was built,
+    // and the bounds as they are — a register value's start only — in a
+    // slice the store takes apart: tc_store_span.)
+    reads, scalar := false, false
+    if build && read_as != nil && elem != nil {
+        probe := Type_Slice{elem = elem}
+        if tc_byte_flow(k, read_as, n, &probe) == .Read {
+            if held {
+                tc_fail(k, "bytes read from a value's span")
+            } else if b = tc_building(k); b != nil {
+                reads, scalar = true, view || !graph_aggregate(read_as)
+                base = graph_base_of(b, plain, plain_t, span)
+            }
+        }
     }
     lo, hi := NO_VALUE, NO_VALUE
     if lo_n != 0 {
         lt: Type
-        lt, lo = tc_bound(k, lo_n, env, w, span, build)
+        lt, lo = tc_bound(k, lo_n, env, w, span, build, raw = reads)
         if !is_numeric(lt) && !is_any(lt) {
             tc_error(k, span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -287,7 +299,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     }
     if hi_n != 0 {
         ht: Type
-        ht, hi = tc_bound(k, hi_n, env, w, span, build)
+        if scalar { ht = tc_check(k, hi_n, env) } else { ht, hi = tc_bound(k, hi_n, env, w, span, build, raw = reads) }
         if !is_numeric(ht) && !is_any(ht) {
             tc_error(k, span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {
@@ -297,6 +309,11 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     if elem == nil { return Type_Error{}, {} }
     t := new_clone(Type_Slice{elem = elem})
     if b = tc_building(k); !build || b == nil { return t, {} }
+    if reads {
+        v := graph_op_value(b, .Slice, w, span, t, "", base, lo, hi)
+        k.span_read = {v.op, scalar}
+        return t, {v = v, ok = true}
+    }
     if held {
         if !graph_fuse_early_place(b, &early) {
             tc_fail(k, "a slice's bounds that branch, of a value")
@@ -308,11 +325,12 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     return t, {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
 
-// A slice's bound, at the header's width.
-tc_bound :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, w: Written, span: Span, build: bool) -> (Type, Operand) {
+// A slice's bound, at the header's width (`raw`: as it is).
+tc_bound :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, w: Written, span: Span, build: bool, raw := false) -> (Type, Operand) {
     t, r := tc_expr(k, n, env, .Value if build else .None, w)
     b := tc_building(k)
     if !build || b == nil { return t, NO_VALUE }
+    if raw { return t, r.v }
     return t, graph_fuse_widen(b, r.v, span, {to = slice_header_width_type})
 }
 

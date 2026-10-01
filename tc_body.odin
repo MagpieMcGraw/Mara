@@ -419,11 +419,12 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
         graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
-    // (Bytes read as the destination's type: tc_store_bytes.)
+    // (Bytes read as the destination's type: tc_store_bytes, tc_store_span.)
     if m, _ := tc_byte_node(k, e); d.type_ != nil && tc_byte_flow(k, d.type_, e, t) == .Read {
-        if k.t.tag[m] == .Index { return tc_store_bytes(k, e, r, d, dt, span) }
-        tc_unsupported(k, e, "a span of bytes read as a type")
-        return
+        #partial switch k.t.tag[m] {
+        case .Index: return tc_store_bytes(k, e, r, d, dt, span)
+        case .Slice: return tc_store_span(k, e, r, d, dt, span)
+        }
     }
     val := graph_fuse_widen(b, tc_value(k, r, e, t), span, {to = dt, settle_to = settle})
     graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)

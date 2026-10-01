@@ -45,11 +45,6 @@ tc_check_byte_flow :: proc(k: ^TC, dest: Type, value: Tree_Id, vt: Type, span: S
             tc_error(k, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
         }
     }
-    if flow == .Read {
-        if m, _ := tc_byte_node(k, value); k.t.tag[m] == .Slice {
-            tc_unsupported(k, value, "a span of bytes read as a type")
-        }
-    }
     return flow
 }
 
@@ -86,6 +81,27 @@ tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Sp
     val := graph_read(b, r.v, dt, span)
     graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
     return true, false
+}
+
+// A span of bytes read as the destination's type: its bytes' place and
+// bounds, as its slice built them; a register value the bytes at its start
+// seen as it, read, else a byte read — at the span, where its failures say
+// it is. (A new partial array is zero first.)
+tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Fused, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
+    b := tc_building(k)
+    m, big := tc_byte_node(k, e)
+    if r.v.op == NO_NODE || r.v.op != k.span_read.op || k.span_read.scalar == graph_aggregate(dt) {
+        tc_fail(k, "a span of bytes read as another type")
+        return
+    }
+    if k.span_read.scalar {
+        val := graph_read(b, graph_fuse_span_view(b, r.v, dt, big, span), dt, span)
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+        return true, false
+    }
+    buf, lo, hi := graph_fuse_span_operands(b, r.v, span)
+    graph_op(b, .Byte_Read, .Explicit, tree_span(k.t, m), d.type_, "#big_endian" if big else "", graph_dest_place(b, d, span), buf, lo, hi)
+    return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
 }
 
 // `bytes[i] = v`: the element's place, v into it — v's raw bytes: the

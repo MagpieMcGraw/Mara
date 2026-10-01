@@ -27,7 +27,10 @@ bug1
 byte_fill_bounds
 byte_slice_index_neg
 byte_slice_read_neg
+byte_slice_write_neg
 byte_view_negative
+byte_view_wide_neg
+byte_views
 bytewrite_neg
 callgraph_probe
 capsize
@@ -152,6 +155,7 @@ partial_param_write_neg
 patest
 pathtest
 printcheck
+ptr_slice
 ptr_slice_uninit_neg
 puretest
 qcinfer
@@ -173,6 +177,7 @@ settled_literal_range_neg
 slerp
 slice_loop_view
 slice_param_header_neg
+slicefield
 spantest
 spec
 spread_literal
@@ -182,11 +187,14 @@ struct_return_shapes
 tailfns
 temp_address_neg
 ternary_values
+test_big_endian
+test_bswap
 test_empty_foreign
 test_fail
 test_match_indexed
 text_constant_views
 text_partial_array
+text_view_print
 try_runs_defers
 tuple_union
 u64dec
