@@ -172,9 +172,9 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
     }
     if shaped { return nil }
     view := solidify_type(vt)
-    lo, lo_ok := tc_number_int(k, lo_n)
-    hi, hi_ok := tc_number_int(k, hi_n)
-    if size := checker_type_byte_size(view); lo_ok && hi_ok && hi - lo != size {
+    lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)
+    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
+    if size := checker_type_byte_size(view); lo_ok && hi_ok && int(hi - lo) != size {
         msg := TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE if is_byte_fixed_array(tt) else TYPE_BYTE_SLICE_WRITE_BYTES_SLICE
         tc_error(k, span, msg, type_name(view), size, hi - lo)
     }
@@ -208,10 +208,10 @@ tc_span_read_size :: proc(k: ^TC, value: Tree_Id, ann: Type, exact: bool, span: 
     m, _ := tc_byte_node(k, value)
     if k.t.tag[m] != .Slice { return }
     lo_n, hi_n := tree_pair(k.t, m)
-    lo, lo_ok := tc_number_int(k, lo_n)
-    hi, hi_ok := tc_number_int(k, hi_n)
+    lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)
+    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
     if !lo_ok || !hi_ok { return }
-    n := hi - lo
+    n := int(hi - lo)
     if exact {
         if size := checker_type_byte_size(ann); n != size { tc_error(k, span, TYPE_BYTE_BUFFER_READ_BYTES_SLICE, type_name(ann), size, n) }
         return

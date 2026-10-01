@@ -1,0 +1,12 @@
+module const_cycle_neg
+//@ expect-fail: constant 'A' is defined in terms of itself
+
+// A constant whose value reaches itself, directly or through another, has
+// no value: an error (it used to overflow the compiler's stack).
+
+A :: B + 1
+B :: A * 2
+
+main :: fun() {
+	print(A)
+}

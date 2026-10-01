@@ -168,8 +168,15 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     }
     if kc != nil { k.const_nodes[n] = true }
     if !ok && kc != nil {
-        // (Not bound here yet: its value's type.)
+        // (Not bound here yet: its value's type — unless it is the value
+        // being checked.)
+        if kc.visiting || kc.state == .In_Progress {
+            tc_error(k, span, TYPE_CONSTANT_DEFINED_ITSELF, name)
+            return Type_Error{}, {}
+        }
+        kc.visiting = true
         ct := tc_check(k, kc.value, env)
+        kc.visiting = false
         return ct, tc_const_use(k, kc, n, ct, want, w)
     }
     if !ok {

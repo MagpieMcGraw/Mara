@@ -18,6 +18,7 @@ TC_Const :: struct {
     pkg:   string,
     t:     Type,
     state: Resolution_State,
+    visiting: bool,         // its value being checked or folded: a use in it is a cycle
 }
 
 // A module's constant: under its flat name, and its bare one unless another

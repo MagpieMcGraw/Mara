@@ -108,15 +108,11 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
     return nil, false
 }
 
-// An array's size, known when the program is compiled: a number, or an
-// expression of them.
+// An array's size, known when the program is compiled: a number, a
+// constant, or an expression of them.
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Span) -> (int, bool) {
     t := k.t
-    #partial switch t.tag[n] {
-    case .Number:
-        _, i, _ := parse_number_text(tc_text(t.main[n]))
-        return int(i), true
-    case .Ident:
+    if t.tag[n] == .Ident {
         // (A constant, known: its value.)
         name := tc_name(k, n)
         if _, is_const := k.const_owners[name]; is_const && !tc_const_visible(k, env, name) {
@@ -128,107 +124,106 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Spa
             tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
             return 0, false
         }
-        if f, i, lit := tc_literal_value(k, kc.value); lit {
-            _ = f
-            return int(i), true
-        }
         if v, ok := tc_comptime_int(k, kc.value, nil); ok { return int(v), true }
         tc_error(k, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, name)
         return 0, false
     }
     if v, ok := tc_comptime_int(k, n, env); ok { return int(v), true }
-    tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
-    return 0, false
-}
-
-// An integer expression's value, when it is known before the program runs.
-tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
-    t := k.t
-    #partial switch t.tag[n] {
-    case .Number:
-        f, _, _ := parse_number_text(tc_text(t.main[n]))
-        return i64(f), true
-    case .Paren:
-        return tc_comptime_int(k, Tree_Id(t.a[n]), env)
-    case .Size_Of:
-        if st, measured := k.size_of[n]; measured { return i64(elem_byte_size(llvm_type_from_checker(st), k.checked)), true }
-    case .Unary:
-        if build_tokens[t.main[n]].kind != .Minus { return 0, false }
-        v, ok := tc_comptime_int(k, Tree_Id(t.a[n]), env)
-        return -v, ok
-    case .Binary:
-        l, l_ok := tc_comptime_int(k, Tree_Id(t.a[n]), env)
-        if !l_ok { return 0, false }
-        r, r_ok := tc_comptime_int(k, Tree_Id(t.b[n]), env)
-        if !r_ok { return 0, false }
-        #partial switch build_tokens[t.main[n]].kind {
-        case .Plus:        return l + r, true
-        case .Minus:       return l - r, true
-        case .Star:        return l * r, true
-        case .Slash:       if r != 0 { return l / r, true }
-        case .Modulo:      if r != 0 { return l % r, true }
-        case .Shift_Left:  return l << uint(r), true
-        case .Shift_Right: return l >> uint(r), true
-        case .Pipe:        return l | r, true
-        case .Ampersand:   return l & r, true
-        case .Caret:       return l ~ r, true
-        }
-    case .Field:
-        // An array's capacity is its type's (a fixed one's length too).
-        field := tc_text(Token_Id(t.b[n]))
-        base := Tree_Id(t.a[n])
-        if (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
-        if env == nil { return 0, false }
-        bt, ok := type_env_get(env, tc_name(k, base))
-        if !ok { return 0, false }
-        #partial switch v in distinct_base(bt) {
-        case ^Type_Partial_Array: if field == "cap" && v.size > 0 { return i64(v.size), true }
-        case ^Type_Fixed_Array:   if v.size > 0 { return i64(v.size), true }
-        }
-    case .Ident:
-        if kc, ok := k.consts[tc_name(k, n)]; ok { return tc_comptime_int(k, kc.value, env) }
+    if tc_has_float(k, n) {
+        tc_error(k, span, TYPE_SIZE_EXPRESSION_INTEGER, "a float")
+    } else {
+        tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
     }
     return 0, false
 }
 
-// A number as written — or an operation of numbers — its value: no
-// constant's name (a span's bounds, its size checked when they are numbers).
-tc_number_int :: proc(k: ^TC, n: Tree_Id) -> (int, bool) {
+// Whether a float is written in an expression: `2.5`, `1.5 + 1`.
+tc_has_float :: proc(k: ^TC, n: Tree_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Number:
+        return strings.index_byte(tc_text(t.main[n]), '.') >= 0
+    case .Paren, .Unary:
+        return tc_has_float(k, Tree_Id(t.a[n]))
+    case .Binary:
+        return tc_has_float(k, Tree_Id(t.a[n])) || tc_has_float(k, Tree_Id(t.b[n]))
+    }
+    return false
+}
+
+// An integer expression's value, when it is known before the program runs:
+// numbers and the operators over them; with `names`, a constant, a
+// size_of, an array's length or capacity too. None is known that is a
+// float, divides by zero, shifts past the width, or leaves i64.
+tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> (i64, bool) {
     t := k.t
     if n == 0 { return 0, false }
+    v: i128
     #partial switch t.tag[n] {
     case .Number:
         text := tc_text(t.main[n])
         if strings.index_byte(text, '.') >= 0 { return 0, false }
         _, i, err := parse_number_text(text)
-        return int(i), err == .None
+        if err != .None { return 0, false }
+        v = i
     case .Paren:
-        return tc_number_int(k, Tree_Id(t.a[n]))
+        return tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
     case .Unary:
-        v, ok := tc_number_int(k, Tree_Id(t.a[n]))
+        x, ok := tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
         if !ok { return 0, false }
         #partial switch build_tokens[t.main[n]].kind {
-        case .Minus: return -v, true
-        case .Tilde: return ~v, true
+        case .Minus: v = -i128(x)
+        case .Tilde: v = i128(~x)
+        case:        return 0, false
         }
     case .Binary:
-        l, l_ok := tc_number_int(k, Tree_Id(t.a[n]))
-        r, r_ok := tc_number_int(k, Tree_Id(t.b[n]))
+        l, l_ok := tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
+        r, r_ok := tc_comptime_int(k, Tree_Id(t.b[n]), env, names)
         if !l_ok || !r_ok { return 0, false }
-        #partial switch build_tokens[t.main[n]].kind {
-        case .Plus:        return l + r, true
-        case .Minus:       return l - r, true
-        case .Star:        return l * r, true
-        case .Slash:       if r != 0 { return l / r, true }
-        case .Modulo:      if r != 0 { return l % r, true }
-        case .Shift_Left:  if r >= 0 { return l << uint(r), true }
-        case .Shift_Right: if r >= 0 { return l >> uint(r), true }
-        case .Ampersand:   return l & r, true
-        case .Pipe:        return l | r, true
-        case .Tilde:       return l ~ r, true
+        a, b := i128(l), i128(r)
+        op := build_tokens[t.main[n]].kind
+        if (op == .Slash || op == .Modulo) && b == 0 { return 0, false }
+        if (op == .Shift_Left || op == .Shift_Right) && (b < 0 || b >= 64) { return 0, false }
+        #partial switch op {
+        case .Plus:        v = a + b
+        case .Minus:       v = a - b
+        case .Star:        v = a * b
+        case .Slash:       v = a / b
+        case .Modulo:      v = a % b
+        case .Shift_Left:  v = a << uint(b)
+        case .Shift_Right: v = a >> uint(b)
+        case .Ampersand:   v = a & b
+        case .Pipe:        v = a | b
+        case .Tilde:       v = a ~ b
+        case:              return 0, false
         }
+    case .Size_Of:
+        st, measured := k.size_of[n]
+        if !names || !measured { return 0, false }
+        return i64(elem_byte_size(llvm_type_from_checker(st), k.checked)), true
+    case .Field:
+        // (An array's capacity is its type's; a fixed one's length too.)
+        field := tc_text(Token_Id(t.b[n]))
+        base := Tree_Id(t.a[n])
+        if !names || env == nil || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        bt, ok := type_env_get(env, tc_name(k, base))
+        if !ok { return 0, false }
+        #partial switch a in distinct_base(bt) {
+        case ^Type_Partial_Array: if field == "cap" && a.size > 0 { return i64(a.size), true }
+        case ^Type_Fixed_Array:   if a.size > 0 { return i64(a.size), true }
+        }
+        return 0, false
+    case .Ident:
+        kc, ok := k.consts[tc_name(k, n)]
+        if !names || !ok || kc.visiting { return 0, false }
+        kc.visiting = true
+        defer kc.visiting = false
+        return tc_comptime_int(k, kc.value, env, names)
+    case:
+        return 0, false
     }
-    return 0, false
+    if v < i128(min(i64)) || v > i128(max(i64)) { return 0, false }
+    return i64(v), true
 }
 
 // `q.T`: a module's type (q its alias), a union's variant's struct, a type a
