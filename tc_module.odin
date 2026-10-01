@@ -90,3 +90,19 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     }
     return m
 }
+
+// A module's variables: its file's block's locals — typed (by what is
+// written, else by its value), no function sees them (one that reaches for
+// one is told so: report_unresolved).
+tc_module_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    v := decl_view(t, s)
+    span := tree_span(t, s)
+    ann: Type
+    if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
+    for tg, i in v.targets {
+        vt: Type = Type_Error{}
+        if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i], env)) }
+        type_env_set(env, tc_name(k, tg), ann if ann != nil else vt)
+    }
+}

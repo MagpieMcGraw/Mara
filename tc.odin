@@ -370,6 +370,9 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
             tc_unsupported(k, value, "this module definition")
             return
         }
+    case .Decl:
+        tc_module_decl(k, s, env)
+        return
     case .Foreign:
         tc_register_foreign(k, s, env, mod)
         return

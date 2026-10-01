@@ -163,6 +163,7 @@ match_bare_enum
 method_alias
 minu16
 mixwiden
+module_locals_neg
 mret_pa
 multi_assign_param_neg
 multiret
