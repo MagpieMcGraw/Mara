@@ -17,9 +17,13 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if is_struct { ts.sig_state = .In_Progress }
     hint := k.hint
     defer k.hint = hint
-    outer := k.body
-    k.body = ts
-    defer k.body = outer
+    outer, outer_vars := k.body, k.vars
+    k.body, k.vars = ts, {}
+    defer {
+        if len(k.vars) > 0 { k.annot.vars[ts] = k.vars }
+        k.body, k.vars = outer, outer_vars
+    }
+    append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
     if is_struct { tc_early_self(k, v.body) }
     body := new_block_scope(ts)

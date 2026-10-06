@@ -7,8 +7,9 @@ import "core:slice"
 // ---------------------------------------------------------------------------
 // Materialized call graph (design/mara_ask.md §12)
 //
-// A post-check artifact on Checked_Program, an index over the program graph's
-// Calls edges (graph.odin). Nodes are the program's callable scopes (funs +
+// A post-check artifact on Checked_Program, an index over the calls the
+// checker annotated (annot.odin: each call's callee, where its node is, what
+// its params receive). Nodes are the program's callable scopes (funs +
 // ctors); edges are calls and constructions; the strongly-connected components
 // are computed once here (Tarjan).
 //
@@ -69,34 +70,45 @@ cg_node :: proc(g: ^Call_Graph, s: ^Type_Scope) -> int {
     return i
 }
 
-// The call graph as an index over the program graph's Calls edges: each call
-// or construct operation is an edge from the fun or struct it runs in to the
-// one it runs, with a default argument's calls in the caller that runs them.
-// A fun hits the outside world directly when it prints or calls a foreign
-// fun: the seed of the purity summary.
+// The call graph from the annotations: an edge for each annotated callee —
+// a written call, a construction, an operator through `overload` — from the
+// function the call runs in (cg_runs_in). A call's line is its node's; a
+// default argument's call gives none in the caller. A fun hits the outside
+// world directly when it calls a foreign fun or prints: the seed of the
+// purity summary.
 build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     g: Call_Graph
-    pg := &checked.graph
+    rc := cg_runs_make(checked.annot, &build_tree)
+    defer cg_runs_free(&rc)
     effectful: map[^Type_Scope]bool
     defer delete(effectful)
-    for e in pg.edges {
-        if e.kind != .Calls { continue }
-        caller := graph_caller(pg, e.from)
-        if caller == nil { continue }   // outside any function
-        callee := pg.type_[e.to].(^Type_Scope)
-        from, to := cg_node(&g, caller), cg_node(&g, callee)
-        if !slice.contains(g.out_edges[from][:], to) { append(&g.out_edges[from], to) }
-        if callee.calling_conv == .C { effectful[caller] = true }
-        // Call order: the first line calling it. A default argument is written
-        // in the callee, so it gives no line in the caller.
-        if e.written == .Implied { continue }
-        edge := Call_Edge{from = caller, to = callee}
-        line := span_line(pg.origin[e.from])
-        if cur, ok := g.edge_line[edge]; !ok || line < cur { g.edge_line[edge] = line }
+    a := checked.annot
+    t := &build_tree
+    keys := make([dynamic]Syntax_Id, 0, len(a.callees), context.temp_allocator)
+    for key in a.callees { append(&keys, key) }
+    slice.sort(keys[:])   // (a node order that doesn't hang on the map's)
+    for key in keys {
+        // (A call through a fun's value runs whatever it holds: no edge, the one
+        // honest seam.)
+        if a.forms[key] == .Value { continue }
+        callee := a.callees[key]
+        callers, implied := cg_runs_in(&rc, key)
+        for caller in callers {
+            from, to := cg_node(&g, caller), cg_node(&g, callee)
+            if !slice.contains(g.out_edges[from][:], to) { append(&g.out_edges[from], to) }
+            if callee.calling_conv == .C { effectful[caller] = true }
+            // Call order: the first line calling it. A default argument is
+            // written in the callee, so it gives no line in the caller.
+            if implied { continue }
+            edge := Call_Edge{from = caller, to = callee}
+            line := span_line(tree_span(t, Tree_Id(u64(key) & 0xffff_ffff)))
+            if cur, ok := g.edge_line[edge]; !ok || line < cur { g.edge_line[edge] = line }
+        }
     }
-    for k, id in pg.kind {
-        if k != .Op || pg.op[id] != .Print { continue }
-        if caller := graph_caller(pg, Node_Id(id)); caller != nil { effectful[caller] = true }
+    for key, form in a.forms {
+        if form != .Builtin || !cg_prints(t, Tree_Id(u64(key) & 0xffff_ffff)) { continue }
+        callers, _ := cg_runs_in(&rc, key)
+        for caller in callers { effectful[caller] = true }
     }
     // Every source function a node, a call-free one (neither calls nor is
     // called) too: the purity count is of all of them. Foreign and intrinsic
@@ -112,6 +124,107 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     cg_dump_purity(&g)
     return g
 }
+
+// Whether a builtin call prints: `print`, `print_cstr`, `print_int`,
+// `print_float`.
+@(private="file")
+cg_prints :: proc(t: ^Tree, n: Tree_Id) -> bool {
+    name: string
+    #partial switch t.tag[n] {
+    case .Call:        name = token_text(build_tokens[t.main[n]])
+    case .Method_Call: name = token_text(build_tokens[method_view(t, n).name])
+    case:              return false
+    }
+    switch name {
+    case "print", "print_cstr", "print_int", "print_float": return true
+    }
+    return false
+}
+
+// Where code runs: each node's innermost body or constant value the checker
+// checked (Annotations.bodies), by instance; and each default argument a
+// call takes, with those calls (Annotations.args).
+@(private="file")
+Cg_Runs :: struct {
+    a:          ^Annotations,
+    owner:      map[Instance_Id][]i32,            // an instance's nodes → each one's innermost body (in a.bodies); -1: none
+    in_default: map[Tree_Id]Tree_Id,              // a default argument's nodes → the innermost default each is in
+    defaults:   map[Tree_Id][dynamic]Syntax_Id,   // a default's node → the calls that take it
+    callers:    map[Tree_Id][]^Type_Scope,        // ... the functions it runs in, once found
+}
+
+@(private="file")
+cg_runs_make :: proc(a: ^Annotations, t: ^Tree) -> Cg_Runs {
+    rc := Cg_Runs{a = a}
+    // (The widest first: a nested body's nodes are its own.)
+    Sized :: struct { size: Tree_Id, i: int }
+    sized := make([]Sized, len(a.bodies), context.temp_allocator)
+    for b, i in a.bodies { sized[i] = {b.hi - b.lo, i} }
+    slice.sort_by(sized, proc(x, y: Sized) -> bool { return x.size > y.size })
+    for s in sized {
+        b := a.bodies[s.i]
+        inst := a.instances[b.inst]
+        owner, made := rc.owner[b.inst]
+        if !made {
+            owner = make([]i32, int(inst.hi - inst.lo) + 1)
+            slice.fill(owner, -1)
+            rc.owner[b.inst] = owner
+        }
+        for n in b.lo ..= b.hi { owner[n - inst.lo] = i32(s.i) }
+    }
+    for key, args in a.args {
+        for arg in args {
+            if arg.kind != .Default || arg.node == 0 { continue }
+            list := rc.defaults[arg.node]
+            if !slice.contains(list[:], key) { append(&list, key) }
+            rc.defaults[arg.node] = list
+        }
+    }
+    Range :: struct { lo, d: Tree_Id }
+    ranges := make([dynamic]Range, 0, len(rc.defaults), context.temp_allocator)
+    for d in rc.defaults { append(&ranges, Range{tree_lo(t, d), d}) }
+    slice.sort_by(ranges[:], proc(x, y: Range) -> bool { return x.d - x.lo > y.d - y.lo })
+    for r in ranges { for n in r.lo ..= r.d { rc.in_default[n] = r.d } }
+    return rc
+}
+
+@(private="file")
+cg_runs_free :: proc(rc: ^Cg_Runs) {
+    for _, owner in rc.owner { delete(owner) }
+    for _, list in rc.defaults { delete(list) }
+    for _, c in rc.callers { delete(c) }
+    delete(rc.owner); delete(rc.in_default); delete(rc.defaults); delete(rc.callers)
+}
+
+// The functions a node runs in: in a default argument, each function whose
+// call takes it (`implied`); else the fun or struct whose body is innermost
+// around it, in its instance — none, in a constant's value or outside any
+// body.
+@(private="file")
+cg_runs_in :: proc(rc: ^Cg_Runs, key: Syntax_Id) -> (callers: []^Type_Scope, implied: bool) {
+    inst, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
+    if def, in_default := rc.in_default[n]; in_default {
+        if found, ok := rc.callers[def]; ok { return found, true }
+        rc.callers[def] = nil   // (a default that takes itself: none more)
+        out: [dynamic]^Type_Scope
+        calls, _ := rc.defaults[def]
+        for call in calls {
+            cs, _ := cg_runs_in(rc, call)
+            for c in cs { if !slice.contains(out[:], c) { append(&out, c) } }
+        }
+        rc.callers[def] = out[:]
+        return out[:], true
+    }
+    owner, _ := rc.owner[inst]
+    lo := rc.a.instances[inst].lo
+    if n < lo || int(n - lo) >= len(owner) || owner[n - lo] < 0 { return nil, false }
+    b := rc.a.bodies[owner[n - lo]]
+    if b.scope == nil { return nil, false }
+    out := make([]^Type_Scope, 1, context.temp_allocator)
+    out[0] = b.scope
+    return out, false
+}
+
 
 // True when node `n` is recursive: it's in a multi-node SCC (mutual recursion)
 // or has a self-edge (direct recursion). A leaf of the bottom-up framework.

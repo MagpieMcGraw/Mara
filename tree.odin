@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:os"
 import "core:strings"
 
@@ -327,6 +328,20 @@ tree_children :: proc(t: ^Tree, n: Tree_Id, out: ^[dynamic]Tree_Id) {
         } else {
             each(t, f, v, out)
         }
+    }
+}
+
+// The lowest node of a subtree: its nodes are [it, n] (children are made
+// before their parents, each child's subtree a range of its own — the first
+// made, the lowest).
+tree_lo :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
+    n := n
+    kids := make([dynamic]Tree_Id, context.temp_allocator)
+    for {
+        clear(&kids)
+        tree_children(t, n, &kids)
+        if len(kids) == 0 { return n }
+        n = slice.min(kids[:])
     }
 }
 

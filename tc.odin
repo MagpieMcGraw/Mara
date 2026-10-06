@@ -49,6 +49,7 @@ TC :: struct {
     subst:         map[string]Type,   // the type params bound, in an instance being checked
     recv:          TC_Recv,           // the call being checked's receiver, checked
     body:          ^Type_Scope,       // the fun or struct whose body is being checked: what its bindings are variables of
+    vars:          [dynamic]Var_Decl, // ... the variables it has bound so far (Annotations.vars once it is done)
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
@@ -89,7 +90,7 @@ tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
     scope_bind(env, name, t, ref)
     #partial switch ref.kind {
     case .Local, .Param, .Result:
-        if k.body != nil && ref.decl != 0 && name != "_" { annot_add_var(k.annot, k.body, {ref.decl, ref.kind, t}) }
+        if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
     }
 }
 
@@ -527,7 +528,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
-        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, lo = tc_subtree_lo(k, node), env = env, pkg = k.pkg} }
+        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg} }
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
@@ -902,16 +903,6 @@ tc_default_args :: proc(ts: ^Type_Scope) -> []Arg {
 tc_set_callee :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope) {
     if n == 0 { return }
     k.annot.callees[tc_sid(k, n)] = ts
-}
-
-// The lowest node of a subtree: its nodes are [it, n] (children are made
-// before their parents).
-tc_subtree_lo :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
-    lo := n
-    kids := make([dynamic]Tree_Id, context.temp_allocator)
-    tree_children(k.t, n, &kids)
-    for c in kids { lo = min(lo, tc_subtree_lo(k, c)) }
-    return lo
 }
 
 // ---------------------------------------------------------------------------

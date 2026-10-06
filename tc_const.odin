@@ -42,6 +42,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     kc.state = .In_Progress
     tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
+    append(&k.annot.bodies, Annot_Body{nil, tc_instance(k, kc.value), tree_lo(k.t, kc.value), kc.value})
     t := k.t
     span := tree_span(t, kc.def)
     hint := k.hint

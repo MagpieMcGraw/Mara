@@ -14,7 +14,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     name := tc_name(k, def)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
-        if name not_in k.union_templates { k.union_templates[name] = TC_Template{def = def, node = node, lo = tc_subtree_lo(k, node), env = env, pkg = k.pkg} }
+        if name not_in k.union_templates { k.union_templates[name] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg} }
         return
     }
     span := tree_span(t, def)

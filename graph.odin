@@ -860,6 +860,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for ts, id in g.scope_node { if kept(new_id, id) { ng.scope_node[ts] = new_id[id] } }
     for id, c in g.consts { if kept(new_id, id) { ng.consts[new_id[id]] = c } }
     for id, s in g.assert_sides { if kept(new_id, id) { ng.assert_sides[new_id[id]] = s } }
+    reserve(&ng.decl_tok, len(g.decl_tok))
     for id, tk in g.decl_tok { if kept(new_id, id) { ng.decl_tok[new_id[id]] = tk } }
 
     // What the builder still holds by id.

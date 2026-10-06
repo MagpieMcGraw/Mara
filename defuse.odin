@@ -556,18 +556,48 @@ du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
     return v
 }
 
-// Where a fun is called: every call operation that runs it.
+// Where a fun is called: every call operation that runs it, in the code of
+// each function the call graph says calls it (a fun's, or a struct's
+// constructor's).
 du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_Call_Site {
     g := &checked.graph
+    cg := &checked.call_graph
     sites: [dynamic]Fn_Call_Site
-    node, ok := g.scope_node[F]
+    to, ok := cg.index_of[F]
     if !ok { return sites }
-    for ei in graph_in(g, node) {
-        e := g.edges[ei]
-        if e.kind != .Calls { continue }
-        append(&sites, Fn_Call_Site{caller = graph_caller(g, e.from), op = e.from})
+    for callees, from in cg.out_edges {
+        if !slice.contains(callees[:], to) { continue }
+        caller := cg.nodes[from]
+        calls: []Node_Id
+        if f := du_fn(checked, caller); f != nil {
+            calls = f.calls[:]
+        } else {
+            calls = du_code_calls(g, caller)
+        }
+        for op in calls {
+            if graph_called(g, op) == F { append(&sites, Fn_Call_Site{caller = caller, op = op}) }
+        }
     }
     return sites
+}
+
+// The calls and constructions a struct's constructor runs, in its code's
+// runs.
+@(private="file")
+du_code_calls :: proc(g: ^Program_Graph, ts: ^Type_Scope) -> []Node_Id {
+    node, ok := g.scope_node[ts]
+    if !ok { return nil }
+    runs := make([dynamic]i32, context.temp_allocator)
+    graph_code_runs(g, node, &runs)
+    calls := make([dynamic]Node_Id, context.temp_allocator)
+    for r in runs {
+        for op in graph_run(g, int(r)) {
+            #partial switch g.op[op] {
+            case .Call, .Construct: append(&calls, op)
+            }
+        }
+    }
+    return calls[:]
 }
 
 // --- guards ---------------------------------------------------------------------

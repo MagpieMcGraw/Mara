@@ -75,6 +75,15 @@ Var_Decl :: struct {
     type_: Type,
 }
 
+// Code checked in an instance: a fun's or a struct's body — what its nodes
+// [lo, hi] (its definition's) run in — or a constant's value (no scope: what
+// it calls, it runs at no function's call).
+Annot_Body :: struct {
+    scope:  ^Type_Scope,
+    inst:   Instance_Id,
+    lo, hi: Tree_Id,
+}
+
 Annotations :: struct {
     instances: [dynamic]Instance,
     types:     [dynamic][]Type,   // each instance's nodes' types, by n - lo
@@ -92,6 +101,8 @@ Annotations :: struct {
 
     // Each fun's and struct's variables, in the order its body binds them.
     vars: map[^Type_Scope][dynamic]Var_Decl,
+    // Each body and constant value checked, in the order checked.
+    bodies: [dynamic]Annot_Body,
 }
 
 // A node in an instance, as one key: the builder's Syntax_Id (tc_sid).
@@ -131,16 +142,9 @@ annot_set_type :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id, t: Type) {
     a.types[i][n - a.instances[i].lo] = t
 }
 
-// A variable `owner`'s body binds. (Bound again — a name a check redoes — it
-// is the same variable, at its latest type.)
+// A variable `owner`'s body binds.
 annot_add_var :: proc(a: ^Annotations, owner: ^Type_Scope, v: Var_Decl) {
     vars := a.vars[owner]
-    for &have in vars {
-        if have.tok == v.tok && have.kind == v.kind && types_equal(solidify_type(have.type_), solidify_type(v.type_)) {
-            have.type_ = v.type_
-            return
-        }
-    }
     append(&vars, v)
     a.vars[owner] = vars
 }
