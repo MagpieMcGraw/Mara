@@ -69,7 +69,7 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
         tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(ann))
     }
     final := vt if is_any(ann) else ann
-    scope_bind(env, name, final, ref)
+    tc_bind(k, env, name, final, ref)
     tc_set_type(k, target, final)
     tc_note_decl(k, name, final, span, true)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }

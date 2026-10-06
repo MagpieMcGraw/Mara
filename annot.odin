@@ -3,6 +3,7 @@ package mara
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,17 @@ Arg_Kind :: enum u8 { Written, Receiver, Default, Call_Site }
 // fun's value.
 Call_Form :: enum u8 { Fun, Dispatch, Generic, Builtin, Conversion, Value }
 
+// A variable a fun's or a struct's body binds: the token that declares it,
+// what kind of name it is (a param, a named result, a local — a loop's, a
+// match arm's binding, a `let`'s), its type as bound. (A union match's arms
+// that rebind their subject's name bind it each at its own payload: one token,
+// several variables, told apart by their types.)
+Var_Decl :: struct {
+    tok:   Token_Id,
+    kind:  Ref_Kind,
+    type_: Type,
+}
+
 Annotations :: struct {
     instances: [dynamic]Instance,
     types:     [dynamic][]Type,   // each instance's nodes' types, by n - lo
@@ -77,6 +89,9 @@ Annotations :: struct {
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
+
+    // Each fun's and struct's variables, in the order its body binds them.
+    vars: map[^Type_Scope][dynamic]Var_Decl,
 }
 
 // A node in an instance, as one key: the builder's Syntax_Id (tc_sid).
@@ -114,6 +129,34 @@ annot_type :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id) -> Type {
 
 annot_set_type :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id, t: Type) {
     a.types[i][n - a.instances[i].lo] = t
+}
+
+// A variable `owner`'s body binds. (Bound again — a name a check redoes — it
+// is the same variable, at its latest type.)
+annot_add_var :: proc(a: ^Annotations, owner: ^Type_Scope, v: Var_Decl) {
+    vars := a.vars[owner]
+    for &have in vars {
+        if have.tok == v.tok && have.kind == v.kind && types_equal(solidify_type(have.type_), solidify_type(v.type_)) {
+            have.type_ = v.type_
+            return
+        }
+    }
+    append(&vars, v)
+    a.vars[owner] = vars
+}
+
+// The variable of `owner` its token declares, at type `t` when the token
+// declares several (a union match's rebound subject): its index in the
+// owner's variables, or -1.
+annot_var :: proc(a: ^Annotations, owner: ^Type_Scope, tok: Token_Id, t: Type) -> int {
+    vars, _ := a.vars[owner]
+    first := -1
+    for v, i in vars {
+        if v.tok != tok { continue }
+        if types_equal(solidify_type(v.type_), solidify_type(t)) { return i }
+        if first < 0 { first = i }
+    }
+    return first
 }
 
 // --- dump -------------------------------------------------------------------
@@ -163,6 +206,18 @@ annot_dump :: proc(a: ^Annotations, t: ^Tree) {
             fmt.sbprintf(&sb, "  %d %v %s%s\n", n, t.tag[n], where_, strings.to_string(line))
         }
     }
+    // (Each body's variables, by owner, its name's order.)
+    owners := make([dynamic]^Type_Scope, context.temp_allocator)
+    for owner in a.vars { append(&owners, owner) }
+    slice.sort_by(owners[:], proc(x, y: ^Type_Scope) -> bool { return x.name < y.name })
+    for owner in owners {
+        fmt.sbprintf(&sb, "vars %s:", owner.name)
+        vars, _ := a.vars[owner]
+        for v in vars {
+            fmt.sbprintf(&sb, " %v:%s@%d:%d:%s", v.kind, token_text(build_tokens[v.tok]), span_line(Span{at = v.tok}), span_col(Span{at = v.tok}), type_name(v.type_))
+        }
+        fmt.sbprint(&sb, "\n")
+    }
     fmt.print(strings.to_string(sb))
 }
 
@@ -181,7 +236,7 @@ annot_dump :: proc(a: ^Annotations, t: ^Tree) {
 // One line a problem, then a count: "annot: N problems".
 annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
     if os.get_env("MARA_ANNOT", context.temp_allocator) != "check" || errors > 0 { return }
-    names, vars, calls, args, loops := 0, 0, 0, 0, 0
+    names, vars, calls, args, loops, decls := 0, 0, 0, 0, 0, 0
     problems := 0
     report :: proc(problems: ^int, t: ^Tree, n: Tree_Id, inst: Instance_Id, format: string, args: ..any) {
         problems^ += 1
@@ -446,7 +501,59 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
                 }
             }
         }
+
+        // Each body's variables: the graph's declarations written in its code
+        // (its params, named results and locals — not a nested fun's), each
+        // the token that declares it, of the same name and type.
+        report_var :: proc(problems: ^int, tok: Token_Id, owner: ^Type_Scope, format: string, args: ..any) {
+            problems^ += 1
+            sp := Span{at = tok}
+            fmt.printf("annot: %s:%d:%d (%s's '%s'): ", filepath.base(span_file(sp)), span_line(sp), span_col(sp),
+                owner.name, token_text(build_tokens[tok]) if tok != 0 else "?")
+            fmt.printf(format, ..args)
+            fmt.println()
+        }
+        for ts, node in g.scope_node {
+            if g.kind[node] != .Fun && g.kind[node] != .Struct { continue }
+            if _, is_foreign := ts.origin.(Origin_Foreign); is_foreign { continue }   // (no body)
+            vars_of, _ := a.vars[ts]
+            have := make([]bool, len(vars_of), context.temp_allocator)
+            for id := node + 1; id <= g.last[node]; id += 1 {
+                #partial switch g.kind[id] {
+                case .Fun, .Struct, .Union, .Enum:
+                    id = g.last[id]
+                    continue
+                case .Param, .Local, .Result:
+                case:
+                    continue
+                }
+                if g.written[id] != .Explicit { continue }
+                tok := g.decl_tok[id] or_else 0
+                if tok == 0 {
+                    report_var(&problems, tok, ts, "the graph's %v '%s' names no token", g.kind[id], g.name[id])
+                    continue
+                }
+                i := annot_var(a, ts, tok, g.type_[id])
+                if i < 0 {
+                    report_var(&problems, tok, ts, "the graph's %v is none of its annotated variables", g.kind[id])
+                    continue
+                }
+                v := vars_of[i]
+                decls += 1
+                have[i] = true
+                if token_text(build_tokens[tok]) != g.name[id] {
+                    report_var(&problems, tok, ts, "the graph's %v is named '%s'", g.kind[id], g.name[id])
+                }
+                // (A distinct type the graph holds as its base: a destructured local's, a loop's element.)
+                if !types_equal(distinct_base(solidify_type(v.type_)), distinct_base(solidify_type(g.type_[id]))) {
+                    report_var(&problems, tok, ts, "is annotated %s; the graph's %v is %s", type_name(v.type_), g.kind[id], type_name(g.type_[id]))
+                }
+            }
+            for v, i in vars_of {
+                if !have[i] { report_var(&problems, v.tok, ts, "is an annotated %v the graph declares nowhere", v.kind) }
+            }
+        }
     }
-    fmt.printf("annot: %d problems (%d names, %d variables, %d calls, %d arguments checked; %d loop variables written by their loop)\n",
-        problems, names, vars, calls, args, loops)
+    fmt.printf("annot: %d problems (%d names, %d variables, %d calls, %d arguments checked; %d loop variables written by their loop; %d declarations)\n",
+        problems, names, vars, calls, args, loops, decls)
 }

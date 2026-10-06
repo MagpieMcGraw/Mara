@@ -112,6 +112,7 @@ Program_Graph :: struct {
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
     stmt:    [dynamic]i32,      // an operation → the statement it comes from (in `stmts`), or -1
+    decl_tok: map[Node_Id]Token_Id,   // a variable's declaration — a param, a named result, a local — → the token that declares it
 
     // A node's operands are operands[operand_first[id] : operand_first[id+1]].
     operands:      [dynamic]Operand,
@@ -859,6 +860,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for ts, id in g.scope_node { if kept(new_id, id) { ng.scope_node[ts] = new_id[id] } }
     for id, c in g.consts { if kept(new_id, id) { ng.consts[new_id[id]] = c } }
     for id, s in g.assert_sides { if kept(new_id, id) { ng.assert_sides[new_id[id]] = s } }
+    for id, tk in g.decl_tok { if kept(new_id, id) { ng.decl_tok[new_id[id]] = tk } }
 
     // What the builder still holds by id.
     callee_of := make(map[Node_Id]^Type_Scope, len(b.callee_of))
@@ -889,7 +891,7 @@ graph_free_columns :: proc(g: ^Program_Graph) {
     delete(g.operands); delete(g.operand_first); delete(g.run_ops); delete(g.run_first)
     delete(g.edges); delete(g.out_first); delete(g.in_edges); delete(g.in_first)
     delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
-    delete(g.consts); delete(g.assert_sides); delete(g.consumes)
+    delete(g.consts); delete(g.assert_sides); delete(g.consumes); delete(g.decl_tok)
     delete(g.tables); delete(g.table_names); delete(g.fold_errors)
 }
 
@@ -2450,8 +2452,9 @@ graph_build_program_field :: proc(b: ^Graph_Builder, name: string, span: Span) {
 
 // A local's declaration (graph_decl), before its value: typed once it is
 // checked (graph_build_typed).
-graph_build_decl :: proc(b: ^Graph_Builder, name: string, span: Span, bound := false) -> Node_Id {
+graph_build_decl :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: Span, bound := false) -> Node_Id {
     d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
+    b.g.decl_tok[d] = tok
     // A big value lives on the arena: its space, taken before
     // its value — kept once its type says so. (A `let` binds memory it takes.)
     if b.arena && !bound {
@@ -2833,7 +2836,7 @@ Graph_Destructure :: struct {
     place:  Operand,   // the target of the output being written
 }
 
-graph_build_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, names: []string, stores: []bool, is_decl: bool) -> Graph_Destructure {
+graph_build_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool) -> Graph_Destructure {
     mr := Graph_Destructure{on = true, names = names, stores = stores, span = span}
     // (A struct's fields from one call: declared as its fields.)
     if ids, of_fields := b.body.field_outs[id]; of_fields {
@@ -2845,6 +2848,7 @@ graph_build_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, na
         mr.decls[i] = NO_NODE
         if !is_decl || name == "" || name == "_" || stores[i] { continue }
         mr.decls[i] = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
+        b.g.decl_tok[mr.decls[i]] = toks[i]
     }
     return mr
 }
@@ -2933,6 +2937,7 @@ Graph_Arm :: struct {
     variant:  string,
     tag:      int,
     bound:    string,
+    bound_tok: Token_Id,
     payload:  Type,
     is_else:  bool,
     is_union: bool,
@@ -2954,6 +2959,7 @@ graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: i
     if ga.is_union && ga.bound != "" {
         if ga.payload == nil { graph_fatal(span, "match arm '%s' has no resolved variant", ga.variant) }
         bound := graph_node(b, .Local, .Explicit, k.n, ga.bound, ga.payload, span)
+        b.g.decl_tok[bound] = ga.bound_tok
         // The binding is the payload's place, not a copy.
         payload := graph_op(b, .Variant, .Explicit, span, ga.payload, ga.bound, graph_build_subject(b, span, gm))
         b.g.refers[payload] = bound
@@ -3066,6 +3072,7 @@ Graph_Loop :: struct {
     var_name:    string,
     elem_name:   string,
     index_name:  string,
+    var_tok, elem_tok, index_tok: Token_Id,   // (the tokens that declare them)
     is_range:    bool,
     has_cond:    bool,   // `for cond {}`, a C-style loop
     has_step:    bool,   // a C-style loop's
@@ -3105,6 +3112,7 @@ graph_build_for :: proc(b: ^Graph_Builder, loop: Graph_Loop) -> Graph_For {
 // A range's counter, before its bounds (typed once they are checked).
 graph_build_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.var_name, nil, fl.span)
+    b.g.decl_tok[fl.counter] = fl.var_tok
     graph_bind(b, fl.var_name, fl.counter)
 }
 
@@ -3149,11 +3157,13 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
     }
     if fl.elem_name != "" {
         fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, elem_t, fl.span)
+        b.g.decl_tok[fl.elem] = fl.elem_tok
         graph_bind(b, fl.elem_name, fl.elem)
     }
     index_t := Type(slice_header_width_type)
     if fl.index_name != "" {
         fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.index_name, index_t, fl.span)
+        b.g.decl_tok[fl.counter] = fl.index_tok
         graph_bind(b, fl.index_name, fl.counter)
     } else {
         fl.counter = graph_slot(b, "index", index_t, fl.span)
@@ -3762,7 +3772,11 @@ graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, int
     gc := Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = n, span = span, intrinsic = intrinsic}
     b.fn_base = gc.names
     b.self = n if kind == .Struct else NO_NODE
-    for p in ts.params { graph_bind(b, p.name, graph_node(b, .Param, .Explicit, n, p.name, p.type_, span)) }
+    for p in ts.params {
+        d := graph_node(b, .Param, .Explicit, n, p.name, p.type_, span)
+        b.g.decl_tok[d] = p.decl
+        graph_bind(b, p.name, d)
+    }
     graph_results(b, ts, n, span)
     // An intrinsic's body is generated at each call: no code of its own.
     if intrinsic { return gc }
@@ -3797,7 +3811,10 @@ graph_results :: proc(b: ^Graph_Builder, ts: ^Type_Scope, parent: Node_Id, span:
         }
         named := i < len(ts.return_binding_names)
         r := graph_node(b, .Result, .Explicit if named else .Synthetic, parent, name, rt, span)
-        if named { graph_bind(b, name, r) }   // a named result is a local
+        if named {   // a named result is a local
+            b.g.decl_tok[r] = ts.return_binding_decls[i]
+            graph_bind(b, name, r)
+        }
     }
 }
 

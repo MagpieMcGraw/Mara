@@ -48,6 +48,7 @@ TC :: struct {
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
     recv:          TC_Recv,           // the call being checked's receiver, checked
+    body:          ^Type_Scope,       // the fun or struct whose body is being checked: what its bindings are variables of
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
@@ -81,6 +82,17 @@ tc_event :: proc(k: ^TC, e: TC_Event) {
 }
 
 // A module's statement settled: what it declares, for lowering.
+// A name bound in `env`; a variable of the body being checked — a param, a
+// named result, a local — kept as one of its variables (Annotations.vars).
+// (`_` names no variable.)
+tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
+    scope_bind(env, name, t, ref)
+    #partial switch ref.kind {
+    case .Local, .Param, .Result:
+        if k.body != nil && ref.decl != 0 && name != "_" { annot_add_var(k.annot, k.body, {ref.decl, ref.kind, t}) }
+    }
+}
+
 tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id, declared: Graph_Declared) {
     tc_event(k, {kind = .Module_Stmt, sid = sid, declared = declared})
 }

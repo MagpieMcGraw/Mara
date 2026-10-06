@@ -66,9 +66,9 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
             body = tree_list(tr, tr.a[arm])
             if is_union { ra.tag = ut.tag_map[name] }
             if bt := Token_Id(tr.b[arm]); bt != 0 {
-                ra.bound = tc_text(bt)
+                ra.bound, ra.bound_tok = tc_text(bt), bt
             } else if su := tc_unparen(k, subj); tr.tag[su] == .Ident {
-                ra.bound = tc_name(k, su)
+                ra.bound, ra.bound_tok = tc_name(k, su), tr.main[su]
             }
             if is_union {
                 if vs := lw_variant_struct(ut, name); vs != nil { ra.payload = vs }
@@ -150,7 +150,7 @@ lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     b := k.gb
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, fields_of, name, target, value, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
     graph_build_typed(b, decl, ann)
     if fields_of != nil {
         val := graph_build_void(b, ann, b.body.field_inits[tc_sid(k, target)])
@@ -270,7 +270,7 @@ lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     b := k.gb
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, fields_of, name, target, 0, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
     r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann))
     graph_build_typed(b, decl, ann)
     lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann), span, settle = true)

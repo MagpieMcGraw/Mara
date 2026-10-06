@@ -42,7 +42,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         if returns == nil {
             if is_any(vt) {
                 // (Of no type, reported: its names none either.)
-                for name, i in names { if name != "" { scope_bind(env, name, Type_Error{}, tc_decl_ref(k, targets[i], fields_of)) } }
+                for name, i in names { if name != "" { tc_bind(k, env, name, Type_Error{}, tc_decl_ref(k, targets[i], fields_of)) } }
                 return
             }
             tc_broadcast(k, s, targets, value, is_decl, env)
@@ -69,7 +69,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                     tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
             } else {
-                scope_bind(env, name, rt, tc_decl_ref(k, tg, fields_of))
+                tc_bind(k, env, name, rt, tc_decl_ref(k, tg, fields_of))
                 tc_set_type(k, tg, rt)
                 tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))
             }

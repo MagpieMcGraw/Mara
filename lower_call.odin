@@ -131,15 +131,16 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     span := tree_span(t, s)
     names := make([]string, len(targets), context.temp_allocator)
     stores := make([]bool, len(targets), context.temp_allocator)
+    toks := make([]Token_Id, len(targets), context.temp_allocator)
     for tg, i in targets {
-        if t.tag[tg] == .Ident { names[i] = tc_name(k, tg) } else { stores[i] = true }
+        if t.tag[tg] == .Ident { names[i], toks[i] = tc_name(k, tg), t.main[tg] } else { stores[i] = true }
     }
     v := tc_unparen(k, value)
     is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))
     of_call := tc_is_call(k, v)
     mark := graph_build_mark(b)
     mr: Graph_Destructure
-    if is_try || of_call { mr = graph_build_destructure(b, tc_sid(k, s), span, names, stores, is_decl) }
+    if is_try || of_call { mr = graph_build_destructure(b, tc_sid(k, s), span, names, toks, stores, is_decl) }
     returns: []Type
     if is_try {
         call := tc_unparen(k, Tree_Id(t.a[v]))
@@ -278,7 +279,7 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     span := tree_span(t, s)
     decl := lw_field_decl(k, fields_of, name, target, value, span)
     field := decl != NO_NODE
-    if !field { decl = graph_build_decl(b, name, span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
+    if !field { decl = graph_build_decl(b, name, t.main[target], span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
     final := tc_node_type(k, target)
     if field { final = b.g.type_[decl] }

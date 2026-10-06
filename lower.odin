@@ -274,7 +274,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         return
     }
     decl := lw_field_decl(k, fields_of, name, target, value, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
     prefix: [2]Node_Id
     prefixed := false
     #partial switch t.tag[value] {
@@ -310,13 +310,13 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     b := k.gb
     if _, is_error := ann.(Type_Error); is_error { return }
     if cap_n != 0 {
-        lw_decl_sized(k, name, ann, span, field, cap_n)
+        lw_decl_sized(k, name, k.t.main[target], ann, span, field, cap_n)
         return
     }
     st := tc_bare_struct(ann)
     decl := field
     if decl == NO_NODE {
-        decl = graph_build_decl(b, name, span)
+        decl = graph_build_decl(b, name, k.t.main[target], span)
         graph_build_typed(b, decl, ann)
     } else if b.g.type_[decl] == nil {
         graph_build_typed(b, decl, ann)
@@ -327,10 +327,10 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
 }
 
 // `s : [:n]T` (tc_decl_bare): its local, then n of T for it.
-lw_decl_sized :: proc(k: ^TC, name: string, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
+lw_decl_sized :: proc(k: ^TC, name: string, tok: Token_Id, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
     b := k.gb
     decl := field
-    if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, tok, span) }
     r := lw_expr(k, cap_n, .Value)
     if field != NO_NODE {
         graph_build_bare(b, decl, b.g.type_[decl], nil, nil, span)
@@ -510,6 +510,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     fl := graph_build_for(b, {span = span, var_name = tc_text(v.var) if v.var != 0 else "",
                             elem_name = tc_text(v.elem) if v.elem != 0 else "",
                             index_name = tc_text(v.index) if v.index != 0 else "",
+                            var_tok = v.var, elem_tok = v.elem, index_tok = v.index,
                             is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
                             end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number})
     defer graph_build_for_end(b, &fl)
