@@ -489,6 +489,13 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Wr
             if gl != nil && gl.variant != nil { tc_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
         }
         if gl == nil && !broadcast { tc_fail(k, "a literal the graph builds no way") }
+    } else if fa == nil && fd == nil && !empty {
+        // (Not built: what its construction runs, checked all the same — its
+        // constructor's defaults, a variant's defaults the literal doesn't give.)
+        if vst == nil && !zero { tc_ctor_args(k, ts, span) }
+        if variant := vst if vst != nil else (ts if ts.is_union_variant else nil); variant != nil {
+            tc_variant_defaults(k, variant, tc_literal_given(k, entries, sd), {}, span)
+        }
     }
     if fd != nil {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, env, d, build, fd)

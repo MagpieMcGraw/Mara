@@ -193,7 +193,11 @@ tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span:
 tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Built {
     b := tc_building(k)
-    if b == nil || want == .None || want == .Place { return {} }
+    if b == nil || want == .None || want == .Place {
+        // (Not built: its defaults checked all the same.)
+        tc_variant_defaults(k, ut.variant_structs[name], nil, {}, span)
+        return {}
+    }
     if want == .Into {
         d := dest
         if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }

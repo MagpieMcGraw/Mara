@@ -382,7 +382,11 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
         tc_set_args(k, target, tc_default_args(st))
     }
     b := tc_building(k)
-    if b == nil { return }
+    if b == nil {
+        // (Not built: its constructor's defaults checked all the same.)
+        if st != nil && constructs_bare(st) { tc_ctor_args(k, st, span) }
+        return
+    }
     if st != nil { tc_struct_ensure(k, st) }
     if b = tc_building(k); b == nil { return }
     // (Its local, then its constructor's arguments — its params' defaults.)
@@ -799,6 +803,10 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             coll = r.v
         } else {
             ct = tc_check(k, v.collection, child)
+            // (A literal looped over is held at its own type, settled: tc_loop_items.)
+            #partial switch k.t.tag[tc_unparen(k, v.collection)] {
+            case .Array, .Literal: ct = solidify_type(ct)
+            }
         }
         elem: Type = Type_Error{}
         #partial switch c in ct {
@@ -1516,6 +1524,8 @@ tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, en
         if b = tc_building(k); b == nil { return t, {} }
         gl = graph_build_literal(b, span, "", false, t, dest, args)
         if gl == nil { tc_fail(k, "a literal the graph builds no way") }
+    } else {
+        tc_ctor_args(k, ts, span)   // (not built: its constructor's defaults checked all the same)
     }
     for bd in bindings {
         idx, has := sd.field_map[bd.field]
