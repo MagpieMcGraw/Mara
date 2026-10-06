@@ -251,7 +251,7 @@ esc_vars :: proc(e: ^Esc) {
     params := 0
     for id := e.node + 1; id <= g.last[e.node]; id += 1 {
         #partial switch g.kind[id] {
-        case .Fun, .Struct, .Union, .Enum:
+        case .Fun, .Struct:
             id = g.last[id]
         case .Param, .Result, .Local, .Field:
             v := Esc_Var{node = id, name = g.name[id], type_ = g.type_[id], depth = esc_depth(e, id),

@@ -276,7 +276,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     bits: i32 = 0
     for id := node + 1; id <= g.last[node]; id += 1 {
         #partial switch g.kind[id] {
-        case .Fun, .Struct, .Union, .Enum:
+        case .Fun, .Struct:
             id = g.last[id]
             continue
         case .Local:

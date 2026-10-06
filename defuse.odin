@@ -144,10 +144,6 @@ du_all :: proc(checked: ^Checked_Program) {
 du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     du := &checked.du
     g := &checked.graph
-    node, ok := g.scope_node[f.ft]
-    if !ok { return }   // a template: only its instances have code
-    f.node = node
-
 
     // Its variables: the ones its body binds (Annotations.vars).
     annotated, _ := checked.annot.vars[f.ft]
@@ -166,6 +162,22 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         of_var[i] = du_bind(checked, f, v, kind, index)
     }
 
+    // (A fun with no code — a foreign one: each param defined on entry, and
+    // nothing more.)
+    node, has_code := g.scope_node[f.ft]
+    if !has_code {
+        for b in f.vars {
+            if b.kind != .Param { continue }
+            d := new(Def)
+            d^ = Def{binding = b, var = NO_NODE, kind = .Param, stmt = -1, span = b.span, run = -1, fn = f, order = du.order}
+            du.order += 1
+            append(&f.defs, d)
+            append(&du.defs, d)
+        }
+        return
+    }
+    f.node = node
+
     // The declarations its code names (its own, not a nested fun's): each a
     // variable's, found by the token that declares it, or a synthetic local
     // seen through — a loop's end, an if-expression's value, a temporary. (An
@@ -176,7 +188,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     defer delete(decl_of)
     for id := node + 1; id <= g.last[node]; id += 1 {
         #partial switch g.kind[id] {
-        case .Fun, .Struct, .Union, .Enum:
+        case .Fun, .Struct:
             id = g.last[id]
         case .Param, .Local, .Result:
             if g.written[id] == .Explicit {

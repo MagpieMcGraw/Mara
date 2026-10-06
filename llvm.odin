@@ -192,7 +192,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     // temporary — where it's built in place (a big temporary elsewhere: later).
     for id := e.node + 1; id <= e.pg.last[e.node]; id += 1 {
         #partial switch e.pg.kind[id] {
-        case .Fun, .Struct, .Union, .Enum: id = e.pg.last[id]; continue   // (another scope's)
+        case .Fun, .Struct: id = e.pg.last[id]; continue   // (another scope's)
         }
         if e.pg.kind[id] != .Local || !routes_to_arena(e.pg.type_[id]) || id in e.arena || id in e.in_place || id in e.carved { continue }
         if e.value[id - e.node] != e.slot { e.stop = id; return false }
@@ -237,7 +237,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
     for id := e.node + 1; id <= pg.last[e.node]; id += 1 {
         e.stop = id
         #partial switch pg.kind[id] {
-        case .Fun, .Struct, .Union, .Enum:
+        case .Fun, .Struct:
             id = pg.last[id]
         case .Param:
             _ = llvm_param_type(pg.type_[id]) or_return
@@ -278,7 +278,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
                 gen_construct_elements(e.g, at, fa.elem, fa.size)
                 llvm_into_fields(e, false)
             }
-        case .Block, .Const, .Import, .Type_Def, .Dispatch, .Op:
+        case .Block, .Const, .Op:
         case:
             return false
         }

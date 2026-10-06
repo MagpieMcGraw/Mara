@@ -34,9 +34,9 @@ NO_NODE :: Node_Id(-1)
 
 Node_Kind :: enum u8 {
     // Scopes
-    Module, Struct, Union, Enum, Fun, Block,
+    Module, Struct, Fun, Block,
     // Names declared in a scope
-    Field, Param, Result, Local, Const, Import, Variant, Type_Def, Dispatch,
+    Field, Param, Result, Local, Const,
     // An operation; which one is in the `op` column
     Op,
 }
@@ -347,6 +347,7 @@ Graph_Segment :: struct {
     pieces:  [dynamic]Graph_Piece,
     anchors: [dynamic]Graph_Anchor,
     root:    Node_Id,   // a scope's: its node, placed by its anchor
+    placed:  bool,      // an anchor puts it somewhere
     // A body's definitions: each built by the builder, at its anchor,
     // when the body is placed.
     defs:    [dynamic]Graph_Def,
@@ -501,9 +502,9 @@ Graph_Declared :: struct {
 }
 
 // The program's modules, before anything is checked: the compiler's globals
-// (typed once checked), then each module's node, in name order, and a place
-// for each of its statements, in written order. (One that declares nothing:
-// its entry, here.)
+// (typed once checked), then a place for each module's statements, the
+// modules in name order, each's in written order: where the code each
+// defines goes.
 @(private="file")
 graph_modules :: proc(b: ^Graph_Builder, programs: map[string][]Graph_Decl) {
     b.program = graph_node(b, .Module, .Synthetic, NO_NODE, "program", nil, {})
@@ -515,14 +516,10 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string][]Graph_Decl) {
     for name in programs { append(&modules, name) }
     slice.sort(modules[:])
     for name in modules {
-        m := graph_node(b, .Module, .Explicit, NO_NODE, name, nil, {})
-        // A module is a scope like a struct: its variables are its fields, which
-        // no function sees (a function sees only its arguments).
         for d in programs[name] {
             b.module_stmts[d.id] = len(b.module_list)
-            append(&b.module_list, Graph_Module_Stmt{d = d, module = m, anchor = graph_anchor_here(b)})
+            append(&b.module_list, Graph_Module_Stmt{d = d, module = NO_NODE, anchor = graph_anchor_here(b)})
         }
-        graph_close(b, m)
     }
 }
 
@@ -603,7 +600,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     graph_piece_end(b, 0)
     for _, si in b.const_segs {
         root := b.segs[si].root
-        if b.g.parent[root] == NO_NODE { graph_fatal(b.g.origin[root], "the constant '%s' was built but never placed", b.g.name[root]) }
+        if !b.segs[si].placed { graph_fatal(b.g.origin[root], "the constant '%s' was built but never placed", b.g.name[root]) }
     }
     // What was dropped, by node: those listed while checking, then settling's.
     if len(b.bodies) > 0 || len(b.drops) > 0 {
@@ -703,6 +700,7 @@ graph_anchor_here :: proc(b: ^Graph_Builder, seg := -1) -> int {
     c := graph_counts(b)
     s := &b.segs[b.seg]
     append(&s.anchors, Graph_Anchor{seg = seg, nodes = c[0], runs = c[1], stmts = c[2], unreach = c[3]})
+    if seg >= 0 { b.segs[seg].placed = true }
     return len(s.anchors) - 1
 }
 
@@ -1037,48 +1035,27 @@ Graph_Decl_Form :: enum u8 {
     Code,       // code outside a body: an error
 }
 
-// A statement outside any body — a module's, a body's definition: its
-// declarations, and no code. (A body's code is the checker's, built as it is
-// checked.)
+// A statement outside any body — a module's, a body's definition: the code
+// it defines, a fun's or a struct's or a constant's, put here. (Each is
+// lowered on its own, lower.odin.)
 @(private="file")
 graph_decl_stmt :: proc(b: ^Graph_Builder, d: Graph_Decl, parent: Node_Id, site: Decl_Site, declared: Graph_Declared = {}) {
-    type_at :: proc(d: Graph_Declared, i: int) -> Type { return d.types[i] if i < len(d.types) else nil }
     // (A constant the checker built: put here.)
     if si, built := b.const_segs[d.id]; built {
         b.g.parent[b.segs[si].root] = parent
         graph_anchor_here(b, si)
         return
     }
-    saved_stmt := b.stmt
-    b.stmt = i32(len(b.g.stmts))
-    append(&b.g.stmts, Graph_Stmt{span = d.span, kind = declared.kind if declared.set else d.kind})
-    defer b.stmt = saved_stmt
-    switch d.form {
-    case .None:
-        // Code outside a body runs nothing here; rules and headers declare
-        // nothing. (`this_program = Program(…)` names the program's arena, set
-        // up at main's entry.)
-    case .Names:
-        for name, i in d.names {
-            if name != "" { graph_decl(b, site, parent, name, type_at(declared, i), d.span) }
-        }
-    case .Import:
-        graph_node(b, .Import, .Explicit, parent, d.name, type_at(declared, 0), d.span)
-    case .Const:
-        // (A constant the checker didn't build.)
-        n := graph_node(b, .Const, .Explicit, parent, d.name, type_at(declared, 0), d.span)
-        if d.value != 0 { b.const_decls[d.value] = n }
+    // (What runs nothing — a module's variable, which no function sees, an
+    // import, a type, a dispatch group, a foreign fun, a constant nothing
+    // uses — is no code: nothing here.)
+    #partial switch d.form {
     case .Scope:
+        saved_stmt := b.stmt
+        b.stmt = i32(len(b.g.stmts))
+        append(&b.g.stmts, Graph_Stmt{span = d.span, kind = declared.kind if declared.set else d.kind})
+        defer b.stmt = saved_stmt
         graph_scope_def(b, d, parent)
-    case .Foreign:
-        for f in d.parts { graph_foreign(b, f, parent) }
-    case .Union:
-        graph_union(b, d, parent)
-    case .Type:
-        t := graph_one(b, d.span, d.name)
-        graph_node(b, .Type_Def, .Explicit, parent, d.name, t, d.span)
-    case .Dispatch:
-        graph_node(b, .Dispatch, .Explicit, parent, d.name, nil, d.span)
     case .Code:
         graph_fatal(d.span, "code outside a body reached the graph")
     }
@@ -1840,11 +1817,10 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
     return nil
 }
 
-// Every call's callee, once all the funs and structs have nodes.
+// Every call's callee.
 @(private="file")
 graph_link_calls :: proc(b: ^Graph_Builder) {
     for op, callee in b.callee_of {
-        if callee not_in b.g.scope_node { graph_fatal(b.g.origin[op], "'%s' calls '%s', which has no node", b.g.name[op], callee.name) }
         b.g.callee[op] = callee
     }
 }
@@ -2011,16 +1987,6 @@ graph_index_edges :: proc(g: ^Program_Graph) {
 }
 
 // --- scopes -------------------------------------------------------------------
-
-// The one checked type a non-generic declaration resolved to.
-@(private="file")
-graph_one :: proc(b: ^Graph_Builder, span: Span, name: string) -> Type {
-    list, ok := b.by_span[span]
-    if !ok || len(list) != 1 {
-        graph_fatal(span, "'%s' should have one checked type, has %d", name, len(list) if ok else 0)
-    }
-    return list[0]
-}
 
 
 // A fun or struct: its node, for each type it was checked as (a generic's
@@ -3748,52 +3714,6 @@ graph_results :: proc(b: ^Graph_Builder, ts: ^Type_Scope, parent: Node_Id, span:
     }
 }
 
-@(private="file")
-graph_foreign :: proc(b: ^Graph_Builder, f: Graph_Decl_Part, parent: Node_Id) {
-    ts, ok := graph_one(b, f.span, f.name).(^Type_Scope)
-    if !ok { graph_fatal(f.span, "foreign '%s' is not a function", f.name) }
-    n := graph_node(b, .Fun, .Explicit, parent, f.name, ts, f.span)
-    b.g.scope_node[ts] = n
-    for p in ts.params { b.g.decl_tok[graph_node(b, .Param, .Explicit, n, p.name, p.type_, f.span)] = p.decl }
-    graph_results(b, ts, n, f.span)
-    graph_close(b, n)
-}
-
-// A union holds its variants, each a struct; an enum holds its variant names.
-@(private="file")
-graph_union :: proc(b: ^Graph_Builder, v: Graph_Decl, parent: Node_Id) {
-    generic := v.generic
-    written: Written = .Synthetic if generic else .Explicit
-    found := false
-    for t in b.by_span[v.span] {
-        #partial switch u in t {
-        case ^Type_Union:
-            found = true
-            name := v.name if !generic else ask_demangle(u.name, u.home_package)
-            n := graph_node(b, .Union, written, parent, name, u, v.span)
-            for variant in u.variants {
-                st := u.variant_structs[variant]
-                if st == nil { graph_fatal(v.span, "variant '%s' of '%s' has no struct", variant, v.name) }
-                vn := graph_node(b, .Struct, .Explicit, n, variant, st, st.body_span)
-                b.g.scope_node[st] = vn
-                for f in st.fields {
-                    fw: Written = .Synthetic if strings.has_prefix(f.name, "__") else .Explicit   // the tag, its padding
-                    graph_node(b, .Field, fw, vn, f.name, f.type_, st.body_span)
-                }
-                graph_close(b, vn)
-            }
-            graph_close(b, n)
-        case ^Type_Enum:
-            if u.is_synthetic { continue }   // a union's tag enum
-            found = true
-            n := graph_node(b, .Enum, written, parent, v.name, u, v.span)
-            for variant in v.parts { graph_node(b, .Variant, .Explicit, n, variant.name, u, variant.span) }
-            graph_close(b, n)
-        }
-    }
-    if !found && !generic { graph_fatal(v.span, "'%s' reached the graph unchecked", v.name) }
-}
-
 // A union's tag type: the one it declares (`union(tag u32)`), else i64.
 @(private="file")
 graph_tag_type :: proc(t: Type) -> Type {
@@ -3812,14 +3732,14 @@ graph_tag_type :: proc(t: Type) -> Type {
 
 // --- checks -------------------------------------------------------------------
 
-// Every checked scope and type the program declares is exactly one node.
+// Every checked fun and struct with code is exactly one node.
 @(private="file")
 graph_check_coverage :: proc(b: ^Graph_Builder) {
     count: map[rawptr]int
     defer delete(count)
     for t, id in b.g.type_ {
         #partial switch b.g.kind[id] {
-        case .Fun, .Struct, .Union, .Enum, .Type_Def: count[graph_type_ptr(t)] += 1
+        case .Fun, .Struct: count[graph_type_ptr(t)] += 1
         }
     }
     bad := 0
@@ -3830,12 +3750,15 @@ graph_check_coverage :: proc(b: ^Graph_Builder) {
             bad^ += 1
         }
     }
+    // (Code: a fun's, a struct's constructor's. A foreign fun, a type, a
+    // union's variant has none.)
     t := b.checked.table
-    for _, ft in b.checked.functions { if !ft.is_module { check(&count, &bad, ft, ft.body_span) } }
-    for _, st in t.structs           { if !st.is_module { check(&count, &bad, st, st.body_span) } }
-    for _, u in t.unions             { check(&count, &bad, u, u.span) }
-    for _, e in t.enums              { if !e.is_synthetic { check(&count, &bad, e, e.span) } }
-    for _, d in t.distinct_types     { check(&count, &bad, d, d.span) }
+    for _, ft in b.checked.functions {
+        if _, is_foreign := ft.origin.(Origin_Foreign); !ft.is_module && !is_foreign { check(&count, &bad, ft, ft.body_span) }
+    }
+    variants := make(map[^Type_Scope]bool, context.temp_allocator)
+    for _, u in t.unions { for _, st in u.variant_structs { variants[st] = true } }
+    for _, st in t.structs { if !st.is_module && st not_in variants { check(&count, &bad, st, st.body_span) } }
     if bad > 0 {
         flush_diagnostics()
         os.exit(1)
@@ -4135,7 +4058,7 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
         fmt.sbprintf(&b, "%d %s %s", id, graph_kind_word(g.kind[id]), g.name[id])
         if t := g.type_[id]; t != nil {
             #partial switch g.kind[id] {
-            case .Field, .Param, .Result, .Local, .Const, .Import, .Type_Def:
+            case .Field, .Param, .Result, .Local, .Const:
                 fmt.sbprintf(&b, " : %s", type_name(t))
             }
         }
@@ -4150,8 +4073,6 @@ graph_kind_word :: proc(k: Node_Kind) -> string {
     switch k {
     case .Module:   return "module"
     case .Struct:   return "struct"
-    case .Union:    return "union"
-    case .Enum:     return "enum"
     case .Fun:      return "fun"
     case .Block:    return "block"
     case .Field:    return "field"
@@ -4159,10 +4080,6 @@ graph_kind_word :: proc(k: Node_Kind) -> string {
     case .Result:   return "result"
     case .Local:    return "local"
     case .Const:    return "const"
-    case .Import:   return "import"
-    case .Variant:  return "variant"
-    case .Type_Def: return "type"
-    case .Dispatch: return "dispatch"
     case .Op:       return "op"
     }
     return "?"
