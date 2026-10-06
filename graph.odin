@@ -314,7 +314,7 @@ Graph_Builder :: struct {
     // the graph is put together.
     module_stmts: map[Syntax_Id]int,
     module_list:  [dynamic]Graph_Module_Stmt,
-    def_segs:     map[Syntax_Id]Graph_Def_Built,   // a body's constants, built as settled
+    def_segs:     map[Syntax_Id]int,   // a body's constants, built as settled: each one's segment
     const_segs:   map[Syntax_Id]int,               // each constant's code, by its statement (graph_const_begin)
     // Every name the checker's table has a constant under, by its value's id
     // (a module's constant is there under its flat name and its bare one):
@@ -350,16 +350,9 @@ Graph_Segment :: struct {
     anchors: [dynamic]Graph_Anchor,
     root:    Node_Id,   // a scope's: its node, placed by its anchor
     placed:  bool,      // an anchor puts it somewhere
-    // A body's definitions: each built by the builder, at its anchor,
-    // when the body is placed.
-    defs:    [dynamic]Graph_Def,
-}
-
-@(private="file")
-Graph_Def :: struct {
-    d:      Graph_Decl,
-    parent: Node_Id,
-    anchor: int,
+    // A body's definitions: each one's code put after it when the body is
+    // placed (graph_body_place).
+    defs:    [dynamic]Graph_Decl,
 }
 
 // A stretch of one segment's items: [from, to) of each.
@@ -3532,11 +3525,11 @@ graph_build_body_stmt :: proc(b: ^Graph_Builder, span: Span, runs_code: bool) {
 // from here, when the body is placed.
 graph_build_def :: proc(b: ^Graph_Builder, d: Graph_Decl) {
     seg := &b.segs[b.seg]
-    append(&seg.defs, Graph_Def{d = d, parent = b.code.block, anchor = graph_anchor_here(b)})
+    append(&seg.defs, d)
 }
 
-// Put a body where its scope is, and build its definitions where each
-// is written.
+// Put a body where its scope is, then the code each of its definitions
+// defines — a fun's, a struct's, a constant's: a code of its own, after it.
 @(private="file")
 graph_body_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: string) {
     graph_anchor_here(b, si)
@@ -3544,36 +3537,28 @@ graph_body_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: stri
     defs := b.segs[si].defs[:]   // (placing them grows b.segs)
     for d in defs {
         // (A constant: built as the checker settled it.)
-        if early, settled := b.def_segs[d.d.id]; settled {
-            if early.parent != d.parent { graph_fatal(d.d.span, "a definition built in another block") }
-            b.segs[si].anchors[d.anchor].seg = early.seg
+        if early, settled := b.def_segs[d.id]; settled {
+            graph_anchor_here(b, early)
             continue
         }
         sub, saved := graph_segment_enter(b)
-        b.segs[si].anchors[d.anchor].seg = sub
-        graph_decl_stmt(b, d.d, d.parent, {kind = .Local})
+        graph_decl_stmt(b, d, NO_NODE, {kind = .Local})
         graph_segment_leave(b, saved)
+        graph_anchor_here(b, sub)
     }
 }
 
-// A body's definition the checker settles — a constant: its declaration,
-// built once its declarations pass has, in the block it is written in, in a
-// segment of its own put where it is when the body is placed.
-Graph_Def_Built :: struct {
-    seg:    int,
-    parent: Node_Id,
-}
-
+// A body's definition the checker settles — a constant: its code, put in a
+// segment of its own after the body when the body is placed.
 graph_build_def_settled :: proc(b: ^Graph_Builder, d: Graph_Decl) {
-    parent := b.code.block
     si, saved := graph_segment_enter(b)
     code, locals := b.code, graph_locals_enter(b)
     b.code = {}
-    graph_decl_stmt(b, d, parent, {kind = .Local})
+    graph_decl_stmt(b, d, NO_NODE, {kind = .Local})
     b.code = code
     graph_locals_leave(b, locals)
     graph_segment_leave(b, saved)
-    b.def_segs[d.id] = {si, parent}
+    b.def_segs[d.id] = si
 }
 
 // --- constants ------------------------------------------------------------

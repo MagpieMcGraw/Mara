@@ -279,16 +279,11 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             append(&at[sp], Tree_Id(n))
         }
         made := make(map[Syntax_Id]Node_Id, len(a.callees), context.temp_allocator)   // (the annotated calls the graph makes: each one's operation)
-        inst_of := make(map[^Type_Scope]Instance_Id, len(a.instances), context.temp_allocator)
-        for inst, i in a.instances { if inst.scope != nil { inst_of[inst.scope] = Instance_Id(i) } }
-        // (An operation's instance: the generic instance's code it is in.)
+        // (An operation's instance: the one its code's body was checked in.)
+        inst_of := make(map[^Type_Scope]Instance_Id, len(a.bodies), context.temp_allocator)
+        for body in a.bodies { if body.scope != nil { inst_of[body.scope] = body.inst } }
         instance :: proc(g: ^Program_Graph, inst_of: map[^Type_Scope]Instance_Id, op: Node_Id) -> Instance_Id {
-            for p := g.parent[op]; p != NO_NODE; p = g.parent[p] {
-                if g.kind[p] != .Fun && g.kind[p] != .Struct { continue }
-                if ts, is_scope := g.type_[p].(^Type_Scope); is_scope {
-                    if i, ok := inst_of[ts]; ok { return i }
-                }
-            }
+            if ts := graph_caller(g, op); ts != nil { return inst_of[ts] or_else 0 }
             return 0
         }
         for id in 0 ..< len(g.kind) {
