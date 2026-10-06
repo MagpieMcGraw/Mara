@@ -59,16 +59,12 @@ Op_Kind :: enum u8 {
 // How a node or edge is written (design/program_graph.md, Identity and editing).
 Written :: enum u8 { Explicit, Implied, Synthetic }
 
-Edge_Kind :: enum u8 {
-    Calls,  // a call or construct operation → the fun or struct it runs
-    Runs,   // a run-defer operation → the defer block it runs
-    Then,   // a run's last operation, or a scope for its entry → a run's first operation
-}
-
+// A `then`: a run's last operation, or a scope for its entry → a run's first
+// operation. (What a call runs and what a run-defer runs are columns:
+// Program_Graph.callee, .defer_of.)
 Edge :: struct {
     from:    Node_Id,
     to:      Node_Id,
-    kind:    Edge_Kind,
     written: Written,
 }
 
@@ -111,6 +107,8 @@ Program_Graph :: struct {
     type_:   [dynamic]Type,     // has type; nil when the node has none
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
+    callee:  map[Node_Id]^Type_Scope,   // a call or construct operation → the fun or struct it runs (none through a fun's value)
+    defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
     stmt:    [dynamic]i32,      // an operation → the statement it comes from (in `stmts`), or -1
     decl_tok: map[Node_Id]Token_Id,   // a variable's declaration — a param, a named result, a local — → the token that declares it
 
@@ -124,13 +122,10 @@ Program_Graph :: struct {
     run_first:  [dynamic]i32,
     run_starts: map[Node_Id]i32,
 
-    // One edge table, sorted by `from`. A node's outgoing edges are
-    // edges[out_first[id] : out_first[id+1]]; its incoming ones are the edge
-    // numbers in_edges[in_first[id] : in_first[id+1]].
+    // The Then edges, sorted by `from`: a node's are
+    // edges[out_first[id] : out_first[id+1]].
     edges:     [dynamic]Edge,
     out_first: [dynamic]i32,
-    in_edges:  [dynamic]i32,
-    in_first:  [dynamic]i32,
 
     // Each checked fun and struct's node: the bridge while analyses still key
     // on scopes.
@@ -179,10 +174,6 @@ graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
     return g.edges[g.out_first[id]:g.out_first[id + 1]]
 }
 
-graph_in :: proc(g: ^Program_Graph, id: Node_Id) -> []i32 {
-    return g.in_edges[g.in_first[id]:g.in_first[id + 1]]
-}
-
 graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
     return g.operands[g.operand_first[id]:g.operand_first[id + 1]]
 }
@@ -200,10 +191,7 @@ graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
 
 // The fun or struct a call or construction runs; nil through a function value.
 graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
-    for edge in graph_out(g, op) {
-        if edge.kind == .Calls { return g.type_[edge.to].(^Type_Scope) }
-    }
-    return nil
+    return g.callee[op] or_else nil
 }
 
 // The signature a call runs by: its callee's, or — through a function value,
@@ -237,7 +225,7 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
     defer delete(seen)
     todo: [dynamic]i32
     defer delete(todo)
-    for e in graph_out(g, scope) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+    for e in graph_out(g, scope) { append(&todo, starts[e.to]) }
     for len(todo) > 0 {
         r := pop(&todo)
         if r in seen { continue }
@@ -245,7 +233,7 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
         ops := graph_run(g, int(r))
         last := ops[len(ops) - 1]
         if g.op[last] == .Return && g.written[last] == .Synthetic { return true }
-        for e in graph_out(g, last) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+        for e in graph_out(g, last) { append(&todo, starts[e.to]) }
     }
     return false
 }
@@ -260,7 +248,7 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
     reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: ^map[i32]bool) {
         todo: [dynamic]i32
         defer delete(todo)
-        for e in graph_out(g, scope) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+        for e in graph_out(g, scope) { append(&todo, starts[e.to]) }
         for len(todo) > 0 {
             r := pop(&todo)
             if r in seen^ { continue }
@@ -270,7 +258,7 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
             // Depth-first in edge order keeps a run's successors after it.
             next := graph_out(g, ops[len(ops) - 1])
             for i := len(next) - 1; i >= 0; i -= 1 {
-                if next[i].kind == .Then { append(&todo, starts[next[i].to]) }
+                append(&todo, starts[next[i].to])
             }
         }
     }
@@ -279,7 +267,7 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
     for i := 0; i < len(out); i += 1 {
         for op in graph_run(g, int(out[i])) {
             if g.op[op] != .Run_Defer { continue }
-            for e in graph_out(g, op) { if e.kind == .Runs { reach(g, starts, e.to, out, &seen) } }
+            reach(g, starts, g.defer_of[op], out, &seen)
         }
     }
     return
@@ -851,7 +839,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
             to = next_kept[to] or_else NO_NODE
             if to != NO_NODE { written = g.written[to] }
         }
-        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, to), kind = e.kind, written = written})
+        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, to), written = written})
     }
     for old in stmts { append(&ng.stmts, g.stmts[old]) }
     for old in unreach { append(&ng.unreachable, g.unreachable[old]) }
@@ -862,6 +850,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for id, s in g.assert_sides { if kept(new_id, id) { ng.assert_sides[new_id[id]] = s } }
     reserve(&ng.decl_tok, len(g.decl_tok))
     for id, tk in g.decl_tok { if kept(new_id, id) { ng.decl_tok[new_id[id]] = tk } }
+    for op, d in g.defer_of { if kept(new_id, op) { ng.defer_of[new_id[op]] = re(new_id, d) } }
 
     // What the builder still holds by id.
     callee_of := make(map[Node_Id]^Type_Scope, len(b.callee_of))
@@ -890,9 +879,10 @@ graph_free_columns :: proc(g: ^Program_Graph) {
     delete(g.kind); delete(g.op); delete(g.written); delete(g.parent); delete(g.last)
     delete(g.name); delete(g.type_); delete(g.origin); delete(g.refers); delete(g.stmt)
     delete(g.operands); delete(g.operand_first); delete(g.run_ops); delete(g.run_first)
-    delete(g.edges); delete(g.out_first); delete(g.in_edges); delete(g.in_first)
+    delete(g.edges); delete(g.out_first)
     delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
     delete(g.consts); delete(g.assert_sides); delete(g.consumes); delete(g.decl_tok)
+    delete(g.callee); delete(g.defer_of)
     delete(g.tables); delete(g.table_names); delete(g.fold_errors)
 }
 
@@ -1316,7 +1306,7 @@ graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
         s := &b.code.scopes[i]
         for j := len(s.defers) - 1; j >= 0; j -= 1 {
             op := graph_op(b, .Run_Defer, .Synthetic, span)
-            append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic})
+            b.g.defer_of[op] = s.defers[j]
         }
         if s.tentative >= 0 { append(&b.body.marks[s.tentative].resets, graph_op(b, .Arena_Reset, .Synthetic, span)) }
     }
@@ -1374,12 +1364,12 @@ graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
 graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written) {
     if len(to.ops) > 0 {
         w := b.g.written[to.ops[0]] if to.early else written   // (as when its operation came after)
-        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = w})
+        append(&b.g.edges, Edge{from = from, to = to.ops[0], written = w})
     } else {
         // Its place among the edges now — a branch's targets keep their order
         // (yes, then no) — and its target once the run has an operation.
         append(&to.waiting, i32(len(b.g.edges)))
-        append(&b.g.edges, Edge{from = from, to = NO_NODE, kind = .Then, written = written})
+        append(&b.g.edges, Edge{from = from, to = NO_NODE, written = written})
     }
 }
 
@@ -1847,13 +1837,12 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
     return nil
 }
 
-// Every call's edge, once all the funs and structs have nodes.
+// Every call's callee, once all the funs and structs have nodes.
 @(private="file")
 graph_link_calls :: proc(b: ^Graph_Builder) {
     for op, callee in b.callee_of {
-        to, ok := b.g.scope_node[callee]
-        if !ok { graph_fatal(b.g.origin[op], "'%s' calls '%s', which has no node", b.g.name[op], callee.name) }
-        append(&b.g.edges, Edge{from = op, to = to, kind = .Calls, written = b.g.written[op]})
+        if callee not_in b.g.scope_node { graph_fatal(b.g.origin[op], "'%s' calls '%s', which has no node", b.g.name[op], callee.name) }
+        b.g.callee[op] = callee
     }
 }
 
@@ -2039,23 +2028,14 @@ graph_user :: proc(g: ^Program_Graph, op, last: Node_Id) -> Node_Id {
     return NO_NODE
 }
 
-// Sort the edge table by `from` and index both directions (counting sorts:
-// one pass each).
+// Sort the edge table by `from` and index it (a counting sort: one pass).
 @(private="file")
 graph_index_edges :: proc(g: ^Program_Graph) {
     n := len(g.kind)
     resize(&g.out_first, n + 1)
-    resize(&g.in_first, n + 1)
     slice.zero(g.out_first[:])
-    slice.zero(g.in_first[:])
-    for e in g.edges {
-        g.out_first[e.from + 1] += 1
-        g.in_first[e.to + 1] += 1
-    }
-    for i in 1 ..= n {
-        g.out_first[i] += g.out_first[i - 1]
-        g.in_first[i] += g.in_first[i - 1]
-    }
+    for e in g.edges { g.out_first[e.from + 1] += 1 }
+    for i in 1 ..= n { g.out_first[i] += g.out_first[i - 1] }
     sorted := make([dynamic]Edge, len(g.edges))
     next := slice.clone(g.out_first[:n], context.temp_allocator)
     for e in g.edges {
@@ -2064,12 +2044,6 @@ graph_index_edges :: proc(g: ^Program_Graph) {
     }
     delete(g.edges)
     g.edges = sorted
-    resize(&g.in_edges, len(g.edges))
-    next_in := slice.clone(g.in_first[:n], context.temp_allocator)
-    for e, i in g.edges {
-        g.in_edges[next_in[e.to]] = i32(i)
-        next_in[e.to] += 1
-    }
 }
 
 // --- scopes -------------------------------------------------------------------
@@ -2514,7 +2488,7 @@ graph_build_drop_since :: proc(b: ^Graph_Builder, m: Graph_Mark) {
     // The then-edges its first operation took wait for the next again.
     if m.ops == 0 && len(r.ops) > 0 {
         for &e, k in b.g.edges {
-            if e.kind == .Then && e.to == r.ops[0] {
+            if e.to == r.ops[0] {
                 e.to = NO_NODE
                 append(&r.waiting, i32(k))
             }
@@ -3983,7 +3957,6 @@ graph_check_runs :: proc(b: ^Graph_Builder) {
         delete(succ); delete(pred); delete(is_entry)
     }
     for e in g.edges {
-        if e.kind != .Then { continue }
         r := run_of[e.to]
         if r == -1 || pos[e.to] != 0 { report(g, &bad, e.to, "a then edge lands inside a run"); continue }
         if g.kind[e.from] != .Op { is_entry[r] = true; continue }
@@ -4121,7 +4094,7 @@ graph_dump :: proc(g: ^Program_Graph) {
             fmt.sbprintf(&sb, "  run %d:", r)
             for op in ops { fmt.sbprintf(&sb, " %d", op) }
             for e in graph_out(g, ops[len(ops) - 1]) {
-                if e.kind == .Then { fmt.sbprintf(&sb, "  → run %d", run_of[e.to]) }
+                fmt.sbprintf(&sb, "  → run %d", run_of[e.to])
             }
             fmt.println(strings.to_string(sb))
         }
@@ -4143,7 +4116,7 @@ graph_dump_full :: proc(g: ^Program_Graph) {
     span :: proc(s: Span) -> string {
         return fmt.tprintf("%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) if span_file(s) != "" else "-"
     }
-    fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges))
+    fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges) + len(g.callee) + len(g.defer_of))
     for id in 0 ..< len(g.kind) {
         b := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
@@ -4160,7 +4133,12 @@ graph_dump_full :: proc(g: ^Program_Graph) {
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))
     }
-    for e in g.edges { fmt.printfln("e %d -> %d %v %v", e.from, e.to, e.kind, e.written) }
+    // (Each operation's: its thens, or what it calls, or the defer it runs.)
+    for id in 0 ..< len(g.kind) {
+        for e in graph_out(g, Node_Id(id)) { fmt.printfln("e %d -> %d Then %v", e.from, e.to, e.written) }
+        if callee := graph_called(g, Node_Id(id)); callee != nil { fmt.printfln("e %d -> %d Calls %v", id, g.scope_node[callee], g.written[id]) }
+        if d, runs := g.defer_of[Node_Id(id)]; runs { fmt.printfln("e %d -> %d Runs Synthetic", id, d) }
+    }
     for r in 0 ..< len(g.run_first) - 1 {
         b := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&b, "r %d:", r)
@@ -4196,9 +4174,8 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
         }
         if r := g.refers[id]; r != NO_NODE { fmt.sbprintf(&b, " = %d", r) }
         if t := g.type_[id]; t != nil { fmt.sbprintf(&b, " : %s", type_name(t)) }
-        for e in graph_out(g, id) {
-            if e.kind != .Then { fmt.sbprintf(&b, " → %d", e.to) }
-        }
+        if callee := graph_called(g, id); callee != nil { fmt.sbprintf(&b, " → %d", g.scope_node[callee]) }
+        if d, runs := g.defer_of[id]; runs { fmt.sbprintf(&b, " → %d", d) }
     } else {
         fmt.sbprintf(&b, "%d %s %s", id, graph_kind_word(g.kind[id]), g.name[id])
         if t := g.type_[id]; t != nil {

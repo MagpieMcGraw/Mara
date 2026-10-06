@@ -215,7 +215,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 // The first operation of the run a scope's code enters.
 @(private="file")
 llvm_first_then :: proc(pg: ^Program_Graph, scope: Node_Id) -> Node_Id {
-    for edge in graph_out(pg, scope) { if edge.kind == .Then { return edge.to } }
+    for edge in graph_out(pg, scope) { return edge.to }
     return NO_NODE
 }
 
@@ -723,7 +723,6 @@ llvm_dominates :: proc(e: ^Llvm, a, b: int) -> bool {
         if i == b { return false }
         ops := graph_run(pg, int(e.runs[i]))
         for edge in graph_out(pg, ops[len(ops) - 1]) {
-            if edge.kind != .Then { continue }
             j, ok := at[e.pg.run_starts[edge.to]]
             if !ok || seen[j] || j == a { continue }
             seen[j] = true
@@ -1414,7 +1413,6 @@ llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
 llvm_target :: proc(e: ^Llvm, op: Node_Id, k: int) -> i32 {
     n := 0
     for edge in graph_out(e.pg, op) {
-        if edge.kind != .Then { continue }
         if n == k { return e.pg.run_starts[edge.to] }
         n += 1
     }
@@ -2422,8 +2420,7 @@ llvm_assert :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
     cases := ops[1:]
-    targets := 0
-    for edge in graph_out(pg, op) { if edge.kind == .Then { targets += 1 } }
+    targets := len(graph_out(pg, op))
     if targets != len(cases) && targets != len(cases) + 1 { return false }
     target :: proc(e: ^Llvm, op: Node_Id, k: int) -> string { return e.label[llvm_target(e, op, k)] }
     fail := targets == len(cases)
@@ -2493,9 +2490,8 @@ llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
 @(private="file")
 llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     g, pg := e.g, e.pg
-    d := NO_NODE
-    for edge in graph_out(pg, op) { if edge.kind == .Runs { d = edge.to } }
-    if d == NO_NODE { return false }
+    d, ok := pg.defer_of[op]
+    if !ok { return false }
     runs: [dynamic]i32
     runs.allocator = context.temp_allocator
     body := runs[:graph_code_runs(pg, d, &runs)]
@@ -2503,7 +2499,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     for r in body {
         for o in graph_run(pg, int(r)) {
             for edge in graph_out(pg, o) {
-                if edge.kind == .Then && pg.run_starts[edge.to] == body[0] { return false }   // its entry a loop's head: later
+                if pg.run_starts[edge.to] == body[0] { return false }   // its entry a loop's head: later
             }
         }
     }

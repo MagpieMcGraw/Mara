@@ -117,6 +117,34 @@ tree and its annotations, and the readers touch the operations only for flow.
   the Calls edges. A function's call sites are its callers' call operations that run it.
 - Gate for each: `ask.sh`'s goldens, any change explained here; `annotcheck.sh`; `irdiff.sh`.
 
+## Stage 4
+
+What stays of the graph is what codegen and the flow analyses read: each function's
+operations. They stay stored, as lowering builds them, since that is simpler than a walker
+that would lower a function again for each reader and faster than doing so. The rest goes:
+
+- **The end.** Each function's code — a fun's, or a struct's constructor's — and each
+  constant's (what folding reads) is its own: its operations (kind, how written, type,
+  where, name, operands, statement), its runs and the Then edges between them, its locals,
+  its statements and its defer blocks. Ids are each code's own, from 0. A local is a
+  variable's token (a param, a named result, a local) or a synthetic one (a temporary, a
+  loop's end). A variable operation names its local, a global operation its constant or
+  fun, a call its callee. There is no scope tree, no program-level declaration, no Calls or
+  Runs edge, and no segment or canonicalization: lowering builds one code at a time.
+- **The steps**, each gated by `irdiff.sh` identical, the goldens and `annotcheck.sh`:
+  1. Calls and Runs edges become columns: a call's callee, a run-defer's block.
+     `graphdiff.sh` identical too (the dump says the same).
+  2. Names by their tokens. Lowering finds a variable's declaration by the token its name
+     refers to; the builder's own name stack goes.
+  3. No program-level declarations. Modules, types, variants, dispatch groups, imports
+     and struct fields stop being nodes; constants are found by their token. What read
+     them reads the checker's (its Type_Scopes, the annotations).
+  4. A code per function. The graph splits into each function's and constant's code; the
+     scope tree (`parent`, `last`, `scope_node`), segments, anchors and canonicalization go;
+     codegen and the analyses read one code at a time.
+  5. Locals. A code's params, results, locals and blocks stop being nodes: its locals
+     table, its defer blocks.
+
 ## Checklist
 
 - [x] 1. Annotations that last (2026-10-06)

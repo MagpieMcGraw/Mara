@@ -342,7 +342,7 @@ esc_defer_end :: proc(e: ^Esc, ret: Node_Id, state: []Esc_Roots) {
 @(private="file")
 esc_defer_block :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
     for p := g.parent[op]; p != NO_NODE; p = g.parent[p] {
-        for edge in graph_out(g, p) { if edge.kind == .Then { return p } }
+        if len(graph_out(g, p)) > 0 { return p }
     }
     return NO_NODE
 }
@@ -351,16 +351,13 @@ esc_defer_block :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
 // block leaves joins in, once known; this run goes again when it grows.
 @(private="file")
 esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
-    for edge in graph_out(e.g, op) {
-        if edge.kind != .Runs { continue }
-        d := edge.to
-        if !e.final {
-            if d not_in e.defer_users { e.defer_users[d] = {} }
-            users := &e.defer_users[d]
-            if !slice.contains(users[:], ri) { append(users, ri) }
-        }
-        if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }
+    d := e.g.defer_of[op]
+    if !e.final {
+        if d not_in e.defer_users { e.defer_users[d] = {} }
+        users := &e.defer_users[d]
+        if !slice.contains(users[:], ri) { append(users, ri) }
     }
+    if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }
 }
 
 // --- operations ----------------------------------------------------------------

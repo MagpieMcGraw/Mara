@@ -622,7 +622,6 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         last := ops[len(ops) - 1]
         if g.op[last] == .Return { append(&succ[i], exit); continue }
         for e in graph_out(g, last) {
-            if e.kind != .Then { continue }
             j, ok := at[g.run_starts[e.to]]
             if !ok { continue }
             if g.op[last] == .Branch && g.written[last] == .Implied {

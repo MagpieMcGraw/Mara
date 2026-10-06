@@ -147,12 +147,9 @@ flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program) {
             for k := len(ops) - 2; k >= 0; k -= 1 {
                 if g.op[ops[k]] == .Arena_Reset { continue }
                 if g.op[ops[k]] != .Run_Defer { break }
-                for edge in graph_out(g, ops[k]) {
-                    if edge.kind != .Runs { continue }
-                    clear(&block)
-                    graph_code_runs(g, edge.to, &block)
-                    flow_defer_writes(c, g, ret, block[:], &seen)
-                }
+                clear(&block)
+                graph_code_runs(g, g.defer_of[ops[k]], &block)
+                flow_defer_writes(c, g, ret, block[:], &seen)
             }
         }
     }

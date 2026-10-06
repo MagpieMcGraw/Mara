@@ -86,18 +86,13 @@ run_flow_solve :: proc(f: ^Run_Flow($S), entry: []S, data: $D, step: proc(data: 
         ops := graph_run(g, int(f.runs[ri]))
         for op in ops {
             if g.op[op] == .Run_Defer {
-                for e in graph_out(g, op) {
-                    if e.kind != .Runs { continue }
-                    for in_ in graph_out(g, e.to) {
-                        if in_.kind != .Then { continue }
-                        if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
-                    }
+                for in_ in graph_out(g, g.defer_of[op]) {
+                    if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
                 }
             }
             step(data, ri, op, state)
         }
         for e in graph_out(g, ops[len(ops) - 1]) {
-            if e.kind != .Then { continue }
             if si, ok := run_flow_at(f, e.to); ok { run_flow_enter(f, si, state) }
         }
     }
