@@ -108,7 +108,7 @@ slice_seed :: proc(s: ^Slice) {
         if s.control { slice_guards(s, du_return_guards(s.f, ret)) }
     }
     for d in s.f.defs {
-        if d.binding != nil && g.kind[d.binding.node] == .Result { slice_add_def(s, d) }
+        if d.binding != nil && d.binding.kind == .Result { slice_add_def(s, d) }
     }
 }
 
@@ -270,7 +270,7 @@ slice_build_feeders :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> map[^
         delete(uses)
     }
     for d in f.defs {
-        if d.binding != nil && g.kind[d.binding.node] == .Result { feeders[d] = true }
+        if d.binding != nil && d.binding.kind == .Result { feeders[d] = true }
     }
     return feeders
 }

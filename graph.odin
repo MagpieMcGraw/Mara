@@ -3824,7 +3824,7 @@ graph_foreign :: proc(b: ^Graph_Builder, f: Graph_Decl_Part, parent: Node_Id) {
     if !ok { graph_fatal(f.span, "foreign '%s' is not a function", f.name) }
     n := graph_node(b, .Fun, .Explicit, parent, f.name, ts, f.span)
     b.g.scope_node[ts] = n
-    for p in ts.params { graph_node(b, .Param, .Explicit, n, p.name, p.type_, f.span) }
+    for p in ts.params { b.g.decl_tok[graph_node(b, .Param, .Explicit, n, p.name, p.type_, f.span)] = p.decl }
     graph_results(b, ts, n, f.span)
     graph_close(b, n)
 }

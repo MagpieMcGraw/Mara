@@ -30,15 +30,16 @@ import "core:strings"
 // it runs, early returns included. A `?` is no branch here, as in the text.
 // ---------------------------------------------------------------------------
 
-Binding_Kind :: enum { Local, Param }
+Binding_Kind :: enum { Local, Param, Result }
 
-// A variable of a fun, as the flow views name it.
+// A variable of a fun, as the flow views name it: one its body binds
+// (Annotations.vars) — the token that declares it, its name and type.
 Var_Binding :: struct {
-    node:        Node_Id,
+    tok:         Token_Id,
     name:        string,
     fn:          ^Type_Scope,
     kind:        Binding_Kind,
-    span:        Span,
+    span:        Span,    // its token's
     param_index: int,     // its position when a param; -1 otherwise
     type_:       Type,
 }
@@ -98,7 +99,7 @@ Du_Fn :: struct {
 
 Def_Use :: struct {
     fns:          map[^Type_Scope]^Du_Fn,
-    bindings:     map[Node_Id]^Var_Binding,
+    bindings:     map[Node_Id]^Var_Binding,   // a variable's declaration in its fun's code → the variable
     vars:         [dynamic]^Var_Binding,   // every analyzed variable
     defs:         [dynamic]^Def,           // every analyzed variable's definitions
     reaching:     map[Node_Id][]^Def,      // a use (a var operation) → the definitions that may reach it
@@ -148,23 +149,44 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     f.node = node
 
 
-    // Its variables, and the synthetic locals seen through: its own subtree,
-    // less the subtrees of what it defines.
+    // Its variables: the ones its body binds (Annotations.vars).
+    annotated, _ := checked.annot.vars[f.ft]
+    of_var := make([]^Var_Binding, len(annotated))
+    defer delete(of_var)
+    params := 0
+    for v, i in annotated {
+        kind, index := Binding_Kind.Local, -1
+        #partial switch v.kind {
+        case .Param:
+            kind, index = .Param, params
+            params += 1
+        case .Result:
+            kind = .Result
+        }
+        of_var[i] = du_bind(checked, f, v, kind, index)
+    }
+
+    // The declarations its code names (its own, not a nested fun's): each a
+    // variable's, found by the token that declares it, or a synthetic local
+    // seen through — a loop's end, an if-expression's value, a temporary. (An
+    // unnamed result is neither.)
     tracked: map[Node_Id]int
     defer delete(tracked)
-    params := 0
+    decl_of: map[^Var_Binding]Node_Id
+    defer delete(decl_of)
     for id := node + 1; id <= g.last[node]; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct, .Union, .Enum:
             id = g.last[id]
-        case .Param:
-            du_bind(checked, f, id, .Param, params)
-            params += 1
-            tracked[id] = len(tracked)
-        case .Result:
-            if g.written[id] == .Explicit { du_bind(checked, f, id, .Local, -1); tracked[id] = len(tracked) }
-        case .Local:
-            if g.written[id] == .Explicit { du_bind(checked, f, id, .Local, -1) }
+        case .Param, .Local, .Result:
+            if g.written[id] == .Explicit {
+                i := annot_var(checked.annot, f.ft, g.decl_tok[id] or_else 0, g.type_[id])
+                if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", g.name[id], f.ft.name) }
+                du.bindings[id] = of_var[i]
+                decl_of[of_var[i]] = id
+            } else if g.kind[id] == .Result {
+                continue
+            }
             tracked[id] = len(tracked)
         }
     }
@@ -176,7 +198,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     def_of: map[[2]i32]^Def   // (variable, statement) → its definition
     defer delete(def_of)
     for b in f.vars {
-        if b.kind == .Param { du_def(checked, f, &def_of, b.node, -1, g.origin[b.node]) }
+        if b.kind == .Param { du_def(checked, f, &def_of, decl_of[b], -1, b.span) }
     }
     for r, ri in f.runs {
         for op in graph_run(g, int(r)) {
@@ -273,16 +295,16 @@ du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, stat
 // --- variables and definitions ---------------------------------------------
 
 @(private="file")
-du_bind :: proc(checked: ^Checked_Program, f: ^Du_Fn, id: Node_Id, kind: Binding_Kind, param_index: int) {
-    g := &checked.graph
+du_bind :: proc(checked: ^Checked_Program, f: ^Du_Fn, v: Var_Decl, kind: Binding_Kind, param_index: int) -> ^Var_Binding {
+    tok := build_tokens[v.tok]
     b := new(Var_Binding)
     b^ = Var_Binding{
-        node = id, name = g.name[id], fn = f.ft, kind = kind, span = g.origin[id],
-        param_index = param_index, type_ = g.type_[id],
+        tok = v.tok, name = token_text(tok), fn = f.ft, kind = kind, span = token_span(tok),
+        param_index = param_index, type_ = solidify_type(v.type_),
     }
     append(&f.vars, b)
     append(&checked.du.vars, b)
-    checked.du.bindings[id] = b
+    return b
 }
 
 // The definition of variable `v` at statement `stmt`, made the first time.

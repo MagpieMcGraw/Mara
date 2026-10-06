@@ -515,7 +515,6 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
         }
         for ts, node in g.scope_node {
             if g.kind[node] != .Fun && g.kind[node] != .Struct { continue }
-            if _, is_foreign := ts.origin.(Origin_Foreign); is_foreign { continue }   // (no body)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)
             for id := node + 1; id <= g.last[node]; id += 1 {

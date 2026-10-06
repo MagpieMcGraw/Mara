@@ -57,6 +57,8 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, module: string)
         }
         ft.origin = Origin_Foreign{library = library, link_name = link}
         ft.body_span = span
+        // (Its params: its variables, though it has no body to bind them.)
+        for p in ft.params { annot_add_var(k.annot, ft, {p.decl, .Param, p.type_}) }
         populate_cg_signature(ft)
         k.checked.functions[make_flat_name(module, name)] = ft
     }
