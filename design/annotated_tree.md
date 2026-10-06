@@ -87,6 +87,36 @@ annotations alone, is the one the checker built (`test/graphdiff.sh`).
   and that they agree with the graph (each operation's declaration is its name's, each Calls
   edge its call's callee). `test/annotcheck.sh` runs the check over the corpus.
 
+## Stage 3
+
+The readers are `mara ask` (`ask.odin`, `slice.odin`, `lineage.odin`), `ask at` (`hittest.odin`),
+def-use (`defuse.odin`) and the call graph they share (`callgraph.odin`). What a flow view
+computes stays def-use over the operations (the table above): reaching definitions over a
+function's runs, a value's reads walked through its operations. What changes is where the
+readers get what the program *means* — which variables a function has, their names, types and
+places, which function calls which and where, an expression's type. Today that is the graph's
+declaration and scope nodes and its Calls edges, which stage 4 removes. After stage 3 it is the
+tree and its annotations, and the readers touch the operations only for flow.
+
+- **`ask at`.** An expression's type is its annotation, in each instance it is checked in (a
+  generic's template: each instance's). An untyped number shows as one; a call with no value
+  (void, or `print`'s) shows none.
+- **Variables are their declarations.** The checker records each variable a body binds — a
+  param, a named result, a local, a loop's, a match arm's binding, a `let` — under the fun or
+  struct it is bound in, in the order bound: its token, its kind, its type
+  (`Annotations.vars`). The graph's declarations name the token that declares them, so an
+  operation's variable is a token. The check: each function's variables are the graph's
+  written declarations in its code, the same names and types.
+- **Def-use's variables from the annotations.** A function's variables are its annotated ones;
+  a definition or a use finds its variable through its declaration's token. The operations
+  still say which synthetic locals are seen through.
+- **The call graph from the annotations.** An edge for each annotated callee, from the
+  function the call is in — a default argument's calls from each function whose call takes
+  the default (`Annotations.args`). A call's line is its node's. A function calls the outside
+  world when it calls a foreign one or prints. The check: the same graph as the one read off
+  the Calls edges. A function's call sites are its callers' call operations that run it.
+- Gate for each: `ask.sh`'s goldens, any change explained here; `annotcheck.sh`; `irdiff.sh`.
+
 ## Checklist
 
 - [x] 1. Annotations that last (2026-10-06)

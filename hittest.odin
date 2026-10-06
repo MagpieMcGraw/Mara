@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:path/filepath"
@@ -20,9 +21,8 @@ import "core:path/filepath"
 // named entry) — the cursor names the statement, definition or expression
 // around them.
 //
-// An expression's type is the graph's: of the operation built where it is
-// written (hit_type). What builds none — a constant's value, a module's or a
-// type's name — shows none.
+// An expression's type is its annotation, in each instance it is checked in
+// (hit_type). What the checker types nothing — a module's name — shows none.
 // ---------------------------------------------------------------------------
 
 // Whether a node is one a cursor names.
@@ -77,37 +77,40 @@ span_text :: proc(src: string, s: Span) -> string {
     return strings.trim_space(src[lo:hi])
 }
 
-// The type the graph gives what is written at a span: its first operation
-// written there that holds a value (a place before its read, an operation
-// before what takes it) — not one implied by its use, nor the place a store
-// there writes into (what it is stored in, not what it is).
+// The type the annotations give what is written at a node: in each instance
+// it is checked in — outside any generic, the one; in a generic's template,
+// each instance's, as they differ.
 @(private="file")
-hit_type :: proc(g: ^Program_Graph, s: Span) -> Type {
-    at := make([dynamic]Node_Id, context.temp_allocator)
-    for id in 0 ..< len(g.kind) {
-        if g.kind[id] == .Op && g.origin[id] == s { append(&at, Node_Id(id)) }
+hit_type :: proc(a: ^Annotations, n: Tree_Id) -> string {
+    labels := make([dynamic]string, context.temp_allocator)
+    for inst, i in a.instances {
+        if n < inst.lo || n > inst.hi { continue }
+        label := hit_label(annot_type(a, Instance_Id(i), n))
+        if label != "" && !slice.contains(labels[:], label) { append(&labels, label) }
     }
-    into := make(map[Node_Id]bool, context.temp_allocator)
-    #reverse for id in at {
-        #partial switch g.op[id] {
-        case .Write, .Zero, .Construct, .Fill, .Byte_Read:
-            into[graph_operands(g, id)[0].op] = true
-        case .Field, .Index, .View, .Deref, .Variant, .Swizzle, .Slice:
-            // (A place written into is its base's too.)
-            if into[id] { into[graph_operands(g, id)[0].op] = true }
-        }
+    return strings.join(labels[:], ", ", context.temp_allocator)
+}
+
+// A type as `ask at` shows it: an untyped number as one (a `:=` binding's,
+// the width it settled at); what has no value — a void call, `print`'s —
+// none.
+@(private="file")
+hit_label :: proc(t: Type) -> string {
+    if t == nil { return "" }
+    if infer_cell_of(t) != nil { return type_name(solidify_type(t)) }
+    #partial switch _ in t {
+    case Type_Error, Type_Void: return ""
+    case Type_Infer_Int:        return "untyped int"
+    case Type_Infer_Float:      return "untyped float"
     }
-    for id in at {
-        if g.type_[id] != nil && g.written[id] == .Explicit && !into[id] { return g.type_[id] }
-    }
-    return nil
+    return type_name(t)
 }
 
 
 // Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
 // rendered text and whether anything was found.
 ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
-                     g: ^Program_Graph, spec: string) -> (string, bool) {
+                     a: ^Annotations, spec: string) -> (string, bool) {
     parts := strings.split(spec, ":")
     defer delete(parts)
     if len(parts) != 3 {
@@ -173,9 +176,9 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         prev = span
         ty := ""
         if t.tag[n] >= .Number {
-            // (A `?`'s value is its call's.)
-            of := span if t.tag[n] != .Try else tree_span(t, Tree_Id(t.a[n]))
-            ty = ask_label(hit_type(g, of))
+            ty = hit_type(a, n)
+            // (A `?` typed no value of its own: its call's.)
+            if ty == "" && t.tag[n] == .Try { ty = hit_type(a, Tree_Id(t.a[n])) }
         }
         fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", fmt.tprint(t.tag[n]), int(span.tok) - base, int(span.end) - base,
                      span_text(src_file.source, span))

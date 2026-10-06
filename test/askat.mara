@@ -1,0 +1,20 @@
+module askat
+
+// Fixture for `mara ask at <file>:<line>:<col>` (hittest.odin): each node
+// holding the cursor, typed by its annotation — a number untyped, a generic's
+// template each instance's type. Queried by test/ask_queries.txt.
+
+V :: struct { x: f32, y: f32 }
+
+add :: fun(a: i32, b: i32) -> i32 { return a + b }
+
+pick :: fun($T: type, a: T, b: T) -> T { return a }
+
+main :: fun() {
+    f : f32 = 5
+    n := add(3, 4) + 2
+    v := V{x = 1, y = 2.5}
+    w := pick(n, 7)
+    z := pick(f, v.y)
+    print(f, n, v.x, w, z)
+}

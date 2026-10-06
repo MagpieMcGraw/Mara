@@ -609,7 +609,7 @@ gfx_mesh_generation.mara:69:11  token '0'
   Fun_Def                  [432,1487)  fun() -> [24]Vertex, [36]u32 { …
   Assign                   [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
   Index                    [463,467)  verts[0]   : Vertex
-  Number                   [465,466)  0
+  Number                   [465,466)  0   : untyped int
 === Pounce | at Pounce.mara:101:27
 Pounce.mara:101:27  token 'draw_state_create'
 
@@ -617,6 +617,37 @@ Pounce.mara:101:27  token 'draw_state_create'
   Fun_Def                  [352,665)  fun(game: ^Megastruct, memory: ^[]byte) { …
   Assign                   [487,506)  game.draw_state_object = draw_state_create( …
   Call                     [491,506)  draw_state_create( …   : DrawState
+=== test/askat.mara | at askat.mara:15:14
+askat.mara:15:14  token '3'
+
+  Define                   [69,146)  main :: fun() { …
+  Fun_Def                  [71,146)  fun() { …
+  Decl                     [82,93)  n := add(3, 4) + 2
+  Binary                   [85,93)  add(3, 4) + 2   : i32
+  Call                     [85,91)  add(3, 4)   : i32
+  Number                   [87,88)  3   : untyped int
+=== test/askat.mara | at askat.mara:15:20
+askat.mara:15:20  token '+'
+
+  Define                   [69,146)  main :: fun() { …
+  Fun_Def                  [71,146)  fun() { …
+  Decl                     [82,93)  n := add(3, 4) + 2
+  Binary                   [85,93)  add(3, 4) + 2   : i32
+=== test/askat.mara | at askat.mara:11:49
+askat.mara:11:49  token 'a'
+
+  Define                   [44,67)  pick :: fun($T: type, a: T, b: T) -> T { return a }
+  Fun_Def                  [46,67)  fun($T: type, a: T, b: T) -> T { return a }
+  Return                   [64,66)  return a
+  Ident                    [65,66)  a   : i32, f32
+=== test/askat.mara | at askat.mara:18:19
+askat.mara:18:19  token '.'
+
+  Define                   [69,146)  main :: fun() { …
+  Fun_Def                  [71,146)  fun() { …
+  Decl                     [118,129)  z := pick(f, v.y)
+  Call                     [121,129)  pick(f, v.y)   : f32
+  Field                    [125,128)  v.y   : f32
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
