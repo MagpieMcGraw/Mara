@@ -43,16 +43,12 @@ TC :: struct {
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
-    callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
-    call_names:    map[Tree_Id]string,   // a method call's name, as its qualifier resolved it
     const_nodes:   map[Tree_Id]bool,  // the names that resolved to a constant
     variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
     recv:          TC_Recv,           // the call being checked's receiver, built
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
-    size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
     byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
     span_read:     Built_Span_Read,    // the span of bytes last built to be read as its destination's type
-    dot_bases:     map[Tree_Id]Tree_Id,   // each `.len` in a subscript: the subscript's base
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     union_templates: map[string]TC_Template,   // each generic union, by name
@@ -136,7 +132,7 @@ tc_name :: proc(k: ^TC, n: Tree_Id) -> string {
 
 // A call's name: a method's as its qualifier resolved it, else as written.
 tc_call_name :: proc(k: ^TC, n: Tree_Id) -> string {
-    if name, ok := k.call_names[n]; ok { return name }
+    if name, ok := k.annot.call_names[tc_sid(k, n)]; ok { return name }
     if k.t.tag[n] == .Method_Call { return tc_text(method_view(k.t, n).name) }
     return tc_name(k, n)
 }
@@ -838,9 +834,17 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
 // salted with the instance's
 // number. (The template's definition itself is the instance's: unsalted.)
 tc_sid :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
-    id := Syntax_Id(n)
-    if k.salt != 0 && n >= k.salt_lo && n <= k.salt_hi { id |= Syntax_Id(k.salt) << 32 }
-    return id
+    return annot_key(tc_instance(k, n), n)
+}
+
+// A call's fun, or struct (its constructor), as checked; nil when none is
+// known yet.
+tc_callee :: proc(k: ^TC, n: Tree_Id) -> ^Type_Scope {
+    return k.annot.callees[tc_sid(k, n)] or_else nil
+}
+
+tc_set_callee :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope) {
+    k.annot.callees[tc_sid(k, n)] = ts
 }
 
 // The lowest node of a subtree: its nodes are [it, n] (children are made

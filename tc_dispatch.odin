@@ -89,7 +89,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         return Type_Error{}, {}
     }
     ft := matched_fts[0]
-    k.callees[n] = ft
+    tc_set_callee(k, n, ft)
     ret := fn_primary_return(ft)
     // (Its defaults — a `_`'s, then the params it leaves off: each in its
     // function's defining scope, run at the call; a call site's (`#caller_name`)

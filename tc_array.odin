@@ -128,7 +128,7 @@ tc_lower_dots :: proc(k: ^TC, base, sub: Tree_Id) {
     #partial switch t.tag[sub] {
     case .Dot_Ident:
         name := tc_text(Token_Id(t.a[sub]))
-        if (name == "len" || name == "cap") && sub not_in k.dot_bases { k.dot_bases[sub] = base }
+        if (name == "len" || name == "cap") && tc_sid(k, sub) not_in k.annot.dot_bases { k.annot.dot_bases[tc_sid(k, sub)] = base }
     case .Binary:
         tc_lower_dots(k, base, Tree_Id(t.a[sub]))
         tc_lower_dots(k, base, Tree_Id(t.b[sub]))

@@ -744,7 +744,7 @@ tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
     #partial switch k.t.tag[n] {
     case .Literal, .Array: return true
     case .Call, .Method_Call:
-        callee := k.callees[n] or_else nil
+        callee := tc_callee(k, n)
         return callee != nil && callee.kind == .Struct
     }
     return false

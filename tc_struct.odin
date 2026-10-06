@@ -27,7 +27,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
     field: string
     if tr.tag[n] == .Dot_Ident {
         // (`.len` in a subscript: its base's — tc_lower_dots.)
-        base, field = k.dot_bases[n], tc_text(Token_Id(tr.a[n]))
+        base, field = k.annot.dot_bases[tc_sid(k, n)], tc_text(Token_Id(tr.a[n]))
     } else {
         field = tc_text(Token_Id(tr.b[n]))
     }

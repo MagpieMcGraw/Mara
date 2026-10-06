@@ -263,7 +263,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     if len(args) != len(ft.params) {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT, name, len(ft.params), len(args))
     }
-    k.callees[n] = ft
+    tc_set_callee(k, n, ft)
     ret := fn_primary_return(ft)
     b = tc_building(k) if b != nil else nil
     if b == nil { return ret, {} }

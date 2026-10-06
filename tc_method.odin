@@ -41,7 +41,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
                     // (Named by its type, a static call; by a value of it,
                     // an instance's when it takes Self.)
                     qual, resolved = fn, true
-                    k.call_names[n] = fn.name
+                    k.annot.call_names[tc_sid(k, n)] = fn.name
                     flat := resolve_type_name(k.pkg, qname, "", env)
                     is_type := flat != "" && (flat in k.table.structs || flat in k.table.funs)
                     if !is_type && !sd_is_module(qsd) {
@@ -66,7 +66,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
             if sd != nil {
                 if fn, has := sd.functions[name]; has && fn != nil {
                     qual, resolved = fn, true
-                    k.call_names[n] = fn.name
+                    k.annot.call_names[tc_sid(k, n)] = fn.name
                 }
             }
         }
@@ -78,7 +78,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
                 failed = qual == nil
             } else if fn, has := qsd.functions[name]; has && fn != nil {
                 qual, resolved = fn, true
-                k.call_names[n] = fn.name
+                k.annot.call_names[tc_sid(k, n)] = fn.name
             }
         }
     }
@@ -93,7 +93,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
         if st := resolve_to_struct_type(k.c, qt); st != nil {
             if fn, has := st.functions[name]; has && fn != nil {
                 qual, resolved = fn, true
-                k.call_names[n] = fn.name
+                k.annot.call_names[tc_sid(k, n)] = fn.name
                 args, failed = tc_self_args(k, n, fn, st, qt, arg, args)
             }
         }
@@ -132,7 +132,7 @@ tc_with_receiver :: proc(recv: Tree_Id, args: []Tree_Id) -> []Tree_Id {
 
 // A type a scope holds, called: its constructor.
 tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
-    k.call_names[n] = type_flat_name(t)
+    k.annot.call_names[tc_sid(k, n)] = type_flat_name(t)
     if ts, is_scope := t.(^Type_Scope); is_scope { return ts }
     tc_unsupported(k, n, "a call of a scope's type")
     return nil

@@ -203,7 +203,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: 
     case .Try:
         return tc_try(k, n, env, want, w)
     case .Dot_Ident:
-        if n in k.dot_bases { return tc_field(k, n, env, want, w, dest, temp, temp_span) }
+        if tc_sid(k, n) in k.annot.dot_bases { return tc_field(k, n, env, want, w, dest, temp, temp_span) }
         name := tc_text(Token_Id(k.t.a[n]))
         hint := k.hint
         k.hint = nil
@@ -711,7 +711,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // (`Foo(args) {f = v}`: its fields written once it is constructed.)
     overrides := Tree_Id(tr.b[n]) if tr.tag[n] == .Call else method_view(tr, n).overrides
     if overrides != 0 && !is_struct { tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, name) }
-    k.callees[n] = ft
+    tc_set_callee(k, n, ft)
     if is_struct { tc_struct_ensure(k, ft) }
     // (Built into storage that holds a value: a temporary made first.)
     dest := dest
@@ -1101,7 +1101,7 @@ tc_print_format :: proc(k: ^TC, args: []Tree_Id, span: Span) {
 tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
     m := tc_unparen(k, n)
     if !tc_is_call(k, m) { return nil }
-    callee := k.callees[m] or_else nil
+    callee := tc_callee(k, m)
     if callee == nil && env != nil {
         // (Not checked yet: the fun its name names.)
         if t, ok := scope_lookup(env, tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
@@ -1398,7 +1398,7 @@ tc_size_of :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Wr
     t := tc_type(k, Tree_Id(k.t.a[n]), env, span)
     if _, is_error := t.(Type_Error); is_error { tc_error(k, span, TYPE_SIZE_UNKNOWN_TYPE) }
     tc_ensure_layout(k, t)
-    k.size_of[n] = t
+    k.annot.size_of[tc_sid(k, n)] = t
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return Type_Infer_Int{}, {} }
     return Type_Infer_Int{}, {v = graph_const(b, w, span, Type_Infer_Int{}, "size_of", graph_size_of(t)), ok = true}
