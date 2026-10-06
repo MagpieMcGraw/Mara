@@ -187,5 +187,40 @@ tree and its annotations, and the readers touch the operations only for flow.
     - What stage 1 expected to annotate needed no annotation: defers at each exit, arena
       marks, where a value is built, and widening at a use's type. The builder decides them
       from the annotated types, as it did for the checker.
-- [ ] 3. The readers onto the tree
+- [x] 3. The readers onto the tree (2026-10-06)
+  - [x] `ask at` (657fb64): an expression's type is its annotation, in each instance it is
+        checked in, named as the compiler names types. Before, it was the first operation
+        built at the expression's span that held a value, named only when it was a struct,
+        enum, union or distinct type. So most expressions showed none; now each does. The
+        goldens' one change: `verts[0]`'s index shows `untyped int`. `test/askat.mara` and
+        four queries cover primitives, a generic's template and a field.
+  - [x] Variables are their declarations (1f6b77c): `Annotations.vars`, recorded through
+        `tc_bind`. The graph's declarations name their token (`Program_Graph.decl_tok`).
+        The check agrees on 8006 declarations, 9138 once foreign params are counted
+        (4824842).
+  - [x] Def-use's variables from the annotations (4824842): a binding per annotated
+        variable — its token, name, type and place the checker's — and a code's declaration
+        finds its variable by its token. The goldens are unchanged.
+  - [x] The call graph from the annotations (38983cb), and a function's call sites through
+        it. Compared with the one read off the Calls edges before switching: the same
+        functions, edges, first lines, purity and call sites in all 257 programs that build
+        one.
+  - Gates: the goldens (40 queries; one change, explained above), `annotcheck.sh`,
+    `annotref` (343 programs identical), `irdiff.sh` (324 builds, and test_1M) and
+    `graphdiff.sh` identical.
+  - Time (test_1M): the build is ~3% slower. Lowering's declaration tokens cost about
+    0.3 s, which goes when stage 4 removes the graph's declarations. Building the call
+    graph's lookup tables costs about 0.2 s.
+  - What stage 3 found, for stage 4:
+    - Readers now touch the graph only for the operations: a function's runs, the locals
+      its code names (the synthetic ones are seen through), statements and their kinds, a
+      call operation's callee and arguments. These are what stage 4 keeps per function. A
+      function's code is still found by `scope_node`, and a variable operation's local by
+      `refers` → `decl_tok`.
+    - A union match's arms that rebind their subject all declare it with the subject's
+      token, each at its own payload type. One token, several variables: a variable is a
+      token and a type.
+    - A variable a destructure or a loop's element declares at a distinct type is that
+      type in the annotations; the graph holds its base type.
+    - The call graph feeds escape analysis, so it is the compiler's as much as `ask`'s.
 - [ ] 4. What's left of the graph
