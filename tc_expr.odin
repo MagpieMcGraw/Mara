@@ -348,6 +348,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
             // (`overload -`: a function of the one operand, when one fits.)
             if callee := tc_unary_overload(k, ot, env); callee != nil {
                 tc_set_callee(k, n, callee)
+                tc_set_args(k, n, {{operand, .Written, -1}})
                 ret := fn_primary_return(callee)
                 b := tc_building(k)
                 if want == .None || want == .Place || b == nil { return ret, {} }
@@ -529,6 +530,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
         if callee, found := tc_operator_overload(k, op, lt, rt, env, span); found {
             tc_set_callee(k, at, callee)   // (its operator's node: a Binary, a compound assignment)
+            tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
             ret := fn_primary_return(callee)
             if !build { return ret, {} }
             if b = tc_building(k); b == nil { return ret, {} }
@@ -769,6 +771,17 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             append(&items, TC_Arg{a, env, w, {}, nil})
         }
         for i := len(args); i < len(ft.params); i += 1 { append(&items, default_arg(k, ft.params[i], ft, env, w, span)) }
+        // (What each param receives, kept.)
+        received := make([]Arg, len(items), context.temp_allocator)
+        for item, i in items {
+            switch {
+            case item.node == k.recv.node && item.node != 0: received[i] = {item.node, .Receiver, -1}
+            case item.at != {}:                                received[i] = {item.node, .Call_Site, -1}
+            case item.node == ft.params[i].default_node:       received[i] = {item.node, .Default, i32(item.slot.? or_else -1)}
+            case:                                              received[i] = {item.node, .Written, -1}
+            }
+        }
+        tc_set_args(k, n, received)
     }
     for item, i in items {
         a, a_env := item.node, item.env

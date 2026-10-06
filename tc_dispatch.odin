@@ -91,6 +91,19 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     ft := matched_fts[0]
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
+    // (What each param receives, kept: a `_`'s default, its own (dispatched
+    // whole, no slot), the rest's after the arguments.)
+    received := make([dynamic]Arg, 0, len(ft.params), context.temp_allocator)
+    for i in 0 ..< len(ft.params) {
+        def := ft.params[i].default_node
+        switch {
+        case i < len(args) && !underscore[i] && args[i] == k.recv.node: append(&received, Arg{args[i], .Receiver, -1})
+        case i < len(args) && !underscore[i]:                           append(&received, Arg{args[i], .Written, -1})
+        case tr.tag[def] == .Hash_Name:                                 append(&received, Arg{def, .Call_Site, -1})
+        case:                                                           append(&received, Arg{def, .Default, -1})
+        }
+    }
+    tc_set_args(k, n, received[:])
     ret := fn_primary_return(ft)
     // (Its defaults — a `_`'s, then the params it leaves off: each in its
     // function's defining scope, run at the call; a call site's (`#caller_name`)

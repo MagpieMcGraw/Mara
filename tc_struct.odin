@@ -454,7 +454,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Wr
         }
     }
     // (Its construction: a struct's — `{0}` is its zero.)
-    if lt, is_scope := t.(^Type_Scope); is_scope && lt.kind == .Struct && !lt.is_module && !zero { tc_set_callee(k, n, lt) }
+    if lt, is_scope := t.(^Type_Scope); is_scope && lt.kind == .Struct && !lt.is_module && !zero {
+        tc_set_callee(k, n, lt)
+        tc_set_args(k, n, tc_default_args(lt))
+    }
     b := tc_building(k)
     build := want != .None && b != nil
     d := dest

@@ -295,6 +295,9 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     }
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
+    received := make([]Arg, len(args), context.temp_allocator)
+    for a, i in args { received[i] = {a, .Receiver if a == k.recv.node else .Written, -1} }
+    tc_set_args(k, n, received)
     ret := fn_primary_return(ft)
     b = tc_building(k) if b != nil else nil
     if b == nil { return ret, {} }

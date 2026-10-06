@@ -377,7 +377,10 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
     st := tc_bare_struct(ann)
     // (Its construction, implied: its struct's — each element's, an array's —
     // when one can be built without arguments; else it is zero.)
-    if st != nil && constructs_bare(st) { tc_set_callee(k, target, st) }
+    if st != nil && constructs_bare(st) {
+        tc_set_callee(k, target, st)
+        tc_set_args(k, target, tc_default_args(st))
+    }
     b := tc_building(k)
     if b == nil { return }
     if st != nil { tc_struct_ensure(k, st) }
@@ -1477,7 +1480,10 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
     // (Its construction: its struct's, its literal built from the shape.)
-    if st, is_scope := ann.(^Type_Scope); is_scope && st.kind == .Struct && !st.is_module { tc_set_callee(k, target, st) }
+    if st, is_scope := ann.(^Type_Scope); is_scope && st.kind == .Struct && !st.is_module {
+        tc_set_callee(k, target, st)
+        tc_set_args(k, target, tc_default_args(st))
+    }
     b := tc_building(k)
     decl := NO_NODE
     if b != nil {

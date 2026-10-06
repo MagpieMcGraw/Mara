@@ -46,6 +46,18 @@ Ref_Kind :: enum u8 {
     Builtin,   // what no source declares: `void`, `this_program`, a builtin type
 }
 
+// What a param of a call receives: an argument written at the call, the
+// receiver a method is called on, or the param's default — its expression in
+// its fun's signature, run at the call (a group's one value: which of its
+// results), or `#caller_name`'s, given where the call is.
+Arg :: struct {
+    node: Tree_Id,
+    kind: Arg_Kind,
+    slot: i32,   // a default that is one of its group's value's results; -1: none
+}
+
+Arg_Kind :: enum u8 { Written, Receiver, Default, Call_Site }
+
 Annotations :: struct {
     instances: [dynamic]Instance,
     types:     [dynamic][]Type,   // each instance's nodes' types, by n - lo
@@ -53,6 +65,7 @@ Annotations :: struct {
 
     // What only some nodes have, by node and instance (annot_key).
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)
+    args:       map[Syntax_Id][]Arg,         // ... what each of its params receives, in order
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
@@ -121,6 +134,17 @@ annot_dump :: proc(a: ^Annotations, t: ^Tree) {
                 }
             }
             if ts := a.callees[key] or_else nil; ts != nil { fmt.sbprintf(&line, " callee=%s", ts.name) }
+            if args, ok := a.args[key]; ok {
+                strings.write_string(&line, " args=[")
+                for arg, j in args {
+                    if j > 0 { strings.write_string(&line, ", ") }
+                    if arg.node == 0 { fmt.sbprintf(&line, "%v -", arg.kind); continue }
+                    asp := tree_span(t, arg.node)
+                    fmt.sbprintf(&line, "%v %v@%d:%d", arg.kind, t.tag[arg.node], span_line(asp), span_col(asp))
+                    if arg.slot >= 0 { fmt.sbprintf(&line, "#%d", arg.slot) }
+                }
+                strings.write_string(&line, "]")
+            }
             if name, ok := a.call_names[key]; ok { fmt.sbprintf(&line, " call_name=%s", name) }
             if st, ok := a.size_of[key]; ok { fmt.sbprintf(&line, " size_of=%s", type_name(st)) }
             if base, ok := a.dot_bases[key]; ok { fmt.sbprintf(&line, " dot_base=%d", base) }
@@ -149,7 +173,7 @@ annot_dump :: proc(a: ^Annotations, t: ^Tree) {
 // One line a problem, then a count: "annot: N problems".
 annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
     if os.get_env("MARA_ANNOT", context.temp_allocator) != "check" || errors > 0 { return }
-    names, vars, calls, loops := 0, 0, 0, 0
+    names, vars, calls, args, loops := 0, 0, 0, 0, 0
     problems := 0
     report :: proc(problems: ^int, t: ^Tree, n: Tree_Id, inst: Instance_Id, format: string, args: ..any) {
         problems^ += 1
@@ -187,7 +211,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             if sp not_in at { at[sp] = make([dynamic]Tree_Id) }
             append(&at[sp], Tree_Id(n))
         }
-        made := make(map[Syntax_Id]bool, len(a.callees), context.temp_allocator)   // (the annotated calls the graph makes)
+        made := make(map[Syntax_Id]Node_Id, len(a.callees), context.temp_allocator)   // (the annotated calls the graph makes: each one's operation)
         inst_of := make(map[^Type_Scope]Instance_Id, len(a.instances), context.temp_allocator)
         for inst, i in a.instances { if inst.scope != nil { inst_of[inst.scope] = Instance_Id(i) } }
         // (An operation's instance: the generic instance's code it is in.)
@@ -251,7 +275,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
                     }
                     compared = true
                     calls += 1
-                    made[annot_key(i, n)] = true
+                    made[annot_key(i, n)] = op
                     got := a.callees[annot_key(i, n)] or_else nil
                     if got != want {
                         report(&problems, t, n, i, "calls %s; the graph's Calls edge runs %s", got.name if got != nil else "nothing", want.name)
@@ -309,7 +333,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
                     for n in on {
                         compared = true
                         calls += 1
-                        made[annot_key(i, n)] = true
+                        made[annot_key(i, n)] = op
                         got := a.callees[annot_key(i, n)] or_else nil
                         if got != want {
                             report(&problems, t, n, i, "calls %s; the graph's Calls edge runs %s", got.name if got != nil else "nothing", want.name)
@@ -344,14 +368,77 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
         // And the other way: each call annotated is one the graph makes — but
         // a call through a function value (the honest seam: no Calls edge).
         for key, ts in a.callees {
-            if made[key] { continue }
+            if key in made { continue }
             i, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
             #partial switch annot_ref(a, i, n).kind {
             case .Local, .Param, .Result, .Field, .Global: continue
             }
             report(&problems, t, n, i, "is annotated as calling %s; the graph makes no such call", ts.name if ts != nil else "nothing")
         }
+        // Each call's arguments: one a param, and each the graph passes
+        // computed from what its annotation says the param receives — an
+        // operation on its way written inside that node (a widen at the call
+        // is not). A `#caller_name` is the call site's: no node of its own.
+        inside :: proc(t: ^Tree, n: Tree_Id, sp: Span) -> bool {
+            return sp.tok >= t.first[n] && sp.end <= t.end[n] && sp.end > sp.tok
+        }
+        // (A temporary the compiler holds a value in — a literal a slice
+        // views, bytes read as an array: what is written into it.)
+        writes := make(map[Node_Id][dynamic]Node_Id, context.temp_allocator)
+        for id in 0 ..< len(g.kind) {
+            if dst := graph_whole_write_dest(g, Node_Id(id)); dst != NO_NODE {
+                if d := g.refers[dst]; d >= 0 && g.written[d] != .Explicit {
+                    if d not_in writes { writes[d] = make([dynamic]Node_Id, context.temp_allocator) }
+                    append(&writes[d], Node_Id(id))
+                }
+            }
+        }
+        // (Whether an argument's value comes from inside a node: an operation
+        // on its way there written inside it — a few steps back at most.)
+        from :: proc(t: ^Tree, g: ^Program_Graph, writes: map[Node_Id][dynamic]Node_Id, n: Tree_Id, v: Node_Id) -> bool {
+            todo := make([dynamic]Node_Id, context.temp_allocator)
+            seen := make(map[Node_Id]bool, context.temp_allocator)
+            append(&todo, v)
+            for steps := 0; len(todo) > 0 && steps < 64; steps += 1 {
+                x := pop_front(&todo)
+                if x < 0 || x in seen { continue }
+                seen[x] = true
+                if inside(t, n, g.origin[x]) { return true }
+                for o in graph_operands(g, x) { append(&todo, o.op) }
+                if g.kind[x] == .Op && g.op[x] == .Var && g.refers[x] >= 0 {
+                    ws, _ := writes[g.refers[x]]   // (none: a variable the compiler doesn't hold a value in)
+                    for w in ws { append(&todo, w) }
+                }
+            }
+            return false
+        }
+        for key, op in made {
+            i, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
+            given, has := a.args[key]
+            if !has {
+                report(&problems, t, n, i, "calls with no arguments annotated")
+                continue
+            }
+            passed := graph_operands(g, op)
+            if g.op[op] == .Construct { passed = passed[1:] }   // (its destination first)
+            if len(given) != len(passed) {
+                report(&problems, t, n, i, "is annotated with %d arguments; the graph passes %d", len(given), len(passed))
+                continue
+            }
+            for arg, j in given {
+                args += 1
+                if arg.kind == .Call_Site { continue }
+                if !from(t, g, writes, arg.node, passed[j].op) {
+                    what := "nothing"
+                    if v := passed[j].op; v >= 0 {
+                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], g.name[v], span_line(g.origin[v]), span_col(g.origin[v]))
+                    }
+                    report(&problems, t, n, i, "param %d is annotated as receiving %v %v; the graph passes %s",
+                        j + 1, arg.kind, t.tag[arg.node], what)
+                }
+            }
+        }
     }
-    fmt.printf("annot: %d problems (%d names, %d variables, %d calls checked; %d loop variables written by their loop)\n",
-        problems, names, vars, calls, loops)
+    fmt.printf("annot: %d problems (%d names, %d variables, %d calls, %d arguments checked; %d loop variables written by their loop)\n",
+        problems, names, vars, calls, args, loops)
 }

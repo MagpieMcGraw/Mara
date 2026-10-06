@@ -45,7 +45,7 @@ xargs -P "$JOBS" -L 1 bash -c 'one_program "$0" "$1" "$2"' < "$list"
 
 n=$(wc -l < "$list")
 checked=$(grep -l '^annot: [0-9]* problems' "$OUT"/*.txt 2>/dev/null | wc -l)
-totals=$(grep -h '^annot: [0-9]* problems' "$OUT"/*.txt | awk -F'[(, ]+' '{ n += $4; v += $6; c += $8; l += $11 } END { printf "%d names, %d variables, %d calls; %d loop variables written by their loop", n, v, c, l }')
+totals=$(grep -h '^annot: [0-9]* problems' "$OUT"/*.txt | awk -F'[(, ]+' '{ n += $4; v += $6; c += $8; g += $10; l += $13 } END { printf "%d names, %d variables, %d calls, %d arguments; %d loop variables written by their loop", n, v, c, g, l }')
 problems=$(grep -h -v '^annot: [0-9]* problems' "$OUT"/*.txt 2>/dev/null)
 count=$(printf '%s' "$problems" | grep -c . )
 if [ "$count" -eq 0 ]; then

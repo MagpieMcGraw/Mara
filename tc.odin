@@ -855,6 +855,19 @@ tc_callee :: proc(k: ^TC, n: Tree_Id) -> ^Type_Scope {
     return k.annot.callees[tc_sid(k, n)] or_else nil
 }
 
+// What each param of the call at n receives, in order.
+tc_set_args :: proc(k: ^TC, n: Tree_Id, args: []Arg) {
+    if n == 0 { return }
+    k.annot.args[tc_sid(k, n)] = slice.clone(args)
+}
+
+// A construction's arguments when none are written: each param's default.
+tc_default_args :: proc(ts: ^Type_Scope) -> []Arg {
+    args := make([]Arg, len(ts.params), context.temp_allocator)
+    for p, i in ts.params { args[i] = {p.default_node, .Default, i32(p.default_slot.? or_else -1)} }
+    return args
+}
+
 tc_set_callee :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope) {
     if n == 0 { return }
     k.annot.callees[tc_sid(k, n)] = ts
