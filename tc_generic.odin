@@ -299,10 +299,8 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     k.subst, k.pkg = subst, tmpl.pkg
     defer k.subst, k.pkg = saved_subst, saved_pkg
     // (Its body's nodes its own: tc_sid.)
-    saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
-    k.instance_count += 1
-    k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
-    defer k.salt, k.salt_lo, k.salt_hi = saved_salt, saved_lo, saved_hi
+    saved_inst := tc_instance_begin(k, tmpl, ft)
+    defer tc_instance_end(k, saved_inst)
     span := tree_span(tr, tmpl.def)
     v := scope_view(tr, tmpl.node)
     for g in v.params {
@@ -509,10 +507,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg = subst, tmpl.pkg
     defer k.subst, k.pkg = saved_subst, saved_pkg
-    saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
-    k.instance_count += 1
-    k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
-    defer k.salt, k.salt_lo, k.salt_hi = saved_salt, saved_lo, saved_hi
+    saved_inst := tc_instance_begin(k, tmpl, st)
+    defer tc_instance_end(k, saved_inst)
     // (Its constructor's params: those no generic's.)
     for g in v.params {
         pv := params_view(tr, g)

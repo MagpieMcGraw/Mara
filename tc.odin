@@ -11,7 +11,8 @@ import "core:strings"
 //
 // What checking an expression builds is what it returns (tc_expr: its type
 // and what it built), not a side channel. What the checker finds about a node
-// is kept by its id (tc_node_type).
+// is kept by its id, in the instance it is checked in (annot.odin), for the
+// passes after it.
 
 TC :: struct {
     t:             ^Tree,
@@ -24,7 +25,7 @@ TC :: struct {
     root:          ^Type_Scope,       // the main module's scope: the root env
     main_package:  string,
     shared:        bool,
-    types:         [dynamic]Type,     // each node's type, as checked (by its id)
+    annot:         ^Annotations,      // what it finds about each node, per instance (annot.odin)
     hint:          Type,              // the type the expression being checked is expected at
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
@@ -87,13 +88,41 @@ tc_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) {
 }
 
 tc_node_type :: proc(k: ^TC, n: Tree_Id) -> Type {
-    return k.types[n] if int(n) < len(k.types) else nil
+    if n == 0 { return nil }
+    return annot_type(k.annot, tc_instance(k, n), n)
 }
 
 tc_set_type :: proc(k: ^TC, n: Tree_Id, t: Type) {
     if n == 0 { return }
-    if int(n) >= len(k.types) { resize(&k.types, max(int(n) + 1, 2 * len(k.types))) }
-    k.types[n] = t
+    annot_set_type(k.annot, tc_instance(k, n), n, t)
+}
+
+// The instance a node is checked in: the generic's being checked, for its
+// template's nodes; else the tree as written (as tc_sid salts it).
+tc_instance :: proc(k: ^TC, n: Tree_Id) -> Instance_Id {
+    if k.salt != 0 && n >= k.salt_lo && n <= k.salt_hi { return Instance_Id(k.salt) }
+    return 0
+}
+
+// A generic's instance made: numbered, and its template's nodes checked as
+// its own (tc_sid, tc_instance) until tc_instance_end puts back the one
+// being checked before.
+tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope) -> (saved: TC_Salt) {
+    saved = {k.salt, k.salt_lo, k.salt_hi}
+    k.instance_count += 1
+    id := annot_instance(k.annot, tmpl.lo, tmpl.node, ts)
+    assert(u64(id) == k.instance_count)
+    k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
+    return
+}
+
+tc_instance_end :: proc(k: ^TC, saved: TC_Salt) {
+    k.salt, k.salt_lo, k.salt_hi = saved.salt, saved.lo, saved.hi
+}
+
+TC_Salt :: struct {
+    salt:   u64,
+    lo, hi: Tree_Id,
 }
 
 tc_text :: proc(tok: Token_Id) -> string {
@@ -151,7 +180,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared}
-    resize(&k.types, len(t.tag))
+    k.annot = annot_new(t)
+    checked.annot = k.annot
 
     files, ok := modules[main_package]
     if !ok {
@@ -242,6 +272,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     if len(checked.graph.kind) > 0 { void_defaults = tc_void_defaults(k, checked) }
     flow_analyze_program(c, checked, void_defaults)
     escape_analyze_program(c, checked)
+    annot_dump(k.annot, t)
     checked.errors = c.errors
     return checked
 }
@@ -868,6 +899,9 @@ Checked_Program :: struct {
     // Def-use over the program graph (defuse.odin), built per function on the
     // first `mara ask` flow query that needs it: what the flow views slice.
     du:             Def_Use,
+
+    // What the checker found about each node, per instance (annot.odin).
+    annot:          ^Annotations,
 }
 
 // ---------------------------------------------------------------------------
