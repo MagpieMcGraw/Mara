@@ -2,6 +2,8 @@
 
 # Compiler — mara build
 
+The program shouldn't re-describe what the text already describes one-to-one.
+
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
@@ -45,6 +47,7 @@ Type checking of unions and distinct is fucked up for some reason.
 🚩 Why do we track which module is the main module?
 
 Fix FFI functions for mara ask. Probably some array on type scope was skipped?
+
 
 
 # Analyzer — mara ask
