@@ -89,14 +89,43 @@ annotations alone, is the one the checker builds today (`test/graphdiff.sh`).
 
 ## Checklist
 
-- [ ] 1. Annotations that last
-  - [ ] The store and the instance table; types per instance, kept; `MARA_ANNOT=dump`
-  - [ ] The checker's other per-node findings in the store, per instance (callees, call
-        names, constants, variants, `size_of`, dot bases)
-  - [ ] Refers-to
-  - [ ] Implicit calls: constructions, operators through `overload`
-  - [ ] Arguments as received
-  - [ ] `MARA_ANNOT=check` and `test/annotcheck.sh`: complete, and agreeing with the graph
+- [x] 1. Annotations that last (2026-10-06)
+  - [x] The store and the instance table; types per instance, kept; `MARA_ANNOT=dump`
+        (65f1f5b). `annot.odin`. A type node keeps the type it resolved to.
+  - [x] The checker's other per-node findings in the store, per instance (5d2f9ad): callees,
+        call names, `size_of`, dot bases, by node and instance (`annot_key`, which `tc_sid`
+        now is); constants and variants became refs' kinds.
+  - [x] Refers-to (6df8853). A binding carries the token that declares its name
+        (`scope_bind`'s ref); named types, funs, fields and variants know their own
+        (`Scope_Body.decl`, a field's `decl`, `Type_Enum.variant_decls`). A `Ref` is that
+        token and the name's kind.
+  - [x] Implicit calls (3e8bebd): an operator through `overload` (on its Binary or Unary,
+        or the compound assignment), a struct literal's construction (on the Literal), a
+        bare or shape declaration's (on the name it declares).
+  - [x] Arguments as received (7ca34e4): `Annotations.args`, per call, in param order.
+  - [x] `MARA_ANNOT=check` and `test/annotcheck.sh`. Complete (every name the checker types
+        names something) and agreeing with the graph both ways: every variable operation
+        refers to its name's declaration, every call and construction the graph makes is
+        its node's annotated callee and every annotated callee is a call the graph makes,
+        every argument is computed from the node its annotation names. Corpus: the 211
+        programs that compile, 0 problems — 49837 names, 28576 variables, 2834 calls, 3832
+        arguments. Reversing the arguments on purpose is caught (541 problems in Pounce).
+  - What stage 1 found, for stage 2:
+    - The builder's own name resolution (`graph_bind` / `graph_lookup`) agrees with the
+      checker's refers-to on the whole corpus: lowering can read the refs.
+    - A loop's variables are declared by tokens in its header, not nodes: the loop's own
+      writes of them have no node to annotate (the check counts them apart, 1571); what
+      reads them is annotated.
+    - A number is typed `infer_int` / `infer_float` with no cell: the width it is built at
+      is its use's, decided where the builder takes it at a type (`settled`). Lowering
+      needs each value's use type — a conversion annotation, added with the lowering that
+      reads it.
+    - `print`'s call is typed `<error>` (the checker's "no value"), not void. Kept for
+      parity.
+    - Not yet annotated, added in stage 2 as the lowering needs each (graphdiff proves
+      them): defers run at each exit, arena mark and reset, where a value is built (into
+      its destination, or a temporary), implied conversions (a widen, an array viewed as a
+      slice), `?`'s branch.
 - [ ] 2. Lowering out of the checker
 - [ ] 3. The readers onto the tree
 - [ ] 4. What's left of the graph
