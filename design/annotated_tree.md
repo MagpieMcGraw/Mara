@@ -149,7 +149,8 @@ that would lower a function again for each reader and faster than doing so. The 
      segments and canonicalization ordering them; building one code at a time comes
      after.
   5. Locals. A code's params, results, locals and blocks stop being nodes: its locals
-     table, its defer blocks.
+     table, its defer blocks. *Not done* — see the checklist: they are that table
+     already, stored in the code's own columns.
 
 ## Checklist
 
@@ -257,4 +258,55 @@ that would lower a function again for each reader and faster than doing so. The 
     - A variable a destructure or a loop's element declares at a distinct type is that
       type in the annotations; the graph holds its base type.
     - The call graph feeds escape analysis, so it is the compiler's as much as `ask`'s.
-- [ ] 4. What's left of the graph
+- [x] 4. What's left of the graph (2026-10-07)
+  - [x] Calls and Runs edges are columns (d538f78): a call's callee is the fun or struct
+        itself, a run-defer's block a node of its code. An edge is a Then edge; the
+        incoming-edge index goes.
+  - [x] Names by their tokens (1ca94f9, 0794c20): lowering says which declaration each
+        name refers to, by the token its annotation names; the builder keeps only the
+        declarations of the code being built, by token. Its name stack goes, and so does
+        resolving what no code declares by its text: that was the compiler's
+        `this_program` and `context`, which lowering now names, and module and type names
+        a field access reads through, which it no longer builds.
+  - [x] No program-level declarations (052fcfa): modules, imports, type definitions,
+        dispatch groups, unions, enums and their variants, foreign funs and module
+        variables stop being nodes. What stays at the program level is code: each fun's,
+        each struct's constructor's, each constant's.
+  - [x] A code per function (8054ac9, 86ceef0, 037407e, 936241c). A constant's use names
+        the constant (by its value's node), not its declaration; a body's definitions are
+        codes of their own, after it. `Program_Code` holds each fun's, struct's
+        constructor's and constant's code, ids its own from 0; the compiler's two globals
+        get nodes past a code's root. What the program has once — tables, fold errors,
+        which funs consume a param, unreachable statements — is `Program_Code`'s.
+        Codegen, escape analysis, the flow checks, folding, def-use, the slices and the
+        annotation check read one code at a time; a def-use use is a function and an
+        operation (`Du_Use`). Canonicalization lays each code out in a graph of its own
+        as it renumbers.
+  - [x] A node's callee, declaring token and constant are columns (1680011), copied with
+        the rest of it as its code is laid out.
+  - [ ] 5. Locals as a table of their own — decided against. A code's params, results,
+        locals and blocks are already the code's own rows: a local is named by its token
+        (`decl_tok`; a synthetic one has none), nothing resolves a name through them, and
+        no code holds another's. Moving them to a table apart from the operations stores
+        the same columns in a second id space, which codegen's values, def-use's bindings
+        and escape analysis's places would all have to cross (some 30 sites read a
+        declaration as a node, besides every value kept by node), for no speed.
+        The blocks stay in any case: escape analysis reads a value's lifetime off how many
+        blocks are around it, so a function's blocks nest — that much of a scope tree is
+        the function's.
+  - Gates at every commit: `irdiff.sh` identical (324 builds, and test_1M's 106 modules and
+    its run), the goldens (40 queries, unchanged), `annotcheck.sh` (8006 declarations) and
+    `run.sh`. `graphdiff.sh` identical at steps 1 and 2; after that it differs only by
+    what each step removed or renamed, as each commit explains.
+  - Time (test_1M): within ~1% of before the codes split (graph 4.6 s against 4.1 s, lower
+    4.3 s against 4.6 s). Splitting cost up to 1.7 s at first; laying each code out
+    directly and making the per-node maps columns took it back. graph.odin is 4204 lines
+    (4277 before the stage).
+  - What stage 4 found, for what comes after:
+    - The builder still builds every code into one graph in the checker's order, a
+      body's definitions and its constants built in the middle of it, and segments and
+      canonicalization put each code together. Building one code at a time — what the
+      end state above asks — removes both; it changes the order nodes are built in, so
+      `graphdiff.sh` stops being a gate for it and `irdiff.sh` carries it alone.
+    - A graph dump of a constant's use printed `constant=?` from the split until the
+      columns change: the dump looked up a table only the builder had.
