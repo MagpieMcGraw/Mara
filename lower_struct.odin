@@ -25,7 +25,9 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     }
     ask: Build_Want = .Place if lw_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
     mark := graph_build_mark(b)
-    br := lw_expr(k, base, ask, w, temp_span = span)
+    // (A module's or a type's name is no value: nothing of it built.)
+    br: Built
+    if r := tc_ref(k, tc_unparen(k, base)).kind; r != .Module && r != .Type { br = lw_expr(k, base, ask, w, temp_span = span) }
     bt := tc_node_type(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return lw_module_member(k, n, sd, field, bt, br, mark, want, w)

@@ -396,11 +396,20 @@ graph_declare :: proc(b: ^Graph_Builder, d: Node_Id, tok: Token_Id) {
 }
 
 // The declaration in the code being built of the variable a name refers to,
-// by the token its annotation says declares it; none — a definition's,
-// resolved once every scope is built (graph_resolve_defs) — when no code here
+// by the token its annotation says declares it; none when no code here
 // declares it.
 graph_local :: proc(b: ^Graph_Builder, tok: Token_Id) -> Node_Id {
     return b.locals[tok] or_else NO_NODE
+}
+
+// The compiler's own global a name is — `this_program`, `context` — when it
+// is one (graph_modules: the program's scope, then its two).
+graph_global :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
+    switch name {
+    case "this_program": return b.program + 1
+    case "context":      return b.program + 2
+    }
+    return NO_NODE
 }
 
 // The code being built's declarations, saved and emptied for another's.
@@ -616,7 +625,6 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     graph_link_calls(b)
     graph_link_constants(b)
     graph_settle_literals(b)
-    graph_resolve_defs(b)
 
     graph_find_consumes(g)
     // A `then` into a run that never got an operation leads nowhere.
@@ -1436,11 +1444,13 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
     return Operand{graph_op(b, kind, w, span, t, name, ..operands), 0}
 }
 
-// A variable's place: `decl`, its declaration in the code being built
-// (graph_local) — NO_NODE, a definition's, resolved once every scope is
-// built (graph_resolve_defs).
+// A variable's place: `decl`, its declaration (graph_local, graph_global).
 graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
-    op := graph_op(b, .Var, .Explicit if decl == NO_NODE else b.g.written[decl], span, t, name)
+    if decl == NO_NODE { graph_fatal(span, "the variable '%s' has no declaration", name) }
+    // (As written as its declaration — a temporary's synthetic; the
+    // compiler's own globals, synthetic, written by name.)
+    w := b.g.written[decl] if b.g.parent[decl] != b.program else .Explicit
+    op := graph_op(b, .Var, w, span, t, name)
     b.g.refers[op] = decl
     return Operand{op, 0}
 }
@@ -1836,45 +1846,6 @@ graph_link_calls :: proc(b: ^Graph_Builder) {
     for op, callee in b.callee_of {
         if callee not_in b.g.scope_node { graph_fatal(b.g.origin[op], "'%s' calls '%s', which has no node", b.g.name[op], callee.name) }
         b.g.callee[op] = callee
-    }
-}
-
-// A name no local binds names a definition: a constant, a function, a type.
-// Definitions are visible wherever their scope is, before or after the line
-// that writes them, so these resolve once every scope is built: the
-// definition of that name in the nearest enclosing scope. A module's
-// variables are locals, not definitions: no function sees them.
-@(private="file")
-graph_resolve_defs :: proc(b: ^Graph_Builder) {
-    g := b.g
-    Key :: struct { scope: Node_Id, name: string }
-    defs: map[Key]Node_Id
-    defer delete(defs)
-    for k, id in g.kind {
-        p := g.parent[id]
-        if p == NO_NODE { continue }
-        #partial switch k {
-        case .Const, .Import, .Fun, .Struct, .Union, .Enum, .Type_Def, .Dispatch:
-            if g.kind[p] == .Union { continue }   // a variant's struct is named through its union
-        case .Field:
-            if p != b.program { continue }        // the compiler's own this_program, context
-        case:
-            continue
-        }
-        key := Key{p, g.name[id]}
-        if key not_in defs { defs[key] = Node_Id(id) }
-    }
-    for k, id in g.kind {
-        if k != .Op || g.op[id] != .Var || g.refers[id] != NO_NODE { continue }
-        for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
-            if d, ok := defs[Key{p, g.name[id]}]; ok {
-                g.refers[id] = d
-                break
-            }
-        }
-        if g.refers[id] == NO_NODE {
-            if d, ok := defs[Key{b.program, g.name[id]}]; ok { g.refers[id] = d }
-        }
     }
 }
 

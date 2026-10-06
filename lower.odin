@@ -54,10 +54,13 @@ lower_program :: proc(k: ^TC) -> ^Graph_Builder {
     return b
 }
 
-// The declaration, in the code being built, of the variable a name refers to:
-// by the token its annotation says declares it (graph_local).
+// The declaration of the variable a name refers to: in the code being built,
+// by the token its annotation says declares it (graph_local); else one of
+// the compiler's own globals (graph_global).
 lw_local :: proc(k: ^TC, n: Tree_Id) -> Node_Id {
-    return graph_local(k.gb, tc_ref(k, n).decl)
+    if d := graph_local(k.gb, tc_ref(k, n).decl); d != NO_NODE { return d }
+    if d := graph_global(k.gb, tc_name(k, n)); d != NO_NODE { return d }
+    lw_fail(k, n, "a name no code here declares")
 }
 
 lw_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) -> ! {
@@ -743,7 +746,10 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
             return {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
         }
     }
-    place := graph_var(b, name, graph_local(b, ref.decl), t, span)
+    // (A module's or a type's name is no value: what a field reads through
+    // it is built, lw_field.)
+    if ref.kind == .Module || ref.kind == .Type { return {} }
+    place := graph_var(b, name, lw_local(k, n), t, span)
     if want == .Value { return {v = graph_read(b, place, t, span), ok = true} }
     return {v = place, place = true, ok = true}
 }
