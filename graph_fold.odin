@@ -35,8 +35,8 @@ Fold :: struct {
 Fold_Width :: enum u8 { Own, Single, Double }
 
 Fold_Key :: struct {
-    decl:  Node_Id,
-    width: Fold_Width,
+    constant: Syntax_Id,
+    width:    Fold_Width,
 }
 
 // A use that has no value: where, the constant, why.
@@ -47,7 +47,7 @@ Fold_Error :: struct {
 
 @(private="file")
 Folder :: struct {
-    g:       ^Program_Graph,
+    pc:      ^Program_Code,
     checked: ^Checked_Program,
     done:   map[Fold_Key]^Fold,
     busy:   map[Fold_Key]bool,   // being computed (a constant defined by itself)
@@ -60,7 +60,8 @@ Folder :: struct {
 // constructs) and the width its untyped arithmetic takes.
 @(private="file")
 Fold_Code :: struct {
-    self:   Node_Id,   // the constant's declaration, or the struct's node
+    g:      ^Program_Graph,   // the code: a constant's, or a struct's constructor's
+    self:   Node_Id,          // its root: the constant's declaration, or the struct's node
     root:   ^Fold,
     width:  Fold_Width,
     values: map[Node_Id]^Fold,
@@ -68,49 +69,47 @@ Fold_Code :: struct {
 
 // Every use of a constant outside a constant's own code, given its value:
 // a number or text as a use's constant, a table's whole value kept for its
-// global (g.tables). A use with no value is listed (g.fold_errors).
-graph_fold_uses :: proc(g: ^Program_Graph, checked: ^Checked_Program) {
-    fo := Folder{g = g, checked = checked}
+// global (pc.tables). A use with no value is listed (pc.fold_errors).
+graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
+    fo := Folder{pc = pc, checked = checked}
     defer { delete(fo.done); delete(fo.busy) }
-    for i := 0; i < len(g.kind); i += 1 {
-        id := Node_Id(i)
-        // (A constant's own code: computed where it's used.)
-        if g.kind[id] == .Const { i = int(g.last[id]); continue }
-        if g.kind[id] != .Op { continue }
-        c, names := g.constant[id]
-        if !names { continue }
-        d, built := g.const_code[c]
-        if !built { continue }
-        #partial switch g.op[id] {
-        case .Const:
-            v := fold_decl(&fo, d, fold_width_of(g.type_[id]))
-            if v == nil || !fold_scalar(v) || llvm_type_from_checker(g.type_[id]) == "ptr" {
-                fold_error(&fo, id, d)
-                continue
-            }
-            g.consts[id] = v.c
-        case .Global:
-            v := fold_decl(&fo, d, .Own)
-            if v == nil {
-                fold_error(&fo, id, d)
-                continue
-            }
-            if v.known && v.c.is_text {
+    for g in pc.codes {
+        if g.kind[0] == .Const { continue }   // (a constant's own code: computed where it's used)
+        for i in 0 ..< len(g.kind) {
+            id := Node_Id(i)
+            if g.kind[id] != .Op { continue }
+            c, names := g.constant[id]
+            if !names || c not_in pc.consts { continue }
+            #partial switch g.op[id] {
+            case .Const:
+                v := fold_decl(&fo, c, fold_width_of(g.type_[id]))
+                if v == nil || !fold_scalar(v) || llvm_type_from_checker(g.type_[id]) == "ptr" {
+                    fold_error(&fo, g, id, c)
+                    continue
+                }
                 g.consts[id] = v.c
-            } else {
-                g.tables[c] = v
+            case .Global:
+                v := fold_decl(&fo, c, .Own)
+                if v == nil {
+                    fold_error(&fo, g, id, c)
+                    continue
+                }
+                if v.known && v.c.is_text {
+                    g.consts[id] = v.c
+                } else {
+                    pc.tables[c] = v
+                }
             }
         }
     }
 }
 
-// Use `id` of constant `d` has no value: reported where what couldn't be
-// computed is written (else at the use).
+// Use `id` (in code g) of constant `c` has no value: reported where what
+// couldn't be computed is written (else at the use).
 @(private="file")
-fold_error :: proc(fo: ^Folder, id, d: Node_Id) {
-    g := fo.g
+fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
     at := fo.at if fo.at != {} else g.origin[id]
-    append(&g.fold_errors, Fold_Error{at, g.name[d]})
+    append(&fo.pc.fold_errors, Fold_Error{at, fo.pc.consts[c].name[0]})
     fo.failed, fo.at = false, {}
 }
 
@@ -129,18 +128,18 @@ fold_scalar :: proc(v: ^Fold) -> bool {
 
 // A constant's value at a width: its code, run once for it.
 @(private="file")
-fold_decl :: proc(fo: ^Folder, d: Node_Id, width: Fold_Width) -> ^Fold {
-    g := fo.g
-    t := g.type_[d]
+fold_decl :: proc(fo: ^Folder, c: Syntax_Id, width: Fold_Width) -> ^Fold {
+    g := fo.pc.consts[c]
+    t := g.type_[0]
     width := Fold_Width.Own if !is_infer(t) else width
-    key := Fold_Key{d, width}
+    key := Fold_Key{c, width}
     if v, ok := fo.done[key]; ok { return v }
     if fo.busy[key] { return fold_fail(fo) }
     fo.busy[key] = true
     defer delete_key(&fo.busy, key)
-    fc := Fold_Code{self = d, root = fold_new(t), width = width}
+    fc := Fold_Code{g = g, self = 0, root = fold_new(t), width = width}
     defer delete(fc.values)
-    if !fold_run(fo, &fc, d) { return nil }
+    if !fold_run(fo, &fc, 0) { return nil }
     fo.done[key] = fc.root
     return fc.root
 }
@@ -149,7 +148,7 @@ fold_decl :: proc(fo: ^Folder, d: Node_Id, width: Fold_Width) -> ^Fold {
 // (Code of its own inside it — a struct's methods — isn't run.)
 @(private="file")
 fold_run :: proc(fo: ^Folder, fc: ^Fold_Code, n: Node_Id) -> bool {
-    g := fo.g
+    g := fc.g
     for i := int(n) + 1; i <= int(g.last[n]); i += 1 {
         id := Node_Id(i)
         if g.kind[id] != .Op {
@@ -177,7 +176,7 @@ fold_new :: proc(t: Type) -> ^Fold {
 
 @(private="file")
 fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
-    g := fo.g
+    g := fc.g
     ops := graph_operands(g, id)
     arg :: proc(fc: ^Fold_Code, ops: []Operand, k: int) -> ^Fold {
         if k >= len(ops) || ops[k].op == NO_NODE || ops[k].out != 0 { return nil }
@@ -192,7 +191,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
             out = fold_new(g.type_[id])
             out.c, out.known = c, true
         } else if named, names := g.constant[id]; names {
-            if d, built := g.const_code[named]; built { out = fold_decl(fo, d, .Own) }
+            if named in fo.pc.consts { out = fold_decl(fo, named, .Own) }
         }
     case .Var:
         out = fold_var(fo, fc, id)
@@ -279,16 +278,15 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
 // width the code computes at), or `void` — a pointer's null.
 @(private="file")
 fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
-    g := fo.g
+    g := fc.g
     if c, ok := g.consts[id]; ok { return fold_value(g.type_[id], c) }
     if g.name[id] == "void" { return fold_value(g.type_[id], {}) }   // (written: a null)
     named, names := g.constant[id]
     if !names { return nil }
-    d, built := g.const_code[named]
-    if !built { return nil }
+    if named not_in fo.pc.consts { return nil }
     width := fc.width
     if width == .Own { width = fold_width_of(g.type_[id]) }
-    return fold_decl(fo, d, width)
+    return fold_decl(fo, named, width)
 }
 
 @(private="file")
@@ -302,7 +300,7 @@ fold_value :: proc(t: Type, c: Const_Value) -> ^Fold {
 // code — one of the fields of the struct being constructed.
 @(private="file")
 fold_var :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
-    g := fo.g
+    g := fc.g
     d := g.refers[id]
     if d == fc.self { return fc.root }
     if d != NO_NODE && g.kind[d] == .Field && g.parent[d] == fc.self {
@@ -398,7 +396,7 @@ fold_store :: proc(dst, src: ^Fold) {
 // arguments is a call: it runs.)
 @(private="file")
 fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand) -> bool {
-    g := fo.g
+    g := fc.g
     dst: ^Fold
     if len(ops) > 0 && ops[0].op != NO_NODE { dst = fc.values[ops[0].op] or_else nil }
     if dst == nil || len(ops) != 1 { return fold_fail(fo) != nil }
@@ -412,11 +410,11 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
         dst.variant = st
         return true
     }
-    n, placed := g.scope_node[ts]
-    if !placed { return fold_fail(fo) != nil }
-    code := Fold_Code{self = n, root = dst, width = .Own}
+    sc := fo.pc.funs[ts] or_else nil
+    if sc == nil { return fold_fail(fo) != nil }
+    code := Fold_Code{g = sc, self = 0, root = dst, width = .Own}
     defer delete(code.values)
-    return fold_run(fo, &code, n)
+    return fold_run(fo, &code, 0)
 }
 
 // Whether arithmetic rounds to single precision: an untyped constant's at
