@@ -1,7 +1,6 @@
 package mara
 
 import "core:fmt"
-import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -233,11 +232,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
             for s in tc_live(k, tree_list(t, t.a[f])) { if k.exposed[s] { table.context_expected_at_runtime = true } }
         }
     }
-    // (MARA_LOWER: the checker only checks, and the graph is lowered from the
-    // annotated tree once it is done — design/annotated_tree.md, stage 2.
-    // `check`: no graph at all, the annotations what is compared.)
-    lowering := os.get_env("MARA_LOWER", context.temp_allocator)
-    if lowering == "" { k.gb = graph_builder_new(checked, tc_module_graph_decls(k)) }
 
     // The program's struct (the compiler-managed global): its args (an
     // arena when `this_program = Program(...)`).
@@ -289,14 +283,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_main(k, main)
 
     if c.errors == 0 {
+        // The checker only checks: the graph is lowered from the annotated
+        // tree once it is done (lower.odin).
+        if perf != nil { perf_timer_mark(perf, "lower") }
+        k.gb = lower_program(k)
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
-        if lowering == "check" {
-            annot_dump(k.annot, t)
-            checked.errors = c.errors
-            return checked
-        }
-        if k.gb == nil { k.gb = lower_program(k) }
         for key, kc in k.consts { k.gb.constant_names[key] = kc.sid }
         checked.graph = build_program_graph(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
