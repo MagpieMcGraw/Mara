@@ -10,6 +10,9 @@
 #   test/lowerdiff.sh -u       ... and record the matches in test/lower_match.txt
 #   test/lowerdiff.sh -j N     N programs at a time (default: every core)
 #
+# A difference test/lower_explained.txt explains (a regex its lines match,
+# why) counts as a match: a graph lowering builds better, its IR the same.
+#
 # A program in test/lower_match.txt that no longer matches fails the run.
 # Lowering stopping (a form it doesn't lower yet) is listed with its reason.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,19 +59,25 @@ xargs -P "$JOBS" -L 1 bash -c 'one_program "$0" "$1" "$2"' < "$list"
 
 match=$OUT/match.txt
 : > "$match"
-stopped=0 differ=0
+# (A difference test/lower_explained.txt explains: each line a regex the
+# differing lines match, a tab, why.)
+explained_re=$(cut -f1 "$ROOT/test/lower_explained.txt" 2>/dev/null | sed 's/[[:space:]]*$//' | paste -sd'|')
+stopped=0 differ=0 explained=0
 for f in "$OUT"/old/*.dump; do
   mod=$(basename "$f" .dump)
   if cmp -s "$f" "$OUT/new/$mod.dump"; then
     echo "$mod" >> "$match"
   elif grep -q 'Graph error: lower:' "$OUT/new/$mod.dump"; then
     stopped=$((stopped + 1))
+  elif [ -n "$explained_re" ] && [ -z "$(diff "$f" "$OUT/new/$mod.dump" | grep '^[<>]' | grep -v -E "$explained_re")" ]; then
+    echo "$mod" >> "$match"
+    explained=$((explained + 1))
   else
     differ=$((differ + 1))
   fi
 done
 total=$(ls "$OUT"/old/*.dump | wc -l)
-echo "LOWERDIFF: $(wc -l < "$match") of $total programs match; $stopped stopped (lower: …), $differ differ"
+echo "LOWERDIFF: $(wc -l < "$match") of $total programs match ($explained as explained); $stopped stopped (lower: …), $differ differ"
 echo "  what stopped lowering, most first:"
 grep -h 'Graph error: lower:' "$OUT"/new/*.dump | sed -E 's/^.*Graph error: lower: //' | sort | uniq -c | sort -rn | head -20
 lost=$(comm -23 <(sed "s/[[:space:]]*$//" "$ROOT/test/lower_match.txt" 2>/dev/null | sort) <(sort "$match"))

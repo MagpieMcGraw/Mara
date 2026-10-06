@@ -171,7 +171,13 @@ lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
     span := tree_span(t, s)
     v := decl_view(t, s)
     if len(v.targets) > 1 && len(v.values) == 1 {
-        lw_unsupported(k, s, "a destructure")
+        if fields_of != nil {
+            names := make([]string, len(v.targets), context.temp_allocator)
+            for tg, i in v.targets { names[i] = tc_name(k, tg) }
+            graph_build_fields(b, names, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
+        }
+        lw_destructure(k, s, v.targets, v.values[0], true, fields_of)
+        return
     }
     if len(v.targets) > 1 && fields_of != nil {
         names := make([]string, len(v.targets), context.temp_allocator)
@@ -199,7 +205,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         lw_decl_void(k, s, target, value, name, ann, fields_of)
         return
     }
-    if value != 0 && t.tag[tc_unparen(k, value)] == .Take { lw_unsupported(k, s, "a declaration by a take") }
+    if value != 0 && t.tag[tc_unparen(k, value)] == .Take {
+        lw_decl_take(k, s, target, value, name, ann, fields_of)
+        return
+    }
     cap_n := Tree_Id(0)
     if ann_node != 0 && t.tag[ann_node] == .Type_Slice {
         cap_n = Tree_Id(t.a[ann_node])
@@ -303,8 +312,14 @@ lw_assign :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
-    if len(targets) > 1 && len(values) == 1 { lw_unsupported(k, s, "a destructure") }
-    if len(targets) > 1 && len(targets) == len(values) { lw_unsupported(k, s, "a parallel assignment") }
+    if len(targets) > 1 && len(values) == 1 {
+        lw_destructure(k, s, targets, values[0], false)
+        return
+    }
+    if len(targets) > 1 && len(targets) == len(values) {
+        lw_parallel_assign(k, s, targets, values)
+        return
+    }
     lw_assign_one(k, s, targets[0], values[0])
 }
 
@@ -332,7 +347,7 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         lw_expr(k, value, .Value)
         return
     }
-    if name == "this_program" { lw_unsupported(k, s, "an assignment to this_program") }
+    if name == "this_program" { return }   // (its arena: set up by main's entry, nothing built here)
     existing := tc_node_type(k, target)
     if tc_is_void(k, value) {
         graph_build_void_assign(b, name, distinct_base(existing), span, tree_span(t, value))
@@ -585,7 +600,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_ident(k, n, want, w, dest, temp, temp_span)
     case .Unary:
         if m := Tree_Id(t.a[n]); build_tokens[t.main[n]].kind == .Ampersand && t.tag[m] == .Method_Call {
-            lw_unsupported(k, n, "the address of a method call")
+            return lw_call(k, m, want, w, dest, temp, temp_span, addressed = n)
         }
         return lw_unary(k, n, want, w)
     case .Deref:
@@ -616,6 +631,8 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_slice(k, n, want, w, dest)
     case .Array:
         return lw_array_literal(k, n, want, w, dest, temp, temp_span)
+    case .Take:
+        return lw_take(k, n, want, w)
     case .In_Range:
         return lw_in_range(k, n, want, w)
     case .Size_Of:
@@ -724,8 +741,15 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
     ask: Build_Want = .Place if op == .Ampersand else .Either if either else .Value
     r := lw_expr(k, operand, ask, w, temp_span = span)
     ot := tc_node_type(k, operand)
-    t := tc_node_type(k, n)
-    if callee := tc_callee(k, n); callee != nil {
+    // (Its type as tc_unary makes it — `&x.f()`'s node is annotated with the
+    // call's.)
+    t: Type
+    #partial switch op {
+    case .Not:       t = Type_Bool{}
+    case .Ampersand: t = new_clone(Type_Ptr{elem = ot})
+    case:            t = ot
+    }
+    if callee := tc_callee(k, n); callee != nil && of == 0 {
         // (`overload -`: a function of the one operand.)
         ret := fn_primary_return(callee)
         arg: Operand
@@ -894,12 +918,12 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
 // --- calls --------------------------------------------------------------------
 
 // A call (tc_call); asked for its place, stored in a temporary made first.
-lw_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
+lw_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> Built {
     b := k.gb
-    if want != .Place { return lw_call_impl(k, n, want, w, dest, temp, temp_span) }
+    if want != .Place { return lw_call_impl(k, n, want, w, dest, temp, temp_span, addressed) }
     at := temp_span if temp_span != {} else tree_span(k.t, n)
     slot := graph_slot(b, "temp", nil, at)
-    r := lw_call_impl(k, n, .Into, w, graph_dest_var("temp", slot, nil), temp, at)
+    r := lw_call_impl(k, n, .Into, w, graph_dest_var("temp", slot, nil), temp, at, addressed)
     if !r.ok { lw_fail(k, n, "a call's place") }
     t := tc_node_type(k, n)
     if !r.into { graph_build_write_at(b, graph_var(b, "temp", slot, nil, at), r.v, at) }
@@ -907,8 +931,8 @@ lw_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, te
     return {v = graph_var(b, "temp", slot, t, at), place = true, ok = true}
 }
 
-lw_call_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
-    if k.t.tag[n] == .Method_Call { lw_unsupported(k, n, "a method call") }
+lw_call_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> Built {
+    if k.t.tag[n] == .Method_Call { return lw_method_call(k, n, want, w, dest, temp, temp_span, addressed) }
     saved := k.recv
     k.recv = {}
     defer k.recv = saved
@@ -934,7 +958,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         r := lw_expr(k, args[0], .Value, w)
         return {v = graph_op_value(b, .Cast, w, span, tc_node_type(k, n), name, r.v), ok = true}
     case .Dispatch:
-        lw_unsupported(k, n, "a dispatch's call")
+        return lw_dispatch_call(k, n, args, want, w)
     case .Generic:
         return lw_generic_call(k, n, args, want, w)
     case .Fun, .Value:
@@ -973,6 +997,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
             case .Call_Site:
                 // (`#caller_name`: the call site's — at the `_`, else the call.)
                 r = lw_hash_name(k, a, .Either, w, tree_span(tr, args[i]) if i < len(args) else span)
+                at = lw_hash_name_type(k, a)
             case .Default:
                 if arg.slot >= 0 {
                     r = lw_tuple_default(k, a, int(arg.slot), .Implied)

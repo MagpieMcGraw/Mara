@@ -1,0 +1,1 @@
+"scope_allocator" t=	the program struct's scope_allocator field: the checker built it before the arena was known (typed any); lowered after the check, it is the arena's type. IR identical.

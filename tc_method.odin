@@ -90,6 +90,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
         qr: Built
         if addressed != 0 { qt, qr = tc_unary(k, addressed, env, ask, w, of = recv) } else { qt, qr = tc_expr(k, recv, env, ask, w) }
         k.recv = {node = arg, t = qt, r = qr}
+        k.annot.receivers[tc_sid(k, n)] = true   // (built as a value, before its method is found)
         tc_struct_of(k, qt)
         if st := resolve_to_struct_type(k.c, qt); st != nil {
             if fn, has := st.functions[name]; has && fn != nil {
