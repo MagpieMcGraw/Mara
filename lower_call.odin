@@ -133,7 +133,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     stores := make([]bool, len(targets), context.temp_allocator)
     toks := make([]Token_Id, len(targets), context.temp_allocator)
     for tg, i in targets {
-        if t.tag[tg] == .Ident { names[i], toks[i] = tc_name(k, tg), t.main[tg] } else { stores[i] = true }
+        if t.tag[tg] == .Ident { names[i], toks[i] = tc_name(k, tg), tc_ref(k, tg).decl } else { stores[i] = true }
     }
     v := tc_unparen(k, value)
     is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))

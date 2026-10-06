@@ -297,12 +297,10 @@ Graph_Builder :: struct {
     runs:       [dynamic]^Run,   // every run made, freed at the end
     nodes:      int,             // how many nodes exist; the columns run ahead
     code:       Code,
-    // Refers-to: the names in scope, innermost last. A fun's lookups stop at
-    // fn_base (a nested fun sees none of its outer fun's locals); a defer's
-    // block shares its fun's. frames holds where each open scope's names start.
-    names:      [dynamic]Name_Binding,
-    frames:     [dynamic]int,
-    fn_base:    int,
+    // Refers-to: each declaration made in the code being built — a fun's, a
+    // struct's, a constant's; its defers' are its own — by the token that
+    // declares it (graph_declare, graph_local).
+    locals:     map[Token_Id]Node_Id,
     self:       Node_Id,         // what `Self` names in a struct's code
     program:    Node_Id,         // the synthetic scope of the compiler's globals (this_program)
     // Each module's statements, where each goes (graph_modules): built as the
@@ -387,36 +385,35 @@ Graph_Table :: struct {
     value:  Syntax_Id,
 }
 
+// A declaration made in the code being built, by the token that declares it:
+// what a name its token declares refers to there. (A union match's arms that
+// rebind their subject declare one token each in turn: the arm being built's.)
 @(private="file")
-Name_Binding :: struct {
-    name: string,
-    decl: Node_Id,
+graph_declare :: proc(b: ^Graph_Builder, d: Node_Id, tok: Token_Id) {
+    if tok == 0 { return }
+    b.g.decl_tok[d] = tok
+    b.locals[tok] = d
+}
+
+// The declaration in the code being built of the variable a name refers to,
+// by the token its annotation says declares it; none — a definition's,
+// resolved once every scope is built (graph_resolve_defs) — when no code here
+// declares it.
+graph_local :: proc(b: ^Graph_Builder, tok: Token_Id) -> Node_Id {
+    return b.locals[tok] or_else NO_NODE
+}
+
+// The code being built's declarations, saved and emptied for another's.
+@(private="file")
+graph_locals_enter :: proc(b: ^Graph_Builder) -> (saved: map[Token_Id]Node_Id) {
+    saved, b.locals = b.locals, {}
+    return
 }
 
 @(private="file")
-graph_bind :: proc(b: ^Graph_Builder, name: string, decl: Node_Id) {
-    if name == "" || name == "_" { return }
-    append(&b.names, Name_Binding{name, decl})
-}
-
-// The declaration a name refers to here: the innermost binding of it in the
-// current fun.
-@(private="file")
-graph_lookup :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
-    for i := len(b.names) - 1; i >= b.fn_base; i -= 1 {
-        if b.names[i].name == name { return b.names[i].decl }
-    }
-    return NO_NODE
-}
-
-@(private="file")
-graph_frame_push :: proc(b: ^Graph_Builder) {
-    append(&b.frames, len(b.names))
-}
-
-@(private="file")
-graph_frame_pop :: proc(b: ^Graph_Builder) {
-    resize(&b.names, pop(&b.frames))
+graph_locals_leave :: proc(b: ^Graph_Builder, saved: map[Token_Id]Node_Id) {
+    delete(b.locals)
+    b.locals = saved
 }
 
 
@@ -536,11 +533,11 @@ graph_module_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, declared: Graph_Decl
 graph_module_build :: proc(b: ^Graph_Builder, ms: ^Graph_Module_Stmt) {
     ms.built = true
     si, saved := graph_segment_enter(b)
-    code, names, base := b.code, len(b.names), b.fn_base
-    b.code, b.fn_base = {}, names
+    code, locals := b.code, graph_locals_enter(b)
+    b.code = {}
     graph_decl_stmt(b, ms.d, ms.module, {kind = .Field}, ms.declared)
-    b.code, b.fn_base = code, base
-    resize(&b.names, names)
+    b.code = code
+    graph_locals_leave(b, locals)
     graph_segment_leave(b, saved)
     b.segs[0].anchors[ms.anchor].seg = si
 }
@@ -555,8 +552,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
         free(r)
     }
     delete(b.runs)
-    delete(b.names)
-    delete(b.frames)
+    delete(b.locals)
     delete(b.const_decls)
     delete(b.constant_names)
     delete(b.const_segs)
@@ -1082,7 +1078,7 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, d: Graph_Decl, parent: Node_Id, site:
 
 // A plain declaration, as a field of the owning struct or a local / constant.
 @(private="file")
-graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: string, t: Type, span: Span) -> Node_Id {
+graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: string, t: Type, span: Span, tok := Token_Id(0)) -> Node_Id {
     t := t
     if site.kind == .Field && site.owner != nil {
         // Signatures resolve on demand, so a struct nothing uses has no typed
@@ -1094,7 +1090,7 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
         }
     }
     d := graph_node(b, site.kind, .Explicit, parent, name, t, span)
-    if site.kind != .Const { graph_bind(b, name, d) }
+    graph_declare(b, d, tok)
     return d
 }
 
@@ -1277,7 +1273,6 @@ graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
 // its scope ends with the program, which made the arena in its setup.
 @(private="file")
 graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, span: Span) {
-    graph_frame_push(b)
     // The checker opens a scope before its declarations are typed: its mark,
     // and the reset at each of its exits, are made and decided when the
     // graph is put together (graph_body_settle).
@@ -1295,7 +1290,6 @@ graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
     if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span) }
     s := pop(&b.code.scopes)
     delete(s.defers)
-    graph_frame_pop(b)
 }
 
 // What leaving scopes[from:] runs, innermost first: each scope's defers, the
@@ -1442,11 +1436,10 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
     return Operand{graph_op(b, kind, w, span, t, name, ..operands), 0}
 }
 
-// A variable's place; `decl` is its declaration when known here (the rest are
-// resolved with refers-to, next step).
+// A variable's place: `decl`, its declaration in the code being built
+// (graph_local) — NO_NODE, a definition's, resolved once every scope is
+// built (graph_resolve_defs).
 graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
-    decl := decl
-    if decl == NO_NODE { decl = graph_lookup(b, name) }
     op := graph_op(b, .Var, .Explicit if decl == NO_NODE else b.g.written[decl], span, t, name)
     b.g.refers[op] = decl
     return Operand{op, 0}
@@ -2395,11 +2388,11 @@ graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 // statements that write them — one per name (`inits`, where each one's
 // initializer is written), or one destructure writing them all from one call
 // (`a, b := f()`: each output to its field).
-graph_build_fields :: proc(b: ^Graph_Builder, names: []string, span: Span, lowered: []Syntax_Id, inits: []Span, destructure: bool) {
+graph_build_fields :: proc(b: ^Graph_Builder, names: []string, toks: []Token_Id, span: Span, lowered: []Syntax_Id, inits: []Span, destructure: bool) {
     f := b.body
     ids := make([]Node_Id, len(names))
     for name, i in names {
-        d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, span)
+        d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, span, toks[i])
         ids[i] = d
         if i < len(lowered) {
             key := lowered[i]
@@ -2416,8 +2409,8 @@ graph_build_fields :: proc(b: ^Graph_Builder, names: []string, span: Span, lower
 }
 
 // A field of the program's struct (the compiler's: nothing constructs it).
-graph_build_program_field :: proc(b: ^Graph_Builder, name: string, span: Span) {
-    graph_decl(b, {kind = .Field, owner = b.body.ts}, b.code.block, name, nil, span)
+graph_build_program_field :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: Span) {
+    graph_decl(b, {kind = .Field, owner = b.body.ts}, b.code.block, name, nil, span, tok)
 }
 
 // The program's struct (main's entry sets up its
@@ -2428,8 +2421,7 @@ graph_build_program_field :: proc(b: ^Graph_Builder, name: string, span: Span) {
 // A local's declaration (graph_decl), before its value: typed once it is
 // checked (graph_build_typed).
 graph_build_decl :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: Span, bound := false) -> Node_Id {
-    d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
-    b.g.decl_tok[d] = tok
+    d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, tok)
     // A big value lives on the arena: its space, taken before
     // its value — kept once its type says so. (A `let` binds memory it takes.)
     if b.arena && !bound {
@@ -2456,8 +2448,8 @@ graph_build_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span, a
     graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, b.g.name[decl], decl, t, span), val)
 }
 
-graph_build_void_assign :: proc(b: ^Graph_Builder, name: string, t: Type, span, at: Span) {
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, NO_NODE, t, span), graph_void(b, t, at))
+graph_build_void_assign :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span, at: Span) {
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), graph_void(b, t, at))
 }
 
 // Where the build stands, to leave out what is built after it: a field
@@ -2566,9 +2558,9 @@ graph_build_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: 
 
 // A call through a function value: the arguments, then the
 // value, read, then the call.
-graph_build_indirect :: proc(b: ^Graph_Builder, name: string, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
+graph_build_indirect :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
     ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
-    append(&ops, graph_read(b, graph_var(b, name, NO_NODE, fn_value, span), fn_value, span))
+    append(&ops, graph_read(b, graph_var(b, name, decl, fn_value, span), fn_value, span))
     append(&ops, ..args)
     return graph_op_value(b, .Call, w, span, t, name, ..ops[:])
 }
@@ -2806,24 +2798,25 @@ Graph_Destructure :: struct {
     names:  []string,
     stores: []bool,
     span:   Span,
-    decls:  []Node_Id,
+    decls:  []Node_Id,   // each name's declaration ...
+    writes: bool,        // ... the variables' it writes (`a, b = f()`), not ones it declares
     call:   Operand,
     place:  Operand,   // the target of the output being written
 }
 
 graph_build_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool) -> Graph_Destructure {
-    mr := Graph_Destructure{on = true, names = names, stores = stores, span = span}
+    mr := Graph_Destructure{on = true, names = names, stores = stores, span = span, writes = !is_decl}
     // (A struct's fields from one call: declared as its fields.)
     if ids, of_fields := b.body.field_outs[id]; of_fields {
         mr.decls = ids
         return mr
     }
+    // (Each name's declaration: made here, or — written — the variable's.)
     mr.decls = make([]Node_Id, len(names), context.temp_allocator)
     for name, i in names {
         mr.decls[i] = NO_NODE
-        if !is_decl || name == "" || name == "_" || stores[i] { continue }
-        mr.decls[i] = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
-        b.g.decl_tok[mr.decls[i]] = toks[i]
+        if name == "" || name == "_" || stores[i] { continue }
+        mr.decls[i] = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, toks[i]) if is_decl else graph_local(b, toks[i])
     }
     return mr
 }
@@ -2836,7 +2829,7 @@ graph_build_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure,
     if i > 0 { val = {graph_outputs_op(b, mr.call, mr.span), i32(i)} }
     dest := mr.place
     if !target {
-        if mr.decls[i] != NO_NODE { graph_build_typed(b, mr.decls[i], t) }
+        if mr.decls[i] != NO_NODE && !mr.writes { graph_build_typed(b, mr.decls[i], t) }
         dest = graph_var(b, name, mr.decls[i], t, mr.span)
     }
     graph_op(b, .Write, .Explicit, mr.span, nil, "", dest, val)
@@ -2934,11 +2927,10 @@ graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: i
     if ga.is_union && ga.bound != "" {
         if ga.payload == nil { graph_fatal(span, "match arm '%s' has no resolved variant", ga.variant) }
         bound := graph_node(b, .Local, .Explicit, k.n, ga.bound, ga.payload, span)
-        b.g.decl_tok[bound] = ga.bound_tok
         // The binding is the payload's place, not a copy.
         payload := graph_op(b, .Variant, .Explicit, span, ga.payload, ga.bound, graph_build_subject(b, span, gm))
         b.g.refers[payload] = bound
-        graph_bind(b, ga.bound, bound)   // after the subject's place: it may reuse the name
+        graph_declare(b, bound, ga.bound_tok)   // after the subject's place: it may reuse the name
     }
     return k
 }
@@ -3080,15 +3072,13 @@ graph_build_for :: proc(b: ^Graph_Builder, loop: Graph_Loop) -> Graph_For {
     fl.f = graph_node(b, .Block, .Explicit, b.code.block, "for", nil, fl.span)
     fl.outer = b.code.block
     b.code.block = fl.f
-    graph_frame_push(b)   // the loop's variables, before its body's scope
     return fl
 }
 
 // A range's counter, before its bounds (typed once they are checked).
 graph_build_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.var_name, nil, fl.span)
-    b.g.decl_tok[fl.counter] = fl.var_tok
-    graph_bind(b, fl.var_name, fl.counter)
+    graph_declare(b, fl.counter, fl.var_tok)
 }
 
 // A range's bound at the counter's type: cast when its
@@ -3132,14 +3122,12 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
     }
     if fl.elem_name != "" {
         fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, elem_t, fl.span)
-        b.g.decl_tok[fl.elem] = fl.elem_tok
-        graph_bind(b, fl.elem_name, fl.elem)
+        graph_declare(b, fl.elem, fl.elem_tok)
     }
     index_t := Type(slice_header_width_type)
     if fl.index_name != "" {
         fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.index_name, index_t, fl.span)
-        b.g.decl_tok[fl.counter] = fl.index_tok
-        graph_bind(b, fl.index_name, fl.counter)
+        graph_declare(b, fl.counter, fl.index_tok)
     } else {
         fl.counter = graph_slot(b, "index", index_t, fl.span)
     }
@@ -3263,7 +3251,6 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     graph_close(b, fl.f)
     b.code.run = fl.done
     b.code.block = fl.outer
-    graph_frame_pop(b)
 }
 
 // A C-style loop's step, checked before its body: built then, into the
@@ -3670,11 +3657,11 @@ Graph_Def_Built :: struct {
 graph_build_def_settled :: proc(b: ^Graph_Builder, d: Graph_Decl) {
     parent := b.code.block
     si, saved := graph_segment_enter(b)
-    code, names, base := b.code, len(b.names), b.fn_base
-    b.code, b.fn_base = {}, names
+    code, locals := b.code, graph_locals_enter(b)
+    b.code = {}
     graph_decl_stmt(b, d, parent, {kind = .Local})
-    b.code, b.fn_base = code, base
-    resize(&b.names, names)
+    b.code = code
+    graph_locals_leave(b, locals)
     graph_segment_leave(b, saved)
     b.def_segs[d.id] = {si, parent}
 }
@@ -3699,8 +3686,8 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
     f.root = graph_node(b, .Const, .Explicit, NO_NODE, d.name, nil, d.span)
     b.segs[f.seg].root = f.root
     b.const_decls[d.value] = f.root
-    f.contents = Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = f.root, span = d.span}
-    b.fn_base, b.self = len(b.names), NO_NODE
+    f.contents = Graph_Contents{locals = graph_locals_enter(b), self = b.self, n = f.root, span = d.span}
+    b.self = NO_NODE
     f.contents.code = graph_code_begin(b, f.root)
     return f
 }
@@ -3731,7 +3718,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
 // What a scope's contents change in the builder, until they end.
 @(private="file")
 Graph_Contents :: struct {
-    base, names: int,
+    locals:      map[Token_Id]Node_Id,   // the outer code's declarations
     self:        Node_Id,
     code:        Code,
     n:           Node_Id,
@@ -3744,13 +3731,11 @@ Graph_Contents :: struct {
 @(private="file")
 graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, intrinsic: bool, n: Node_Id) -> Graph_Contents {
     kind := b.g.kind[n]
-    gc := Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = n, span = span, intrinsic = intrinsic}
-    b.fn_base = gc.names
+    gc := Graph_Contents{locals = graph_locals_enter(b), self = b.self, n = n, span = span, intrinsic = intrinsic}
     b.self = n if kind == .Struct else NO_NODE
     for p in ts.params {
         d := graph_node(b, .Param, .Explicit, n, p.name, p.type_, span)
-        b.g.decl_tok[d] = p.decl
-        graph_bind(b, p.name, d)
+        graph_declare(b, d, p.decl)
     }
     graph_results(b, ts, n, span)
     // An intrinsic's body is generated at each call: no code of its own.
@@ -3769,8 +3754,8 @@ graph_contents_end :: proc(b: ^Graph_Builder, gc: Graph_Contents, finish := true
         graph_code_end(b, gc.code)
     }
     graph_close(b, gc.n)
-    resize(&b.names, gc.names)
-    b.fn_base, b.self = gc.base, gc.self
+    graph_locals_leave(b, gc.locals)
+    b.self = gc.self
 }
 
 
@@ -3787,8 +3772,7 @@ graph_results :: proc(b: ^Graph_Builder, ts: ^Type_Scope, parent: Node_Id, span:
         named := i < len(ts.return_binding_names)
         r := graph_node(b, .Result, .Explicit if named else .Synthetic, parent, name, rt, span)
         if named {   // a named result is a local
-            b.g.decl_tok[r] = ts.return_binding_decls[i]
-            graph_bind(b, name, r)
+            graph_declare(b, r, ts.return_binding_decls[i])
         }
     }
 }

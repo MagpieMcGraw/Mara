@@ -299,7 +299,7 @@ lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     ty := Tree_Id(tr.a[e])
     vt := tc_node_type(k, ty)
     sd := resolve_to_struct_type(k.c, vt)
-    gl := graph_build_override(k.gb, graph_dest_var(tc_name(k, ty), NO_NODE, vt), sd)
+    gl := graph_build_override(k.gb, graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt), sd)
     lw_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, gl)
     return true
 }

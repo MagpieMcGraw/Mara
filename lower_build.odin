@@ -260,7 +260,7 @@ lw_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, valu
     key := tc_sid(k, target)
     if d, made := b.body.fields[key]; made { return d }   // (made with the others declared with it)
     inits := []Span{tree_span(k.t, value)} if value != 0 else nil
-    graph_build_fields(b, {name}, span, {key}, inits, false)
+    graph_build_fields(b, {name}, {k.t.main[target]}, span, {key}, inits, false)
     return b.body.fields[key]
 }
 

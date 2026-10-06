@@ -54,6 +54,12 @@ lower_program :: proc(k: ^TC) -> ^Graph_Builder {
     return b
 }
 
+// The declaration, in the code being built, of the variable a name refers to:
+// by the token its annotation says declares it (graph_local).
+lw_local :: proc(k: ^TC, n: Tree_Id) -> Node_Id {
+    return graph_local(k.gb, tc_ref(k, n).decl)
+}
+
 lw_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) -> ! {
     graph_fatal(tree_span(k.t, n), "lower: %s is not supported yet (%v)", what, k.t.tag[n])
 }
@@ -136,7 +142,7 @@ lw_program_struct :: proc(k: ^TC) {
             ss := tree_span(t, s)
             graph_build_body_stmt(b, ss, true)
             saved := graph_build_stmt(b, tc_sid(k, s), ss, tc_stmt_kind(k, s), fresh = true)
-            for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), ss) }
+            for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), t.main[target], ss) }
             graph_build_stmt_end(b, saved)
         }
         graph_body_end(b, f)
@@ -224,8 +230,9 @@ lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
     if len(v.targets) > 1 && len(v.values) == 1 {
         if fields_of != nil {
             names := make([]string, len(v.targets), context.temp_allocator)
-            for tg, i in v.targets { names[i] = tc_name(k, tg) }
-            graph_build_fields(b, names, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
+            toks := make([]Token_Id, len(v.targets), context.temp_allocator)
+            for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
+            graph_build_fields(b, names, toks, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
         }
         lw_destructure(k, s, v.targets, v.values[0], true, fields_of)
         return
@@ -233,10 +240,11 @@ lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
     if len(v.targets) > 1 && fields_of != nil {
         names := make([]string, len(v.targets), context.temp_allocator)
         ids := make([]Syntax_Id, len(v.targets), context.temp_allocator)
+        toks := make([]Token_Id, len(v.targets), context.temp_allocator)
         inits := make([]Span, len(v.values), context.temp_allocator)
-        for tg, i in v.targets { names[i], ids[i] = tc_name(k, tg), tc_sid(k, tg) }
+        for tg, i in v.targets { names[i], ids[i], toks[i] = tc_name(k, tg), tc_sid(k, tg), t.main[tg] }
         for val, i in v.values { inits[i] = tree_span(t, val) }
-        graph_build_fields(b, names, span, ids, inits, false)
+        graph_build_fields(b, names, toks, span, ids, inits, false)
     }
     for tg, i in v.targets {
         lw_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, fields_of)
@@ -401,13 +409,13 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     if name == "this_program" { return }   // (its arena: set up by main's entry, nothing built here)
     existing := tc_node_type(k, target)
     if tc_is_void(k, value) {
-        graph_build_void_assign(b, name, distinct_base(existing), span, tree_span(t, value))
+        graph_build_void_assign(b, name, lw_local(k, target), distinct_base(existing), span, tree_span(t, value))
         return
     }
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, lw_local(k, target), vt), temp = true, temp_span = span)
     lw_byte_view_address(k, existing, value)
-    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(name, NO_NODE, distinct_base(existing)), span), span)
+    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(name, lw_local(k, target), distinct_base(existing)), span), span)
 }
 
 // `x op= v` (tc_compound): `x = x op v`, at the `op=`.
@@ -431,7 +439,7 @@ lw_compound :: proc(k: ^TC, s: Tree_Id) {
     name := tc_name(k, target)
     existing := tc_node_type(k, target)
     fr := lw_compound_value(k, s, op_tok, target, value, .Into)
-    lw_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, NO_NODE, distinct_base(existing)), span)
+    lw_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, lw_local(k, target), distinct_base(existing)), span)
 }
 
 // A compound assignment's operation (tc_compound_value).
@@ -735,7 +743,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
             return {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
         }
     }
-    place := graph_var(b, name, NO_NODE, t, span)
+    place := graph_var(b, name, graph_local(b, ref.decl), t, span)
     if want == .Value { return {v = graph_read(b, place, t, span), ok = true} }
     return {v = place, place = true, ok = true}
 }
@@ -1071,7 +1079,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         return lw_construct(k, n, ft, ops[:], want, w, dest, false, temp_span, overrides = overrides)
     }
     ret := fn_primary_return(ft)
-    if indirect { return {v = graph_build_indirect(b, name, ft, ret, ops[:], w, span), ok = true} }
+    if indirect { return {v = graph_build_indirect(b, name, lw_local(k, n), ft, ret, ops[:], w, span), ok = true} }
     call := Operand{graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}
     if view_slot != NO_NODE {
         graph_build_write_at(b, graph_var(b, "temp", view_slot, ret, temp_span), call, temp_span)
