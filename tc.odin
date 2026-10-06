@@ -30,7 +30,7 @@ TC :: struct {
     events:        [dynamic]TC_Event, // what it checked, in order: what lowering builds
     lowering:      bool,              // lowering is running (lower.odin): the checker isn't
     lower:         Lower,             // ... its state
-    const_by_decl: map[Token_Id]^TC_Const,   // each constant, by the token that declares it (lowering's)
+    const_by_decl: map[u64]^TC_Const,   // each constant, by its instance and the token that declares it (lowering's)
     hint:          Type,              // the type the expression being checked is expected at
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type

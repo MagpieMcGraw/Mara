@@ -147,7 +147,7 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         lw_scope(k, tree_list(t, t.a[s]))
         graph_build_defer_end(k.gb, gd)
     case .Match:
-        lw_unsupported(k, s, "a match")
+        lw_match(k, s)
     case .Break, .Continue:
         graph_build_loop_exit(k.gb, span, is_break = t.tag[s] == .Break)
     case:
@@ -196,7 +196,8 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
     if value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann) {
-        lw_unsupported(k, s, "a declaration of void")
+        lw_decl_void(k, s, target, value, name, ann, fields_of)
+        return
     }
     if value != 0 && t.tag[tc_unparen(k, value)] == .Take { lw_unsupported(k, s, "a declaration by a take") }
     cap_n := Tree_Id(0)
@@ -205,7 +206,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }
     }
     if value == 0 {
-        if bindings := tc_shape_bindings(k, ann_node); len(bindings) > 0 { lw_unsupported(k, s, "the shape shortcut") }
+        if bindings := tc_shape_bindings(k, ann_node); len(bindings) > 0 {
+            lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
+            return
+        }
         lw_decl_bare(k, target, name, ann, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
     }
@@ -612,6 +616,12 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_slice(k, n, want, w, dest)
     case .Array:
         return lw_array_literal(k, n, want, w, dest, temp, temp_span)
+    case .In_Range:
+        return lw_in_range(k, n, want, w)
+    case .Size_Of:
+        return lw_size_of(k, n, want, w)
+    case .Hash_Name:
+        return lw_hash_name(k, n, want, w, span)
     case .Try:
         if want == .Place { return {} }
         r := lw_expr(k, Tree_Id(t.a[n]), .Value, w)
@@ -644,7 +654,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     case ref.kind == .Variant:
         return lw_variant_of(k, t, name, span, want, w, dest, temp, temp_span)
     case ref.kind == .Const:
-        return tc_const_use(k, lw_const_of(k, ref.decl), n, t, want, w)
+        return tc_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w)
     case name == "void":
         if want == .Place { return {} }
         return {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
@@ -671,12 +681,16 @@ lw_variant_value :: proc(t: Type, name: string) -> int {
 }
 
 // The constant a declaring token names.
-lw_const_of :: proc(k: ^TC, decl: Token_Id) -> ^TC_Const {
+// (A body's constant in a generic's instance is that instance's own: the
+// use's instance first, then the tree's.)
+lw_const_of :: proc(k: ^TC, use: Tree_Id, decl: Token_Id) -> ^TC_Const {
+    key :: proc(salt: u64, decl: Token_Id) -> u64 { return salt << 32 | u64(decl) }
     if k.const_by_decl == nil {
-        for _, kc in k.consts { k.const_by_decl[k.t.main[kc.def]] = kc }
-        for _, list in k.scope_consts { for _, kc in list { k.const_by_decl[k.t.main[kc.def]] = kc } }
+        for _, kc in k.consts { k.const_by_decl[key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc }
+        for _, list in k.scope_consts { for _, kc in list { k.const_by_decl[key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc } }
     }
-    kc := k.const_by_decl[decl] or_else nil
+    kc := k.const_by_decl[key(u64(tc_instance(k, use)), decl)] or_else nil
+    if kc == nil { kc = k.const_by_decl[key(0, decl)] or_else nil }
     if kc == nil { graph_fatal(Span{at = decl}, "lower: no constant is declared here") }
     return kc
 }
@@ -739,7 +753,7 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
 // in; `and` / `or` short-circuit. `at`: its node (a Binary, a compound
 // assignment); `t`: its type.
 lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, right: Tree_Id,
-                     want: Build_Want, w: Written, t: Type) -> Built {
+                     want: Build_Want, w: Written, t: Type, in_range: ^TC_In_Range = nil) -> Built {
     tr := k.t
     b := k.gb
     op := tok
@@ -759,7 +773,13 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     if and_or { sa = graph_build_and(b, op == .And, w, span) }
     for side, i in ([2]Tree_Id{left, right}) {
         if and_or {
-            r := lw_expr(k, side, .Value, w)
+            // (A side: its expression; an `in`'s, its comparison.)
+            r: Built
+            switch {
+            case in_range == nil: r = lw_expr(k, side, .Value, w)
+            case i == 0:          r = lw_binary_op(k, 0, .Greater_Equal, in_range.span, in_range.value, in_range.lo, .Value, w, Type_Bool{})
+            case:                 r = lw_binary_op(k, 0, .Less, in_range.span, in_range.value, in_range.hi, .Value, w, Type_Bool{})
+            }
             types[i] = tc_node_type(k, side)
             sides[i] = r.v
             if i == 0 { graph_build_and_left(b, &sa, r.v) }
@@ -916,7 +936,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     case .Dispatch:
         lw_unsupported(k, n, "a dispatch's call")
     case .Generic:
-        lw_unsupported(k, n, "a generic's call")
+        return lw_generic_call(k, n, args, want, w)
     case .Fun, .Value:
     }
     if want == .Place { lw_fail(k, n, "a call's place") }
@@ -948,16 +968,22 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
             append(&ops, tc_value_as(k, a, k.recv.t, k.recv.r, pt, span, {sig = ft, param = i}))
         } else {
             r: Built
+            at := tc_node_type(k, a)
             switch arg.kind {
             case .Call_Site:
-                lw_unsupported(k, a, "a #caller_name default")
+                // (`#caller_name`: the call site's — at the `_`, else the call.)
+                r = lw_hash_name(k, a, .Either, w, tree_span(tr, args[i]) if i < len(args) else span)
             case .Default:
-                if arg.slot >= 0 { lw_unsupported(k, a, "a default of a group's value") }
-                r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
+                if arg.slot >= 0 {
+                    r = lw_tuple_default(k, a, int(arg.slot), .Implied)
+                    if returns := tc_call_returns(k, a, nil); len(returns) > 1 { at = returns[arg.slot] }
+                } else {
+                    r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
+                }
             case .Written, .Receiver:
                 r = lw_expr(k, a, .Either, w, dest = use, temp_span = use_at)
             }
-            append(&ops, tc_value_as(k, a, tc_node_type(k, a), r, pt, span, {sig = ft, param = i}, &held))
+            append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held))
         }
         tc_byte_view_address(k, pt, a)
     }
@@ -995,7 +1021,7 @@ lw_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Buil
         return {v = NO_VALUE, ok = true}
     }
     target, is_cast := cast_result_type(name)
-    if !is_cast { lw_unsupported(k, n, "this builtin") }
+    if !is_cast { return lw_builtin_more(k, n, name, args, want, w) }
     each(k, args, w, span, &vals)
     if want == .Place { lw_fail(k, n, "a builtin's place") }
     return {v = graph_op_value(b, .Cast, w, span, target, name, ..vals[:]), ok = true}
