@@ -111,10 +111,10 @@ Program_Graph :: struct {
     type_:   [dynamic]Type,     // has type; nil when the node has none
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
-    callee:  map[Node_Id]^Type_Scope,   // a call or construct operation → the fun or struct it runs (none through a fun's value)
+    callee:  [dynamic]^Type_Scope,      // a call or construct operation → the fun or struct it runs (nil through a fun's value)
     defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
     stmt:    [dynamic]i32,      // an operation → the statement it comes from (in `stmts`), or -1
-    decl_tok: map[Node_Id]Token_Id,   // a variable's declaration — a param, a named result, a local — → the token that declares it
+    decl_tok: [dynamic]Token_Id,      // a variable's declaration — a param, a named result, a local — → the token that declares it (0: none)
 
     // A node's operands are operands[operand_first[id] : operand_first[id+1]].
     operands:      [dynamic]Operand,
@@ -154,10 +154,10 @@ Program_Graph :: struct {
     // value (a literal, a variant).
     assert_sides: map[Node_Id][2]string,
 
-    // A constant, by its value's node (Graph_Named.value): an operation that
-    // names one — its value at the use, a table's global — and each one's
-    // code.
-    constant:   map[Node_Id]Syntax_Id,
+    // A constant, by its value's node (Graph_Named.value; 0: none): an
+    // operation that names one — its value at the use, a table's global —
+    // and each one's code.
+    constant:   [dynamic]Syntax_Id,
     const_code: map[Syntax_Id]Node_Id,
 
     // A fun that consumes a param into its result → which param, by its
@@ -195,7 +195,7 @@ graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
 
 // The fun or struct a call or construction runs; nil through a function value.
 graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
-    return g.callee[op] or_else nil
+    return g.callee[op]
 }
 
 // The signature a call runs by: its callee's, or — through a function value,
@@ -293,10 +293,6 @@ Graph_Builder :: struct {
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
-    // Each call's or construction's callee. Its Calls edge waits for the
-    // callee's node (a call can come before its callee in written order),
-    // its name for an instance's (known once checking is done).
-    callee_of:  map[Node_Id]^Type_Scope,
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run made, freed at the end
     nodes:      int,             // how many nodes exist; the columns run ahead
@@ -538,7 +534,6 @@ graph_module_build :: proc(b: ^Graph_Builder, ms: ^Graph_Module_Stmt) {
 graph_builder_free :: proc(b: ^Graph_Builder) {
     for _, list in b.by_span { delete(list) }
     delete(b.by_span)
-    delete(b.callee_of)
     for r in b.runs {
         delete(r.ops)
         delete(r.waiting)
@@ -595,7 +590,8 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     }
     for f in b.bodies { graph_body_settle(b, f) }
     // (Each call named for its callee, an instance's now known.)
-    for op, callee in b.callee_of {
+    for callee, op in g.callee[:b.nodes] {
+        if callee == nil { continue }
         braces := strings.has_suffix(g.name[op], "{}")   // a literal's construction, as written
         g.name[op] = graph_call_name(callee)
         if braces { g.name[op] = strings.concatenate({g.name[op], "{}"}) }
@@ -866,6 +862,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) -> Program_Code {
             old, at := nodes[i], i - lo
             c.kind[at], c.op[at], c.written[at] = g.kind[old], g.op[old], g.written[old]
             c.name[at], c.type_[at], c.origin[at] = g.name[old], g.type_[old], g.origin[old]
+            c.callee[at], c.decl_tok[at], c.constant[at] = g.callee[old], g.decl_tok[old], g.constant[old]
             c.parent[at] = NO_NODE if g.parent[old] == NO_NODE else re(new_id, g.parent[old]) - Node_Id(lo)
             c.last[at] = Node_Id(at)
             r := g.refers[old]
@@ -950,7 +947,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) -> Program_Code {
     }
     // What only some nodes have, each to its code: counted, each code's
     // reserved, then put.
-    Side :: enum { Consts, Sides, Decl_Tok, Constant, Defer, Callee }
+    Side :: enum { Consts, Sides, Defer }
     counts := make([][Side]i32, len(pc.codes), context.temp_allocator)
     count :: proc(counts: [][Side]i32, code_of: []i32, new_id: []Node_Id, old: Node_Id, s: Side) {
         if old == NO_NODE || new_id[old] == NO_NODE { return }
@@ -958,18 +955,12 @@ graph_canonicalize :: proc(b: ^Graph_Builder) -> Program_Code {
     }
     for id in g.consts { count(counts, code_of, new_id, id, .Consts) }
     for id in g.assert_sides { count(counts, code_of, new_id, id, .Sides) }
-    for id in g.decl_tok { count(counts, code_of, new_id, id, .Decl_Tok) }
-    for id in g.constant { count(counts, code_of, new_id, id, .Constant) }
     for id in g.defer_of { count(counts, code_of, new_id, id, .Defer) }
-    for id in b.callee_of { count(counts, code_of, new_id, id, .Callee) }
     for c, i in pc.codes {
         n := counts[i]
         if n[.Consts] > 0 { reserve(&c.consts, int(n[.Consts])) }
         if n[.Sides] > 0 { reserve(&c.assert_sides, int(n[.Sides])) }
-        if n[.Decl_Tok] > 0 { reserve(&c.decl_tok, int(n[.Decl_Tok])) }
-        if n[.Constant] > 0 { reserve(&c.constant, int(n[.Constant])) }
         if n[.Defer] > 0 { reserve(&c.defer_of, int(n[.Defer])) }
-        if n[.Callee] > 0 { reserve(&c.callee, int(n[.Callee])) }
     }
     for id in g.settled {
         if !kept(new_id, id) { continue }
@@ -979,18 +970,10 @@ graph_canonicalize :: proc(b: ^Graph_Builder) -> Program_Code {
     for c in pc.codes { slice.sort(c.settled[:]) }
     for id, v in g.consts { if kept(new_id, id) { p := place(code_of[:], lo_of[:], new_id, id); if p.code >= 0 { pc.codes[p.code].consts[p.id] = v } } }
     for id, s in g.assert_sides { if kept(new_id, id) { p := place(code_of[:], lo_of[:], new_id, id); if p.code >= 0 { pc.codes[p.code].assert_sides[p.id] = s } } }
-    for id, tk in g.decl_tok { if kept(new_id, id) { p := place(code_of[:], lo_of[:], new_id, id); if p.code >= 0 { pc.codes[p.code].decl_tok[p.id] = tk } } }
-    for id, v in g.constant { if kept(new_id, id) { p := place(code_of[:], lo_of[:], new_id, id); if p.code >= 0 { pc.codes[p.code].constant[p.id] = v } } }
     for op, d in g.defer_of {
         if !kept(new_id, op) { continue }
         p := place(code_of[:], lo_of[:], new_id, op)
         pc.codes[p.code].defer_of[p.id] = place(code_of[:], lo_of[:], new_id, d).id
-    }
-    // (Each call's callee.)
-    for op, callee in b.callee_of {
-        if !kept(new_id, op) { continue }
-        p := place(code_of[:], lo_of[:], new_id, op)
-        pc.codes[p.code].callee[p.id] = callee
     }
     graph_free_columns(g)
     return pc
@@ -1046,7 +1029,10 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.type_[i] = t if b.body != nil else graph_settled(t)   // (a body's settle with it)
     g.origin[i] = origin
     g.refers[i] = NO_NODE
+    g.callee[i] = nil
     g.stmt[i] = b.stmt
+    g.decl_tok[i] = 0
+    g.constant[i] = 0
     g.operand_first[i] = i32(len(g.operands))
     b.nodes += 1
     return id
@@ -1064,7 +1050,10 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     resize(&g.type_, n)
     resize(&g.origin, n)
     resize(&g.refers, n)
+    resize(&g.callee, n)
     resize(&g.stmt, n)
+    resize(&g.decl_tok, n)
+    resize(&g.constant, n)
     resize(&g.operand_first, n)
 }
 
@@ -1618,7 +1607,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     g.refers[n.op] = g.refers[id]
     if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
     if g.op[id] == .Const { graph_const_settles(b, n.op, g.type_[id]) }
-    if v, names := g.constant[id]; names { g.constant[n.op] = v }
+    g.constant[n.op] = g.constant[id]
     // (A widening decided when the graph is put together: this one too, alike.)
     if f := b.body; f != nil && g.op[id] == .Cast {
         for w in f.widens {
@@ -1748,7 +1737,7 @@ graph_outputs_op :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Node_Id {
 // signature's.
 @(private="file")
 graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
-    callee := b.callee_of[op] or_else nil
+    callee := b.g.callee[op]
     if callee == nil && b.g.op[op] == .Call {
         ops := graph_built_operands(b, op)
         if len(ops) > 0 && ops[0].op != NO_NODE {
@@ -1763,7 +1752,7 @@ graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
 // A call or construct operation, with a Calls edge to what it runs.
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
     op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)
-    b.callee_of[op] = callee
+    b.g.callee[op] = callee
     return op
 }
 
@@ -1872,7 +1861,6 @@ graph_token_text :: proc(op: Token_Kind) -> string {
 // types each use before its operands. What no use decides takes the default.
 @(private="file")
 graph_settle_literals :: proc(g: ^Program_Graph) {
-    callee := g.callee
     for i := len(g.kind) - 1; i >= 0; i -= 1 {
         id := Node_Id(i)
         if g.kind[id] != .Op { continue }
@@ -1882,9 +1870,9 @@ graph_settle_literals :: proc(g: ^Program_Graph) {
             if o.op == NO_NODE || o.out != 0 { continue }
             untyped_void := g.op[o.op] == .Const && g.name[o.op] == "void" && is_any(g.type_[o.op])
             if !is_infer(g.type_[o.op]) && !untyped_void { continue }
-            if t := graph_literal_use(g, callee, id, k); t != nil && !is_infer(t) {
+            if t := graph_literal_use(g, id, k); t != nil && !is_infer(t) {
                 g.type_[o.op] = t
-                if g.op[o.op] == .Const && (o.op in g.consts || o.op in g.constant) { append(&g.settled, o.op) }
+                if g.op[o.op] == .Const && (o.op in g.consts || g.constant[o.op] != 0) { append(&g.settled, o.op) }
             }
         }
         if is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }
@@ -1894,7 +1882,7 @@ graph_settle_literals :: proc(g: ^Program_Graph) {
 // The type an operation takes its k-th operand at, when that decides a
 // literal's; nil when it doesn't.
 @(private="file")
-graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id: Node_Id, k: int) -> Type {
+graph_literal_use :: proc(g: ^Program_Graph, id: Node_Id, k: int) -> Type {
     ops := graph_operands(g, id)
     #partial switch g.op[id] {
     case .Arith, .Unary:
@@ -1906,7 +1894,7 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
     case .Fill:
         if k > 0 { return graph_elem_type(g.type_[ops[0].op]) }
     case .Call:
-        if c, ok := callee[id]; ok {
+        if c := g.callee[id]; c != nil {
             if k < len(c.params) { return c.params[k].type_ }
         } else if k > 0 && ops[0].op != NO_NODE {
             // (Through a function value, its first operand: its signature's.)
@@ -1914,7 +1902,7 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
             if is_fn && ft.kind == .Fun && k - 1 < len(ft.params) { return ft.params[k - 1].type_ }
         }
     case .Construct:   // its first operand is where it builds
-        if c, ok := callee[id]; ok && k >= 1 && k - 1 < len(c.params) { return c.params[k - 1].type_ }
+        if c := g.callee[id]; c != nil && k >= 1 && k - 1 < len(c.params) { return c.params[k - 1].type_ }
     case .Return:
         fun := graph_code_owner(g, id)
         if fun == NO_NODE { return nil }
@@ -3378,7 +3366,7 @@ graph_build_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> De
 // `Foo{call()}`, the call built: each field its
 // result. False when it resolved to no function.
 graph_build_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, span: Span, c: Operand) -> bool {
-    callee := b.callee_of[c.op] or_else nil if c.op != NO_NODE else nil
+    callee := b.g.callee[c.op] if c.op != NO_NODE else nil
     if callee == nil || gl.sd == nil { return false }
     graph_spread_results(b, span, gl.sd, &gl.parent, callee, c)
     return true
@@ -4034,7 +4022,7 @@ graph_dump :: proc(pc: ^Program_Code) {
     if want == "" { return }
     for c in pc.codes {
         fmt.printfln("code %v %s", c.kind[0], c.name[0])
-        if want == "full" { graph_dump_full(c) } else { graph_dump_code(c, want) }
+        if want == "full" { graph_dump_full(pc, c) } else { graph_dump_code(c, want) }
     }
     for s in pc.unreachable { fmt.printfln("u @%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) }
 }
@@ -4079,11 +4067,13 @@ graph_depth :: proc(g: ^Program_Graph, id: Node_Id) -> int {
 // and tables, one fact a line in id order — two builds of one program compare
 // line by line (a type is its name; a constant's value expression its span).
 @(private="file")
-graph_dump_full :: proc(g: ^Program_Graph) {
+graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
     span :: proc(s: Span) -> string {
         return fmt.tprintf("%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) if span_file(s) != "" else "-"
     }
-    fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges) + len(g.callee) + len(g.defer_of))
+    calls := 0
+    for c in g.callee { if c != nil { calls += 1 } }
+    fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges) + calls + len(g.defer_of))
     for id in 0 ..< len(g.kind) {
         b := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
@@ -4096,9 +4086,9 @@ graph_dump_full :: proc(g: ^Program_Graph) {
             strings.write_string(&b, ")")
         }
         if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
-        if c, ok := g.constant[Node_Id(id)]; ok {   // (by its code's name: a value's node isn't the same from one build to the next)
-            d, built := g.const_code[c]
-            fmt.sbprintf(&b, " constant=%s", g.name[d] if built else "?")
+        if c := g.constant[id]; c != 0 {   // (by its code's name: a value's node isn't the same from one build to the next)
+            code, built := pc.consts[c]
+            fmt.sbprintf(&b, " constant=%s", code.name[0] if built else "?")
         }
         if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }

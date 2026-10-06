@@ -539,7 +539,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     continue
                 }
                 if g.written[id] != .Explicit { continue }
-                tok := g.decl_tok[id] or_else 0
+                tok := g.decl_tok[id]
                 if tok == 0 {
                     report_var(&problems, tok, ts, "the graph's %v '%s' names no token", g.kind[id], g.name[id])
                     continue

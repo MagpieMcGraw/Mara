@@ -201,7 +201,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             id = g.last[id]
         case .Param, .Local, .Result:
             if g.written[id] == .Explicit {
-                i := annot_var(checked.annot, f.ft, g.decl_tok[id] or_else 0, g.type_[id])
+                i := annot_var(checked.annot, f.ft, g.decl_tok[id], g.type_[id])
                 if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", g.name[id], f.ft.name) }
                 f.bindings[id] = of_var[i]
                 decl_of[of_var[i]] = id

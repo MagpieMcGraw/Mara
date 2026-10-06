@@ -78,8 +78,8 @@ graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
         for i in 0 ..< len(g.kind) {
             id := Node_Id(i)
             if g.kind[id] != .Op { continue }
-            c, names := g.constant[id]
-            if !names || c not_in pc.consts { continue }
+            c := g.constant[id]
+            if c == 0 || c not_in pc.consts { continue }
             #partial switch g.op[id] {
             case .Const:
                 v := fold_decl(&fo, c, fold_width_of(g.type_[id]))
@@ -190,7 +190,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         if c, ok := g.consts[id]; ok && c.is_text {
             out = fold_new(g.type_[id])
             out.c, out.known = c, true
-        } else if named, names := g.constant[id]; names {
+        } else if named := g.constant[id]; named != 0 {
             if named in fo.pc.consts { out = fold_decl(fo, named, .Own) }
         }
     case .Var:
@@ -281,8 +281,8 @@ fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fc.g
     if c, ok := g.consts[id]; ok { return fold_value(g.type_[id], c) }
     if g.name[id] == "void" { return fold_value(g.type_[id], {}) }   // (written: a null)
-    named, names := g.constant[id]
-    if !names { return nil }
+    named := g.constant[id]
+    if named == 0 { return nil }
     if named not_in fo.pc.consts { return nil }
     width := fc.width
     if width == .Own { width = fold_width_of(g.type_[id]) }
