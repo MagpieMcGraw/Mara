@@ -108,5 +108,6 @@ tc_module_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i], env)) }
         scope_bind(env, tc_name(k, tg), ann if ann != nil else vt, {t.main[tg], .Global})
         tc_set_ref(k, tg, {t.main[tg], .Global})
+        tc_set_type(k, tg, ann if ann != nil else vt)
     }
 }

@@ -27,6 +27,10 @@ TC :: struct {
     main_package:  string,
     shared:        bool,
     annot:         ^Annotations,      // what it finds about each node, per instance (annot.odin)
+    events:        [dynamic]TC_Event, // what it checked, in order: what lowering builds
+    lowering:      bool,              // lowering is running (lower.odin): the checker isn't
+    lower:         Lower,             // ... its state
+    const_by_decl: map[Token_Id]^TC_Const,   // each constant, by the token that declares it (lowering's)
     hint:          Type,              // the type the expression being checked is expected at
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
@@ -56,6 +60,35 @@ TC :: struct {
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
+}
+
+// What the checker checked, in the order it did — a body, a constant, a
+// module's statement settled, the program's struct — and where: the instance
+// and the module it was checked in. What lowering builds, in that order
+// (lower.odin).
+TC_Event :: struct {
+    kind:     TC_Event_Kind,
+    sc:       ^TC_Scope,         // .Body
+    kc:       ^TC_Const,         // .Const
+    sid:      Syntax_Id,         // .Module_Stmt
+    declared: Graph_Declared,    // .Module_Stmt
+    salt:     TC_Salt,
+    pkg:      string,
+    subst:    map[string]Type,
+}
+
+TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt, Program_Struct }
+
+tc_event :: proc(k: ^TC, e: TC_Event) {
+    e := e
+    e.salt, e.pkg, e.subst = {k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
+    append(&k.events, e)
+}
+
+// A module's statement settled: what it declares, for the builder.
+tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id, declared: Graph_Declared) {
+    tc_event(k, {kind = .Module_Stmt, sid = sid, declared = declared})
+    if k.gb != nil { graph_module_stmt(k.gb, sid, declared) }
 }
 
 // A fun or a struct as registered: its type, its definition, the scope its
@@ -250,6 +283,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         populate_cg_signature(ft)
         checked.functions[key] = ft
     }
+    tc_event(k, {kind = .Program_Struct})
     tc_program_struct(k)
     tc_validate_allocator(k)
     tc_validate_main(k, main)
@@ -324,7 +358,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         if ts := k.scopes[i].ts; ts != nil && ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
     }
     for i in mine {
-        if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, k.scopes[i].def), {kind = .Other, set = true}) }
+        tc_module_stmt(k, tc_sid(k, k.scopes[i].def), {kind = .Other, set = true})
     }
     // (Its foreign funs, for the emitter.)
     for f, i in files {
@@ -383,14 +417,14 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
             tc_use(k, e, env, mod)
-            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {kind = .Decl, set = true}) }
+            tc_module_stmt(k, tc_sid(k, s), {kind = .Decl, set = true})
             return
         }
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
             m := tc_use(k, value, env, mod, alias = t.main[s])
-            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
+            tc_module_stmt(k, tc_sid(k, s), {types = slice.clone([]Type{m}), kind = .Other, set = true})
             return
         }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
@@ -453,7 +487,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         // (A constant: checked, and built, here in its module's order.)
         if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
             tc_check_const(k, kc)
-            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true}) }
+            tc_module_stmt(k, tc_sid(k, s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true})
         }
         return
     }

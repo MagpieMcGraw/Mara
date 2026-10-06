@@ -96,6 +96,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 }
             } else {
                 scope_bind(env, name, rt, tc_decl_ref(k, tg, fields_of))
+                tc_set_type(k, tg, rt)
                 tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))
             }
             // (A struct's field: its value its slot of the call's.)

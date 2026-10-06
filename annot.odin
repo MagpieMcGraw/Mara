@@ -58,6 +58,11 @@ Arg :: struct {
 
 Arg_Kind :: enum u8 { Written, Receiver, Default, Call_Site }
 
+// How a call is made: a fun or a constructor named, one a dispatch chose, a
+// generic's instance, a builtin, a distinct type's conversion, or through a
+// fun's value.
+Call_Form :: enum u8 { Fun, Dispatch, Generic, Builtin, Conversion, Value }
+
 Annotations :: struct {
     instances: [dynamic]Instance,
     types:     [dynamic][]Type,   // each instance's nodes' types, by n - lo
@@ -66,6 +71,7 @@ Annotations :: struct {
     // What only some nodes have, by node and instance (annot_key).
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)
     args:       map[Syntax_Id][]Arg,         // ... what each of its params receives, in order
+    forms:      map[Syntax_Id]Call_Form,     // ... how it is made
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base

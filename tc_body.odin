@@ -9,6 +9,7 @@ import "core:strings"
 // body is checked.
 
 tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
+    tc_event(k, {kind = .Body, sc = sc})
     t := k.t
     ts := sc.ts
     v := scope_view(t, sc.node)
@@ -312,6 +313,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
     scope_bind(env, name, final, ref)
+    tc_set_type(k, target, final)   // (the name declared: its type)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
     if b = tc_building(k); b == nil { return }
@@ -365,6 +367,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each). `field`: its node, when it is a struct's field.
 tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE, cap_n := Tree_Id(0)) {
+    tc_set_type(k, target, ann)
     defer scope_bind(env, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
@@ -651,7 +654,10 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
 tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, loc: ^Type_Scope, ok: bool) {
     found: bool
     existing, loc, found = scope_find(env, name)
-    if found { tc_set_ref(k, target, scope_find_ref(env, name)) }
+    if found {
+        tc_set_ref(k, target, scope_find_ref(env, name))
+        tc_set_type(k, target, existing)   // (the name written: its type)
+    }
     if !found && name not_in k.consts {
         report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         scope_bind(env, name, Type_Error{}, {})
@@ -981,6 +987,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 tc_compound_value :: proc(k: ^TC, s: Tree_Id, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Build_Want) -> (Type, Built) {
     op, _ := compound_assign_op(build_tokens[op_tok].kind)
     t, r := tc_binary_op(k, s, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
+    tc_set_type(k, s, t)   // (its operation's type, on the statement)
     if want != .None && !r.ok { tc_fail(k, "a compound assignment's operation") }
     return t, r
 }
@@ -1130,6 +1137,7 @@ tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
         if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     }
     scope_bind(env, name, ann, ref)
+    tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
     graph_build_typed(b, decl, ann)
@@ -1501,6 +1509,7 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     k.hint = ann
     vt, r := tc_shape_literal(k, s, ann, bindings, env, .Into if b != nil else .None, graph_dest_var(name, decl, ann))
     scope_bind(env, name, ann, ref)
+    tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
     if b = tc_building(k); b == nil { return }
     graph_build_typed(b, decl, ann)

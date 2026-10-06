@@ -91,6 +91,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     ft := matched_fts[0]
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
+    k.annot.forms[tc_sid(k, n)] = .Dispatch
     // (What each param receives, kept: a `_`'s default, its own (dispatched
     // whole, no slot), the rest's after the arguments.)
     received := make([dynamic]Arg, 0, len(ft.params), context.temp_allocator)

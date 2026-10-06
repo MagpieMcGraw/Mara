@@ -40,6 +40,7 @@ tc_register_const :: proc(k: ^TC, def, value: Tree_Id, env, mod: ^Type_Scope) {
 tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     if kc.state != .Unresolved { return }
     kc.state = .In_Progress
+    tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
     t := k.t
     span := tree_span(t, kc.def)
