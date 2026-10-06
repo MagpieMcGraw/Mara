@@ -1172,9 +1172,9 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op - e.node] = tmp
             return true
         }
-        d := pg.refers[op]
-        if d == NO_NODE || d not_in pg.tables || !is_table_const(pg.type_[op]) { return false }
-        e.value[op - e.node] = const_table(g, pg, d, span)
+        c, names := pg.constant[op]
+        if !names || c not_in pg.tables || !is_table_const(pg.type_[op]) { return false }
+        e.value[op - e.node] = const_table(g, pg, c, span)
     case .Byte_Read:
         return llvm_byte_read(e, op, ops, span)
     case .Print:

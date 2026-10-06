@@ -150,10 +150,16 @@ Program_Graph :: struct {
     // value (a literal, a variant).
     assert_sides: map[Node_Id][2]string,
 
-    // Each table's value, by its constant's declaration, computed from its
-    // code (graph_fold_uses); and the uses of constants that have none.
-    tables:      map[Node_Id]^Fold,
-    table_names: map[Node_Id]string,   // each one's symbol's
+    // A constant, by its value's node (Graph_Named.value): an operation that
+    // names one — its value at the use, a table's global — and each one's
+    // code.
+    constant:   map[Node_Id]Syntax_Id,
+    const_code: map[Syntax_Id]Node_Id,
+
+    // Each table's value, by its constant, computed from its code
+    // (graph_fold_uses); and the uses of constants that have none.
+    tables:      map[Syntax_Id]^Fold,
+    table_names: map[Syntax_Id]string,   // each one's symbol's
     fold_errors: [dynamic]Fold_Error,
 
     // A fun that consumes a param into its result → which param, by its
@@ -310,10 +316,6 @@ Graph_Builder :: struct {
     module_list:  [dynamic]Graph_Module_Stmt,
     def_segs:     map[Syntax_Id]Graph_Def_Built,   // a body's constants, built as settled
     const_segs:   map[Syntax_Id]int,               // each constant's code, by its statement (graph_const_begin)
-    // Each constant's declaration, by its value's identity, and the table
-    // globals waiting to name theirs.
-    const_decls: map[Syntax_Id]Node_Id,
-    tables:      [dynamic]Graph_Table,
     // Every name the checker's table has a constant under, by its value's id
     // (a module's constant is there under its flat name and its bare one):
     // what its table is named (graph_table_names).
@@ -379,12 +381,6 @@ Graph_Anchor :: struct {
 // says which statement that is.
 @(private="file")
 STMT_ANCHOR :: i32(-2)
-
-@(private="file")
-Graph_Table :: struct {
-    global: Node_Id,
-    value:  Syntax_Id,
-}
 
 // A declaration made in the code being built, by the token that declares it:
 // what a name its token declares refers to there. (A union match's arms that
@@ -559,10 +555,8 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     }
     delete(b.runs)
     delete(b.locals)
-    delete(b.const_decls)
     delete(b.constant_names)
     delete(b.const_segs)
-    delete(b.tables)
     for s in b.segs {
         delete(s.pieces)
         delete(s.anchors)
@@ -620,7 +614,6 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     append(&g.run_first, i32(len(g.run_ops)))
     graph_canonicalize(b)
     graph_link_calls(b)
-    graph_link_constants(b)
     graph_settle_literals(b)
 
     graph_find_consumes(g)
@@ -853,22 +846,14 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     reserve(&ng.decl_tok, len(g.decl_tok))
     for id, tk in g.decl_tok { if kept(new_id, id) { ng.decl_tok[new_id[id]] = tk } }
     for op, d in g.defer_of { if kept(new_id, op) { ng.defer_of[new_id[op]] = re(new_id, d) } }
+    for op, v in g.constant { if kept(new_id, op) { ng.constant[new_id[op]] = v } }
+    for v, d in g.const_code { if kept(new_id, d) { ng.const_code[v] = new_id[d] } }
 
     // What the builder still holds by id.
     callee_of := make(map[Node_Id]^Type_Scope, len(b.callee_of))
     for op, callee in b.callee_of { if kept(new_id, op) { callee_of[new_id[op]] = callee } }
     delete(b.callee_of)
     b.callee_of = callee_of
-    tables := 0
-    for t in b.tables {
-        if kept(new_id, t.global) { b.tables[tables] = {new_id[t.global], t.value}; tables += 1 }
-    }
-    resize(&b.tables, tables)
-    gone := make([dynamic]Syntax_Id, context.temp_allocator)
-    for k, id in b.const_decls {
-        if kept(new_id, id) { b.const_decls[k] = new_id[id] } else { append(&gone, k) }
-    }
-    for k in gone { delete_key(&b.const_decls, k) }
     b.program = new_id[b.program]
     b.nodes = len(nodes)
     graph_free_columns(g)
@@ -884,7 +869,7 @@ graph_free_columns :: proc(g: ^Program_Graph) {
     delete(g.edges); delete(g.out_first)
     delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
     delete(g.consts); delete(g.assert_sides); delete(g.consumes); delete(g.decl_tok)
-    delete(g.callee); delete(g.defer_of)
+    delete(g.callee); delete(g.defer_of); delete(g.constant); delete(g.const_code)
     delete(g.tables); delete(g.table_names); delete(g.fold_errors)
 }
 
@@ -1498,9 +1483,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     g.refers[n.op] = g.refers[id]
     if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
     if g.op[id] == .Const { graph_const_settles(b, n.op, g.type_[id]) }
-    for t in b.tables {
-        if t.global == id { append(&b.tables, Graph_Table{n.op, t.value}); break }
-    }
+    if v, names := g.constant[id]; names { g.constant[n.op] = v }
     // (A widening decided when the graph is put together: this one too, alike.)
     if f := b.body; f != nil && g.op[id] == .Cast {
         for w in f.widens {
@@ -1696,7 +1679,7 @@ Graph_Named :: struct {
 graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named) -> Operand {
     if n.value == 0 { return graph_const(b, w, span, t, name, n.known) }
     o := graph_op_value(b, .Const, w, span, t, name)
-    append(&b.tables, Graph_Table{o.op, n.value})
+    b.g.constant[o.op] = n.value
     graph_const_settles(b, o.op, t)
     return o
 }
@@ -1711,7 +1694,7 @@ graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)
 // declaration (once every one is built: a use can come first).
 graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named) -> Operand {
     o := graph_op_value(b, .Global, w, span, t, name)
-    if n.value != 0 { append(&b.tables, Graph_Table{o.op, n.value}) }
+    if n.value != 0 { b.g.constant[o.op] = n.value }
     return o
 }
 
@@ -1767,7 +1750,7 @@ graph_settle_literals :: proc(b: ^Graph_Builder) {
             if !is_infer(g.type_[o.op]) && !untyped_void { continue }
             if t := graph_literal_use(g, callee, id, k); t != nil && !is_infer(t) {
                 g.type_[o.op] = t
-                if g.op[o.op] == .Const && (o.op in g.consts || g.refers[o.op] != NO_NODE) { append(&g.settled, o.op) }
+                if g.op[o.op] == .Const && (o.op in g.consts || o.op in g.constant) { append(&g.settled, o.op) }
             }
         }
         if is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }
@@ -1832,19 +1815,9 @@ graph_link_calls :: proc(b: ^Graph_Builder) {
 graph_table_names :: proc(b: ^Graph_Builder) {
     g := b.g
     for key, v in b.constant_names {
-        d, ok := b.const_decls[v]
-        if !ok || d not_in g.tables { continue }
-        if name, named := g.table_names[d]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
-        g.table_names[d] = key
-    }
-}
-
-// Each use of a named constant names its declaration (built as the checker
-// checked it: a use can come first).
-@(private="file")
-graph_link_constants :: proc(b: ^Graph_Builder) {
-    for t in b.tables {
-        if d, ok := b.const_decls[t.value]; ok { b.g.refers[t.global] = d }
+        if v not_in g.tables { continue }
+        if name, named := g.table_names[v]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
+        g.table_names[v] = key
     }
 }
 
@@ -3622,7 +3595,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
     append(&b.g.stmts, Graph_Stmt{span = d.span, kind = d.kind})
     f.root = graph_node(b, .Const, .Explicit, NO_NODE, d.name, nil, d.span)
     b.segs[f.seg].root = f.root
-    b.const_decls[d.value] = f.root
+    b.g.const_code[d.value] = f.root
     f.contents = Graph_Contents{locals = graph_locals_enter(b), self = b.self, n = f.root, span = d.span}
     b.self = NO_NODE
     f.contents.code = graph_code_begin(b, f.root)
@@ -3647,7 +3620,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
         append(&b.bodies, f)   // settled when the graph is put together
         return
     }
-    delete_key(&b.const_decls, d.value)
+    delete_key(&b.g.const_code, d.value)
     graph_body_free(f)
 }
 
@@ -4007,6 +3980,7 @@ graph_dump_full :: proc(g: ^Program_Graph) {
             strings.write_string(&b, ")")
         }
         if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
+        if c, ok := g.constant[Node_Id(id)]; ok { fmt.sbprintf(&b, " constant=%d", c) }
         if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))

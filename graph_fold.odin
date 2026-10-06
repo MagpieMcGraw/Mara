@@ -77,8 +77,10 @@ graph_fold_uses :: proc(g: ^Program_Graph, checked: ^Checked_Program) {
         // (A constant's own code: computed where it's used.)
         if g.kind[id] == .Const { i = int(g.last[id]); continue }
         if g.kind[id] != .Op { continue }
-        d := g.refers[id]
-        if d == NO_NODE || g.kind[d] != .Const { continue }
+        c, names := g.constant[id]
+        if !names { continue }
+        d, built := g.const_code[c]
+        if !built { continue }
         #partial switch g.op[id] {
         case .Const:
             v := fold_decl(&fo, d, fold_width_of(g.type_[id]))
@@ -96,7 +98,7 @@ graph_fold_uses :: proc(g: ^Program_Graph, checked: ^Checked_Program) {
             if v.known && v.c.is_text {
                 g.consts[id] = v.c
             } else {
-                g.tables[d] = v
+                g.tables[c] = v
             }
         }
     }
@@ -189,8 +191,8 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         if c, ok := g.consts[id]; ok && c.is_text {
             out = fold_new(g.type_[id])
             out.c, out.known = c, true
-        } else if d := g.refers[id]; d != NO_NODE && g.kind[d] == .Const {
-            out = fold_decl(fo, d, .Own)
+        } else if named, names := g.constant[id]; names {
+            if d, built := g.const_code[named]; built { out = fold_decl(fo, d, .Own) }
         }
     case .Var:
         out = fold_var(fo, fc, id)
@@ -280,8 +282,10 @@ fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fo.g
     if c, ok := g.consts[id]; ok { return fold_value(g.type_[id], c) }
     if g.name[id] == "void" { return fold_value(g.type_[id], {}) }   // (written: a null)
-    d := g.refers[id]
-    if d == NO_NODE || g.kind[d] != .Const { return nil }
+    named, names := g.constant[id]
+    if !names { return nil }
+    d, built := g.const_code[named]
+    if !built { return nil }
     width := fc.width
     if width == .Own { width = fold_width_of(g.type_[id]) }
     return fold_decl(fo, d, width)
