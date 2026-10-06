@@ -6,58 +6,18 @@ import "core:strings"
 // calls the one function of the group its argument types fit; `a + b` with
 // an operand no number calls the best fit of the groups `overload +` names.
 
-// `f(args)` where f is a dispatch group: each argument checked and built (at
-// its param's type once the function is chosen), the one member they fit
-// chosen, then the call.
+// `f(args)` where f is a dispatch group: each argument checked, the one
+// member they fit chosen, then the call.
 tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]string, args: []Tree_Id,
-                         env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
+                         env: ^Type_Scope) -> Type {
     tr := k.t
     span := tree_span(tr, n)
-    b := tc_building(k) if want != .None else nil
-    if b != nil && want == .Place {
-        tc_fail(k, "a call's place")
-        b = nil
-    }
-    // (A `_`: the default the chosen function has there — its place in the
-    // arguments reserved, its value built once it is chosen.)
+    // (A `_`: the default the chosen function has there — checked once it
+    // is chosen.)
     underscore := make([]bool, len(args), context.temp_allocator)
     for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
-    laters := make([]Graph_Later, len(args), context.temp_allocator)
-    vals := make([dynamic]Operand, context.temp_allocator)
-    widens := make([dynamic]int, context.temp_allocator)
-    array_values := make([dynamic]bool, context.temp_allocator)
-    literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     arg_types := make([dynamic]Type, context.temp_allocator)
-    for a, i in args {
-        if underscore[i] {
-            append(&arg_types, nil)
-            if b != nil && tc_building(k) != nil {
-                laters[i] = graph_build_later(b)
-                append(&vals, NO_VALUE)
-                append(&widens, -1)
-                append(&array_values, false)
-            }
-        } else if b != nil && tc_building(k) != nil {
-            from := b.nodes
-            t, r := tc_arg(k, a, env, .Either, w)
-            append(&arg_types, t)
-            if tc_building(k) == nil { continue }
-            _, is_array := distinct_base(t).(^Type_Fixed_Array)
-            u := tc_unparen(k, a)
-            if tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) ||
-               tr.tag[u] == .Slice && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
-                tc_fail(k, "bytes as a dispatch's argument")
-                continue
-            }
-            v, wi := graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
-            append(&vals, v)
-            append(&widens, wi)
-            append(&array_values, is_array && !r.place)
-            if tr.tag[u] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
-        } else {
-            append(&arg_types, k.recv.t if a == k.recv.node else tc_check(k, a, env))
-        }
-    }
+    for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a, env)) }
     matched := make([dynamic]string, context.temp_allocator)
     matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
     candidates: for f in members {
@@ -82,11 +42,11 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         names := make([dynamic]string, context.temp_allocator)
         for at, i in arg_types { append(&names, "_" if underscore[i] else type_name(at)) }
         tc_error(k, span, TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT, name, strings.join(names[:], ", "))
-        return Type_Error{}, {}
+        return Type_Error{}
     }
     if len(matched) > 1 {
         tc_error(k, span, TYPE_AMBIGUOUS_DISPATCH_MATCHES_MULTIPLE_OVERLOADS, name, strings.join(matched[:], ", "))
-        return Type_Error{}, {}
+        return Type_Error{}
     }
     ft := matched_fts[0]
     tc_set_callee(k, n, ft)
@@ -105,53 +65,17 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         }
     }
     tc_set_args(k, n, received[:])
-    ret := fn_primary_return(ft)
     // (Its defaults — a `_`'s, then the params it leaves off: each in its
-    // function's defining scope, run at the call; a call site's (`#caller_name`)
-    // where the call is.)
+    // function's defining scope; a call site's (`#caller_name`) where the
+    // call is.)
     callee := callee_def_scope(ft)
     if callee == nil { callee = env }
-    default_at :: proc(k: ^TC, def: Tree_Id, env, callee: ^Type_Scope, want: Build_Want, w: Written, at: Span) -> (Type, Built) {
-        if k.t.tag[def] == .Hash_Name { return tc_hash_name(k, def, env, want, w, at) }
-        return tc_expr(k, def, callee, want, .Implied)
-    }
-    for a, i in args {
-        if !underscore[i] { continue }
+    for i in 0 ..< len(ft.params) {
+        if i < len(args) && !underscore[i] { continue }
         def := ft.params[i].default_node
-        built := b != nil && tc_building(k) != nil
-        if !built {
-            default_at(k, def, env, callee, .None, w, tree_span(tr, a))
-            continue
-        }
-        graph_build_later_begin(b, &laters[i])
-        t, r := default_at(k, def, env, callee, .Either, w, tree_span(tr, a))
-        if tc_building(k) != nil { vals[i] = tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}) }
-        if !graph_build_later_end(b, &laters[i]) { tc_fail(k, "a default for `_` across runs") }
+        if tr.tag[def] == .Hash_Name { tc_hash_name(k, def, env) } else { tc_check(k, def, callee) }
     }
-    for i := len(args); i < len(ft.params); i += 1 {
-        def := ft.params[i].default_node
-        if b == nil || tc_building(k) == nil {
-            default_at(k, def, env, callee, .None, w, span)
-            continue
-        }
-        t, r := default_at(k, def, env, callee, .Either, w, span)
-        if tc_building(k) != nil { append(&vals, tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i})) }
-    }
-    b = tc_building(k) if b != nil else nil
-    if b == nil { return ret, {} }
-    for wi, i in widens {
-        if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, i }
-    }
-    if build_views_value(ft, array_values[:]) {
-        tc_fail(k, "an array's value viewed by a dispatch's param")
-        return ret, {}
-    }
-    for la in literals {
-        if la.arg >= len(ft.params) { continue }
-        pt := ft.params[la.arg].type_
-        if graph_aggregate(pt) && pt != la.t { graph_build_retype_literal(b, la.from, la.to, pt) }
-    }
-    return ret, {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
+    return fn_primary_return(ft)
 }
 
 // The function `l op r` calls, when an operand is no number: of the groups

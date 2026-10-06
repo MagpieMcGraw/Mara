@@ -4,12 +4,11 @@ package mara
 // type path x names (`Type.f`, `mod.f`, `Outer.Inner.f`: a static call — by
 // a struct's value, an instance's, x its first argument when it takes Self);
 // a type it holds (`Outer.Inner()`: construction); a module's dispatch; else
-// x a value, built here — a method of its struct's, or `f(x, args)`. The
-// receiver's build dropped where it is no argument. (`addressed`: the `&`
-// written around the call — `&x.f()`, x's address the receiver, a value.)
+// x a value, checked here — a method of its struct's, or `f(x, args)`.
+// (`addressed`: the `&` written around the call — `&x.f()`, x's address the
+// receiver, a value.)
 
-tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written,
-                       dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> (Type, Built) {
+tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_Id(0)) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     mv := method_view(tr, n)
@@ -23,10 +22,6 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
             tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
     }
-    b := tc_building(k)
-    build := want != .None && b != nil
-    mark: Graph_Mark
-    if build { mark = graph_build_mark(b) }
     recv := mv.receiver
     arg := addressed if addressed != 0 else recv   // (the receiver, as an argument)
     args := mv.args
@@ -55,7 +50,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
                     qual_dispatch, resolved = fns[:], true
                 } else if sd_is_module(qsd) {
                     tc_error(k, span, TYPE_MODULE_FUNCTION, qsd.name, name)
-                    return Type_Error{}, {}
+                    return Type_Error{}
                 }
             }
         }
@@ -85,12 +80,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
     }
     if !resolved {
         // (A value: a method of its struct's, else `f(x, args)`.)
-        ask: Build_Want = .Either if build else .None
-        qt: Type
-        qr: Built
-        if addressed != 0 { qt, qr = tc_unary(k, addressed, env, ask, w, of = recv) } else { qt, qr = tc_expr(k, recv, env, ask, w) }
-        k.recv = {node = arg, t = qt, r = qr}
-        k.annot.receivers[tc_sid(k, n)] = true   // (built as a value, before its method is found)
+        qt := tc_unary(k, addressed, env, of = recv) if addressed != 0 else tc_check(k, recv, env)
+        k.recv = {node = arg, t = qt}
+        k.annot.receivers[tc_sid(k, n)] = true   // (checked as a value, before its method is found)
         tc_struct_of(k, qt)
         if st := resolve_to_struct_type(k.c, qt); st != nil {
             if fn, has := st.functions[name]; has && fn != nil {
@@ -101,12 +93,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
         }
         if !resolved { args = tc_with_receiver(arg, args) }
     }
-    if build && k.recv.r.ok && (len(args) == 0 || args[0] != arg) {
-        if bb := tc_building(k); bb != nil { graph_build_drop_since(bb, mark) }
-    }
-    if failed { return Type_Error{}, {} }
+    if failed { return Type_Error{} }
     callee_name := tc_call_name(k, n)
-    return tc_call_core(k, n, callee_name, args, env, want, w, dest, temp, temp_span, qual, qual_dispatch)
+    return tc_call_core(k, n, callee_name, args, env, qual, qual_dispatch)
 }
 
 // An instance's method: x its first argument, when the method takes Self (a

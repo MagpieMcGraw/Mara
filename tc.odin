@@ -5,21 +5,21 @@ import "core:slice"
 import "core:strings"
 
 // The type checker, on the flat tree (design/flat_tree.md). It fills the
-// Checked_Program — the symbol table, the Type_Scopes, the program
-// graph (built as each body is checked, through the builder), the
-// diagnostics — from the tree as written: nothing lowered, nothing cloned.
+// Checked_Program — the symbol table, the Type_Scopes, the diagnostics —
+// from the tree as written: nothing desugared, nothing cloned. It only
+// checks: what it finds about a node is kept by its id, in the instance it
+// is checked in (annot.odin), and the program graph is lowered from the
+// tree and those annotations once it is done (lower.odin;
+// design/annotated_tree.md).
 //
-// What checking an expression builds is what it returns (tc_expr: its type
-// and what it built), not a side channel. What the checker finds about a node
-// is kept by its id, in the instance it is checked in (annot.odin), for the
-// passes after it.
+// Checking an expression returns its type (tc_check), not a side channel.
 
 TC :: struct {
     t:             ^Tree,
     c:             ^Checker,          // the error sink and table the shared passes and helpers take
     table:         ^SymbolTable,
     checked:       ^Checked_Program,
-    gb:            ^Graph_Builder,
+    gb:            ^Graph_Builder,    // lowering's builder, while it runs (lower.odin)
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
     root:          ^Type_Scope,       // the main module's scope: the root env
@@ -47,18 +47,14 @@ TC :: struct {
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
-    recv:          TC_Recv,           // the call being checked's receiver, built
+    recv:          TC_Recv,           // the call being checked's receiver, checked
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
-    byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
-    span_read:     Built_Span_Read,    // the span of bytes last built to be read as its destination's type
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     union_templates: map[string]TC_Template,   // each generic union, by name
-    parallel:      ^[dynamic]TC_Held, // assigned together (`a, b = b, a`): each store, held
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
-    compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
 // What the checker checked, in the order it did — a body, a constant, a
@@ -84,10 +80,9 @@ tc_event :: proc(k: ^TC, e: TC_Event) {
     append(&k.events, e)
 }
 
-// A module's statement settled: what it declares, for the builder.
+// A module's statement settled: what it declares, for lowering.
 tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id, declared: Graph_Declared) {
     tc_event(k, {kind = .Module_Stmt, sid = sid, declared = declared})
-    if k.gb != nil { graph_module_stmt(k.gb, sid, declared) }
 }
 
 // A fun or a struct as registered: its type, its definition, the scope its
@@ -171,18 +166,6 @@ tc_call_name :: proc(k: ^TC, n: Tree_Id) -> string {
 // Whether a node is a call: plain, or of a method.
 tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
     return k.t.tag[n] == .Call || k.t.tag[n] == .Method_Call
-}
-
-// The builder, while the body being checked is one the checker builds and
-// nothing has stopped it.
-tc_building :: proc(k: ^TC) -> ^Graph_Builder {
-    b := k.gb
-    if b == nil || b.body == nil || b.body.failed != "" || k.c.errors > 0 { return nil }
-    return b
-}
-
-tc_fail :: proc(k: ^TC, reason: string) {
-    if b := tc_building(k); b != nil { graph_body_fail(b, b.body, reason) }
 }
 
 // --- the program --------------------------------------------------------------
@@ -278,7 +261,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         checked.functions[key] = ft
     }
     tc_event(k, {kind = .Program_Struct})
-    tc_program_struct(k)
     tc_validate_allocator(k)
     tc_validate_main(k, main)
 

@@ -2,7 +2,7 @@ package mara
 
 import "core:slice"
 
-// Lowering structs (tc_struct.odin's building): fields, literals,
+// Lowering structs (what tc_struct.odin checks): fields, literals,
 // constructions, unions' variants, writes to a field or through a pointer.
 
 // `x.f` (tc_field): a struct's field — through a pointer, what it points at;
@@ -21,15 +21,14 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     }
     // (`pkg.X` inside pkg: its own constant.)
     if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
-        if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok { return tc_const_use(k, kc, n, tc_node_type(k, n), want, w) }
+        if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok { return lw_const_use(k, kc, n, tc_node_type(k, n), want, w) }
     }
-    ask: Build_Want = .Place if tc_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
+    ask: Build_Want = .Place if lw_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
     mark := graph_build_mark(b)
     br := lw_expr(k, base, ask, w, temp_span = span)
     bt := tc_node_type(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        _, r := tc_module_member(k, n, sd, field, bt, br, mark, true, want, w)
-        return r
+        return lw_module_member(k, n, sd, field, bt, br, mark, want, w)
     }
     if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has {
@@ -49,7 +48,31 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
         return {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
     }
     if !is_member { return {} }
-    p := tc_member_place(k, n, field, br, bt, t, tc_is_self(k, base))
+    p := lw_member_place(k, n, field, br, bt, t, tc_is_self(k, base))
+    if p == NO_VALUE { return {} }
+    if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
+    return {v = p, place = true, ok = true}
+}
+
+// `m.X`, m a module (tc_module_member): an enum's variant it holds, its
+// value; its constant, a value of its own (the base, built, left out); else
+// its member.
+lw_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, br: Built, mark: Graph_Mark,
+                         want: Build_Want, w: Written) -> Built {
+    b := k.gb
+    span := tree_span(k.t, n)
+    t := tc_node_type(k, n)
+    if _, found := scope_lookup(sd_module_scope(sd), field); !found {
+        et, is_enum := t.(^Type_Enum)
+        if !is_enum { lw_fail(k, n, "a module's member of no enum") }
+        graph_build_drop_since(b, mark)
+        return lw_enum_value(k, et, et.variants[field], field, span, want, w)
+    }
+    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const {
+        graph_build_drop_since(b, mark)
+        return lw_const_use(k, kc, n, t, want, w)
+    }
+    p := lw_member_place(k, n, field, br, bt, t)
     if p == NO_VALUE { return {} }
     if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
     return {v = p, place = true, ok = true}
@@ -60,10 +83,16 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
 lw_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span, want: Build_Want, w: Written,
                       dest: Dest, temp: bool, temp_span: Span) -> Built {
     if ut, is_union := t.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
-    return tc_variant_value(k, t.(^Type_Enum), lw_variant_value(t, name), name, span, want, w)
+    return lw_enum_value(k, t.(^Type_Enum), lw_variant_value(t, name), name, span, want, w)
 }
 
-// A union's variant as a value (tc_union_variant): constructed where it goes
+// An enum's variant, as a value: its tag, known.
+lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written) -> Built {
+    if want == .None || want == .Place { return {} }
+    return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
+}
+
+// A union's variant as a value (tc_variant_of): constructed where it goes
 // — else in a temporary — then its fields' defaults.
 lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Built {
@@ -73,14 +102,14 @@ lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want
         d := dest
         if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }
         lw_variant_build(k, ut, name, d, span)
-        return tc_built(k, want, temp, temp, d, ut, temp_span, false)
+        return lw_built(k, want, temp, temp, d, ut, temp_span, false)
     }
     d := graph_build_temp(b, span, ut)
     lw_variant_build(k, ut, name, d, span)
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
 }
 
-// A variant built at d (tc_variant_build): its construction, then its defaults.
+// A variant built at d: its construction, then its defaults.
 lw_variant_build :: proc(k: ^TC, t: Type, name: string, d: Dest, span: Span) {
     st := graph_build_variant(k.gb, t, name, d, span)
     dd := d
@@ -166,7 +195,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     } else if !zero && !empty {
         lw_literal_fields(k, n, entries, sd, gl)
     }
-    return tc_built(k, want, in_temp, into_temp, d, t, at, placed)
+    return lw_built(k, want, in_temp, into_temp, d, t, at, placed)
 }
 
 // `all v` into an array (tc_broadcast_fill): v, then the fill.
@@ -231,11 +260,11 @@ lw_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 lw_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, gl: ^Graph_Literal) {
     d := graph_build_literal_field(gl, name, i)
     r := lw_expr(k, value, .Into, dest = d, temp_span = span)
-    tc_store(k, value, tc_node_type(k, value), r, d, span)
-    tc_byte_view_address(k, f.type_, value)
+    lw_store(k, value, tc_node_type(k, value), r, d, span)
+    lw_byte_view_address(k, f.type_, value)
 }
 
-// `Foo(args)` (tc_construct): its constructor run where it goes (else in a
+// `Foo(args)`: its constructor run where it goes (else in a
 // temporary), then its override block's fields.
 lw_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: Build_Want, w: Written,
                      dest: Dest, temp: bool, temp_span: Span, made := false, overrides := Tree_Id(0)) -> Built {
@@ -296,12 +325,12 @@ lw_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         // (A header's field, an array's swizzle.)
         ft := build_target_field_type(bt, field)
         if ft == nil { lw_fail(k, target, "a write to an unknown field") }
-        lw_store_at(k, value, tc_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
+        lw_store_at(k, value, lw_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
         return
     }
     ft := resolve_struct_field(sd, field)
     if ft == nil { lw_fail(k, target, "a write to an unknown field") }
-    lw_store_at(k, value, tc_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
+    lw_store_at(k, value, lw_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
 }
 
 // `p^ = v` (tc_deref_assign): the place p points at, then v into it.
@@ -325,11 +354,11 @@ lw_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, span: Span, op_tok: 
     pt := b.g.type_[place.op] if place.op != NO_NODE else nil
     d := Dest{kind = .At, at = place, type_ = pt}
     if op_tok != 0 {
-        saved := k.compound
-        k.compound = {target, place}
+        saved := k.lower.compound
+        k.lower.compound = {target, place}
         r := lw_compound_value(k, s, op_tok, target, value, .Into)
-        k.compound = saved
-        tc_store(k, 0, tc_node_type(k, s), r, tc_parallel_hold(k, d, span), span, settle = true)
+        k.lower.compound = saved
+        lw_store(k, 0, tc_node_type(k, s), r, lw_parallel_hold(k, d, span), span, settle = true)
         return
     }
     if tc_is_void(k, value) {
@@ -337,5 +366,5 @@ lw_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, span: Span, op_tok: 
         return
     }
     r := lw_expr(k, value, .Into, dest = d, temp = true, temp_span = span)
-    tc_store(k, value, tc_node_type(k, value), r, tc_parallel_hold(k, d, span), span, settle = true)
+    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, d, span), span, settle = true)
 }

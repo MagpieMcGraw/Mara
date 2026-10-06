@@ -11,18 +11,24 @@ import "core:strings"
 // It replays what the checker checked, in the order it did (TC.events): each
 // module's statements settled, each constant, each body — in the instance it
 // was checked in (its salt, so tc_node_type and the rest read that
-// instance's annotations). A body's statements and expressions are built as
-// the checker built them while it checked: the same builder, the same calls
-// in the same order, each value's type the one annotated on its node.
+// instance's annotations). A body's statements and expressions are built in
+// the order the checker checked them, through the one builder, each value's
+// type the one annotated on its node.
 //
-// While it runs, the builder is k.gb: the build helpers the checker shares
-// (tc_store, tc_value_as, tc_value, tc_built, …) build for it as they built
-// for the checker. What lowering can't build yet stops the build, saying so.
+// While it runs, the builder is k.gb, and its state is k.lower; the helpers
+// that take a value to its use (lw_store, lw_value_as, lw_built, …) are in
+// lower_build.odin. What lowering can't build stops the build, saying so
+// (lw_fail).
 // ---------------------------------------------------------------------------
 
 // The lowering's own state: the body being built.
 Lower :: struct {
-    ts: ^Type_Scope,   // the fun or struct whose code is being built (nil: a constant's)
+    ts:         ^Type_Scope,                // the fun or struct whose code is being built (nil: a constant's)
+    recv:       struct { node: Tree_Id, t: Type, r: Built },   // the call being built's receiver, built
+    byte_addrs: map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
+    span_read:  Built_Span_Read,            // the span of bytes last built to be read as its destination's type
+    parallel:   ^[dynamic]LW_Held,          // assigned together (`a, b = b, a`): each store, held
+    compound:   struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
 lower_program :: proc(k: ^TC) -> ^Graph_Builder {
@@ -42,7 +48,7 @@ lower_program :: proc(k: ^TC) -> ^Graph_Builder {
         case .Module_Stmt:    graph_module_stmt(b, e.sid, e.declared)
         case .Const:          lw_const(k, e.kc)
         case .Body:           lw_body(k, e.sc)
-        case .Program_Struct: tc_program_struct(k)
+        case .Program_Struct: lw_program_struct(k)
         }
     }
     return b
@@ -52,7 +58,7 @@ lw_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) -> ! {
     graph_fatal(tree_span(k.t, n), "lower: %s is not supported yet (%v)", what, k.t.tag[n])
 }
 
-// What the checker built, and lowering couldn't: the build stops, saying why.
+// What lowering can't build: the build stops, saying why.
 lw_fail :: proc(k: ^TC, n: Tree_Id, reason: string) -> ! {
     graph_fatal(tree_span(k.t, n), "lower: %s", reason)
 }
@@ -72,8 +78,24 @@ lw_const :: proc(k: ^TC, kc: ^TC_Const) {
     defer k.lower = saved
     at := graph_dest_var(kc.name, f.root, nil if is_untyped(ann) else ann)
     r := lw_expr(k, kc.value, .Into, dest = at, temp_span = span)
-    tc_store(k, kc.value, tc_node_type(k, kc.value), r, graph_dest_var(kc.name, f.root, kc.t), span, settle = true)
+    lw_store(k, kc.value, tc_node_type(k, kc.value), r, graph_dest_var(kc.name, f.root, kc.t), span, settle = true)
     graph_const_end(b, f, kc.t)
+}
+
+// A use of a constant: its value (a table's global, read; asked its place, the
+// global itself).
+lw_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Want, w: Written) -> Built {
+    b := k.gb
+    if want == .None { return {} }
+    span := tree_span(k.t, n)
+    named := Graph_Named{value = kc.sid}
+    if graph_aggregate(t) {
+        g := graph_const_global(b, w, span, t, kc.name, named)
+        if want == .Value { return {v = graph_read(b, g, t, span), ok = true} }
+        return {v = g, place = true, ok = true}
+    }
+    if want == .Place { return {} }
+    return {v = graph_named_const(b, w, span, t, kc.name, named), ok = true}
 }
 
 // A fun's or a struct's body (tc_scope_body): its code, statement by
@@ -91,6 +113,35 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) {
     f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit)
     if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil, top = true) }
     graph_body_end(b, f)
+}
+
+// The program's struct (the compiler's): built from mara.core's declaration
+// of it — its fields, each a declaration, and no code (nothing constructs
+// it: main's entry sets up its storage).
+lw_program_struct :: proc(k: ^TC) {
+    pt := k.table.funs["Program"] or_else nil
+    if pt == nil || pt.body_span == {} { return }
+    t := k.t
+    for _, tmpl in k.templates {
+        span := tree_span(t, tmpl.def)
+        if span != pt.body_span { continue }
+        v := scope_view(t, tmpl.node)
+        f := graph_body_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
+        b := k.gb
+        for s in v.body {
+            if t.tag[s] != .Decl {
+                graph_body_fail(b, f, "the program's struct declares no field")
+                break
+            }
+            ss := tree_span(t, s)
+            graph_build_body_stmt(b, ss, true)
+            saved := graph_build_stmt(b, tc_sid(k, s), ss, tc_stmt_kind(k, s), fresh = true)
+            for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), ss) }
+            graph_build_stmt_end(b, saved)
+        }
+        graph_body_end(b, f)
+        return
+    }
 }
 
 // A block's statements (tc_scope).
@@ -219,10 +270,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
             lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
             return
         }
-        lw_decl_bare(k, target, name, ann, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
+        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
     }
-    decl := tc_field_decl(k, fields_of, name, target, value, span)
+    decl := lw_field_decl(k, fields_of, name, target, value, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     prefix: [2]Node_Id
     prefixed := false
@@ -241,9 +292,9 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     k.field_default = saved_field
     vt := tc_node_type(k, value)
     final := tc_node_type(k, target)
-    if !is_any(ann) { tc_byte_view_address(k, ann, value) }
+    if !is_any(ann) { lw_byte_view_address(k, ann, value) }
     graph_build_typed(b, decl, final)
-    wrote, zeroed := tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
+    wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
     if prefixed {
         fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
         graph_build_prefix_end(b, prefix, zeroed || wrote && fills, final)
@@ -275,7 +326,7 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     graph_build_bare(b, decl, ann, nil, args, span)
 }
 
-// `s : [:n]T` (tc_decl_sized): its local, then n of T for it.
+// `s : [:n]T` (tc_decl_bare): its local, then n of T for it.
 lw_decl_sized :: proc(k: ^TC, name: string, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
     b := k.gb
     decl := field
@@ -301,9 +352,9 @@ lw_ctor_args :: proc(k: ^TC, ts: ^Type_Scope, span: Span) -> []Operand {
 
 // A default, built where what leaves it off runs it (tc_default).
 lw_default :: proc(k: ^TC, def: Tree_Id, t: Type, span: Span, w: Graph_Widen) -> Operand {
-    use, at := tc_use_type(k, def, t, span)
+    use, at := lw_use_type(k, def, t, span)
     r := lw_expr(k, def, .Either, .Implied, dest = use, temp_span = at)
-    return tc_value_as(k, def, tc_node_type(k, def), r, t, span, w)
+    return lw_value_as(k, def, tc_node_type(k, def), r, t, span, w)
 }
 
 // --- assignments ------------------------------------------------------------
@@ -355,8 +406,8 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
-    tc_byte_view_address(k, existing, value)
-    tc_store(k, value, tc_node_type(k, value), r, tc_parallel_hold(k, graph_dest_var(name, NO_NODE, distinct_base(existing)), span), span)
+    lw_byte_view_address(k, existing, value)
+    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(name, NO_NODE, distinct_base(existing)), span), span)
 }
 
 // `x op= v` (tc_compound): `x = x op v`, at the `op=`.
@@ -380,7 +431,7 @@ lw_compound :: proc(k: ^TC, s: Tree_Id) {
     name := tc_name(k, target)
     existing := tc_node_type(k, target)
     fr := lw_compound_value(k, s, op_tok, target, value, .Into)
-    tc_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, NO_NODE, distinct_base(existing)), span)
+    lw_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, NO_NODE, distinct_base(existing)), span)
 }
 
 // A compound assignment's operation (tc_compound_value).
@@ -413,7 +464,7 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
                 text_held = graph_build_later(b)
             }
         }
-        use, at := tc_use_type(k, val, want, span)
+        use, at := lw_use_type(k, val, want, span)
         held: Graph_Later
         if is_slice_type(want) { held = graph_build_later(b) }
         r := lw_expr(k, val, .Either, dest = use, temp_span = at)
@@ -425,12 +476,12 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
             if !graph_build_later_end(b, &text_held) { lw_fail(k, val, "a text constant returned across runs") }
         }
         if !text {
-            append(&vals, tc_value_as(k, val, vt, r, want, span, {to = want}, &held))
+            append(&vals, lw_value_as(k, val, vt, r, want, span, {to = want}, &held))
         } else {
-            tc_store(k, val, vt, r, graph_dest_var("temp", slot, want), span)
+            lw_store(k, val, vt, r, graph_dest_var("temp", slot, want), span)
             append(&vals, graph_read(b, graph_var(b, "temp", slot, want, span), want, span))
         }
-        tc_byte_view_address(k, want, val)
+        lw_byte_view_address(k, want, val)
     }
     graph_build_return(b, vals[:], span)
 }
@@ -466,7 +517,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     case .For_Each:
         ct: Type
         coll := NO_VALUE
-        if !tc_pure_place(k, v.collection) {
+        if !lw_pure_place(k, v.collection) {
             ct = lw_loop_items(k, &fl, v.collection)
         } else {
             r := lw_expr(k, v.collection, .Place)
@@ -516,7 +567,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// A loop's collection that is no plain place (tc_loop_items): held in the
+// A loop's collection that is no plain place: held in the
 // loop's own local, or viewed.
 lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
     b := k.gb
@@ -537,22 +588,22 @@ lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
         graph_build_items_view(b, fl, &gi, r.v, r.place, t, view, tc_is_self(k, e), fills)
     } else {
         graph_build_typed(b, fl.coll_slot, t)
-        tc_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
+        lw_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
     }
     return t
 }
 
-// A value built into a destination, then stored there (tc_store_into).
+// A value built into a destination, then stored there.
 lw_store_into :: proc(k: ^TC, e: Tree_Id, d: Dest, span: Span, settle := false) -> Type {
     r := lw_expr(k, e, .Into, dest = d, temp_span = span)
     t := tc_node_type(k, e)
-    tc_store(k, e, t, r, d, span, settle)
+    lw_store(k, e, t, r, d, span, settle)
     return t
 }
 
 // --- expressions ----------------------------------------------------------------
 
-// An expression built as its use asks (tc_expr): its value, its place, either,
+// An expression built as its use asks (tc_check): its value, its place, either,
 // or into a destination.
 lw_expr :: proc(k: ^TC, n: Tree_Id, want := Build_Want.Value, w := Written.Explicit,
                 dest := Dest{}, temp := false, temp_span := Span{}) -> Built {
@@ -560,18 +611,18 @@ lw_expr :: proc(k: ^TC, n: Tree_Id, want := Build_Want.Value, w := Written.Expli
     b := k.gb
     // (A compound assignment's target, read in its operation: through the
     // place already built.)
-    if n == k.compound.target {
+    if n == k.lower.compound.target {
         t := tc_node_type(k, n)
         span := tree_span(k.t, n)
-        if want == .Value { return {v = graph_read(b, k.compound.place, t, span), ok = true} }
-        return {v = k.compound.place, place = true, ok = true}
+        if want == .Value { return {v = graph_read(b, k.lower.compound.place, t, span), ok = true} }
+        return {v = k.lower.compound.place, place = true, ok = true}
     }
-    if want == .Place && tc_holds(k, n) {
+    if want == .Place && lw_holds(k, n) {
         p := lw_hold(k, n, temp_span if temp_span != {} else tree_span(k.t, n))
         return {v = p, place = true, ok = p != NO_VALUE}
     }
     r := lw_expr_impl(k, n, want, w, dest, temp, temp_span)
-    if !r.ok { lw_fail(k, n, fmt.tprintf("a %v the checker built and lowering didn't", k.t.tag[n])) }
+    if !r.ok { lw_fail(k, n, fmt.tprintf("a %v lowering builds nothing for", k.t.tag[n])) }
     return r
 }
 
@@ -671,7 +722,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     case ref.kind == .Variant:
         return lw_variant_of(k, t, name, span, want, w, dest, temp, temp_span)
     case ref.kind == .Const:
-        return tc_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w)
+        return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w)
     case name == "void":
         if want == .Place { return {} }
         return {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
@@ -712,7 +763,7 @@ lw_const_of :: proc(k: ^TC, use: Tree_Id, decl: Token_Id) -> ^TC_Const {
     return kc
 }
 
-// Its place, when it has none (tc_hold): a temporary made first, the value
+// Its place, when it has none: a temporary made first, the value
 // stored in it.
 lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     b := k.gb
@@ -721,7 +772,7 @@ lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     d := graph_dest_var("temp", slot, nil)
     r := lw_expr(k, n, .Into, dest = d, temp_span = span)
     t := tc_node_type(k, n)
-    tc_store(k, n, t, r, d, span)
+    lw_store(k, n, t, r, d, span)
     graph_build_prefix_end(b, prefix, is_partial_array(t) && (k.t.tag[n] == .String || is_slice_type(t)), t)
     graph_build_typed(b, slot, t)
     return graph_var(b, "temp", slot, t, span)
@@ -755,20 +806,20 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
         arg: Operand
         if len(callee.params) > 0 {
             pt := callee.params[0].type_
-            arg = tc_value_as(k, operand, ot, r, pt, span, {to = pt})
+            arg = lw_value_as(k, operand, ot, r, pt, span, {to = pt})
         } else {
-            arg = tc_value(k, r, operand, ot)
+            arg = lw_value(k, r, operand, ot)
         }
         kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
         return {v = {graph_call_op(b, kind, w, span, callee, ret, arg), 0}, ok = true}
     }
     if op == .Ampersand {
         a := graph_op_value(b, .Address, w, span, t, "", r.v)
-        if tc_byte_index(k, operand) { k.byte_addrs[tc_sid(k, n)] = {a.op, r.v.op} }
+        if tc_byte_index(k, operand) { k.lower.byte_addrs[tc_sid(k, n)] = {a.op, r.v.op} }
         return {v = a, ok = true}
     }
     v := r.v
-    if either { v = tc_value(k, r, operand, ot) }
+    if either { v = lw_value(k, r, operand, ot) }
     word := "-%" if wrapping else graph_token_text(.Minus if op == .Minus else op)
     return {v = graph_op_value(b, .Unary, w, span, t, word, v), ok = true}
 }
@@ -883,13 +934,13 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     prefix: [2][2]Node_Id
     for branch, i in ([2]Tree_Id{then_n, else_n}) {
         if i == 1 { graph_build_if_expr_else(b, &gi) }
-        if tc_may_fill_prefix(k, branch) { prefix[i] = graph_build_prefix(b, "if", slot, span) }
+        if lw_may_fill_prefix(k, branch) { prefix[i] = graph_build_prefix(b, "if", slot, span) }
         r := lw_expr(k, branch, .Into, dest = graph_dest_var("if", slot, nil))
         types[i] = tc_node_type(k, branch)
         if r.into { continue }
-        if tc_builds_into(k, branch) || tc_byte_index(k, branch) { lw_fail(k, branch, "an if's branch built in place, or of bytes") }
+        if lw_builds_into(k, branch) || tc_byte_index(k, branch) { lw_fail(k, branch, "an if's branch built in place, or of bytes") }
         count := len(b.body.widens)
-        val := graph_build_widen(b, tc_value(k, r, branch, types[i]), span, {pending = true})
+        val := graph_build_widen(b, lw_value(k, r, branch, types[i]), span, {pending = true})
         if len(b.body.widens) > count { widen[i] = count }
         graph_build_write_at(b, graph_var(b, "if", slot, nil, span), val, span)
     }
@@ -933,9 +984,9 @@ lw_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, te
 
 lw_call_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> Built {
     if k.t.tag[n] == .Method_Call { return lw_method_call(k, n, want, w, dest, temp, temp_span, addressed) }
-    saved := k.recv
-    k.recv = {}
-    defer k.recv = saved
+    saved := k.lower.recv
+    k.lower.recv = {}
+    defer k.lower.recv = saved
     return lw_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]), want, w, dest, temp, temp_span)
 }
 
@@ -985,11 +1036,11 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     for arg, i in given {
         a := arg.node
         pt := ft.params[i].type_
-        use, use_at := tc_use_type(k, a, pt, span)
+        use, use_at := lw_use_type(k, a, pt, span)
         held: Graph_Later
         if is_slice_type(pt) { held = graph_build_later(b) }
         if arg.kind == .Receiver {
-            append(&ops, tc_value_as(k, a, k.recv.t, k.recv.r, pt, span, {sig = ft, param = i}))
+            append(&ops, lw_value_as(k, a, k.lower.recv.t, k.lower.recv.r, pt, span, {sig = ft, param = i}))
         } else {
             r: Built
             at := tc_node_type(k, a)
@@ -1008,9 +1059,9 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
             case .Written, .Receiver:
                 r = lw_expr(k, a, .Either, w, dest = use, temp_span = use_at)
             }
-            append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held))
+            append(&ops, lw_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held))
         }
-        tc_byte_view_address(k, pt, a)
+        lw_byte_view_address(k, pt, a)
     }
     if is_struct {
         if into_temp {
@@ -1054,9 +1105,9 @@ lw_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Buil
 
 // An argument (tc_arg) — or the receiver, as built.
 lw_arg :: proc(k: ^TC, a: Tree_Id, want: Build_Want, w: Written, temp_span := Span{}) -> Built {
-    if a != 0 && a == k.recv.node {
-        r := k.recv.r
-        if want == .Value && r.place { r = {v = tc_value(k, r, a, k.recv.t), ok = true} }
+    if a != 0 && a == k.lower.recv.node {
+        r := k.lower.recv.r
+        if want == .Value && r.place { r = {v = lw_value(k, r, a, k.lower.recv.t), ok = true} }
         return r
     }
     return lw_expr(k, a, want, w, temp_span = temp_span)

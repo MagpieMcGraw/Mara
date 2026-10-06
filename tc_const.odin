@@ -4,7 +4,7 @@ import "core:strings"
 
 // Constants in the checker: `X :: v`, `X : T : v`. Each is its value,
 // checked once — in its module's order, or sooner by a use — and built as
-// its own code (graph_const_begin); a use is the constant's value (a table's
+// its own code by lowering (lw_const); a use is the constant's value (a table's
 // global, when it is an aggregate), named by its value's node.
 
 TC_Const :: struct {
@@ -36,7 +36,7 @@ tc_register_const :: proc(k: ^TC, def, value: Tree_Id, env, mod: ^Type_Scope) {
     }
 }
 
-// A constant checked, its value built (once).
+// A constant checked (once).
 tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     if kc.state != .Unresolved { return }
     kc.state = .In_Progress
@@ -44,24 +44,12 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     defer kc.state = .Resolved
     t := k.t
     span := tree_span(t, kc.def)
-    b := k.gb
-    f: ^Graph_Body
-    if b != nil && k.c.errors == 0 && tc_sid(k, kc.def) not_in b.const_segs {
-        f = graph_const_begin(b, tc_graph_decl(k, kc.def))
-    }
     hint := k.hint
     defer k.hint = hint
     ann: Type = Type_Any{}
     if kc.ann != 0 { ann = tc_type(k, kc.ann, kc.env, span) }
     k.hint = ann if !is_any(ann) else nil
-    vt: Type
-    r: Built
-    if f != nil && tc_building(k) != nil {
-        at := graph_dest_var(kc.name, f.root, nil if is_untyped(ann) else ann)
-        vt, r = tc_expr(k, kc.value, kc.env, .Into, dest = at, temp_span = span)
-    } else {
-        vt = tc_check(k, kc.value, kc.env)
-    }
+    vt := tc_check(k, kc.value, kc.env)
     final := vt
     if !is_any(ann) && !kc.local {
         if types_incompatible(ann, vt) {
@@ -72,14 +60,6 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     }
     kc.t = final
     scope_bind(kc.pub, kc.name, final, {k.t.main[kc.def], .Const})
-    if f != nil {
-        if k.c.errors > 0 {
-            graph_body_fail(b, f, "errors")
-        } else if tc_building(k) != nil {
-            tc_store(k, kc.value, vt, r, graph_dest_var(kc.name, f.root, final), span, settle = true)
-        }
-        graph_const_end(b, f, final)
-    }
 }
 
 // The constant a bare name names from `env`: its own module's, or one it
@@ -116,22 +96,6 @@ tc_const_ref :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> (^TC
     first := owners[0] if len(owners) > 0 else name
     tc_error(k, span, TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", "), first, name)
     return nil, false
-}
-
-// A use of a constant: its value (a table's global, read; asked its place, the
-// global itself).
-tc_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Want, w: Written) -> Built {
-    b := tc_building(k)
-    if b == nil || want == .None { return {} }
-    span := tree_span(k.t, n)
-    named := Graph_Named{value = kc.sid}
-    if graph_aggregate(t) {
-        g := graph_const_global(b, w, span, t, kc.name, named)
-        if want == .Value { return {v = graph_read(b, g, t, span), ok = true} }
-        return {v = g, place = true, ok = true}
-    }
-    if want == .Place { return {} }
-    return {v = graph_named_const(b, w, span, t, kc.name, named), ok = true}
 }
 
 // Whether a module's constant is visible from env by its bare name: its own

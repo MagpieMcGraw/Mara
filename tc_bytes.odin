@@ -61,68 +61,15 @@ tc_check_big_endian :: proc(k: ^TC, value: Tree_Id, span: Span) {
     }
 }
 
-// An element of bytes read into its destination (tc_store): a slice or a
-// partial array filled by a byte read; else the bytes there seen as the
-// destination's type, read, written. (`zeroed`: a new partial array it fills
-// was zero first.)
-tc_store_bytes :: proc(k: ^TC, e: Tree_Id, r: Built, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
-    b := tc_building(k)
-    _, big := tc_byte_node(k, e)
-    if !r.place {
-        tc_fail(k, "bytes read as another type")
-        return
-    }
-    if is_slice_type(dt) || is_partial_array(dt) {
-        buf, off := graph_build_byte_operands(b, r.v, span)
-        graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if big else "", graph_dest_place(b, d, span), buf, off)
-        return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
-    }
-    graph_build_view(b, r.v, dt, big, span)
-    val := graph_read(b, r.v, dt, span)
-    graph_build_write_at(b, graph_dest_place(b, d, span), val, span)
-    return true, false
-}
-
-// A span of bytes read as the destination's type: its bytes' place and
-// bounds, as its slice built them; a register value the bytes at its start
-// seen as it, read, else a byte read — at the span, where its failures say
-// it is. (A new partial array is zero first.)
-tc_store_span :: proc(k: ^TC, e: Tree_Id, r: Built, d: Dest, dt: Type, span: Span) -> (wrote, zeroed: bool) {
-    b := tc_building(k)
-    m, big := tc_byte_node(k, e)
-    if r.v.op == NO_NODE || r.v.op != k.span_read.op || k.span_read.scalar == graph_aggregate(dt) {
-        tc_fail(k, "a span of bytes read as another type")
-        return
-    }
-    if k.span_read.scalar {
-        val := graph_read(b, graph_build_span_view(b, r.v, dt, big, span), dt, span)
-        graph_build_write_at(b, graph_dest_place(b, d, span), val, span)
-        return true, false
-    }
-    buf, lo, hi := graph_build_span_operands(b, r.v, span)
-    graph_op(b, .Byte_Read, .Explicit, tree_span(k.t, m), d.type_, "#big_endian" if big else "", graph_dest_place(b, d, span), buf, lo, hi)
-    return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
-}
-
-// `bytes[i] = v`: the element's place, v into it — v's raw bytes: the
-// place a view of them as v's type.
-tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Type, it: Type, env: ^Type_Scope, op_tok: Token_Id) {
+// `bytes[i] = v`: v's raw bytes written at the element — as v's type, of a
+// width.
+tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, env: ^Type_Scope, op_tok: Token_Id) {
     span := tree_span(k.t, s)
     if op_tok != 0 {
         tc_unsupported(k, s, "a compound assignment into bytes")
         return
     }
-    b := tc_building(k)
-    vt: Type
-    r: Built
-    d: Dest
-    if b != nil && place != NO_VALUE {
-        pt := b.g.type_[place.op] if place.op != NO_NODE else nil
-        d = Dest{kind = .At, at = place, type_ = pt}
-        vt, r = tc_expr(k, value, env, .Into, dest = d, temp = true, temp_span = span)
-    } else {
-        vt = tc_check(k, value, env)
-    }
+    vt := tc_check(k, value, env)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -137,26 +84,6 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
         return
     }
     check_byte_write(k.c, vt, span)
-    if b = tc_building(k); b == nil || place == NO_VALUE { return }
-    _, big := tc_byte_node(k, target)
-    graph_build_view(b, place, solidify_type(vt), big, span)
-    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
-}
-
-// `&bytes[i]` where a pointer to another type takes it: a view of the bytes
-// as that type, its address a pointer to it (its bounds checked where made).
-tc_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
-    pt, is_ptr := expected.(^Type_Ptr)
-    if !is_ptr { return }
-    if _, to_byte := pt.elem.(Type_Byte); to_byte { return }
-    u := tc_unparen(k, value)
-    b := tc_building(k)
-    if b == nil || k.t.tag[u] != .Unary { return }
-    ops, built := k.byte_addrs[tc_sid(k, u)]
-    if !built { return }
-    _, big := tc_byte_node(k, Tree_Id(k.t.a[u]))
-    graph_build_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
-    b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
 }
 
 // Into a span of bytes: a value no array is its raw bytes — plain data, as
@@ -179,25 +106,6 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
         tc_error(k, span, msg, type_name(view), size, hi - lo)
     }
     return view
-}
-
-// The write into bytes: the target the value's type says — the view at lo,
-// as that type (`view`), else the span — then the value into it, at the
-// bytes' type.
-tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Built, gs: ^Graph_Span_Target, tt, view: Type,
-                           void: bool, span: Span) {
-    b := tc_building(k)
-    if b == nil { return }
-    if void {
-        tc_fail(k, "void written into bytes")
-        return
-    }
-    place, ok := graph_build_span_target_end(b, gs, view, span)
-    if !ok {
-        tc_fail(k, "a span's end that branches, viewed")
-        return
-    }
-    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
 
 // A span of bytes read as a type, its bounds numbers: as many bytes as the

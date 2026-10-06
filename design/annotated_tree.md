@@ -44,7 +44,7 @@ With the checker only annotating:
 | then | the operations, made from the annotated tree |
 
 The proof that nothing is lost is stage 2's: the program graph, made from the tree and its
-annotations alone, is the one the checker builds today (`test/graphdiff.sh`).
+annotations alone, is the one the checker built (`test/graphdiff.sh`).
 
 ## Stages
 
@@ -126,6 +126,36 @@ annotations alone, is the one the checker builds today (`test/graphdiff.sh`).
       them): defers run at each exit, arena mark and reset, where a value is built (into
       its destination, or a temporary), implied conversions (a widen, an array viewed as a
       slice), `?`'s branch.
-- [ ] 2. Lowering out of the checker
+- [x] 2. Lowering out of the checker (2026-10-06)
+  - [x] The checker's findings are the same without a builder (e8857c8): checked with no
+        builder, every annotation is the one it makes while building.
+  - [x] Lowering, form by form (ccba42e, f53fd1c, 2d1f2e8, 3e017ef). `lower*.odin` replay
+        what the checker checked, in its order (`TC.events`: each module statement settled,
+        each constant, each body, each in its instance) and build each body from the tree
+        and its annotations, through the one builder, in the order the checker built it.
+        Every program in the corpus lowered to the checker's graph.
+  - [x] The switch (3185241): the graph is lowered after checking, always.
+  - [x] The checker only checks: its builder calls, its two modes and its tentative builds
+        are gone. `tc_check` is its one entry for an expression, and returns a type. The
+        build helpers it shared are lowering's (`lower_build.odin`: `lw_store`,
+        `lw_value_as`, …), and so is the state they kept (`TC.lower`). The checker went from
+        8645 lines to 6594; lowering is 2645.
+  - Gates: the IR is identical (323 builds, and test_1M's 106 modules and its run). The
+    annotations are identical to the pre-switch compiler's (342 programs) and agree with the
+    graph (`annotcheck.sh`). Ask's goldens match. The graph is identical except for one
+    explained difference: the program struct's `scope_allocator` field. The checker built it
+    before the arena was known, so it was typed `any`; lowered after the check, it is the
+    arena's type (16 programs; IR identical).
+  - Time (test_1M): checking alone is 5.2 s (8.6 s when it built the graph as it went), and
+    lowering takes 4.7 s. Total build time is unchanged (29.4 s). Lowering is slower than the
+    building it replaced; stage 4 changes what it builds.
+  - What stage 2 found, for stages 3 and 4:
+    - Lowering needed three more annotations: how a call is made (`Annotations.forms`), a
+      literal statement that writes into the variable it names (`overrides`), and a method
+      call whose receiver is built as a value first (`receivers`). It also needed the
+      checker's order (`TC.events`).
+    - What stage 1 expected to annotate needed no annotation: defers at each exit, arena
+      marks, where a value is built, and widening at a use's type. The builder decides them
+      from the annotated types, as it did for the checker.
 - [ ] 3. The readers onto the tree
 - [ ] 4. What's left of the graph

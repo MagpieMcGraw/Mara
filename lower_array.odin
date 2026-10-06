@@ -1,6 +1,6 @@
 package mara
 
-// Lowering arrays (tc_array.odin's and tc_bytes.odin's building): an element
+// Lowering arrays (what tc_array.odin and tc_bytes.odin check): an element
 // read or written, an array literal, a slice — and bytes read or written as
 // another type.
 
@@ -60,7 +60,7 @@ lw_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
     vt := tc_node_type(k, value)
     _, big := tc_byte_node(k, target)
     graph_build_view(b, place, solidify_type(vt), big, span)
-    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
+    lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
 
 // `[a, b, c]` (tc_array_literal): zero where it goes (else in a temporary),
@@ -81,20 +81,20 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
         r := lw_expr(k, elems[0], .Either)
         et := tc_node_type(k, elems[0])
         lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
-        tc_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span)
+        lw_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span)
     } else {
         lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, nil, nil), span)
     }
     for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
     t := tc_node_type(k, n)
     if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
-    return tc_built(k, want, in_temp, temp, d, t, at, placed)
+    return lw_built(k, want, in_temp, temp, d, t, at, placed)
 }
 
 // `a[lo:hi]` (tc_slice): its collection's place — a plain place built after
 // its bounds, as the builder walks it; anything else built first and put
 // after them — then the slice. Bytes read as where it goes: their place and
-// bounds as they are, for the store to take apart (tc_store_span).
+// bounds as they are, for the store to take apart (lw_store_span).
 lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -> Built {
     tr := k.t
     b := k.gb
@@ -108,9 +108,9 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     early: Graph_Early
     base, plain := NO_VALUE, NO_VALUE
     tt := tc_node_type(k, base_n)
-    if !tc_pure_place(k, base_n) {
+    if !lw_pure_place(k, base_n) {
         held, early = true, graph_build_early_begin(b)
-        if tc_is_place_form(k, base_n) {
+        if lw_is_place_form(k, base_n) {
             base = lw_expr(k, base_n, .Place, temp_span = span).v
         } else {
             base = lw_hold(k, base_n, span)
@@ -149,7 +149,7 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     t := tc_node_type(k, n)
     if reads {
         v := graph_op_value(b, .Slice, w, span, t, "", base, lo, hi)
-        k.span_read = {v.op, scalar}
+        k.lower.span_read = {v.op, scalar}
         return {v = v, ok = true}
     }
     if held {
@@ -160,7 +160,7 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     return {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
 
-// A slice's bound (tc_bound), at the header's width (`raw`: as it is).
+// A slice's bound, at the header's width (`raw`: as it is).
 lw_bound :: proc(k: ^TC, n: Tree_Id, w: Written, span: Span, raw := false) -> Operand {
     r := lw_expr(k, n, .Value, w)
     if raw { return r.v }
@@ -176,7 +176,7 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     sl_span := tree_span(tr, target)
     base_n := Tree_Id(tr.a[target])
     lo_n, hi_n := tree_pair(tr, target)
-    if !tc_pure_place(k, base_n) { lw_fail(k, target, "a slice of no plain place") }
+    if !lw_pure_place(k, base_n) { lw_fail(k, target, "a slice of no plain place") }
     from := b.nodes
     coll := lw_expr(k, base_n, .Place).v
     tt := tc_node_type(k, base_n)
@@ -202,5 +202,5 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     if !is_array_shaped(vt) { view = solidify_type(vt) }
     place, ok := graph_build_span_target_end(b, &gs, view, span)
     if !ok { lw_fail(k, s, "a span's end that branches, viewed") }
-    tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
+    lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }

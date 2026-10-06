@@ -92,36 +92,6 @@ tc_size_is :: proc(k: ^TC, n: Tree_Id, name: string) -> bool {
     return n != 0 && k.t.tag[n] == .Ident && tc_name(k, n) == name
 }
 
-// The program's struct (the compiler's): built from mara.core's declaration
-// of it — its fields, each a declaration, and no code (nothing constructs
-// it: main's entry sets up its storage).
-tc_program_struct :: proc(k: ^TC) {
-    pt := k.table.funs["Program"] or_else nil
-    if k.gb == nil || pt == nil || pt.body_span == {} { return }
-    t := k.t
-    for _, tmpl in k.templates {
-        span := tree_span(t, tmpl.def)
-        if span != pt.body_span { continue }
-        v := scope_view(t, tmpl.node)
-        f := graph_body_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
-        b := k.gb
-        for s in v.body {
-            if t.tag[s] != .Decl {
-                graph_body_fail(b, f, "the program's struct declares no field")
-                break
-            }
-            ss := tree_span(t, s)
-            graph_build_body_stmt(b, ss, true)
-            saved := graph_build_stmt(b, tc_sid(k, s), ss, tc_stmt_kind(k, s), fresh = true)
-            for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), ss) }
-            graph_build_stmt_end(b, saved)
-        }
-        if k.c.errors > 0 { graph_body_fail(b, f, "errors") }
-        graph_body_end(b, f)
-        return
-    }
-}
-
 // A template's type params, in order: those it declares, then each
 // `$T` its params and results introduce, first use first.
 tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> [dynamic]string {
@@ -226,47 +196,17 @@ tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) 
     if name != "" && name in subst^ && subst[name] == nil { subst[name] = solidify_type(actual) }
 }
 
-// A call of a generic fun: each argument checked and built (at its param's
-// type once the instance is known), the type params bound from them, the
-// instance made once per bindings, then the call.
-tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id, env: ^Type_Scope,
-                        want: Build_Want, w: Written) -> (Type, Built) {
+// A call of a generic fun: each argument checked, the type params bound from
+// them, the instance made once per bindings, then the call.
+tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id, env: ^Type_Scope) -> Type {
     tr := k.t
     span := tree_span(tr, n)
-    b := tc_building(k) if want != .None else nil
-    if b != nil && want == .Place {
-        tc_fail(k, "a call's place")
-        b = nil
-    }
     if tr.tag[tmpl.node] != .Fun_Def {
         tc_unsupported(k, n, "a generic struct's construction")
-        return Type_Error{}, {}
+        return Type_Error{}
     }
-    vals := make([dynamic]Operand, context.temp_allocator)
-    widens := make([dynamic]int, context.temp_allocator)
-    array_values := make([dynamic]bool, context.temp_allocator)
-    literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     arg_types := make([dynamic]Type, context.temp_allocator)
-    for a, i in args {
-        if b != nil && tc_building(k) != nil {
-            from := b.nodes
-            t, r := tc_arg(k, a, env, .Either, w)
-            append(&arg_types, t)
-            if tc_building(k) == nil { continue }
-            _, is_array := distinct_base(t).(^Type_Fixed_Array)
-            if u := tc_unparen(k, a); tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
-                tc_fail(k, "bytes as a generic's argument")
-                continue
-            }
-            v, wi := graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
-            append(&vals, v)
-            append(&widens, wi)
-            append(&array_values, is_array && !r.place)
-            if tr.tag[tc_unparen(k, a)] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
-        } else {
-            append(&arg_types, k.recv.t if a == k.recv.node else tc_check(k, a, env))
-        }
-    }
+    for a in args { append(&arg_types, tc_arg(k, a, env)) }
     params := tc_generic_params(k, tmpl.node)
     subst: map[string]Type
     for p in params { subst[p] = nil }
@@ -282,7 +222,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     for p in params {
         if subst[p] == nil {
             tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, p, name)
-            return Type_Error{}, {}
+            return Type_Error{}
         }
     }
     type_args := make([dynamic]Type, context.temp_allocator)
@@ -299,31 +239,12 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     received := make([]Arg, len(args), context.temp_allocator)
     for a, i in args { received[i] = {a, .Receiver if a == k.recv.node else .Written, -1} }
     tc_set_args(k, n, received)
-    ret := fn_primary_return(ft)
-    b = tc_building(k) if b != nil else nil
-    if b == nil { return ret, {} }
-    for wi, j in widens {
-        if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, j }
-    }
-    for la in literals {
-        if la.arg >= len(ft.params) { continue }
-        pt := ft.params[la.arg].type_
-        if graph_aggregate(pt) && pt != la.t { graph_build_retype_literal(b, la.from, la.to, pt) }
-    }
-    if build_views_value(ft, array_values[:]) {
-        tc_fail(k, "an array's value viewed by a generic's param")
-        return ret, {}
-    }
-    return ret, {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
+    return fn_primary_return(ft)
 }
 
 // An instance of a generic fun: its signature at the bindings, its body the
-// template's own checked again with them bound — its scope the call's, its
-// graph its own.
+// template's own checked again with them bound — its scope the call's.
 tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string, env: ^Type_Scope) -> ^Type_Scope {
-    outer: ^Graph_Body
-    if k.gb != nil { outer, k.gb.body = k.gb.body, nil }
-    defer if k.gb != nil { k.gb.body = outer }
     tr := k.t
     ft := new(Type_Scope)
     ft.kind = .Fun
@@ -518,13 +439,10 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
 
 // A generic struct's instance: its type (named for its arguments), its
 // params bound in it; then its body — its fields, its methods — checked as
-// its own (its nodes salted: tc_sid), its graph built apart from where it is
-// named. Its init and methods are extracted with the main module's.
+// its own (its nodes salted: tc_sid). Its init and methods are extracted with
+// the main module's.
 tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, targs: []Type,
                               promoted: map[string]bool, mangled: string) -> ^Type_Scope {
-    outer: ^Graph_Body
-    if k.gb != nil { outer, k.gb.body = k.gb.body, nil }
-    defer if k.gb != nil { k.gb.body = outer }
     tr := k.t
     v := scope_view(tr, tmpl.node)
     span := tree_span(tr, tmpl.def)

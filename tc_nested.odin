@@ -71,11 +71,8 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
 }
 
 // A body's definitions checked: its structs' bodies (their fields), then its
-// funs'. (From outside the body being built: what each builds is its own.)
+// funs'.
 tc_check_defs :: proc(k: ^TC, sc: ^TC_Scope) {
-    outer: ^Graph_Body
-    if k.gb != nil { outer, k.gb.body = k.gb.body, nil }
-    defer if k.gb != nil { k.gb.body = outer }
     hint := k.hint
     defer k.hint = hint
     nested := sc.nested[:]

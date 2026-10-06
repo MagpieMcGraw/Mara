@@ -20,7 +20,7 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     slot := NO_NODE
     subject := NO_VALUE
     st := tc_node_type(k, subj)
-    if !tc_pure_place(k, subj) {
+    if !lw_pure_place(k, subj) {
         slot = graph_slot(b, "subject", nil, span)
         st = lw_store_into(k, subj, graph_dest_var("subject", slot, nil), span)
         graph_build_typed(b, slot, st)
@@ -140,7 +140,7 @@ lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want:
 
 // An argument's type: the receiver's, as built; else its own.
 lw_arg_type :: proc(k: ^TC, a: Tree_Id) -> Type {
-    if a != 0 && a == k.recv.node { return k.recv.t }
+    if a != 0 && a == k.lower.recv.node { return k.lower.recv.t }
     return tc_node_type(k, a)
 }
 
@@ -149,7 +149,7 @@ lw_arg_type :: proc(k: ^TC, a: Tree_Id) -> Type {
 lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
     b := k.gb
     span := tree_span(k.t, s)
-    decl := tc_field_decl(k, fields_of, name, target, value, span)
+    decl := lw_field_decl(k, fields_of, name, target, value, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     graph_build_typed(b, decl, ann)
     if fields_of != nil {
@@ -269,11 +269,11 @@ lw_generic_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w
 lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {
     b := k.gb
     span := tree_span(k.t, s)
-    decl := tc_field_decl(k, fields_of, name, target, 0, span)
+    decl := lw_field_decl(k, fields_of, name, target, 0, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, span) }
     r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann))
     graph_build_typed(b, decl, ann)
-    tc_store(k, 0, ann, r, graph_dest_var(name, decl, ann), span, settle = true)
+    lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann), span, settle = true)
 }
 
 // `{inner = Box(5)}` of the shape shortcut (tc_shape_literal).
@@ -289,5 +289,5 @@ lw_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, wa
         if !has { continue }
         lw_literal_field(k, bd.call, sd.fields[idx], 0, bd.field, span, gl)
     }
-    return tc_built(k, want, false, false, dest, t, span, false)
+    return lw_built(k, want, false, false, dest, t, span, false)
 }

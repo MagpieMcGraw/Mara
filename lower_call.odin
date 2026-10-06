@@ -11,9 +11,9 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
     tr := k.t
     b := k.gb
     mv := method_view(tr, n)
-    saved := k.recv
-    k.recv = {}
-    defer k.recv = saved
+    saved := k.lower.recv
+    k.lower.recv = {}
+    defer k.lower.recv = saved
     mark := graph_build_mark(b)
     recv := mv.receiver
     arg := addressed if addressed != 0 else recv
@@ -28,7 +28,7 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
             qr = lw_expr(k, recv, .Either, w)
             qt = tc_node_type(k, recv)
         }
-        k.recv = {node = arg, t = qt, r = qr}
+        k.lower.recv = {node = arg, t = qt, r = qr}
     }
     // (Its arguments as the call takes them: the receiver first when the
     // method takes Self, or when it is no method — a fun, a builtin, called
@@ -36,12 +36,12 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
     args := mv.args
     form := k.annot.forms[tc_sid(k, n)] or_else .Fun
     switch {
-    case k.recv.node != 0 && form == .Builtin:
+    case k.lower.recv.node != 0 && form == .Builtin:
         args = tc_with_receiver(arg, mv.args)
     case len(given) > 0 && (given[0].node == arg || given[0].node == recv) && given[0].kind != .Default:
         args = tc_with_receiver(given[0].node, mv.args)
     }
-    if k.recv.r.ok && (len(args) == 0 || args[0] != arg) { graph_build_drop_since(b, mark) }
+    if k.lower.recv.r.ok && (len(args) == 0 || args[0] != arg) { graph_build_drop_since(b, mark) }
     return lw_call_core(k, n, tc_call_name(k, n), args, want, w, dest, temp, temp_span)
 }
 
@@ -94,13 +94,13 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         def := ft.params[i].default_node
         graph_build_later_begin(b, &laters[i])
         t, r := default_at(k, def, w, tree_span(tr, a))
-        vals[i] = tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i})
+        vals[i] = lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i})
         if !graph_build_later_end(b, &laters[i]) { lw_fail(k, a, "a default for `_` across runs") }
     }
     for i := len(args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_node
         t, r := default_at(k, def, w, span)
-        append(&vals, tc_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
+        append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
     }
     for wi, i in widens {
         if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, i }
@@ -181,31 +181,57 @@ lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     graph_build_stmt_kind(b, .Other)
     for tg in targets {
         declares := is_decl && t.tag[tg] == .Ident
-        kind := Stmt_Kind.Decl if declares else tc_assign_kind(k, tg)
+        kind := Stmt_Kind.Decl if declares else lw_assign_kind(k, tg)
         saved := graph_build_stmt(b, tc_sid(k, s), span, kind, fresh = true)
         if declares { lw_decl_one(k, s, tg, value, 0, nil) } else { lw_assign_one(k, s, tg, value) }
         graph_build_stmt_end(b, saved)
     }
 }
 
-// `a, b = c, d` (tc_parallel_assign): every value in first, each held at its
+// `a, b = c, d` (tc_assign): every value in first, each held at its
 // target's type, then each target written from its own.
 lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     b := k.gb
     span := tree_span(k.t, s)
-    held := make([dynamic]TC_Held, context.temp_allocator)
-    saved := k.parallel
-    k.parallel = &held
+    held := make([dynamic]LW_Held, context.temp_allocator)
+    saved := k.lower.parallel
+    k.lower.parallel = &held
     for tg, i in targets {
-        saved_stmt := graph_build_stmt(b, tc_sid(k, s), span, tc_assign_kind(k, tg), fresh = true)
+        saved_stmt := graph_build_stmt(b, tc_sid(k, s), span, lw_assign_kind(k, tg), fresh = true)
         lw_assign_one(k, s, tg, values[i])
         graph_build_stmt_end(b, saved_stmt)
     }
-    k.parallel = saved
+    k.lower.parallel = saved
     for h in held {
         v := graph_read(b, graph_var(b, "parallel", h.slot, h.t, h.span), h.t, h.span)
         graph_build_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
     }
+}
+
+// An assignment's statement kind, by its target: a place's a write; `_`'s
+// and this_program's no assignment.
+lw_assign_kind :: proc(k: ^TC, target: Tree_Id) -> Stmt_Kind {
+    if k.t.tag[target] != .Ident { return .Write }
+    if name := tc_name(k, target); name == "_" || name == "this_program" { return .Other }
+    return .Assign
+}
+
+LW_Held :: struct {
+    d:    Dest,
+    slot: Node_Id,
+    t:    Type,
+    span: Span,
+}
+
+// A store assigned together with others: into a temporary of its own, at
+// its target's type (lw_parallel_assign writes the target from it).
+lw_parallel_hold :: proc(k: ^TC, d: Dest, span: Span) -> Dest {
+    if k.lower.parallel == nil { return d }
+    b := k.gb
+    t := graph_dest_type(b, d)
+    slot := graph_slot(b, "parallel", t, span)
+    append(k.lower.parallel, LW_Held{d, slot, t, span})
+    return graph_dest_var("parallel", slot, t)
 }
 
 // A take (tc_take): the count at the header's width, then the storage it
@@ -223,17 +249,25 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     case t.tag[ty] == .Type_Slice && tc_count_arg(k, Tree_Id(t.b[ty]), take = true) != 0:
         count = tc_count_arg(k, Tree_Id(t.b[ty]), take = true)
     }
-    if want == .Place || !tc_carves_place(k, storage) { lw_fail(k, n, "a take's place, or a take from no plain place") }
+    if want == .Place || !lw_carves_place(k, storage) { lw_fail(k, n, "a take's place, or a take from no plain place") }
     count_op := NO_VALUE
     if count != 0 { count_op = lw_bound(k, count, w, span) }
     su := tc_unparen(k, storage)
     addressed := t.tag[su] == .Unary
     from := lw_expr(k, storage, .Value if addressed else .Place).v
-    if addressed { delete_key(&k.byte_addrs, tc_sid(k, su)) }
+    if addressed { delete_key(&k.lower.byte_addrs, tc_sid(k, su)) }
     st := tc_node_type(k, storage)
     taken := tc_node_type(k, n)
     v := graph_build_carve(b, span, tc_text(t.main[n]), taken, from, st, addressed, t.tag[su] == .Self, count_op, w)
     return {v = v, ok = true}
+}
+
+// Whether a take's storage is a plain place (`&s`, `&bytes[i]`, `s`): what
+// is walked where the carve is.
+lw_carves_place :: proc(k: ^TC, storage: Tree_Id) -> bool {
+    su := tc_unparen(k, storage)
+    if k.t.tag[su] == .Unary && build_tokens[k.t.main[su]].kind == .Ampersand { return lw_pure_place(k, Tree_Id(k.t.a[su])) }
+    return lw_pure_place(k, storage)
 }
 
 // `x := let(T, s)`, `x : T = slice([:n]T, s)` (tc_decl_take): the local bound
@@ -242,12 +276,12 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     t := k.t
     b := k.gb
     span := tree_span(t, s)
-    decl := tc_field_decl(k, fields_of, name, target, value, span)
+    decl := lw_field_decl(k, fields_of, name, target, value, span)
     field := decl != NO_NODE
     if !field { decl = graph_build_decl(b, name, span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
     final := tc_node_type(k, target)
     if field { final = b.g.type_[decl] }
     graph_build_typed(b, decl, final)
-    tc_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final), span, settle = true)
+    lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final), span, settle = true)
 }
