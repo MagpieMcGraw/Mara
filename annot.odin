@@ -72,6 +72,7 @@ Annotations :: struct {
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)
     args:       map[Syntax_Id][]Arg,         // ... what each of its params receives, in order
     forms:      map[Syntax_Id]Call_Form,     // ... how it is made
+    overrides:  map[Syntax_Id]bool,          // a literal statement that writes into the variable it names (`v{x = 1}`)
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base

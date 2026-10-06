@@ -71,7 +71,7 @@ total=$(ls "$OUT"/old/*.dump | wc -l)
 echo "LOWERDIFF: $(wc -l < "$match") of $total programs match; $stopped stopped (lower: …), $differ differ"
 echo "  what stopped lowering, most first:"
 grep -h 'Graph error: lower:' "$OUT"/new/*.dump | sed -E 's/^.*Graph error: lower: //' | sort | uniq -c | sort -rn | head -20
-lost=$(comm -23 <(sort "$ROOT/test/lower_match.txt" 2>/dev/null) <(sort "$match"))
+lost=$(comm -23 <(sed "s/[[:space:]]*$//" "$ROOT/test/lower_match.txt" 2>/dev/null | sort) <(sort "$match"))
 if [ $UPDATE = 1 ]; then sort "$match" > "$ROOT/test/lower_match.txt"; fi
 if [ -n "$lost" ]; then
   echo "LOST (matched before):"; echo "$lost" | sed 's/^/  /'

@@ -912,6 +912,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     sd := resolve_to_struct_type(k.c, vt)
     if sd == nil { return false }
     tc_set_type(k, e, vt)
+    k.annot.overrides[tc_sid(k, e)] = true
     tc_set_type(k, ty, vt)   // (the variable it writes into, named)
     tc_set_ref(k, ty, scope_find_ref(env, name))
     gl: ^Graph_Literal

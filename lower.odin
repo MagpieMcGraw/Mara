@@ -163,19 +163,6 @@ lw_stmt_entry :: proc(k: ^TC, s: Tree_Id) {
     graph_build_stmt_end(k.gb, saved)
 }
 
-// `v{ x = 1 }` as a statement (tc_override): each field written into v's.
-lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {
-    tr := k.t
-    if tr.tag[e] != .Literal { return false }
-    ty := Tree_Id(tr.a[e])
-    if ty == 0 || tr.tag[ty] != .Ident { return false }
-    #partial switch tc_ref(k, ty).kind {
-    case .Local, .Param, .Result, .Field, .Global:
-        lw_unsupported(k, e, "an override of a variable")
-    }
-    return false
-}
-
 // --- declarations ---------------------------------------------------------------
 
 lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
@@ -323,8 +310,18 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     b := k.gb
     span := tree_span(t, s)
     #partial switch t.tag[target] {
-    case .Field, .Index, .Slice, .Deref:
-        lw_unsupported(k, target, "this assignment target")
+    case .Field:
+        lw_field_assign(k, s, target, value)
+        return
+    case .Deref:
+        lw_deref_assign(k, s, target, value)
+        return
+    case .Index:
+        lw_index_assign(k, s, target, value)
+        return
+    case .Slice:
+        lw_slice_assign(k, s, target, value)
+        return
     }
     name := tc_name(k, target)
     if name == "_" {
@@ -351,8 +348,15 @@ lw_compound :: proc(k: ^TC, s: Tree_Id) {
     r := tree_rec(t, t.b[s], 2)
     op_tok, value := Token_Id(r[0]), Tree_Id(r[1])
     #partial switch t.tag[target] {
-    case .Field, .Index, .Deref:
-        lw_unsupported(k, target, "this compound assignment's target")
+    case .Field:
+        lw_field_assign(k, s, target, value, op_tok)
+        return
+    case .Deref:
+        lw_deref_assign(k, s, target, value, op_tok)
+        return
+    case .Index:
+        lw_index_assign(k, s, target, value, op_tok)
+        return
     }
     name := tc_name(k, target)
     existing := tc_node_type(k, target)
@@ -593,6 +597,21 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_assert(k, n, want, w)
     case .If_Expr:
         return lw_if_expr(k, n, want, w)
+    case .Dot_Ident:
+        if tc_sid(k, n) in k.annot.dot_bases { return lw_field(k, n, want, w, dest, temp, temp_span) }
+        return lw_variant_of(k, ty, tc_text(Token_Id(t.a[n])), span, want, w, dest, temp, temp_span)
+    case .Field:
+        return lw_field(k, n, want, w, dest, temp, temp_span)
+    case .Literal, .Broadcast:
+        return lw_literal(k, n, want, w, dest, temp, temp_span)
+    case .Self:
+        return lw_self(k, n, want, w)
+    case .Index:
+        return lw_index(k, n, want, w)
+    case .Slice:
+        return lw_slice(k, n, want, w, dest)
+    case .Array:
+        return lw_array_literal(k, n, want, w, dest, temp, temp_span)
     case .Try:
         if want == .Place { return {} }
         r := lw_expr(k, Tree_Id(t.a[n]), .Value, w)
@@ -623,7 +642,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     ref := tc_ref(k, n)
     switch {
     case ref.kind == .Variant:
-        return tc_variant_of(k, t, lw_variant_value(t, name), name, span, want, w, dest, temp, temp_span)
+        return lw_variant_of(k, t, name, span, want, w, dest, temp, temp_span)
     case ref.kind == .Const:
         return tc_const_use(k, lw_const_of(k, ref.decl), n, t, want, w)
     case name == "void":
@@ -944,9 +963,9 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     }
     if is_struct {
         if into_temp {
-            return tc_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true, overrides = lw_overrides(k, overrides))
+            return lw_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true, overrides = overrides)
         }
-        return tc_construct(k, n, ft, ops[:], want, w, dest, false, temp_span, overrides = lw_overrides(k, overrides))
+        return lw_construct(k, n, ft, ops[:], want, w, dest, false, temp_span, overrides = overrides)
     }
     ret := fn_primary_return(ft)
     if indirect { return {v = graph_build_indirect(b, name, ft, ret, ops[:], w, span), ok = true} }
@@ -956,12 +975,6 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         return {v = graph_var(b, "temp", view_slot, ret, temp_span), place = true, ok = true}
     }
     return {v = call, ok = true}
-}
-
-// A construction's override block (`Foo(args) {f = v}`): not yet lowered.
-lw_overrides :: proc(k: ^TC, overrides: Tree_Id) -> Tree_Id {
-    if overrides != 0 { lw_unsupported(k, overrides, "a construction's override block") }
-    return 0
 }
 
 // A builtin (tc_builtin): print, crash, a cast.

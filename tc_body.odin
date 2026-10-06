@@ -9,7 +9,6 @@ import "core:strings"
 // body is checked.
 
 tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
-    tc_event(k, {kind = .Body, sc = sc})
     t := k.t
     ts := sc.ts
     v := scope_view(t, sc.node)
@@ -29,6 +28,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // intrinsic's shape.)
     if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
     f: ^Graph_Body
+    tc_event(k, {kind = .Body, sc = sc})   // (built from here: after its constants)
     if k.gb != nil { f = graph_body_begin(k.gb, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
     // (A fun's definitions are checked before its code; a struct's once its
     // fields are known: its methods read them.)
