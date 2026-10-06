@@ -856,6 +856,7 @@ tc_callee :: proc(k: ^TC, n: Tree_Id) -> ^Type_Scope {
 }
 
 tc_set_callee :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope) {
+    if n == 0 { return }
     k.annot.callees[tc_sid(k, n)] = ts
 }
 

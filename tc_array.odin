@@ -94,7 +94,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         tc_byte_write(k, s, target, value, place, tt, it, env, op_tok)
         return
     }
-    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target, s)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {

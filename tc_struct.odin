@@ -242,7 +242,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     } else if tc_building(k) != nil {
         tc_fail(k, "a write to an unknown field")
     }
-    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target, s)
     k.hint = nil
     if ft == nil {
         tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
@@ -265,11 +265,11 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
 // into a temporary where it builds in place, then written at the place's
 // type.
 tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, span: Span,
-                    op_tok: Token_Id = 0, target: Tree_Id = 0) -> Type {
+                    op_tok: Token_Id = 0, target: Tree_Id = 0, s: Tree_Id = 0) -> Type {
     b := tc_building(k)
     if b == nil || place == NO_VALUE {
         if op_tok != 0 {
-            t, _ := tc_compound_value(k, op_tok, target, value, env, .None)
+            t, _ := tc_compound_value(k, s, op_tok, target, value, env, .None)
             return t
         }
         return tc_check(k, value, env)
@@ -280,7 +280,7 @@ tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, sp
         // (The operation reads the target through the place built.)
         saved := k.compound
         k.compound = {target, place}
-        vt, r := tc_compound_value(k, op_tok, target, value, env, .Into)
+        vt, r := tc_compound_value(k, s, op_tok, target, value, env, .Into)
         k.compound = saved
         tc_store(k, 0, vt, r, tc_parallel_hold(k, d, span), span, settle = true)
         return vt
@@ -414,6 +414,20 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Wr
             return Type_Error{}, {}
         }
     }
+    // (The type it is written with, a name — `Foo`, `mod.T`, a variant's:
+    // what it names.)
+    if ty != 0 && (tr.tag[ty] == .Ident || tr.tag[ty] == .Field) {
+        tc_set_type(k, ty, t)
+        switch {
+        case variant != "":
+            tc_set_ref(k, ty, {variant_decl(t, variant), .Variant})
+        case tr.tag[ty] == .Ident:
+            tc_set_ref(k, ty, scope_find_ref(env, name))
+        case:
+            vs, is_variant := t.(^Type_Scope)
+            tc_set_ref(k, ty, {type_decl(t), .Variant if is_variant && vs.is_union_variant else .Type})
+        }
+    }
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     ts, is_scope := t.(^Type_Scope)
@@ -439,6 +453,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Wr
             }
         }
     }
+    // (Its construction: a struct's — `{0}` is its zero.)
+    if lt, is_scope := t.(^Type_Scope); is_scope && lt.kind == .Struct && !lt.is_module && !zero { tc_set_callee(k, n, lt) }
     b := tc_building(k)
     build := want != .None && b != nil
     d := dest
@@ -746,7 +762,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Built,
             tc_fail(k, "a write to an unknown field")
         }
     }
-    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target, s)
     k.hint = nil
     obj := bt
     if pt, is_ptr := obj.(^Type_Ptr); is_ptr {
@@ -886,6 +902,8 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     sd := resolve_to_struct_type(k.c, vt)
     if sd == nil { return false }
     tc_set_type(k, e, vt)
+    tc_set_type(k, ty, vt)   // (the variable it writes into, named)
+    tc_set_ref(k, ty, scope_find_ref(env, name))
     gl: ^Graph_Literal
     if b := tc_building(k); b != nil { gl = graph_build_override(b, graph_dest_var(name, NO_NODE, vt), sd) }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env, gl)

@@ -347,6 +347,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
         } else if !is_numeric(ot) {
             // (`overload -`: a function of the one operand, when one fits.)
             if callee := tc_unary_overload(k, ot, env); callee != nil {
+                tc_set_callee(k, n, callee)
                 ret := fn_primary_return(callee)
                 b := tc_building(k)
                 if want == .None || want == .Place || b == nil { return ret, {} }
@@ -435,7 +436,7 @@ tc_value :: proc(k: ^TC, r: Built, n: Tree_Id, t: Type) -> Operand {
 // `or` short-circuit.
 tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
     tr := k.t
-    return tc_binary_op(k, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]), env, want, w)
+    return tc_binary_op(k, n, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]), env, want, w)
 }
 
 // `x in lo..hi`: `x >= lo and x < hi` — `not in`, its negation — x walked
@@ -450,10 +451,10 @@ tc_in_range :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: W
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
     rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
-    if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, .And, span, 0, 0, env, want, w, &rng) }
+    if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, 0, .And, span, 0, 0, env, want, w, &rng) }
     if want == .Place { tc_fail(k, "a unary's place") }
     ask: Build_Want = .None if want == .None || want == .Place else .Value
-    ot, r := tc_binary_op(k, .And, span, 0, 0, env, ask, w, &rng)
+    ot, r := tc_binary_op(k, 0, .And, span, 0, 0, env, ask, w, &rng)
     if _, is_bool := ot.(Type_Bool); !is_bool && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
     b := tc_building(k)
     if want == .None || want == .Place || b == nil { return Type_Bool{}, {} }
@@ -462,13 +463,13 @@ tc_in_range :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: W
 
 // `left op right`, where `span` is: a Binary's, or a compound assignment's
 // (`x += v` is `x = x + v`, at the `+=`).
-tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, env: ^Type_Scope,
+tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, right: Tree_Id, env: ^Type_Scope,
                      want: Build_Want, w: Written, in_range: ^TC_In_Range = nil) -> (Type, Built) {
     // (A side: its expression; an `in`'s, its comparison.)
     side_of :: proc(k: ^TC, rng: ^TC_In_Range, i: int, side: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Written) -> (Type, Built) {
         if rng == nil { return tc_expr(k, side, env, want, w) }
-        if i == 0 { return tc_binary_op(k, .Greater_Equal, rng.span, rng.value, rng.lo, env, want, w) }
-        return tc_binary_op(k, .Less, rng.span, rng.value, rng.hi, env, want, w)
+        if i == 0 { return tc_binary_op(k, 0, .Greater_Equal, rng.span, rng.value, rng.lo, env, want, w) }
+        return tc_binary_op(k, 0, .Less, rng.span, rng.value, rng.hi, env, want, w)
     }
     tr := k.t
     op := tok
@@ -527,6 +528,7 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     // (An operand no number: an `overload`'s function, when one fits.)
     if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
         if callee, found := tc_operator_overload(k, op, lt, rt, env, span); found {
+            tc_set_callee(k, at, callee)   // (its operator's node: a Binary, a compound assignment)
             ret := fn_primary_return(callee)
             if !build { return ret, {} }
             if b = tc_building(k); b == nil { return ret, {} }

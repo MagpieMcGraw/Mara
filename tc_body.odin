@@ -221,7 +221,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
             tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
             return
         }
-        tc_decl_bare(k, name, ref, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
+        tc_decl_bare(k, target, name, ref, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
     }
     if cap_n != 0 {
@@ -364,7 +364,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
 
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each). `field`: its node, when it is a struct's field.
-tc_decl_bare :: proc(k: ^TC, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE, cap_n := Tree_Id(0)) {
+tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE, cap_n := Tree_Id(0)) {
     defer scope_bind(env, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
@@ -374,9 +374,12 @@ tc_decl_bare :: proc(k: ^TC, name: string, ref: Ref, ann: Type, env: ^Type_Scope
         tc_decl_sized(k, name, ann, env, span, field, cap_n)
         return
     }
+    st := tc_bare_struct(ann)
+    // (Its construction, implied: its struct's — each element's, an array's —
+    // when one can be built without arguments; else it is zero.)
+    if st != nil && constructs_bare(st) { tc_set_callee(k, target, st) }
     b := tc_building(k)
     if b == nil { return }
-    st := tc_bare_struct(ann)
     if st != nil { tc_struct_ensure(k, st) }
     if b = tc_building(k); b == nil { return }
     // (Its local, then its constructor's arguments — its params' defaults.)
@@ -954,7 +957,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     k.hint = existing if !is_untyped(existing) else nil
-    vt, fr := tc_compound_value(k, op_tok, target, value, env, .Into if tc_building(k) != nil else .None)
+    vt, fr := tc_compound_value(k, s, op_tok, target, value, env, .Into if tc_building(k) != nil else .None)
     if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, target, value)
@@ -964,9 +967,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // A compound assignment's operation: its target (read, or through the place
 // already built: `k.compound`) op its value.
-tc_compound_value :: proc(k: ^TC, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Build_Want) -> (Type, Built) {
+tc_compound_value :: proc(k: ^TC, s: Tree_Id, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Build_Want) -> (Type, Built) {
     op, _ := compound_assign_op(build_tokens[op_tok].kind)
-    t, r := tc_binary_op(k, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
+    t, r := tc_binary_op(k, s, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
     if want != .None && !r.ok { tc_fail(k, "a compound assignment's operation") }
     return t, r
 }
@@ -1018,7 +1021,7 @@ tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if b = tc_building(k); b != nil {
         if p, is_ptr := pt.(^Type_Ptr); is_ptr { place = graph_op_value(b, .Deref, .Explicit, at, p.elem, "", pr.v) }
     }
-    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target, s)
     if p, is_ptr := pt.(^Type_Ptr); is_ptr {
         tc_set_type(k, target, p.elem)
         if types_incompatible(p.elem, vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem)) }
@@ -1473,6 +1476,8 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
 tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, env, fields_of: ^Type_Scope) {
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
+    // (Its construction: its struct's, its literal built from the shape.)
+    if st, is_scope := ann.(^Type_Scope); is_scope && st.kind == .Struct && !st.is_module { tc_set_callee(k, target, st) }
     b := tc_building(k)
     decl := NO_NODE
     if b != nil {
