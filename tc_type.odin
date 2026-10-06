@@ -4,8 +4,47 @@ import "core:strings"
 
 // Types as written (the flat tree's type nodes), resolved: a keyword to its
 // primitive, a name through the scope and the table, a pointer, an array.
+// Each type node keeps the type it resolved to, and a name what it names.
 
 tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+    ty := tc_type_impl(k, n, env, span)
+    if n == 0 { return ty }
+    tc_set_type(k, n, ty)
+    #partial switch k.t.tag[n] {
+    case .Type_Keyword:
+        tc_set_ref(k, n, {kind = .Builtin})
+    case .Type_Name, .Type_Generic, .Type_Of:
+        tc_set_ref(k, n, tc_type_ref(k, n, ty))
+    }
+    return ty
+}
+
+// What a type's name names: the type param it is, in an instance; else the
+// type's declaration (a fun's, for `fn name`); else — a builtin type, the
+// compiler's own — no source's.
+tc_type_ref :: proc(k: ^TC, n: Tree_Id, ty: Type) -> Ref {
+    t := k.t
+    if _, is_error := ty.(Type_Error); is_error || ty == nil { return {} }
+    if t.tag[n] == .Type_Name {
+        parts := tree_token_list(t, t.a[n])
+        if len(parts) == 1 {
+            name := tc_text(parts[0])
+            if _, is_primitive := tc_primitive_named(name); is_primitive { return {kind = .Builtin} }
+            if bound, is_param := k.subst[name]; is_param && bound != nil && k.salt != 0 {
+                if scope := k.annot.instances[k.salt].scope; scope != nil {
+                    return {tc_type_param_decl(k, scope.node, name), .Type}
+                }
+            }
+        }
+    }
+    if decl := type_decl(ty); decl != 0 {
+        if fun, is_scope := ty.(^Type_Scope); is_scope && fun.kind == .Fun { return {decl, .Fun} }
+        return {decl, .Type}
+    }
+    return {kind = .Builtin}
+}
+
+tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
     if n == 0 { return Type_Any{} }
     t := k.t
     #partial switch t.tag[n] {

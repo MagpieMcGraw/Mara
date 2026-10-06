@@ -6,7 +6,7 @@ import "core:strings"
 // used — its own uses first), then makes its names visible in the file
 // that uses it (`include m`: in its module too); `name :: use m` names it.
 
-tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := "") -> ^Type_Scope {
+tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := Token_Id(0)) -> ^Type_Scope {
     t := k.t
     span := tree_span(t, imp)
     path := tc_path(k, imp)
@@ -22,8 +22,11 @@ tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := "") -> ^Typ
     if reexport && mod != env {
         flatten_module_exports(k.c, mod, &m.sd, is_sealed = sealed)
     }
-    scope_bind(env, alias if alias != "" else tc_use_name(k, imp), m)
-    scope_bind(k.root, path, m)
+    // (Its name the alias, else its path's last part: the token that declares it.)
+    parts := tree_token_list(t, t.a[imp])
+    decl := alias if alias != 0 else parts[len(parts) - 1]
+    scope_bind(env, tc_text(decl), m, {decl, .Module})
+    scope_bind(k.root, path, m, {decl, .Module})
     return m
 }
 
@@ -64,10 +67,10 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.is_module = true
     // (The build's own names — the program, std, void — every module sees.)
     for builtin in ([]string{"this_program", "Program", "std", "void"}) {
-        if bt, ok := scope_defines(k.root, builtin); ok { scope_bind(m, builtin, bt) }
+        if bt, ok := scope_defines(k.root, builtin); ok { scope_bind(m, builtin, bt, {kind = .Builtin}) }
     }
     if _, has_void := scope_defines(m, "void"); !has_void {
-        scope_bind(m, "void", new_clone(Type_Ptr{elem = Type_Any{}}))
+        scope_bind(m, "void", new_clone(Type_Ptr{elem = Type_Any{}}), {kind = .Builtin})
     }
     saved_pkg, saved_hint := k.pkg, k.hint
     saved_dispatch, saved_overloads := k.c.dispatch_groups, k.c.operator_overloads
@@ -84,9 +87,9 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     k.table.funs[name] = m
     // (A stdlib module is `std`'s member by its last name: `math.sin`.)
     if strings.has_prefix(name, "mara.") {
-        scope_bind(k.std, name[len("mara."):], m)
+        scope_bind(k.std, name[len("mara."):], m, {kind = .Module})
     } else {
-        scope_bind(k.root, name, m)
+        scope_bind(k.root, name, m, {kind = .Module})
     }
     return m
 }
@@ -103,6 +106,7 @@ tc_module_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     for tg, i in v.targets {
         vt: Type = Type_Error{}
         if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i], env)) }
-        scope_bind(env, tc_name(k, tg), ann if ann != nil else vt)
+        scope_bind(env, tc_name(k, tg), ann if ann != nil else vt, {t.main[tg], .Global})
+        tc_set_ref(k, tg, {t.main[tg], .Global})
     }
 }

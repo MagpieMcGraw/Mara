@@ -189,11 +189,60 @@ raw_type_key :: proc(t: Type) -> rawptr {
     return nil
 }
 
-// Bind a name in scope s.
-scope_bind :: proc(s: ^Type_Scope, name: string, t: Type) {
+// Bind a name in scope s: its type, and what declares it.
+scope_bind :: proc(s: ^Type_Scope, name: string, t: Type, ref: Ref) {
     if s == nil { return }
     if s.types == nil { s.types = make(map[string]Type) }
     s.types[name] = t
+    if s.refs == nil { s.refs = make(map[string]Ref) }
+    s.refs[name] = ref
+}
+
+// What a name refers to from env, found as scope_find finds it: its
+// binding's declaration, or the fun's it names.
+scope_find_ref :: proc(env: ^Type_Scope, name: string, below_module := false) -> Ref {
+    for s := env; s != nil && s.kind == .Block; s = s.parent_scope {
+        if s.types != nil { if _, ok := s.types[name]; ok { return s.refs[name] } }
+    }
+    for s := env; s != nil; s = s.parent_scope {
+        if below_module && s.is_module { break }
+        if s.types != nil {
+            t, ok := s.types[name]
+            if ok && (s.kind != .Block || names_module(t)) { return s.refs[name] }
+        }
+        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return Ref{f.decl, .Fun} } }
+    }
+    for s := env; s != nil; s = s.parent_scope {
+        if below_module && s.is_module { break }
+        for inc in s.includes {
+            if inc == nil { continue }
+            if _, ok := inc.types[name]; ok { return inc.refs[name] }
+        }
+        if s.is_module { break }
+    }
+    return {}
+}
+
+// What declares an enum's or a union's variant, by its name (0: none).
+variant_decl :: proc(t: Type, name: string) -> Token_Id {
+    #partial switch v in t {
+    case ^Type_Enum:
+        return v.variant_decls[name] or_else 0
+    case ^Type_Union:
+        if vs := v.variant_structs[name] or_else nil; vs != nil { return vs.decl }
+    }
+    return 0
+}
+
+// What declares a type that has a name: its name's token (0: none does).
+type_decl :: proc(t: Type) -> Token_Id {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.decl
+    case ^Type_Enum:     return v.span.at
+    case ^Type_Union:    return v.span.at
+    case ^Type_Distinct: return v.span.at
+    }
+    return 0
 }
 
 // A new block's scope (an if's, a loop's, a defer's), inside parent.

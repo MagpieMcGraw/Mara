@@ -94,6 +94,7 @@ tc_carves_place :: proc(k: ^TC, storage: Tree_Id) -> bool {
 tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, env, fields_of: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
+    ref := tc_decl_ref(k, target, fields_of)
     b := tc_building(k)
     decl := NO_NODE
     field := false
@@ -113,9 +114,9 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
         tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(ann))
     }
     final := vt if is_any(ann) else ann
-    scope_bind(env, name, final)
+    scope_bind(env, name, final, ref)
     tc_note_decl(k, name, final, span, true)
-    if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
+    if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
     if b = tc_building(k); b == nil { return }
     if field { final = b.g.type_[decl] }   // (a field: its struct's type)
     graph_build_typed(b, decl, final)

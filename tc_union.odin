@@ -68,12 +68,15 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
             k.table.error_set_counter += 1
             et.error_set_id = k.table.error_set_counter
             et.variants["Ok"] = 0
-            for v, i in variants { et.variants[v.name] = (et.error_set_id << 16) | (i + 1) }
+            for v, i in variants {
+                et.variants[v.name] = (et.error_set_id << 16) | (i + 1)
+                et.variant_decls[v.name] = v.span.at
+            }
         } else {
-            for v in variants { et.variants[v.name] = v.tag }
+            for v in variants { et.variants[v.name], et.variant_decls[v.name] = v.tag, v.span.at }
         }
         k.table.enums[flat] = et
-        scope_bind(mod, name, et)
+        scope_bind(mod, name, et, {k.t.main[def], .Type})
         register_enum_variants(k.c, et, flat)
         return
     }
@@ -87,7 +90,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     tag_et := new(Type_Enum)
     tag_et.name = make_flat_name(k.pkg, strings.concatenate({name, "_Tag"}))
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = k.pkg, tag_type, span, true
-    for v in variants { tag_et.variants[v.name] = v.tag }
+    for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     k.table.enums[tag_et.name] = tag_et
     register_enum_variants(k.c, tag_et, tag_et.name)
     ut.tag_enum = tag_et
@@ -95,13 +98,14 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
         vst := new(Type_Scope)
         vst.name = make_flat_name(k.pkg, strings.concatenate({name, "_", v.name}))
         vst.home_package, vst.kind, vst.body_span = k.pkg, .Struct, v.span
+        vst.decl = v.span.at
         k.table.structs[vst.name] = vst
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
         ut.variant_structs[v.name] = vst
     }
     k.table.unions[flat] = ut
-    scope_bind(mod, name, ut)
+    scope_bind(mod, name, ut, {k.t.main[def], .Type})
 }
 
 TC_Variant :: struct {
@@ -127,7 +131,7 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
         if vst == nil { continue }
         for f in tree_list(t, t.b[vn]) {
             ft := tc_type(k, Tree_Id(t.a[f]), env, span)
-            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), type_ = ft, default_node = Tree_Id(t.b[f])})
+            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), decl = t.main[f], type_ = ft, default_node = Tree_Id(t.b[f])})
         }
         build_field_map(&vst.sd)
     }
@@ -312,7 +316,7 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
             if _, at, lit := tc_literal_value(k, v); lit { tags[i] = int(at) }
         }
         next = tags[i] + 1
-        tag_et.variants[tc_name(k, vn)] = tags[i]
+        tag_et.variants[tc_name(k, vn)], tag_et.variant_decls[tc_name(k, vn)] = tags[i], t.main[vn]
     }
     k.table.enums[tag_et.name] = tag_et
     ut.tag_enum = tag_et
@@ -322,9 +326,10 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
         vst := new(Type_Scope)
         vst.name = make_flat_name(tmpl.pkg, strings.concatenate({mangled, "_", vname}))
         vst.home_package, vst.kind, vst.body_span = tmpl.pkg, .Struct, Span{at = main, tok = main, end = main + 1}
+        vst.decl = main
         for f in tree_list(t, t.b[vn]) {
             ft := tc_type(k, Tree_Id(t.a[f]), tmpl.env, span)
-            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), type_ = ft, default_node = Tree_Id(t.b[f])})
+            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), decl = t.main[f], type_ = ft, default_node = Tree_Id(t.b[f])})
         }
         build_field_map(&vst.sd)
         k.table.structs[vst.name] = vst
@@ -335,6 +340,6 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     finalize_union_variant_headers(k.c, ut)
     k.table.unions[ut.name] = ut
     k.table.mono_union_cache[mangled] = ut
-    scope_bind(k.root, mangled, ut)
+    scope_bind(k.root, mangled, ut, {ut.span.at, .Type})
     return ut
 }

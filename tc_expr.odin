@@ -213,7 +213,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: 
             return Type_Error{}, {}
         }
         if et == nil { return Type_Error{}, {} }
-        k.variant_nodes[n] = true
+        tc_set_ref(k, n, {variant_decl(et, name), .Variant})
         return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
     case .Field:
         return tc_field(k, n, env, want, w, dest, temp, temp_span)
@@ -253,7 +253,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
     if hint != nil {
         if et, v, found := tc_variant_ident(k, name, hint, env, false, span); found {
             if et == nil { return Type_Error{}, {} }
-            k.variant_nodes[n] = true
+            tc_set_ref(k, n, {variant_decl(et, name), .Variant})
             return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
         }
     }
@@ -266,7 +266,11 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
         kc, unambiguous = tc_const_ref(k, env, name, span)
         if !unambiguous { return Type_Error{}, {} }
     }
-    if kc != nil { k.const_nodes[n] = true }
+    if kc != nil {
+        tc_set_ref(k, n, {k.t.main[kc.def], .Const})
+    } else if ok {
+        tc_set_ref(k, n, scope_find_ref(env, name))
+    }
     if !ok && kc != nil {
         // (Not bound here yet: its value's type — unless it is the value
         // being checked.)
@@ -670,7 +674,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         return tc_dispatch_call(k, n, name, members, args, env, want if build else .None, w)
     }
     if qual == nil {
-        if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin { return t, r }
+        if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin {
+            tc_set_ref(k, n, {kind = .Builtin})
+            return t, r
+        }
         if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
             return tc_dispatch_call(k, n, name, members, args, env, want if build else .None, w)
         }
@@ -686,6 +693,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         return Type_Error{}, {}
     }
     if dt, is_distinct := ft_raw.(^Type_Distinct); is_distinct {
+        tc_set_ref(k, n, {type_decl(dt), .Type})
         return tc_distinct_conversion(k, n, name, dt, args, env, want if build else .None, w)
     }
     ft, is_scope := ft_raw.(^Type_Scope)
@@ -712,6 +720,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     overrides := Tree_Id(tr.b[n]) if tr.tag[n] == .Call else method_view(tr, n).overrides
     if overrides != 0 && !is_struct { tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, name) }
     tc_set_callee(k, n, ft)
+    tc_set_ref(k, n, scope_find_ref(env, name) if indirect else Ref{ft.decl, .Type if is_struct else .Fun})
     if is_struct { tc_struct_ensure(k, ft) }
     // (Built into storage that holds a value: a temporary made first.)
     dest := dest
@@ -934,7 +943,7 @@ tc_unparen :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
 // a negated number.
 tc_is_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
     n := tc_unparen(k, n)
-    if n in k.variant_nodes { return true }   // (a variant's name states its value)
+    if tc_ref(k, n).kind == .Variant { return true }   // (a variant's name states its value)
     #partial switch k.t.tag[n] {
     case .Number, .True, .False, .Char: return true
     case .Unary:

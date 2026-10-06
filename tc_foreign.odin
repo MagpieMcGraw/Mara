@@ -20,12 +20,13 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
         for g in v.params {
             pv := params_view(t, g)
             for pn in pv.names {
-                append(&ft.params, Struct_Type_Field{name = tc_text(pn), type_ = tc_type(k, pv.type_, env, span)})
+                append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = tc_type(k, pv.type_, env, span)})
             }
         }
         for r in v.returns { append(&ft.return_types, tc_type(k, r, env, span)) }
         build_param_map(ft)
-        scope_bind(mod, name, ft)
+        ft.decl = v.name
+        scope_bind(mod, name, ft, {ft.decl, .Fun})
         k.c.declared_funs[name] = true
         k.table.fun_homes[name] = k.pkg
         if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }

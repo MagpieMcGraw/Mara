@@ -82,6 +82,7 @@ Type_Partial_Array :: struct {
 
 Struct_Type_Field :: struct {
     name:          string,
+    decl:          Token_Id, // the token that declares it; 0 when none does
     type_:         Type,
     default_node:  Tree_Id, // its default in the flat tree; 0 if none
     default_slot:  Maybe(int), // ... one of a group's one value (`x, y := f()`): f's result there, else the value
@@ -163,6 +164,11 @@ Scope_Body :: struct {
     // env-pointer cleanup.)
     functions:      map[string]^Type_Scope, // bare name -> callable fun/struct
     types:    map[string]Type,         // bare name -> nested type (struct/enum/union/distinct)
+    refs:     map[string]Ref,          // bare name -> what declares it (scope_bind)
+
+    // The token that declares its name (a fun's, a struct's, a variant's);
+    // 0 when no source does.
+    decl:           Token_Id,
 
     // Bare-`include`d modules' durable scopes, visible from this scope (a file
     // scope holds that file's private includes; a module scope holds re-exports).
@@ -187,6 +193,7 @@ Scope_Body :: struct {
     body_span:            Span,             // span of the declaring statement (diagnostics)
     is_exposed:           bool,             // `#expose` → dllexport linkage + unmangled symbol
     return_binding_names: [dynamic]string,  // named-return locals (`fun() -> (fwd, up: Vec3)`)
+    return_binding_decls: [dynamic]Token_Id,  // ... and the tokens that declare them
     // Codegen-facing signature caches (see populate_cg_signature). cg_returns
     // prepends a struct ctor's Self (sret slot 0); both pre-unwrap distinct.
     // Built at CHECK time: codegen's parallel workers read them, and must
@@ -364,6 +371,7 @@ Type_Enum :: struct {
     span:          Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     tag_type:      string,                    // "" = default (i64), or "i32", "i16", etc.
     variants:      map[string]int,
+    variant_decls: map[string]Token_Id,   // the token that declares each
     is_error_kind: bool,    // true for `Name :: error { ... }` — flat tag set in the global `err` type
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)

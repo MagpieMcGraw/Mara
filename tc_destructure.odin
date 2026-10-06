@@ -68,7 +68,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             }
             if is_any(vt) {
                 // (Of no type, reported: its names none either.)
-                for name in names { if name != "" { scope_bind(env, name, Type_Error{}) } }
+                for name, i in names { if name != "" { scope_bind(env, name, Type_Error{}, tc_decl_ref(k, targets[i], fields_of)) } }
                 return
             }
             tc_broadcast(k, s, targets, value, is_decl, env)
@@ -89,16 +89,17 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             if !is_decl && name != "_" {
                 // (Written: at the variable's own type — the result's, or a
                 // width still open, settled to it.)
-                existing, _, ok := tc_name_write(k, name, env, span)
+                existing, _, ok := tc_name_write(k, tg, name, env, span)
                 if !ok { return }
                 if !coerce_deferred(k.c, existing, rt, span) && !is_any(existing) && !is_any(rt) && !types_equal(existing, rt) {
                     tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
             } else {
-                scope_bind(env, name, rt)
+                scope_bind(env, name, rt, tc_decl_ref(k, tg, fields_of))
+                tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))
             }
             // (A struct's field: its value its slot of the call's.)
-            if fields_of != nil && name != "_" { tc_add_field(fields_of, name, rt, value, i) }
+            if fields_of != nil && name != "_" { tc_add_field(fields_of, name, k.t.main[tg], rt, value, i) }
         } else {
             if pname, immutable := tc_write_root_param(k, tg, env); immutable {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)

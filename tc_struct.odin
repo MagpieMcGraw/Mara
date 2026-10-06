@@ -35,7 +35,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
     if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
         if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok {
             t := tc_check(k, kc.value, env)
-            k.const_nodes[n] = true
+            tc_set_ref(k, n, {k.t.main[kc.def], .Const})
             return t, tc_const_use(k, kc, n, t, want, w)
         }
     }
@@ -53,13 +53,13 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
     // (A union's variant: a value of its own — its base, built, left out.)
     if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has {
-            k.variant_nodes[n] = true
+            tc_set_ref(k, n, {variant_decl(ut, field), .Variant})
             if b := tc_building(k); build && b != nil { graph_build_drop_since(b, mark) }
             return ut, tc_union_variant(k, ut, field, span, want if build else .None, w, dest, temp, temp_span)
         }
     }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
-    if _, is_enum := t.(^Type_Enum); is_enum && known_ok { k.variant_nodes[n] = true }
+    tc_set_ref(k, n, tc_member_ref(k, bt, t, field, is_member))
     if !build || tc_building(k) == nil { return t, {} }
     if known_ok {
         // (A length known — a fixed array's, a text constant's: its value;
@@ -82,6 +82,21 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
     if p == NO_VALUE { return t, {} }
     if want == .Value { return t, {v = graph_read(tc_building(k), p, t, span), ok = true} }
     return t, {v = p, place = true, ok = true}
+}
+
+// What `x.field` names, given its base's type and what tc_field_type found:
+// an enum's variant, a fun its struct has, a struct's field — or what no
+// source declares (a header's len, a swizzle, a union's tag).
+tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
+    if _, is_error := t.(Type_Error); is_error || t == nil { return {} }
+    if et, is_enum := t.(^Type_Enum); is_enum && !member { return {variant_decl(et, field), .Variant} }
+    if fun, is_fun := t.(^Type_Scope); is_fun && !member && fun.kind == .Fun { return {fun.decl, .Fun} }
+    if member {
+        if sd := tc_struct_of(k, bt); sd != nil {
+            if i, ok := sd.field_map[field]; ok { return {sd.fields[i].decl, .Field} }
+        }
+    }
+    return {kind = .Builtin}
 }
 
 // A field's type: whether it names part of the value (a member), or a
@@ -222,6 +237,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if ft != nil {
         k.hint = ft
         tc_set_type(k, target, ft)
+        if i, ok := sd.field_map[field]; ok { tc_set_ref(k, target, {sd.fields[i].decl, .Field}) }
         if tc_building(k) != nil { place = tc_member_place(k, target, field, br, bt, ft) }
     } else if tc_building(k) != nil {
         tc_fail(k, "a write to an unknown field")
@@ -752,6 +768,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Built,
         }
         if len(field) == 1 {
             tc_set_type(k, target, v.elem)
+            tc_set_ref(k, target, {kind = .Builtin})
             if types_incompatible(v.elem, vt) && !is_infer(vt) {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE, type_name(vt), field, type_name(v.elem))
             }
@@ -759,6 +776,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Built,
             return
         }
         tc_set_type(k, target, new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}))
+        tc_set_ref(k, target, {kind = .Builtin})
         if va, is_array := vt.(^Type_Fixed_Array); is_array {
             if types_incompatible(v.elem, va.elem) { tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPES, type_name(vt), field) }
         } else if !is_any(vt) && !is_infer(vt) {
@@ -798,7 +816,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
         for _, mt in sd.types {
             if et, is_enum := mt.(^Type_Enum); is_enum {
                 if val, has := et.variants[field]; has {
-                    k.variant_nodes[n] = true
+                    tc_set_ref(k, n, {variant_decl(et, field), .Variant})
                     if b := tc_building(k); build && b != nil { graph_build_drop_since(b, mark) }
                     return et, tc_variant_value(k, et, val, field, span, want if build else .None, w)
                 }
@@ -812,8 +830,9 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
         tc_error(k, span, TYPE_MODULE_SYMBOL, sd.name, field)
         return Type_Error{}, {}
     }
+    tc_set_ref(k, n, scope_find_ref(msc, field))
     if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const {
-        k.const_nodes[n] = true
+        tc_set_ref(k, n, {k.t.main[kc.def], .Const})
         b := tc_building(k)
         if !build || b == nil { return t, {} }
         graph_build_drop_since(b, mark)
@@ -839,13 +858,13 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
             cur = Tree_Id(tr.a[cur])
             continue
         case .Field:
-            if cur in k.const_nodes { return tc_text(Token_Id(tr.b[cur])), true }
+            if tc_ref(k, cur).kind == .Const { return tc_text(Token_Id(tr.b[cur])), true }
             inner = Tree_Id(tr.a[cur])
         case .Index, .Slice:
             inner = Tree_Id(tr.a[cur])
         case .Ident:
             name := tc_name(k, cur)
-            return name, cur in k.const_nodes || name in k.consts
+            return name, tc_ref(k, cur).kind == .Const || name in k.consts
         case:
             return "", false
         }

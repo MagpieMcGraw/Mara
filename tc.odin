@@ -43,8 +43,6 @@ TC :: struct {
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
-    const_nodes:   map[Tree_Id]bool,  // the names that resolved to a constant
-    variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
     recv:          TC_Recv,           // the call being checked's receiver, built
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
@@ -190,7 +188,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.name = "std"
     std_fun.home_package = "std"
     std_fun.kind = .Struct
-    scope_bind(main_mod, "std", std_fun)
+    scope_bind(main_mod, "std", std_fun, {kind = .Builtin})
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
@@ -223,12 +221,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.field_map["args"] = len(prog_type.fields)
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
         table.funs["Program"] = prog_type
-        scope_bind(main_mod, "this_program", prog_type)
-        scope_bind(main_mod, "Program", prog_type)
+        scope_bind(main_mod, "this_program", prog_type, {kind = .Builtin})
+        scope_bind(main_mod, "Program", prog_type, {kind = .Builtin})
     }
     void_type := new(Type_Ptr)
     void_type.elem = Type_Any{}
-    scope_bind(main_mod, "void", void_type)
+    scope_bind(main_mod, "void", void_type, {kind = .Builtin})
 
     k.pkg = main_package
     main := tc_check_module_files(k, files, main_mod)
@@ -269,6 +267,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     flow_analyze_program(c, checked, void_defaults)
     escape_analyze_program(c, checked)
     annot_dump(k.annot, t)
+    annot_check(k.annot, t, &checked.graph, c.errors)
     checked.errors = c.errors
     return checked
 }
@@ -379,7 +378,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
-            m := tc_use(k, value, env, mod, alias = tc_name(k, s))
+            m := tc_use(k, value, env, mod, alias = t.main[s])
             if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
             return
         }
@@ -430,7 +429,7 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
-    scope_bind(mod, name, dt)
+    scope_bind(mod, name, dt, {k.t.main[def], .Type})
 }
 
 // What a module statement leaves for every name to be known: a distinct
@@ -527,7 +526,8 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     // (A struct with params is constructed by a call, as a fun is.)
     callable := !is_struct || len(v.params) > 0
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
-    scope_bind(mod, name, ts)
+    ts.decl = t.main[def]
+    scope_bind(mod, name, ts, {ts.decl, .Type if is_struct else .Fun})
     k.table.fun_homes[name] = k.pkg
     if callable {
         k.c.declared_funs[name] = true
@@ -556,7 +556,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
             slot: Maybe(int)
             if len(pv.values) == 1 && len(pv.names) > 1 { def, slot = pv.values[0], i }
             pt := tc_param_type(k, tc_text(name), pv.type_, def, sc.env, span, slot)
-            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt, default_node = def, default_slot = slot})
+            append(&ts.params, Struct_Type_Field{name = tc_text(name), decl = name, type_ = pt, default_node = def, default_slot = slot})
         }
     }
     build_param_map(ts)
@@ -569,6 +569,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
             for name in pv.names {
                 append(&ts.return_types, rt)
                 append(&ts.return_binding_names, tc_text(name))
+                append(&ts.return_binding_decls, name)
             }
             continue
         }
@@ -835,6 +836,17 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
 // number. (The template's definition itself is the instance's: unsalted.)
 tc_sid :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
     return annot_key(tc_instance(k, n), n)
+}
+
+// What a name refers to, as checked (a declaration's name: itself).
+tc_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
+    if n == 0 { return {} }
+    return annot_ref(k.annot, tc_instance(k, n), n)
+}
+
+tc_set_ref :: proc(k: ^TC, n: Tree_Id, r: Ref) {
+    if n == 0 { return }
+    annot_set_ref(k.annot, tc_instance(k, n), n, r)
 }
 
 // A call's fun, or struct (its constructor), as checked; nil when none is

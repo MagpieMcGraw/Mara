@@ -36,6 +36,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w
     if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
         if qt, found := scope_lookup(env, qname); found {
+            tc_set_ref(k, q, scope_find_ref(env, qname))
             if qsd := as_scope_body(qt); qsd != nil {
                 if fn, has := qsd.functions[name]; has && fn != nil {
                     // (Named by its type, a static call; by a value of it,
