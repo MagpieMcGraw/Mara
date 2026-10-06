@@ -1,22 +1,26 @@
 package mara
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// The program graph (design/program_graph.md): the program's shape. The
-// checker builds it as it checks each body (Graph_Builder, the graph_build_*
-// procs), and once the check is clean it is put together (build_program_graph)
-// for the analyses, `mara ask` and the emitter to read.
+// The program's code (design/annotated_tree.md, stage 4): what the analyses
+// and the emitter read. Lowering builds it from the annotated tree once the
+// check is clean (lower.odin, through Graph_Builder and the graph_build_*
+// procs); put together (build_program_graph), it is each fun's, struct's
+// constructor's and constant's code, a graph of its own (Program_Code).
 //
-// Nodes are scopes, the names they declare, and operations (the set in
-// design/program_graph.md § Operations). Each fact is a column indexed by
-// Node_Id. Put together, ids run depth-first in written order — bodies are
-// built in pieces as they are checked, and graph_canonicalize puts them in
-// order — so a scope's subtree is one run of ids: [id, last[id]].
+// A code's nodes are its scopes — its own and its blocks — the variables they
+// declare, and operations (the set in design/program_graph.md § Operations).
+// Each fact is a column indexed by Node_Id, the code's own from 0: its root,
+// then everything in it, depth-first in written order, so a scope's subtree
+// is one run of ids: [id, last[id]]. (Built, the codes share one graph, in
+// pieces as each is lowered; graph_canonicalize puts them in order, and
+// graph_split takes each out.)
 //
 // Execution order is kept apart from the tree: every function's operations
 // are cut into runs, each ending in a jump, branch, switch or return, and a
@@ -566,7 +570,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     free(b)
 }
 
-build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
+build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     defer graph_builder_free(b)
     if f := b.failure; f.reason != "" { graph_fatal(f.span, "the checker built no graph of '%s': %s", f.name, f.reason) }
     g, checked := b.g, b.checked
@@ -624,7 +628,196 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
         graph_check_refers(b)
     }
     graph_dump(g)
-    return g^
+    pc := graph_split(g)
+    graph_free_columns(g)
+    return pc
+}
+
+// --- the program's code ---------------------------------------------------------
+
+// The program's code, once lowered (design/annotated_tree.md, stage 4): each
+// fun's, each struct's constructor's and each constant's, a graph of its own —
+// its ids its own, from 0: its node, then everything in it — and what the
+// program has once: the constants' tables, the funs that consume a param, the
+// statements nothing reaches.
+Program_Code :: struct {
+    codes:       [dynamic]^Program_Graph,          // each, in written order
+    funs:        map[^Type_Scope]^Program_Graph,   // a fun's, a struct's constructor's
+    consts:      map[Syntax_Id]^Program_Graph,     // a constant's, by its value's node
+    tables:      map[Syntax_Id]^Fold,              // each table's value, by its constant (graph_fold_uses)
+    table_names: map[Syntax_Id]string,             // ... its symbol's name
+    fold_errors: [dynamic]Fold_Error,              // the uses of constants with no value
+    consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
+    unreachable: [dynamic]Span,                    // statements right after a return, break or continue
+    arena:       ^virtual.Arena,                   // where the codes are (they last as long as the program)
+}
+
+// The program graph, put together, as each code's (graph_code_of): its
+// nodes, code by code; then the runs and what only some nodes have, each in
+// one pass, to the code each belongs to.
+@(private="file")
+graph_split :: proc(g: ^Program_Graph) -> Program_Code {
+    pc := Program_Code{tables = g.tables, table_names = g.table_names, fold_errors = g.fold_errors, unreachable = g.unreachable}
+    g.tables, g.table_names, g.fold_errors, g.unreachable = {}, {}, {}, {}
+    pc.arena = new(virtual.Arena)
+    if err := virtual.arena_init_growing(pc.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
+    context.allocator = virtual.arena_allocator(pc.arena)
+    const_of := make(map[Node_Id]Syntax_Id, len(g.const_code), context.temp_allocator)
+    for v, d in g.const_code { const_of[d] = v }
+    // (Each node's code — its root's place in pc.codes; -1: the compiler's
+    // globals' scope — and each code's root. A statement's id in the code
+    // being made, -1 until it has one.)
+    code_of := make([]i32, len(g.kind), context.temp_allocator)
+    roots := make([dynamic]Node_Id, context.temp_allocator)
+    stmt_at := make([]i32, len(g.stmts), context.temp_allocator)
+    slice.fill(stmt_at, -1)
+    for id := 0; id < len(g.kind); id = int(g.last[id]) + 1 {
+        root := Node_Id(id)
+        if g.parent[root] != NO_NODE { graph_fatal(g.origin[root], "'%s' is inside another code", g.name[root]) }
+        at := i32(-1)
+        #partial switch g.kind[root] {
+        case .Module:   // (the compiler's own globals: no code)
+        case .Fun, .Struct:
+            c := graph_code_of(g, root, stmt_at)
+            at = i32(len(pc.codes))
+            append(&pc.codes, c)
+            append(&roots, root)
+            pc.funs[g.type_[root].(^Type_Scope)] = c
+        case .Const:
+            c := graph_code_of(g, root, stmt_at)
+            at = i32(len(pc.codes))
+            append(&pc.codes, c)
+            append(&roots, root)
+            pc.consts[const_of[root]] = c
+        case:
+            graph_fatal(g.origin[root], "a %v '%s' is no code", g.kind[root], g.name[root])
+        }
+        slice.fill(code_of[root:g.last[root] + 1], at)
+    }
+    for r in 0 ..< len(g.run_first) - 1 {
+        ops := graph_run(g, r)
+        if len(ops) == 0 || code_of[ops[0]] < 0 { continue }
+        c, lo := pc.codes[code_of[ops[0]]], roots[code_of[ops[0]]]
+        append(&c.run_first, i32(len(c.run_ops)))
+        for op in ops { append(&c.run_ops, op - lo) }
+    }
+    // (What only some nodes have: counted, each code's reserved, then put.)
+    Side :: enum { Decl_Tok, Callee, Defer, Constant, Consts, Sides }
+    counts := make([][Side]i32, len(pc.codes), context.temp_allocator)
+    count :: proc(counts: [][Side]i32, code_of: []i32, id: Node_Id, s: Side) {
+        if at := code_of[id]; at >= 0 { counts[at][s] += 1 }
+    }
+    for id in g.decl_tok { count(counts, code_of, id, .Decl_Tok) }
+    for id in g.callee { count(counts, code_of, id, .Callee) }
+    for id in g.defer_of { count(counts, code_of, id, .Defer) }
+    for id in g.constant { count(counts, code_of, id, .Constant) }
+    for id in g.consts { count(counts, code_of, id, .Consts) }
+    for id in g.assert_sides { count(counts, code_of, id, .Sides) }
+    for c, i in pc.codes {
+        n := counts[i]
+        if n[.Decl_Tok] > 0 { reserve(&c.decl_tok, int(n[.Decl_Tok])) }
+        if n[.Callee] > 0 { reserve(&c.callee, int(n[.Callee])) }
+        if n[.Defer] > 0 { reserve(&c.defer_of, int(n[.Defer])) }
+        if n[.Constant] > 0 { reserve(&c.constant, int(n[.Constant])) }
+        if n[.Consts] > 0 { reserve(&c.consts, int(n[.Consts])) }
+        if n[.Sides] > 0 { reserve(&c.assert_sides, int(n[.Sides])) }
+    }
+    for id, tk in g.decl_tok { if at := code_of[id]; at >= 0 { pc.codes[at].decl_tok[id - roots[at]] = tk } }
+    for id, ts in g.callee { if at := code_of[id]; at >= 0 { pc.codes[at].callee[id - roots[at]] = ts } }
+    for id, d in g.defer_of { if at := code_of[id]; at >= 0 { pc.codes[at].defer_of[id - roots[at]] = d - roots[at] } }
+    for id, v in g.constant { if at := code_of[id]; at >= 0 { pc.codes[at].constant[id - roots[at]] = v } }
+    for id, v in g.consts { if at := code_of[id]; at >= 0 { pc.codes[at].consts[id - roots[at]] = v } }
+    for id, s in g.assert_sides { if at := code_of[id]; at >= 0 { pc.codes[at].assert_sides[id - roots[at]] = s } }
+    for id in g.settled { if at := code_of[id]; at >= 0 { append(&pc.codes[at].settled, id - roots[at]) } }
+    for c in pc.codes {
+        append(&c.run_first, i32(len(c.run_ops)))
+        graph_index_runs(c)
+    }
+    for n, k in g.consumes { pc.consumes[g.type_[n].(^Type_Scope)] = k }
+    return pc
+}
+
+// One code's nodes: [root, last[root]], renumbered from 0 — their columns,
+// operands, thens and statements, each a stretch of the graph's copied whole
+// and moved down to 0; then the declarations outside it they name (the
+// compiler's own globals), each a node of its own past its root's.
+// (`stmt_at`: the program's statements' ids here, -1 each, as it is left.)
+@(private="file")
+graph_code_of :: proc(g: ^Program_Graph, root: Node_Id, stmt_at: []i32) -> ^Program_Graph {
+    lo, hi := root, g.last[root]
+    n := int(hi - lo) + 1
+    c := new(Program_Graph)
+    inside :: #force_inline proc(lo, hi, id: Node_Id) -> bool { return id >= lo && id <= hi }
+    // (What it names outside it, first: its columns made once.)
+    outside: map[Node_Id]Node_Id   // a declaration outside it it names → its own node for it (rare: made once one is)
+    defer delete(outside)
+    outer := make([dynamic]Node_Id, context.temp_allocator)
+    for r in g.refers[lo:hi + 1] {
+        if r != NO_NODE && !inside(lo, hi, r) && r not_in outside {
+            outside[r] = Node_Id(n + len(outer))
+            append(&outer, r)
+        }
+    }
+    m := n + len(outer)
+    graph_resize(c, m)
+    copy(c.kind[:n], g.kind[lo:hi + 1])
+    copy(c.op[:n], g.op[lo:hi + 1])
+    copy(c.written[:n], g.written[lo:hi + 1])
+    copy(c.name[:n], g.name[lo:hi + 1])
+    copy(c.type_[:n], g.type_[lo:hi + 1])
+    copy(c.origin[:n], g.origin[lo:hi + 1])
+    // (Its statements: those its nodes come from, in order.)
+    used := make([dynamic]i32, context.temp_allocator)
+    for s in g.stmt[lo:hi + 1] {
+        if s >= 0 && stmt_at[s] < 0 { stmt_at[s] = 0; append(&used, s) }
+    }
+    slice.sort(used[:])
+    resize(&c.stmts, len(used))
+    for s, i in used {
+        stmt_at[s] = i32(i)
+        c.stmts[i] = g.stmts[s]
+    }
+    for i in 0 ..< n {
+        id := lo + Node_Id(i)
+        p := g.parent[id]
+        c.parent[i] = p - lo if inside(lo, hi, p) else NO_NODE
+        c.last[i] = g.last[id] - lo
+        r := g.refers[id]
+        c.refers[i] = NO_NODE if r == NO_NODE else (r - lo if inside(lo, hi, r) else outside[r])
+        s := g.stmt[id]
+        c.stmt[i] = stmt_at[s] if s >= 0 else -1
+    }
+    for s in used { stmt_at[s] = -1 }
+    for r, k in outer {
+        at := n + k
+        c.kind[at], c.op[at], c.written[at] = g.kind[r], g.op[r], g.written[r]
+        c.name[at], c.type_[at], c.origin[at] = g.name[r], g.type_[r], g.origin[r]
+        c.parent[at], c.last[at], c.refers[at], c.stmt[at] = NO_NODE, Node_Id(at), NO_NODE, -1
+    }
+    // (Its operands, and its thens: each a stretch, moved down.)
+    o_lo, o_hi := g.operand_first[lo], g.operand_first[hi + 1]
+    for i in 0 ..< n { c.operand_first[i] = g.operand_first[lo + Node_Id(i)] - o_lo }
+    for k in n ..< m { c.operand_first[k] = o_hi - o_lo }
+    append(&c.operand_first, o_hi - o_lo)
+    resize(&c.operands, int(o_hi - o_lo))
+    copy(c.operands[:], g.operands[o_lo:o_hi])
+    for &o in c.operands {
+        if o.op == NO_NODE { continue }
+        if !inside(lo, hi, o.op) { graph_fatal(g.origin[root], "an operand in '%s' is in another code", g.name[root]) }
+        o.op -= lo
+    }
+    e_lo, e_hi := g.out_first[lo], g.out_first[hi + 1]
+    resize(&c.edges, int(e_hi - e_lo))
+    copy(c.edges[:], g.edges[e_lo:e_hi])
+    for &e in c.edges {
+        if e.to != NO_NODE && !inside(lo, hi, e.to) { graph_fatal(g.origin[root], "a then in '%s' into another code", g.name[root]) }
+        e.from -= lo
+        if e.to != NO_NODE { e.to -= lo }
+    }
+    resize(&c.out_first, m + 1)
+    for i in 0 ..< n { c.out_first[i] = g.out_first[lo + Node_Id(i)] - e_lo }
+    for k in n ..= m { c.out_first[k] = e_hi - e_lo }
+    return c
 }
 
 // Leave node id out of the graph, `with` standing for it where it is used.
@@ -1917,10 +2110,8 @@ graph_find_consumes :: proc(g: ^Program_Graph) {
 }
 
 // The param a fun consumes into its result (graph_find_consumes), if any.
-graph_consumed :: proc(g: ^Program_Graph, ft: ^Type_Scope) -> Maybe(int) {
-    if n, ok := g.scope_node[ft]; ok {
-        if k, consumes := g.consumes[n]; consumes { return k }
-    }
+graph_consumed :: proc(pc: ^Program_Code, ft: ^Type_Scope) -> Maybe(int) {
+    if k, consumes := pc.consumes[ft]; consumes { return k }
     return nil
 }
 
@@ -3965,7 +4156,10 @@ graph_dump_full :: proc(g: ^Program_Graph) {
             strings.write_string(&b, ")")
         }
         if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
-        if c, ok := g.constant[Node_Id(id)]; ok { fmt.sbprintf(&b, " constant=%d", c) }
+        if c, ok := g.constant[Node_Id(id)]; ok {   // (by its code's name: a value's node isn't the same from one build to the next)
+            d, built := g.const_code[c]
+            fmt.sbprintf(&b, " constant=%s", g.name[d] if built else "?")
+        }
         if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))

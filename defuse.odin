@@ -76,33 +76,42 @@ Guard :: struct {
     conds: []Operand,   // what it branches on
 }
 
-// One call of a fun: the call operation and the fun it runs in.
+// One call of a fun: the call operation, the fun it runs in and that fun's
+// code.
 Fn_Call_Site :: struct {
     caller: ^Type_Scope,
     op:     Node_Id,
+    g:      ^Program_Graph,
 }
 
 // One fun's analysis.
 Du_Fn :: struct {
-    ft:      ^Type_Scope,
-    node:    Node_Id,
-    vars:    [dynamic]^Var_Binding,
-    defs:    [dynamic]^Def,        // its variables' and synthetic locals' definitions
-    runs:    [dynamic]i32,         // its code's runs, then its defer blocks'
-    main:    int,                  // how many of `runs` are its code's own
-    returns: [dynamic]Node_Id,     // its explicit returns
-    ret_run: map[Node_Id]i32,
-    calls:   [dynamic]Node_Id,     // its calls, constructions and prints
-    guards:  map[i32][dynamic]Guard,  // a run → the statements guarding it (du_def_guards)
-    guarded: bool,                 // guards computed
+    ft:       ^Type_Scope,
+    g:        ^Program_Graph,       // its code (nil: it has none — a foreign fun)
+    node:     Node_Id,
+    vars:     [dynamic]^Var_Binding,
+    bindings: map[Node_Id]^Var_Binding,   // a variable's declaration in its code → the variable
+    defs:     [dynamic]^Def,        // its variables' and synthetic locals' definitions
+    reaching: map[Node_Id][]^Def,   // a use (a var operation) → the definitions that may reach it
+    runs:     [dynamic]i32,         // its code's runs, then its defer blocks'
+    main:     int,                  // how many of `runs` are its code's own
+    returns:  [dynamic]Node_Id,     // its explicit returns
+    ret_run:  map[Node_Id]i32,
+    calls:    [dynamic]Node_Id,     // its calls, constructions and prints
+    guards:   map[i32][dynamic]Guard,  // a run → the statements guarding it (du_def_guards)
+    guarded:  bool,                 // guards computed
+}
+
+// A use of a variable: a var operation, in a fun's code.
+Du_Use :: struct {
+    fn: ^Du_Fn,
+    op: Node_Id,
 }
 
 Def_Use :: struct {
     fns:          map[^Type_Scope]^Du_Fn,
-    bindings:     map[Node_Id]^Var_Binding,   // a variable's declaration in its fun's code → the variable
     vars:         [dynamic]^Var_Binding,   // every analyzed variable
     defs:         [dynamic]^Def,           // every analyzed variable's definitions
-    reaching:     map[Node_Id][]^Def,      // a use (a var operation) → the definitions that may reach it
 
     want_control: bool,                    // `control`: guards too (post-dominators)
     order:        int,
@@ -143,7 +152,7 @@ du_all :: proc(checked: ^Checked_Program) {
 @(private="file")
 du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     du := &checked.du
-    g := &checked.graph
+    g := checked.code.funs[f.ft] or_else nil
 
     // Its variables: the ones its body binds (Annotations.vars).
     annotated, _ := checked.annot.vars[f.ft]
@@ -164,8 +173,8 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
 
     // (A fun with no code — a foreign one: each param defined on entry, and
     // nothing more.)
-    node, has_code := g.scope_node[f.ft]
-    if !has_code {
+    node := Node_Id(0)   // (its code's root)
+    if g == nil {
         for b in f.vars {
             if b.kind != .Param { continue }
             d := new(Def)
@@ -176,7 +185,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         }
         return
     }
-    f.node = node
+    f.g, f.node = g, node
 
     // The declarations its code names (its own, not a nested fun's): each a
     // variable's, found by the token that declares it, or a synthetic local
@@ -194,7 +203,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             if g.written[id] == .Explicit {
                 i := annot_var(checked.annot, f.ft, g.decl_tok[id] or_else 0, g.type_[id])
                 if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", g.name[id], f.ft.name) }
-                du.bindings[id] = of_var[i]
+                f.bindings[id] = of_var[i]
                 decl_of[of_var[i]] = id
             } else if g.kind[id] == .Result {
                 continue
@@ -282,7 +291,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     for r, ri in f.runs {
         if fl.entered[ri] { copy(state, fl.in_state[ri]) } else { slice.zero(state) }
         for op in graph_run(g, int(r)) {
-            du_uses_in(g, du, f, op, state, tracked, kill, dest)
+            du_uses_in(g, f, op, state, tracked, kill, dest)
             apply(&t, ri, op, state)
         }
     }
@@ -292,7 +301,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
 // whole write lands: what reaches it is that variable's definitions in the
 // state just before it (a run lists operations in the order they run).
 @(private="file")
-du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, state: []u64,
+du_uses_in :: proc(g: ^Program_Graph, f: ^Du_Fn, op: Node_Id, state: []u64,
                    tracked: map[Node_Id]int, kill: [][]u64, dest: map[Node_Id]bool) {
     if g.op[op] != .Var || op in dest { return }
     k, ok := tracked[g.refers[op]]
@@ -301,7 +310,7 @@ du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, stat
     for d, i in f.defs {
         if bits_has(kill[k], i) && bits_has(state, i) { append(&reach, d) }
     }
-    if len(reach) > 0 { du.reaching[op] = reach[:] } else { delete(reach) }
+    if len(reach) > 0 { f.reaching[op] = reach[:] } else { delete(reach) }
 }
 
 // --- variables and definitions ---------------------------------------------
@@ -326,7 +335,7 @@ du_def :: proc(checked: ^Checked_Program, f: ^Du_Fn, def_of: ^map[[2]i32]^Def, v
     if d, ok := def_of[key]; ok { return d }
     du := &checked.du
     d := new(Def)
-    d^ = Def{binding = du.bindings[v], var = v, stmt = stmt, span = span, run = -1, fn = f, order = du.order}
+    d^ = Def{binding = f.bindings[v], var = v, stmt = stmt, span = span, run = -1, fn = f, order = du.order}
     d.kind = .Param if d.binding != nil && d.binding.kind == .Param && stmt < 0 else .Assign
     du.order += 1
     def_of[key] = d
@@ -421,33 +430,38 @@ du_classify :: proc(g: ^Program_Graph, d: ^Def) {
 
 // --- what a value reads -------------------------------------------------------
 
-// A walk over the operations that compute a value, collecting the variable
-// uses it reads. Filtered, a call contributes only the arguments its result
-// is computed from; unfiltered, every argument (what was fed in).
+// A walk over the operations that compute a value, in a fun's code,
+// collecting the variable uses it reads. Filtered, a call contributes only
+// the arguments its result is computed from; unfiltered, every argument
+// (what was fed in).
 Du_Walk :: struct {
     checked:  ^Checked_Program,
+    f:        ^Du_Fn,
     filtered: bool,
-    out:      ^[dynamic]Node_Id,
+    out:      ^[dynamic]Du_Use,
     seen:     map[^Def]bool,   // synthetic locals' definitions already seen through
 }
 
-// The variable uses a value reads.
-du_value_uses :: proc(checked: ^Checked_Program, o: Operand, filtered: bool, out: ^[dynamic]Node_Id) {
-    w := Du_Walk{checked = checked, filtered = filtered, out = out}
+// The variable uses a value in f's code reads. (A fun with no def-use — a
+// struct's constructor: none.)
+du_value_uses :: proc(checked: ^Checked_Program, f: ^Du_Fn, o: Operand, filtered: bool, out: ^[dynamic]Du_Use) {
+    if f == nil || f.g == nil { return }
+    w := Du_Walk{checked = checked, f = f, filtered = filtered, out = out}
     defer delete(w.seen)
     du_walk_value(&w, o)
 }
 
 // The variable uses a definition's value reads.
-du_def_uses :: proc(checked: ^Checked_Program, d: ^Def, filtered: bool, out: ^[dynamic]Node_Id) {
-    w := Du_Walk{checked = checked, filtered = filtered, out = out}
+du_def_uses :: proc(checked: ^Checked_Program, d: ^Def, filtered: bool, out: ^[dynamic]Du_Use) {
+    if d.fn == nil || d.fn.g == nil { return }
+    w := Du_Walk{checked = checked, f = d.fn, filtered = filtered, out = out}
     defer delete(w.seen)
     for op in d.writes { du_walk_write(&w, op) }
 }
 
 @(private="file")
 du_walk_write :: proc(w: ^Du_Walk, op: Node_Id) {
-    g := &w.checked.graph
+    g := w.f.g
     ops := graph_operands(g, op)
     #partial switch g.op[op] {
     case .Write, .Fill:  du_walk_value(w, ops[1])
@@ -460,7 +474,7 @@ du_walk_write :: proc(w: ^Du_Walk, op: Node_Id) {
 @(private="file")
 du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
     if o.op == NO_NODE { return }
-    g := &w.checked.graph
+    g := w.f.g
     ops := graph_operands(g, o.op)
     #partial switch g.op[o.op] {
     case .Var:
@@ -481,7 +495,7 @@ du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
 // A call's arguments: all of them, or those its result is computed from.
 @(private="file")
 du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
-    g := &w.checked.graph
+    g := w.f.g
     args := du_call_args(g, op)
     callee := graph_called(g, op)
     if w.filtered && callee != nil && scope_is_written(callee) {
@@ -499,13 +513,13 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
 // the values written into it.
 @(private="file")
 du_walk_use :: proc(w: ^Du_Walk, op: Node_Id) {
-    du := &w.checked.du
-    g := &w.checked.graph
-    if g.refers[op] in du.bindings {
-        append(w.out, op)
+    f := w.f
+    if f.g.refers[op] in f.bindings {
+        append(w.out, Du_Use{f, op})
         return
     }
-    for d in du.reaching[op] {
+    reach, _ := f.reaching[op]
+    for d in reach {
         if d.binding != nil || d in w.seen { continue }
         w.seen[d] = true
         for wr in d.writes { du_walk_write(w, wr) }
@@ -529,7 +543,8 @@ du_call_args :: proc(g: ^Program_Graph, op: Node_Id) -> []Operand {
 // f(y)`, `x := Foo(y)`, `a, b := f()`. A literal's construction is written as
 // braces, a bare `x : Foo` writes none, and a cast is no call.
 du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: bool) {
-    g := &checked.graph
+    if d.fn == nil || d.fn.g == nil { return "", false }
+    g := d.fn.g
     if len(d.writes) == 0 { return "", false }
     op := d.writes[0]
     if g.op[op] == .Write {
@@ -572,7 +587,6 @@ du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
 // each function the call graph says calls it (a fun's, or a struct's
 // constructor's).
 du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_Call_Site {
-    g := &checked.graph
     cg := &checked.call_graph
     sites: [dynamic]Fn_Call_Site
     to, ok := cg.index_of[F]
@@ -580,14 +594,16 @@ du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_
     for callees, from in cg.out_edges {
         if !slice.contains(callees[:], to) { continue }
         caller := cg.nodes[from]
+        g := checked.code.funs[caller] or_else nil
+        if g == nil { continue }
         calls: []Node_Id
         if f := du_fn(checked, caller); f != nil {
             calls = f.calls[:]
         } else {
-            calls = du_code_calls(g, caller)
+            calls = du_code_calls(g)
         }
         for op in calls {
-            if graph_called(g, op) == F { append(&sites, Fn_Call_Site{caller = caller, op = op}) }
+            if graph_called(g, op) == F { append(&sites, Fn_Call_Site{caller = caller, op = op, g = g}) }
         }
     }
     return sites
@@ -596,11 +612,9 @@ du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_
 // The calls and constructions a struct's constructor runs, in its code's
 // runs.
 @(private="file")
-du_code_calls :: proc(g: ^Program_Graph, ts: ^Type_Scope) -> []Node_Id {
-    node, ok := g.scope_node[ts]
-    if !ok { return nil }
+du_code_calls :: proc(g: ^Program_Graph) -> []Node_Id {
     runs := make([dynamic]i32, context.temp_allocator)
-    graph_code_runs(g, node, &runs)
+    graph_code_runs(g, 0, &runs)
     calls := make([dynamic]Node_Id, context.temp_allocator)
     for r in runs {
         for op in graph_run(g, int(r)) {
@@ -620,7 +634,7 @@ du_code_calls :: proc(g: ^Program_Graph, ts: ^Type_Scope) -> []Node_Id {
 // statement is an if, a loop or a match; a `?`'s return is no path of its own.
 du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     f.guarded = true
-    g := &checked.graph
+    g := f.g
     n := f.main
     if n == 0 { return }
     exit := n
@@ -708,7 +722,8 @@ du_return_guards :: proc(f: ^Du_Fn, ret: Node_Id) -> []Guard {
 du_dump :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     buf: [8]u8
     if os.get_env_buf(buf[:], "MARA_DUMP_USEDEF") == "" { return }
-    g := &checked.graph
+    g := f.g
+    if g == nil { return }
     fmt.eprintf("--- def-use: %s (%d vars, %d defs, %d runs) ---\n", f.ft.name, len(f.vars), len(f.defs), len(f.runs))
     for d in f.defs {
         name := d.binding.name if d.binding != nil else fmt.tprintf("(%s)", g.name[d.var])
@@ -716,7 +731,7 @@ du_dump :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
     for r in f.runs {
         for op in graph_run(g, int(r)) {
-            if reach, ok := checked.du.reaching[op]; ok {
+            if reach, ok := f.reaching[op]; ok {
                 fmt.eprintf("  use %-18s %s <-", g.name[op], span_loc(g.origin[op]))
                 for d in reach { fmt.eprintf(" %v@%s", d.kind, span_loc(d.span)) }
                 fmt.eprintln()

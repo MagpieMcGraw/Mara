@@ -79,9 +79,9 @@ llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope) {
 
 @(private="file")
 llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
-    pg := &g.checked.graph
-    node, ok := pg.scope_node[cf]
-    if !ok || (pg.kind[node] != .Fun && pg.kind[node] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
+    pg := g.checked.code.funs[cf] or_else nil
+    node := Node_Id(0)   // (its code's root)
+    if pg == nil || (pg.kind[node] != .Fun && pg.kind[node] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, node = node, ctor = pg.kind[node] == .Struct, main = main}
     e.own = graph_code_runs(pg, node, &e.runs)
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
@@ -151,7 +151,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // A fun that consumes a param into its result: its opening copy is
     // skipped when the caller passes that storage as the slot.
-    if k, consumes := graph_consumed(e.pg, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
+    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
     params := make([dynamic]string, 0, len(cf.cg_params), context.temp_allocator)
     for p in cf.cg_params {
         ir, ok := llvm_param_type(p.type_)
@@ -509,7 +509,7 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
             if len(ops) == 1 || pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { continue }
             callee := graph_called(e.pg, op)
             if callee == nil || llvm_passes_storage(callee) { return false }
-            if _, consumes := graph_consumed(e.pg, callee).?; consumes { return false }
+            if _, consumes := graph_consumed(&e.g.checked.code, callee).?; consumes { return false }
         }
     }
     return true
@@ -532,13 +532,11 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Ty
     }
 }
 
-// Whether a variable is `this_program`, the compiler's global the program's
-// scope declares.
+// Whether a variable is `this_program`, the compiler's global: a declaration
+// the code names from outside it.
 @(private="file")
 llvm_this_program :: proc(e: ^Llvm, d: Node_Id) -> bool {
-    pg := e.pg
-    p := pg.parent[d]
-    return pg.name[d] == "this_program" && p != NO_NODE && pg.kind[p] == .Module && pg.parent[p] == NO_NODE
+    return d > e.pg.last[e.node] && e.pg.name[d] == "this_program"
 }
 
 // Where a place lives: the variable at the root of its path; whether the
@@ -1173,8 +1171,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         c, names := pg.constant[op]
-        if !names || c not_in pg.tables || !is_table_const(pg.type_[op]) { return false }
-        e.value[op - e.node] = const_table(g, pg, c, span)
+        if !names || c not_in g.checked.code.tables || !is_table_const(pg.type_[op]) { return false }
+        e.value[op - e.node] = const_table(g, &g.checked.code, c, span)
     case .Byte_Read:
         return llvm_byte_read(e, op, ops, span)
     case .Print:
@@ -2864,7 +2862,7 @@ llvm_in_place_updates :: proc(e: ^Llvm) {
             if pg.op[op] != .Call { continue }
             callee := graph_called(e.pg, op)
             if callee == nil { continue }
-            k, consumes := graph_consumed(e.pg, callee).?
+            k, consumes := graph_consumed(&e.g.checked.code, callee).?
             u := e.user[op - e.node]
             if !consumes || u < 0 || pg.op[u] != .Write { continue }
             uops := graph_operands(pg, u)

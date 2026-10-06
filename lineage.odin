@@ -46,13 +46,14 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
     inputs: [dynamic]^Def
     defer delete(inputs)
     if root != nil && root.valued {
-        uses: [dynamic]Node_Id
+        uses: [dynamic]Du_Use
         defer delete(uses)
         du_def_uses(checked, root, false, &uses)
         seen_in: map[^Def]bool
         defer delete(seen_in)
         for u in uses {
-            for d2 in checked.du.reaching[u] { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
+            reach, _ := u.fn.reaching[u.op]
+            for d2 in reach { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
         }
     }
     // Rooted at the declaration by default: if the variable is written again later,
@@ -99,13 +100,13 @@ render_later_writes :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
         if label, is_call := du_call_label(checked, d); is_call {
             fmt.sbprintf(bb, "⟵ %s() ", label)
         }
-        uses: [dynamic]Node_Id
+        uses: [dynamic]Du_Use
         defer delete(uses)
         du_def_uses(checked, d, false, &uses)
         names: [dynamic]string
         defer delete(names)
         for u in uses {
-            name := checked.graph.name[u]
+            name := u.fn.g.name[u.op]
             if !slice.contains(names[:], name) { append(&names, name) }
         }
         if len(names) == 0 {
@@ -148,7 +149,7 @@ lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, b
     // Recurse into every input the producer consumed — all call arguments included,
     // unfiltered (the point of lineage: what was fed in, not just what the result
     // mathematically derives from). Dedup the child defs for a stable, finite tree.
-    uses: [dynamic]Node_Id
+    uses: [dynamic]Du_Use
     defer delete(uses)
     du_def_uses(checked, d, false, &uses)
 
@@ -159,7 +160,8 @@ lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, b
     defer delete(kids)
     for u in uses {
         clear(&kids)
-        for d2 in checked.du.reaching[u] {
+        reach, _ := u.fn.reaching[u.op]
+        for d2 in reach {
             if child_seen[d2] { continue }
             child_seen[d2] = true
             append(&kids, d2)

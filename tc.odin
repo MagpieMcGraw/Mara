@@ -285,7 +285,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { k.gb.constant_names[key] = kc.sid }
-        checked.graph = build_program_graph(k.gb)
+        checked.code = build_program_graph(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
         c.cg = &checked.call_graph
@@ -295,11 +295,11 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     k.gb = nil
     void_defaults: map[Span]bool
-    if len(checked.graph.kind) > 0 { void_defaults = tc_void_defaults(k, checked) }
+    if len(checked.code.codes) > 0 { void_defaults = tc_void_defaults(k, checked) }
     flow_analyze_program(c, checked, void_defaults)
     escape_analyze_program(c, checked)
     annot_dump(k.annot, t)
-    annot_check(k.annot, t, &checked.graph, c.errors)
+    annot_check(k.annot, t, &checked.code, c.errors)
     checked.errors = c.errors
     return checked
 }
@@ -930,13 +930,14 @@ Checked_Program :: struct {
     function_order: [dynamic]string,
 
     // Materialized call graph (nodes = callable scopes, edges = resolved calls,
-    // + strongly-connected components): an index over the program graph's calls.
+    // + strongly-connected components): an index over the annotated calls.
     // See callgraph.odin / design/mara_ask.md §12.
     call_graph:     Call_Graph,
 
-    // The program graph (graph.odin): built as the program is checked, the
-    // analyses' and the emitter's input.
-    graph:          Program_Graph,
+    // The program's code (graph.odin): each fun's, struct's and constant's,
+    // lowered from the annotated tree once it is checked: the analyses' and the
+    // emitter's input.
+    code:           Program_Code,
 
     // Target platform — drives ABI lowering for .C-convention functions.
     // Inherited from the checker; stamped at check completion.

@@ -238,7 +238,7 @@ annot_dump :: proc(a: ^Annotations, t: ^Tree) {
 //     runs the callee its annotation names.
 //
 // One line a problem, then a count: "annot: N problems".
-annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
+annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
     if os.get_env("MARA_ANNOT", context.temp_allocator) != "check" || errors > 0 { return }
     names, vars, calls, args, loops, decls := 0, 0, 0, 0, 0, 0
     problems := 0
@@ -267,7 +267,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
     }
 
     // Agreeing with the graph: its operations, found where they are written.
-    if len(g.kind) > 0 {
+    if len(pc.codes) > 0 {
         at := make(map[Span][dynamic]Tree_Id, len(t.tag))
         defer {
             for _, list in at { delete(list) }
@@ -278,7 +278,8 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             if sp not_in at { at[sp] = make([dynamic]Tree_Id) }
             append(&at[sp], Tree_Id(n))
         }
-        made := make(map[Syntax_Id]Node_Id, len(a.callees), context.temp_allocator)   // (the annotated calls the graph makes: each one's operation)
+        Made :: struct { g: ^Program_Graph, op: Node_Id }
+        made := make(map[Syntax_Id]Made, len(a.callees), context.temp_allocator)   // (the annotated calls the graph makes: each one's operation, in its code)
         // (An operation's instance: the one its code's body was checked in.)
         inst_of := make(map[^Type_Scope]Instance_Id, len(a.bodies), context.temp_allocator)
         for body in a.bodies { if body.scope != nil { inst_of[body.scope] = body.inst } }
@@ -286,145 +287,147 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             if ts := graph_caller(g, op); ts != nil { return inst_of[ts] or_else 0 }
             return 0
         }
-        for id in 0 ..< len(g.kind) {
-            op := Node_Id(id)
-            if g.kind[op] != .Op { continue }
-            // (What the graph says: a variable's declaration, written — not
-            // the compiler's own; a call's callee.)
-            d := NO_NODE
-            want: ^Type_Scope
-            #partial switch g.op[op] {
-            case .Var:
-                if g.written[op] != .Explicit { continue }
-                d = g.refers[op]
-                if d < 0 || g.origin[d].at == 0 { continue }
-                #partial switch g.kind[d] {
-                case .Local, .Param, .Result, .Field:
-                case: continue
-                }
-            case .Call, .Construct:
-                if want = graph_called(g, op); want == nil { continue }
-            case:
-                continue
-            }
-            i := instance(g, inst_of, op)
-            compared := false
-            nodes, _ := at[g.origin[op]]   // (none: a node it isn't written at, its own span)
-            for n in nodes {
-                n := n
-                if n < a.instances[i].lo || n > a.instances[i].hi { continue }
-                if d != NO_NODE {
-                    // (A name: written as itself, as a count in a type, as the
-                    // fun value a call calls, as what an override writes into.)
-                    if t.tag[n] == .Literal && t.a[n] != 0 && t.tag[t.a[n]] == .Ident { n = Tree_Id(t.a[n]) }
-                    #partial switch t.tag[n] {
-                    case .Ident, .Type_Name, .Call, .Method_Call:
-                        if token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
+        for g in pc.codes {
+            for id in 0 ..< len(g.kind) {
+                op := Node_Id(id)
+                if g.kind[op] != .Op { continue }
+                // (What the graph says: a variable's declaration, written — not
+                // the compiler's own; a call's callee.)
+                d := NO_NODE
+                want: ^Type_Scope
+                #partial switch g.op[op] {
+                case .Var:
+                    if g.written[op] != .Explicit { continue }
+                    d = g.refers[op]
+                    if d < 0 || g.origin[d].at == 0 { continue }
+                    #partial switch g.kind[d] {
+                    case .Local, .Param, .Result, .Field:
                     case: continue
                     }
-                    compared = true
-                    vars += 1
-                    r := annot_ref(a, i, n)
-                    within := r.decl != 0 && r.decl >= g.origin[d].tok && r.decl < g.origin[d].end
-                    if r.decl == 0 || token_text(build_tokens[r.decl]) != g.name[d] || !within {
-                        report(&problems, t, n, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
-                            r.kind, r.decl, g.kind[d], g.name[d], span_line(g.origin[d]), span_col(g.origin[d]))
-                    }
-                } else {
-                    #partial switch t.tag[n] {
-                    case .Call, .Method_Call, .Binary, .Unary, .Literal:
-                    case: continue
-                    }
-                    compared = true
-                    calls += 1
-                    made[annot_key(i, n)] = op
-                    got := a.callees[annot_key(i, n)] or_else nil
-                    if got != want {
-                        report(&problems, t, n, i, "calls %s; the graph's Calls edge runs %s", got.name if got != nil else "nothing", want.name)
-                    }
+                case .Call, .Construct:
+                    if want = graph_called(g, op); want == nil { continue }
+                case:
+                    continue
                 }
-            }
-            // (A variable written where no name is — a declaration's, an
-            // assignment's: the name its statement writes.)
-            if !compared && d != NO_NODE && g.stmt[op] >= 0 {
-                stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
-                for sn in stmt_nodes {
-                    sn := sn
-                    if t.tag[sn] == .Using { sn = Tree_Id(t.a[sn]) }   // (its declaration's)
-                    if sn < a.instances[i].lo || sn > a.instances[i].hi { continue }
-                    targets: []Tree_Id
-                    #partial switch t.tag[sn] {
-                    case .Decl:     targets = decl_view(t, sn).targets
-                    case .Assign:   targets = tree_list(t, t.a[sn])
-                    case .Compound: targets = []Tree_Id{Tree_Id(t.a[sn])}
-                    }
-                    for n in targets {
-                        if t.tag[n] != .Ident || token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
+                i := instance(g, inst_of, op)
+                compared := false
+                nodes, _ := at[g.origin[op]]   // (none: a node it isn't written at, its own span)
+                for n in nodes {
+                    n := n
+                    if n < a.instances[i].lo || n > a.instances[i].hi { continue }
+                    if d != NO_NODE {
+                        // (A name: written as itself, as a count in a type, as the
+                        // fun value a call calls, as what an override writes into.)
+                        if t.tag[n] == .Literal && t.a[n] != 0 && t.tag[t.a[n]] == .Ident { n = Tree_Id(t.a[n]) }
+                        #partial switch t.tag[n] {
+                        case .Ident, .Type_Name, .Call, .Method_Call:
+                            if token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
+                        case: continue
+                        }
                         compared = true
                         vars += 1
                         r := annot_ref(a, i, n)
-                        if r.decl == 0 || r.decl < g.origin[d].tok || r.decl >= g.origin[d].end {
+                        within := r.decl != 0 && r.decl >= g.origin[d].tok && r.decl < g.origin[d].end
+                        if r.decl == 0 || token_text(build_tokens[r.decl]) != g.name[d] || !within {
                             report(&problems, t, n, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
                                 r.kind, r.decl, g.kind[d], g.name[d], span_line(g.origin[d]), span_col(g.origin[d]))
                         }
-                    }
-                }
-            }
-            // (A call made where no call is written — a bare declaration's
-            // construction, a compound assignment's operator: on the name it
-            // constructs, or on the statement.)
-            if !compared && want != nil && g.stmt[op] >= 0 {
-                dest := ""
-                if ops := graph_operands(g, op); len(ops) > 0 && ops[0].op >= 0 && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var {
-                    dest = g.name[ops[0].op]
-                }
-                stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
-                for sn in stmt_nodes {
-                    sn := sn
-                    if t.tag[sn] == .Using { sn = Tree_Id(t.a[sn]) }   // (its declaration's)
-                    if sn < a.instances[i].lo || sn > a.instances[i].hi { continue }
-                    on := make([dynamic]Tree_Id, context.temp_allocator)
-                    #partial switch t.tag[sn] {
-                    case .Decl:
-                        for n in decl_view(t, sn).targets {
-                            if t.tag[n] == .Ident && token_text(build_tokens[t.main[n]]) == dest { append(&on, n) }
+                    } else {
+                        #partial switch t.tag[n] {
+                        case .Call, .Method_Call, .Binary, .Unary, .Literal:
+                        case: continue
                         }
-                    case .Compound, .Assign:
-                        append(&on, sn)
-                    }
-                    for n in on {
                         compared = true
                         calls += 1
-                        made[annot_key(i, n)] = op
+                        made[annot_key(i, n)] = {g, op}
                         got := a.callees[annot_key(i, n)] or_else nil
                         if got != want {
                             report(&problems, t, n, i, "calls %s; the graph's Calls edge runs %s", got.name if got != nil else "nothing", want.name)
                         }
                     }
                 }
-            }
-            // (A loop's variable, written by the loop: declared by a token
-            // in its header, no name node — what reads it is checked.)
-            if !compared && d != NO_NODE && g.stmt[op] >= 0 {
-                stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
-                for sn in stmt_nodes {
-                    if t.tag[sn] != .For_Range && t.tag[sn] != .For_Each { continue }
-                    v := for_view(t, sn)
-                    for tok in ([]Token_Id{v.var, v.elem, v.index}) {
-                        if tok != 0 && token_text(build_tokens[tok]) == g.name[d] && tok >= g.origin[d].tok && tok < g.origin[d].end {
+                // (A variable written where no name is — a declaration's, an
+                // assignment's: the name its statement writes.)
+                if !compared && d != NO_NODE && g.stmt[op] >= 0 {
+                    stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
+                    for sn in stmt_nodes {
+                        sn := sn
+                        if t.tag[sn] == .Using { sn = Tree_Id(t.a[sn]) }   // (its declaration's)
+                        if sn < a.instances[i].lo || sn > a.instances[i].hi { continue }
+                        targets: []Tree_Id
+                        #partial switch t.tag[sn] {
+                        case .Decl:     targets = decl_view(t, sn).targets
+                        case .Assign:   targets = tree_list(t, t.a[sn])
+                        case .Compound: targets = []Tree_Id{Tree_Id(t.a[sn])}
+                        }
+                        for n in targets {
+                            if t.tag[n] != .Ident || token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
                             compared = true
-                            loops += 1
-                            break
+                            vars += 1
+                            r := annot_ref(a, i, n)
+                            if r.decl == 0 || r.decl < g.origin[d].tok || r.decl >= g.origin[d].end {
+                                report(&problems, t, n, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
+                                    r.kind, r.decl, g.kind[d], g.name[d], span_line(g.origin[d]), span_col(g.origin[d]))
+                            }
                         }
                     }
                 }
-            }
-            if !compared {
-                tags := make([dynamic]Tree_Tag, context.temp_allocator)
-                for n in nodes { append(&tags, t.tag[n]) }
-                problems += 1
-                fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (nodes there: %v)\n", g.op[op], g.name[op],
-                    filepath.base(span_file(g.origin[op])), span_line(g.origin[op]), span_col(g.origin[op]), tags[:])
+                // (A call made where no call is written — a bare declaration's
+                // construction, a compound assignment's operator: on the name it
+                // constructs, or on the statement.)
+                if !compared && want != nil && g.stmt[op] >= 0 {
+                    dest := ""
+                    if ops := graph_operands(g, op); len(ops) > 0 && ops[0].op >= 0 && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var {
+                        dest = g.name[ops[0].op]
+                    }
+                    stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
+                    for sn in stmt_nodes {
+                        sn := sn
+                        if t.tag[sn] == .Using { sn = Tree_Id(t.a[sn]) }   // (its declaration's)
+                        if sn < a.instances[i].lo || sn > a.instances[i].hi { continue }
+                        on := make([dynamic]Tree_Id, context.temp_allocator)
+                        #partial switch t.tag[sn] {
+                        case .Decl:
+                            for n in decl_view(t, sn).targets {
+                                if t.tag[n] == .Ident && token_text(build_tokens[t.main[n]]) == dest { append(&on, n) }
+                            }
+                        case .Compound, .Assign:
+                            append(&on, sn)
+                        }
+                        for n in on {
+                            compared = true
+                            calls += 1
+                            made[annot_key(i, n)] = {g, op}
+                            got := a.callees[annot_key(i, n)] or_else nil
+                            if got != want {
+                                report(&problems, t, n, i, "calls %s; the graph's Calls edge runs %s", got.name if got != nil else "nothing", want.name)
+                            }
+                        }
+                    }
+                }
+                // (A loop's variable, written by the loop: declared by a token
+                // in its header, no name node — what reads it is checked.)
+                if !compared && d != NO_NODE && g.stmt[op] >= 0 {
+                    stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
+                    for sn in stmt_nodes {
+                        if t.tag[sn] != .For_Range && t.tag[sn] != .For_Each { continue }
+                        v := for_view(t, sn)
+                        for tok in ([]Token_Id{v.var, v.elem, v.index}) {
+                            if tok != 0 && token_text(build_tokens[tok]) == g.name[d] && tok >= g.origin[d].tok && tok < g.origin[d].end {
+                                compared = true
+                                loops += 1
+                                break
+                            }
+                        }
+                    }
+                }
+                if !compared {
+                    tags := make([dynamic]Tree_Tag, context.temp_allocator)
+                    for n in nodes { append(&tags, t.tag[n]) }
+                    problems += 1
+                    fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (nodes there: %v)\n", g.op[op], g.name[op],
+                        filepath.base(span_file(g.origin[op])), span_line(g.origin[op]), span_col(g.origin[op]), tags[:])
+                }
             }
         }
         // And the other way: each call annotated is one the graph makes — but
@@ -446,15 +449,20 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
         }
         // (A temporary the compiler holds a value in — a literal a slice
         // views, bytes read as an array: what is written into it.)
-        writes := make(map[Node_Id][dynamic]Node_Id, context.temp_allocator)
-        for id in 0 ..< len(g.kind) {
-            if dst := graph_whole_write_dest(g, Node_Id(id)); dst != NO_NODE {
-                if d := g.refers[dst]; d >= 0 && g.written[d] != .Explicit {
-                    if d not_in writes { writes[d] = make([dynamic]Node_Id, context.temp_allocator) }
-                    append(&writes[d], Node_Id(id))
+        // (Each code's writes into its temporaries.)
+        writes_of :: proc(g: ^Program_Graph) -> map[Node_Id][dynamic]Node_Id {
+            writes := make(map[Node_Id][dynamic]Node_Id, context.temp_allocator)
+            for id in 0 ..< len(g.kind) {
+                if dst := graph_whole_write_dest(g, Node_Id(id)); dst != NO_NODE {
+                    if d := g.refers[dst]; d >= 0 && g.written[d] != .Explicit {
+                        if d not_in writes { writes[d] = make([dynamic]Node_Id, context.temp_allocator) }
+                        append(&writes[d], Node_Id(id))
+                    }
                 }
             }
+            return writes
         }
+        code_writes := make(map[^Program_Graph]map[Node_Id][dynamic]Node_Id, context.temp_allocator)
         // (Whether an argument's value comes from inside a node: an operation
         // on its way there written inside it — a few steps back at most.)
         from :: proc(t: ^Tree, g: ^Program_Graph, writes: map[Node_Id][dynamic]Node_Id, n: Tree_Id, v: Node_Id) -> bool {
@@ -474,7 +482,10 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             }
             return false
         }
-        for key, op in made {
+        for key, m in made {
+            g, op := m.g, m.op
+            if g not_in code_writes { code_writes[g] = writes_of(g) }
+            writes := code_writes[g]
             i, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
             given, has := a.args[key]
             if !has {
@@ -512,8 +523,10 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, g: ^Program_Graph, errors: int) {
             fmt.printf(format, ..args)
             fmt.println()
         }
-        for ts, node in g.scope_node {
+        for g in pc.codes {
+            node := Node_Id(0)   // (its root)
             if g.kind[node] != .Fun && g.kind[node] != .Struct { continue }
+            ts := g.type_[node].(^Type_Scope)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)
             for id := node + 1; id <= g.last[node]; id += 1 {

@@ -53,12 +53,12 @@ is_table_const :: proc(t: Type) -> bool {
 
 // The global of constant `c`'s table, laid out the first time this TU reads
 // it; `span` is the reference's.
-const_table :: proc(g: ^Codegen, pg: ^Program_Graph, c: Syntax_Id, span: Span) -> string {
-    key, named := pg.table_names[c]
+const_table :: proc(g: ^Codegen, pc: ^Program_Code, c: Syntax_Id, span: Span) -> string {
+    key, named := pc.table_names[c]
     if !named { codegen_fatal(g, span, CODE_CONST_TABLE_UNNAMED) }
     name := strings.concatenate({"@mara_const.", ir_safe_name(key)})
     if name not_in g.const_tables {
-        g.const_tables[name] = build_const_table(g, name, pg.tables[c], pg.type_[pg.const_code[c]], span)
+        g.const_tables[name] = build_const_table(g, name, pc.tables[c], pc.consts[c].type_[0], span)
     }
     return name
 }

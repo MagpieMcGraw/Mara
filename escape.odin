@@ -152,7 +152,7 @@ Esc :: struct {
 @(private="file")
 Esc_Pass :: struct {
     c:        ^Checker,
-    graph:    ^Program_Graph,
+    code:     ^Program_Code,
 
     reported: []bool,
     diags:    [dynamic]Esc_Diag,
@@ -170,7 +170,7 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     resize(&cg.esc, len(cg.nodes))
     g_esc = Esc_Pass{
         c        = c,
-        graph    = &checked.graph,
+        code     = &checked.code,
 
         reported = make([]bool, len(cg.nodes)),
     }
@@ -212,9 +212,9 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
 @(private="file")
 esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     ft := cg.nodes[n]
-    g := g_esc.graph
-    node, has := g.scope_node[ft]
-    if !has { return {}, false }
+    g := g_esc.code.funs[ft] or_else nil
+    node := Node_Id(0)   // (its code's root)
+    if g == nil { return {}, false }
     e := Esc{c = g_esc.c, cg = cg, g = g, ft = ft, node = node, ctor = g.kind[node] == .Struct, report = report}
     e.main = graph_code_runs(g, node, &e.runs)
     if len(e.runs) == 0 { return {}, false }

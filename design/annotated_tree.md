@@ -139,9 +139,15 @@ that would lower a function again for each reader and faster than doing so. The 
   3. No program-level declarations. Modules, types, variants, dispatch groups, imports
      and struct fields stop being nodes; constants are found by their token. What read
      them reads the checker's (its Type_Scopes, the annotations).
-  4. A code per function. The graph splits into each function's and constant's code; the
-     scope tree (`parent`, `last`, `scope_node`), segments, anchors and canonicalization go;
-     codegen and the analyses read one code at a time.
+  4. A code per function. First the codes become independent inside the one graph: a
+     constant's use names the constant (by its value's node), and a body's definitions
+     are codes of their own. Then the graph, once built, splits into each function's and
+     constant's code (`Program_Code`), ids its own from 0; the only declarations a code
+     names from outside it, the compiler's globals, get nodes of their own past its
+     root's. Codegen and the analyses read one code at a time; def-use's uses are a
+     function and an operation. The builder still builds the codes in one graph, its
+     segments and canonicalization ordering them; building one code at a time comes
+     after.
   5. Locals. A code's params, results, locals and blocks stop being nodes: its locals
      table, its defer blocks.
 

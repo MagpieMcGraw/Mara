@@ -21,7 +21,7 @@ import "core:strings"
 // tc_void_defaults.)
 flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
     // Missing-return reads the program graph's runs, built from a clean check.
-    graphed := len(checked.graph.kind) > 0
+    graphed := len(checked.code.codes) > 0
     if graphed {
         flow_check_unreachable(c, checked)
         flow_check_literal_ranges(c, checked)
@@ -52,9 +52,9 @@ flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool 
     if len(ft.return_types) == 0 { return false }       // void
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
-    n, ok := checked.graph.scope_node[ft]
-    if !ok { fmt.panicf("missing return: '%s' has no node in the program graph", ft.name) }
-    return graph_falls_off(&checked.graph, n)
+    g := checked.code.funs[ft] or_else nil
+    if g == nil { fmt.panicf("missing return: '%s' has no code", ft.name) }
+    return graph_falls_off(g, 0)
 }
 
 // Unreachable code: a statement right after a return, break or continue (the
@@ -63,7 +63,7 @@ flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool 
 flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    for span in checked.graph.unreachable {
+    for span in checked.code.unreachable {
         if span in seen { continue }
         seen[span] = true
         check_error(c, span, TYPE_UNREACHABLE_CODE)
@@ -74,13 +74,14 @@ flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
 // adopted, an operand's — must fit it, as one written at that type must
 // (`first := -1` adopting a u16 index's width was 65535, never below 0).
 flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
-    g := &checked.graph
     // (Generic instances share their template's spans: an error repeated at
     // one is reported once, check_error's rule; each instance is checked.)
-    for id in g.settled {
-        v, ok := g.consts[id]
-        if !ok || v.is_text { continue }
-        check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], g.origin[id])
+    for g in checked.code.codes {
+        for id in g.settled {
+            v, ok := g.consts[id]
+            if !ok || v.is_text { continue }
+            check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], g.origin[id])
+        }
     }
 }
 
@@ -92,30 +93,29 @@ flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
 // refers-to has resolved shadowing, and a read in a nested block or a defer's
 // block is a read like any other.
 flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
-    g := &checked.graph
-    dest := make([]bool, len(g.kind))   // where a whole write lands
-    defer delete(dest)
-    read := make([]bool, len(g.kind))
-    defer delete(read)
-    for k, id in g.kind {
-        if k != .Op { continue }
-        if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
-    }
-    for k, id in g.kind {
-        if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
-    }
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    for k, id in g.kind {
-        if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(g.type_[id]) { continue }
-        // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
-        // variable or a match arm's binding.
-        s := g.stmt[id]
-        if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
-        span := g.origin[id]
-        if span in seen { continue }
-        seen[span] = true
-        check_error(c, span, TYPE_UNUSED_ERR, g.name[id])
+    for g in checked.code.codes {
+        dest := make([]bool, len(g.kind), context.temp_allocator)   // where a whole write lands
+        read := make([]bool, len(g.kind), context.temp_allocator)
+        for k, id in g.kind {
+            if k != .Op { continue }
+            if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
+        }
+        for k, id in g.kind {
+            if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
+        }
+        for k, id in g.kind {
+            if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(g.type_[id]) { continue }
+            // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
+            // variable or a match arm's binding.
+            s := g.stmt[id]
+            if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
+            span := g.origin[id]
+            if span in seen { continue }
+            seen[span] = true
+            check_error(c, span, TYPE_UNUSED_ERR, g.name[id])
+        }
     }
 }
 
@@ -127,7 +127,6 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
 // it is an error. A value the return computes is no local; a write through a
 // pointer that aliases one is not seen (field-insensitive, like escape).
 flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program) {
-    g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
     runs, block: [dynamic]i32
@@ -135,8 +134,9 @@ flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program) {
     for ft in flow_functions(checked) {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
-        node, ok := g.scope_node[ft]
-        if !ok || g.kind[node] != .Fun { continue }
+        g := checked.code.funs[ft] or_else nil
+        node := Node_Id(0)
+        if g == nil || g.kind[node] != .Fun { continue }
         clear(&runs)
         own := graph_code_runs(g, node, &runs)
         for r in runs[:own] {
@@ -245,14 +245,14 @@ Init_Field :: struct {
 }
 
 flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program) {
-    g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
     for ft in flow_functions(checked) {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
-        node, ok := g.scope_node[ft]
-        if !ok { continue }
+        g := checked.code.funs[ft] or_else nil
+        node := Node_Id(0)
+        if g == nil { continue }
         flow_init_fun(c, g, node, &seen)
     }
 }
@@ -546,7 +546,7 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    for e in checked.graph.fold_errors {
+    for e in checked.code.fold_errors {
         if seen[e.span] { continue }
         seen[e.span] = true
         check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name)
@@ -562,22 +562,23 @@ flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
 // a store through a field/index/deref, an if-branch, a default — is an error.
 
 flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
-    g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
     // (A parameter's default: the checker's, tc_void_defaults.)
     for sp in void_defaults { seen[sp] = true }
     // Every other: a void as written, where the operation that takes it
     // stores it — its type its use's.
-    for i in 0 ..< len(g.kind) {
-        id := Node_Id(i)
-        if g.kind[id] != .Op { continue }
-        for o, k in graph_operands(g, id) {
-            v := o.op
-            if v == NO_NODE || g.op[v] != .Const || g.name[v] != "void" { continue }
-            if g.written[v] != .Explicit { continue }
-            if where_, stored := void_where(g, id, k); stored {
-                void_error(c, &seen, g.origin[v], g.type_[v], where_)
+    for g in checked.code.codes {
+        for i in 0 ..< len(g.kind) {
+            id := Node_Id(i)
+            if g.kind[id] != .Op { continue }
+            for o, k in graph_operands(g, id) {
+                v := o.op
+                if v == NO_NODE || g.op[v] != .Const || g.name[v] != "void" { continue }
+                if g.written[v] != .Explicit { continue }
+                if where_, stored := void_where(g, id, k); stored {
+                    void_error(c, &seen, g.origin[v], g.type_[v], where_)
+                }
             }
         }
     }
