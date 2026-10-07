@@ -1144,27 +1144,15 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
         argc_min := "%argc" // every argument fits from here on
 
-        // Store len at field 0: argc_min is i32 (matches argc + the i32 loop
-        // counter below), widened to the header's i64.
-        len_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
+        // Its header: len argc (i32, as the loop counter below; the header's
+        // i64), cap 64, ptr its elements (field 3).
         len_store_val := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", SLICE_LEN_IR}))
-        emit_header_store(g, len_store_val, len_ptr)
-
-        // Store cap = 64 at field 1
-        cap_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
-        emit_header_store(g, ARGS_CAP, cap_ptr)
-
-        // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
+        emit_header_set(g, args_ptr, SLICE.len, len_store_val)
+        emit_header_set(g, args_ptr, SLICE.cap, ARGS_CAP)
         elements_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 3"}))
-
-        // Store ptr = &elements at field 2
-        ptr_field := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", ptr_field, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 2"}))
-        emit_raw(g, strings.concatenate({"  store ptr ", elements_ptr, ", ptr ", ptr_field}))
+        emit_header_set(g, args_ptr, SLICE.ptr, elements_ptr)
 
         // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
         // Counter is i32 to match argc and the slice header — no widen/trunc.
@@ -1204,17 +1192,11 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // at [len] — passing an argument to a file open or any C call works.
         elem_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
-        slen_ptr := fresh_tmp(g)
-        emit_slice_gep(g, slen_ptr, elem_ptr, SLICE.len)
-        emit_header_store(g, str_len, slen_ptr)
+        emit_header_set(g, elem_ptr, SLICE.len, str_len)
         str_cap := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", SLICE_LEN_IR, " ", str_len, ", 1"}))
-        scap_ptr := fresh_tmp(g)
-        emit_slice_gep(g, scap_ptr, elem_ptr, SLICE.cap)
-        emit_header_store(g, str_cap, scap_ptr)
-        data_ptr := fresh_tmp(g)
-        emit_slice_gep(g, data_ptr, elem_ptr, SLICE.ptr)
-        emit_raw(g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
+        emit_header_set(g, elem_ptr, SLICE.cap, str_cap)
+        emit_header_set(g, elem_ptr, SLICE.ptr, argv_i)
         // i++
         next_i := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", next_i, " = add i32 ", cur_i, ", 1"}))

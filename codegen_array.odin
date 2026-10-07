@@ -1,7 +1,6 @@
 package mara
 
 import "core:fmt"
-import "core:strconv"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -24,15 +23,21 @@ emit_slice_alloca :: proc(g: ^Codegen, result: string) {
     emit_alloca(g, result, SLICE_IR_TYPE)
 }
 
-// A slice header's len or cap stored, at its i64 (SLICE_LEN_IR), into the
-// field `field_gep` addresses — an SSA name, or a literal like "0".
-emit_header_store :: proc(g: ^Codegen, val: string, field_gep: string) {
-    emit_store(g, SLICE_LEN_IR, val, field_gep)
+// A field of the slice header (or partial array) at `header` — SLICE.len,
+// .cap (at SLICE_LEN_IR) or .ptr — loaded.
+emit_header_field :: proc(g: ^Codegen, header: string, field: int) -> string {
+    gep := fresh_tmp(g)
+    emit_slice_gep(g, gep, header, field)
+    v := fresh_tmp(g)
+    emit_load_into(g, v, "ptr" if field == SLICE.ptr else SLICE_LEN_IR, gep)
+    return v
 }
 
-// A slice header's len or cap loaded, at its i64 (SLICE_LEN_IR).
-emit_header_load :: proc(g: ^Codegen, result: string, field_gep: string) {
-    emit_load_into(g, result, SLICE_LEN_IR, field_gep)
+// ... and stored.
+emit_header_set :: proc(g: ^Codegen, header: string, field: int, v: string) {
+    gep := fresh_tmp(g)
+    emit_slice_gep(g, gep, header, field)
+    emit_store(g, "ptr" if field == SLICE.ptr else SLICE_LEN_IR, v, gep)
 }
 
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
@@ -86,9 +91,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
         ir_type := partial_array_ir_type(elem_ir, v.size)
         elements_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-        ptr_gep := fresh_tmp(g)
-        emit_slice_gep(g, ptr_gep, ptr, SLICE.ptr)
-        emit_store(g, "ptr", elements_ptr, ptr_gep)
+        emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
         if value_has_partial_array(g, v.elem) {
             reanchor_slots(g, v.elem, fmt.tprintf("[%d x %s]", v.size, elem_ir), elements_ptr, fmt.tprintf("%d", v.size))
         }
@@ -130,29 +133,44 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
 // reanchor_partial_arrays over `count` consecutive `elem` slots of array type
 // `arr_ir` at `base` — a runtime loop, so a big array doesn't unroll.
 reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: string, base: string, count: string) {
-    w := SLICE_LEN_IR
-    idx_ptr := fresh_tmp(g)
-    emit_alloca(g, idx_ptr, w)
-    emit_store(g, w, "0", idx_ptr)
-    cond_label := fresh_label(g, "reanchor.cond")
-    body_label := fresh_label(g, "reanchor.body")
-    end_label := fresh_label(g, "reanchor.end")
-    emit_br(g, cond_label)
-    emit_label(g, cond_label)
-    i := fresh_tmp(g)
-    emit_load_into(g, i, w, idx_ptr)
-    more := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", more, w, i, count)
-    emit_cond_br(g, more, body_label, end_label)
-    emit_label(g, body_label)
+    l := emit_loop_begin(g, count, "reanchor")
     gep := fresh_tmp(g)
-    emit_array_gep_var(g, gep, arr_ir, base, i, w)
+    emit_array_gep_var(g, gep, arr_ir, base, l.i, SLICE_LEN_IR)
     reanchor_partial_arrays(g, elem, gep)
+    emit_loop_end(g, l)
+}
+
+// A counted loop, at runtime: i from 0 while i < count (signed, at slice
+// header width), its counter in a slot — so a big array loops, not unrolls.
+// emit_loop_begin leaves the code in its body, i loaded; emit_loop_end steps
+// i and closes it.
+Count_Loop :: struct { slot, i, cond, end: string }
+
+emit_loop_begin :: proc(g: ^Codegen, count: string, name: string) -> (l: Count_Loop) {
+    w := SLICE_LEN_IR
+    l.slot = fresh_tmp(g)
+    emit_alloca(g, l.slot, w)
+    emit_store(g, w, "0", l.slot)
+    l.cond = fresh_label(g, fmt.tprintf("%s.cond", name))
+    body := fresh_label(g, fmt.tprintf("%s.body", name))
+    l.end = fresh_label(g, fmt.tprintf("%s.end", name))
+    emit_br(g, l.cond)
+    emit_label(g, l.cond)
+    l.i = fresh_tmp(g)
+    emit_load_into(g, l.i, w, l.slot)
+    more := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", more, w, l.i, count)
+    emit_cond_br(g, more, body, l.end)
+    emit_label(g, body)
+    return
+}
+
+emit_loop_end :: proc(g: ^Codegen, l: Count_Loop) {
     next := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, 1", next, w, i)
-    emit_store(g, w, next, idx_ptr)
-    emit_br(g, cond_label)
-    emit_label(g, end_label)
+    emit(g, "  %s = add %s %s, 1", next, SLICE_LEN_IR, l.i)
+    emit_store(g, SLICE_LEN_IR, next, l.slot)
+    emit_br(g, l.cond)
+    emit_label(g, l.end)
 }
 
 // Text into a fixed byte array: the array zeroed, then the text's bytes — the
@@ -205,15 +223,9 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
 
 // A slice header's fields stored at `at`: ptr, len, cap.
 emit_slice_header_at :: proc(g: ^Codegen, at: string, data_ptr: string, len_val: string, cap_val: string) {
-    ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, at, SLICE.ptr)
-    emit_store(g, "ptr", data_ptr, ptr_gep)
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, at, SLICE.len)
-    emit_header_store(g, len_val, len_gep)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, at, SLICE.cap)
-    emit_header_store(g, cap_val, cap_gep)
+    emit_header_set(g, at, SLICE.ptr, data_ptr)
+    emit_header_set(g, at, SLICE.len, len_val)
+    emit_header_set(g, at, SLICE.cap, cap_val)
 }
 
 // ---------------------------------------------------------------------------
@@ -474,36 +486,11 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
 // pointer to element 0): a runtime counted loop, so `[..256]Font` is a
 // handful of instructions, not 256 unrolled ones.
 emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, each: proc(g: ^Codegen, ptr: string, t: Type, args: []string), args: []string = nil) {
-    elem_ir := llvm_type_from_checker(elem)
-    w := SLICE_LEN_IR
-    cond_label := fresh_label(g, "ctor.cond")
-    body_label := fresh_label(g, "ctor.body")
-    end_label  := fresh_label(g, "ctor.end")
-
-    idx_ptr := fresh_tmp(g)
-    emit_alloca(g, idx_ptr, w)
-    emit_store(g, w, "0", idx_ptr)
-    emit_br(g, cond_label)
-
-    emit_label(g, cond_label)
-    idx := fresh_tmp(g)
-    emit_load_into(g, idx, w, idx_ptr)
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %d", cmp, w, idx, count)
-    emit_cond_br(g, cmp, body_label, end_label)
-
-    emit_label(g, body_label)
-    idx2 := fresh_tmp(g)
-    emit_load_into(g, idx2, w, idx_ptr)
+    l := emit_loop_begin(g, fmt.tprintf("%d", count), "ctor")
     elem_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_ptr, elem_ir, elements_ptr, w, idx2)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_ptr, llvm_type_from_checker(elem), elements_ptr, SLICE_LEN_IR, l.i)
     each(g, elem_ptr, elem, args)
-    next := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, 1", next, w, idx2)
-    emit_store(g, w, next, idx_ptr)
-    emit_br(g, cond_label)
-
-    emit_label(g, end_label)
+    emit_loop_end(g, l)
 }
 
 // A partial array's zero value at `addr`: its elements zeroed (`zero`), and
@@ -516,15 +503,9 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Arr
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
     if !stamp { return elements_ptr }
     if zero { emit_memset_zero(g, elements_ptr, pa.size * type_size(pa.elem)) }
-    ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
-    emit_store(g, "ptr", elements_ptr, ptr_gep)
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, addr, SLICE.len)
-    emit_header_store(g, "0", len_gep)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-    emit_header_store(g, fmt.tprintf("%d", pa.size), cap_gep)
+    emit_header_set(g, addr, SLICE.ptr, elements_ptr)
+    emit_header_set(g, addr, SLICE.len, "0")
+    emit_header_set(g, addr, SLICE.cap, fmt.tprintf("%d", pa.size))
     return elements_ptr
 }
 
@@ -549,15 +530,9 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     // cap → N. Mirrors the literal init helper.
     elements_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", slot_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, slot_ptr, SLICE.ptr)
-    emit_store(g, "ptr", elements_ptr, ptr_gep)
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, slot_ptr, SLICE.len)
-    emit_header_store(g, "0", len_gep)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
-    emit_header_store(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+    emit_header_set(g, slot_ptr, SLICE.ptr, elements_ptr)
+    emit_header_set(g, slot_ptr, SLICE.len, "0")
+    emit_header_set(g, slot_ptr, SLICE.cap, fmt.tprintf("%d", alloc_cap))
 
     w := SLICE_LEN_IR
 
@@ -612,11 +587,10 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     }
 
     // Auto-add to len. For a fresh decl this is + 0, so the final len = count.
-    cur_len := fresh_tmp(g)
-    emit_header_load(g, cur_len, len_gep)
+    cur_len := emit_header_field(g, slot_ptr, SLICE.len)
     new_len := fresh_tmp(g)
     emit(g, "  %s = add %s %s, %s", new_len, w, cur_len, count)
-    emit_header_store(g, new_len, len_gep)
+    emit_header_set(g, slot_ptr, SLICE.len, new_len)
 }
 
 // Counter-driven loop that calls emit_bswap_in_place on each of `count`
@@ -630,30 +604,12 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
 emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string, elem_ty: Type) {
     if !type_has_swappable_leaf(elem_ty) { return }
 
-    w := SLICE_LEN_IR
     elem_ir := llvm_type_from_checker(elem_ty)
-    idx_slot := fresh_tmp(g)
-    emit_alloca(g, idx_slot, w)
-    emit_header_store(g, "0", idx_slot)
-    loop_lbl := fresh_label(g, "bswap.loop")
-    body_lbl := fresh_label(g, "bswap.body")
-    end_lbl  := fresh_label(g, "bswap.end")
-    emit(g, "  br label %%%s", loop_lbl)
-    emit_label(g, loop_lbl)
-    cur := fresh_tmp(g)
-    emit_header_load(g, cur, idx_slot)
-    done := fresh_tmp(g)
-    emit(g, "  %s = icmp uge %s %s, %s", done, w, cur, count)
-    emit_cond_br(g, done, end_lbl, body_lbl)
-    emit_label(g, body_lbl)
+    l := emit_loop_begin(g, count, "bswap")   // (a count: never negative)
     elem_gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_gep, elem_ir, elements_ptr, w, cur)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_gep, elem_ir, elements_ptr, SLICE_LEN_IR, l.i)
     emit_bswap_in_place(g, elem_gep, elem_ir, elem_ty)
-    next := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, 1", next, w, cur)
-    emit_header_store(g, next, idx_slot)
-    emit(g, "  br label %%%s", loop_lbl)
-    emit_label(g, end_lbl)
+    emit_loop_end(g, l)
 }
 
 // True if `ty` contains any multi-byte integer leaf — i.e. emit_bswap_in_place
@@ -686,27 +642,11 @@ emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: string) {
 // Array and slice IR helpers
 // ---------------------------------------------------------------------------
 
-// Parse an LLVM array type string like "[512 x i1]" into capacity and element type.
-parse_array_ir_type :: proc(ir_type: string) -> (cap: int, elem: string, ok: bool) {
-    if !strings.has_prefix(ir_type, "[") { return 0, "", false }
-    rest := ir_type[1:]  // "512 x i1]"
-    x_idx := strings.index(rest, " x ")
-    if x_idx < 0 { return 0, "", false }
-    cap_str := rest[:x_idx]
-    elem_str := strings.trim_right(rest[x_idx+3:], "]")
-    n, n_ok := strconv.parse_int(cap_str)
-    if !n_ok { return 0, "", false }
-    return n, elem_str, true
-}
-
 
 // A new `.len` for the slice header at `hdr` is within 0 ..= its cap, or the
 // program stops.
 emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
-    cap_val := fresh_tmp(g)
-    emit_header_load(g, cap_val, cap_gep)
+    cap_val := emit_header_field(g, hdr, SLICE.cap)
 
     w := SLICE_LEN_IR
     ok_label   := fresh_label(g, "slice_len.ok")
@@ -744,12 +684,8 @@ stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_A
     ir_type := partial_array_ir_type(elem_t, v.size)
     elements_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
-    emit_store(g, "ptr", elements_ptr, ptr_gep)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-    emit_header_store(g, fmt.tprintf("%d", v.size), cap_gep)
+    emit_header_set(g, addr, SLICE.ptr, elements_ptr)
+    emit_header_set(g, addr, SLICE.cap, fmt.tprintf("%d", v.size))
 }
 
 // Walk a zero-filled struct instance at `base_ptr` and stamp valid headers for

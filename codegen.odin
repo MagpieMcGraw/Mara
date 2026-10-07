@@ -424,11 +424,6 @@ emit_label :: proc(g: ^Codegen, name: string) {
     strings.write_string(b, ":\n")
 }
 
-// printf helpers: each variant matches a specific arg shape used by Mara's
-// built-in `print` lowering. The void variant is fmt-only; the others take
-// one typed arg of the indicated LLVM type.
-
-// `  call i32 (ptr, ...) @printf(ptr <fmt>)\n`
 // The printf symbol for the current emission context: @printf normally,
 // @__mara_tee_printf inside an assert/crash fail block (g.tee) so the
 // message also lands in crash.txt.
@@ -436,48 +431,18 @@ printf_sym :: proc(g: ^Codegen) -> string {
     return g.tee ? "@__mara_tee_printf" : "@printf"
 }
 
-emit_printf_void :: proc(g: ^Codegen, fmt_ptr: string) {
+// `  call i32 (ptr, ...) @printf(ptr <format>, <args>)\n` — `format` a C
+// format (a string literal of its own), each arg "<IR type> <value>".
+emit_printf :: proc(g: ^Codegen, format: string, args: ..string) {
     b := emit_target(g)
     strings.write_string(b, "  call i32 (ptr, ...) ")
     strings.write_string(b, printf_sym(g))
     strings.write_string(b, "(ptr ")
-    strings.write_string(b, fmt_ptr)
-    strings.write_string(b, ")\n")
-}
-
-// `  call i32 (ptr, ...) @printf(ptr <fmt>, i64 <val>)\n`
-emit_printf_i64 :: proc(g: ^Codegen, fmt_ptr, val: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) ")
-    strings.write_string(b, printf_sym(g))
-    strings.write_string(b, "(ptr ")
-    strings.write_string(b, fmt_ptr)
-    strings.write_string(b, ", i64 ")
-    strings.write_string(b, val)
-    strings.write_string(b, ")\n")
-}
-
-// `  call i32 (ptr, ...) @printf(ptr <fmt>, ptr <val>)\n`
-emit_printf_ptr :: proc(g: ^Codegen, fmt_ptr, val: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) ")
-    strings.write_string(b, printf_sym(g))
-    strings.write_string(b, "(ptr ")
-    strings.write_string(b, fmt_ptr)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, val)
-    strings.write_string(b, ")\n")
-}
-
-// `  call i32 (ptr, ...) @printf(ptr <fmt>, double <val>)\n`
-emit_printf_double :: proc(g: ^Codegen, fmt_ptr, val: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) ")
-    strings.write_string(b, printf_sym(g))
-    strings.write_string(b, "(ptr ")
-    strings.write_string(b, fmt_ptr)
-    strings.write_string(b, ", double ")
-    strings.write_string(b, val)
+    strings.write_string(b, get_string_literal(g, format))
+    for a in args {
+        strings.write_string(b, ", ")
+        strings.write_string(b, a)
+    }
     strings.write_string(b, ")\n")
 }
 
@@ -1025,10 +990,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
         emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", tmp_slice, ")"}))
     }
     // Extract raw data pointer from the returned slice header
-    data_ptr_ptr := fresh_tmp(g)
-    emit_slice_gep(g, data_ptr_ptr, tmp_slice, SLICE.ptr)
-    data_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", data_ptr, " = load ptr, ptr ", data_ptr_ptr}))
+    data_ptr := emit_header_field(g, tmp_slice, SLICE.ptr)
 
     return data_ptr
 }

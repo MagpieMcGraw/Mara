@@ -351,7 +351,7 @@ Print_Arg :: struct {
 
 emit_print_operand :: proc(g: ^Codegen, v: Print_Arg) {
     switch {
-    case v.is_text:   emit_print_text_at(g, v.val, len(v.text))
+    case v.is_text:   emit_print_text(g, v.val, fmt.tprintf("%d", len(v.text)))
     case v.addr != "": emit_print_at_addr(g, v.addr, v.t)
     case:             emit_print_value(g, v.val, v.t)
     }
@@ -368,14 +368,12 @@ raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
     return
 }
 
-emit_print_raw :: proc(g: ^Codegen, spec, ir, val: string) {
-    emit(g, "  call i32 (ptr, ...) %s(ptr %s, %s %s)", printf_sym(g), get_string_literal(g, spec), ir, val)
-}
-
-// Text of `n` bytes at `data`, printed.
-emit_print_text_at :: proc(g: ^Codegen, data: string, n: int) {
-    h := Array_Handle{fixed_alloca = data, static_cap = n}
-    emit_array_print(g, &h)
+// Text of `n` bytes (at slice header width) at `data`, printed: bounded, so
+// it needs no terminating 0. (`%.*s` takes an int: n, narrowed.)
+emit_print_text :: proc(g: ^Codegen, data, n: string) {
+    prec := fresh_tmp(g)
+    emit(g, "  %s = trunc %s %s to i32", prec, SLICE_LEN_IR, n)
+    emit_printf(g, "%.*s", fmt.tprintf("i32 %s", prec), fmt.tprintf("ptr %s", data))
 }
 
 // True if `s` contains a `%` placeholder (i.e. an unescaped `%`). `%%` is the
@@ -450,14 +448,11 @@ emit_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Print_Arg, call_
 
 // Emit a printf("%s", literal) for an inline static string.
 emit_print_literal :: proc(g: ^Codegen, s: string) {
-    str_ptr := get_string_literal(g, s)
-    fmt_ptr := get_string_literal(g, "%s")
-    emit_printf_ptr(g, fmt_ptr, str_ptr)
+    emit_printf(g, "%s", fmt.tprintf("ptr %s", get_string_literal(g, s)))
 }
 
 emit_print_newline :: proc(g: ^Codegen) {
-    nl_ptr := get_string_literal(g, "\n")
-    emit_printf_void(g, nl_ptr)
+    emit_printf(g, "\n")
 }
 
 // Print an i1 as `true`/`false`. Shared by scalar args, struct fields, and
@@ -470,7 +465,7 @@ gen_print_bool :: proc(g: ^Codegen, val_i1: string) {
     false_ptr := get_string_literal(g, "false")
     bool_str := fresh_tmp(g)
     emit(g, "  %s = select i1 %s, ptr %s, ptr %s", bool_str, val_i1, true_ptr, false_ptr)
-    emit_printf_ptr(g, get_string_literal(g, "%s"), bool_str)
+    emit_printf(g, "%s", fmt.tprintf("ptr %s", bool_str))
 }
 
 // Print an already-loaded scalar VALUE given its Mara type — the single source
@@ -487,7 +482,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         // utf8 scalar = a character: render the glyph, not the code point.
         ext := fresh_tmp(g)
         emit(g, "  %s = zext i8 %s to i32", ext, val)
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, "%c"), ext)
+        emit_printf(g, "%c", fmt.tprintf("i32 %s", ext))
         return
     }
     if et, ok := bt.(^Type_Enum); ok {
@@ -503,41 +498,38 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         spec := "%p"
         if _, b := pt.elem.(Type_Byte); b { spec = "%s" }
         if _, u := pt.elem.(Type_Utf8); u { spec = "%s" }
-        emit_printf_ptr(g, get_string_literal(g, spec), val)
+        emit_printf(g, spec, fmt.tprintf("ptr %s", val))
         return
     }
     if _, ok := bt.(Type_CString); ok {
-        emit_printf_ptr(g, get_string_literal(g, "%s"), val)
+        emit_printf(g, "%s", fmt.tprintf("ptr %s", val))
         return
     }
 
-    // Numeric (integers + floats): IR-width driven with sign awareness.
+    // Numeric (integers + floats): IR-width driven with sign awareness. (A
+    // float prints as a double, an integer under 32 bits as an int: C's
+    // varargs promote them.)
     is_unsigned := false
     if n, ok := bt.(Type_Numeric); ok { is_unsigned = n.kind == .Unsigned }
     if _, ok := bt.(Type_Byte); ok { is_unsigned = true }
     nt := llvm_type_from_checker(ty)
     switch nt {
     case "double":
-        emit_printf_double(g, get_string_literal(g, "%g"), val)
-    case "float":
+        emit_printf(g, "%g", fmt.tprintf("double %s", val))
+    case "float", "half":
         ext := fresh_tmp(g)
-        emit(g, "  %s = fpext float %s to double", ext, val)
-        emit_printf_double(g, get_string_literal(g, "%g"), ext)
-    case "half":
-        ext := fresh_tmp(g)
-        emit(g, "  %s = fpext half %s to double", ext, val)
-        emit_printf_double(g, get_string_literal(g, "%g"), ext)
+        emit(g, "  %s = fpext %s %s to double", ext, nt, val)
+        emit_printf(g, "%g", fmt.tprintf("double %s", ext))
     case "i64":
-        emit_printf_i64(g, get_string_literal(g, is_unsigned ? "%llu" : "%lld"), val)
+        emit_printf(g, is_unsigned ? "%llu" : "%lld", fmt.tprintf("i64 %s", val))
     case "i32":
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, is_unsigned ? "%u" : "%d"), val)
+        emit_printf(g, is_unsigned ? "%u" : "%d", fmt.tprintf("i32 %s", val))
     case "i1":
         gen_print_bool(g, val)
     case "i8", "i16":
-        // C varargs promote sub-int integers to int (i32).
         ext := fresh_tmp(g)
         emit(g, "  %s = %s %s %s to i32", ext, is_unsigned ? "zext" : "sext", nt, val)
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, is_unsigned ? "%u" : "%d"), ext)
+        emit_printf(g, is_unsigned ? "%u" : "%d", fmt.tprintf("i32 %s", ext))
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
     }
@@ -558,44 +550,24 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     }
     bt := distinct_base(ty)
 
-    // A utf8 array (fixed / slice / partial) is a string — print it as bounded
-    // text (%.*s) like a bare print(string), not element-by-element. Fixed
-    // storage anchors the handle at the data; slice/PA anchor at the {len,cap,ptr}
-    // header sitting at this address.
-    #partial switch t in bt {
-    case ^Type_Fixed_Array:
-        if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{fixed_alloca = addr, static_cap = t.size}
-            emit_array_print(g, &h)
-            return
-        }
-    case ^Type_Slice:
-        if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{header_ptr = addr}
-            emit_array_print(g, &h)
+    // An array: its elements, `[a, b]` — a utf8 one (a string) as text, like
+    // a bare print(string). A fixed one's are here, as many as its size; a
+    // slice's or a partial array's are its header's, as many as its len.
+    if fa, ok := bt.(^Type_Fixed_Array); ok {
+        if _, u := distinct_base(fa.elem).(Type_Utf8); u {
+            emit_print_text(g, addr, fmt.tprintf("%d", fa.size))
         } else {
-            h := Array_Handle{header_ptr = addr}
-            gen_print_array_handle(g, &h, t.elem)
-        }
-        return
-    case ^Type_Partial_Array:
-        if _, u := distinct_base(t.elem).(Type_Utf8); u {
-            h := Array_Handle{header_ptr = addr}
-            emit_array_print(g, &h)
-        } else {
-            h := Array_Handle{header_ptr = addr}
-            gen_print_array_handle(g, &h, t.elem)
+            gen_print_array_inline(g, addr, fa.size, fa.elem)
         }
         return
     }
-
-    // Non-utf8 fixed array → recurse per element (flat or nested rows).
-    if fa, ok := bt.(^Type_Fixed_Array); ok {
-        elem_ir := llvm_type_from_checker(fa.elem)
-        if _, nested := distinct_base(fa.elem).(^Type_Fixed_Array); nested {
-            gen_print_nested_array(g, addr, fa.size, elem_ir, fa.elem)
+    if elem := llvm_header_elem(bt); elem != nil {
+        data := emit_header_field(g, addr, SLICE.ptr)
+        n := emit_header_field(g, addr, SLICE.len)
+        if _, u := distinct_base(elem).(Type_Utf8); u {
+            emit_print_text(g, data, n)
         } else {
-            gen_print_array_inline(g, addr, fa.size, elem_ir, fa.elem)
+            gen_print_elements(g, data, n, elem)
         }
         return
     }
@@ -610,10 +582,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
 // given); a union variant's, its tag's (the variant's name), the tag itself
 // not a field.
 gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "") {
-    say :: proc(g: ^Codegen, text: string) {
-        ptr := get_string_literal(g, text)
-        emit_printf_void(g, ptr)
-    }
+    say :: proc(g: ^Codegen, text: string) { emit_printf(g, text) }
     st_llvm := struct_llvm_name(st.name)
     first := first_user_field(st)
     if name != "" {
@@ -750,20 +719,18 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
 
     emit_label(g, unknown_lbl)
     emit_print_literal(g, fmt.tprintf("%s(", et.source_name if et.source_name != "" else et.name))
-    fmt_ptr := get_string_literal(g, tag_ir == "i64" ? "%lld" : "%d")
     switch tag_ir {
     case "i64":
-        emit_printf_i64(g, fmt_ptr, val)
+        emit_printf(g, "%lld", fmt.tprintf("i64 %s", val))
     case "i32":
-        // Already at printf's default-int width — pass through.
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), fmt_ptr, val)
+        emit_printf(g, "%d", fmt.tprintf("i32 %s", val))
     case:
         // i16 / i8: zext to i32 for printf's default-int varargs promotion.
         // zext (not sext) — enum tags are unsigned-shaped values, no two's-
         // complement bits to preserve.
         ext := fresh_tmp(g)
         emit(g, "  %s = zext %s %s to i32", ext, tag_ir, val)
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), fmt_ptr, ext)
+        emit_printf(g, "%d", fmt.tprintf("i32 %s", ext))
     }
     emit_print_literal(g, ")")
     emit_br(g, done_lbl)
@@ -771,164 +738,36 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
     emit_label(g, done_lbl)
 }
 
-// Print a flat array inline: [v1, v2, v3]
-gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_type: string, elem_ty: Type) {
-    open_ptr := get_string_literal(g, "[")
-    emit_printf_void(g, open_ptr)
-
-    arr_type := fmt.tprintf("[%d x %s]", cap, elem_type)
-    for i := 0; i < cap; i += 1 {
-        if i > 0 {
-            sep_ptr := get_string_literal(g, ", ")
-            emit_printf_void(g, sep_ptr)
-        }
+// A fixed array's `size` elements at `data`, printed: [v1, v2, v3] (an
+// element an array, as its own — [[1, 2], [3, 4]]).
+gen_print_array_inline :: proc(g: ^Codegen, data: string, size: int, elem: Type) {
+    emit_printf(g, "[")
+    arr_type := fmt.tprintf("[%d x %s]", size, llvm_type_from_checker(elem))
+    for i := 0; i < size; i += 1 {
+        if i > 0 { emit_printf(g, ", ") }
         gep := fresh_tmp(g)
-        emit_array_gep_const(g, gep, arr_type, data_ptr, i)
-        emit_print_at_addr(g, gep, elem_ty)
+        emit_array_gep_const(g, gep, arr_type, data, i)
+        emit_print_at_addr(g, gep, elem)
     }
-
-    close_ptr := get_string_literal(g, "]")
-    emit_printf_void(g, close_ptr)
+    emit_printf(g, "]")
 }
 
-// Print a nested array like [4][4]f32 as: [[v, v, v, v], [v, v, v, v], ...]
-gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, inner_ir_type: string, row_ty: Type) {
-    inner_cap, inner_elem, _ := parse_array_ir_type(inner_ir_type)
-    outer_arr_type := fmt.tprintf("[%d x %s]", outer_cap, inner_ir_type)
-    // row_ty is the inner row's Mara type (e.g. [M]T); its element type drives
-    // each scalar's sign-aware / char-aware rendering.
-    inner_elem_ty: Type = nil
-    if fa, ok := distinct_base(row_ty).(^Type_Fixed_Array); ok { inner_elem_ty = fa.elem }
-
-    open_ptr := get_string_literal(g, "[")
-    emit_printf_void(g, open_ptr)
-
-    for i := 0; i < outer_cap; i += 1 {
-        if i > 0 {
-            sep_ptr := get_string_literal(g, ", ")
-            emit_printf_void(g, sep_ptr)
-        }
-        row_gep := fresh_tmp(g)
-        emit_array_gep_const(g, row_gep, outer_arr_type, data_ptr, i)
-        gen_print_array_inline(g, row_gep, inner_cap, inner_elem, inner_elem_ty)
-    }
-
-    close_ptr := get_string_literal(g, "]")
-    emit_printf_void(g, close_ptr)
-}
-
-// Print a slice / partial array as [e0, e1, ...] bounded by its RUNTIME length.
-// Works off an Array_Handle (header carries len + data ptr); each element
-// recurses through emit_print_at_addr so element structs / nested arrays render
-// too. Fixed arrays use the compile-time gen_print_array_inline instead.
-gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
-    emit_printf_void(g, get_string_literal(g, "["))
-    data := emit_array_data(g, h)
-    n := emit_array_len(g, h)
-    w := SLICE_LEN_IR
-    elem_ir := llvm_type_from_checker(elem_ty)
-
-    idx_ptr := fresh_tmp(g)
-    emit_alloca(g, idx_ptr, w)
-    emit_store(g, w, "0", idx_ptr)
-    cond_l := fresh_label(g, "pah.cond")
-    body_l := fresh_label(g, "pah.body")
-    end_l  := fresh_label(g, "pah.end")
-    emit_br(g, cond_l)
-
-    emit_label(g, cond_l)
-    i := fresh_tmp(g)
-    emit_load_into(g, i, w, idx_ptr)
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, i, n)
-    emit_cond_br(g, cmp, body_l, end_l)
-
-    emit_label(g, body_l)
-    i2 := fresh_tmp(g)
-    emit_load_into(g, i2, w, idx_ptr)
-    sep_l   := fresh_label(g, "pah.sep")
-    nosep_l := fresh_label(g, "pah.nosep")
-    after_l := fresh_label(g, "pah.after")
-    is_first := fresh_tmp(g)
-    emit(g, "  %s = icmp eq %s %s, 0", is_first, w, i2)
-    emit_cond_br(g, is_first, nosep_l, sep_l)
-    emit_label(g, sep_l)
-    emit_printf_void(g, get_string_literal(g, ", "))
-    emit_br(g, after_l)
-    emit_label(g, nosep_l)
-    emit_br(g, after_l)
-    emit_label(g, after_l)
-    elem_gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_gep, elem_ir, data, w, i2)
-    emit_print_at_addr(g, elem_gep, elem_ty)
-    nxt := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, 1", nxt, w, i2)
-    emit_store(g, w, nxt, idx_ptr)
-    emit_br(g, cond_l)
-
-    emit_label(g, end_l)
-    emit_printf_void(g, get_string_literal(g, "]"))
-}
-
-// Array_Handle is print's view of "something array-shaped": a fixed array
-// (raw [N x T] storage), a slice (a {len, cap, ptr} header over separate
-// elements) or a partial array (the header and its elements together) —
-// printed alike once the right pointers are in hand.
-//
-// Two pointers live on the handle:
-//   header_ptr   — non-empty for slices and partial arrays; points at a
-//                  `{len, cap, ptr}` header. Verbs load len/cap/data through
-//                  this. Empty for fixed arrays.
-//   fixed_alloca — non-empty for fixed arrays; the raw `[N x T]` alloca that
-//                  is itself the data pointer. Empty for slices/partial
-//                  arrays.
-// Exactly one of the two is set on a valid handle.
-//
-// For fixed arrays, `static_cap` is the capacity. For slices and partial arrays, cap is held in the
-// header and read at runtime — static_cap stays 0.
-Array_Handle :: struct {
-    header_ptr:     string,
-    fixed_alloca:   string,
-    static_cap:     int,
-}
-
-handle_is_fixed :: proc(h: ^Array_Handle) -> bool { return h.fixed_alloca != "" }
-
-// Load (or compute) the current length of the array as an i64 SSA value.
-// Fixed arrays don't have a separate len field — for them len == capacity.
-emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
-    if handle_is_fixed(h) {
-        return fmt.tprintf("%d", h.static_cap)
-    }
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, h.header_ptr, SLICE.len)
-    out := fresh_tmp(g)
-    emit_header_load(g, out, len_gep)
-    return out
-}
-
-// Return a ptr-typed SSA value pointing at the array's first element.
-// For fixed arrays this is the alloca itself; for slices/partial arrays it
-// is loaded from header.ptr.
-emit_array_data :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
-    if handle_is_fixed(h) { return h.fixed_alloca }
-    data_gep := fresh_tmp(g)
-    emit_slice_gep(g, data_gep, h.header_ptr, SLICE.ptr)
-    out := fresh_tmp(g)
-    emit_load_into(g, out, "ptr", data_gep)
-    return out
-}
-
-// Emit `printf("%.*s", len, data)` for a utf8 array. Bounded printing —
-// works for fixed and dynamic storage. Callers should have already
-// established that the handle is utf8.
-emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
-    fmt_ptr := get_string_literal(g, "%.*s")
-    data_ptr := emit_array_data(g, h)
-    // C's printf `%.*s` precision is an `int` (i32): the header's i64 length,
-    // narrowed.
-    len_val := emit_array_len(g, h)
-    prec := fresh_tmp(g)
-    emit(g, "  %s = trunc %s %s to i32", prec, SLICE_LEN_IR, len_val)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, prec, data_ptr)
+// A slice's or a partial array's `n` elements at `data` (n known when the
+// program runs), printed as a fixed array's are.
+gen_print_elements :: proc(g: ^Codegen, data, n: string, elem: Type) {
+    emit_printf(g, "[")
+    l := emit_loop_begin(g, n, "pah")
+    sep, after := fresh_label(g, "pah.sep"), fresh_label(g, "pah.after")
+    first := fresh_tmp(g)
+    emit(g, "  %s = icmp eq %s %s, 0", first, SLICE_LEN_IR, l.i)
+    emit_cond_br(g, first, after, sep)
+    emit_label(g, sep)
+    emit_printf(g, ", ")
+    emit_br(g, after)
+    emit_label(g, after)
+    gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", gep, llvm_type_from_checker(elem), data, SLICE_LEN_IR, l.i)
+    emit_print_at_addr(g, gep, elem)
+    emit_loop_end(g, l)
+    emit_printf(g, "]")
 }
