@@ -114,7 +114,7 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
             span := g.origin[id]
             if span in seen { continue }
             seen[span] = true
-            check_error(c, span, TYPE_UNUSED_ERR, g.name[id])
+            check_error(c, span, TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))
         }
     }
 }
@@ -173,7 +173,7 @@ flow_defer_writes :: proc(c: ^Checker, g: ^Program_Graph, ret: Node_Id, block: [
                 span := g.origin[op]
                 if span in seen^ { continue }
                 seen[span] = true
-                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, g.name[v], span_line(g.origin[ret]))
+                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, graph_name(g, v), span_line(g.origin[ret]))
             }
         }
     }
@@ -418,12 +418,12 @@ flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, 
     if base == NO_NODE || g.kind[base] != .Op { return }
     #partial switch g.op[base] {
     case .Var:
-        return g.refers[base], g.name[f], NO_NODE, true
+        return g.refers[base], graph_name(g, f), NO_NODE, true
     case .Deref:
         p := graph_operands(g, base)[0].op
         if p == NO_NODE || g.op[p] != .Var { return }
         if target, is_alias := s.alias[g.refers[p]]; is_alias {
-            return target, g.name[f], g.refers[p], true
+            return target, graph_name(g, f), g.refers[p], true
         }
     }
     return
@@ -463,7 +463,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     #partial switch g.op[op] {
     case .Var:
         if reporting && flow_is_unset(state, flow_var_bit(s, g.refers[op])) && flow_read_by(s, op) {
-            report(s, g.origin[op], TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, g.name[op])
+            report(s, g.origin[op], TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, op))
         }
     case .Field:
         if !reporting { break }
@@ -476,9 +476,9 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
         }
         if g.op[u] == .Address || g.op[u] == .Field || g.op[u] == .Swizzle { break }
         if via != NO_NODE {
-            report(s, g.origin[op], TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, g.name[v], g.name[via])
+            report(s, g.origin[op], TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
         } else {
-            report(s, g.origin[op], TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, g.name[v])
+            report(s, g.origin[op], TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
         }
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
@@ -490,7 +490,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             #partial switch g.op[op] {
             case .Write:
                 val := ops[1].op
-                unset = val != NO_NODE && g.op[val] == .Const && g.name[val] == "void"
+                unset = val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void"
                 fields_unset = unset
             case .Zero:
                 // A bare `p : ^T` or `s : []T` (a sized slice has its storage, a
@@ -501,7 +501,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             case .Construct:
                 // Built bare or from braces, a struct has only what it is given
                 // (the braces' writes follow); a constructor call may set anything.
-                fields_unset = g.written[op] == .Synthetic || strings.has_suffix(g.name[op], "{}")
+                fields_unset = g.written[op] == .Synthetic || strings.has_suffix(graph_name(g, op), "{}")
             }
             flow_set_var(s, state, v, unset, fields_unset)
         } else if v, field, _, ok := flow_field_place(s, d); ok {
@@ -575,7 +575,7 @@ flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: m
             if g.kind[id] != .Op { continue }
             for o, k in graph_operands(g, id) {
                 v := o.op
-                if v == NO_NODE || g.op[v] != .Const || g.name[v] != "void" { continue }
+                if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
                 if g.written[v] != .Explicit { continue }
                 if where_, stored := void_where(g, id, k); stored {
                     void_error(c, &seen, g.origin[v], g.type_[v], where_)
@@ -612,7 +612,7 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
         if k != 1 { return "", false }
         dest := ops[0].op
         #partial switch g.op[dest] {
-        case .Field:        return fmt.tprintf("field '%s'", g.name[dest]), true
+        case .Field:        return fmt.tprintf("field '%s'", graph_name(g, dest)), true
         case .Index, .View: return "an array element", true
         case .Deref:        return "a dereferenced pointer", true
         case .Var:
@@ -620,8 +620,8 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
             // branches go into, are no variables.
             d := g.refers[dest]
             if d == NO_NODE { return "", false }
-            if g.kind[d] == .Field { return fmt.tprintf("field '%s'", g.name[d]), true }
-            if g.kind[d] == .Local && g.written[d] == .Synthetic && g.name[d] == "if" {
+            if g.kind[d] == .Field { return fmt.tprintf("field '%s'", graph_name(g, d)), true }
+            if g.kind[d] == .Local && g.written[d] == .Synthetic && graph_name(g, d) == "if" {
                 return "a branch of an if-expression", true
             }
         }
@@ -631,7 +631,7 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
         // (A construction's first operand is where it builds; a call
         // through a function value's, the value.)
         n := k + 1 if g.op[op] == .Call && graph_called(g, op) != nil else k
-        return fmt.tprintf("argument %d of '%s'", n, g.name[op]), true
+        return fmt.tprintf("argument %d of '%s'", n, graph_name(g, op)), true
     case .Return:
         return "a return value", true
     }

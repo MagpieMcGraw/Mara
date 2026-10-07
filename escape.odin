@@ -255,7 +255,7 @@ esc_vars :: proc(e: ^Esc) {
         case .Fun, .Struct:
             id = graph_last(g, id)
         case .Param, .Result, .Local, .Field:
-            v := Esc_Var{node = id, name = g.name[id], type_ = g.type_[id], depth = esc_depth(e, id),
+            v := Esc_Var{node = id, name = graph_name(g, id), type_ = g.type_[id], depth = esc_depth(e, id),
                          param = -1, slot = -1, init = NO_NODE}
             #partial switch g.kind[id] {
             case .Param:
@@ -297,7 +297,7 @@ esc_scan :: proc(e: ^Esc) {
                 if k < 0 || val == NO_NODE { break }
                 v := &e.vars[k]
                 s := g.stmt[op]
-                if g.op[val] == .Carve && g.name[val] == "let" && s >= 0 && g.stmts[s].kind == .Decl {
+                if g.op[val] == .Carve && graph_name(g, val) == "let" && s >= 0 && g.stmts[s].kind == .Decl {
                     v.view = true   // `x := let(T, s)`: x IS the storage it views
                     v.init = op
                 }
@@ -387,7 +387,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     case .Index, .View:
         esc_mem(e, r, ops[0], state)
     case .Slice:
-        if g.name[op] == "slice_from_ptr" {   // may view any argument
+        if graph_name(g, op) == "slice_from_ptr" {   // may view any argument
             for o in ops { esc_join(r, esc_at(e, o)) }
         } else {
             esc_mem(e, r, ops[0], state)
@@ -406,7 +406,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         // let(T, s) reads a T out of s's memory; slice(..., s) views it.
         mem: Esc_Roots
         esc_mem(e, &mem, ops[0], state)
-        if g.name[op] != "let" {
+        if graph_name(g, op) != "let" {
             esc_join(r, mem)
         } else if esc_has_refs(e.c, g.type_[op]) {
             esc_deref(e, r, mem, state)
@@ -904,7 +904,7 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
     g := e.g
     what := esc_describe(e, val)
     if site.callee != nil {
-        name := g.name[site.op]
+        name := graph_name(g, site.op)
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
             esc_diag(e, g.origin[site.op], TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
@@ -947,7 +947,7 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
     }
     if n == 0 { return false }
     esc_diag(e, g.origin[ret], TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
-        g.name[call], strings.to_string(sb), "argument" if n == 1 else "arguments")
+        graph_name(g, call), strings.to_string(sb), "argument" if n == 1 else "arguments")
     return true
 }
 

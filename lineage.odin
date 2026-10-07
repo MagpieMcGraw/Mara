@@ -106,7 +106,7 @@ render_later_writes :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
         names: [dynamic]string
         defer delete(names)
         for u in uses {
-            name := u.fn.g.name[u.op]
+            name := graph_name(u.fn.g, u.op)
             if !slice.contains(names[:], name) { append(&names, name) }
         }
         if len(names) == 0 {

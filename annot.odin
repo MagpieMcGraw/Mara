@@ -321,16 +321,16 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                         if t.tag[n] == .Literal && t.a[n] != 0 && t.tag[t.a[n]] == .Ident { n = Tree_Id(t.a[n]) }
                         #partial switch t.tag[n] {
                         case .Ident, .Type_Name, .Call, .Method_Call:
-                            if token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
+                            if token_text(build_tokens[t.main[n]]) != graph_name(g, d) { continue }
                         case: continue
                         }
                         compared = true
                         vars += 1
                         r := annot_ref(a, i, n)
                         within := r.decl != 0 && r.decl >= g.origin[d].tok && r.decl < g.origin[d].end
-                        if r.decl == 0 || token_text(build_tokens[r.decl]) != g.name[d] || !within {
+                        if r.decl == 0 || token_text(build_tokens[r.decl]) != graph_name(g, d) || !within {
                             report(&problems, t, n, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
-                                r.kind, r.decl, g.kind[d], g.name[d], span_line(g.origin[d]), span_col(g.origin[d]))
+                                r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(g.origin[d]), span_col(g.origin[d]))
                         }
                     } else {
                         #partial switch t.tag[n] {
@@ -361,13 +361,13 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                         case .Compound: targets = []Tree_Id{Tree_Id(t.a[sn])}
                         }
                         for n in targets {
-                            if t.tag[n] != .Ident || token_text(build_tokens[t.main[n]]) != g.name[d] { continue }
+                            if t.tag[n] != .Ident || token_text(build_tokens[t.main[n]]) != graph_name(g, d) { continue }
                             compared = true
                             vars += 1
                             r := annot_ref(a, i, n)
                             if r.decl == 0 || r.decl < g.origin[d].tok || r.decl >= g.origin[d].end {
                                 report(&problems, t, n, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
-                                    r.kind, r.decl, g.kind[d], g.name[d], span_line(g.origin[d]), span_col(g.origin[d]))
+                                    r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(g.origin[d]), span_col(g.origin[d]))
                             }
                         }
                     }
@@ -378,7 +378,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if !compared && want != nil && g.stmt[op] >= 0 {
                     dest := ""
                     if ops := graph_operands(g, op); len(ops) > 0 && ops[0].op >= 0 && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var {
-                        dest = g.name[ops[0].op]
+                        dest = graph_name(g, ops[0].op)
                     }
                     stmt_nodes, _ := at[g.stmts[g.stmt[op]].span]
                     for sn in stmt_nodes {
@@ -413,7 +413,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                         if t.tag[sn] != .For_Range && t.tag[sn] != .For_Each { continue }
                         v := for_view(t, sn)
                         for tok in ([]Token_Id{v.var, v.elem, v.index}) {
-                            if tok != 0 && token_text(build_tokens[tok]) == g.name[d] && tok >= g.origin[d].tok && tok < g.origin[d].end {
+                            if tok != 0 && token_text(build_tokens[tok]) == graph_name(g, d) && tok >= g.origin[d].tok && tok < g.origin[d].end {
                                 compared = true
                                 loops += 1
                                 break
@@ -425,7 +425,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     tags := make([dynamic]Tree_Tag, context.temp_allocator)
                     for n in nodes { append(&tags, t.tag[n]) }
                     problems += 1
-                    fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (nodes there: %v)\n", g.op[op], g.name[op],
+                    fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (nodes there: %v)\n", g.op[op], graph_name(g, op),
                         filepath.base(span_file(g.origin[op])), span_line(g.origin[op]), span_col(g.origin[op]), tags[:])
                 }
             }
@@ -504,7 +504,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if !from(t, g, writes, arg.node, passed[j].op) {
                     what := "nothing"
                     if v := passed[j].op; v >= 0 {
-                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], g.name[v], span_line(g.origin[v]), span_col(g.origin[v]))
+                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], graph_name(g, v), span_line(g.origin[v]), span_col(g.origin[v]))
                     }
                     report(&problems, t, n, i, "param %d is annotated as receiving %v %v; the graph passes %s",
                         j + 1, arg.kind, t.tag[arg.node], what)
@@ -542,7 +542,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if g.written[id] != .Explicit { continue }
                 tok := g.decl_tok[id]
                 if tok == 0 {
-                    report_var(&problems, tok, ts, "the graph's %v '%s' names no token", g.kind[id], g.name[id])
+                    report_var(&problems, tok, ts, "the graph's %v '%s' names no token", g.kind[id], graph_name(g, id))
                     continue
                 }
                 i := annot_var(a, ts, tok, g.type_[id])
@@ -553,8 +553,8 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 v := vars_of[i]
                 decls += 1
                 have[i] = true
-                if token_text(build_tokens[tok]) != g.name[id] {
-                    report_var(&problems, tok, ts, "the graph's %v is named '%s'", g.kind[id], g.name[id])
+                if token_text(build_tokens[tok]) != graph_name(g, id) {
+                    report_var(&problems, tok, ts, "the graph's %v is named '%s'", g.kind[id], graph_name(g, id))
                 }
                 // (A distinct type the graph holds as its base: a destructured local's, a loop's element.)
                 if !types_equal(distinct_base(solidify_type(v.type_)), distinct_base(solidify_type(g.type_[id]))) {

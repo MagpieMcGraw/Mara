@@ -203,7 +203,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         case .Param, .Local, .Result:
             if g.written[id] == .Explicit {
                 i := annot_var(checked.annot, f.ft, g.decl_tok[id], g.type_[id])
-                if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", g.name[id], f.ft.name) }
+                if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", graph_name(g, id), f.ft.name) }
                 f.bindings[id] = of_var[i]
                 decl_of[of_var[i]] = id
             } else if g.kind[id] == .Result {
@@ -558,13 +558,13 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
     case .Call:
     case .Construct:
         // Braces, or a bare declaration's implicit construction: no call written.
-        if strings.has_suffix(g.name[op], "{}") || g.written[op] == .Synthetic { return "", false }
+        if strings.has_suffix(graph_name(g, op), "{}") || g.written[op] == .Synthetic { return "", false }
         if graph_called(g, op) == nil { return "", false }   // a union variant: no function runs
     case:
         return "", false
     }
     if callee := graph_called(g, op); callee != nil { return ask_label(callee), true }
-    return g.name[op], true
+    return graph_name(g, op), true
 }
 
 // A value read out of a temporary it was built in whole — a construction
@@ -727,13 +727,13 @@ du_dump :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     if g == nil { return }
     fmt.eprintf("--- def-use: %s (%d vars, %d defs, %d runs) ---\n", f.ft.name, len(f.vars), len(f.defs), len(f.runs))
     for d in f.defs {
-        name := d.binding.name if d.binding != nil else fmt.tprintf("(%s)", g.name[d.var])
+        name := d.binding.name if d.binding != nil else fmt.tprintf("(%s)", graph_name(g, d.var))
         fmt.eprintf("  def %-11v %-18s %s  writes %v\n", d.kind, name, span_loc(d.span), d.writes[:])
     }
     for r in f.runs {
         for op in graph_run(g, int(r)) {
             if reach, ok := f.reaching[op]; ok {
-                fmt.eprintf("  use %-18s %s <-", g.name[op], span_loc(g.origin[op]))
+                fmt.eprintf("  use %-18s %s <-", graph_name(g, op), span_loc(g.origin[op]))
                 for d in reach { fmt.eprintf(" %v@%s", d.kind, span_loc(d.span)) }
                 fmt.eprintln()
             }
