@@ -130,8 +130,8 @@ Esc :: struct {
     node:   Node_Id,
     ctor:   bool,                // a struct's code: `Self` is its fields
     vars:   [dynamic]Esc_Var,
-    var_of: []i32,               // a declaration → its variable, by id - node; -1 for none
-    run_of: []i32,               // an operation → its run's position in `runs`, by id - node
+    var_of: []i32,               // a declaration → its variable + 1, by id - node; 0 for none
+    run_of: []i32,               // an operation → its run's position in `runs` + 1, by id - node; 0 for none
     slots:  int,
     runs:   [dynamic]i32,        // its code's runs, then its defer blocks'
     main:   int,                 // how many of `runs` are its code's own
@@ -243,8 +243,6 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     e.var_of = make([]i32, size)
     e.run_of = make([]i32, size)
     e.used_across = make([]bool, size)
-    slice.fill(e.var_of, -1)
-    slice.fill(e.run_of, -1)
     esc_vars(&e)
     esc_scan(&e)
     esc_fixpoint(&e)
@@ -281,7 +279,7 @@ esc_vars :: proc(e: ^Esc) {
             case .Field:
                 v.depth = ESC_CALLER   // a field of the value under construction: the caller's
             }
-            e.var_of[id - e.node] = i32(len(e.vars))
+            e.var_of[id - e.node] = i32(len(e.vars)) + 1
             append(&e.vars, v)
         }
     }
@@ -293,14 +291,14 @@ esc_vars :: proc(e: ^Esc) {
 esc_scan :: proc(e: ^Esc) {
     g := e.g
     for r, ri in e.runs {
-        for op in graph_run(g, int(r)) { e.run_of[op - e.node] = i32(ri) }
+        for op in graph_run(g, int(r)) { e.run_of[op - e.node] = i32(ri) + 1 }
     }
     for r, ri in e.runs {
         for op in graph_run(g, int(r)) {
             ops := graph_operands(g, op)
             for o in ops {
                 if o.op == NO_NODE { continue }
-                if from := e.run_of[o.op - e.node]; from != i32(ri) {
+                if from := e.run_of[o.op - e.node]; from != i32(ri) + 1 {
                     e.used_across[o.op - e.node] = true
                     if o.op not_in e.uses { e.uses[o.op] = {} }
                     list := &e.uses[o.op]
@@ -500,7 +498,7 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
 @(private="file")
 esc_var :: proc(e: ^Esc, d: Node_Id) -> int {
     if d <= e.node || d > graph_last(e.g, e.node) { return -1 }
-    return int(e.var_of[d - e.node])
+    return int(e.var_of[d - e.node]) - 1
 }
 
 // The variable a place operand names directly, or -1.

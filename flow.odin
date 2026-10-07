@@ -1,6 +1,8 @@
 package mara
 
 import "core:fmt"
+import "core:mem"
+import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
 
@@ -17,21 +19,21 @@ import "core:strings"
 // function and raises the intraprocedural diagnostics it owns. Takes the Checker
 // purely as the error sink (check_error); the analysis itself reads only the
 // durable Checked_Program.
-// (`void_defaults`: the spans of params' `void` defaults the checker reported,
-// tc_void_defaults.)
-flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
+// (`fns`: the checked functions in name order, flow_functions. `void_defaults`:
+// the spans of params' `void` defaults the checker reported, tc_void_defaults.)
+flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope, void_defaults: map[Span]bool) {
     // Missing-return reads the program graph's runs, built from a clean check.
     graphed := len(checked.code.codes) > 0
     if graphed {
         flow_check_unreachable(c, checked)
         flow_check_literal_ranges(c, checked)
         flow_check_unused(c, checked)
-        flow_check_init(c, checked)
-        flow_check_defer_writes(c, checked)
+        flow_check_init(c, checked, fns)
+        flow_check_defer_writes(c, checked, fns)
         flow_check_void(c, checked, void_defaults)
         flow_check_constants(c, checked)
     }
-    for ft in flow_functions(checked) {
+    for ft in fns {
         if ft == nil { continue }
         // Source bodies only: intrinsics/foreigns have no Mara statements. An
         // empty one declares a shape (`Arena`'s methods, which a `~Arena`
@@ -126,12 +128,12 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
 // or not depending on how the value travels (a copy, or built in place), so
 // it is an error. A value the return computes is no local; a write through a
 // pointer that aliases one is not seen (field-insensitive, like escape).
-flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program) {
+flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) {
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
     runs, block: [dynamic]i32
     defer { delete(runs); delete(block) }
-    for ft in flow_functions(checked) {
+    for ft in fns {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         g := checked.code.funs[ft] or_else nil
@@ -228,11 +230,11 @@ flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
 Init :: struct {
     g:       ^Program_Graph,
     node:    Node_Id,
-    own:     []i32,            // a local's own bit; -1 when it can't be unset
+    own:     []i32,            // a local's own bit + 1; 0 when it can't be unset
     fields:  [][2]i32,         // a struct local's fields that can be unset: [first, count) of field_of
     field_of: [dynamic]Init_Field,
     alias:   map[Node_Id]Node_Id,   // a pointer local → the local it always points at
-    user:    []Node_Id,        // an operation → the one that takes its output (NO_NODE: none)
+    user:    []Node_Id,        // an operation → the one that takes its output (0: none)
     words:   int,
     c:       ^Checker,
     seen:    ^map[Span]bool,   // reads reported (generic instances share spans)
@@ -244,23 +246,32 @@ Init_Field :: struct {
     bit:  i32,
 }
 
-flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program) {
+flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) {
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    for ft in flow_functions(checked) {
+    walk: virtual.Arena
+    if err := virtual.arena_init_static(&walk, reserved = 64 * mem.Gigabyte); err != nil {
+        fmt.panicf("flow analysis: no arena for its walks (%v)", err)
+    }
+    defer virtual.arena_destroy(&walk)
+    for ft in fns {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         g := checked.code.funs[ft] or_else nil
         node := Node_Id(0)
         if g == nil { continue }
-        flow_init_fun(c, g, node, &seen)
+        flow_init_fun(c, g, node, &seen, &walk)
     }
 }
 
 @(private="file")
-flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[Span]bool) {
+flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[Span]bool, walk: ^virtual.Arena) {
+    // (What the fun's walk makes is `walk`'s, the last fun's freed; the
+    // diagnostics, the reads', outlive it.)
+    kept := context.allocator
+    virtual.arena_free_all(walk)
+    context.allocator = virtual.arena_allocator(walk)
     runs: [dynamic]i32
-    defer delete(runs)
     graph_code_runs(g, node, &runs)
     if len(runs) == 0 { return }
 
@@ -268,8 +279,6 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     s := Init{g = g, c = c, seen = seen, node = node}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
-    defer { delete(s.own); delete(s.fields); delete(s.field_of); delete(s.alias); delete(s.user) }
-    slice.fill(s.own, -1)
 
     // What can be unset: its locals that are pointers, slices or scalars, and
     // the pointer and slice fields of its struct locals that have no default.
@@ -287,7 +296,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
         }
         base := distinct_base(graph_type(g, id))
         if flow_can_be_unset(base) {
-            s.own[id - node] = bits
+            s.own[id - node] = bits + 1
             bits += 1
         } else if sd := as_scope_body(base); sd != nil {
             first := i32(len(s.field_of))
@@ -304,9 +313,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
 
     // Who takes each operation's output, and which pointers are aliases.
     s.user = make([]Node_Id, size)
-    slice.fill(s.user, NO_NODE)
     not_alias: map[Node_Id]bool
-    defer delete(not_alias)
     for r in runs {
         for op in graph_run(g, int(r)) {
             for o in graph_operands(g, op) {
@@ -332,12 +339,11 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
 
     // The fixpoint: each run's entry state (nothing unset on entry).
     fl := run_flow_make(g, runs[:], s.words, bits_copy, bits_union)
-    defer run_flow_free(&fl)
     state := make([]u64, s.words)
-    defer delete(state)
     run_flow_solve(&fl, state, &s, proc(s: ^Init, ri: int, op: Node_Id, state: []u64) { flow_init_op(s, op, state, false) })
 
     // The reads, against the fixpoint, in the order the runs list them.
+    context.allocator = kept
     for r, ri in runs {
         if !fl.entered[ri] { continue }
         copy(state, fl.in_state[ri])
@@ -376,7 +382,7 @@ flow_own :: proc(s: ^Init, v: Node_Id) -> bool {
 // A variable's own bit: -1 when it can't be unset.
 @(private="file")
 flow_var_bit :: proc(s: ^Init, v: Node_Id) -> i32 {
-    return s.own[v - s.node] if flow_own(s, v) else -1
+    return s.own[v - s.node] - 1 if flow_own(s, v) else -1
 }
 
 // A struct variable's field's bit: -1 when it can't be unset.
@@ -403,7 +409,7 @@ flow_is_unset :: proc(state: []u64, bit: i32) -> bool {
 @(private="file")
 flow_set_var :: proc(s: ^Init, state: []u64, v: Node_Id, unset, fields_unset: bool) {
     if !flow_own(s, v) { return }
-    flow_set(state, s.own[v - s.node], unset)
+    flow_set(state, s.own[v - s.node] - 1, unset)
     r := s.fields[v - s.node]
     for f in s.field_of[r[0]:r[0] + r[1]] { flow_set(state, f.bit, fields_unset) }
 }
@@ -432,7 +438,9 @@ flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, 
 // Who takes an operation's output; NO_NODE for none.
 @(private="file")
 flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
-    return s.user[op - s.node] if op >= s.node && op <= graph_last(s.g, s.node) else NO_NODE
+    if op < s.node || op > graph_last(s.g, s.node) { return NO_NODE }
+    if u := s.user[op - s.node]; u != 0 { return u }   // (0: none — no operation is the code's root)
+    return NO_NODE
 }
 
 // Whether a place's output is read: not written to as a whole, not only
