@@ -143,9 +143,11 @@ Program_Graph :: struct {
     settled:     [dynamic]Node_Id,   // literals whose type is their use's (a `:=` width adopted, an operand's): for the range check
 
     // A constant operation's value, where code needs one: a literal, an enum
-    // variant, a named scalar constant, a fixed array's length. `void` and a
-    // constant not evaluated here have none.
-    consts: map[Node_Id]Const_Value,
+    // variant, a named scalar constant, a fixed array's length — a string
+    // constant's global, its text. `void` and a constant not evaluated here
+    // have none. (Read with graph_value.)
+    value:  [dynamic]Const_Id,
+    values: ^[dynamic]Const_Value,   // (the program's values, a node's by its Const_Id)
 
     // An assert on a comparison: each side's source text, which its failure
     // reports beside the side's value — "" for a side whose text states its
@@ -169,6 +171,43 @@ Const_Value :: struct {
     text:     string,   // a string constant's, when is_text
     is_text:  bool,
 }
+
+// A node's value, as the program's values hold it (Program_Code.values):
+// each one once, by its index; 0, none.
+Const_Id :: distinct u32
+
+// A constant operation's value, if it has one.
+graph_value :: proc(g: ^Program_Graph, id: Node_Id) -> (Const_Value, bool) {
+    v := g.value[id]
+    if v == 0 { return {}, false }
+    return g.values[v], true
+}
+
+// A node's value given: the program's id for it, made the first time the
+// program has it (Graph_Builder.value_ids) — a small integer's, kept at hand.
+graph_set_value :: proc(b: ^Graph_Builder, g: ^Program_Graph, id: Node_Id, c: Const_Value) {
+    // (A small integer's float none, or itself: `1` is read as either.)
+    small := !c.is_float && !c.is_text && c.int >= 0 && c.int < len(b.value_small[0])
+    as := 0 if transmute(u64)c.float == 0 else 1
+    if c.float != 0 && c.float != f64(c.int) { small = false }
+    if small && b.value_small[as][c.int] != 0 {
+        g.value[id] = b.value_small[as][c.int]
+        return
+    }
+    // (A float by its bits: -0.0 is not 0.0.)
+    key := Const_Key{c.int, transmute(u64)c.float, c.is_float, c.is_text, c.text}
+    v, seen := b.value_ids[key]
+    if !seen {
+        v = Const_Id(len(b.pc.values))
+        append(b.pc.values, c)
+        b.value_ids[key] = v
+    }
+    if small { b.value_small[as][c.int] = v }
+    g.value[id] = v
+}
+
+@(private="file")
+Const_Key :: struct { int: i128, float: u64, is_float, is_text: bool, text: string }
 
 graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
     return g.edges[g.out_first[id]:g.out_first[id + 1]]
@@ -466,6 +505,8 @@ Graph_Builder :: struct {
     type_last:  struct { raw: [2]u64, id: Type_Id },
     type_flags: [dynamic]Graph_Type_Flags,   // (each type's, by its Type_Id)
     name_cache: [1024]struct { data: [^]u8, len: int, id: Name_Id },
+    value_ids:   map[Const_Key]Const_Id,   // (graph_set_value)
+    value_small: [2][256]Const_Id,
     // A literal's type, its use's (graph_settle_use): which use typed each
     // node one decides (NO_NODE: none), and each node made of a type a use
     // decides — the default once the code is built, if none does.
@@ -603,6 +644,8 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     append(b.pc.names, "")   // (Name_Id 0: none)
     b.pc.types = new([dynamic]Type, virtual.arena_allocator(b.pc.arena))
     append(b.pc.types, nil)   // (Type_Id 0: none)
+    b.pc.values = new([dynamic]Const_Value, virtual.arena_allocator(b.pc.arena))
+    append(b.pc.values, Const_Value{})   // (Const_Id 0: none)
     append(&b.type_flags, graph_type_flags(nil))
     graph_modules(b, modules)
     return b
@@ -670,6 +713,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.name_ids)
     delete(b.type_slots)
     delete(b.type_flags)
+    delete(b.value_ids)
     free(b)
 }
 
@@ -682,7 +726,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     graph_index(b)
     graph_place_codes(b)
     pc := b.pc
-    graph_fold_uses(&pc, checked)
+    graph_fold_uses(b, &pc, checked)
     graph_table_names(b, &pc)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
@@ -706,7 +750,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok,
+    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok, Value,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
 }
 
@@ -798,6 +842,8 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
     g.stmt = make([dynamic]i32, at(r, .Stmt))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
+    g.value = make([dynamic]Const_Id, at(r, .Value))
+    g.values = b.pc.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
@@ -820,7 +866,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
     }
     trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n)
     trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n)
-    trim(&g.stmt, n); trim(&g.decl_tok, n)
+    trim(&g.stmt, n); trim(&g.decl_tok, n); trim(&g.value, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
     trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
@@ -850,6 +896,7 @@ Program_Code :: struct {
     regions:     ^[Graph_Column]Graph_Region,       // where their columns are
     names:       ^[dynamic]string,                 // every node's name, once (Name_Id)
     types:       ^[dynamic]Type,                   // every node's type, once (Type_Id)
+    values:      ^[dynamic]Const_Value,            // every constant's value, once (Const_Id)
 }
 
 // --- one code at a time ---------------------------------------------------------
@@ -963,7 +1010,7 @@ graph_order_settled :: proc(b: ^Graph_Builder) {
         from := len(g.settled)
         for o in graph_built_operands(b, Node_Id(u)) {
             if o.op == NO_NODE || o.out != 0 || b.typed_by[o.op] != Node_Id(u) { continue }
-            if g.op[o.op] != .Const || o.op not_in g.consts && g.constant[o.op] == 0 { continue }
+            if g.op[o.op] != .Const || g.value[o.op] == 0 && g.constant[o.op] == 0 { continue }
             if slice.contains(g.settled[from:], o.op) { continue }
             append(&g.settled, o.op)
         }
@@ -1098,6 +1145,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.refers[i] = NO_NODE
     g.stmt[i] = b.stmt
     g.decl_tok[i] = 0
+    g.value[i] = 0
     if i >= len(b.typed_by) {
         resize(&b.typed_by, len(g.kind))
         resize(&b.untyped, len(g.kind))
@@ -1126,6 +1174,7 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.refers, n)
     non_zero_resize(&g.stmt, n)
     non_zero_resize(&g.decl_tok, n)
+    non_zero_resize(&g.value, n)
     non_zero_resize(&g.operand_first, n)
 }
 
@@ -1685,7 +1734,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     t := b.untyped[id] if b.typed_by[id] != NO_NODE else graph_type(g, id)   // (one a use typed: as made, for its own use to type)
     n := graph_op_value(b, g.op[id], g.written[id], g.origin[id], t, graph_name(g, id), ..ops)
     g.refers[n.op] = g.refers[id]
-    if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
+    g.value[n.op] = g.value[id]
     if g.op[id] == .Const && slice.contains(g.settled[:], id) { append(&g.settled, n.op) }   // (graph_const_settles)
     if c, named := g.constant[id]; named { g.constant[n.op] = c }
     return Operand{n.op, p.out}
@@ -1843,7 +1892,7 @@ graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
 graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value)) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
     if v, ok := value.?; ok {
-        b.g.consts[o.op] = v
+        graph_set_value(b, b.g, o.op, v)
         graph_const_settles(b, o.op, t)
     }
     return o
@@ -1874,7 +1923,7 @@ graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, na
 
 // A string constant's global carries its text in the constants table.
 graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)) -> Operand {
-    if c, ok := value.?; ok && c.is_text { b.g.consts[global.op] = c }
+    if c, ok := value.?; ok && c.is_text { graph_set_value(b, b.g, global.op, c) }
     return global
 }
 
@@ -2584,7 +2633,7 @@ graph_unbuild :: proc(b: ^Graph_Builder, id: Node_Id) {
     }
     pop(&r.ops)
     resize(&g.operands, int(g.operand_first[id]))
-    delete_key(&g.consts, id)
+    g.value[id] = 0
     b.nodes -= 1
 }
 
@@ -2782,7 +2831,7 @@ Graph_Arm :: struct {
 graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: int) -> Graph_Block {
     if id := gm.tags[i]; id != NO_NODE {
         b.g.name[id] = graph_intern(b, ga.variant)
-        b.g.consts[id] = Const_Value{int = i128(ga.tag)}
+        graph_set_value(b, b.g, id, Const_Value{int = i128(ga.tag)})
     }
     span := gm.span
     b.code.run = gm.arms[i]
@@ -3752,7 +3801,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
             for o, i in ops { fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out) }
             strings.write_string(&b, ")")
         }
-        if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
+        if c, ok := graph_value(g, Node_Id(id)); ok { fmt.sbprintf(&b, " const=%v", c) }
         if c := g.constant[Node_Id(id)]; c != 0 {   // (by its code's name: a value's node isn't the same from one build to the next)
             code, built := pc.consts[c]
             fmt.sbprintf(&b, " constant=%s", graph_name(code, 0) if built else "?")

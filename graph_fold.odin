@@ -72,7 +72,7 @@ Fold_Code :: struct {
 // Every use of a constant outside a constant's own code, given its value:
 // a number or text as a use's constant, a table's whole value kept for its
 // global (pc.tables). A use with no value is listed (pc.fold_errors).
-graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
+graph_fold_uses :: proc(b: ^Graph_Builder, pc: ^Program_Code, checked: ^Checked_Program) {
     fo := Folder{pc = pc, checked = checked}
     defer { delete(fo.done); delete(fo.busy) }
     for g in pc.codes {
@@ -90,7 +90,7 @@ graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
                     fold_error(&fo, g, id, c)
                     continue
                 }
-                g.consts[id] = v.c
+                graph_set_value(b, g, id, v.c)
             case .Global:
                 v := fold_decl(&fo, c, .Own)
                 if v == nil {
@@ -98,7 +98,7 @@ graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
                     continue
                 }
                 if v.known && v.c.is_text {
-                    g.consts[id] = v.c
+                    graph_set_value(b, g, id, v.c)
                 } else {
                     pc.tables[c] = v
                 }
@@ -191,7 +191,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     case .Const:
         out = fold_const(fo, fc, id)
     case .Global:
-        if c, ok := g.consts[id]; ok && c.is_text {
+        if c, ok := graph_value(g, id); ok && c.is_text {
             out = fold_new(graph_type(g, id))
             out.c, out.known = c, true
         } else if named := g.constant[id]; named != 0 {
@@ -283,7 +283,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
 @(private="file")
 fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fc.g
-    if c, ok := g.consts[id]; ok { return fold_value(graph_type(g, id), c) }
+    if c, ok := graph_value(g, id); ok { return fold_value(graph_type(g, id), c) }
     if graph_name(g, id) == "void" { return fold_value(graph_type(g, id), {}) }   // (written: a null)
     named := g.constant[id]
     if named == 0 { return nil }

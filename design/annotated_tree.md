@@ -431,3 +431,10 @@ that would lower a function again for each reader and faster than doing so. The 
     pay), its declaring token and what it refers to (set on 11% and 27% of the nodes; a
     map saves little). Per node now: the origin, seven columns of 4 bytes, three of 1,
     and the operands, runs and statements (~12 bytes).
+  - A constant's value (and after: a column, not a map). The values were a map of each
+    code's, 64 bytes a value, made again as it grew: 245 MB allocated lowering test_1M
+    for 876K constants, 4,073 distinct. The column holds an id, 4 bytes, into the
+    program's values (`Program_Code.values`), each held once; read with `graph_value`,
+    given with `graph_set_value` (by the builder: folding too). The codes take 323 MB;
+    the process at its peak 111 MB less. Lowering ~35 ms faster optimized (~0.27 s in a
+    debug build, where the map's hashing cost more).

@@ -78,7 +78,7 @@ flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
     // one is reported once, check_error's rule; each instance is checked.)
     for g in checked.code.codes {
         for id in g.settled {
-            v, ok := g.consts[id]
+            v, ok := graph_value(g, id)
             if !ok || v.is_text { continue }
             check_value_range(c, v.float if v.is_float else f64(v.int), v.int, graph_type(g, id), g.origin[id])
         }

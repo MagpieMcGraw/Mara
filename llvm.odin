@@ -1165,7 +1165,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op - e.node] = mara_fn_name(g, ft.name)
             return true
         }
-        if c, has := pg.consts[op]; has && c.is_text {
+        if c, has := graph_value(pg, op); has && c.is_text {
             global, n := get_string_literal(g, c.text)
             tmp := fresh_tmp(g)
             emit_string_gep(g, tmp, n, global)
@@ -1423,7 +1423,7 @@ llvm_target :: proc(e: ^Llvm, op: Node_Id, k: int) -> i32 {
 @(private="file")
 llvm_const :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
     t := graph_type(e.pg, op)
-    v, ok := e.pg.consts[op]
+    v, ok := graph_value(e.pg, op)
     if !ok || !llvm_scalar(t) { return "", false }
     ir := llvm_type_from_checker(t)
     if ir == "i1" { return "true" if v.int != 0 else "false", true }
@@ -1999,7 +1999,7 @@ llvm_text :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
     at := op
     if pg.op[at] == .Read { at = graph_operands(pg, at)[0].op }
     if at == NO_NODE || pg.op[at] != .Global { return "", false }
-    c, has := pg.consts[at]
+    c, has := graph_value(pg, at)
     return c.text, has && c.is_text
 }
 
@@ -2182,7 +2182,7 @@ llvm_sized_slice :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     name := fmt.tprintf("%%%s.data", graph_name(pg, pg.refers[dest]))
     for k := 2; e.used[name]; k += 1 { name = fmt.tprintf("%%%s.data.%d", graph_name(pg, pg.refers[dest]), k) }
     e.used[name] = true
-    if c, is_const := pg.consts[ops[1].op]; is_const {
+    if c, is_const := graph_value(pg, ops[1].op); is_const {
         total := int(c.int) * size
         if total >= 1024 { return false }
         emit_alloca(g, name, fmt.tprintf("[%d x %s]%s", c.int, elem_ir, ", align 16" if elem_ir == "i8" else ""))
@@ -2432,7 +2432,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         sw := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&sw, "  switch %s %s, label %%%s [\n", ir, tag, default)
         for c, i in cases {
-            v, has := pg.consts[c.op]
+            v, has := graph_value(pg, c.op)
             if !has || v.is_float { return false }
             fmt.sbprintf(&sw, "    %s %d, label %%%s\n", ir, v.int, target(e, op, i))
         }
@@ -2931,8 +2931,8 @@ llvm_same_storage :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
         if ai == NO_NODE || bi == NO_NODE || pg.op[ai] != pg.op[bi] { return false }
         #partial switch pg.op[ai] {
         case .Const:
-            av, aok := pg.consts[ai]
-            bv, bok := pg.consts[bi]
+            av, aok := graph_value(pg, ai)
+            bv, bok := graph_value(pg, bi)
             return aok && bok && !av.is_float && !bv.is_float && av.int == bv.int
         case .Read:
             ap, bp := graph_operands(pg, ai)[0].op, graph_operands(pg, bi)[0].op
