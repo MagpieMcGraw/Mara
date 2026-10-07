@@ -1441,16 +1441,6 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
     if g.op[id] == .Const { graph_const_settles(b, n.op, g.type_[id]) }
     g.constant[n.op] = g.constant[id]
-    // (A widening decided when the code is settled: this one too, alike.)
-    if f := b.body; f != nil && g.op[id] == .Cast {
-        for w in f.widens {
-            if w.id != id { continue }
-            twin := w
-            twin.id, twin.v = n.op, ops[0]
-            append(&f.widens, twin)
-            break
-        }
-    }
     return Operand{n.op, p.out}
 }
 
@@ -1940,10 +1930,9 @@ Graph_Body :: struct {
     // Types are settled once the body is built: a `:=` binding's width is the one it
     // adopts from a later use, a param's default's once its fun is checked.
     // Synthetic locals settle as behind a pointer; constants whose width a
-    // binding settles are listed in g.settled; a widening is kept or dropped.
+    // binding settles are listed in g.settled.
     slots:      [dynamic]Node_Id,
     consts:     [dynamic]Node_Id,
-    widens:     [dynamic]Graph_Widen,
     checks:     [dynamic]Graph_Check,
     marks:      [dynamic]Graph_Arena,
     allocs:     [dynamic]Graph_Alloc,
@@ -1971,29 +1960,29 @@ Graph_Alloc :: struct {
     decl, var, alloc: Node_Id,
 }
 
-// A number widened to the type its use takes (graph_widen), decided when the
-// code is settled. It widens to `to` — settled, for a declaration's
-// (as its node is); or to the param `param` of `sig`; or to a binary
-// operation's working type.
+// Where a number is widened to the type its use takes (graph_build_widen):
+// to `to` — settled, for a declaration's (as its node is); or to the param
+// `param` of `sig`; or to a binary operation's working type.
 Graph_Widen :: struct {
-    id:        Node_Id,
-    v:         Operand,
     to:        Type,
     settle_to: bool,
     sig:       ^Type_Scope,
     param:     int,
     work:      Graph_Work,
     binary:    bool,
-    // A value at a param's type chosen after it is built (for
-    // a dispatch's or an operator's argument): a view may be taken — its
-    // place seen as a slice (slice; read left out), or a partial array's
-    // header as one (the cast) — else it widens. t is its type; read and
-    // slice are a place's.
-    views:     bool,
-    t:         Type,
-    read:      Node_Id,
-    slice:     Node_Id,
-    pending:   bool,   // `to` is set once known (an if expression's type)
+}
+
+// The type a widening takes its value to.
+@(private="file")
+graph_widen_to :: proc(w: Graph_Widen) -> Type {
+    to := w.to
+    if w.binary {
+        to = graph_work(w.work)
+    } else if w.sig != nil {
+        to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil
+    }
+    if w.settle_to { to = graph_settled(to) }
+    return to
 }
 
 // A fun's or struct's body begins: `id` its statement's, `span` its; an
@@ -2046,7 +2035,6 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
 graph_body_free :: proc(f: ^Graph_Body) {
     delete(f.slots)
     delete(f.consts)
-    delete(f.widens)
     delete(f.checks)
     delete(f.defs)
     for m in f.marks { delete(m.resets) }
@@ -2056,72 +2044,45 @@ graph_body_free :: proc(f: ^Graph_Body) {
     free(f)
 }
 
-// A value at a param's type known only later: a place is
-// read, cast (a header's view, a widening), and seen as a slice — whichever
-// its param takes kept; a value, cast. Its index in the body's list, to name
-// the param once it is known.
-graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read_span, span: Span, w: Graph_Widen) -> (Operand, int) {
-    w := w
-    w.views, w.t, w.read, w.slice = true, t, NO_NODE, NO_NODE
-    val := v
-    if place {
-        val = graph_read(b, v, t, read_span)   // (at the expression, as a value is read)
-        w.read = val.op
+// A value at the type a callee's param — or, `w.binary`, a binary
+// operation's working type — takes (an overloaded operator's, a dispatch's
+// or a generic's argument; an operation's side), `t` its own: an array's
+// place seen as a slice, a partial array's header as one, or a number
+// widened; else the value (a place, read).
+graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read_span, span: Span, w: Graph_Widen) -> Operand {
+    read :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, span: Span) -> Operand {
+        return graph_read(b, v, t, span) if place else v   // (at the expression, as a value is read)
     }
     // A cast only where one can be taken — a number's widening, a partial
     // array's header — and a slice only of a fixed array's place.
     _, _, num := numeric_info(graph_settled(t))
-    if !num && !graph_partial_of(t) || is_infer(t) && infer_cell_of(t) == nil { return val, -1 }
-    w.id, w.v = graph_op(b, .Cast, .Implied, span, nil, "", val), val
-    if _, from_array := distinct_base(t).(^Type_Fixed_Array); place && from_array { w.slice = graph_op(b, .Slice, .Implied, span, nil, "", v) }
-    append(&b.body.widens, w)
-    return {w.id, 0}, len(b.body.widens) - 1
+    if !num && !graph_partial_of(t) || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
+    to := graph_widen_to(w)
+    if !w.binary && to != nil {
+        _, to_ptr := distinct_base(to).(^Type_Ptr)
+        _, from_ptr := distinct_base(t).(^Type_Ptr)
+        _, to_slice := distinct_base(to).(^Type_Slice)
+        _, from_array := distinct_base(t).(^Type_Fixed_Array)
+        if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
+            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), read(b, v, place, t, read_span))   // (its header, as one)
+        }
+        if place && to_slice && from_array { return graph_op_value(b, .Slice, .Implied, span, to, "", v) }   // (its place, as a slice)
+    }
+    val := read(b, v, place, t, read_span)
+    if val.op == NO_NODE || !graph_widens(graph_settled(b.g.type_[val.op]), to) { return val }
+    return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), val)
 }
 
-// A number at the type its use takes, as graph_widen: an operation made
-// here, kept or dropped when its code is settled.
+// A number at the type its use takes, as graph_widen: `w` says which.
 graph_build_widen :: proc(b: ^Graph_Builder, v: Operand, span: Span, w: Graph_Widen) -> Operand {
     if v.op == NO_NODE || v.out != 0 { return v }
     // What is no number, or a literal's own (no binding types it), never widens.
     from := b.g.type_[v.op]
     if _, _, num := numeric_info(graph_settled(from)); !num { return v }
     if is_infer(from) && infer_cell_of(from) == nil { return v }
-    // Where no width is still open, decided now.
-    if !w.binary && !w.pending && !graph_open_width(from) {
-        to := w.to
-        if w.sig != nil { to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil }
-        if !graph_open_width(to) && !(w.sig != nil && graph_param_open(w.sig, w.param)) {
-            if w.settle_to { to = graph_settled(to) }
-            if !graph_widens(graph_settled(from), to) { return v }
-            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), v)
-        }
-    }
-    f := b.body
-    w := w
-    w.id, w.v, w.read, w.slice = graph_op(b, .Cast, .Implied, span, nil, "", v), v, NO_NODE, NO_NODE
-    append(&f.widens, w)
-    return {w.id, 0}
-}
-
-// Whether a type's width is a `:=` binding's still open (it adopts a later
-// use's).
-@(private="file")
-graph_open_width :: proc(t: Type) -> bool {
-    #partial switch v in t {
-    case Type_Infer_Int:   return v.cell != nil && is_infer(t)
-    case Type_Infer_Float: return v.cell != nil && is_infer(t)
-    case ^Type_Ptr:        return graph_open_width(v.elem)
-    }
-    return false
-}
-
-// Whether a callee's param may still change type: one with a default whose
-// width its body settles (solidify_param_defaults) and hasn't yet.
-@(private="file")
-graph_param_open :: proc(sig: ^Type_Scope, param: int) -> bool {
-    if param < 0 || param >= len(sig.params) { return false }
-    p := sig.params[param]
-    return field_has_default(p) && is_infer(p.type_)
+    to := graph_widen_to(w)
+    if !graph_widens(graph_settled(from), to) { return v }
+    return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), v)
 }
 
 // A block of code: opened before its statements are
@@ -3239,40 +3200,6 @@ graph_build_returned :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> Node_Id {
 @(private="file")
 graph_body_settle :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     g := b.g
-    for w in f.widens {
-        to := w.to
-        if w.binary {
-            to = graph_work(w.work)
-        } else if w.sig != nil {
-            to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil
-        }
-        if w.settle_to { to = graph_settled(to) }
-        if w.views {
-            _, to_ptr := distinct_base(to).(^Type_Ptr)
-            _, from_ptr := distinct_base(w.t).(^Type_Ptr)
-            _, to_slice := distinct_base(to).(^Type_Slice)
-            _, from_array := distinct_base(w.t).(^Type_Fixed_Array)
-            if to != nil && to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(w.t) {
-                g.type_[w.id], g.name[w.id] = to, type_name(to)   // its header, as one
-                if w.slice != NO_NODE { graph_drop(b, w.slice, NO_VALUE) }
-                continue
-            }
-            if w.slice != NO_NODE {
-                if to != nil && to_slice && from_array {
-                    g.type_[w.slice] = to   // its place, as a slice
-                    graph_drop(b, w.read, {w.slice, 0})
-                    graph_drop(b, w.id, {w.read, 0})
-                    continue
-                }
-            }
-        }
-        if w.slice != NO_NODE { graph_drop(b, w.slice, NO_VALUE) }   // (no view taken)
-        if graph_widens(graph_settled(g.type_[w.v.op]), to) {
-            g.type_[w.id], g.name[w.id] = to, type_name(to)
-        } else {
-            graph_drop(b, w.id, w.v)
-        }
-    }
     for id in f.consts {
         if is_infer(g.type_[id]) && !is_infer(graph_settled(g.type_[id])) { append(&g.settled, id) }
     }

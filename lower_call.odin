@@ -59,7 +59,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         return tc_node_type(k, def), lw_expr(k, def, .Either, .Implied)
     }
     vals := make([dynamic]Operand, context.temp_allocator)
-    widens := make([dynamic]int, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
     literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     for a, i in args {
@@ -67,7 +66,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
             def := ft.params[i].default_node
             t, r := default_at(k, def, w, tree_span(tr, a))
             append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
-            append(&widens, -1)
             append(&array_values, false)
             continue
         }
@@ -80,9 +78,7 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
            tr.tag[u] == .Slice && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
             lw_fail(k, a, "bytes as a dispatch's argument")
         }
-        v, wi := graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
-        append(&vals, v)
-        append(&widens, wi)
+        append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
         append(&array_values, is_array && !r.place)
         if tr.tag[u] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
     }
@@ -90,9 +86,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         def := ft.params[i].default_node
         t, r := default_at(k, def, w, span)
         append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
-    }
-    for wi, i in widens {
-        if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, i }
     }
     if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a dispatch's param") }
     for la in literals {

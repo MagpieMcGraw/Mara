@@ -862,10 +862,14 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     }
     if want == .Place { lw_fail(k, at, "a binary's place") }
     sides: [2]Operand
-    widen := [2]int{-1, -1}
     types: [2]Type
     arrays: [2]bool
     and_or := op == .And || op == .Or
+    // (Each side at the type it is taken at: an overload's param, else the
+    // operation's working type.)
+    callee: ^Type_Scope
+    if at != 0 { callee = tc_callee(k, at) }
+    work := Graph_Work{op, t, tc_node_type(k, left), tc_node_type(k, right)}
     sa: Graph_And
     if and_or { sa = graph_build_and(b, op == .And, w, span) }
     for side, i in ([2]Tree_Id{left, right}) {
@@ -888,22 +892,16 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         if tr.tag[tc_unparen(k, side)] == .Array { lw_fail(k, side, "an array literal as an operand") }
         _, is_array := distinct_base(st).(^Type_Fixed_Array)
         arrays[i] = is_array && !r.place
-        sides[i], widen[i] = graph_build_as(b, r.v, r.place, st, tree_span(tr, side), span, {})
+        as := Graph_Widen{work = work, binary = true}
+        if callee != nil { as = {sig = callee, param = i} if i < len(callee.params) else {} }
+        sides[i] = graph_build_as(b, r.v, r.place, st, tree_span(tr, side), span, as)
     }
-    lt, rt := types[0], types[1]
-    if callee := tc_callee(k, at); at != 0 && callee != nil {
+    if callee != nil {
         ret := fn_primary_return(callee)
-        for wi, i in widen {
-            if wi >= 0 && i < len(callee.params) { b.body.widens[wi].sig, b.body.widens[wi].param = callee, i }
-        }
         kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
         return {v = {graph_call_op(b, kind, w, span, callee, ret, sides[0], sides[1]), 0}, ok = true}
     }
     if and_or { return {v = graph_build_and_end(b, &sa, sides[1]), ok = true} }
-    work := Graph_Work{op, t, lt, rt}
-    for wi in widen {
-        if wi >= 0 { b.body.widens[wi].work, b.body.widens[wi].binary, b.body.widens[wi].views = work, true, false }
-    }
     kind: Op_Kind = .Compare if is_comparison_op(op) else .Arith
     word := graph_token_text(op)
     if wrapping { word = strings.concatenate({word, "%"}) }
@@ -952,7 +950,7 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     cond := lw_expr(k, cond_n, .Value, w)
     gi := graph_build_if_expr(b, cond.v, w, span)
     types: [2]Type
-    widen := [2]int{-1, -1}
+    t := tc_node_type(k, n)
     prefix: [2][2]Node_Id
     for branch, i in ([2]Tree_Id{then_n, else_n}) {
         if i == 1 { graph_build_if_expr_else(b, &gi) }
@@ -961,13 +959,10 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
         types[i] = tc_node_type(k, branch)
         if r.into { continue }
         if lw_builds_into(k, branch) || tc_byte_index(k, branch) { lw_fail(k, branch, "an if's branch built in place, or of bytes") }
-        count := len(b.body.widens)
-        val := graph_build_widen(b, lw_value(k, r, branch, types[i]), span, {pending = true})
-        if len(b.body.widens) > count { widen[i] = count }
+        val := graph_build_widen(b, lw_value(k, r, branch, types[i]), span, {to = t})
         graph_build_write_at(b, graph_var(b, "if", slot, nil, span), val, span)
     }
     graph_build_if_expr_end(b, &gi)
-    t := tc_node_type(k, n)
     for bt, i in types {
         if build_views(t, bt) { lw_fail(k, n, "an if's branch viewed") }
         if prefix[i] != {} {
@@ -976,7 +971,6 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
             graph_build_prefix_end(b, prefix[i], fills, t)
         }
     }
-    for wi in widen { if wi >= 0 { b.body.widens[wi].to = t } }
     lt := t
     if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
         lt = solidify_type(t)

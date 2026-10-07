@@ -234,8 +234,8 @@ lw_generic_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w
     b := k.gb
     span := tree_span(tr, n)
     if want == .Place { lw_fail(k, n, "a call's place") }
+    ft := tc_callee(k, n)
     vals := make([dynamic]Operand, context.temp_allocator)
-    widens := make([dynamic]int, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
     literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     for a, i in args {
@@ -244,17 +244,11 @@ lw_generic_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w
         t := lw_arg_type(k, a)
         _, is_array := distinct_base(t).(^Type_Fixed_Array)
         if u := tc_unparen(k, a); tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) { lw_fail(k, a, "bytes as a generic's argument") }
-        v, wi := graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
-        append(&vals, v)
-        append(&widens, wi)
+        append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
         append(&array_values, is_array && !r.place)
         if tr.tag[tc_unparen(k, a)] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
     }
-    ft := tc_callee(k, n)
     ret := fn_primary_return(ft)
-    for wi, j in widens {
-        if wi >= 0 { b.body.widens[wi].sig, b.body.widens[wi].param = ft, j }
-    }
     for la in literals {
         if la.arg >= len(ft.params) { continue }
         pt := ft.params[la.arg].type_
