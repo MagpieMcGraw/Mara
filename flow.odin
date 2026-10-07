@@ -333,11 +333,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, seen: ^map[Span]bool, walk
 
     // The reads, against the fixpoint, in the order the runs list them.
     context.allocator = kept
-    for r, ri in runs {
-        if !fl.entered[ri] { continue }
-        copy(state, fl.in_state[ri])
-        for op in graph_run(g, int(r)) { flow_init_op(&s, op, state, true) }
-    }
+    run_flow_replay(&fl, &s, proc(s: ^Init, ri: int, op: Node_Id, state: []u64) { flow_init_op(s, op, state, true) })
 }
 
 // Whether a variable of this type can be read unset: a pointer, a slice, or a

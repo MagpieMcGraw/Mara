@@ -65,14 +65,28 @@ Ask_Result :: struct {
 
 // --- type → display helpers ------------------------------------------------
 
-ask_label :: proc(t: Type) -> string {
+// What a named type — a fun or a struct, an enum, a union, a distinct type —
+// says of itself: its flat name, the name written, its module, where it is.
+// False for any other type.
+Ask_Named :: struct {
+    name, source_name, home_package: string,
+    span:                            Span,
+}
+
+ask_named :: proc(t: Type) -> (n: Ask_Named, ok: bool) {
     #partial switch v in t {
-    case ^Type_Scope:    return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
-    case ^Type_Enum:     return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
-    case ^Type_Union:    return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
-    case ^Type_Distinct: return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
+    case ^Type_Scope:    return {v.name, v.source_name, v.home_package, v.body_span}, true
+    case ^Type_Enum:     return {v.name, v.source_name, v.home_package, v.span}, true
+    case ^Type_Union:    return {v.name, v.source_name, v.home_package, v.span}, true
+    case ^Type_Distinct: return {v.name, v.source_name, v.home_package, v.span}, true
     }
-    return type_flat_name(t)
+    return
+}
+
+ask_label :: proc(t: Type) -> string {
+    n, named := ask_named(t)
+    if !named { return type_flat_name(t) }
+    return n.source_name if n.source_name != "" else ask_demangle(n.name, n.home_package)
 }
 
 // A flat name is `<flattened home_package>_<bare>` (the module path's dots become
@@ -124,38 +138,23 @@ ask_enum_sub :: proc(e: ^Type_Enum) -> string {
 }
 
 ask_span :: proc(t: Type) -> Span {
-    #partial switch v in t {
-    case ^Type_Scope:    return v.body_span
-    case ^Type_Enum:     return v.span
-    case ^Type_Union:    return v.span
-    case ^Type_Distinct: return v.span
-    }
-    return Span{}
+    n, _ := ask_named(t)
+    return n.span
 }
 
 // The owning module's name (`mara.math`, `camera`, ""). The map / module-surface
 // views group definitions by this.
 ask_home_package :: proc(t: Type) -> string {
-    #partial switch v in t {
-    case ^Type_Scope:    return v.home_package
-    case ^Type_Enum:     return v.home_package
-    case ^Type_Union:    return v.home_package
-    case ^Type_Distinct: return v.home_package
-    }
-    return ""
+    n, _ := ask_named(t)
+    return n.home_package
 }
 
 // The user-written name. Empty for monomorphized instances and other synthetic
 // types — the signal the module views use to list DECLARATIONS (the generic
 // `Program`), not instances (`mara_core_Program` minted under whoever uses it).
 ask_source_name :: proc(t: Type) -> string {
-    #partial switch v in t {
-    case ^Type_Scope:    return v.source_name
-    case ^Type_Enum:     return v.source_name
-    case ^Type_Union:    return v.source_name
-    case ^Type_Distinct: return v.source_name
-    }
-    return ""
+    n, _ := ask_named(t)
+    return n.source_name
 }
 
 // An FFI function — a `fun` inside a `foreign` block. These live ONLY in
@@ -547,13 +546,8 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int, 
 // source_name; only this reverse compare-against-a-resolved-target needs a
 // monomorphization-stable key.
 ask_type_name :: proc(t: Type) -> string {
-    #partial switch v in t {
-    case ^Type_Scope:    return v.name
-    case ^Type_Enum:     return v.name
-    case ^Type_Union:    return v.name
-    case ^Type_Distinct: return v.name
-    }
-    return ""
+    n, _ := ask_named(t)
+    return n.name
 }
 
 // One reverse reference: a container that points at some type, with the edge
@@ -1128,16 +1122,9 @@ ask_walk_calls :: proc(b: ^strings.Builder, cg: ^Call_Graph, adj: [][dynamic]int
 // that way reads as having no callers.
 render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int) {
     cg := &checked.call_graph
-    // Reverse adjacency (callee -> its callers), built once, then walked as a tree
-    // up toward the program's entry points.
-    rev := make([][dynamic]int, len(cg.nodes))
-    defer { for r in rev { delete(r) }; delete(rev) }
-    for callees, c in cg.out_edges {
-        for callee in callees { append(&rev[callee], c) }
-    }
-
+    // (Its callers, walked as a tree up toward the program's entry points.)
     nf, ok := cg.index_of[ft]
-    direct := ask_direct_call_count(rev, nf) if ok else 0
+    direct := ask_direct_call_count(cg.in_edges[:], nf) if ok else 0
     fmt.sbprintf(b, "\nbelow (calls)   (%s, %s)\n", ask_plural(direct, "direct caller"), ask_depth_label(depth))
     if direct == 0 {
         fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
@@ -1147,7 +1134,7 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
     defer delete(seen)
     seen[nf] = true
     budget := depth if depth >= 0 else (1 << 30)
-    ask_walk_calls(b, cg, rev, nf, 1, budget, &seen, false)
+    ask_walk_calls(b, cg, cg.in_edges[:], nf, 1, budget, &seen, false)
 }
 
 // callees of a function — `fun call above`, the mirror of render_fn_users, read off

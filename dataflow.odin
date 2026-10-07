@@ -5,9 +5,10 @@ import "core:fmt"
 // Forward dataflow over a fun's runs (graph_code_runs: its code's, then its
 // defer blocks'): each run's entry state is joined from every way into it —
 // the run before it (a `then` edge) and, for a defer block's first run, each
-// run-defer that runs it, at that point — and a loop goes round to its
-// fixpoint. The analyses on it (definite assignment, reaching definitions,
-// escape) differ in their state and in what an operation does to it.
+// run-defer that runs it, at that point — and the runs go round, in order,
+// until a pass changes nothing. The analyses on it (definite assignment,
+// reaching definitions, escape) differ in their state and in what an
+// operation does to it.
 
 Run_Flow :: struct($S: typeid) {
     g:        ^Program_Graph,
@@ -16,8 +17,7 @@ Run_Flow :: struct($S: typeid) {
     slots:    int,               // a state's length
     in_state: [][]S,             // each run's entry state, once entered
     entered:  []bool,
-    queued:   []bool,
-    todo:     [dynamic]int,
+    changed:  bool,              // an entry state grew this pass (or what a run reads elsewhere: the step says so)
     copy:     proc(dst, src: []S),
     join:     proc(dst, src: []S) -> bool,   // dst joined with src: whether it grew
 }
@@ -28,7 +28,6 @@ run_flow_make :: proc(g: ^Program_Graph, runs: []i32, slots: int,
     for r, i in runs { f.run_at[r] = i }
     f.in_state = make([][]S, len(runs))
     f.entered = make([]bool, len(runs))
-    f.queued = make([]bool, len(runs))
     return
 }
 
@@ -36,29 +35,20 @@ run_flow_free :: proc(f: ^Run_Flow($S)) {
     for s in f.in_state { delete(s) }
     delete(f.in_state)
     delete(f.entered)
-    delete(f.queued)
-    delete(f.todo)
     delete(f.run_at)
 }
 
-// Run ri goes again (a value it reads grew).
-run_flow_queue :: proc(f: ^Run_Flow($S), ri: int) {
-    if f.queued[ri] { return }
-    f.queued[ri] = true
-    append(&f.todo, ri)
-}
-
-// Run ri is entered with `state`: joined into its entry state, and queued
-// when that grew (or it is entered first).
+// Run ri is entered with `state`: joined into its entry state (made, the
+// first time) — a change when that grew.
 run_flow_enter :: proc(f: ^Run_Flow($S), ri: int, state: []S) {
     if !f.entered[ri] {
         f.entered[ri] = true
         f.in_state[ri] = make([]S, f.slots)
         f.copy(f.in_state[ri], state)
-        run_flow_queue(f, ri)
+        f.changed = true
         return
     }
-    if f.join(f.in_state[ri], state) { run_flow_queue(f, ri) }
+    if f.join(f.in_state[ri], state) { f.changed = true }
 }
 
 // The run a `then` edge (or a defer block's entry) lands in, by its place in
@@ -67,34 +57,47 @@ run_flow_at :: proc(f: ^Run_Flow($S), to: Node_Id) -> (int, bool) {
     return f.run_at[f.g.run_starts[to]]
 }
 
-// The fixpoint, from `entry` (the first run's state): `step` runs each
-// operation on the state — a run-defer once the defer block it runs is
-// entered with the state there.
+// The fixpoint, from `entry` (the first run's state): passes over the runs
+// entered, `step` running each operation on the state — a run-defer once the
+// defer block it runs is entered with the state there — until one changes
+// nothing.
 run_flow_solve :: proc(f: ^Run_Flow($S), entry: []S, data: $D, step: proc(data: D, ri: int, op: Node_Id, state: []S)) {
     if len(f.runs) == 0 { return }
     g := f.g
     run_flow_enter(f, 0, entry)
     state := make([]S, f.slots)
     defer delete(state)
-    visits := 0
-    for len(f.todo) > 0 {
-        ri := pop(&f.todo)
-        f.queued[ri] = false
-        visits += 1
-        if visits > 10_000_000 { fmt.panicf("dataflow over %d runs did not converge", len(f.runs)) }
-        f.copy(state, f.in_state[ri])
-        ops := graph_run(g, int(f.runs[ri]))
-        for op in ops {
-            if g.op[op] == .Run_Defer {
-                for in_ in graph_out(g, g.defer_of[op]) {
-                    if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
+    for passes := 0; f.changed; passes += 1 {
+        if passes > 100_000 { fmt.panicf("dataflow over %d runs did not converge", len(f.runs)) }
+        f.changed = false
+        for ri in 0 ..< len(f.runs) {
+            if !f.entered[ri] { continue }
+            f.copy(state, f.in_state[ri])
+            ops := graph_run(g, int(f.runs[ri]))
+            for op in ops {
+                if g.op[op] == .Run_Defer {
+                    for in_ in graph_out(g, g.defer_of[op]) {
+                        if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
+                    }
                 }
+                step(data, ri, op, state)
             }
-            step(data, ri, op, state)
+            for e in graph_out(g, ops[len(ops) - 1]) {
+                if si, ok := run_flow_at(f, e.to); ok { run_flow_enter(f, si, state) }
+            }
         }
-        for e in graph_out(g, ops[len(ops) - 1]) {
-            if si, ok := run_flow_at(f, e.to); ok { run_flow_enter(f, si, state) }
-        }
+    }
+}
+
+// Once the fixpoint is reached: each run entered, once, from its entry state
+// — the pass that reports.
+run_flow_replay :: proc(f: ^Run_Flow($S), data: $D, step: proc(data: D, ri: int, op: Node_Id, state: []S)) {
+    state := make([]S, f.slots)
+    defer delete(state)
+    for r, ri in f.runs {
+        if !f.entered[ri] { continue }
+        f.copy(state, f.in_state[ri])
+        for op in graph_run(f.g, int(r)) { step(data, ri, op, state) }
     }
 }
 

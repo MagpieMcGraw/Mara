@@ -586,18 +586,11 @@ du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_
     sites: [dynamic]Fn_Call_Site
     to, ok := cg.index_of[F]
     if !ok { return sites }
-    for callees, from in cg.out_edges {
-        if !slice.contains(callees[:], to) { continue }
+    for from in cg.in_edges[to] {
         caller := cg.nodes[from]
         g := checked.code.funs[caller] or_else nil
         if g == nil { continue }
-        calls: []Node_Id
-        if f := du_fn(checked, caller); f != nil {
-            calls = f.calls[:]
-        } else {
-            calls = du_code_calls(g)
-        }
-        for op in calls {
+        for op in du_code_calls(g) {
             if graph_called(g, op) == F { append(&sites, Fn_Call_Site{caller = caller, op = op, g = g}) }
         }
     }

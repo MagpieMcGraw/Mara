@@ -153,33 +153,15 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     }
     defs, ctrl := slice_run(checked, ft, checked.du.want_control)
     defer { delete(defs); delete(ctrl) }
-
-    params: [dynamic]^Def
-    stmts:  [dynamic]^Def
+    params, stmts := slice_split(defs[:])
     defer { delete(params); delete(stmts) }
-    for d in defs {
-        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
-    }
-    slice.sort_by(params[:], def_less)
-    slice.sort_by(stmts[:],  def_less)
-    slice.sort_by(ctrl[:],   guard_span_less)
+    slice.sort_by(ctrl[:], guard_span_less)
 
     b := strings.builder_make()
     fmt.sbprint(&b, "\nabove (flow) — contributors to the return value  (backward slice)\n")
-    if len(params) > 0 {
-        fmt.sbprintf(&b, "\n  parameters (%d)\n", len(params))
-        for d in params { fmt.sbprintf(&b, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
-    }
-    if len(stmts) > 0 {
-        fmt.sbprintf(&b, "\n  statements (%d)\n", len(stmts))
-        for d in stmts {
-            fmt.sbprintf(&b, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
-        }
-    }
-    if len(ctrl) > 0 {
-        fmt.sbprintf(&b, "\n  control — branches/loops guarding the above (%d)\n", len(ctrl))
-        for g in ctrl { fmt.sbprintf(&b, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
-    }
+    render_params(&b, params[:], false)
+    render_stmts(&b, "statements", stmts[:], false)
+    render_guards(&b, "control — branches/loops guarding the above", ctrl[:])
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(&b, "\n  (no variable contributors — the return value is a constant)\n")
     }
@@ -205,6 +187,52 @@ guard_word :: proc(k: Guard_Kind) -> string {
     case .Match: return "match"
     }
     return "?"
+}
+
+// A slice's definitions, as listed: its parameters' and its statements', each
+// in source order — less the variables `skip` (the ones sliced from).
+@(private="file")
+slice_split :: proc(defs: []^Def, skip: map[^Var_Binding]bool = nil) -> (params, stmts: [dynamic]^Def) {
+    for d in defs {
+        if d.binding != nil && skip[d.binding] { continue }
+        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
+    }
+    slice.sort_by(params[:], def_less)
+    slice.sort_by(stmts[:], def_less)
+    return
+}
+
+// A listing's sections: its parameters (`name  where`), its statements (`kind
+// name  where` — under `title`, or under what precedes them when there is
+// none), its guards. A row is `(in fn)` when the slice spans funs (`in_fn`);
+// a definition of `own` is its modification.
+@(private="file")
+render_params :: proc(bb: ^strings.Builder, defs: []^Def, in_fn: bool) {
+    if len(defs) == 0 { return }
+    fmt.sbprintf(bb, "\n  parameters (%d)\n", len(defs))
+    for d in defs { fmt.sbprintf(bb, "    %-14s %s%s\n", d.binding.name, ask_loc(d.span), render_in_fn(d, in_fn)) }
+}
+
+@(private="file")
+render_stmts :: proc(bb: ^strings.Builder, title: string, defs: []^Def, in_fn: bool, own: ^Var_Binding = nil) {
+    if len(defs) == 0 { return }
+    if title != "" { fmt.sbprintf(bb, "\n  %s (%d)\n", title, len(defs)) }
+    for d in defs {
+        word := "modify" if own != nil && d.binding == own else slice_def_word(d.kind)
+        fmt.sbprintf(bb, "    %-7s %-14s %s%s\n", word, d.binding.name, ask_loc(d.span), render_in_fn(d, in_fn))
+    }
+}
+
+@(private="file")
+render_guards :: proc(bb: ^strings.Builder, title: string, guards: []Guard) {
+    if len(guards) == 0 { return }
+    fmt.sbprintf(bb, "\n  %s (%d)\n", title, len(guards))
+    for g in guards { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
+}
+
+@(private="file")
+render_in_fn :: proc(d: ^Def, in_fn: bool) -> string {
+    return fmt.tprintf("  (in %s)", ask_label(d.binding.fn)) if in_fn else ""
 }
 
 // ---------------------------------------------------------------------------
@@ -278,13 +306,15 @@ slice_build_feeders :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> map[^
     return feeders
 }
 
+// What the definitions `from` reach forward (succ), themselves included.
 @(private="file")
-slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^Def]bool {
+slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, from: []^Def) -> map[^Def]bool {
     seen: map[^Def]bool
     stack: [dynamic]^Def
     defer delete(stack)
-    seen[seed] = true
-    append(&stack, seed)
+    for d in from {
+        if !seen[d] { seen[d] = true; append(&stack, d) }
+    }
     for len(stack) > 0 {
         d := pop(&stack)
         edges := succ[d]   // bind before ranging — a transient map-index lvalue faults on an absent key
@@ -376,18 +406,21 @@ arg_reads_targets :: proc(checked: ^Checked_Program, f: ^Du_Fn, arg: Operand, ta
 // different field — does not spuriously count.
 @(private="file")
 flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Def]bool {
-    targets: map[^Def]bool
     succ := slice_build_succ(checked, fn, true)   // a value "lands in" a call by data flow, not control
     defer slice_free_succ(&succ)
     f := du_fn(checked, fn)
-    if f == nil { return targets }
-    for d in f.defs {
-        if d.binding == nil || !seeds[d.binding] { continue }
-        r := slice_forward_reach(succ, d)   // includes the seed def d itself
-        for k in r { targets[k] = true }    // keep defs, do not collapse to bindings
-        delete(r)
-    }
-    return targets
+    if f == nil { return {} }
+    from := defs_of(f, seeds)
+    defer delete(from)
+    return slice_forward_reach(succ, from[:])   // defs (the seeds' included), not collapsed to bindings
+}
+
+// A fun's definitions of the variables `seeds`.
+@(private="file")
+defs_of :: proc(f: ^Du_Fn, seeds: map[^Var_Binding]bool) -> [dynamic]^Def {
+    out: [dynamic]^Def
+    for d in f.defs { if d.binding != nil && seeds[d.binding] { append(&out, d) } }
+    return out
 }
 
 // Collect the callee-param landings out of `fn`: for every call whose argument
@@ -717,12 +750,10 @@ render_var_types_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     defer slice_free_succ(&data_succ)
     defs := var_defs(checked, b)
     defer delete(defs)
-    for d in defs {
-        r := slice_forward_reach(data_succ, d)
-        for k in r {
-            if k.binding != nil && k.binding != b && k.kind != .Param { consumers[k.binding] = true }
-        }
-        delete(r)
+    reached := slice_forward_reach(data_succ, defs[:])
+    defer delete(reached)
+    for k in reached {
+        if k.binding != nil && k.binding != b && k.kind != .Param { consumers[k.binding] = true }
     }
 
     // Interprocedural: the callee parameters the value lands in, across call hops.
@@ -914,20 +945,10 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     defer slice_free_succ(&data_succ)
     feeders := slice_build_feeders(checked, b.fn)
     defer delete(feeders)
-
-    reached: map[^Def]bool
+    from := defs[:]
+    if root_def != nil { from = []^Def{root_def} }
+    reached := slice_forward_reach(data_succ, from)
     defer delete(reached)
-    if root_def != nil {
-        r := slice_forward_reach(data_succ, root_def)
-        for k in r { reached[k] = true }
-        delete(r)
-    } else {
-        for d in defs {
-            r := slice_forward_reach(data_succ, d)
-            for k in r { reached[k] = true }
-            delete(r)
-        }
-    }
 
     stmts: [dynamic]^Def
     defer delete(stmts)
@@ -946,19 +967,8 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     if checked.du.want_control {
         full_succ := slice_build_succ(checked, b.fn, false)
         defer slice_free_succ(&full_succ)
-        full: map[^Def]bool
+        full := slice_forward_reach(full_succ, from)
         defer delete(full)
-        if root_def != nil {
-            r := slice_forward_reach(full_succ, root_def)
-            for k in r { full[k] = true }
-            delete(r)
-        } else {
-            for d in defs {
-                r := slice_forward_reach(full_succ, d)
-                for k in r { full[k] = true }
-                delete(r)
-            }
-        }
         for d in full {
             if reached[d] { continue }
             if d == root || d.kind == .Param { continue }
@@ -975,19 +985,9 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
 
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
     fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), hop1_calls))
-    for d in stmts {
-        word := slice_def_word(d.kind)
-        if d.binding == b { word = "modify" }   // the variable's own evolution, not a downstream effect
-        fmt.sbprintf(bb, "    %-7s %-14s %s\n", word, d.binding.name, ask_loc(d.span))
-    }
-    if len(ctrl_stmts) > 0 {
-        fmt.sbprintf(bb, "\n  control — runs inside branches/loops it drives (%d)\n", len(ctrl_stmts))
-        for d in ctrl_stmts {
-            word := slice_def_word(d.kind)
-            if d.binding == b { word = "modify" }
-            fmt.sbprintf(bb, "    %-7s %-14s %s\n", word, d.binding.name, ask_loc(d.span))
-        }
-    }
+    // (Its own definitions: its value evolving, not a downstream effect.)
+    render_stmts(bb, "", stmts[:], false, own = b)
+    render_stmts(bb, "control — runs inside branches/loops it drives", ctrl_stmts[:], false, own = b)
     render_landings(bb, landings[:], unfollowed)
 }
 
@@ -1035,16 +1035,8 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
     for d in checked.du.defs { if d.binding != nil && seeds[d.binding] { slice_add_def(&s, d) } }
     slice_close(&s)
-
-    params: [dynamic]^Def
-    stmts:  [dynamic]^Def
+    params, stmts := slice_split(s.result[:], skip = seeds)   // (the T-typed values themselves aren't feeders)
     defer { delete(params); delete(stmts) }
-    for d in s.result {
-        if d.binding != nil && seeds[d.binding] { continue }   // the T-typed values themselves aren't feeders
-        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
-    }
-    slice.sort_by(params[:], def_less)
-    slice.sort_by(stmts[:],  def_less)
     slice.sort_by(s.ctrl[:], guard_span_less)
 
     fmt.sbprintf(bb, "\nabove (flow) — what feeds values of type %s  (%s, backward slice)\n", label, ask_plural(len(seeds), "value"))
@@ -1052,18 +1044,9 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         fmt.sbprintf(bb, "  (no variables or parameters of type %s)\n", label)
         return
     }
-    if len(params) > 0 {
-        fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
-        for d in params { fmt.sbprintf(bb, "    %-14s %s  (in %s)\n", d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
-    if len(stmts) > 0 {
-        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
-        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
-    if len(s.ctrl) > 0 {
-        fmt.sbprintf(bb, "\n  control (%d)\n", len(s.ctrl))
-        for g in s.ctrl { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
-    }
+    render_params(bb, params[:], true)
+    render_stmts(bb, "statements", stmts[:], true)
+    render_guards(bb, "control", s.ctrl[:])
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(bb, "\n  (these values are constants or external inputs — nothing feeds them)\n")
     }
@@ -1082,29 +1065,22 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         G := b.fn
         if done_fns[G] { continue }
         done_fns[G] = true
-        f := du_fn(checked, G)
+        from := defs_of(du_fn(checked, G), seeds)
         data_succ := slice_build_succ(checked, G, true)
         feeders := slice_build_feeders(checked, G)
-        for d in f.defs {
-            if d.binding != nil && seeds[d.binding] {
-                r := slice_forward_reach(data_succ, d)
-                for k in r { reached[k] = true; if feeders[k] { ret_fns[G] = true } }
-                delete(r)
-            }
-        }
+        r := slice_forward_reach(data_succ, from[:])
+        for k in r { reached[k] = true; if feeders[k] { ret_fns[G] = true } }
+        delete(r)
         slice_free_succ(&data_succ)
         if checked.du.want_control {
             full_succ := slice_build_succ(checked, G, false)
-            for d in f.defs {
-                if d.binding != nil && seeds[d.binding] {
-                    r := slice_forward_reach(full_succ, d)
-                    for k in r { ctrl[k] = true }
-                    delete(r)
-                }
-            }
+            rf := slice_forward_reach(full_succ, from[:])
+            for k in rf { ctrl[k] = true }
+            delete(rf)
             slice_free_succ(&full_succ)
         }
         delete(feeders)
+        delete(from)
     }
 
     stmts: [dynamic]^Def
@@ -1135,14 +1111,8 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         fmt.sbprintf(bb, "  (no variables or parameters of type %s)\n", label)
         return
     }
-    if len(stmts) > 0 {
-        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
-        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
-    if len(ctrl_stmts) > 0 {
-        fmt.sbprintf(bb, "\n  control — run inside branches/loops these values drive (%d)\n", len(ctrl_stmts))
-        for d in ctrl_stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
+    render_stmts(bb, "statements", stmts[:], true)
+    render_stmts(bb, "control — run inside branches/loops these values drive", ctrl_stmts[:], true)
     if len(ret_fns) > 0 {
         fmt.sbprintf(bb, "\n  reaches the return of %s\n", ask_plural(len(ret_fns), "function"))
     }
@@ -1175,30 +1145,14 @@ render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
         for arg in du_call_args(site.g, site.op) { slice_value(&s, cf, arg) }
     }
     slice_close(&s)
-
-    params: [dynamic]^Def
-    stmts:  [dynamic]^Def
+    params, stmts := slice_split(s.result[:])
     defer { delete(params); delete(stmts) }
-    for d in s.result {
-        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
-    }
-    slice.sort_by(params[:], def_less)
-    slice.sort_by(stmts[:],  def_less)
     slice.sort_by(s.ctrl[:], guard_span_less)
 
     fmt.sbprintf(bb, "\nabove (flow) — what feeds the arguments at its %s  (backward slice)\n", ask_plural(len(sites), "call site"))
-    if len(params) > 0 {
-        fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
-        for d in params { fmt.sbprintf(bb, "    %-14s %s  (in %s)\n", d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
-    if len(stmts) > 0 {
-        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
-        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
-    if len(s.ctrl) > 0 {
-        fmt.sbprintf(bb, "\n  control (%d)\n", len(s.ctrl))
-        for g in s.ctrl { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
-    }
+    render_params(bb, params[:], true)
+    render_stmts(bb, "statements", stmts[:], true)
+    render_guards(bb, "control", s.ctrl[:])
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(bb, "\n  (arguments are constants or literals — nothing feeds them)\n")
     }
@@ -1231,13 +1185,11 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
         if done_fns[G] { continue }
         done_fns[G] = true
         succ := slice_build_succ(checked, G, true)   // where results flow = data flow
-        for rd2 in result_defs {
-            if rd2.binding.fn == G {
-                r := slice_forward_reach(succ, rd2)
-                for k in r { reached[k] = true }
-                delete(r)
-            }
-        }
+        from: [dynamic]^Def
+        for rd2 in result_defs { if rd2.binding.fn == G { append(&from, rd2) } }
+        r := slice_forward_reach(succ, from[:])
+        for k in r { reached[k] = true }
+        delete(r); delete(from)
         slice_free_succ(&succ)
     }
 
@@ -1250,10 +1202,7 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     slice.sort_by(stmts[:], def_less)
 
     fmt.sbprintf(bb, "\nbelow (flow) — where its results flow, across %s  (forward slice)\n", ask_plural(len(sites), "call site"))
-    if len(stmts) > 0 {
-        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
-        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
-    }
+    render_stmts(bb, "statements", stmts[:], true)
     if inline > 0 {
         fmt.sbprintf(bb, "\n  %s use the result inline (flows into the enclosing expression — not traced)\n", ask_plural(inline, "call"))
     }

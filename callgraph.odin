@@ -29,6 +29,7 @@ Call_Graph :: struct {
     nodes:     [dynamic]^Type_Scope,   // node id -> the callable scope
     index_of:  map[^Type_Scope]int,    // scope -> node id
     out_edges: [dynamic][dynamic]int,  // node id -> callee node ids
+    in_edges:  [dynamic][dynamic]int,  // node id -> caller node ids (each ascending)
     edge_line: map[Call_Edge]int,      // (caller,callee) scope edge -> first call-site line (call order)
 
     // Strongly-connected components. scc_of[node] = its component id; sccs[id] =
@@ -118,6 +119,8 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
             cg_node(&g, cs)
         }
     }
+    resize(&g.in_edges, len(g.nodes))
+    for callees, from in g.out_edges { for to in callees { append(&g.in_edges[to], from) } }
     cg_compute_sccs(&g)
 
     cg_compute_purity(&g, effectful)

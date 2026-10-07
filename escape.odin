@@ -136,10 +136,8 @@ Esc :: struct {
 
     // The fixpoint.
     flow:        Run_Flow(Esc_Roots),
-    uses:        map[Node_Id][dynamic]int,    // an operation → the other runs using its value
-    used_across: []bool,                      // ... whether it has any, by id
+    used_across: []bool,                      // an operation another run uses the value of, by id
     defer_exit:  map[Node_Id][]Esc_Roots,     // a defer block → the state it leaves
-    defer_users: map[Node_Id][dynamic]int,    // ... and the runs that run it
 
     // The last pass, over the fixpoint: summary and diagnostics.
     final:  bool,
@@ -239,12 +237,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     esc_fixpoint(&e)
 
     e.final = true
-    state := make([]Esc_Roots, e.slots)
-    for r, ri in e.runs {
-        if !e.flow.entered[ri] { continue }
-        esc_state_copy(state, e.flow.in_state[ri])
-        for op in graph_run(g, int(r)) { esc_op(&e, ri, op, state) }
-    }
+    run_flow_replay(&e.flow, &e, esc_op)
     if report { append(&g_esc.diags, ..e.diags[:]) }
     return e.sum, true
 }
@@ -288,12 +281,7 @@ esc_scan :: proc(e: ^Esc) {
             ops := graph_operands(g, op)
             for o in ops {
                 if o.op == NO_NODE { continue }
-                if from := e.run_of[o.op]; from != i32(ri) + 1 {
-                    e.used_across[o.op] = true
-                    if o.op not_in e.uses { e.uses[o.op] = {} }
-                    list := &e.uses[o.op]
-                    if !slice.contains(list[:], ri) { append(list, ri) }
-                }
+                if from := e.run_of[o.op]; from != i32(ri) + 1 { e.used_across[o.op] = true }
             }
             #partial switch g.op[op] {
             case .Write:
@@ -334,14 +322,12 @@ esc_fixpoint :: proc(e: ^Esc) {
 }
 
 // The end of a defer's block: what it leaves joins back in where it ran
-// (esc_run_defer), and those runs go again when that grows.
+// (esc_run_defer) — a change when that grows.
 @(private="file")
 esc_defer_end :: proc(e: ^Esc, ret: Node_Id, state: []Esc_Roots) {
     d := esc_defer_block(e.g, ret)
     if d not_in e.defer_exit { e.defer_exit[d] = make([]Esc_Roots, e.slots) }
-    if esc_merge(e.defer_exit[d], state) {
-        for u in e.defer_users[d] { run_flow_queue(&e.flow, u) }
-    }
+    if esc_merge(e.defer_exit[d], state) { e.flow.changed = true }
 }
 
 // The defer block whose code an operation ends: the scope its code is entered from.
@@ -354,16 +340,10 @@ esc_defer_block :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
 }
 
 // A run-defer (its block entered with this state: run_flow_solve): what the
-// block leaves joins in, once known; this run goes again when it grows.
+// block leaves joins in, once known.
 @(private="file")
-esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
-    d := e.g.defer_of[op]
-    if !e.final {
-        if d not_in e.defer_users { e.defer_users[d] = {} }
-        users := &e.defer_users[d]
-        if !slice.contains(users[:], ri) { append(users, ri) }
-    }
-    if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }
+esc_run_defer :: proc(e: ^Esc, op: Node_Id, state: []Esc_Roots) {
+    if exit, ok := e.defer_exit[e.g.defer_of[op]]; ok { esc_merge(state, exit) }
 }
 
 // --- operations ----------------------------------------------------------------
@@ -373,7 +353,7 @@ esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
 esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     g := e.g
     ops := graph_operands(g, op)
-    // A value another run uses: when it grows, that run goes again.
+    // A value another run uses: when it grows, a change.
     watched := !e.final && e.used_across[op]
     old: Esc_Roots
     if watched { esc_join(&old, e.memo[op]) }
@@ -456,11 +436,9 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         if e.final && ri < e.main { esc_return_op(e, ri, op, ops, state) }
         if !e.final && ri >= e.main { esc_defer_end(e, op, state) }
     case .Run_Defer:
-        esc_run_defer(e, ri, op, state)
+        esc_run_defer(e, op, state)
     }
-    if watched && !esc_equal(old, r^) {
-        for u in e.uses[op] { run_flow_queue(&e.flow, u) }
-    }
+    if watched && !esc_equal(old, r^) { e.flow.changed = true }
 }
 
 // A variable's storage. A view names the storage it views; `Self` in a
