@@ -381,7 +381,7 @@ that would lower a function again for each reader and faster than doing so. The 
       code settled its types; both are done as it is built.
   - A `:=` binding's adopted width, a param's type, a synthetic local's (as behind a
     pointer): each type is settled where it is written — made, or given later
-    (`graph_type`: a local typed, a literal retyped, a view). A constant a binding's width
+    (`graph_retype`: a local typed, a literal retyped, a view). A constant a binding's width
     settles is listed when it is made.
   - A literal's type its use's: the walk back from a code's end (`graph_settle_literals`)
     is each operation, as it is built, typing the operands of its own a use decides
@@ -409,3 +409,25 @@ that would lower a function again for each reader and faster than doing so. The 
     ~0.1 s faster. What the code takes in memory is now what would make it cheaper.
   - What remains once a code is built: its default widths, the compiler's globals placed,
     its columns trimmed, and the three indexes.
+- [x] Memory per node (2326f3c, 6e77a2d, 11ff19b, 4489157, 5be1d8b, 2026-10-07). test_1M's
+      codes took 584 MB, ~108 bytes for each of its 5.7M nodes; they take 301 MB, ~56.
+  - A Type is 16 bytes, not 24: Type_Numeric's kind is a u8 enum, its width an i32, and
+    every variant fits in 8 (541 MB; the checker's annotations and tables are smaller
+    alike, and checking ~0.25 s faster).
+  - What few nodes have is a map of the code's, not a column of every node's: a call's
+    callee (1% of the nodes, 8 bytes), a use's named constant (24 nodes), a subtree's end
+    past itself (a block's, 1.3%; the code's own is `Program_Graph.end`; both read with
+    `graph_last`) (432 MB).
+  - A node's name and its type are interned: the column holds an id, 4 bytes, into the
+    program's names or types (`Program_Code.names`, `.types`), each held once — 13K names,
+    94.5K types — read with `graph_name`, `graph_type` (367 MB, 301 MB). A variable takes
+    its declaration's name id unhashed, a node the last node's type id unlooked; the rest
+    are hashed. What the builder asks of a type (open, settled) is asked once and kept by
+    its id. `graph_type`, which set a type, is `graph_retype`.
+  - Gates: unchanged at each step (graph, IR with test_1M, goldens, `annotcheck.sh`).
+  - Time (test_1M): unchanged, but lowering ~0.18 s slower in a debug build (~4%) for the
+    types: reading one is an index more (~20 ms in an optimized build).
+  - Left as they are: a node's origin (12 bytes; 3.5M distinct spans, interning wouldn't
+    pay), its declaring token and what it refers to (set on 11% and 27% of the nodes; a
+    map saves little). Per node now: the origin, seven columns of 4 bytes, three of 1,
+    and the operands, runs and statements (~12 bytes).
