@@ -307,6 +307,7 @@ Graph_Builder :: struct {
     outside:    [2]Node_Id,
     globals:    [2]Type,
     self:       Node_Id,         // what `Self` names in a struct's code
+    main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
     // Each module's statements, in written order: where the code each
     // defines goes (graph_place_codes).
     module_stmts: map[Syntax_Id]int,
@@ -420,7 +421,12 @@ Run :: struct {
 Code_Scope :: struct {
     block:  Node_Id,
     defers: [dynamic]Node_Id,   // defer blocks registered so far, in order
-    tentative: int,             // its arena mark and resets, decided later (b.body.marks); -1: none
+    // A local of its own lives on the arena (lowering says so, when it opens
+    // the scope: graph_build_decl checks), so it marks the arena where it
+    // begins and resets it at each exit (`arena`; not main's body).
+    holds:  bool,
+    arena:  bool,
+    held:   int,                // (how many of its locals do)
 }
 
 @(private="file")
@@ -444,6 +450,7 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     b.checked = checked
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
+    b.main = checked.functions["main"] or_else nil
     b.outside = {NO_NODE, NO_NODE}
     for name, i in ([]string{"this_program", "context"}) {
         if root := checked.table.root_env; root != nil { b.globals[i], _ = scope_defines(root, name) }
@@ -1084,7 +1091,6 @@ graph_widen :: proc(b: ^Graph_Builder, v: Operand, to: Type, span: Span) -> Oper
 
 // Whether a value of type `from` widens to `to`: both numbers of one kind,
 // `to` the wider.
-@(private="file")
 graph_widens :: proc(from, to: Type) -> bool {
     if from == nil || to == nil || is_infer(from) || is_infer(to) { return false }
     fb, fk, fok := numeric_info(from)
@@ -1196,27 +1202,31 @@ graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     graph_jump(b, l.done if is_break else l.cont, .Explicit, span)
 }
 
-// Enter a scope: an arena mark when it holds a big value. (A struct's
-// declarations are its fields: in Self, not on the arena.) Nor main's body:
-// its scope ends with the program, which made the arena in its setup.
+// Enter a scope: an arena mark when a local of its own lives on the arena
+// (`holds`, as lowering finds it). (A struct's declarations are its fields:
+// in Self, not on the arena.) Nor main's body: its scope ends with the
+// program, which made the arena in its setup.
 @(private="file")
-graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, span: Span) {
-    // The checker opens a scope before its declarations are typed: its mark,
-    // and the reset at each of its exits, are made and decided when the
-    // code is settled (graph_body_settle).
-    if b.arena && b.g.kind[block] != .Struct {
-        append(&b.body.marks, Graph_Arena{mark = graph_op(b, .Arena_Mark, .Synthetic, span), block = block})
-        append(&b.code.scopes, Code_Scope{block = block, tentative = len(b.body.marks) - 1})
-        return
-    }
-    append(&b.code.scopes, Code_Scope{block = block, tentative = -1})
+graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, span: Span, holds: bool) {
+    s := Code_Scope{block = block, holds = holds && b.arena && b.g.kind[block] != .Struct}
+    s.arena = s.holds && (b.main == nil || b.g.type_[block] != Type(b.main))
+    if s.arena { graph_op(b, .Arena_Mark, .Synthetic, span) }
+    append(&b.code.scopes, s)
 }
 
 // Leave a scope at its end: its defers and reset, if the end is reached.
 @(private="file")
 graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
     if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span) }
+    graph_scope_pop(b)
+}
+
+// (A scope said to hold a local on the arena that held none: lowering's
+// reading of its declarations is wrong — the mark it made is no one's.)
+@(private="file")
+graph_scope_pop :: proc(b: ^Graph_Builder) {
     s := pop(&b.code.scopes)
+    if s.holds && s.held == 0 { graph_fatal(b.g.origin[s.block], "a scope said to hold a local on the arena holds none") }
     delete(s.defers)
 }
 
@@ -1230,7 +1240,7 @@ graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
             op := graph_op(b, .Run_Defer, .Synthetic, span)
             b.g.defer_of[op] = s.defers[j]
         }
-        if s.tentative >= 0 { append(&b.body.marks[s.tentative].resets, graph_op(b, .Arena_Reset, .Synthetic, span)) }
+        if s.arena { graph_op(b, .Arena_Reset, .Synthetic, span) }
     }
 }
 
@@ -1261,8 +1271,7 @@ graph_code_finish :: proc(b: ^Graph_Builder, span: Span) {
         graph_run_close(b)
     }
     for len(b.code.scopes) > 0 {
-        s := pop(&b.code.scopes)
-        delete(s.defers)
+        graph_scope_pop(b)
     }
 }
 
@@ -1933,10 +1942,10 @@ Graph_Body :: struct {
     // binding settles are listed in g.settled.
     slots:      [dynamic]Node_Id,
     consts:     [dynamic]Node_Id,
-    checks:     [dynamic]Graph_Check,
-    marks:      [dynamic]Graph_Arena,
-    allocs:     [dynamic]Graph_Alloc,
-    returns:    [dynamic]Node_Id,        // its returns: what the local every one returns is
+    // Whether each local that could live on the arena does, by its type
+    // when declared (graph_build_decl); the local every return returns.
+    arena_types: map[Node_Id]bool,
+    returned:   Token_Id,
     // A struct's: each field declaration's lowered assignment, and its field.
     fields:     map[Syntax_Id]Node_Id,
     field_inits: map[Syntax_Id]Span,   // (where its initializer is written)
@@ -1945,20 +1954,6 @@ Graph_Body :: struct {
     failed:     string,
 }
 
-// A scope's arena mark and the resets at its exits, made where the builder
-// makes them, kept when its declarations turn out to hold a value on the
-// arena (graph_scope_open).
-Graph_Arena :: struct {
-    mark:   Node_Id,
-    resets: [dynamic]Node_Id,
-    block:  Node_Id,
-}
-
-// A local's space on the arena, made before its value: kept
-// when its type turns out to route there.
-Graph_Alloc :: struct {
-    decl, var, alloc: Node_Id,
-}
 
 // Where a number is widened to the type its use takes (graph_build_widen):
 // to `to` — settled, for a declaration's (as its node is); or to the param
@@ -1987,8 +1982,11 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 
 // A fun's or struct's body begins: `id` its statement's, `span` its; an
 // intrinsic's has no code of its own. Its root's statement is its
-// definition's, made where it is put in place (graph_place_scope).
-graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written) -> ^Graph_Body {
+// definition's, made where it is put in place (graph_place_scope). As
+// lowering finds them: the local every return returns (its token), and
+// whether a local of the body's own lives on the arena.
+graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
+                         returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
     b.scope_of[id] = ts
     f := new(Graph_Body)
@@ -1997,7 +1995,8 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
     f.stmt, b.stmt = b.stmt, 0
     append(&b.g.stmts, Graph_Stmt{})
     f.root = graph_scope_root(b, ts, span, written)
-    f.contents = graph_contents_begin(b, ts, span, intrinsic, f.root)
+    f.returned = returned
+    f.contents = graph_contents_begin(b, ts, span, intrinsic, f.root, holds)
     return f
 }
 
@@ -2035,12 +2034,8 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
 graph_body_free :: proc(f: ^Graph_Body) {
     delete(f.slots)
     delete(f.consts)
-    delete(f.checks)
     delete(f.defs)
-    for m in f.marks { delete(m.resets) }
-    delete(f.marks)
-    delete(f.allocs)
-    delete(f.returns)
+    delete(f.arena_types)
     free(f)
 }
 
@@ -2092,10 +2087,10 @@ Graph_Block :: struct {
     span:     Span,
 }
 
-graph_build_block_open :: proc(b: ^Graph_Builder, label: string, span: Span) -> Graph_Block {
+graph_build_block_open :: proc(b: ^Graph_Builder, label: string, span: Span, holds: bool) -> Graph_Block {
     k := Graph_Block{n = graph_node(b, .Block, .Explicit, b.code.block, label, nil, span), outer = b.code.block, span = span}
     b.code.block = k.n
-    graph_scope_open(b, k.n, span)
+    graph_scope_open(b, k.n, span, holds)
     return k
 }
 
@@ -2114,22 +2109,22 @@ Graph_If :: struct {
     span:                 Span,
 }
 
-graph_build_if :: proc(b: ^Graph_Builder, cond: Operand, span: Span, has_else: bool) -> Graph_If {
+graph_build_if :: proc(b: ^Graph_Builder, cond: Operand, span: Span, has_else, holds: bool) -> Graph_If {
     fi := Graph_If{has_else = has_else, span = span}
     fi.then_r, fi.join = graph_run_new(b), graph_run_new(b)
     fi.else_r = graph_run_new(b) if fi.has_else else fi.join
     graph_branch(b, cond, fi.then_r, fi.else_r, .Explicit, span)
     b.code.run = fi.then_r
-    fi.block = graph_build_block_open(b, "if", span)
+    fi.block = graph_build_block_open(b, "if", span, holds)
     return fi
 }
 
-graph_build_else :: proc(b: ^Graph_Builder, fi: ^Graph_If, span: Span) {
+graph_build_else :: proc(b: ^Graph_Builder, fi: ^Graph_If, span: Span, holds: bool) {
     graph_build_block_close(b, fi.block)
     if graph_reachable(b) { graph_jump(b, fi.join, .Synthetic, fi.span) }
     if fi.has_else {
         b.code.run = fi.else_r
-        fi.block = graph_build_block_open(b, "else", span)
+        fi.block = graph_build_block_open(b, "else", span, holds)
     }
 }
 
@@ -2149,7 +2144,7 @@ graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     append(&all, ..vals)
     graph_implied_oks(b, &all, rts, span)
     graph_exit_scopes(b, 0, span)
-    append(&b.body.returns, graph_op(b, .Return, .Explicit, span, nil, "", ..all[:]))
+    graph_op(b, .Return, .Explicit, span, nil, "", ..all[:])
     graph_run_close(b)
 }
 
@@ -2192,15 +2187,21 @@ graph_build_program_field :: proc(b: ^Graph_Builder, name: string, tok: Token_Id
 
 
 // A local's declaration (graph_decl), before its value: typed once it is
-// checked (graph_build_typed).
-graph_build_decl :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: Span, bound := false) -> Node_Id {
+// built (graph_build_typed) as `t`, the type lowering knows it takes. A big
+// value lives on the arena: its space, taken before its value — but the
+// local every return returns, which is built in its caller's slot. (A `let`
+// binds memory it takes.)
+graph_build_decl :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: Span, t: Type, bound := false) -> Node_Id {
     d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, tok)
-    // A big value lives on the arena: its space, taken before
-    // its value — kept once its type says so. (A `let` binds memory it takes.)
-    if b.arena && !bound {
-        v := graph_var(b, name, d, nil, span)
-        a := graph_op(b, .Arena_Alloc, .Synthetic, span, nil, "", v)
-        append(&b.body.allocs, Graph_Alloc{decl = d, var = v.op, alloc = a})
+    if !b.arena || bound { return d }
+    routes := t != nil && routes_to_arena(t)
+    b.body.arena_types[d] = routes   // (checked against the type it is given: graph_code_close)
+    if !routes || b.body.returned != 0 && tok == b.body.returned { return d }
+    graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, name, d, t, span))
+    if n := len(b.code.scopes); n > 0 && b.code.scopes[n - 1].block == b.code.block {
+        s := &b.code.scopes[n - 1]
+        if !s.holds { graph_fatal(span, "'%s' lives on the arena in a scope said to hold no local there", name) }
+        s.held += 1
     }
     return d
 }
@@ -2647,6 +2648,7 @@ Graph_Arm :: struct {
     payload:  Type,
     is_else:  bool,
     is_union: bool,
+    arena:    bool,   // a local of its own lives on the arena (graph_scope_open)
 }
 
 // An arm, resolved: its tag, its run and block, and — a union's arm that
@@ -2661,7 +2663,7 @@ graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: i
     label := "else" if ga.is_else else fmt.aprintf("arm %s", ga.variant)
     k := Graph_Block{n = graph_node(b, .Block, .Explicit, b.code.block, label, nil, span), outer = b.code.block, span = span}
     b.code.block = k.n
-    graph_scope_open(b, k.n, span)
+    graph_scope_open(b, k.n, span, ga.arena)
     if ga.is_union && ga.bound != "" {
         if ga.payload == nil { graph_fatal(span, "match arm '%s' has no resolved variant", ga.variant) }
         bound := graph_node(b, .Local, .Explicit, k.n, ga.bound, ga.payload, span)
@@ -2691,10 +2693,10 @@ Graph_Defer :: struct {
     span:  Span,
 }
 
-graph_build_defer :: proc(b: ^Graph_Builder, span: Span) -> Graph_Defer {
+graph_build_defer :: proc(b: ^Graph_Builder, span: Span, holds: bool) -> Graph_Defer {
     gd := Graph_Defer{d = graph_node(b, .Block, .Explicit, b.code.block, "defer", nil, span), span = span}
     gd.saved = graph_code_begin(b, gd.d)
-    graph_scope_open(b, gd.d, span)
+    graph_scope_open(b, gd.d, span, holds)
     return gd
 }
 
@@ -2782,6 +2784,7 @@ Graph_Loop :: struct {
     has_cond:    bool,   // `for cond {}`, a C-style loop
     has_step:    bool,   // a C-style loop's
     end_literal: bool,   // a range whose end is a literal
+    body_arena:  bool,   // a local of its body's lives on the arena (graph_scope_open)
 }
 
 // A loop, built around its checks: its block, the loop's
@@ -2819,27 +2822,25 @@ graph_build_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     graph_declare(b, fl.counter, fl.var_tok)
 }
 
-// A range's bound at the counter's type: cast when its
-// own differs — decided when its code is settled.
-graph_build_range_bound :: proc(b: ^Graph_Builder, v: Operand, t: Type, span: Span) -> Operand {
-    id := graph_op(b, .Cast, .Synthetic, span, nil, "", v)
-    append(&b.body.checks, Graph_Check{kind = .Bound, ids = {id, NO_NODE}, v = v, t = t})
-    return {id, 0}
+// A range's bound at the counter's type, `ct`: cast when its own differs.
+graph_build_range_bound :: proc(b: ^Graph_Builder, v: Operand, t, ct: Type, span: Span) -> Operand {
+    if t == nil || is_infer(t) || types_equal(t, ct) { return v }
+    return graph_op_value(b, .Cast, .Synthetic, span, ct, type_name(ct), v)
 }
 
-// The range's bounds checked: the counter typed, the end held (a literal's
-// is itself), the check that the range counts up — kept when a bound is no
+// The range's bounds built: the counter typed, the end held (a literal's is
+// itself), the check that the range counts up — where a bound is no
 // constant — and the counter's first value; then the check run.
-graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, bounds: [2]int, ct: Type) {
+graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
     b.g.type_[fl.counter] = ct
-    for k in bounds { if k >= 0 { b.body.checks[k].ct = ct } }
     if !fl.end_literal {
         fl.end_slot = graph_slot(b, "end", ct, fl.span)
         graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "end", fl.end_slot, ct, fl.span), fl.hi)
     }
-    up := graph_op_value(b, .Compare, .Synthetic, fl.span, Type_Bool{}, "<=", fl.lo, fl.hi)
-    assert := graph_op(b, .Assert, .Synthetic, fl.span, nil, "range", up)
-    append(&b.body.checks, Graph_Check{kind = .Ascends, ids = {up.op, assert}, lo = fl.lo, hi = fl.hi})
+    if fl.lo.op == NO_NODE || fl.hi.op == NO_NODE || b.g.op[fl.lo.op] != .Const || b.g.op[fl.hi.op] != .Const {
+        up := graph_op_value(b, .Compare, .Synthetic, fl.span, Type_Bool{}, "<=", fl.lo, fl.hi)
+        graph_op(b, .Assert, .Synthetic, fl.span, nil, "range", up)
+    }
     graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.var_name, fl.counter, ct, fl.span), fl.lo)
     graph_build_for_runs(b, fl)
 }
@@ -2945,7 +2946,7 @@ graph_build_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     append(&b.code.loops, Loop{cont = fl.post if fl.has_post else fl.check, done = fl.done, scope = len(b.code.scopes)})
     fl.body_block = graph_node(b, .Block, .Explicit, fl.f, "body", nil, span)
     b.code.block = fl.body_block
-    graph_scope_open(b, fl.body_block, span)
+    graph_scope_open(b, fl.body_block, span, fl.body_arena)
     if fl.elem != NO_NODE {
         ct := b.g.type_[fl.counter]
         at := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
@@ -2993,16 +2994,6 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
 // `break`, `continue` (graph_loop_exit).
 graph_build_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     graph_loop_exit(b, span, is_break)
-}
-
-// A range's bound cast or its check that it counts up, decided when the
-// code is settled.
-Graph_Check :: struct {
-    kind:   enum u8 { Bound, Ascends },
-    ids:    [2]Node_Id,   // the cast; the compare and the assert
-    v:      Operand,      // the bound's value
-    t, ct:  Type,         // its type, the counter's
-    lo, hi: Operand,      // the bounds, as the check reads them
 }
 
 // A struct literal built into d, before its fields are
@@ -3176,79 +3167,19 @@ graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
     return b.g.operands[b.g.operand_first[id]:end]
 }
 
-// The local every one of a fun's returns returns, read whole — built in its
-// caller's slot, not on the arena; none when one returns something else, or
-// the fun has several results.
-@(private="file")
-graph_build_returned :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> Node_Id {
-    g := b.g
-    if f.ts == nil || f.ts.kind != .Fun || len(f.ts.return_types) != 1 { return NO_NODE }
-    returned := NO_NODE
-    for r in f.returns {
-        if graph_dropped(b, r) { continue }
-        ops := graph_built_operands(b, r)
-        if len(ops) != 1 || ops[0].op == NO_NODE || g.op[ops[0].op] != .Read { return NO_NODE }
-        place := graph_built_operands(b, ops[0].op)[0].op
-        if g.op[place] != .Var || g.refers[place] == NO_NODE { return NO_NODE }
-        local := g.refers[place]
-        if g.kind[local] != .Local || returned != NO_NODE && local != returned { return NO_NODE }
-        returned = local
-    }
-    return returned
-}
-
 @(private="file")
 graph_body_settle :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     g := b.g
     for id in f.consts {
         if is_infer(g.type_[id]) && !is_infer(graph_settled(g.type_[id])) { append(&g.settled, id) }
     }
-    // A big local's space on the arena, taken before its value — but the
-    // local every return returns: it is built in the caller's slot.
-    returned := graph_build_returned(b, f)
-    holds: map[Node_Id]bool   // the scopes holding one
-    defer delete(holds)
-    for a in f.allocs {
-        t := g.type_[a.decl]
-        if t != nil && routes_to_arena(t) && a.decl != returned {
-            g.type_[a.var], g.type_[a.alloc] = t, t
-            holds[g.parent[a.decl]] = true
-            continue
-        }
-        graph_drop(b, a.var, NO_VALUE); graph_drop(b, a.alloc, NO_VALUE)
-    }
-    // A scope holding values on the arena (graph_scope_open): its mark and
-    // resets, where the builder makes them; else none. Main's own body sets
-    // the arena up and leaves it with the program.
-    main, _ := b.checked.functions["main"]
-    for m in f.marks {
-        if holds[m.block] && (main == nil || g.type_[m.block] != Type(main)) { continue }
-        graph_drop(b, m.mark, NO_VALUE)
-        for r in m.resets { graph_drop(b, r, NO_VALUE) }
+    // (Each local that could live on the arena, by the type it was given:
+    // as lowering said when it declared it.)
+    for d, routes in f.arena_types {
+        t := g.type_[d]
+        if routes != (t != nil && routes_to_arena(t)) { graph_fatal(g.origin[d], "'%s' is typed otherwise than it was declared", g.name[d]) }
     }
 
-    // A range's bounds cast to the counter's type where theirs differs; the
-    // check that it counts up where a bound is no constant.
-    resolve :: proc(b: ^Graph_Builder, o: Operand) -> Operand {
-        o := o
-        for (o.op != NO_NODE && graph_dropped(b, o.op)) { o = b.repl[o.op] }
-        return o
-    }
-    for k in f.checks {
-        if k.kind != .Bound { continue }
-        if k.t != nil && !is_infer(k.t) && !types_equal(k.t, k.ct) {
-            g.type_[k.ids[0]], g.name[k.ids[0]] = k.ct, type_name(k.ct)
-        } else {
-            graph_drop(b, k.ids[0], k.v)
-        }
-    }
-    for k in f.checks {
-        if k.kind != .Ascends { continue }
-        lo, hi := resolve(b, k.lo).op, resolve(b, k.hi).op
-        if lo != NO_NODE && hi != NO_NODE && g.op[lo] == .Const && g.op[hi] == .Const {
-            graph_drop(b, k.ids[0], NO_VALUE); graph_drop(b, k.ids[1], NO_VALUE)
-        }
-    }
     k := 0   // (its synthetic locals, in the order they were made)
     for i in 0 ..< b.nodes {
         for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
@@ -3352,7 +3283,7 @@ Graph_Contents :: struct {
 // A scope's contents up to its statements: a fresh set of names, its params
 // and results, and its code's start.
 @(private="file")
-graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, intrinsic: bool, n: Node_Id) -> Graph_Contents {
+graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, intrinsic: bool, n: Node_Id, holds: bool) -> Graph_Contents {
     kind := b.g.kind[n]
     gc := Graph_Contents{locals = graph_locals_enter(b), self = b.self, n = n, span = span, intrinsic = intrinsic}
     b.self = n if kind == .Struct else NO_NODE
@@ -3364,7 +3295,7 @@ graph_contents_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, int
     // An intrinsic's body is generated at each call: no code of its own.
     if intrinsic { return gc }
     gc.code = graph_code_begin(b, n)
-    graph_scope_open(b, n, span)
+    graph_scope_open(b, n, span, holds)
     return gc
 }
 

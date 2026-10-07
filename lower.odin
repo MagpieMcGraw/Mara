@@ -119,9 +119,124 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) {
     saved := k.lower
     k.lower = {ts = ts}
     defer k.lower = saved
-    f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit)
+    returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
+    holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
+    f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
     if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil, top = true) }
     graph_body_end(b, f)
+}
+
+// --- the arena ------------------------------------------------------------------
+// Where the program has a scope arena, a local whose value is big lives on
+// it (routes_to_arena): its space taken where it is declared, the arena
+// marked where its scope begins and reset at each exit. Lowering finds, from
+// the tree as it builds it, which locals do — before it builds them.
+
+// The local every `return` of a fun with one result returns as it is: what
+// its code builds in its caller's slot, not on the arena (the token that
+// declares it). 0 when one returns anything else, or there are none.
+lw_returned_local :: proc(k: ^TC, ts: ^Type_Scope, body: []Tree_Id) -> Token_Id {
+    if ts == nil || ts.kind != .Fun || len(ts.return_types) != 1 { return 0 }
+    r := LW_Returns{want = ts.return_types[0]}
+    lw_scan_returns(k, body, &r)
+    return 0 if r.other else r.tok
+}
+
+@(private="file")
+LW_Returns :: struct {
+    want:  Type,
+    tok:   Token_Id,
+    other: bool,
+}
+
+// Each `return` in the statements lowering builds (lw_scope's, and each
+// nested block's).
+@(private="file")
+lw_scan_returns :: proc(k: ^TC, stmts: []Tree_Id, r: ^LW_Returns) {
+    t := k.t
+    for s in tc_live(k, stmts) {
+        #partial switch t.tag[s] {
+        case .Return:
+            values := tree_list(t, t.a[s])
+            tok := lw_return_local(k, values[0], r.want) if len(values) == 1 else 0
+            if tok == 0 || r.tok != 0 && tok != r.tok { r.other = true } else { r.tok = tok }
+        case .If, .Elif:
+            v := if_view(t, s)
+            lw_scan_returns(k, v.then, r)
+            lw_scan_returns(k, v.else_, r)
+        case .For_Range, .For_Each, .For_C, .For_Cond:
+            lw_scan_returns(k, for_view(t, s).body, r)
+        case .Defer:
+            lw_scan_returns(k, tree_list(t, t.a[s]), r)
+        case .Match:
+            for arm in tree_list(t, t.b[s]) { lw_scan_returns(k, lw_arm_body(k, arm), r) }
+        }
+    }
+}
+
+// A match arm's statements.
+lw_arm_body :: proc(k: ^TC, arm: Tree_Id) -> []Tree_Id {
+    t := k.t
+    return tree_list(t, t.b[arm]) if t.tag[arm] == .Arm_Value else tree_list(t, t.a[arm])
+}
+
+// The local `return v` returns as it is — read, with no view taken of it or
+// widening (lw_return, lw_value_as): its token; else 0.
+@(private="file")
+lw_return_local :: proc(k: ^TC, val: Tree_Id, want: Type) -> Token_Id {
+    e := tc_unparen(k, val)
+    if k.t.tag[e] != .Ident { return 0 }
+    ref := tc_ref(k, e)
+    if ref.kind != .Local { return 0 }
+    vt := tc_node_type(k, val)
+    if ts, is_scope := vt.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global, lw_ident)
+        if tc_name(k, e) in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0) { return 0 }
+    }
+    _, to_ptr := distinct_base(want).(^Type_Ptr)
+    _, from_ptr := distinct_base(vt).(^Type_Ptr)
+    _, to_slice := distinct_base(want).(^Type_Slice)
+    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
+    if to_ptr == from_ptr && graph_header_of(want) && graph_partial_of(vt) || to_slice && from_array { return 0 }
+    if _, _, num := numeric_info(graph_settled(vt)); num && !(is_infer(vt) && infer_cell_of(vt) == nil) && graph_widens(graph_settled(vt), want) { return 0 }
+    return ref.decl
+}
+
+// Whether a local declared in these statements, a block's own, lives on the
+// arena (lw_decl_arena); `returned` (lw_returned_local) doesn't.
+lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
+    if !k.gb.arena { return false }
+    t := k.t
+    for s in tc_live(k, stmts) {
+        if t.tag[s] != .Decl { continue }
+        v := decl_view(t, s)
+        if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
+        for tg, i in v.targets {
+            lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
+            if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }
+        }
+    }
+    return false
+}
+
+// One name's declaration in a body (lw_decl_one): the type its local takes,
+// and whether its space can be on the arena (graph_build_decl: a `let`
+// binds memory it takes; a bare declaration of no type declares none).
+@(private="file")
+lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
+    t := k.t
+    ann: Type = Type_Any{}
+    if ann_node != 0 { ann = tc_node_type(k, ann_node) }
+    switch {
+    case value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann):
+        return ann, true
+    case value != 0 && t.tag[tc_unparen(k, value)] == .Take:
+        return tc_node_type(k, target), tc_text(t.main[tc_unparen(k, value)]) != "let"
+    case value == 0:
+        if len(tc_shape_bindings(k, ann_node)) > 0 { return ann, true }
+        _, is_error := ann.(Type_Error)
+        return ann, !is_error
+    }
+    return tc_node_type(k, target), true
 }
 
 // The program's struct (the compiler's): built from mara.core's declaration
@@ -198,8 +313,9 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Compound:
         lw_compound(k, s)
     case .Defer:
-        gd := graph_build_defer(k.gb, span)
-        lw_scope(k, tree_list(t, t.a[s]))
+        body := tree_list(t, t.a[s])
+        gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned))
+        lw_scope(k, body)
         graph_build_defer_end(k.gb, gd)
     case .Match:
         lw_match(k, s)
@@ -280,7 +396,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         return
     }
     decl := lw_field_decl(k, fields_of, name, target, value, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, tc_node_type(k, target)) }
     prefix: [2]Node_Id
     prefixed := false
     #partial switch t.tag[value] {
@@ -322,7 +438,7 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     st := tc_bare_struct(ann)
     decl := field
     if decl == NO_NODE {
-        decl = graph_build_decl(b, name, k.t.main[target], span)
+        decl = graph_build_decl(b, name, k.t.main[target], span, ann)
         graph_build_typed(b, decl, ann)
     } else if b.g.type_[decl] == nil {
         graph_build_typed(b, decl, ann)
@@ -336,7 +452,7 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
 lw_decl_sized :: proc(k: ^TC, name: string, tok: Token_Id, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
     b := k.gb
     decl := field
-    if decl == NO_NODE { decl = graph_build_decl(b, name, tok, span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, tok, span, ann) }
     r := lw_expr(k, cap_n, .Value)
     if field != NO_NODE {
         graph_build_bare(b, decl, b.g.type_[decl], nil, nil, span)
@@ -504,9 +620,9 @@ lw_if :: proc(k: ^TC, s: Tree_Id) {
     span := tree_span(t, s)
     v := if_view(t, s)
     cond := lw_expr(k, v.cond, .Value)
-    fi := graph_build_if(b, cond.v, span, len(v.else_) > 0)
+    fi := graph_build_if(b, cond.v, span, len(v.else_) > 0, lw_scope_arena(k, v.then, b.body.returned))
     lw_scope(k, v.then)
-    graph_build_else(b, &fi, span)
+    graph_build_else(b, &fi, span, lw_scope_arena(k, v.else_, b.body.returned))
     if len(v.else_) > 0 { lw_scope(k, v.else_) }
     graph_build_if_end(b, &fi)
 }
@@ -523,7 +639,8 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
                             index_name = tc_text(v.index) if v.index != 0 else "",
                             var_tok = v.var, elem_tok = v.elem, index_tok = v.index,
                             is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
-                            end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number})
+                            end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number,
+                            body_arena = lw_scope_arena(k, v.body, b.body.returned)})
     defer graph_build_for_end(b, &fl)
     #partial switch tag {
     case .For_Each:
@@ -545,17 +662,8 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         graph_build_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         lw_scope(k, v.body)
     case .For_Range:
-        bounds := [2]int{-1, -1}
-        graph_build_range_counter(b, &fl)
-        lo := lw_expr(k, v.lo, .Value)
-        lt := tc_node_type(k, v.lo)
-        bounds[0] = len(b.body.checks)
-        fl.lo = graph_build_range_bound(b, lo.v, lt, span)
-        hi := lw_expr(k, v.hi, .Value)
-        ht := tc_node_type(k, v.hi)
-        fl.high = hi.v
-        bounds[1] = len(b.body.checks)
-        fl.hi = graph_build_range_bound(b, hi.v, ht, span)
+        // (Its counter's type: as written, else its bounds'.)
+        lt, ht := tc_node_type(k, v.lo), tc_node_type(k, v.hi)
         it: Type
         if v.type_ != 0 {
             it = tc_node_type(k, v.type_)
@@ -563,7 +671,14 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
             it = try_promote_numeric(lt, ht)
             if _, is_error := it.(Type_Error); is_error || is_infer(it) { it = slice_header_width_type }
         }
-        graph_build_range(b, &fl, bounds, distinct_base(it))
+        ct := distinct_base(it)
+        graph_build_range_counter(b, &fl)
+        lo := lw_expr(k, v.lo, .Value)
+        fl.lo = graph_build_range_bound(b, lo.v, lt, ct, span)
+        hi := lw_expr(k, v.hi, .Value)
+        fl.high = hi.v
+        fl.hi = graph_build_range_bound(b, hi.v, ht, ct, span)
+        graph_build_range(b, &fl, ct)
         lw_scope(k, v.body)
     case:
         if v.init != 0 { lw_stmt_entry(k, v.init) }

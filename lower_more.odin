@@ -87,6 +87,7 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
                 }
             }
         }
+        ra.arena = lw_scope_arena(k, body, b.body.returned)
         blk := graph_build_arm(b, gm, ra, i)
         lw_scope(k, body)
         graph_build_arm_end(b, gm, blk)
@@ -150,7 +151,7 @@ lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     b := k.gb
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, fields_of, name, target, value, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
     graph_build_typed(b, decl, ann)
     if fields_of != nil {
         val := graph_build_void(b, ann, b.body.field_inits[tc_sid(k, target)])
@@ -264,7 +265,7 @@ lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     b := k.gb
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, fields_of, name, target, 0, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
     r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann))
     graph_build_typed(b, decl, ann)
     lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann), span, settle = true)

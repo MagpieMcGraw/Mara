@@ -261,7 +261,7 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     span := tree_span(t, s)
     decl := lw_field_decl(k, fields_of, name, target, value, span)
     field := decl != NO_NODE
-    if !field { decl = graph_build_decl(b, name, t.main[target], span, bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
+    if !field { decl = graph_build_decl(b, name, t.main[target], span, tc_node_type(k, target), bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
     final := tc_node_type(k, target)
     if field { final = b.g.type_[decl] }
