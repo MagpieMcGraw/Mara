@@ -15,6 +15,7 @@
 # A compiling fixture may also carry `//@ expect-output: text` lines (any
 # number): it is then RUN, and must exit 0 with each text in its output. That's
 # how a miscompile that still compiles — printing nothing, say — gets caught.
+# A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
 #
 # New fixtures should use the //@ annotations; the lists are a migration shim.
 # (test/failures/*.mara have no main and can't build standalone — out of scope
@@ -43,7 +44,7 @@ export MARA RES ROOT LEGACY_FAIL LEGACY_SKIP
 verdict() { printf '%s\n' "$2" "${3-}" > "$RES/$1.res"; }                   # key kind [message]
 
 check_file() {  # f
-  local f=$1 name="${1%.mara}" exp=pass substr="" out comp run rc missing want
+  local f=$1 name="${1%.mara}" exp=pass substr="" out comp run rc missing want flags
   if grep -qE '//@ expect-fail' "$f" 2>/dev/null; then
     exp=fail
     substr=$(sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' "$f" | head -1)
@@ -58,7 +59,8 @@ check_file() {  # f
   fi
   [ "$exp" = skip ] && { verdict "$name" skip; return; }
 
-  out=$("$MARA" build "$name" 2>&1)
+  flags=$(sed -nE 's#.*//@ build-flags:[[:space:]]*(.+)#\1#p' "$f" | head -1 | tr -d '\r')
+  out=$("$MARA" build "$name" $flags 2>&1)
   if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
 

@@ -2296,11 +2296,9 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 
 // An assert: its condition, a value already, branches to the failure, which
 // reports a comparison's sides by their text and value (emit_assert_fail).
-// With `-no assert` the condition isn't evaluated either: later.
 @(private="file")
 llvm_assert :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
-    if g.no_assert { return false }
     c := llvm_operand(e, ops[0], Type_Bool{}) or_return
     ok_label := fresh_label(g, "assert.ok")
     fail_label := fresh_label(g, "assert.fail")

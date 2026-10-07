@@ -25,6 +25,7 @@ TC :: struct {
     root:          ^Type_Scope,       // the main module's scope: the root env
     main_package:  string,
     shared:        bool,
+    no_assert:     bool,              // -no assert: each assert lowered behind a branch never taken (lw_assert)
     annot:         ^Annotations,      // what it finds about each node, per instance (annot.odin)
     events:        [dynamic]TC_Event, // what it checked, in order: what lowering builds
     lowering:      bool,              // lowering is running (lower.odin): the checker isn't
@@ -185,7 +186,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows,
-                         analysis_only: bool = false, perf: ^Performance_Timer = nil) -> ^Checked_Program {
+                         analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil) -> ^Checked_Program {
     table := new(SymbolTable)
     main_mod := new(Type_Scope)
     main_mod.name = main_package
@@ -202,7 +203,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared}
+    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
     k.annot = annot_new(t)
     checked.annot = k.annot
 

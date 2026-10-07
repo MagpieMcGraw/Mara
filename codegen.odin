@@ -102,7 +102,6 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
-    no_assert: bool, // -no assert — compile asserts out entirely
     // Every function's code comes from the program graph (llvm.odin).
 
     // Inside an assert/crash fail block (native builds): print-shaped

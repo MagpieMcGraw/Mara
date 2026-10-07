@@ -133,7 +133,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode
-    g.no_assert          = task.main_g.no_assert
 
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
@@ -380,12 +379,11 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, no_assert: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
-    g.no_assert = no_assert
 
 
     // g.out is now a swap target driven by switch_to_module; each per-module

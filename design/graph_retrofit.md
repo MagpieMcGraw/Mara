@@ -487,9 +487,11 @@ evaluates its destination and value); how instructions are chosen stays in the e
       graph emitter had given a fun body's constant an uninitialized slot, and now
       declines a var naming a constant (`test/scope_constants.mara`). Normalizer: a float constant's width change (`fptrunc double 0.5 to
       float`), like an integer's.
-      Still declined: `-no assert` (the graph keeps an assert's condition, which
-      the old emitter never evaluated), a crash message computed at runtime, `cstring(s)`
-      (only ever a foreign call's argument: with those, step 9)
+      Still declined: a crash message computed at runtime, `cstring(s)`
+      (only ever a foreign call's argument: with those, step 9). `-no assert`, once
+      declined (the emitter can't un-evaluate a condition already built), is now
+      lowered behind `if false` (lw_assert): never run, still read by the analyses
+      (`test/noassert.mara`).
 - [x] Unions and `match`: tags, variants, niche layouts. A union is an aggregate handled
       by its address; a `variant` place is the union's own address (each variant's
       struct, its tag first, overlays the union from its start; a niche union's Some

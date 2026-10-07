@@ -1022,12 +1022,22 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     return {v = graph_op_value(b, kind, w, span, t, word, sides[0], sides[1]), ok = true}
 }
 
-// `assert(c)` (tc_assert).
+// `assert(c)` (tc_assert). With `-no assert`, behind `if false`: the
+// analyses still see what its condition reads, and it never runs.
 lw_assert :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     t := k.t
     span := tree_span(t, n)
     cond := Tree_Id(t.a[n])
     if want != .Value { lw_fail(k, n, "an assert's place") }
+    off: Graph_If
+    if k.no_assert {
+        never := graph_const(k.gb, .Synthetic, span, Type_Bool{}, "", Const_Value{int = 0})
+        off = graph_build_if(k.gb, never, span, false, false)
+    }
+    defer if k.no_assert {
+        graph_build_else(k.gb, &off, span, false)
+        graph_build_if_end(k.gb, &off)
+    }
     r := lw_expr(k, cond, .Value, w)
     lo, hi := int(t.first[cond]), int(t.end[cond])
     sides: Maybe([2]string)
