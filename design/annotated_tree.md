@@ -334,7 +334,46 @@ that would lower a function again for each reader and faster than doing so. The 
     `annotcheck.sh` are unchanged.
   - Time (test_1M): lowering and putting the code together take ~7.4 s, from ~9.9 s; the
     build is ~2.4 s (~9%) faster. graph.odin is 3887 lines (4204 before).
-  - What remains of the end state above: a code is laid out once it is built, since
-    settling decides what to leave out only when the whole body is known (a scope's arena
-    mark, a widening, the local every return returns). Deciding those from the
-    annotations as the code is built would let lowering write the code in place.
+  - What remained of the end state above: a code was laid out once it was built, since
+    settling decided what to leave out only when the whole body was known (a scope's
+    arena mark, a widening, the local every return returns). Done next, below.
+- [x] Each code written in place (2026-10-07). Lowering built many things before it knew
+      whether it needed them and left them out when the body was settled — on test_1M
+      about 1.6 million nodes: 1.1M arena allocations, 390K widening casts, 125K arena
+      marks and resets. It now decides each from the annotations before it builds it, and
+      nothing built is left out.
+  - [x] Widenings (bba141b): a cast is made only where the value widens; its target — an
+        overload's, a dispatch's or a generic's param, a binary operation's working type,
+        an if expression's type — is annotated before the value is built.
+  - [x] Range checks and the arena (b0f7ec2). A range's counter type is known before its
+        bounds. A local's space on the arena, and a scope's mark and resets, are decided
+        from the tree: the local's type (an annotation), the local every return returns
+        (`lw_returned_local`: the fun's returns, scanned as lowering walks them), and
+        whether a block declares one of its own (`lw_scope_arena`).
+  - [x] What was built to be left out (953875f): a field's base, a method's receiver,
+        `len` of a fixed array, a destructure that is a broadcast, a slice's base built
+        twice, `bytes[lo:hi] = v`'s view and slice both, a take's `&`, a loop collection's
+        template — each decided from the annotations, or built where it is walked.
+  - [x] Temporaries, zeros and byte reads (2ec3fe2). Whether an expression lowered for
+        either gives a place (`lw_either_place`), or names a constant (`lw_const_named`), is
+        known before it is built; a partial array's zero is decided from its value's type
+        and how bytes flow into it. A byte read takes apart the element or span just built
+        by taking it back (`graph_unbuild`: the newest node, its run's last operation).
+  - [x] In place (e120684): with nothing to leave out, a code is copied into the program's
+        arena as it is (`graph_code_copy`); `graph_lay_out`, the drop list and the
+        replacement table go. `this_program` and `context` are placeholders until the code
+        is built, then nodes past its root's subtree; a statement that builds nothing takes
+        back its entry (`graph_build_stmt_none`).
+  - Every prediction is checked against what is built — a temporary made for a place, a
+    local on the arena in a scope said to hold none (or the reverse), a local typed
+    otherwise than declared, a text constant or a zero found otherwise — each an internal
+    error, not a silent difference.
+  - Gates at every commit: `graphdiff.sh` identical (a node never built leaves the graph
+    as it was with the node left out), `irdiff.sh` (324 builds, test_1M), the goldens,
+    `annotcheck.sh`, `run.sh`.
+  - Time (test_1M): lowering ~5.3 s, from ~6.8 s; the build ~1.4 s (~5.5%) faster.
+    graph.odin is 3515 lines (3887 before); lowering 2852 (2662), its predictions the
+    growth.
+  - What remains: the copy into the arena (one per column, no remapping), and settling's
+    types (`graph_body_settle`: each node's type settled once the body is built — known
+    from the annotations as well).
