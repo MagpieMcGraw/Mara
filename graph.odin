@@ -108,7 +108,7 @@ Program_Graph :: struct {
     type_:   [dynamic]Type,     // has type; nil when the node has none
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
-    callee:  [dynamic]^Type_Scope,      // a call or construct operation → the fun or struct it runs (nil through a fun's value)
+    callee:  map[Node_Id]^Type_Scope,   // a call or construct operation → the fun or struct it runs (none through a fun's value)
     defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
     stmt:    [dynamic]i32,      // an operation → the statement it comes from (in `stmts`), or -1
     decl_tok: [dynamic]Token_Id,      // a variable's declaration — a param, a named result, a local — → the token that declares it (0: none)
@@ -149,7 +149,7 @@ Program_Graph :: struct {
 
     // A constant, by its value's node (Graph_Named.value; 0: none): an
     // operation that names one — its value at the use, a table's global.
-    constant: [dynamic]Syntax_Id,
+    constant: map[Node_Id]Syntax_Id,
 
     // A fun that consumes a param into its result → which param, by its
     // place among the fun's (graph_find_consumes).
@@ -556,7 +556,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Last, Name, Type, Origin, Refers, Callee, Stmt, Decl_Tok, Constant,
+    Kind, Op, Written, Parent, Last, Name, Type, Origin, Refers, Stmt, Decl_Tok,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
 }
 
@@ -645,10 +645,8 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.type_ = make([dynamic]Type, at(r, .Type))
     g.origin = make([dynamic]Span, at(r, .Origin))
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
-    g.callee = make([dynamic]^Type_Scope, at(r, .Callee))
     g.stmt = make([dynamic]i32, at(r, .Stmt))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
-    g.constant = make([dynamic]Syntax_Id, at(r, .Constant))
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
@@ -670,8 +668,8 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
         if cap(col) > n { shrink(col) }
     }
     trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n); trim(&g.last, n)
-    trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n); trim(&g.callee, n)
-    trim(&g.stmt, n); trim(&g.decl_tok, n); trim(&g.constant, n)
+    trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n)
+    trim(&g.stmt, n); trim(&g.decl_tok, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
     trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
@@ -943,10 +941,8 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.type_[i] = graph_settled(t)
     g.origin[i] = origin
     g.refers[i] = NO_NODE
-    g.callee[i] = nil
     g.stmt[i] = b.stmt
     g.decl_tok[i] = 0
-    g.constant[i] = 0
     if i >= len(b.typed_by) {
         resize(&b.typed_by, len(g.kind))
         resize(&b.untyped, len(g.kind))
@@ -974,10 +970,8 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.type_, n)
     non_zero_resize(&g.origin, n)
     non_zero_resize(&g.refers, n)
-    non_zero_resize(&g.callee, n)
     non_zero_resize(&g.stmt, n)
     non_zero_resize(&g.decl_tok, n)
-    non_zero_resize(&g.constant, n)
     non_zero_resize(&g.operand_first, n)
 }
 
@@ -1536,7 +1530,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     g.refers[n.op] = g.refers[id]
     if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
     if g.op[id] == .Const && slice.contains(g.settled[:], id) { append(&g.settled, n.op) }   // (graph_const_settles)
-    g.constant[n.op] = g.constant[id]
+    if c, named := g.constant[id]; named { g.constant[n.op] = c }
     return Operand{n.op, p.out}
 }
 
@@ -3586,8 +3580,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
     span :: proc(s: Span) -> string {
         return fmt.tprintf("%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) if span_file(s) != "" else "-"
     }
-    calls := 0
-    for c in g.callee { if c != nil { calls += 1 } }
+    calls := len(g.callee)
     fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges) + calls + len(g.defer_of))
     for id in 0 ..< len(g.kind) {
         b := strings.builder_make(context.temp_allocator)
@@ -3601,7 +3594,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
             strings.write_string(&b, ")")
         }
         if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
-        if c := g.constant[id]; c != 0 {   // (by its code's name: a value's node isn't the same from one build to the next)
+        if c := g.constant[Node_Id(id)]; c != 0 {   // (by its code's name: a value's node isn't the same from one build to the next)
             code, built := pc.consts[c]
             fmt.sbprintf(&b, " constant=%s", code.name[0] if built else "?")
         }

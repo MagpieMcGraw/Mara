@@ -1,5 +1,7 @@
 package mara
 
+import "core:slice"
+
 // ---------------------------------------------------------------------------
 // Constants, evaluated at compile time
 //
@@ -74,10 +76,11 @@ graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
     fo := Folder{pc = pc, checked = checked}
     defer { delete(fo.done); delete(fo.busy) }
     for g in pc.codes {
-        if g.kind[0] == .Const { continue }   // (a constant's own code: computed where it's used)
-        for i in 0 ..< len(g.kind) {
-            id := Node_Id(i)
-            if g.kind[id] != .Op { continue }
+        if g.kind[0] == .Const || len(g.constant) == 0 { continue }   // (a constant's own code: computed where it's used)
+        uses := make([dynamic]Node_Id, 0, len(g.constant), context.temp_allocator)   // (in order)
+        for id in g.constant { append(&uses, id) }
+        slice.sort(uses[:])
+        for id in uses {
             c := g.constant[id]
             if c == 0 || c not_in pc.consts { continue }
             #partial switch g.op[id] {
