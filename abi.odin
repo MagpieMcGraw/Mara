@@ -64,7 +64,7 @@ classify :: proc(t: Type, os: Target_OS) -> Lowering {
 // -----------------------------------------------------------------------------
 
 classify_win64 :: proc(t: Type) -> Lowering {
-    if !is_aggregate(t) {
+    if !llvm_aggregate(t) {
         return Lowering_Direct{parts = scalar_parts(t)}
     }
     size := type_size(t)
@@ -85,7 +85,7 @@ classify_win64 :: proc(t: Type) -> Lowering {
 // -----------------------------------------------------------------------------
 
 classify_sysv :: proc(t: Type) -> Lowering {
-    if !is_aggregate(t) {
+    if !llvm_aggregate(t) {
         return Lowering_Direct{parts = scalar_parts(t)}
     }
     size := type_size(t)
@@ -288,19 +288,6 @@ count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (
 // Helpers
 // -----------------------------------------------------------------------------
 
-// True for types that need ABI classification at the .C boundary.
-// Function-pointer Type_Scope (kind=.Fun) is NOT an aggregate — it's a ptr.
-is_aggregate :: proc(t: Type) -> bool {
-    #partial switch v in t {
-    case ^Type_Scope:
-        return v.kind == .Struct
-    case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array, ^Type_Union:
-        return true
-    case ^Type_Distinct:
-        return is_aggregate(v.base_type)
-    }
-    return false
-}
 
 scalar_parts :: proc(t: Type) -> [dynamic]string {
     parts: [dynamic]string

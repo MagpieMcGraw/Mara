@@ -46,7 +46,7 @@ emit_header_set :: proc(g: ^Codegen, header: string, field: int, v: string) {
 stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
     base := distinct_base(t)
     if pa, is_pa := base.(^Type_Partial_Array); is_pa {
-        stamp_partial_array_header(g, ptr, pa)
+        emit_partial_array_zero(g, ptr, pa, zero = false)
         return
     }
     // An array of partial arrays: each element. (An array of structs is
@@ -88,9 +88,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
     #partial switch v in base {
     case ^Type_Partial_Array:
         elem_ir := llvm_type_from_checker(v.elem)
-        ir_type := partial_array_ir_type(elem_ir, v.size)
-        elements_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+        elements_ptr := partial_elements(g, ptr, v)
         emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
         if value_has_partial_array(g, v.elem) {
             reanchor_slots(g, v.elem, fmt.tprintf("[%d x %s]", v.size, elem_ir), elements_ptr, fmt.tprintf("%d", v.size))
@@ -108,12 +106,8 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
         }
     case ^Type_Union:
         // Only the live variant's fields exist: dispatch on the tag.
-        ukey := v.name
         tag_ir := union_tag_ir_type(v)
-        tag_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, union_llvm_name(ukey), ptr)
-        tag := fresh_tmp(g)
-        emit_load_into(g, tag, tag_ir, tag_ptr)
+        tag := load_union_tag(g, v, ptr)
         for name in v.variants {
             vst := v.variant_structs[name]
             if vst == nil || !value_has_partial_array(g, vst) { continue }
@@ -456,7 +450,7 @@ gen_construct_value_at :: proc(g: ^Codegen, ptr: string, t: Type, args: []string
             emit_struct_init_call(g, v.name, ptr, args)
         }
     case ^Type_Partial_Array:
-        stamp_partial_array_header(g, ptr, v)
+        emit_partial_array_zero(g, ptr, v, zero = false)
         gen_construct_partial_array_elements(g, ptr, v, args)
     case ^Type_Fixed_Array:
         gen_construct_elements(g, ptr, v.elem, v.size, args)
@@ -467,11 +461,7 @@ gen_construct_value_at :: proc(g: ^Codegen, ptr: string, t: Type, args: []string
 // `pa_addr`. Skipped entirely when the element type is trivially zero-formed.
 gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^Type_Partial_Array, args: []string = nil) {
     if !type_needs_construction(g, pa.elem) { return }
-    elem_ir := llvm_type_from_checker(pa.elem)
-    pa_ir := partial_array_ir_type(elem_ir, pa.size)
-    inline_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", inline_ptr, " = getelementptr inbounds ", pa_ir, ", ptr ", pa_addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    gen_construct_elements(g, inline_ptr, pa.elem, pa.size, args)
+    gen_construct_elements(g, partial_elements(g, pa_addr, pa), pa.elem, pa.size, args)
 }
 
 // Run no-arg construction over `count` elements starting at `elements_ptr` (a
@@ -493,15 +483,19 @@ emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: 
     emit_loop_end(g, l)
 }
 
-// A partial array's zero value at `addr`: its elements zeroed (`zero`), and
-// its header over them (`stamp`) — ptr → the elements, len 0, cap N. Returns
-// the elements' address.
-emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Array, stamp := true, zero := true) -> string {
-    elem_t := llvm_type_from_checker(pa.elem)
-    ir_type := partial_array_ir_type(elem_t, pa.size)
+// A partial array's elements: their address, past its header.
+partial_elements :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Array) -> string {
     elements_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    if !stamp { return elements_ptr }
+    emit(g, "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d, i32 0", elements_ptr,
+         partial_array_ir_type(llvm_type_from_checker(pa.elem), pa.size), addr, PARTIAL_ELEMENTS_FIELD)
+    return elements_ptr
+}
+
+// A partial array's zero value at `addr`: its elements zeroed (`zero`; over
+// zeroed storage, not), and its header over them — ptr → the elements, len 0,
+// cap N. Returns the elements' address.
+emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Array, zero := true) -> string {
+    elements_ptr := partial_elements(g, addr, pa)
     if zero { emit_memset_zero(g, elements_ptr, pa.size * type_size(pa.elem)) }
     emit_header_set(g, addr, SLICE.ptr, elements_ptr)
     emit_header_set(g, addr, SLICE.len, "0")
@@ -520,19 +514,11 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Arr
 gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array,
                                              src_data_ptr, src_cap, src_low, src_bytes: string,
                                              is_big_endian: bool, span: Span) {
-    elem_t := llvm_type_from_checker(pa.elem)
     cap_n := pa.size
-    alloc_cap := cap_n
-    ir_type := partial_array_ir_type(elem_t, alloc_cap)
     elem_bytes := type_size(pa.elem)
 
-    // Initialise header: ptr → elements, len → 0 (auto-add at the end),
-    // cap → N. Mirrors the literal init helper.
-    elements_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", slot_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    emit_header_set(g, slot_ptr, SLICE.ptr, elements_ptr)
-    emit_header_set(g, slot_ptr, SLICE.len, "0")
-    emit_header_set(g, slot_ptr, SLICE.cap, fmt.tprintf("%d", alloc_cap))
+    // Its header: len 0 (the count added at the end).
+    elements_ptr := emit_partial_array_zero(g, slot_ptr, pa, zero = false)
 
     w := SLICE_LEN_IR
 
@@ -675,18 +661,6 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
 // Partial-array headers stamped over zero-filled storage
 // ---------------------------------------------------------------------------
 
-// Stamp a valid partial-array header at `addr` over a zero-filled slot:
-// ptr → &inline elements, cap = N. A flat zero-fill leaves cap=0 / ptr=null —
-// an unusable partial array, even though the static capacity is right there in
-// the type. `len` is left as the zero-fill set it (0).
-stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_Array) {
-    elem_t := llvm_type_from_checker(v.elem)
-    ir_type := partial_array_ir_type(elem_t, v.size)
-    elements_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    emit_header_set(g, addr, SLICE.ptr, elements_ptr)
-    emit_header_set(g, addr, SLICE.cap, fmt.tprintf("%d", v.size))
-}
 
 // Walk a zero-filled struct instance at `base_ptr` and stamp valid headers for
 // every partial-array field, recursing into nested struct fields. Makes a
@@ -701,7 +675,7 @@ fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: string, sd: ^Scope_Bod
         case ^Type_Partial_Array:
             addr := fresh_tmp(g)
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", addr, st_llvm, base_ptr, i)
-            stamp_partial_array_header(g, addr, v)
+            emit_partial_array_zero(g, addr, v, zero = false)
             gen_construct_partial_array_elements(g, addr, v)
         case ^Type_Fixed_Array:
             if type_needs_construction(g, v.elem) {

@@ -1123,12 +1123,9 @@ union_tag_unsigned :: proc(ut: ^Type_Union) -> bool {
     return strings.has_prefix(ut.tag_type, "u")
 }
 
-// Whether a matched value is unsigned: an enum's declared tag type, a number's kind.
+// Whether a matched value is unsigned: an enum's declared tag type, else as
+// llvm_unsigned.
 match_value_unsigned :: proc(t: Type) -> bool {
-    #partial switch v in distinct_base(t) {
-    case ^Type_Enum:   return strings.has_prefix(v.tag_type, "u")
-    case Type_Numeric: return v.kind == .Unsigned
-    case Type_Byte, Type_Utf8, Type_Bool: return true
-    }
-    return false
+    if et, is_enum := distinct_base(t).(^Type_Enum); is_enum { return strings.has_prefix(et.tag_type, "u") }
+    return llvm_unsigned(t)
 }

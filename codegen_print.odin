@@ -87,8 +87,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
             fmt.sbprintf(&msg, "%s%s was ", joiner, esc_side)
             joiner = " and "
             assert_flush_printf(g, &msg, &args)
-            tag_ir := "i64"
-            if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
+            tag_ir := llvm_type_from_checker(et)
             v := side.val
             if ir_type != tag_ir {
                 w := fresh_tmp(g)
@@ -486,8 +485,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         return
     }
     if et, ok := bt.(^Type_Enum); ok {
-        tag_ir := et.tag_type != "" ? tag_type_to_ir(et.tag_type) : "i64"
-        gen_print_enum(g, val, tag_ir, et)
+        gen_print_enum(g, val, llvm_type_from_checker(et), et)
         return
     }
     if _, ok := bt.(Type_Err); ok {
@@ -509,9 +507,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
     // Numeric (integers + floats): IR-width driven with sign awareness. (A
     // float prints as a double, an integer under 32 bits as an int: C's
     // varargs promote them.)
-    is_unsigned := false
-    if n, ok := bt.(Type_Numeric); ok { is_unsigned = n.kind == .Unsigned }
-    if _, ok := bt.(Type_Byte); ok { is_unsigned = true }
+    is_unsigned := llvm_unsigned(ty)
     nt := llvm_type_from_checker(ty)
     switch nt {
     case "double":
@@ -636,13 +632,7 @@ gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
     }
     emit_label(g, unknown)
     emit_print_literal(g, strings.concatenate({type_name(ut), "("}, context.temp_allocator))
-    bits := 64
-    switch tag_ir {
-    case "i8":  bits = 8
-    case "i16": bits = 16
-    case "i32": bits = 32
-    }
-    emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = i32(bits)})
+    emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = i32(ir_type_bits(tag_ir))})
     emit_print_literal(g, ")")
     emit_br(g, done)
     emit_label(g, done)

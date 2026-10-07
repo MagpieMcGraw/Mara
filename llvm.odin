@@ -263,7 +263,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             // constructed, right after its address (its zero is not all zeros).
             if pa := llvm_partial(t); pa != nil {
                 llvm_into_fields(e, true)
-                stamp_partial_array_header(e.g, at, pa)
+                emit_partial_array_zero(e.g, at, pa, zero = false)
                 gen_construct_partial_array_elements(e.g, at, pa)
                 llvm_into_fields(e, false)
             }
@@ -822,7 +822,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if llvm_union_tag(e, place) != nil { return false }   // a union's tag is its variant's: a construct writes it
         t := graph_type(pg, place)
         // Another type's value into bytes is a write through a view of them (later).
-        if ops[1].op != NO_NODE && llvm_is_byte(t) != llvm_is_byte(graph_type(pg, ops[1].op)) { return false }
+        if ops[1].op != NO_NODE && is_byte_elem(t) != is_byte_elem(graph_type(pg, ops[1].op)) { return false }
         // Into a partial array, text or a slice's elements fill a prefix.
         if pa := llvm_partial(t); pa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
             if text, is_text := llvm_text(e, ops[1].op); is_text { return llvm_text_into(e, place, pa, text) }
@@ -1655,7 +1655,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if llvm_direct(e, dest) { return false }
         if llvm_zeroed(e, dest) { return true }   // a constructor's field: at its entry
         args := llvm_ctor_args(e, op, ops) or_return
-        elements := emit_partial_array_zero(g, e.value[dest], pa, stamp = false)
+        elements := partial_elements(g, e.value[dest], pa)
         gen_construct_elements(g, elements, pa.elem, pa.size, args)
         return true
     }
@@ -1976,7 +1976,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
     g := e.g
     if llvm_type_from_checker(pa.elem) != "i8" || len(text) > pa.size { return false }
     at := e.value[place]
-    elements := emit_partial_array_zero(g, at, pa, stamp = false)
+    elements := partial_elements(g, at, pa)
     if len(text) > 0 {
         src := get_string_literal(g, text)
         emit_memcpy(g, elements, src, len(text) + 1 if pa.size > len(text) else len(text))
@@ -1997,7 +1997,7 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     n0 := emit_header_field(g, hdr, SLICE.len)
     cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, n0, pa.size)
     n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, n0, w, pa.size)
-    elements := emit_partial_array_zero(g, at, pa, stamp = false)
+    elements := partial_elements(g, at, pa)
     nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, type_size(pa.elem))
     emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", elements, data, nbytes)
     emit_header_set(g, at, SLICE.len, n)
@@ -2012,11 +2012,11 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id) -> (data, bound: string, ok: bool) {
     if llvm_direct(e, base) { return }
     bt := graph_type(pg, base)
     at := e.value[base]
-    if fa := llvm_array(bt); fa != nil && llvm_is_byte(fa.elem) {
+    if fa := llvm_array(bt); fa != nil && is_byte_elem(fa.elem) {
         return at, fmt.tprintf("%d", fa.size), true
     }
     elem := llvm_header_elem(bt)
-    if elem == nil || !llvm_is_byte(elem) { return }
+    if elem == nil || !is_byte_elem(elem) { return }
     data = emit_header_field(g, at, SLICE.ptr)
     bound = emit_header_field(g, at, SLICE.cap)
     return data, bound, true
@@ -2605,7 +2605,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         }
         switch pl in classify(pt, os) {
         case Lowering_Direct:
-            if is_aggregate(pt) {
+            if llvm_aggregate(pt) {
                 for part, k in pl.parts {
                     at := v
                     if k > 0 {
@@ -2635,7 +2635,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
     e.value[op] = tmp
     // An aggregate returned in registers: put back together where it can be
     // read as one.
-    if direct, is_direct := ret_low.(Lowering_Direct); is_direct && is_aggregate(result) {
+    if direct, is_direct := ret_low.(Lowering_Direct); is_direct && llvm_aggregate(result) {
         at := fresh_tmp(g)
         emit_alloca(g, at, llvm_type_from_checker(result))
         if len(direct.parts) == 1 {
@@ -2919,7 +2919,6 @@ llvm_scalar :: proc(t: Type) -> bool {
 // union — is a value handled by its address: a param is a pointer to the
 // caller's, and reading one yields where it is; a copy re-points the partial
 // arrays in it at its own elements.
-@(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
     return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil || llvm_union(t) != nil
 }
@@ -3029,14 +3028,7 @@ llvm_param_type :: proc(t: Type) -> (string, bool) {
     return "", false
 }
 
-@(private="file")
-llvm_is_byte :: proc(t: Type) -> bool {
-    _, is_byte := distinct_base(t).(Type_Byte)
-    return is_byte
-}
-
 // Unsigned: unsigned ints, bytes, chars and bools.
-@(private="file")
 llvm_unsigned :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
     case Type_Numeric:                   return v.kind == .Unsigned
