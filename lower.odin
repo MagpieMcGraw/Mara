@@ -189,14 +189,8 @@ lw_return_local :: proc(k: ^TC, val: Tree_Id, want: Type) -> Token_Id {
     ref := tc_ref(k, e)
     if ref.kind != .Local { return 0 }
     vt := tc_node_type(k, val)
-    if ts, is_scope := vt.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global, lw_ident)
-        if tc_name(k, e) in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0) { return 0 }
-    }
-    _, to_ptr := distinct_base(want).(^Type_Ptr)
-    _, from_ptr := distinct_base(vt).(^Type_Ptr)
-    _, to_slice := distinct_base(want).(^Type_Slice)
-    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
-    if to_ptr == from_ptr && graph_header_of(want) && graph_partial_of(vt) || to_slice && from_array { return 0 }
+    if lw_names_fun(k, tc_name(k, e), vt) { return 0 }   // (a fun's name: its global, lw_ident)
+    if view_kind(want, vt) != .None { return 0 }
     if _, _, num := numeric_info(graph_settled(vt)); num && !(is_infer(vt) && infer_cell_of(vt) == nil) && graph_widens(graph_settled(vt), want) { return 0 }
     return ref.decl
 }
@@ -844,6 +838,13 @@ lw_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Build_Want
     return {v = graph_const(k.gb, w, span, t, "", Const_Value{int = i, float = f, is_float = is_float}), ok = true}
 }
 
+// Whether a name of type `t` is declared as a fun's — a fun's, a struct's
+// constructor's — and so names its global (lw_ident).
+lw_names_fun :: proc(k: ^TC, name: string, t: Type) -> bool {
+    ts, is_scope := t.(^Type_Scope)
+    return is_scope && !ts.is_module && name in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0)
+}
+
 // A name (tc_ident): a variant, a constant, `void`, a fun's name as a value,
 // else a variable — its place, or read.
 lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
@@ -862,8 +863,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
         return {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
     if ts, is_scope := t.(^Type_Scope); is_scope && !ts.is_module {
-        declared := name in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0)
-        if declared || ref.kind == .Fun && ts.kind == .Fun {
+        if lw_names_fun(k, name, t) || ref.kind == .Fun && ts.kind == .Fun {
             if want == .Place { return {} }
             return {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
         }
@@ -1080,7 +1080,7 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     }
     graph_build_if_expr_end(b, &gi)
     for bt, i in types {
-        if build_views(t, bt) { lw_fail(k, n, "an if's branch viewed") }
+        if view_kind(t, bt) != .None { lw_fail(k, n, "an if's branch viewed") }
     }
     lt := t
     if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {

@@ -1331,6 +1331,21 @@ graph_partial_of :: proc(t: Type) -> bool {
     return is_partial
 }
 
+// How a use of a `from` as a `to` views it: a partial array (or a pointer to
+// one) as a slice's header — a cast; a fixed array as a slice — of its
+// place; or it doesn't.
+View_Kind :: enum u8 { None, Header, Slice }
+
+view_kind :: proc(to, from: Type) -> View_Kind {
+    if to == nil || from == nil { return .None }
+    _, to_ptr := distinct_base(to).(^Type_Ptr)
+    _, from_ptr := distinct_base(from).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return .Header }
+    _, to_slice := distinct_base(to).(^Type_Slice)
+    _, from_array := distinct_base(from).(^Type_Fixed_Array)
+    return .Slice if to_slice && from_array else .None
+}
+
 
 // A binary operation: its operator, its type and its sides'.
 Graph_Work :: struct {
@@ -1744,8 +1759,7 @@ graph_spread_results :: proc(b: ^Graph_Builder, span: Span, sd: ^Scope_Body, par
         if i >= len(sd.fields) { break }
         f := sd.fields[i]
         val := Operand{c.op, i32(i)}
-        _, to_slice := distinct_base(f.type_).(^Type_Slice)
-        if _, from_array := distinct_base(rt).(^Type_Fixed_Array); to_slice && from_array {
+        if view_kind(f.type_, rt) == .Slice {
             slot := graph_slot(b, "temp", rt, span)
             graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, rt, span), val)
             val = graph_op_value(b, .Slice, .Implied, span, f.type_, "", graph_var(b, "temp", slot, rt, span))
@@ -2326,15 +2340,11 @@ graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read
     _, _, num := numeric_info(graph_settled(t))
     if !num && !graph_partial_of(t) || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
     to := graph_widen_to(w)
-    if !w.binary && to != nil {
-        _, to_ptr := distinct_base(to).(^Type_Ptr)
-        _, from_ptr := distinct_base(t).(^Type_Ptr)
-        _, to_slice := distinct_base(to).(^Type_Slice)
-        _, from_array := distinct_base(t).(^Type_Fixed_Array)
-        if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
-            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), read(b, v, place, t, read_span))   // (its header, as one)
+    if !w.binary {
+        #partial switch view_kind(to, t) {
+        case .Header: return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), read(b, v, place, t, read_span))
+        case .Slice:  if place { return graph_op_value(b, .Slice, .Implied, span, to, "", v) }
         }
-        if place && to_slice && from_array { return graph_op_value(b, .Slice, .Implied, span, to, "", v) }   // (its place, as a slice)
     }
     val := read(b, v, place, t, read_span)
     if val.op == NO_NODE || !graph_widens(graph_settled(graph_type(b.g, val.op)), to) { return val }

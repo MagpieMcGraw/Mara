@@ -43,18 +43,6 @@ build_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
     return false
 }
 
-// Whether a use of a `from` as a `to` views it: a fixed array as a slice; a
-// partial array, or a pointer to one, as a slice's header.
-build_views :: proc(to, from: Type) -> bool {
-    if to == nil || from == nil { return false }
-    _, to_ptr := distinct_base(to).(^Type_Ptr)
-    _, from_ptr := distinct_base(from).(^Type_Ptr)
-    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return true }
-    _, to_slice := distinct_base(to).(^Type_Slice)
-    _, from_array := distinct_base(from).(^Type_Fixed_Array)
-    return to_slice && from_array
-}
-
 // The type of the temporary a value is built in before it goes to `d`: the
 // destination's, once settled; nil leaves it the value's own.
 build_temp_type :: proc(d: Dest) -> Type {
@@ -133,7 +121,7 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
         case tc_name(k, e) == "void":             return false
         }
         if ts, is_scope := ty.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global)
-            if tc_name(k, e) in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0) || ref.kind == .Fun && ts.kind == .Fun { return false }
+            if lw_names_fun(k, tc_name(k, e), ty) || ref.kind == .Fun && ts.kind == .Fun { return false }
         }
         return true
     case .Field, .Dot_Ident:
@@ -227,18 +215,16 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
     used := false
     defer if held != NO_NODE && !used { lw_fail(k, e, "a temporary made before a value it never holds") }
     if to != nil {
-        _, to_slice := distinct_base(to).(^Type_Slice)
         _, from_array := distinct_base(t).(^Type_Fixed_Array)
         is_literal := k.t.tag[tc_unparen(k, e)] == .Array
         if _, at := lw_use_type(k, e, to, span); at != {} && !from_array {
             lw_fail(k, e, "a literal placed at its use, of no array")
         }
-        _, to_ptr := distinct_base(to).(^Type_Ptr)
-        _, from_ptr := distinct_base(t).(^Type_Ptr)
-        if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
+        view := view_kind(to, t)
+        if view == .Header {
             return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), lw_value(k, r, e, t))
         }
-        if to_slice && from_array {
+        if view == .Slice {
             if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
             if held == NO_NODE { lw_fail(k, e, "a slice of an array value") }
             used = true
@@ -286,17 +272,14 @@ lw_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, d: Dest, span: Span, set
     }
     if lw_builds_into(k, e) { lw_fail(k, e, "a value built in place, taken as one") }
     dt := graph_dest_type(b, d)
-    _, to_ptr := distinct_base(dt).(^Type_Ptr)
-    _, from_ptr := distinct_base(t).(^Type_Ptr)
-    if to_ptr == from_ptr && graph_header_of(dt) && graph_partial_of(t) {
+    view := view_kind(dt, t)
+    if view == .Header {
         // A partial array seen as a slice's header.
         v := graph_op_value(b, .Cast, .Implied, span, dt, type_name(dt), lw_value(k, r, e, t))
         graph_build_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
-    _, to_slice := distinct_base(dt).(^Type_Slice)
-    _, from_array := distinct_base(t).(^Type_Fixed_Array)
-    if to_slice && from_array {
+    if view == .Slice {
         if !r.place { lw_fail(k, e, "a slice of an array value") }
         v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
         graph_build_write_at(b, graph_dest_place(b, d, span), v, span)
