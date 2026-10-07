@@ -469,13 +469,16 @@ Graph_Builder :: struct {
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
     arena:      bool,    // the program has a scope arena: big values live on it
-    runs:       [dynamic]^Run,   // every run the code being built made, freed when it is done
+    runs:       [dynamic]^Run,   // every run the code being built made, kept for the next once it is done
+    run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
+    body_pool:  [dynamic]^Graph_Body,   // (bodies done, kept for the next: graph_body_new)
     nodes:      int,             // how many nodes the code being built has; the columns run ahead
     code:       Code,
     // Refers-to: each declaration made in the code being built — a fun's, a
     // struct's, a constant's; its defers' are its own — by the token that
     // declares it (graph_declare, graph_local).
     locals:     map[Token_Id]Node_Id,
+    locals_pool: [dynamic]map[Token_Id]Node_Id,   // (graph_locals_enter)
     // The compiler's own globals — this_program, context: their types, and
     // whether the code being built names one (graph_global).
     globals:       [2]Type,
@@ -571,13 +574,15 @@ graph_is_outside :: proc(b: ^Graph_Builder, d: Node_Id) -> bool {
 // The code being built's declarations, saved and emptied for another's.
 @(private="file")
 graph_locals_enter :: proc(b: ^Graph_Builder) -> (saved: map[Token_Id]Node_Id) {
-    saved, b.locals = b.locals, {}
+    saved = b.locals
+    b.locals = pop(&b.locals_pool) if len(b.locals_pool) > 0 else {}
     return
 }
 
 @(private="file")
 graph_locals_leave :: proc(b: ^Graph_Builder, saved: map[Token_Id]Node_Id) {
-    delete(b.locals)
+    graph_map_reuse(&b.locals)
+    append(&b.locals_pool, b.locals)
     b.locals = saved
 }
 
@@ -695,6 +700,16 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     for _, list in b.by_span { delete(list) }
     delete(b.by_span)
     delete(b.runs)
+    for r in b.run_pool {
+        delete(r.ops)
+        delete(r.waiting)
+        free(r)
+    }
+    delete(b.run_pool)
+    for f in b.body_pool { graph_body_drop(f) }
+    delete(b.body_pool)
+    for &m in b.locals_pool { delete(m) }
+    delete(b.locals_pool)
     delete(b.locals)
     delete(b.constant_names)
     delete(b.module_stmts)
@@ -918,11 +933,11 @@ graph_code_open :: proc(b: ^Graph_Builder) {
 // they are. Nil when it failed (graph_body_fail): it is left out.
 @(private="file")
 graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
-    defer {
+    defer {   // (its runs kept for the next code's, emptied)
         for r in b.runs {
-            delete(r.ops)
-            delete(r.waiting)
-            free(r)
+            clear(&r.ops)
+            clear(&r.waiting)
+            append(&b.run_pool, r)
         }
         clear(&b.runs)
     }
@@ -1539,7 +1554,7 @@ graph_code_end :: proc(b: ^Graph_Builder, saved: Code) {
 
 @(private="file")
 graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
-    r := new(Run)
+    r := pop(&b.run_pool) if len(b.run_pool) > 0 else new(Run)
     append(&b.runs, r)
     return r
 }
@@ -2278,7 +2293,7 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
     b.scope_of[id] = ts
-    f := new(Graph_Body)
+    f := graph_body_new(b)
     f.ts = ts
     b.body = f
     f.stmt, b.stmt = b.stmt, 0
@@ -2306,24 +2321,52 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = f.stmt
     b.body = nil
-    delete(f.stmts)
-    delete(f.fields)
-    delete(f.field_inits)
-    for _, ids in f.field_outs { delete(ids) }
-    delete(f.field_outs)
     // (Its end can find what it can't build: a scope's values on the arena.)
     if c := graph_code_close(b, f); c != nil {
         b.bodies[f.ts] = new_clone(Built_Code{g = c, defs = f.defs})
         f.defs = nil
     }
-    graph_body_free(f)
+    graph_body_free(b, f)
 }
 
 @(private="file")
-graph_body_free :: proc(f: ^Graph_Body) {
+graph_body_new :: proc(b: ^Graph_Builder) -> ^Graph_Body {
+    return pop(&b.body_pool) if len(b.body_pool) > 0 else new(Graph_Body)
+}
+
+// A body done: kept for the next, its maps emptied (its definitions went
+// with its code, if it was built).
+@(private="file")
+graph_body_free :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     delete(f.defs)
-    delete(f.arena_types)
+    for _, ids in f.field_outs { delete(ids) }
+    kept := Graph_Body{stmts = f.stmts, arena_types = f.arena_types, fields = f.fields,
+                       field_inits = f.field_inits, field_outs = f.field_outs}
+    graph_map_reuse(&kept.stmts)
+    graph_map_reuse(&kept.arena_types)
+    graph_map_reuse(&kept.fields)
+    graph_map_reuse(&kept.field_inits)
+    graph_map_reuse(&kept.field_outs)
+    f^ = kept
+    append(&b.body_pool, f)
+}
+
+@(private="file")
+graph_body_drop :: proc(f: ^Graph_Body) {
+    delete(f.stmts); delete(f.arena_types); delete(f.fields); delete(f.field_inits); delete(f.field_outs)
     free(f)
+}
+
+// A map emptied for its next use — or, grown big, given back: emptying
+// one goes over all it holds room for, and the next is most likely small.
+@(private="file")
+graph_map_reuse :: proc(m: ^$M/map[$K]$V) {
+    if cap(m^) > 256 {
+        delete(m^)
+        m^ = nil
+    } else {
+        clear(m)
+    }
 }
 
 // A value at the type a callee's param — or, `w.binary`, a binary
@@ -3414,7 +3457,7 @@ graph_build_def :: proc(b: ^Graph_Builder, d: Graph_Decl) {
 // once the value is) and a run entered from it.
 graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
     graph_code_open(b)
-    f := new(Graph_Body)
+    f := graph_body_new(b)
     f.const_decl = d
     b.body = f
     f.stmt, b.stmt = b.stmt, 0
@@ -3434,14 +3477,10 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = f.stmt
     b.body = nil
-    delete(f.stmts)
-    delete(f.fields)
-    delete(f.field_inits)
-    delete(f.field_outs)
     if c := graph_code_close(b, f); c != nil {
         b.consts[d.id] = new_clone(Built_Code{g = c, value = d.value})
     }
-    graph_body_free(f)
+    graph_body_free(b, f)
 }
 
 
