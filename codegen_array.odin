@@ -164,9 +164,7 @@ emit_text_into_array :: proc(g: ^Codegen, dst: string, text: string, total_bytes
         emit_memset_zero(g, dst, total_bytes)
         return
     }
-    global, n := get_string_literal(g, text)
-    src := fresh_tmp(g)
-    emit_string_gep(g, src, n, global)
+    src := get_string_literal(g, text)
     emit_memset_zero(g, dst, total_bytes)
     emit_memcpy(g, dst, src, len(text))
 }
@@ -241,15 +239,10 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: strin
     cmp := emit_byte_span_outside(g, offset, count, cap_val, size)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld\n", label)
-    err_name, err_len := get_string_literal(g, err_msg)
-    err_ptr := fresh_tmp(g)
-    emit_string_gep(g, err_ptr, err_len, err_name)
     bytes := fresh_tmp(g)
     emit(g, "  %s = mul %s %s, %d", bytes, w, count, size)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", err_ptr, w, offset, w, bytes, w, cap_val)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld\n", label),
+              fail_i64(offset), fail_i64(bytes), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 
     elem_ptr := fresh_tmp(g)
@@ -284,19 +277,13 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) 
 // Bounds check for byte-buffer access at offset [low, low+size), at
 // SLICE_LEN_IR: the caller has low and cap_val at that width.
 emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
-    w := SLICE_LEN_IR
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, low, fmt.tprintf("%d", size), cap_val)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size)
-    err_name, err_len := get_string_literal(g, err_msg)
-    err_ptr := fresh_tmp(g)
-    emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", err_ptr, w, low, w, cap_val)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size),
+              fail_i64(low), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 }
 
@@ -579,12 +566,8 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     src_err := fresh_label(g, "byte.view.err")
     emit_cond_br(g, emit_byte_span_outside(g, src_low, src_bytes, src_cap), src_err, src_ok)
     emit_label(g, src_err)
-    src_global, src_len := get_string_literal(g, "runtime error: byte buffer view out of bounds: offset %lld + %lld > capacity %lld\n")
-    src_msg := fresh_tmp(g)
-    emit_string_gep(g, src_msg, src_len, src_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", src_msg, w, src_low, w, src_bytes, w, src_cap)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, "runtime error: byte buffer view out of bounds: offset %lld + %lld > capacity %lld\n",
+              fail_i64(src_low), fail_i64(src_bytes), fail_i64(src_cap))
     emit_label(g, src_ok)
 
     // Runtime check 1: src_bytes % elem_bytes == 0.
@@ -596,13 +579,8 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     emit(g, "  %s = icmp ne %s %s, 0", rem_cmp, w, rem)
     emit_cond_br(g, rem_cmp, rem_err, rem_ok)
     emit_label(g, rem_err)
-    rem_msg := fmt.tprintf("runtime error: partial-array byte read at offset %%d: %%d bytes not divisible by elem size %d\n", elem_bytes)
-    rem_global, rem_byte_len := get_string_literal(g, rem_msg)
-    rem_ptr := fresh_tmp(g)
-    emit_string_gep(g, rem_ptr, rem_byte_len, rem_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", rem_ptr, w, src_low, w, src_bytes)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("runtime error: partial-array byte read at offset %%lld: %%lld bytes not divisible by elem size %d\n", elem_bytes),
+              fail_i64(src_low), fail_i64(src_bytes))
     emit_label(g, rem_ok)
 
     // count = src_bytes / elem_bytes.
@@ -617,13 +595,8 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     emit(g, "  %s = icmp ugt %s %s, %s", cap_cmp, w, count, cap_str)
     emit_cond_br(g, cap_cmp, cap_err, cap_ok)
     emit_label(g, cap_err)
-    cap_msg := fmt.tprintf("runtime error: partial-array byte read at offset %%d: produced %%d elements, exceeds cap %d\n", cap_n)
-    cap_global, cap_byte_len := get_string_literal(g, cap_msg)
-    cap_msg_ptr := fresh_tmp(g)
-    emit_string_gep(g, cap_msg_ptr, cap_byte_len, cap_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", cap_msg_ptr, w, src_low, w, count)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("runtime error: partial-array byte read at offset %%lld: produced %%lld elements, exceeds cap %d\n", cap_n),
+              fail_i64(src_low), fail_i64(count))
     emit_label(g, cap_ok)
 
     // memcpy(elements_ptr, src_data_ptr + src_low, src_bytes).
@@ -749,8 +722,8 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
 
     emit_label(g, fail_label)
     loc := span_location(span)
-    loc_global,  _ := get_string_literal(g, loc)
-    name_global, _ := get_string_literal(g, "slice")
+    loc_global := get_string_literal(g, loc)
+    name_global := get_string_literal(g, "slice")
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
         __MARA_SLICE_LEN_FAIL, loc_global, w, val, w, cap_val, name_global)
     emit(g, "  unreachable")

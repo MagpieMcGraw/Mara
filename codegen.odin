@@ -374,20 +374,6 @@ emit_alloca_runtime :: proc(g: ^Codegen, dst, elem_ir, count_ir, count_ssa: stri
     }
 }
 
-// `  <dst> = getelementptr [<byte_len> x i8], ptr <global>, i64 0, i64 0\n`
-// String-literal address: turn a `@.strN` global into a `ptr` SSA. Used for
-// every printf format reference and string-literal byte buffer.
-emit_string_gep :: proc(g: ^Codegen, dst: string, byte_len: int, global: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = getelementptr [")
-    strings.write_int(b, byte_len)
-    strings.write_string(b, " x i8], ptr ")
-    strings.write_string(b, global)
-    strings.write_string(b, ", i64 0, i64 0\n")
-}
-
 // `  call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)\n`
 emit_memcpy :: proc(g: ^Codegen, dst, src: string, bytes: int) {
     b := emit_target(g)
@@ -665,10 +651,8 @@ llvm_type_from_checker :: proc(t: Type) -> string {
 // Get or create a string literal global
 // ---------------------------------------------------------------------------
 
-get_string_literal :: proc(g: ^Codegen, s: string) -> (global_name: string, byte_len: int) {
-    if name, ok := g.string_literals[s]; ok {
-        return name, len(s) + 1 // +1 for null terminator
-    }
+get_string_literal :: proc(g: ^Codegen, s: string) -> string {
+    if name, ok := g.string_literals[s]; ok { return name }
     // Named by content, not by order: a string's name doesn't depend on the
     // strings emitted before it, so one function's IR stays the same when
     // another changes. The per-worker prefix keeps the parallel codegens'
@@ -690,7 +674,7 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> (global_name: string, byte
     decl := fmt.tprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"", name, byte_length + 1, escaped)
     append(&g.string_decls, decl)
 
-    return name, byte_length + 1
+    return name
 }
 
 // Escape string for LLVM IR constant — iterates over raw bytes to preserve
@@ -727,89 +711,37 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // Runtime safety checks
 // ---------------------------------------------------------------------------
 
-// Emit a runtime bounds check: if idx < 0 or idx >= len, print error and exit(1).
-// Both `idx` and `len` are at slice header width (SLICE_LEN_IR).
-// `name` is the variable name for the error message.
-// Module-level helpers for the runtime fail blocks. Emitted once per module;
-// per-site fail blocks shrink to `call helper(...) + unreachable`. `loc` and
-// `name` are passed as ptr args referencing get_string_literal globals —
-// those already dedupe, so identical loc/name across many sites share
-// storage. Functions are `internal` linkage so the linker dead-strips any
-// unused kind. Helper names are constants so call sites stay readable.
+// The runtime checks' failures, each a function of its own the checks call
+// (the main TU defines them, the others declare them): its name, its params
+// — where it failed first, a string global's address — and its message.
+// Each reports as any runtime failure does (emit_fail). (An assert's message
+// is its own, built where it is: emit_assert_fail.)
 __MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
 __MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "@__mara_match_fail"
-// (assert has no helper: its failure message is a per-site printf format
-// assembled at codegen time — emit_assert_fail.)
+
+Runtime_Fail :: struct { name, params, message: string }
+
+RUNTIME_FAILS := [?]Runtime_Fail{
+    {__MARA_BOUNDS_FAIL,    "ptr %loc, i64 %idx, i64 %len, ptr %name",    "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
+    {__MARA_OVERFLOW_FAIL,  "ptr %loc",                                   "%s runtime error: integer overflow\n"},
+    {__MARA_DIVZ_FAIL,      "ptr %loc",                                   "%s runtime error: division by zero\n"},
+    {__MARA_SLICE_LEN_FAIL, "ptr %loc, i64 %new_len, i64 %cap, ptr %name", "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
+    {__MARA_MATCH_FAIL,     "ptr %loc, i64 %tag",                         "%s runtime error: match on an invalid tag %lld\n"},
+}
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
-    // Register format strings as deduped globals via the normal literals path.
-    fmt_bounds,    _ := get_string_literal(g, "%s runtime error: index %d out of bounds [0, %d) for '%s'\n")
-    fmt_overflow,  _ := get_string_literal(g, "%s runtime error: integer overflow\n")
-    fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
-    fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
-    fmt_match,     _ := get_string_literal(g, "%s runtime error: match on an invalid tag %lld\n")
-
-    b: strings.Builder
-    strings.builder_init(&b)
+    b := strings.builder_make()
     strings.write_string(&b, "; Runtime fail-block helpers (hoisted)\n")
-
-    // bounds: (loc, idx, len, name). idx / len at slice header width (i32).
-    //
-    // Default (external) linkage so per-module .ll files can reference these
-    // via `declare` lines instead of duplicating the definition. Main TU
-    // owns the definition; every other TU gets just the declare.
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_BOUNDS_FAIL)
-    strings.write_string(&b, "(ptr %loc, i32 %idx, i32 %len, ptr %name) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_bounds,
-        ", ptr %loc, i32 %idx, i32 %len, ptr %name)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
-    // overflow: (loc)
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_OVERFLOW_FAIL)
-    strings.write_string(&b, "(ptr %loc) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_overflow, ", ptr %loc)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
-    // divz: (loc)
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_DIVZ_FAIL)
-    strings.write_string(&b, "(ptr %loc) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_divz, ", ptr %loc)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
-    // slice_len: (loc, new_len, cap, name). Fires on direct `s.len = X` writes
-    // where X is outside [0, cap] — keeps the slice invariant honest even when
-    // user code (FFI fill patterns, manual bookkeeping) sets len directly.
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_SLICE_LEN_FAIL)
-    strings.write_string(&b, "(ptr %loc, i32 %new_len, i32 %cap, ptr %name) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_slice_len,
-        ", ptr %loc, i32 %new_len, i32 %cap, ptr %name)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
-    // match: (loc, tag). A match covers every variant, so another tag is
-    // corrupt memory (a union read from bytes, say).
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_MATCH_FAIL)
-    strings.write_string(&b, "(ptr %loc, i64 %tag) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_match, ", ptr %loc, i64 %tag)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
+    for f in RUNTIME_FAILS {
+        fmt.sbprintf(&b, "define void %s(%s) %s\n", f.name, f.params, "{")
+        if !g.web { strings.write_string(&b, "  call void @__mara_crash_begin()\n") }
+        fmt.sbprintf(&b, "  call i32 (ptr, ...) %s(ptr %s, %s)\n", "@printf" if g.web else "@__mara_tee_printf", get_string_literal(g, f.message), f.params)
+        if !g.web { strings.write_string(&b, "  call void @__mara_crash_end()\n") }
+        strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+    }
     // print_err: prints the qualified name of a u32 error value (set_id<<16 |
     // tag). One switch case per (set_id, tag) pair across all error_kinds
     // in the program; the 0 case is the universal `.Ok` and the default falls
@@ -817,7 +749,6 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // print sites call this; concrete error_kind print sites still use the
     // inline switch from gen_print_enum.
     strings.write_string(&b, runtime_print_err_helper_ir(g))
-
     return strings.to_string(b)
 }
 
@@ -834,14 +765,13 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
     }
     slice.sort_by(cases[:], proc(a, b: Variant_Case) -> bool { return a.value < b.value })
 
-    // Register all the format strings via the global literal cache so each
-    // one becomes a stable rodata global the helper can GEP.
-    ok_str, _ := get_string_literal(g, "Ok")
-    fmt_str_s, _ := get_string_literal(g, "%s")
-    fmt_unknown, _ := get_string_literal(g, "?(%u)")
+    // (Each string a global of the literal cache's: its address.)
+    ok_str := get_string_literal(g, "Ok")
+    fmt_str_s := get_string_literal(g, "%s")
+    fmt_unknown := get_string_literal(g, "?(%u)")
     case_strs := make([dynamic]string, 0, len(cases), context.temp_allocator)
     for c in cases {
-        s, _ := get_string_literal(g, c.qualified_name)
+        s := get_string_literal(g, c.qualified_name)
         append(&case_strs, s)
     }
 
@@ -854,31 +784,17 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
         strings.write_string(&b, fmt.tprintf("    i32 %d, label %%case_%d\n", c.value, i))
     }
     strings.write_string(&b, "  ]\nok:\n")
-    strings.write_string(&b, strings.concatenate({
-        "  %ok_s = getelementptr [3 x i8], ptr ", ok_str, ", i64 0, i64 0\n",
-        "  %fmt_s = getelementptr [3 x i8], ptr ", fmt_str_s, ", i64 0, i64 0\n",
-        "  call i32 (ptr, ...) @printf(ptr %fmt_s, ptr %ok_s)\n",
-        "  ret void\n",
-    }))
-    for c, i in cases {
-        lit_global := case_strs[i]
-        lit_len := len(c.qualified_name) + 1
-        strings.write_string(&b, fmt.tprintf("case_%d:\n", i))
-        strings.write_string(&b, fmt.tprintf("  %%cs_%d = getelementptr [%d x i8], ptr %s, i64 0, i64 0\n", i, lit_len, lit_global))
-        strings.write_string(&b, fmt.tprintf("  %%fs_%d = getelementptr [3 x i8], ptr %s, i64 0, i64 0\n", i, fmt_str_s))
-        strings.write_string(&b, fmt.tprintf("  call i32 (ptr, ...) @printf(ptr %%fs_%d, ptr %%cs_%d)\n", i, i))
-        strings.write_string(&b, "  ret void\n")
+    fmt.sbprintf(&b, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)\n  ret void\n", fmt_str_s, ok_str)
+    for s, i in case_strs {
+        fmt.sbprintf(&b, "case_%d:\n  call i32 (ptr, ...) @printf(ptr %s, ptr %s)\n  ret void\n", i, fmt_str_s, s)
     }
-    strings.write_string(&b, "unknown:\n")
-    strings.write_string(&b, strings.concatenate({
-        "  %unk_fmt = getelementptr [6 x i8], ptr ", fmt_unknown, ", i64 0, i64 0\n",
-        "  call i32 (ptr, ...) @printf(ptr %unk_fmt, i32 %val)\n",
-        "  ret void\n",
-    }))
-    strings.write_string(&b, "}\n")
+    fmt.sbprintf(&b, "unknown:\n  call i32 (ptr, ...) @printf(ptr %s, i32 %%val)\n  ret void\n}\n", fmt_unknown)
     return strings.to_string(b)
 }
 
+// A runtime bounds check: idx < 0 or idx >= len fails (__mara_bounds_fail);
+// both at slice header width (SLICE_LEN_IR). `name` is the array's, for the
+// message.
 emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}) {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
@@ -903,8 +819,8 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
 
     emit_label(g, fail_label)
     loc := span_location(span)
-    loc_global,  _ := get_string_literal(g, loc)
-    name_global, _ := get_string_literal(g, name)
+    loc_global := get_string_literal(g, loc)
+    name_global := get_string_literal(g, name)
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
         __MARA_BOUNDS_FAIL, loc_global, w, idx, w, len_val, name_global)
     emit(g, "  unreachable")
@@ -941,7 +857,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
 
     emit_label(g, fail_label)
     loc := span_location(span)
-    loc_global, _ := get_string_literal(g, loc)
+    loc_global := get_string_literal(g, loc)
     emit(g, "  call void %s(ptr %s)", __MARA_DIVZ_FAIL, loc_global)
     emit(g, "  unreachable")
 
@@ -955,15 +871,8 @@ emit_range_check :: proc(g: ^Codegen, up: string, span: Span) {
     emit_cond_br(g, up, ok_label, bad_label)
 
     emit_label(g, bad_label)
-    emit_crash_journal_begin(g)
-    loc := span_location(span)
-    esc_loc, _ := strings.replace_all(loc, "%", "%%")
-    msg, _ := get_string_literal(g, strings.concatenate(
-        {"Descending range at ", esc_loc, " -- `..` only counts up (low > high); use a C-style for to count down.\n"}))
-    emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), msg)
-    emit_crash_journal_end(g)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+    emit_fail(g, fmt.tprintf("Descending range at %s -- `..` only counts up (low > high); use a C-style for to count down.\n", loc))
 
     emit_label(g, ok_label)
 }
@@ -1003,7 +912,7 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
 
     emit_label(g, fail_label)
     loc := span_location(span)
-    loc_global, _ := get_string_literal(g, loc)
+    loc_global := get_string_literal(g, loc)
     emit(g, "  call void %s(ptr %s)", __MARA_OVERFLOW_FAIL, loc_global)
     emit(g, "  unreachable")
 
@@ -1102,13 +1011,9 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     tmp_slice := fresh_tmp(g)
     emit_slice_alloca(g, tmp_slice)
     // Get a pointer to the name string literal
-    name_global, name_len := get_string_literal(g, name)
-    name_ptr := fresh_tmp(g)
-    emit_string_gep(g, name_ptr, name_len, name_global)
+    name_ptr := get_string_literal(g, name)
     // Get a pointer to the span/location string literal
-    span_global, span_len := get_string_literal(g, loc)
-    span_ptr := fresh_tmp(g)
-    emit_string_gep(g, span_ptr, span_len, span_global)
+    span_ptr := get_string_literal(g, loc)
     // sret goes last, after the regular params. The size operand width matches
     // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
     // alloc hands back a `[]byte`, the size shares the slice header width.
@@ -1246,7 +1151,7 @@ emit_match_fail :: proc(g: ^Codegen, span: Span, tag, tag_ir: string, unsigned: 
         wide = fresh_tmp(g)
         emit(g, "  %s = %s %s %s to i64", wide, "zext" if unsigned else "sext", tag_ir, tag)
     }
-    loc_global, _ := get_string_literal(g, span_location(span))
+    loc_global := get_string_literal(g, span_location(span))
     emit(g, "  call void %s(ptr %s, i64 %s)", __MARA_MATCH_FAIL, loc_global, wide)
     emit(g, "  unreachable")
 }

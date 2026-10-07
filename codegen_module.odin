@@ -886,11 +886,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, fail_helpers_ir)
     } else {
         strings.write_string(&b, "; Runtime fail-block helpers (extern)\n")
-        strings.write_string(&b, "declare void @__mara_bounds_fail(ptr, i32, i32, ptr)\n")
-        strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
-        strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
-        strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
-        strings.write_string(&b, "declare void @__mara_match_fail(ptr, i64)\n")
+        for f in RUNTIME_FAILS { fmt.sbprintf(&b, "declare void %s(%s)\n", f.name, f.params) }
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')
@@ -1144,12 +1140,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
         emit_raw(g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
         emit_raw(g, strings.concatenate({args_err_lbl, ":"}))
-        args_err_name, args_err_len := get_string_literal(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n")
-        args_err_ptr := fresh_tmp(g)
-        emit_string_gep(g, args_err_ptr, args_err_len, args_err_name)
-        emit_raw(g, strings.concatenate({"  call i32 (ptr, ...) @printf(ptr ", args_err_ptr, ", i32 %argc)"}))
-        emit_raw(g, "  call void @exit(i32 1)")
-        emit_raw(g, "  unreachable")
+        emit_fail(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n", "i32 %argc")
         emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
         argc_min := "%argc" // every argument fits from here on
 

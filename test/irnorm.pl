@@ -11,7 +11,8 @@
 #     only address arithmetic);
 #   - a constant's width changed, which is that constant at the new width,
 #     and integer arithmetic of constants, which is its result; a pointer
-#     bitcast to a pointer, which is that pointer;
+#     bitcast to a pointer, which is that pointer, and a getelementptr
+#     whose indices are all 0, which is its base;
 #   - address arithmetic whose shape can't matter: `inbounds`, a constant
 #     index's width (it is sign-extended to the pointer's: `i32 1` and
 #     `i64 1` step alike), an unused getelementptr, a chain of them folded
@@ -154,6 +155,12 @@ sub fold_widths {
             }
             # A pointer cast to a pointer is the pointer.
             if (/^\s+(%[-\w.\$]+) = bitcast ptr (%[-\w.\$]+|\@[-\w.\$]+) to ptr$/) {
+                $const{$1} = $2;
+                next;
+            }
+            # An address 0 elements in (`getelementptr [N x i8], ptr @s, i64 0,
+            # i64 0`) is the address.
+            if (/^\s+(%[-\w.\$]+) = getelementptr (?:inbounds )?[^,]+, ptr (%[-\w.\$]+|\@[-\w.\$]+)(?:, i\d+ 0)+$/) {
                 $const{$1} = $2;
                 next;
             }

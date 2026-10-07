@@ -108,8 +108,8 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
         v := side.val
         switch {
         case is_bool:
-            t_global, _ := get_string_literal(g, "true")
-            f_global, _ := get_string_literal(g, "false")
+            t_global := get_string_literal(g, "true")
+            f_global := get_string_literal(g, "false")
             sel := fresh_tmp(g)
             emit(g, "  %s = select i1 %s, ptr %s, ptr %s", sel, side.val, t_global, f_global)
             fmt.sbprintf(&args, ", ptr %s", sel)
@@ -146,7 +146,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
 // inline switch, which does its own printf calls mid-message.
 assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^strings.Builder) {
     if strings.builder_len(msg^) == 0 { return }
-    msg_global, _ := get_string_literal(g, strings.to_string(msg^))
+    msg_global := get_string_literal(g, strings.to_string(msg^))
     emit(g, "  call i32 (ptr, ...) %s(ptr %s%s)", printf_sym(g), msg_global, strings.to_string(args^))
     strings.builder_reset(msg)
     strings.builder_reset(args)
@@ -166,6 +166,26 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
     if g.web { return }
     g.tee = false
     emit(g, "  call void @__mara_crash_end()")
+}
+
+// A runtime failure: the journal opens, the message prints — `message`, a C
+// format, and its `args`, each "<IR type> <value>" — and the program exits.
+// Nothing runs after it.
+emit_fail :: proc(g: ^Codegen, message: string, args: ..string) {
+    emit_crash_journal_begin(g)
+    call := strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&call, "  call i32 (ptr, ...) %s(ptr %s", printf_sym(g), get_string_literal(g, message))
+    for a in args { fmt.sbprintf(&call, ", %s", a) }
+    strings.write_byte(&call, ')')
+    emit_raw(g, strings.to_string(call))
+    emit_crash_journal_end(g)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+}
+
+// A value at slice header width (SLICE_LEN_IR), as emit_fail's argument.
+fail_i64 :: proc(v: string) -> string {
+    return fmt.tprintf("i64 %s", v)
 }
 
 // ---------------------------------------------------------------------------
@@ -235,14 +255,8 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span:
     emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
-    loc := span_location(span)
-    err_msg := fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc)
-    err_name, err_len := get_string_literal(g, err_msg)
-    err_ptr := fresh_tmp(g)
-    emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+    emit_fail(g, fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc))
     emit_label(g, pass_lbl)
     return src_ptr
 }
@@ -311,20 +325,13 @@ is_plain_data :: proc(t: Type) -> bool {
 // the same scope lands in a fresh dead block — IR after `unreachable` is
 // invalid.
 emit_crash :: proc(g: ^Codegen, span: Span, msg: string) {
-    emit_crash_journal_begin(g)
-
-    // Location line, same family as the assert message.
-    loc := span_location(span)
-    esc_loc, _ := strings.replace_all(loc, "%", "%%", context.temp_allocator)
-    loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}, context.temp_allocator))
-    emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), loc_global)
+    // (The location line, as an assert's.)
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     if msg != "" {
-        emit_printf_ptr(g, emit_fmt_ptr(g, "%s"), msg)
-        emit_print_newline(g)
+        emit_fail(g, fmt.tprintf("Crashed at %s\n%%s\n", loc), fmt.tprintf("ptr %s", msg))
+    } else {
+        emit_fail(g, fmt.tprintf("Crashed at %s\n", loc))
     }
-    emit_crash_journal_end(g)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
     emit_label(g, fresh_label(g, "crash.dead"))
 }
 
@@ -362,7 +369,7 @@ raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
 }
 
 emit_print_raw :: proc(g: ^Codegen, spec, ir, val: string) {
-    emit(g, "  call i32 (ptr, ...) %s(ptr %s, %s %s)", printf_sym(g), emit_fmt_ptr(g, spec), ir, val)
+    emit(g, "  call i32 (ptr, ...) %s(ptr %s, %s %s)", printf_sym(g), get_string_literal(g, spec), ir, val)
 }
 
 // Text of `n` bytes at `data`, printed.
@@ -443,19 +450,13 @@ emit_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Print_Arg, call_
 
 // Emit a printf("%s", literal) for an inline static string.
 emit_print_literal :: proc(g: ^Codegen, s: string) {
-    str_name, str_len := get_string_literal(g, s)
-    str_ptr := fresh_tmp(g)
-    emit_string_gep(g, str_ptr, str_len, str_name)
-    fmt_name, fmt_len := get_string_literal(g, "%s")
-    fmt_ptr := fresh_tmp(g)
-    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    str_ptr := get_string_literal(g, s)
+    fmt_ptr := get_string_literal(g, "%s")
     emit_printf_ptr(g, fmt_ptr, str_ptr)
 }
 
 emit_print_newline :: proc(g: ^Codegen) {
-    nl_name, nl_len := get_string_literal(g, "\n")
-    nl_ptr := fresh_tmp(g)
-    emit_string_gep(g, nl_ptr, nl_len, nl_name)
+    nl_ptr := get_string_literal(g, "\n")
     emit_printf_void(g, nl_ptr)
 }
 
@@ -465,28 +466,11 @@ emit_print_newline :: proc(g: ^Codegen) {
 // an i64 vararg slot → invalid IR) or sext it to a garbage value (array: true
 // → -1).
 gen_print_bool :: proc(g: ^Codegen, val_i1: string) {
-    true_name, true_len := get_string_literal(g, "true")
-    false_name, false_len := get_string_literal(g, "false")
-    true_ptr := fresh_tmp(g)
-    emit_string_gep(g, true_ptr, true_len, true_name)
-    false_ptr := fresh_tmp(g)
-    emit_string_gep(g, false_ptr, false_len, false_name)
+    true_ptr := get_string_literal(g, "true")
+    false_ptr := get_string_literal(g, "false")
     bool_str := fresh_tmp(g)
     emit(g, "  %s = select i1 %s, ptr %s, ptr %s", bool_str, val_i1, true_ptr, false_ptr)
-    fmt_name, fmt_len := get_string_literal(g, "%s")
-    fmt_ptr := fresh_tmp(g)
-    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-    emit_printf_ptr(g, fmt_ptr, bool_str)
-}
-
-// Print a struct as: StructName { field1: val1, field2: val2 }
-// Build a printf format-string pointer for `spec` — folds the get_string_literal
-// + GEP pair that every print site otherwise repeats by hand.
-emit_fmt_ptr :: proc(g: ^Codegen, spec: string) -> string {
-    name, n := get_string_literal(g, spec)
-    p := fresh_tmp(g)
-    emit_string_gep(g, p, n, name)
-    return p
+    emit_printf_ptr(g, get_string_literal(g, "%s"), bool_str)
 }
 
 // Print an already-loaded scalar VALUE given its Mara type — the single source
@@ -503,7 +487,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         // utf8 scalar = a character: render the glyph, not the code point.
         ext := fresh_tmp(g)
         emit(g, "  %s = zext i8 %s to i32", ext, val)
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, "%c"), ext)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, "%c"), ext)
         return
     }
     if et, ok := bt.(^Type_Enum); ok {
@@ -519,11 +503,11 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         spec := "%p"
         if _, b := pt.elem.(Type_Byte); b { spec = "%s" }
         if _, u := pt.elem.(Type_Utf8); u { spec = "%s" }
-        emit_printf_ptr(g, emit_fmt_ptr(g, spec), val)
+        emit_printf_ptr(g, get_string_literal(g, spec), val)
         return
     }
     if _, ok := bt.(Type_CString); ok {
-        emit_printf_ptr(g, emit_fmt_ptr(g, "%s"), val)
+        emit_printf_ptr(g, get_string_literal(g, "%s"), val)
         return
     }
 
@@ -534,26 +518,26 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
     nt := llvm_type_from_checker(ty)
     switch nt {
     case "double":
-        emit_printf_double(g, emit_fmt_ptr(g, "%g"), val)
+        emit_printf_double(g, get_string_literal(g, "%g"), val)
     case "float":
         ext := fresh_tmp(g)
         emit(g, "  %s = fpext float %s to double", ext, val)
-        emit_printf_double(g, emit_fmt_ptr(g, "%g"), ext)
+        emit_printf_double(g, get_string_literal(g, "%g"), ext)
     case "half":
         ext := fresh_tmp(g)
         emit(g, "  %s = fpext half %s to double", ext, val)
-        emit_printf_double(g, emit_fmt_ptr(g, "%g"), ext)
+        emit_printf_double(g, get_string_literal(g, "%g"), ext)
     case "i64":
-        emit_printf_i64(g, emit_fmt_ptr(g, is_unsigned ? "%llu" : "%lld"), val)
+        emit_printf_i64(g, get_string_literal(g, is_unsigned ? "%llu" : "%lld"), val)
     case "i32":
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, is_unsigned ? "%u" : "%d"), val)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, is_unsigned ? "%u" : "%d"), val)
     case "i1":
         gen_print_bool(g, val)
     case "i8", "i16":
         // C varargs promote sub-int integers to int (i32).
         ext := fresh_tmp(g)
         emit(g, "  %s = %s %s %s to i32", ext, is_unsigned ? "zext" : "sext", nt, val)
-        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, is_unsigned ? "%u" : "%d"), ext)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), get_string_literal(g, is_unsigned ? "%u" : "%d"), ext)
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
     }
@@ -627,9 +611,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
 // not a field.
 gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "") {
     say :: proc(g: ^Codegen, text: string) {
-        name, n := get_string_literal(g, text)
-        ptr := fresh_tmp(g)
-        emit_string_gep(g, ptr, n, name)
+        ptr := get_string_literal(g, text)
         emit_printf_void(g, ptr)
     }
     st_llvm := struct_llvm_name(st.name)
@@ -768,9 +750,7 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
 
     emit_label(g, unknown_lbl)
     emit_print_literal(g, fmt.tprintf("%s(", et.source_name if et.source_name != "" else et.name))
-    fmt_name, fmt_len := get_string_literal(g, tag_ir == "i64" ? "%lld" : "%d")
-    fmt_ptr := fresh_tmp(g)
-    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    fmt_ptr := get_string_literal(g, tag_ir == "i64" ? "%lld" : "%d")
     switch tag_ir {
     case "i64":
         emit_printf_i64(g, fmt_ptr, val)
@@ -793,17 +773,13 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
 
 // Print a flat array inline: [v1, v2, v3]
 gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_type: string, elem_ty: Type) {
-    open_name, open_len := get_string_literal(g, "[")
-    open_ptr := fresh_tmp(g)
-    emit_string_gep(g, open_ptr, open_len, open_name)
+    open_ptr := get_string_literal(g, "[")
     emit_printf_void(g, open_ptr)
 
     arr_type := fmt.tprintf("[%d x %s]", cap, elem_type)
     for i := 0; i < cap; i += 1 {
         if i > 0 {
-            sep_name, sep_len := get_string_literal(g, ", ")
-            sep_ptr := fresh_tmp(g)
-            emit_string_gep(g, sep_ptr, sep_len, sep_name)
+            sep_ptr := get_string_literal(g, ", ")
             emit_printf_void(g, sep_ptr)
         }
         gep := fresh_tmp(g)
@@ -811,9 +787,7 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
         emit_print_at_addr(g, gep, elem_ty)
     }
 
-    close_name, close_len := get_string_literal(g, "]")
-    close_ptr := fresh_tmp(g)
-    emit_string_gep(g, close_ptr, close_len, close_name)
+    close_ptr := get_string_literal(g, "]")
     emit_printf_void(g, close_ptr)
 }
 
@@ -826,16 +800,12 @@ gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, in
     inner_elem_ty: Type = nil
     if fa, ok := distinct_base(row_ty).(^Type_Fixed_Array); ok { inner_elem_ty = fa.elem }
 
-    open_name, open_len := get_string_literal(g, "[")
-    open_ptr := fresh_tmp(g)
-    emit_string_gep(g, open_ptr, open_len, open_name)
+    open_ptr := get_string_literal(g, "[")
     emit_printf_void(g, open_ptr)
 
     for i := 0; i < outer_cap; i += 1 {
         if i > 0 {
-            sep_name, sep_len := get_string_literal(g, ", ")
-            sep_ptr := fresh_tmp(g)
-            emit_string_gep(g, sep_ptr, sep_len, sep_name)
+            sep_ptr := get_string_literal(g, ", ")
             emit_printf_void(g, sep_ptr)
         }
         row_gep := fresh_tmp(g)
@@ -843,9 +813,7 @@ gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, in
         gen_print_array_inline(g, row_gep, inner_cap, inner_elem, inner_elem_ty)
     }
 
-    close_name, close_len := get_string_literal(g, "]")
-    close_ptr := fresh_tmp(g)
-    emit_string_gep(g, close_ptr, close_len, close_name)
+    close_ptr := get_string_literal(g, "]")
     emit_printf_void(g, close_ptr)
 }
 
@@ -854,7 +822,7 @@ gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, in
 // recurses through emit_print_at_addr so element structs / nested arrays render
 // too. Fixed arrays use the compile-time gen_print_array_inline instead.
 gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
-    emit_printf_void(g, emit_fmt_ptr(g, "["))
+    emit_printf_void(g, get_string_literal(g, "["))
     data := emit_array_data(g, h)
     n := emit_array_len(g, h)
     w := SLICE_LEN_IR
@@ -885,7 +853,7 @@ gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
     emit(g, "  %s = icmp eq %s %s, 0", is_first, w, i2)
     emit_cond_br(g, is_first, nosep_l, sep_l)
     emit_label(g, sep_l)
-    emit_printf_void(g, emit_fmt_ptr(g, ", "))
+    emit_printf_void(g, get_string_literal(g, ", "))
     emit_br(g, after_l)
     emit_label(g, nosep_l)
     emit_br(g, after_l)
@@ -899,7 +867,7 @@ gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
     emit_br(g, cond_l)
 
     emit_label(g, end_l)
-    emit_printf_void(g, emit_fmt_ptr(g, "]"))
+    emit_printf_void(g, get_string_literal(g, "]"))
 }
 
 // Array_Handle is print's view of "something array-shaped": a fixed array
@@ -955,9 +923,7 @@ emit_array_data :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
 // works for fixed and dynamic storage. Callers should have already
 // established that the handle is utf8.
 emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
-    fmt_name, fmt_len := get_string_literal(g, "%.*s")
-    fmt_ptr := fresh_tmp(g)
-    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    fmt_ptr := get_string_literal(g, "%.*s")
     data_ptr := emit_array_data(g, h)
     // C's printf `%.*s` precision is an `int` (i32): the header's i64 length,
     // narrowed.

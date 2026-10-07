@@ -974,7 +974,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // terminating 0 counts).
         if text, is_text := llvm_text(e, base); is_text {
             i := llvm_operand(e, ops[1], slice_header_width_type) or_return
-            global, n := get_string_literal(g, text)
+            global := get_string_literal(g, text)
+            n := llvm_string_byte_length(text) + 1
             name := graph_place_name(pg, ops[0])
             emit_bounds_check(g, i, fmt.tprintf("%d", n), name if name != "" else "array", span)
             tmp := fresh_tmp(g)
@@ -1161,9 +1162,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if c, has := graph_value(pg, op); has && c.is_text {
-            global, n := get_string_literal(g, c.text)
-            tmp := fresh_tmp(g)
-            emit_string_gep(g, tmp, n, global)
+            tmp := get_string_literal(g, c.text)
             e.value[op] = tmp
             return true
         }
@@ -1946,12 +1945,8 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit(g, "  %s = icmp sgt %s %s, %s", hi_cmp, w, hi, dst.bound)
     emit_cond_br(g, hi_cmp, hi_err, hi_ok)
     emit_label(g, hi_err)
-    msg_global, msg_len := get_string_literal(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%d > capacity %%d for '%s'\n", name))
-    msg := fresh_tmp(g)
-    emit_string_gep(g, msg, msg_len, msg_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg, w, hi, w, dst.bound)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", name),
+              fail_i64(hi), fail_i64(dst.bound))
     emit_label(g, hi_ok)
     loop, body, done := fresh_label(g, "slice.loop"), fresh_label(g, "slice.body"), fresh_label(g, "slice.end")
     i_slot := fresh_tmp(g)
@@ -2008,9 +2003,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
     at := e.value[place]
     elements := emit_partial_array_zero(g, at, pa, stamp = false)
     if len(text) > 0 {
-        global, n := get_string_literal(g, text)
-        src := fresh_tmp(g)
-        emit_string_gep(g, src, n, global)
+        src := get_string_literal(g, text)
         emit_memcpy(g, elements, src, len(text) + 1 if pa.size > len(text) else len(text))
     }
     len_gep := fresh_tmp(g)
@@ -2092,12 +2085,8 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, hi, lo)
         emit_cond_br(g, inv_cmp, inv_err, inv_ok)
         emit_label(g, inv_err)
-        inv_global, inv_len := get_string_literal(g, "runtime error: partial-array byte read slice bounds inverted (low=%d, high=%d) for partial-array byte read\n")
-        inv_ptr := fresh_tmp(g)
-        emit_string_gep(g, inv_ptr, inv_len, inv_global)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", inv_ptr, w, lo, w, hi)
-        emit(g, "  call void @exit(i32 1)")
-        emit(g, "  unreachable")
+        emit_fail(g, "runtime error: partial-array byte read slice bounds inverted (low=%lld, high=%lld) for partial-array byte read\n",
+                  fail_i64(lo), fail_i64(hi))
         emit_label(g, inv_ok)
         bytes = fresh_tmp(g)
         emit(g, "  %s = sub %s %s, %s", bytes, w, hi, lo)
@@ -2124,7 +2113,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     data, bound := llvm_bytes(e, ops[1].op) or_return
     if hi == "" { hi = bound }
     w := SLICE_LEN_IR
-    loc := span_location(span)
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     size := type_size(t)
     n := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
@@ -2132,24 +2121,14 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     src_cmp := emit_byte_span_outside(g, lo, n, bound)
     emit_cond_br(g, src_cmp, src_err, src_ok)
     emit_label(g, src_err)
-    src_global, src_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
-    src_msg := fresh_tmp(g)
-    emit_string_gep(g, src_msg, src_len, src_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", src_msg)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
     emit_label(g, src_ok)
     dst_ok, dst_err := fresh_label(g, "span.dst.ok"), fresh_label(g, "span.dst.err")
     dst_cmp := fresh_tmp(g)
     emit(g, "  %s = icmp ugt %s %s, %d", dst_cmp, w, n, size)
     emit_cond_br(g, dst_cmp, dst_err, dst_ok)
     emit_label(g, dst_err)
-    dst_global, dst_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read of %%d bytes exceeds destination (%d bytes)\n", loc, size))
-    dst_msg := fresh_tmp(g)
-    emit_string_gep(g, dst_msg, dst_len, dst_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s)", dst_msg, w, n)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("<%s> runtime error: sized read of %%lld bytes exceeds destination (%d bytes)\n", loc, size), fail_i64(n))
     emit_label(g, dst_ok)
     src := fresh_tmp(g)
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src, data, w, lo)
@@ -2289,17 +2268,12 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     fail, ok := fresh_label(g, "take.fail"), fresh_label(g, "take.ok")
     emit_cond_br(g, over, fail, ok)
     emit_label(g, fail)
-    loc := span_location(span)
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     name := graph_place_name(pg, ops[0])
     // What was asked for, as asked (the advance itself may have wrapped).
-    msg := fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name)
-    msg_global, msg_len := get_string_literal(g, msg)
-    msg_ptr := fresh_tmp(g)
-    emit_string_gep(g, msg_ptr, msg_len, msg_global)
     asked := "1" if let else count
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", msg_ptr, w, asked, w, cursor, w, cap_val)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    emit_fail(g, fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name),
+              fail_i64(asked), fail_i64(cursor), fail_i64(cap_val))
     emit_label(g, ok)
     emit_header_store(g, moved, len_gep)
     if let {
