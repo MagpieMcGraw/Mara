@@ -393,6 +393,19 @@ that would lower a function again for each reader and faster than doing so. The 
     walk back made it), IR (324 builds, test_1M), goldens, `annotcheck.sh`. A debug build
     checks every type is settled. test_1M's time is unchanged: the passes were cheap, and
     their work moved into building rather than going.
-  - What remains once a code is built: its default widths (a short list), the compiler's
-    globals placed, the copy into the arena, and three indexes the analyses read (a fun's
-    consumed param, the thens by their source, the runs by their first operation).
+  - What remained once a code was built: its default widths (a short list), the
+    compiler's globals placed, the copy into the arena, and three indexes the analyses
+    read (a fun's consumed param, the thens by their source, the runs by their first
+    operation). The copy goes next, below.
+- [x] Each code built where it stays (c8910a9, 2026-10-07). Each column of every code's has
+      a region of address space of its own (`Graph_Region`), reserved once and committed
+      as it fills. Codes are built one at a time, so the code being built's column is its
+      region's newest allocation: it grows in place, and is trimmed to its length once the
+      code is done, the next code's beginning where it ends. No column is ever copied; one
+      resized when it is no longer its region's newest is an internal error.
+  - Gates: unchanged (graph, IR with test_1M, goldens, `annotcheck.sh`).
+  - Time (test_1M): the copy took ~0.6 s, most of it first touching the 584 MB the codes'
+    columns take (5.4M nodes, ~108 bytes each), which building now does; the build is
+    ~0.1 s faster. What the code takes in memory is now what would make it cheaper.
+  - What remains once a code is built: its default widths, the compiler's globals placed,
+    its columns trimmed, and the three indexes.
