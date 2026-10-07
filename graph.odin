@@ -371,31 +371,35 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
 // code's; each list keeps a run's successors after it.
 graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
     starts := g.run_starts
-    seen: map[i32]bool
-    defer delete(seen)
-    reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: ^map[i32]bool) {
-        todo: [dynamic]i32
-        defer delete(todo)
-        for e in graph_out(g, scope) { append(&todo, starts[e.to]) }
+    // (Which runs are listed, by run: a code has few, so here unless many.)
+    few: [256]bool
+    n := len(g.run_first) - 1
+    seen := few[:n] if n <= len(few) else make([]bool, n)
+    defer if n > len(few) { delete(seen) }
+    todo := make([dynamic]i32, 0, 16)
+    defer delete(todo)
+    reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: []bool, todo: ^[dynamic]i32) {
+        for e in graph_out(g, scope) { append(todo, starts[e.to]) }
         for len(todo) > 0 {
-            r := pop(&todo)
-            if r in seen^ { continue }
-            seen^[r] = true
+            r := pop(todo)
+            if seen[r] { continue }
+            seen[r] = true
             append(out, r)
             ops := graph_run(g, int(r))
             // Depth-first in edge order keeps a run's successors after it.
             next := graph_out(g, ops[len(ops) - 1])
             for i := len(next) - 1; i >= 0; i -= 1 {
-                append(&todo, starts[next[i].to])
+                append(todo, starts[next[i].to])
             }
         }
     }
-    reach(g, starts, scope, out, &seen)
+    reach(g, starts, scope, out, seen, &todo)
     own = len(out)
+    if len(g.defer_of) == 0 { return }   // (no run defers: no defer blocks)
     for i := 0; i < len(out); i += 1 {
         for op in graph_run(g, int(out[i])) {
             if g.op[op] != .Run_Defer { continue }
-            reach(g, starts, g.defer_of[op], out, &seen)
+            reach(g, starts, g.defer_of[op], out, seen, &todo)
         }
     }
     return
