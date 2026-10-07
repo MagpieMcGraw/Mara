@@ -446,5 +446,5 @@ lw_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
     if !built { return }
     _, big := tc_byte_node(k, Tree_Id(k.t.a[u]))
     graph_build_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
-    b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
+    graph_type(b, ops[0], new_clone(Type_Ptr{elem = pt.elem}))
 }

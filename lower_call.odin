@@ -133,7 +133,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         r := lw_expr(k, call, .Value)
         if mr.on {
             if !r.ok { lw_fail(k, v, "a `?` on no call built") }
-            b.g.type_[r.v.op] = nil
+            graph_type(b, r.v.op, nil)
             mr.call = graph_try_after(b, tree_span(t, v), r.v)
         }
         rets := tc_call_returns(k, call, nil)
