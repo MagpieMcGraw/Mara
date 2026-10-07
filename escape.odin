@@ -1,6 +1,8 @@
 package mara
 
 import "core:fmt"
+import "core:mem"
+import "core:mem/virtual"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -156,6 +158,8 @@ Esc_Pass :: struct {
 
     reported: []bool,
     diags:    [dynamic]Esc_Diag,
+    kept:     mem.Allocator,    // what outlives a walk: its diagnostics
+    walk:     virtual.Arena,    // what a walk makes, until the next (esc_walk)
 }
 
 @(private="file") g_esc: Esc_Pass
@@ -173,7 +177,16 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         code     = &checked.code,
 
         reported = make([]bool, len(cg.nodes)),
+        diags    = make([dynamic]Esc_Diag),
+        kept     = context.allocator,
     }
+    if err := virtual.arena_init_static(&g_esc.walk, reserved = 64 * mem.Gigabyte); err != nil {
+        fmt.panicf("escape analysis: no arena for its walks (%v)", err)
+    }
+    defer virtual.arena_destroy(&g_esc.walk)
+    // (The type caches fill during walks: kept, with their own allocator.)
+    reserve(&g_esc_refs_cache, 64)
+    reserve(&g_esc_self_cache, 64)
     cg_bottom_up(cg, esc_summary_transfer)
     esc_dump(cg)
     for _, n in cg.nodes {
@@ -215,6 +228,10 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     g := g_esc.code.funs[ft] or_else nil
     node := Node_Id(0)   // (its code's root)
     if g == nil { return {}, false }
+    // (All a walk makes is the walk arena's, the last walk's freed: its
+    // summary is read before the next.)
+    virtual.arena_free_all(&g_esc.walk)
+    context.allocator = virtual.arena_allocator(&g_esc.walk)
     e := Esc{c = g_esc.c, cg = cg, g = g, ft = ft, node = node, ctor = g.kind[node] == .Struct, report = report}
     e.main = graph_code_runs(g, node, &e.runs)
     if len(e.runs) == 0 { return {}, false }
@@ -896,7 +913,7 @@ esc_self_pointing :: proc(t: Type) -> bool {
 
 @(private="file")
 esc_diag :: proc(e: ^Esc, span: Span, msg: string, args: ..any) {
-    append(&e.diags, Esc_Diag{span = span, msg = fmt.aprintf(msg, ..args)})
+    append(&e.diags, Esc_Diag{span = span, msg = fmt.aprintf(msg, ..args, allocator = g_esc.kept)})
 }
 
 @(private="file")
