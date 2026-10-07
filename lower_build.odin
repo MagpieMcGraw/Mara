@@ -145,10 +145,13 @@ lw_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
 
 // An argument or a returned value at the type its use takes: a view where
 // one is taken (a partial array's header, an array's slice — its value held
-// in a temporary reserved before it, `held`), else its value, widened.
+// in the temporary made before it, `held`; left out when unused), else its
+// value, widened.
 lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span, w: Graph_Widen,
-                    held: ^Graph_Later = nil) -> Operand {
+                    held := NO_NODE) -> Operand {
     b := k.gb
+    used := false
+    defer if held != NO_NODE && !used { graph_drop(b, held, NO_VALUE) }
     if to != nil {
         _, to_slice := distinct_base(to).(^Type_Slice)
         _, from_array := distinct_base(t).(^Type_Fixed_Array)
@@ -163,12 +166,10 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
         }
         if to_slice && from_array {
             if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
-            if held == nil || !held.reserved { lw_fail(k, e, "a slice of an array value") }
-            graph_build_later_begin(b, held)
-            slot := graph_slot(b, "temp", t, span)
-            if !graph_build_later_end(b, held) { lw_fail(k, e, "an array's value across runs") }
-            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, t, span), r.v)
-            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, "temp", slot, t, span))
+            if held == NO_NODE { lw_fail(k, e, "a slice of an array value") }
+            used = true
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held, t, span), r.v)
+            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, "temp", held, t, span))
         }
         // (Bytes taken as an array: a view, copied into a temporary.)
         _, to_array := distinct_base(to).(^Type_Fixed_Array)

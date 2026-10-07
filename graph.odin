@@ -427,7 +427,6 @@ Code :: struct {
 Run :: struct {
     ops:     [dynamic]Node_Id,
     waiting: [dynamic]i32,       // the `then` edges (by index) whose target is this run's first operation, once it has one
-    early:   bool,               // (a body's) built before what enters it: an edge into it is its first operation's
 }
 
 @(private="file")
@@ -1451,8 +1450,7 @@ graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
 @(private="file")
 graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written) {
     if len(to.ops) > 0 {
-        w := b.g.written[to.ops[0]] if to.early else written   // (as when its operation came after)
-        append(&b.g.edges, Edge{from = from, to = to.ops[0], written = w})
+        append(&b.g.edges, Edge{from = from, to = to.ops[0], written = written})
     } else {
         // Its place among the edges now — a branch's targets keep their order
         // (yes, then no) — and its target once the run has an operation.
@@ -2154,7 +2152,6 @@ Graph_Body :: struct {
     marks:      [dynamic]Graph_Arena,
     allocs:     [dynamic]Graph_Alloc,
     returns:    [dynamic]Node_Id,        // its returns: what the local every one returns is
-    steps:      [dynamic]int,            // its loops' steps' segments
     // A struct's: each field declaration's lowered assignment, and its field.
     fields:     map[Syntax_Id]Node_Id,
     field_inits: map[Syntax_Id]Span,   // (where its initializer is written)
@@ -2257,7 +2254,6 @@ graph_body_free :: proc(f: ^Graph_Body) {
     delete(f.widens)
     delete(f.checks)
 
-    delete(f.steps)
     for m in f.marks { delete(m.resets) }
     delete(f.marks)
     delete(f.allocs)
@@ -2643,59 +2639,24 @@ graph_build_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: b
     return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", buf, at)
 }
 
-// What is built after what follows it, where it goes (a dispatch's default
-// for `_`, known once the function is chosen): a place for it, then it, in
-// a segment of its own there. Its operations join the run the place is in:
-// false when they would and that is no longer the run (declarations alone —
-// a temporary's slot — go anywhere).
-Graph_Later :: struct {
-    seg, anchor:  int,
-    si, saved:    int,
-    run:          ^Run,
-    same:         bool,
-    reserved:     bool,
-    ops:          int,   // the current run's operations when it began
+// A temporary what comes next may need, made before it — zeroed first where
+// it fills a partial array: kept if it is used, else left out
+// (graph_build_unhold). Whether it is needed is known once what it holds is
+// built, and it goes before that.
+Graph_Held :: struct {
+    slot: Node_Id,
+    to:   int,       // its nodes: slot ..< to (none made: 0)
 }
 
-// What is built before what it follows (checked first, built after): in a
-// segment of its own, put in place later — at the anchor it is placed at.
-// False when the run it was built in is no longer the run.
-Graph_Early :: struct {
-    seg, si, saved: int,
-    run:            ^Run,
+graph_build_hold :: proc(b: ^Graph_Builder, t: Type, span: Span, zero := false) -> Graph_Held {
+    h := Graph_Held{slot = graph_slot(b, "temp", t, span)}
+    if zero { graph_build_zero_var(b, h.slot, t, span) }
+    h.to = b.nodes
+    return h
 }
 
-graph_build_early_begin :: proc(b: ^Graph_Builder) -> Graph_Early {
-    e := Graph_Early{seg = b.seg, run = b.code.run}
-    e.si, e.saved = graph_segment_enter(b)
-    return e
-}
-
-graph_build_early_end :: proc(b: ^Graph_Builder, e: ^Graph_Early) {
-    graph_segment_leave(b, e.saved)
-}
-
-graph_build_early_place :: proc(b: ^Graph_Builder, e: ^Graph_Early) -> bool {
-    if b.seg != e.seg { return false }
-    graph_anchor_here(b, e.si)
-    return b.code.run == e.run
-}
-
-graph_build_later :: proc(b: ^Graph_Builder) -> Graph_Later {
-    return {seg = b.seg, anchor = graph_anchor_here(b), run = b.code.run, reserved = true}
-}
-
-graph_build_later_begin :: proc(b: ^Graph_Builder, l: ^Graph_Later) {
-    l.same = b.code.run == l.run
-    l.ops = len(b.code.run.ops) if b.code.run != nil else 0
-    l.si, l.saved = graph_segment_enter(b)
-}
-
-graph_build_later_end :: proc(b: ^Graph_Builder, l: ^Graph_Later) -> bool {
-    graph_segment_leave(b, l.saved)
-    b.segs[l.seg].anchors[l.anchor].seg = l.si
-    added := b.code.run != nil && len(b.code.run.ops) > l.ops
-    return !added || l.same && b.code.run == l.run
+graph_build_unhold :: proc(b: ^Graph_Builder, h: Graph_Held) {
+    for i in int(h.slot) ..< h.to { graph_drop(b, Node_Id(i), NO_VALUE) }
 }
 
 // `bytes[lo:hi] = v`: its target is a view of the bytes at lo —
@@ -3085,11 +3046,11 @@ Graph_For :: struct {
     check, body, post, done: ^Run,
     body_block:              Node_Id,
     has_post:                bool,
-    step:                    int,   // the step's segment, built before the body; -1
+    stepped:                 bool,  // past its body: in its step (graph_build_for_step)
 }
 
 graph_build_for :: proc(b: ^Graph_Builder, loop: Graph_Loop) -> Graph_For {
-    fl := Graph_For{loop = loop, counter = NO_NODE, end_slot = NO_NODE, coll_slot = NO_NODE, elem = NO_NODE, step = -1}
+    fl := Graph_For{loop = loop, counter = NO_NODE, end_slot = NO_NODE, coll_slot = NO_NODE, elem = NO_NODE}
     fl.f = graph_node(b, .Block, .Explicit, b.code.block, "for", nil, fl.span)
     fl.outer = b.code.block
     b.code.block = fl.f
@@ -3159,30 +3120,21 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
 
 // A collection that is no plain place: held in a local made
 // before it — its place's view, when it has a header, else itself — which
-// the loop walks. Its local first (typed once it is checked); a temporary its
-// value may need, reserved before it (graph_build_later).
-Graph_Items :: struct {
-    temp: Graph_Later,
-}
-
-graph_build_items :: proc(b: ^Graph_Builder, fl: ^Graph_For) -> Graph_Items {
+// the loop walks. Its local first (typed once it is checked).
+graph_build_items :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     fl.coll_slot = graph_slot(b, "items", nil, fl.span)
-    return {temp = graph_build_later(b)}
 }
 
-// Checked, `t` its type: its view, or it, written to the local.
-graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, gi: ^Graph_Items, place: Operand, is_place: bool, t, view: Type, is_self, fills: bool) {
+// Checked, `t` its type: its view, or it, written to the local. A value is
+// held in the temporary made before it (`held`), else that is left out.
+graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Graph_Held, place: Operand, is_place: bool, t, view: Type, is_self: bool) {
     span := fl.span
     p := place
     if !is_place {
-        // A value: held in a temporary made before it —
-        // zero first when it fills a prefix of a partial array.
-        graph_build_later_begin(b, &gi.temp)
-        slot := graph_slot(b, "temp", t, span)
-        if fills { graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, "temp", slot, t, span)) }
-        if !graph_build_later_end(b, &gi.temp) { graph_body_fail(b, b.body, "a loop's collection across runs") }
-        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, t, span), place)
-        p = graph_var(b, "temp", slot, t, span)
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held.slot, t, span), place)
+        p = graph_var(b, "temp", held.slot, t, span)
+    } else {
+        graph_build_unhold(b, held)
     }
     if pt, ok := distinct_base(t).(^Type_Ptr); ok && !is_self {
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)   // (through a pointer, what it points at)
@@ -3249,8 +3201,10 @@ graph_build_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     }
 }
 
-// After the body: its scope's end, the step, and the code after the loop.
-graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
+// After the body: its scope's end, then the step's run — a C-style loop's
+// step is built next, into it (graph_build_for_end runs this first when the
+// loop has none).
+graph_build_for_step :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     span := fl.span
     graph_scope_close(b, span)
     graph_close(b, fl.body_block)
@@ -3258,9 +3212,15 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     pop(&b.code.loops)
     cont := fl.post if fl.has_post else fl.check
     if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
+    if fl.has_post { b.code.run = fl.post }
+    fl.stepped = true
+}
+
+// The step's run's end, and the code after the loop.
+graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
+    if !fl.stepped { graph_build_for_step(b, fl) }
+    span := fl.span
     if fl.has_post {
-        b.code.run = fl.post
-        if fl.step >= 0 { graph_anchor_here(b, fl.step) }   // (the step, where it runs)
         if fl.counter != NO_NODE {
             ct := b.g.type_[fl.counter]
             cur := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
@@ -3272,28 +3232,6 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     graph_close(b, fl.f)
     b.code.run = fl.done
     b.code.block = fl.outer
-}
-
-// A C-style loop's step, checked before its body: built then, into the
-// step's run, in a segment of its own anchored after the body.
-Graph_Step :: struct {
-    saved:      int,
-    run:        ^Run,
-    block:      Node_Id,
-}
-
-graph_build_step :: proc(b: ^Graph_Builder, fl: ^Graph_For) -> Graph_Step {
-    st := Graph_Step{run = b.code.run, block = b.code.block}
-    fl.step, st.saved = graph_segment_enter(b)
-    append(&b.body.steps, fl.step)   // (settled with its body)
-    b.code.run, b.code.block = fl.post, fl.f
-    fl.post.early = true
-    return st
-}
-
-graph_build_step_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, st: Graph_Step) {
-    b.code.run, b.code.block = st.run, st.block
-    graph_segment_leave(b, st.saved)
 }
 
 // `break`, `continue` (graph_loop_exit).
@@ -3589,16 +3527,11 @@ graph_body_settle :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
             graph_drop(b, k.ids[0], NO_VALUE); graph_drop(b, k.ids[1], NO_VALUE)
         }
     }
-    segs := make([dynamic]int, 0, 1 + len(f.steps), context.temp_allocator)
-    append(&segs, f.seg)
-    append(&segs, ..f.steps[:])
-    for si in segs {
-        k := 0   // (its synthetic locals, in the order they were made)
-        for p in b.segs[si].pieces {
-            for i in p.nodes[0] ..< p.nodes[1] {
-                for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
-                g.type_[i] = graph_settled(g.type_[i], pointee = k < len(f.slots) && int(f.slots[k]) == i)
-            }
+    k := 0   // (its synthetic locals, in the order they were made)
+    for p in b.segs[f.seg].pieces {
+        for i in p.nodes[0] ..< p.nodes[1] {
+            for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
+            g.type_[i] = graph_settled(g.type_[i], pointee = k < len(f.slots) && int(f.slots[k]) == i)
         }
     }
     // Params by their scope's types: a default's width is settled once its

@@ -91,8 +91,8 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     return lw_built(k, want, in_temp, temp, d, t, at, placed)
 }
 
-// `a[lo:hi]` (tc_slice): its collection's place — a plain place built after
-// its bounds, as the builder walks it; anything else built first and put
+// `a[lo:hi]` (tc_slice): its bounds, then its collection's place — a plain
+// place walked after them, as the builder walks it; anything else built
 // after them — then the slice. Bytes read as where it goes: their place and
 // bounds as they are, for the store to take apart (lw_store_span).
 lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -> Built {
@@ -104,24 +104,10 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     read_as: Type
     if want == .Into || dest.type_ != nil { read_as = graph_dest_type(b, dest) }
     view := want != .Into && dest.type_ != nil
-    held := false
-    early: Graph_Early
+    held := !lw_pure_place(k, base_n)
     base, plain := NO_VALUE, NO_VALUE
     tt := tc_node_type(k, base_n)
-    if !lw_pure_place(k, base_n) {
-        held, early = true, graph_build_early_begin(b)
-        if lw_is_place_form(k, base_n) {
-            base = lw_expr(k, base_n, .Place, temp_span = span).v
-        } else {
-            base = lw_hold(k, base_n, span)
-        }
-        if pt, is_ptr := distinct_base(tt).(^Type_Ptr); is_ptr && base != NO_VALUE {
-            base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base)
-        }
-        graph_build_early_end(b, &early)
-    } else {
-        plain = lw_expr(k, base_n, .Place).v
-    }
+    if !held { plain = lw_expr(k, base_n, .Place).v }
     target := tt
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
@@ -153,7 +139,14 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
         return {v = v, ok = true}
     }
     if held {
-        if !graph_build_early_place(b, &early) { lw_fail(k, n, "a slice's bounds that branch, of a value") }
+        if lw_is_place_form(k, base_n) {
+            base = lw_expr(k, base_n, .Place, temp_span = span).v
+        } else {
+            base = lw_hold(k, base_n, span)
+        }
+        if pt, is_ptr := distinct_base(tt).(^Type_Ptr); is_ptr && base != NO_VALUE {
+            base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base)
+        }
     } else {
         base = graph_build_base_place(b, plain, tt, tc_is_self(k, base_n), span)
     }

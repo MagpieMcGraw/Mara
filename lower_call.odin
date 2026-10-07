@@ -45,25 +45,28 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
     return lw_call_core(k, n, tc_call_name(k, n), args, want, w, dest, temp, temp_span)
 }
 
-// A dispatch's call (tc_dispatch_call): each argument as it is — a `_`'s
-// place reserved — then each default the chosen function has there, then the
-// call.
+// A dispatch's call (tc_dispatch_call): each argument as it is — a `_`, the
+// default the chosen function has there — then the call.
 lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w: Written) -> Built {
     tr := k.t
     b := k.gb
     span := tree_span(tr, n)
     if want == .Place { lw_fail(k, n, "a call's place") }
-    underscore := make([]bool, len(args), context.temp_allocator)
-    for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
-    laters := make([]Graph_Later, len(args), context.temp_allocator)
+    ft := tc_callee(k, n)
+    ret := fn_primary_return(ft)
+    default_at :: proc(k: ^TC, def: Tree_Id, w: Written, at: Span) -> (Type, Built) {
+        if k.t.tag[def] == .Hash_Name { return lw_hash_name_type(k, def), lw_hash_name(k, def, .Either, w, at) }
+        return tc_node_type(k, def), lw_expr(k, def, .Either, .Implied)
+    }
     vals := make([dynamic]Operand, context.temp_allocator)
     widens := make([dynamic]int, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
     literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     for a, i in args {
-        if underscore[i] {
-            laters[i] = graph_build_later(b)
-            append(&vals, NO_VALUE)
+        if tr.tag[a] == .Ident && tc_name(k, a) == "_" {
+            def := ft.params[i].default_node
+            t, r := default_at(k, def, w, tree_span(tr, a))
+            append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
             append(&widens, -1)
             append(&array_values, false)
             continue
@@ -82,20 +85,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         append(&widens, wi)
         append(&array_values, is_array && !r.place)
         if tr.tag[u] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
-    }
-    ft := tc_callee(k, n)
-    ret := fn_primary_return(ft)
-    default_at :: proc(k: ^TC, def: Tree_Id, w: Written, at: Span) -> (Type, Built) {
-        if k.t.tag[def] == .Hash_Name { return lw_hash_name_type(k, def), lw_hash_name(k, def, .Either, w, at) }
-        return tc_node_type(k, def), lw_expr(k, def, .Either, .Implied)
-    }
-    for a, i in args {
-        if !underscore[i] { continue }
-        def := ft.params[i].default_node
-        graph_build_later_begin(b, &laters[i])
-        t, r := default_at(k, def, w, tree_span(tr, a))
-        vals[i] = lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i})
-        if !graph_build_later_end(b, &laters[i]) { lw_fail(k, a, "a default for `_` across runs") }
     }
     for i := len(args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_node

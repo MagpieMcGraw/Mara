@@ -466,28 +466,33 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
     for val, i in values {
         want := rts[i]
         text, slot := false, NO_NODE
-        text_held: Graph_Later
+        vt := tc_node_type(k, val)
+        // (Text — a literal, or a text constant's — in a zeroed temporary;
+        // an array's value its result views, in a temporary.)
+        text_held: Graph_Held
         if is_partial_array(want) {
             if t.tag[tc_unparen(k, val)] == .String {
                 text, slot = true, graph_slot(b, "temp", want, span)
                 graph_build_zero_var(b, slot, want, span)
             } else {
-                text_held = graph_build_later(b)
+                text_held = graph_build_hold(b, want, span, zero = true)
             }
         }
         use, at := lw_use_type(k, val, want, span)
-        held: Graph_Later
-        if is_slice_type(want) { held = graph_build_later(b) }
+        held := NO_NODE
+        if _, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && is_slice_type(want) {
+            held = graph_build_hold(b, vt, span).slot
+        }
         r := lw_expr(k, val, .Either, dest = use, temp_span = at)
-        vt := tc_node_type(k, val)
-        if text_held.reserved && built_is_text_constant(b, r) {
-            graph_build_later_begin(b, &text_held)
-            text, slot = true, graph_slot(b, "temp", want, span)
-            graph_build_zero_var(b, slot, want, span)
-            if !graph_build_later_end(b, &text_held) { lw_fail(k, val, "a text constant returned across runs") }
+        if text_held.to > 0 {
+            if built_is_text_constant(b, r) {
+                text, slot = true, text_held.slot
+            } else {
+                graph_build_unhold(b, text_held)
+            }
         }
         if !text {
-            append(&vals, lw_value_as(k, val, vt, r, want, span, {to = want}, &held))
+            append(&vals, lw_value_as(k, val, vt, r, want, span, {to = want}, held))
         } else {
             lw_store(k, val, vt, r, graph_dest_var("temp", slot, want), span)
             append(&vals, graph_read(b, graph_var(b, "temp", slot, want, span), want, span))
@@ -570,12 +575,11 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         graph_build_for_runs(b, &fl)
         cond := lw_expr(k, v.cond, .Value)
         graph_build_for_cond(b, &fl, cond.v)
-        if v.post != 0 {
-            step := graph_build_step(b, &fl)
-            lw_stmt_entry(k, v.post)
-            graph_build_step_end(b, &fl, step)
-        }
         lw_scope(k, v.body)
+        if v.post != 0 {   // (its step, after its body: where it runs)
+            graph_build_for_step(b, &fl)
+            lw_stmt_entry(k, v.post)
+        }
     }
 }
 
@@ -583,8 +587,9 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
 // loop's own local, or viewed.
 lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
     b := k.gb
-    gi := graph_build_items(b, fl)
-    #partial switch k.t.tag[tc_unparen(k, e)] {
+    graph_build_items(b, fl)
+    tag := k.t.tag[tc_unparen(k, e)]
+    #partial switch tag {
     case .Array, .Literal:
         from := b.nodes
         t := solidify_type(lw_store_into(k, e, graph_dest_var("items", fl.coll_slot, nil), fl.span))
@@ -593,11 +598,18 @@ lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
         graph_build_typed(b, fl.coll_slot, t)
         return t
     }
-    r := lw_expr(k, e, .Either)
     t := tc_node_type(k, e)
-    if view := graph_loop_view_of(t); view != nil {
-        fills := is_partial_array(t) && (k.t.tag[tc_unparen(k, e)] == .String || is_slice_type(t))
-        graph_build_items_view(b, fl, &gi, r.v, r.place, t, view, tc_is_self(k, e), fills)
+    view := graph_loop_view_of(t)
+    // (A value viewed: held in a temporary made before it — zero first when
+    // it fills a prefix of a partial array.)
+    held: Graph_Held
+    if view != nil {
+        fills := is_partial_array(t) && (tag == .String || is_slice_type(t))
+        held = graph_build_hold(b, t, fl.span, zero = fills)
+    }
+    r := lw_expr(k, e, .Either)
+    if view != nil {
+        graph_build_items_view(b, fl, held, r.v, r.place, t, view, tc_is_self(k, e))
     } else {
         graph_build_typed(b, fl.coll_slot, t)
         lw_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
@@ -1052,29 +1064,38 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         a := arg.node
         pt := ft.params[i].type_
         use, use_at := lw_use_type(k, a, pt, span)
-        held: Graph_Later
-        if is_slice_type(pt) { held = graph_build_later(b) }
         if arg.kind == .Receiver {
             append(&ops, lw_value_as(k, a, k.lower.recv.t, k.lower.recv.r, pt, span, {sig = ft, param = i}))
         } else {
-            r: Built
             at := tc_node_type(k, a)
+            #partial switch arg.kind {
+            case .Call_Site:
+                at = lw_hash_name_type(k, a)
+            case .Default:
+                if arg.slot >= 0 {
+                    if returns := tc_call_returns(k, a, nil); len(returns) > 1 { at = returns[arg.slot] }
+                }
+            }
+            // (An array's value its param views: held in a temporary.)
+            held := NO_NODE
+            if _, from_array := distinct_base(at).(^Type_Fixed_Array); from_array && is_slice_type(pt) {
+                held = graph_build_hold(b, at, span).slot
+            }
+            r: Built
             switch arg.kind {
             case .Call_Site:
                 // (`#caller_name`: the call site's — at the `_`, else the call.)
                 r = lw_hash_name(k, a, .Either, w, tree_span(tr, args[i]) if i < len(args) else span)
-                at = lw_hash_name_type(k, a)
             case .Default:
                 if arg.slot >= 0 {
                     r = lw_tuple_default(k, a, int(arg.slot), .Implied)
-                    if returns := tc_call_returns(k, a, nil); len(returns) > 1 { at = returns[arg.slot] }
                 } else {
                     r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
                 }
             case .Written, .Receiver:
                 r = lw_expr(k, a, .Either, w, dest = use, temp_span = use_at)
             }
-            append(&ops, lw_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held))
+            append(&ops, lw_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, held))
         }
         lw_byte_view_address(k, pt, a)
     }
