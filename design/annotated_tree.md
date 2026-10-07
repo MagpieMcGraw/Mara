@@ -426,7 +426,7 @@ that would lower a function again for each reader and faster than doing so. The 
     its id. `graph_type`, which set a type, is `graph_retype`.
   - Gates: unchanged at each step (graph, IR with test_1M, goldens, `annotcheck.sh`).
   - Time (test_1M): unchanged, but lowering ~0.18 s slower in a debug build (~4%) for the
-    types: reading one is an index more (~20 ms in an optimized build).
+    types: reading one is an index more (~0.1 s, ~6%, in an optimized build).
   - Left as they are: a node's origin (12 bytes; 3.5M distinct spans, interning wouldn't
     pay), its declaring token and what it refers to (set on 11% and 27% of the nodes; a
     map saves little). Per node now: the origin, seven columns of 4 bytes, three of 1,
