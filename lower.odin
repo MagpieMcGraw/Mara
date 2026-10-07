@@ -77,7 +77,7 @@ lw_fail :: proc(k: ^TC, n: Tree_Id, reason: string) -> ! {
 // A constant's value, built into its declaration (tc_check_const).
 lw_const :: proc(k: ^TC, kc: ^TC_Const) {
     b := k.gb
-    if tc_sid(k, kc.def) in b.const_segs { return }
+    if tc_sid(k, kc.def) in b.consts { return }
     span := tree_span(k.t, kc.def)
     f := graph_const_begin(b, tc_graph_decl(k, kc.def))
     ann: Type = Type_Any{}
@@ -158,11 +158,6 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
     t := k.t
     b := k.gb
     stmts := tc_live(k, stmts)
-    if top {
-        for s in stmts {
-            if t.tag[s] == .Define && t.b[s] != 0 && !tc_is_definition(t.tag[t.b[s]]) { graph_build_def_settled(b, tc_graph_decl(k, s)) }
-        }
-    }
     for s in stmts {
         if t.tag[s] == .Define {
             if top { graph_build_def(b, tc_graph_decl(k, s)) }
