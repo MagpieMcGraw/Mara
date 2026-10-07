@@ -152,10 +152,11 @@ fold_decl :: proc(fo: ^Folder, c: Syntax_Id, width: Fold_Width) -> ^Fold {
 @(private="file")
 fold_run :: proc(fo: ^Folder, fc: ^Fold_Code, n: Node_Id) -> bool {
     g := fc.g
-    for i := int(n) + 1; i <= int(g.last[n]); i += 1 {
+    end := int(graph_last(g, n))
+    for i := int(n) + 1; i <= end; i += 1 {
         id := Node_Id(i)
         if g.kind[id] != .Op {
-            i = int(g.last[id])
+            i = int(graph_last(g, id))
             continue
         }
         if g.op[id] == .Return { return true }

@@ -85,7 +85,7 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     e := Llvm{g = g, pg = pg, ft = cf, node = node, ctor = pg.kind[node] == .Struct, main = main}
     e.own = graph_code_runs(pg, node, &e.runs)
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
-    size := int(pg.last[node] - node) + 1
+    size := int(graph_last(pg, node) - node) + 1
     e.value = make([]string, size)
     e.held = make([]bool, size)
 
@@ -190,9 +190,10 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_in_place(e)
     // A big variable lives on the arena, or in the caller's slot, or — a
     // temporary — where it's built in place (a big temporary elsewhere: later).
-    for id := e.node + 1; id <= e.pg.last[e.node]; id += 1 {
+    end := graph_last(e.pg, e.node)
+    for id := e.node + 1; id <= end; id += 1 {
         #partial switch e.pg.kind[id] {
-        case .Fun, .Struct: id = e.pg.last[id]; continue   // (another scope's)
+        case .Fun, .Struct: id = graph_last(e.pg, id); continue   // (another scope's)
         }
         if e.pg.kind[id] != .Local || !routes_to_arena(e.pg.type_[id]) || id in e.arena || id in e.in_place || id in e.carved { continue }
         if e.value[id - e.node] != e.slot { e.stop = id; return false }
@@ -234,11 +235,12 @@ llvm_sort_runs :: proc(runs: []i32) {
 @(private="file")
 llvm_variables :: proc(e: ^Llvm) -> bool {
     pg := e.pg
-    for id := e.node + 1; id <= pg.last[e.node]; id += 1 {
+    end := graph_last(pg, e.node)
+    for id := e.node + 1; id <= end; id += 1 {
         e.stop = id
         #partial switch pg.kind[id] {
         case .Fun, .Struct:
-            id = pg.last[id]
+            id = graph_last(pg, id)
         case .Param:
             _ = llvm_param_type(pg.type_[id]) or_return
             e.value[id - e.node] = fmt.tprintf("%%%s.arg", pg.name[id])
@@ -448,7 +450,7 @@ llvm_in_place :: proc(e: ^Llvm) {
             if pg.op[x] == .Swizzle { continue }   // components, not one array's storage
             if pg.op[x] == .Slice { continue }     // a run of elements the value's are copied into, no storage of one type
             t := pg.refers[tv]
-            if t <= e.node || t > pg.last[e.node] || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
+            if t <= e.node || t > graph_last(pg, e.node) || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
             if e.value[t - e.node] != "" || llvm_reads(e, t) != 1 { continue }
             if llvm_builds_alone(e, ops[:at], t, x) { e.in_place[t] = x }
         }
@@ -536,7 +538,7 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Ty
 // the code names from outside it.
 @(private="file")
 llvm_this_program :: proc(e: ^Llvm, d: Node_Id) -> bool {
-    return d > e.pg.last[e.node] && e.pg.name[d] == "this_program"
+    return d > graph_last(e.pg, e.node) && e.pg.name[d] == "this_program"
 }
 
 // Where a place lives: the variable at the root of its path; whether the
@@ -617,7 +619,7 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
 @(private="file")
 llvm_in_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     if e.ctor && (d == e.node || (e.pg.kind[d] == .Field && e.pg.parent[d] == e.node)) { return true }
-    return d > e.node && d <= e.pg.last[e.node] && e.value[d - e.node] == e.slot
+    return d > e.node && d <= graph_last(e.pg, e.node) && e.value[d - e.node] == e.slot
 }
 
 // How many reads a variable has.
@@ -752,7 +754,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op - e.node] = at
             return true
         }
-        if d <= e.node || d > pg.last[e.node] { return false }   // not this fun's
+        if d <= e.node || d > graph_last(pg, e.node) { return false }   // not this fun's
         if pg.kind[d] == .Const { return false }   // a constant has no storage: a use reads its value
         if d in e.hdr { return true }   // a view held as values: no storage
         switch {
@@ -1203,7 +1205,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // A big local: its storage, bumped from the arena (reset when its
         // scope is left).
         d := pg.refers[ops[0].op]
-        if d <= e.node || d > pg.last[e.node] || pg.kind[d] != .Local { return false }
+        if d <= e.node || d > graph_last(pg, e.node) || pg.kind[d] != .Local { return false }
         e.value[d - e.node] = emit_arena_bump(g, type_size(pg.type_[op]), pg.name[d], span_location(span))
     }
     return true
@@ -1345,7 +1347,7 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
     if pg.op[place] != .Var { return e.held[place - e.node] }   // a held view's len or cap
     d := pg.refers[place]
     if pg.kind[d] == .Param { return llvm_scalar(pg.type_[d]) }
-    if d <= e.node || d > pg.last[e.node] { return false }   // this_program's: in memory
+    if d <= e.node || d > graph_last(pg, e.node) { return false }   // this_program's: in memory
     return e.held[d - e.node]
 }
 

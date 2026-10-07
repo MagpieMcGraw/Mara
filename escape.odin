@@ -221,7 +221,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     if len(ft.params) > ESC_MAX_PARAMS {
         fmt.panicf("escape analysis: %s has %d parameters (max %d)", ft.name, len(ft.params), ESC_MAX_PARAMS)
     }
-    size := int(g.last[node] - node) + 1
+    size := int(graph_last(g, node) - node) + 1
     e.memo = make([]Esc_Roots, size)
     e.var_of = make([]i32, size)
     e.run_of = make([]i32, size)
@@ -249,10 +249,11 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
 esc_vars :: proc(e: ^Esc) {
     g := e.g
     params := 0
-    for id := e.node + 1; id <= g.last[e.node]; id += 1 {
+    end := graph_last(g, e.node)
+    for id := e.node + 1; id <= end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
-            id = g.last[id]
+            id = graph_last(g, id)
         case .Param, .Result, .Local, .Field:
             v := Esc_Var{node = id, name = g.name[id], type_ = g.type_[id], depth = esc_depth(e, id),
                          param = -1, slot = -1, init = NO_NODE}
@@ -481,7 +482,7 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
 // The variable a declaration is, or -1: its own subtree's only.
 @(private="file")
 esc_var :: proc(e: ^Esc, d: Node_Id) -> int {
-    if d <= e.node || d > e.g.last[e.node] { return -1 }
+    if d <= e.node || d > graph_last(e.g, e.node) { return -1 }
     return int(e.var_of[d - e.node])
 }
 

@@ -529,10 +529,11 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             ts := g.type_[node].(^Type_Scope)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)
-            for id := node + 1; id <= g.last[node]; id += 1 {
+            end := graph_last(g, node)
+            for id := node + 1; id <= end; id += 1 {
                 #partial switch g.kind[id] {
                 case .Fun, .Struct:
-                    id = g.last[id]
+                    id = graph_last(g, id)
                     continue
                 case .Param, .Local, .Result:
                 case:

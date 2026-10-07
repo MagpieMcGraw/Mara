@@ -103,7 +103,10 @@ Program_Graph :: struct {
     op:      [dynamic]Op_Kind,  // for operations
     written: [dynamic]Written,
     parent:  [dynamic]Node_Id,
-    last:    [dynamic]Node_Id,  // the subtree's last id
+    // A subtree is one run of ids, [id, its last] (graph_last): the code's,
+    // [0, end]; a block's, by it (a node not here: itself).
+    end:     Node_Id,
+    last:    map[Node_Id]Node_Id,
     name:    [dynamic]string,
     type_:   [dynamic]Type,     // has type; nil when the node has none
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
@@ -182,6 +185,12 @@ graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
         if len(ops) > 0 && ops[0].op != NO_NODE && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var { return ops[0].op }
     }
     return NO_NODE
+}
+
+// The last id of a node's subtree.
+graph_last :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    if id == 0 { return g.end }
+    return g.last[id] or_else id
 }
 
 // The fun or struct a call or construction runs; nil through a function value.
@@ -556,7 +565,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Last, Name, Type, Origin, Refers, Stmt, Decl_Tok,
+    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
 }
 
@@ -640,7 +649,6 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.op = make([dynamic]Op_Kind, at(r, .Op))
     g.written = make([dynamic]Written, at(r, .Written))
     g.parent = make([dynamic]Node_Id, at(r, .Parent))
-    g.last = make([dynamic]Node_Id, at(r, .Last))
     g.name = make([dynamic]string, at(r, .Name))
     g.type_ = make([dynamic]Type, at(r, .Type))
     g.origin = make([dynamic]Span, at(r, .Origin))
@@ -667,7 +675,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
         resize(col, n)
         if cap(col) > n { shrink(col) }
     }
-    trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n); trim(&g.last, n)
+    trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n)
     trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n)
     trim(&g.stmt, n); trim(&g.decl_tok, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
@@ -735,6 +743,8 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     for id in b.open {
         if int(id) < b.nodes && g.kind[id] == .Op && is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }
     }
+    g.end = g.last[0] or_else 0   // (the root's subtree: graph_last)
+    delete_key(&g.last, 0)
     if b.outside_named { graph_place_outside(b) }
     if b.nodes >= len(g.kind) { graph_resize(g, b.nodes + 1) }
     g.operand_first[b.nodes] = i32(len(g.operands))
@@ -936,7 +946,6 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.op[i] = .Var
     g.written[i] = written
     g.parent[i] = parent
-    g.last[i] = id
     g.name[i] = name
     g.type_[i] = graph_settled(t)
     g.origin[i] = origin
@@ -965,7 +974,6 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.op, n)
     non_zero_resize(&g.written, n)
     non_zero_resize(&g.parent, n)
-    non_zero_resize(&g.last, n)
     non_zero_resize(&g.name, n)
     non_zero_resize(&g.type_, n)
     non_zero_resize(&g.origin, n)
@@ -978,7 +986,7 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
 // End a scope: its subtree is everything added since it.
 @(private="file")
 graph_close :: proc(b: ^Graph_Builder, id: Node_Id) {
-    b.g.last[id] = Node_Id(b.nodes - 1)
+    if end := Node_Id(b.nodes - 1); end != id { b.g.last[id] = end } else { delete_key(&b.g.last, id) }
 }
 
 graph_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
@@ -1939,12 +1947,13 @@ graph_find_consumes :: proc(g: ^Program_Graph) {
         }
         if !by_slot { continue }
         // (Its params come first among its contents.)
-        for p := fun + 1; p <= g.last[fun] && g.kind[p] == .Param; p += 1 {
+        fun_end := graph_last(g, fun)
+        for p := fun + 1; p <= fun_end && g.kind[p] == .Param; p += 1 {
             v, once := mention[p]
             if !once || v == NO_NODE { continue }
-            read := graph_user(g, v, g.last[fun])
+            read := graph_user(g, v, fun_end)
             if read == NO_NODE || g.op[read] != .Read { continue }
-            w := graph_user(g, read, g.last[fun])
+            w := graph_user(g, read, fun_end)
             if w == NO_NODE || g.op[w] != .Write || g.stmt[w] < 0 || g.stmts[g.stmt[w]].kind != .Decl { continue }
             if ops := graph_operands(g, w); ops[1].op != read || g.op[ops[0].op] != .Var || g.refers[ops[0].op] != local { continue }
             for cp, k in ft.cg_params {
@@ -3546,14 +3555,14 @@ graph_dump_code :: proc(g: ^Program_Graph, want: string) {
         if want != "all" && g.name[id] != want { continue }
         if want == "all" && g.parent[id] != NO_NODE { continue }   // roots print their subtrees
         base := graph_depth(g, Node_Id(id))
-        for n in id ..= int(g.last[id]) {
+        for n in id ..= int(graph_last(g, Node_Id(id))) {
             graph_dump_node(g, Node_Id(n), graph_depth(g, Node_Id(n)) - base)
         }
         if want == "all" { continue }
         // The runs whose operations are in this subtree, in order.
         for r in 0 ..< len(g.run_first) - 1 {
             ops := graph_run(g, r)
-            if len(ops) == 0 || int(ops[0]) < id || int(ops[0]) > int(g.last[id]) { continue }
+            if len(ops) == 0 || int(ops[0]) < id || int(ops[0]) > int(graph_last(g, Node_Id(id))) { continue }
             sb := strings.builder_make(context.temp_allocator)
             fmt.sbprintf(&sb, "  run %d:", r)
             for op in ops { fmt.sbprintf(&sb, " %d", op) }
@@ -3585,7 +3594,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
     for id in 0 ..< len(g.kind) {
         b := strings.builder_make(context.temp_allocator)
         fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
-            g.parent[id], g.last[id], g.name[id])
+            g.parent[id], graph_last(g, Node_Id(id)), g.name[id])
         if t := g.type_[id]; t != nil { fmt.sbprintf(&b, " t=%s", type_name(t)) }
         fmt.sbprintf(&b, " @%s r%d s%d", span(g.origin[id]), g.refers[id], g.stmt[id])
         if ops := graph_operands(g, Node_Id(id)); len(ops) > 0 {

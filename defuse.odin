@@ -195,10 +195,11 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     defer delete(tracked)
     decl_of: map[^Var_Binding]Node_Id
     defer delete(decl_of)
-    for id := node + 1; id <= g.last[node]; id += 1 {
+    end := graph_last(g, node)
+    for id := node + 1; id <= end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
-            id = g.last[id]
+            id = graph_last(g, id)
         case .Param, .Local, .Result:
             if g.written[id] == .Explicit {
                 i := annot_var(checked.annot, f.ft, g.decl_tok[id], g.type_[id])

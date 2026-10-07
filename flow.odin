@@ -264,7 +264,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     graph_code_runs(g, node, &runs)
     if len(runs) == 0 { return }
 
-    size := int(g.last[node] - node) + 1
+    size := int(graph_last(g, node) - node) + 1
     s := Init{g = g, c = c, seen = seen, node = node}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
@@ -274,10 +274,11 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     // What can be unset: its locals that are pointers, slices or scalars, and
     // the pointer and slice fields of its struct locals that have no default.
     bits: i32 = 0
-    for id := node + 1; id <= g.last[node]; id += 1 {
+    end := graph_last(g, node)
+    for id := node + 1; id <= end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
-            id = g.last[id]
+            id = graph_last(g, id)
             continue
         case .Local:
             if g.written[id] != .Explicit { continue }
@@ -309,7 +310,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     for r in runs {
         for op in graph_run(g, int(r)) {
             for o in graph_operands(g, op) {
-                if o.op >= node && o.op <= g.last[node] { s.user[o.op - node] = op }
+                if o.op >= node && o.op <= graph_last(g, node) { s.user[o.op - node] = op }
             }
             // (A pointer every write of which is `&x`.)
             d := graph_whole_write_dest(g, op)
@@ -369,7 +370,7 @@ flow_field_can_be_unset :: proc(t: Type) -> bool {
 // Whether declaration v is one of this fun's own.
 @(private="file")
 flow_own :: proc(s: ^Init, v: Node_Id) -> bool {
-    return v > s.node && v <= s.g.last[s.node]
+    return v > s.node && v <= graph_last(s.g, s.node)
 }
 
 // A variable's own bit: -1 when it can't be unset.
@@ -431,7 +432,7 @@ flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, 
 // Who takes an operation's output; NO_NODE for none.
 @(private="file")
 flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
-    return s.user[op - s.node] if op >= s.node && op <= s.g.last[s.node] else NO_NODE
+    return s.user[op - s.node] if op >= s.node && op <= graph_last(s.g, s.node) else NO_NODE
 }
 
 // Whether a place's output is read: not written to as a whole, not only
