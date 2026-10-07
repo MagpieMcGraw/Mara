@@ -166,29 +166,20 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
     if !tc_declarable(k, env, name, span) { return }
-    // (`x : T = void`, T no pointer: uninitialized — a pointer's void is its
-    // null, a value.)
-    skip := value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann)
-    if skip {
+    form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
+    if form == .Void {
         tc_decl_void(k, s, target, value, name, ann, env, fields_of)
         return
     }
     if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ref.decl, ann, value) }
-    if value != 0 && t.tag[tc_unparen(k, value)] == .Take {
+    #partial switch form {
+    case .Take:
         tc_decl_take(k, s, target, value, name, ann, env, fields_of)
         return
-    }
-    // (`[:n]T`: n its capacity.)
-    cap_n := Tree_Id(0)
-    if ann_node != 0 && t.tag[ann_node] == .Type_Slice {
-        cap_n = Tree_Id(t.a[ann_node])
-        if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }   // (`[]T(n)`)
-    }
-    if value == 0 {
-        if bindings := tc_shape_bindings(k, ann_node); len(bindings) > 0 {
-            tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
-            return
-        }
+    case .Shape:
+        tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
+        return
+    case .Bare:
         tc_decl_bare(k, target, name, ref, ann, env, span, cap_n)
         return
     }
@@ -266,6 +257,29 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     tc_set_type(k, target, final)   // (the name declared: its type)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
+}
+
+// What a declaration is, as written — the checker and lowering each read it
+// here: `x : T = void`, T no pointer (uninitialized: a pointer's void is its
+// null, a value); `x := take(…)`; `x : T` with no value, by a shape's
+// `bindings` or bare; or one of a value. `cap_n`: `[:n]T`'s (or `[]T(n)`'s)
+// capacity, n.
+Decl_Form :: enum u8 { Value, Void, Take, Shape, Bare }
+
+tc_decl_form :: proc(k: ^TC, value, ann_node: Tree_Id, ann: Type) -> (form: Decl_Form, cap_n: Tree_Id, bindings: []TC_Binding) {
+    t := k.t
+    if ann_node != 0 && t.tag[ann_node] == .Type_Slice {
+        cap_n = Tree_Id(t.a[ann_node])
+        if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }
+    }
+    switch {
+    case value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann): form = .Void
+    case value != 0 && t.tag[tc_unparen(k, value)] == .Take:         form = .Take
+    case value == 0:
+        bindings = tc_shape_bindings(k, ann_node)
+        form = .Shape if len(bindings) > 0 else .Bare
+    }
+    return
 }
 
 // What a declaration's name declares: its own token — a struct's field in
@@ -565,6 +579,26 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // `for i in lo..hi`, `for e, i in c`, `for init; cond; step`, `for cond`: its
 // variables bound in its block, then its body.
+// What a loop over a collection of type `ct` walks: its elements' type — an
+// array's, a slice's, a partial array's (nil: no collection).
+loop_elem :: proc(ct: Type) -> Type {
+    #partial switch c in ct {
+    case ^Type_Fixed_Array:   return c.elem
+    case ^Type_Slice:         return c.elem
+    case ^Type_Partial_Array: return c.elem
+    }
+    return nil
+}
+
+// A range's counter: of the type written (nil: none), else its bounds' — at
+// the header's width when they disagree or have none.
+range_counter :: proc(lt, ht, written: Type) -> Type {
+    if written != nil { return written }
+    it := try_promote_numeric(lt, ht)
+    if _, is_error := it.(Type_Error); is_error || is_infer(it) { return slice_header_width_type }
+    return it
+}
+
 tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
@@ -577,13 +611,14 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         #partial switch k.t.tag[tc_unparen(k, v.collection)] {
         case .Array, .Literal: ct = solidify_type(ct)
         }
-        elem: Type = Type_Error{}
-        #partial switch c in ct {
-        case ^Type_Fixed_Array:   elem = c.elem
-        case ^Type_Slice:         elem = c.elem
-        case ^Type_Partial_Array: elem = c.elem
-        case ^Type_Scope:         tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, c.name)
-        case:                     tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
+        elem := loop_elem(ct)
+        if elem == nil {
+            elem = Type_Error{}
+            if st, is_scope := ct.(^Type_Scope); is_scope {
+                tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, st.name)
+            } else {
+                tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
+            }
         }
         if v.type_ != 0 { elem = tc_type(k, v.type_, env, span) }
         if v.elem != 0 { tc_bind(k, child, tc_text(v.elem), elem, {v.elem, .Local}) }
@@ -592,14 +627,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     case .For_Range:
         lt := tc_check(k, v.lo, child)
         ht := tc_check(k, v.hi, child)
-        it: Type
-        if v.type_ != 0 {
-            it = tc_type(k, v.type_, env, span)
-        } else {
-            // (Bounds that disagree count at the header's width.)
-            it = try_promote_numeric(lt, ht)
-            if _, is_error := it.(Type_Error); is_error || is_infer(it) { it = slice_header_width_type }
-        }
+        it := range_counter(lt, ht, tc_type(k, v.type_, env, span) if v.type_ != 0 else nil)
         if !is_numeric(lt) && !is_infer(lt) && !is_any(lt) { tc_error(k, span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(lt)) }
         if !is_numeric(ht) && !is_infer(ht) && !is_any(ht) { tc_error(k, span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(ht)) }
         // (`..` counts up: known bounds that count down are an error.)
@@ -848,14 +876,11 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     covered := make(map[string]bool, context.temp_allocator)
     for arm in arms {
-        variant := ""
-        body: []Tree_Id
+        a := tc_match_arm(k, subj, arm, et, ut)
+        name := a.variant
         child := new_block_scope(env)
         #partial switch tr.tag[arm] {
         case .Arm_Dot:
-            name := tc_text(tr.main[arm])
-            variant = name
-            body = tree_list(tr, tr.a[arm])
             switch {
             case is_enum:
                 if name not_in et.variants { tc_error(k, span, TYPE_ENUM_VARIANT, et.name, name) }
@@ -865,38 +890,18 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                 tc_error(k, span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, name)
             }
         case .Arm_Variant:
-            name := tc_text(tr.main[arm])
-            variant = name
-            body = tree_list(tr, tr.a[arm])
             if is_union && name not_in ut.tag_map { tc_error(k, span, TYPE_VARIANT_UNION, name, ut.name) }
-            // (No binding: a bare subject's own name sees the payload — the
-            // binding declared where the subject's name is written.)
-            bound: string
-            bound_decl: Token_Id
-            if bt := Token_Id(tr.b[arm]); bt != 0 {
-                bound, bound_decl = tc_text(bt), bt
-            } else if su := tc_unparen(k, subj); tr.tag[su] == .Ident {
-                bound, bound_decl = tc_name(k, su), tr.main[su]
-            }
             if is_union {
-                if vs := ut.variant_structs[name]; vs != nil && bound != "" { tc_bind(k, child, bound, vs, {bound_decl, .Local}) }
+                if vs := ut.variant_structs[name]; vs != nil && a.bound != "" { tc_bind(k, child, a.bound, vs, {a.bound_tok, .Local}) }
             }
-        case .Arm_Else:
-            body = tree_list(tr, tr.a[arm])
         case .Arm_Value:
-            value := Tree_Id(tr.a[arm])
-            body = tree_list(tr, tr.b[arm])
-            if tr.tag[value] == .Ident {
-                name := tc_name(k, value)
-                if is_enum && name in et.variants || is_union && name in ut.tag_map { variant = name }
-            }
-            if variant == "" {
-                tc_check(k, value, env)
-                if tr.tag[value] == .Field { covered[tc_text(Token_Id(tr.b[value]))] = true }
+            if name == "" {
+                tc_check(k, a.value, env)
+                if tr.tag[a.value] == .Field { covered[tc_text(Token_Id(tr.b[a.value]))] = true }
             }
         }
-        if variant != "" { covered[variant] = true }
-        tc_scope(k, body, child)
+        if name != "" { covered[name] = true }
+        tc_scope(k, a.body, child)
     }
     // (Every variant covered, unless an else says otherwise.)
     if has_else || !(is_enum || is_union) { return }
@@ -909,6 +914,43 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, name) }
         }
     }
+}
+
+// A match arm, as written against a subject of enum `et` or union `ut` (nil:
+// neither) — the checker and lowering each read it here: the variant it names
+// ("": none — an else, a value no variant is), its body, a value arm's value,
+// and the name its payload is bound to with the token declaring it (a variant
+// arm's own; with none, a bare subject's name sees the payload).
+Match_Arm :: struct {
+    variant:   string,
+    body:      []Tree_Id,
+    value:     Tree_Id,
+    bound:     string,
+    bound_tok: Token_Id,
+}
+
+tc_match_arm :: proc(k: ^TC, subj, arm: Tree_Id, et: ^Type_Enum, ut: ^Type_Union) -> (a: Match_Arm) {
+    t := k.t
+    #partial switch t.tag[arm] {
+    case .Arm_Dot:
+        a.variant, a.body = tc_text(t.main[arm]), tree_list(t, t.a[arm])
+    case .Arm_Variant:
+        a.variant, a.body = tc_text(t.main[arm]), tree_list(t, t.a[arm])
+        if bt := Token_Id(t.b[arm]); bt != 0 {
+            a.bound, a.bound_tok = tc_text(bt), bt
+        } else if su := tc_unparen(k, subj); t.tag[su] == .Ident {
+            a.bound, a.bound_tok = tc_name(k, su), t.main[su]
+        }
+    case .Arm_Else:
+        a.body = tree_list(t, t.a[arm])
+    case .Arm_Value:
+        a.value, a.body = Tree_Id(t.a[arm]), tree_list(t, t.b[arm])
+        if t.tag[a.value] == .Ident {
+            name := tc_name(k, a.value)
+            if et != nil && name in et.variants || ut != nil && name in ut.tag_map { a.variant = name }
+        }
+    }
+    return
 }
 
 // A struct's field initializer handing `#self` to anything — a call, an

@@ -226,15 +226,14 @@ lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
     t := k.t
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
-    switch {
-    case value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann):
-        return ann, true
-    case value != 0 && t.tag[tc_unparen(k, value)] == .Take:
-        return tc_node_type(k, target), tc_text(t.main[tc_unparen(k, value)]) != "let"
-    case value == 0:
-        if len(tc_shape_bindings(k, ann_node)) > 0 { return ann, true }
+    form, _, _ := tc_decl_form(k, value, ann_node, ann)
+    switch form {
+    case .Void, .Shape: return ann, true
+    case .Take:         return tc_node_type(k, target), tc_text(t.main[tc_unparen(k, value)]) != "let"
+    case .Bare:
         _, is_error := ann.(Type_Error)
         return ann, !is_error
+    case .Value:
     }
     return tc_node_type(k, target), true
 }
@@ -374,24 +373,18 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     name := tc_name(k, target)
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
-    if value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann) {
+    form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
+    #partial switch form {
+    case .Void:
         lw_decl_void(k, s, target, value, name, ann, fields_of)
         return
-    }
-    if value != 0 && t.tag[tc_unparen(k, value)] == .Take {
+    case .Take:
         lw_decl_take(k, s, target, value, name, ann, fields_of)
         return
-    }
-    cap_n := Tree_Id(0)
-    if ann_node != 0 && t.tag[ann_node] == .Type_Slice {
-        cap_n = Tree_Id(t.a[ann_node])
-        if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }
-    }
-    if value == 0 {
-        if bindings := tc_shape_bindings(k, ann_node); len(bindings) > 0 {
-            lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
-            return
-        }
+    case .Shape:
+        lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
+        return
+    case .Bare:
         lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
     }
@@ -658,26 +651,15 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
                 fl.walk, fl.walk_data = lw_walk_place, &walk
             }
         }
-        elem: Type = Type_Error{}
-        #partial switch c in ct {
-        case ^Type_Fixed_Array:   elem = c.elem
-        case ^Type_Slice:         elem = c.elem
-        case ^Type_Partial_Array: elem = c.elem
-        }
+        elem := loop_elem(ct)
+        if elem == nil { elem = Type_Error{} }
         if v.type_ != 0 { elem = tc_node_type(k, v.type_) }
         graph_build_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         lw_scope(k, v.body)
     case .For_Range:
         // (Its counter's type: as written, else its bounds'.)
         lt, ht := tc_node_type(k, v.lo), tc_node_type(k, v.hi)
-        it: Type
-        if v.type_ != 0 {
-            it = tc_node_type(k, v.type_)
-        } else {
-            it = try_promote_numeric(lt, ht)
-            if _, is_error := it.(Type_Error); is_error || is_infer(it) { it = slice_header_width_type }
-        }
-        ct := distinct_base(it)
+        ct := distinct_base(range_counter(lt, ht, tc_node_type(k, v.type_) if v.type_ != 0 else nil))
         graph_build_range_counter(b, &fl)
         lo := lw_expr(k, v.lo, .Value)
         fl.lo = graph_build_range_bound(b, lo.v, lt, ct, span)

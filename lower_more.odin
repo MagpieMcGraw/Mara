@@ -47,49 +47,20 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     graph_build_match_switch(b, gm, span)
     defer graph_build_match_end(b, gm)
     for arm, i in arms {
-        ra: Graph_Arm
+        a := tc_match_arm(k, subj, arm, et, ut)
         tag := tr.tag[arm]
-        ra.is_else, ra.is_union = tag == .Arm_Else, tag == .Arm_Variant
-        body: []Tree_Id
-        #partial switch tag {
-        case .Arm_Dot:
-            name := tc_text(tr.main[arm])
-            ra.variant = name
-            body = tree_list(tr, tr.a[arm])
+        ra := Graph_Arm{variant = a.variant, bound = a.bound, bound_tok = a.bound_tok,
+                        is_else = tag == .Arm_Else, is_union = tag == .Arm_Variant}
+        // (Its tag, and a union's payload: a variant arm's on a union only.)
+        if a.variant != "" && (tag != .Arm_Variant || is_union) {
             switch {
-            case is_enum:  ra.tag = et.variants[name]
-            case is_union: ra.tag, ra.payload = ut.tag_map[name], lw_variant_struct(ut, name)
-            }
-        case .Arm_Variant:
-            name := tc_text(tr.main[arm])
-            ra.variant = name
-            body = tree_list(tr, tr.a[arm])
-            if is_union { ra.tag = ut.tag_map[name] }
-            if bt := Token_Id(tr.b[arm]); bt != 0 {
-                ra.bound, ra.bound_tok = tc_text(bt), bt
-            } else if su := tc_unparen(k, subj); tr.tag[su] == .Ident {
-                ra.bound, ra.bound_tok = tc_name(k, su), tr.main[su]
-            }
-            if is_union {
-                if vs := lw_variant_struct(ut, name); vs != nil { ra.payload = vs }
-            }
-        case .Arm_Else:
-            body = tree_list(tr, tr.a[arm])
-        case .Arm_Value:
-            value := Tree_Id(tr.a[arm])
-            body = tree_list(tr, tr.b[arm])
-            if tr.tag[value] == .Ident {
-                name := tc_name(k, value)
-                if is_enum {
-                    if v, has := et.variants[name]; has { ra.variant, ra.tag = name, v }
-                } else if is_union {
-                    if v, has := ut.tag_map[name]; has { ra.variant, ra.tag, ra.payload = name, v, lw_variant_struct(ut, name) }
-                }
+            case is_enum:  ra.tag = et.variants[a.variant]
+            case is_union: ra.tag, ra.payload = ut.tag_map[a.variant], lw_variant_struct(ut, a.variant)
             }
         }
-        ra.arena = lw_scope_arena(k, body, b.body.returned)
+        ra.arena = lw_scope_arena(k, a.body, b.body.returned)
         blk := graph_build_arm(b, gm, ra, i)
-        lw_scope(k, body)
+        lw_scope(k, a.body)
         graph_build_arm_end(b, gm, blk)
     }
 }
