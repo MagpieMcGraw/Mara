@@ -339,9 +339,9 @@ that would lower a function again for each reader and faster than doing so. The 
     arena mark, a widening, the local every return returns). Done next, below.
 - [x] Each code written in place (2026-10-07). Lowering built many things before it knew
       whether it needed them and left them out when the body was settled — on test_1M
-      about 1.6 million nodes: 1.1M arena allocations, 390K widening casts, 125K arena
-      marks and resets. It now decides each from the annotations before it builds it, and
-      nothing built is left out.
+      about 1.66 million nodes: 1.12M of arena allocations, 393K widening casts, 125K
+      arena marks and resets, 17K more. It now decides each from the annotations before
+      it builds it, and nothing built is left out.
   - [x] Widenings (bba141b): a cast is made only where the value widens; its target — an
         overload's, a dispatch's or a generic's param, a binary operation's working type,
         an if expression's type — is annotated before the value is built.
