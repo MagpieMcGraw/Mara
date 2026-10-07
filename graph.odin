@@ -1856,21 +1856,22 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
     return graph_const(b, .Synthetic, span, slice_header_width_type, fmt.aprintf("%d", i), Const_Value{int = i128(i)})
 }
 
-// A constant whose width is its use's: one whose width a binding settles is
-// listed (g.settled: for the range check).
+// A constant whose width is its use's (`untyped`: a number, an untyped
+// constant's name, size_of): once a use or a binding settles it, listed
+// (g.settled: for the range check).
 @(private="file")
-graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
-    if !is_infer(t) { return }
+graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type, untyped: bool) {
+    if !untyped && !is_infer(t) { return }
     if b.body == nil { graph_fatal(b.g.origin[id], "a constant of open width outside any body") }
     if !is_infer(graph_settled(t)) { append(&b.g.settled, id) }
 }
 
 // A constant operation, with its value when it has one.
-graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value)) -> Operand {
+graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value), untyped := false) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
     if v, ok := value.?; ok {
         graph_set_value(b, b.g, o.op, v)
-        graph_const_settles(b, o.op, t)
+        graph_const_settles(b, o.op, t, untyped)
     }
     return o
 }
@@ -1890,11 +1891,11 @@ Graph_Named :: struct {
 // A named register-value constant where it's used: its declaration's
 // value, computed at the use's width once every code is built
 // (graph_fold_uses). An enum's variant, a length: its value.
-graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named) -> Operand {
-    if n.value == 0 { return graph_const(b, w, span, t, name, n.known) }
+graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named, untyped := false) -> Operand {
+    if n.value == 0 { return graph_const(b, w, span, t, name, n.known, untyped) }
     o := graph_op_value(b, .Const, w, span, t, name)
     b.g.constant[o.op] = n.value
-    graph_const_settles(b, o.op, t)
+    graph_const_settles(b, o.op, t, untyped)
     return o
 }
 

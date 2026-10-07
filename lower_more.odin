@@ -134,7 +134,7 @@ lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
 lw_size_of :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     if want == .Place { return {} }
     t := k.annot.size_of[tc_sid(k, n)]
-    return {v = graph_const(k.gb, w, tree_span(k.t, n), Type_Infer_Int{}, "size_of", graph_size_of(t)), ok = true}
+    return {v = graph_const(k.gb, w, tree_span(k.t, n), tc_node_type(k, n), "size_of", graph_size_of(t), untyped = true), ok = true}
 }
 
 // `x in lo..hi` (tc_in_range): `x >= lo and x < hi`; `not in`, its negation.

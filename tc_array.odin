@@ -17,7 +17,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check(k, idx_n, env)
+    it := tc_check_at(k, idx_n, env, slice_header_width_type)
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -56,7 +56,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     elem := index_elem_type(tt)
     tc_set_type(k, target, elem)
     if fa, ok := tt.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check(k, idx_n, env)
+    it := tc_check_at(k, idx_n, env, slice_header_width_type)
     #partial switch v in tt {
     case ^Type_Fixed_Array:   k.hint = v.elem
     case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
@@ -68,6 +68,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         return
     }
     vt := tc_store_at(k, value, env, op_tok, target, s)
+    tc_settle(k, diag, elem)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -132,6 +133,7 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }
+    for e in elems { tc_settle(k, e, et) }   // (each written to its slot, at its type)
     return new_clone(Type_Fixed_Array{size = len(elems), elem = et})
 }
 
@@ -163,7 +165,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if lo_n != 0 {
-        lt := tc_check(k, lo_n, env)
+        lt := tc_check_at(k, lo_n, env, slice_header_width_type)
         if !is_numeric(lt) && !is_any(lt) {
             tc_error(k, span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -171,7 +173,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if hi_n != 0 {
-        ht := tc_check(k, hi_n, env)
+        ht := tc_check_at(k, hi_n, env, slice_header_width_type)
         if !is_numeric(ht) && !is_any(ht) {
             tc_error(k, span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {
@@ -197,8 +199,8 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_set_type(k, target, new_clone(Type_Slice{elem = elem}))
     }
     lt, ht: Type = Type_Any{}, Type_Any{}
-    if lo_n != 0 { lt = tc_check(k, lo_n, env) }
-    if hi_n != 0 { ht = tc_check(k, hi_n, env) }
+    if lo_n != 0 { lt = tc_check_at(k, lo_n, env, slice_header_width_type) }
+    if hi_n != 0 { ht = tc_check_at(k, hi_n, env, slice_header_width_type) }
     vt := tc_check(k, value, env)
     if !is_numeric(lt) && !is_any(lt) {
         tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))

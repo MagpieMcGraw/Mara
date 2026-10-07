@@ -239,6 +239,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     received := make([]Arg, len(args), context.temp_allocator)
     for a, i in args { received[i] = {a, .Receiver if a == k.recv.node else .Written, -1} }
     tc_set_args(k, n, received)
+    for a, i in args { if i < len(ft.params) { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
     return fn_primary_return(ft)
 }
 

@@ -56,7 +56,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
         if types_incompatible(ann, vt) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE, type_name(vt), kc.name, type_name(ann))
         }
-        if is_infer(vt) { tc_literal_overflow(k, kc.value, ann, span) }
+        tc_value_at(k, kc.value, vt, ann, span)
         final = ann
     }
     kc.t = final

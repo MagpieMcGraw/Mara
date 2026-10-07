@@ -65,6 +65,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         }
     }
     tc_set_args(k, n, received[:])
+    for a, i in args { if i < len(ft.params) && !underscore[i] { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
     // (Its defaults — a `_`'s, then the params it leaves off: each in its
     // function's defining scope; a call site's (`#caller_name`) where the
     // call is.)
@@ -73,7 +74,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     for i in 0 ..< len(ft.params) {
         if i < len(args) && !underscore[i] { continue }
         def := ft.params[i].default_node
-        if tr.tag[def] == .Hash_Name { tc_hash_name(k, def, env) } else { tc_check(k, def, callee) }
+        if tr.tag[def] == .Hash_Name { tc_hash_name(k, def, env) } else { tc_check_at(k, def, callee, ft.params[i].type_) }
     }
     return fn_primary_return(ft)
 }

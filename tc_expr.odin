@@ -17,6 +17,13 @@ tc_check :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     return t
 }
 
+// An expression checked, used at `t` (tc_settle).
+tc_check_at :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, t: Type) -> Type {
+    r := tc_check(k, n, env)
+    tc_settle(k, n, t)
+    return r
+}
+
 tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     t := k.t
     span := tree_span(t, n)
@@ -105,6 +112,62 @@ tc_number :: proc(k: ^TC, n: Tree_Id) -> Type {
     return Type_Infer_Float{} if strings.index_byte(token_text(build_tokens[k.t.main[n]]), '.') >= 0 else Type_Infer_Int{}
 }
 
+// What a use takes a value at, where the value's width is the use's to
+// decide (tc_open_node): a number, a constant's name, `void`, an operation
+// of such, an array literal of such, an if of such — typed `t`, and what it
+// is made of with it. (`t` a binding's open width: as the binding settles,
+// graph_settled.)
+tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
+    if n == 0 || t == nil || tc_open(t) || !tc_open_node(k, n) { return }
+    tc_set_type(k, n, t)
+    tr := k.t
+    #partial switch tr.tag[n] {
+    case .Paren:
+        tc_settle(k, Tree_Id(tr.a[n]), t)
+    case .Unary:
+        #partial switch build_tokens[tr.main[n]].kind {
+        case .Minus, .Wrap_Minus, .Tilde: tc_settle(k, Tree_Id(tr.a[n]), t)
+        }
+    case .Binary:
+        #partial switch build_tokens[tr.main[n]].kind {
+        case .Plus, .Minus, .Star, .Slash, .Modulo, .Wrap_Plus, .Wrap_Minus, .Wrap_Star,
+             .Ampersand, .Pipe, .Tilde, .Shift_Left, .Shift_Right:
+            tc_settle(k, Tree_Id(tr.a[n]), t)
+            tc_settle(k, Tree_Id(tr.b[n]), t)
+        }
+    case .Array:
+        if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array {
+            for e in tree_list(tr, tr.a[n]) { tc_settle(k, e, fa.elem) }
+        }
+    case .If_Expr:
+        then_n, else_n := tree_pair(tr, n)
+        tc_settle(k, then_n, t)
+        tc_settle(k, else_n, t)
+    }
+}
+
+// A width no use has decided yet (no binding's).
+tc_open :: proc(t: Type) -> bool {
+    return is_infer(t) && infer_cell_of(t) == nil
+}
+
+// Whether a node's type is its use's to decide: a number's, a constant's,
+// an operation's of such (an open width), an untyped `void`, an array
+// literal's of open elements, an if's of either.
+tc_open_node :: proc(k: ^TC, n: Tree_Id) -> bool {
+    t := tc_node_type(k, n)
+    #partial switch k.t.tag[n] {
+    case .Number, .Paren, .Unary, .Binary, .Size_Of, .Field, .Dot_Ident:
+        return tc_open(t)
+    case .Ident:
+        return tc_open(t) || is_any(t) && tc_name(k, n) == "void"
+    case .Array, .If_Expr:
+        if fa, is_array := t.(^Type_Fixed_Array); is_array { return tc_open(fa.elem) }
+        return k.t.tag[n] == .If_Expr && tc_open(t)
+    }
+    return false
+}
+
 tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     name := tc_name(k, n)
     span := tree_span(k.t, n)
@@ -186,6 +249,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
             if callee := tc_unary_overload(k, ot, env); callee != nil {
                 tc_set_callee(k, n, callee)
                 tc_set_args(k, n, {{operand, .Written, -1}})
+                tc_settle(k, operand, callee.params[0].type_)
                 return fn_primary_return(callee)
             }
             tc_error(k, span, TYPE_CANNOT_NEGATE, type_name(ot))
@@ -292,6 +356,8 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         if callee, found := tc_operator_overload(k, op, lt, rt, env, span); found {
             tc_set_callee(k, at, callee)
             tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
+            tc_settle(k, left, callee.params[0].type_)
+            tc_settle(k, right, callee.params[1].type_)
             return fn_primary_return(callee)
         }
     }
@@ -351,6 +417,15 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     case:
         tc_error(k, span, "tc: the operator %v is not supported yet", tok)
         return Type_Error{}
+    }
+    // (Each side at the type the operation takes it at: a comparison's, the
+    // other side's; an arithmetic one's, its own.)
+    if is_comparison_op(op) {
+        tc_settle(k, left, rt)
+        tc_settle(k, right, lt)
+    } else if !and_or {
+        tc_settle(k, left, t)
+        tc_settle(k, right, t)
     }
     return t
 }
@@ -507,7 +582,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         if is_cstring(pt) && !is_cstring(at) && !tc_text_literal(k, a) {
             tc_error(k, span, TYPE_CSTRING_ARG_EXPLICIT)
         }
-        if is_infer(at) { tc_literal_overflow(k, a, pt, span) }
+        tc_value_at(k, a, at, pt, span)
     }
     if is_struct {
         if overrides != 0 { tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), &ft.sd, env) }
@@ -517,6 +592,13 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
 }
 
 // A literal that doesn't fit the type it is used at.
+// A value at the type its use takes it at, `t`: one of no width of its own
+// settled to it (tc_settle), a literal's range checked.
+tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
+    if is_infer(vt) { tc_literal_overflow(k, n, t, span) }
+    tc_settle(k, n, t)
+}
+
 tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {
     if f, i, lit := tc_literal_value(k, n); lit {
         check_value_range(k.c, f, i, target, span)
@@ -757,7 +839,7 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope) {
     saved := k.hint
     k.hint = t
     defer k.hint = saved
-    tc_check(k, def, callee_def_scope(owner))
+    tc_check_at(k, def, callee_def_scope(owner), t)
 }
 
 // The rest of the builtins: print_cstr / print_int / print_float (as print),
@@ -798,6 +880,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(pt))
         }
         st := tc_arg(k, args[1], env)
+        tc_settle(k, args[1], slice_header_width_type)
         if !is_numeric(st) && !is_any(st) {
             tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(st))
         } else if !coerces_to_slice_width(st) {
@@ -912,13 +995,17 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     }
     types: [2]Type
     for branch, i in ([2]Tree_Id{then_n, else_n}) { types[i] = tc_check(k, branch, env) }
+    t := types[0]
     switch {
-    case is_untyped(types[0]) || is_infer(types[0]): return types[1]
-    case is_untyped(types[1]) || is_infer(types[1]): return types[0]
+    case is_untyped(types[0]) || is_infer(types[0]): t = types[1]
+    case is_untyped(types[1]) || is_infer(types[1]):
     case types_incompatible(types[0], types[1]):
         tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
     }
-    return types[0]
+    // (Each branch written to its local, at its type.)
+    tc_settle(k, then_n, t)
+    tc_settle(k, else_n, t)
+    return t
 }
 
 // The expression an access path (`x.f[i].g`) is rooted at.

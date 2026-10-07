@@ -609,7 +609,7 @@ gfx_mesh_generation.mara:69:11  token '0'
   Fun_Def                  [432,1487)  fun() -> [24]Vertex, [36]u32 { …
   Assign                   [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
   Index                    [463,467)  verts[0]   : Vertex
-  Number                   [465,466)  0   : untyped int
+  Number                   [465,466)  0   : i64
 === Pounce | at Pounce.mara:101:27
 Pounce.mara:101:27  token 'draw_state_create'
 
@@ -625,7 +625,7 @@ askat.mara:15:14  token '3'
   Decl                     [82,93)  n := add(3, 4) + 2
   Binary                   [85,93)  add(3, 4) + 2   : i32
   Call                     [85,91)  add(3, 4)   : i32
-  Number                   [87,88)  3   : untyped int
+  Number                   [87,88)  3   : i32
 === test/askat.mara | at askat.mara:15:20
 askat.mara:15:20  token '+'
 

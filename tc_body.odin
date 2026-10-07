@@ -184,7 +184,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         return
     }
     if cap_n != 0 {
-        if ct := tc_check(k, cap_n, env); !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
+        if ct := tc_check_at(k, cap_n, env, slice_header_width_type); !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
     }
     k.hint = ann
     errors_before := k.c.errors
@@ -230,7 +230,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
             tc_assign_error(k, span, vt, name, ann, value)
         }
-        if is_infer(vt) { tc_literal_overflow(k, value, ann, span) }
+        tc_value_at(k, value, vt, ann, span)
         final = ann
     } else if existing, shadowed := tc_declared_before(env, name, fields_of != nil); shadowed {
         // (Reported as a shadow: checked as the write it reads as.)
@@ -255,6 +255,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     }
     tc_bind(k, env, name, final, ref)
     tc_set_type(k, target, final)   // (the name declared: its type)
+    tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
 }
@@ -326,7 +327,7 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
     if cap_n != 0 {
         // (`s : [:n]T`: n of T allocated for it.)
-        ct := tc_check(k, cap_n, env)
+        ct := tc_check_at(k, cap_n, env, slice_header_width_type)
         if !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
         return
     }
@@ -427,7 +428,7 @@ tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string,
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, value)
     }
-    if is_infer(vt) { tc_literal_overflow(k, value, existing, span) }
+    tc_value_at(k, value, vt, existing, span)
 }
 
 is_slice_type :: proc(t: Type) -> bool {
@@ -554,7 +555,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                 tc_error(k, span, TYPE_RETURN_TYPE_MATCH_EXPECTED, type_name(vt), type_name(want))
             }
         }
-        if is_infer(vt) { tc_literal_overflow(k, val, want, span) }
+        tc_value_at(k, val, vt, want, span)
     }
 }
 
@@ -611,6 +612,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         #partial switch k.t.tag[tc_unparen(k, v.collection)] {
         case .Array, .Literal: ct = solidify_type(ct)
         }
+        tc_settle(k, v.collection, ct)
         elem := loop_elem(ct)
         if elem == nil {
             elem = Type_Error{}
@@ -628,6 +630,8 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         lt := tc_check(k, v.lo, child)
         ht := tc_check(k, v.hi, child)
         it := range_counter(lt, ht, tc_type(k, v.type_, env, span) if v.type_ != 0 else nil)
+        tc_settle(k, v.lo, it)
+        tc_settle(k, v.hi, it)
         if !is_numeric(lt) && !is_infer(lt) && !is_any(lt) { tc_error(k, span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(lt)) }
         if !is_numeric(ht) && !is_infer(ht) && !is_any(ht) { tc_error(k, span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(ht)) }
         // (`..` counts up: known bounds that count down are an error.)
@@ -735,7 +739,7 @@ tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if p, is_ptr := pt.(^Type_Ptr); is_ptr {
         tc_set_type(k, target, p.elem)
         if types_incompatible(p.elem, vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem)) }
-        if is_infer(vt) { tc_literal_overflow(k, diag, p.elem, span) }
+        tc_value_at(k, diag, vt, p.elem, span)
     } else if !is_any(pt) {
         tc_error(k, span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(pt))
     }

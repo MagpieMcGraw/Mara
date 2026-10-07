@@ -206,7 +206,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if flow == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
-    if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
+    tc_value_at(k, diag, vt, ft, span)
 }
 
 // A value written into a place a target names: its type — a compound
@@ -435,14 +435,14 @@ tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, 
             tc_error(k, fd.span, TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED, fd.name, type_name(vt), type_name(elem), type_name(lit_t))
             return
         }
-        if is_infer(vt) { tc_literal_overflow(k, value, elem, fd.span) }
+        tc_value_at(k, value, vt, elem, fd.span)
         return
     }
     if types_incompatible(elem, vt) {
         tc_error(k, span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED, name, type_name(vt), type_name(elem))
         return
     }
-    if is_infer(vt) { tc_literal_overflow(k, value, elem, span) }
+    tc_value_at(k, value, vt, elem, span)
 }
 
 tc_is_fixed_array :: proc(t: Type) -> bool {
@@ -477,7 +477,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
             hint_for(k, e, fa.elem)
             vt := tc_check(k, e, env)
             if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
-            if is_infer(vt) { tc_literal_overflow(k, e, fa.elem, span) }
+            tc_value_at(k, e, vt, fa.elem, span)
         }
         return
     }
@@ -497,7 +497,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         hint_for(k, value, fa.elem)
         vt := tc_check(k, value, env)
         if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
-        if is_infer(vt) { tc_literal_overflow(k, value, fa.elem, span) }
+        tc_value_at(k, value, vt, fa.elem, span)
         set[idx] = true
     }
 }
@@ -552,7 +552,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
             tc_error(k, span, TYPE_FIELD_EXPECTED, f.name, type_name(f.type_), type_name(vt))
         }
     }
-    if is_infer(vt) { tc_literal_overflow(k, value, f.type_, span) }
+    tc_value_at(k, value, vt, f.type_, span)
 }
 
 // `{all v}`: a literal of one value, every slot's.
@@ -593,11 +593,12 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
             if types_incompatible(v.elem, vt) && !is_infer(vt) {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE, type_name(vt), field, type_name(v.elem))
             }
-            if is_infer(vt) { tc_literal_overflow(k, diag, v.elem, span) }
+            tc_value_at(k, diag, vt, v.elem, span)
             return
         }
         tc_set_type(k, target, new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}))
         tc_set_ref(k, target, {kind = .Builtin})
+        tc_settle(k, diag, tc_node_type(k, target))
         if va, is_array := vt.(^Type_Fixed_Array); is_array {
             if types_incompatible(v.elem, va.elem) { tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPES, type_name(vt), field) }
         } else if !is_any(vt) && !is_infer(vt) {
@@ -622,7 +623,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !is_infer(vt) && !value_preserving_widen(vt, ft) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
-    if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
+    tc_value_at(k, diag, vt, ft, span)
 }
 
 // `m.X`, m a module: its constant, an enum's variant it holds, or its member

@@ -104,7 +104,7 @@ lw_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Wan
         return {v = g, place = true, ok = true}
     }
     if want == .Place { return {} }
-    return {v = graph_named_const(b, w, span, t, kc.name, named), ok = true}
+    return {v = graph_named_const(b, w, span, t, kc.name, named, untyped = tc_open(kc.t)), ok = true}
 }
 
 // A fun's or a struct's body (tc_scope_body): its code, statement by
@@ -833,9 +833,10 @@ lw_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Build_Want
     f, i, _ := parse_number_text(text)
     is_float := strings.index_byte(text, '.') >= 0
     if negate { f, i = -f, -i }
-    t: Type = Type_Infer_Float{} if is_float else Type_Infer_Int{}
     if want == .Place { return {} }
-    return {v = graph_const(k.gb, w, span, t, "", Const_Value{int = i, float = f, is_float = is_float}), ok = true}
+    t := tc_node_type(k, n)   // (its width, its use's: tc_settle)
+    if t == nil { lw_fail(k, n, "a number the checker never typed") }
+    return {v = graph_const(k.gb, w, span, t, "", Const_Value{int = i, float = f, is_float = is_float}, untyped = true), ok = true}
 }
 
 // Whether a name of type `t` is declared as a fun's — a fun's, a struct's

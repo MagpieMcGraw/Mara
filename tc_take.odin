@@ -35,7 +35,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         if _, is_err := taken.(Type_Error); is_err { tc_error(k, span, TYPE_TAKE_UNKNOWN_TYPE) }
     }
     if count != 0 {
-        ct := tc_check(k, count, env)
+        ct := tc_check_at(k, count, env, slice_header_width_type)
         if !is_any(ct) && !is_numeric(ct) {
             tc_error(k, span, TYPE_TAKE_COUNT_INTEGER, type_name(ct))
         } else if !coerces_to_slice_width(ct) {
