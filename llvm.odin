@@ -65,7 +65,6 @@ Llvm :: struct {
 // Emit a fun with a body from the graph.
 llvm_function :: proc(g: ^Codegen, cf: ^Type_Scope) {
     g.tmp_counter, g.label_counter = 0, 0
-    g.emitted_allocas = {}
     llvm_code(g, cf, main = false)
 }
 
@@ -1296,7 +1295,7 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     if pa != nil {
         len_gep := fresh_tmp(g)
         emit_slice_gep(g, len_gep, to, SLICE.len)
-        emit_typed_store_len(g, fmt.tprintf("%d", pa.size), len_gep)
+        emit_header_store(g, fmt.tprintf("%d", pa.size), len_gep)
     }
     return true
 }
@@ -1734,7 +1733,7 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
             cap_val = fresh_tmp(g)
-            emit_typed_load_cap(g, cap_val, cap_gep)
+            emit_header_load(g, cap_val, cap_gep)
         }
         name := graph_place_name(pg, ops[0])
         emit_bounds_check(g, i, cap_val, name if name != "" else "slice", span)
@@ -1831,7 +1830,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, at, SLICE.len)
             hi = fresh_tmp(g)
-            emit_typed_load_len(g, hi, len_gep)
+            emit_header_load(g, hi, len_gep)
         }
         if lo != "" {
             from := data
@@ -1931,7 +1930,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, e.value[src], SLICE.len)
             n = fresh_tmp(g)
-            emit_typed_load_len(g, n, len_gep)
+            emit_header_load(g, n, len_gep)
         }
         hi = fresh_tmp(g)
         emit(g, "  %s = add %s %s, %s", hi, w, lo, n)
@@ -2016,7 +2015,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
     }
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, at, SLICE.len)
-    emit_typed_store_len(g, fmt.tprintf("%d", len(text)), len_gep)
+    emit_header_store(g, fmt.tprintf("%d", len(text)), len_gep)
     return true
 }
 
@@ -2031,14 +2030,14 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     dptr := fresh_tmp(g); emit_slice_gep(g, dptr, hdr, SLICE.ptr)
     data := fresh_tmp(g); emit_load_into(g, data, "ptr", dptr)
     slen := fresh_tmp(g); emit_slice_gep(g, slen, hdr, SLICE.len)
-    n0 := fresh_tmp(g); emit_typed_load_len(g, n0, slen)
+    n0 := fresh_tmp(g); emit_header_load(g, n0, slen)
     cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, n0, pa.size)
     n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, n0, w, pa.size)
     elements := emit_partial_array_zero(g, at, pa, stamp = false)
     nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, type_size(pa.elem))
     emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", elements, data, nbytes)
     plen := fresh_tmp(g); emit_slice_gep(g, plen, at, SLICE.len)
-    emit_typed_store_len(g, n, plen)
+    emit_header_store(g, n, plen)
     return true
 }
 
@@ -2062,7 +2061,7 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id) -> (data, bound: string, ok: bool) {
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, at, SLICE.cap)
     bound = fresh_tmp(g)
-    emit_typed_load_cap(g, bound, cap_gep)
+    emit_header_load(g, bound, cap_gep)
     return data, bound, true
 }
 
@@ -2198,10 +2197,10 @@ llvm_sized_slice :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     emit_store(g, "ptr", name, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, hdr, SLICE.len)
-    emit_typed_store_len(g, "0", len_gep)
+    emit_header_store(g, "0", len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
-    emit_typed_store_cap(g, n, cap_gep)
+    emit_header_store(g, n, cap_gep)
     return true
 }
 
@@ -2259,7 +2258,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, hdr, SLICE.len)
     cursor := fresh_tmp(g)
-    emit_typed_load_len(g, cursor, len_gep)
+    emit_header_load(g, cursor, len_gep)
     advance := fmt.tprintf("%d", size)
     if !let {
         advance = fresh_tmp(g)
@@ -2278,7 +2277,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
     cap_val := fresh_tmp(g)
-    emit_typed_load_cap(g, cap_val, cap_gep)
+    emit_header_load(g, cap_val, cap_gep)
     // (Its count of elements, or its one value, in the room past the aligned
     // cursor: a negative count is outside.)
     over := ""
@@ -2302,7 +2301,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok)
-    emit_typed_store_len(g, moved, len_gep)
+    emit_header_store(g, moved, len_gep)
     if let {
         e.value[op] = at
         return true
@@ -2333,10 +2332,10 @@ llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: string) {
     emit_store(g, "ptr", at, ptr_gep)
     n_gep := fresh_tmp(g)
     emit_slice_gep(g, n_gep, out, SLICE.len)
-    emit_typed_store_len(g, count, n_gep)
+    emit_header_store(g, count, n_gep)
     c_gep := fresh_tmp(g)
     emit_slice_gep(g, c_gep, out, SLICE.cap)
-    emit_typed_store_cap(g, count, c_gep)
+    emit_header_store(g, count, c_gep)
     e.value[op] = out
 }
 
@@ -2755,11 +2754,11 @@ llvm_cstring :: proc(e: ^Llvm, op, x: Node_Id, span: Span) -> bool {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, hdr, SLICE.len)
     n := fresh_tmp(g)
-    emit_typed_load_len(g, n, len_gep)
+    emit_header_load(g, n, len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
     c := fresh_tmp(g)
-    emit_typed_load_cap(g, c, cap_gep)
+    emit_header_load(g, c, cap_gep)
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
     data := fresh_tmp(g)

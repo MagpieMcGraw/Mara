@@ -26,20 +26,12 @@ emit_slice_alloca :: proc(g: ^Codegen, result: string) {
 
 // A slice header's len or cap stored, at its i64 (SLICE_LEN_IR), into the
 // field `field_gep` addresses — an SSA name, or a literal like "0".
-emit_typed_store_len :: proc(g: ^Codegen, val: string, field_gep: string) {
-    emit_store(g, SLICE_LEN_IR, val, field_gep)
-}
-
-emit_typed_store_cap :: proc(g: ^Codegen, val: string, field_gep: string) {
+emit_header_store :: proc(g: ^Codegen, val: string, field_gep: string) {
     emit_store(g, SLICE_LEN_IR, val, field_gep)
 }
 
 // A slice header's len or cap loaded, at its i64 (SLICE_LEN_IR).
-emit_typed_load_len :: proc(g: ^Codegen, result: string, field_gep: string) {
-    emit_load_into(g, result, SLICE_LEN_IR, field_gep)
-}
-
-emit_typed_load_cap :: proc(g: ^Codegen, result: string, field_gep: string) {
+emit_header_load :: proc(g: ^Codegen, result: string, field_gep: string) {
     emit_load_into(g, result, SLICE_LEN_IR, field_gep)
 }
 
@@ -220,10 +212,10 @@ emit_slice_header_at :: proc(g: ^Codegen, at: string, data_ptr: string, len_val:
     emit_store(g, "ptr", data_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, at, SLICE.len)
-    emit_typed_store_len(g, len_val, len_gep)
+    emit_header_store(g, len_val, len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, at, SLICE.cap)
-    emit_typed_store_cap(g, cap_val, cap_gep)
+    emit_header_store(g, cap_val, cap_gep)
 }
 
 // ---------------------------------------------------------------------------
@@ -542,10 +534,10 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Arr
     emit_store(g, "ptr", elements_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, addr, SLICE.len)
-    emit_typed_store_len(g, "0", len_gep)
+    emit_header_store(g, "0", len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-    emit_typed_store_cap(g, fmt.tprintf("%d", pa.size), cap_gep)
+    emit_header_store(g, fmt.tprintf("%d", pa.size), cap_gep)
     return elements_ptr
 }
 
@@ -575,10 +567,10 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     emit_store(g, "ptr", elements_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, slot_ptr, SLICE.len)
-    emit_typed_store_len(g, "0", len_gep)
+    emit_header_store(g, "0", len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
-    emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+    emit_header_store(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
     w := SLICE_LEN_IR
 
@@ -648,10 +640,10 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
 
     // Auto-add to len. For a fresh decl this is + 0, so the final len = count.
     cur_len := fresh_tmp(g)
-    emit_typed_load_len(g, cur_len, len_gep)
+    emit_header_load(g, cur_len, len_gep)
     new_len := fresh_tmp(g)
     emit(g, "  %s = add %s %s, %s", new_len, w, cur_len, count)
-    emit_typed_store_len(g, new_len, len_gep)
+    emit_header_store(g, new_len, len_gep)
 }
 
 // Counter-driven loop that calls emit_bswap_in_place on each of `count`
@@ -669,14 +661,14 @@ emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string
     elem_ir := llvm_type_from_checker(elem_ty)
     idx_slot := fresh_tmp(g)
     emit_alloca(g, idx_slot, w)
-    emit_typed_store_len(g, "0", idx_slot)
+    emit_header_store(g, "0", idx_slot)
     loop_lbl := fresh_label(g, "bswap.loop")
     body_lbl := fresh_label(g, "bswap.body")
     end_lbl  := fresh_label(g, "bswap.end")
     emit(g, "  br label %%%s", loop_lbl)
     emit_label(g, loop_lbl)
     cur := fresh_tmp(g)
-    emit_typed_load_len(g, cur, idx_slot)
+    emit_header_load(g, cur, idx_slot)
     done := fresh_tmp(g)
     emit(g, "  %s = icmp uge %s %s, %s", done, w, cur, count)
     emit_cond_br(g, done, end_lbl, body_lbl)
@@ -686,7 +678,7 @@ emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string
     emit_bswap_in_place(g, elem_gep, elem_ir, elem_ty)
     next := fresh_tmp(g)
     emit(g, "  %s = add %s %s, 1", next, w, cur)
-    emit_typed_store_len(g, next, idx_slot)
+    emit_header_store(g, next, idx_slot)
     emit(g, "  br label %%%s", loop_lbl)
     emit_label(g, end_lbl)
 }
@@ -712,15 +704,9 @@ type_has_swappable_leaf :: proc(ty: Type) -> bool {
 // Runtime-sized memcpy. Used when the byte count is an SSA value, not a
 // compile-time literal — e.g. partial-array byte-buffer reads where the
 // source span size is computed from runtime slice bounds. `bytes` is at
-// slice header width (i32); the memcpy intrinsic takes i64, so we zext.
+// slice header width (SLICE_LEN_IR: i64), the intrinsic's.
 emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: string) {
-    w := SLICE_LEN_IR
-    n64 := bytes
-    if w != "i64" {
-        n64 = fresh_tmp(g)
-        emit(g, "  %s = zext %s %s to i64", n64, w, bytes)
-    }
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src, n64)
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src, bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +733,7 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
     cap_val := fresh_tmp(g)
-    emit_typed_load_cap(g, cap_val, cap_gep)
+    emit_header_load(g, cap_val, cap_gep)
 
     w := SLICE_LEN_IR
     ok_label   := fresh_label(g, "slice_len.ok")
@@ -790,7 +776,7 @@ stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_A
     emit_store(g, "ptr", elements_ptr, ptr_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-    emit_typed_store_cap(g, fmt.tprintf("%d", v.size), cap_gep)
+    emit_header_store(g, fmt.tprintf("%d", v.size), cap_gep)
 }
 
 // Walk a zero-filled struct instance at `base_ptr` and stamp valid headers for

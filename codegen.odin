@@ -66,7 +66,6 @@ Codegen :: struct {
     // overflow_intrinsics used. Read at .ll-write time.
     module_tasks:        []^Module_Task,
     hoist_allocas: bool,           // true during function body codegen
-    emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
     tmp_counter: int,              // bumped per fresh_tmp (and a few inline temp names)
     tmp_pool:    []string,         // pre-formatted "%.tN" names; indexed by tmp_counter
     label_counter: int,            // label numbering
@@ -103,7 +102,6 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
-    release: bool,   // -release build mode — -O3; asserts stay ON
     no_assert: bool, // -no assert — compile asserts out entirely
     // Every function's code comes from the program graph (llvm.odin).
 
@@ -344,43 +342,15 @@ emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx, idx_ir: string) {
     strings.write_byte(b, '\n')
 }
 
-// `  <dst> = alloca <ir_type>\n`
-// Fast alloca emitter — direct write to the right builder, honoring alloca-
-// hoist mode. The emit() path was kept on the slow path historically for
-// dedup, but the dedup logic is purely about which buffer to write to and
-// whether to skip a duplicate name; doing both inline is straightforward.
+// `  <dst> = alloca <ir_type>\n`, with the hoisted allocas while hoisting. (Each
+// is made once: llvm_storage names them.)
 emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
-    if g.hoist_allocas {
-        // Dedup: same alloca name in multiple branches collapses to one.
-        if alloca_exists(g, dst, ir_type) { return }
-        g.emitted_allocas[dst] = ir_type
-        b := &g.alloca_buf
-        strings.write_string(b, "  ")
-        strings.write_string(b, dst)
-        strings.write_string(b, " = alloca ")
-        strings.write_string(b, ir_type)
-        strings.write_byte(b, '\n')
-        return
-    }
-    b := &g.out
+    b := &g.alloca_buf if g.hoist_allocas else &g.out
     strings.write_string(b, "  ")
     strings.write_string(b, dst)
     strings.write_string(b, " = alloca ")
     strings.write_string(b, ir_type)
     strings.write_byte(b, '\n')
-}
-
-// Whether `name` is already allocated in this function. Reusing a slot is
-// only sound at the same type; a different type means two values would share
-// storage sized for one, so it is a compiler bug.
-@(private="file")
-alloca_exists :: proc(g: ^Codegen, name, ir_type: string) -> bool {
-    have, ok := g.emitted_allocas[name]
-    if !ok { return false }
-    if have != ir_type {
-        codegen_fatal(g, {}, "internal: alloca %s reused as %s (first allocated as %s)", name, ir_type, have)
-    }
-    return true
 }
 
 // Emit an `alloca T, <w> %count` form where the count is a runtime SSA. This

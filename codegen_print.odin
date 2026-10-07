@@ -935,7 +935,7 @@ emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, h.header_ptr, SLICE.len)
     out := fresh_tmp(g)
-    emit_typed_load_len(g, out, len_gep)
+    emit_header_load(g, out, len_gep)
     return out
 }
 

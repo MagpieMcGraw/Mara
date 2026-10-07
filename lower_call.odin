@@ -160,7 +160,7 @@ lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     for tg in targets {
         declares := is_decl && t.tag[tg] == .Ident
         kind := Stmt_Kind.Decl if declares else lw_assign_kind(k, tg)
-        saved := graph_build_stmt(b, tc_sid(k, s), span, kind, fresh = true)
+        saved := graph_build_stmt(b, span, kind)
         if declares { lw_decl_one(k, s, tg, value, 0, nil) } else { lw_assign_one(k, s, tg, value) }
         graph_build_stmt_end(b, saved)
     }
@@ -175,7 +175,7 @@ lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     saved := k.lower.parallel
     k.lower.parallel = &held
     for tg, i in targets {
-        saved_stmt := graph_build_stmt(b, tc_sid(k, s), span, lw_assign_kind(k, tg), fresh = true)
+        saved_stmt := graph_build_stmt(b, span, lw_assign_kind(k, tg))
         lw_assign_one(k, s, tg, values[i])
         graph_build_stmt_end(b, saved_stmt)
     }

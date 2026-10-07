@@ -258,8 +258,8 @@ lw_program_struct :: proc(k: ^TC) {
                 break
             }
             ss := tree_span(t, s)
-            graph_build_body_stmt(b, ss, true)
-            saved := graph_build_stmt(b, tc_sid(k, s), ss, tc_stmt_kind(k, s), fresh = true)
+            graph_build_body_stmt(b, ss)
+            saved := graph_build_stmt(b, ss, tc_stmt_kind(k, s))
             for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), t.main[target], ss) }
             graph_build_stmt_end(b, saved)
         }
@@ -279,8 +279,8 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
             continue
         }
         span := tree_span(t, s)
-        graph_build_body_stmt(b, span, true)
-        saved := graph_build_stmt(b, tc_sid(k, s), span, tc_stmt_kind(k, s), fresh = true)
+        graph_build_body_stmt(b, span)
+        saved := graph_build_stmt(b, span, tc_stmt_kind(k, s))
         if t.tag[s] == .Using && fields_of != nil {
             lw_decl(k, Tree_Id(t.a[s]), fields_of)
         } else if t.tag[s] == .Decl && fields_of != nil {
@@ -329,7 +329,7 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
 // A statement that is its own entry in the graph's statements (a loop's
 // init, its step).
 lw_stmt_entry :: proc(k: ^TC, s: Tree_Id) {
-    saved := graph_build_stmt(k.gb, tc_sid(k, s), tree_span(k.t, s), tc_stmt_kind(k, s))
+    saved := graph_build_stmt(k.gb, tree_span(k.t, s), tc_stmt_kind(k, s))
     lw_stmt(k, s)
     graph_build_stmt_end(k.gb, saved)
 }

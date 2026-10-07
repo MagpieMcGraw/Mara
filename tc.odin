@@ -411,7 +411,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
             m := tc_use(k, value, env, mod, alias = t.main[s])
-            tc_module_stmt(k, tc_sid(k, s), {types = slice.clone([]Type{m}), kind = .Other, set = true})
+            tc_module_stmt(k, tc_sid(k, s), {kind = .Other, set = true})
             return
         }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
@@ -474,7 +474,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         // (A constant: checked, and built, here in its module's order.)
         if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
             tc_check_const(k, kc)
-            tc_module_stmt(k, tc_sid(k, s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true})
+            tc_module_stmt(k, tc_sid(k, s), {kind = .Other, set = true})
         }
         return
     }
@@ -722,48 +722,22 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s), kind = tc_stmt_kind(k, s)}
     #partial switch t.tag[s] {
     case .Expr_Stmt:
-        d.form = .None
-        if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import {
-            // (A bare `use m` declares m's last name.)
-            d.form, d.settles, d.names = .Names, true, slice.clone([]string{tc_use_name(k, imp)})
-        }
-    case .Module, .Return, .Break, .Continue, .Overload:
-        d.form = .None
-    case .Foreign:
-        d.form = .Foreign
-        funs := foreign_view(t, s).funs
-        parts := make([]Graph_Decl_Part, len(funs))
-        for ff, i in funs { parts[i] = {tc_text(foreign_fun_view(t, ff).name), tree_span(t, ff)} }
-        d.parts = parts
+        // (A bare `use m` the checker settles.)
+        if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import { d.settles = true }
+    case .Module, .Return, .Break, .Continue, .Overload, .Foreign:
     case .Define:
-        d.settles, d.name = true, tc_name(k, s)
+        d.name = tc_name(k, s)
         value := Tree_Id(t.b[s])
-        switch {
-        case value != 0 && t.tag[value] == .Fun_Def || value != 0 && t.tag[value] == .Struct_Def:
-            d.form, d.settles = .Scope, false
-            d.generic = tc_is_generic(k, value)
-        case value != 0 && t.tag[value] == .Import:
-            d.form = .Import
-        case value != 0 && (t.tag[value] == .Alias_Def || t.tag[value] == .Distinct_Def):
-            d.form, d.settles = .Type, false
-        case value != 0 && t.tag[value] == .Dispatch_Def:
-            d.form, d.settles = .Dispatch, false
-        case value != 0 && t.tag[value] == .Union_Def:
-            d.form, d.settles = .Union, false
-            d.generic = tc_union_is_generic(k, value)
-            variants := tree_list(t, t.b[value])
-            parts := make([]Graph_Decl_Part, len(variants))
-            for vn, i in variants { parts[i] = {tc_name(k, vn), tree_span(t, vn)} }
-            d.parts = parts
-        case value != 0 && t.tag[value] == .Error_Def:
-            d.form, d.settles = .Union, false
-            names := tree_token_list(t, t.a[value])
-            parts := make([]Graph_Decl_Part, len(names))
-            for tok, i in names { parts[i] = {tc_text(tok), Span{at = tok, tok = tok, end = tok + 1}} }
-            d.parts = parts
+        tag := t.tag[value] if value != 0 else .Define
+        #partial switch tag {
+        case .Fun_Def, .Struct_Def:
+            d.form, d.generic = .Scope, tc_is_generic(k, value)
+        case .Import:
+            d.settles = true
+        case .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def:
+            // (A type, a dispatch: no code of its own.)
         case:
-            d.form = .Const
-            d.value = tc_sid(k, value)
+            d.settles, d.value = true, tc_sid(k, value)   // a constant
         }
     case:
         d.form = .Code

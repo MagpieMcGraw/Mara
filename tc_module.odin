@@ -30,12 +30,6 @@ tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := Token_Id(0)
     return m
 }
 
-// The name a bare `use a.b` gives its module: its last part.
-tc_use_name :: proc(k: ^TC, imp: Tree_Id) -> string {
-    parts := tree_token_list(k.t, k.t.a[imp])
-    return tc_text(parts[len(parts) - 1])
-}
-
 // An import's path, its parts joined: `mara.core`.
 tc_path :: proc(k: ^TC, imp: Tree_Id) -> string {
     sb := strings.builder_make()

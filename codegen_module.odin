@@ -133,7 +133,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode
-    g.release            = task.main_g.release
     g.no_assert          = task.main_g.no_assert
 
     g.context_enabled    = task.main_g.context_enabled
@@ -381,12 +380,11 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, release: bool = false, no_assert: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, no_assert: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
-    g.release = release
     g.no_assert = no_assert
 
 
@@ -545,7 +543,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.out = main_builder
     g.tmp_counter = 0
     g.label_counter = 0
-    g.emitted_allocas = {}
     // On web (wasm32), the C entry point's `int` is i32, not i64. We keep
     // Mara's main internally as i64 so user `return X` and the args-setup
     // size_t handling don't change, and emit a tiny i32 wrapper after.
@@ -1162,12 +1159,12 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
         len_store_val := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", SLICE_LEN_IR}))
-        emit_typed_store_len(g, len_store_val, len_ptr)
+        emit_header_store(g, len_store_val, len_ptr)
 
         // Store cap = 64 at field 1
         cap_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
-        emit_typed_store_cap(g, ARGS_CAP, cap_ptr)
+        emit_header_store(g, ARGS_CAP, cap_ptr)
 
         // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
         elements_ptr := fresh_tmp(g)
@@ -1218,12 +1215,12 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_raw(g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
         slen_ptr := fresh_tmp(g)
         emit_slice_gep(g, slen_ptr, elem_ptr, SLICE.len)
-        emit_typed_store_len(g, str_len, slen_ptr)
+        emit_header_store(g, str_len, slen_ptr)
         str_cap := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", SLICE_LEN_IR, " ", str_len, ", 1"}))
         scap_ptr := fresh_tmp(g)
         emit_slice_gep(g, scap_ptr, elem_ptr, SLICE.cap)
-        emit_typed_store_cap(g, str_cap, scap_ptr)
+        emit_header_store(g, str_cap, scap_ptr)
         data_ptr := fresh_tmp(g)
         emit_slice_gep(g, data_ptr, elem_ptr, SLICE.ptr)
         emit_raw(g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
