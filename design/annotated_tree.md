@@ -374,6 +374,25 @@ that would lower a function again for each reader and faster than doing so. The 
   - Time (test_1M): lowering ~5.3 s, from ~6.8 s; the build ~1.4 s (~5.5%) faster.
     graph.odin is 3515 lines (3887 before); lowering 2852 (2662), its predictions the
     growth.
-  - What remains: the copy into the arena (one per column, no remapping), and settling's
+  - What remained: the copy into the arena (one per column, no remapping), and settling's
     types (`graph_body_settle`: each node's type settled once the body is built — known
-    from the annotations as well).
+    from the annotations as well). The types are done next, below.
+- [x] Types settled where they are built (e6fa714, 2026-10-07). Two passes over each built
+      code settled its types; both are done as it is built.
+  - A `:=` binding's adopted width, a param's type, a synthetic local's (as behind a
+    pointer): each type is settled where it is written — made, or given later
+    (`graph_type`: a local typed, a literal retyped, a view). A constant a binding's width
+    settles is listed when it is made.
+  - A literal's type its use's: the walk back from a code's end (`graph_settle_literals`)
+    is each operation, as it is built, typing the operands of its own a use decides
+    (`graph_settle_use`). The last use decides, so a later one types an operand again;
+    a use typed later — a call's callee given, an array literal retyped, the variable a
+    write writes typed — types its operands again, and an operand typed types its own.
+    What no use types takes the default once the code is done.
+  - Gates: unchanged — graph (324 programs; the list of settled literals in the order the
+    walk back made it), IR (324 builds, test_1M), goldens, `annotcheck.sh`. A debug build
+    checks every type is settled. test_1M's time is unchanged: the passes were cheap, and
+    their work moved into building rather than going.
+  - What remains once a code is built: its default widths (a short list), the compiler's
+    globals placed, the copy into the arena, and three indexes the analyses read (a fun's
+    consumed param, the thens by their source, the runs by their first operation).
