@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:mem"
 import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
@@ -278,12 +279,12 @@ graph_is_terminator :: proc(k: Op_Kind) -> bool {
 
 // Lowering builds one code at a time — a fun's, a struct's constructor's, a
 // constant's (graph_body_begin … graph_body_end, graph_const_begin …
-// graph_const_end): its nodes in the order they end up in, in a graph the
-// builder keeps for each in turn. Once built, a code is finished and copied
-// into the program's arena (graph_code_close); once every code is, each is
-// put in written order (graph_place_codes).
+// graph_const_end): its nodes in the order they end up in, where they stay
+// (graph_code_new: its columns in their regions). Once built, a code is
+// finished (graph_code_close); once every code is, each is put in written
+// order (graph_place_codes).
 Graph_Builder :: struct {
-    g:       ^Program_Graph,  // the code being built (the builder's own, emptied for each)
+    g:       ^Program_Graph,  // the code being built
     checked: ^Checked_Program,
     stmt:    i32,     // the statement being lowered (in g.stmts), or -1
     stmt_id:   Syntax_Id,   // (the newest entry's statement, and the nodes there were then)
@@ -446,7 +447,6 @@ Decl_Site :: struct {
 // The builder, made once the program is checked (lower_program).
 graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph_Decl) -> ^Graph_Builder {
     b := new(Graph_Builder)
-    b.g = new(Program_Graph)
     b.checked = checked
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
@@ -456,6 +456,7 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     }
     b.pc.arena = new(virtual.Arena)
     if err := virtual.arena_init_growing(b.pc.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
+    b.pc.regions = new([Graph_Column]Graph_Region, virtual.arena_allocator(b.pc.arena))
     graph_modules(b, modules)
     return b
 }
@@ -519,12 +520,10 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.is_open)
     delete(b.typer)
     delete(b.untyped_dests)
-    graph_free_columns(b.g)
-    free(b.g)
     free(b)
 }
 
-// Every code lowered, each copied out as it was: put in written order, and
+// Every code lowered, each finished as it was: put in written order, and
 // what reads across codes — the constants' values at their uses — worked out.
 build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     defer graph_builder_free(b)
@@ -546,6 +545,142 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     return pc
 }
 
+
+// --- storage --------------------------------------------------------------------
+// Each code is built where it stays: a column of every code's — its nodes'
+// kinds, their types, its operands, its runs — in a region of address space
+// of its own (Graph_Region), reserved once and committed as it fills. Codes
+// are built one at a time, so the code being built's column is always its
+// region's newest allocation: it grows in place, and once the code is done
+// it is trimmed to its length (graph_trim), the next code's beginning where
+// it ends. Nothing is copied.
+
+Graph_Column :: enum u8 {
+    Kind, Op, Written, Parent, Last, Name, Type, Origin, Refers, Callee, Stmt, Decl_Tok, Constant,
+    Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
+}
+
+Graph_Region :: struct {
+    base:       [^]byte,
+    reserved:   uint,
+    committed:  uint,
+    last, used: uint,   // its newest allocation: [last, used)
+}
+
+@(private="file")
+GRAPH_REGION_RESERVE :: uint(64) << 30   // (each column's: more than any program's)
+@(private="file")
+GRAPH_REGION_COMMIT :: uint(1) << 20     // (committed so much at a time)
+
+@(private="file")
+graph_region_allocator :: proc(r: ^Graph_Region) -> mem.Allocator {
+    return {procedure = graph_region_proc, data = r}
+}
+
+// A region's allocations: the newest one grows and shrinks in place, and a
+// new one begins where it ends. (Only the newest can change: one that isn't
+// is an internal error.)
+@(private="file")
+graph_region_proc :: proc(data: rawptr, mode: mem.Allocator_Mode, size, alignment: int,
+                          old_memory: rawptr, old_size: int, loc := #caller_location) -> (memory: []byte, err: mem.Allocator_Error) {
+    r := (^Graph_Region)(data)
+    // (Its newest allocation to end at `end`, committed — zero past `from`
+    // when asked.)
+    end_at :: proc(r: ^Graph_Region, end, from: uint, zero: bool) -> mem.Allocator_Error {
+        if end > r.reserved { return .Out_Of_Memory }
+        if end > r.committed {
+            to := min(mem.align_forward_uint(end, GRAPH_REGION_COMMIT), r.reserved)
+            virtual.commit(r.base[r.committed:], to - r.committed) or_return
+            r.committed = to
+        }
+        if zero && end > from { mem.zero(r.base[from:], int(end - from)) }
+        r.used = end
+        return nil
+    }
+    switch mode {
+    case .Alloc, .Alloc_Non_Zeroed:
+        if r.base == nil {
+            space := virtual.reserve(GRAPH_REGION_RESERVE) or_return
+            r.base, r.reserved = raw_data(space), uint(len(space))
+        }
+        start := mem.align_forward_uint(r.used, uint(alignment))
+        end_at(r, start + uint(size), start, mode == .Alloc) or_return
+        r.last = start
+        return r.base[start:][:size], nil
+    case .Resize, .Resize_Non_Zeroed:
+        if old_memory == nil {
+            return graph_region_proc(data, .Alloc if mode == .Resize else .Alloc_Non_Zeroed, size, alignment, nil, 0, loc)
+        }
+        start := uint(uintptr(old_memory) - uintptr(r.base))
+        if start != r.last || start + uint(old_size) != r.used { graph_fatal({}, "a code's column resized when it is no longer its region's newest") }
+        end_at(r, start + uint(size), start + uint(old_size), mode == .Resize) or_return
+        return r.base[start:][:size], nil
+    case .Free:
+        // (The newest given back; one before it stays where it is.)
+        if old_memory != nil && uint(uintptr(old_memory) - uintptr(r.base)) == r.last { r.used = r.last }
+        return nil, nil
+    case .Query_Features:
+        if set := (^mem.Allocator_Mode_Set)(old_memory); set != nil {
+            set^ = {.Alloc, .Alloc_Non_Zeroed, .Resize, .Resize_Non_Zeroed, .Free, .Query_Features}
+        }
+        return nil, nil
+    case .Free_All, .Query_Info:
+        return nil, .Mode_Not_Implemented
+    }
+    return nil, nil
+}
+
+// A new code's graph: each column empty, in its region.
+@(private="file")
+graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
+    g := new(Program_Graph, virtual.arena_allocator(b.pc.arena))
+    r := b.pc.regions
+    at :: proc(r: ^[Graph_Column]Graph_Region, c: Graph_Column) -> mem.Allocator { return graph_region_allocator(&r[c]) }
+    g.kind = make([dynamic]Node_Kind, at(r, .Kind))
+    g.op = make([dynamic]Op_Kind, at(r, .Op))
+    g.written = make([dynamic]Written, at(r, .Written))
+    g.parent = make([dynamic]Node_Id, at(r, .Parent))
+    g.last = make([dynamic]Node_Id, at(r, .Last))
+    g.name = make([dynamic]string, at(r, .Name))
+    g.type_ = make([dynamic]Type, at(r, .Type))
+    g.origin = make([dynamic]Span, at(r, .Origin))
+    g.refers = make([dynamic]Node_Id, at(r, .Refers))
+    g.callee = make([dynamic]^Type_Scope, at(r, .Callee))
+    g.stmt = make([dynamic]i32, at(r, .Stmt))
+    g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
+    g.constant = make([dynamic]Syntax_Id, at(r, .Constant))
+    g.operand_first = make([dynamic]i32, at(r, .Operand_First))
+    g.operands = make([dynamic]Operand, at(r, .Operands))
+    g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
+    g.run_first = make([dynamic]i32, at(r, .Run_First))
+    g.edges = make([dynamic]Edge, at(r, .Edges))
+    g.stmts = make([dynamic]Graph_Stmt, at(r, .Stmts))
+    g.unreachable = make([dynamic]Span, at(r, .Unreachable))
+    g.settled = make([dynamic]Node_Id, at(r, .Settled))
+    return g
+}
+
+// A code's columns trimmed: each node column to `n`, operand_first to `n`
+// and its end (none, for none), the rest to their lengths — what each was
+// built past given back to its region.
+@(private="file")
+graph_trim :: proc(g: ^Program_Graph, n: int) {
+    trim :: proc(col: ^[dynamic]$T, n: int) {
+        resize(col, n)
+        if cap(col) > n { shrink(col) }
+    }
+    trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n); trim(&g.last, n)
+    trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n); trim(&g.callee, n)
+    trim(&g.stmt, n); trim(&g.decl_tok, n); trim(&g.constant, n)
+    trim(&g.operand_first, n + 1 if n > 0 else 0)
+    trim(&g.operands, len(g.operands) if n > 0 else 0)
+    trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
+    trim(&g.run_first, len(g.run_first) if n > 0 else 0)
+    trim(&g.edges, len(g.edges) if n > 0 else 0)
+    trim(&g.stmts, len(g.stmts) if n > 0 else 0)
+    trim(&g.unreachable, len(g.unreachable) if n > 0 else 0)
+    trim(&g.settled, len(g.settled) if n > 0 else 0)
+}
 // --- the program's code ---------------------------------------------------------
 
 // The program's code, once lowered (design/annotated_tree.md, stage 4): each
@@ -562,7 +697,8 @@ Program_Code :: struct {
     fold_errors: [dynamic]Fold_Error,              // the uses of constants with no value
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
-    arena:       ^virtual.Arena,                   // where the codes are (they last as long as the program)
+    arena:       ^virtual.Arena,                   // where the codes' graphs are (they last as long as the program)
+    regions:     ^[Graph_Column]Graph_Region,       // where their columns are
 }
 
 // --- one code at a time ---------------------------------------------------------
@@ -572,19 +708,16 @@ Program_Code :: struct {
 @(private="file")
 graph_code_open :: proc(b: ^Graph_Builder) {
     if f := b.body; f != nil { graph_fatal(b.g.origin[f.root], "a code begun while '%s' is being built", b.g.name[f.root]) }
-    g := b.g
-    clear(&g.operands); clear(&g.run_ops); clear(&g.run_first); clear(&g.edges)
-    clear(&g.stmts); clear(&g.unreachable); clear(&g.settled)
-    clear(&g.consts); clear(&g.assert_sides); clear(&g.defer_of)
+    b.g = graph_code_new(b)
     b.nodes = 0
     b.outside_named = false
     clear(&b.open)
     clear(&b.untyped_dests)
 }
 
-// The code built: settled — its widths — with the compiler's globals it
-// names past its own nodes, and copied into the program's arena. Nil when
-// it failed (graph_body_fail): it is left out.
+// The code built: its widths defaulted where no use typed one, the
+// compiler's globals it names past its own nodes, its columns trimmed where
+// they are. Nil when it failed (graph_body_fail): it is left out.
 @(private="file")
 graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     defer {
@@ -595,8 +728,11 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         }
         clear(&b.runs)
     }
-    if f.failed != "" { return nil }
     g := b.g
+    if f.failed != "" {
+        graph_trim(g, 0)
+        return nil
+    }
     // (What no use typed takes the default: graph_settle_use.)
     for id in b.open {
         if int(id) < b.nodes && g.kind[id] == .Op && is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }
@@ -609,11 +745,12 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         if e.to == NO_NODE { graph_fatal(g.origin[e.from], "a then from '%s' into a run that never had an operation", g.name[e.from]) }
     }
     when ODIN_DEBUG { graph_check_built(b) }
-    c := graph_code_copy(b)
-    graph_find_consumes(c)
-    graph_index_edges(c)
-    graph_index_runs(c)
-    return c
+    graph_order_settled(b)
+    graph_trim(g, b.nodes)
+    graph_find_consumes(g)
+    graph_index_edges(g)
+    graph_index_runs(g)
+    return g
 }
 
 // The compiler's globals the code names — this_program, context: a node
@@ -660,41 +797,23 @@ graph_check_built :: proc(b: ^Graph_Builder) {
     }
 }
 
-// The code just built, copied into the program's arena: each column to its
-// nodes', each table to its own.
+// The literals whose width is their use's (g.settled): those a binding's
+// settles in order, then those a use typed — by the use that did, the last
+// first, each one's in its operands' order.
 @(private="file")
-graph_code_copy :: proc(b: ^Graph_Builder) -> ^Program_Graph {
+graph_order_settled :: proc(b: ^Graph_Builder) {
     g := b.g
-    n := b.nodes
-    context.allocator = virtual.arena_allocator(b.pc.arena)
-    c := new(Program_Graph)
-    c.kind, c.op, c.written = slice.clone_to_dynamic(g.kind[:n]), slice.clone_to_dynamic(g.op[:n]), slice.clone_to_dynamic(g.written[:n])
-    c.parent, c.last = slice.clone_to_dynamic(g.parent[:n]), slice.clone_to_dynamic(g.last[:n])
-    c.name, c.type_, c.origin = slice.clone_to_dynamic(g.name[:n]), slice.clone_to_dynamic(g.type_[:n]), slice.clone_to_dynamic(g.origin[:n])
-    c.refers, c.callee, c.stmt = slice.clone_to_dynamic(g.refers[:n]), slice.clone_to_dynamic(g.callee[:n]), slice.clone_to_dynamic(g.stmt[:n])
-    c.decl_tok, c.constant = slice.clone_to_dynamic(g.decl_tok[:n]), slice.clone_to_dynamic(g.constant[:n])
-    c.operands, c.operand_first = slice.clone_to_dynamic(g.operands[:]), slice.clone_to_dynamic(g.operand_first[:n + 1])
-    c.run_ops, c.run_first = slice.clone_to_dynamic(g.run_ops[:]), slice.clone_to_dynamic(g.run_first[:])
-    c.edges, c.stmts = slice.clone_to_dynamic(g.edges[:]), slice.clone_to_dynamic(g.stmts[:])
-    c.unreachable, c.settled = slice.clone_to_dynamic(g.unreachable[:]), slice.clone_to_dynamic(g.settled[:])
-    slice.sort(c.settled[:])
-    // (Then the constants a use typed: by the use that did, the last first,
-    // each one's in its operands' order.)
-    for u := n - 1; u >= 0; u -= 1 {
+    slice.sort(g.settled[:])
+    for u := b.nodes - 1; u >= 0; u -= 1 {
         if !b.typer[u] { continue }
-        from := len(c.settled)
+        from := len(g.settled)
         for o in graph_built_operands(b, Node_Id(u)) {
             if o.op == NO_NODE || o.out != 0 || b.typed_by[o.op] != Node_Id(u) { continue }
             if g.op[o.op] != .Const || o.op not_in g.consts && g.constant[o.op] == 0 { continue }
-            if slice.contains(c.settled[from:], o.op) { continue }
-            append(&c.settled, o.op)
+            if slice.contains(g.settled[from:], o.op) { continue }
+            append(&g.settled, o.op)
         }
     }
-    if len(g.consts) > 0 { reserve(&c.consts, len(g.consts)) }
-    for id, v in g.consts { c.consts[id] = v }
-    for id, s in g.assert_sides { c.assert_sides[id] = s }
-    for op, d in g.defer_of { c.defer_of[op] = d }
-    return c
 }
 
 // Every code built, put in written order (Program_Code.codes): each
@@ -776,18 +895,6 @@ graph_place :: proc(b: ^Graph_Builder, c: ^Built_Code) {
     append(&pc.unreachable, ..g.unreachable[:])
 }
 
-// The storage of a graph's columns and tables.
-@(private="file")
-graph_free_columns :: proc(g: ^Program_Graph) {
-    delete(g.kind); delete(g.op); delete(g.written); delete(g.parent); delete(g.last)
-    delete(g.name); delete(g.type_); delete(g.origin); delete(g.refers); delete(g.stmt)
-    delete(g.operands); delete(g.operand_first); delete(g.run_ops); delete(g.run_first)
-    delete(g.edges); delete(g.out_first); delete(g.run_starts)
-    delete(g.stmts); delete(g.unreachable); delete(g.settled)
-    delete(g.consts); delete(g.assert_sides); delete(g.consumes); delete(g.decl_tok)
-    delete(g.callee); delete(g.defer_of); delete(g.constant)
-}
-
 // A type with its `:=` bindings' deferred widths settled — the one each
 // adopted, else the default, i64 or f64. (A literal's own, with no binding,
 // takes the type its use gives it — except behind a pointer, which no use
@@ -825,7 +932,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
                    name: string, t: Type, origin: Span) -> Node_Id {
     g := b.g
     i := b.nodes
-    if i >= len(g.kind) { graph_resize(g, max(2 * len(g.kind), 1 << 16)) }
+    if i >= len(g.kind) { graph_resize(g, max(2 * len(g.kind), 64)) }
     id := Node_Id(i)
     g.kind[i] = kind
     g.op[i] = .Var
@@ -854,23 +961,24 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     return id
 }
 
-// Every per-node column to `n` entries.
+// Every per-node column to `n` entries (each written as its node is made:
+// none zeroed).
 @(private="file")
 graph_resize :: proc(g: ^Program_Graph, n: int) {
-    resize(&g.kind, n)
-    resize(&g.op, n)
-    resize(&g.written, n)
-    resize(&g.parent, n)
-    resize(&g.last, n)
-    resize(&g.name, n)
-    resize(&g.type_, n)
-    resize(&g.origin, n)
-    resize(&g.refers, n)
-    resize(&g.callee, n)
-    resize(&g.stmt, n)
-    resize(&g.decl_tok, n)
-    resize(&g.constant, n)
-    resize(&g.operand_first, n)
+    non_zero_resize(&g.kind, n)
+    non_zero_resize(&g.op, n)
+    non_zero_resize(&g.written, n)
+    non_zero_resize(&g.parent, n)
+    non_zero_resize(&g.last, n)
+    non_zero_resize(&g.name, n)
+    non_zero_resize(&g.type_, n)
+    non_zero_resize(&g.origin, n)
+    non_zero_resize(&g.refers, n)
+    non_zero_resize(&g.callee, n)
+    non_zero_resize(&g.stmt, n)
+    non_zero_resize(&g.decl_tok, n)
+    non_zero_resize(&g.constant, n)
+    non_zero_resize(&g.operand_first, n)
 }
 
 // End a scope: its subtree is everything added since it.
@@ -1907,7 +2015,7 @@ graph_scope_name :: proc(ts: ^Type_Scope, name: string, written: Written) -> str
 // --- bodies -------------------------------------------------------------------
 
 // A fun's or struct's body, lowered (lower.odin): its scope's node and
-// contents, a code of its own, copied out once it is built, and put
+// contents, a code of its own, finished once it is built, and put
 // in place once every code is (graph_place_codes).
 //
 // Where lowering can't build something, the body fails: it is left out, and
@@ -1990,7 +2098,7 @@ graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     }
 }
 
-// The body is built: finished and copied out, to be put in place —
+// The body is built: finished, to be put in place —
 // or, if it failed, left out.
 graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     graph_contents_end(b, f.contents, finish = f.failed == "")
@@ -3116,7 +3224,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
     return f
 }
 
-// Its value built, of type t: its code ends, copied out, to be put
+// Its value built, of type t: its code ends, finished, to be put
 // where it is written. One not built is left out (graph_body_fail).
 graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     d := f.const_decl
