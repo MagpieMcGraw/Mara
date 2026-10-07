@@ -350,7 +350,7 @@ lw_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
 lw_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, span: Span, op_tok: Token_Id = 0, target: Tree_Id = 0, s: Tree_Id = 0) {
     b := k.gb
     if place == NO_VALUE { lw_fail(k, value, "a write to no place") }
-    pt := b.g.type_[place.op] if place.op != NO_NODE else nil
+    pt := graph_type(b.g, place.op) if place.op != NO_NODE else nil
     d := Dest{kind = .At, at = place, type_ = pt}
     if op_tok != 0 {
         saved := k.lower.compound

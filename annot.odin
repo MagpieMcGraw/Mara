@@ -526,7 +526,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
         for g in pc.codes {
             node := Node_Id(0)   // (its root)
             if g.kind[node] != .Fun && g.kind[node] != .Struct { continue }
-            ts := g.type_[node].(^Type_Scope)
+            ts := graph_type(g, node).(^Type_Scope)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)
             end := graph_last(g, node)
@@ -545,7 +545,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     report_var(&problems, tok, ts, "the graph's %v '%s' names no token", g.kind[id], graph_name(g, id))
                     continue
                 }
-                i := annot_var(a, ts, tok, g.type_[id])
+                i := annot_var(a, ts, tok, graph_type(g, id))
                 if i < 0 {
                     report_var(&problems, tok, ts, "the graph's %v is none of its annotated variables", g.kind[id])
                     continue
@@ -557,8 +557,8 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     report_var(&problems, tok, ts, "the graph's %v is named '%s'", g.kind[id], graph_name(g, id))
                 }
                 // (A distinct type the graph holds as its base: a destructured local's, a loop's element.)
-                if !types_equal(distinct_base(solidify_type(v.type_)), distinct_base(solidify_type(g.type_[id]))) {
-                    report_var(&problems, tok, ts, "is annotated %s; the graph's %v is %s", type_name(v.type_), g.kind[id], type_name(g.type_[id]))
+                if !types_equal(distinct_base(solidify_type(v.type_)), distinct_base(solidify_type(graph_type(g, id)))) {
+                    report_var(&problems, tok, ts, "is annotated %s; the graph's %v is %s", type_name(v.type_), g.kind[id], type_name(graph_type(g, id)))
                 }
             }
             for v, i in vars_of {

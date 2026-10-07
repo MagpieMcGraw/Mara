@@ -85,8 +85,8 @@ graph_fold_uses :: proc(pc: ^Program_Code, checked: ^Checked_Program) {
             if c == 0 || c not_in pc.consts { continue }
             #partial switch g.op[id] {
             case .Const:
-                v := fold_decl(&fo, c, fold_width_of(g.type_[id]))
-                if v == nil || !fold_scalar(v) || llvm_type_from_checker(g.type_[id]) == "ptr" {
+                v := fold_decl(&fo, c, fold_width_of(graph_type(g, id)))
+                if v == nil || !fold_scalar(v) || llvm_type_from_checker(graph_type(g, id)) == "ptr" {
                     fold_error(&fo, g, id, c)
                     continue
                 }
@@ -133,7 +133,7 @@ fold_scalar :: proc(v: ^Fold) -> bool {
 @(private="file")
 fold_decl :: proc(fo: ^Folder, c: Syntax_Id, width: Fold_Width) -> ^Fold {
     g := fo.pc.consts[c]
-    t := g.type_[0]
+    t := graph_type(g, 0)
     width := Fold_Width.Own if !is_infer(t) else width
     key := Fold_Key{c, width}
     if v, ok := fo.done[key]; ok { return v }
@@ -192,7 +192,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         out = fold_const(fo, fc, id)
     case .Global:
         if c, ok := g.consts[id]; ok && c.is_text {
-            out = fold_new(g.type_[id])
+            out = fold_new(graph_type(g, id))
             out.c, out.known = c, true
         } else if named := g.constant[id]; named != 0 {
             if named in fo.pc.consts { out = fold_decl(fo, named, .Own) }
@@ -207,8 +207,8 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         }
     case .Variant:
         if u := arg(fc, ops, 0); u != nil {
-            if u.variant != g.type_[id] {
-                u.variant, u.parts = g.type_[id], nil
+            if u.variant != graph_type(g, id) {
+                u.variant, u.parts = graph_type(g, id), nil
             }
             out = u
         }
@@ -216,7 +216,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         // Text seen as a slice: a view of it.
         if len(ops) == 1 {
             if x := arg(fc, ops, 0); x != nil && x.known && x.c.is_text {
-                out = fold_new(g.type_[id])
+                out = fold_new(graph_type(g, id))
                 out.c, out.known = x.c, true
             }
         }
@@ -244,25 +244,25 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     case .Arith:
         l, r := arg(fc, ops, 0), arg(fc, ops, 1)
         if l != nil && r != nil && fold_scalar(l) && fold_scalar(r) {
-            if c, ok := fold_arith(graph_name(g, id), l.c, r.c, fold_single(fc, g.type_[id])); ok {
-                out = fold_value(g.type_[id], c)
+            if c, ok := fold_arith(graph_name(g, id), l.c, r.c, fold_single(fc, graph_type(g, id))); ok {
+                out = fold_value(graph_type(g, id), c)
             }
         }
     case .Compare:
         l, r := arg(fc, ops, 0), arg(fc, ops, 1)
         if l != nil && r != nil && fold_scalar(l) && fold_scalar(r) {
-            if c, ok := fold_compare(graph_name(g, id), l.c, r.c); ok { out = fold_value(g.type_[id], c) }
+            if c, ok := fold_compare(graph_name(g, id), l.c, r.c); ok { out = fold_value(graph_type(g, id), c) }
         }
     case .Unary:
         if x := arg(fc, ops, 0); x != nil && fold_scalar(x) {
-            if c, ok := fold_unary(graph_name(g, id), x.c); ok { out = fold_value(g.type_[id], c) }
+            if c, ok := fold_unary(graph_name(g, id), x.c); ok { out = fold_value(graph_type(g, id), c) }
         }
     case .Cast:
         // (Text seen as a slice, a partial array: the same text.)
         if x := arg(fc, ops, 0); x != nil && x.known && x.c.is_text {
-            out = fold_value(g.type_[id], x.c)
+            out = fold_value(graph_type(g, id), x.c)
         } else if x != nil && fold_scalar(x) {
-            if c, ok := fold_cast(x.c, g.type_[id]); ok { out = fold_value(g.type_[id], c) }
+            if c, ok := fold_cast(x.c, graph_type(g, id)); ok { out = fold_value(graph_type(g, id), c) }
         }
     case .Address, .Deref, .View, .Byte_Read, .Carve, .Arena_Alloc,
          .Call, .Print, .Assert, .Crash,
@@ -283,13 +283,13 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
 @(private="file")
 fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fc.g
-    if c, ok := g.consts[id]; ok { return fold_value(g.type_[id], c) }
-    if graph_name(g, id) == "void" { return fold_value(g.type_[id], {}) }   // (written: a null)
+    if c, ok := g.consts[id]; ok { return fold_value(graph_type(g, id), c) }
+    if graph_name(g, id) == "void" { return fold_value(graph_type(g, id), {}) }   // (written: a null)
     named := g.constant[id]
     if named == 0 { return nil }
     if named not_in fo.pc.consts { return nil }
     width := fc.width
-    if width == .Own { width = fold_width_of(g.type_[id]) }
+    if width == .Own { width = fold_width_of(graph_type(g, id)) }
     return fold_decl(fo, named, width)
 }
 
@@ -407,7 +407,7 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
     fold_zero(dst)
     ts := graph_called(g, id)
     if ts == nil {
-        u, is_union := distinct_base(g.type_[id]).(^Type_Union)
+        u, is_union := distinct_base(graph_type(g, id)).(^Type_Union)
         if !is_union { return fold_fail(fo) != nil }
         st := u.variant_structs[graph_name(g, id)]
         if st == nil { return fold_fail(fo) != nil }

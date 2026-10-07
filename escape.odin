@@ -255,7 +255,7 @@ esc_vars :: proc(e: ^Esc) {
         case .Fun, .Struct:
             id = graph_last(g, id)
         case .Param, .Result, .Local, .Field:
-            v := Esc_Var{node = id, name = graph_name(g, id), type_ = g.type_[id], depth = esc_depth(e, id),
+            v := Esc_Var{node = id, name = graph_name(g, id), type_ = graph_type(g, id), depth = esc_depth(e, id),
                          param = -1, slot = -1, init = NO_NODE}
             #partial switch g.kind[id] {
             case .Param:
@@ -395,11 +395,11 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     case .Deref:
         esc_deref(e, r, esc_at(e, ops[0]), state)
     case .Read:
-        if esc_has_refs(e.c, g.type_[op]) { esc_deref(e, r, esc_at(e, ops[0]), state) }
+        if esc_has_refs(e.c, graph_type(g, op)) { esc_deref(e, r, esc_at(e, ops[0]), state) }
     case .Address:
         esc_join(r, esc_at(e, ops[0]))
     case .Arith, .Compare, .Unary, .Cast:
-        if esc_has_refs(e.c, g.type_[op]) {
+        if esc_has_refs(e.c, graph_type(g, op)) {
             for o in ops { esc_join(r, esc_at(e, o)) }
         }
     case .Carve:
@@ -408,7 +408,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_mem(e, &mem, ops[0], state)
         if graph_name(g, op) != "let" {
             esc_join(r, mem)
-        } else if esc_has_refs(e.c, g.type_[op]) {
+        } else if esc_has_refs(e.c, graph_type(g, op)) {
             esc_deref(e, r, mem, state)
         }
     case .Call:
@@ -434,14 +434,14 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_write(e, op, ops[0], val, state)
     case .Fill:
         val: Esc_Roots
-        if esc_has_refs(e.c, g.type_[ops[0].op]) { esc_join(&val, esc_at(e, ops[1])) }
+        if esc_has_refs(e.c, graph_type(g, ops[0].op)) { esc_join(&val, esc_at(e, ops[1])) }
         esc_write(e, op, ops[0], val, state)
     case .Write:
         esc_write_op(e, op, ops, state)
     case .Byte_Read:
         // A value read out of a byte buffer holds what the buffer's memory does.
         val: Esc_Roots
-        if esc_has_refs(e.c, g.type_[ops[0].op]) {
+        if esc_has_refs(e.c, graph_type(g, ops[0].op)) {
             mem: Esc_Roots
             esc_mem(e, &mem, ops[1], state)
             esc_deref(e, &val, mem, state)
@@ -504,7 +504,7 @@ esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
 @(private="file")
 esc_mem :: proc(e: ^Esc, dst: ^Esc_Roots, place: Operand, state: []Esc_Roots) {
     m := esc_at(e, place)
-    #partial switch bt in distinct_base(e.g.type_[place.op]) {
+    #partial switch bt in distinct_base(graph_type(e.g, place.op)) {
     case ^Type_Ptr:
         pointee: Esc_Roots
         esc_deref(e, &pointee, m, state)
@@ -534,11 +534,11 @@ esc_write_op :: proc(e: ^Esc, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
     }
     if e.g.op[dest.op] == .Slice {
         // `dst[lo:hi] = src`: src's elements copied into the ones the slice views.
-        elems := esc_elems(e, val, index_elem_type(e.g.type_[dest.op]), state)
+        elems := esc_elems(e, val, index_elem_type(graph_type(e.g, dest.op)), state)
         esc_store(e, Esc_Site{op = op, place = dest}, esc_at(e, dest), elems, state)
         return
     }
-    esc_write(e, op, dest, esc_into(e, val, e.g.type_[dest.op], state), state)
+    esc_write(e, op, dest, esc_into(e, val, graph_type(e.g, dest.op), state), state)
 }
 
 // Store `val` into the place `dest`. A write of a whole variable replaces
@@ -661,7 +661,7 @@ esc_elems :: proc(e: ^Esc, o: Operand, elem: Type, state: []Esc_Roots) -> Esc_Ro
 // A value's type; a call's later outputs have none recorded.
 @(private="file")
 esc_value_type :: proc(e: ^Esc, o: Operand) -> Type {
-    return e.g.type_[o.op] if o.out == 0 else nil
+    return graph_type(e.g, o.op) if o.out == 0 else nil
 }
 
 // Where a value sits: a read's place, or else a temporary of the block

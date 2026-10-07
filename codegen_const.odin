@@ -58,7 +58,7 @@ const_table :: proc(g: ^Codegen, pc: ^Program_Code, c: Syntax_Id, span: Span) ->
     if !named { codegen_fatal(g, span, CODE_CONST_TABLE_UNNAMED) }
     name := strings.concatenate({"@mara_const.", ir_safe_name(key)})
     if name not_in g.const_tables {
-        g.const_tables[name] = build_const_table(g, name, pc.tables[c], pc.consts[c].type_[0], span)
+        g.const_tables[name] = build_const_table(g, name, pc.tables[c], graph_type(pc.consts[c], 0), span)
     }
     return name
 }

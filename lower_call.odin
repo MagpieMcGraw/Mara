@@ -133,7 +133,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         r := lw_expr(k, call, .Value)
         if mr.on {
             if !r.ok { lw_fail(k, v, "a `?` on no call built") }
-            graph_type(b, r.v.op, nil)
+            graph_retype(b, r.v.op, nil)
             mr.call = graph_try_after(b, tree_span(t, v), r.v)
         }
         rets := tc_call_returns(k, call, nil)
@@ -264,7 +264,7 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     if !field { decl = graph_build_decl(b, name, t.main[target], span, tc_node_type(k, target), bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
     final := tc_node_type(k, target)
-    if field { final = b.g.type_[decl] }
+    if field { final = graph_type(b.g, decl) }
     graph_build_typed(b, decl, final)
     lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final), span, settle = true)
 }

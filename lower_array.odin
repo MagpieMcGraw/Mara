@@ -55,7 +55,7 @@ lw_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
     b := k.gb
     span := tree_span(k.t, s)
     if op_tok != 0 { lw_fail(k, s, "a compound assignment into bytes") }
-    pt := b.g.type_[place.op] if place.op != NO_NODE else nil
+    pt := graph_type(b.g, place.op) if place.op != NO_NODE else nil
     r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = place, type_ = pt}, temp = true, temp_span = span)
     vt := tc_node_type(k, value)
     _, big := tc_byte_node(k, target)
@@ -87,7 +87,7 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     }
     for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
     t := tc_node_type(k, n)
-    if b.g.type_[ga.zero] == nil { graph_type(b, ga.zero, t) }
+    if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, t) }
     return lw_built(k, want, in_temp, temp, d, t, at, placed)
 }
 

@@ -80,7 +80,7 @@ flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
         for id in g.settled {
             v, ok := g.consts[id]
             if !ok || v.is_text { continue }
-            check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], g.origin[id])
+            check_value_range(c, v.float if v.is_float else f64(v.int), v.int, graph_type(g, id), g.origin[id])
         }
     }
 }
@@ -106,7 +106,7 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
             if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
         }
         for k, id in g.kind {
-            if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(g.type_[id]) { continue }
+            if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(graph_type(g, Node_Id(id))) { continue }
             // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
             // variable or a match arm's binding.
             s := g.stmt[id]
@@ -285,7 +285,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
         case:
             continue
         }
-        base := distinct_base(g.type_[id])
+        base := distinct_base(graph_type(g, id))
         if flow_can_be_unset(base) {
             s.own[id - node] = bits
             bits += 1
@@ -495,7 +495,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             case .Zero:
                 // A bare `p : ^T` or `s : []T` (a sized slice has its storage, a
                 // bare scalar is zero).
-                #partial switch _ in distinct_base(g.type_[v]) {
+                #partial switch _ in distinct_base(graph_type(g, v)) {
                 case ^Type_Ptr, ^Type_Slice: unset = g.written[op] == .Synthetic && len(ops) == 1
                 }
             case .Construct:
@@ -578,7 +578,7 @@ flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: m
                 if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
                 if g.written[v] != .Explicit { continue }
                 if where_, stored := void_where(g, id, k); stored {
-                    void_error(c, &seen, g.origin[v], g.type_[v], where_)
+                    void_error(c, &seen, g.origin[v], graph_type(g, v), where_)
                 }
             }
         }

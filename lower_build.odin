@@ -24,7 +24,7 @@ built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
     if b == nil || r.v.op == NO_NODE { return false }
     op := r.v.op
     if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
-    return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
+    return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(graph_type(b.g, op))
 }
 
 // A dispatch's array literal argument: its position, its nodes, its type.
@@ -258,7 +258,7 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
             // (That many bytes at the span's start, seen as the array.)
             return graph_build_view_temp(b, graph_build_span_view(b, r.v, to, big, span), to, span)
         }
-        if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && b.g.type_[r.v.op] == to { return r.v }
+        if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && graph_type(b.g, r.v.op) == to { return r.v }
         if to_array && (tc_byte_index(k, e) || is_span && is_byte_buffer(tc_node_type(k, Tree_Id(k.t.a[m])))) || is_literal && graph_aggregate(to) {
             lw_fail(k, e, "bytes or a literal at its use's type")
         }
@@ -446,5 +446,5 @@ lw_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
     if !built { return }
     _, big := tc_byte_node(k, Tree_Id(k.t.a[u]))
     graph_build_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
-    graph_type(b, ops[0], new_clone(Type_Ptr{elem = pt.elem}))
+    graph_retype(b, ops[0], new_clone(Type_Ptr{elem = pt.elem}))
 }

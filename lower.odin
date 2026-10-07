@@ -442,7 +442,7 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     if decl == NO_NODE {
         decl = graph_build_decl(b, name, k.t.main[target], span, ann)
         graph_build_typed(b, decl, ann)
-    } else if b.g.type_[decl] == nil {
+    } else if b.g.type_[decl] == 0 {
         graph_build_typed(b, decl, ann)
     }
     args: []Operand
@@ -457,7 +457,7 @@ lw_decl_sized :: proc(k: ^TC, name: string, tok: Token_Id, ann: Type, span: Span
     if decl == NO_NODE { decl = graph_build_decl(b, name, tok, span, ann) }
     r := lw_expr(k, cap_n, .Value)
     if field != NO_NODE {
-        graph_build_bare(b, decl, b.g.type_[decl], nil, nil, span)
+        graph_build_bare(b, decl, graph_type(b.g, decl), nil, nil, span)
         return
     }
     graph_build_typed(b, decl, ann)
