@@ -51,10 +51,10 @@ Type_Void :: struct {}
 Type_Error :: struct {}
 Type_Err :: struct {}
 
-Numeric_Kind :: enum { Signed, Unsigned, Float }
+Numeric_Kind :: enum u8 { Signed, Unsigned, Float }
 Type_Numeric :: struct {
     kind: Numeric_Kind,
-    bits: int,           // 8, 16, 32
+    bits: i32,           // 8, 16, 32, 64 (Type: 16 bytes, every variant 8 or less)
 }
 
 Type_Ptr :: struct {
@@ -973,7 +973,7 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 // separately so a `distinct i32` stays nominal.
 numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
     #partial switch v in distinct_base(resolve_infer(t)) {
-    case Type_Numeric:                   return v.bits, v.kind, true
+    case Type_Numeric:                   return int(v.bits), v.kind, true
     case Type_Byte, Type_Utf8:  return 8, .Unsigned, true
     case Type_F64:                       return 64, .Float, true
     }
@@ -1042,7 +1042,7 @@ common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
     } else {
         return nil, false  // u64 vs a signed type: no value-preserving common
     }
-    return Type_Numeric{kind = .Signed, bits = w}, true
+    return Type_Numeric{kind = .Signed, bits = i32(w)}, true
 }
 
 // A subscript index may be ANY integer: the runtime bounds check makes a
@@ -1085,7 +1085,7 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
     // cast. Brings counts/bounds in line with coerces_to_index_width — lossless only.
     bits, kind, ok := numeric_info(t)
     if !ok { return false }   // floats / non-numerics rejected
-    if kind == slice_header_width_type.kind && bits == slice_header_width_type.bits {
+    if kind == slice_header_width_type.kind && bits == int(slice_header_width_type.bits) {
         return true
     }
     return value_preserving_widen(t, slice_header_width_type)

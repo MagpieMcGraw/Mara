@@ -691,7 +691,7 @@ gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
     case "i16": bits = 16
     case "i32": bits = 32
     }
-    emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = bits})
+    emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = i32(bits)})
     emit_print_literal(g, ")")
     emit_br(g, done)
     emit_label(g, done)

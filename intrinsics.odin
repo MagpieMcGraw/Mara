@@ -112,7 +112,7 @@ int_type_matches_width :: proc(t: Type, bits: int) -> bool {
     base := distinct_base(t)
     if n, ok := base.(Type_Numeric); ok {
         if n.kind != .Signed && n.kind != .Unsigned { return false }
-        return n.bits == bits
+        return int(n.bits) == bits
     }
     return false
 }
@@ -123,7 +123,7 @@ int_type_matches_width :: proc(t: Type, bits: int) -> bool {
 unsigned_int_type_matches_width :: proc(t: Type, bits: int) -> bool {
     base := distinct_base(t)
     if n, ok := base.(Type_Numeric); ok {
-        return n.kind == .Unsigned && n.bits == bits
+        return n.kind == .Unsigned && int(n.bits) == bits
     }
     return false
 }

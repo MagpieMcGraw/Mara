@@ -23,7 +23,7 @@ type_layout :: proc(t: Type) -> Layout {
     case Type_F64, Type_Infer_Int, Type_Infer_Float:
         return {8, 8}
     case Type_Numeric:
-        n := word_bytes() if v.bits == 0 else v.bits / 8
+        n := word_bytes() if v.bits == 0 else int(v.bits) / 8
         return {n, n}
     case Type_Err:
         return {4, 4}   // an i32: its set's id and its tag
