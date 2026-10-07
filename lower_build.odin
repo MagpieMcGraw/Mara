@@ -109,6 +109,80 @@ lw_value :: proc(k: ^TC, r: Built, n: Tree_Id, t: Type) -> Operand {
     return graph_read(b, r.v, t, tree_span(k.t, n))
 }
 
+// Whether an expression built for its value or its place (lw_expr, .Either;
+// `temp_span`, where a literal's temporary is) gives its place — known
+// before it is built, for a temporary made before it to hold a value (and
+// checked once it is built: lw_value_as, lw_loop_items).
+lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
+    t := k.t
+    if e == k.lower.compound.target { return true }
+    #partial switch t.tag[e] {
+    case .Paren, .Big_Endian:
+        return lw_either_place(k, Tree_Id(t.a[e]), temp_span)
+    case .Deref, .If_Expr, .Index:
+        return true
+    case .Array, .Literal, .Broadcast:
+        return temp_span != {}   // (built in a temporary, placed at its use: lw_built)
+    case .Ident, .Type_Name:
+        ref := tc_ref(k, e)
+        ty := tc_node_type(k, e)
+        switch {
+        case ref.kind == .Variant:                return false
+        case ref.kind == .Const:                  return graph_aggregate(ty)   // (a table's global)
+        case ref.kind == .Module || ref.kind == .Type: return false
+        case tc_name(k, e) == "void":             return false
+        }
+        if ts, is_scope := ty.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global)
+            if tc_name(k, e) in k.c.declared_funs && (ts.kind == .Fun || len(ts.params) > 0) || ref.kind == .Fun && ts.kind == .Fun { return false }
+        }
+        return true
+    case .Field, .Dot_Ident:
+        if t.tag[e] == .Dot_Ident && tc_sid(k, e) not_in k.annot.dot_bases { return false }   // (a variant)
+        if lw_const_named(k, e) { return graph_aggregate(tc_node_type(k, e)) }
+        base, field := lw_field_parts(k, e)
+        bt := tc_node_type(k, base)
+        if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
+            _, found := scope_lookup(sd_module_scope(sd), field)
+            return found   // (else an enum's variant it holds)
+        }
+        if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
+            if _, has := ut.tag_map[field]; has { return false }
+        }
+        ft, is_member, _, known_ok := tc_field_type(k, e, base, bt, field, tree_span(t, e))
+        if known_ok { return false }
+        if fun, is_fun := ft.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun { return false }
+        return is_member
+    }
+    return false
+}
+
+// Whether a name or a field names a constant (lw_ident, lw_field: its use
+// is lw_const_use's).
+lw_const_named :: proc(k: ^TC, e: Tree_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[e] {
+    case .Paren:
+        return lw_const_named(k, Tree_Id(t.a[e]))
+    case .Ident:
+        return tc_ref(k, e).kind == .Const
+    case .Field, .Dot_Ident:
+        if t.tag[e] == .Dot_Ident && tc_sid(k, e) not_in k.annot.dot_bases { return false }
+        base, field := lw_field_parts(k, e)
+        if t.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg && make_flat_name(k.pkg, field) in k.consts { return true }
+        if sd := as_scope_body(tc_node_type(k, base)); sd != nil && sd_is_module(sd) {
+            if _, found := scope_lookup(sd_module_scope(sd), field); found { return make_flat_name(sd.name, field) in k.consts }
+        }
+    }
+    return false
+}
+
+// A field access's base and its field's name.
+lw_field_parts :: proc(k: ^TC, n: Tree_Id) -> (base: Tree_Id, field: string) {
+    tr := k.t
+    if tr.tag[n] == .Dot_Ident { return k.annot.dot_bases[tc_sid(k, n)], tc_text(Token_Id(tr.a[n])) }
+    return Tree_Id(tr.a[n]), tc_text(Token_Id(tr.b[n]))
+}
+
 // An expression with no place of its own: an operation's value, a `?`'s, a
 // slice, an assert, a take. (A deref names one.)
 lw_holds :: proc(k: ^TC, n: Tree_Id) -> bool {
@@ -145,13 +219,13 @@ lw_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
 
 // An argument or a returned value at the type its use takes: a view where
 // one is taken (a partial array's header, an array's slice — its value held
-// in the temporary made before it, `held`; left out when unused), else its
-// value, widened.
+// in the temporary made before it for a value, `held`: lw_either_place),
+// else its value, widened.
 lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span, w: Graph_Widen,
                     held := NO_NODE) -> Operand {
     b := k.gb
     used := false
-    defer if held != NO_NODE && !used { graph_drop(b, held, NO_VALUE) }
+    defer if held != NO_NODE && !used { lw_fail(k, e, "a temporary made before a value it never holds") }
     if to != nil {
         _, to_slice := distinct_base(to).(^Type_Slice)
         _, from_array := distinct_base(t).(^Type_Fixed_Array)

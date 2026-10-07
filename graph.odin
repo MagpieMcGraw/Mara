@@ -2272,19 +2272,6 @@ graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Oper
     graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, args, span)
 }
 
-// A new partial array's zero, made before the value it may be a prefix of:
-// kept, typed, when it is.
-graph_build_prefix :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, span: Span) -> [2]Node_Id {
-    v := graph_var(b, name, decl, nil, span)
-    return {v.op, graph_op(b, .Zero, .Synthetic, span, nil, "", v)}
-}
-
-graph_build_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: Type) {
-    for id in p {
-        if keep { b.g.type_[id] = t } else { graph_drop(b, id, NO_VALUE) }
-    }
-}
-
 // A call through a function value: the arguments, then the
 // value, read, then the call.
 graph_build_indirect :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
@@ -2309,30 +2296,54 @@ graph_build_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, 
     }
 }
 
-// Bytes read by a byte read: of the element built, its
-// buffer's place (its dereference at the read) and its index as it was
-// before it was widened; the element's operation left out.
+// Take back the operation just built — its operands are what is wanted (an
+// element of bytes, a span of them, read as another type): the code's
+// newest node, and its run's last operation.
+@(private="file")
+graph_unbuild :: proc(b: ^Graph_Builder, id: Node_Id) {
+    g := b.g
+    r := b.code.run
+    if int(id) != b.nodes - 1 || g.kind[id] != .Op || r == nil || len(r.ops) == 0 || r.ops[len(r.ops) - 1] != id {
+        graph_fatal(g.origin[id], "a %v taken apart after more was built", g.op[id])
+    }
+    if len(r.ops) == 1 {   // (the thens its run's first operation took wait for the next again)
+        for &e, k in g.edges {
+            if e.to == id {
+                e.to = NO_NODE
+                append(&r.waiting, i32(k))
+            }
+        }
+    }
+    pop(&r.ops)
+    resize(&g.operands, int(g.operand_first[id]))
+    delete_key(&g.consts, id)
+    b.nodes -= 1
+}
+
+// Bytes read by a byte read: of the element just built, its buffer's place
+// (its dereference at the read) and its index as it was before it was
+// widened; the element taken back.
 graph_build_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span) -> (Operand, Operand) {
     id := place.op
     ops := graph_built_operands(b, id)
     buf, off := ops[0], ops[1]
+    graph_unbuild(b, id)
     if off.op != NO_NODE && b.g.op[off.op] == .Cast && b.g.written[off.op] == .Implied {
         raw := b.g.operands[b.g.operand_first[off.op]]
-        graph_drop(b, off.op, raw)
+        graph_unbuild(b, off.op)
         off = raw
     }
-    graph_drop(b, id, NO_VALUE)
     if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
     return buf, off
 }
 
-// A span of bytes read: of the slice built, its bytes' place
-// (its dereference at the read) and its bounds; the slice left out.
+// A span of bytes read: of the slice just built, its bytes' place (its
+// dereference at the read) and its bounds; the slice taken back.
 graph_build_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span) -> (buf, lo, hi: Operand) {
     id := slice.op
     ops := graph_built_operands(b, id)
     buf, lo, hi = ops[0], ops[1], ops[2]
-    graph_drop(b, id, NO_VALUE)
+    graph_unbuild(b, id)
     if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
     return
 }
@@ -2349,26 +2360,6 @@ graph_build_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: b
         at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
     }
     return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", buf, at)
-}
-
-// A temporary what comes next may need, made before it — zeroed first where
-// it fills a partial array: kept if it is used, else left out
-// (graph_build_unhold). Whether it is needed is known once what it holds is
-// built, and it goes before that.
-Graph_Held :: struct {
-    slot: Node_Id,
-    to:   int,       // its nodes: slot ..< to (none made: 0)
-}
-
-graph_build_hold :: proc(b: ^Graph_Builder, t: Type, span: Span, zero := false) -> Graph_Held {
-    h := Graph_Held{slot = graph_slot(b, "temp", t, span)}
-    if zero { graph_build_zero_var(b, h.slot, t, span) }
-    h.to = b.nodes
-    return h
-}
-
-graph_build_unhold :: proc(b: ^Graph_Builder, h: Graph_Held) {
-    for i in int(h.slot) ..< h.to { graph_drop(b, Node_Id(i), NO_VALUE) }
 }
 
 // Bytes taken as an array: their view, copied into a
@@ -2754,15 +2745,13 @@ graph_build_items :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
 }
 
 // Checked, `t` its type: its view, or it, written to the local. A value is
-// held in the temporary made before it (`held`), else that is left out.
-graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Graph_Held, place: Operand, is_place: bool, t, view: Type, is_self: bool) {
+// held in the temporary made before it (`held`).
+graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Node_Id, place: Operand, is_place: bool, t, view: Type, is_self: bool) {
     span := fl.span
     p := place
     if !is_place {
-        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held.slot, t, span), place)
-        p = graph_var(b, "temp", held.slot, t, span)
-    } else {
-        graph_build_unhold(b, held)
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held, t, span), place)
+        p = graph_var(b, "temp", held, t, span)
     }
     if pt, ok := distinct_base(t).(^Type_Ptr); ok && !is_self {
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)   // (through a pointer, what it points at)

@@ -397,13 +397,20 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     decl := lw_field_decl(k, fields_of, name, target, value, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, tc_node_type(k, target)) }
-    prefix: [2]Node_Id
-    prefixed := false
+    vt := tc_node_type(k, value)
+    final := tc_node_type(k, target)
+    // (A partial array: zero first where its value fills a prefix of it —
+    // text, a slice's elements, bytes read into it.)
+    prefixed := is_partial_array(ann)
     #partial switch t.tag[value] {
     case .String, .Ident, .Field:
-        if is_untyped(ann) { prefix, prefixed = graph_build_prefix(b, name, decl, span), true }
+        if is_untyped(ann) { prefixed = true }
     }
-    if !prefixed && is_partial_array(ann) { prefix, prefixed = graph_build_prefix(b, name, decl, span), true }
+    fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
+    m, _ := tc_byte_node(k, value)
+    reads := is_partial_array(final) && tc_byte_flow(k, final, value, vt) == .Read && (t.tag[m] == .Index || t.tag[m] == .Slice)
+    zero := prefixed && (fills || reads)
+    if zero { graph_build_zero_var(b, decl, final, span) }
     saved_field := k.field_default
     k.field_default = {}
     if fields_of != nil {
@@ -412,15 +419,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
     k.field_default = saved_field
-    vt := tc_node_type(k, value)
-    final := tc_node_type(k, target)
     if !is_any(ann) { lw_byte_view_address(k, ann, value) }
     graph_build_typed(b, decl, final)
     wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
-    if prefixed {
-        fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
-        graph_build_prefix_end(b, prefix, zeroed || wrote && fills, final)
-    }
+    if prefixed && (zeroed || wrote && fills) != zero { lw_fail(k, s, "a partial array zeroed first, or not, other than lowering found") }
     if zeroed && !prefixed { lw_fail(k, s, "a new partial array read from bytes") }
     if va, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(va.elem) && fields_of == nil {
         graph_build_retype_literal(b, int(decl), b.nodes, final)
@@ -580,28 +582,21 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
         vt := tc_node_type(k, val)
         // (Text — a literal, or a text constant's — in a zeroed temporary;
         // an array's value its result views, in a temporary.)
-        text_held: Graph_Held
+        named_text := false
         if is_partial_array(want) {
-            if t.tag[tc_unparen(k, val)] == .String {
+            named_text = t.tag[tc_unparen(k, val)] != .String && lw_const_named(k, val) && is_partial_array(vt)
+            if t.tag[tc_unparen(k, val)] == .String || named_text {
                 text, slot = true, graph_slot(b, "temp", want, span)
                 graph_build_zero_var(b, slot, want, span)
-            } else {
-                text_held = graph_build_hold(b, want, span, zero = true)
             }
         }
         use, at := lw_use_type(k, val, want, span)
         held := NO_NODE
-        if _, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && is_slice_type(want) {
-            held = graph_build_hold(b, vt, span).slot
+        if _, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && is_slice_type(want) && !lw_either_place(k, val, at) {
+            held = graph_slot(b, "temp", vt, span)
         }
         r := lw_expr(k, val, .Either, dest = use, temp_span = at)
-        if text_held.to > 0 {
-            if built_is_text_constant(b, r) {
-                text, slot = true, text_held.slot
-            } else {
-                graph_build_unhold(b, text_held)
-            }
-        }
+        if is_partial_array(want) && !text == built_is_text_constant(b, r) { lw_fail(k, val, "a text constant, or not one, other than lowering found") }
         if !text {
             append(&vals, lw_value_as(k, val, vt, r, want, span, {to = want}, held))
         } else {
@@ -731,13 +726,14 @@ lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
     view := graph_loop_view_of(t)
     // (A value viewed: held in a temporary made before it — zero first when
     // it fills a prefix of a partial array.)
-    held: Graph_Held
-    if view != nil {
-        fills := is_partial_array(t) && (tag == .String || is_slice_type(t))
-        held = graph_build_hold(b, t, fl.span, zero = fills)
+    held := NO_NODE
+    if view != nil && !lw_either_place(k, e) {
+        held = graph_slot(b, "temp", t, fl.span)
+        if is_partial_array(t) && (tag == .String || is_slice_type(t)) { graph_build_zero_var(b, held, t, fl.span) }
     }
     r := lw_expr(k, e, .Either)
     if view != nil {
+        if r.place != (held == NO_NODE) { lw_fail(k, e, "a loop's collection, a place or not, other than lowering found") }
         graph_build_items_view(b, fl, held, r.v, r.place, t, view, tc_is_self(k, e))
     } else {
         graph_build_typed(b, fl.coll_slot, t)
@@ -919,17 +915,16 @@ lw_const_of :: proc(k: ^TC, use: Tree_Id, decl: Token_Id) -> ^TC_Const {
     return kc
 }
 
-// Its place, when it has none: a temporary made first, the value
-// stored in it.
+// Its place, when it has none: a temporary made first — zero first where
+// its value fills a prefix of it — the value stored in it.
 lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     b := k.gb
+    t := tc_node_type(k, n)
     slot := graph_slot(b, "temp", nil, span)
-    prefix := graph_build_prefix(b, "temp", slot, span)
+    if is_partial_array(t) && (k.t.tag[n] == .String || is_slice_type(t)) { graph_build_zero_var(b, slot, t, span) }
     d := graph_dest_var("temp", slot, nil)
     r := lw_expr(k, n, .Into, dest = d, temp_span = span)
-    t := tc_node_type(k, n)
     lw_store(k, n, t, r, d, span)
-    graph_build_prefix_end(b, prefix, is_partial_array(t) && (k.t.tag[n] == .String || is_slice_type(t)), t)
     graph_build_typed(b, slot, t)
     return graph_var(b, "temp", slot, t, span)
 }
@@ -1085,10 +1080,12 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     gi := graph_build_if_expr(b, cond.v, w, span)
     types: [2]Type
     t := tc_node_type(k, n)
-    prefix: [2][2]Node_Id
     for branch, i in ([2]Tree_Id{then_n, else_n}) {
         if i == 1 { graph_build_if_expr_else(b, &gi) }
-        if lw_may_fill_prefix(k, branch) { prefix[i] = graph_build_prefix(b, "if", slot, span) }
+        // (Zero first where it fills a prefix of a partial array.)
+        if lw_may_fill_prefix(k, branch) && is_partial_array(t) && (tr.tag[tc_unparen(k, branch)] == .String || is_slice_type(tc_node_type(k, branch))) {
+            graph_build_zero_var(b, slot, t, span)
+        }
         r := lw_expr(k, branch, .Into, dest = graph_dest_var("if", slot, nil))
         types[i] = tc_node_type(k, branch)
         if r.into { continue }
@@ -1099,11 +1096,6 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     graph_build_if_expr_end(b, &gi)
     for bt, i in types {
         if build_views(t, bt) { lw_fail(k, n, "an if's branch viewed") }
-        if prefix[i] != {} {
-            branch := then_n if i == 0 else else_n
-            fills := is_partial_array(t) && (tr.tag[tc_unparen(k, branch)] == .String || is_slice_type(bt))
-            graph_build_prefix_end(b, prefix[i], fills, t)
-        }
     }
     lt := t
     if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
@@ -1200,10 +1192,12 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
                     if returns := tc_call_returns(k, a, nil); len(returns) > 1 { at = returns[arg.slot] }
                 }
             }
-            // (An array's value its param views: held in a temporary.)
+            // (An array's value its param views: held in a temporary. A
+            // call site's name and a shared default's output are values.)
             held := NO_NODE
             if _, from_array := distinct_base(at).(^Type_Fixed_Array); from_array && is_slice_type(pt) {
-                held = graph_build_hold(b, at, span).slot
+                place := arg.kind != .Call_Site && !(arg.kind == .Default && arg.slot >= 0) && lw_either_place(k, a, use_at)
+                if !place { held = graph_slot(b, "temp", at, span) }
             }
             r: Built
             switch arg.kind {
