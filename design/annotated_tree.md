@@ -306,7 +306,35 @@ that would lower a function again for each reader and faster than doing so. The 
     - The builder still builds every code into one graph in the checker's order, a
       body's definitions and its constants built in the middle of it, and segments and
       canonicalization put each code together. Building one code at a time — what the
-      end state above asks — removes both; it changes the order nodes are built in, so
-      `graphdiff.sh` stops being a gate for it and `irdiff.sh` carries it alone.
+      end state above asks — removes both. (Done next, below.)
     - A graph dump of a constant's use printed `constant=?` from the split until the
       columns change: the dump looked up a table only the builder had.
+- [x] One code at a time (2026-10-07)
+  - [x] Each code built in its final order (2a87ede). Lowering replayed what the checker
+        checked first and built it after, through segments placed later. It knows the
+        annotations up front, so it now builds a C-style loop's step after its body, a
+        slice's bounds before a base that is no plain place, and a dispatch's `_` default
+        where it is written (the callee is annotated before any argument is built). A
+        temporary a value may need — an array's value a param or a result views, text
+        returned as a partial array, a loop's collection — is made before the value and
+        left out when the value turns out not to need it, as operations made before
+        whether they were needed was known already were.
+  - [x] Lowering builds one code at a time (582dba0). Each code is built into a graph the
+        builder keeps and empties for each, ids its own from 0. When it ends it is settled
+        and laid out in the program's arena (`graph_lay_out`): what settling dropped is
+        left out, and `this_program` and `context` — made where the code first names them
+        — go past its own nodes. Once every code is built, a walk over the modules'
+        statements puts each in written order, a body's definitions after it, and gives a
+        fun's or struct's root its definition's statement and name (`graph_place_codes`).
+        Segments, anchors, the program-level nodes and canonicalization are gone; a code
+        begun while another is being built is an error.
+  - Gates: `graphdiff.sh` identical at both steps — the order a code is laid out in was
+    always the order one build in written order makes, so building in that order makes the
+    same graph. The IR (324 builds, test_1M's 106 modules and its run), the goldens and
+    `annotcheck.sh` are unchanged.
+  - Time (test_1M): lowering and putting the code together take ~7.4 s, from ~9.9 s; the
+    build is ~2.4 s (~9%) faster. graph.odin is 3887 lines (4204 before).
+  - What remains of the end state above: a code is laid out once it is built, since
+    settling decides what to leave out only when the whole body is known (a scope's arena
+    mark, a widening, the local every return returns). Deciding those from the
+    annotations as the code is built would let lowering write the code in place.
