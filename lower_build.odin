@@ -27,12 +27,6 @@ built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
     return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(graph_type(b.g, op))
 }
 
-// A dispatch's array literal argument: its position, its nodes, its type.
-Build_Literal_Arg :: struct {
-    arg, from, to: int,
-    t:             Type,
-}
-
 // Whether a function's param would view an argument that is an array's
 // value (its place, or a temporary) — a slice over it.
 build_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {

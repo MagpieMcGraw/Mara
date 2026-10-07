@@ -411,9 +411,6 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
     if prefixed && (zeroed || wrote && fills) != zero { lw_fail(k, s, "a partial array zeroed first, or not, other than lowering found") }
     if zeroed && !prefixed { lw_fail(k, s, "a new partial array read from bytes") }
-    if va, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(va.elem) && fields_of == nil {
-        graph_build_retype_literal(b, int(decl), b.nodes, final)
-    }
 }
 
 // `x : T` (tc_decl_bare): its zero, or its construction.
@@ -694,10 +691,8 @@ lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
     tag := k.t.tag[tc_unparen(k, e)]
     #partial switch tag {
     case .Array, .Literal:
-        from := b.nodes
         t := solidify_type(lw_store_into(k, e, graph_dest_var("items", fl.coll_slot, nil), fl.span))
         if graph_loop_view_of(t) != nil { lw_fail(k, e, "a literal loop over its view") }
-        graph_build_retype_literal(b, from, b.nodes, t)
         graph_build_typed(b, fl.coll_slot, t)
         return t
     }
@@ -1094,10 +1089,7 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
         if view_kind(t, bt) != .None { lw_fail(k, n, "an if's branch viewed") }
     }
     lt := t
-    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
-        lt = solidify_type(t)
-        graph_build_retype_literal(b, int(slot), b.nodes, lt)
-    }
+    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) { lt = solidify_type(t) }   // (one of open elements no use typed: the default's)
     graph_build_typed(b, slot, lt)
     p := graph_var(b, "if", slot, lt, span)
     if want == .Value { return {v = graph_read(b, p, lt, span), ok = true} }

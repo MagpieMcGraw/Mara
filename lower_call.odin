@@ -57,7 +57,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
     }
     vals := make([dynamic]Operand, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
-    literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     for a, i in args {
         if tr.tag[a] == .Ident && tc_name(k, a) == "_" {
             def := ft.params[i].default_node
@@ -66,7 +65,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
             append(&array_values, false)
             continue
         }
-        from := b.nodes
         r := lw_arg(k, a, .Either, w)
         t := lw_arg_type(k, a)
         _, is_array := distinct_base(t).(^Type_Fixed_Array)
@@ -77,7 +75,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         }
         append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
         append(&array_values, is_array && !r.place)
-        if tr.tag[u] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
     }
     for i := len(args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_node
@@ -85,11 +82,6 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
         append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
     }
     if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a dispatch's param") }
-    for la in literals {
-        if la.arg >= len(ft.params) { continue }
-        pt := ft.params[la.arg].type_
-        if graph_aggregate(pt) && pt != la.t { graph_build_retype_literal(b, la.from, la.to, pt) }
-    }
     return {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
 }
 

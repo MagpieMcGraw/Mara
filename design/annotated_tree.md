@@ -438,3 +438,25 @@ that would lower a function again for each reader and faster than doing so. The 
     given with `graph_set_value` (by the builder: folding too). The codes take 323 MB;
     the process at its peak 111 MB less. Lowering ~35 ms faster optimized (~0.27 s in a
     debug build, where the map's hashing cost more).
+- [x] Literal widths settled by the checker (4bc0dcf, and the next, 2026-10-07). A literal's
+      width, its use's, was the builder's to settle: each operation typed the operands of
+      its own a use decides as it was built (`graph_settle_use`), a use typed later typed
+      them again, and what none typed took the default once the code was built.
+  - The checker settles it where it meets the use (`tc_settle`): a number, an untyped
+    constant's name, `size_of`, `void`, an operation, an array literal, an if of such, typed
+    as the use takes it — an index or bound at the header's width, a comparison's side at
+    the other's, an operation's at its own, a write at its place's, an argument at its
+    param's (a generic's or a dispatch's once it is chosen), a default at its param's, a
+    return at its result's, a range's bounds at its counter's. The overflow checks at those
+    sites are `tc_value_at`. Lowering builds a literal at its annotated type; what no use
+    settled takes the default as its node is made (`graph_settled`), and an untyped
+    constant's own node keeps its open width (its uses' each).
+  - Gone from the builder: the settling, its six columns, the default pass, the settled
+    list's ordering, re-typing an array literal once its use is known, and the cache of
+    what it asked of each type. The range check's list (`g.settled`) is filled where an
+    untyped constant is built, once a use or a binding settled it.
+  - Gates: graph identical but the `settled` lines (a literal built twice lists its unused
+    copy too; the diagnostics they make are the same), IR with test_1M and runtime
+    identical, goldens (`mara ask … at` shows a literal's settled type), `annotcheck.sh`.
+  - Lines: −155 (the builder −222, lowering −29, the checker +104). Time (test_1M, debug):
+    unchanged — lowering ~0.35 s faster, checking ~0.2 s slower.

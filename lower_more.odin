@@ -207,23 +207,15 @@ lw_generic_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w
     ft := tc_callee(k, n)
     vals := make([dynamic]Operand, context.temp_allocator)
     array_values := make([dynamic]bool, context.temp_allocator)
-    literals := make([dynamic]Build_Literal_Arg, context.temp_allocator)
     for a, i in args {
-        from := b.nodes
         r := lw_arg(k, a, .Either, w)
         t := lw_arg_type(k, a)
         _, is_array := distinct_base(t).(^Type_Fixed_Array)
         if u := tc_unparen(k, a); tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) { lw_fail(k, a, "bytes as a generic's argument") }
         append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
         append(&array_values, is_array && !r.place)
-        if tr.tag[tc_unparen(k, a)] == .Array { append(&literals, Build_Literal_Arg{i, from, b.nodes, t}) }
     }
     ret := fn_primary_return(ft)
-    for la in literals {
-        if la.arg >= len(ft.params) { continue }
-        pt := ft.params[la.arg].type_
-        if graph_aggregate(pt) && pt != la.t { graph_build_retype_literal(b, la.from, la.to, pt) }
-    }
     if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a generic's param") }
     return {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
 }
