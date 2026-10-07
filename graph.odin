@@ -1164,7 +1164,7 @@ graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Typ
 @(private="file")
 graph_coll_place :: proc(b: ^Graph_Builder, fl: ^Graph_For, span: Span) -> Operand {
     if slot := fl.coll_slot; slot != NO_NODE { return graph_var(b, b.g.name[slot], slot, b.g.type_[slot], span) }
-    return graph_base_of(b, graph_place_again(b, fl.coll, span), fl.coll_t, span, fl.coll_self)
+    return graph_base_of(b, fl.walk(fl.walk_data, span), fl.coll_t, span, fl.coll_self)
 }
 
 graph_loop_view_of :: proc(t: Type) -> Type {
@@ -1451,14 +1451,6 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     if g.op[id] == .Const { graph_const_settles(b, n.op, g.type_[id]) }
     g.constant[n.op] = g.constant[id]
     return Operand{n.op, p.out}
-}
-
-// A plain place left out, its operations built for walking it again (a
-// place used only in the runs where it's walked: graph_place_again).
-graph_drop_place :: proc(b: ^Graph_Builder, p: Operand) {
-    if p.op == NO_NODE { return }
-    for o in graph_built_operands(b, p.op) { graph_drop_place(b, o) }
-    graph_drop(b, p.op, NO_VALUE)
 }
 
 // A plain place's base, from its place: through a
@@ -2226,43 +2218,6 @@ graph_build_void_assign :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, 
     graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), graph_void(b, t, at))
 }
 
-// Where the build stands, to leave out what is built after it: a field
-// access's base, built before the access is found to name no member (a
-// variant, a constant, a module's function) — the builder never builds it.
-Graph_Mark :: struct {
-    nodes: int,
-    run:   ^Run,
-    ops:   int,
-}
-
-graph_build_mark :: proc(b: ^Graph_Builder) -> Graph_Mark {
-    return {b.nodes, b.code.run, len(b.code.run.ops) if b.code.run != nil else 0}
-}
-
-graph_build_drop_since :: proc(b: ^Graph_Builder, m: Graph_Mark) {
-    if b.nodes == m.nodes { return }
-    r := b.code.run
-    if r == nil || r != m.run && m.run != nil {
-        graph_body_fail(b, b.body, "a field access's base crossed runs")
-        return
-    }
-    for i in m.nodes ..< b.nodes { graph_drop(b, Node_Id(i), NO_VALUE) }
-    if m.run == nil {
-        b.code.run = nil   // (the run the base began: code after a jump)
-        return
-    }
-    // The then-edges its first operation took wait for the next again.
-    if m.ops == 0 && len(r.ops) > 0 {
-        for &e, k in b.g.edges {
-            if e.to == r.ops[0] {
-                e.to = NO_NODE
-                append(&r.waiting, i32(k))
-            }
-        }
-    }
-    resize(&r.ops, m.ops)
-}
-
 // An assert of its condition's value, its text as written; a comparison's
 // sides as written, for its failure's message ("" for a side whose text
 // states its value).
@@ -2416,82 +2371,6 @@ graph_build_unhold :: proc(b: ^Graph_Builder, h: Graph_Held) {
     for i in int(h.slot) ..< h.to { graph_drop(b, Node_Id(i), NO_VALUE) }
 }
 
-// `bytes[lo:hi] = v`: its target is a view of the bytes at lo —
-// their place, lo at the header's width, the view — where v is no array;
-// else the slice (lo, hi, their place, the slice). Which is known once v is
-// checked: both are built before it, in one line — a view's place, lo, hi,
-// a slice's place, the slice, the view — and one's parts left out.
-Graph_Span_Target :: struct {
-    view_place: [2]int,   // (node ranges)
-    hi:         [2]int,
-    place:      [2]int,
-    lo:         Operand,
-    widened:    bool,     // lo, by a cast of its own
-    run:        ^Run,
-    branched:   bool,     // hi did (a `?`: what follows it is in its runs)
-    vplace:     Operand,
-    slice, zero, view: Node_Id,
-    bytes:      Operand,  // the bytes' place, the checker's (built from node `from` on)
-    bytes_t:    Type,
-    bytes_self: bool,
-}
-
-// The view's place, first: the bytes' place as the checker built it (from
-// node `from` on).
-graph_build_span_target :: proc(b: ^Graph_Builder, bytes: Operand, t: Type, is_self: bool, from: int, span: Span) -> Graph_Span_Target {
-    st := Graph_Span_Target{lo = NO_VALUE, zero = NO_NODE, bytes = bytes, bytes_t = t, bytes_self = is_self}
-    st.view_place.x = from
-    st.vplace = graph_base_of(b, bytes, t, span, is_self)
-    st.view_place.y = b.nodes
-    return st
-}
-
-// lo built: at the header's width (a slice's, at it); hi next.
-graph_build_span_target_hi :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, lo: Operand, slice_span: Span) {
-    if lo != NO_VALUE {
-        st.lo = graph_build_widen(b, lo, slice_span, {to = slice_header_width_type})
-        st.widened = st.lo.op != lo.op
-    }
-    st.run = b.code.run
-    st.hi.x = b.nodes
-}
-
-// hi built: the slice's place, the slice, then the view (of no type yet).
-graph_build_span_target_ops :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, hi: Operand, t: Type, big: bool, slice_span, span: Span) {
-    st.hi.y = b.nodes
-    st.branched = b.code.run != st.run
-    st.place.x = b.nodes
-    p := graph_base_of(b, graph_place_again(b, st.bytes, slice_span), st.bytes_t, slice_span, st.bytes_self)
-    st.place.y = b.nodes
-    st.slice = graph_op(b, .Slice, .Explicit, slice_span, t, "", p, st.lo, hi)
-    at := st.lo
-    if at == NO_VALUE {
-        at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
-        st.zero = at.op
-    }
-    st.view = graph_op(b, .View, .Explicit, span, nil, "#big_endian" if big else "", st.vplace, at)
-}
-
-// v checked: the target — the view, as `view`; the slice, when nil. False
-// when a view's hi branched.
-graph_build_span_target_end :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, view: Type, span: Span) -> (Operand, bool) {
-    drop :: proc(b: ^Graph_Builder, r: [2]int) {
-        for i in r.x ..< r.y { graph_drop(b, Node_Id(i), NO_VALUE) }
-    }
-    if view == nil {
-        drop(b, st.view_place)
-        if st.zero != NO_NODE { graph_drop(b, st.zero, NO_VALUE) }
-        graph_drop(b, st.view, NO_VALUE)
-        return {st.slice, 0}, true
-    }
-    drop(b, st.hi)
-    drop(b, st.place)
-    graph_drop(b, st.slice, NO_VALUE)
-    b.g.type_[st.view] = view
-    if st.widened { b.g.origin[st.lo.op] = span }   // (lo's widening, at the view)
-    return {st.view, 0}, !st.branched
-}
-
 // Bytes taken as an array: their view, copied into a
 // temporary, read.
 graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
@@ -2500,32 +2379,20 @@ graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: S
     return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
 }
 
-// A take: the count, then the storage, the checker's — `&x`
-// as its address (of type t), else a place — then the carve. It carves from
-// the storage's header: `&s` is s's, a `^[]byte` what it points at; or,
-// positional (`&bytes[i]`), the view of the bytes there as what's taken.
+// A take: the count, then the storage — `&x`, x's place; else a place, of
+// type t — then the carve. It carves from the storage's header: `&s` is
+// s's, a `^[]byte` what it points at; or, positional (`&bytes[i]`), the view
+// of the bytes there as what's taken.
 graph_build_carve :: proc(b: ^Graph_Builder, span: Span, keyword: string, taken: Type, storage: Operand, t: Type, addressed, is_self: bool, count: Operand, w: Written) -> Operand {
     from := storage
     if addressed {
-        if storage.op == NO_NODE || b.g.op[storage.op] != .Address { graph_fatal(span, "a take's `&` built as no address") }
-        from = graph_built_operands(b, storage.op)[0]
-        graph_drop(b, storage.op, NO_VALUE)
-        if b.g.op[from.op] == .Index && is_byte_buffer(b.g.type_[graph_built_operands(b, from.op)[0].op]) {
+        if from.op != NO_NODE && b.g.op[from.op] == .Index && is_byte_buffer(b.g.type_[graph_built_operands(b, from.op)[0].op]) {
             graph_build_view(b, from, taken, false, span)
         }
     } else {
         from = graph_base_of(b, storage, t, span, is_self)
     }
     return graph_op_value(b, .Carve, w, span, taken, keyword, from, count)
-}
-
-// A plain place the checker built where it was checked, walked where it's
-// needed (a slice's, after its bounds): its operations copied there, its
-// first building left out.
-graph_build_base_place :: proc(b: ^Graph_Builder, p: Operand, t: Type, is_self: bool, span: Span) -> Operand {
-    again := graph_place_again(b, p, span)
-    graph_drop_place(b, p)
-    return graph_base_of(b, again, t, span, is_self)
 }
 
 // A destructure of a call's outputs: the names it
@@ -2798,7 +2665,10 @@ Graph_For :: struct {
     elem:                    Node_Id,
     lo, hi:                  Operand,
     high:                    Operand,   // a range's end as the checker built it (a literal's: walked again)
-    coll:                    Operand,   // a plain place collection's place, the checker's
+    // A plain place collection: walked where the loop needs it — built there
+    // by lowering (`walk`) — unless it is viewed once, where the loop begins.
+    walk:                    proc(data: rawptr, span: Span) -> Operand,
+    walk_data:               rawptr,
     coll_t:                  Type,
     coll_self:               bool,
     elem_t:                  Type,      // a collection loop's element's
@@ -2845,18 +2715,19 @@ graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
     graph_build_for_runs(b, fl)
 }
 
-// A collection loop, the collection checked (a plain place, `place` of type
-// `t`: walked where the loop needs it): a slice's elements as they are when
-// the loop begins, the element and the index; then the check run.
+// A collection loop, the collection of type `t` checked: a slice's elements
+// as they are when the loop begins (`place`, a plain place, viewed once),
+// else a plain place walked where the loop needs it (fl.walk); the element
+// and the index; then the check run.
 graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Operand, t: Type, is_self: bool, elem_t: Type) {
-    fl.coll, fl.coll_t, fl.coll_self, fl.elem_t = place, t, is_self, elem_t
+    fl.coll_t, fl.coll_self, fl.elem_t = t, is_self, elem_t
     if fl.coll_slot == NO_NODE {
         if view := graph_loop_view_of(t); view != nil {
             fl.coll_slot = graph_slot(b, "items", view, fl.span)
             val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_base_of(b, place, t, fl.span, is_self))
             graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
-        } else {
-            graph_drop_place(b, place)   // (walked in each run: graph_coll_place)
+        } else if fl.walk == nil {
+            graph_fatal(fl.span, "a loop's collection walked by no one")
         }
     }
     if fl.elem_name != "" {

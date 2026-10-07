@@ -642,6 +642,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
                             end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number,
                             body_arena = lw_scope_arena(k, v.body, b.body.returned)})
     defer graph_build_for_end(b, &fl)
+    walk: LW_Walk   // (a plain place collection's: what the loop's runs walk)
     #partial switch tag {
     case .For_Each:
         ct: Type
@@ -649,8 +650,15 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         if !lw_pure_place(k, v.collection) {
             ct = lw_loop_items(k, &fl, v.collection)
         } else {
-            r := lw_expr(k, v.collection, .Place)
-            ct, coll = tc_node_type(k, v.collection), r.v
+            // (A plain place: viewed once, where the loop begins; else built
+            // where each run walks it.)
+            ct = tc_node_type(k, v.collection)
+            if graph_loop_view_of(ct) != nil {
+                coll = lw_expr(k, v.collection, .Place).v
+            } else {
+                walk = {k, v.collection}
+                fl.walk, fl.walk_data = lw_walk_place, &walk
+            }
         }
         elem: Type = Type_Error{}
         #partial switch c in ct {
@@ -691,6 +699,17 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
             lw_stmt_entry(k, v.post)
         }
     }
+}
+
+// A plain place, built again where a loop's run walks it (Graph_For.walk).
+LW_Walk :: struct {
+    k: ^TC,
+    n: Tree_Id,
+}
+
+lw_walk_place :: proc(data: rawptr, span: Span) -> Operand {
+    walk := (^LW_Walk)(data)
+    return lw_expr(walk.k, walk.n, .Place).v
 }
 
 // A loop's collection that is no plain place: held in the
@@ -1169,6 +1188,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         pt := ft.params[i].type_
         use, use_at := lw_use_type(k, a, pt, span)
         if arg.kind == .Receiver {
+            if !k.lower.recv.r.ok { lw_fail(k, a, "a receiver taken as an argument, never built") }
             append(&ops, lw_value_as(k, a, k.lower.recv.t, k.lower.recv.r, pt, span, {sig = ft, param = i}))
         } else {
             at := tc_node_type(k, a)

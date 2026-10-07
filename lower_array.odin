@@ -105,9 +105,8 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     if want == .Into || dest.type_ != nil { read_as = graph_dest_type(b, dest) }
     view := want != .Into && dest.type_ != nil
     held := !lw_pure_place(k, base_n)
-    base, plain := NO_VALUE, NO_VALUE
     tt := tc_node_type(k, base_n)
-    if !held { plain = lw_expr(k, base_n, .Place).v }
+    is_self := tc_is_self(k, base_n)
     target := tt
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
@@ -126,9 +125,10 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
         if tc_byte_flow(k, read_as, n, &probe) == .Read {
             if held { lw_fail(k, n, "bytes read from a value's span") }
             reads, scalar = true, view || !graph_aggregate(read_as)
-            base = graph_base_of(b, plain, tt, span, tc_is_self(k, base_n))
         }
     }
+    base := NO_VALUE
+    if reads { base = graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, span, is_self) }
     lo, hi := NO_VALUE, NO_VALUE
     if lo_n != 0 { lo = lw_bound(k, lo_n, w, span, raw = reads) }
     if hi_n != 0 && !scalar { hi = lw_bound(k, hi_n, w, span, raw = reads) }
@@ -148,7 +148,7 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
             base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base)
         }
     } else {
-        base = graph_build_base_place(b, plain, tt, tc_is_self(k, base_n), span)
+        base = graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, span, is_self)
     }
     return {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
@@ -161,7 +161,8 @@ lw_bound :: proc(k: ^TC, n: Tree_Id, w: Written, span: Span, raw := false) -> Op
 }
 
 // `a[lo:hi] = v` (tc_slice_assign): the target's slice, then the value into
-// its elements — into bytes, a value no array its raw bytes at lo, a view.
+// its elements — into bytes, a value no array its raw bytes at lo: their
+// place, lo (0 when it has none), a view of them as the value's type.
 lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     tr := k.t
     b := k.gb
@@ -170,30 +171,36 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     base_n := Tree_Id(tr.a[target])
     lo_n, hi_n := tree_pair(tr, target)
     if !lw_pure_place(k, base_n) { lw_fail(k, target, "a slice of no plain place") }
-    from := b.nodes
-    coll := lw_expr(k, base_n, .Place).v
     tt := tc_node_type(k, base_n)
     st := tc_node_type(k, target)
+    is_self := tc_is_self(k, base_n)
     bytes := is_byte_buffer(tt)
-    gs: Graph_Span_Target
-    if bytes { gs = graph_build_span_target(b, coll, tt, tc_is_self(k, base_n), from, span) }
-    lo, hi := NO_VALUE, NO_VALUE
-    if lo_n != 0 { lo = lw_bound(k, lo_n, .Explicit, sl_span, raw = bytes) }
-    if bytes { graph_build_span_target_hi(b, &gs, lo, sl_span) }
-    if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
-    if !bytes {
-        place := graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_build_base_place(b, coll, tt, tc_is_self(k, base_n), sl_span), lo, hi)
-        lw_store_at(k, value, place, span)
-        return
-    }
-    graph_build_span_target_ops(b, &gs, hi, st, false, sl_span, span)
-    if tc_is_void(k, value) { lw_fail(k, s, "void written into bytes") }
-    r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = NO_VALUE}, temp = true, temp_span = span)
+    if bytes && tc_is_void(k, value) { lw_fail(k, s, "void written into bytes") }
     vt := tc_node_type(k, value)
     // (The view's type: a value no array's own — tc_byte_span_checks.)
     view: Type
-    if !is_array_shaped(vt) { view = solidify_type(vt) }
-    place, ok := graph_build_span_target_end(b, &gs, view, span)
-    if !ok { lw_fail(k, s, "a span's end that branches, viewed") }
+    if bytes && !is_array_shaped(vt) { view = solidify_type(vt) }
+    place: Operand
+    if view != nil {
+        vplace := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, span, is_self)
+        at := NO_VALUE
+        if lo_n != 0 { at = graph_build_widen(b, lw_bound(k, lo_n, .Explicit, sl_span, raw = true), span, {to = slice_header_width_type}) }
+        if at == NO_VALUE { at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{}) }
+        place = graph_op_value(b, .View, .Explicit, span, view, "", vplace, at)
+    } else {
+        lo, hi := NO_VALUE, NO_VALUE
+        if lo_n != 0 {
+            lo = lw_bound(k, lo_n, .Explicit, sl_span, raw = bytes)
+            if bytes { lo = graph_build_widen(b, lo, sl_span, {to = slice_header_width_type}) }
+        }
+        if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
+        base := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, sl_span, is_self)
+        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", base, lo, hi)
+        if !bytes {
+            lw_store_at(k, value, place, span)
+            return
+        }
+    }
+    r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = NO_VALUE}, temp = true, temp_span = span)
     lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }

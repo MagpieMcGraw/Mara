@@ -5,43 +5,40 @@ package mara
 // parallel assignment, a take.
 
 // `x.f(args)` (tc_method_call): its receiver built first when it is a value
-// the method was found through (Annotations.receivers) — kept as the call's
-// first argument, else left out — then the call.
+// the method was found through (Annotations.receivers) and the call's first
+// argument — else none of it built — then the call.
 lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> Built {
     tr := k.t
-    b := k.gb
     mv := method_view(tr, n)
     saved := k.lower.recv
     k.lower.recv = {}
     defer k.lower.recv = saved
-    mark := graph_build_mark(b)
     recv := mv.receiver
     arg := addressed if addressed != 0 else recv
     given := k.annot.args[tc_sid(k, n)] or_else nil
-    if k.annot.receivers[tc_sid(k, n)] or_else false {
-        qr: Built
-        qt: Type
-        if addressed != 0 {
-            qr = lw_unary(k, addressed, .Either, w, of = recv)
-            qt = tc_node_type(k, addressed)
-        } else {
-            qr = lw_expr(k, recv, .Either, w)
-            qt = tc_node_type(k, recv)
-        }
-        k.lower.recv = {node = arg, t = qt, r = qr}
-    }
+    found_through := k.annot.receivers[tc_sid(k, n)] or_else false
     // (Its arguments as the call takes them: the receiver first when the
     // method takes Self, or when it is no method — a fun, a builtin, called
     // on its first argument.)
     args := mv.args
     form := k.annot.forms[tc_sid(k, n)] or_else .Fun
     switch {
-    case k.lower.recv.node != 0 && form == .Builtin:
+    case found_through && form == .Builtin:
         args = tc_with_receiver(arg, mv.args)
     case len(given) > 0 && (given[0].node == arg || given[0].node == recv) && given[0].kind != .Default:
         args = tc_with_receiver(given[0].node, mv.args)
     }
-    if k.lower.recv.r.ok && (len(args) == 0 || args[0] != arg) { graph_build_drop_since(b, mark) }
+    if found_through {
+        qt := tc_node_type(k, addressed if addressed != 0 else recv)
+        k.lower.recv = {node = arg, t = qt}
+        if len(args) > 0 && args[0] == arg {
+            if addressed != 0 {
+                k.lower.recv.r = lw_unary(k, addressed, .Either, w, of = recv)
+            } else {
+                k.lower.recv.r = lw_expr(k, recv, .Either, w)
+            }
+        }
+    }
     return lw_call_core(k, n, tc_call_name(k, n), args, want, w, dest, temp, temp_span)
 }
 
@@ -120,10 +117,17 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     v := tc_unparen(k, value)
     is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))
     of_call := tc_is_call(k, v)
-    mark := graph_build_mark(b)
+    // (A value of no several results: a broadcast, nothing of it built here.)
+    returns: []Type
+    if !is_try {
+        returns = tc_call_returns(k, value, nil)
+        if returns == nil {
+            lw_broadcast(k, s, targets, value, is_decl)
+            return
+        }
+    }
     mr: Graph_Destructure
     if is_try || of_call { mr = graph_build_destructure(b, tc_sid(k, s), span, names, toks, stores, is_decl) }
-    returns: []Type
     if is_try {
         call := tc_unparen(k, Tree_Id(t.a[v]))
         r := lw_expr(k, call, .Value)
@@ -138,15 +142,6 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         r: Built
         if of_call { r = lw_expr(k, value, .Value) }
         mr.call = r.v
-        returns = tc_call_returns(k, value, nil)
-        if returns == nil {
-            if mr.on {
-                graph_build_drop_since(b, mark)
-                mr.on = false
-            }
-            lw_broadcast(k, s, targets, value, is_decl)
-            return
-        }
     }
     for tg, i in targets {
         rt := solidify_type(returns[i])
@@ -237,8 +232,13 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     if count != 0 { count_op = lw_bound(k, count, w, span) }
     su := tc_unparen(k, storage)
     addressed := t.tag[su] == .Unary
-    from := lw_expr(k, storage, .Value if addressed else .Place).v
-    if addressed { delete_key(&k.lower.byte_addrs, tc_sid(k, su)) }
+    from: Operand
+    if addressed {   // (`&x`: x's place, what it carves from)
+        if build_tokens[t.main[su]].kind != .Ampersand || tc_callee(k, su) != nil { lw_fail(k, storage, "a take's `&` that takes no address") }
+        from = lw_expr(k, Tree_Id(t.a[su]), .Place, temp_span = tree_span(t, su)).v
+    } else {
+        from = lw_expr(k, storage, .Place).v
+    }
     st := tc_node_type(k, storage)
     taken := tc_node_type(k, n)
     v := graph_build_carve(b, span, tc_text(t.main[n]), taken, from, st, addressed, t.tag[su] == .Self, count_op, w)

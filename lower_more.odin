@@ -105,7 +105,6 @@ lw_variant_struct :: proc(ut: ^Type_Union, name: string) -> Type {
 lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Build_Want, w: Written) -> Built {
     b := k.gb
     span := tree_span(k.t, n)
-    mark := graph_build_mark(b)
     switch name {
     case "print_cstr", "print_int", "print_float":
         r := lw_arg(k, args[0], .Value, w, temp_span = span)
@@ -114,13 +113,12 @@ lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want:
         return {v = NO_VALUE, ok = true}
     case "len", "cap":
         t := slice_header_width_type
-        r := lw_arg(k, args[0], .Place, w, temp_span = span)
         at := lw_arg_type(k, args[0])
         if want == .Place { lw_fail(k, n, "a builtin's place") }
-        if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {
-            graph_build_drop_since(b, mark)
+        if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {   // (its size: nothing of it built)
             return {v = graph_const(b, w, span, t, name, Const_Value{int = i128(fa.size)}), ok = true}
         }
+        r := lw_arg(k, args[0], .Place, w, temp_span = span)
         if !r.place { lw_fail(k, n, "the length of a value") }
         base := r.v
         if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr && !tc_is_self(k, args[0]) { base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base) }

@@ -23,32 +23,25 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
         if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok { return lw_const_use(k, kc, n, tc_node_type(k, n), want, w) }
     }
-    ask: Build_Want = .Place if lw_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
-    mark := graph_build_mark(b)
-    // (A module's or a type's name is no value: nothing of it built.)
-    br: Built
-    if r := tc_ref(k, tc_unparen(k, base)).kind; r != .Module && r != .Type { br = lw_expr(k, base, ask, w, temp_span = span) }
     bt := tc_node_type(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        return lw_module_member(k, n, sd, field, bt, br, mark, want, w)
+        return lw_module_member(k, n, base, sd, field, bt, want, w)
     }
+    // (What reads no value of its base — a union's variant, an enum's, a
+    // fun — builds none of it.)
     if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
-        if _, has := ut.tag_map[field]; has {
-            graph_build_drop_since(b, mark)
-            return lw_union_variant(k, ut, field, span, want, w, dest, temp, temp_span)
-        }
+        if _, has := ut.tag_map[field]; has { return lw_union_variant(k, ut, field, span, want, w, dest, temp, temp_span) }
     }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
     if known_ok {
-        graph_build_drop_since(b, mark)
         if want == .Place { return {} }
         return {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
     if fun, is_fun := t.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun {
-        graph_build_drop_since(b, mark)
         if want == .Place { return {} }
         return {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
     }
+    br := lw_field_base(k, base, span, w)
     if !is_member { return {} }
     p := lw_member_place(k, n, field, br, bt, t, tc_is_self(k, base))
     if p == NO_VALUE { return {} }
@@ -56,25 +49,29 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     return {v = p, place = true, ok = true}
 }
 
+// A field's base, as a field reads it: its place (its value held, a
+// call's), else either. (A module's or a type's name is no value: nothing
+// of it built.)
+lw_field_base :: proc(k: ^TC, base: Tree_Id, span: Span, w: Written) -> Built {
+    if r := tc_ref(k, tc_unparen(k, base)).kind; r == .Module || r == .Type { return {} }
+    ask: Build_Want = .Place if lw_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
+    return lw_expr(k, base, ask, w, temp_span = span)
+}
+
 // `m.X`, m a module (tc_module_member): an enum's variant it holds, its
-// value; its constant, a value of its own (the base, built, left out); else
-// its member.
-lw_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, br: Built, mark: Graph_Mark,
-                         want: Build_Want, w: Written) -> Built {
+// value; its constant, a value of its own; else its member (the base
+// built).
+lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, want: Build_Want, w: Written) -> Built {
     b := k.gb
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
     if _, found := scope_lookup(sd_module_scope(sd), field); !found {
         et, is_enum := t.(^Type_Enum)
         if !is_enum { lw_fail(k, n, "a module's member of no enum") }
-        graph_build_drop_since(b, mark)
         return lw_enum_value(k, et, et.variants[field], field, span, want, w)
     }
-    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const {
-        graph_build_drop_since(b, mark)
-        return lw_const_use(k, kc, n, t, want, w)
-    }
-    p := lw_member_place(k, n, field, br, bt, t)
+    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const { return lw_const_use(k, kc, n, t, want, w) }
+    p := lw_member_place(k, n, field, lw_field_base(k, base, span, w), bt, t)
     if p == NO_VALUE { return {} }
     if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
     return {v = p, place = true, ok = true}
