@@ -3,8 +3,6 @@ package mara
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
-import "core:slice"
-import "core:strings"
 
 // ---------------------------------------------------------------------------
 // The annotations (design/annotated_tree.md): what the checker finds about
@@ -161,68 +159,6 @@ annot_var :: proc(a: ^Annotations, owner: ^Type_Scope, tok: Token_Id, t: Type) -
         if first < 0 { first = i }
     }
     return first
-}
-
-// --- dump -------------------------------------------------------------------
-
-// MARA_ANNOT=dump: each instance's annotated nodes, one a line in id order —
-// its tag, where it is written, what was found about it.
-annot_dump :: proc(a: ^Annotations, t: ^Tree) {
-    if os.get_env("MARA_ANNOT", context.temp_allocator) != "dump" { return }
-    sb := strings.builder_make()
-    for inst, i in a.instances {
-        if i == 0 {
-            fmt.sbprintf(&sb, "instance 0: the tree\n")
-        } else {
-            fmt.sbprintf(&sb, "instance %d: %s [%d, %d]\n", i, inst.scope.name if inst.scope != nil else "?", inst.lo, inst.hi)
-        }
-        for n in inst.lo ..= inst.hi {
-            key := annot_key(Instance_Id(i), n)
-            line := strings.builder_make(context.temp_allocator)
-            if ty := annot_type(a, Instance_Id(i), n); ty != nil { fmt.sbprintf(&line, " t=%s", type_name(ty)) }
-            if r := annot_ref(a, Instance_Id(i), n); r.kind != .None {
-                if r.decl != 0 {
-                    tk := build_tokens[r.decl]
-                    fmt.sbprintf(&line, " ref=%v:%s@%s:%d:%d", r.kind, token_text(tk), filepath.base(span_file(Span{at = r.decl})), span_line(Span{at = r.decl}), span_col(Span{at = r.decl}))
-                } else {
-                    fmt.sbprintf(&line, " ref=%v", r.kind)
-                }
-            }
-            if ts := a.callees[key] or_else nil; ts != nil { fmt.sbprintf(&line, " callee=%s", ts.name) }
-            if args, ok := a.args[key]; ok {
-                strings.write_string(&line, " args=[")
-                for arg, j in args {
-                    if j > 0 { strings.write_string(&line, ", ") }
-                    if arg.node == 0 { fmt.sbprintf(&line, "%v -", arg.kind); continue }
-                    asp := tree_span(t, arg.node)
-                    fmt.sbprintf(&line, "%v %v@%d:%d", arg.kind, t.tag[arg.node], span_line(asp), span_col(asp))
-                    if arg.slot >= 0 { fmt.sbprintf(&line, "#%d", arg.slot) }
-                }
-                strings.write_string(&line, "]")
-            }
-            if name, ok := a.call_names[key]; ok { fmt.sbprintf(&line, " call_name=%s", name) }
-            if st, ok := a.size_of[key]; ok { fmt.sbprintf(&line, " size_of=%s", type_name(st)) }
-            if base, ok := a.dot_bases[key]; ok { fmt.sbprintf(&line, " dot_base=%d", base) }
-            if strings.builder_len(line) == 0 { continue }
-            sp := tree_span(t, n)
-            where_ := "-"
-            if span_file(sp) != "" { where_ = fmt.tprintf("%s:%d:%d", filepath.base(span_file(sp)), span_line(sp), span_col(sp)) }
-            fmt.sbprintf(&sb, "  %d %v %s%s\n", n, t.tag[n], where_, strings.to_string(line))
-        }
-    }
-    // (Each body's variables, by owner, its name's order.)
-    owners := make([dynamic]^Type_Scope, context.temp_allocator)
-    for owner in a.vars { append(&owners, owner) }
-    slice.sort_by(owners[:], proc(x, y: ^Type_Scope) -> bool { return x.name < y.name })
-    for owner in owners {
-        fmt.sbprintf(&sb, "vars %s:", owner.name)
-        vars, _ := a.vars[owner]
-        for v in vars {
-            fmt.sbprintf(&sb, " %v:%s@%d:%d:%s", v.kind, token_text(build_tokens[v.tok]), span_line(Span{at = v.tok}), span_col(Span{at = v.tok}), type_name(v.type_))
-        }
-        fmt.sbprint(&sb, "\n")
-    }
-    fmt.print(strings.to_string(sb))
 }
 
 // --- the check --------------------------------------------------------------
@@ -524,13 +460,11 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             fmt.println()
         }
         for g in pc.codes {
-            node := Node_Id(0)   // (its root)
-            if g.kind[node] != .Fun && g.kind[node] != .Struct { continue }
-            ts := graph_type(g, node).(^Type_Scope)
+            if g.kind[0] != .Fun && g.kind[0] != .Struct { continue }
+            ts := graph_type(g, 0).(^Type_Scope)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)
-            end := graph_last(g, node)
-            for id := node + 1; id <= end; id += 1 {
+            for id := Node_Id(1); id <= g.end; id += 1 {
                 #partial switch g.kind[id] {
                 case .Fun, .Struct:
                     id = graph_last(g, id)

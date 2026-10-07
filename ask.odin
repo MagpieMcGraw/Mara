@@ -808,15 +808,9 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // Flow is the "outside" view, and for both a type (every value of it) and a
     // function (every call of it) it aggregates across the whole program, so every
     // function's def-use graph must exist first (data-only, cheap). Control deps
-    // (post-dominators) are the expensive step — build them only on `control`, and
-    // only for the functions the slice actually touches.
-    if show_flow {
-        du_all(checked)
-        if checked.du.want_control {
-            if is_fn { flow_build_fn_guards(checked, ft) }
-            else     { flow_build_type_guards(checked, subject.type_) }
-        }
-    }
+    // (post-dominators) are the expensive step: a function's are built the first
+    // time a slice asks for one of its definitions' guards (du_def_guards).
+    if show_flow { du_all(checked) }
 
     // The CALL graph (callees/callers) reads off the materialized call_graph and is
     // always available. The FLOW views (args in / results out) need call SITES, which

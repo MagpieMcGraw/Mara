@@ -3,7 +3,6 @@ package mara
 import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
-import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -123,24 +122,22 @@ Esc_Diag :: struct {
 // One walk of one fun's or struct's code.
 @(private="file")
 Esc :: struct {
-    c:      ^Checker,
     cg:     ^Call_Graph,
     g:      ^Program_Graph,
     ft:     ^Type_Scope,
-    node:   Node_Id,
     ctor:   bool,                // a struct's code: `Self` is its fields
     vars:   [dynamic]Esc_Var,
-    var_of: []i32,               // a declaration → its variable + 1, by id - node; 0 for none
-    run_of: []i32,               // an operation → its run's position in `runs` + 1, by id - node; 0 for none
+    var_of: []i32,               // a declaration → its variable + 1, by id; 0 for none
+    run_of: []i32,               // an operation → its run's position in `runs` + 1, by id; 0 for none
     slots:  int,
     runs:   [dynamic]i32,        // its code's runs, then its defer blocks'
     main:   int,                 // how many of `runs` are its code's own
-    memo:   []Esc_Roots,         // each operation's roots, by id - node
+    memo:   []Esc_Roots,         // each operation's roots, by id
 
     // The fixpoint.
     flow:        Run_Flow(Esc_Roots),
     uses:        map[Node_Id][dynamic]int,    // an operation → the other runs using its value
-    used_across: []bool,                      // ... whether it has any, by id - node
+    used_across: []bool,                      // ... whether it has any, by id
     defer_exit:  map[Node_Id][]Esc_Roots,     // a defer block → the state it leaves
     defer_users: map[Node_Id][dynamic]int,    // ... and the runs that run it
 
@@ -153,7 +150,6 @@ Esc :: struct {
 
 @(private="file")
 Esc_Pass :: struct {
-    c:        ^Checker,
     code:     ^Program_Code,
 
     reported: []bool,
@@ -173,7 +169,6 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     if cg == nil { return }
     resize(&cg.esc, len(cg.nodes))
     g_esc = Esc_Pass{
-        c        = c,
         code     = &checked.code,
 
         reported = make([]bool, len(cg.nodes)),
@@ -188,20 +183,17 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     reserve(&g_esc_refs_cache, 64)
     reserve(&g_esc_self_cache, 64)
     cg_bottom_up(cg, esc_summary_transfer)
-    esc_dump(cg)
     for _, n in cg.nodes {
         if !g_esc.reported[n] { esc_walk(cg, n, true) }
     }
-    // In source order, once each (a generic's instances share their spans).
+    // In source order (check_error reports one once: a generic's instances
+    // share their spans).
     slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
         if span_before(a.span, b.span) { return true }
         if span_before(b.span, a.span) { return false }
         return a.msg < b.msg
     })
-    for d, i in g_esc.diags {
-        if i > 0 && g_esc.diags[i - 1] == d { continue }
-        check_error(c, d.span, "%s", d.msg)
-    }
+    for d in g_esc.diags { check_error(c, d.span, "%s", d.msg) }
 }
 
 @(private="file")
@@ -226,19 +218,18 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
 esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     ft := cg.nodes[n]
     g := g_esc.code.funs[ft] or_else nil
-    node := Node_Id(0)   // (its code's root)
     if g == nil { return {}, false }
     // (All a walk makes is the walk arena's, the last walk's freed: its
     // summary is read before the next.)
     virtual.arena_free_all(&g_esc.walk)
     context.allocator = virtual.arena_allocator(&g_esc.walk)
-    e := Esc{c = g_esc.c, cg = cg, g = g, ft = ft, node = node, ctor = g.kind[node] == .Struct, report = report}
-    e.main = graph_code_runs(g, node, &e.runs)
+    e := Esc{cg = cg, g = g, ft = ft, ctor = g.kind[0] == .Struct, report = report}
+    e.main = graph_code_runs(g, 0, &e.runs)
     if len(e.runs) == 0 { return {}, false }
     if len(ft.params) > ESC_MAX_PARAMS {
         fmt.panicf("escape analysis: %s has %d parameters (max %d)", ft.name, len(ft.params), ESC_MAX_PARAMS)
     }
-    size := int(graph_last(g, node) - node) + 1
+    size := int(g.end) + 1
     e.memo = make([]Esc_Roots, size)
     e.var_of = make([]i32, size)
     e.run_of = make([]i32, size)
@@ -264,8 +255,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
 esc_vars :: proc(e: ^Esc) {
     g := e.g
     params := 0
-    end := graph_last(g, e.node)
-    for id := e.node + 1; id <= end; id += 1 {
+    for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
             id = graph_last(g, id)
@@ -279,7 +269,7 @@ esc_vars :: proc(e: ^Esc) {
             case .Field:
                 v.depth = ESC_CALLER   // a field of the value under construction: the caller's
             }
-            e.var_of[id - e.node] = i32(len(e.vars)) + 1
+            e.var_of[id] = i32(len(e.vars)) + 1
             append(&e.vars, v)
         }
     }
@@ -291,15 +281,15 @@ esc_vars :: proc(e: ^Esc) {
 esc_scan :: proc(e: ^Esc) {
     g := e.g
     for r, ri in e.runs {
-        for op in graph_run(g, int(r)) { e.run_of[op - e.node] = i32(ri) + 1 }
+        for op in graph_run(g, int(r)) { e.run_of[op] = i32(ri) + 1 }
     }
     for r, ri in e.runs {
         for op in graph_run(g, int(r)) {
             ops := graph_operands(g, op)
             for o in ops {
                 if o.op == NO_NODE { continue }
-                if from := e.run_of[o.op - e.node]; from != i32(ri) + 1 {
-                    e.used_across[o.op - e.node] = true
+                if from := e.run_of[o.op]; from != i32(ri) + 1 {
+                    e.used_across[o.op] = true
                     if o.op not_in e.uses { e.uses[o.op] = {} }
                     list := &e.uses[o.op]
                     if !slice.contains(list[:], ri) { append(list, ri) }
@@ -323,7 +313,7 @@ esc_scan :: proc(e: ^Esc) {
         }
     }
     for &v in e.vars {
-        if v.view || esc_has_refs(e.c, v.type_) {
+        if v.view || esc_has_refs(v.type_) {
             v.slot = e.slots
             e.slots += 1
         }
@@ -384,10 +374,10 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     g := e.g
     ops := graph_operands(g, op)
     // A value another run uses: when it grows, that run goes again.
-    watched := !e.final && e.used_across[op - e.node]
+    watched := !e.final && e.used_across[op]
     old: Esc_Roots
-    if watched { esc_join(&old, e.memo[op - e.node]) }
-    r := &e.memo[op - e.node]
+    if watched { esc_join(&old, e.memo[op]) }
+    r := &e.memo[op]
     esc_clear(r)
     #partial switch g.op[op] {
     case .Var:
@@ -410,11 +400,11 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     case .Deref:
         esc_deref(e, r, esc_at(e, ops[0]), state)
     case .Read:
-        if esc_has_refs(e.c, graph_type(g, op)) { esc_deref(e, r, esc_at(e, ops[0]), state) }
+        if esc_has_refs(graph_type(g, op)) { esc_deref(e, r, esc_at(e, ops[0]), state) }
     case .Address:
         esc_join(r, esc_at(e, ops[0]))
     case .Arith, .Compare, .Unary, .Cast:
-        if esc_has_refs(e.c, graph_type(g, op)) {
+        if esc_has_refs(graph_type(g, op)) {
             for o in ops { esc_join(r, esc_at(e, o)) }
         }
     case .Carve:
@@ -423,7 +413,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_mem(e, &mem, ops[0], state)
         if graph_name(g, op) != "let" {
             esc_join(r, mem)
-        } else if esc_has_refs(e.c, graph_type(g, op)) {
+        } else if esc_has_refs(graph_type(g, op)) {
             esc_deref(e, r, mem, state)
         }
     case .Call:
@@ -449,14 +439,14 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_write(e, op, ops[0], val, state)
     case .Fill:
         val: Esc_Roots
-        if esc_has_refs(e.c, graph_type(g, ops[0].op)) { esc_join(&val, esc_at(e, ops[1])) }
+        if esc_has_refs(graph_type(g, ops[0].op)) { esc_join(&val, esc_at(e, ops[1])) }
         esc_write(e, op, ops[0], val, state)
     case .Write:
         esc_write_op(e, op, ops, state)
     case .Byte_Read:
         // A value read out of a byte buffer holds what the buffer's memory does.
         val: Esc_Roots
-        if esc_has_refs(e.c, graph_type(g, ops[0].op)) {
+        if esc_has_refs(graph_type(g, ops[0].op)) {
             mem: Esc_Roots
             esc_mem(e, &mem, ops[1], state)
             esc_deref(e, &val, mem, state)
@@ -487,7 +477,7 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
         }
         return
     }
-    if e.ctor && d == e.node {
+    if e.ctor && d == 0 {
         for v, k in e.vars { if e.g.kind[v.node] == .Field { append(&r.vars, i32(k)) } }
         return
     }
@@ -497,8 +487,8 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
 // The variable a declaration is, or -1: its own subtree's only.
 @(private="file")
 esc_var :: proc(e: ^Esc, d: Node_Id) -> int {
-    if d <= e.node || d > graph_last(e.g, e.node) { return -1 }
-    return int(e.var_of[d - e.node]) - 1
+    if d <= 0 || d > e.g.end { return -1 }
+    return int(e.var_of[d]) - 1
 }
 
 // The variable a place operand names directly, or -1.
@@ -511,7 +501,7 @@ esc_var_named :: proc(e: ^Esc, o: Operand) -> int {
 @(private="file")
 esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
     if o.op == NO_NODE { return {} }
-    return e.memo[o.op - e.node]
+    return e.memo[o.op]
 }
 
 // The memory holding a place's elements: through a pointer, what it points
@@ -642,7 +632,7 @@ esc_return :: proc(e: ^Esc, ri: int, op: Node_Id, val: Esc_Roots, o: Operand, st
 esc_into :: proc(e: ^Esc, o: Operand, dest: Type, state: []Esc_Roots) -> Esc_Roots {
     r: Esc_Roots
     if o.op == NO_NODE { return r }
-    if dest != nil && !esc_has_refs(e.c, dest) { return r }
+    if dest != nil && !esc_has_refs(dest) { return r }
     #partial switch db in distinct_base(dest) {
     case ^Type_Slice:
         #partial switch _ in distinct_base(esc_value_type(e, o)) {
@@ -663,7 +653,7 @@ esc_into :: proc(e: ^Esc, o: Operand, dest: Type, state: []Esc_Roots) -> Esc_Roo
 @(private="file")
 esc_elems :: proc(e: ^Esc, o: Operand, elem: Type, state: []Esc_Roots) -> Esc_Roots {
     r: Esc_Roots
-    if !esc_has_refs(e.c, elem) { return r }
+    if !esc_has_refs(elem) { return r }
     #partial switch _ in distinct_base(esc_value_type(e, o)) {
     case ^Type_Slice, ^Type_Ptr:
         esc_deref(e, &r, esc_at(e, o), state)   // the elements live where the view points
@@ -842,7 +832,7 @@ esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
 @(private="file")
 esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
     d := ESC_BODY
-    for p := e.g.parent[id]; p != e.node && p != NO_NODE; p = e.g.parent[p] {
+    for p := e.g.parent[id]; p != 0 && p != NO_NODE; p = e.g.parent[p] {
         if e.g.kind[p] == .Block { d += 1 }
     }
     return d
@@ -854,18 +844,18 @@ esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
 @(private="file") g_esc_self_cache: map[^Type_Scope]bool
 
 // Can a value of this type hold a reference? (Unknown: assume it can.)
-esc_has_refs :: proc(c: ^Checker, t: Type) -> bool {
+esc_has_refs :: proc(t: Type) -> bool {
     if t == nil { return true }
     #partial switch bt in distinct_base(t) {
     case ^Type_Ptr, ^Type_Slice, Type_CString, Type_Any:
         return true
     case ^Type_Fixed_Array:
-        return esc_has_refs(c, bt.elem)
+        return esc_has_refs(bt.elem)
     case ^Type_Partial_Array:
-        return esc_has_refs(c, bt.elem)
+        return esc_has_refs(bt.elem)
     case ^Type_Union:
         for _, st in bt.variant_structs {
-            if esc_has_refs(c, st) { return true }
+            if esc_has_refs(st) { return true }
         }
     case ^Type_Scope:
         sd := as_struct_body(bt)
@@ -874,7 +864,7 @@ esc_has_refs :: proc(c: ^Checker, t: Type) -> bool {
         g_esc_refs_cache[bt] = false // terminates recursion; a by-value cycle can't exist
         has := false
         for &f in sd.fields {
-            if esc_has_refs(c, f.type_) { has = true; break }
+            if esc_has_refs(f.type_) { has = true; break }
         }
         g_esc_refs_cache[bt] = has
         return has
@@ -1014,16 +1004,4 @@ esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
     }
     if r.temp > 0 { return "a temporary" }
     return "local memory"
-}
-
-// MARA_DUMP_ESC=1: each function's summary, after the bottom-up pass.
-@(private="file")
-esc_dump :: proc(cg: ^Call_Graph) {
-    env_buf: [8]u8
-    if os.get_env_buf(env_buf[:], "MARA_DUMP_ESC") == "" { return }
-    for s, i in cg.nodes {
-        sum := cg.esc[i]
-        if sum.ret == {} && sum.ret_deep == {} && len(sum.stores) == 0 { continue }
-        fmt.eprintf("  %-40s ret %v deep %v stores %v\n", s.name, sum.ret, sum.ret_deep, sum.stores[:])
-    }
 }

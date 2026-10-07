@@ -63,11 +63,9 @@ flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool 
 // graph records the first of each stretch). Codegen would put it after the
 // terminator.
 flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
+    // (Generic instances share their template's spans: check_error reports
+    // one once.)
     for span in checked.code.unreachable {
-        if span in seen { continue }
-        seen[span] = true
         check_error(c, span, TYPE_UNREACHABLE_CODE)
     }
 }
@@ -95,8 +93,6 @@ flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
 // refers-to has resolved shadowing, and a read in a nested block or a defer's
 // block is a read like any other.
 flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
     for g in checked.code.codes {
         dest := make([]bool, len(g.kind), context.temp_allocator)   // where a whole write lands
         read := make([]bool, len(g.kind), context.temp_allocator)
@@ -113,10 +109,7 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
             // variable or a match arm's binding.
             s := g.stmt[id]
             if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
-            span := g.origin[id]
-            if span in seen { continue }
-            seen[span] = true
-            check_error(c, span, TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))
+            check_error(c, g.origin[id], TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))
         }
     }
 }
@@ -137,10 +130,9 @@ flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         g := checked.code.funs[ft] or_else nil
-        node := Node_Id(0)
-        if g == nil || g.kind[node] != .Fun { continue }
+        if g == nil || g.kind[0] != .Fun { continue }
         clear(&runs)
-        own := graph_code_runs(g, node, &runs)
+        own := graph_code_runs(g, 0, &runs)
         for r in runs[:own] {
             ops := graph_run(g, int(r))
             ret := ops[len(ops) - 1]
@@ -229,7 +221,6 @@ flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
 @(private="file")
 Init :: struct {
     g:       ^Program_Graph,
-    node:    Node_Id,
     own:     []i32,            // a local's own bit + 1; 0 when it can't be unset
     fields:  [][2]i32,         // a struct local's fields that can be unset: [first, count) of field_of
     field_of: [dynamic]Init_Field,
@@ -258,33 +249,31 @@ flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Sco
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         g := checked.code.funs[ft] or_else nil
-        node := Node_Id(0)
         if g == nil { continue }
-        flow_init_fun(c, g, node, &seen, &walk)
+        flow_init_fun(c, g, &seen, &walk)
     }
 }
 
 @(private="file")
-flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[Span]bool, walk: ^virtual.Arena) {
+flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, seen: ^map[Span]bool, walk: ^virtual.Arena) {
     // (What the fun's walk makes is `walk`'s, the last fun's freed; the
     // diagnostics, the reads', outlive it.)
     kept := context.allocator
     virtual.arena_free_all(walk)
     context.allocator = virtual.arena_allocator(walk)
     runs: [dynamic]i32
-    graph_code_runs(g, node, &runs)
+    graph_code_runs(g, 0, &runs)
     if len(runs) == 0 { return }
 
-    size := int(graph_last(g, node) - node) + 1
-    s := Init{g = g, c = c, seen = seen, node = node}
+    size := int(g.end) + 1
+    s := Init{g = g, c = c, seen = seen}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
 
     // What can be unset: its locals that are pointers, slices or scalars, and
     // the pointer and slice fields of its struct locals that have no default.
     bits: i32 = 0
-    end := graph_last(g, node)
-    for id := node + 1; id <= end; id += 1 {
+    for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
             id = graph_last(g, id)
@@ -296,7 +285,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
         }
         base := distinct_base(graph_type(g, id))
         if flow_can_be_unset(base) {
-            s.own[id - node] = bits + 1
+            s.own[id] = bits + 1
             bits += 1
         } else if sd := as_scope_body(base); sd != nil {
             first := i32(len(s.field_of))
@@ -305,7 +294,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
                 append(&s.field_of, Init_Field{f.name, bits})
                 bits += 1
             }
-            s.fields[id - node] = {first, i32(len(s.field_of)) - first}
+            s.fields[id] = {first, i32(len(s.field_of)) - first}
         }
     }
     if bits == 0 { return }
@@ -317,7 +306,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     for r in runs {
         for op in graph_run(g, int(r)) {
             for o in graph_operands(g, op) {
-                if o.op >= node && o.op <= graph_last(g, node) { s.user[o.op - node] = op }
+                if o.op >= 0 && o.op <= g.end { s.user[o.op] = op }
             }
             // (A pointer every write of which is `&x`.)
             d := graph_whole_write_dest(g, op)
@@ -376,20 +365,20 @@ flow_field_can_be_unset :: proc(t: Type) -> bool {
 // Whether declaration v is one of this fun's own.
 @(private="file")
 flow_own :: proc(s: ^Init, v: Node_Id) -> bool {
-    return v > s.node && v <= graph_last(s.g, s.node)
+    return v > 0 && v <= s.g.end
 }
 
 // A variable's own bit: -1 when it can't be unset.
 @(private="file")
 flow_var_bit :: proc(s: ^Init, v: Node_Id) -> i32 {
-    return s.own[v - s.node] - 1 if flow_own(s, v) else -1
+    return s.own[v] - 1 if flow_own(s, v) else -1
 }
 
 // A struct variable's field's bit: -1 when it can't be unset.
 @(private="file")
 flow_field_bit :: proc(s: ^Init, v: Node_Id, field: string) -> i32 {
     if !flow_own(s, v) { return -1 }
-    r := s.fields[v - s.node]
+    r := s.fields[v]
     for f in s.field_of[r[0]:r[0] + r[1]] { if f.name == field { return f.bit } }
     return -1
 }
@@ -409,8 +398,8 @@ flow_is_unset :: proc(state: []u64, bit: i32) -> bool {
 @(private="file")
 flow_set_var :: proc(s: ^Init, state: []u64, v: Node_Id, unset, fields_unset: bool) {
     if !flow_own(s, v) { return }
-    flow_set(state, s.own[v - s.node] - 1, unset)
-    r := s.fields[v - s.node]
+    flow_set(state, s.own[v] - 1, unset)
+    r := s.fields[v]
     for f in s.field_of[r[0]:r[0] + r[1]] { flow_set(state, f.bit, fields_unset) }
 }
 
@@ -438,8 +427,8 @@ flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, 
 // Who takes an operation's output; NO_NODE for none.
 @(private="file")
 flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
-    if op < s.node || op > graph_last(s.g, s.node) { return NO_NODE }
-    if u := s.user[op - s.node]; u != 0 { return u }   // (0: none — no operation is the code's root)
+    if op < 0 || op > s.g.end { return NO_NODE }
+    if u := s.user[op]; u != 0 { return u }   // (0: none — no operation is the code's root)
     return NO_NODE
 }
 
@@ -553,11 +542,7 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 // (graph_fold_uses: a call in it, a struct's construction with arguments).
 
 flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
     for e in checked.code.fold_errors {
-        if seen[e.span] { continue }
-        seen[e.span] = true
         check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name)
     }
 }

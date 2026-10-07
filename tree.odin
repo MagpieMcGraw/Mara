@@ -1,9 +1,6 @@
 package mara
 
-import "core:fmt"
 import "core:slice"
-import "core:os"
-import "core:strings"
 
 // The syntax tree, flat (design/flat_tree.md): every file's nodes in one table
 // for the build, a node's id its index, each node the same shape — its tag,
@@ -345,30 +342,6 @@ tree_lo :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
     }
 }
 
-// The tokens a node records: its report point, its token fields, its token
-// lists' items.
-tree_node_tokens :: proc(t: ^Tree, n: Tree_Id, out: ^[dynamic]Token_Id) {
-    each :: proc(t: ^Tree, f: Tree_Field, v: u32, out: ^[dynamic]Token_Id) {
-        #partial switch f {
-        case .Token:  if v != 0 { append(out, Token_Id(v)) }
-        case .Tokens: for c in tree_token_list(t, v) { append(out, c) }
-        }
-    }
-    if t.main[n] != 0 { append(out, t.main[n]) }
-    shape := tree_shapes[t.tag[n]]
-    for f, k in ([2]Tree_Field{shape.a, shape.b}) {
-        v := t.a[n] if k == 0 else t.b[n]
-        if f == .Rec {
-            for rf, i in shape.rec {
-                if rf == .None { break }
-                each(t, rf, t.extra[v + u32(i)], out)
-            }
-        } else {
-            each(t, f, v, out)
-        }
-    }
-}
-
 // --- views: a form's fields by name ----------------------------------------
 
 // A fun's or a struct's.
@@ -485,36 +458,5 @@ foreign_fun_view :: proc(t: ^Tree, n: Tree_Id) -> Foreign_Fun_View {
 tree_pair :: proc(t: ^Tree, n: Tree_Id) -> (Tree_Id, Tree_Id) {
     r := tree_rec(t, t.b[n], 2)
     return Tree_Id(r[0]), Tree_Id(r[1])
-}
-
-// --- the dump ----------------------------------------------------------------
-
-// MARA_TREE=dump: each file's tree, one node a line, indented by depth.
-tree_mode :: proc() -> string {
-    return os.get_env("MARA_TREE", context.temp_allocator)
-}
-
-tree_dump :: proc(t: ^Tree) {
-    line :: proc(t: ^Tree, sb: ^strings.Builder, n: Tree_Id, depth: int) {
-        for _ in 0 ..< depth { strings.write_string(sb, "  ") }
-        fmt.sbprintf(sb, "%v", t.tag[n])
-        toks: [dynamic]Token_Id
-        defer delete(toks)
-        tree_node_tokens(t, n, &toks)
-        for tk in toks { fmt.sbprintf(sb, " '%s'", token_text(build_tokens[tk])) }
-        sp := tree_span(t, n)
-        if sp.at != 0 { fmt.sbprintf(sb, "  %d:%d", span_line(sp), span_col(sp)) }
-        strings.write_byte(sb, '\n')
-        kids: [dynamic]Tree_Id
-        defer delete(kids)
-        tree_children(t, n, &kids)
-        for k in kids { line(t, sb, k, depth + 1) }
-    }
-    sb := strings.builder_make()
-    for f in t.files {
-        fmt.sbprintf(&sb, "file %s\n", span_file(Span{at = t.first[f]}))
-        line(t, &sb, f, 1)
-    }
-    fmt.print(strings.to_string(sb))
 }
 

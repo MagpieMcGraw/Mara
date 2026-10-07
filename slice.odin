@@ -610,11 +610,7 @@ var_root_def :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> ^Def {
     defs := var_defs(checked, b)
     defer delete(defs)
     best: ^Def
-    for d in defs {
-        if best == nil || span_line(d.span) < span_line(best.span) || (span_line(d.span) == span_line(best.span) && span_col(d.span) < span_col(best.span)) {
-            best = d
-        }
-    }
+    for d in defs { if best == nil || def_less(d, best) { best = d } }
     return best
 }
 
@@ -1029,36 +1025,6 @@ type_flow_seeds :: proc(checked: ^Checked_Program, T: Type) -> map[^Var_Binding]
         if flow_type_base(b.type_) == T { seeds[b] = true }
     }
     return seeds
-}
-
-// du_all is data-only (no post-dominators) for speed, so an aggregate would miss
-// control dependence. But a slice stays inside the function holding its seed
-// (calls are crossed by summary), so only the functions that actually hold a
-// relevant occurrence need guards: build them just for `fns` (du_fn stamps
-// their defs). Keeps the cost ~O(uses) instead of O(all functions).
-@(private="file")
-flow_build_guards :: proc(checked: ^Checked_Program, fns: map[^Type_Scope]bool) {
-    for ft in fns { du_fn(checked, ft) }
-}
-
-// Guards for the functions holding a value of type T (where type-flow slices).
-flow_build_type_guards :: proc(checked: ^Checked_Program, T: Type) {
-    fns: map[^Type_Scope]bool
-    defer delete(fns)
-    for b in checked.du.vars {
-        if b.type_ != nil && b.fn != nil && flow_type_base(b.type_) == T { fns[b.fn] = true }
-    }
-    flow_build_guards(checked, fns)
-}
-
-// Guards for the functions that call F (where function-flow slices the args).
-flow_build_fn_guards :: proc(checked: ^Checked_Program, F: ^Type_Scope) {
-    fns: map[^Type_Scope]bool
-    defer delete(fns)
-    sites := du_call_sites(checked, F)
-    defer delete(sites)
-    for site in sites { if site.caller != nil { fns[site.caller] = true } }
-    flow_build_guards(checked, fns)
 }
 
 render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, T: Type, label: string) {

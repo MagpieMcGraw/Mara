@@ -1,7 +1,5 @@
 package mara
 
-import "core:fmt"
-import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -88,7 +86,6 @@ Fn_Call_Site :: struct {
 Du_Fn :: struct {
     ft:       ^Type_Scope,
     g:        ^Program_Graph,       // its code (nil: it has none — a foreign fun)
-    node:     Node_Id,
     vars:     [dynamic]^Var_Binding,
     bindings: map[Node_Id]^Var_Binding,   // a variable's declaration in its code → the variable
     defs:     [dynamic]^Def,        // its variables' and synthetic locals' definitions
@@ -129,7 +126,6 @@ du_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> ^Du_Fn {
         f.ft = ft
         du.fns[ft] = f
         du_build(checked, f)
-        du_dump(checked, f)
     }
     return f
 }
@@ -173,7 +169,6 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
 
     // (A fun with no code — a foreign one: each param defined on entry, and
     // nothing more.)
-    node := Node_Id(0)   // (its code's root)
     if g == nil {
         for b in f.vars {
             if b.kind != .Param { continue }
@@ -185,7 +180,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         }
         return
     }
-    f.g, f.node = g, node
+    f.g = g
 
     // The declarations its code names (its own, not a nested fun's): each a
     // variable's, found by the token that declares it, or a synthetic local
@@ -195,8 +190,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     defer delete(tracked)
     decl_of: map[^Var_Binding]Node_Id
     defer delete(decl_of)
-    end := graph_last(g, node)
-    for id := node + 1; id <= end; id += 1 {
+    for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
             id = graph_last(g, id)
@@ -214,7 +208,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
 
     // Its runs: its code's, then each defer block's, entered by a run defer.
-    f.main = graph_code_runs(g, node, &f.runs)
+    f.main = graph_code_runs(g, 0, &f.runs)
 
     // Its definitions: a param's entry, then each statement's writes.
     def_of: map[[2]i32]^Def   // (variable, statement) → its definition
@@ -714,29 +708,4 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
 // The guards of a fun's explicit return.
 du_return_guards :: proc(f: ^Du_Fn, ret: Node_Id) -> []Guard {
     return f.guards[f.ret_run[ret]][:]
-}
-
-// --- diagnostics ------------------------------------------------------------------
-
-// MARA_DUMP_USEDEF=1: each fun's variables, definitions and what reaches each use.
-@(private="file")
-du_dump :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
-    buf: [8]u8
-    if os.get_env_buf(buf[:], "MARA_DUMP_USEDEF") == "" { return }
-    g := f.g
-    if g == nil { return }
-    fmt.eprintf("--- def-use: %s (%d vars, %d defs, %d runs) ---\n", f.ft.name, len(f.vars), len(f.defs), len(f.runs))
-    for d in f.defs {
-        name := d.binding.name if d.binding != nil else fmt.tprintf("(%s)", graph_name(g, d.var))
-        fmt.eprintf("  def %-11v %-18s %s  writes %v\n", d.kind, name, span_loc(d.span), d.writes[:])
-    }
-    for r in f.runs {
-        for op in graph_run(g, int(r)) {
-            if reach, ok := f.reaching[op]; ok {
-                fmt.eprintf("  use %-18s %s <-", graph_name(g, op), span_loc(g.origin[op]))
-                for d in reach { fmt.eprintf(" %v@%s", d.kind, span_loc(d.span)) }
-                fmt.eprintln()
-            }
-        }
-    }
 }

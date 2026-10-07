@@ -1178,8 +1178,6 @@ main :: proc() {
 
     perf_timer_mark(&perf, "parse")
     parse_errors := parse_target_files()
-    // MARA_TREE=dump: the flat tree, as parsed.
-    if tree_mode() == "dump" { tree_dump(&build_tree) }
 
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }

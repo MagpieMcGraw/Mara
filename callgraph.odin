@@ -293,7 +293,6 @@ cg_compute_return_deps :: proc(g: ^Call_Graph, checked: ^Checked_Program) {
     g_cg_checked = checked
     resize(&g.return_deps, len(g.nodes))
     cg_bottom_up(g, cg_return_deps_transfer)
-    cg_dump_return_deps(g)
 }
 
 @(private="file")
@@ -394,16 +393,5 @@ cg_strongconnect :: proc(t: ^Tarjan, v: int) {
             if w == v { break }
         }
         append(&t.g.sccs, comp)
-    }
-}
-
-// Diagnostic: `MARA_DUMP_RETURN_DEPS=1` prints each function's return-dependency
-// summary, once a slice has built it.
-cg_dump_return_deps :: proc(g: ^Call_Graph) {
-    env_buf: [8]u8
-    if os.get_env_buf(env_buf[:], "MARA_DUMP_RETURN_DEPS") == "" { return }
-    for s, i in g.nodes {
-        if s == nil { continue }
-        fmt.eprintf("  %-40s %v\n", s.name, g.return_deps[i])
     }
 }

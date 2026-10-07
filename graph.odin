@@ -3770,54 +3770,18 @@ graph_dominators :: proc(n: int, succ, pred: [][dynamic]i32, is_entry: []bool) -
 
 // --- dump -------------------------------------------------------------------
 
-// MARA_GRAPH=all prints the whole graph; MARA_GRAPH=<name> prints the subtree
-// of every node with that name, and the runs of each fun in it.
+// MARA_GRAPH=full prints every code (graph_dump_full), then the statements
+// nothing reaches: what test/graphdiff.sh compares.
 @(private="file")
 graph_dump :: proc(pc: ^Program_Code) {
-    want := os.get_env("MARA_GRAPH", context.temp_allocator)
-    if want == "" { return }
+    if os.get_env("MARA_GRAPH", context.temp_allocator) != "full" { return }
     for c in pc.codes {
         fmt.printfln("code %v %s", c.kind[0], graph_name(c, 0))
-        if want == "full" { graph_dump_full(pc, c) } else { graph_dump_code(c, want) }
+        graph_dump_full(pc, c)
     }
     for s in pc.unreachable { fmt.printfln("u @%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) }
 }
 
-@(private="file")
-graph_dump_code :: proc(g: ^Program_Graph, want: string) {
-    fmt.printf("graph: %d nodes, %d runs\n", len(g.kind), len(g.run_first) - 1)
-    run_of := make([]i32, len(g.kind), context.temp_allocator)
-    slice.fill(run_of, -1)
-    for r in 0 ..< len(g.run_first) - 1 { for id in graph_run(g, r) { run_of[id] = i32(r) } }
-    for id in 0 ..< len(g.kind) {
-        if want != "all" && graph_name(g, Node_Id(id)) != want { continue }
-        if want == "all" && g.parent[id] != NO_NODE { continue }   // roots print their subtrees
-        base := graph_depth(g, Node_Id(id))
-        for n in id ..= int(graph_last(g, Node_Id(id))) {
-            graph_dump_node(g, Node_Id(n), graph_depth(g, Node_Id(n)) - base)
-        }
-        if want == "all" { continue }
-        // The runs whose operations are in this subtree, in order.
-        for r in 0 ..< len(g.run_first) - 1 {
-            ops := graph_run(g, r)
-            if len(ops) == 0 || int(ops[0]) < id || int(ops[0]) > int(graph_last(g, Node_Id(id))) { continue }
-            sb := strings.builder_make(context.temp_allocator)
-            fmt.sbprintf(&sb, "  run %d:", r)
-            for op in ops { fmt.sbprintf(&sb, " %d", op) }
-            for e in graph_out(g, ops[len(ops) - 1]) {
-                fmt.sbprintf(&sb, "  → run %d", run_of[e.to])
-            }
-            fmt.println(strings.to_string(sb))
-        }
-    }
-}
-
-@(private="file")
-graph_depth :: proc(g: ^Program_Graph, id: Node_Id) -> int {
-    d := 0
-    for p := g.parent[id]; p != NO_NODE; p = g.parent[p] { d += 1 }
-    return d
-}
 
 // MARA_GRAPH=full: every column of every node, then the edges, runs, statements
 // and tables, one fact a line in id order — two builds of one program compare
@@ -3865,42 +3829,6 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
     for id in g.settled { fmt.printfln("settled %d", id) }
 }
 
-@(private="file")
-graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
-    b := strings.builder_make(context.temp_allocator)
-    for _ in 0 ..< indent { strings.write_string(&b, "  ") }
-    if g.kind[id] == .Op {
-        fmt.sbprintf(&b, "%d %s", id, graph_op_word(g.op[id]))
-        if graph_name(g, id) != "" { fmt.sbprintf(&b, " %s", graph_name(g, id)) }
-        ops := graph_operands(g, id)
-        if len(ops) > 0 {
-            strings.write_string(&b, "(")
-            for o, i in ops {
-                if i > 0 { strings.write_string(&b, ", ") }
-                if o.op == NO_NODE { strings.write_string(&b, "_") }
-                else if o.out > 0  { fmt.sbprintf(&b, "%d.%d", o.op, o.out) }
-                else               { fmt.sbprintf(&b, "%d", o.op) }
-            }
-            strings.write_string(&b, ")")
-        }
-        if r := g.refers[id]; r != NO_NODE { fmt.sbprintf(&b, " = %d", r) }
-        if t := graph_type(g, id); t != nil { fmt.sbprintf(&b, " : %s", type_name(t)) }
-        if callee := graph_called(g, id); callee != nil { fmt.sbprintf(&b, " → %s", callee.name) }
-        if d, runs := g.defer_of[id]; runs { fmt.sbprintf(&b, " → %d", d) }
-    } else {
-        fmt.sbprintf(&b, "%d %s %s", id, graph_kind_word(g.kind[id]), graph_name(g, id))
-        if t := graph_type(g, id); t != nil {
-            #partial switch g.kind[id] {
-            case .Field, .Param, .Result, .Local, .Const:
-                fmt.sbprintf(&b, " : %s", type_name(t))
-            }
-        }
-    }
-    if o := g.origin[id]; span_file(o) != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(span_file(o)), span_line(o)) }
-    if g.written[id] == .Synthetic { strings.write_string(&b, "   (synthetic)") }
-    else if g.written[id] == .Implied { strings.write_string(&b, "   (implied)") }
-    fmt.println(strings.to_string(b))
-}
 
 graph_kind_word :: proc(k: Node_Kind) -> string {
     switch k {
