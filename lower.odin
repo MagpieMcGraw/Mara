@@ -522,7 +522,10 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         lw_expr(k, value, .Value)
         return
     }
-    if name == "this_program" { return }   // (its arena: set up by main's entry, nothing built here)
+    if name == "this_program" {   // (its arena: set up by main's entry, nothing built here)
+        graph_build_stmt_none(k.gb)
+        return
+    }
     existing := tc_node_type(k, target)
     if tc_is_void(k, value) {
         graph_build_void_assign(b, name, lw_local(k, target), distinct_base(existing), span, tree_span(t, value))

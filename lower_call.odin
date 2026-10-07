@@ -156,7 +156,7 @@ lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     t := k.t
     b := k.gb
     span := tree_span(t, s)
-    graph_build_stmt_kind(b, .Other)
+    graph_build_stmt_none(b)
     for tg in targets {
         declares := is_decl && t.tag[tg] == .Ident
         kind := Stmt_Kind.Decl if declares else lw_assign_kind(k, tg)

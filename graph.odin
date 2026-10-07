@@ -19,8 +19,8 @@ import "core:strings"
 // Each fact is a column indexed by Node_Id, the code's own from 0: its root,
 // then everything in it, depth-first in written order, so a scope's subtree
 // is one run of ids: [id, last[id]]. Lowering builds a code's nodes in that
-// order; what it turns out not to need is left out when the code is laid out
-// (graph_lay_out).
+// order, each one it decides it needs from the annotations before it builds
+// it: nothing built is left out.
 //
 // Execution order is kept apart from the tree: every function's operations
 // are cut into runs, each ending in a jump, branch, switch or return, and a
@@ -80,10 +80,6 @@ Operand :: struct {
 }
 
 NO_VALUE :: Operand{op = NO_NODE}
-
-// A node no drop replaced (Graph_Builder.repl).
-@(private="file")
-KEPT :: Operand{op = Node_Id(-2)}
 
 // A statement code is lowered from: where it is written and what it does to
 // the variables it writes, which is how an analysis reports a write.
@@ -283,13 +279,15 @@ graph_is_terminator :: proc(k: Op_Kind) -> bool {
 // Lowering builds one code at a time — a fun's, a struct's constructor's, a
 // constant's (graph_body_begin … graph_body_end, graph_const_begin …
 // graph_const_end): its nodes in the order they end up in, in a graph the
-// builder keeps for each in turn. Once built, a code is settled and laid out
-// in the program's arena (graph_code_close); once every code is, each is put
-// in written order (graph_place_codes).
+// builder keeps for each in turn. Once built, a code is settled and copied
+// into the program's arena (graph_code_close); once every code is, each is
+// put in written order (graph_place_codes).
 Graph_Builder :: struct {
     g:       ^Program_Graph,  // the code being built (the builder's own, emptied for each)
     checked: ^Checked_Program,
     stmt:    i32,     // the statement being lowered (in g.stmts), or -1
+    stmt_id:   Syntax_Id,   // (the newest entry's statement, and the nodes there were then)
+    stmt_from: int,
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
@@ -301,11 +299,10 @@ Graph_Builder :: struct {
     // struct's, a constant's; its defers' are its own — by the token that
     // declares it (graph_declare, graph_local).
     locals:     map[Token_Id]Node_Id,
-    // The compiler's own globals — this_program, context: a node each in the
-    // code being built that names one, made where it first does
-    // (graph_global); and their types.
-    outside:    [2]Node_Id,
-    globals:    [2]Type,
+    // The compiler's own globals — this_program, context: their types, and
+    // whether the code being built names one (graph_global).
+    globals:       [2]Type,
+    outside_named: bool,
     self:       Node_Id,         // what `Self` names in a struct's code
     main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
     // Each module's statements, in written order: where the code each
@@ -316,7 +313,7 @@ Graph_Builder :: struct {
     // (a module's constant is there under its flat name and its bare one):
     // what its table is named (graph_table_names).
     constant_names: map[string]Syntax_Id,
-    // The codes built, laid out, waiting to be put in place: each fun's and
+    // The codes built, waiting to be put in place: each fun's and
     // struct's by its scope, each constant's by its statement.
     bodies:   map[^Type_Scope]^Built_Code,
     consts:   map[Syntax_Id]^Built_Code,
@@ -325,17 +322,10 @@ Graph_Builder :: struct {
     // internal error, reported once the check is found clean).
     body:     ^Graph_Body,
     failure:  struct { name, reason: string, span: Span },
-    // Operations made before whether they are needed was known, found not
-    // to be: each is left out, and what it stood for used in its place —
-    // by node while its code is settled and laid out (repl, over repl_buf;
-    // KEPT where it is not), listed until then.
-    repl:     []Operand,
-    repl_buf: [dynamic]Operand,
-    drops:    [dynamic][2]Operand,
-    pc:       Program_Code,   // the codes, as each is laid out
+    pc:       Program_Code,   // the codes, as each is built
 }
 
-// A code laid out, waiting to be put in place; a body's definitions go after
+// A code built, waiting to be put in place; a body's definitions go after
 // it.
 @(private="file")
 Built_Code :: struct {
@@ -363,25 +353,25 @@ graph_local :: proc(b: ^Graph_Builder, tok: Token_Id) -> Node_Id {
 }
 
 // The compiler's own global a name is — `this_program`, `context` — when it
-// is one: its node in the code being built, made where the code first names
-// it (and laid out past the code's own: graph_lay_out).
+// is one: as the code being built names it, its placeholder (OUTSIDE), made
+// a node of its own past the code's once the code is built
+// (graph_place_outside).
 graph_global :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
-    k: int
     switch name {
-    case "this_program": k = 0
-    case "context":      k = 1
-    case:                return NO_NODE
+    case "this_program": b.outside_named = true; return OUTSIDE[0]
+    case "context":      b.outside_named = true; return OUTSIDE[1]
     }
-    if b.outside[k] == NO_NODE {
-        b.outside[k] = graph_node(b, .Field, .Synthetic, NO_NODE, name, b.globals[k], {})
-    }
-    return b.outside[k]
+    return NO_NODE
 }
 
-// Whether a node of the code being built is one of the compiler's globals.
+@(private="file")
+OUTSIDE :: [2]Node_Id{-3, -4}
+
+// Whether a declaration is one of the compiler's globals, as the code being
+// built names them.
 @(private="file")
 graph_is_outside :: proc(b: ^Graph_Builder, d: Node_Id) -> bool {
-    return d != NO_NODE && (d == b.outside[0] || d == b.outside[1])
+    return d == OUTSIDE[0] || d == OUTSIDE[1]
 }
 
 // The code being built's declarations, saved and emptied for another's.
@@ -451,7 +441,6 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
     b.main = checked.functions["main"] or_else nil
-    b.outside = {NO_NODE, NO_NODE}
     for name, i in ([]string{"this_program", "context"}) {
         if root := checked.table.root_env; root != nil { b.globals[i], _ = scope_defines(root, name) }
     }
@@ -514,14 +503,12 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     for _, c in b.consts { free(c) }
     delete(b.consts)
     delete(b.scope_of)
-    delete(b.repl_buf)
-    delete(b.drops)
     graph_free_columns(b.g)
     free(b.g)
     free(b)
 }
 
-// Every code lowered, each laid out as it was: put in written order, and
+// Every code lowered, each copied out as it was: put in written order, and
 // what reads across codes — the constants' values at their uses — worked out.
 build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     defer graph_builder_free(b)
@@ -562,20 +549,6 @@ Program_Code :: struct {
     arena:       ^virtual.Arena,                   // where the codes are (they last as long as the program)
 }
 
-// Leave node id out of the graph, `with` standing for it where it is used.
-graph_drop :: proc(b: ^Graph_Builder, id: Node_Id, with: Operand) {
-    if b.repl != nil {
-        b.repl[id] = with
-    } else {
-        append(&b.drops, [2]Operand{{id, 0}, with})
-    }
-}
-
-@(private="file")
-graph_dropped :: proc(b: ^Graph_Builder, id: Node_Id) -> bool {
-    return b.repl != nil && b.repl[id] != KEPT
-}
-
 // --- one code at a time ---------------------------------------------------------
 
 // A code begins: the builder's graph emptied for it. (Lowering builds one
@@ -588,13 +561,12 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     clear(&g.stmts); clear(&g.unreachable); clear(&g.settled)
     clear(&g.consts); clear(&g.assert_sides); clear(&g.defer_of)
     b.nodes = 0
-    b.outside = {NO_NODE, NO_NODE}
-    clear(&b.drops)
+    b.outside_named = false
 }
 
-// The code built: settled — its widths, and what it turned out not to need
-// left out — and laid out in the program's arena. Nil when it failed
-// (graph_body_fail): it is left out.
+// The code built: settled — its widths — with the compiler's globals it
+// names past its own nodes, and copied into the program's arena. Nil when
+// it failed (graph_body_fail): it is left out.
 @(private="file")
 graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     defer {
@@ -604,18 +576,9 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
             free(r)
         }
         clear(&b.runs)
-        b.repl = nil
     }
     if f.failed != "" { return nil }
     g := b.g
-    if b.nodes >= len(g.kind) { graph_resize(g, b.nodes + 1) }
-    g.operand_first[b.nodes] = i32(len(g.operands))
-    append(&g.run_first, i32(len(g.run_ops)))
-    // What was dropped, by node: those listed while building, then settling's.
-    resize(&b.repl_buf, b.nodes)
-    b.repl = b.repl_buf[:]
-    slice.fill(b.repl, KEPT)
-    for d in b.drops { b.repl[d[0].op] = d[1] }
     graph_body_settle(b, f)
     // (Each call named for its callee, an instance's now known.)
     for callee, op in g.callee[:b.nodes] {
@@ -624,7 +587,15 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         g.name[op] = graph_call_name(callee)
         if braces { g.name[op] = strings.concatenate({g.name[op], "{}"}) }
     }
-    c := graph_lay_out(b)
+    if b.outside_named { graph_place_outside(b) }
+    if b.nodes >= len(g.kind) { graph_resize(g, b.nodes + 1) }
+    g.operand_first[b.nodes] = i32(len(g.operands))
+    append(&g.run_first, i32(len(g.run_ops)))
+    for e in g.edges {
+        if e.to == NO_NODE { graph_fatal(g.origin[e.from], "a then from '%s' into a run that never had an operation", g.name[e.from]) }
+    }
+    when ODIN_DEBUG { graph_check_built(b) }
+    c := graph_code_copy(b)
     graph_settle_literals(c)
     graph_find_consumes(c)
     graph_index_edges(c)
@@ -632,138 +603,69 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     return c
 }
 
-// The code just built, laid out in the program's arena: its nodes in the
-// order they were built, but those left out — what a dropped operation stood
-// for used in its place — and the compiler's globals it names past its own;
-// its statements, runs and thens renumbered to match.
+// The compiler's globals the code names — this_program, context: a node
+// each, in the order it first does, past its own (the root's subtree
+// closed), each name's placeholder (OUTSIDE) made the node.
 @(private="file")
-graph_lay_out :: proc(b: ^Graph_Builder) -> ^Program_Graph {
+graph_place_outside :: proc(b: ^Graph_Builder) {
+    g := b.g
+    names := [2]string{"this_program", "context"}
+    made := [2]Node_Id{NO_NODE, NO_NODE}
+    n := b.nodes
+    for i in 0 ..< n {
+        k: int
+        switch g.refers[i] {
+        case OUTSIDE[0]: k = 0
+        case OUTSIDE[1]: k = 1
+        case:            continue
+        }
+        if made[k] == NO_NODE {
+            made[k] = graph_node(b, .Field, .Synthetic, NO_NODE, names[k], b.globals[k], {})
+            g.stmt[made[k]] = -1
+        }
+        g.refers[i] = made[k]
+    }
+}
+
+// (What the code is as built: each statement some node's, each run's
+// operations in the order they were made.)
+@(private="file")
+graph_check_built :: proc(b: ^Graph_Builder) {
+    g := b.g
+    used := make([]bool, len(g.stmts), context.temp_allocator)
+    for i in 0 ..< b.nodes {
+        if s := g.stmt[i]; s >= 0 { used[s] = true }
+    }
+    for u, s in used {
+        if !u { graph_fatal(g.stmts[s].span, "a statement nothing was built for") }
+    }
+    for r in 0 ..< len(g.run_first) - 1 {
+        if !slice.is_sorted(g.run_ops[g.run_first[r]:g.run_first[r + 1]]) { graph_fatal({}, "a run whose operations are out of order") }
+    }
+}
+
+// The code just built, copied into the program's arena: each column to its
+// nodes', each table to its own.
+@(private="file")
+graph_code_copy :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g := b.g
     n := b.nodes
     context.allocator = virtual.arena_allocator(b.pc.arena)
-    new_id := make([]Node_Id, n, context.temp_allocator)
-    count := 0
-    for i in 0 ..< n {
-        if graph_dropped(b, Node_Id(i)) || graph_is_outside(b, Node_Id(i)) {
-            new_id[i] = NO_NODE
-            continue
-        }
-        new_id[i] = Node_Id(count)
-        count += 1
-    }
-    re :: proc(new_id: []Node_Id, id: Node_Id) -> Node_Id {
-        if id == NO_NODE { return id }
-        assert(new_id[id] != NO_NODE, "a node refers to one left out")
-        return new_id[id]
-    }
-    ro :: proc(b: ^Graph_Builder, new_id: []Node_Id, o: Operand) -> Operand {
-        o := o
-        for (o.op != NO_NODE && graph_dropped(b, o.op)) { o = b.repl[o.op] }
-        return Operand{re(new_id, o.op), o.out}
-    }
-    kept :: proc(new_id: []Node_Id, id: Node_Id) -> bool { return id != NO_NODE && new_id[id] != NO_NODE }
-    // The compiler's globals it names, in the order it first does: a node
-    // each, past its own.
-    outer: [2]Node_Id
-    nouter := 0
-    if b.outside != {NO_NODE, NO_NODE} {
-        for i in 0 ..< n {
-            if new_id[i] == NO_NODE || int(new_id[i]) >= count { continue }
-            if r := g.refers[i]; graph_is_outside(b, r) && new_id[r] == NO_NODE {
-                new_id[r] = Node_Id(count + nouter)
-                outer[nouter] = r
-                nouter += 1
-            }
-        }
-    }
     c := new(Program_Graph)
-    graph_resize(c, count + nouter)
-    reserve(&c.operands, len(g.operands))
-    reserve(&c.operand_first, count + nouter + 1)
-    // Its statements: those its nodes are in, in order.
-    stmt_at := make([]i32, len(g.stmts), context.temp_allocator)
-    slice.fill(stmt_at, -1)
-    for i in 0 ..< n {
-        if s := g.stmt[i]; s >= 0 && new_id[i] != NO_NODE && int(new_id[i]) < count { stmt_at[s] = 0 }
-    }
-    reserve(&c.stmts, len(g.stmts))
-    for &at, s in stmt_at {
-        if at < 0 { continue }
-        at = i32(len(c.stmts))
-        append(&c.stmts, g.stmts[s])
-    }
-    for i in 0 ..< n {
-        at := new_id[i]
-        if at == NO_NODE || int(at) >= count { continue }   // (left out, or a global: below)
-        c.kind[at], c.op[at], c.written[at] = g.kind[i], g.op[i], g.written[i]
-        c.name[at], c.type_[at], c.origin[at] = g.name[i], g.type_[i], g.origin[i]
-        c.callee[at], c.decl_tok[at], c.constant[at] = g.callee[i], g.decl_tok[i], g.constant[i]
-        c.parent[at] = re(new_id, g.parent[i])
-        c.last[at] = at
-        c.refers[at] = re(new_id, g.refers[i])
-        s := g.stmt[i]
-        c.stmt[at] = -1 if s < 0 else stmt_at[s]
-        c.operand_first[at] = i32(len(c.operands))
-        for o in g.operands[g.operand_first[i]:g.operand_first[i + 1]] { append(&c.operands, ro(b, new_id, o)) }
-    }
-    // A subtree is one run of ids: each node's last is its last descendant's.
-    for at := count - 1; at >= 0; at -= 1 {
-        if p := c.parent[at]; p != NO_NODE && c.last[at] > c.last[p] { c.last[p] = c.last[at] }
-    }
-    for r, k in outer[:nouter] {
-        at := count + k
-        c.kind[at], c.op[at], c.written[at] = g.kind[r], g.op[r], g.written[r]
-        c.name[at], c.type_[at], c.origin[at] = g.name[r], g.type_[r], g.origin[r]
-        c.parent[at], c.last[at], c.refers[at], c.stmt[at] = NO_NODE, Node_Id(at), NO_NODE, -1
-        c.operand_first[at] = i32(len(c.operands))
-    }
-    append(&c.operand_first, i32(len(c.operands)))
-    // Its runs in the order they were closed, each without what was left
-    // out. What entered the operation that began one — left out — enters the
-    // first kept (none, when there is none).
-    next_kept := make(map[Node_Id]Node_Id, context.temp_allocator)
-    placed := make([dynamic]Node_Id, context.temp_allocator)
-    reserve(&c.run_ops, len(g.run_ops))
-    reserve(&c.run_first, len(g.run_first))
-    for r in 0 ..< len(g.run_first) - 1 {
-        ops := g.run_ops[g.run_first[r]:g.run_first[r + 1]]
-        clear(&placed)
-        for op in ops {
-            if !graph_dropped(b, op) { append(&placed, op) }
-        }
-        if !slice.is_sorted(placed[:]) { slice.sort(placed[:]) }
-        first := placed[0] if len(placed) > 0 else NO_NODE
-        for op in ops {   // (its leading dropped ones, and the first kept)
-            if op != first { next_kept[op] = first }
-            if !graph_dropped(b, op) { break }
-        }
-        if len(placed) == 0 { continue }
-        append(&c.run_first, i32(len(c.run_ops)))
-        for op in placed { append(&c.run_ops, new_id[op]) }
-    }
-    append(&c.run_first, i32(len(c.run_ops)))
-    // (A `then` into a run that never got an operation leads nowhere.)
-    reserve(&c.edges, len(g.edges))
-    for e in g.edges {
-        if !kept(new_id, e.from) { continue }
-        to, written := e.to, e.written
-        if to != NO_NODE && (graph_dropped(b, to) || to in next_kept) {
-            to = next_kept[to] or_else NO_NODE
-            if to != NO_NODE { written = g.written[to] }
-        }
-        if to == NO_NODE { continue }
-        append(&c.edges, Edge{from = new_id[e.from], to = new_id[to], written = written})
-    }
-    // What only some nodes have.
-    for id in g.settled {
-        if kept(new_id, id) { append(&c.settled, new_id[id]) }
-    }
+    c.kind, c.op, c.written = slice.clone_to_dynamic(g.kind[:n]), slice.clone_to_dynamic(g.op[:n]), slice.clone_to_dynamic(g.written[:n])
+    c.parent, c.last = slice.clone_to_dynamic(g.parent[:n]), slice.clone_to_dynamic(g.last[:n])
+    c.name, c.type_, c.origin = slice.clone_to_dynamic(g.name[:n]), slice.clone_to_dynamic(g.type_[:n]), slice.clone_to_dynamic(g.origin[:n])
+    c.refers, c.callee, c.stmt = slice.clone_to_dynamic(g.refers[:n]), slice.clone_to_dynamic(g.callee[:n]), slice.clone_to_dynamic(g.stmt[:n])
+    c.decl_tok, c.constant = slice.clone_to_dynamic(g.decl_tok[:n]), slice.clone_to_dynamic(g.constant[:n])
+    c.operands, c.operand_first = slice.clone_to_dynamic(g.operands[:]), slice.clone_to_dynamic(g.operand_first[:n + 1])
+    c.run_ops, c.run_first = slice.clone_to_dynamic(g.run_ops[:]), slice.clone_to_dynamic(g.run_first[:])
+    c.edges, c.stmts = slice.clone_to_dynamic(g.edges[:]), slice.clone_to_dynamic(g.stmts[:])
+    c.unreachable, c.settled = slice.clone_to_dynamic(g.unreachable[:]), slice.clone_to_dynamic(g.settled[:])
     slice.sort(c.settled[:])
     if len(g.consts) > 0 { reserve(&c.consts, len(g.consts)) }
-    for id, v in g.consts { if kept(new_id, id) { c.consts[new_id[id]] = v } }
-    for id, s in g.assert_sides { if kept(new_id, id) { c.assert_sides[new_id[id]] = s } }
-    for op, d in g.defer_of { if kept(new_id, op) { c.defer_of[new_id[op]] = new_id[d] } }
-    append(&c.unreachable, ..g.unreachable[:])
+    for id, v in g.consts { c.consts[id] = v }
+    for id, s in g.assert_sides { c.assert_sides[id] = s }
+    for op, d in g.defer_of { c.defer_of[op] = d }
     return c
 }
 
@@ -1914,7 +1816,7 @@ graph_scope_name :: proc(ts: ^Type_Scope, name: string, written: Written) -> str
 // --- bodies -------------------------------------------------------------------
 
 // A fun's or struct's body, lowered (lower.odin): its scope's node and
-// contents, a code of its own, settled and laid out once it is built, and put
+// contents, a code of its own, settled and copied out once it is built, and put
 // in place once every code is (graph_place_codes).
 //
 // Where lowering can't build something, the body fails: it is left out, and
@@ -2003,7 +1905,7 @@ graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     }
 }
 
-// The body is built: finished, settled and laid out, to be put in place —
+// The body is built: finished, settled and copied out, to be put in place —
 // or, if it failed, left out.
 graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     graph_contents_end(b, f.contents, finish = f.failed == "")
@@ -2589,12 +2491,6 @@ graph_build_if_expr_end :: proc(b: ^Graph_Builder, gi: ^Graph_If_Expr) {
     b.code.run = gi.join
 }
 
-// The kind of the statement being built, once its check says (a
-// destructure found a broadcast is its copies').
-graph_build_stmt_kind :: proc(b: ^Graph_Builder, kind: Stmt_Kind) {
-    b.g.stmts[b.stmt].kind = kind
-}
-
 // A broadcast literal built into d: its value at the element
 // type, then the fill.
 graph_build_fill :: proc(b: ^Graph_Builder, span: Span, t: Type, d: Dest, val: Operand) {
@@ -3067,11 +2963,25 @@ graph_build_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, kind: Stm
     b.stmt = i32(len(b.g.stmts))
     append(&b.g.stmts, Graph_Stmt{span = span, kind = kind})
     f.stmts[id] = b.stmt
+    b.stmt_id, b.stmt_from = id, b.nodes   // (graph_build_stmt_none)
     return
 }
 
 graph_build_stmt_end :: proc(b: ^Graph_Builder, saved: i32) {
     b.stmt = saved
+}
+
+// The statement being lowered builds nothing of its own (`this_program = …`
+// in main; a broadcast, whose copies are statements of their own): the
+// entry just made for it taken back.
+graph_build_stmt_none :: proc(b: ^Graph_Builder) {
+    g := b.g
+    if b.stmt < 0 || int(b.stmt) != len(g.stmts) - 1 || b.stmt_from != b.nodes {
+        graph_fatal(g.origin[b.body.root], "a statement taken back with something built for it")
+    }
+    pop(&g.stmts)
+    delete_key(&b.body.stmts, b.stmt_id)
+    b.stmt = -1
 }
 
 // A statement of the body's code, before it is checked — code, not a
@@ -3110,7 +3020,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
     return f
 }
 
-// Its value built, of type t: its code ends, settled and laid out, to be put
+// Its value built, of type t: its code ends, settled and copied out, to be put
 // where it is written. One not built is left out (graph_body_fail).
 graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     d := f.const_decl
