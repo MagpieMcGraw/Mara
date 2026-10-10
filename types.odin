@@ -422,6 +422,12 @@ union_niche_variant :: proc(c: ^Checker, ut: ^Type_Union) -> string {
     return some if has_empty else ""
 }
 
+// A niche union's fieldless variant: the one its null pointer holds.
+union_niche_none :: proc(ut: ^Type_Union) -> string {
+    for vname in ut.variants { if vname != ut.niche_some { return vname } }
+    return ""
+}
+
 // Once a union's variant structs have their user fields resolved, fold the tag
 // (+pad) into each as LEADING fields so the variant IS the union value and
 // rides struct codegen: `__tag` at index 0 (typed as the union's tag enum),
@@ -1247,8 +1253,7 @@ byte_slice_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
     case ^Type_Scope:
         sd := as_struct_body(v)
         if sd == nil { return "" }
-        for &f in sd.fields {
-            if f.name == "__tag" || f.name == "__pad" { continue }
+        for &f in sd.fields[first_user_field(sd):] {
             if r := byte_slice_reason(c, f.type_, path == "" ? f.name : fmt.tprintf("%s.%s", path, f.name)); r != "" { return r }
         }
     }

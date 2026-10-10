@@ -505,24 +505,6 @@ union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
     return "i64"
 }
 
-// Niche-laid-out unions (see union_niche_variant — the checker decides) are
-// stored as their Some variant's pointer alone: null for None, the live pointer
-// for Some. The layout differs; everything else (matching, `.tag`) reads the
-// tag through load_union_tag like any other union.
-is_niche_layout :: proc(g: ^Codegen, ut: ^Type_Union) -> bool {
-    return ut.niche_some != ""
-}
-
-// For a niche-laid-out union, the variant carrying the pointer (Some) and the
-// fieldless one (None).
-niche_variants :: proc(g: ^Codegen, ut: ^Type_Union) -> (some_name: string, none_name: string) {
-    some_name = ut.niche_some
-    for vname in ut.variants {
-        if vname != some_name { none_name = vname }
-    }
-    return
-}
-
 // Convert a Mara tag_type string (e.g. "u32", "i16") to LLVM IR integer type.
 tag_type_to_ir :: proc(tag: string) -> string {
     switch tag {
@@ -1056,24 +1038,15 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 
     // Niche layout: single pointer slot, no tag. Identifies None via null
     // and Some via a live pointer at the same offset.
-    if is_niche_layout(g, ut) {
+    if ut.niche_some != "" {
         type_decl := strings.concatenate({llvm_name, " = type { ptr }"})
         append(&g.struct_decls, type_decl)
         return
     }
-
-    tag_ir := union_tag_ir_type(ut)
-    pad_bytes := union_tag_pad_bytes(ut)
-    tag_area_bytes := tag_bytes(ut.tag_type) + pad_bytes
-
-    payload_str := fmt.tprintf("[%d x i8]", union_payload_bytes(ut))
-    tag_field: string
-    if pad_bytes > 0 {
-        tag_field = fmt.tprintf("[%d x i8]", tag_area_bytes)
-    } else {
-        tag_field = tag_ir
-    }
-    type_decl := strings.concatenate({llvm_name, " = type { ", tag_field, ", ", payload_str, " }"})
+    // Its tag (with a pad: the bytes they take), then the rest of its size.
+    header := union_header_bytes(ut)
+    tag_field := union_tag_ir_type(ut) if ut.tag_pad == nil else fmt.tprintf("[%d x i8]", header)
+    type_decl := strings.concatenate({llvm_name, " = type { ", tag_field, ", ", fmt.tprintf("[%d x i8]", type_size(ut) - header), " }"})
     append(&g.struct_decls, type_decl)
 }
 
@@ -1086,8 +1059,8 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // its tag is whichever variant the pointer's nullness says it holds.
 load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: string) -> string {
     tag_ir := union_tag_ir_type(ut)
-    if is_niche_layout(g, ut) {
-        some, none := niche_variants(g, ut)
+    if some := ut.niche_some; some != "" {
+        none := union_niche_none(ut)
         ptr := fresh_tmp(g)
         emit_load_into(g, ptr, "ptr", union_ptr)
         live := fresh_tmp(g)

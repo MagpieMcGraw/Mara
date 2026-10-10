@@ -262,7 +262,7 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> string {
 @(private="file")
 const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: string, init: string) {
     g := cx.g
-    if v.variant == nil || is_niche_layout(g, ut) { const_fail(cx) }
+    if v.variant == nil || ut.niche_some != "" { const_fail(cx) }
     vsd := as_struct_body(distinct_base(v.variant))
     if vsd == nil { const_fail(cx) }
     vname := struct_llvm_name(vsd.name)

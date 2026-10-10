@@ -1639,10 +1639,9 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // are the writes that follow.)
         if len(ops) != 1 || llvm_direct(e, dest) { return false }
         at := e.value[dest]
-        if is_niche_layout(g, ut) {
+        if some := ut.niche_some; some != "" {
             // A niche union is its Some variant's pointer: None is null, Some
             // the pointer its literal writes next (none written: null).
-            some, _ := niche_variants(g, ut)
             if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
             return llvm_variant_ctor(e, op, at)
         }

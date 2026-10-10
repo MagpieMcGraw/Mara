@@ -3012,7 +3012,7 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
     if st := graph_variant_struct(b, t, name); st != nil {
         gl.sd = as_scope_body(st)
         gl.parent = Dest{kind = .Variant, name = name, type_ = st, parent = &gl.d}
-        for f in gl.sd.fields { if strings.has_prefix(f.name, "__") { gl.skip += 1 } }
+        gl.skip = first_user_field(gl.sd)
     }
     return gl
 }

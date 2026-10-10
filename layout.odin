@@ -115,29 +115,20 @@ slice_header_layout :: proc() -> Layout {
     return layout_close(slice_header_fields())
 }
 
-// A union: its tag (and declared pad), then room for its largest variant —
-// `{ tag, [N x i8] }`, or with a pad `{ [tag+pad x i8], [N x i8] }`, aligned
-// to a byte. A niche union is its Some variant's pointer.
+// A union: as big as its largest variant — each variant's struct begins with
+// the tag (and the pad), so that is the union laid out holding it — at least
+// its declared size; aligned as its tag is, or to a byte with a pad (how a
+// union mirrors a C layout). A niche union is its Some variant's pointer.
 union_layout :: proc(ut: ^Type_Union) -> Layout {
     if ut.niche_some != "" { return {word_bytes(), word_bytes()} }
-    tag := tag_bytes(ut.tag_type)
-    area := tag + union_tag_pad_bytes(ut)
-    payload := union_payload_bytes(ut)
-    if area > tag { return {area + payload, 1} }
-    return layout_close({tag + payload, tag})
+    size := ut.min_size
+    for _, st in ut.variant_structs { size = max(size, type_size(st)) }
+    return layout_close({size, 1 if ut.tag_pad != nil else tag_bytes(ut.tag_type)})
 }
 
-// A (tagged) union's payload: its largest variant past the tag and pad each
-// variant's struct begins with, at least its declared size's.
-union_payload_bytes :: proc(ut: ^Type_Union) -> int {
-    area := tag_bytes(ut.tag_type) + union_tag_pad_bytes(ut)
-    n := 0
-    for _, st in ut.variant_structs { n = max(n, type_size(st) - area) }
-    if ut.min_size > 0 { n = max(n, ut.min_size - area) }
+// The bytes a tagged union's variants begin with: its tag, then its pad.
+union_header_bytes :: proc(ut: ^Type_Union) -> int {
+    n := tag_bytes(ut.tag_type)
+    if ut.tag_pad != nil { n += type_size(ut.tag_pad) }
     return n
-}
-
-union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
-    if ut.tag_pad == nil { return 0 }
-    return type_size(ut.tag_pad)
 }
