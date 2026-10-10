@@ -396,8 +396,8 @@ fold_store :: proc(dst, src: ^Fold) {
 }
 
 // A struct constructed where it goes: zero, then its code — its fields'
-// defaults. A union's variant: zero, of that variant. (Construction with
-// arguments is a call: it runs.)
+// defaults. A union's variant: zero, of that variant, then its code, when it
+// has a body. (Construction with arguments is a call: it runs.)
 @(private="file")
 fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand) -> bool {
     g := fc.g
@@ -406,13 +406,13 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
     if dst == nil || len(ops) != 1 { return fold_fail(fo) != nil }
     fold_zero(dst)
     ts := graph_called(g, id)
-    if ts == nil {
-        u, is_union := distinct_base(graph_type(g, id)).(^Type_Union)
-        if !is_union { return fold_fail(fo) != nil }
+    if u, is_union := distinct_base(graph_type(g, id)).(^Type_Union); is_union {
         st := u.variant_structs[graph_name(g, id)]
         if st == nil { return fold_fail(fo) != nil }
         dst.variant = st
-        return true
+        if ts == nil { return true }
+    } else if ts == nil {
+        return fold_fail(fo) != nil
     }
     sc := fo.pc.funs[ts] or_else nil
     if sc == nil { return fold_fail(fo) != nil }

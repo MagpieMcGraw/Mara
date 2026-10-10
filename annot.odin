@@ -269,8 +269,10 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                                 r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(g.origin[d]), span_col(g.origin[d]))
                         }
                     } else {
+                        // (A call: written, an operator's, a literal's; a union's variant
+                        // named as a value, its constructor.)
                         #partial switch t.tag[n] {
-                        case .Call, .Method_Call, .Binary, .Unary, .Literal:
+                        case .Call, .Method_Call, .Binary, .Unary, .Literal, .Ident, .Field, .Dot_Ident:
                         case: continue
                         }
                         compared = true

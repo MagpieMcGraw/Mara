@@ -204,6 +204,13 @@ ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
 
 // --- node interning --------------------------------------------------------
 
+// Whether a type is a union's variant's struct: part of its union, not a
+// type of its module's own.
+ask_is_variant :: proc(t: Type) -> bool {
+    st, is_scope := t.(^Type_Scope)
+    return is_scope && st.is_union_variant
+}
+
 // A marker for compiler-GENERATED types, "" for ordinary user declarations.
 // Only the truly synthetic case (a union's `_Tag` discriminant enum) is flagged;
 // variant structs are source-backed (a `Name = tag {…}` line) and stay unmarked.
@@ -1331,6 +1338,7 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
     for m in ask_all_definitions(checked.table, "", checked.functions) {
         hp := ask_home_package(m.type_)
         if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
+        if ask_is_variant(m.type_) { continue }   // (a union's variant: its union's)
         if !ask_module_name_matches(hp, target) { continue }
         canonical = hp
         if m.sub == "fun" { append(&funs, m) }
@@ -1442,6 +1450,7 @@ ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic
     by_home: map[string]Counts
     for m in ask_all_definitions(checked.table, "", checked.functions) {
         if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
+        if ask_is_variant(m.type_) { continue }   // (a union's variant: its union's)
         hp := ask_home_package(m.type_)
         if hp == "" { continue }
         c := by_home[hp]

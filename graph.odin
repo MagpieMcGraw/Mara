@@ -2980,7 +2980,6 @@ Graph_Literal :: struct {
     d, parent: Dest,
     sd:        ^Scope_Body,
     skip:      int,
-    variant:   ^Type_Scope,   // a variant's struct: its field defaults (the checker's, into parent)
 }
 
 // A literal's construction at d: a struct's constructor run on `args` (its
@@ -2998,20 +2997,21 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
         op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops[:])
         b.g.name[op] = graph_intern(b, strings.concatenate({graph_name(b.g, op), "{}"}))   // as written: braces, no call
     } else if graph_aggregate(t) {
-        _, is_union := distinct_base(t).(^Type_Union)
-        graph_op(b, .Construct if is_union else .Zero, .Explicit, span, t, name, graph_dest_place(b, d, span))
+        if _, is_union := distinct_base(t).(^Type_Union); is_union {
+            graph_build_variant(b, t, name, d, span)
+        } else {
+            graph_op(b, .Zero, .Explicit, span, t, name, graph_dest_place(b, d, span))
+        }
     } else {
         return nil
     }
     gl := new(Graph_Literal, context.temp_allocator)
     gl.d, gl.parent = d, d
     gl.sd = as_scope_body(distinct_base(t))
-    if is_scope && ts.is_union_variant { gl.variant = ts }
     // A union's variant: its fields are the variant struct's, past the tag.
     if st := graph_variant_struct(b, t, name); st != nil {
         gl.sd = as_scope_body(st)
         gl.parent = Dest{kind = .Variant, name = name, type_ = st, parent = &gl.d}
-        gl.variant = st
         for f in gl.sd.fields { if strings.has_prefix(f.name, "__") { gl.skip += 1 } }
     }
     return gl
@@ -3071,19 +3071,13 @@ graph_build_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, firs
     return Dest{kind = .Index, index = i, type_ = ga.elem_t, parent = &ga.d}
 }
 
-// A variant built at d (a bare variant): its construction, then
-// its field defaults.
+// A variant built at d: the union zeroed, its tag written, then — its
+// struct's body the constructor — its fields' defaults.
 graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) -> ^Type_Scope {
-    graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
-    return graph_variant_struct(b, t, name)
-}
-
-// A field default a construction writes (a variant
-// has no constructor to run them), into the struct at d.
-graph_build_field_default :: proc(b: ^Graph_Builder, d: Dest, name: string, t: Type, v: Operand, span: Span) {
-    vd := d
-    fd := Dest{kind = .Field, name = name, type_ = t, parent = &vd}
-    graph_op(b, .Write, .Implied, span, nil, "", graph_dest_place(b, fd, span), v)
+    op := graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
+    st := graph_variant_struct(b, t, name)
+    if st != nil && st.node != 0 { b.g.callee[op] = st }   // (its body: its constructor)
+    return st
 }
 
 // An aggregate built where no destination was given: a synthetic local,

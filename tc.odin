@@ -54,6 +54,7 @@ TC :: struct {
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
+    variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     union_templates: map[string]TC_Template,   // each generic union, by name
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
@@ -263,6 +264,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     // (Generic structs' instances: their methods, their inits — before the
     // main module's.)
     for i in k.struct_instances { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
+    for i in k.variant_scopes { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
     tc_extract(k, main, main_package, is_main = true)
     // (Each generic fun's instances, for codegen: in the functions, in no order.)
     for mangled in k.instance_order {
@@ -710,11 +712,31 @@ tc_module_graph_decls :: proc(k: ^TC) -> map[string][]Graph_Decl {
     for name, files in k.modules {
         decls: [dynamic]Graph_Decl
         for f in files {
-            for s in tc_live(k, tree_list(k.t, k.t.a[f])) { append(&decls, tc_graph_decl(k, s)) }
+            for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
+                append(&decls, tc_graph_decl(k, s))
+                tc_variant_graph_decls(k, s, &decls)
+            }
         }
         out[name] = decls[:]
     }
     return out
+}
+
+// A union's variants with bodies, after its statement: each a struct's
+// constructor (a generic union's, each instance's), placed as a struct's is.
+tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) {
+    t := k.t
+    if t.tag[s] != .Define || t.a[s] != 0 { return }
+    node := Tree_Id(t.b[s])
+    if node == 0 || t.tag[node] != .Union_Def { return }
+    kind := tc_stmt_kind(k, s)
+    generic := tc_union_is_generic(k, node)
+    for vn in tree_list(t, t.b[node]) {
+        if v := tc_variant(k, vn, 0); v.fields {
+            name := strings.concatenate({tc_name(k, s), "_", v.name}, context.temp_allocator)
+            append(decls, Graph_Decl{id = tc_sid(k, vn), span = tree_span(t, vn), kind = kind, form = .Scope, name = name, generic = generic})
+        }
+    }
 }
 
 // What a statement outside any body declares, as the builder builds it.

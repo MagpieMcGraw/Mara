@@ -77,8 +77,8 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: strin
     return {v = p, place = true, ok = true}
 }
 
-// A variant by itself (tc_variant_of): a union's, constructed; an enum's,
-// its value.
+// A variant by itself (`.Circle`, `Shape.Circle`): a union's, constructed;
+// an enum's, its value.
 lw_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span, want: Build_Want, w: Written,
                       dest: Dest, temp: bool, temp_span: Span) -> Built {
     if ut, is_union := t.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
@@ -91,8 +91,8 @@ lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Sp
     return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
 }
 
-// A union's variant as a value (tc_variant_of): constructed where it goes
-// — else in a temporary — then its fields' defaults.
+// A union's variant as a value: constructed where it goes — else in a
+// temporary — its constructor running its fields' defaults.
 lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Built {
     b := k.gb
@@ -100,29 +100,12 @@ lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want
     if want == .Into {
         d := dest
         if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }
-        lw_variant_build(k, ut, name, d, span)
+        graph_build_variant(b, ut, name, d, span)
         return lw_built(k, want, temp, temp, d, ut, temp_span, false)
     }
     d := graph_build_temp(b, span, ut)
-    lw_variant_build(k, ut, name, d, span)
+    graph_build_variant(b, ut, name, d, span)
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
-}
-
-// A variant built at d: its construction, then its defaults.
-lw_variant_build :: proc(k: ^TC, t: Type, name: string, d: Dest, span: Span) {
-    st := graph_build_variant(k.gb, t, name, d, span)
-    dd := d
-    lw_variant_defaults(k, st, nil, Dest{kind = .Variant, name = name, type_ = st, parent = &dd}, span)
-}
-
-// A variant's field defaults a literal doesn't give (tc_variant_defaults).
-lw_variant_defaults :: proc(k: ^TC, st: ^Type_Scope, given: map[string]bool, d: Dest, span: Span) {
-    if st == nil { return }
-    for f in st.fields {
-        if f.default_node == 0 || f.name in given { continue }
-        v := lw_default(k, f.default_node, f.type_, span, {to = f.type_})
-        graph_build_field_default(k.gb, d, f.name, f.type_, v, span)
-    }
 }
 
 // `#self` (tc_self): the place a constructor builds, or its address.
@@ -179,12 +162,10 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         gl = graph_build_literal(b, span, name, zero, t, d)
     } else if vst != nil {
         gl = graph_build_literal(b, span, name, zero, t, d)
-        if gl != nil { lw_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
     } else {
         args: []Operand
         if !zero { args = lw_ctor_args(k, ts, span) }
         gl = graph_build_literal(b, span, name, zero, t, d, args)
-        if gl != nil && gl.variant != nil { lw_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
     }
     if gl == nil && !broadcast { lw_fail(k, n, "a literal the graph builds no way") }
     if fd != nil {

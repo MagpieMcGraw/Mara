@@ -155,6 +155,7 @@ PARSE_DEFAULT_VALUE_COUNT_MISMATCH :: "%d default values for %d names (expected 
 PARSE_UNION_TAG_NEEDS_TYPE        :: "expected type after `tag` in union header, got `%s`"
 PARSE_UNION_SIZE_NEEDS_NUM        :: "expected number after `size` in union header, got `%s`"
 PARSE_UNION_HEADER_UNKNOWN        :: "union header takes `$T: type`, `tag <type>`, `pad <type>`, `size <N>`; got `%s`"
+PARSE_VARIANT_INTRINSIC_BODY      :: "a union variant's body is its fields, not an intrinsic"
 PARSE_OVERLOAD_EXPECTED_OP        :: "expected operator after 'overload', got '%s'"
 PARSE_FOREIGN_NEEDS_STATIC_LIB    :: "foreign block needs `static_lib`, got `%s`"
 PARSE_NESTED_IF_EXPR              :: "nested if-expressions are not allowed"

@@ -1614,6 +1614,17 @@ llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string
     return args, true
 }
 
+// A variant's constructor run at `at`, when it has one (a body: its fields'
+// defaults); a variant's body with no constructor built is an error.
+@(private="file")
+llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: string) -> bool {
+    callee := graph_called(e.pg, op)
+    if callee == nil || callee.node == 0 { return true }
+    if _, built := e.g.checked.functions[callee.name]; !built { e.note = "a variant's constructor"; return false }
+    emit_raw(e.g, strings.concatenate({"  call void ", mara_fn_name(e.g, callee.name), "(ptr ", at, ")"}))
+    return true
+}
+
 // A struct built in place: its storage zeroed, then its constructor run on it
 // with the arguments, the place last. An array's elements, zeroed already,
 // each run theirs.
@@ -1633,7 +1644,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             // the pointer its literal writes next (none written: null).
             some, _ := niche_variants(g, ut)
             if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
-            return true
+            return llvm_variant_ctor(e, op, at)
         }
         st := ut.variant_structs[graph_name(pg, op)]
         if st == nil { return false }
@@ -1642,7 +1653,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
         emit_store(g, union_tag_ir_type(ut), fmt.tprintf("%d", ut.tag_map[graph_name(pg, op)]), tag)
         stamp_zero_partial_arrays(g, at, st)   // (a partial array's zero isn't all zeros: no constructor stamps a variant's)
-        return true
+        return llvm_variant_ctor(e, op, at)
     }
     // An array's elements: each constructed on the same arguments.
     if fa := llvm_array(graph_type(pg, dest)); fa != nil && llvm_same_type(fa.elem, t) {
@@ -1664,7 +1675,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if !llvm_same_type(graph_type(pg, dest), t) { return false }   // an array's elements (later)
     if callee.is_union_variant {
         // A union's variant as a struct of its own: zeroed, its tag in field
-        // 0, its partial arrays' headers (its defaults are the writes after).
+        // 0, its partial arrays' headers, then its constructor.
         if len(ops) != 1 { return false }
         at := e.value[dest]
         emit_memset_zero(g, at, type_size(t))
@@ -1672,7 +1683,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
         emit_store(g, field_ir_type(&callee.fields[0]), fmt.tprintf("%d", callee.union_variant_tag), tag)
         stamp_zero_partial_arrays(g, at, callee)
-        return true
+        return llvm_variant_ctor(e, op, at)
     }
     if _, has_init := g.checked.functions[callee.name]; !has_init && len(ops) == 1 {
         // Nothing to run — no defaults, no partial arrays (a generic instance

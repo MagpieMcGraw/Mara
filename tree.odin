@@ -76,8 +76,7 @@ Tree_Tag :: enum u8 {
     Union_Tag,      // `tag u32`: main: `tag`; a: the type keyword
     Union_Pad,      // `pad T`: main: `pad`; a: the type
     Union_Size,     // `size N`: main: `size`; a: the number
-    Variant,        // main: the name; a: its tag's value; b: list — its fields
-    Field_Def,      // `name: T = v` in a variant: main: the name; a: the type; b: the default
+    Variant,        // main: the name; a: its tag's value; b: its body, a Struct_Def (0: none)
     Error_Def,      // main: `error`; a: tokens — the variants
     Dispatch_Def,   // main: `dispatch`; a: tokens — the functions
     Distinct_Def,   // main: `distinct`; a: the type
@@ -186,8 +185,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Union_Tag      = {a = .Token},
     .Union_Pad      = {a = .Node},
     .Union_Size     = {a = .Token},
-    .Variant        = {a = .Node, b = .List},
-    .Field_Def      = {a = .Node, b = .Node},
+    .Variant        = {a = .Node, b = .Node},
     .Error_Def      = {a = .Tokens},
     .Dispatch_Def   = {a = .Tokens},
     .Distinct_Def   = {a = .Node},

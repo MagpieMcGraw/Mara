@@ -1236,27 +1236,15 @@ tp_union_def :: proc(p: ^Tree_Parser) -> Tree_Id {
                 tag = tp_leaf(p, .Number, tp_expect(p, .Number))
             }
         }
-        fields := tp_items()
+        // (Its body a struct's: its declarations its fields, run when it
+        // is built.)
+        body: Tree_Id
         if tp_kind(p) == .Left_Brace {
-            tp_advance(p)
-            tp_skip_newlines(p)
-            for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
-                f_start := p.pos
-                f_name := tp_expect(p, .Identifier)
-                tp_expect(p, .Colon)
-                f_type := tp_type(p)
-                default: Tree_Id
-                if tp_kind(p) == .Equals {
-                    tp_advance(p)
-                    default = tp_expr(p)
-                }
-                append(&fields, tp_node(p, .Field_Def, f_name, f_start, u32(f_type), u32(default)))
-                if tp_kind(p) == .Comma { tp_advance(p) }
-                tp_skip_newlines(p)
-            }
-            tp_expect(p, .Right_Brace)
+            stmts, intrinsic := tp_scope_body(p, true)
+            if intrinsic != 0 { tp_error(p, Token_Id(p.t.main[intrinsic]), PARSE_VARIANT_INTRINSIC_BODY) }
+            body = tp_node(p, .Struct_Def, name, v_start, tree_rec_add(p.t, 0, 0, 0, stmts, 0), 0)
         }
-        append(&variants, tp_node(p, .Variant, name, v_start, u32(tag), tp_list(p, fields)))
+        append(&variants, tp_node(p, .Variant, name, v_start, u32(tag), u32(body)))
         if tp_kind(p) == .Comma { tp_advance(p) }
         tp_skip_newlines(p)
     }

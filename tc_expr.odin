@@ -90,7 +90,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
         if et == nil { return Type_Error{} }
         tc_set_ref(k, n, {variant_decl(et, name), .Variant})
-        tc_variant_of(k, et, name, span)
+        tc_variant_built(k, n, et, name)
         return et
     case .Field:
         return tc_field(k, n, env)
@@ -178,7 +178,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         if et, _, found := tc_variant_ident(k, name, hint, env, false, span); found {
             if et == nil { return Type_Error{} }
             tc_set_ref(k, n, {variant_decl(et, name), .Variant})
-            tc_variant_of(k, et, name, span)
+            tc_variant_built(k, n, et, name)
             return et
         }
     }

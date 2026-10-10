@@ -47,9 +47,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
                 if _, i, lit := tc_literal_value(k, v); lit { tag = int(i) }
             }
             next = tag + 1
-            main := t.main[vn]
-            append(&variants, TC_Variant{name = tc_name(k, vn), tag = tag, node = vn, fields = len(tree_list(t, t.b[vn])) > 0,
-                                         span = Span{at = main, tok = main, end = main + 1}})
+            append(&variants, tc_variant(k, vn, tag))
         }
     }
     has_data := false
@@ -96,14 +94,9 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     register_enum_variants(k.c, tag_et, tag_et.name)
     ut.tag_enum = tag_et
     for v in variants {
-        vst := new(Type_Scope)
-        vst.name = make_flat_name(k.pkg, strings.concatenate({name, "_", v.name}))
-        vst.home_package, vst.kind, vst.body_span = k.pkg, .Struct, v.span
-        vst.decl = v.span.at
-        k.table.structs[vst.name] = vst
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
-        ut.variant_structs[v.name] = vst
+        ut.variant_structs[v.name] = tc_variant_struct(k, k.pkg, name, v, env)
     }
     k.table.unions[flat] = ut
     scope_bind(mod, name, ut, {k.t.main[def], .Type})
@@ -113,12 +106,50 @@ TC_Variant :: struct {
     name:   string,
     tag:    int,
     node:   Tree_Id,
-    fields: bool,
+    body:   Tree_Id,   // its Struct_Def (0: none)
+    fields: bool,      // (its body declares something)
     span:   Span,
 }
 
+// A union's variant as written, its tag given.
+tc_variant :: proc(k: ^TC, vn: Tree_Id, tag: int) -> TC_Variant {
+    t := k.t
+    main := t.main[vn]
+    body := Tree_Id(t.b[vn])
+    return {name = tc_name(k, vn), tag = tag, node = vn, body = body, fields = body != 0 && len(scope_view(t, body).body) > 0,
+            span = Span{at = main, tok = main, end = main + 1}}
+}
+
+// A variant's struct, named for its union (`Shape_Rect`). Its body is a
+// struct's: registered as one, its declarations its fields (checked once
+// every name is known: tc_union_ready), run as its constructor when it is
+// built. (`subst`: a generic union's instance's bindings.)
+tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, env: ^Type_Scope, subst: map[string]Type = nil) -> ^Type_Scope {
+    vst := new(Type_Scope)
+    vst.source_name = strings.concatenate({union_name, "_", v.name})
+    vst.name = make_flat_name(pkg, vst.source_name)
+    vst.home_package, vst.kind, vst.body_span = pkg, .Struct, v.span
+    vst.decl = v.span.at
+    k.table.structs[vst.name] = vst
+    if v.fields {
+        vst.node, vst.parent_scope = v.body, env
+        k.scope_of[vst] = len(k.scopes)
+        append(&k.variant_scopes, len(k.scopes))
+        append(&k.scopes, new_clone(TC_Scope{ts = vst, def = v.node, node = v.body, env = env, subst = subst, synthetic = subst != nil}))
+        tc_signature(k, k.scopes[len(k.scopes) - 1])
+    }
+    return vst
+}
+
+// A union's variants' bodies checked (their fields), then each one's tag
+// put first: its layout known.
+tc_union_ready :: proc(k: ^TC, ut: ^Type_Union) {
+    for vname in ut.variants { tc_struct_ensure(k, ut.variant_structs[vname]) }
+    finalize_union_variant_headers(k.c, ut)
+}
+
 // A union's pad and its variants' fields, once every name is known; each
-// variant's tag its first field.
+// variant's tag its first field (tc_union_ready).
 tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
     t := k.t
     ut, ok := k.table.unions[make_flat_name(k.pkg, tc_name(k, def))]
@@ -127,16 +158,7 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
     for opt in tree_list(t, t.a[node]) {
         if t.tag[opt] == .Union_Pad { ut.tag_pad = tc_type(k, Tree_Id(t.a[opt]), env, span) }
     }
-    for vn in tree_list(t, t.b[node]) {
-        vst := ut.variant_structs[tc_name(k, vn)]
-        if vst == nil { continue }
-        for f in tree_list(t, t.b[vn]) {
-            ft := tc_type(k, Tree_Id(t.a[f]), env, span)
-            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), decl = t.main[f], type_ = ft, default_node = Tree_Id(t.b[f])})
-        }
-        build_field_map(&vst.sd)
-    }
-    finalize_union_variant_headers(k.c, ut)
+    tc_union_ready(k, ut)
 }
 
 // A variant named by itself (`.Red`, or `Red` where an enum is expected):
@@ -181,20 +203,14 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
     return nil, 0, false
 }
 
-// A variant as a value (`.Circle`, `Shape.Circle`, `Circle` where a Shape is
-// expected): an enum's its tag; a union's constructed — its fields'
-// defaults checked.
-tc_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span) {
-    if ut, is_union := t.(^Type_Union); is_union { tc_variant_defaults(k, ut.variant_structs[name], nil, span) }
-}
-
-// A variant's field defaults, each one a literal doesn't give (`given`), at
-// its field's type.
-tc_variant_defaults :: proc(k: ^TC, st: ^Type_Scope, given: map[string]bool, span: Span) {
-    if st == nil { return }
-    for f in st.fields {
-        if f.default_node == 0 || f.name in given { continue }
-        tc_default(k, f.default_node, f.type_, st)
+// A variant built at n — its literal, its name as a value: its constructor
+// called there, when it has a body (the graph's Calls edge).
+tc_variant_built :: proc(k: ^TC, n: Tree_Id, t: Type, name: string) {
+    ut, is_union := distinct_base(t).(^Type_Union)
+    if !is_union { return }
+    if st := ut.variant_structs[name]; st != nil && st.node != 0 {
+        tc_set_callee(k, n, st)
+        tc_set_args(k, n, {})
     }
 }
 
@@ -204,20 +220,6 @@ tc_variant_union :: proc(k: ^TC, name: string) -> (^Type_Union, bool) {
     if ut, is_union := distinct_base(k.hint).(^Type_Union); is_union && name in ut.tag_map { return ut, false }
     if ut := variant_owner_union(k.c, name); ut != nil { return ut, false }
     return nil, false
-}
-
-// The fields a literal gives: named, or by position (past a variant's tag).
-tc_literal_given :: proc(k: ^TC, entries: []Tree_Id, sd: ^Scope_Body) -> map[string]bool {
-    given := make(map[string]bool, context.temp_allocator)
-    skip := first_user_field(sd)
-    for e, j in entries {
-        if k.t.tag[e] == .Named_Entry {
-            given[tc_name(k, e)] = true
-        } else if skip + j < len(sd.fields) {
-            given[sd.fields[skip + j].name] = true
-        }
-    }
-    return given
 }
 
 // Whether a union is generic: its header names a param (`union($T: type)`).
@@ -273,39 +275,31 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     tag_et.source_name = strings.concatenate({mangled, "_Tag"})
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = tmpl.pkg, tag_type, def_span, true
     // (Each variant's tag: as written, else one past the one before.)
-    variants := tree_list(t, t.b[tmpl.node])
-    tags := make([]int, len(variants), context.temp_allocator)
+    variants := make([dynamic]TC_Variant, context.temp_allocator)
     next := 0
-    for vn, i in variants {
-        tags[i] = next
+    for vn in tree_list(t, t.b[tmpl.node]) {
+        tag := next
         if v := Tree_Id(t.a[vn]); v != 0 {
-            if _, at, lit := tc_literal_value(k, v); lit { tags[i] = int(at) }
+            if _, at, lit := tc_literal_value(k, v); lit { tag = int(at) }
         }
-        next = tags[i] + 1
-        tag_et.variants[tc_name(k, vn)], tag_et.variant_decls[tc_name(k, vn)] = tags[i], t.main[vn]
+        next = tag + 1
+        append(&variants, tc_variant(k, vn, tag))
     }
+    for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     k.table.enums[tag_et.name] = tag_et
     ut.tag_enum = tag_et
-    for vn, i in variants {
-        vname := tc_name(k, vn)
-        main := t.main[vn]
-        vst := new(Type_Scope)
-        vst.name = make_flat_name(tmpl.pkg, strings.concatenate({mangled, "_", vname}))
-        vst.home_package, vst.kind, vst.body_span = tmpl.pkg, .Struct, Span{at = main, tok = main, end = main + 1}
-        vst.decl = main
-        for f in tree_list(t, t.b[vn]) {
-            ft := tc_type(k, Tree_Id(t.a[f]), tmpl.env, span)
-            append(&vst.fields, Struct_Type_Field{name = tc_name(k, f), decl = t.main[f], type_ = ft, default_node = Tree_Id(t.b[f])})
-        }
-        build_field_map(&vst.sd)
-        k.table.structs[vst.name] = vst
-        append(&ut.variants, vname)
-        ut.tag_map[vname] = tags[i]
-        ut.variant_structs[vname] = vst
-    }
-    finalize_union_variant_headers(k.c, ut)
     k.table.unions[ut.name] = ut
     k.table.mono_union_cache[mangled] = ut
     scope_bind(k.root, mangled, ut, {ut.span.at, .Type})
+    // (Its variants' bodies are its template's, checked again with its params
+    // bound: their nodes its own — tc_sid.)
+    saved_inst := tc_instance_begin(k, tmpl, nil)
+    defer tc_instance_end(k, saved_inst)
+    for v in variants {
+        append(&ut.variants, v.name)
+        ut.tag_map[v.name] = v.tag
+        ut.variant_structs[v.name] = tc_variant_struct(k, tmpl.pkg, mangled, v, tmpl.env, subst)
+    }
+    tc_union_ready(k, ut)
     return ut
 }

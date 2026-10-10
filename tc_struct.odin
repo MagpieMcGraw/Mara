@@ -46,7 +46,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has {
             tc_set_ref(k, n, {variant_decl(ut, field), .Variant})
-            tc_variant_of(k, ut, field, span)
+            tc_variant_built(k, n, ut, field)
             return ut
         }
     }
@@ -379,12 +379,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         tc_set_args(k, n, tc_default_args(lt))
     }
     if fa == nil && fd == nil && !empty {
-        // (What its construction runs: its constructor's defaults, a
-        // variant's defaults the literal doesn't give.)
+        // (What its construction runs: its constructor's defaults. A
+        // variant's are its body's, checked with it.)
         if vst == nil && !zero { tc_ctor_args(k, ts, span) }
-        if variant := vst if vst != nil else (ts if ts.is_union_variant else nil); variant != nil {
-            tc_variant_defaults(k, variant, tc_literal_given(k, entries, sd), span)
-        }
+        if vst != nil { tc_variant_built(k, n, t, variant) }
     }
     if fd != nil {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, env, fd)
