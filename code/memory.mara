@@ -2,8 +2,11 @@ module mara.memory
 
 use mara.os
 
+// 1024 bytes.
 KB :: 1 << 10
+// 1024 KB, in bytes: `16 * MB`.
 MB :: 1 << 20
+// 1024 MB, in bytes.
 GB :: 1 << 30
 
 // Dynamic arena idea rejected
@@ -16,6 +19,7 @@ GB :: 1 << 30
 //
 // Each mark writes 8 bytes (prev_mark offset). No debug headers.
 
+// The report an arena prints when it runs out of memory.
 oom_string :: "
 	=== Arena out of memory ===
 
@@ -26,6 +30,11 @@ oom_string :: "
 	Failed allocation: %, % bytes in %
 	"
 
+// An arena: memory handed out by moving a cursor forward, and freed all at
+// once back to a mark. The fast one, for a finished program; make it the
+// program's allocator with `this_program = Program(Arena_Basic(16 * MB))`.
+// A block holding a value of 1 KB or more marks it when it starts and
+// resets it when it ends, by itself.
 Arena_Basic :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
@@ -35,6 +44,7 @@ Arena_Basic :: class(cap: i64) {
 	// cursor (cap stays the reservation). No per-alloc header — pure bump.
 	base.len = 0
 
+	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
 		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
@@ -49,6 +59,8 @@ Arena_Basic :: class(cap: i64) {
 		a.base.len = off + 16
 	}
 
+	// Hands out size bytes (16-byte aligned). When the arena is full, prints a
+	// report and stops the program.
 	alloc :: fun(
 		a: ^Self,
 		size: i64,
@@ -68,6 +80,7 @@ Arena_Basic :: class(cap: i64) {
 		return result
 	}
 
+	// Frees everything allocated since the last mark.
 	reset :: fun(a: ^Self) {
 		cm := a.current_mark
 		assert(cm != -1)   // reset without a prior mark would read base[-1]
@@ -78,6 +91,7 @@ Arena_Basic :: class(cap: i64) {
 		a.current_mark = prev
 	}
 
+	// Prints the out-of-memory report.
 	dump :: fun(
 		a: ^Self,
 		failed_size: i64,
@@ -90,6 +104,9 @@ Arena_Basic :: class(cap: i64) {
 	}
 }
 
+// An arena like Arena_Basic that also records each allocation's size and
+// where it was asked for, and lists them all when it runs out. Use it while
+// writing a program: `this_program = Program(Arena_Debug(16 * MB))`.
 Arena_Debug :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
@@ -102,6 +119,7 @@ Arena_Debug :: class(cap: i64) {
 	// of len is fine — no separate offset field needed.
 	base.len = 0
 
+	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
 		off := (a.base.len + 15) & -16
@@ -113,14 +131,18 @@ Arena_Debug :: class(cap: i64) {
 		a.base.len = off + 16
 	}
 
+	// What Arena_Debug records in front of each allocation.
 	AllocHeader :: class{
 		prev: i64
 		size: i64
 		name: ^byte
 		span: ^byte
 	}
+	// AllocHeader's size in bytes.
 	HEADER_SIZE :: size_of(AllocHeader)
 
+	// Hands out size bytes (16-byte aligned), recording its size and where it was
+	// asked for. When the arena is full, prints a report and stops the program.
 	alloc :: fun(
 		a: ^Self,
 		size: i64,
@@ -150,6 +172,7 @@ Arena_Debug :: class(cap: i64) {
 		return result
 	}
 
+	// Frees everything allocated since the last mark.
 	reset :: fun(a: ^Self) {
 		cm := a.current_mark
 		assert(cm != -1)   // reset without a prior mark would read base[-1]
@@ -162,6 +185,7 @@ Arena_Debug :: class(cap: i64) {
 		a.current_mark = prev
 	}
 
+	// Prints the out-of-memory report, then every allocation, most recent first.
 	dump :: fun(
 		a: ^Self,
 		failed_size: i64,

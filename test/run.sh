@@ -17,6 +17,8 @@
 # how a miscompile that still compiles — printing nothing, say — gets caught.
 # A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
 #
+# The docs' programs, doc/*.mara, are checked too: each must build and run.
+#
 # New fixtures should use the //@ annotations; the lists are a migration shim.
 # (test/failures/*.mara have no main and can't build standalone — out of scope
 #  until `mara` grows a check-only mode.)
@@ -109,15 +111,30 @@ check_dir() {  # d
   fi
   rm -f "$d/$d.exe" "$d/$d.dll" "$d/$d.lib" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
 }
-export -f in_list skip_reason verdict check_file check_dir
+
+# The docs' programs (doc/*.mara): each must build and run with no arguments
+# to exit 0 — run from doc/, where they find the files they read.
+check_doc() {  # f
+  local f=$1 name="${1%.mara}" key="doc.${1%.mara}" out rc
+  out=$(cd "$ROOT/doc" && "$ROOT/Mara.exe" build "$name" 2>&1)
+  if ! echo "$out" | grep -q "Compiled module"; then
+    verdict "$key" bad "DOC DOESN'T BUILD: doc/$f"
+    return
+  fi
+  (cd "$ROOT/doc" && timeout 10 "./$name.exe" > /dev/null 2>&1); rc=$?
+  rm -rf "$ROOT/doc/$name.exe" "$ROOT/doc/$name.pdb" "$ROOT/doc/${name}_build"
+  if [ $rc -ne 0 ]; then verdict "$key" bad "DOC FAILS WHEN RUN: doc/$f (exit $rc)"; else verdict "$key" pass; fi
+}
+export -f in_list skip_reason verdict check_file check_dir check_doc
 
 dirs=()
 for d in */; do d="${d%/}"; [ -f "$d/.multifile" ] && dirs+=("$d"); done
-{ printf 'file %s\n' *.mara; printf 'dir %s\n' "${dirs[@]}"; } \
+docs=($(cd ../doc && ls *.mara))
+{ printf 'file %s\n' *.mara; printf 'dir %s\n' "${dirs[@]}"; printf 'doc %s\n' "${docs[@]}"; } \
   | xargs -P "$JOBS" -L 1 bash -c 'check_$0 "$1"'
 
 pass=0; xfail=0; skip=0; bad=0
-for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${dirs[@]}"); do
+for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${dirs[@]}") $(printf 'doc.%s\n' "${docs[@]}" | sed 's/\.mara$//'); do
   { read -r kind; read -r msg; } < "$RES/$key.res"
   case $kind in
     pass)  pass=$((pass+1)) ;;

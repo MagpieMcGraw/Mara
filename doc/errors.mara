@@ -1,0 +1,50 @@
+// How errors work: a function that can fail returns an err last, and `?` passes one on.
+//
+// `-> i64, err` returns a number and an err. `return 0, Not_A_Digit` fails;
+// `return n` succeeds, and so does reaching the end of a function that
+// only returns an err. The caller takes both, `n, e := parse(s)`, and has
+// to look at e: an err nobody checks is a compile error (`_` in its place
+// ignores it on purpose). `bool(e)` is true when it failed, and
+// `e == .Not_A_Digit` asks how.
+//
+// In a function that returns an err itself, `d := digit(c)?` takes the
+// value, and on a failure returns that err from the function right there.
+//
+// Your own errors are an `error` set, like Parse_Error below. The standard
+// library's file functions fail with File_Error (see read_file.mara).
+module errors
+
+use mara.core
+
+// What parsing a number can fail with.
+Parse_Error :: error { Empty, Not_A_Digit }
+
+// The value of a digit character.
+digit :: fun(c: utf8) -> i64, err {
+	n := i64(c) - i64('0')
+	if n < 0 or n > 9 do return 0, Not_A_Digit
+	return n
+}
+
+// The number a text of digits spells.
+parse :: fun(s: []utf8) -> i64, err {
+	if s.len == 0 do return 0, Empty
+	n := 0
+	for c in s {
+		d := digit(c)?    // a failure returns from parse here
+		n = n * 10 + d
+	}
+	return n
+}
+
+main :: fun() {
+	n, e := parse("123")
+	print(n, e)                                   // 123 Ok
+
+	_, e2 := parse("12x")
+	if bool(e2) do print("failed:", e2)           // failed: Parse_Error.Not_A_Digit
+	if e2 == .Not_A_Digit do print("not a digit")
+
+	_, e3 := parse("")
+	print(e3 == .Empty)                           // true
+}

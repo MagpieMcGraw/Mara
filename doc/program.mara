@@ -1,0 +1,39 @@
+// The shape of a Mara program: a module line, the modules it uses, and main.
+//
+// Build it from its folder with `mara build program`: `mara build <name>`
+// builds every .mara file in the folder that starts `module <name>`, into
+// <name>.exe. A program is one module, in one file or several.
+//
+// `use m` makes m's names visible in this file. `include m` makes them
+// visible in every file of this module. `short :: use m` names the module
+// instead, and its names are reached through it: `short.thing`.
+module program
+
+use mara.core
+include mara.memory
+
+// A constant: `::` binds a name for good. Its width is whatever each use needs.
+GREETING :: "hello"
+
+// A function: params with their types, then what it returns.
+twice :: fun(n: i64) -> i64 {
+	return n * 2
+}
+
+// Where the program starts.
+main :: fun() {
+	// `:=` declares a variable, its type taken from its value.
+	count := 3
+	// `name : type = value` declares one with its type written.
+	ratio : f32 = 0.5
+	count = twice(count)
+	print(GREETING, count, ratio)   // hello 6 0.5
+
+	// `if`, and `do` for a one-statement body.
+	if count > 5 do print("more than five")
+
+	// `for` over a range, from the first number up to (not including) the second.
+	for i in 0..3 {
+		print("round", i)
+	}
+}

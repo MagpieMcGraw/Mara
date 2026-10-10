@@ -1,0 +1,45 @@
+// How to read a file: all at once with read_entire_file, or step by step.
+//
+// Both read into a buffer you declare, `[..N]byte`, which holds up to N
+// bytes; its len becomes the number read. A buffer of 1 KB or more lives in
+// the program's arena, so set one first (see arenas.mara). The bytes can be
+// seen as text: `text : []utf8 = data[:]`.
+module read_file
+
+use mara.core
+use mara.os
+include mara.memory
+
+// Step by step: open, size, read, close — each can fail, and `?` passes the
+// failure on to whoever called (see errors.mara).
+read_first_bytes :: fun(path: []utf8, data: ^[]byte) -> err {
+	id := file_open_read(path)?
+	defer file_close(id)   // runs when the function ends, whichever way
+	size := file_size(id)?
+	print("the file has % bytes", size)
+	file_read(id, data)?   // reads as much as data holds
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+
+	// All at once. This program reads its own source.
+	data : [..1 * MB]byte
+	err := read_entire_file("read_file.mara", &data)
+	if bool(err) {
+		print("couldn't read it:", err)
+		return
+	}
+	text : []utf8 = data[:]
+	print("read % bytes; it starts with:", text.len)
+	print(text[0:20])
+
+	small : [..64]byte
+	err2 := read_first_bytes("read_file.mara", &small)
+	if bool(err2) do print("couldn't read it:", err2)
+	print("read the first % bytes", small.len)
+
+	// A file that isn't there fails with File_Error.Open_Failed.
+	missing := read_entire_file("no_such_file.txt", &data)
+	print(missing)
+}

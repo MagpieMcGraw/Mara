@@ -1,0 +1,32 @@
+// How to print values: print, with or without `%` placeholders.
+//
+// print takes any number of values and prints them separated by spaces,
+// then a newline. If the first is text with `%` in it, each `%` is replaced
+// by the next value instead, and `%%` prints one `%`. The number of `%`
+// must match the number of values; the compiler checks. (Text without any
+// placeholder prints as written, `%%` and all.)
+module printing
+
+use mara.core
+
+// An enum is a union whose variants carry nothing.
+Color :: union {
+	Red
+	Green
+}
+
+main :: fun() {
+	print("hello")                           // hello
+	print(1, 2.5, true)                      // 1 2.5 true
+
+	name := "Ada"
+	age := 36
+	print("% is % years old", name, age)     // Ada is 36 years old
+	print("% is 100%% done", name)           // Ada is 100% done
+
+	// An enum prints its variant's name.
+	print(Color.Green)                       // Green
+
+	// Text with several lines: \n starts a new one.
+	print("first\nsecond")
+}

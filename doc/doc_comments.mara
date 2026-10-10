@@ -1,0 +1,37 @@
+// How to document code so search and the docs window can find it: a doc comment.
+//
+// The `//` lines directly above a definition, with no blank line between,
+// are its doc comment. So is a comment at the end of the definition's own
+// line. For a file, it's the comment directly above its `module` line, like
+// this one.
+//
+// The first line says what the thing is for, in plain words: it's what
+// search matches and what the docs window shows first. Write it with the
+// words you'd search with. Notes for whoever changes the code come after.
+module doc_comments
+
+use mara.core
+
+// The larger of two numbers.
+larger :: fun(a: i64, b: i64) -> i64 {
+	if a > b do return a
+	return b
+}
+
+// How many times c appears in text.
+// (Counts bytes, so c must be a single-byte character.)
+count_char :: fun(text: []utf8, c: utf8) -> i64 {
+	n := 0
+	for t in text {
+		if t == c do n += 1
+	}
+	return n
+}
+
+LIMIT :: 10   // the most lines this program reads
+
+main :: fun() {
+	print(larger(3, 7))                    // 7
+	print(count_char("banana", 'a'))       // 3
+	print(LIMIT)                           // 10
+}

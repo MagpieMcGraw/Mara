@@ -3,6 +3,7 @@ module mara.os
 use mara.core
 use mara.string
 
+// What a file operation can fail with.
 // File-system error set. Each fallible file operation returns one of these
 // in its trailing err slot; callers either `?`-propagate or match. No
 // print() inside the stdlib — the error value is the diagnostic, and the
@@ -25,6 +26,7 @@ SEEK_CUR :: 1   // relative to the current position
 SEEK_END :: 2   // relative to the end of the file
 
 // DANGER BELOW
+
 // Scan a C-owned NUL-terminated buffer into an honest slice: len is the
 // distance to the first 0 (or cap if none found within the window).
 read_cstring :: fun(cap: i64, src: ^byte) -> []utf8 {
@@ -35,7 +37,8 @@ read_cstring :: fun(cap: i64, src: ^byte) -> []utf8 {
 	return view
 }
 
-// NEVER CALL THIS FUNCTION
+// Reserves cap bytes of memory from the OS, for an arena to manage.
+// NEVER CALL THIS FUNCTION: make an arena instead (mara.memory).
 sys_alloc :: fun(cap: i64) -> []byte {
 	#if #native {
 		raw := vm_reserve(cap)
@@ -157,6 +160,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// File I/O
 	// ---------------------------------------------------------------------------
 
+	// An open file, as file_open_read or file_open_write hands it back.
 	// Pointer-sized opaque token. Win32 HANDLE is `void *` — fits in i64 on
 	// x64 (and Win32 on x86 isn't a target we'd compile for in 2026).
 	File_Id :: distinct i64
@@ -186,17 +190,22 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return id
 	}
 
+	// Closes the file. NO_FILE is ignored, so `defer file_close(id)` right
+	// after an open is safe even when the open failed.
 	file_close :: fun(id: File_Id) {
 		if id == NO_FILE do return
 		_ = CloseHandle(id)
 	}
 
+	// The file's size in bytes.
 	file_size :: fun(id: File_Id) -> i64, err {
 		size: i64 = 0
 		if not bool(GetFileSizeEx(id, &size)) do return 0, Size_Failed
 		return size
 	}
 
+	// Reads from the file into data, as much as its capacity holds; data.len
+	// becomes the number of bytes read.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
 		read: u32 = 0
 		if not bool(ReadFile(id, &data[0], u32(data.cap), &read, void)) {
@@ -205,6 +214,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		data.len = read
 	}
 
+	// Reads a whole file into data. Fails with Too_Large when the file is
+	// bigger than data's capacity.
 	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
 		id := file_open_read(path)?
 		defer file_close(id)
@@ -231,6 +242,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return new_pos
 	}
 
+	// Deletes the file at path.
 	file_delete :: fun(path: []utf8) -> err {
 		if not bool(DeleteFileA(cstring(path))) do return Delete_Failed
 	}
@@ -289,6 +301,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return GetProcAddress(mod, cstring(name))
 	}
 
+	// Unloads a library that load_library loaded.
 	free_library :: fun(mod: ^byte) {
 	_ = FreeLibrary(mod)
 	}

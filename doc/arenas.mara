@@ -1,0 +1,37 @@
+// How memory works: small values on the stack, big ones in the program's arena.
+//
+// A value under 1 KB lives on the stack, like a local in C. A value of 1 KB
+// or more (a big array, a big buffer) lives in `this_program`'s arena, so
+// a program with one sets an arena at the top of main; without one, the
+// compiler stops and says so:
+//
+//     this_program = Program(Arena_Debug(16 * MB))
+//
+// 16 * MB is how much the arena holds in all. It hands out memory by moving
+// a cursor forward, and frees by moving it back to a mark. A block holding a
+// big value marks the arena when it starts and resets it when it ends, so
+// that block's big values are freed with it, without anything to write.
+//
+// Arena_Debug records every allocation and lists them when it runs out;
+// Arena_Basic is the fast one for a finished program. Both are in
+// mara.memory.
+module arenas
+
+use mara.core
+include mara.memory
+
+main :: fun() {
+	this_program = Program(Arena_Debug(16 * MB))
+
+	// 2000 i64s are 16000 bytes: in the arena.
+	table : [2000]i64
+	table[0] = 1
+	print(table.len, table[0])                    // 2000 1
+
+	// Each round's buffer is freed when the round ends, so going round
+	// doesn't use up the arena.
+	for round in 0..3 {
+		buffer : [..4 * KB]byte
+		print("round", round, "buffer holds", buffer.cap)
+	}
+}

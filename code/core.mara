@@ -1,14 +1,19 @@
 module mara.core
 
-// string literal types
+// A text buffer of up to 64 characters: `name : str64`, then `&name + "text"`.
 str64 :: type [..64]utf8
+// A text buffer of up to 256 characters (see str64).
 str256 :: type [..256]utf8
+// A text buffer of up to 1024 characters (see str64).
 str1024 :: type [..1024]utf8
 
+// `&list + x` appends to a text buffer or a list: text, one character, items or one item.
 overload + add
+// Appends to a text buffer or a list; which one runs depends on what is added.
 add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
 
-// we write 0 to enable valid cstring conversion
+// Appends text to dst; it must fit in dst's capacity.
+// (We write 0 after it, so dst stays a valid C string.)
 utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
 	assert(dst.len + src.len <= dst.cap)
 	dst[dst.len:] = src
@@ -16,6 +21,7 @@ utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
 	if dst.len < dst.cap do dst[dst.len] = 0
 }
 
+// Appends one character to dst; it must fit in dst's capacity.
 utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
 	assert(dst.len < dst.cap)
 	dst[dst.len] = src
@@ -23,31 +29,44 @@ utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
 	if dst.len < dst.cap do dst[dst.len] = 0
 }
 
+// Appends items to dst; they must fit in dst's capacity.
 slice_add :: fun(dst: ^[]$T, src: []$T) {
 	assert(dst.len + src.len <= dst.cap)
 	dst[dst.len:] = src
 	dst.len += src.len
 }
 
+// Appends one item to dst; it must fit in dst's capacity.
 slice_add_item :: fun(dst: ^[]$T, src: $T) {
 	assert(dst.len < dst.cap)
 	dst[dst.len] = src
 	dst.len += 1
 }
 
+// What an arena must have to be the program's allocator. Arena_Basic and
+// Arena_Debug (mara.memory) are the ones to use.
 Arena :: struct {
 	size: [64]byte
 
+	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {
 	}
+	// Hands out size bytes.
 	alloc :: fun(a: ^Self, size: i64) -> []byte	{
 	}
+	// Frees everything allocated since the last mark.
 	reset :: fun(a: ^Self) {
 	}
+	// Reports that an allocation of size bytes didn't fit.
 	dump :: fun(a: ^Self, size: i64, name, span: ^byte)	{
 	}
 }
 
+// The running program, `this_program`: its command-line arguments and its
+// allocator. args[0] is the program's own path, the rest what it was run
+// with. Values of 1 KB or more live in the allocator, not on the stack: a
+// program with any sets one at the top of main —
+// `this_program = Program(Arena_Basic(16 * MB))`.
 Program :: struct (ar_shape: ~Arena = void) {
 	scope_allocator: ar_shape
 	args: [..64][]utf8

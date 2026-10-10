@@ -1,0 +1,36 @@
+// How to write a file, and delete one.
+//
+// file_open_write creates the file, or empties it if it's already there.
+// file_write takes bytes; text becomes bytes with `bytes : []byte = text[:]`
+// (the same memory, seen as bytes).
+module write_file
+
+use mara.core
+use mara.os
+include mara.memory
+
+// Writes text to the file at path, replacing what was there.
+save :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_write(path)?
+	defer file_close(id)
+	bytes : []byte = text[:]
+	file_write(id, &bytes)?
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+
+	err := save("write_file_demo.txt", "one line\nanother line\n")
+	if bool(err) {
+		print("couldn't write it:", err)
+		return
+	}
+
+	// Read it back to see it arrived.
+	data : [..1 * KB]byte
+	_ = read_entire_file("write_file_demo.txt", &data)
+	print("wrote % bytes", data.len)
+
+	err2 := file_delete("write_file_demo.txt")
+	if bool(err2) do print("couldn't delete it:", err2)
+}
