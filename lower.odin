@@ -1205,6 +1205,10 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         }
         lw_byte_view_address(k, pt, a)
     }
+    // (A union's variant built by its params: built as the union, tc_variant_call.)
+    if ut, is_union := distinct_base(tc_node_type(k, n)).(^Type_Union); is_union && is_struct {
+        return lw_variant_call(k, n, ut, ft, ops[:], want, w, dest, into_temp, temp_span, overrides, made = into_temp)
+    }
     if is_struct {
         if into_temp {
             return lw_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true, overrides = overrides)

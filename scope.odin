@@ -397,15 +397,6 @@ build_field_map :: proc(st: ^Scope_Body) {
     }
 }
 
-// Populate a callable fun's field_map from its params for O(1) param lookup.
-build_param_map :: proc(ft: ^Type_Scope) {
-    for p, i in ft.params {
-        if p.name != "" {
-            ft.field_map[p.name] = i
-        }
-    }
-}
-
 // Track variant ownership in c.table.variant_to_enum so the dot-shorthand
 // fallback (`.Core` with no expected type) can find variants by name across
 // visible enums/unions. Variants are never bound as bare names: bare variant

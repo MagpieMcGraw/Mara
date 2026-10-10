@@ -594,7 +594,6 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
             append(&ts.params, Struct_Type_Field{name = tc_text(name), decl = name, type_ = pt, default_node = def, default_slot = slot})
         }
     }
-    build_param_map(ts)
     if ts.kind == .Struct && len(v.params) == 0 { return }   // (no constructor: no results)
     for r in v.returns {
         if t.tag[r] == .Param_Group {

@@ -1614,14 +1614,19 @@ llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string
     return args, true
 }
 
-// A variant's constructor run at `at`, when it has one (a body: its fields'
-// defaults); a variant's body with no constructor built is an error.
+// A variant's constructor run at `at` on `args` (its params'), when it has
+// one — a body: its fields' defaults; a variant's body with no constructor
+// built is an error. (The arguments are the caller's to compute first: the
+// union is zeroed before the call.)
 @(private="file")
-llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: string) -> bool {
+llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: string, args: []string) -> bool {
     callee := graph_called(e.pg, op)
-    if callee == nil || callee.node == 0 { return true }
+    if callee == nil || callee.node == 0 { return len(args) == 0 }
     if _, built := e.g.checked.functions[callee.name]; !built { e.note = "a variant's constructor"; return false }
-    emit_raw(e.g, strings.concatenate({"  call void ", mara_fn_name(e.g, callee.name), "(ptr ", at, ")"}))
+    all := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
+    append(&all, ..args)
+    append(&all, fmt.tprintf("ptr %s", at))
+    emit_raw(e.g, strings.concatenate({"  call void ", mara_fn_name(e.g, callee.name), "(", strings.join(all[:], ", ", context.temp_allocator), ")"}))
     return true
 }
 
@@ -1637,13 +1642,14 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // A variant: the union zeroed — its bytes past the variant too — then
         // its tag, and its partial arrays' headers. (Its defaults and fields
         // are the writes that follow.)
-        if len(ops) != 1 || llvm_direct(e, dest) { return false }
+        if llvm_direct(e, dest) { return false }
+        args := llvm_ctor_args(e, op, ops) or_return   // (before the union is zeroed)
         at := e.value[dest]
         if some := ut.niche_some; some != "" {
             // A niche union is its Some variant's pointer: None is null, Some
             // the pointer its literal writes next (none written: null).
             if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
-            return llvm_variant_ctor(e, op, at)
+            return llvm_variant_ctor(e, op, at, args)
         }
         st := ut.variant_structs[graph_name(pg, op)]
         if st == nil { return false }
@@ -1652,7 +1658,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
         emit_store(g, union_tag_ir_type(ut), fmt.tprintf("%d", ut.tag_map[graph_name(pg, op)]), tag)
         stamp_zero_partial_arrays(g, at, st)   // (a partial array's zero isn't all zeros: no constructor stamps a variant's)
-        return llvm_variant_ctor(e, op, at)
+        return llvm_variant_ctor(e, op, at, args)
     }
     // An array's elements: each constructed on the same arguments.
     if fa := llvm_array(graph_type(pg, dest)); fa != nil && llvm_same_type(fa.elem, t) {
@@ -1675,14 +1681,14 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if callee.is_union_variant {
         // A union's variant as a struct of its own: zeroed, its tag in field
         // 0, its partial arrays' headers, then its constructor.
-        if len(ops) != 1 { return false }
+        args := llvm_ctor_args(e, op, ops) or_return   // (before it is zeroed)
         at := e.value[dest]
         emit_memset_zero(g, at, type_size(t))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
         emit_store(g, field_ir_type(&callee.fields[0]), fmt.tprintf("%d", callee.union_variant_tag), tag)
         stamp_zero_partial_arrays(g, at, callee)
-        return llvm_variant_ctor(e, op, at)
+        return llvm_variant_ctor(e, op, at, args)
     }
     if _, has_init := g.checked.functions[callee.name]; !has_init && len(ops) == 1 {
         // Nothing to run — no defaults, no partial arrays (a generic instance

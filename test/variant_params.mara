@@ -1,0 +1,59 @@
+module variant_params
+
+use mara.core
+
+// A union's variant can take params, as a struct can: it is built by them —
+// `Rect(5)` where a Shape goes, `Shape.Rect(7)` — its body run on them, so a
+// field that depends on another is right from the start. A param's default
+// lets it be built bare (`.Circle`); fields written after the call override
+// what its body made. A generic union's variants take theirs the same way.
+
+//@ expect-output: Rect { width: 5, h: 15 }
+//@ expect-output: Rect { width: 7, h: 21 } 147
+//@ expect-output: area 12
+//@ expect-output: Circle { d: 2 } Circle { d: 8 }
+//@ expect-output: Rect { width: 5, h: 1 }
+//@ expect-output: Full { value: 9, twice: 18 }
+
+Shape :: union {
+	Rect(w: i64) = 2 {
+		width := w
+		h := width * 3
+	}
+	Circle(r: i64 = 1) {
+		d := r * 2
+	}
+	Dot
+}
+
+Box :: union($T: type) {
+	Full(v: T) { value := v  twice := v + v }
+	Empty
+}
+
+area :: fun(s: Shape) -> i64 {
+	match s {
+	Rect r
+		return r.width * r.h
+	Circle c
+		return c.d
+	Dot
+		return 0
+	}
+	return -1
+}
+
+main :: fun() {
+	a : Shape = Rect(5)
+	print(a)
+	b := Shape.Rect(7)
+	print(b, area(b))
+	print("area", area(Rect(2)))
+	c : Shape = .Circle
+	d : Shape = Circle(4)
+	print(c, d)
+	e : Shape = Rect(5) { h = 1 }
+	print(e)
+	f : Box(i64) = Full(9)
+	print(f)
+}

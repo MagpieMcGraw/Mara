@@ -36,7 +36,9 @@ main :: fun() {
 	count = twice(count)
 	print(GREETING, count, ratio)   // hello 6 0.5
 
-	// A struct's value: the fields given, the rest their defaults.
+	// A struct's value: its constructor runs first (every field its default),
+	// then the fields given are written over theirs. A field that depends on
+	// another belongs in the struct's params, not in what is written after.
 	p := Point{x = 2}
 	print(p, p.x)                   // Point { x: 2, y: 1 } 2
 

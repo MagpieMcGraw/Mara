@@ -1,0 +1,16 @@
+module variant_params_neg
+
+use mara.core
+
+// MUST FAIL: a variant with params is built by them; bare, it can't be.
+//@ expect-fail: 'Rect' is built by its params: write `Rect(…)`
+
+Shape :: union {
+	Rect(w: i64) { width := w }
+	Dot
+}
+
+main :: fun() {
+	a : Shape = .Rect
+	print(a)
+}

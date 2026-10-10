@@ -1,0 +1,51 @@
+// How to hold one of several kinds of value: a union, its variants, and match.
+//
+// A union is a set of variants, each laid out like a struct, with a tag that
+// says which one a value holds. A variant's body is a struct's body: fields
+// with defaults, even methods. A variant with params is built by them, like
+// a struct with params: `Rect(5)`. One without is built bare, `.Dot`, or as
+// a literal, `Label{text = "hi"}` (its body runs first, then the fields
+// given are written over theirs).
+//
+// `match` picks the arm for the variant a value holds, and can name it: in
+// `Rect r`, r is that variant's fields. A union whose variants hold nothing
+// is an enum (see printing.mara).
+module unions
+
+use mara.core
+
+Shape :: union {
+	// Built by its params: `Rect(5)`, or `Shape.Rect(5)`.
+	Rect(w: i64) {
+		width := w
+		height := w * 2
+		area :: fun(r: Self) -> i64 { return r.width * r.height }
+	}
+	// A field with a default, given or not.
+	Label { text: str64 = "none" }
+	// Nothing in it.
+	Dot
+}
+
+// What a shape is, in words.
+describe :: fun(s: Shape) {
+	match s {
+	Rect r
+		print("a rect of area", r.area())
+	Label l
+		print("a label:", l.text)
+	Dot
+		print("a dot")
+	}
+}
+
+main :: fun() {
+	describe(Rect(3))                   // a rect of area 18
+	describe(Label{text = "hi"})        // a label: hi
+	describe(.Dot)                      // a dot
+
+	s : Shape = Shape.Rect(1)
+	print(s)                            // Rect { width: 1, height: 2 }
+	s = .Dot
+	print(s.tag)                        // Shape_Tag.Dot
+}

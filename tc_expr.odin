@@ -475,6 +475,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     ft_raw, found := scope_lookup(env, name)
     if qual != nil { ft_raw, found = qual, true }
     if !found {
+        // (A union's variant built by its params: `Rect(5)` where a Shape goes.)
+        if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args, env) }
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
         for a in args { tc_check(k, a, env) }
         return Type_Error{}

@@ -276,7 +276,6 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
         }
         append(&ft.return_types, tc_type(k, r, tmpl.env, span))
     }
-    build_param_map(ft)
     ft.decl = tr.main[tmpl.def]
     scope_bind(k.root, mangled, ft, {ft.decl, .Fun})
     if env != k.root { scope_bind(env, mangled, ft, {ft.decl, .Fun}) }
@@ -475,7 +474,6 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
             append(&st.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt, default_node = def})
         }
     }
-    build_param_map(st)
     k.scope_of[st] = len(k.scopes)
     append(&k.struct_instances, len(k.scopes))
     append(&k.scopes, new_clone(TC_Scope{ts = st, def = tmpl.def, node = tmpl.node, env = tmpl.env, subst = subst, synthetic = true}))

@@ -24,7 +24,6 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
             }
         }
         for r in v.returns { append(&ft.return_types, tc_type(k, r, env, span)) }
-        build_param_map(ft)
         ft.decl = v.name
         scope_bind(mod, name, ft, {ft.decl, .Fun})
         k.c.declared_funs[name] = true

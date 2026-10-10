@@ -2998,7 +2998,7 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
         b.g.name[op] = graph_intern(b, strings.concatenate({graph_name(b.g, op), "{}"}))   // as written: braces, no call
     } else if graph_aggregate(t) {
         if _, is_union := distinct_base(t).(^Type_Union); is_union {
-            graph_build_variant(b, t, name, d, span)
+            graph_build_variant(b, t, name, d, span, args)
         } else {
             graph_op(b, .Zero, .Explicit, span, t, name, graph_dest_place(b, d, span))
         }
@@ -3072,9 +3072,12 @@ graph_build_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, firs
 }
 
 // A variant built at d: the union zeroed, its tag written, then — its
-// struct's body the constructor — its fields' defaults.
-graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) -> ^Type_Scope {
-    op := graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
+// struct's body the constructor, run on `args` — its fields' defaults.
+graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span, args: []Operand = nil) -> ^Type_Scope {
+    ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
+    append(&ops, graph_dest_place(b, d, span))
+    append(&ops, ..args)
+    op := graph_op(b, .Construct, .Explicit, span, t, name, ..ops[:])
     st := graph_variant_struct(b, t, name)
     if st != nil && st.node != 0 { b.g.callee[op] = st }   // (its body: its constructor)
     return st

@@ -92,19 +92,50 @@ lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Sp
 }
 
 // A union's variant as a value: constructed where it goes — else in a
-// temporary — its constructor running its fields' defaults.
+// temporary — its constructor running its fields' defaults (on its params').
 lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Built {
     b := k.gb
     if want == .Place { return {} }
+    args := lw_variant_args(k, ut, name, span)
     if want == .Into {
         d := dest
         if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }
-        graph_build_variant(b, ut, name, d, span)
+        graph_build_variant(b, ut, name, d, span, args)
         return lw_built(k, want, temp, temp, d, ut, temp_span, false)
     }
     d := graph_build_temp(b, span, ut)
-    graph_build_variant(b, ut, name, d, span)
+    graph_build_variant(b, ut, name, d, span, args)
+    return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
+}
+
+// A variant's constructor's arguments where none are written: its params'
+// defaults (tc_variant_built).
+lw_variant_args :: proc(k: ^TC, t: Type, name: string, span: Span) -> []Operand {
+    ut, is_union := distinct_base(t).(^Type_Union)
+    if !is_union { return nil }
+    st := ut.variant_structs[name]
+    return lw_ctor_args(k, st, span) if st != nil && st.node != 0 else nil
+}
+
+// `Rect(5)`, `Shape.Rect(5)` (tc_variant_call): the variant built where it
+// goes — else in a temporary — its constructor run on the arguments, then
+// the fields its overrides give written.
+lw_variant_call :: proc(k: ^TC, n: Tree_Id, ut: ^Type_Union, vst: ^Type_Scope, args: []Operand, want: Build_Want, w: Written,
+                        dest: Dest, temp: bool, temp_span: Span, overrides: Tree_Id, made := false) -> Built {
+    b := k.gb
+    span := tree_span(k.t, n)
+    if want == .Place { lw_fail(k, n, "a variant's call's place") }
+    name := ""
+    for vname in ut.variants { if ut.variant_structs[vname] == vst { name = vname } }
+    d := dest
+    switch {
+    case want != .Into:  d = graph_build_temp(b, span, ut)
+    case temp && !made: d = graph_build_temp(b, temp_span, build_temp_type(d))
+    }
+    gl := graph_build_literal(b, span, name, false, ut, d, args)
+    if overrides != 0 { lw_literal_fields(k, overrides, tree_list(k.t, k.t.b[overrides]), &vst.sd, gl) }
+    if want == .Into { return lw_built(k, want, temp, temp, d, ut, temp_span, false) }
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
 }
 
@@ -161,7 +192,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     } else if empty {
         gl = graph_build_literal(b, span, name, zero, t, d)
     } else if vst != nil {
-        gl = graph_build_literal(b, span, name, zero, t, d)
+        gl = graph_build_literal(b, span, name, zero, t, d, lw_variant_args(k, t, name, span))
     } else {
         args: []Operand
         if !zero { args = lw_ctor_args(k, ts, span) }

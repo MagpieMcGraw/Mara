@@ -138,7 +138,7 @@ TC_Variant :: struct {
     tag:    int,
     node:   Tree_Id,
     body:   Tree_Id,   // its Struct_Def (0: none)
-    fields: bool,      // (its body declares something)
+    fields: bool,      // (its body declares something, or it has params: it is built)
     span:   Span,
 }
 
@@ -147,14 +147,15 @@ tc_variant :: proc(k: ^TC, vn: Tree_Id, tag: int) -> TC_Variant {
     t := k.t
     main := t.main[vn]
     body := Tree_Id(t.b[vn])
-    return {name = tc_name(k, vn), tag = tag, node = vn, body = body, fields = body != 0 && len(scope_view(t, body).body) > 0,
+    v := scope_view(t, body) if body != 0 else {}
+    return {name = tc_name(k, vn), tag = tag, node = vn, body = body, fields = len(v.body) > 0 || len(v.params) > 0,
             span = Span{at = main, tok = main, end = main + 1}}
 }
 
 // A variant's struct, named for its union (`Shape_Rect`). Its body is a
-// struct's: registered as one, its declarations its fields (checked once
-// every name is known: tc_union_resolve), run as its constructor when it is
-// built. (`subst`: a generic union's instance's bindings.)
+// struct's: registered as one — its params, its declarations its fields
+// (both once every name is known: tc_union_resolve) — run as its constructor
+// when it is built. (`subst`: a generic union's instance's bindings.)
 tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, env: ^Type_Scope, subst: map[string]Type = nil) -> ^Type_Scope {
     vst := new(Type_Scope)
     vst.source_name = strings.concatenate({union_name, "_", v.name})
@@ -167,16 +168,18 @@ tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, env: ^
         k.scope_of[vst] = len(k.scopes)
         append(&k.variant_scopes, len(k.scopes))
         append(&k.scopes, new_clone(TC_Scope{ts = vst, def = v.node, node = v.body, env = env, subst = subst, synthetic = subst != nil}))
-        tc_signature(k, k.scopes[len(k.scopes) - 1])
     }
     return vst
 }
 
-// A union's pad's type and its variants' bodies, once every name is known
-// (an instance's, its params bound): each variant's fields found, then its
-// tag put first — its layout known.
+// A union's pad's type and its variants' params and bodies, once every name
+// is known (an instance's, its params bound): each variant's fields found,
+// then its tag put first — its layout known.
 tc_union_resolve :: proc(k: ^TC, ut: ^Type_Union, pad: Tree_Id, env: ^Type_Scope, span: Span) {
     if pad != 0 { ut.tag_pad = tc_type(k, pad, env, span) }
+    for vname in ut.variants {
+        if i, has := k.scope_of[ut.variant_structs[vname]]; has { tc_signature(k, k.scopes[i]) }
+    }
     for vname in ut.variants { tc_struct_ensure(k, ut.variant_structs[vname]) }
     finalize_union_variant_headers(k.c, ut)
 }
@@ -232,14 +235,35 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
 }
 
 // A variant built at n — its literal, its name as a value: its constructor
-// called there, when it has a body (the graph's Calls edge).
+// called there, when it has one (the graph's Calls edge). One with params is
+// built by them (tc_variant_call): it can't be built bare.
 tc_variant_built :: proc(k: ^TC, n: Tree_Id, t: Type, name: string) {
     ut, is_union := distinct_base(t).(^Type_Union)
     if !is_union { return }
-    if st := ut.variant_structs[name]; st != nil && st.node != 0 {
-        tc_set_callee(k, n, st)
-        tc_set_args(k, n, {})
+    st := ut.variant_structs[name]
+    if st == nil || st.node == 0 { return }
+    if count_required_params(st) > 0 {
+        tc_error(k, tree_span(k.t, n), TYPE_VARIANT_NEEDS_ARGS, name, name)
+        return
     }
+    tc_set_callee(k, n, st)
+    tc_set_args(k, n, tc_default_args(st))
+    tc_ctor_args(k, st, tree_span(k.t, n))
+}
+
+// `Rect(5)` where a Shape goes, `Shape.Rect(5)`: a union's variant built by
+// its params — its arguments checked as a struct's constructor's are, its
+// value the union's.
+tc_variant_call :: proc(k: ^TC, n: Tree_Id, ut: ^Type_Union, name: string, args: []Tree_Id, env: ^Type_Scope) -> Type {
+    vst := ut.variant_structs[name]
+    if vst == nil || len(vst.params) == 0 {
+        tc_error(k, tree_span(k.t, n), TYPE_VARIANT_TAKES_NO_ARGS, name, name, "{…}", name)
+        return Type_Error{}
+    }
+    qualified := strings.concatenate({ut.source_name, ".", name}, context.temp_allocator)   // (as its diagnostics name it)
+    if _, failed := tc_call_core(k, n, qualified, args, env, qual = vst).(Type_Error); failed { return Type_Error{} }
+    tc_set_ref(k, n, {variant_decl(ut, name), .Variant})
+    return ut
 }
 
 // The union a literal named by a bare variant builds: the one expected,
