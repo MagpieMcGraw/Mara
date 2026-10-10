@@ -1,0 +1,23 @@
+module print_percent
+
+use mara.core
+
+// `%%` in print's first text is one `%`, whether the text has placeholders
+// or not (without any, it used to print as `%%`, and a lone `%` is a
+// placeholder: a percent sign alone couldn't be printed). Text that is a
+// value — a variable's, a later argument's — prints as it is.
+
+//@ expect-output: 100% sure
+//@ expect-output: Ada is 100% done
+//@ expect-output: 50% 3
+//@ expect-output: raw %% text
+//@ expect-output: a 100%%
+
+main :: fun() {
+	print("100%% sure")
+	print("% is 100%% done", "Ada")
+	print("50%%", 3)
+	s := "raw %% text"
+	print(s)
+	print("a", "100%%")
+}

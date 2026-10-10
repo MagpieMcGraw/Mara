@@ -2287,6 +2287,12 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     } else {
         for a, i in args {
             if i > 0 { emit_print_literal(g, " ") }
+            // (The first text's `%%` is one `%`, placeholders or none.)
+            if i == 0 && a.is_text && strings.contains(a.text, "%%") {
+                text, _ := strings.replace_all(a.text, "%%", "%", context.temp_allocator)
+                emit_print_literal(g, text)
+                continue
+            }
             emit_print_operand(g, a)
         }
     }

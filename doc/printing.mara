@@ -3,8 +3,7 @@
 // print takes any number of values and prints them separated by spaces,
 // then a newline. If the first is text with `%` in it, each `%` is replaced
 // by the next value instead, and `%%` prints one `%`. The number of `%`
-// must match the number of values; the compiler checks. (Text without any
-// placeholder prints as written, `%%` and all.)
+// must match the number of values; the compiler checks.
 module printing
 
 use mara.core
@@ -23,6 +22,7 @@ main :: fun() {
 	age := 36
 	print("% is % years old", name, age)     // Ada is 36 years old
 	print("% is 100%% done", name)           // Ada is 100% done
+	print("100%% sure")                      // 100% sure
 
 	// An enum prints its type and its variant, as an err does.
 	print(Color.Green)                       // Color.Green
