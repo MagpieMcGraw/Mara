@@ -140,6 +140,7 @@ Scope_Body :: struct {
     // (the tag isn't a user-set field). False/0 for ordinary structs.
     is_union_variant:  bool,
     union_variant_tag: i64,
+    variant_of:        ^Type_Union,   // a union's variant's: its union (named `Union.Variant`: scope_display_name)
 
 
     // Its definition in the flat tree (a Fun_Def, a Struct_Def). 0 for types
@@ -453,6 +454,15 @@ finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
         vst.fields = with_header
         build_field_map(&vst.sd)
     }
+}
+
+// A struct's or a fun's name as the source writes it — a union's variant's,
+// `Shape.Rect` — for diagnostics.
+scope_display_name :: proc(ts: ^Type_Scope) -> string {
+    if ut := ts.variant_of; ut != nil && len(ts.source_name) > len(ut.source_name) {
+        return fmt.tprintf("%s.%s", ut.source_name, ts.source_name[len(ut.source_name) + 1:])
+    }
+    return ts.source_name if ts.source_name != "" else ts.name
 }
 
 // Index of a struct's first user field — past a union variant's `__tag` (and

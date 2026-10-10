@@ -128,6 +128,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
         ut.variant_structs[v.name] = tc_variant_struct(k, pkg, name, v, env, subst)
+        ut.variant_structs[v.name].variant_of = ut
     }
     k.table.unions[ut.name] = ut
     return ut

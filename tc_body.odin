@@ -165,7 +165,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
-    if !tc_declarable(k, env, name, span) { return }
+    if !tc_declarable(k, env, name, span, fields_of != nil) { return }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
     if form == .Void {
         tc_decl_void(k, s, target, value, name, ann, env, fields_of)
@@ -288,11 +288,17 @@ tc_decl_ref :: proc(k: ^TC, target: Tree_Id, fields_of: ^Type_Scope) -> Ref {
 }
 
 // Whether a name can be declared here: not in this scope already, and no
-// constant's. (Shadowing an enclosing local is reported, and declares.)
-tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> bool {
+// constant's. (Shadowing an enclosing local is reported, and declares.) A
+// param's name is taken too: params and what the body declares are one name
+// space, so a field or a local named as a param would be ambiguous.
+tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span, field: bool) -> bool {
     _, here := scope_defines(env, name)
     if here {
-        tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
+        if ref := scope_find_ref(env, name); ref.kind == .Param && k.body != nil {
+            tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "field" if field else "variable")
+        } else {
+            tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
+        }
         return false
     }
     if (env == nil || !env.is_module) && parent_struct_scope(env) == nil {

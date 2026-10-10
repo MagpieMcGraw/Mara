@@ -1,0 +1,16 @@
+module param_name_field_neg
+
+use mara.core
+
+// MUST FAIL: params and a body's declarations are one name space — a field
+// named as a param would make `w` ambiguous; the error says which `w` it is.
+//@ expect-fail: 'w' is already a param of P: give this field a name of its own
+
+P :: struct(w: i64) {
+	w := w
+}
+
+main :: fun() {
+	p := P(5)
+	print(p.w)
+}
