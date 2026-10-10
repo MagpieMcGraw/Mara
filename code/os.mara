@@ -381,14 +381,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// and musl require -ldl. Add a "dl" foreign block if a target
 	// system needs that split.
 
+	// An open file, as file_open_read or file_open_write hands it back.
 	// 32-bit fd. Linux file descriptors are `int`, not pointer-sized.
 	File_Id :: distinct i32
 
-	// "No fd" sentinel for the failure branches of multi-return. Doubles
-	// as the placeholder File_Id we hand back when ok=false; the caller
-	// has agreed not to inspect it.
-	NO_FILE    :: File_Id(0)
-	BAD_FILE   :: File_Id(-1)
+	// "No file": what a failed open hands back, and what file_close ignores.
+	// -1 is what open(2) returns on failure, and never a real fd (0 is stdin).
+	NO_FILE :: File_Id(-1)
 
 	// ---------------------------------------------------------------------------
 	// open(2) flags
@@ -409,116 +408,109 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	DEFAULT_MODE :: 420
 
 	// ---------------------------------------------------------------------------
-	// File I/O
+	// File I/O: the same functions as the Windows side, failing the same way.
 	// ---------------------------------------------------------------------------
 
-	// Open a file for reading. Returns (id, true) on success; the (id, false)
-	// branch carries an unspecified File_Id — don't use it.
-	file_open_read :: fun(path: []utf8) -> (File_Id, bool) {
+	// Open a file for reading. Returns (id, .Ok) on success; on failure
+	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
+	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		id := open(cstring(path), O_RDONLY, 0)
-		if id == BAD_FILE do return NO_FILE, false
-		return id, true
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
-	file_open_write :: fun(path: []utf8) -> (File_Id, bool) {
+	file_open_write :: fun(path: []utf8) -> File_Id, err {
 		id := open(cstring(path), O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE)
-		if id == BAD_FILE do return NO_FILE, false
-		return id, true
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
 	}
 
-	// Null-safe close — NO_FILE early-returns so `defer file_close(id)` placed
-	// right after `file_open_read` is safe even when the open failed. Critical
-	// here: `close(0)` would close stdin, since fd 0 is a real file descriptor.
+	// Closes the file. NO_FILE is ignored, so `defer file_close(id)` right
+	// after an open is safe even when the open failed.
 	file_close :: fun(id: File_Id) {
 		if id == NO_FILE do return
-		close(id)
+		_ = close(id)
 	}
 
-	// File size in bytes via fstat. Returns (size, true) on success;
-	// (_, false) if the query failed.
-	file_size :: fun(id: File_Id) -> (i64, bool) {
+	// The file's size in bytes.
+	file_size :: fun(id: File_Id) -> i64, err {
 		st : Stat
-		if fstat(id, &st) < 0 do return 0, false
-		return st.size, true
+		if fstat(id, &st) < 0 do return 0, Size_Failed
+		return st.size
 	}
 
-	// Read up to buf.cap bytes into buf. Returns (data, true) where data is a
-	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
-	// Returns (empty slice, false) on error. POSIX read() returns ssize_t
-	// directly with -1 for error, so the bool branch is just sign of n.
-	// `buf` is `^[]byte` because the bytes are written through FFI; Mara's
-	// immutable-param address-check rejects `&buf[0]` on a by-value slice.
-	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
-		n := read(id, &buf[0], usize(buf.len))
-		if n < 0 do return buf[0:0], false
-		return buf[0:n], true
+	// Reads from the file into data, as much as its capacity holds; data.len
+	// becomes the number of bytes read (0 at the end of the file).
+	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
+		n := read(id, &data[0], usize(data.cap))
+		if n < 0 do return Read_Failed
+		data.len = n
 	}
 
-	// Write data to the file. Returns (n, true) where n is bytes written, or
-	// (_, false) on error. POSIX may write fewer bytes than requested under
-	// signal interruption / pipe-full / disk-full conditions; compare n
-	// against data.len for partial-write detection. `data` is `^[]byte` for
-	// symmetry with file_read — write() only reads, but passing `&data[0]`
-	// still trips the immutable-param address check, so the contract is
-	// `^[]byte` either way.
-	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
+	// Reads a whole file into data. Fails with Too_Large when the file is
+	// bigger than data's capacity.
+	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
+		id := file_open_read(path)?
+		defer file_close(id)
+		size := file_size(id)?
+		if size > data.cap do return Too_Large
+		file_read(id, data)?
+	}
+
+	// Write data to the file. Returns (n, .Ok) where n is bytes written. POSIX
+	// may write fewer bytes than requested under signal interruption /
+	// pipe-full / disk-full conditions; compare n against data.len for
+	// partial-write detection.
+	file_write :: fun(id: File_Id, data: ^[]byte) -> i64, err {
 		n := write(id, &data[0], usize(data.len))
-		if n < 0 do return 0, false
-		return n, true
+		if n < 0 do return 0, Write_Failed
+		return n
 	}
 
 	// Move the file pointer to `offset` relative to `whence` (SEEK_SET / SEEK_CUR
 	// / SEEK_END) and return the resulting absolute position. POSIX lseek.
-	file_seek :: fun(id: File_Id, offset: i64, whence: i32) -> (i64, bool) {
-		pos := lseek(id, offset, whence)
-		if pos < 0 do return 0, false
-		return pos, true
+	file_seek :: fun(id: File_Id, offset: i64, whence: u32) -> i64, err {
+		pos := lseek(id, offset, i32(whence))
+		if pos < 0 do return 0, Seek_Failed
+		return pos
 	}
 
-	file_delete :: fun(path: []utf8) -> bool {
-		return unlink(cstring(path)) == 0
+	// Deletes the file at path.
+	file_delete :: fun(path: []utf8) -> err {
+		if unlink(cstring(path)) != 0 do return Delete_Failed
 	}
 
-	// Copy `src` to `dst` via streaming read+write. Less efficient than
-	// sendfile(2) but uses APIs already bound; suitable for occasional
-	// hot-reload-style copies. Returns false on any I/O error.
-	copy_file :: fun(src: []utf8, dst: []utf8) -> bool {
-		src_id, src_ok := file_open_read(src)
-		if not src_ok do return false
-		dst_id, dst_ok := file_open_write(dst)
-		if not dst_ok {
-			close(src_id)
-			return false
+	// Copy `src` to `dst`. Overwrites `dst` if it exists. Reads and writes it
+	// in pieces: slower than sendfile(2), but it needs no more bindings, and
+	// suits occasional hot-reload-style copies.
+	copy_file :: fun(src: []utf8, dst: []utf8) -> err {
+		if bool(copy_file_pieces(src, dst)) do return Copy_Failed
+	}
+
+	// copy_file's copy, failing as whichever step did.
+	copy_file_pieces :: fun(src: []utf8, dst: []utf8) -> err {
+		from := file_open_read(src)?
+		defer file_close(from)
+		to := file_open_write(dst)?
+		defer file_close(to)
+		buf : [..512]byte
+		for true {
+			file_read(from, &buf)?
+			if buf.len == 0 do return   // the end of the file
+			file_write(to, &buf)?
 		}
-		buf : [512]byte
-		buf_slice : []byte = buf[:]
-		ok := true
-		done := false
-		for not done {
-			data, read_ok := file_read(src_id, &buf_slice)
-			if not read_ok { ok = false; done = true; continue }
-			if data.len == 0 { done = true; continue }  // EOF
-			_, write_ok := file_write(dst_id, &data)
-			if not write_ok { ok = false; done = true }
-		}
-		close(src_id)
-		close(dst_id)
-		return ok
 	}
 
 	// Last-write time as i64 (Linux's st_mtime is already a 64-bit signed
 	// seconds-since-epoch). Returns 0 on failure so callers comparing
 	// against a previous value see a "change" and react safely.
 	file_mtime :: fun(path: []utf8) -> i64 {
-		id, ok := file_open_read(path)
-		if not ok do return 0
+		id, e := file_open_read(path)
+		if bool(e) do return 0
+		defer file_close(id)
 		st : Stat
-		if fstat(id, &st) < 0 {
-			close(id)
-			return 0
-		}
-		close(id)
+		if fstat(id, &st) < 0 do return 0
 		return st.mtime
 	}
 
@@ -605,16 +597,21 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	RTLD_LAZY :: 0x1
 	RTLD_NOW  :: 0x2
 
+	// Load a shared library by name. Returns void on failure. Caller must
+	// release with free_library.
 	load_library :: fun(name: []utf8) -> ^byte {
 		return dlopen(cstring(name), RTLD_NOW)
 	}
 
+	// Look up a symbol in a loaded library. Returns void if the symbol does not
+	// exist. Cast the returned ^byte to the function pointer type at the call site.
 	find_symbol :: fun(mod: ^byte, name: []utf8) -> ^byte {
 		return dlsym(mod, cstring(name))
 	}
 
+	// Unloads a library that load_library loaded.
 	free_library :: fun(mod: ^byte) {
-		dlclose(mod)
+		_ = dlclose(mod)
 	}
 
 	// ---------------------------------------------------------------------------

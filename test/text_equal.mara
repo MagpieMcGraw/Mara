@@ -1,0 +1,24 @@
+module text_equal
+
+use mara.core
+
+// Text compares by its characters — mara.core's `overload ==` and `!=` — a
+// slice, a buffer and a literal alike. (`==` on text used to pass the
+// checker and then fail in codegen.)
+
+//@ expect-output: true true true true false false
+//@ expect-output: same
+//@ expect-output: empty true true
+
+main :: fun() {
+	a := "hello"
+	name : str64
+	&name + "hel"
+	&name + "lo"
+	s := "say hello"
+	line := s[4:9]
+	print(a == "hello", a == name, name == line, a != "help", a == "hell", a != a)
+	if name == "hello" do print("same")
+	empty : str64
+	print("empty", empty == "", empty != "x")
+}

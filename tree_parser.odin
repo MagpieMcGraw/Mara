@@ -610,7 +610,7 @@ tp_overload :: proc(p: ^Tree_Parser) -> Tree_Id {
     kw := tp_advance(p)
     op := tp_advance(p)
     #partial switch build_tokens[op].kind {
-    case .Star, .Plus, .Minus, .Slash, .Modulo:
+    case .Star, .Plus, .Minus, .Slash, .Modulo, .Equal_Equal, .Not_Equal:
     case:
         tp_error(p, op, PARSE_OVERLOAD_EXPECTED_OP, token_text(build_tokens[op]))
     }

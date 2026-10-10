@@ -380,7 +380,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         t = Type_Bool{}
     case .Equal_Equal, .Not_Equal:
         if !is_any(lt) && !is_any(rt) {
-            if is_composite(lt) || is_composite(rt) {
+            if !is_comparable(lt) || !is_comparable(rt) {
                 tc_error(k, span, TYPE_CANNOT_COMPARE_USING, type_name(lt), type_name(rt), "==" if op == .Equal_Equal else "!=")
             }
             if is_numeric(lt) && is_numeric(rt) { promote_numeric(k.c, lt, rt, span) }

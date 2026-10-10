@@ -14,7 +14,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     test_draw      1 type    · 2 funs
 
   stdlib
-    mara.core      4 types   · 2 funs
+    mara.core      4 types   · 4 funs
     mara.endian    0 types   · 9 funs
     mara.font      29 types  · 6 funs
     mara.math      4 types   · 51 funs

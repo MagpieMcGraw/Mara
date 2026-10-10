@@ -6,9 +6,8 @@
 // part of a text, without a copy. Searching is in mara.string: find,
 // find_byte, starts_with.
 //
-// Characters aren't numbers: convert one with i64(c) to do arithmetic.
-// Comparing two texts with `==` doesn't work yet: use starts_with, or
-// compare character by character.
+// Two texts compare with `==` and `!=`, by their characters. Characters
+// aren't numbers: convert one with i64(c) to do arithmetic.
 module text
 
 use mara.core
@@ -24,6 +23,7 @@ main :: fun() {
 	&name + ' '                              // one character
 	&name + "Lovelace"
 	print(name, name.len, name.cap)          // Ada Lovelace 12 64
+	print(name == "Ada Lovelace", name != "Ada")   // true true
 
 	// Each character, with its position.
 	for c, i in "abc" {

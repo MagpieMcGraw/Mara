@@ -1144,6 +1144,21 @@ is_composite :: proc(t: Type) -> bool {
     return false
 }
 
+// Whether `==` compares two values of t as they are: a scalar's bits (a
+// number, a bool, a character, an enum, a pointer, an err, a fun's value),
+// or a value not typed yet. Anything else (text: mara.core's `overload ==`)
+// compares only through an overload.
+is_comparable :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(resolve_infer(t)) {
+    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err,
+         Type_Infer_Int, Type_Infer_Float, Type_Any, Type_Error:
+        return true
+    case ^Type_Scope:
+        return v.kind == .Fun
+    }
+    return false
+}
+
 // Strict check: true only for error-recovery or genuinely untyped variables.
 // Unlike is_any, this returns false for opaque pointers (^Type_Ptr{elem=Type_Any{}}).
 // Used by codegen to decide whether to trust type info.

@@ -12,6 +12,16 @@ overload + add
 // Appends to a text buffer or a list; which one runs depends on what is added.
 add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
 
+// `a == b` on text: whether both hold the same characters.
+overload == equal
+// Whether two texts hold the same characters: `a == b`.
+equal :: dispatch{ utf8_equal }
+
+// `a != b` on text: whether their characters differ.
+overload != not_equal
+// Whether two texts' characters differ: `a != b`.
+not_equal :: dispatch{ utf8_not_equal }
+
 // Appends text to dst; it must fit in dst's capacity.
 // (We write 0 after it, so dst stays a valid C string.)
 utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
@@ -19,6 +29,20 @@ utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
 	dst[dst.len:] = src
 	dst.len += src.len
 	if dst.len < dst.cap do dst[dst.len] = 0
+}
+
+// Whether a and b hold the same characters.
+utf8_equal :: fun(a: []utf8, b: []utf8) -> bool {
+	if a.len != b.len do return false
+	for c, i in a {
+		if c != b[i] do return false
+	}
+	return true
+}
+
+// Whether a and b hold different characters.
+utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
+	return not utf8_equal(a, b)
 }
 
 // Appends one character to dst; it must fit in dst's capacity.
