@@ -24,8 +24,8 @@ main :: fun() {
 	print("% is % years old", name, age)     // Ada is 36 years old
 	print("% is 100%% done", name)           // Ada is 100% done
 
-	// An enum prints its variant's name.
-	print(Color.Green)                       // Green
+	// An enum prints its type and its variant, as an err does.
+	print(Color.Green)                       // Color.Green
 
 	// Text with several lines: \n starts a new one.
 	print("first\nsecond")

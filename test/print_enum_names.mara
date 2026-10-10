@@ -1,0 +1,28 @@
+module print_enum_names
+
+use mara.core
+
+// An enum's value prints with its enum's name, as an err's does: a plain
+// enum's, a union's tag's. A union's value prints the variant it holds, as
+// that variant's struct prints: by the variant's name alone.
+
+//@ expect-output: Color.Green
+//@ expect-output: Shape_Tag.Rect
+//@ expect-output: Rect { w: 2 }
+
+Color :: union {
+	Red
+	Green
+}
+
+Shape :: union {
+	Rect { w: i64 = 2 }
+	Dot
+}
+
+main :: fun() {
+	print(Color.Green)
+	s : Shape = Rect{}
+	print(s.tag)
+	print(s)
+}

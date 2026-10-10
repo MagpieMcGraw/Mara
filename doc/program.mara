@@ -15,6 +15,13 @@ include mara.memory
 // A constant: `::` binds a name for good. Its width is whatever each use needs.
 GREETING :: "hello"
 
+// A struct: named fields, each with a type, and a default if you like.
+// (`class` is another spelling of `struct`.)
+Point :: struct {
+	x: f32
+	y: f32 = 1
+}
+
 // A function: params with their types, then what it returns.
 twice :: fun(n: i64) -> i64 {
 	return n * 2
@@ -28,6 +35,10 @@ main :: fun() {
 	ratio : f32 = 0.5
 	count = twice(count)
 	print(GREETING, count, ratio)   // hello 6 0.5
+
+	// A struct's value: the fields given, the rest their defaults.
+	p := Point{x = 2}
+	print(p, p.x)                   // Point { x: 2, y: 1 } 2
 
 	// `if`, and `do` for a one-statement body.
 	if count > 5 do print("more than five")

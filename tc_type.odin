@@ -371,9 +371,8 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
     return Type_Error{}
 }
 
-// `Name(args)` as a type: a generic struct's instance (to come); else `T(n)`
-// — `[]T(n)`'s T, n a count its declaration or take reads (tc_count_arg) —
-// or what a constructor's call means, written where a type goes: said so.
+// `Name(args)` as a type: a generic struct's or union's instance; else what
+// a count or a constructor's call means, written where a type goes: said so.
 // (Its arguments resolved first: a name, a type; a number or an operation,
 // a size.)
 tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
@@ -386,19 +385,17 @@ tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
     return tc_generic_base(k, n, env, span)
 }
 
-// `T(n)`'s T, by its name: a struct — n a count; else an error.
+// `T(n)` where T is no generic: a distinct slice's capacity, a constructor's
+// call, or a count (`[]T(n)`: written `[:n]T`) — each an error, said so.
 tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
-    if len(tree_list(t, t.a[n])) == 1 {
+    one := len(tree_list(t, t.a[n])) == 1
+    if one {
         flat := resolve_type_name(k.pkg, name, "", env)
         if dt, ok := k.table.distinct_types[flat]; ok && is_slice_type(dt.base_type) {
             tc_error(k, tree_span(t, n), TYPE_SLICE_ALIAS_CAPACITY)
             return Type_Error{}
-        }
-        if st, ok := k.table.structs[flat]; ok { return st }
-        if found, ok := scope_lookup(env, name); ok {
-            if _, is_scope := found.(^Type_Scope); is_scope { return found }
         }
     }
     if found, ok := scope_lookup(env, name); ok {
@@ -406,20 +403,13 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
             tc_error(k, span, TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC, name, name, name, name)
             return Type_Error{}
         }
+        if _, is_scope := found.(^Type_Scope); is_scope && one {
+            tc_error(k, span, TYPE_SLICE_COUNT_SPELLING, name, name, name)
+            return Type_Error{}
+        }
     }
     tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
     return Type_Error{}
-}
-
-// `T(n)`, T no generic: n, a count — a number or an operation (a take's, a
-// name too); 0 when it is none.
-tc_count_arg :: proc(k: ^TC, n: Tree_Id, take := false) -> Tree_Id {
-    t := k.t
-    if n == 0 || t.tag[n] != .Type_Generic || tc_name(k, n) in k.templates { return 0 }
-    args := tree_list(t, t.a[n])
-    if len(args) != 1 { return 0 }
-    if tc_is_type_tag(t.tag[args[0]]) && !(take && t.tag[args[0]] == .Type_Name) { return 0 }
-    return args[0]
 }
 
 tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {

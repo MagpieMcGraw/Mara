@@ -584,9 +584,14 @@ gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "")
     if name != "" {
         say(g, name)
     } else if st.is_union_variant {
+        // (Its tag, by the variant's bare name: it names the struct.)
+        at := fresh_tmp(g)
+        emit_field_gep_into(g, at, st_llvm, addr, 0)
+        et := distinct_base(st.fields[0].type_).(^Type_Enum)
+        tag_ir := llvm_type_from_checker(et)
         tag := fresh_tmp(g)
-        emit_field_gep_into(g, tag, st_llvm, addr, 0)
-        emit_print_at_addr(g, tag, st.fields[0].type_)
+        emit_load_into(g, tag, tag_ir, at)
+        gen_print_enum(g, tag, tag_ir, et, named = false)
     } else {
         say(g, print_struct_name(st))
     }
@@ -659,7 +664,7 @@ print_struct_name :: proc(sd: ^Scope_Body) -> string {
 // tag). Variants are sorted by value for stable IR; same-value aliases keep
 // the first in name order — LLVM's switch requires unique case values, so
 // duplicates are folded into one case.
-gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum) {
+gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum, named := true) {
     Variant :: struct { name: string, value: int }
     entries := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
     for name, value in et.variants {
@@ -691,15 +696,11 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
     strings.write_string(&sw, "  ]")
     emit_raw(g, strings.to_string(sw))
 
-    // error_kinds print namespaced (`File_Error.Not_Found`) so the variant
-    // name alone — which can collide across sets — stays unambiguous in logs.
-    // Regular enums print just the variant for compactness (Tag_u8.B -> "B").
+    // A variant prints with its enum's name (`Color.Green`, `File_Error.Not_Found`,
+    // a union's tag `Shape_Tag.Rect`): a variant's name alone can be any enum's.
+    // (Not `named`: the variant's alone, as a union variant's struct is named.)
     name_prefix := ""
-    if et.is_error_kind {
-        prefix_name := et.source_name
-        if prefix_name == "" { prefix_name = et.name }
-        name_prefix = strings.concatenate({prefix_name, "."}, context.temp_allocator)
-    }
+    if named { name_prefix = strings.concatenate({et.source_name if et.source_name != "" else et.name, "."}, context.temp_allocator) }
 
     for entry, i in dedup {
         emit_label(g, case_labels[i])

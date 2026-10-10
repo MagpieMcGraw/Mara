@@ -1,0 +1,12 @@
+module slice_count_spelling_neg
+
+// MUST FAIL: a slice of n elements is written `[:n]T`; `[]T(n)` is no
+// longer a second spelling of it (it read like a generic type's instance).
+//@ expect-fail: is no type: n of Node are written `[:n]Node`
+
+Node :: struct { v: i64 }
+
+main :: fun() {
+	s : []Node(4)
+	print(s.cap)
+}

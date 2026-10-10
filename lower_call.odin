@@ -216,8 +216,6 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     case ty == 0:
     case t.tag[ty] == .Type_Slice && t.a[ty] != 0:
         count = Tree_Id(t.a[ty])
-    case t.tag[ty] == .Type_Slice && tc_count_arg(k, Tree_Id(t.b[ty]), take = true) != 0:
-        count = tc_count_arg(k, Tree_Id(t.b[ty]), take = true)
     }
     if want == .Place || !lw_carves_place(k, storage) { lw_fail(k, n, "a take's place, or a take from no plain place") }
     count_op := NO_VALUE

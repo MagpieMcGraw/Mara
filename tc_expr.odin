@@ -66,7 +66,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     case .Take:
         return tc_take(k, n, env)
     case .Type_Name:
-        // (A count written where a type's argument goes — `[]T(n)`'s n: the name.)
+        // (A name written where a type's argument goes, standing for a value.)
         return tc_ident(k, n, env)
     case .Hash_Name:
         return tc_hash_name(k, n, env)

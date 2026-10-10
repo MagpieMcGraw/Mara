@@ -2104,7 +2104,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     return true
 }
 
-// A sized slice, `s : []T(n)`: storage for n elements on the stack (bytes
+// A sized slice, `s : [:n]T`: storage for n elements on the stack (bytes
 // 16-aligned, for what's taken from them), zeroed, and s's header over it —
 // len 0, cap n. (A big one, on the arena: later.)
 @(private="file")

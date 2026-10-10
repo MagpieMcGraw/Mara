@@ -89,6 +89,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     ut.tag_type, ut.min_size = tag_type, min_size
     tag_et := new(Type_Enum)
     tag_et.name = make_flat_name(k.pkg, strings.concatenate({name, "_Tag"}))
+    tag_et.source_name = strings.concatenate({name, "_Tag"})
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = k.pkg, tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     k.table.enums[tag_et.name] = tag_et
@@ -269,6 +270,7 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     if pad != 0 { ut.tag_pad = tc_type(k, pad, tmpl.env, span) }
     tag_et := new(Type_Enum)
     tag_et.name = make_flat_name(tmpl.pkg, strings.concatenate({mangled, "_Tag"}))
+    tag_et.source_name = strings.concatenate({mangled, "_Tag"})
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = tmpl.pkg, tag_type, def_span, true
     // (Each variant's tag: as written, else one past the one before.)
     variants := tree_list(t, t.b[tmpl.node])

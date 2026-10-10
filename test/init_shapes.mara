@@ -24,7 +24,7 @@ written_through_alias :: fun(src: ^Node) -> bool {
 
 // A sized slice has its storage from the start.
 sized_slice :: fun() -> i64 {
-	s : []Node(4)
+	s : [:4]Node
 	return s.cap
 }
 
