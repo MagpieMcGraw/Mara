@@ -616,10 +616,13 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     span := tree_span(t, s)
     v := for_view(t, s)
     tag := t.tag[s]
-    fl := graph_build_for(b, {span = span, var_name = tc_text(v.var) if v.var != 0 else "",
-                            elem_name = tc_text(v.elem) if v.elem != 0 else "",
-                            index_name = tc_text(v.index) if v.index != 0 else "",
-                            var_tok = v.var, elem_tok = v.elem, index_tok = v.index,
+    // (A loop variable named `_` is none: the loop counts, or walks, for no one.)
+    named :: proc(tok: Token_Id) -> Token_Id { return tok if tok != 0 && tc_text(tok) != "_" else 0 }
+    var_tok, elem_tok, index_tok := named(v.var), named(v.elem), named(v.index)
+    fl := graph_build_for(b, {span = span, var_name = tc_text(var_tok) if var_tok != 0 else "",
+                            elem_name = tc_text(elem_tok) if elem_tok != 0 else "",
+                            index_name = tc_text(index_tok) if index_tok != 0 else "",
+                            var_tok = var_tok, elem_tok = elem_tok, index_tok = index_tok,
                             is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
                             end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number,
                             body_arena = lw_scope_arena(k, v.body, b.body.returned)})

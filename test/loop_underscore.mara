@@ -1,0 +1,41 @@
+module loop_underscore
+
+use mara.core
+
+// A loop variable named `_` is none: the loop counts, or walks, for no one.
+// It compiled before, but the graph made `_` a variable the checker hadn't,
+// and `mara ask` lost answers about every program using one (os.mara's
+// pipe_connect had one). A range counted, a collection walked, an element
+// or an index left out.
+
+//@ expect-output: counted 5
+//@ expect-output: walked 3
+//@ expect-output: sum 60
+//@ expect-output: index sum 3
+
+main :: fun() {
+	n := 0
+	for _ in 0 .. 5 {
+		n += 1
+	}
+	print("counted", n)
+	data : [3]i64
+	data[0] = 10
+	data[1] = 20
+	data[2] = 30
+	m := 0
+	for _ in data {
+		m += 1
+	}
+	print("walked", m)
+	total : i64 = 0
+	for x, _ in data {
+		total += x
+	}
+	print("sum", total)
+	idx := 0
+	for _, i in data {
+		idx += i
+	}
+	print("index sum", idx)
+}

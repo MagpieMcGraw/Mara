@@ -627,8 +627,9 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             }
         }
         if v.type_ != 0 { elem = tc_type(k, v.type_, env, span) }
-        if v.elem != 0 { tc_bind(k, child, tc_text(v.elem), elem, {v.elem, .Local}) }
-        if v.index != 0 { tc_bind(k, child, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+        // (A loop variable named `_` is none: nothing the body can name.)
+        if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, child, tc_text(v.elem), elem, {v.elem, .Local}) }
+        if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, child, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
         tc_scope(k, v.body, child)
     case .For_Range:
         lt := tc_check(k, v.lo, child)
@@ -642,7 +643,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         lc, lc_ok := tc_comptime_int(k, v.lo, child)
         hc, hc_ok := tc_comptime_int(k, v.hi, child)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
-        tc_bind(k, child, tc_text(v.var), it, {v.var, .Local})
+        if tc_text(v.var) != "_" { tc_bind(k, child, tc_text(v.var), it, {v.var, .Local}) }
         tc_scope(k, v.body, child)
     case:
         if v.init != 0 { tc_stmt(k, v.init, child) }

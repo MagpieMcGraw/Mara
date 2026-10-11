@@ -2805,8 +2805,13 @@ graph_build_for :: proc(b: ^Graph_Builder, loop: Graph_Loop) -> Graph_For {
     return fl
 }
 
-// A range's counter, before its bounds (typed once they are checked).
+// A range's counter, before its bounds (typed once they are checked): the
+// loop's own when no variable is named (`for _ in`).
 graph_build_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
+    if fl.var_name == "" {
+        fl.counter = graph_slot(b, "counter", nil, fl.span)
+        return
+    }
     fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.var_name, nil, fl.span)
     graph_declare(b, fl.counter, fl.var_tok)
 }
@@ -2830,7 +2835,7 @@ graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
         up := graph_op_value(b, .Compare, .Synthetic, fl.span, Type_Bool{}, "<=", fl.lo, fl.hi)
         graph_op(b, .Assert, .Synthetic, fl.span, nil, "range", up)
     }
-    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.var_name, fl.counter, ct, fl.span), fl.lo)
+    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, fl.span), fl.lo)
     graph_build_for_runs(b, fl)
 }
 
