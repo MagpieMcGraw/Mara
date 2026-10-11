@@ -465,6 +465,8 @@ CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested b
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
 CODE_GRAPH_UNLOWERED :: "can't lower '%s' from the program graph: its %s '%s'%s"
+CODE_TEMPORARY_TOO_LARGE :: "the result of '%s' (%s, %d bytes) is held in a temporary here, and that's too large for the stack%s"
+CODE_TEMPORARY_TOO_LARGE_CALL :: ". It can't be built where it goes while the call may reach that through what it's passed: declare it first (`x := %s(…)` is built in place), or have '%s' fill a pointer instead"
 CODE_GRAPH_NO_SCOPE :: "'%s' has no scope in the program graph"
 CODE_GRAPH_NO_CODE :: "'%s' has no code in the program graph"
 CODE_TEXT_LONGER_THAN_ARRAY :: "text of %d bytes into an array of %d"

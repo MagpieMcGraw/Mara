@@ -2600,11 +2600,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         for rt, i in callee.cg_returns {
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
             if llvm_aggregate(rt) { at[i] = llvm_declared_at(e, Operand{op, i32(i)}) }
-            if at[i] == "" {
-                if routes_to_arena(rt) { e.note = "a big result (on the arena: later)"; return false }
-                at[i] = fresh_tmp(g)
-                emit_alloca(g, at[i], llvm_alloca_type(rt))
-            }
+            if at[i] == "" { at[i] = llvm_temporary(e, op, callee, rt, llvm_alloca_type(rt)) }
             append(&args, fmt.tprintf("ptr %s", at[i]))
         }
         emit(g, "  call void %s(%s)", name, strings.join(args[:], ", ", context.temp_allocator))
@@ -2641,10 +2637,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
                 at = llvm_place(e, dest)
             }
         }
-        if at == "" {
-            at = fresh_tmp(g)
-            emit_alloca(g, at, ret)
-        }
+        if at == "" { at = llvm_temporary(e, op, callee, result, ret) }
         emit_store(g, ret, tmp, at)
         // Its partial arrays pointed into the callee's frame, gone: re-pointed
         // at its own elements.
@@ -2678,8 +2671,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
-            slot = fresh_tmp(g)
-            emit_alloca(g, slot, llvm_type_from_checker(result))
+            slot = llvm_temporary(e, op, callee, result)
             append(&args, fmt.tprintf("ptr sret(%s) %s", llvm_type_from_checker(result), slot))
         }
     }
@@ -2841,12 +2833,24 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
             }
         }
     }
-    // (A struct's temporary is on the stack whatever its size; another big
-    // one goes on the arena: later.)
-    if routes_to_arena(result) && llvm_struct(result) == nil { return "", false }
+    return llvm_temporary(e, op, callee, result), true
+}
+
+// A temporary on the stack for a call's result. One as big as a local gets
+// an arena for (routes_to_arena) is an error at the call, not a stack that
+// overflows when it runs. (A Mara fun's struct result is one only when it
+// can't be built where it goes, llvm_result_place: a declaration's always
+// can. A C fun's slot and a union's value always are.)
+@(private="file")
+llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: string = "") -> string {
+    if routes_to_arena(t) {
+        name := scope_display_name(callee)
+        hint := "" if callee.calling_conv == .C || llvm_union(t) != nil else fmt.tprintf(CODE_TEMPORARY_TOO_LARGE_CALL, name, name)
+        codegen_fatal(e.g, e.pg.origin[op], CODE_TEMPORARY_TOO_LARGE, name, type_name(t), type_size(t), hint)
+    }
     tmp := fresh_tmp(e.g)
-    emit_alloca(e.g, tmp, llvm_type_from_checker(result))
-    return tmp, true
+    emit_alloca(e.g, tmp, ir if ir != "" else llvm_type_from_checker(t))
+    return tmp
 }
 
 // Each functional update `x = f(x, …)` — f consumes that argument (builds its
