@@ -1,0 +1,110 @@
+module pipe_listen
+
+use mara.core
+use mara.os
+
+// Named pipes (os.mara): a program listens on a name and starts two of
+// itself as clients that connect at once; it holds both connections, then
+// answers each on its own — the second first. Accepting doesn't wait while
+// nobody connects. A second listener on the name is turned away, a name
+// nobody listens on can't be connected to, and once the listener stops the
+// name is free again.
+
+//@ expect-output: nobody yet: true
+//@ expect-output: second listener: Pipe_Error.Name_Taken
+//@ expect-output: nobody there: Pipe_Error.Connect_Failed
+//@ expect-output: answered 2
+//@ expect-output: client exits: 7 7
+//@ expect-output: listening again: true
+
+NAME :: "mara-test-pipe-listen"
+
+// A client: connects, says its word, and exits 7 when its word comes back.
+client :: fun(word: []utf8) -> i64 {
+	id, e := pipe_connect(NAME)
+	if bool(e) do return 1
+	question : []byte = word[:]
+	_, we := file_write(id, &question)
+	if bool(we) do return 2
+	answer : [..64]byte
+	re := file_read(id, &answer)
+	file_close(id)
+	if bool(re) do return 3
+	text : []utf8 = answer[:]
+	if text == word do return 7
+	return 4
+}
+
+// This program again, as a client saying a word.
+start_client :: fun(word: []utf8) -> Process, err {
+	command : str256
+	&command + "\""
+	&command + this_program.args[0]
+	&command + "\" client "
+	&command + word
+	return process_start(command)
+}
+
+// Its word back, on one connection.
+answer :: fun(c: File_Id) -> err {
+	question : [..64]byte
+	file_read(c, &question)?
+	bytes : []byte = question[:]
+	file_write(c, &bytes)?
+	file_close(c)
+}
+
+main :: fun() -> i64 {
+	if this_program.args.len > 2 do return client(this_program.args[2])
+	l, e := pipe_listen(NAME)
+	if bool(e) {
+		print("listen failed:", e)
+		return 1
+	}
+	none, ne := pipe_accept(&l)
+	print("nobody yet:", none == NO_FILE and not bool(ne))
+	_, e2 := pipe_listen(NAME)
+	print("second listener:", e2)
+	_, e3 := pipe_connect("mara-test-nobody-listens-here")
+	print("nobody there:", e3)
+
+	a, ae := start_client("alpha")
+	b, be := start_client("beta")
+	if bool(ae) or bool(be) {
+		print("start failed")
+		return 1
+	}
+	held : [2]File_Id
+	n := 0
+	for n < 2 {
+		c, ce := pipe_accept(&l)
+		if bool(ce) {
+			print("accept failed:", ce)
+			return 1
+		}
+		if c != NO_FILE {
+			held[n] = c
+			n += 1
+		}
+	}
+	e4 := answer(held[1])
+	e5 := answer(held[0])
+	if bool(e4) or bool(e5) {
+		print("answer failed")
+		return 1
+	}
+	print("answered", n)
+	ca, xa := process_wait(&a)
+	cb, xb := process_wait(&b)
+	if bool(xa) or bool(xb) {
+		print("wait failed")
+		return 1
+	}
+	print("client exits:", ca, cb)
+
+	pipe_listen_stop(&l)
+	l2, e6 := pipe_listen(NAME)
+	print("listening again:", not bool(e6))
+	pipe_listen_stop(&l2)
+	return 0
+}

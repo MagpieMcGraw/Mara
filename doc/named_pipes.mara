@@ -1,0 +1,97 @@
+// How to make a program others connect to: it listens on a name, and
+// programs on this machine connect to it by that name — several at once,
+// each with a connection of its own.
+//
+// pipe_listen claims a name, a word such as "mara-view-game"; it fails with
+// Name_Taken when another program has it. pipe_accept returns the next
+// connection once a program has connected, and NO_FILE while none has: it
+// doesn't wait, so a program with other work, a window drawing its frames,
+// looks each frame. pipe_connect is the other side. A connection is read
+// and written as a file is — file_read, pipe_read not to wait, file_write —
+// and file_close ends it. pipe_listen_stop frees the name.
+//
+// This program listens, then runs itself again as the one that connects
+// (see processes.mara), which asks a question and prints the answer.
+module named_pipes
+
+use mara.core
+use mara.os
+
+NAME :: "mara-doc-named-pipes"
+
+// The program that connects: asks, and prints what comes back.
+ask :: fun() {
+	id, e := pipe_connect(NAME)
+	if bool(e) {
+		print("couldn't connect:", e)
+		return
+	}
+	defer file_close(id)
+	question := "what's six times seven?"
+	bytes : []byte = question[:]
+	_, we := file_write(id, &bytes)
+	if bool(we) do print("couldn't ask:", we)
+	answer : [..64]byte
+	re := file_read(id, &answer)
+	if bool(re) do print("couldn't read the answer:", re)
+	text : []utf8 = answer[:]
+	print("the answer:", text)
+}
+
+main :: fun() -> i64 {
+	if this_program.args.len > 1 {
+		ask()
+		return 0
+	}
+	l, e := pipe_listen(NAME)
+	if bool(e) {
+		print("couldn't listen:", e)
+		return 1
+	}
+	defer pipe_listen_stop(&l)
+
+	command : str256
+	&command + "\""
+	&command + this_program.args[0]
+	&command + "\" ask"
+	p, pe := process_start(command)
+	if bool(pe) {
+		print("couldn't start it:", pe)
+		return 1
+	}
+
+	// Look until it connects. (A window would draw a frame between looks.)
+	c := NO_FILE
+	for c == NO_FILE {
+		got, ae := pipe_accept(&l)
+		if bool(ae) {
+			print("couldn't accept:", ae)
+			return 1
+		}
+		c = got
+	}
+	question : [..64]byte
+	qe := file_read(c, &question)
+	if bool(qe) do print("couldn't read the question:", qe)
+	text : []utf8 = question[:]
+	print("asked:", text)
+	reply := "42"
+	bytes : []byte = reply[:]
+	_, we := file_write(c, &bytes)
+	if bool(we) do print("couldn't answer:", we)
+	file_close(c)
+
+	// What the other program printed, to its end.
+	out : [..200]byte
+	chunk : [..64]byte
+	for true {
+		oe := file_read(p.output, &chunk)
+		if bool(oe) or chunk.len == 0 do break
+		&out + chunk[:]
+	}
+	said : []utf8 = out[:]
+	print("it printed:", said)
+	_, xe := process_wait(&p)
+	if bool(xe) do print("couldn't wait for it:", xe)
+	return 0
+}

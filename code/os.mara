@@ -25,6 +25,14 @@ Process_Error :: error {
     Wait_Failed
 }
 
+// What listening on a name, or connecting to one, can fail with.
+Pipe_Error :: error {
+    Listen_Failed
+    Name_Taken       // another program listens on the name
+    Accept_Failed
+    Connect_Failed   // nobody listens on the name
+}
+
 // Whence values for file_seek — identical numeric values on Win32
 // (FILE_BEGIN/CURRENT/END) and POSIX (SEEK_SET/CUR/END), so one set serves both.
 SEEK_SET :: 0   // relative to the start of the file
@@ -460,6 +468,112 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	ERROR_BROKEN_PIPE    :: 109
 
 	// ---------------------------------------------------------------------------
+	// Named pipes: a program others connect to, by a name
+	// ---------------------------------------------------------------------------
+
+	// A name a program listens on (pipe_listen), for others on this machine
+	// to connect to (pipe_connect). `id` is the pipe waiting for the next.
+	Pipe_Listener :: struct {
+		name: [..300]utf8   // \\.\pipe\ and the name
+		id:   File_Id
+	}
+
+	// Listens on a name — a word, such as "mara-view-game" — for programs on
+	// this machine to connect to; pipe_accept takes each. Fails with
+	// Name_Taken when another program listens on it.
+	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
+		l : Pipe_Listener
+		if name.len > 200 do return l, Listen_Failed
+		&l.name + "\\\\.\\pipe\\"
+		&l.name + name
+		l.id = pipe_instance(&l, FILE_FLAG_FIRST_PIPE_INSTANCE)
+		if l.id == INVALID_HANDLE_VALUE {
+			l.id = NO_FILE
+			if GetLastError() == ERROR_ACCESS_DENIED do return l, Name_Taken
+			return l, Listen_Failed
+		}
+		return l
+	}
+
+	// The next program to connect to the listener's name, when one has: its
+	// connection, to read from and write to as a file's id (pipe_read not to
+	// wait), file_close ending it. NO_FILE when none has — it doesn't wait,
+	// so a window can look each frame.
+	pipe_accept :: fun(l: ^Pipe_Listener) -> File_Id, err {
+		if l.id == NO_FILE {
+			// (The last accept couldn't make the next one waiting: again.)
+			l.id = pipe_instance(l, 0)
+			if l.id == INVALID_HANDLE_VALUE {
+				l.id = NO_FILE
+				return NO_FILE, Accept_Failed
+			}
+		}
+		// (Not waiting, ConnectNamedPipe says how it is: true, listening
+		// from now on; then listening still, connected, or one came and went.)
+		if bool(ConnectNamedPipe(l.id, void)) do return NO_FILE
+		e := GetLastError()
+		if e == ERROR_PIPE_LISTENING do return NO_FILE
+		if e == ERROR_NO_DATA {
+			_ = DisconnectNamedPipe(l.id)
+			return NO_FILE
+		}
+		if e != ERROR_PIPE_CONNECTED do return NO_FILE, Accept_Failed
+		// (Theirs now, its reads and writes waiting as a file's do; a new
+		// one waits for the next.)
+		mode: u32 = PIPE_WAIT
+		_ = SetNamedPipeHandleState(l.id, &mode, void, void)
+		taken := l.id
+		l.id = pipe_instance(l, 0)
+		if l.id == INVALID_HANDLE_VALUE do l.id = NO_FILE
+		return taken
+	}
+
+	// Connects to a name a program listens on (pipe_listen): the connection,
+	// to write to and read from as a file's id, file_close ending it. Fails
+	// with Connect_Failed when nobody listens there.
+	pipe_connect :: fun(name: []utf8) -> File_Id, err {
+		full : [..300]utf8
+		if name.len > 200 do return NO_FILE, Connect_Failed
+		&full + "\\\\.\\pipe\\"
+		&full + name
+		for _ in 0 .. 5 {
+			id := CreateFileA(cstring(full), GENERIC_READ | GENERIC_WRITE, 0, void, OPEN_EXISTING, 0, NO_FILE)
+			if id != INVALID_HANDLE_VALUE do return id
+			// (Each one taken, between one accept and the next: wait for one.)
+			if GetLastError() != ERROR_PIPE_BUSY do return NO_FILE, Connect_Failed
+			_ = WaitNamedPipeA(cstring(full), 1000)
+		}
+		return NO_FILE, Connect_Failed
+	}
+
+	// Stops listening: the name free for another. Connections taken stay
+	// open until closed.
+	pipe_listen_stop :: fun(l: ^Pipe_Listener) {
+		file_close(l.id)
+		l.id = NO_FILE
+	}
+
+	// One pipe of the listener's name, waiting for a program to connect:
+	// not blocking (pipe_accept looks, and returns), and for this machine
+	// only.
+	pipe_instance :: fun(l: ^Pipe_Listener, first: u32) -> File_Id {
+		return CreateNamedPipeA(cstring(l.name), PIPE_ACCESS_DUPLEX | first, PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+		                        PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, void)
+	}
+
+	PIPE_ACCESS_DUPLEX            :: 0x00000003
+	FILE_FLAG_FIRST_PIPE_INSTANCE :: 0x00080000   // fails when the name is taken
+	PIPE_WAIT                     :: 0x00000000   // (byte mode: 0 too)
+	PIPE_NOWAIT                   :: 0x00000001
+	PIPE_REJECT_REMOTE_CLIENTS    :: 0x00000008
+	PIPE_UNLIMITED_INSTANCES      :: 255
+	ERROR_ACCESS_DENIED           :: 5
+	ERROR_PIPE_BUSY               :: 231
+	ERROR_NO_DATA                 :: 232
+	ERROR_PIPE_CONNECTED          :: 535
+	ERROR_PIPE_LISTENING          :: 536
+
+	// ---------------------------------------------------------------------------
 	// kernel32 bindings
 	// ---------------------------------------------------------------------------
 	// Static-linked: clang resolves the symbols against kernel32.lib at link
@@ -541,6 +655,21 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun GetStdHandle(which: u32) -> File_Id
 		fun GetLastError() -> u32
 		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
+
+		// Named pipes
+		fun CreateNamedPipeA(
+			name:          cstring,
+			open_mode:     u32,
+			pipe_mode:     u32,
+			max_instances: u32,
+			out_size:      u32,
+			in_size:       u32,
+			timeout:       u32,
+			attributes:    ^SECURITY_ATTRIBUTES) -> File_Id
+		fun ConnectNamedPipe(pipe: File_Id, overlapped: ^byte) -> i32
+		fun DisconnectNamedPipe(pipe: File_Id) -> i32
+		fun SetNamedPipeHandleState(pipe: File_Id, mode: ^u32, max_collection: ^u32, timeout: ^u32) -> i32
+		fun WaitNamedPipeA(name: cstring, timeout: u32) -> i32
 	}
 }
 
@@ -816,6 +945,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		end := command.len
 		if end == command.cap do end -= 1
 		if end < 0 or whole[end] != 0 do return Process{}, Start_Failed
+		ignore_broken_pipes()
 		// (The words sh runs with, each ending in a 0; then the end of them.)
 		sh := "/bin/sh"
 		dash_c := "-c"
@@ -921,6 +1051,125 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	POLLIN :: 0x0001
 
 	// ---------------------------------------------------------------------------
+	// Named pipes: a program others connect to, by a name (a Unix socket)
+	// ---------------------------------------------------------------------------
+
+	// A name a program listens on (pipe_listen), for others on this machine
+	// to connect to (pipe_connect). `id` is the socket listening.
+	Pipe_Listener :: struct {
+		at: Sockaddr_Un   // its socket's path
+		id: File_Id
+	}
+
+	// Listens on a name — a word, such as "mara-view-game" — for programs on
+	// this machine to connect to; pipe_accept takes each. Fails with
+	// Name_Taken when another program listens on it.
+	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
+		l : Pipe_Listener
+		l.id = NO_FILE
+		if not pipe_address(name, &l.at) do return l, Listen_Failed
+		ignore_broken_pipes()
+		// (A socket there that answers: another listens. One that doesn't:
+		// left by a listener that ended — removed.)
+		probe := socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
+		if probe == NO_FILE do return l, Listen_Failed
+		taken := connect(probe, &l.at, SOCKADDR_UN_SIZE) == 0
+		_ = close(probe)
+		if taken do return l, Name_Taken
+		_ = unlink(cstring(l.at.path[:]))
+		l.id = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+		if l.id == NO_FILE do return l, Listen_Failed
+		if bind(l.id, &l.at, SOCKADDR_UN_SIZE) != 0 or listen(l.id, 16) != 0 {
+			_ = close(l.id)
+			l.id = NO_FILE
+			return l, Listen_Failed
+		}
+		return l
+	}
+
+	// The next program to connect to the listener's name, when one has: its
+	// connection, to read from and write to as a file's id (pipe_read not to
+	// wait), file_close ending it. NO_FILE when none has — it doesn't wait,
+	// so a window can look each frame.
+	pipe_accept :: fun(l: ^Pipe_Listener) -> File_Id, err {
+		id := accept4(l.id, void, void, SOCK_CLOEXEC)   // (its reads and writes wait, as a file's)
+		if id != NO_FILE do return id
+		e := __errno_location()^
+		// (Nobody yet; one that came and went; a signal.)
+		if e == EAGAIN or e == ECONNABORTED or e == EINTR do return NO_FILE
+		return NO_FILE, Accept_Failed
+	}
+
+	// Connects to a name a program listens on (pipe_listen): the connection,
+	// to write to and read from as a file's id, file_close ending it. Fails
+	// with Connect_Failed when nobody listens there.
+	pipe_connect :: fun(name: []utf8) -> File_Id, err {
+		at : Sockaddr_Un
+		if not pipe_address(name, &at) do return NO_FILE, Connect_Failed
+		ignore_broken_pipes()
+		id := socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
+		if id == NO_FILE do return NO_FILE, Connect_Failed
+		if connect(id, &at, SOCKADDR_UN_SIZE) != 0 {
+			_ = close(id)
+			return NO_FILE, Connect_Failed
+		}
+		return id
+	}
+
+	// Stops listening: the name free for another. Connections taken stay
+	// open until closed.
+	pipe_listen_stop :: fun(l: ^Pipe_Listener) {
+		if l.id == NO_FILE do return
+		_ = close(l.id)
+		l.id = NO_FILE
+		_ = unlink(cstring(l.at.path[:]))
+	}
+
+	// A name's socket address: <name>.sock in the user's own runtime
+	// directory ($XDG_RUNTIME_DIR), else /tmp. False when too long for one.
+	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> bool {
+		path : [..108]utf8
+		dir := getenv("XDG_RUNTIME_DIR")
+		if dir == void {
+			&path + "/tmp"
+		else
+			&path + read_cstring(100, dir)
+		}
+		if path.len + name.len + 6 >= 108 do return false
+		&path + "/"
+		&path + name
+		&path + ".sock"
+		at.family = AF_UNIX
+		for c, i in path {
+			at.path[i] = c
+		}
+		return true
+	}
+
+	// A write to a pipe or socket nobody reads any more: Write_Failed, not
+	// SIGPIPE ending the program.
+	ignore_broken_pipes :: fun() {
+		_ = signal(SIGPIPE, SIG_IGN)
+	}
+
+	// A Unix socket's address: its path, ending in a 0.
+	Sockaddr_Un :: struct {
+		family: u16
+		path:   [108]utf8
+	}
+
+	SOCKADDR_UN_SIZE :: 110
+	AF_UNIX          :: 1
+	SOCK_STREAM      :: 1
+	SOCK_NONBLOCK    :: 0x800
+	SOCK_CLOEXEC     :: 0x80000
+	SIGPIPE          :: 13
+	SIG_IGN          :: 1
+	EINTR            :: 4
+	EAGAIN           :: 11
+	ECONNABORTED     :: 103
+
+	// ---------------------------------------------------------------------------
 	// libc bindings
 	// ---------------------------------------------------------------------------
 	// Static-linked: clang resolves against libc at link time. ssize_t is i64
@@ -956,5 +1205,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun _exit(code: i32)
 		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
 		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
+
+		// Named pipes: Unix sockets
+		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id
+		fun bind(fd: File_Id, at: ^Sockaddr_Un, size: u32) -> i32
+		fun listen(fd: File_Id, backlog: i32) -> i32
+		fun accept4(fd: File_Id, at: ^byte, size: ^u32, flags: i32) -> File_Id
+		fun connect(fd: File_Id, at: ^Sockaddr_Un, size: u32) -> i32
+		fun getenv(name: cstring) -> ^byte
+		fun signal(sig: i32, handler: usize) -> usize
+		fun __errno_location() -> ^i32
 	}
 }
