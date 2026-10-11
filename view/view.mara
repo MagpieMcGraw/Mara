@@ -20,7 +20,6 @@ PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
 PAD       :: 12.0            // room around text: a panel's margin, a column's
 ROW_PAD   :: 3.0             // room above and below a line of text in a bar or row
-FRAME_MS  :: u64(8)          // the least time between two frames drawn
 
 // The window and what it shows.
 Ui :: struct {
@@ -30,6 +29,7 @@ Ui :: struct {
 	font:     [..1000]utf8   // the font's path
 	layout_path: [..1000]utf8
 	density:  f32            // pixels a window unit (a high-density display has more)
+	frame_ns: u64            // the display's time between frames: as often as it's drawn
 	width:    f32            // the window's size, pixels
 	height:   f32
 	saved_width:  f64        // its size as layout.txt had it
@@ -101,10 +101,10 @@ main :: fun() -> i64 {
 	defer Quit()
 	ui.window = CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
 	ui.renderer = CreateRenderer(ui.window, void)
-	// (No vsync: it's drawn only when what it shows changes, and a frame
-	// sent waits for none before it — with vsync, frames sent faster than the
-	// screen shows them queue up, and a click's waits behind them.)
-	_ = SetRenderVSync(ui.renderer, 0)
+	// (Vsync, and frames no oftener than the display shows them (run): sent
+	// faster, they'd queue to be shown, behind the mouse — a click's, a
+	// dragged panel's.)
+	_ = SetRenderVSync(ui.renderer, 1)
 	for id in 0 .. 10 {
 		ui.cursors[id] = CreateSystemCursor(i32(id))
 	}
@@ -131,24 +131,25 @@ main :: fun() -> i64 {
 }
 
 // Events until the window closes: drawn again when what it shows changed —
-// no oftener than FRAME_MS: a mouse moving says so a thousand times a second
-// — and the profile read again when the file changed. (Waiting, not
-// spinning: for an event, a quarter second at most to look at the file, or,
-// with something to draw, until it's time to.)
+// no oftener than the display shows frames: a mouse moving says so a
+// thousand times a second — and the profile read again when the file
+// changed. (Waiting, not spinning: for an event, a quarter second at most to
+// look at the file, or, with something to draw, until it's time to.)
 run :: fun(ui: ^Ui, p: ^Profile) {
 	looked := GetTicks()
 	drawn : u64 = 0   // when it was last drawn (GetTicksNS)
 	for ui.running {
 		wait : i32 = 250
 		if ui.dirty {
-			since := (GetTicksNS() - drawn) / 1000000
-			if since >= FRAME_MS {
+			// (A frame's time less a little: vsync keeps it to the display.)
+			since := GetTicksNS() - drawn
+			if since + ui.frame_ns / 8 >= ui.frame_ns {
 				measure(ui)
 				draw_window(ui, p)
 				drawn = GetTicksNS()
 				ui.dirty = false
 			else
-				wait = i32(FRAME_MS - since)
+				wait = i32((ui.frame_ns - since) / 1000000) + 1
 			}
 		}
 		ev : Event
@@ -293,6 +294,13 @@ measure :: fun(ui: ^Ui) {
 	ui.height = f32(h)
 	ui.density = 1.0
 	if units_w > 0 do ui.density = f32(w) / f32(units_w)
+	// (The display's refresh: 60 a second when it doesn't say.)
+	hz : f32 = 60.0
+	mode := GetCurrentDisplayMode(GetDisplayForWindow(ui.window))
+	if mode != void {
+		if mode.refresh_rate > 1.0 do hz = mode.refresh_rate
+	}
+	ui.frame_ns = u64(1000000000.0 / hz)
 }
 
 // The room the window's display has for it, window units: the display's

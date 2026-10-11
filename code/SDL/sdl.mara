@@ -1003,6 +1003,19 @@ SDL_FRect :: struct {
     h: f32
 }
 
+// SDL_DisplayMode — a display's size and refresh rate (GetCurrentDisplayMode).
+Display_Mode :: struct {
+    display:      u32
+    format:       u32
+    w:            i32
+    h:            i32
+    pixel_density: f32
+    refresh_rate: f32     // frames a second; 0 when the display doesn't say
+    refresh_numerator:   i32
+    refresh_denominator: i32
+    internal:     ^byte
+}
+
 // SDL_Rect — whole pixels: a texture's region to update, the clip rect.
 SDL_Rect :: struct {
     x: i32
@@ -1163,6 +1176,8 @@ foreign static_lib "SDL3" prefix SDL_ {
     // (the taskbar's left out).
     fun GetDisplayForWindow(window: Window) -> u32
     fun GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> bool
+    // The display's mode now: its refresh rate among it. (void: none.)
+    fun GetCurrentDisplayMode(display: u32) -> ^Display_Mode
     // The modifier keys held now: KMOD_SHIFT, ...
     fun GetModState() -> u16
     // Where the cursor is on the screen (and the buttons held).

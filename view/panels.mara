@@ -18,7 +18,8 @@ PROFILE_PANEL :: 0
 KEYS_PANEL    :: 1
 PANEL_KINDS   :: 2
 
-GRAB   :: 6.0     // how near its edge the mouse resizes a panel, pixels
+GRAB_OUT :: 5.0   // how far outside its border the mouse resizes a panel, pixels
+GRAB_IN  :: 3.0   // and inside it — but at its top: there its title bar moves it
 MIN_W  :: 200.0   // the least a panel is
 MIN_H  :: 100.0
 MARGIN :: 6.0     // the default layout's room around a panel
@@ -100,6 +101,21 @@ panel_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
 	return -1
 }
 
+// The front panel shown that a press at (x, y) takes: one it's in, or one
+// whose border it's near enough to resize by; its place in ui.panels, -1
+// for none.
+panel_grab_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
+	i := ui.panels.len - 1
+	for i >= 0 {
+		if ui.panels[i].shown {
+			b := ui.panels[i].box
+			if inside(b, x, y) or edges_at(b, x, y) != 0 do return i
+		}
+		i -= 1
+	}
+	return -1
+}
+
 // The front panel shown: its place in ui.panels; -1 for none.
 front_panel :: fun(ui: ^Ui) -> i64 {
 	i := ui.panels.len - 1
@@ -149,13 +165,17 @@ clamp_panels :: fun(ui: ^Ui) {
 	}
 }
 
-// The edges of b the mouse at (x, y) is near enough to resize by (bits).
+// The edges of b the mouse at (x, y) is near enough to resize by (bits):
+// within GRAB_OUT outside its border or GRAB_IN inside — at its top, only
+// above it: a press on its title bar moves it, never resizes.
 edges_at :: fun(b: Rect, x: f32, y: f32) -> i64 {
+	if x < b.x - GRAB_OUT or x >= b.x + b.w + GRAB_OUT do return 0
+	if y < b.y - GRAB_OUT or y >= b.y + b.h + GRAB_OUT do return 0
 	edges : i64 = 0
-	if x < b.x + GRAB do edges = edges | EDGE_LEFT
-	if x >= b.x + b.w - GRAB do edges = edges | EDGE_RIGHT
-	if y < b.y + GRAB do edges = edges | EDGE_TOP
-	if y >= b.y + b.h - GRAB do edges = edges | EDGE_BOTTOM
+	if x < b.x + GRAB_IN do edges = edges | EDGE_LEFT
+	if x >= b.x + b.w - GRAB_IN do edges = edges | EDGE_RIGHT
+	if y < b.y do edges = edges | EDGE_TOP
+	if y >= b.y + b.h - GRAB_IN do edges = edges | EDGE_BOTTOM
 	return edges
 }
 
@@ -184,7 +204,7 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 		ui.menu_open = true
 		return
 	}
-	i := panel_at(ui, x, y)
+	i := panel_grab_at(ui, x, y)
 	if i < 0 do return
 	i = bring_to_front(ui, i)
 	pn := ui.panels[i]
@@ -243,7 +263,7 @@ drag_to :: fun(ui: ^Ui, x: f32, y: f32) {
 // edges, else the arrow.
 cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
 	if ui.menu_open do return SYSTEM_CURSOR_DEFAULT
-	i := panel_at(ui, x, y)
+	i := panel_grab_at(ui, x, y)
 	if i < 0 do return SYSTEM_CURSOR_DEFAULT
 	edges := edges_at(ui.panels[i].box, x, y)
 	if edges == EDGE_LEFT | EDGE_TOP or edges == EDGE_RIGHT | EDGE_BOTTOM do return SYSTEM_CURSOR_NWSE_RESIZE
