@@ -6,14 +6,20 @@ use mara.font
 use mara.sdl
 
 // Text drawn pixel for pixel: a font's glyphs at one size (mara.font's
-// coverage), white in a texture, drawn in any color by color mod.
+// coverage), white in a texture, drawn in any color by color mod. Text is
+// UTF-8: ASCII's characters and EXTRA's have glyphs; any other shows '?'.
 
-FIRST_CHAR :: 32   // ' ': the glyphs are ' ' to '~'
-ATLAS      :: 512  // the glyphs' texture, each side, in pixels
+ATLAS  :: 512   // the glyphs' texture, each side, in pixels
+GLYPHS :: 128   // room for ASCII's 95 and EXTRA's
+
+// Characters past ASCII's with glyphs: marks mara ask's answers and doc
+// comments use.
+EXTRA :: "—–·∞…←→↑↓⟵⟶•×≤≥≠✦"
 
 Text :: struct {
 	texture: Texture
-	glyphs:  [..95]Glyph
+	chars:   [..GLYPHS]u32     // the character each glyph is: ASCII's from ' ', then EXTRA's
+	glyphs:  [..GLYPHS]Glyph
 	metrics: Line_Metrics
 	ascent:  f32   // a line's top to its baseline, whole pixels
 	line:    f32   // a line's height, whole pixels
@@ -28,8 +34,20 @@ Color :: struct {
 
 // The font's glyphs, `pixels` high (its em), in a texture of the renderer's.
 text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err {
+	t.chars.len = 0
+	for c in 32 .. 127 {
+		&t.chars + u32(c)
+	}
+	extra_text := EXTRA
+	extra : []utf8 = extra_text[:]
+	at : i64 = 0
+	for at < extra.len {
+		c, n := char_at(extra, at)
+		&t.chars + c
+		at += n
+	}
 	atlas : [..ATLAS * ATLAS]byte
-	load_coverage_glyphs(font, pixels, &t.glyphs, &t.metrics, &atlas, ATLAS)?
+	load_coverage_chars(font, pixels, t.chars[:], &t.glyphs, &t.metrics, &atlas, ATLAS)?
 	// (Each texel white, its alpha the coverage.)
 	rgba : [..ATLAS * ATLAS * 4]byte
 	rgba.len = rgba.cap
@@ -51,8 +69,11 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 // How wide the text is drawn, in pixels.
 text_width :: fun(t: ^Text, s: []utf8) -> f32 {
 	w : f32 = 0
-	for ch in s {
-		w += t.glyphs[glyph_of(ch)].advance
+	at : i64 = 0
+	for at < s.len {
+		c, n := char_at(s, at)
+		at += n
+		w += t.glyphs[glyph_of(t, c)].advance
 	}
 	return w
 }
@@ -64,8 +85,11 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 	_ = SetTextureColorMod(t.texture, color.r, color.g, color.b)
 	pen := x
 	baseline := floor_f32(y) + t.ascent
-	for ch in s {
-		g := t.glyphs[glyph_of(ch)]
+	at : i64 = 0
+	for at < s.len {
+		c, n := char_at(s, at)
+		at += n
+		g := t.glyphs[glyph_of(t, c)]
 		if g.w > 0 {
 			from := SDL_FRect{x = f32(g.x), y = f32(g.y), w = f32(g.w), h = f32(g.h)}
 			to := SDL_FRect{x = floor_f32(pen + 0.5) + g.bearing_x, y = baseline - g.bearing_y, w = f32(g.w), h = f32(g.h)}
@@ -76,11 +100,39 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 	return pen
 }
 
-// A character's glyph: '?' for one the font's glyphs here don't have.
-glyph_of :: fun(ch: utf8) -> i64 {
-	i := i64(ch) - FIRST_CHAR
-	if i < 0 or i >= 95 do return i64('?') - FIRST_CHAR
-	return i
+// The character at s[at] — its code point — and how many bytes it takes.
+// (A byte that doesn't begin one, or one cut off: U+FFFD, the bytes it has.)
+char_at :: fun(s: []utf8, at: i64) -> u32, i64 {
+	b := u32(s[at])
+	if b < 0x80 do return b, 1
+	n : i64 = 0
+	c : u32 = 0
+	if b >= 0xF0 {
+		n = 4
+		c = b & 0x07
+	elif b >= 0xE0
+		n = 3
+		c = b & 0x0F
+	elif b >= 0xC0
+		n = 2
+		c = b & 0x1F
+	else
+		return u32(0xFFFD), 1
+	}
+	if at + n > s.len do return u32(0xFFFD), s.len - at
+	for k in 1 .. n {
+		c = (c << 6) | (u32(s[at + k]) & 0x3F)
+	}
+	return c, n
+}
+
+// A character's glyph: '?' for one the glyphs don't have.
+glyph_of :: fun(t: ^Text, c: u32) -> i64 {
+	if c >= 32 and c < 127 do return i64(c) - 32
+	for k in 95 .. t.chars.len {
+		if t.chars[k] == c do return k
+	}
+	return i64('?') - 32
 }
 
 // A rectangle filled with a color, in pixels.

@@ -1,0 +1,310 @@
+module view
+
+use mara.core
+use mara.os
+use mara.math
+
+// The window's side of `mara ask` and `mara docs` (the compiler's
+// view.odin): it listens on the pipe name `mara view` gives it and keeps a
+// `mara serve` of its own running. Each connection sends a line, answered
+// with an end line after (serve's: "-- end of answer --", or "...: failed
+// --"), then closed:
+//   <query>          what serve answers it — as `mara ask <query>` would
+//   -show <query>    the same, shown in the Ask panel (an editor's queries)
+//   -docs <words>    what the Docs panel finds for the words, shown there
+// Never waiting: looked at between frames (hub_poll). Queries go to serve
+// one at a time, in the order their lines came; docs are answered at once.
+// Serve, ended — a compiler bug stops it — is started again for the next
+// query.
+
+ANSWER_DONE   :: "-- end of answer --"
+ANSWER_FAILED :: "-- end of answer: failed --"
+
+// A connection, its line coming.
+Client :: struct {
+	id:    File_Id
+	line:  [..2000]utf8   // as it comes; whole once it ends in '\n'
+	whole: bool
+}
+
+Hub :: struct {
+	listening: bool
+	listener:  Pipe_Listener
+	command:   [..2000]utf8   // "<compiler>" serve <module>
+	serve:     Process
+	serving:   bool           // serve started, not ended
+	waiting:   [..16]Client   // connected, their lines coming or waiting for serve
+	asked:     Client         // the one whose query serve is answering
+	asking:    bool
+	shown:     bool           // ... a query the Ask panel shows
+	gone:      bool           // ... its connection failed: the answer read on to its end
+	current:   [..4000]utf8   // serve's answer's line coming
+}
+
+// Listening on the pipe name, serve started — when `mara view` gave a name.
+hub_start :: fun(ui: ^Ui, h: ^Hub) {
+	args := this_program.args
+	if args.len < 4 do return
+	&h.command + "\""
+	&h.command + args[1]
+	&h.command + "\" serve "
+	&h.command + args[2]
+	l, e := pipe_listen(args[3])
+	if bool(e) {
+		if e == .Name_Taken {
+			lines_status(&ui.asked, "Another window open on this module answers mara ask.", STYLE_DIM)
+		else
+			lines_status(&ui.asked, "mara ask can't reach this window: listening on its pipe failed.", STYLE_BAD)
+		}
+		return
+	}
+	h.listener = l
+	h.listening = true
+	// (Serve checks the module as it starts: ready by the first query.)
+	_ = serve_up(h)
+}
+
+// Listening stopped, the connections closed, serve ended.
+hub_stop :: fun(h: ^Hub) {
+	if not h.listening do return
+	pipe_listen_stop(&h.listener)
+	for i in 0 .. h.waiting.len {
+		file_close(h.waiting[i].id)
+	}
+	if h.asking do file_close(h.asked.id)
+	serve_down(h)
+	h.listening = false
+}
+
+// How long the window may wait for an event before looking again, ms:
+// soon while connections are coming or a query is with serve.
+hub_wait :: fun(h: ^Hub) -> i32 {
+	if not h.listening do return 250
+	if h.asking or h.waiting.len > 0 do return 2
+	return 25
+}
+
+// What's arrived since the last look: connections taken, their lines read,
+// docs answered, the next query sent to serve, serve's answer passed on.
+hub_poll :: fun(ui: ^Ui, h: ^Hub) {
+	if not h.listening do return
+	for h.waiting.len < h.waiting.cap {
+		c, e := pipe_accept(&h.listener)
+		if bool(e) or c == NO_FILE do break
+		// (Its place filled where it is: a Client is too big to build aside.)
+		h.waiting.len += 1
+		fresh := &h.waiting[h.waiting.len - 1]
+		fresh.id = c
+		fresh.line.len = 0
+		fresh.whole = false
+	}
+	i : i64 = 0
+	for i < h.waiting.len {
+		if not h.waiting[i].whole and not client_read(&h.waiting[i]) {
+			// (Gone before its line ended.)
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
+		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-docs ") {
+			answer_docs(ui, &h.waiting[i])
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
+		i += 1
+	}
+	if not h.asking {
+		for k in 0 .. h.waiting.len {
+			if h.waiting[k].whole {
+				h.asked = h.waiting[k]
+				drop_waiting(h, k)
+				ask_serve(ui, h)
+				break
+			}
+		}
+	}
+	if h.asking do read_answer(ui, h)
+}
+
+// Client c's line read, what has arrived of it: false when its connection
+// ended first.
+client_read :: fun(c: ^Client) -> bool {
+	chunk : [..512]byte
+	open, e := pipe_read(c.id, &chunk)
+	if bool(e) or not open do return false
+	text : []utf8 = chunk[:]
+	for ch in text {
+		if c.line.len == c.line.cap do return false   // (no query is that long)
+		&c.line + ch
+		if ch == '\n' {
+			c.whole = true
+			break
+		}
+	}
+	return true
+}
+
+// Waiting connection i taken off the list.
+drop_waiting :: fun(h: ^Hub, i: i64) {
+	for k in i .. h.waiting.len - 1 {
+		h.waiting[k] = h.waiting[k + 1]
+	}
+	h.waiting.len -= 1
+}
+
+// A line without its line end.
+line_of :: fun(c: ^Client) -> []utf8 {
+	n := c.line.len
+	for n > 0 {
+		if c.line[n - 1] != '\n' and c.line[n - 1] != '\r' do break
+		n -= 1
+	}
+	return c.line[0 : n]
+}
+
+// A "-docs <words>" line answered: the words looked up, the Docs panel
+// showing what's found; the connection sent it as text, its end line after.
+answer_docs :: fun(ui: ^Ui, c: ^Client) {
+	line := line_of(c)
+	docs_search(ui, line[6 : line.len])
+	ui.dirty = true
+	out : [..64 * KB]utf8
+	&out + ui.docs.status[:]
+	&out + "\n\n"
+	for k in 0 .. ui.docs.lines.len {
+		text := line_text(&ui.docs, k)
+		if out.len + text.len + 1 > out.cap {
+			if not send(c.id, out[:]) do return
+			out.len = 0
+		}
+		&out + text[0 : min_int(text.len, out.cap - 1)]
+		&out + "\n"
+	}
+	if ui.search.count == 0 {
+		&out + ANSWER_FAILED
+	else
+		&out + ANSWER_DONE
+	}
+	&out + "\n"
+	_ = send(c.id, out[:])
+}
+
+// Text written to a connection or a pipe: false when it can't be (the
+// other end's gone).
+send :: fun(id: File_Id, text: []utf8) -> bool {
+	bytes : []byte = text[:]
+	_, e := file_write(id, &bytes)
+	return not bool(e)
+}
+
+// The asked connection's query sent to serve — started if it isn't; one
+// that ended since the last, found by the write failing, started again.
+// A "-show " query is shown in the Ask panel as it's answered.
+ask_serve :: fun(ui: ^Ui, h: ^Hub) {
+	line := line_of(&h.asked)
+	h.shown = starts_with(line, "-show ")
+	query := line
+	if h.shown do query = line[6 : line.len]
+	if h.shown {
+		lines_clear(&ui.asked)
+		heading : [..2100]utf8
+		&heading + "mara ask "
+		&heading + query
+		lines_add(&ui.asked, heading[:], STYLE_QUERY)
+		lines_add(&ui.asked, "", STYLE_TEXT)
+		lines_status(&ui.asked, "Asking…", STYLE_DIM)
+		ui.dirty = true
+	}
+	h.gone = false
+	h.current.len = 0
+	sent : [..2100]utf8
+	&sent + query
+	&sent + "\n"
+	if serve_up(h) {
+		if send(h.serve.input, sent[:]) {
+			h.asking = true
+			return
+		}
+		serve_down(h)
+		if serve_up(h) {
+			if send(h.serve.input, sent[:]) {
+				h.asking = true
+				return
+			}
+		}
+	}
+	// (No serve to ask: cut off, the connection makes `mara ask` check for itself.)
+	file_close(h.asked.id)
+	if h.shown do lines_status(&ui.asked, "mara serve didn't start: mara ask checked for itself.", STYLE_BAD)
+	ui.dirty = true
+}
+
+// What has arrived of serve's answer: passed on to the asker as it comes,
+// its lines to the Ask panel when it's shown; at its end line, the
+// connection closed.
+read_answer :: fun(ui: ^Ui, h: ^Hub) {
+	chunk : [..16 * KB]byte
+	open, e := pipe_read(h.serve.output, &chunk)
+	if bool(e) or not open {
+		// (Serve ended answering it — maybe for it. Cut off, with no end
+		// line: `mara ask` checks for itself. The next query starts serve.)
+		serve_down(h)
+		file_close(h.asked.id)
+		h.asking = false
+		if h.shown do lines_status(&ui.asked, "mara serve ended answering: mara ask checked for itself.", STYLE_BAD)
+		ui.dirty = true
+		return
+	}
+	if chunk.len == 0 do return
+	if not h.gone {
+		piece : []byte = chunk[:]
+		_, we := file_write(h.asked.id, &piece)
+		if bool(we) do h.gone = true
+	}
+	text : []utf8 = chunk[:]
+	for ch in text {
+		if ch != '\n' {
+			if h.current.len < h.current.cap do &h.current + ch
+			continue
+		}
+		line := trimmed(h.current[:])
+		if starts_with(line, "-- end of answer") {
+			file_close(h.asked.id)
+			h.asking = false
+			if h.shown {
+				if line == ANSWER_FAILED {
+					lines_status(&ui.asked, "Failed: what mara ask said is above.", STYLE_BAD)
+				else
+					lines_status(&ui.asked, "Answered.", STYLE_DIM)
+				}
+			}
+			ui.dirty = true
+			h.current.len = 0
+			return
+		}
+		if h.shown {
+			lines_add(&ui.asked, h.current[:], STYLE_TEXT)
+			ui.dirty = true
+		}
+		h.current.len = 0
+	}
+}
+
+// Serve running: started unless it is. False when it can't be.
+serve_up :: fun(h: ^Hub) -> bool {
+	if h.serving do return true
+	p, e := process_start(h.command)
+	if bool(e) do return false
+	h.serve = p
+	h.serving = true
+	return true
+}
+
+// Serve ended — its input closed: it ends there — and waited for.
+serve_down :: fun(h: ^Hub) {
+	if not h.serving do return
+	_, we := process_wait(&h.serve)
+	h.serving = false
+	if bool(we) do return   // (its handles closed all the same)
+}

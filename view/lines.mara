@@ -1,0 +1,133 @@
+module view
+
+use mara.core
+use mara.math
+use mara.sdl
+
+// Text shown a line at a time, each line in a style, scrolled: the Docs
+// panel's and the Ask panel's. A status line at the bottom, when it has one.
+
+STYLE_TEXT  :: 0   // as text is: the ink
+STYLE_DIM   :: 1   // quieter
+STYLE_TITLE :: 2   // a heading: its first word in the accent, the rest dim
+STYLE_CODE  :: 3   // code
+STYLE_BAD   :: 4   // a failure
+STYLE_QUERY :: 5   // what was asked: the accent
+
+TAB_SPACES :: 4    // a tab, shown
+
+// A line: its text in Lines.text, and its style.
+Line :: struct {
+	at:    i64
+	len:   i64
+	style: i64
+}
+
+Lines :: struct {
+	text:   [..2 * MB]utf8
+	lines:  [..50000]Line
+	status: [..400]utf8   // the status line; none when empty
+	status_style: i64
+	scroll: i64           // the first line shown
+	cut:    bool          // more came than it holds: the rest left out
+}
+
+// Emptied: no lines, no status line, at the top.
+lines_clear :: fun(l: ^Lines) {
+	l.text.len = 0
+	l.lines.len = 0
+	l.status.len = 0
+	l.status_style = STYLE_DIM
+	l.scroll = 0
+	l.cut = false
+}
+
+// A line added in a style: its tabs as spaces, a carriage return left out.
+lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
+	if l.lines.len == l.lines.cap or l.text.len + s.len * TAB_SPACES > l.text.cap {
+		l.cut = true
+		return
+	}
+	at := l.text.len
+	for ch in s {
+		if ch == '\t' {
+			for _ in 0 .. TAB_SPACES {
+				&l.text + ' '
+			}
+		elif ch != '\r'
+			&l.text + ch
+		}
+	}
+	&l.lines + Line{at = at, len = l.text.len - at, style = style}
+}
+
+// Line k's text.
+line_text :: fun(l: ^Lines, k: i64) -> []utf8 {
+	ln := l.lines[k]
+	return l.text[ln.at : ln.at + ln.len]
+}
+
+// The status line: its text, in a style (as much as it holds).
+lines_status :: fun(l: ^Lines, s: []utf8, style: i64) {
+	l.status.len = 0
+	&l.status + s[0 : min_int(s.len, l.status.cap)]
+	l.status_style = style
+}
+
+// How many lines fit in r, room kept for the status line.
+lines_visible :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
+	h := r.h - 2.0 * PAD
+	if l.status.len > 0 do h -= row_height(ui)
+	return max_int(i64(h / ui.text.line), 1)
+}
+
+// The lines drawn in r: from the scroll, as many as fit, a scroll bar when
+// they don't all; the status line at its bottom. With none, `empty`, dim.
+draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
+	rd := ui.renderer
+	shown := lines_visible(ui, l, r)
+	l.scroll = max_int(0, min_int(l.scroll, l.lines.len - shown))
+	if l.lines.len == 0 do _ = text_draw(&ui.text, rd, empty, r.x + PAD, r.y + PAD, ui.dim)
+	y := r.y + PAD
+	for k in 0 .. shown {
+		at := l.scroll + k
+		if at >= l.lines.len do break
+		draw_line(ui, line_text(l, at), l.lines[at].style, r.x + PAD, y)
+		y += ui.text.line
+	}
+	if l.lines.len > shown {
+		track := f32(shown) * ui.text.line
+		thumb := max_f32(track * f32(shown) / f32(l.lines.len), 20.0)
+		thumb_y := r.y + PAD + (track - thumb) * f32(l.scroll) / f32(l.lines.len - shown)
+		fill(rd, r.x + r.w - 8.0, thumb_y, 5.0, thumb, ui.dim)
+	}
+	if l.status.len > 0 {
+		row_h := row_height(ui)
+		fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
+		_ = text_draw(&ui.text, rd, l.status[:], r.x + PAD, r.y + r.h - row_h + ROW_PAD, style_color(ui, l.status_style))
+	}
+}
+
+// A line drawn at (x, y) in its style.
+draw_line :: fun(ui: ^Ui, s: []utf8, style: i64, x: f32, y: f32) {
+	if style == STYLE_TITLE {
+		first : i64 = 0
+		for first < s.len {
+			if s[first] == ' ' do break
+			first += 1
+		}
+		pen := text_draw(&ui.text, ui.renderer, s[0 : first], x, y, ui.accent)
+		_ = text_draw(&ui.text, ui.renderer, s[first : s.len], pen, y, ui.dim)
+		return
+	}
+	_ = text_draw(&ui.text, ui.renderer, s, x, y, style_color(ui, style))
+}
+
+// A style's color.
+style_color :: fun(ui: ^Ui, style: i64) -> Color {
+	if style == STYLE_DIM do return ui.dim
+	if style == STYLE_CODE do return ui.code
+	if style == STYLE_BAD do return ui.bad
+	if style == STYLE_QUERY or style == STYLE_TITLE do return ui.accent
+	return ui.ink
+}

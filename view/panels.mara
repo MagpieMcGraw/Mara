@@ -6,17 +6,26 @@ use mara.math
 use mara.sdl
 
 // The window's panels: boxes it shows, each a view of something — the
-// profile, the keys — floating over the window's ground. A panel is dragged
-// by its title bar and resized by its edges and corners; the one clicked
-// comes to the front, its title bar's x hides it. The menu bar's Panels
-// menu shows or hides each and resets their layout. The layout — the
-// window's size, each panel's place, size, shown or not, front to back — is
-// kept in layout.txt beside the window's program: read when it opens,
+// profile, the docs, the asked query, the keys — floating over the window's
+// ground. A panel is dragged by its title bar and resized by its edges and
+// corners; the one clicked comes to the front, its title bar's x hides it.
+// The menu bar's Panels menu shows or hides each and resets their layout;
+// its Theme menu makes the window dark or light. The layout — the window's
+// size, the theme, each panel's place, size, shown or not, front to back —
+// is kept in layout.txt beside the window's program: read when it opens,
 // written when it changes and when it closes.
 
 PROFILE_PANEL :: 0
-KEYS_PANEL    :: 1
-PANEL_KINDS   :: 2
+DOCS_PANEL    :: 1
+ASK_PANEL     :: 2
+KEYS_PANEL    :: 3
+PANEL_KINDS   :: 4
+
+// The menu bar's menus; MENU_NONE: none open.
+MENU_NONE   :: -1
+MENU_PANELS :: 0
+MENU_THEME  :: 1
+MENUS       :: 2
 
 GRAB_OUT :: 5.0   // how far outside its border the mouse resizes a panel, pixels
 GRAB_IN  :: 3.0   // and inside it — but at its top: there its title bar moves it
@@ -44,7 +53,7 @@ Rect :: struct {
 }
 
 Panel :: struct {
-	kind:  i64     // PROFILE_PANEL, KEYS_PANEL
+	kind:  i64     // PROFILE_PANEL, ...
 	shown: bool
 	box:   Rect    // its frame in the window: its title bar, then its content
 }
@@ -52,12 +61,16 @@ Panel :: struct {
 // A panel kind's title, as its title bar and the menu show it.
 panel_title :: fun(kind: i64) -> []utf8 {
 	if kind == PROFILE_PANEL do return "Profile"
+	if kind == DOCS_PANEL do return "Docs"
+	if kind == ASK_PANEL do return "Ask"
 	return "Keys"
 }
 
 // A panel kind's name in layout.txt.
 panel_name :: fun(kind: i64) -> []utf8 {
 	if kind == PROFILE_PANEL do return "profile"
+	if kind == DOCS_PANEL do return "docs"
+	if kind == ASK_PANEL do return "ask"
 	return "keys"
 }
 
@@ -137,17 +150,28 @@ bring_to_front :: fun(ui: ^Ui, i: i64) -> i64 {
 	return last
 }
 
-// The panels as they first are: the profile filling the window below the
-// menu bar; the keys, hidden, at its right.
+// The panels as they first are: the profile at the left, the docs and the
+// asked query stacked at its right; the keys, hidden, over the docs.
 default_layout :: fun(ui: ^Ui) {
 	top := bar_height(ui)
 	ui.panels.len = 0
+	room_h := ui.height - top - 2.0 * MARGIN
+	left_w := floor_f32((ui.width - 3.0 * MARGIN) * 0.55)
+	right_x := MARGIN + left_w + MARGIN
+	right_w := ui.width - right_x - MARGIN
+	upper_h := floor_f32((room_h - MARGIN) * 0.5)
 	keys := Panel{kind = KEYS_PANEL, shown = false}
-	keys.box = Rect{x = ui.width - 460.0 - 4.0 * MARGIN, y = top + 4.0 * MARGIN, w = 460.0, h = 300.0}
+	keys.box = Rect{x = ui.width - 520.0 - 4.0 * MARGIN, y = top + 4.0 * MARGIN, w = 520.0, h = 330.0}
 	&ui.panels + keys
 	profile := Panel{kind = PROFILE_PANEL, shown = true}
-	profile.box = Rect{x = MARGIN, y = top + MARGIN, w = ui.width - 2.0 * MARGIN, h = ui.height - top - 2.0 * MARGIN}
+	profile.box = Rect{x = MARGIN, y = top + MARGIN, w = left_w, h = room_h}
 	&ui.panels + profile
+	docs := Panel{kind = DOCS_PANEL, shown = true}
+	docs.box = Rect{x = right_x, y = top + MARGIN, w = right_w, h = upper_h}
+	&ui.panels + docs
+	ask := Panel{kind = ASK_PANEL, shown = true}
+	ask.box = Rect{x = right_x, y = top + MARGIN + upper_h + MARGIN, w = right_w, h = room_h - upper_h - MARGIN}
+	&ui.panels + ask
 	clamp_panels(ui)
 }
 
@@ -179,29 +203,28 @@ edges_at :: fun(b: Rect, x: f32, y: f32) -> i64 {
 	return edges
 }
 
-// A press of the mouse at (x, y): on the menu, its item; on the Panels
-// button, the menu; on a panel, it brought to the front and then — near
-// its edges, a resize; on its title bar, a move (its x: hidden); in its
-// content, the panel's own click.
+// A press of the mouse at (x, y): with a menu open, its item — on another
+// menu's button, that menu; on a menu's button, its menu; on a panel, it
+// brought to the front and then — near its edges, a resize; on its title
+// bar, a move (its x: hidden); in its content, the panel's own click.
 press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 	ui.dirty = true
-	if ui.menu_open {
-		ui.menu_open = false
-		item := menu_item_at(ui, x, y)
-		if item >= 0 and item < PANEL_KINDS {
-			i := find_panel(ui, item)
-			ui.panels[i].shown = not ui.panels[i].shown
-			if ui.panels[i].shown do _ = bring_to_front(ui, i)
-			layout_save(ui)
+	if ui.menu_open != MENU_NONE {
+		m := ui.menu_open
+		ui.menu_open = MENU_NONE
+		item := menu_item_at(ui, m, x, y)
+		if item >= 0 {
+			menu_choose(ui, m, item)
+			return
 		}
-		if item == PANEL_KINDS {
-			default_layout(ui)
-			layout_save(ui)
-		}
-		return   // (a click elsewhere only closes the menu)
+		// (A click elsewhere only closes it.)
+		b := menu_button_at(ui, x, y)
+		if b >= 0 and b != m do ui.menu_open = b
+		return
 	}
-	if inside(menu_button_rect(ui), x, y) {
-		ui.menu_open = true
+	b := menu_button_at(ui, x, y)
+	if b >= 0 {
+		ui.menu_open = b
 		return
 	}
 	i := panel_grab_at(ui, x, y)
@@ -228,6 +251,24 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 		return
 	}
 	if pn.kind == PROFILE_PANEL do profile_click(ui, p, content_rect(ui, pn), x, y)
+}
+
+// Menu m's item chosen: a panel shown or hidden, the layout reset, the
+// theme.
+menu_choose :: fun(ui: ^Ui, m: i64, item: i64) {
+	if m == MENU_THEME {
+		theme_set(ui, item == 1)
+		layout_save(ui)
+		return
+	}
+	if item < PANEL_KINDS {
+		i := find_panel(ui, item)
+		ui.panels[i].shown = not ui.panels[i].shown
+		if ui.panels[i].shown do _ = bring_to_front(ui, i)
+	else
+		default_layout(ui)
+	}
+	layout_save(ui)
 }
 
 // The mouse moved to (x, y) while a panel is dragged: its box follows.
@@ -262,7 +303,7 @@ drag_to :: fun(ui: ^Ui, x: f32, y: f32) {
 // The cursor's look for the mouse at (x, y): resize arrows near a panel's
 // edges, else the arrow.
 cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
-	if ui.menu_open do return SYSTEM_CURSOR_DEFAULT
+	if ui.menu_open != MENU_NONE do return SYSTEM_CURSOR_DEFAULT
 	i := panel_grab_at(ui, x, y)
 	if i < 0 do return SYSTEM_CURSOR_DEFAULT
 	edges := edges_at(ui.panels[i].box, x, y)
@@ -274,7 +315,7 @@ cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
 }
 
 // The panels drawn back to front, each its frame and content; the menu bar
-// over them, its menu when open.
+// over them, its menu when one's open.
 draw_window :: fun(ui: ^Ui, p: ^Profile) {
 	r := ui.renderer
 	_ = SetRenderDrawColor(r, ui.ground.r, ui.ground.g, ui.ground.b, u8(255))
@@ -284,7 +325,7 @@ draw_window :: fun(ui: ^Ui, p: ^Profile) {
 		if pn.shown do draw_panel(ui, p, pn, i == front)
 	}
 	draw_menu_bar(ui)
-	if ui.menu_open do draw_menu(ui)
+	if ui.menu_open != MENU_NONE do draw_menu(ui, ui.menu_open)
 	_ = RenderPresent(r)
 }
 
@@ -308,106 +349,164 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	_ = SetRenderClipRect(r, &clip)
 	if pn.kind == PROFILE_PANEL {
 		draw_profile(ui, p, c)
+	elif pn.kind == DOCS_PANEL
+		draw_lines(ui, &ui.docs, c, "Select a word in Sublime (Mara Ask) — or run mara docs <words> here — to look it up.")
+	elif pn.kind == ASK_PANEL
+		draw_lines(ui, &ui.asked, c, "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers.")
 	else
 		draw_keys(ui, c)
 	}
 	_ = SetRenderClipRect(r, void)
 }
 
-// The menu bar's Panels button.
-menu_button_rect :: fun(ui: ^Ui) -> Rect {
-	return Rect{x = 0, y = 0, w = text_width(&ui.text, "Panels") + 2.0 * PAD, h = bar_height(ui)}
+// A menu's name, as its button shows it.
+menu_name :: fun(m: i64) -> []utf8 {
+	if m == MENU_PANELS do return "Panels"
+	return "Theme"
 }
 
-// The menu bar: its Panels button.
+// Menu m's button in the menu bar: after the ones before it.
+menu_button_rect :: fun(ui: ^Ui, m: i64) -> Rect {
+	x : f32 = 0
+	for k in 0 .. m {
+		x += text_width(&ui.text, menu_name(k)) + 2.0 * PAD
+	}
+	return Rect{x = x, y = 0, w = text_width(&ui.text, menu_name(m)) + 2.0 * PAD, h = bar_height(ui)}
+}
+
+// The menu button at (x, y); -1 for none.
+menu_button_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
+	for m in 0 .. MENUS {
+		if inside(menu_button_rect(ui, m), x, y) do return m
+	}
+	return -1
+}
+
+// How many items menu m has: the Panels menu, each panel kind and Reset
+// layout; the Theme menu, Dark and Light.
+menu_items :: fun(m: i64) -> i64 {
+	if m == MENU_PANELS do return PANEL_KINDS + 1
+	return 2
+}
+
+// Item k of menu m, as the menu shows it.
+menu_item_text :: fun(m: i64, k: i64) -> []utf8 {
+	if m == MENU_THEME {
+		if k == 0 do return "Dark"
+		return "Light"
+	}
+	if k == PANEL_KINDS do return "Reset layout"
+	return panel_title(k)
+}
+
+// Whether item k of menu m is ticked: a panel shown, the theme chosen.
+menu_item_ticked :: fun(ui: ^Ui, m: i64, k: i64) -> bool {
+	if m == MENU_THEME do return (k == 1) == ui.light
+	if k == PANEL_KINDS do return false
+	i := find_panel(ui, k)
+	if i < 0 do return false
+	return ui.panels[i].shown
+}
+
+// Whether item k of menu m has a box to tick (Reset layout hasn't).
+menu_item_boxed :: fun(m: i64, k: i64) -> bool {
+	return not (m == MENU_PANELS and k == PANEL_KINDS)
+}
+
+// Menu m's width: its widest item's, a box to tick beside it, room.
+menu_width :: fun(ui: ^Ui, m: i64) -> f32 {
+	w : f32 = 0
+	for k in 0 .. menu_items(m) {
+		w = max_f32(w, text_width(&ui.text, menu_item_text(m, k)))
+	}
+	return ceil_f32(w + ui.text.line + 3.0 * PAD)
+}
+
+// Item k of menu m, below its button: Reset layout below a line.
+menu_item_rect :: fun(ui: ^Ui, m: i64, k: i64) -> Rect {
+	bar := bar_height(ui)
+	y := bar + f32(k) * bar
+	if m == MENU_PANELS and k == PANEL_KINDS do y += 5.0
+	return Rect{x = menu_button_rect(ui, m).x, y = y, w = menu_width(ui, m), h = bar}
+}
+
+// Menu m's item at (x, y); -1 for none.
+menu_item_at :: fun(ui: ^Ui, m: i64, x: f32, y: f32) -> i64 {
+	for k in 0 .. menu_items(m) {
+		if inside(menu_item_rect(ui, m, k), x, y) do return k
+	}
+	return -1
+}
+
+// The menu bar: its menus' buttons, the open one's lit.
 draw_menu_bar :: fun(ui: ^Ui) {
 	r := ui.renderer
 	bar := bar_height(ui)
 	fill(r, 0, 0, ui.width, bar, ui.header)
 	fill(r, 0, bar - 1.0, ui.width, 1.0, ui.border)
-	button := menu_button_rect(ui)
-	if ui.menu_open do fill(r, button.x, button.y, button.w, button.h - 1.0, ui.hover)
-	_ = text_draw(&ui.text, r, "Panels", PAD, ROW_PAD, ui.ink)
-}
-
-// The menu's width: its widest item's, a box to tick beside it, room.
-menu_width :: fun(ui: ^Ui) -> f32 {
-	w := text_width(&ui.text, "Reset layout")
-	for k in 0 .. PANEL_KINDS {
-		w = max_f32(w, text_width(&ui.text, panel_title(k)))
+	for m in 0 .. MENUS {
+		button := menu_button_rect(ui, m)
+		if ui.menu_open == m do fill(r, button.x, button.y, button.w, button.h - 1.0, ui.hover)
+		_ = text_draw(&ui.text, r, menu_name(m), button.x + PAD, ROW_PAD, ui.ink)
 	}
-	return ceil_f32(w + ui.text.line + 3.0 * PAD)
 }
 
-// Item k of the menu: a panel kind's (k < PANEL_KINDS), then Reset layout,
-// below a line between them.
-menu_item_rect :: fun(ui: ^Ui, k: i64) -> Rect {
-	bar := bar_height(ui)
-	y := bar + f32(k) * bar
-	if k == PANEL_KINDS do y += 5.0
-	return Rect{x = 0, y = y, w = menu_width(ui), h = bar}
-}
-
-// The menu's item at (x, y); -1 for none.
-menu_item_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
-	for k in 0 .. PANEL_KINDS + 1 {
-		if inside(menu_item_rect(ui, k), x, y) do return k
-	}
-	return -1
-}
-
-// The menu: each panel, a box ticked when it's shown; Reset layout.
-draw_menu :: fun(ui: ^Ui) {
+// Menu m: its items, each with a box, filled when it's ticked.
+draw_menu :: fun(ui: ^Ui, m: i64) {
 	r := ui.renderer
-	last := menu_item_rect(ui, PANEL_KINDS)
+	n := menu_items(m)
+	last := menu_item_rect(ui, m, n - 1)
 	top := bar_height(ui)
-	w := menu_width(ui)
-	fill(r, 0, top, w + 1.0, last.y + last.h - top + 1.0, ui.border)
-	fill(r, 0, top, w, last.y + last.h - top, ui.header)
-	hovered := menu_item_at(ui, ui.mouse_x, ui.mouse_y)
+	x := last.x
+	w := last.w
+	fill(r, x, top, w + 1.0, last.y + last.h - top + 1.0, ui.border)
+	fill(r, x, top, w, last.y + last.h - top, ui.header)
+	hovered := menu_item_at(ui, m, ui.mouse_x, ui.mouse_y)
 	ui.menu_hover = hovered
 	box := floor_f32(ui.text.line * 0.6)
-	for k in 0 .. PANEL_KINDS + 1 {
-		item := menu_item_rect(ui, k)
+	for k in 0 .. n {
+		item := menu_item_rect(ui, m, k)
 		if k == hovered do fill(r, item.x, item.y, item.w, item.h, ui.hover)
-		if k == PANEL_KINDS {
-			fill(r, PAD, item.y - 3.0, w - 2.0 * PAD, 1.0, ui.border)
-			_ = text_draw(&ui.text, r, "Reset layout", PAD, item.y + ROW_PAD, ui.ink)
+		if not menu_item_boxed(m, k) {
+			fill(r, x + PAD, item.y - 3.0, w - 2.0 * PAD, 1.0, ui.border)
+			_ = text_draw(&ui.text, r, menu_item_text(m, k), x + PAD, item.y + ROW_PAD, ui.ink)
 			continue
 		}
-		// (A box, filled when the panel's shown.)
-		bx := PAD
+		bx := x + PAD
 		by := floor_f32(item.y + (item.h - box) * 0.5)
 		fill(r, bx, by, box, box, ui.dim)
 		fill(r, bx + 1.0, by + 1.0, box - 2.0, box - 2.0, ui.header)
-		i := find_panel(ui, k)
-		if i >= 0 {
-			if ui.panels[i].shown do fill(r, bx + 3.0, by + 3.0, box - 6.0, box - 6.0, ui.accent)
-		}
-		_ = text_draw(&ui.text, r, panel_title(k), bx + box + PAD, item.y + ROW_PAD, ui.ink)
+		if menu_item_ticked(ui, m, k) do fill(r, bx + 3.0, by + 3.0, box - 6.0, box - 6.0, ui.accent)
+		_ = text_draw(&ui.text, r, menu_item_text(m, k), bx + box + PAD, item.y + ROW_PAD, ui.ink)
 	}
 }
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [8][]utf8
-	does : [8][]utf8
+	keys : [11][]utf8
+	does : [11][]utf8
 	keys[0] = "Click a column title"
-	does[0] = "sort by it; again: the other way"
-	keys[1] = "Wheel, Up, Down"
-	does[1] = "scroll the rows"
-	keys[2] = "PageUp, PageDown, Home, End"
-	does[2] = "a page, the first, the last"
+	does[0] = "sort the profile by it; again: the other way"
+	keys[1] = "Wheel"
+	does[1] = "scroll the panel under the mouse"
+	keys[2] = "Up, Down, PageUp, PageDown, Home, End"
+	does[2] = "scroll the front panel"
 	keys[3] = "Shift+wheel, Left, Right"
-	does[3] = "scroll sideways"
-	keys[4] = "Drag a title bar"
-	does[4] = "move its panel"
-	keys[5] = "Drag an edge or corner"
-	does[5] = "resize its panel"
-	keys[6] = "x in a title bar"
-	does[6] = "hide its panel"
-	keys[7] = "Panels (top left)"
-	does[7] = "show or hide panels, reset the layout"
+	does[3] = "scroll the profile sideways"
+	keys[4] = "Select words in Sublime"
+	does[4] = "Docs looks them up (the Mara Ask plugin)"
+	keys[5] = "Mara Ask in Sublime"
+	does[5] = "Ask shows its query and answer"
+	keys[6] = "Drag a title bar"
+	does[6] = "move its panel"
+	keys[7] = "Drag an edge or corner"
+	does[7] = "resize its panel"
+	keys[8] = "x in a title bar"
+	does[8] = "hide its panel"
+	keys[9] = "Panels (top left)"
+	does[9] = "show or hide panels, reset the layout"
+	keys[10] = "Theme (top left)"
+	does[10] = "dark or light"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))
@@ -423,6 +522,7 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 // The layout written to layout.txt:
 //   mara view layout
 //   window <width> <height>
+//   theme <dark or light>
 //   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
@@ -431,6 +531,12 @@ layout_save :: fun(ui: ^Ui) {
 	&text + count_text(i64(ui.width))
 	&text + " "
 	&text + count_text(i64(ui.height))
+	&text + "\ntheme "
+	if ui.light {
+		&text + "light"
+	else
+		&text + "dark"
+	}
 	&text + "\n"
 	for pn in ui.panels {
 		&text + "panel "
@@ -455,10 +561,10 @@ layout_save :: fun(ui: ^Ui) {
 	if bool(we) do return
 }
 
-// The layout read from layout.txt: the panels it names, in its order, and
-// the window's size it had (ui.saved_width, saved_height); a panel kind it
-// doesn't name, as the default layout has it. False when there's none —
-// or it isn't one: the default layout then.
+// The layout read from layout.txt: the theme, the panels it names, in its
+// order, and the window's size it had (ui.saved_width, saved_height); a
+// panel kind it doesn't name, as the default layout has it. False when
+// there's none — or it isn't one: the default layout then.
 layout_load :: fun(ui: ^Ui) -> bool {
 	buf : [..4000]byte
 	if bool(read_entire_file(ui.layout_path, &buf)) do return false
@@ -475,7 +581,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		line : []utf8 = text[at : end]
 		at = end + 1
 		if line.len > 0 {
-			if line[line.len - 1] == '' do line = line[0 : line.len - 1]
+			if line[line.len - 1] == '\r' do line = line[0 : line.len - 1]
 		}
 		words : [..8]Field
 		w_at : i64 = 0
@@ -496,6 +602,9 @@ layout_load :: fun(ui: ^Ui) -> bool {
 			ui.saved_width, _ = parse_number(word_text(line, words[1]))
 			ui.saved_height, _ = parse_number(word_text(line, words[2]))
 		}
+		if head == "theme" and words.len == 2 {
+			theme_set(ui, word_text(line, words[1]) == "light")
+		}
 		if head == "panel" and words.len == 7 {
 			name := word_text(line, words[1])
 			kind : i64 = -1
@@ -513,8 +622,8 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		}
 	}
 	if first or ui.panels.len == 0 do return false
-	// (Kinds it doesn't name — panels newer than it: behind the rest, as the
-	// default layout has them.)
+	// (Kinds it doesn't name — panels newer than it: where the default
+	// layout has them, in front, to be seen.)
 	saved : [..8]Panel
 	for pn in ui.panels {
 		&saved + pn
@@ -525,15 +634,15 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		&defaults + pn
 	}
 	ui.panels.len = 0
+	for pn in saved {
+		&ui.panels + pn
+	}
 	for pn in defaults {
 		named := false
 		for s in saved {
 			if s.kind == pn.kind do named = true
 		}
 		if not named do &ui.panels + pn
-	}
-	for pn in saved {
-		&ui.panels + pn
 	}
 	return true
 }

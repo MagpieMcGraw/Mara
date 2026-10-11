@@ -64,6 +64,8 @@ done
 # The fixtures' queries through a window: the stand-in test/view_hub, started
 # by `mara view` (MARA_VIEW naming it) where each copied fixture is, so that
 # `mara ask` there asks it — the same answers again, and in its log, each.
+# Every other one is asked with -show (a query the window shows): the same
+# answer.
 # Before askat's third, its serve is ended, as a crash would: the window
 # starts another, and answers on.
 kill_serve() {  # module: its window's `mara serve` ended
@@ -95,7 +97,8 @@ while [ $i -lt ${#targets[@]} ]; do
         kill_serve askat; sleep 0.5
       fi
       echo "=== ${targets[$k]} | ${argss[$k]}" >> "$routed"
-      ( cd "$d" && "$MARA" ask ${argss[$k]} 2>&1 ) | tr -d '\r' >> "$routed"
+      show=""; [ $(( (k - i) % 2 )) -eq 1 ] && show=-show
+      ( cd "$d" && "$MARA" ask $show ${argss[$k]} 2>&1 ) | tr -d '\r' >> "$routed"
       [ ${PIPESTATUS[0]} -ne 0 ] && echo "[exit 1]" >> "$routed"
     done
     for t in $(seq 1 100); do grep -qs '^ended' "$d/view_hub.log" && break; sleep 0.1; done

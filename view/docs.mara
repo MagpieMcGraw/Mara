@@ -1,0 +1,568 @@
+module view
+
+use mara.core
+use mara.os
+use mara.math
+
+// The Docs panel's search: words — what's selected in the editor, sent by
+// `mara docs` — looked up in the module's .mara files (the directory the
+// window runs in), the stdlib's (the compiler's code/, and the directories
+// in it) and the doc/ pages beside it. Each definition whose name has a
+// word, or whose doc comment does, is found; the best are shown first, each
+// with its doc comment and its signature (a struct's body). Crude: it reads
+// lines, not the program. A definition is a line `name :: ...`, a foreign
+// block's `fun name(...)`, a struct's `name: type` (a field), or a file's
+// `module name`; its doc comment, the `//` lines right above it.
+
+DOCS_SHOWN     :: 40   // the most definitions shown
+DOCS_BODY      :: 40   // the most lines of a struct's body shown
+DOCS_SIGNATURE :: 12   // ... of a fun's signature
+
+// What a definition is.
+DEF_MODULE :: 0   // a file's module: its doc comment, its `module` line
+DEF_TYPE   :: 1   // a struct, union, error set: its body shown
+DEF_FUN    :: 2   // its signature shown, to its `{`
+DEF_OTHER  :: 3   // a constant, a foreign fun: its line
+DEF_FIELD  :: 4   // a struct's: its line, and the struct named
+
+Docs_File :: struct {
+	path: [..1000]utf8
+	at:   i64   // its text in Docs.source
+	len:  i64
+}
+
+// A definition found: how well it matched, where it is.
+Found :: struct {
+	score: i64
+	file:  i64       // in Docs.files
+	line:  i64       // its line's number, from 1
+	at:    i64       // its line's start, in its file's text
+	doc:   i64       // its doc comment's first line's start; -1: none
+	kind:  i64       // DEF_...
+	name:  Field     // in its file's text
+	owner: Field     // a field's struct's name
+}
+
+// The search's room: the files read, what's found.
+Docs :: struct {
+	source: [..8 * MB]utf8          // the files' text, one after another
+	files:  [..600]Docs_File
+	found:  [..DOCS_SHOWN]Found     // the best, best first
+	count:  i64                     // how many matched in all
+	query:  [..400]utf8             // the words, lower case
+	words:  [..16]Field             // in query
+}
+
+// The words looked up: the Docs panel shows what's found, its status line
+// how much.
+docs_search :: fun(ui: ^Ui, asked: []utf8) {
+	d := &ui.search
+	l := &ui.docs
+	lines_clear(l)
+	docs_words(d, asked)
+	shown_query := asked[0 : min_int(asked.len, 60)]
+	if d.words.len == 0 {
+		none : [..300]utf8
+		&none + "Nothing to look up in \""
+		&none + shown_query
+		&none + "\": no word of two letters or more."
+		lines_status(l, none[:], STYLE_DIM)
+		return
+	}
+	docs_read(ui, d)
+	d.found.len = 0
+	d.count = 0
+	for f in 0 .. d.files.len {
+		docs_scan(d, f)
+	}
+	for fd in d.found {
+		docs_show(d, l, fd)
+	}
+	status : [..300]utf8
+	if d.count == 0 {
+		&status + "Nothing found for \""
+		&status + shown_query
+		&status + "\"."
+		lines_status(l, status[:], STYLE_BAD)
+		return
+	}
+	&status + count_text(d.count)
+	&status + " found for \""
+	&status + shown_query
+	&status + "\""
+	if d.count > d.found.len {
+		&status + ", the best "
+		&status + count_text(d.found.len)
+		&status + " shown"
+	}
+	&status + "."
+	lines_status(l, status[:], STYLE_DIM)
+}
+
+// The words asked, lower case: each run of letters, digits and _, two or
+// more long (a selection's punctuation and one-letter names left out).
+docs_words :: fun(d: ^Docs, asked: []utf8) {
+	d.query.len = 0
+	d.words.len = 0
+	at : i64 = 0
+	for at < asked.len {
+		if not is_word_char(asked[at]) {
+			at += 1
+			continue
+		}
+		end := at
+		for end < asked.len {
+			if not is_word_char(asked[end]) do break
+			end += 1
+		}
+		if end - at >= 2 and d.words.len < d.words.cap and d.query.len + end - at <= d.query.cap {
+			w := Field{at = d.query.len, len = end - at}
+			for k in at .. end {
+				&d.query + lower(asked[k])
+			}
+			&d.words + w
+		}
+		at = end
+	}
+}
+
+// The files looked in, read: the module's, the stdlib's, the doc pages.
+docs_read :: fun(ui: ^Ui, d: ^Docs) {
+	d.source.len = 0
+	d.files.len = 0
+	docs_read_dir(d, ".", ui.sep)
+	code : [..1000]utf8
+	&code + ui.compiler_dir
+	&code + "code"
+	docs_read_dir(d, code, ui.sep)
+	// (The directories in code/, as the compiler looks in them.)
+	entries : [..200]Dir_Entry
+	if not bool(dir_read(code, &entries)) {
+		for entry in entries {
+			if not entry.dir do continue
+			sub : [..1000]utf8
+			&sub + code[:]
+			&sub + ui.sep
+			&sub + entry.name[:]
+			docs_read_dir(d, sub, ui.sep)
+		}
+	}
+	doc : [..1000]utf8
+	&doc + ui.compiler_dir
+	&doc + "doc"
+	docs_read_dir(d, doc, ui.sep)
+}
+
+// The .mara files in a directory read into d.source, as many as fit — a
+// directory that isn't there, or a file that can't be read, left out. A
+// file's path: its name alone in ".", else the directory's, sep, its name.
+docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
+	entries : [..1000]Dir_Entry
+	e := dir_read(dir, &entries)
+	if bool(e) and e != .Too_Large do return
+	for entry in entries {
+		name : []utf8 = entry.name[:]
+		if entry.dir or name.len < 6 do continue
+		if name[name.len - 5 : name.len] != ".mara" do continue
+		if d.files.len == d.files.cap do return
+		path : [..1000]utf8
+		if dir != "." {
+			&path + dir
+			&path + sep
+		}
+		&path + name
+		buf : [..1 * MB]byte
+		if bool(read_entire_file(path, &buf)) do continue
+		text : []utf8 = buf[:]
+		if d.source.len + text.len > d.source.cap do return
+		file := Docs_File{at = d.source.len, len = text.len}
+		&file.path + path[:]
+		&d.source + text
+		&d.files + file
+	}
+}
+
+// File f's text.
+docs_text :: fun(d: ^Docs, f: i64) -> []utf8 {
+	file := d.files[f]
+	return d.source[file.at : file.at + file.len]
+}
+
+// File f's definitions, each scored against the words: the ones that match
+// counted, the best kept.
+docs_scan :: fun(d: ^Docs, f: i64) {
+	text := docs_text(d, f)
+	line : i64 = 0
+	at : i64 = 0
+	doc : i64 = -1             // the comment right above: its first line's start
+	owner := Field{at = -1}    // the struct the lines are in; at -1: none
+	owner_indent : i64 = 0     // its line's indentation
+	field_indent : i64 = -1    // its fields' (its first line's); -1: not seen yet
+	for at < text.len {
+		end := line_end(text, at)
+		line += 1
+		indent, from := indentation(text, at, end)
+		rest := trimmed(text[from : end])
+		if rest.len == 0 {
+			doc = -1
+		elif starts_with(rest, "//")
+			if doc < 0 do doc = at
+		else
+			// (The struct's end: a `}` no further in than its line.)
+			if owner.at >= 0 and rest[0] == '}' and indent <= owner_indent do owner.at = -1
+			fd := Found{file = f, line = line, at = at, doc = doc, kind = -1}
+			definition(rest, from, &fd)
+			if fd.kind < 0 and owner.at >= 0 {
+				if field_indent < 0 do field_indent = indent
+				if indent == field_indent do field(rest, from, &fd)
+				if fd.kind == DEF_FIELD do fd.owner = owner
+			}
+			if fd.kind >= 0 do docs_score(d, text, &fd)
+			// (A struct's body follows: its fields.)
+			if fd.kind == DEF_TYPE and rest[rest.len - 1] == '{' {
+				w := text[fd.name.at + fd.name.len : end]
+				if contains(w, "struct") or contains(w, "class") {
+					owner = fd.name
+					owner_indent = indent
+					field_indent = -1
+				}
+			}
+			doc = -1
+		}
+		at = end + 1
+	}
+}
+
+// What the line (its text from its indentation: rest, at `from` in the
+// file) defines, into fd: kind and name; kind stays -1 for none.
+definition :: fun(rest: []utf8, from: i64, fd: ^Found) {
+	if starts_with(rest, "module ") {
+		n := word_at(rest, 7)
+		if n > 0 {
+			fd.kind = DEF_MODULE
+			fd.name = Field{at = from + 7, len = n}
+		}
+		return
+	}
+	if starts_with(rest, "fun ") {
+		n := word_at(rest, 4)
+		if n > 0 {
+			fd.kind = DEF_OTHER
+			fd.name = Field{at = from + 4, len = n}
+		}
+		return
+	}
+	n := word_at(rest, 0)
+	if n == 0 do return
+	k := skip_spaces(rest, n)
+	if not starts_with(rest[k : rest.len], "::") do return
+	fd.name = Field{at = from, len = n}
+	fd.kind = DEF_OTHER
+	what := rest[skip_spaces(rest, k + 2) : rest.len]
+	if starts_with(what, "fun") {
+		fd.kind = DEF_FUN
+	elif starts_with(what, "struct") or starts_with(what, "class") or starts_with(what, "union") or starts_with(what, "error") or starts_with(what, "enum")
+		fd.kind = DEF_TYPE
+	}
+}
+
+// A struct's field on the line — `name: type`, `name := value` — into fd.
+field :: fun(rest: []utf8, from: i64, fd: ^Found) {
+	n := word_at(rest, 0)
+	if n == 0 do return
+	k := skip_spaces(rest, n)
+	if k >= rest.len or rest[k] != ':' do return
+	if k + 1 < rest.len {
+		if rest[k + 1] == ':' do return
+	}
+	fd.kind = DEF_FIELD
+	fd.name = Field{at = from, len = n}
+}
+
+// fd scored against the words — each word in its name: all of it 100, its
+// start 50, anywhere 25; else in its doc comment, 6 — and kept among the
+// best when it matched.
+docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
+	name := text[fd.name.at : fd.name.at + fd.name.len]
+	// (A module by its last part: mara.os's is os.)
+	if fd.kind == DEF_MODULE {
+		last_dot : i64 = -1
+		for i in 0 .. name.len {
+			if name[i] == '.' do last_dot = i
+		}
+		name = name[last_dot + 1 : name.len]
+	}
+	doc := text[0 : 0]
+	if fd.doc >= 0 do doc = text[fd.doc : fd.at]
+	trailing := text[0 : 0]
+	if fd.kind == DEF_FIELD {
+		end := line_end(text, fd.at)
+		line := text[fd.at : end]
+		for i in 0 .. max_int(line.len - 1, 0) {
+			if line[i] == '/' and line[i + 1] == '/' {
+				trailing = line[i : line.len]
+				break
+			}
+		}
+	}
+	score : i64 = 0
+	matched : i64 = 0   // words it has, in its name or its doc
+	for w in d.words {
+		word := d.query[w.at : w.at + w.len]
+		before := score
+		if name.len == word.len and contains_folded(name, word) {
+			score += 100
+		elif name.len >= word.len and contains_folded(name[0 : word.len], word)
+			score += 50
+		elif contains_folded(name, word)
+			score += 25
+		elif contains_folded(doc, word) or contains_folded(trailing, word)
+			score += 6
+		}
+		if score > before do matched += 1
+	}
+	if score == 0 do return
+	// (Every word, of two or more: what was asked about, more than one word's
+	// namesake — "read file" finds read_entire_file before read.)
+	if matched == d.words.len and matched > 1 do score += 100
+	d.count += 1
+	// (Ties: a type first, then a fun, a module, the rest, a field.)
+	if fd.kind == DEF_TYPE do score += 3
+	if fd.kind == DEF_FUN or fd.kind == DEF_MODULE do score += 2
+	if fd.kind == DEF_OTHER do score += 1
+	fd.score = score
+	// (Into the best, in order: after those as good, so files' order holds.)
+	place := d.found.len
+	for place > 0 {
+		if d.found[place - 1].score >= score do break
+		place -= 1
+	}
+	if place >= d.found.cap do return
+	if d.found.len < d.found.cap do d.found.len += 1
+	k := d.found.len - 1
+	for k > place {
+		d.found[k] = d.found[k - 1]
+		k -= 1
+	}
+	d.found[place] = fd^
+}
+
+// A definition found, as the panel shows it: its name, a struct's for a
+// field, its file:line; its doc comment; its code — a fun's signature, a
+// type's body, the line — less its line's indentation. A blank line after.
+docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
+	text := docs_text(d, fd.file)
+	title : [..1200]utf8
+	&title + text[fd.name.at : fd.name.at + fd.name.len]
+	if fd.kind == DEF_FIELD {
+		&title + "   field of "
+		&title + text[fd.owner.at : fd.owner.at + fd.owner.len]
+	}
+	&title + "   "
+	&title + d.files[fd.file].path[:]
+	&title + ":"
+	&title + count_text(fd.line)
+	lines_add(l, title[:], STYLE_TITLE)
+
+	// The doc comment: each line's words, after its //.
+	if fd.doc >= 0 {
+		at := fd.doc
+		for at < fd.at {
+			end := line_end(text, at)
+			_, from := indentation(text, at, end)
+			// (One space after the // left out: the rest is the comment's own.)
+			c := min_int(from + 2, end)
+			if c < end and text[c] == ' ' do c += 1
+			comment := text[c : end]
+			doc_line : [..1200]utf8
+			&doc_line + "  "
+			&doc_line + comment[0 : min_int(comment.len, 1000)]
+			lines_add(l, doc_line[:], STYLE_TEXT)
+			at = end + 1
+		}
+	}
+
+	// The code, from the definition's line: a fun's to its `{`, a type's to
+	// its `}`, the rest's to where its parentheses close (a foreign fun's
+	// signature can take lines).
+	first_end := line_end(text, fd.at)
+	indent, _ := indentation(text, fd.at, first_end)
+	at := fd.at
+	most := DOCS_SIGNATURE
+	if fd.kind == DEF_TYPE do most = DOCS_BODY
+	if fd.kind == DEF_FIELD or fd.kind == DEF_MODULE do most = 1
+	depth : i64 = 0   // parentheses open
+	shown : i64 = 0
+	for at < text.len {
+		end := line_end(text, at)
+		code := text[at : end]
+		line_indent, from := indentation(text, at, end)
+		rest := trimmed(text[from : end])
+		last := shown + 1 == most
+		if fd.kind == DEF_FUN {
+			// (Its `{` left out.)
+			brace : i64 = -1
+			for i in 0 .. rest.len {
+				if rest[i] == '{' do brace = i
+			}
+			if brace >= 0 {
+				code = text[at : from + brace]
+				last = true
+			}
+		}
+		if fd.kind == DEF_OTHER {
+			for ch in rest {
+				if ch == '(' do depth += 1
+				if ch == ')' do depth -= 1
+			}
+			if depth <= 0 do last = true
+		}
+		if fd.kind == DEF_TYPE and shown > 0 and line_indent <= indent and rest.len > 0 {
+			if rest[0] == '}' do last = true
+		}
+		if fd.kind == DEF_TYPE and shown == 0 and contains(rest, "}") do last = true
+		if trimmed(code).len > 0 or not last do lines_add_code(l, code, indent)
+		shown += 1
+		at = end + 1
+		if last do break
+		if shown == most {
+			lines_add(l, "  …", STYLE_DIM)
+			break
+		}
+	}
+	lines_add(l, "", STYLE_TEXT)
+}
+
+// A line of code added: `indent` columns of its indentation left out, two
+// spaces in.
+lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
+	col : i64 = 0
+	k : i64 = 0
+	for k < code.len and col < indent {
+		if code[k] == '\t' {
+			col += TAB_SPACES
+		elif code[k] == ' '
+			col += 1
+		else
+			break
+		}
+		k += 1
+	}
+	end := code.len
+	for end > k {
+		if code[end - 1] != ' ' and code[end - 1] != '\t' and code[end - 1] != '\r' do break
+		end -= 1
+	}
+	shown : [..1200]utf8
+	&shown + "  "
+	&shown + code[k : min_int(end, k + 1000)]
+	lines_add(l, shown[:], STYLE_CODE)
+}
+
+// Where the line from `at` ends: its '\n', or the text's end.
+line_end :: fun(text: []utf8, at: i64) -> i64 {
+	end := at
+	for end < text.len {
+		if text[end] == '\n' do break
+		end += 1
+	}
+	return end
+}
+
+// The line's indentation in columns (a tab, TAB_SPACES), and where its text
+// begins — a carriage return at its end left off by the caller's end.
+indentation :: fun(text: []utf8, at: i64, end: i64) -> i64, i64 {
+	col : i64 = 0
+	k := at
+	for k < end {
+		if text[k] == '\t' {
+			col += TAB_SPACES
+		elif text[k] == ' '
+			col += 1
+		else
+			break
+		}
+		k += 1
+	}
+	return col, k
+}
+
+// The text without the spaces, tabs and carriage return at its ends.
+trimmed :: fun(s: []utf8) -> []utf8 {
+	a : i64 = 0
+	b := s.len
+	for a < b {
+		if s[a] != ' ' and s[a] != '\t' and s[a] != '\r' do break
+		a += 1
+	}
+	for b > a {
+		if s[b - 1] != ' ' and s[b - 1] != '\t' and s[b - 1] != '\r' do break
+		b -= 1
+	}
+	return s[a : b]
+}
+
+// Past the spaces from k.
+skip_spaces :: fun(s: []utf8, k: i64) -> i64 {
+	at := k
+	for at < s.len {
+		if s[at] != ' ' and s[at] != '\t' do break
+		at += 1
+	}
+	return at
+}
+
+// How long the name at s[k] is: letters, digits, _ and dots (a module's
+// name has them); 0 for none.
+word_at :: fun(s: []utf8, k: i64) -> i64 {
+	at := k
+	for at < s.len {
+		if not is_word_char(s[at]) and not (s[at] == '.' and at > k) do break
+		at += 1
+	}
+	return at - k
+}
+
+// Whether ch is a letter, a digit or _.
+is_word_char :: fun(ch: utf8) -> bool {
+	c := i64(ch)
+	return (c >= i64('a') and c <= i64('z')) or (c >= i64('A') and c <= i64('Z')) or (c >= i64('0') and c <= i64('9')) or ch == '_'
+}
+
+// A letter in lower case; anything else as it is.
+lower :: fun(ch: utf8) -> utf8 {
+	c := i64(ch)
+	if c >= i64('A') and c <= i64('Z') do return utf8(c + 32)
+	return ch
+}
+
+// Whether s begins with what.
+starts_with :: fun(s: []utf8, what: []utf8) -> bool {
+	if s.len < what.len do return false
+	return s[0 : what.len] == what
+}
+
+// Whether s has what in it.
+contains :: fun(s: []utf8, what: []utf8) -> bool {
+	if s.len < what.len do return false
+	for k in 0 .. s.len - what.len + 1 {
+		if s[k : k + what.len] == what do return true
+	}
+	return false
+}
+
+// Whether s has `word` (lower case) in it, s's case not minded.
+contains_folded :: fun(s: []utf8, word: []utf8) -> bool {
+	if s.len < word.len do return false
+	for k in 0 .. s.len - word.len + 1 {
+		same := true
+		for i in 0 .. word.len {
+			if lower(s[k + i]) != word[i] {
+				same = false
+				break
+			}
+		}
+		if same do return true
+	}
+	return false
+}

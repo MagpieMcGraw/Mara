@@ -2,7 +2,7 @@
 Pounce — module map   (run `mara ask <module>` to look inside one)
 
   your code
-    Pounce         3 types   · 8 funs   · main
+    Pounce         4 types   · 9 funs   · main
     asset          8 types   · 2 funs
     cache          6 types   · 11 funs
     camera         1 type    · 9 funs
@@ -16,11 +16,11 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
   stdlib
     mara.core      4 types   · 4 funs
     mara.endian    0 types   · 9 funs
-    mara.font      30 types  · 14 funs
+    mara.font      30 types  · 15 funs
     mara.math      4 types   · 55 funs
     mara.memory    3 types   · 0 funs
     mara.open_gl   19 types  · 61 funs
-    mara.os        10 types  · 59 funs
+    mara.os        12 types  · 63 funs
     mara.sdl       18 types  · 71 funs
     mara.skyline   2 types   · 6 funs
     mara.string    0 types   · 3 funs
@@ -194,7 +194,7 @@ below (calls)   (12 functions)
   fun    camera_turn_walking    camera.mara:117   (param camera : ^Camera)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
-  fun    draw_marker            Pounce.mara:172   (param camera : Camera)
+  fun    draw_marker            Pounce.mara:234   (param camera : Camera)
   fun    draw_state_append      gfx_draw_state.mara:132   (param camera : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
@@ -253,9 +253,9 @@ above (flow) — what feeds values of type Camera  (13 values, backward slice)
     decl    half_w         camera.mara:167  (in camera_update_size)
     decl    half_h         camera.mara:168  (in camera_update_size)
 === Pounce | Megastruct type above 2
-Megastruct — struct  Pounce.mara:44   (module Pounce)
+Megastruct — struct  Pounce.mara:53   (module Pounce)
 
-above (types)   (32 types, depth 2)
+above (types)   (33 types, depth 2)
   assets : asset.Assets
     font_stream : asset.Font_Stream
       font_files : [64]mara.core.str64
@@ -333,6 +333,7 @@ above (types)   (32 types, depth 2)
     near_plane : f32
     far_plane : f32
   camera : camera.Camera  (shown above)
+  drag_offset : mara.math.Vec3
   draw_state_highlight : gfx.DrawState
     batches : [..]gfx.Mesh_Batch
       instances : [..]gfx.Instance
@@ -353,6 +354,9 @@ above (types)   (32 types, depth 2)
   draw_state_object : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
   gl_context : mara.sdl.GLContext
+  markers : [4]Pounce.Marker
+    pos : mara.math.Vec3
+    color : [3]f32
   playa : object.Playa
     obj : object.Object  (shown above)
     visual : object.Visual
@@ -408,6 +412,7 @@ above (types)   (32 types, depth 2)
   fps : f64
   frame_counter : i64
   mouse_look : bool
+  dragging : i64
 === Pounce | camera_update
 camera_update — fun  camera.mara:140   (module camera)
 
@@ -483,7 +488,7 @@ camera_update — fun  camera.mara:140   (module camera)
 above (flow) — what feeds the arguments at its 1 call site  (backward slice)
 
   parameters (1)
-    game           Pounce.mara:165  (in game_update)
+    game           Pounce.mara:227  (in game_update)
 === Pounce | camera_update flow below
 camera_update — fun  camera.mara:140   (module camera)
 
@@ -610,13 +615,13 @@ gfx_mesh_generation.mara:69:11  token '0'
   Assign                   [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
   Index                    [463,467)  verts[0]   : Vertex
   Number                   [465,466)  0   : i64
-=== Pounce | at Pounce.mara:99:13
-Pounce.mara:99:13  token 'VAO_State'
+=== Pounce | at Pounce.mara:112:13
+Pounce.mara:112:13  token 'VAO_State'
 
-  Define                   [350,667)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [352,667)  fun(game: ^Megastruct, memory: ^[]byte) { …
-  Assign                   [478,485)  game.vao = VAO_State()
-  Call                     [482,485)  VAO_State()   : VAO_State
+  Define                   [398,844)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [400,844)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Assign                   [526,533)  game.vao = VAO_State()
+  Call                     [530,533)  VAO_State()   : VAO_State
 === test/askat.mara | at askat.mara:15:14
 askat.mara:15:14  token '3'
 

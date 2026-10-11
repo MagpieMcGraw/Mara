@@ -1066,6 +1066,12 @@ CLI_Args :: struct {
     ask:          bool,
     ask_query:    Ask_Query,  // the one query (ask_parse_query)
     ask_words:    []string,   // ... as written: a window asked it (ask_via_view)
+    show:         bool,       // -show — the window shows the query and its answer
+
+    // `mara docs <words>` — the window open here looks the words up in the
+    // docs: shown in its Docs panel, printed here (docs_via_view).
+    docs:         bool,
+    docs_words:   []string,
 
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
@@ -1075,7 +1081,15 @@ CLI_Args :: struct {
     view:         bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]\n       mara view [module]"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs <words>"
+DOCS_USAGE :: `Usage: mara docs <words>
+
+  Asks the window open here (mara view) to look the words up in the docs —
+  the module's .mara files, the stdlib's, the doc/ pages: each definition
+  whose name or doc comment has them, its doc comment and its signature (a
+  struct's fields too), best first. The window shows them in its Docs panel;
+  they're printed here too. Part of a name finds it. Fails when nothing is
+  found, or no window is open here.`
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1092,7 +1106,9 @@ VIEW_USAGE :: `Usage: mara view [module]
   'view <this compiler> <module> <pipe name>'. It listens on the pipe name
   (os.mara's pipe_listen): each connection sends one line, a query as
   'mara ask' takes it, and gets what its 'mara serve' answers, the end line
-  too; then it closes the connection. 'mara ask' here asks it first.`
+  too; then it closes the connection. 'mara ask' here asks it first. A line
+  '-show <query>' is a query its Ask panel shows (mara ask -show), and
+  '-docs <words>' words its Docs panel looks up (mara docs).`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
@@ -1137,7 +1153,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask at camera.mara:176      slice whatever is defined on that line
 
   A window open here on the module (mara view) answers 'mara ask' when it
-  can: from a check already made, and showing the query.
+  can, from a check already made. -show: it shows the query and its answer
+  in its Ask panel too (an editor's queries, say).
 
   Many queries, checked again as the files change:
     mara serve [module]              each line stdin sends is a query, answered
@@ -1193,6 +1210,7 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
         if arg == "-profile" { args.profile = true; i += 1; continue }
+        if arg == "-show"    { args.show    = true; i += 1; continue }
         if arg == "-no" {
             // `-no <feature>` — explicit feature disabler, two argv tokens.
             if i + 1 >= len(os.args) {
@@ -1241,6 +1259,20 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
+    // `mara docs <words>` — the window open here looks them up (DOCS_USAGE).
+    if subcmd == "docs" {
+        if len(positional) < 3 || is_help_flag(positional[2]) {
+            fmt.println(DOCS_USAGE)
+            os.exit(0 if len(positional) >= 3 else 1)
+        }
+        args.docs = true
+        args.docs_words = positional[2:]
+        cwd, _ := os.get_working_directory(context.allocator)
+        args.pkg_name = filepath.base(cwd)
+        args.ok = true
+        return args
+    }
+
     if (subcmd == "serve" || subcmd == "view") && len(positional) >= 3 && is_help_flag(positional[2]) {
         fmt.println(SERVE_USAGE if subcmd == "serve" else VIEW_USAGE)
         os.exit(0)
@@ -1281,6 +1313,10 @@ main :: proc() {
     }
     if args.view {
         run_view(args)
+        return
+    }
+    if args.docs {
+        docs_via_view(args)
         return
     }
 

@@ -1,0 +1,31 @@
+module local_label_names
+
+use mara.core
+
+// Variables named as the IR's block labels are — entry, run1 — get names of
+// their own: they built to a second %entry (clang: "multiple definition of
+// local value named 'entry'").
+
+//@ expect-output: entry 3, run1 4, total 7
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+sum :: fun(entry: Pair) -> (run1: i64) {
+	run1 = entry.a
+	for i in 0 .. 2 {
+		if i > 0 do run1 += entry.b
+	}
+	return run1
+}
+
+main :: fun() -> i64 {
+	entry := Pair{a = 3, b = 4}
+	run1 := entry.b
+	if run1 > 0 {
+		print("entry %, run1 %, total %", entry.a, run1, sum(entry))
+	}
+	return 0
+}

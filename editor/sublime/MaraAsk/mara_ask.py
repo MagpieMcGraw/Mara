@@ -269,7 +269,10 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             filt.append(str(depth))
 
         mara = _settings().get("mara_path", "mara")
-        name_args = [mara, "ask", word] + filt
+        # -show: a `mara view` window open on the module shows the query and its
+        # answer in its Ask panel (it answers too; no window, a plain ask).
+        ask = [mara, "ask"] + (["-show"] if _settings().get("show_in_window", True) else [])
+        name_args = ask + [word] + filt
 
         # Root the query, and pick the `at <file>:<line>` fallback used when <word>
         # isn't a top-level name (a local/param, or a name drilled in the output).
@@ -279,15 +282,14 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             # location for the `at` fallback.
             cwd = view.settings().get("mara_ask_cwd") or None
             loc = _loc_on_line(view)
-            at_args = ([mara, "ask", "at", loc] + filt) if loc else None
+            at_args = (ask + ["at", loc] + filt) if loc else None
         else:
             fname = view.file_name()
             cwd = os.path.dirname(fname) if fname else None
             at_args = None
             if fname:
                 row = view.rowcol(view.sel()[0].b)[0] + 1
-                at_args = [mara, "ask", "at",
-                           "%s:%d" % (os.path.basename(fname), row)] + filt
+                at_args = ask + ["at", "%s:%d" % (os.path.basename(fname), row)] + filt
 
         threading.Thread(target=self._work, args=(name_args, at_args, cwd)).start()
 
@@ -301,7 +303,7 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             rc2, out2 = _run_mara(at_args, cwd)
             if rc2 == 0:
                 used, out = at_args, out2
-        echo = " ".join(a if " " not in a else '"%s"' % a for a in used)
+        echo = " ".join(a if " " not in a else '"%s"' % a for a in used if a != "-show")
         sublime.set_timeout(lambda: self._present(cwd, echo, out), 0)
 
     def _present(self, cwd, echo, out):
@@ -349,3 +351,56 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
         window = self.view.window()
         if window is not None:
             _clear_flow(window)
+
+
+# ---- docs on select: what's selected, looked up in a `mara view` window ---------
+#
+# Selecting a word, part of one, or a few on one line sends them to the window
+# open on the file's module (`mara docs <text>`): its Docs panel fills with the
+# definitions they name — doc comments and signatures — to read after an alt-tab.
+# Once the selection has settled (docs_delay_ms), and only when it changed; the
+# status bar says what was found. Off with "docs_on_select": false.
+
+_docs_pending = [0]       # the latest selection's number: older ones don't send
+_docs_sent = [None]       # (cwd, text) last sent: the same again isn't
+
+
+def _docs_cwd(view):
+    # The module the selection is in: its file's directory; in the output pane,
+    # the module of the query that filled it.
+    if view.settings().get(VIEW_FLAG):
+        return view.settings().get("mara_ask_cwd") or None
+    fname = view.file_name()
+    if fname and fname.endswith(".mara"):
+        return os.path.dirname(fname)
+    return None
+
+
+class MaraDocsOnSelect(sublime_plugin.EventListener):
+    def on_selection_modified_async(self, view):
+        if not _settings().get("docs_on_select", True):
+            return
+        sel = view.sel()
+        if len(sel) != 1 or sel[0].empty():
+            return
+        cwd = _docs_cwd(view)
+        if cwd is None:
+            return
+        text = view.substr(sel[0]).strip()
+        # (A selection over lines — a whole fun — isn't words to look up.)
+        if not text or "\n" in text or len(text) > 200:
+            return
+        _docs_pending[0] += 1
+        number = _docs_pending[0]
+        delay = _settings().get("docs_delay_ms", 300)
+        sublime.set_timeout_async(lambda: _docs_send(number, cwd, text), delay)
+
+
+def _docs_send(number, cwd, text):
+    if number != _docs_pending[0] or _docs_sent[0] == (cwd, text):
+        return
+    _docs_sent[0] = (cwd, text)
+    mara = _settings().get("mara_path", "mara")
+    rc, out = _run_mara([mara, "docs", text], cwd)
+    first = out.strip().splitlines()[0] if out.strip() else "no answer"
+    sublime.status_message("Mara Docs: " + first)

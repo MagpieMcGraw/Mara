@@ -94,6 +94,7 @@ load_glyphs_and_metrics :: fun(
 Font_Error :: error {
 	Atlas_Full      // the atlas has no room left for a glyph
 	Glyph_Too_Big   // a glyph's bitmap is bigger than the room to draw it in
+	Too_Many_Chars  // more characters than the glyphs' list holds
 }
 
 COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
@@ -105,6 +106,7 @@ COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
 // metrics. In pixels, y down: a glyph's bitmap is drawn bearing_x right of
 // the pen and bearing_y above the baseline, both whole pixels. Unlike an
 // MSDF (rasterize_msdf), it is for this size only, and sharp at it.
+// (load_coverage_chars takes any characters: these, and — or ∞, say.)
 load_coverage_glyphs :: fun(
 	font: []utf8,
 	pixels: f32,
@@ -114,6 +116,28 @@ load_coverage_glyphs :: fun(
 	size: i64,
 	first: u32 = 32) -> err
 {
+	chars : [..1024]u32
+	if glyphs.cap > chars.cap do return Too_Many_Chars
+	for i in 0 .. glyphs.cap {
+		&chars + (first + u32(i))
+	}
+	load_coverage_chars(font, pixels, chars[:], glyphs, metrics, atlas, size)?
+}
+
+// A font's glyphs for the characters `chars` — code points, glyphs[i] for
+// chars[i] — as load_coverage_glyphs makes them: for text with more than
+// one range of characters, such as ASCII's and a few marks (— · ∞ →). A
+// character the font hasn't, its missing-glyph box.
+load_coverage_chars :: fun(
+	font: []utf8,
+	pixels: f32,
+	chars: []u32,
+	glyphs: ^[]Glyph,
+	metrics: ^Line_Metrics,
+	atlas: ^[]byte,
+	size: i64) -> err
+{
+	if chars.len > glyphs.cap do return Too_Many_Chars
 	ttf_file : [..2 * MB]byte = void
 	read_entire_file(font, &ttf_file)?
 	ttf := TTF(&ttf_file)
@@ -130,9 +154,9 @@ load_coverage_glyphs :: fun(
 	acc : [..(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
 	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
 
-	glyphs.len = glyphs.cap
+	glyphs.len = chars.len
 	for i in 0 .. glyphs.len {
-		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, first + u32(i))
+		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, chars[i])
 		outline := parse_glyph(&ttf, glyph_index)
 		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
 		glyphs[i] = Glyph{advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale}

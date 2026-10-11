@@ -7,7 +7,9 @@ use mara.os
 // side of `mara ask` asking it, with no window. Run as `mara view` runs one
 // — view_hub <compiler> <module> <pipe name> — it listens on the pipe name,
 // keeps the compiler's `serve` running, and answers each connection's line
-// with what serve answers, its end line too; then closes the connection.
+// with what serve answers, its end line too; then closes the connection. A
+// "-show <query>" line is a query the window would show: here, answered as
+// any; a "-docs <words>" line, docs it has none of: answered as failed.
 // Each line goes in view_hub.log, in the directory it runs in, as does serve
 // starting and ending, and "ended" when it ends: once no one has connected
 // for a second or so.
@@ -91,11 +93,23 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	asked : []utf8 = line[:]
 	note(log, "asked: ")
 	note(log, asked)
+	if asked.len >= 6 {
+		if asked[0 : 6] == "-docs " {
+			no_docs := "the stand-in window has no docs\n-- end of answer: failed --\n"
+			no_docs_bytes : []byte = no_docs[:]
+			file_write(c, &no_docs_bytes)?
+			return
+		}
+	}
 
-	// (To serve. One that ended since the last query, found by the write
-	// failing, is started again and asked: it never saw it.)
+	// (To serve — a "-show " query without it. One that ended since the last
+	// query, found by the write failing, is started again and asked: it never
+	// saw it.)
 	server_up(s, log)?
 	bytes : []byte = line[:]
+	if asked.len >= 6 {
+		if asked[0 : 6] == "-show " do bytes = line[6 : line.len]
+	}
 	_, we := file_write(s.process.input, &bytes)
 	if bool(we) {
 		server_down(s, log)

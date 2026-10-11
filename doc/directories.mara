@@ -1,0 +1,48 @@
+// How to see what's in a directory — its files and the directories in it —
+// with dir_read.
+//
+// dir_read fills a list you declare, `[..N]Dir_Entry`, with an entry for
+// each: its name (not its path: join the directory's and the name to open
+// it) and whether it's a directory. "." and ".." aren't listed, and the
+// order is the system's: sort them if it matters. It fails with
+// File_Error.Open_Failed when there's no directory at the path, and with
+// File_Error.Too_Large when there are more than the list holds — the list
+// then has the ones that fit.
+//
+// An entry is about 260 bytes, so a list of them lives in the program's
+// arena: set one first (see arenas.mara).
+module directories
+
+use mara.core
+use mara.os
+include mara.memory
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+
+	// This program's own directory, doc/: the .mara files in it.
+	entries : [..500]Dir_Entry
+	e := dir_read(".", &entries)
+	if bool(e) {
+		print("couldn't read it:", e)
+		return
+	}
+	pages := 0
+	for entry in entries {
+		name : []utf8 = entry.name[:]
+		if entry.dir do continue
+		if name.len > 5 and name[name.len - 5 : name.len] == ".mara" do pages += 1
+	}
+	print("doc/ has % pages, this one among them", pages)
+
+	// The stdlib's directory, beside doc/: what's a directory in it.
+	stdlib : [..500]Dir_Entry
+	if not bool(dir_read("../code", &stdlib)) {
+		for entry in stdlib {
+			if entry.dir do print("a directory in code/:", entry.name[:])
+		}
+	}
+
+	// A directory that isn't there.
+	print(dir_read("no_such_directory", &entries))   // File_Error.Open_Failed
+}

@@ -393,7 +393,9 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     case .String, .Ident, .Field:
         if is_untyped(ann) { prefixed = true }
     }
-    fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
+    // (A text constant's name fills it as its text does: `s := GREETING`.)
+    named_text := t.tag[tc_unparen(k, value)] != .String && lw_const_named(k, value) && is_partial_array(vt)
+    fills := is_partial_array(final) && (t.tag[value] == .String || named_text || is_slice_type(vt))
     m, _ := tc_byte_node(k, value)
     reads := is_partial_array(final) && tc_byte_flow(k, final, value, vt) == .Read && (t.tag[m] == .Index || t.tag[m] == .Slice)
     zero := prefixed && (fills || reads)

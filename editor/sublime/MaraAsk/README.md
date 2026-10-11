@@ -32,6 +32,14 @@ appears in an output panel with every `file:line` clickable.
   open file. So `flow above`/`below` is also a visual map, not just a list. Cleared on
   the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
+- **The window** — with `mara view` open on the module, each query also shows in
+  the window's **Ask** panel (`mara ask -show`), and **selecting** a word, part of
+  one, or a few on one line looks them up in its **Docs** panel (`mara docs`):
+  the definitions they name, with doc comments and signatures, to read after an
+  alt-tab. The status bar says how many were found. A selection over several
+  lines isn't looked up. Off with `"show_in_window": false` /
+  `"docs_on_select": false`.
+
 ## Commands & keys
 
 | Command | Default key | What |
@@ -52,6 +60,9 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 - `highlight_subject_scope` / `highlight_scope` — region colours for the queried
   variable and the surfaced variables (default `region.bluish` / `region.yellowish`;
   any scope your color scheme defines).
+- `show_in_window` — show queries in a `mara view` window's Ask panel (default `true`).
+- `docs_on_select` / `docs_delay_ms` — look up selections in the window's Docs
+  panel, once the selection rests that long (default `true`, `300`).
 
 ## Install
 

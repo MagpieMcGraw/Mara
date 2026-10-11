@@ -252,6 +252,10 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     llvm_sort_runs(e.runs[1:e.own])
     for r, i in e.runs[1:e.own] { e.label[r] = fmt.tprintf("run%d", i + 1) }
+    // (Labels share the locals' names: a variable named entry or run1 is
+    // %entry.2, %run1.2.)
+    e.used["%entry"] = true
+    for i in 1 ..< e.own { e.used[fmt.tprintf("%%run%d", i)] = true }
 
     llvm_users(e)
     if !llvm_variables(e) { return false }
@@ -1312,6 +1316,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
         case llvm_scalar(t):
             // (At the entry, before the code's own allocas.)
             name := fmt.tprintf("%%%s", graph_name(pg, d))
+            for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%%%s.%d", graph_name(pg, d), n) }
             e.used[name] = true
             ir := llvm_type_from_checker(t)
             fmt.sbprintf(&e.fields, "  %s = alloca %s\n  store %s %s, ptr %s\n", name, ir, ir, llvm_zero(t), name)

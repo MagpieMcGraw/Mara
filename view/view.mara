@@ -1,10 +1,14 @@
 module view
 
 // The Mara window: `mara view` opens it on a module. It shows panels
-// (panels.mara) — for now the module's profile.txt (build with `mara build
-// -profile`, run the program), every probed fun's times sorted by whichever
-// column is clicked, read again whenever the program writes it; and the
-// keys. Panels are moved, resized, shown and hidden; the layout is kept.
+// (panels.mara): the module's profile.txt (build with `mara build -profile`,
+// run the program), every probed fun's times sorted by whichever column is
+// clicked, read again whenever the program writes it; the docs, looked up
+// for the words an editor sends (`mara docs`, docs.mara); the last query an
+// editor asked (`mara ask -show`) and its answer; the keys. Panels are
+// moved, resized, shown and hidden; the layout and the theme, dark or
+// light, are kept. It answers `mara ask` here from a `mara serve` of its
+// own (hub.mara).
 //   view <compiler> <module> <pipe name>   (as `mara view` starts it)
 // Its font, Inter (OFL.txt), and SDL3.dll are beside it, and its layout,
 // layout.txt. Built here: `mara build view` — with the window closed
@@ -42,7 +46,7 @@ Ui :: struct {
 	dirty:    bool = true    // drawn again when it is
 
 	panels:   [..8]Panel     // back to front: the last is drawn over the rest
-	menu_open:  bool
+	menu_open:  i64 = MENU_NONE   // the menu open: MENU_PANELS, MENU_THEME
 	menu_hover: i64 = -1     // the menu's item under the mouse as last drawn
 	drag:       i64          // DRAG_NONE, _MOVE, _RESIZE: what the mouse is doing
 	drag_kind:  i64          // the panel dragged
@@ -56,22 +60,65 @@ Ui :: struct {
 	scroll:   i64            // the first row shown
 	scroll_x: f32            // pixels the table is scrolled sideways
 
-	ground     := Color{r = 22, g = 23, b = 25}    // the window behind the panels
-	background := Color{r = 30, g = 31, b = 34}    // a panel's
-	border     := Color{r = 58, g = 60, b = 66}
-	stripe     := Color{r = 36, g = 37, b = 41}    // every other row
-	hover      := Color{r = 52, g = 55, b = 62}    // what's under the mouse
-	header     := Color{r = 44, g = 46, b = 51}    // bars: the menu, titles, a status line
-	ink        := Color{r = 222, g = 222, b = 222}
-	dim        := Color{r = 150, g = 152, b = 158}
-	accent     := Color{r = 236, g = 180, b = 80}  // the column sorted by; a shown panel
-	bad        := Color{r = 240, g = 120, b = 110}
+	// The Docs panel's and the Ask panel's lines; the docs search's room.
+	docs:   Lines
+	asked:  Lines
+	search: Docs
+	compiler_dir: [..1000]utf8   // the compiler's directory, its separator at the end
+	sep:    utf8                 // the compiler's path's separator: '\' or '/'
+
+	// The theme's colors (theme_set).
+	light:      bool
+	ground:     Color   // the window behind the panels
+	background: Color   // a panel's
+	border:     Color
+	stripe:     Color   // every other row
+	hover:      Color   // what's under the mouse
+	header:     Color   // bars: the menu, titles, a status line
+	ink:        Color
+	dim:        Color
+	accent:     Color   // the column sorted by; a ticked box; a name found
+	bad:        Color
+	code:       Color   // code, as the Docs panel shows it
+}
+
+// The colors: dark — light text on dark — or light.
+theme_set :: fun(ui: ^Ui, light: bool) {
+	ui.light = light
+	if light {
+		ui.ground     = Color{r = 214, g = 216, b = 221}
+		ui.background = Color{r = 250, g = 250, b = 251}
+		ui.border     = Color{r = 188, g = 191, b = 198}
+		ui.stripe     = Color{r = 242, g = 243, b = 246}
+		ui.hover      = Color{r = 218, g = 228, b = 242}
+		ui.header     = Color{r = 232, g = 234, b = 238}
+		ui.ink        = Color{r = 30, g = 32, b = 36}
+		ui.dim        = Color{r = 98, g = 102, b = 110}
+		ui.accent     = Color{r = 176, g = 98, b = 0}
+		ui.bad        = Color{r = 192, g = 40, b = 30}
+		ui.code       = Color{r = 24, g = 82, b = 160}
+	else
+		ui.ground     = Color{r = 22, g = 23, b = 25}
+		ui.background = Color{r = 30, g = 31, b = 34}
+		ui.border     = Color{r = 58, g = 60, b = 66}
+		ui.stripe     = Color{r = 36, g = 37, b = 41}
+		ui.hover      = Color{r = 52, g = 55, b = 62}
+		ui.header     = Color{r = 44, g = 46, b = 51}
+		ui.ink        = Color{r = 222, g = 222, b = 222}
+		ui.dim        = Color{r = 150, g = 152, b = 158}
+		ui.accent     = Color{r = 236, g = 180, b = 80}
+		ui.bad        = Color{r = 240, g = 120, b = 110}
+		ui.code       = Color{r = 150, g = 192, b = 240}
+	}
+	ui.dirty = true
 }
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(256 * MB))
 	ui : Ui
 	p : Profile
+	hub : Hub
+	theme_set(&ui, false)
 
 	// (Its font and its layout beside it: the directory of its own path.)
 	exe := this_program.args[0]
@@ -83,6 +130,20 @@ main :: fun() -> i64 {
 	&ui.font + "Inter.ttf"
 	&ui.layout_path + exe[0 : dir_end]
 	&ui.layout_path + "layout.txt"
+
+	// (The compiler's directory: its stdlib and doc pages, for the docs.)
+	if this_program.args.len > 1 {
+		compiler := this_program.args[1]
+		ui.sep = '/'
+		end : i64 = 0
+		for ch, i in compiler {
+			if ch == '\\' or ch == '/' {
+				end = i + 1
+				ui.sep = ch
+			}
+		}
+		&ui.compiler_dir + compiler[0 : end]
+	}
 
 	title : str256
 	if this_program.args.len > 2 {
@@ -127,23 +188,27 @@ main :: fun() -> i64 {
 		default_layout(&ui)
 	}
 	clamp_panels(&ui)
-	run(&ui, &p)
+	hub_start(&ui, &hub)
+	run(&ui, &p, &hub)
 	layout_save(&ui)
 	DestroyRenderer(ui.renderer)
 	DestroyWindow(ui.window)
+	// (After the window's gone: serve may finish a check before it ends.)
+	hub_stop(&hub)
 	return 0
 }
 
 // Events until the window closes: drawn again when what it shows changed —
 // no oftener than the display shows frames: a mouse moving says so a
-// thousand times a second — and the profile read again when the file
-// changed. (Waiting, not spinning: for an event, a quarter second at most to
-// look at the file, or, with something to draw, until it's time to.)
-run :: fun(ui: ^Ui, p: ^Profile) {
+// thousand times a second — the profile read again when the file changed,
+// and the hub's pipes looked at. (Waiting, not spinning: for an event, a
+// quarter second at most to look at the file, less to look at the pipes —
+// hub_wait — or, with something to draw, until it's time to.)
+run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 	looked := GetTicks()
 	next : u64 = 0   // the soonest the next frame is drawn (GetTicksNS)
 	for ui.running {
-		wait : i32 = 250
+		wait := hub_wait(hub)
 		if ui.dirty {
 			now := GetTicksNS()
 			if now >= next {
@@ -166,6 +231,7 @@ run :: fun(ui: ^Ui, p: ^Profile) {
 				handle(ui, p, &ev)
 			}
 		}
+		hub_poll(ui, hub)
 		if GetTicks() - looked >= 500 {
 			looked = GetTicks()
 			if file_mtime(PROFILE) != p.stamp {
@@ -219,7 +285,15 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			}
 			// (Drawn again only when what's under it changes: all motion shows.)
 			if profile_hover(ui, p) != ui.hover_row do ui.dirty = true
-			if ui.menu_open and menu_item_at(ui, ui.mouse_x, ui.mouse_y) != ui.menu_hover do ui.dirty = true
+			if ui.menu_open != MENU_NONE {
+				// (Over another menu's button: that menu, as menu bars do.)
+				b := menu_button_at(ui, ui.mouse_x, ui.mouse_y)
+				if b >= 0 and b != ui.menu_open {
+					ui.menu_open = b
+					ui.dirty = true
+				}
+				if menu_item_at(ui, ui.menu_open, ui.mouse_x, ui.mouse_y) != ui.menu_hover do ui.dirty = true
+			}
 		}
 	WindowMouseLeave
 		ui.mouse_x = -1.0
@@ -249,10 +323,15 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 				ui.scroll_x += sideways * 60.0
 				ui.dirty = true
 			}
+			l, has := panel_lines(ui, ui.panels[i].kind)
+			if has {
+				l.scroll -= i64(e.y * 3.0)
+				ui.dirty = true
+			}
 		}
 	KeyDown
-		if e.scancode == Scancode.Escape and ui.menu_open {
-			ui.menu_open = false
+		if e.scancode == Scancode.Escape and ui.menu_open != MENU_NONE {
+			ui.menu_open = MENU_NONE
 			ui.dirty = true
 		}
 		// (Keys go to the front panel.)
@@ -270,9 +349,27 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 				if e.scancode == Scancode.Right do ui.scroll_x += 60.0
 				ui.dirty = true
 			}
+			l, has := panel_lines(ui, ui.panels[i].kind)
+			if has {
+				page := lines_visible(ui, l, content_rect(ui, ui.panels[i]))
+				if e.scancode == Scancode.Down do l.scroll += 1
+				if e.scancode == Scancode.Up do l.scroll -= 1
+				if e.scancode == Scancode.PageDown do l.scroll += page
+				if e.scancode == Scancode.PageUp do l.scroll -= page
+				if e.scancode == Scancode.Home do l.scroll = 0
+				if e.scancode == Scancode.End do l.scroll = l.lines.len
+				ui.dirty = true
+			}
 		}
 	else
 	}
+}
+
+// The lines a panel kind shows — the Docs panel's, the Ask panel's — and
+// whether it shows lines (false: the others).
+panel_lines :: fun(ui: ^Ui, kind: i64) -> ^Lines, bool {
+	if kind == ASK_PANEL do return &ui.asked, true
+	return &ui.docs, kind == DOCS_PANEL
 }
 
 // The drag, if any, over: the layout saved.
@@ -333,15 +430,16 @@ display_room :: fun(ui: ^Ui) -> f32, f32 {
 	return f32(room.w) - 40.0, f32(room.h) - 40.0
 }
 
-// The window, the first time: as wide as the profile's table — no wider
-// than its display has room for — so every column shows.
+// The window, the first time: wide enough that the profile's panel, in
+// the default layout, shows its table's every column — no wider than its
+// display has room for.
 fit_window :: fun(ui: ^Ui, p: ^Profile) {
 	if p.problem.len > 0 do return
 	room_w, _ := display_room(ui)
 	units_w : i32 = 0
 	units_h : i32 = 0
 	_ = GetWindowSize(ui.window, &units_w, &units_h)
-	want := ceil_f32((table_width(p) + 2.0 * MARGIN + 2.0) / ui.density)
+	want := ceil_f32((table_width(p) + 2.0) / 0.55 / ui.density)
 	want = min_f32(want, room_w)
 	if want > f32(units_w) {
 		_ = SetWindowSize(ui.window, i32(want), units_h)
