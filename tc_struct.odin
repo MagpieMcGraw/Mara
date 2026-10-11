@@ -78,17 +78,17 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     #partial switch v in bt {
     case ^Type_Enum:
         if val, has := v.variants[field]; has { return v, false, i128(val), true }
-        tc_error(k, span, TYPE_ENUM_VARIANT, v.name, field)
+        tc_error(k, span, TYPE_ENUM_VARIANT, type_name(v), field)
         return Type_Error{}, false, 0, false
     case ^Type_Union:
         switch field {
         case "tag":
             if tag_et, found := k.table.enums[strings.concatenate({v.name, "_Tag"})]; found { return tag_et, true, 0, false }
-            tc_error(k, span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, v.name)
+            tc_error(k, span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, type_name(v))
             return Type_Error{}, false, 0, false
         case "pad":
             if v.tag_pad == nil {
-                tc_error(k, span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, v.name)
+                tc_error(k, span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, type_name(v))
                 return Type_Error{}, false, 0, false
             }
             return v.tag_pad, true, 0, false
@@ -97,7 +97,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             tc_unsupported(k, n, "a union's variant as a value")
             return Type_Error{}, false, 0, false
         }
-        tc_error(k, span, TYPE_UNION_VARIANT, v.name, field)
+        tc_error(k, span, TYPE_UNION_VARIANT, type_name(v), field)
         return Type_Error{}, false, 0, false
     }
 
@@ -118,7 +118,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
         if ft := resolve_struct_field(sd, field); ft != nil { return ft, true, 0, false }
         // (Its function: a value of its own, tc_field's to build.)
         if fun, has := sd.functions[field]; has { return fun, false, 0, false }
-        tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
+        tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), field)
         return Type_Error{}, false, 0, false
     }
     obj := bt
@@ -193,7 +193,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     vt := tc_store_at(k, value, env, op_tok, target, s)
     k.hint = nil
     if ft == nil {
-        tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
+        tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), field)
         return
     }
     if pname, immutable := tc_write_root_param(k, target, env); immutable {
@@ -279,7 +279,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     case ty == 0:
         hint := k.hint
         if ut, is_union := distinct_base(hint).(^Type_Union); is_union {
-            tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, ut.name)
+            tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, type_name(ut))
             return Type_Error{}
         }
         if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint)) {
@@ -519,7 +519,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         }
         user := sd.fields[first_user_field(sd):]
         if len(entries) > len(user) {
-            tc_error(k, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES, sd.name, len(user), len(entries))
+            tc_error(k, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES, scope_display_name(sd), len(user), len(entries))
         }
         for e, i in entries {
             if i >= len(user) { break }
@@ -531,7 +531,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         name := tc_name(k, e)
         idx, ok := sd.field_map[name]
         if !ok {
-            tc_error(k, span, TYPE_CLASS_FIELD, sd.name, name)
+            tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), name)
             continue
         }
         tc_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, name, span, env)
@@ -644,7 +644,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string) -> 
                 }
             }
         }
-        tc_error(k, span, TYPE_MODULE_SYMBOL, sd.name, field)
+        tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
         return Type_Error{}
     }
     tc_set_ref(k, n, scope_find_ref(msc, field))

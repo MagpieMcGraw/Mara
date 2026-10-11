@@ -1,5 +1,7 @@
 package mara
 
+import "core:strings"
+
 // `x.f(args)`, resolved by its qualifier: a function of the type, module or
 // type path x names (`Type.f`, `mod.f`, `Outer.Inner.f`: a static call — by
 // a struct's value, an instance's, x its first argument when it takes Self);
@@ -51,7 +53,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
                 } else if fns, dispatches := qsd.dispatch_groups[name]; dispatches {
                     qual_dispatch, resolved = fns[:], true
                 } else if sd_is_module(qsd) {
-                    tc_error(k, span, TYPE_MODULE_FUNCTION, qsd.name, name)
+                    tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
                     return Type_Error{}
                 }
             }
@@ -110,7 +112,9 @@ tc_self_args :: proc(k: ^TC, n: Tree_Id, fn: ^Type_Scope, sd: ^Scope_Body, qt: T
     if wants_ptr { inner = pt.elem }
     if as_scope_body(inner) != sd { return args, false }
     if _, is_ptr := qt.(^Type_Ptr); wants_ptr && !is_ptr {
-        tc_error(k, tree_span(k.t, n), TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE, fn.name, sd.name)
+        owner := scope_display_name(sd)
+        method := strings.concatenate({owner, ".", fn.source_name if fn.source_name != "" else fn.name}, context.temp_allocator)
+        tc_error(k, tree_span(k.t, n), TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE, method, owner)
         return args, true
     }
     return tc_with_receiver(recv, args), false

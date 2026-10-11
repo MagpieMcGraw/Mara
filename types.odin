@@ -456,13 +456,13 @@ finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
     }
 }
 
-// A struct's or a fun's name as the source writes it — a union's variant's,
-// `Shape.Rect` — for diagnostics.
-scope_display_name :: proc(ts: ^Type_Scope) -> string {
-    if ut := ts.variant_of; ut != nil && len(ts.source_name) > len(ut.source_name) {
-        return fmt.tprintf("%s.%s", ut.source_name, ts.source_name[len(ut.source_name) + 1:])
+// A struct's, a fun's or a module's name as the source writes it — a union's
+// variant's, `Shape.Rect` — for diagnostics (type_name's, for a named scope).
+scope_display_name :: proc(sd: ^Scope_Body) -> string {
+    if ut := sd.variant_of; ut != nil && len(sd.source_name) > len(ut.source_name) {
+        return fmt.tprintf("%s.%s", ut.source_name, sd.source_name[len(ut.source_name) + 1:])
     }
-    return ts.source_name if ts.source_name != "" else ts.name
+    return sd.source_name if sd.source_name != "" else sd.name
 }
 
 // Index of a struct's first user field — past a union variant's `__tag` (and
@@ -856,9 +856,7 @@ type_name :: proc(t: Type) -> string {
     case Type_Byte:         return "byte"
     case ^Type_Ptr:         return fmt.tprintf("^%s", type_name(v.elem))
     case ^Type_Scope:
-        if v.name != "" {
-            return v.source_name if v.source_name != "" else v.name
-        }
+        if v.name != "" { return scope_display_name(v) }
         b := strings.builder_make()
         strings.write_string(&b, "fun(")
         for p, i in v.params {

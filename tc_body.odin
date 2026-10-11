@@ -621,7 +621,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if elem == nil {
             elem = Type_Error{}
             if st, is_scope := ct.(^Type_Scope); is_scope {
-                tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, st.name)
+                tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, scope_display_name(st))
             } else {
                 tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
             }
@@ -891,14 +891,14 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         case .Arm_Dot:
             switch {
             case is_enum:
-                if name not_in et.variants { tc_error(k, span, TYPE_ENUM_VARIANT, et.name, name) }
+                if name not_in et.variants { tc_error(k, span, TYPE_ENUM_VARIANT, type_name(et), name) }
             case is_union:
-                if name not_in ut.tag_map { tc_error(k, span, TYPE_UNION_VARIANT, ut.name, name) }
+                if name not_in ut.tag_map { tc_error(k, span, TYPE_UNION_VARIANT, type_name(ut), name) }
             case:
                 tc_error(k, span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, name)
             }
         case .Arm_Variant:
-            if is_union && name not_in ut.tag_map { tc_error(k, span, TYPE_VARIANT_UNION, name, ut.name) }
+            if is_union && name not_in ut.tag_map { tc_error(k, span, TYPE_VARIANT_UNION, name, type_name(ut)) }
             if is_union {
                 if vs := ut.variant_structs[name]; vs != nil && a.bound != "" { tc_bind(k, child, a.bound, vs, {a.bound_tok, .Local}) }
             }
@@ -915,11 +915,11 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if has_else || !(is_enum || is_union) { return }
     if is_enum {
         for name in et.variants {
-            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, et.name, name) }
+            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, type_name(et), name) }
         }
     } else {
         for name in ut.variants {
-            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, name) }
+            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, type_name(ut), name) }
         }
     }
 }
