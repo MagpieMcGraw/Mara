@@ -110,19 +110,26 @@ hit_label :: proc(t: Type) -> string {
 }
 
 
-// What the innermost name among the nodes holding a point (widest first)
-// refers to: "refers to: <kind> <name>  <file>:<line>", its declaration's —
-// a builtin's, which no source declares, without the place; `name`, the
-// point's token, names it then. "" when none refers to anything.
+// What the name at a point — its token `at`, its text `name` — refers to,
+// as the innermost of the nodes holding it (widest first) says: "refers to:
+// <kind> <name>  <file>:<line>", its declaration's; a builtin's, which no
+// source declares, without the place. Only a reference about that name: a
+// node around it (a call, around a string in its arguments) refers to
+// something else. "" when nothing there refers to anything.
 @(private="file")
-hit_refers :: proc(a: ^Annotations, hits: []Tree_Id, name: string) -> string {
+hit_refers :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> string {
     #reverse for n in hits {
         for inst, i in a.instances {
             if n < inst.lo || n > inst.hi || int(n - inst.lo) >= len(a.refs[i]) { continue }
             r := annot_ref(a, Instance_Id(i), n)
             if r.kind == .None { continue }
-            if r.decl == 0 { return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name) }
+            if r.decl == 0 {
+                // (A builtin: only a node its name begins — the name, a call of it.)
+                if int(t.first[n]) != at { continue }
+                return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name)
+            }
             tok := build_tokens[r.decl]
+            if token_text(tok) != name { continue }
             return fmt.tprintf("refers to: %s %s  %s\n", ref_kind_word(r.kind), token_text(tok), ask_loc(token_span(tok)))
         }
     }
@@ -210,7 +217,7 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
 
     sb := strings.builder_make()
     fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n", want, line, col, token_text(tokens[tok_i]))
-    fmt.sbprint(&sb, hit_refers(a, hits[:], token_text(tokens[tok_i])))
+    fmt.sbprint(&sb, hit_refers(t, a, hits[:], at, token_text(tokens[tok_i])))
     fmt.sbprint(&sb, "\n")
     prev: Span
     for n in hits {
