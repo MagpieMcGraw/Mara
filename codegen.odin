@@ -107,6 +107,10 @@ Codegen :: struct {
     // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
     // when they're entered and left (llvm.odin, llvm_probe).
     profile: string,
+    // What each fun's code reaches through its params and of the program
+    // (llvm.odin, fun_summary): worked out as calls ask, once — each worker
+    // its own.
+    summaries: map[^Type_Scope]^Fun_Summary,
     // Every function's code comes from the program graph (llvm.odin).
 
     // Inside an assert/crash fail block (native builds): print-shaped

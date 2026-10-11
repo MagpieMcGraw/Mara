@@ -1,0 +1,49 @@
+module inplace_result
+
+use mara.core
+use mara.memory
+
+//@ expect-output: swapped 2 1
+//@ expect-output: tagged 5 7 true
+
+// Where a call's struct result is built (llvm_result_place, fun_summary).
+// `v = swap(&v)`: swap reads through p after it starts writing its result, so
+// the result goes in a temporary — built in v, it would read its own writes.
+// `h.big = tag(&h.n, "label")`: tag only keeps p in its result and reads
+// constant text, so the 4 KB result is built straight in h.big (a temporary
+// that big is an error: bigtemp_neg).
+
+V :: struct { x: i64  y: i64 }
+
+swap :: fun(p: ^V) -> V {
+	return V{ x = p.y, y = p.x }
+}
+
+Big :: struct {
+	a: [510]i64
+	count: ^i64
+	label_len: i64
+}
+
+Holder :: struct {
+	big: Big
+	n: i64
+}
+
+tag :: fun(count: ^i64, label: []utf8) -> Big {
+	return Big{ count = count, label_len = label.len }
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+
+	v := V{ x = 1, y = 2 }
+	v = swap(&v)
+	print("swapped", v.x, v.y)
+
+	h : Holder
+	h.n = 7
+	h.big.a[0] = 42
+	h.big = tag(&h.n, "label")
+	print("tagged", h.big.label_len, h.big.count^, h.big.a[0] == 0)
+}
