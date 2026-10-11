@@ -38,6 +38,8 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"cos",    1, .Match_Float_Suffix},
     {"acos",   1, .Match_Float_Suffix},
     {"fabs",   1, .Match_Float_Suffix},
+    {"floor",  1, .Match_Float_Suffix},
+    {"ceil",   1, .Match_Float_Suffix},
     {"pow",    2, .Match_Float_Suffix},
     {"minnum", 2, .Match_Float_Suffix},
     {"maxnum", 2, .Match_Float_Suffix},

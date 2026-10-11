@@ -1,0 +1,66 @@
+module font_coverage
+
+use mara.core
+use mara.os
+use mara.math
+use mara.font
+include mara.memory
+
+// mara.font's coverage glyphs (load_coverage_glyphs — text drawn pixel for
+// pixel, as `mara view` draws it), from the window's own font: every
+// character ' ' to '~' drawn but the space, compound glyphs (Inter builds
+// i, j and others from parts) resolved — an i is its dot and its stem;
+// at 64 pixels, a pixel inside l's stem is all covered, the one left of
+// its box none.
+
+//@ expect-output: drawn 94 of 95
+//@ expect-output: i has 2 contours
+//@ expect-output: l stem 255, beside it 0
+
+FONT :: "../view/Inter.ttf"
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Basic(64 * MB))
+	glyphs : [..95]Glyph
+	metrics : Line_Metrics
+	atlas : [..512 * 512]byte
+	e := load_coverage_glyphs(FONT, 16.0, &glyphs, &metrics, &atlas, 512)
+	if bool(e) {
+		print("load failed:", e)
+		return 1
+	}
+	drawn := 0
+	for g in glyphs {
+		if g.w > 0 do drawn += 1
+	}
+	print("drawn", drawn, "of", glyphs.len)
+
+	ttf_file : [..2 * MB]byte = void
+	re := read_entire_file(FONT, &ttf_file)
+	if bool(re) {
+		print("read failed:", re)
+		return 1
+	}
+	ttf := TTF(&ttf_file)
+	i_glyph := parse_glyph(&ttf, cmap_glyph_index(&ttf_file, ttf.cmap_sub, u32('i')))
+	print("i has", i_glyph.contour_end_pts.len, "contours")
+
+	l := parse_glyph(&ttf, cmap_glyph_index(&ttf_file, ttf.cmap_sub, u32('l')))
+	scale := 64.0 / f32(ttf.head.units_per_em)
+	left := floor_f32(f32(l.header.x_min) * scale) - 1.0
+	right := ceil_f32(f32(l.header.x_max) * scale) + 1.0
+	top := ceil_f32(f32(l.header.y_max) * scale) + 1.0
+	bottom := floor_f32(f32(l.header.y_min) * scale) - 1.0
+	w := i64(right - left)
+	h := i64(top - bottom)
+	acc : [..(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
+	rasterize_coverage(&l, scale, -left, top, w, h, &acc, &cell)
+	mid := h / 2
+	most := 0
+	for x in 0 .. w {
+		most = max_int(most, i64(cell[mid * w + x]))
+	}
+	print("l stem %, beside it %", most, i64(cell[mid * w]))
+	return 0
+}

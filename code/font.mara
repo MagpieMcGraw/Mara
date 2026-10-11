@@ -86,6 +86,267 @@ load_glyphs_and_metrics :: fun(
 	return storage
 }
 
+// ---------------------------------------------------------------------------
+// Coverage: glyphs at one pixel size, pixel for pixel
+// ---------------------------------------------------------------------------
+
+// What loading glyphs for drawing at one size can fail with.
+Font_Error :: error {
+	Atlas_Full      // the atlas has no room left for a glyph
+	Glyph_Too_Big   // a glyph's bitmap is bigger than the room to draw it in
+}
+
+COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
+
+// A font's glyphs for drawing text `pixels` high (its em), pixel for pixel:
+// characters first .. first + glyphs.cap - 1, each one's coverage (0..255:
+// how much of the pixel it covers) packed into `atlas`, size by size bytes,
+// and its place there and metrics in glyphs; the font's line metrics in
+// metrics. In pixels, y down: a glyph's bitmap is drawn bearing_x right of
+// the pen and bearing_y above the baseline, both whole pixels. Unlike an
+// MSDF (rasterize_msdf), it is for this size only, and sharp at it.
+load_coverage_glyphs :: fun(
+	font: []utf8,
+	pixels: f32,
+	glyphs: ^[]Glyph,
+	metrics: ^Line_Metrics,
+	atlas: ^[]byte,
+	size: i64,
+	first: u32 = 32) -> err
+{
+	ttf_file : [..2 * MB]byte = void
+	read_entire_file(font, &ttf_file)?
+	ttf := TTF(&ttf_file)
+	scale := pixels / f32(ttf.head.units_per_em)
+	metrics.ascent   = f32(ttf.hhea.ascent)   * scale
+	metrics.descent  = f32(ttf.hhea.descent)  * scale
+	metrics.line_gap = f32(ttf.hhea.line_gap) * scale
+
+	sky := Skyline(size, size)
+	atlas.len = size * size
+	for i in 0 .. atlas.len {
+		atlas[i] = u8(0)
+	}
+	acc : [..(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
+
+	glyphs.len = glyphs.cap
+	for i in 0 .. glyphs.len {
+		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, first + u32(i))
+		outline := parse_glyph(&ttf, glyph_index)
+		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
+		glyphs[i] = Glyph{advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale}
+		if outline.contour_end_pts.len == 0 do continue   // (a space: nothing drawn)
+
+		// (Its box in pixels, whole ones, a pixel of room around it.)
+		left   := floor_f32(f32(outline.header.x_min) * scale) - 1.0
+		right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
+		top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
+		bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
+		w := i64(right - left)
+		h := i64(top - bottom)
+		if w > COVERAGE_CELL or h > COVERAGE_CELL do return Glyph_Too_Big
+		rasterize_coverage(&outline, scale, -left, top, w, h, &acc, &cell)
+
+		px, py, ok := pack_rect(&sky, w, h)
+		if not ok do return Atlas_Full
+		for y in 0 .. h {
+			for x in 0 .. w {
+				atlas[(py + y) * size + px + x] = cell[y * w + x]
+			}
+		}
+		glyphs[i].x = i32(px)
+		glyphs[i].y = i32(py)
+		glyphs[i].w = i32(w)
+		glyphs[i].h = i32(h)
+		glyphs[i].bearing_x = left
+		glyphs[i].bearing_y = top
+	}
+}
+
+// A glyph's coverage bitmap: how much of each pixel its outline covers, 0
+// to 255. The outline at `scale` pixels a font unit, its origin (the pen,
+// on the baseline) at (origin_x, origin_y) in the bitmap: `out`, w by h
+// bytes, row-major, y down. `acc` is room to work in: (w + 2) * h at least.
+// (Signed-area accumulation, as in font-rs: each edge adds the area it
+// covers to the cells of the rows it crosses; a running sum along a row is
+// its coverage.)
+rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y: f32,
+                          w: i64, h: i64, acc: ^[]f32, out: ^[]byte) {
+	stride := w + 2
+	acc.len = stride * h
+	for i in 0 .. acc.len {
+		acc[i] = 0
+	}
+	start : i64 = 0
+	for c in 0 .. outline.contour_end_pts.len {
+		end := i64(outline.contour_end_pts[c])
+		coverage_contour(outline, start, end, scale, origin_x, origin_y, w, h, acc)
+		start = end + 1
+	}
+	out.len = w * h
+	for y in 0 .. h {
+		sum : f32 = 0
+		for x in 0 .. w {
+			sum += acc[y * stride + x]
+			out[y * w + x] = u8(min_f32(abs_f32(sum), 1.0) * 255.0 + 0.5)
+		}
+	}
+}
+
+// One contour's edges: a line between points on the curve, a quadratic
+// curve around each point off it — between two off it, a point on it
+// halfway, implied.
+coverage_contour :: fun(o: ^Outline, start: i64, end: i64, scale: f32, ox: f32, oy: f32,
+                        w: i64, h: i64, acc: ^[]f32) {
+	n := end - start + 1
+	if n < 2 do return
+	// (Begin at a point on the curve; with none, halfway from the last to
+	// the first, the points after it all of them.)
+	first : i64 = -1
+	for i in 0 .. n {
+		if o.points[start + i].on_curve {
+			first = i
+			break
+		}
+	}
+	sx, sy := coverage_point(o, start + max_int(first, 0), scale, ox, oy)
+	if first < 0 {
+		lx, ly := coverage_point(o, end, scale, ox, oy)
+		sx = (sx + lx) * 0.5
+		sy = (sy + ly) * 0.5
+		first = n - 1
+	}
+	cx := sx
+	cy := sy
+	qx : f32 = 0
+	qy : f32 = 0
+	pending := false   // qx, qy a point off the curve, not yet drawn
+	for j in 1 .. n + 1 {
+		at := start + (first + j) % n
+		px, py := coverage_point(o, at, scale, ox, oy)
+		if o.points[at].on_curve {
+			if pending {
+				coverage_quad(acc, w, h, cx, cy, qx, qy, px, py)
+			else
+				coverage_line(acc, w, h, cx, cy, px, py)
+			}
+			cx = px
+			cy = py
+			pending = false
+			continue
+		}
+		if pending {
+			mx := (qx + px) * 0.5
+			my := (qy + py) * 0.5
+			coverage_quad(acc, w, h, cx, cy, qx, qy, mx, my)
+			cx = mx
+			cy = my
+		}
+		qx = px
+		qy = py
+		pending = true
+	}
+	// (Closed: back to where it began.)
+	if pending {
+		coverage_quad(acc, w, h, cx, cy, qx, qy, sx, sy)
+	else
+		coverage_line(acc, w, h, cx, cy, sx, sy)
+	}
+}
+
+// A point of the outline in the bitmap's pixels.
+coverage_point :: fun(o: ^Outline, i: i64, scale: f32, ox: f32, oy: f32) -> f32, f32 {
+	return ox + f32(o.points[i].x) * scale, oy - f32(o.points[i].y) * scale
+}
+
+// A quadratic curve from (x0, y0) around (x1, y1) to (x2, y2): lines along
+// it, more where it bends more.
+coverage_quad :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1: f32, x2: f32, y2: f32) {
+	devx := x0 - 2.0 * x1 + x2
+	devy := y0 - 2.0 * y1 + y2
+	devsq := devx * devx + devy * devy
+	if devsq < 0.333 {
+		coverage_line(acc, w, h, x0, y0, x2, y2)
+		return
+	}
+	n := 1 + i64(floor_f32(sqrt_f32(sqrt_f32(3.0 * devsq))))
+	px := x0
+	py := y0
+	for i in 1 .. n + 1 {
+		t := f32(i) / f32(n)
+		u := 1.0 - t
+		qx := u * u * x0 + 2.0 * u * t * x1 + t * t * x2
+		qy := u * u * y0 + 2.0 * u * t * y1 + t * t * y2
+		coverage_line(acc, w, h, px, py, qx, qy)
+		px = qx
+		py = qy
+	}
+}
+
+// An edge from (x0, y0) to (x1, y1), in pixels: the area it covers added to
+// the cells of each row it crosses, signed by its direction (up or down).
+coverage_line :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1: f32) {
+	if abs_f32(y0 - y1) <= 0.000001 do return
+	dir : f32 = 1.0
+	ax := x0
+	ay := y0
+	bx := x1
+	by := y1
+	if y0 > y1 {
+		dir = -1.0
+		ax = x1
+		ay = y1
+		bx = x0
+		by = y0
+	}
+	dxdy := (bx - ax) / (by - ay)
+	x := ax
+	if ay < 0 do x -= ay * dxdy
+	stride := w + 2
+	for y in max_int(i64(ay), 0) .. min_int(i64(ceil_f32(by)), h) {
+		row := y * stride
+		dy := min_f32(f32(y + 1), by) - max_f32(f32(y), ay)
+		xnext := x + dxdy * dy
+		d := dy * dir
+		left := min_f32(x, xnext)
+		right := max_f32(x, xnext)
+		left_floor := floor_f32(left)
+		li := i64(left_floor)
+		right_ceil := ceil_f32(right)
+		ri := i64(right_ceil)
+		// (Past the bitmap's sides — its room around the outline makes that
+		// none of a glyph's: not drawn.)
+		if li >= 0 and ri <= w {
+			if ri <= li + 1 {
+				xmf := 0.5 * (x + xnext) - left_floor
+				acc[row + li] += d - d * xmf
+				acc[row + li + 1] += d * xmf
+			else
+				s := 1.0 / (right - left)
+				lf := left - left_floor
+				a0 := 0.5 * s * (1.0 - lf) * (1.0 - lf)
+				rf := right - right_ceil + 1.0
+				am := 0.5 * s * rf * rf
+				acc[row + li] += d * a0
+				if ri == li + 2 {
+					acc[row + li + 1] += d * (1.0 - a0 - am)
+				else
+					a1 := s * (1.5 - lf)
+					acc[row + li + 1] += d * (a1 - a0)
+					for xi in li + 2 .. ri - 1 {
+						acc[row + xi] += d * s
+					}
+					a2 := a1 + f32(ri - li - 3) * s
+					acc[row + ri - 1] += d * (1.0 - a2 - am)
+				}
+				acc[row + ri] += d * am
+			}
+		}
+		x = xnext
+	}
+}
+
 
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
@@ -410,7 +671,7 @@ MAX_GLYPH_POINTS   :: 4096
 
 Outline :: struct {
 	// Byte-read straight off the record. num_contours < 0 is the compound
-	// marker (the arrays stay empty until composite resolution lands).
+	// marker: the arrays then hold its components' points and contours.
 	header : TTF.Glyph_Header
 
 	// contour_end_pts[i] is the LAST point index of contour i; points is the
@@ -427,8 +688,9 @@ Glyph_Point :: struct {
 
 // Decode glyph `glyph_index` out of the font's glyf table. Takes the TTF
 // rather than raw glyph bytes so the loca/glyf lookup lives here — and so
-// composite resolution can fetch component glyphs by index when it lands.
-parse_glyph :: fun(t: ^TTF, glyph_index: u16) -> Outline {
+// a compound glyph's components are fetched by index. (depth: how deep in
+// components of components.)
+parse_glyph :: fun(t: ^TTF, glyph_index: u16, depth: i64 = 0) -> Outline {
 	outline : Outline
 	goff := t.loca.offsets[glyph_index]
 	glen := t.loca.offsets[glyph_index + 1] - goff
@@ -438,10 +700,87 @@ parse_glyph :: fun(t: ^TTF, glyph_index: u16) -> Outline {
 	outline.header = #big_endian glyph_bytes[0]
 	if outline.header.num_contours > 0 {
 		parse_simple_glyph_body(&outline, glyph_bytes)
+	elif outline.header.num_contours < 0
+		parse_compound_glyph_body(t, &outline, glyph_bytes, depth)
 	}
-	// num_contours < 0: compound — skipped until composite resolution lands;
-	// the header keeps the marker.
 	return outline
+}
+
+// A compound glyph's components (TTF.Glyph_On_Disk.Compound): each a glyph
+// of its own, moved — and scaled or turned, when it says — into this one,
+// its points and contours appended to the outline.
+parse_compound_glyph_body :: fun(t: ^TTF, outline: ^Outline, glyph_bytes: []byte, depth: i64) {
+	ARG_1_AND_2_ARE_WORDS    :: u16(0x0001)
+	ARGS_ARE_XY_VALUES       :: u16(0x0002)   // offsets (else points to match)
+	WE_HAVE_A_SCALE          :: u16(0x0008)
+	MORE_COMPONENTS          :: u16(0x0020)
+	WE_HAVE_AN_X_AND_Y_SCALE :: u16(0x0040)
+	WE_HAVE_A_TWO_BY_TWO     :: u16(0x0080)
+
+	assert(depth < 8)   // (components nested deeper: a broken font)
+	cursor := 10   // past the header
+	more := true
+	for more {
+		flags := read_u16be(glyph_bytes[cursor])
+		index := read_u16be(glyph_bytes[cursor + 2])
+		cursor += 4
+		dx : i64 = 0
+		dy : i64 = 0
+		if (flags & ARG_1_AND_2_ARE_WORDS) != 0 {
+			dx = i64(read_i16be(glyph_bytes[cursor]))
+			dy = i64(read_i16be(glyph_bytes[cursor + 2]))
+			cursor += 4
+		else
+			dx = i64(glyph_bytes[cursor])
+			dy = i64(glyph_bytes[cursor + 1])
+			if dx > 127 do dx -= 256   // (signed bytes)
+			if dy > 127 do dy -= 256
+			cursor += 2
+		}
+		// Placed by matching a point of it to one of the glyph's: not read.
+		assert((flags & ARGS_ARE_XY_VALUES) != 0)
+
+		// (Its transform, F2Dot14 numbers: x' = xx*x + yx*y, y' = xy*x + yy*y.)
+		xx : f32 = 1
+		xy : f32 = 0
+		yx : f32 = 0
+		yy : f32 = 1
+		if (flags & WE_HAVE_A_SCALE) != 0 {
+			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
+			yy = xx
+			cursor += 2
+		elif (flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0
+			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
+			yy = f2dot14(read_i16be(glyph_bytes[cursor + 2]))
+			cursor += 4
+		elif (flags & WE_HAVE_A_TWO_BY_TWO) != 0
+			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
+			xy = f2dot14(read_i16be(glyph_bytes[cursor + 2]))
+			yx = f2dot14(read_i16be(glyph_bytes[cursor + 4]))
+			yy = f2dot14(read_i16be(glyph_bytes[cursor + 6]))
+			cursor += 8
+		}
+
+		component := parse_glyph(t, index, depth + 1)
+		base := outline.points.len
+		assert(base + component.points.len <= MAX_GLYPH_POINTS)
+		assert(outline.contour_end_pts.len + component.contour_end_pts.len <= MAX_GLYPH_CONTOURS)
+		for p in component.points {
+			x := f32(p.x) * xx + f32(p.y) * yx + f32(dx)
+			y := f32(p.x) * xy + f32(p.y) * yy + f32(dy)
+			&outline.points + Glyph_Point{x = i16(floor_f32(x + 0.5)), y = i16(floor_f32(y + 0.5)), on_curve = p.on_curve}
+		}
+		for e in component.contour_end_pts {
+			&outline.contour_end_pts + u16(i64(e) + base)
+		}
+		more = (flags & MORE_COMPONENTS) != 0
+	}
+	assert(cursor <= glyph_bytes.len)
+}
+
+// A 2.14 fixed-point number (a compound glyph's scale): 16384 is 1.
+f2dot14 :: fun(v: i16) -> f32 {
+	return f32(v) / 16384.0
 }
 
 // Decode one simple glyph's body (what TTF.Glyph_On_Disk's Simple variant
