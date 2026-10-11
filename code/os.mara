@@ -576,6 +576,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	O_EXCL   :: 0x0080
 	O_TRUNC  :: 0x0200
 
+	// On every file and pipe this program opens: closed in a program it
+	// starts (process_start) when that one runs — which inherits only its
+	// own input and output, as on Windows.
+	O_CLOEXEC :: 0x80000
+
 	// Default mode for created files: rw-r--r-- (octal 0o644 = decimal 420).
 	// Mara's lexer doesn't recognize `0o` octal prefixes today; using decimal.
 	DEFAULT_MODE :: 420
@@ -587,14 +592,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Open a file for reading. Returns (id, .Ok) on success; on failure
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
-		id := open(cstring(path), O_RDONLY, 0)
+		id := open(cstring(path), O_RDONLY | O_CLOEXEC, 0)
 		if id == NO_FILE do return NO_FILE, Open_Failed
 		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
 	file_open_write :: fun(path: []utf8) -> File_Id, err {
-		id := open(cstring(path), O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE)
+		id := open(cstring(path), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DEFAULT_MODE)
 		if id == NO_FILE do return NO_FILE, Open_Failed
 		return id
 	}
@@ -820,22 +825,30 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		words[2] = command.ptr
 		to_child : [2]i32
 		from_child : [2]i32
-		if pipe(&to_child[0]) != 0 do return Process{}, Start_Failed
-		if pipe(&from_child[0]) != 0 {
+		// (Close-on-exec, all four ends: a program started later inherits
+		// none, so this one's input ends when ours closes. The child gets its
+		// two as its input and output — dup2's copies, without the flag.)
+		if pipe2(&to_child[0], O_CLOEXEC) != 0 do return Process{}, Start_Failed
+		made := pipe2(&from_child[0], O_CLOEXEC) == 0
+		// (A child's end numbered 0 to 2 — this program's own input or output
+		// closed — would stay itself in the child, flag and all, and close as
+		// it runs the command: an error instead.)
+		if not made or to_child[0] < 3 or from_child[1] < 3 {
 			_ = close(File_Id(to_child[0]))
 			_ = close(File_Id(to_child[1]))
+			if made {
+				_ = close(File_Id(from_child[0]))
+				_ = close(File_Id(from_child[1]))
+			}
 			return Process{}, Start_Failed
 		}
 		pid := fork()
 		if pid == 0 {
 			// The child: the pipes its input and output, then the command.
+			// (The four ends close as it runs it: close-on-exec.)
 			_ = dup2(to_child[0], 0)
 			_ = dup2(from_child[1], 1)
 			_ = dup2(from_child[1], 2)
-			_ = close(File_Id(to_child[0]))
-			_ = close(File_Id(to_child[1]))
-			_ = close(File_Id(from_child[0]))
-			_ = close(File_Id(from_child[1]))
 			_ = execv(sh.ptr, &words[0])
 			_exit(127)   // (no shell to run it)
 		}
@@ -936,7 +949,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun dlclose(handle: ^byte) -> i32
 
 		// Processes and pipes
-		fun pipe(fds: ^i32) -> i32
+		fun pipe2(fds: ^i32, flags: i32) -> i32
 		fun fork() -> i32
 		fun dup2(old: i32, new: i32) -> i32
 		fun execv(path: ^utf8, words: ^^utf8) -> i32
