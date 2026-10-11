@@ -319,8 +319,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// ---------------------------------------------------------------------------
 
 	// A program process_start started: its input, to write to with
-	// file_write; its output, to read from with file_read (its error output
-	// comes there too). `id` is its Win32 process handle.
+	// file_write; its output, to read from with file_read, or pipe_read not
+	// to wait (its error output comes there too). `id` is its Win32 process handle.
 	Process :: struct {
 		id:     File_Id
 		input:  File_Id
@@ -367,6 +367,23 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	process_close_input :: fun(p: ^Process) {
 		file_close(p.input)
 		p.input = NO_FILE
+	}
+
+	// Reads from a pipe what has arrived, without waiting for more — for a
+	// program that can't wait, as a window between its frames: data.len
+	// becomes the number of bytes read, 0 when none has. Returns false once
+	// the pipe has ended: its writer closed and all it wrote read.
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
+		data.len = 0
+		waiting: u32 = 0
+		if not bool(PeekNamedPipe(id, void, 0, void, &waiting, void)) {
+			if GetLastError() == ERROR_BROKEN_PIPE do return false
+			return false, Read_Failed
+		}
+		if waiting > 0 {
+			file_read(id, data)?   // (what has arrived: it doesn't wait)
+		}
+		return true
 	}
 
 	// Waits for the process to end and returns its exit code — its input and
@@ -523,6 +540,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun GetExitCodeProcess(h: File_Id, code: ^u32) -> i32
 		fun GetStdHandle(which: u32) -> File_Id
 		fun GetLastError() -> u32
+		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
 	}
 }
 
@@ -596,7 +614,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// Reads from the file into data, as much as its capacity holds; data.len
-	// becomes the number of bytes read (0 at the end of the file).
+	// becomes the number of bytes read (0 at the end of the file, or of a pipe
+	// whose writer closed).
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
 		n := read(id, &data[0], usize(data.cap))
 		if n < 0 do return Read_Failed
@@ -774,8 +793,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// ---------------------------------------------------------------------------
 
 	// A program process_start started: its input, to write to with
-	// file_write; its output, to read from with file_read (its error output
-	// comes there too). `id` is its pid.
+	// file_write; its output, to read from with file_read, or pipe_read not
+	// to wait (its error output comes there too). `id` is its pid.
 	Process :: struct {
 		id:     i32
 		input:  File_Id
@@ -838,6 +857,21 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		p.input = NO_FILE
 	}
 
+	// Reads from a pipe what has arrived, without waiting for more — for a
+	// program that can't wait, as a window between its frames: data.len
+	// becomes the number of bytes read, 0 when none has. Returns false once
+	// the pipe has ended: its writer closed and all it wrote read.
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
+		data.len = 0
+		ready := Poll_Fd{fd = id, events = POLLIN}
+		n := poll(&ready, 1, 0)   // (0 ms: answers at once)
+		if n < 0 do return false, Read_Failed
+		if n == 0 do return true
+		// (Readable: what has arrived, or its end — 0 bytes.)
+		file_read(id, data)?
+		return data.len > 0
+	}
+
 	// Waits for the process to end and returns its exit code — its input and
 	// output closed first, so one still writing stops rather than waiting
 	// for a reader. Read what it writes before.
@@ -863,6 +897,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	standard_output :: fun() -> File_Id {
 		return File_Id(1)
 	}
+
+	// poll's question about a file: are there bytes to read (POLLIN)?
+	Poll_Fd :: struct {
+		fd:      File_Id
+		events:  i16
+		revents: i16
+	}
+
+	POLLIN :: 0x0001
 
 	// ---------------------------------------------------------------------------
 	// libc bindings
@@ -899,5 +942,6 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun execv(path: ^utf8, words: ^^utf8) -> i32
 		fun _exit(code: i32)
 		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
+		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
 	}
 }

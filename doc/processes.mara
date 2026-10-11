@@ -7,6 +7,11 @@
 // more: its reads get 0 bytes. process_wait waits for it to end and returns
 // its exit code.
 //
+// file_read waits for the program to write something. A program that can't
+// wait — a window, drawing its frames — reads with pipe_read instead: it
+// takes what has arrived, maybe nothing, and returns false once the output
+// has ended.
+//
 // A program reads its own input with standard_input(), and writes its
 // output with standard_output() or print.
 //
@@ -44,6 +49,13 @@ main :: fun() -> i64 {
 		print("couldn't start it:", e)
 		return 1
 	}
+
+	// Without waiting: nothing has arrived yet (the child is waiting for its
+	// input to end), and its output is still open.
+	early : [..64]byte
+	open, pe := pipe_read(p.output, &early)
+	if bool(pe) do print("couldn't read from it:", pe)
+	print("so far:", early.len, "bytes; still open:", open)
 
 	// Write to its input, then close it: the child reads to its end.
 	message := "hello"
