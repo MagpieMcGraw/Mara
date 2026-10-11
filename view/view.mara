@@ -67,6 +67,9 @@ main :: fun() -> i64 {
 	}
 	&title + "mara view"
 
+	// (A click that brings the window forward is a click too: on Windows SDL
+	// would drop it — and, by its count of buttons held, the next ones.)
+	_ = SetHint("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 	if not Init(Video) {
 		print("mara view: SDL didn't start")
 		return 1
@@ -145,7 +148,10 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		ui.mouse_y = e.y * ui.density
 		ui.dirty = true
 	MouseButtonDown
-		if e.button == 1 do click(ui, p, e.x * ui.density, e.y * ui.density)
+		if e.button == 1 {
+			x, y := cursor_in_window(ui)
+			click(ui, p, x, y)
+		}
 	MouseWheel
 		// (Shift held: the wheel moves the table sideways; a wheel that
 		// tilts, or a touchpad, moves it sideways anyway.)
@@ -170,6 +176,20 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		ui.dirty = true
 	else
 	}
+}
+
+// Where the cursor is in the window, in pixels: its place on the screen less
+// the window's. (A button event's own place is wherever SDL last saw the
+// mouse move — for a click before any motion it saw, the first one on a
+// window just opened or brought forward, (0, 0): above every title.)
+cursor_in_window :: fun(ui: ^Ui) -> f32, f32 {
+	gx : f32 = 0
+	gy : f32 = 0
+	_ = GetGlobalMouseState(&gx, &gy)
+	wx : i32 = 0
+	wy : i32 = 0
+	_ = GetWindowPosition(ui.window, &wx, &wy)
+	return (gx - f32(wx)) * ui.density, (gy - f32(wy)) * ui.density
 }
 
 // The window's size in pixels, and how many a window unit is.

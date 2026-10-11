@@ -1156,6 +1156,10 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> bool
     // The modifier keys held now: KMOD_SHIFT, ...
     fun GetModState() -> u16
+    // Where the cursor is on the screen (and the buttons held).
+    fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
+    // Where the window's inside is on the screen.
+    fun GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> bool
     fun GL_SetAttribute(attr: GLattr, value: i32) -> bool
     fun GL_CreateContext(window: Window) -> GLContext
     fun GL_MakeCurrent(window: Window, context: GLContext) -> bool
