@@ -196,8 +196,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// Open a file for reading. Returns (id, .Ok) on success; on failure
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
-	// Paths arrive as honest []utf8 — `cstring(path)` copies into a fresh
-	// NUL-terminated buffer right at the FFI boundary.
+	// The path goes to Windows as it is, not copied (cstring): a 0 must
+	// follow it in its storage — so pass a literal, or the buffer it was
+	// appended to, not a `[:]` of the buffer (that slice's room ends where
+	// the path does). So for every path this module takes.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		id := CreateFileA(cstring(path), GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
@@ -791,6 +793,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// Open a file for reading. Returns (id, .Ok) on success; on failure
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
+	// The path goes to Linux as it is, not copied (cstring): a 0 must
+	// follow it in its storage — so pass a literal, or the buffer it was
+	// appended to, not a `[:]` of the buffer (that slice's room ends where
+	// the path does). So for every path this module takes.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		id := open(cstring(path), O_RDONLY | O_CLOEXEC, 0)
 		if id == NO_FILE do return NO_FILE, Open_Failed
