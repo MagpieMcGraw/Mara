@@ -1,0 +1,334 @@
+module view
+
+use mara.core
+use mara.os
+use mara.math
+
+// A profile.txt (`mara build -profile`, written when the program ends):
+// header lines, the line naming the columns, then a row per fun — the
+// numbers, the fun's name, its file:line (runtime/mara_prof.c says so).
+// The columns are the ones the file names, of the titles this window knows
+// (column_title): a profile from before a column was added reads too.
+
+KNOWN       :: 10   // the titles this window knows
+MAX_COLUMNS :: 16
+MAX_ROWS    :: 20000
+
+// A stretch of the file's text: where it begins, how long.
+Field :: struct {
+	at:  i64
+	len: i64
+}
+
+Row :: struct {
+	fields: [MAX_COLUMNS]Field   // each as written
+	values: [MAX_COLUMNS]f64     // a number column's number
+}
+
+Profile :: struct {
+	text:    [..8 * MB]byte          // the file
+	header:  [..8]Field              // its lines before the columns
+	columns: [..MAX_COLUMNS]i64      // the columns it has, in order: which title each is
+	rows:    [..MAX_ROWS]Row
+	order:   [..MAX_ROWS]i64         // the rows as shown: sorted
+	scratch: [..MAX_ROWS]i64         // (sorting's)
+	widths:  [MAX_COLUMNS]f32        // each column's, in pixels: its widest text, room around it
+	sort_by: i64 = -1                // the column (its place) it's sorted by; -1: as in the file
+	descending: bool
+	problem: [..400]utf8             // why there's nothing to show, when there isn't
+	missing: bool                    // (that why: no file yet — the usual, not a fault)
+	stamp:   i64                     // the file's time when it was read
+}
+
+// A title this window knows.
+column_title :: fun(k: i64) -> []utf8 {
+	if k == 0 do return "total ms"
+	if k == 1 do return "self ms"
+	if k == 2 do return "calls"
+	if k == 3 do return "avg us"
+	if k == 4 do return "min us"
+	if k == 5 do return "median us"
+	if k == 6 do return "max us"
+	if k == 7 do return "probes %"
+	if k == 8 do return "fun"
+	return "where"
+}
+
+// Whether the title's column holds numbers (all but fun and where).
+is_number :: fun(k: i64) -> bool {
+	return k < 8
+}
+
+// The text a field is.
+field_text :: fun(p: ^Profile, f: Field) -> []utf8 {
+	text : []utf8 = p.text[f.at : f.at + f.len]
+	return text
+}
+
+// The profile read from the file again: its rows in the order it had, then
+// sorted as they were. When it can't be shown, why: p.problem.
+profile_read :: fun(p: ^Profile, path: []utf8) {
+	p.header.len = 0
+	p.columns.len = 0
+	p.rows.len = 0
+	p.order.len = 0
+	p.problem.len = 0
+	p.missing = false
+	p.stamp = file_mtime(path)
+	e := read_entire_file(path, &p.text)
+	if e == .Open_Failed {
+		p.missing = true
+		&p.problem + "No profile.txt here yet: build the program with `mara build -profile` and run it."
+		return
+	}
+	if bool(e) {
+		&p.problem + "profile.txt couldn't be read (or is over 8 MB)."
+		return
+	}
+	text : []utf8 = p.text[:]
+	at : i64 = 0
+	for at < text.len {
+		end := at
+		for end < text.len {
+			if text[end] == '\n' do break
+			end += 1
+		}
+		line := Field{at = at, len = end - at}
+		at = end + 1
+		if line.len > 0 {
+			if text[line.at + line.len - 1] == '\r' do line.len -= 1
+		}
+		if line.len == 0 do continue
+		if p.columns.len == 0 {
+			if not read_columns(p, line) and p.header.len < p.header.cap do &p.header + line
+			if p.problem.len > 0 do return
+			continue
+		}
+		if not profile_row(p, line) do return
+	}
+	if p.columns.len == 0 {
+		&p.problem + "profile.txt has no line naming its columns: not a profile this window knows."
+		return
+	}
+	if p.sort_by >= p.columns.len do p.sort_by = -1
+	profile_sort(p)
+}
+
+// When the line names the columns (it begins "total ms"), the titles it
+// names, read into p.columns — true. A title this window doesn't know is
+// a problem: the format changed past it.
+read_columns :: fun(p: ^Profile, line: Field) -> bool {
+	// (Its words, one space between each.)
+	words : [..300]utf8
+	text := field_text(p, line)
+	at : i64 = 0
+	for at < text.len {
+		w := next_word(text, at)
+		if w.len == 0 do break
+		if words.len > 0 and words.len < words.cap do &words + ' '
+		if words.len + w.len <= words.cap do &words + text[w.at : w.at + w.len]
+		at = w.at + w.len
+	}
+	if words.len < 8 do return false
+	if words[0 : 8] != "total ms" do return false
+
+	at = 0
+	for at < words.len {
+		found : i64 = -1
+		for k in 0 .. KNOWN {
+			title := column_title(k)
+			end := at + title.len
+			if end <= words.len {
+				if words[at : end] == title {
+					// (The whole title: the words after it are another's.)
+					whole := end == words.len
+					if not whole do whole = words[end] == ' '
+					if whole {
+						found = k
+						break
+					}
+				}
+			}
+		}
+		if found < 0 or p.columns.len == p.columns.cap {
+			&p.problem + "profile.txt has a column this window doesn't know: "
+			&p.problem + words[at : words.len]
+			return true
+		}
+		&p.columns + found
+		at += column_title(found).len + 1
+	}
+	return true
+}
+
+// A row read off its line; false when it isn't one (p.problem says).
+profile_row :: fun(p: ^Profile, line: Field) -> bool {
+	if p.rows.len == MAX_ROWS {
+		&p.problem + "profile.txt has more funs than this window shows (20000)."
+		return false
+	}
+	row : Row
+	text := field_text(p, line)
+	n := 0
+	at : i64 = 0
+	for at < text.len {
+		w := next_word(text, at)
+		if w.len == 0 do break
+		if n < MAX_COLUMNS do row.fields[n] = Field{at = line.at + w.at, len = w.len}
+		n += 1
+		at = w.at + w.len
+	}
+	ok := n == p.columns.len
+	for c in 0 .. p.columns.len {
+		if not ok do break
+		if is_number(p.columns[c]) {
+			v, number := parse_number(field_text(p, row.fields[c]))
+			row.values[c] = v
+			ok = number
+		}
+	}
+	if not ok {
+		&p.problem + "A row of profile.txt isn't one this window knows: "
+		&p.problem + text[0 : min_int(text.len, 200)]
+		return false
+	}
+	&p.rows + row
+	return true
+}
+
+// The next word in text from `at`: where it begins and how long (0 long:
+// none). Words are what spaces separate.
+next_word :: fun(text: []utf8, at: i64) -> Field {
+	i := at
+	for i < text.len {
+		if text[i] != ' ' and text[i] != '\t' do break
+		i += 1
+	}
+	j := i
+	for j < text.len {
+		if text[j] == ' ' or text[j] == '\t' do break
+		j += 1
+	}
+	return Field{at = i, len = j - i}
+}
+
+// A number as profile.txt writes them — digits, a point, digits — and
+// whether it is one.
+parse_number :: fun(s: []utf8) -> f64, bool {
+	v : f64 = 0
+	digits := 0
+	i : i64 = 0
+	for i < s.len {
+		d := i64(s[i]) - i64('0')
+		if d < 0 or d > 9 do break
+		v = v * 10.0 + f64(d)
+		digits += 1
+		i += 1
+	}
+	if i < s.len {
+		if s[i] == '.' {
+			i += 1
+			place : f64 = 0.1
+			for i < s.len {
+				d := i64(s[i]) - i64('0')
+				if d < 0 or d > 9 do break
+				v += f64(d) * place
+				place *= 0.1
+				digits += 1
+				i += 1
+			}
+		}
+	}
+	return v, digits > 0 and i == s.len
+}
+
+// The rows' order: as in the file, or by the column sorted by — numbers
+// largest first when descending, text A to Z (reversed when descending);
+// rows that tie keep the file's order.
+profile_sort :: fun(p: ^Profile) {
+	n := p.rows.len
+	p.order.len = n
+	p.scratch.len = n
+	for i in 0 .. n {
+		p.order[i] = i
+	}
+	if p.sort_by < 0 do return
+	// (A merge sort, bottom up: runs of 1, 2, 4 ... merged into scratch and back.)
+	width : i64 = 1
+	for width < n {
+		lo : i64 = 0
+		for lo < n {
+			mid := min_int(lo + width, n)
+			hi := min_int(lo + 2 * width, n)
+			merge_runs(p, lo, mid, hi)
+			lo += 2 * width
+		}
+		for i in 0 .. n {
+			p.order[i] = p.scratch[i]
+		}
+		width *= 2
+	}
+}
+
+// order[lo:mid] and order[mid:hi], each sorted, merged into scratch[lo:hi].
+merge_runs :: fun(p: ^Profile, lo: i64, mid: i64, hi: i64) {
+	i := lo
+	j := mid
+	k := lo
+	for k < hi {
+		take_right := false
+		if i >= mid {
+			take_right = true
+		elif j < hi
+			take_right = row_before(p, p.order[j], p.order[i])
+		}
+		if take_right {
+			p.scratch[k] = p.order[j]
+			j += 1
+		else
+			p.scratch[k] = p.order[i]
+			i += 1
+		}
+		k += 1
+	}
+}
+
+// Whether row a goes before row b, sorted as the profile is.
+row_before :: fun(p: ^Profile, a: i64, b: i64) -> bool {
+	c := p.sort_by
+	if is_number(p.columns[c]) {
+		va := p.rows[a].values[c]
+		vb := p.rows[b].values[c]
+		if p.descending do return va > vb
+		return va < vb
+	}
+	order := compare_text(field_text(p, p.rows[a].fields[c]), field_text(p, p.rows[b].fields[c]))
+	if p.descending do return order > 0
+	return order < 0
+}
+
+// -1, 0 or 1: a before b, the same, or after — letters' case not minded
+// (Arena after append), then minded, so the order is one.
+compare_text :: fun(a: []utf8, b: []utf8) -> i64 {
+	order := compare_bytes(a, b, true)
+	if order != 0 do return order
+	return compare_bytes(a, b, false)
+}
+
+// -1, 0 or 1, byte by byte; `fold`: A to Z as a to z.
+compare_bytes :: fun(a: []utf8, b: []utf8, fold: bool) -> i64 {
+	n := min_int(a.len, b.len)
+	for i in 0 .. n {
+		ca := i64(a[i])
+		cb := i64(b[i])
+		if fold {
+			if ca >= i64('A') and ca <= i64('Z') do ca += 32
+			if cb >= i64('A') and cb <= i64('Z') do cb += 32
+		}
+		if ca < cb do return -1
+		if ca > cb do return 1
+	}
+	if a.len < b.len do return -1
+	if a.len > b.len do return 1
+	return 0
+}

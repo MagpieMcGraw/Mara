@@ -1,0 +1,406 @@
+module view
+
+// The Mara window: `mara view` opens it on a module. For now it shows the
+// module's profile.txt — build with `mara build -profile`, run the program —
+// every probed fun's times, sorted by whichever column is clicked (again:
+// the other way). It reads the file again whenever the program writes it.
+//   view <compiler> <module> <pipe name>   (as `mara view` starts it)
+// Its font, Inter (OFL.txt), and SDL3.dll are beside it. Built here:
+// `mara build view` — with the window closed (Windows won't write over a
+// program that's running).
+
+use mara.core
+use mara.os
+use mara.math
+use mara.sdl
+include mara.memory
+
+PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
+FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
+PAD       :: 12.0            // the window's margin, and room in a column
+ROW_PAD   :: 3.0             // room above and below a row's text
+
+// The window and what it shows.
+Ui :: struct {
+	window:   Window
+	renderer: Renderer
+	text:     Text
+	font:     [..1000]utf8   // the font's path
+	density:  f32            // pixels a window unit (a high-density display has more)
+	width:    f32            // the window's size, pixels
+	height:   f32
+	mouse_x:  f32            // the mouse, pixels
+	mouse_y:  f32
+	scroll:   i64            // the first row shown
+	scroll_x: f32            // pixels the table is scrolled sideways
+	running:  bool = true
+	dirty:    bool = true    // drawn again when it is
+
+	background := Color{r = 30, g = 31, b = 34}
+	stripe     := Color{r = 36, g = 37, b = 41}   // every other row
+	hover      := Color{r = 52, g = 55, b = 62}   // the row under the mouse
+	header     := Color{r = 44, g = 46, b = 51}   // the column titles' row
+	ink        := Color{r = 222, g = 222, b = 222}
+	dim        := Color{r = 150, g = 152, b = 158}
+	accent     := Color{r = 236, g = 180, b = 80}  // the column sorted by
+	bad        := Color{r = 240, g = 120, b = 110}
+}
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Basic(256 * MB))
+	ui : Ui
+	p : Profile
+
+	// (Its font beside it: the directory of its own path.)
+	exe := this_program.args[0]
+	dir_end : i64 = 0
+	for ch, i in exe {
+		if ch == '\\' or ch == '/' do dir_end = i + 1
+	}
+	&ui.font + exe[0 : dir_end]
+	&ui.font + "Inter.ttf"
+
+	title : str256
+	if this_program.args.len > 2 {
+		&title + this_program.args[2]
+		&title + " - "
+	}
+	&title + "mara view"
+
+	if not Init(Video) {
+		print("mara view: SDL didn't start")
+		return 1
+	}
+	defer Quit()
+	ui.window = CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
+	ui.renderer = CreateRenderer(ui.window, void)
+	_ = SetRenderVSync(ui.renderer, 1)
+	measure(&ui)
+	e := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
+	if bool(e) {
+		print("mara view: its font didn't load:", e)
+		return 1
+	}
+	profile_read(&p, PROFILE)
+	layout(&ui, &p)
+	fit_window(&ui, &p)
+	run(&ui, &p)
+	DestroyRenderer(ui.renderer)
+	DestroyWindow(ui.window)
+	return 0
+}
+
+// Events until the window closes: drawn again when something changed, the
+// profile read again when the file did. (Waiting, not spinning: a quarter
+// second at most, to look at the file.)
+run :: fun(ui: ^Ui, p: ^Profile) {
+	looked := GetTicks()
+	for ui.running {
+		ev : Event
+		if WaitEventTimeout(&ev, 250) {
+			handle(ui, p, &ev)
+			for PollEvent(&ev) {
+				handle(ui, p, &ev)
+			}
+		}
+		if GetTicks() - looked >= 500 {
+			looked = GetTicks()
+			if file_mtime(PROFILE) != p.stamp {
+				profile_read(p, PROFILE)
+				layout(ui, p)
+				ui.dirty = true
+			}
+		}
+		if ui.dirty {
+			measure(ui)
+			draw(ui, p)
+			ui.dirty = false
+		}
+	}
+}
+
+// One event: the window closed, resized or shown again; the mouse moved,
+// clicked or wheeled; a key.
+handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
+	e := ev^
+	match e {
+	Quit
+		ui.running = false
+	WindowCloseRequested
+		ui.running = false
+	WindowResized
+		ui.dirty = true
+	WindowPixelSizeChanged
+		ui.dirty = true
+	WindowExposed
+		ui.dirty = true
+	WindowDisplayScaleChanged
+		measure(ui)
+		le := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
+		if bool(le) do print("mara view: its font didn't load:", le)
+		layout(ui, p)
+		ui.dirty = true
+	MouseMotion
+		ui.mouse_x = e.x * ui.density
+		ui.mouse_y = e.y * ui.density
+		ui.dirty = true
+	MouseButtonDown
+		if e.button == 1 do click(ui, p, e.x * ui.density, e.y * ui.density)
+	MouseWheel
+		// (Shift held: the wheel moves the table sideways; a wheel that
+		// tilts, or a touchpad, moves it sideways anyway.)
+		sideways := e.x
+		if (GetModState() & KMOD_SHIFT) != 0 {
+			sideways = -e.y
+		else
+			ui.scroll -= i64(e.y * 3.0)
+		}
+		ui.scroll_x += sideways * 60.0
+		ui.dirty = true
+	KeyDown
+		page := visible_rows(ui, p)
+		if e.scancode == Scancode.Down do ui.scroll += 1
+		if e.scancode == Scancode.Up do ui.scroll -= 1
+		if e.scancode == Scancode.PageDown do ui.scroll += page
+		if e.scancode == Scancode.PageUp do ui.scroll -= page
+		if e.scancode == Scancode.Home do ui.scroll = 0
+		if e.scancode == Scancode.End do ui.scroll = p.rows.len
+		if e.scancode == Scancode.Left do ui.scroll_x -= 60.0
+		if e.scancode == Scancode.Right do ui.scroll_x += 60.0
+		ui.dirty = true
+	else
+	}
+}
+
+// The window's size in pixels, and how many a window unit is.
+measure :: fun(ui: ^Ui) {
+	w : i32 = 0
+	h : i32 = 0
+	_ = GetRenderOutputSize(ui.renderer, &w, &h)
+	units_w : i32 = 0
+	units_h : i32 = 0
+	_ = GetWindowSize(ui.window, &units_w, &units_h)
+	ui.width = f32(w)
+	ui.height = f32(h)
+	ui.density = 1.0
+	if units_w > 0 do ui.density = f32(w) / f32(units_w)
+}
+
+// Each column's width: its widest text, title included, room around it.
+layout :: fun(ui: ^Ui, p: ^Profile) {
+	for c in 0 .. p.columns.len {
+		widest := text_width(&ui.text, column_title(p.columns[c])) + arrow_room(ui)
+		for r in p.rows {
+			widest = max_f32(widest, text_width(&ui.text, field_text(p, r.fields[c])))
+		}
+		p.widths[c] = ceil_f32(widest + 2.0 * PAD)
+	}
+}
+
+// The table's width: its columns', the margins.
+table_width :: fun(p: ^Profile) -> f32 {
+	w := 2.0 * PAD
+	for c in 0 .. p.columns.len {
+		w += p.widths[c]
+	}
+	return w
+}
+
+// The window as wide as the table — no wider than its display has room
+// for — so every column shows.
+fit_window :: fun(ui: ^Ui, p: ^Profile) {
+	if p.problem.len > 0 do return
+	room := SDL_Rect{}
+	if not GetDisplayUsableBounds(GetDisplayForWindow(ui.window), &room) do return
+	units_w : i32 = 0
+	units_h : i32 = 0
+	_ = GetWindowSize(ui.window, &units_w, &units_h)
+	want := i32(ceil_f32(table_width(p) / ui.density))
+	want = i32(min_int(i64(want), i64(room.w) - 40))
+	if want > units_w {
+		_ = SetWindowSize(ui.window, want, units_h)
+		measure(ui)
+	}
+}
+
+// The room beside a title for the arrow saying it's sorted by.
+arrow_room :: fun(ui: ^Ui) -> f32 {
+	return floor_f32(ui.text.line * 0.6)
+}
+
+// A row's height, in pixels.
+row_height :: fun(ui: ^Ui) -> f32 {
+	return ui.text.line + 2.0 * ROW_PAD
+}
+
+// Where the column titles' row begins: below the header lines.
+table_top :: fun(ui: ^Ui, p: ^Profile) -> f32 {
+	return PAD + f32(p.header.len) * ui.text.line + PAD
+}
+
+// How many rows fit between the titles and the status line.
+visible_rows :: fun(ui: ^Ui, p: ^Profile) -> i64 {
+	rows_top := table_top(ui, p) + row_height(ui)
+	rows_bottom := ui.height - row_height(ui)
+	return max_int(i64((rows_bottom - rows_top) / row_height(ui)), 1)
+}
+
+// A click: on a column's title, the rows sorted by it — a number largest
+// first, text A to Z; on the one sorted by, the other way.
+click :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
+	top := table_top(ui, p)
+	if y < top or y >= top + row_height(ui) do return
+	left := PAD - ui.scroll_x
+	for c in 0 .. p.columns.len {
+		if x >= left and x < left + p.widths[c] {
+			if p.sort_by == c {
+				p.descending = not p.descending
+			else
+				p.sort_by = c
+				p.descending = is_number(p.columns[c])
+			}
+			ui.scroll = 0   // (the new order from its top)
+			profile_sort(p)
+			ui.dirty = true
+			return
+		}
+		left += p.widths[c]
+	}
+}
+
+// The window drawn: the profile's header lines, the column titles, the
+// rows that fit from the scroll on, a scroll bar, the status line.
+draw :: fun(ui: ^Ui, p: ^Profile) {
+	r := ui.renderer
+	_ = SetRenderDrawColor(r, ui.background.r, ui.background.g, ui.background.b, u8(255))
+	_ = RenderClear(r)
+	if p.problem.len > 0 {
+		color := ui.bad
+		if p.missing do color = ui.dim
+		_ = text_draw(&ui.text, r, p.problem[:], PAD, PAD, color)
+		_ = RenderPresent(r)
+		return
+	}
+
+	y := PAD
+	for h, i in p.header {
+		color := ui.dim
+		if i == 0 do color = ui.ink
+		_ = text_draw(&ui.text, r, field_text(p, h), PAD, y, color)
+		y += ui.text.line
+	}
+
+	// The column titles.
+	top := table_top(ui, p)
+	row_h := row_height(ui)
+	fill(r, 0, top, ui.width, row_h, ui.header)
+	ui.scroll_x = max_f32(0, min_f32(ui.scroll_x, table_width(p) - ui.width))
+	left := PAD - ui.scroll_x
+	for c in 0 .. p.columns.len {
+		title := column_title(p.columns[c])
+		color := ui.dim
+		if c == p.sort_by do color = ui.accent
+		x := left + PAD
+		if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, title)
+		_ = text_draw(&ui.text, r, title, x, top + ROW_PAD, color)
+		if c == p.sort_by {
+			arrow_x := x + text_width(&ui.text, title) + 4.0
+			if is_number(p.columns[c]) do arrow_x = x - arrow_room(ui)
+			draw_arrow(ui, arrow_x, top + ROW_PAD, p.descending)
+		}
+		left += p.widths[c]
+	}
+
+	// The rows: from the scroll, as many as fit.
+	shown := visible_rows(ui, p)
+	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
+	rows_top := top + row_h
+	for k in 0 .. shown {
+		at := ui.scroll + k
+		if at >= p.rows.len do break
+		ry := rows_top + f32(k) * row_h
+		if ui.mouse_y >= ry and ui.mouse_y < ry + row_h {
+			fill(r, 0, ry, ui.width, row_h, ui.hover)
+		elif at % 2 == 1
+			fill(r, 0, ry, ui.width, row_h, ui.stripe)
+		}
+		row := p.rows[p.order[at]]
+		left = PAD - ui.scroll_x
+		for c in 0 .. p.columns.len {
+			s := field_text(p, row.fields[c])
+			color := ui.ink
+			if p.columns[c] == 9 do color = ui.dim   // (where: quieter)
+			x := left + PAD
+			if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, s)
+			_ = text_draw(&ui.text, r, s, x, ry + ROW_PAD, color)
+			left += p.widths[c]
+		}
+	}
+
+	// A scroll bar, when they don't all fit.
+	if p.rows.len > shown {
+		track := f32(shown) * row_h
+		thumb := max_f32(track * f32(shown) / f32(p.rows.len), 20.0)
+		thumb_y := rows_top + (track - thumb) * f32(ui.scroll) / f32(p.rows.len - shown)
+		fill(r, ui.width - 8.0, thumb_y, 5.0, thumb, ui.dim)
+	}
+
+	// The status line.
+	status : [..300]utf8
+	&status + "profile.txt: "
+	&status + count_text(p.rows.len)
+	&status + " funs"
+	if p.sort_by < 0 {
+		&status + ", as in the file (most total time first). Click a column title to sort by it."
+	else
+		&status + ", sorted by "
+		&status + column_title(p.columns[p.sort_by])
+		if is_number(p.columns[p.sort_by]) {
+			if p.descending {
+				&status + ", largest first"
+			else
+				&status + ", smallest first"
+			}
+		else
+			if p.descending {
+				&status + ", Z to A"
+			else
+				&status + ", A to Z"
+			}
+		}
+		&status + ". Click it again for the other way."
+	}
+	fill(r, 0, ui.height - row_h, ui.width, row_h, ui.header)
+	_ = text_draw(&ui.text, r, status[:], PAD, ui.height - row_h + ROW_PAD, ui.dim)
+	_ = RenderPresent(r)
+}
+
+// An arrow beside a title, pointing down (largest first) or up, a line's
+// height: rows of pixels, each narrower.
+draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
+	size := arrow_room(ui)
+	half := floor_f32(size * 0.5)
+	top := floor_f32(y + (ui.text.line - half) * 0.5)
+	for k in 0 .. i64(half) {
+		inset := f32(k)
+		row_y := top + f32(k)
+		if not down do row_y = top + half - 1.0 - f32(k)
+		fill(ui.renderer, x + inset, row_y, size - 2.0 * inset, 1.0, ui.accent)
+	}
+}
+
+// A count as digits.
+count_text :: fun(n: i64) -> str64 {
+	backwards : [..24]utf8
+	v := n
+	for true {
+		&backwards + utf8(i64('0') + v % 10)
+		v /= 10
+		if v == 0 do break
+	}
+	out : str64
+	for i in 0 .. backwards.len {
+		&out + backwards[backwards.len - 1 - i]
+	}
+	return out
+}

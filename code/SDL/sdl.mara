@@ -1003,6 +1003,23 @@ SDL_FRect :: struct {
     h: f32
 }
 
+// SDL_Rect — whole pixels: a texture's region to update, the clip rect.
+SDL_Rect :: struct {
+    x: i32
+    y: i32
+    w: i32
+    h: i32
+}
+
+// A texture's pixels, 4 bytes each in this order in memory: R, G, B, A.
+// (SDL_PIXELFORMAT_RGBA32: ABGR8888 on a little-endian machine.)
+PIXELFORMAT_RGBA32 :: u32(0x16762004)
+TEXTUREACCESS_STATIC :: i32(0)    // updated now and then (UpdateTexture)
+BLENDMODE_NONE  :: u32(0)
+BLENDMODE_BLEND :: u32(1)         // drawn over what's there by its alpha
+SCALEMODE_NEAREST :: i32(0)       // a texel to a pixel, never blended
+KMOD_SHIFT :: u16(0x0003)         // either shift key (GetModState)
+
 // ---------------------------------------------------------------------------
 // SDL functions
 // ---------------------------------------------------------------------------
@@ -1064,6 +1081,7 @@ GLprofile :: union(tag i32) {
 // ---------------------------------------------------------------------------
 Window    :: type ^byte
 Renderer  :: distinct ^byte
+Texture   :: distinct ^byte   // a renderer's image (CreateTexture)
 GLContext :: type ^byte
 IOStream  :: distinct ^byte
 
@@ -1105,12 +1123,39 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun PollEvent(event: ^Event) -> bool
     fun Delay(ms: u32)
     fun Quit()
-    fun CreateRenderer(window: Window, name: cstring) -> Renderer
+    // name: a driver's, or void — SDL picks one.
+    fun CreateRenderer(window: Window, name: ^byte) -> Renderer
     fun DestroyRenderer(renderer: Renderer)
     fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool
     fun RenderClear(renderer: Renderer) -> bool
-    fun RenderFillRect(renderer: Renderer, rect: ^byte) -> bool
+    fun RenderFillRect(renderer: Renderer, rect: ^SDL_FRect) -> bool
     fun RenderPresent(renderer: Renderer) -> bool
+    fun SetRenderDrawBlendMode(renderer: Renderer, mode: u32) -> bool
+    fun SetRenderVSync(renderer: Renderer, vsync: i32) -> bool
+    // The renderer's size in pixels (a window's on a high-density display
+    // has more than its size says).
+    fun GetRenderOutputSize(renderer: Renderer, w: ^i32, h: ^i32) -> bool
+    // Drawing kept inside rect (void: everywhere again).
+    fun SetRenderClipRect(renderer: Renderer, rect: ^SDL_Rect) -> bool
+    fun CreateTexture(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture
+    // rect void: the whole texture; pitch: bytes from a row to the next.
+    fun UpdateTexture(texture: Texture, rect: ^SDL_Rect, pixels: ^byte, pitch: i32) -> bool
+    fun RenderTexture(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> bool
+    fun SetTextureBlendMode(texture: Texture, mode: u32) -> bool
+    // Each texel's color multiplied by this: white texels drawn in it.
+    fun SetTextureColorMod(texture: Texture, r: u8, g: u8, b: u8) -> bool
+    fun SetTextureScaleMode(texture: Texture, mode: i32) -> bool
+    fun DestroyTexture(texture: Texture)
+    // The next event, waiting for it up to ms milliseconds: false when none came.
+    fun WaitEventTimeout(event: ^Event, ms: i32) -> bool
+    fun SetWindowTitle(window: Window, title: cstring) -> bool
+    fun SetWindowSize(window: Window, w: i32, h: i32) -> bool
+    // The display the window is on, and the part of it windows can use
+    // (the taskbar's left out).
+    fun GetDisplayForWindow(window: Window) -> u32
+    fun GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> bool
+    // The modifier keys held now: KMOD_SHIFT, ...
+    fun GetModState() -> u16
     fun GL_SetAttribute(attr: GLattr, value: i32) -> bool
     fun GL_CreateContext(window: Window) -> GLContext
     fun GL_MakeCurrent(window: Window, context: GLContext) -> bool

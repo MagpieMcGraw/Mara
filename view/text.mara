@@ -1,0 +1,91 @@
+module view
+
+use mara.core
+use mara.math
+use mara.font
+use mara.sdl
+
+// Text drawn pixel for pixel: a font's glyphs at one size (mara.font's
+// coverage), white in a texture, drawn in any color by color mod.
+
+FIRST_CHAR :: 32   // ' ': the glyphs are ' ' to '~'
+ATLAS      :: 512  // the glyphs' texture, each side, in pixels
+
+Text :: struct {
+	texture: Texture
+	glyphs:  [..95]Glyph
+	metrics: Line_Metrics
+	ascent:  f32   // a line's top to its baseline, whole pixels
+	line:    f32   // a line's height, whole pixels
+}
+
+// What a color is drawn in: red, green, blue.
+Color :: struct {
+	r: u8
+	g: u8
+	b: u8
+}
+
+// The font's glyphs, `pixels` high (its em), in a texture of the renderer's.
+text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err {
+	atlas : [..ATLAS * ATLAS]byte
+	load_coverage_glyphs(font, pixels, &t.glyphs, &t.metrics, &atlas, ATLAS)?
+	// (Each texel white, its alpha the coverage.)
+	rgba : [..ATLAS * ATLAS * 4]byte
+	rgba.len = rgba.cap
+	for i in 0 .. atlas.len {
+		rgba[i * 4] = u8(255)
+		rgba[i * 4 + 1] = u8(255)
+		rgba[i * 4 + 2] = u8(255)
+		rgba[i * 4 + 3] = atlas[i]
+	}
+	if t.texture != void do DestroyTexture(t.texture)
+	t.texture = CreateTexture(renderer, PIXELFORMAT_RGBA32, TEXTUREACCESS_STATIC, ATLAS, ATLAS)
+	_ = UpdateTexture(t.texture, void, &rgba[0], ATLAS * 4)
+	_ = SetTextureBlendMode(t.texture, BLENDMODE_BLEND)
+	_ = SetTextureScaleMode(t.texture, SCALEMODE_NEAREST)
+	t.ascent = ceil_f32(t.metrics.ascent)
+	t.line = ceil_f32(t.metrics.ascent - t.metrics.descent + t.metrics.line_gap)
+}
+
+// How wide the text is drawn, in pixels.
+text_width :: fun(t: ^Text, s: []utf8) -> f32 {
+	w : f32 = 0
+	for ch in s {
+		w += t.glyphs[glyph_of(ch)].advance
+	}
+	return w
+}
+
+// The text drawn at x, its line's top at y, in a color: each glyph at the
+// pen rounded to a whole pixel, its bitmap a texel to a pixel. The pen
+// after it.
+text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color: Color) -> f32 {
+	_ = SetTextureColorMod(t.texture, color.r, color.g, color.b)
+	pen := x
+	baseline := floor_f32(y) + t.ascent
+	for ch in s {
+		g := t.glyphs[glyph_of(ch)]
+		if g.w > 0 {
+			from := SDL_FRect{x = f32(g.x), y = f32(g.y), w = f32(g.w), h = f32(g.h)}
+			to := SDL_FRect{x = floor_f32(pen + 0.5) + g.bearing_x, y = baseline - g.bearing_y, w = f32(g.w), h = f32(g.h)}
+			_ = RenderTexture(renderer, t.texture, &from, &to)
+		}
+		pen += g.advance
+	}
+	return pen
+}
+
+// A character's glyph: '?' for one the font's glyphs here don't have.
+glyph_of :: fun(ch: utf8) -> i64 {
+	i := i64(ch) - FIRST_CHAR
+	if i < 0 or i >= 95 do return i64('?') - FIRST_CHAR
+	return i
+}
+
+// A rectangle filled with a color, in pixels.
+fill :: fun(renderer: Renderer, x: f32, y: f32, w: f32, h: f32, color: Color) {
+	_ = SetRenderDrawColor(renderer, color.r, color.g, color.b, u8(255))
+	r := SDL_FRect{x = x, y = y, w = w, h = h}
+	_ = RenderFillRect(renderer, &r)
+}
