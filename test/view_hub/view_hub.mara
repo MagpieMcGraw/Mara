@@ -6,26 +6,35 @@ use mara.os
 // A stand-in for the window (`mara view`), for test/ask.sh: the window's
 // side of `mara ask` asking it, with no window. Run as `mara view` runs one
 // — view_hub <compiler> <module> <pipe name> — it listens on the pipe name,
-// starts the compiler's `serve`, and answers each connection's line with
-// what serve answers, its end line too; then closes the connection. Each
-// line goes in view_hub.log, in the directory it runs in, and "ended" when
-// it ends: once no one has connected for a second or so.
+// keeps the compiler's `serve` running, and answers each connection's line
+// with what serve answers, its end line too; then closes the connection.
+// Each line goes in view_hub.log, in the directory it runs in, as does serve
+// starting and ending, and "ended" when it ends: once no one has connected
+// for a second or so.
+
+// The compiler's `serve`, started again after it ends — a compiler bug stops
+// it — once a query needs it: one that dies each start costs a start a
+// query, not a loop of them.
+Server :: struct {
+	command: str256   // "<compiler>" serve <module>
+	process: Process
+	running: bool
+}
 
 main :: fun() -> i64 {
 	if this_program.args.len < 4 do return 1
 	l, le := pipe_listen(this_program.args[3])
 	if bool(le) do return 1   // (another listens there: it answers)
 	defer pipe_listen_stop(&l)
-	command : str256
-	&command + "\""
-	&command + this_program.args[1]
-	&command + "\" serve "
-	&command + this_program.args[2]
-	serve, se := process_start(command)
-	if bool(se) do return 1
 	log, oe := file_open_write("view_hub.log")
 	if bool(oe) do return 1
 	defer file_close(log)
+	s : Server
+	&s.command + "\""
+	&s.command + this_program.args[1]
+	&s.command + "\" serve "
+	&s.command + this_program.args[2]
+	if bool(server_up(&s, log)) do return 1
 
 	// (A look each 10 ms; 100 with no one: a second or so — Windows' sleeps
 	// run long.)
@@ -39,19 +48,37 @@ main :: fun() -> i64 {
 			continue
 		}
 		idle = 0
-		e := answer(c, &serve, log)
+		e := answer(c, &s, log)
 		file_close(c)
-		if bool(e) do break
+		if bool(e) do note(log, "unanswered\n")
 	}
 	note(log, "ended\n")
-	_, xe := process_wait(&serve)
-	if bool(xe) do return 1
+	server_down(&s, log)
 	return 0
+}
+
+// Serve running: started, unless it is.
+server_up :: fun(s: ^Server, log: File_Id) -> err {
+	if not s.running {
+		p := process_start(s.command)?
+		s.process = p
+		s.running = true
+		note(log, "serve started\n")
+	}
+}
+
+// Serve ended, or ended now: waited for.
+server_down :: fun(s: ^Server, log: File_Id) {
+	if not s.running do return
+	_, we := process_wait(&s.process)
+	if bool(we) do note(log, "serve not waited for\n")
+	s.running = false
+	note(log, "serve ended\n")
 }
 
 // A connection's line asked of serve, and what serve answers passed back as
 // it comes, to its end line.
-answer :: fun(c: File_Id, serve: ^Process, log: File_Id) -> err {
+answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	line : [..500]byte
 	chunk : [..200]byte
 	for true {
@@ -64,14 +91,29 @@ answer :: fun(c: File_Id, serve: ^Process, log: File_Id) -> err {
 	asked : []utf8 = line[:]
 	note(log, "asked: ")
 	note(log, asked)
+
+	// (To serve. One that ended since the last query, found by the write
+	// failing, is started again and asked: it never saw it.)
+	server_up(s, log)?
 	bytes : []byte = line[:]
-	file_write(serve.input, &bytes)?
+	_, we := file_write(s.process.input, &bytes)
+	if bool(we) {
+		server_down(s, log)
+		server_up(s, log)?
+		file_write(s.process.input, &bytes)?
+	}
 
 	current : [..100]utf8   // the line coming, to know the end line
 	done := false
 	for not done {
-		file_read(serve.output, &chunk)?
-		if chunk.len == 0 do return Read_Failed   // (serve ended)
+		file_read(s.process.output, &chunk)?
+		if chunk.len == 0 {
+			// (Serve ended answering it — maybe for it: not asked again. No
+			// end line, so `mara ask` checks for itself; the next query
+			// starts a new serve.)
+			server_down(s, log)
+			return Read_Failed
+		}
 		piece : []byte = chunk[:]
 		file_write(c, &piece)?
 		for ch in chunk[:] {

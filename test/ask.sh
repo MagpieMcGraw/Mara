@@ -64,6 +64,15 @@ done
 # The fixtures' queries through a window: the stand-in test/view_hub, started
 # by `mara view` (MARA_VIEW naming it) where each copied fixture is, so that
 # `mara ask` there asks it — the same answers again, and in its log, each.
+# Before askat's third, its serve is ended, as a crash would: the window
+# starts another, and answers on.
+kill_serve() {  # module: its window's `mara serve` ended
+  if command -v powershell.exe > /dev/null; then
+    powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*serve $1' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" > /dev/null
+  else
+    pkill -f "serve $1\$"
+  fi
+}
 hub_dir=$WORK/view_hub
 mkdir -p "$hub_dir" && cp "$ROOT/test/view_hub/view_hub.mara" "$hub_dir/"
 ( cd "$hub_dir" && "$MARA" build view_hub > /dev/null 2>&1 )
@@ -82,6 +91,9 @@ while [ $i -lt ${#targets[@]} ]; do
     ( cd "$d" && MARA_VIEW="$HUB" "$MARA" view ) || route_problems+="no window opened for ${targets[$i]}; "
     for t in $(seq 1 100); do [ -f "$d/view_hub.log" ] && break; sleep 0.1; done   # (listening)
     for ((k = i; k < j; k++)); do
+      if [ "${targets[$k]}" = test/askat.mara ] && [ $k -eq $((i + 2)) ]; then
+        kill_serve askat; sleep 0.5
+      fi
       echo "=== ${targets[$k]} | ${argss[$k]}" >> "$routed"
       ( cd "$d" && "$MARA" ask ${argss[$k]} 2>&1 ) | tr -d '\r' >> "$routed"
       [ ${PIPESTATUS[0]} -ne 0 ] && echo "[exit 1]" >> "$routed"
@@ -89,6 +101,9 @@ while [ $i -lt ${#targets[@]} ]; do
     for t in $(seq 1 100); do grep -qs '^ended' "$d/view_hub.log" && break; sleep 0.1; done
     asked=$(grep -cs '^asked: ' "$d/view_hub.log")
     [ "$asked" = $((j - i)) ] || route_problems+="the window for ${targets[$i]} answered $asked of $((j - i)); "
+    started=$(grep -cs '^serve started' "$d/view_hub.log")
+    want=1; [ "${targets[$i]}" = test/askat.mara ] && want=2
+    [ "$started" = $want ] || route_problems+="the window for ${targets[$i]} started serve $started times, not $want; "
   fi
   i=$j
 done
