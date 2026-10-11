@@ -1,15 +1,13 @@
 package mara
 
-import "core:bufio"
 import "core:fmt"
-import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
 // `mara ask` queries: parsed from their words, their `in` scopes classified,
-// answered against the checked program — once from the command line, or, with
-// `--stdin`, each line stdin sends against one check (ask_serve).
+// answered against the checked program — once from the command line, or each
+// line `mara serve` reads (serve.odin).
 // ---------------------------------------------------------------------------
 
 // One query, as written: its subject and its filters.
@@ -188,62 +186,4 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)
-}
-
-// ASK_DONE ends each answer `mara ask --stdin` gives: a client reading them
-// knows where one ends.
-ASK_DONE :: "-- end of answer --"
-
-// `mara ask --stdin`: each line stdin sends is a query, answered as `mara ask
-// <line>` would answer it — a mistake in one is its answer — then ASK_DONE;
-// until stdin closes. The program was checked once, before the first.
-ask_serve :: proc(s: ^Ask_Session) {
-    r: bufio.Reader
-    bufio.reader_init(&r, os.to_stream(os.stdin))
-    defer bufio.reader_destroy(&r)
-    for {
-        line, rerr := bufio.reader_read_string(&r, '\n', context.temp_allocator)
-        if rerr != nil && line == "" { break }
-        if words := ask_words(line); len(words) > 0 {
-            fmt.print(ask_serve_one(s, words))
-            fmt.println(ASK_DONE)
-        }
-        free_all(context.temp_allocator)
-        if rerr != nil { break }
-    }
-}
-
-@(private="file")
-ask_serve_one :: proc(s: ^Ask_Session, words: []string) -> string {
-    q, err := ask_parse_query(words)
-    if q.help { return strings.concatenate({ASK_USAGE, "\n"}, context.temp_allocator) }
-    if err != "" { return strings.concatenate({err, "\n"}, context.temp_allocator) }
-    in_, in_err := ask_scopes(q, s.all_files, s.files, s.pkg)
-    if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator) }
-    out, _ := ask_run(s, q, in_)
-    return out
-}
-
-// A line's words: split at whitespace, a double-quoted stretch one word
-// (`at "C:\My Code\f.mara:12"`), its quotes dropped.
-@(private="file")
-ask_words :: proc(line: string) -> []string {
-    words: [dynamic]string
-    words.allocator = context.temp_allocator
-    i := 0
-    for i < len(line) {
-        for i < len(line) && strings.is_space(rune(line[i])) { i += 1 }
-        if i >= len(line) { break }
-        if line[i] == '"' {
-            end := strings.index_byte(line[i + 1:], '"')
-            if end < 0 { end = len(line) - i - 1 }
-            append(&words, line[i + 1:i + 1 + end])
-            i += end + 2
-            continue
-        }
-        start := i
-        for i < len(line) && !strings.is_space(rune(line[i])) { i += 1 }
-        append(&words, line[start:i])
-    }
-    return words[:]
 }

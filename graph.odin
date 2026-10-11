@@ -861,6 +861,19 @@ Program_Code :: struct {
     values:      ^[dynamic]Const_Value,            // every constant's value, once (Const_Id)
 }
 
+// A program's code let go of: its columns' regions, then its arena. (A
+// build's goes with its process; `mara serve` checks again, and again.)
+program_code_free :: proc(pc: ^Program_Code) {
+    if pc.arena == nil { return }
+    if pc.regions != nil {
+        for &r in pc.regions {
+            if r.base != nil { virtual.release(r.base, r.reserved) }
+        }
+    }
+    virtual.arena_destroy(pc.arena)
+    pc^ = {}
+}
+
 // --- one code at a time ---------------------------------------------------------
 
 // A code begins: the builder's graph emptied for it. (Lowering builds one

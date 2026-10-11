@@ -937,6 +937,83 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
     return true
 }
 
+// No files declare the module: which modules there are.
+module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string) -> string {
+    b := strings.builder_make()
+    fmt.sbprintf(&b, "Error: no files found for the following modules:\n  %s\nAvailable modules:\n", pkg)
+    for name in all_files { fmt.sbprintf(&b, "  %s\n", name) }
+    return strings.to_string(b)
+}
+
+// The front half every command shares: the module's files lexed, parsed and
+// checked. On a failure, what to say about it — the diagnostics, then a
+// summary — for build and ask to print and exit on, and serve to answer
+// with. `shared`: the module builds a DLL (no main, or -shared).
+check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, perf: ^Performance_Timer) -> (checked: ^Checked_Program, shared: bool, failure: string) {
+    analysis := args.ask || args.serve   // (read-only: no code, no entry point needed)
+
+    perf_timer_mark(perf, "lex")
+    lex_target_files(files)
+
+    perf_timer_mark(perf, "parse")
+    parse_errors := parse_target_files()
+
+    target_os: Target_OS = .Windows
+    when ODIN_OS == .Linux  { target_os = .Linux  }
+    when ODIN_OS == .Darwin { target_os = .Mac    }
+
+    // Abort early on ANY parse errors — not just in the requested package.
+    // Imported modules with broken parses produce partial trees that the
+    // type checker may quietly accept (as Type_Error placeholders) and the
+    // codegen then silently fails on. Aborting at the parse phase keeps
+    // the failure attributable to the bad source, not a downstream symptom.
+    // The queued diagnostics, then a summary listing every package that
+    // errored.
+    if len(parse_errors) > 0 {
+        b := strings.builder_make()
+        strings.write_string(&b, take_diagnostics())
+        total_errs := 0
+        for _, n in parse_errors { total_errs += n }
+        if len(parse_errors) == 1 {
+            for pkg, n in parse_errors {
+                fmt.sbprintf(&b, BUILD_PARSE_ERRORS_ABORT, n, pkg)
+            }
+        } else {
+            fmt.sbprintf(&b, "Found %d parse error(s) across %d module(s). Aborting.\n", total_errs, len(parse_errors))
+            for pkg, n in parse_errors {
+                fmt.sbprintf(&b, "  - %s: %d error(s)\n", pkg, n)
+            }
+        }
+        return nil, false, strings.to_string(b)
+    }
+
+    // A build needs an entry point — `main` for an exe or an `#expose`
+    // function for a DLL. A package with neither is typically a user
+    // mistake; bail with a hint. (`ask` is read-only static analysis: a
+    // library package is a perfectly valid thing to query.)
+    has_main, has_expose := module_entries(args.pkg_name)
+    if !args.shared && !analysis && !has_main && !has_expose {
+        return nil, false, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_NO_ENTRY_POINT, args.pkg_name)})
+    }
+
+    // DLL when the package has no main (or -shared was requested).
+    shared = args.shared || !has_main
+
+    perf_timer_mark(perf, "type check")
+    // The checker, on the flat tree (design/flat_tree.md).
+    checked = tc_check_program(&build_tree, tc_modules(), args.pkg_name,
+                               web           = args.web,
+                               shared        = shared,
+                               target_os     = target_os,
+                               analysis_only = analysis,
+                               no_assert     = args.no_assert,
+                               perf          = perf)
+    if checked.errors > 0 {
+        return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
+    }
+    return checked, shared, ""
+}
+
 // ---------------------------------------------------------------------------
 // Args + entry point
 // ---------------------------------------------------------------------------
@@ -954,10 +1031,20 @@ CLI_Args :: struct {
     // Runs the front half of the pipeline and stops after the check.
     ask:          bool,
     ask_query:    Ask_Query,  // the one query (ask_parse_query)
-    ask_stdin:    bool,       // `--stdin`: the queries come from stdin, one per line
+
+    // `mara serve [module]` — ask's queries, one per stdin line, against the
+    // module as it is on disk: checked again when a file changes (serve.odin).
+    serve:        bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]"
+SERVE_USAGE :: `Usage: mara serve [module]
+
+  Checks the module (by default the current directory's), then answers each
+  line stdin sends as 'mara ask <line>' would, then a line
+  '-- end of answer --'. Before each answer, a .mara file changed since the
+  check — the module's or the stdlib's — checks it again; one that doesn't
+  check answers with its errors. Ends when stdin closes.`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
@@ -1001,8 +1088,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line
 
-  Many queries, one check:
-    mara ask --stdin                 each line stdin sends is a query, answered
+  Many queries, checked again as the files change:
+    mara serve [module]              each line stdin sends is a query, answered
                                      as 'mara ask <line>' would be, then a line
                                      '-- end of answer --'; until stdin closes`
 
@@ -1082,23 +1169,18 @@ parse_args :: proc() -> CLI_Args {
     // in the cwd and answer a static query about <name> (ASK_USAGE).
     if subcmd == "ask" {
         rest := positional[2:]   // tokens after the `ask` subcommand
-        // `mara ask --stdin`: check once, then answer each query stdin sends.
-        if len(rest) == 1 && rest[0] == "--stdin" {
-            args.ask_stdin = true
-        } else {
-            q, err := ask_parse_query(rest)
-            // Help is a successful terminal action (exit 0); an error leaves
-            // ok=false, which main turns into exit 1.
-            if q.help {
-                fmt.println(ASK_USAGE)
-                os.exit(0)
-            }
-            if err != "" {
-                fmt.println(err)
-                return args
-            }
-            args.ask_query = q
+        q, err := ask_parse_query(rest)
+        // Help is a successful terminal action (exit 0); an error leaves
+        // ok=false, which main turns into exit 1.
+        if q.help {
+            fmt.println(ASK_USAGE)
+            os.exit(0)
         }
+        if err != "" {
+            fmt.println(err)
+            return args
+        }
+        args.ask_query = q
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = filepath.base(cwd)
@@ -1106,10 +1188,15 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
-    if subcmd != "build" {
+    if subcmd == "serve" && len(positional) >= 3 && is_help_flag(positional[2]) {
+        fmt.println(SERVE_USAGE)
+        os.exit(0)
+    }
+    if subcmd != "build" && subcmd != "serve" {
         fmt.println(USAGE)
         return args
     }
+    args.serve = subcmd == "serve"
 
     if len(positional) >= 3 {
         args.pkg_name = positional[2]
@@ -1133,6 +1220,12 @@ main :: proc() {
     if !args.ok { os.exit(1) }
     word_size_is_32 = args.web   // (the target's layout, for the checker and codegen alike)
 
+    // `serve` checks in a loop, again as the files change (serve.odin).
+    if args.serve {
+        serve(args)
+        return
+    }
+
     perf: Performance_Timer
     perf.quiet = args.ask   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
@@ -1148,10 +1241,7 @@ main :: proc() {
             q := args.ask_query
             fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, q.target, ask_filters_str(q.kind, q.dir)))
         } else {
-            fmt.println("Error: no files found for the following modules:")
-            fmt.printf("  %s\n", args.pkg_name)
-            fmt.println("Available modules:")
-            for name in all_files { fmt.printf("  %s\n", name) }
+            fmt.print(module_missing(all_files, args.pkg_name))
         }
         os.exit(1)
     }
@@ -1164,7 +1254,7 @@ main :: proc() {
     // `ask ... in <scope>` narrows where the subject resolves (ask_scopes). A
     // bad scope fails here, before the check; a query from stdin, as its answer.
     ask_in: Ask_Scopes
-    if args.ask && !args.ask_stdin {
+    if args.ask {
         in_err: string
         ask_in, in_err = ask_scopes(args.ask_query, all_files, files, args.pkg_name)
         if in_err != "" {
@@ -1173,69 +1263,10 @@ main :: proc() {
         }
     }
 
-    perf_timer_mark(&perf, "lex")
-    lex_target_files(files)
-
-    perf_timer_mark(&perf, "parse")
-    parse_errors := parse_target_files()
-
-    target_os: Target_OS = .Windows
-    when ODIN_OS == .Linux  { target_os = .Linux  }
-    when ODIN_OS == .Darwin { target_os = .Mac    }
-
-    // Abort early on ANY parse errors — not just in the requested package.
-    // Imported modules with broken parses produce partial trees that the
-    // type checker may quietly accept (as Type_Error placeholders) and the
-    // codegen then silently fails on. Aborting at the parse phase keeps
-    // the failure attributable to the bad source, not a downstream symptom.
-    // Print the perf-so-far, flush the queued diagnostics, then a summary
-    // listing every package that errored.
-    if len(parse_errors) > 0 {
+    checked, pkg_shared, failure := check_module(args, files, &perf)
+    if failure != "" {
         perf_timer_end(&perf)
-        flush_diagnostics()
-        total_errs := 0
-        for _, n in parse_errors { total_errs += n }
-        if len(parse_errors) == 1 {
-            for pkg, n in parse_errors {
-                fmt.printf(BUILD_PARSE_ERRORS_ABORT, n, pkg)
-            }
-        } else {
-            fmt.printf("Found %d parse error(s) across %d module(s). Aborting.\n", total_errs, len(parse_errors))
-            for pkg, n in parse_errors {
-                fmt.printf("  - %s: %d error(s)\n", pkg, n)
-            }
-        }
-        os.exit(1)
-    }
-
-    // A build needs an entry point — `main` for an exe or an `#expose`
-    // function for a DLL. A package with neither is typically a user
-    // mistake; bail with a hint. (`ask` is read-only static analysis: a
-    // library package is a perfectly valid thing to query.)
-    has_main, has_expose := module_entries(args.pkg_name)
-    if !args.shared && !args.ask && !has_main && !has_expose {
-        perf_timer_end(&perf)
-        flush_diagnostics()
-        fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
-        os.exit(1)
-    }
-
-    // DLL when the package has no main (or -shared was requested).
-    pkg_shared := args.shared || !has_main
-
-    perf_timer_mark(&perf, "type check")
-    // The checker, on the flat tree (design/flat_tree.md).
-    checked := tc_check_program(&build_tree, tc_modules(), args.pkg_name,
-                               web           = args.web,
-                               shared        = pkg_shared,
-                               target_os     = target_os,
-                               analysis_only = args.ask,
-                               no_assert     = args.no_assert,
-                               perf          = &perf)
-    if checked.errors > 0 {
-        perf_timer_end(&perf)
-        flush_diagnostics()
-        fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
+        fmt.print(failure)
         os.exit(1)
     }
 
@@ -1243,10 +1274,6 @@ main :: proc() {
     if args.ask {
         flush_diagnostics()
         s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
-        if args.ask_stdin {
-            ask_serve(&s)
-            return
-        }
         out, found := ask_run(&s, args.ask_query, ask_in)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed

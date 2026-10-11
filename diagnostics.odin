@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:strings"
 
 // ============================================================
 // Diagnostic queue — buffered emission with explicit flush
@@ -31,6 +32,11 @@ Diagnostic :: struct {
 @(private="file")
 g_diagnostics: [dynamic]Diagnostic
 
+// The queue let go of, unread: a new check's (mara serve) starts its own.
+reset_diagnostics :: proc() {
+    g_diagnostics = {}
+}
+
 // Queue one diagnostic. msg + args are formatted now (so the args
 // don't have to outlive the call); the resulting string lives until
 // flush. Order at flush time is the order emitted.
@@ -53,6 +59,13 @@ emit_diagnostic_once :: proc(kind: Diagnostic_Kind, location: string, msg: strin
 // Print every queued diagnostic and clear the queue. Safe to call
 // multiple times — second call has nothing to print.
 flush_diagnostics :: proc() {
+    fmt.print(take_diagnostics())
+}
+
+// The queued diagnostics as text, one a line — taken: the queue is empty
+// after. (A check that fails says what's wrong with them first.)
+take_diagnostics :: proc() -> string {
+    b := strings.builder_make()
     for d in g_diagnostics {
         label: string
         switch d.kind {
@@ -63,12 +76,13 @@ flush_diagnostics :: proc() {
         case .Graph_Error:   label = "Graph error"
         }
         if d.location != "" {
-            fmt.printf("[%s] %s: %s\n", d.location, label, d.message)
+            fmt.sbprintf(&b, "[%s] %s: %s\n", d.location, label, d.message)
         } else {
-            fmt.printf("%s: %s\n", label, d.message)
+            fmt.sbprintf(&b, "%s: %s\n", label, d.message)
         }
     }
     clear(&g_diagnostics)
+    return strings.to_string(b)
 }
 
 // All compiler diagnostics — errors and warnings — live in this file.

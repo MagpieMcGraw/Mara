@@ -177,9 +177,10 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         fmt.panicf("escape analysis: no arena for its walks (%v)", err)
     }
     defer virtual.arena_destroy(&g_esc.walk)
-    // (The type caches fill during walks: kept, with their own allocator.)
-    reserve(&g_esc_refs_cache, 64)
-    reserve(&g_esc_self_cache, 64)
+    // (The type caches fill during walks: kept, with their own allocator —
+    // new each run, as its types are: `mara serve` checks again.)
+    g_esc_refs_cache = make(map[^Type_Scope]bool, 64)
+    g_esc_self_cache = make(map[^Type_Scope]bool, 64)
     cg_bottom_up(cg, esc_summary_transfer)
     for _, n in cg.nodes {
         if !g_esc.reported[n] { esc_walk(cg, n, true) }

@@ -10,7 +10,7 @@ get_compiler_dir :: proc() -> string {
     buf: [512]u16
     ret := win32.GetModuleFileNameW(nil, &buf[0], 512)
     if ret > 0 {
-        exe_path, _ := win32.utf16_to_utf8(buf[:ret])
+        exe_path, _ := win32.utf16_to_utf8(buf[:ret], context.allocator)   // (kept: serve frees temp after each answer)
         dir := filepath.dir(exe_path)
         if dir != "" { return dir }
     }
