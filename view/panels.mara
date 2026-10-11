@@ -96,6 +96,21 @@ close_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
 	return Rect{x = pn.box.x + pn.box.w - bar, y = pn.box.y, w = bar, h = bar}
 }
 
+// The Docs panel's pin: in its title bar, left of its close box.
+pin_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
+	close := close_rect(ui, pn)
+	w := text_width(&ui.text, pin_label(ui)) + 2.0 * PAD
+	return Rect{x = close.x - w, y = close.y, w = w, h = close.h}
+}
+
+// The pin's label: "pin"; pinned, "pinned" — "pinned · new" once a lookup
+// waits behind it.
+pin_label :: fun(ui: ^Ui) -> []utf8 {
+	if not ui.docs_pinned do return "pin"
+	if ui.docs_newer do return "pinned · new"
+	return "pinned"
+}
+
 // The panel of a kind: its place in ui.panels.
 find_panel :: fun(ui: ^Ui, kind: i64) -> i64 {
 	for pn, i in ui.panels {
@@ -247,6 +262,10 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 			layout_save(ui)
 			return
 		}
+		if pn.kind == DOCS_PANEL and inside(pin_rect(ui, pn), x, y) {
+			docs_pin(ui)
+			return
+		}
 		ui.drag = DRAG_MOVE
 		return
 	}
@@ -342,6 +361,12 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	_ = text_draw(&ui.text, r, panel_title(pn.kind), b.x + PAD, b.y + ROW_PAD, title_color)
 	close := close_rect(ui, pn)
 	_ = text_draw(&ui.text, r, "x", close.x + floor_f32((close.w - text_width(&ui.text, "x")) * 0.5), b.y + ROW_PAD, ui.dim)
+	if pn.kind == DOCS_PANEL {
+		pin := pin_rect(ui, pn)
+		pin_color := ui.dim
+		if ui.docs_pinned do pin_color = ui.accent
+		_ = text_draw(&ui.text, r, pin_label(ui), pin.x + PAD, b.y + ROW_PAD, pin_color)
+	}
 
 	c := content_rect(ui, pn)
 	fill(r, c.x, c.y, c.w, c.h, ui.background)
@@ -350,7 +375,7 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	if pn.kind == PROFILE_PANEL {
 		draw_profile(ui, p, c)
 	elif pn.kind == DOCS_PANEL
-		draw_lines(ui, &ui.docs, c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
+		draw_lines(ui, docs_shown(ui), c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
 	elif pn.kind == ASK_PANEL
 		draw_ask(ui, c)
 	else
@@ -502,8 +527,8 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [11][]utf8
-	does : [11][]utf8
+	keys : [12][]utf8
+	does : [12][]utf8
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[1] = "Wheel"
@@ -526,6 +551,8 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	does[9] = "show or hide panels, reset the layout"
 	keys[10] = "Theme (top left)"
 	does[10] = "dark or light"
+	keys[11] = "pin in the Docs title bar"
+	does[11] = "keep what's shown; lookups wait until it's unpinned"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))

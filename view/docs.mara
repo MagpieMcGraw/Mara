@@ -72,7 +72,7 @@ Docs :: struct {
 // line how much.
 docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
 	d := &ui.search
-	l := &ui.docs
+	l := docs_target(ui)
 	lines_clear(l)
 	docs_words(d, asked)
 	d.found.len = 0
@@ -132,6 +132,30 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
 	}
 	&status + "."
 	lines_status(l, status[:], STYLE_DIM)
+}
+
+// The Docs panel's lines, the ones it shows.
+docs_shown :: fun(ui: ^Ui) -> ^Lines {
+	return &ui.docs[ui.docs_front]
+}
+
+// The lines a lookup fills: the ones shown — but while the panel's pinned,
+// the other ones, waiting to be shown when it's unpinned.
+docs_target :: fun(ui: ^Ui) -> ^Lines {
+	if not ui.docs_pinned do return &ui.docs[ui.docs_front]
+	ui.docs_newer = true
+	return &ui.docs[1 - ui.docs_front]
+}
+
+// The pin toggled: pinned, lookups wait; unpinned, the newest one made while
+// pinned is shown.
+docs_pin :: fun(ui: ^Ui) {
+	ui.docs_pinned = not ui.docs_pinned
+	if not ui.docs_pinned and ui.docs_newer {
+		ui.docs_front = 1 - ui.docs_front
+		ui.docs_newer = false
+	}
+	ui.dirty = true
 }
 
 // Where a search looked, for its status line: ", in <dir's name> and the

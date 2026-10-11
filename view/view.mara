@@ -62,7 +62,10 @@ Ui :: struct {
 
 	// The Docs panel's and the Ask panel's lines — what's at the editor's
 	// cursor, above what was asked; the docs search's room.
-	docs:   Lines
+	docs:   [2]Lines         // the one shown, docs[docs_front]; the other, a lookup made while pinned
+	docs_front:  i64
+	docs_pinned: bool        // lookups don't replace what's shown (the title bar's pin)
+	docs_newer:  bool        // ... one was made: shown when it's unpinned
 	asked:  Lines
 	at_cursor: Lines
 	search: Docs
@@ -371,7 +374,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 // whether it shows lines (false: the others).
 panel_lines :: fun(ui: ^Ui, kind: i64) -> ^Lines, bool {
 	if kind == ASK_PANEL do return &ui.asked, true
-	return &ui.docs, kind == DOCS_PANEL
+	return docs_shown(ui), kind == DOCS_PANEL
 }
 
 // The drag, if any, over: the layout saved.

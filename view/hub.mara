@@ -250,11 +250,14 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	}
 	docs_search(ui, dir, words, ex)
 	ui.dirty = true
+	// (The lines it filled: the shown ones, or while pinned, the waiting ones.)
+	found := &ui.docs[ui.docs_front]
+	if ui.docs_pinned do found = &ui.docs[1 - ui.docs_front]
 	out : [..64 * KB]utf8
-	&out + ui.docs.status[:]
+	&out + found.status[:]
 	&out + "\n\n"
-	for k in 0 .. ui.docs.lines.len {
-		text := line_text(&ui.docs, k)
+	for k in 0 .. found.lines.len {
+		text := line_text(found, k)
 		if out.len + text.len + 1 > out.cap {
 			if not send(c.id, out[:]) do return
 			out.len = 0
