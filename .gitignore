@@ -43,3 +43,6 @@ test_*/
 # Asset bundles — regenerated from the source assets in Pounce/data/
 # subdirs. The bundles together are ~80MB; keep them local.
 Pounce/data/*.bin
+
+# Profile written by a -profile build at exit (runtime/mara_prof.c)
+profile.txt

@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:path/filepath"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ Llvm :: struct {
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
     head:  string,              // its `define` line
+    probe: string,              // -profile: its slot, when it's timed (llvm_probe)
     user:  []Node_Id,           // by id: the one operation using an operation's value
 
     // Its named allocas: one for the named locals of one name and type (their
@@ -112,6 +114,76 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
     if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
     note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
     codegen_fatal(e.g, pg.origin[at], CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
+}
+
+// -profile: a fun worth timing — main, and one that does work a probe is
+// worth (llvm_works) — tells the profiler (runtime/mara_prof.c) when it's
+// entered, here, first thing, and when it's left, before each return
+// (llvm_ret). Both name its slot: its name and where it's written, for its
+// line in the profile, and the profiler's record of it, filled on its first
+// call. Straight-line code that calls nothing costs its caller less than the
+// probes would; its time is the caller's own.
+@(private="file")
+llvm_probe :: proc(e: ^Llvm) {
+    g, cf := e.g, e.ft
+    if g.profile == "" || !(e.main || llvm_works(&g.checked.code, e.pg, constructs = true)) { return }
+    name := llvm_probe_name(cf)
+    at := fmt.tprintf("%s:%d", filepath.base(span_file(cf.body_span)), span_line(cf.body_span))
+    e.probe = strings.concatenate({"@.prof.", mara_fn_name(g, cf.name)[1:]})
+    append(&g.string_decls, strings.concatenate({e.probe, " = internal global { ptr, ptr, ptr } { ptr ",
+        get_string_literal(g, name), ", ptr ", get_string_literal(g, at), ", ptr null }"}))
+    emit(g, "  call void @__mara_prof_enter(ptr %s)", e.probe)
+}
+
+// A fun's name in the profile: as written, after the structs and funs it's in
+// (`Player.update`). A generic's instance has its types after it, as its
+// flat name has them (`total_of[i64]`).
+@(private="file")
+llvm_probe_name :: proc(cf: ^Type_Scope) -> string {
+    if cf.source_name == "" && cf.decl != 0 {
+        written := tc_text(cf.decl)
+        at := strings.index(cf.name, strings.concatenate({written, "__"}))
+        if at < 0 { return written }
+        args, _ := strings.replace_all(cf.name[at + len(written) + 2:], "__", ", ")
+        return strings.concatenate({written, "[", args, "]"})
+    }
+    name := scope_display_name(cf)
+    for p := cf.parent_scope; p != nil && !p.is_module; p = p.parent_scope {
+        if outer := scope_display_name(p); outer != "" { name = strings.concatenate({outer, ".", name}) }
+    }
+    return name
+}
+
+// Whether a code does work worth a probe: it loops, or calls something — a
+// fun (not an intrinsic: that's code in place), a print, an arena. A
+// construct counts when the struct's code calls or loops.
+@(private="file")
+llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> bool {
+    for s in pg.stmts { if s.kind == .Loop { return true } }
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
+        case .Op:
+        case: continue
+        }
+        #partial switch pg.op[id] {
+        case .Call:
+            if callee := pg.callee[id] or_else nil; callee == nil || !scope_is_intrinsic(callee) { return true }
+        case .Print, .Arena_Alloc:
+            return true
+        case .Construct:
+            callee := pg.callee[id] or_else nil
+            if c := pc.funs[callee] or_else nil; constructs && c != nil && llvm_works(pc, c, constructs = false) { return true }
+        }
+    }
+    return false
+}
+
+// A return, after the profiler is told the fun is left (llvm_probe).
+@(private="file")
+llvm_ret :: proc(e: ^Llvm, ret: string, args: ..any) {
+    if e.probe != "" { emit(e.g, "  call void @__mara_prof_exit(ptr %s)", e.probe) }
+    emit(e.g, ret, ..args)
 }
 
 @(private="file")
@@ -196,6 +268,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         if e.pg.kind[id] != .Local || !routes_to_arena(graph_type(e.pg, id)) || id in e.arena || id in e.in_place || id in e.carved { continue }
         if e.value[id] != e.slot { e.stop = id; return false }
     }
+    llvm_probe(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
         if i > 0 { emit_label(g, e.label[r]) }
         e.run = r
@@ -1078,7 +1151,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 v := llvm_operand(e, o, rt) or_return
                 emit_store(g, llvm_type_from_checker(rt), v, fmt.tprintf("%%sret.%d", i + 1))
             }
-            emit(g, "  ret void")
+            llvm_ret(e, "  ret void")
             return true
         }
         // Falling off the end with a result (a shape's method, no body — the
@@ -1086,14 +1159,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         fell_off := len(ops) == 0 && pg.written[op] == .Synthetic
         if e.sret != nil {
             if fell_off {
-                emit(g, "  ret void")
+                llvm_ret(e, "  ret void")
                 return true
             }
             // Into the caller's slot, unless it was built there.
             if len(ops) != 1 { return false }
             v := llvm_operand(e, ops[0], e.sret) or_return
             if v != e.slot { llvm_copy(e, e.slot, v, e.sret) }
-            emit(g, "  ret void")
+            llvm_ret(e, "  ret void")
             return true
         }
         if e.rets != nil {
@@ -1110,7 +1183,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                     llvm_copy(e, at, v, rt)
                 }
             }
-            emit(g, "  ret void")
+            llvm_ret(e, "  ret void")
             return true
         }
         if e.by_value != nil {
@@ -1119,26 +1192,26 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             at := llvm_operand(e, ops[0], e.by_value) or_return
             v := fresh_tmp(g)
             emit_load_into(g, v, e.ret, at)
-            emit(g, "  ret %s %s", e.ret, v)
+            llvm_ret(e, "  ret %s %s", e.ret, v)
             return true
         }
         if len(ops) == 0 {
             if e.main {   // the C entry point: 0, the program went well
-                emit(g, "  ret i64 0")
+                llvm_ret(e, "  ret i64 0")
                 return true
             }
             if e.ret != "void" && fell_off {
-                emit(g, "  ret %s %s", e.ret, llvm_zero(e.ft.cg_returns[0]))
+                llvm_ret(e, "  ret %s %s", e.ret, llvm_zero(e.ft.cg_returns[0]))
                 return true
             }
             if e.ret != "void" { return false }
-            emit(g, "  ret void")
+            llvm_ret(e, "  ret void")
             return true
         }
         if len(ops) != 1 || e.ret == "void" { return false }
         v, ok := llvm_operand(e, ops[0], e.ft.cg_returns[0])
         if !ok { return false }
-        emit(g, "  ret %s %s", e.ret, v)
+        llvm_ret(e, "  ret %s %s", e.ret, v)
     case .Assert:
         if pg.written[op] != .Synthetic || graph_name(pg, op) != "range" { return llvm_assert(e, op, ops, span) }
         c, ok := llvm_operand(e, ops[0], Type_Bool{})

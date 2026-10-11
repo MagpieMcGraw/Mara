@@ -1,0 +1,43 @@
+// How to find what's slow: build with -profile, run, read profile.txt.
+//
+// `mara build profiling -profile -release` makes a program that times its
+// funs. When it exits (main's end, an assert, a crash) it writes profile.txt
+// next to the exe: one line per fun, the most time first. Profile the
+// -release build: a debug build's times say little about the optimized one.
+//
+// The columns:
+//   total ms    time in the fun, the funs it calls included
+//   self ms     time in its own code: where to look first
+//   calls       how many times it ran
+//   avg us, min us, median us, max us
+//               one call's time. A max far above the median is a call that
+//               was slow once: a stutter.
+//   probes %    how much of total is the profiler's own cost. Each timed call
+//               costs its caller a few hundredths of a microsecond; a fun
+//               making millions of tiny calls is mostly that, and its
+//               numbers say more about the profiler than about it.
+//
+// A fun that calls nothing and doesn't loop (`wrap` below) isn't timed: it's
+// over too quickly for the timing to be worth its cost. Its time is its
+// caller's self time.
+module profiling
+
+use mara.core
+
+// Calls nothing, doesn't loop: not timed.
+wrap :: fun(x: i64) -> i64 {
+	return (x * 31 + 7) % 1000003
+}
+
+// Loops: timed. Its self time has wrap's in it.
+step :: fun(seed: i64) -> i64 {
+	t := seed
+	for i in 0..10000 { t = wrap(t + i) }
+	return t
+}
+
+main :: fun() {
+	s := 0
+	for frame in 0..100 { s += step(frame) }
+	print(s)
+}

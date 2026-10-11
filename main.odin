@@ -698,17 +698,18 @@ compile_task_proc :: proc(t: thread.Task) {
     data.exit_code = libc.system(data.clang_cmd)
 }
 
-// Crash-journal runtime (runtime/mara_crash.c) — every native build links it
-// so asserts and crash() can tee their message into crash.txt. Compiled once
-// to a sibling .o and reused; recompiled when the .c is newer (compiler
-// update). runtime/ holds compiler-internal C support (compiler-rt), as
-// opposed to code/ which is the user-facing stdlib.
-ensure_crash_runtime :: proc(clang_path, compiler_dir: string) -> (string, bool) {
-    c_path, _ := filepath.join({compiler_dir, "runtime", "mara_crash.c"})
-    o_path, _ := filepath.join({compiler_dir, "runtime", "mara_crash.o"})
+// A runtime file (runtime/<name>.c) a native build links: mara_crash, in
+// every one, so asserts and crash() can tee their message into crash.txt;
+// mara_prof, in a -profile build. Compiled once to a sibling .o and reused;
+// recompiled when the .c is newer (compiler update). runtime/ holds
+// compiler-internal C support (compiler-rt), as opposed to code/ which is the
+// user-facing stdlib.
+ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool) {
+    c_path, _ := filepath.join({compiler_dir, "runtime", strings.concatenate({name, ".c"})})
+    o_path, _ := filepath.join({compiler_dir, "runtime", strings.concatenate({name, ".o"})})
     c_time, c_err := os_old.last_write_time_by_name(c_path)
     if c_err != nil {
-        fmt.printf("missing crash runtime source '%s'\n", c_path)
+        fmt.printf("missing runtime source '%s'\n", c_path)
         return "", false
     }
     o_time, o_err := os_old.last_write_time_by_name(o_path)
@@ -724,20 +725,24 @@ ensure_crash_runtime :: proc(clang_path, compiler_dir: string) -> (string, bool)
     when ODIN_OS == .Windows { cmd = strings.concatenate({`"`, cmd, `"`}) }
     ret := libc.system(strings.clone_to_cstring(cmd))
     if ret != 0 {
-        fmt.printf("clang failed compiling mara_crash.c (exit code %d)\n", ret)
+        fmt.printf("clang failed compiling %s.c (exit code %d)\n", name, ret)
         return "", false
     }
     return o_path, true
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
     clang_path := clang_resolve_path(compiler_dir)
 
-    crash_o, crash_ok := ensure_crash_runtime(clang_path, compiler_dir)
-    if !crash_ok { return false }
+    runtimes := []string{"mara_crash", "mara_prof"}
+    runtime_os := make([dynamic]string, context.temp_allocator)
+    for name in runtimes[:2 if profile else 1] {
+        o := ensure_runtime(clang_path, compiler_dir, name) or_return
+        append(&runtime_os, o)
+    }
 
     // ---- Stage 1: parallel `clang -c <ll> -o <o>` per module ----
     //
@@ -837,8 +842,10 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_byte(&b, ' ')
         strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
     }
-    strings.write_byte(&b, ' ')
-    strings.write_byte(&b, '"'); strings.write_string(&b, crash_o); strings.write_byte(&b, '"')
+    for o in runtime_os {
+        strings.write_byte(&b, ' ')
+        strings.write_byte(&b, '"'); strings.write_string(&b, o); strings.write_byte(&b, '"')
+    }
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
     // Always use lld for consistency across platforms. Windows finds
@@ -1051,6 +1058,7 @@ CLI_Args :: struct {
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
     release:      bool,    // -release — pass -O3 to clang for an optimized build
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
+    profile:      bool,    // -profile — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     ok:           bool,
 
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
@@ -1067,7 +1075,7 @@ CLI_Args :: struct {
     view:         bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]\n       mara view [module]"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]\n       mara view [module]"
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1184,6 +1192,7 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-web"     { args.web     = true; i += 1; continue }
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
+        if arg == "-profile" { args.profile = true; i += 1; continue }
         if arg == "-no" {
             // `-no <feature>` — explicit feature disabler, two argv tokens.
             if i + 1 >= len(os.args) {
@@ -1340,9 +1349,17 @@ main :: proc() {
         return
     }
 
+    // A profile is written when the program exits: a program, run natively.
+    if args.profile && (args.web || pkg_shared) {
+        fmt.printf("-profile times a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")
+        os.exit(1)
+    }
+    profile := ""
+    if args.profile { profile = "release build" if args.release else "debug build" }
+
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)
@@ -1362,7 +1379,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { os.exit(1) }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile) { os.exit(1) }
     }
 
     perf_timer_end(&perf)

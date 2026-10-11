@@ -47,7 +47,8 @@ static int    mara_entry_active = 0;
 // Directory of the running executable, written into `out` WITH a trailing
 // separator. Returns the prefix length; 0 means unresolvable (out is then an
 // empty string and paths built on it fall back to the working directory).
-static size_t mara_exe_dir(char* out, size_t cap) {
+// (The profiler, runtime/mara_prof.c, writes its file there too.)
+size_t __mara_exe_dir(char* out, size_t cap) {
     out[0] = 0;
 #ifdef _WIN32
     DWORD n = GetModuleFileNameA(NULL, out, (DWORD)cap);
@@ -165,7 +166,7 @@ void __mara_crash_end(void) {
     mara_entry_len += 1;
 
     char path[MARA_PATH_CAP];
-    size_t dir = mara_exe_dir(path, sizeof path - 32);
+    size_t dir = __mara_exe_dir(path, sizeof path - 32);
     snprintf(path + dir, sizeof path - dir, "%s", MARA_CRASH_FILE);
     mara_append_entry(path);
 

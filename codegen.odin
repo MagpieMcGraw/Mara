@@ -78,7 +78,8 @@ Codegen :: struct {
     // set to a module-specific tag by parallel codegen workers so each TU's
     // strings live in its own namespace.
     string_name_prefix: string,
-    // Track all string globals to emit at top of module
+    // Track all string globals to emit at top of module (and -profile's slots,
+    // which name them: llvm_probe)
     string_decls: [dynamic]string,
     // Struct support (no shadow map — reads directly from checked.table.funs)
     struct_decls:       [dynamic]string,        // LLVM type definitions
@@ -102,6 +103,10 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
+    // -profile: the build, as the profile's header names it ("" when not
+    // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
+    // when they're entered and left (llvm.odin, llvm_probe).
+    profile: string,
     // Every function's code comes from the program graph (llvm.odin).
 
     // Inside an assert/crash fail block (native builds): print-shaped

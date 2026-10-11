@@ -1,0 +1,45 @@
+module profile
+
+use mara.core
+
+//@ build-flags: -profile
+//@ expect-output: total 706
+//@ expect-output: profile:
+
+// `-profile` times the program's funs: profile.txt, next to the exe, when it
+// exits. A fun that calls nothing and doesn't loop isn't timed (`square`);
+// the rest are (main, a loop, a recursion, a method, a constructor that
+// calls).
+
+square :: fun(x: i64) -> i64 {
+	return x * x
+}
+
+// A loop, no calls: timed.
+sum_to :: fun(n: i64) -> i64 {
+	total := 0
+	for i in 0..n { total += i }
+	return total
+}
+
+// Recursion: its total time counts the outermost calls once.
+fib :: fun(n: i64) -> i64 {
+	if n < 2 { return n }
+	return fib(n - 1) + fib(n - 2)
+}
+
+Counter :: struct(start: i64) {
+	value := sum_to(start)
+
+	bump :: fun(c: ^Self) {
+		c.value += square(c.value)
+	}
+}
+
+main :: fun() {
+	c := Counter(4)
+	p := &c
+	p.bump()
+	total := c.value + fib(15) + sum_to(10) + square(3)
+	print("total", total)
+}

@@ -133,6 +133,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode
+    g.profile            = task.main_g.profile
 
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
@@ -379,11 +380,12 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "") -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
+    g.profile = profile
 
 
     // g.out is now a swap target driven by switch_to_module; each per-module
@@ -552,6 +554,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     emit_raw(&g, "entry:")
 
     emit_main_prologue(&g, checked)
+    if g.profile != "" { emit(&g, "  call void @__mara_prof_start(ptr %s)", get_string_literal(&g, g.profile)) }
 
     main_cf, main_ok := checked.functions["main"]
     if !main_ok {
@@ -816,6 +819,12 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_crash_begin()\n")
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
         strings.write_string(&b, "declare void @__mara_crash_end()\n")
+    }
+    if g.profile != "" {
+        // The profiler, runtime/mara_prof.c: linked into a -profile build.
+        strings.write_string(&b, "declare void @__mara_prof_start(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_prof_enter(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_prof_exit(ptr)\n")
     }
     if g.web {
         strings.write_string(&b, "declare i32 @strlen(ptr)\n")
