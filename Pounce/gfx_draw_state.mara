@@ -51,12 +51,15 @@ DrawState :: struct {
 	command_count: i32,
 }
 
-// Create a draw state
-draw_state_create :: fun(
+// Set up a draw state where it lives. (Filled in place, not returned: a
+// DrawState is ~790 KB, and a returned one is built in a temporary on the
+// stack, then copied — two of them overflowed the 1 MB stack.)
+draw_state_init :: fun(
+	state: ^DrawState,
 	shader_file: []utf8,
 	vao_state: ^VAO_State,
 	max_instances: i64,
-	max_commands: isize,) -> DrawState
+	max_commands: isize,)
 {
 	shader_id, shader_err := make_program(shader_file)
 	if bool(shader_err) do print(shader_err)
@@ -71,7 +74,7 @@ draw_state_create :: fun(
 				  gl.DYNAMIC_DRAW)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
-	return DrawState{
+	state^ = DrawState{
 		shader = shader_id,
 		vao_state = vao_state,
 		command_buffer = command_buffer,

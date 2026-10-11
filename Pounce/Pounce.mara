@@ -98,10 +98,10 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	// testing the gfx
 	game.vao = VAO_State()
 	//gfx.primitives_init(&game.vao)
-	game.draw_state_object = draw_state_create(
+	draw_state_init(&game.draw_state_object,
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
-	game.draw_state_text = draw_state_create(
+	draw_state_init(&game.draw_state_text,
 		"data/shaders/instanced_text.glsl",
 		&game.vao, 8192, 32)
 
