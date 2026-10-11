@@ -34,6 +34,15 @@ Player :: struct {
 	color := COLOR_RED
 }
 
+// A square in the scene, dragged with the left mouse button.
+Marker :: struct {
+	pos:   Vec3
+	color: [3]f32
+}
+
+MARKER_DEPTH :: 120.0   // the squares' plane: z, facing the camera as it starts
+MARKER_HALF  :: 20.0    // half a square's side (its scale, 40)
+
 Timers :: struct {
 	work  : time.Timer
 	frame : Timer
@@ -77,6 +86,10 @@ Megastruct :: struct {
 	quad:   Quad_Renderer
 	player: Player
 	playa : Playa
+
+	markers: [4]Marker
+	dragging: i64 = -1    // the square the mouse is dragging; -1: none
+	drag_offset: Vec3     // from the mouse's point on the plane to it
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
@@ -129,6 +142,13 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.playa.obj.scale = Vec3{70, 70, 70}
 	game.playa.visual.texture = ATLAS_TEXTURE
 
+	// Orientation cross of solid quads around the playa: +X red, +Y green,
+	// -X blue, -Y yellow, at its depth.
+	game.markers[0] = Marker{pos = Vec3{ 90,   0, MARKER_DEPTH}, color = [1, 0, 0]}
+	game.markers[1] = Marker{pos = Vec3{  0,  90, MARKER_DEPTH}, color = [0, 1, 0]}
+	game.markers[2] = Marker{pos = Vec3{-90,   0, MARKER_DEPTH}, color = [0, 0, 1]}
+	game.markers[3] = Marker{pos = Vec3{  0, -90, MARKER_DEPTH}, color = [1, 1, 0]}
+
 	game.running = true
 	game.initialized = true
 }
@@ -161,6 +181,57 @@ game_events :: fun(game: ^Megastruct) {
 		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
 	}
 	if game.mouse_look do camera_turn_walking(&game.camera, &ev.mouse)
+
+	// Squares dragged with the left button: the one under the mouse when it's
+	// pressed, then kept under it — where its ray meets their plane, less
+	// where on the square it was grabbed — while it's held.
+	if not game.mouse_look {
+		at, on := mouse_on_plane(game, MARKER_DEPTH)
+		if ev.mouse.pressed[1] and on {
+			game.dragging = -1
+			for m, i in game.markers {
+				if abs_f32(at.x - m.pos.x) <= MARKER_HALF and abs_f32(at.y - m.pos.y) <= MARKER_HALF {
+					game.dragging = i
+					game.drag_offset = m.pos - at
+				}
+			}
+		}
+		if not ev.mouse.held[1] do game.dragging = -1
+		if game.dragging >= 0 and on do game.markers[game.dragging].pos = at + game.drag_offset
+	}
+}
+
+// Where the mouse is on the plane z (facing the camera, as the squares'
+// plane does): the plane's mapping to the window — world_to_screen at three
+// of its points, the window's own size (the camera keeps the size it was
+// made with) — turned around. False when the plane isn't in front.
+mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
+	w : i32 = 0
+	h : i32 = 0
+	_ = sdl.GetWindowSizeInPixels(game.window, &w, &h)
+	if w <= 0 or h <= 0 do return Vec3{}, false
+	ox, oy, o_ok := window_place(game, Vec3{0, 0, z}, w, h)
+	ax, ay, a_ok := window_place(game, Vec3{100, 0, z}, w, h)
+	bx, by, b_ok := window_place(game, Vec3{0, 100, z}, w, h)
+	if not o_ok or not a_ok or not b_ok do return Vec3{}, false
+	// (The mouse as u of the first step plus v of the second, from o.)
+	det := (ax - ox) * (by - oy) - (bx - ox) * (ay - oy)
+	if abs_f32(det) < 0.0001 do return Vec3{}, false
+	mx := game.events.mouse.x - ox
+	my := game.events.mouse.y - oy
+	u := (mx * (by - oy) - (bx - ox) * my) / det
+	v := ((ax - ox) * my - mx * (ay - oy)) / det
+	return Vec3{u * 100.0, v * 100.0, z}, true
+}
+
+// A point of the world's place in the window: pixels from its top left.
+window_place :: fun(game: ^Megastruct, pos: Vec3, w: i32, h: i32) -> f32, f32, bool {
+	sx, sy, ok := world_to_screen(&game.camera, pos)
+	if not ok do return 0, 0, false
+	// (world_to_screen's pixels are the camera's, from the center, y up.)
+	x := sx / (game.camera.w_width / 2.0) * (f32(w) / 2.0) + f32(w) / 2.0
+	y := f32(h) / 2.0 - sy / (game.camera.w_height / 2.0) * (f32(h) / 2.0)
+	return x, y, true
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
@@ -194,13 +265,11 @@ game_draw :: fun(game: ^Megastruct) {
 	ClearColor(0.85, 0.80, 0.70, 1.0)
 	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
 
-	// Orientation cross of solid quads around the playa, so one object isn't the
-	// only thing on screen: +X red, +Y green, -X blue, -Y yellow, at the playa's
-	// depth. Drawn through the object shader / image atlas.
-	draw_marker(&game.draw_state_object, Vec3{ 90,   0, 120}, [1, 0, 0], game.camera)
-	draw_marker(&game.draw_state_object, Vec3{  0,  90, 120}, [0, 1, 0], game.camera)
-	draw_marker(&game.draw_state_object, Vec3{-90,   0, 120}, [0, 0, 1], game.camera)
-	draw_marker(&game.draw_state_object, Vec3{  0, -90, 120}, [1, 1, 0], game.camera)
+	// The squares (game.markers), so one object isn't the only thing on
+	// screen. Drawn through the object shader / image atlas.
+	for m in game.markers {
+		draw_marker(&game.draw_state_object, m.pos, m.color, game.camera)
+	}
 	draw_state_render(&game.draw_state_object)
 	draw_state_reset(&game.draw_state_object)
 
