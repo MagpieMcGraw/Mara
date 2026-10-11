@@ -5,9 +5,10 @@ use mara.os
 use mara.math
 
 // The Docs panel's search: words — what's selected in the editor, sent by
-// `mara docs` — looked up in the module's .mara files (the directory the
-// window runs in), the stdlib's (the compiler's code/, and the directories
-// in it) and the doc/ pages beside it. Each definition whose name has a
+// `mara docs` — looked up in the .mara files of the directory they came from
+// (the editor's file's, `mara docs`'s; none said: the window's own), the
+// stdlib's (the compiler's code/, and the directories in it) and the doc/
+// pages beside it. Each definition whose name has a
 // word, or whose doc comment does, is found; the best are shown first, each
 // with its doc comment and its signature (a struct's body). Crude: it reads
 // lines, not the program. A definition is a line `name :: ...`, a foreign
@@ -55,7 +56,7 @@ Docs :: struct {
 
 // The words looked up: the Docs panel shows what's found, its status line
 // how much.
-docs_search :: fun(ui: ^Ui, asked: []utf8) {
+docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8) {
 	d := &ui.search
 	l := &ui.docs
 	lines_clear(l)
@@ -69,7 +70,7 @@ docs_search :: fun(ui: ^Ui, asked: []utf8) {
 		lines_status(l, none[:], STYLE_DIM)
 		return
 	}
-	docs_read(ui, d)
+	docs_read(ui, d, dir)
 	d.found.len = 0
 	d.count = 0
 	for f in 0 .. d.files.len {
@@ -82,7 +83,9 @@ docs_search :: fun(ui: ^Ui, asked: []utf8) {
 	if d.count == 0 {
 		&status + "Nothing found for \""
 		&status + shown_query
-		&status + "\"."
+		&status + "\""
+		where_looked(ui, dir, &status)
+		&status + "."
 		lines_status(l, status[:], STYLE_BAD)
 		return
 	}
@@ -90,6 +93,7 @@ docs_search :: fun(ui: ^Ui, asked: []utf8) {
 	&status + " found for \""
 	&status + shown_query
 	&status + "\""
+	where_looked(ui, dir, &status)
 	if d.count > d.found.len {
 		&status + ", the best "
 		&status + count_text(d.found.len)
@@ -97,6 +101,18 @@ docs_search :: fun(ui: ^Ui, asked: []utf8) {
 	}
 	&status + "."
 	lines_status(l, status[:], STYLE_DIM)
+}
+
+// Where a search looked, for its status line: ", in <dir's name> and the
+// stdlib" — nothing when it's the stdlib's own.
+where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[..300]utf8) {
+	if dir.len == 0 or dir == "." or stdlib_dir(ui, dir) do return
+	trimmed_dir := trim_separators(dir)
+	from := parent_dir(trimmed_dir).len
+	if from > 0 do from += 1
+	&status^ + ", in "
+	&status^ + trimmed_dir[from : trimmed_dir.len]
+	&status^ + " and the stdlib"
 }
 
 // The words asked, lower case: each run of letters, digits and _, two or
@@ -126,11 +142,17 @@ docs_words :: fun(d: ^Docs, asked: []utf8) {
 	}
 }
 
-// The files looked in, read: the module's, the stdlib's, the doc pages.
-docs_read :: fun(ui: ^Ui, d: ^Docs) {
+// The files looked in, read: the words' directory's (none said: the
+// window's), the stdlib's, the doc pages.
+docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	d.source.len = 0
 	d.files.len = 0
-	docs_read_dir(d, ".", ui.sep)
+	// (Unless it's the stdlib's own, or doc/: read below, once.)
+	if dir.len == 0 {
+		docs_read_dir(d, ".", ui.sep)
+	elif not stdlib_dir(ui, dir)
+		docs_read_dir(d, dir, ui.sep)
+	}
 	code : [..1000]utf8
 	&code + ui.compiler_dir
 	&code + "code"
@@ -151,6 +173,53 @@ docs_read :: fun(ui: ^Ui, d: ^Docs) {
 	&doc + ui.compiler_dir
 	&doc + "doc"
 	docs_read_dir(d, doc, ui.sep)
+}
+
+// Whether a directory is one the search reads anyway: the stdlib's, one in
+// it, doc/.
+stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
+	code : [..1000]utf8
+	&code + ui.compiler_dir
+	&code + "code"
+	doc : [..1000]utf8
+	&doc + ui.compiler_dir
+	&doc + "doc"
+	return same_path(dir, code) or same_path(dir, doc) or same_path(parent_dir(trim_separators(dir)), code)
+}
+
+// Whether two paths name one directory: a separator at the end, '/' or
+// '\', and letters' case not minded (as Windows doesn't).
+same_path :: fun(a: []utf8, b: []utf8) -> bool {
+	x := trim_separators(a)
+	y := trim_separators(b)
+	if x.len != y.len do return false
+	for i in 0 .. x.len {
+		cx := lower(x[i])
+		cy := lower(y[i])
+		if cx == '/' do cx = '\\'
+		if cy == '/' do cy = '\\'
+		if cx != cy do return false
+	}
+	return true
+}
+
+// The path without the separators at its end.
+trim_separators :: fun(path: []utf8) -> []utf8 {
+	n := path.len
+	for n > 0 {
+		if path[n - 1] != '/' and path[n - 1] != '\\' do break
+		n -= 1
+	}
+	return path[0 : n]
+}
+
+// The directory a path is in: the path to its last separator.
+parent_dir :: fun(path: []utf8) -> []utf8 {
+	end : i64 = 0
+	for i in 0 .. path.len {
+		if path[i] == '/' or path[i] == '\\' do end = i
+	}
+	return path[0 : end]
 }
 
 // The .mara files in a directory read into d.source, as many as fit — a

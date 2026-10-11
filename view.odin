@@ -12,8 +12,11 @@ import "core:time"
 // each connection sends one line, a query as `mara ask` takes it, and gets
 // what the window's `mara serve` answers, its end line too; then the window
 // closes the connection. A line "-show <query>" is a query the window shows
-// too (`mara ask -show`); "-docs <words>", words it looks up in the docs and
-// answers with what it found (`mara docs`).
+// too (`mara ask -show`). Docs aren't a module's: every window also listens
+// on one name for this compiler (docs_pipe_name) — the first opened answers
+// there, the others take it over when it closes — for "-docs <dir>\t<words>":
+// words looked up in that directory's .mara files and the stdlib's, shown in
+// its Docs panel and answered with what it found (`mara docs`).
 // ---------------------------------------------------------------------------
 
 // How long `mara ask` waits for a window's next byte before it checks here
@@ -38,6 +41,15 @@ view_pipe_name :: proc(module: string) -> string {
     return fmt.aprintf("mara-view-%s-%016x", module, hash.fnv64a(transmute([]byte)key))
 }
 
+// The pipe name the windows this compiler opened answer docs on, wherever
+// they were opened: a hash of the compiler's path alone (case folded on
+// Windows, as view_pipe_name's).
+docs_pipe_name :: proc() -> string {
+    key := get_compiler_exe()
+    when ODIN_OS == .Windows { key = strings.to_lower(key, context.temp_allocator) }
+    return fmt.aprintf("mara-view-docs-%016x", hash.fnv64a(transmute([]byte)key))
+}
+
 // `mara ask`'s query asked of the window open here on its module, when one
 // is: the answer, and whether it failed. ok false when no window answers —
 // none open, or one that stopped answering or cut its answer off: the check
@@ -50,7 +62,7 @@ ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool)
         // (A word with a space in it, quoted: still one word to ask_words.)
         if strings.index_any(w, " \t") >= 0 { fmt.sbprintf(&b, `"%s"`, w) } else { strings.write_string(&b, w) }
     }
-    reply, said_failed, how := view_request(args.pkg_name, strings.to_string(b))
+    reply, said_failed, how := view_request(view_pipe_name(args.pkg_name), strings.to_string(b))
     if how == .Answered { return reply, said_failed, true }
     // (A window that stopped answering, or cut its answer off: said, then
     // the check here answers.)
@@ -58,14 +70,17 @@ ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool)
     return "", false, false
 }
 
-// `mara docs <words>`: the window open here looks them up; what it found
-// printed. Exits 1 when it found nothing, or no window answers.
+// `mara docs <words>`: a window this compiler opened, wherever, looks them up
+// in this directory's .mara files and the stdlib's; what it found printed.
+// Exits 1 when it found nothing, or no window answers.
 docs_via_view :: proc(args: CLI_Args) {
-    request := strings.concatenate({"-docs ", strings.join(args.docs_words, " ", context.temp_allocator)}, context.temp_allocator)
-    answer, failed, how := view_request(args.pkg_name, request)
+    cwd, _ := os.get_working_directory(context.temp_allocator)
+    words := strings.join(args.docs_words, " ", context.temp_allocator)
+    request := strings.concatenate({"-docs ", cwd, "\t", words}, context.temp_allocator)
+    answer, failed, how := view_request(docs_pipe_name(), request)
     switch how {
     case .No_Window:
-        fmt.eprintln("mara docs: no window is open here on this module — 'mara view' opens one")
+        fmt.eprintln("mara docs: no window is open — 'mara view' opens one")
         os.exit(1)
     case .Broken:
         fmt.eprintln("mara docs: the window open here didn't answer")
@@ -76,12 +91,12 @@ docs_via_view :: proc(args: CLI_Args) {
     }
 }
 
-// One request to the window open here on `module`: its answer, without the
-// end line, and whether that line said it failed. Broken also when the
+// One request to the window listening on the pipe name: its answer, without
+// the end line, and whether that line said it failed. Broken also when the
 // reply came without an end line — cut off.
-view_request :: proc(module, request: string) -> (answer: string, failed: bool, how: View_Exchange) {
+view_request :: proc(name, request: string) -> (answer: string, failed: bool, how: View_Exchange) {
     reply: string
-    reply, how = view_exchange(view_pipe_name(module), request)
+    reply, how = view_exchange(name, request)
     if how != .Answered { return }
     // (Its last line ends it: the answer is before.)
     body := strings.trim_suffix(reply, "\n")

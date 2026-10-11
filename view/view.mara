@@ -9,7 +9,7 @@ module view
 // moved, resized, shown and hidden; the layout and the theme, dark or
 // light, are kept. It answers `mara ask` here from a `mara serve` of its
 // own (hub.mara).
-//   view <compiler> <module> <pipe name>   (as `mara view` starts it)
+//   view <compiler> <module> <pipe name> <docs pipe name>   (as `mara view` starts it)
 // Its font, Inter (OFL.txt), and SDL3.dll are beside it, and its layout,
 // layout.txt. Built here: `mara build view` — with the window closed
 // (Windows won't write over a program that's running).

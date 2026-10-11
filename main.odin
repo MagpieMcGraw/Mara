@@ -972,7 +972,7 @@ run_view :: proc(args: CLI_Args) {
         fmt.printf(VIEW_NOT_BUILT, view_exe, view_dir)
         os.exit(1)
     }
-    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name, view_pipe_name(args.pkg_name)}) {
+    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name, view_pipe_name(args.pkg_name), docs_pipe_name()}) {
         fmt.printf(VIEW_NOT_STARTED, view_exe)
         os.exit(1)
     }
@@ -1084,12 +1084,13 @@ CLI_Args :: struct {
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs <words>"
 DOCS_USAGE :: `Usage: mara docs <words>
 
-  Asks the window open here (mara view) to look the words up in the docs —
-  the module's .mara files, the stdlib's, the doc/ pages: each definition
-  whose name or doc comment has them, its doc comment and its signature (a
-  struct's fields too), best first. The window shows them in its Docs panel;
-  they're printed here too. Part of a name finds it. Fails when nothing is
-  found, or no window is open here.`
+  Asks a window this compiler opened (mara view — anywhere, on any module)
+  to look the words up in the docs: this directory's .mara files, the
+  stdlib's, the doc/ pages. Each definition whose name or doc comment has
+  them, its doc comment and its signature (a struct's fields too), best
+  first. The window shows them in its Docs panel; they're printed here too.
+  Part of a name finds it. Fails when nothing is found, or no window is
+  open.`
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1103,12 +1104,15 @@ VIEW_USAGE :: `Usage: mara view [module]
   returns: the window runs on its own — closing the terminal leaves it open —
   and starts a 'mara serve' of its own for what it shows. The window is
   view/view(.exe) beside the compiler, run in the current directory as
-  'view <this compiler> <module> <pipe name>'. It listens on the pipe name
+  'view <this compiler> <module> <pipe name> <docs pipe name>'. It listens
+  on the pipe name
   (os.mara's pipe_listen): each connection sends one line, a query as
   'mara ask' takes it, and gets what its 'mara serve' answers, the end line
   too; then it closes the connection. 'mara ask' here asks it first. A line
-  '-show <query>' is a query its Ask panel shows (mara ask -show), and
-  '-docs <words>' words its Docs panel looks up (mara docs).`
+  '-show <query>' is a query its Ask panel shows (mara ask -show). The docs
+  pipe name is one for every window this compiler opens: the first to open
+  listens there, for '-docs <directory><tab><words>' — words its Docs panel
+  looks up in that directory and the stdlib (mara docs).`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara

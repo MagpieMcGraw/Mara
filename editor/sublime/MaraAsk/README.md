@@ -33,10 +33,11 @@ appears in an output panel with every `file:line` clickable.
   the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
 - **The window** — with `mara view` open on the module, each query also shows in
-  the window's **Ask** panel (`mara ask -show`), and **selecting** a word, part of
-  one, or a few on one line looks them up in its **Docs** panel (`mara docs`):
-  the definitions they name, with doc comments and signatures, to read after an
-  alt-tab. The status bar says how many were found. A selection over several
+  the window's **Ask** panel (`mara ask -show`). With a `mara view` window open
+  anywhere, on any module, **selecting** a word, part of one, or a few on one line
+  in any `.mara` file looks them up in its **Docs** panel (`mara docs`): the
+  definitions they name — in that file's directory, the stdlib and doc/ — with
+  doc comments and signatures, to read after an alt-tab. The status bar says how many were found. A selection over several
   lines isn't looked up. Off with `"show_in_window": false` /
   `"docs_on_select": false`.
 

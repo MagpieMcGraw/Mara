@@ -355,9 +355,10 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 
 # ---- docs on select: what's selected, looked up in a `mara view` window ---------
 #
-# Selecting a word, part of one, or a few on one line sends them to the window
-# open on the file's module (`mara docs <text>`): its Docs panel fills with the
-# definitions they name — doc comments and signatures — to read after an alt-tab.
+# Selecting a word, part of one, or a few on one line sends them, with the file's
+# directory, to a `mara view` window open anywhere (`mara docs <text>`): its Docs
+# panel fills with the definitions they name there and in the stdlib — doc
+# comments and signatures — to read after an alt-tab.
 # Once the selection has settled (docs_delay_ms), and only when it changed; the
 # status bar says what was found. Off with "docs_on_select": false.
 

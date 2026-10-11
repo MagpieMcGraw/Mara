@@ -3,6 +3,7 @@ module view
 use mara.core
 use mara.os
 use mara.math
+use mara.sdl
 
 // The window's side of `mara ask` and `mara docs` (the compiler's
 // view.odin): it listens on the pipe name `mara view` gives it and keeps a
@@ -11,11 +12,18 @@ use mara.math
 // --"), then closed:
 //   <query>          what serve answers it — as `mara ask <query>` would
 //   -show <query>    the same, shown in the Ask panel (an editor's queries)
-//   -docs <words>    what the Docs panel finds for the words, shown there
-// Never waiting: looked at between frames (hub_poll). Queries go to serve
-// one at a time, in the order their lines came; docs are answered at once.
-// Serve, ended — a compiler bug stops it — is started again for the next
-// query.
+// Docs aren't the module's: every window the compiler opens listens for
+// them on one name, the docs pipe name it's given too — the first window
+// opened answers there, the others try again every few seconds, so one
+// takes over when it closes. Its line:
+//   -docs <directory><tab><words>
+// what the Docs panel finds for the words, in that directory's .mara files
+// and the stdlib's, shown there. Never waiting: looked at between frames
+// (hub_poll). Queries go to serve one at a time, in the order their lines
+// came; docs are answered at once. Serve, ended — a compiler bug stops it —
+// is started again for the next query.
+
+DOCS_RETRY :: 2000   // ms between tries to take the docs pipe name
 
 ANSWER_DONE   :: "-- end of answer --"
 ANSWER_FAILED :: "-- end of answer: failed --"
@@ -25,6 +33,7 @@ Client :: struct {
 	id:    File_Id
 	line:  [..2000]utf8   // as it comes; whole once it ends in '\n'
 	whole: bool
+	docs:  bool           // it came on the docs pipe: docs are all it's answered
 }
 
 Hub :: struct {
@@ -39,11 +48,20 @@ Hub :: struct {
 	shown:     bool           // ... a query the Ask panel shows
 	gone:      bool           // ... its connection failed: the answer read on to its end
 	current:   [..4000]utf8   // serve's answer's line coming
+
+	docs_name:      [..300]utf8   // the docs pipe name; none: `mara view` gave none
+	docs_listening: bool
+	docs_listener:  Pipe_Listener
+	docs_tried:     u32           // when listening there was last tried (GetTicks)
 }
 
 // Listening on the pipe name, serve started — when `mara view` gave a name.
 hub_start :: fun(ui: ^Ui, h: ^Hub) {
 	args := this_program.args
+	if args.len > 4 {
+		&h.docs_name + args[4]
+		docs_listen(h)
+	}
 	if args.len < 4 do return
 	&h.command + "\""
 	&h.command + args[1]
@@ -66,30 +84,36 @@ hub_start :: fun(ui: ^Ui, h: ^Hub) {
 
 // Listening stopped, the connections closed, serve ended.
 hub_stop :: fun(h: ^Hub) {
-	if not h.listening do return
-	pipe_listen_stop(&h.listener)
+	if h.docs_listening {
+		pipe_listen_stop(&h.docs_listener)
+		h.docs_listening = false
+	}
 	for i in 0 .. h.waiting.len {
 		file_close(h.waiting[i].id)
 	}
+	h.waiting.len = 0
+	if not h.listening do return
+	pipe_listen_stop(&h.listener)
 	if h.asking do file_close(h.asked.id)
 	serve_down(h)
 	h.listening = false
 }
 
-// How long the window may wait for an event before looking again, ms:
-// soon while connections are coming or a query is with serve.
-hub_wait :: fun(h: ^Hub) -> i32 {
-	if not h.listening do return 250
-	if h.asking or h.waiting.len > 0 do return 2
-	return 25
+// Listening on the docs pipe name, unless another window does: tried again
+// DOCS_RETRY later (hub_poll).
+docs_listen :: fun(h: ^Hub) {
+	h.docs_tried = GetTicks()
+	l, e := pipe_listen(h.docs_name)
+	if bool(e) do return
+	h.docs_listener = l
+	h.docs_listening = true
 }
 
-// What's arrived since the last look: connections taken, their lines read,
-// docs answered, the next query sent to serve, serve's answer passed on.
-hub_poll :: fun(ui: ^Ui, h: ^Hub) {
-	if not h.listening do return
+// The connections that have come to a listener, into the waiting list:
+// `docs`, the docs pipe's.
+take_connections :: fun(h: ^Hub, l: ^Pipe_Listener, docs: bool) {
 	for h.waiting.len < h.waiting.cap {
-		c, e := pipe_accept(&h.listener)
+		c, e := pipe_accept(l)
 		if bool(e) or c == NO_FILE do break
 		// (Its place filled where it is: a Client is too big to build aside.)
 		h.waiting.len += 1
@@ -97,7 +121,24 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 		fresh.id = c
 		fresh.line.len = 0
 		fresh.whole = false
+		fresh.docs = docs
 	}
+}
+
+// How long the window may wait for an event before looking again, ms:
+// soon while connections are coming or a query is with serve.
+hub_wait :: fun(h: ^Hub) -> i32 {
+	if not h.listening and not h.docs_listening do return 250
+	if h.asking or h.waiting.len > 0 do return 2
+	return 25
+}
+
+// What's arrived since the last look: connections taken, their lines read,
+// docs answered, the next query sent to serve, serve's answer passed on.
+hub_poll :: fun(ui: ^Ui, h: ^Hub) {
+	if not h.docs_listening and h.docs_name.len > 0 and GetTicks() - h.docs_tried >= DOCS_RETRY do docs_listen(h)
+	if h.docs_listening do take_connections(h, &h.docs_listener, true)
+	if h.listening do take_connections(h, &h.listener, false)
 	i : i64 = 0
 	for i < h.waiting.len {
 		if not h.waiting[i].whole and not client_read(&h.waiting[i]) {
@@ -108,6 +149,13 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 		}
 		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-docs ") {
 			answer_docs(ui, &h.waiting[i])
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
+		if h.waiting[i].whole and h.waiting[i].docs {
+			// (A query on the docs pipe: not this window's to answer.)
+			_ = send(h.waiting[i].id, "the docs pipe answers -docs lines only\n-- end of answer: failed --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue
@@ -167,7 +215,17 @@ line_of :: fun(c: ^Client) -> []utf8 {
 // showing what's found; the connection sent it as text, its end line after.
 answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	line := line_of(c)
-	docs_search(ui, line[6 : line.len])
+	// (The directory before a tab; with none, the window's own.)
+	dir := line[0 : 0]
+	words := line[6 : line.len]
+	for k in 6 .. line.len {
+		if line[k] == '\t' {
+			dir = line[6 : k]
+			words = line[k + 1 : line.len]
+			break
+		}
+	}
+	docs_search(ui, dir, words)
 	ui.dirty = true
 	out : [..64 * KB]utf8
 	&out + ui.docs.status[:]

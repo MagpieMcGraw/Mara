@@ -350,7 +350,7 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	if pn.kind == PROFILE_PANEL {
 		draw_profile(ui, p, c)
 	elif pn.kind == DOCS_PANEL
-		draw_lines(ui, &ui.docs, c, "Select a word in Sublime (Mara Ask) — or run mara docs <words> here — to look it up.")
+		draw_lines(ui, &ui.docs, c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
 	elif pn.kind == ASK_PANEL
 		draw_lines(ui, &ui.asked, c, "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers.")
 	else

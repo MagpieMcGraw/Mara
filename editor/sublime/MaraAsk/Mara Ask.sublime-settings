@@ -30,9 +30,9 @@
     // answer in the window's Ask panel too (mara ask -show).
     "show_in_window": true,
 
-    // With a `mara view` window open on the module: look up what's selected —
-    // a word, part of one, a few on a line — in the window's Docs panel (mara
-    // docs), once the selection has rested this long.
+    // With a `mara view` window open anywhere: look up what's selected — a
+    // word, part of one, a few on a line, in any .mara file — in the window's
+    // Docs panel (mara docs), once the selection has rested this long.
     "docs_on_select": true,
     "docs_delay_ms": 300
 }
