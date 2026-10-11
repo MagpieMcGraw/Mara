@@ -552,6 +552,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         emit_raw(&g, "define i64 @main(i32 %.argc, ptr %.argv) {")
     }
     emit_raw(&g, "entry:")
+    // A crash the program doesn't report itself (a stack overflow, a bad
+    // memory access) reported as an assert is (runtime/mara_crash.c).
+    if !g.web { emit_raw(&g, "  call void @__mara_crash_install()") }
 
     emit_main_prologue(&g, checked)
     if g.profile != "" { emit(&g, "  call void @__mara_prof_start(ptr %s)", get_string_literal(&g, g.profile)) }
@@ -819,6 +822,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_crash_begin()\n")
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
         strings.write_string(&b, "declare void @__mara_crash_end()\n")
+        strings.write_string(&b, "declare void @__mara_crash_install()\n")
     }
     if g.profile != "" {
         // The profiler, runtime/mara_prof.c: linked into a -profile build.

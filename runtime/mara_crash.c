@@ -1,6 +1,8 @@
 // Mara crash journal — linked into every native build.
 //
-// Asserts and crash() tee their failure message here: __mara_crash_begin
+// Asserts and crash() tee their failure message here, and so do crashes the
+// program doesn't report itself (a stack overflow, a bad memory access: see
+// __mara_crash_install, at the end): __mara_crash_begin
 // stamps a new entry, __mara_tee_printf mirrors each printf into it, and
 // __mara_crash_end appends the finished entry to crash.txt NEXT TO THE
 // EXECUTABLE — not the working directory; programs get launched with
@@ -174,3 +176,112 @@ void __mara_crash_end(void) {
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     mara_crash_trim(path, tmp);
 }
+
+// --- crashes the program doesn't report itself ----------------------------------
+//
+// A stack overflow, a bad memory access: the OS ends the process without a
+// word. main calls __mara_crash_install first thing (a DLL has no main, and
+// leaves its host's crashes alone), and such a crash is then reported as an
+// assert reports itself — "Crashed: <what>" on stdout and in crash.txt — and
+// the process exits with the OS's code for it (0xC00000FD for a stack
+// overflow; 128 + the signal on Linux) through exit(), so atexit work still
+// runs: a -profile build's profile, naming the calls that were running. A
+// crash inside the report is left to the OS.
+
+#ifdef _WIN32
+
+static const char* mara_exception_name(DWORD code) {
+    switch (code) {
+    case EXCEPTION_STACK_OVERFLOW:        return "stack overflow";
+    case EXCEPTION_ACCESS_VIOLATION:      return "bad memory access";
+    case EXCEPTION_IN_PAGE_ERROR:         return "bad memory access (a page that couldn't be read in)";
+    case EXCEPTION_DATATYPE_MISALIGNMENT: return "misaligned memory access";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:    return "integer division by zero";
+    case EXCEPTION_INT_OVERFLOW:          return "integer overflow";
+    case EXCEPTION_ILLEGAL_INSTRUCTION:   return "illegal instruction";
+    case EXCEPTION_PRIV_INSTRUCTION:      return "privileged instruction";
+    }
+    return NULL;
+}
+
+static volatile LONG mara_crashing = 0;
+
+static LONG WINAPI mara_crash_filter(EXCEPTION_POINTERS* info) {
+    if (InterlockedExchange(&mara_crashing, 1)) return EXCEPTION_CONTINUE_SEARCH;
+    EXCEPTION_RECORD* r = info->ExceptionRecord;
+    DWORD code = r->ExceptionCode;
+    const char* what = mara_exception_name(code);
+    __mara_crash_begin();
+    if (!what) {
+        __mara_tee_printf("Crashed: exception 0x%08lX\n", (unsigned long)code);
+    } else if (code == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+        ULONG_PTR how = r->ExceptionInformation[0];
+        __mara_tee_printf("Crashed: %s, %s address 0x%llX\n", what,
+                          how == 0 ? "reading" : how == 1 ? "writing" : "running code at",
+                          (unsigned long long)r->ExceptionInformation[1]);
+    } else {
+        __mara_tee_printf("Crashed: %s\n", what);
+    }
+    __mara_crash_end();
+    fflush(stdout);
+    exit((int)code);
+}
+
+void __mara_crash_install(void) {
+    // A stack overflow's report runs on what's left of the stack: keep it
+    // enough (taken from the stack's 1 MB).
+    ULONG reserve = 64 * 1024;
+    SetThreadStackGuarantee(&reserve);
+    SetUnhandledExceptionFilter(mara_crash_filter);
+}
+
+#else
+
+#include <signal.h>
+#include <sys/resource.h>
+
+static char mara_signal_stack[64 * 1024];   // the report's: the stack may be what overflowed
+static char* mara_stack_top;                 // main's stack, for telling an overflow
+static size_t mara_stack_size;
+static volatile sig_atomic_t mara_crashing = 0;
+
+static void mara_crash_signal(int sig, siginfo_t* info, void* context) {
+    (void)context;
+    if (mara_crashing) { signal(sig, SIG_DFL); raise(sig); return; }
+    mara_crashing = 1;
+    char* at = (char*)info->si_addr;
+    int overflow = sig == SIGSEGV && mara_stack_size && at <= mara_stack_top &&
+                   at >= mara_stack_top - mara_stack_size - 64 * 1024;
+    __mara_crash_begin();
+    if (overflow)                         __mara_tee_printf("Crashed: stack overflow\n");
+    else if (sig == SIGSEGV || sig == SIGBUS) __mara_tee_printf("Crashed: bad memory access, address %p\n", (void*)at);
+    else if (sig == SIGFPE)               __mara_tee_printf("Crashed: arithmetic error (integer division by zero?)\n");
+    else if (sig == SIGILL)               __mara_tee_printf("Crashed: illegal instruction\n");
+    else                                  __mara_tee_printf("Crashed: signal %d\n", sig);
+    __mara_crash_end();
+    fflush(stdout);
+    exit(128 + sig);
+}
+
+void __mara_crash_install(void) {
+    char here;
+    mara_stack_top = &here;
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) mara_stack_size = (size_t)rl.rlim_cur;
+
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_sp = mara_signal_stack;
+    ss.ss_size = sizeof mara_signal_stack;
+    sigaltstack(&ss, NULL);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = mara_crash_signal;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    int sigs[] = { SIGSEGV, SIGBUS, SIGFPE, SIGILL };
+    for (int i = 0; i < 4; i++) sigaction(sigs[i], &sa, NULL);
+}
+
+#endif

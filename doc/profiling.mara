@@ -4,6 +4,8 @@
 // funs. When it exits (main's end, an assert, a crash) it writes profile.txt
 // next to the exe: one line per fun, the most time first. Profile the
 // -release build: a debug build's times say little about the optimized one.
+// After a crash, the profile's top lists the calls that were running: where
+// it crashed.
 //
 // The columns:
 //   total ms    time in the fun, the funs it calls included

@@ -27,8 +27,9 @@
 // total it is: probes %.
 //
 // At exit (atexit — `exit()` from an assert or crash too) calls still running
-// end there, and the table goes to profile.txt NEXT TO THE EXECUTABLE, one
-// line per fun, the most total time first. The file, for readers like
+// end there (the header names them: where a crash was), and the table goes
+// to profile.txt NEXT TO THE EXECUTABLE, one line per fun, the most total time
+// first. The file, for readers like
 // `mara view`: header lines, then a line starting `total ms` naming the
 // columns, then one row per fun — eight numbers, the fun's name, its
 // file:line — separated by spaces (no field has one).
@@ -293,6 +294,19 @@ static int prof_by_total(const void* a, const void* b) {
 static void prof_dump(void) {
     uint64_t end = prof_ticks();
     size_t open = prof.depth;
+    // The calls running, innermost first: where a crash was. A fun's calls in
+    // a row (a recursion) are one line.
+    enum { SHOWN = 20 };
+    Mara_Prof_Fun* running[SHOWN];
+    size_t times[SHOWN], shown = 0, listed = 0;
+    for (size_t i = open; i > 0; i--) {
+        Mara_Prof_Fun* f = prof.stack[i - 1].fun;
+        if (shown > 0 && running[shown - 1] == f) { times[shown - 1]++; listed++; continue; }
+        if (shown == SHOWN) break;
+        running[shown] = f;
+        times[shown++] = 1;
+        listed++;
+    }
     while (prof.depth > 0) prof_end_call(end);
     double rate = prof_rate();
     double probe = prof_probe_ticks();
@@ -319,7 +333,15 @@ static void prof_dump(void) {
     fprintf(out, "Times per call include the callees; self is the fun's own code. Median: within about 3%%.\n");
     fprintf(out, "Each probed call costs its caller about %.3f us; probes %% is how much of a fun's total that is, for the calls inside it.\n", probe * us);
     fprintf(out, "Funs that call nothing and don't loop aren't probed: their time is their caller's self.\n");
-    if (open) fprintf(out, "%zu calls were running at exit; their times end there.\n", open);
+    if (open) {
+        fprintf(out, "%zu calls were running at exit; their times end there. Innermost first:\n", open);
+        for (size_t i = 0; i < shown; i++) {
+            fprintf(out, "    %s  %s", running[i]->name, running[i]->where);
+            if (times[i] > 1) fprintf(out, "  (%zu calls in a row)", times[i]);
+            fprintf(out, "\n");
+        }
+        if (open > listed) fprintf(out, "    ... %zu more\n", open - listed);
+    }
     fprintf(out, "\n");
 
     qsort(prof.funs, prof.nfuns, sizeof *prof.funs, prof_by_total);
