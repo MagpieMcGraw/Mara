@@ -100,7 +100,11 @@ main :: fun() -> i64 {
 	}
 	defer Quit()
 	ui.window = CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
-	ui.renderer = CreateRenderer(ui.window, void)
+	// (SDL's OpenGL renderer: Direct3D 11's, its default on Windows, showed a
+	// frame late now and then — a dragged panel moved on after its release,
+	// again when the mouse came over it. OpenGL's, as Pounce draws, didn't.)
+	driver := "opengl"
+	ui.renderer = CreateRenderer(ui.window, &driver[0])
 	// (Vsync, and frames no oftener than the display shows them (run): sent
 	// faster, they'd queue to be shown, behind the mouse — a click's, a
 	// dragged panel's.)
@@ -137,19 +141,22 @@ main :: fun() -> i64 {
 // look at the file, or, with something to draw, until it's time to.)
 run :: fun(ui: ^Ui, p: ^Profile) {
 	looked := GetTicks()
-	drawn : u64 = 0   // when it was last drawn (GetTicksNS)
+	next : u64 = 0   // the soonest the next frame is drawn (GetTicksNS)
 	for ui.running {
 		wait : i32 = 250
 		if ui.dirty {
-			// (A frame's time less a little: vsync keeps it to the display.)
-			since := GetTicksNS() - drawn
-			if since + ui.frame_ns / 8 >= ui.frame_ns {
+			now := GetTicksNS()
+			if now >= next {
 				measure(ui)
 				draw_window(ui, p)
-				drawn = GetTicksNS()
 				ui.dirty = false
+				// (The next a refresh after this one, and a little more: frames
+				// sent faster than the display shows them queue up — the window
+				// isn't made to wait — and the picture falls behind, the longer
+				// the more: a dragged panel went on moving after its release.)
+				next = now + ui.frame_ns + ui.frame_ns / 50
 			else
-				wait = i32((ui.frame_ns - since) / 1000000) + 1
+				wait = i32((next - now) / 1000000) + 1
 			}
 		}
 		ev : Event
@@ -195,7 +202,15 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		ui.mouse_x = e.x * ui.density
 		ui.mouse_y = e.y * ui.density
 		if ui.drag != DRAG_NONE {
-			drag_to(ui, ui.mouse_x, ui.mouse_y)
+			// (A drag follows the OS cursor, as its press did: one source,
+			// read now — an event's place can be an older one. The button not
+			// held now: the drag's over, its release missed or not.)
+			x, y, held := cursor_now(ui)
+			if held {
+				drag_to(ui, x, y)
+			else
+				end_drag(ui)
+			}
 		else
 			look := cursor_look(ui, ui.mouse_x, ui.mouse_y)
 			if look != ui.cursor {
@@ -212,13 +227,12 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		ui.dirty = true
 	MouseButtonDown
 		if e.button == 1 {
-			x, y := cursor_in_window(ui)
+			x, y, _ := cursor_now(ui)
 			press(ui, p, x, y)
 		}
 	MouseButtonUp
-		if e.button == 1 and ui.drag != DRAG_NONE {
-			ui.drag = DRAG_NONE
-			layout_save(ui)
+		if e.button == 1 {
+			end_drag(ui)
 		}
 	MouseWheel
 		i := panel_at(ui, ui.mouse_x, ui.mouse_y)
@@ -261,6 +275,13 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	}
 }
 
+// The drag, if any, over: the layout saved.
+end_drag :: fun(ui: ^Ui) {
+	if ui.drag == DRAG_NONE do return
+	ui.drag = DRAG_NONE
+	layout_save(ui)
+}
+
 // The window resized: its size measured, the panels kept inside it.
 window_changed :: fun(ui: ^Ui) {
 	measure(ui)
@@ -268,18 +289,19 @@ window_changed :: fun(ui: ^Ui) {
 	ui.dirty = true
 }
 
-// Where the cursor is in the window, in pixels: its place on the screen less
-// the window's. (A button event's own place is wherever SDL last saw the
-// mouse move — for a click before any motion it saw, the first one on a
-// window just opened or brought forward, (0, 0).)
-cursor_in_window :: fun(ui: ^Ui) -> f32, f32 {
+// Where the cursor is in the window now, in pixels — its place on the
+// screen less the window's — and whether the left button is held. (A
+// button event's own place is wherever SDL last saw the mouse move: for a
+// click before any motion it saw, (0, 0); for one right after a quick
+// move, a place on the way.)
+cursor_now :: fun(ui: ^Ui) -> f32, f32, bool {
 	gx : f32 = 0
 	gy : f32 = 0
-	_ = GetGlobalMouseState(&gx, &gy)
+	buttons := GetGlobalMouseState(&gx, &gy)
 	wx : i32 = 0
 	wy : i32 = 0
 	_ = GetWindowPosition(ui.window, &wx, &wy)
-	return (gx - f32(wx)) * ui.density, (gy - f32(wy)) * ui.density
+	return (gx - f32(wx)) * ui.density, (gy - f32(wy)) * ui.density, (buttons & 1) != 0
 }
 
 // The window's size in pixels, and how many a window unit is.

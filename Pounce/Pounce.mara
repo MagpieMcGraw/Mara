@@ -201,37 +201,28 @@ game_events :: fun(game: ^Megastruct) {
 	}
 }
 
-// Where the mouse is on the plane z (facing the camera, as the squares'
-// plane does): the plane's mapping to the window — world_to_screen at three
-// of its points, the window's own size (the camera keeps the size it was
-// made with) — turned around. False when the plane isn't in front.
+// Where the mouse points on the plane z: the line under it from the near
+// plane to the far — the mouse in the window's -1..1 (the camera keeps the
+// size it was made with: the window's own is used) put back through view and
+// projection — to where it crosses z. False when it doesn't, in view.
 mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
 	w : i32 = 0
 	h : i32 = 0
 	_ = sdl.GetWindowSizeInPixels(game.window, &w, &h)
 	if w <= 0 or h <= 0 do return Vec3{}, false
-	ox, oy, o_ok := window_place(game, Vec3{0, 0, z}, w, h)
-	ax, ay, a_ok := window_place(game, Vec3{100, 0, z}, w, h)
-	bx, by, b_ok := window_place(game, Vec3{0, 100, z}, w, h)
-	if not o_ok or not a_ok or not b_ok do return Vec3{}, false
-	// (The mouse as u of the first step plus v of the second, from o.)
-	det := (ax - ox) * (by - oy) - (bx - ox) * (ay - oy)
-	if abs_f32(det) < 0.0001 do return Vec3{}, false
-	mx := game.events.mouse.x - ox
-	my := game.events.mouse.y - oy
-	u := (mx * (by - oy) - (bx - ox) * my) / det
-	v := ((ax - ox) * my - mx * (ay - oy)) / det
-	return Vec3{u * 100.0, v * 100.0, z}, true
-}
-
-// A point of the world's place in the window: pixels from its top left.
-window_place :: fun(game: ^Megastruct, pos: Vec3, w: i32, h: i32) -> f32, f32, bool {
-	sx, sy, ok := world_to_screen(&game.camera, pos)
-	if not ok do return 0, 0, false
-	// (world_to_screen's pixels are the camera's, from the center, y up.)
-	x := sx / (game.camera.w_width / 2.0) * (f32(w) / 2.0) + f32(w) / 2.0
-	y := f32(h) / 2.0 - sy / (game.camera.w_height / 2.0) * (f32(h) / 2.0)
-	return x, y, true
+	x := 2.0 * game.events.mouse.x / f32(w) - 1.0
+	y := 1.0 - 2.0 * game.events.mouse.y / f32(h)
+	inv := mat4_inverse(game.camera.proj * game.camera.view)
+	near := inv * Vec4{x, y, -1, 1}
+	far := inv * Vec4{x, y, 1, 1}
+	if near.w == 0 or far.w == 0 do return Vec3{}, false
+	a := Vec3{near.x / near.w, near.y / near.w, near.z / near.w}
+	b := Vec3{far.x / far.w, far.y / far.w, far.z / far.w}
+	d := b - a
+	if abs_f32(d.z) < 0.0001 do return Vec3{}, false
+	t := (z - a.z) / d.z
+	if t < 0 or t > 1 do return Vec3{}, false
+	return Vec3{a.x + d.x * t, a.y + d.y * t, z}, true
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
