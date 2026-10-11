@@ -695,7 +695,11 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     k.annot.overrides[tc_sid(k, e)] = true
     tc_set_type(k, ty, vt)   // (the variable it writes into, named)
     tc_set_ref(k, ty, scope_find_ref(env, name))
-    if tc_in_program(k, ty) { tc_error(k, tree_span(tr, e), TYPE_PROGRAM_READ_ONLY, "write into", "") }
+    // (Into storage that can't be written, as a field's write: tc_field_assign.)
+    span := tree_span(tr, e)
+    if pname, immutable := tc_write_root_param(k, ty, env); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }
+    if cname, is_const := tc_write_root_const(k, ty); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+    if tc_in_program(k, ty) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env)
     return true
 }

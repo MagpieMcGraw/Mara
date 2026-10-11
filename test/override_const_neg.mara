@@ -1,0 +1,13 @@
+module override_const_neg
+//@ expect-fail: cannot write into constant 'K'
+
+// An override statement on a constant: its storage is read only (it crashed
+// lowering before the checker said so).
+
+V :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	K :: V{ x = 1, y = 2 }
+	K{ x = 9 }
+	print(K.x)
+}

@@ -1,0 +1,18 @@
+module override_param_neg
+//@ expect-fail: cannot assign to immutable parameter 'v'
+
+// An override statement writes the variable it names, in place. A by-value
+// param is immutable — and its storage is the caller's: written, the
+// caller's variable changed.
+
+V :: struct { x: i64  y: i64 }
+
+bumped :: fun(v: V) -> i64 {
+	v{ x = 5 }
+	return v.x
+}
+
+main :: fun() {
+	w := V{ x = 1, y = 2 }
+	print(bumped(w), w.x)
+}
