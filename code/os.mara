@@ -199,7 +199,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The path goes to Windows as it is, not copied (cstring): a 0 must
 	// follow it in its storage — so pass a literal, or the buffer it was
 	// appended to, not a `[:]` of the buffer (that slice's room ends where
-	// the path does). So for every path this module takes.
+	// the path does). So for every path this module takes but dir_read's,
+	// which copies its own.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		id := CreateFileA(cstring(path), GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
@@ -312,7 +313,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The files and directories in a directory, to look through what's there:
 	// each one's name and whether it's a directory, into `entries` — not "."
 	// or "..", in no order to count on. Fails with Open_Failed when there's no
-	// directory there, Too_Large when it has more than `entries` holds.
+	// directory there, Too_Large when it has more than `entries` holds. The
+	// path is copied: any slice of one will do (cstring's 0 needn't follow it).
 	dir_read :: fun(path: []utf8, entries: ^[]Dir_Entry) -> err {
 		entries.len = 0
 		if path.len > 500 do return Open_Failed   // (its pattern on the stack, under 1 KB)
@@ -796,7 +798,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The path goes to Linux as it is, not copied (cstring): a 0 must
 	// follow it in its storage — so pass a literal, or the buffer it was
 	// appended to, not a `[:]` of the buffer (that slice's room ends where
-	// the path does). So for every path this module takes.
+	// the path does). So for every path this module takes but dir_read's,
+	// which copies its own.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		id := open(cstring(path), O_RDONLY | O_CLOEXEC, 0)
 		if id == NO_FILE do return NO_FILE, Open_Failed
@@ -902,10 +905,16 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The files and directories in a directory, to look through what's there:
 	// each one's name and whether it's a directory, into `entries` — not "."
 	// or "..", in no order to count on. Fails with Open_Failed when there's no
-	// directory there, Too_Large when it has more than `entries` holds.
+	// directory there, Too_Large when it has more than `entries` holds. The
+	// path is copied: any slice of one will do (cstring's 0 needn't follow it).
 	dir_read :: fun(path: []utf8, entries: ^[]Dir_Entry) -> err {
 		entries.len = 0
-		dir := opendir(cstring(path))
+		// (A copy of the path, a 0 after it: any slice of a path will do, as
+		// on Windows, where its search pattern is built.)
+		if path.len > 500 do return Open_Failed   // (the copy on the stack, under 1 KB)
+		opened : [..512]utf8
+		&opened + path
+		dir := opendir(cstring(opened))
 		if dir == void do return Open_Failed
 		full := false
 		for true {
