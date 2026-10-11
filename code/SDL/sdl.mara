@@ -1020,6 +1020,14 @@ BLENDMODE_BLEND :: u32(1)         // drawn over what's there by its alpha
 SCALEMODE_NEAREST :: i32(0)       // a texel to a pixel, never blended
 KMOD_SHIFT :: u16(0x0003)         // either shift key (GetModState)
 
+// The system's cursors (CreateSystemCursor), the ones for resizing too.
+SYSTEM_CURSOR_DEFAULT     :: i32(0)   // an arrow
+SYSTEM_CURSOR_NWSE_RESIZE :: i32(5)   // pointing up-left and down-right
+SYSTEM_CURSOR_NESW_RESIZE :: i32(6)   // up-right and down-left
+SYSTEM_CURSOR_EW_RESIZE   :: i32(7)   // left and right
+SYSTEM_CURSOR_NS_RESIZE   :: i32(8)   // up and down
+SYSTEM_CURSOR_MOVE        :: i32(9)   // all four ways
+
 // ---------------------------------------------------------------------------
 // SDL functions
 // ---------------------------------------------------------------------------
@@ -1082,6 +1090,7 @@ GLprofile :: union(tag i32) {
 Window    :: type ^byte
 Renderer  :: distinct ^byte
 Texture   :: distinct ^byte   // a renderer's image (CreateTexture)
+Cursor    :: distinct ^byte   // a mouse cursor's look (CreateSystemCursor)
 GLContext :: type ^byte
 IOStream  :: distinct ^byte
 
@@ -1160,6 +1169,9 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
     // Where the window's inside is on the screen.
     fun GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> bool
+    fun CreateSystemCursor(id: i32) -> Cursor
+    // The mouse cursor's look, over the windows of this program.
+    fun SetCursor(cursor: Cursor) -> bool
     fun GL_SetAttribute(attr: GLattr, value: i32) -> bool
     fun GL_CreateContext(window: Window) -> GLContext
     fun GL_MakeCurrent(window: Window, context: GLContext) -> bool

@@ -1,13 +1,14 @@
 module view
 
-// The Mara window: `mara view` opens it on a module. For now it shows the
-// module's profile.txt — build with `mara build -profile`, run the program —
-// every probed fun's times, sorted by whichever column is clicked (again:
-// the other way). It reads the file again whenever the program writes it.
+// The Mara window: `mara view` opens it on a module. It shows panels
+// (panels.mara) — for now the module's profile.txt (build with `mara build
+// -profile`, run the program), every probed fun's times sorted by whichever
+// column is clicked, read again whenever the program writes it; and the
+// keys. Panels are moved, resized, shown and hidden; the layout is kept.
 //   view <compiler> <module> <pipe name>   (as `mara view` starts it)
-// Its font, Inter (OFL.txt), and SDL3.dll are beside it. Built here:
-// `mara build view` — with the window closed (Windows won't write over a
-// program that's running).
+// Its font, Inter (OFL.txt), and SDL3.dll are beside it, and its layout,
+// layout.txt. Built here: `mara build view` — with the window closed
+// (Windows won't write over a program that's running).
 
 use mara.core
 use mara.os
@@ -17,8 +18,8 @@ include mara.memory
 
 PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
-PAD       :: 12.0            // the window's margin, and room in a column
-ROW_PAD   :: 3.0             // room above and below a row's text
+PAD       :: 12.0            // room around text: a panel's margin, a column's
+ROW_PAD   :: 3.0             // room above and below a line of text in a bar or row
 FRAME_MS  :: u64(8)          // the least time between two frames drawn
 
 // The window and what it shows.
@@ -27,24 +28,43 @@ Ui :: struct {
 	renderer: Renderer
 	text:     Text
 	font:     [..1000]utf8   // the font's path
+	layout_path: [..1000]utf8
 	density:  f32            // pixels a window unit (a high-density display has more)
 	width:    f32            // the window's size, pixels
 	height:   f32
-	mouse_x:  f32            // the mouse, pixels
+	saved_width:  f64        // its size as layout.txt had it
+	saved_height: f64
+	mouse_x:  f32            // the mouse, pixels; -1 when it's outside
 	mouse_y:  f32
-	hover_row: i64 = -1      // the row under the mouse as last drawn (row_at); -1: none
-	scroll:   i64            // the first row shown
-	scroll_x: f32            // pixels the table is scrolled sideways
+	cursors:  [10]Cursor     // the system's, by SYSTEM_CURSOR_...
+	cursor:   i32            // the one shown
 	running:  bool = true
 	dirty:    bool = true    // drawn again when it is
 
-	background := Color{r = 30, g = 31, b = 34}
-	stripe     := Color{r = 36, g = 37, b = 41}   // every other row
-	hover      := Color{r = 52, g = 55, b = 62}   // the row under the mouse
-	header     := Color{r = 44, g = 46, b = 51}   // the column titles' row
+	panels:   [..8]Panel     // back to front: the last is drawn over the rest
+	menu_open:  bool
+	menu_hover: i64 = -1     // the menu's item under the mouse as last drawn
+	drag:       i64          // DRAG_NONE, _MOVE, _RESIZE: what the mouse is doing
+	drag_kind:  i64          // the panel dragged
+	drag_edges: i64          // a resize's edges (EDGE_...)
+	drag_x:     f32          // the mouse where the drag began
+	drag_y:     f32
+	drag_box:   Rect         // the panel's box then
+
+	// The Profile panel's.
+	hover_row: i64 = -1      // the row under the mouse as last drawn; -1: none
+	scroll:   i64            // the first row shown
+	scroll_x: f32            // pixels the table is scrolled sideways
+
+	ground     := Color{r = 22, g = 23, b = 25}    // the window behind the panels
+	background := Color{r = 30, g = 31, b = 34}    // a panel's
+	border     := Color{r = 58, g = 60, b = 66}
+	stripe     := Color{r = 36, g = 37, b = 41}    // every other row
+	hover      := Color{r = 52, g = 55, b = 62}    // what's under the mouse
+	header     := Color{r = 44, g = 46, b = 51}    // bars: the menu, titles, a status line
 	ink        := Color{r = 222, g = 222, b = 222}
 	dim        := Color{r = 150, g = 152, b = 158}
-	accent     := Color{r = 236, g = 180, b = 80}  // the column sorted by
+	accent     := Color{r = 236, g = 180, b = 80}  // the column sorted by; a shown panel
 	bad        := Color{r = 240, g = 120, b = 110}
 }
 
@@ -53,7 +73,7 @@ main :: fun() -> i64 {
 	ui : Ui
 	p : Profile
 
-	// (Its font beside it: the directory of its own path.)
+	// (Its font and its layout beside it: the directory of its own path.)
 	exe := this_program.args[0]
 	dir_end : i64 = 0
 	for ch, i in exe {
@@ -61,6 +81,8 @@ main :: fun() -> i64 {
 	}
 	&ui.font + exe[0 : dir_end]
 	&ui.font + "Inter.ttf"
+	&ui.layout_path + exe[0 : dir_end]
+	&ui.layout_path + "layout.txt"
 
 	title : str256
 	if this_program.args.len > 2 {
@@ -70,7 +92,7 @@ main :: fun() -> i64 {
 	&title + "mara view"
 
 	// (A click that brings the window forward is a click too: on Windows SDL
-	// would drop it — and, by its count of buttons held, the next ones.)
+	// would drop it.)
 	_ = SetHint("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 	if not Init(Video) {
 		print("mara view: SDL didn't start")
@@ -83,6 +105,9 @@ main :: fun() -> i64 {
 	// sent waits for none before it — with vsync, frames sent faster than the
 	// screen shows them queue up, and a click's waits behind them.)
 	_ = SetRenderVSync(ui.renderer, 0)
+	for id in 0 .. 10 {
+		ui.cursors[id] = CreateSystemCursor(i32(id))
+	}
 	measure(&ui)
 	e := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
 	if bool(e) {
@@ -90,9 +115,16 @@ main :: fun() -> i64 {
 		return 1
 	}
 	profile_read(&p, PROFILE)
-	layout(&ui, &p)
-	fit_window(&ui, &p)
+	measure_columns(&ui, &p)
+	if layout_load(&ui) {
+		restore_window(&ui)
+	else
+		fit_window(&ui, &p)
+		default_layout(&ui)
+	}
+	clamp_panels(&ui)
 	run(&ui, &p)
+	layout_save(&ui)
 	DestroyRenderer(ui.renderer)
 	DestroyWindow(ui.window)
 	return 0
@@ -112,7 +144,7 @@ run :: fun(ui: ^Ui, p: ^Profile) {
 			since := (GetTicksNS() - drawn) / 1000000
 			if since >= FRAME_MS {
 				measure(ui)
-				draw(ui, p)
+				draw_window(ui, p)
 				drawn = GetTicksNS()
 				ui.dirty = false
 			else
@@ -130,7 +162,7 @@ run :: fun(ui: ^Ui, p: ^Profile) {
 			looked = GetTicks()
 			if file_mtime(PROFILE) != p.stamp {
 				profile_read(p, PROFILE)
-				layout(ui, p)
+				measure_columns(ui, p)
 				ui.dirty = true
 			}
 		}
@@ -138,7 +170,7 @@ run :: fun(ui: ^Ui, p: ^Profile) {
 }
 
 // One event: the window closed, resized or shown again; the mouse moved,
-// clicked or wheeled; a key.
+// pressed, released or wheeled; a key.
 handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	e := ev^
 	match e {
@@ -147,60 +179,98 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	WindowCloseRequested
 		ui.running = false
 	WindowResized
-		ui.dirty = true
+		window_changed(ui)
 	WindowPixelSizeChanged
-		ui.dirty = true
+		window_changed(ui)
 	WindowExposed
 		ui.dirty = true
 	WindowDisplayScaleChanged
 		measure(ui)
 		le := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
 		if bool(le) do print("mara view: its font didn't load:", le)
-		layout(ui, p)
-		ui.dirty = true
+		measure_columns(ui, p)
+		window_changed(ui)
 	MouseMotion
 		ui.mouse_x = e.x * ui.density
 		ui.mouse_y = e.y * ui.density
-		// (Drawn again only when the row under it changes: all it shows.)
-		if row_at(ui, p, ui.mouse_y) != ui.hover_row do ui.dirty = true
+		if ui.drag != DRAG_NONE {
+			drag_to(ui, ui.mouse_x, ui.mouse_y)
+		else
+			look := cursor_look(ui, ui.mouse_x, ui.mouse_y)
+			if look != ui.cursor {
+				ui.cursor = look
+				_ = SetCursor(ui.cursors[look])
+			}
+			// (Drawn again only when what's under it changes: all motion shows.)
+			if profile_hover(ui, p) != ui.hover_row do ui.dirty = true
+			if ui.menu_open and menu_item_at(ui, ui.mouse_x, ui.mouse_y) != ui.menu_hover do ui.dirty = true
+		}
 	WindowMouseLeave
+		ui.mouse_x = -1.0
 		ui.mouse_y = -1.0
-		if ui.hover_row >= 0 do ui.dirty = true
+		ui.dirty = true
 	MouseButtonDown
 		if e.button == 1 {
 			x, y := cursor_in_window(ui)
-			click(ui, p, x, y)
+			press(ui, p, x, y)
+		}
+	MouseButtonUp
+		if e.button == 1 and ui.drag != DRAG_NONE {
+			ui.drag = DRAG_NONE
+			layout_save(ui)
 		}
 	MouseWheel
-		// (Shift held: the wheel moves the table sideways; a wheel that
-		// tilts, or a touchpad, moves it sideways anyway.)
-		sideways := e.x
-		if (GetModState() & KMOD_SHIFT) != 0 {
-			sideways = -e.y
-		else
-			ui.scroll -= i64(e.y * 3.0)
+		i := panel_at(ui, ui.mouse_x, ui.mouse_y)
+		if i >= 0 {
+			if ui.panels[i].kind == PROFILE_PANEL {
+				// (Shift held: the wheel moves the table sideways; a wheel
+				// that tilts, or a touchpad, moves it sideways anyway.)
+				sideways := e.x
+				if (GetModState() & KMOD_SHIFT) != 0 {
+					sideways = -e.y
+				else
+					ui.scroll -= i64(e.y * 3.0)
+				}
+				ui.scroll_x += sideways * 60.0
+				ui.dirty = true
+			}
 		}
-		ui.scroll_x += sideways * 60.0
-		ui.dirty = true
 	KeyDown
-		page := visible_rows(ui, p)
-		if e.scancode == Scancode.Down do ui.scroll += 1
-		if e.scancode == Scancode.Up do ui.scroll -= 1
-		if e.scancode == Scancode.PageDown do ui.scroll += page
-		if e.scancode == Scancode.PageUp do ui.scroll -= page
-		if e.scancode == Scancode.Home do ui.scroll = 0
-		if e.scancode == Scancode.End do ui.scroll = p.rows.len
-		if e.scancode == Scancode.Left do ui.scroll_x -= 60.0
-		if e.scancode == Scancode.Right do ui.scroll_x += 60.0
-		ui.dirty = true
+		if e.scancode == Scancode.Escape and ui.menu_open {
+			ui.menu_open = false
+			ui.dirty = true
+		}
+		// (Keys go to the front panel.)
+		i := front_panel(ui)
+		if i >= 0 {
+			if ui.panels[i].kind == PROFILE_PANEL {
+				page := visible_rows(ui, p, content_rect(ui, ui.panels[i]))
+				if e.scancode == Scancode.Down do ui.scroll += 1
+				if e.scancode == Scancode.Up do ui.scroll -= 1
+				if e.scancode == Scancode.PageDown do ui.scroll += page
+				if e.scancode == Scancode.PageUp do ui.scroll -= page
+				if e.scancode == Scancode.Home do ui.scroll = 0
+				if e.scancode == Scancode.End do ui.scroll = p.rows.len
+				if e.scancode == Scancode.Left do ui.scroll_x -= 60.0
+				if e.scancode == Scancode.Right do ui.scroll_x += 60.0
+				ui.dirty = true
+			}
+		}
 	else
 	}
+}
+
+// The window resized: its size measured, the panels kept inside it.
+window_changed :: fun(ui: ^Ui) {
+	measure(ui)
+	clamp_panels(ui)
+	ui.dirty = true
 }
 
 // Where the cursor is in the window, in pixels: its place on the screen less
 // the window's. (A button event's own place is wherever SDL last saw the
 // mouse move — for a click before any motion it saw, the first one on a
-// window just opened or brought forward, (0, 0): above every title.)
+// window just opened or brought forward, (0, 0).)
 cursor_in_window :: fun(ui: ^Ui) -> f32, f32 {
 	gx : f32 = 0
 	gy : f32 = 0
@@ -225,220 +295,38 @@ measure :: fun(ui: ^Ui) {
 	if units_w > 0 do ui.density = f32(w) / f32(units_w)
 }
 
-// Each column's width: its widest text, title included, room around it.
-layout :: fun(ui: ^Ui, p: ^Profile) {
-	for c in 0 .. p.columns.len {
-		widest := text_width(&ui.text, column_title(p.columns[c])) + arrow_room(ui)
-		for r in p.rows {
-			widest = max_f32(widest, text_width(&ui.text, field_text(p, r.fields[c])))
-		}
-		p.widths[c] = ceil_f32(widest + 2.0 * PAD)
-	}
+// The room the window's display has for it, window units: the display's
+// usable part (the taskbar left out), a little less.
+display_room :: fun(ui: ^Ui) -> f32, f32 {
+	room := SDL_Rect{}
+	if not GetDisplayUsableBounds(GetDisplayForWindow(ui.window), &room) do return 100000.0, 100000.0
+	return f32(room.w) - 40.0, f32(room.h) - 40.0
 }
 
-// The table's width: its columns', the margins.
-table_width :: fun(p: ^Profile) -> f32 {
-	w := 2.0 * PAD
-	for c in 0 .. p.columns.len {
-		w += p.widths[c]
-	}
-	return w
-}
-
-// The window as wide as the table — no wider than its display has room
-// for — so every column shows.
+// The window, the first time: as wide as the profile's table — no wider
+// than its display has room for — so every column shows.
 fit_window :: fun(ui: ^Ui, p: ^Profile) {
 	if p.problem.len > 0 do return
-	room := SDL_Rect{}
-	if not GetDisplayUsableBounds(GetDisplayForWindow(ui.window), &room) do return
+	room_w, _ := display_room(ui)
 	units_w : i32 = 0
 	units_h : i32 = 0
 	_ = GetWindowSize(ui.window, &units_w, &units_h)
-	want := i32(ceil_f32(table_width(p) / ui.density))
-	want = i32(min_int(i64(want), i64(room.w) - 40))
-	if want > units_w {
-		_ = SetWindowSize(ui.window, want, units_h)
+	want := ceil_f32((table_width(p) + 2.0 * MARGIN + 2.0) / ui.density)
+	want = min_f32(want, room_w)
+	if want > f32(units_w) {
+		_ = SetWindowSize(ui.window, i32(want), units_h)
 		measure(ui)
 	}
 }
 
-// The room beside a title for the arrow saying it's sorted by.
-arrow_room :: fun(ui: ^Ui) -> f32 {
-	return floor_f32(ui.text.line * 0.6)
-}
-
-// A row's height, in pixels.
-row_height :: fun(ui: ^Ui) -> f32 {
-	return ui.text.line + 2.0 * ROW_PAD
-}
-
-// Where the column titles' row begins: below the header lines.
-table_top :: fun(ui: ^Ui, p: ^Profile) -> f32 {
-	return PAD + f32(p.header.len) * ui.text.line + PAD
-}
-
-// The row under y, a place in the window in pixels: its place in the order
-// shown, from the scroll; -1 for none.
-row_at :: fun(ui: ^Ui, p: ^Profile, y: f32) -> i64 {
-	rows_top := table_top(ui, p) + row_height(ui)
-	if y < rows_top do return -1
-	k := i64((y - rows_top) / row_height(ui))
-	if k >= visible_rows(ui, p) do return -1
-	at := ui.scroll + k
-	if at >= p.rows.len do return -1
-	return at
-}
-
-// How many rows fit between the titles and the status line.
-visible_rows :: fun(ui: ^Ui, p: ^Profile) -> i64 {
-	rows_top := table_top(ui, p) + row_height(ui)
-	rows_bottom := ui.height - row_height(ui)
-	return max_int(i64((rows_bottom - rows_top) / row_height(ui)), 1)
-}
-
-// A click: on a column's title, the rows sorted by it — a number largest
-// first, text A to Z; on the one sorted by, the other way.
-click :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
-	top := table_top(ui, p)
-	if y < top or y >= top + row_height(ui) do return
-	left := PAD - ui.scroll_x
-	for c in 0 .. p.columns.len {
-		if x >= left and x < left + p.widths[c] {
-			if p.sort_by == c {
-				p.descending = not p.descending
-			else
-				p.sort_by = c
-				p.descending = is_number(p.columns[c])
-			}
-			ui.scroll = 0   // (the new order from its top)
-			profile_sort(p)
-			ui.dirty = true
-			return
-		}
-		left += p.widths[c]
-	}
-}
-
-// The window drawn: the profile's header lines, the column titles, the
-// rows that fit from the scroll on, a scroll bar, the status line.
-draw :: fun(ui: ^Ui, p: ^Profile) {
-	r := ui.renderer
-	_ = SetRenderDrawColor(r, ui.background.r, ui.background.g, ui.background.b, u8(255))
-	_ = RenderClear(r)
-	if p.problem.len > 0 {
-		color := ui.bad
-		if p.missing do color = ui.dim
-		_ = text_draw(&ui.text, r, p.problem[:], PAD, PAD, color)
-		_ = RenderPresent(r)
-		return
-	}
-
-	y := PAD
-	for h, i in p.header {
-		color := ui.dim
-		if i == 0 do color = ui.ink
-		_ = text_draw(&ui.text, r, field_text(p, h), PAD, y, color)
-		y += ui.text.line
-	}
-
-	// The column titles.
-	top := table_top(ui, p)
-	row_h := row_height(ui)
-	fill(r, 0, top, ui.width, row_h, ui.header)
-	ui.scroll_x = max_f32(0, min_f32(ui.scroll_x, table_width(p) - ui.width))
-	left := PAD - ui.scroll_x
-	for c in 0 .. p.columns.len {
-		title := column_title(p.columns[c])
-		color := ui.dim
-		if c == p.sort_by do color = ui.accent
-		x := left + PAD
-		if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, title)
-		_ = text_draw(&ui.text, r, title, x, top + ROW_PAD, color)
-		if c == p.sort_by {
-			arrow_x := x + text_width(&ui.text, title) + 4.0
-			if is_number(p.columns[c]) do arrow_x = x - arrow_room(ui)
-			draw_arrow(ui, arrow_x, top + ROW_PAD, p.descending)
-		}
-		left += p.widths[c]
-	}
-
-	// The rows: from the scroll, as many as fit.
-	shown := visible_rows(ui, p)
-	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
-	ui.hover_row = row_at(ui, p, ui.mouse_y)
-	rows_top := top + row_h
-	for k in 0 .. shown {
-		at := ui.scroll + k
-		if at >= p.rows.len do break
-		ry := rows_top + f32(k) * row_h
-		if ui.mouse_y >= ry and ui.mouse_y < ry + row_h {
-			fill(r, 0, ry, ui.width, row_h, ui.hover)
-		elif at % 2 == 1
-			fill(r, 0, ry, ui.width, row_h, ui.stripe)
-		}
-		row := p.rows[p.order[at]]
-		left = PAD - ui.scroll_x
-		for c in 0 .. p.columns.len {
-			s := field_text(p, row.fields[c])
-			color := ui.ink
-			if p.columns[c] == 9 do color = ui.dim   // (where: quieter)
-			x := left + PAD
-			if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, s)
-			_ = text_draw(&ui.text, r, s, x, ry + ROW_PAD, color)
-			left += p.widths[c]
-		}
-	}
-
-	// A scroll bar, when they don't all fit.
-	if p.rows.len > shown {
-		track := f32(shown) * row_h
-		thumb := max_f32(track * f32(shown) / f32(p.rows.len), 20.0)
-		thumb_y := rows_top + (track - thumb) * f32(ui.scroll) / f32(p.rows.len - shown)
-		fill(r, ui.width - 8.0, thumb_y, 5.0, thumb, ui.dim)
-	}
-
-	// The status line.
-	status : [..300]utf8
-	&status + "profile.txt: "
-	&status + count_text(p.rows.len)
-	&status + " funs"
-	if p.sort_by < 0 {
-		&status + ", as in the file (most total time first). Click a column title to sort by it."
-	else
-		&status + ", sorted by "
-		&status + column_title(p.columns[p.sort_by])
-		if is_number(p.columns[p.sort_by]) {
-			if p.descending {
-				&status + ", largest first"
-			else
-				&status + ", smallest first"
-			}
-		else
-			if p.descending {
-				&status + ", Z to A"
-			else
-				&status + ", A to Z"
-			}
-		}
-		&status + ". Click it again for the other way."
-	}
-	fill(r, 0, ui.height - row_h, ui.width, row_h, ui.header)
-	_ = text_draw(&ui.text, r, status[:], PAD, ui.height - row_h + ROW_PAD, ui.dim)
-	_ = RenderPresent(r)
-}
-
-// An arrow beside a title, pointing down (largest first) or up, a line's
-// height: rows of pixels, each narrower.
-draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
-	size := arrow_room(ui)
-	half := floor_f32(size * 0.5)
-	top := floor_f32(y + (ui.text.line - half) * 0.5)
-	for k in 0 .. i64(half) {
-		inset := f32(k)
-		row_y := top + f32(k)
-		if not down do row_y = top + half - 1.0 - f32(k)
-		fill(ui.renderer, x + inset, row_y, size - 2.0 * inset, 1.0, ui.accent)
-	}
+// The window as big as layout.txt had it, no bigger than its display.
+restore_window :: fun(ui: ^Ui) {
+	if ui.saved_width < 1.0 or ui.saved_height < 1.0 do return
+	room_w, room_h := display_room(ui)
+	w := min_f32(f32(ui.saved_width) / ui.density, room_w)
+	h := min_f32(f32(ui.saved_height) / ui.density, room_h)
+	_ = SetWindowSize(ui.window, i32(w), i32(h))
+	measure(ui)
 }
 
 // A count as digits.

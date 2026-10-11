@@ -1,0 +1,214 @@
+module view
+
+use mara.core
+use mara.math
+use mara.sdl
+
+// The Profile panel: profile.txt's header lines, its column titles, the
+// rows that fit from the scroll on, a scroll bar, a status line — drawn in
+// the panel's content (r, a rectangle in the window, pixels). A click on a
+// column's title sorts by it.
+
+// Each column's width: its widest text, title included, room around it.
+measure_columns :: fun(ui: ^Ui, p: ^Profile) {
+	for c in 0 .. p.columns.len {
+		widest := text_width(&ui.text, column_title(p.columns[c])) + arrow_room(ui)
+		for row in p.rows {
+			widest = max_f32(widest, text_width(&ui.text, field_text(p, row.fields[c])))
+		}
+		p.widths[c] = ceil_f32(widest + 2.0 * PAD)
+	}
+}
+
+// The table's width: its columns', the margins.
+table_width :: fun(p: ^Profile) -> f32 {
+	w := 2.0 * PAD
+	for c in 0 .. p.columns.len {
+		w += p.widths[c]
+	}
+	return w
+}
+
+// The room beside a title for the arrow saying it's sorted by.
+arrow_room :: fun(ui: ^Ui) -> f32 {
+	return floor_f32(ui.text.line * 0.6)
+}
+
+// A row's height, in pixels.
+row_height :: fun(ui: ^Ui) -> f32 {
+	return ui.text.line + 2.0 * ROW_PAD
+}
+
+// Where the column titles' row begins: below the header lines.
+table_top :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
+	return r.y + PAD + f32(p.header.len) * ui.text.line + PAD
+}
+
+// How many rows fit between the titles and the status line.
+visible_rows :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> i64 {
+	rows_top := table_top(ui, p, r) + row_height(ui)
+	rows_bottom := r.y + r.h - row_height(ui)
+	return max_int(i64((rows_bottom - rows_top) / row_height(ui)), 1)
+}
+
+// The row under (x, y), a place in the window in pixels: its place in the
+// order shown, from the scroll; -1 for none.
+row_at :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) -> i64 {
+	if x < r.x or x >= r.x + r.w do return -1
+	rows_top := table_top(ui, p, r) + row_height(ui)
+	if y < rows_top do return -1
+	k := i64((y - rows_top) / row_height(ui))
+	if k >= visible_rows(ui, p, r) do return -1
+	at := ui.scroll + k
+	if at >= p.rows.len do return -1
+	return at
+}
+
+// The row the mouse is over, when the Profile panel is the one under it.
+profile_hover :: fun(ui: ^Ui, p: ^Profile) -> i64 {
+	i := panel_at(ui, ui.mouse_x, ui.mouse_y)
+	if i < 0 do return -1
+	if ui.panels[i].kind != PROFILE_PANEL do return -1
+	return row_at(ui, p, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
+}
+
+// A click in the panel: on a column's title, the rows sorted by it — a
+// number largest first, text A to Z; on the one sorted by, the other way.
+profile_click :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) {
+	if p.problem.len > 0 do return
+	top := table_top(ui, p, r)
+	if y < top or y >= top + row_height(ui) do return
+	left := r.x + PAD - ui.scroll_x
+	for c in 0 .. p.columns.len {
+		if x >= left and x < left + p.widths[c] {
+			if p.sort_by == c {
+				p.descending = not p.descending
+			else
+				p.sort_by = c
+				p.descending = is_number(p.columns[c])
+			}
+			ui.scroll = 0   // (the new order from its top)
+			profile_sort(p)
+			ui.dirty = true
+			return
+		}
+		left += p.widths[c]
+	}
+}
+
+// The panel's content drawn in r.
+draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
+	rd := ui.renderer
+	if p.problem.len > 0 {
+		color := ui.bad
+		if p.missing do color = ui.dim
+		_ = text_draw(&ui.text, rd, p.problem[:], r.x + PAD, r.y + PAD, color)
+		return
+	}
+
+	y := r.y + PAD
+	for h, i in p.header {
+		color := ui.dim
+		if i == 0 do color = ui.ink
+		_ = text_draw(&ui.text, rd, field_text(p, h), r.x + PAD, y, color)
+		y += ui.text.line
+	}
+
+	// The column titles.
+	top := table_top(ui, p, r)
+	row_h := row_height(ui)
+	fill(rd, r.x, top, r.w, row_h, ui.header)
+	ui.scroll_x = max_f32(0, min_f32(ui.scroll_x, table_width(p) - r.w))
+	left := r.x + PAD - ui.scroll_x
+	for c in 0 .. p.columns.len {
+		title := column_title(p.columns[c])
+		color := ui.dim
+		if c == p.sort_by do color = ui.accent
+		x := left + PAD
+		if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, title)
+		_ = text_draw(&ui.text, rd, title, x, top + ROW_PAD, color)
+		if c == p.sort_by {
+			arrow_x := x + text_width(&ui.text, title) + 4.0
+			if is_number(p.columns[c]) do arrow_x = x - arrow_room(ui)
+			draw_arrow(ui, arrow_x, top + ROW_PAD, p.descending)
+		}
+		left += p.widths[c]
+	}
+
+	// The rows: from the scroll, as many as fit.
+	shown := visible_rows(ui, p, r)
+	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
+	ui.hover_row = profile_hover(ui, p)
+	rows_top := top + row_h
+	for k in 0 .. shown {
+		at := ui.scroll + k
+		if at >= p.rows.len do break
+		ry := rows_top + f32(k) * row_h
+		if at == ui.hover_row {
+			fill(rd, r.x, ry, r.w, row_h, ui.hover)
+		elif at % 2 == 1
+			fill(rd, r.x, ry, r.w, row_h, ui.stripe)
+		}
+		row := p.rows[p.order[at]]
+		left = r.x + PAD - ui.scroll_x
+		for c in 0 .. p.columns.len {
+			s := field_text(p, row.fields[c])
+			color := ui.ink
+			if p.columns[c] == 9 do color = ui.dim   // (where: quieter)
+			x := left + PAD
+			if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, s)
+			_ = text_draw(&ui.text, rd, s, x, ry + ROW_PAD, color)
+			left += p.widths[c]
+		}
+	}
+
+	// A scroll bar, when they don't all fit.
+	if p.rows.len > shown {
+		track := f32(shown) * row_h
+		thumb := max_f32(track * f32(shown) / f32(p.rows.len), 20.0)
+		thumb_y := rows_top + (track - thumb) * f32(ui.scroll) / f32(p.rows.len - shown)
+		fill(rd, r.x + r.w - 8.0, thumb_y, 5.0, thumb, ui.dim)
+	}
+
+	// The status line.
+	status : [..300]utf8
+	&status + "profile.txt: "
+	&status + count_text(p.rows.len)
+	&status + " funs"
+	if p.sort_by < 0 {
+		&status + ", as in the file (most total time first). Click a column title to sort by it."
+	else
+		&status + ", sorted by "
+		&status + column_title(p.columns[p.sort_by])
+		if is_number(p.columns[p.sort_by]) {
+			if p.descending {
+				&status + ", largest first"
+			else
+				&status + ", smallest first"
+			}
+		else
+			if p.descending {
+				&status + ", Z to A"
+			else
+				&status + ", A to Z"
+			}
+		}
+		&status + ". Click it again for the other way."
+	}
+	fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
+	_ = text_draw(&ui.text, rd, status[:], r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.dim)
+}
+
+// An arrow beside a title, pointing down (largest first) or up, a line's
+// height: rows of pixels, each narrower.
+draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
+	size := arrow_room(ui)
+	half := floor_f32(size * 0.5)
+	top := floor_f32(y + (ui.text.line - half) * 0.5)
+	for k in 0 .. i64(half) {
+		inset := f32(k)
+		row_y := top + f32(k)
+		if not down do row_y = top + half - 1.0 - f32(k)
+		fill(ui.renderer, x + inset, row_y, size - 2.0 * inset, 1.0, ui.accent)
+	}
+}
