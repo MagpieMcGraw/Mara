@@ -19,6 +19,7 @@ PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
 PAD       :: 12.0            // the window's margin, and room in a column
 ROW_PAD   :: 3.0             // room above and below a row's text
+FRAME_MS  :: u64(8)          // the least time between two frames drawn
 
 // The window and what it shows.
 Ui :: struct {
@@ -31,6 +32,7 @@ Ui :: struct {
 	height:   f32
 	mouse_x:  f32            // the mouse, pixels
 	mouse_y:  f32
+	hover_row: i64 = -1      // the row under the mouse as last drawn (row_at); -1: none
 	scroll:   i64            // the first row shown
 	scroll_x: f32            // pixels the table is scrolled sideways
 	running:  bool = true
@@ -77,7 +79,10 @@ main :: fun() -> i64 {
 	defer Quit()
 	ui.window = CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
 	ui.renderer = CreateRenderer(ui.window, void)
-	_ = SetRenderVSync(ui.renderer, 1)
+	// (No vsync: it's drawn only when what it shows changes, and a frame
+	// sent waits for none before it — with vsync, frames sent faster than the
+	// screen shows them queue up, and a click's waits behind them.)
+	_ = SetRenderVSync(ui.renderer, 0)
 	measure(&ui)
 	e := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
 	if bool(e) {
@@ -93,14 +98,29 @@ main :: fun() -> i64 {
 	return 0
 }
 
-// Events until the window closes: drawn again when something changed, the
-// profile read again when the file did. (Waiting, not spinning: a quarter
-// second at most, to look at the file.)
+// Events until the window closes: drawn again when what it shows changed —
+// no oftener than FRAME_MS: a mouse moving says so a thousand times a second
+// — and the profile read again when the file changed. (Waiting, not
+// spinning: for an event, a quarter second at most to look at the file, or,
+// with something to draw, until it's time to.)
 run :: fun(ui: ^Ui, p: ^Profile) {
 	looked := GetTicks()
+	drawn : u64 = 0   // when it was last drawn (GetTicksNS)
 	for ui.running {
+		wait : i32 = 250
+		if ui.dirty {
+			since := (GetTicksNS() - drawn) / 1000000
+			if since >= FRAME_MS {
+				measure(ui)
+				draw(ui, p)
+				drawn = GetTicksNS()
+				ui.dirty = false
+			else
+				wait = i32(FRAME_MS - since)
+			}
+		}
 		ev : Event
-		if WaitEventTimeout(&ev, 250) {
+		if WaitEventTimeout(&ev, wait) {
 			handle(ui, p, &ev)
 			for PollEvent(&ev) {
 				handle(ui, p, &ev)
@@ -113,11 +133,6 @@ run :: fun(ui: ^Ui, p: ^Profile) {
 				layout(ui, p)
 				ui.dirty = true
 			}
-		}
-		if ui.dirty {
-			measure(ui)
-			draw(ui, p)
-			ui.dirty = false
 		}
 	}
 }
@@ -146,7 +161,11 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	MouseMotion
 		ui.mouse_x = e.x * ui.density
 		ui.mouse_y = e.y * ui.density
-		ui.dirty = true
+		// (Drawn again only when the row under it changes: all it shows.)
+		if row_at(ui, p, ui.mouse_y) != ui.hover_row do ui.dirty = true
+	WindowMouseLeave
+		ui.mouse_y = -1.0
+		if ui.hover_row >= 0 do ui.dirty = true
 	MouseButtonDown
 		if e.button == 1 {
 			x, y := cursor_in_window(ui)
@@ -258,6 +277,18 @@ table_top :: fun(ui: ^Ui, p: ^Profile) -> f32 {
 	return PAD + f32(p.header.len) * ui.text.line + PAD
 }
 
+// The row under y, a place in the window in pixels: its place in the order
+// shown, from the scroll; -1 for none.
+row_at :: fun(ui: ^Ui, p: ^Profile, y: f32) -> i64 {
+	rows_top := table_top(ui, p) + row_height(ui)
+	if y < rows_top do return -1
+	k := i64((y - rows_top) / row_height(ui))
+	if k >= visible_rows(ui, p) do return -1
+	at := ui.scroll + k
+	if at >= p.rows.len do return -1
+	return at
+}
+
 // How many rows fit between the titles and the status line.
 visible_rows :: fun(ui: ^Ui, p: ^Profile) -> i64 {
 	rows_top := table_top(ui, p) + row_height(ui)
@@ -334,6 +365,7 @@ draw :: fun(ui: ^Ui, p: ^Profile) {
 	// The rows: from the scroll, as many as fit.
 	shown := visible_rows(ui, p)
 	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
+	ui.hover_row = row_at(ui, p, ui.mouse_y)
 	rows_top := top + row_h
 	for k in 0 .. shown {
 		at := ui.scroll + k
