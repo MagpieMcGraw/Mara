@@ -186,7 +186,7 @@ above (calls)   (0 functions)
 Camera — struct  camera.mara:10   (module camera)
 
 below (calls)   (12 functions)
-  fun    append_one             gfx_draw_state.mara:165   (param camera : Camera)
+  fun    append_one             gfx_draw_state.mara:168   (param camera : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
   fun    camera_move            camera.mara:48   (param camera : ^Camera)
@@ -195,7 +195,7 @@ below (calls)   (12 functions)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
   fun    draw_marker            Pounce.mara:172   (param camera : Camera)
-  fun    draw_state_append      gfx_draw_state.mara:129   (param camera : Camera)
+  fun    draw_state_append      gfx_draw_state.mara:132   (param camera : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
 === Pounce | Camera flow above 2
@@ -610,13 +610,13 @@ gfx_mesh_generation.mara:69:11  token '0'
   Assign                   [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
   Index                    [463,467)  verts[0]   : Vertex
   Number                   [465,466)  0   : i64
-=== Pounce | at Pounce.mara:101:27
-Pounce.mara:101:27  token 'draw_state_create'
+=== Pounce | at Pounce.mara:99:13
+Pounce.mara:99:13  token 'VAO_State'
 
-  Define                   [350,665)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [352,665)  fun(game: ^Megastruct, memory: ^[]byte) { …
-  Assign                   [487,506)  game.draw_state_object = draw_state_create( …
-  Call                     [491,506)  draw_state_create( …   : DrawState
+  Define                   [350,667)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [352,667)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Assign                   [478,485)  game.vao = VAO_State()
+  Call                     [482,485)  VAO_State()   : VAO_State
 === test/askat.mara | at askat.mara:15:14
 askat.mara:15:14  token '3'
 

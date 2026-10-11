@@ -33,7 +33,7 @@ Pounce | translation_mx in camera_update type above
 Pounce | at camera.mara:148
 # A point: the nodes containing it, each typed by its annotation.
 Pounce | at gfx_mesh_generation.mara:69:11
-Pounce | at Pounce.mara:101:27
+Pounce | at Pounce.mara:99:13
 
 # Types at a point: an untyped number, a primitive's operation, a generic's
 # template (each instance's), a field through its struct.
