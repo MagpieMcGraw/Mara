@@ -38,5 +38,11 @@
 
     // With a `mara view` window open: while a call is typed, look up the fun
     // being called — its signature and doc first — once typing rests.
-    "signature_help": true
+    "signature_help": true,
+
+    // With a `mara view` window open on the module: when the cursor rests on
+    // a word in a saved file, the window's Ask panel shows what it is at its
+    // top (mara ask -cursor what at ...), once the cursor has rested this long.
+    "what_at_cursor": true,
+    "what_delay_ms": 400
 }

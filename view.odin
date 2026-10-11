@@ -13,7 +13,8 @@ import "core:time"
 // each connection sends one line, a query as `mara ask` takes it, and gets
 // what the window's `mara serve` answers, its end line too; then the window
 // closes the connection. A line "-show <query>" is a query the window shows
-// too (`mara ask -show`). Docs aren't a module's: every window also listens
+// too (`mara ask -show`); "-cursor <query>", one it shows as what's at the
+// editor's cursor (`mara ask -cursor`). Docs aren't a module's: every window also listens
 // on one name for this compiler (docs_pipe_name) — the first opened answers
 // there, the others take it over when it closes — for "-docs <dir>\t<words>":
 // words looked up in that directory's .mara files and the stdlib's, shown in
@@ -60,6 +61,7 @@ docs_pipe_name :: proc() -> string {
 ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool) {
     b := strings.builder_make(context.temp_allocator)
     if args.show { strings.write_string(&b, "-show ") }
+    if args.cursor { strings.write_string(&b, "-cursor ") }
     for w, i in args.ask_words {
         if i > 0 { strings.write_byte(&b, ' ') }
         // (A word with a space in it, quoted: still one word to ask_words.)
@@ -69,7 +71,7 @@ ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool)
     if how == .Answered { return reply, said_failed, true }
     // (A window that stopped answering, or cut its answer off: said, then
     // the check here answers.)
-    if how == .Broken { fmt.eprintln("mara ask: the window open here didn't answer; checking here instead") }
+    if how == .Broken && !args.cursor { fmt.eprintln("mara ask: the window open here didn't answer; checking here instead") }
     return "", false, false
 }
 

@@ -671,6 +671,7 @@ ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     case "types", "type":       return "types", true
     case "call", "calls":       return "call", true      // the call graph (callees / callers)
     case "flow":                return "flow", true      // the dataflow slice (above = lineage / producer tree)
+    case "what":                return "what", true      // what is at a point (`what at <file>:<line>:<col>`)
     }
     return "", false
 }

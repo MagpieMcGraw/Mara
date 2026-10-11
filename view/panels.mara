@@ -352,12 +352,31 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	elif pn.kind == DOCS_PANEL
 		draw_lines(ui, &ui.docs, c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
 	elif pn.kind == ASK_PANEL
-		draw_lines(ui, &ui.asked, c, "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers.")
+		draw_ask(ui, c)
 	else
 		draw_keys(ui, c)
 	}
 	_ = SetRenderClipRect(r, void)
 }
+
+// The Ask panel: what's at the editor's cursor at its top (mara ask
+// -cursor: as many lines as it has, up to CURSOR_LINES), a line under it,
+// then the query asked, its answer, below.
+draw_ask :: fun(ui: ^Ui, r: Rect) {
+	asked_hint := "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers."
+	if ui.at_cursor.lines.len == 0 {
+		draw_lines(ui, &ui.asked, r, asked_hint)
+		return
+	}
+	n := min_int(ui.at_cursor.lines.len, CURSOR_LINES)
+	h := min_f32(2.0 * PAD + f32(n) * ui.text.line, r.h)
+	draw_lines(ui, &ui.at_cursor, Rect{x = r.x, y = r.y, w = r.w, h = h}, "")
+	fill(ui.renderer, r.x, r.y + h, r.w, 1.0, ui.border)
+	rest := Rect{x = r.x, y = r.y + h + 1.0, w = r.w, h = r.h - h - 1.0}
+	if rest.h >= 2.0 * PAD + ui.text.line do draw_lines(ui, &ui.asked, rest, asked_hint)
+}
+
+CURSOR_LINES :: 12   // the most lines of what's at the cursor shown
 
 // A menu's name, as its button shows it.
 menu_name :: fun(m: i64) -> []utf8 {

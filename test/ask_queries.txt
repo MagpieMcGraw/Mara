@@ -34,6 +34,8 @@ Pounce | at camera.mara:148
 # A point: the nodes containing it, each typed by its annotation.
 Pounce | at gfx_mesh_generation.mara:69:11
 Pounce | at Pounce.mara:112:13
+Pounce | what at camera.mara:52:46
+Pounce | what at Pounce.mara:163:33
 
 # Types at a point: an untyped number, a primitive's operation, a generic's
 # template (each instance's), a field through its struct.
@@ -41,6 +43,7 @@ test/askat.mara | at askat.mara:15:14
 test/askat.mara | at askat.mara:15:20
 test/askat.mara | at askat.mara:11:49
 test/askat.mara | at askat.mara:18:19
+test/askat.mara | what at askat.mara:18:19
 test/askat.mara | no_such_name_here
 
 # Calls in operator form are call-graph edges.

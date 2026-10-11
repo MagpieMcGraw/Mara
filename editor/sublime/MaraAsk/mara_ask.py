@@ -386,10 +386,13 @@ def _docs_cwd(view):
 
 class MaraDocsOnSelect(sublime_plugin.EventListener):
     def on_selection_modified_async(self, view):
+        sel = view.sel()
+        if len(sel) == 1 and sel[0].empty():
+            _what_later(view, sel[0].b)
+            return
         if not _settings().get("docs_on_select", True):
             return
-        sel = view.sel()
-        if len(sel) != 1 or sel[0].empty():
+        if len(sel) != 1:
             return
         cwd = _docs_cwd(view)
         if cwd is None:
@@ -414,6 +417,43 @@ class MaraDocsOnSelect(sublime_plugin.EventListener):
         if callee is not None:
             name, point = callee
             _docs_later(os.path.dirname(fname), name, _docs_at(view, point))
+
+
+# ---- what's at the cursor: the window's Ask panel, its top --------------------
+#
+# When the cursor rests on a word in a saved .mara file, the window open on the
+# file's module shows what it is at the top of its Ask panel (`mara ask -cursor
+# what at <file>:<line>:<col>`): what the name is, its type, where it's declared,
+# what it's in, the expressions around it. Only a window answers — with none
+# open on the module, nothing is checked. An unsaved file's places may be stale:
+# it waits for the save. Off with "what_at_cursor": false.
+
+_what_pending = [0]   # the latest cursor rest's number: older ones don't send
+_what_sent = [None]   # the word last sent: the same again isn't
+
+
+def _what_later(view, caret):
+    if not _settings().get("what_at_cursor", True):
+        return
+    fname = view.file_name()
+    if not fname or not fname.endswith(".mara") or view.is_dirty():
+        return
+    word = view.word(caret)
+    key = (fname, word.begin(), word.end())
+    at = _docs_at(view, caret)
+    _what_pending[0] += 1
+    number = _what_pending[0]
+    delay = _settings().get("what_delay_ms", 400)
+    cwd = os.path.dirname(fname)
+    sublime.set_timeout_async(lambda: _what_send(number, cwd, at, key), delay)
+
+
+def _what_send(number, cwd, at, key):
+    if number != _what_pending[0] or _what_sent[0] == key:
+        return
+    _what_sent[0] = key
+    mara = _settings().get("mara_path", "mara")
+    _run_mara([mara, "ask", "-cursor", "what", "at", at], cwd)
 
 
 # Words, in that directory, at that place (or None), sent once things have

@@ -60,9 +60,11 @@ Ui :: struct {
 	scroll:   i64            // the first row shown
 	scroll_x: f32            // pixels the table is scrolled sideways
 
-	// The Docs panel's and the Ask panel's lines; the docs search's room.
+	// The Docs panel's and the Ask panel's lines — what's at the editor's
+	// cursor, above what was asked; the docs search's room.
 	docs:   Lines
 	asked:  Lines
+	at_cursor: Lines
 	search: Docs
 	compiler_dir: [..1000]utf8   // the compiler's directory, its separator at the end
 	sep:    utf8                 // the compiler's path's separator: '\' or '/'

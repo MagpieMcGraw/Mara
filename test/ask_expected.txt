@@ -623,6 +623,21 @@ refers to: type VAO_State  gfx_vao.mara:37
   Fun_Def                  [400,844)  fun(game: ^Megastruct, memory: ^[]byte) { …
   Assign                   [526,533)  game.vao = VAO_State()
   Call                     [530,533)  VAO_State()   : VAO_State
+=== Pounce | what at camera.mara:52:46
+obj — field : Object
+  declared  camera.mara:11
+  in        camera_move  camera.mara:48
+
+  camera.obj   : Object
+  camera.obj.dir   : distinct Quat
+  obj_get_directions(camera.obj.dir)   : distinct Vec3
+  fwd, up, right := obj_get_directions(camera.obj.dir)
+=== Pounce | what at Pounce.mara:163:33
+"dropepd file: " : [..64]utf8
+  in        game_events  Pounce.mara:156
+
+  print("dropepd file: ", file.name)
+  if file.was_dropped		do print("dropepd file: ", file.name)
 === test/askat.mara | at askat.mara:15:14
 askat.mara:15:14  token '3'
 
@@ -655,6 +670,13 @@ askat.mara:18:19  token '.'
   Decl                     [118,129)  z := pick(f, v.y)
   Call                     [121,129)  pick(f, v.y)   : f32
   Field                    [125,128)  v.y   : f32
+=== test/askat.mara | what at askat.mara:18:19
+.
+  in        main  askat.mara:13
+
+  v.y   : f32
+  pick(f, v.y)   : f32
+  z := pick(f, v.y)
 === test/askat.mara | no_such_name_here
 mara ask: no type or function named 'no_such_name_here' in askat
   (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)

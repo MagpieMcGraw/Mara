@@ -33,7 +33,10 @@ appears in an output panel with every `file:line` clickable.
   the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
 - **The window** — with `mara view` open on the module, each query also shows in
-  the window's **Ask** panel (`mara ask -show`). With a `mara view` window open
+  the window's **Ask** panel (`mara ask -show`), and resting the cursor on a word
+  in a saved file shows what it is at the panel's top (`mara ask -cursor what at
+  <file>:<line>:<col>`): its kind and type, where it's declared, what it's in,
+  the expressions around it. With a `mara view` window open
   anywhere, on any module, **selecting** a word, part of one, or a few on one line
   in any `.mara` file looks them up in its **Docs** panel (`mara docs`): the
   definitions they name — in that file's directory, the stdlib and doc/ — with
@@ -69,6 +72,8 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 - `docs_on_select` / `docs_delay_ms` — look up selections in the window's Docs
   panel, once the selection rests that long (default `true`, `300`).
 - `signature_help` — look up the fun whose call is being typed (default `true`).
+- `what_at_cursor` / `what_delay_ms` — when the cursor rests on a word in a saved
+  file, show what it is at the top of the window's Ask panel (default `true`, `400`).
 
 ## Install
 

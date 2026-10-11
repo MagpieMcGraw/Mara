@@ -25,7 +25,9 @@ import "core:path/filepath"
 // (hit_type). What the checker types nothing — a module's name — shows none.
 // The innermost name holding the point says what it refers to (hit_refers):
 // its declaration's kind, name and file:line — `mara docs` shows that one
-// first.
+// first. `mara ask what at <point>` says the same to read (ask_what_at_point):
+// what the name is, its type, where it's declared, what it's in, and the
+// expressions around it, innermost first.
 // ---------------------------------------------------------------------------
 
 // Whether a node is one a cursor names.
@@ -118,6 +120,17 @@ hit_label :: proc(t: Type) -> string {
 // something else. "" when nothing there refers to anything.
 @(private="file")
 hit_refers :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> string {
+    r, found := hit_ref(t, a, hits, at, name)
+    if !found { return "" }
+    if r.decl == 0 { return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name) }
+    tok := build_tokens[r.decl]
+    return fmt.tprintf("refers to: %s %s  %s\n", ref_kind_word(r.kind), token_text(tok), ask_loc(token_span(tok)))
+}
+
+// hit_refers's reference: the innermost about the point's name; found false
+// for none.
+@(private="file")
+hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> (Ref, bool) {
     #reverse for n in hits {
         for inst, i in a.instances {
             if n < inst.lo || n > inst.hi || int(n - inst.lo) >= len(a.refs[i]) { continue }
@@ -126,14 +139,13 @@ hit_refers :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: st
             if r.decl == 0 {
                 // (A builtin: only a node its name begins — the name, a call of it.)
                 if int(t.first[n]) != at { continue }
-                return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name)
+                return r, true
             }
-            tok := build_tokens[r.decl]
-            if token_text(tok) != name { continue }
-            return fmt.tprintf("refers to: %s %s  %s\n", ref_kind_word(r.kind), token_text(tok), ask_loc(token_span(tok)))
+            if token_text(build_tokens[r.decl]) != name { continue }
+            return r, true
         }
     }
-    return ""
+    return {}, false
 }
 
 // A reference's kind as `ask at` says it.
@@ -155,19 +167,33 @@ ref_kind_word :: proc(k: Ref_Kind) -> string {
     return "?"
 }
 
-// Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
-// rendered text and whether anything was found.
-ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
-                     a: ^Annotations, spec: string) -> (string, bool) {
+// A point in a file, found: its file, its token (`at`, in the build's
+// tokens; tok_i, in the file's), and the nodes holding it, widest first.
+Hit_Point :: struct {
+    src:    ^Source_File,
+    want:   string,    // the file's name
+    line:   int,
+    col:    int,
+    base:   int,       // the file's first token
+    tokens: []Token,   // the file's
+    tok_i:  int,
+    at:     int,
+    hits:   [dynamic]Tree_Id,
+}
+
+// `<file>:<line>:<col>` found: the point; else what to say instead, and
+// false.
+@(private="file")
+hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: string) -> (p: Hit_Point, msg: string, ok: bool) {
     parts := strings.split(spec, ":")
     defer delete(parts)
     if len(parts) != 3 {
-        return fmt.tprintf("mara ask: `at %s` — expected <file>:<line>:<col>\n", spec), false
+        return p, fmt.tprintf("mara ask: `at %s` — expected <file>:<line>:<col>\n", spec), false
     }
     line, line_ok := strconv.parse_int(parts[1])
     col,  col_ok  := strconv.parse_int(parts[2])
     if !line_ok || !col_ok || line < 1 || col < 1 {
-        return fmt.tprintf("mara ask: `at %s` — line and column must be positive integers\n", spec), false
+        return p, fmt.tprintf("mara ask: `at %s` — line and column must be positive integers\n", spec), false
     }
 
     want := filepath.base(parts[0])
@@ -177,10 +203,10 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         if src_file != nil { break }
     }
     if src_file == nil {
-        return fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false
+        return p, fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false
     }
     if src_file.end_token <= src_file.first_token {
-        return fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
+        return p, fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
     }
 
     // (Token positions print from the file's first.)
@@ -188,7 +214,7 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     tokens := build_tokens[src_file.first_token:src_file.end_token]
     tok_i, found := token_index_at(tokens, line, col)
     if !found {
-        return fmt.tprintf("mara ask: nothing at %s:%d:%d\n", want, line, col), false
+        return p, fmt.tprintf("mara ask: nothing at %s:%d:%d\n", want, line, col), false
     }
 
     // (The file's nodes holding the cursor; the widest first — an equal one,
@@ -202,8 +228,8 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         if first <= at && at < end { append(&hits, n) }
     }
     if len(hits) == 0 {
-        return fmt.tprintf("%s:%d:%d — token '%s', but no node covers it\n",
-                           want, line, col, token_text(tokens[tok_i])), false
+        return p, fmt.tprintf("%s:%d:%d — token '%s', but no node covers it\n",
+                              want, line, col, token_text(tokens[tok_i])), false
     }
     width :: proc(t: ^Tree, n: Tree_Id) -> int { return int(t.end[n] - t.first[n]) }
     for a in 1 ..< len(hits) {
@@ -214,6 +240,16 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         }
         hits[b + 1] = h
     }
+    return Hit_Point{src_file, want, line, col, base, tokens, tok_i, at, hits}, "", true
+}
+
+// Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
+// rendered text and whether anything was found.
+ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
+                     a: ^Annotations, spec: string) -> (string, bool) {
+    p, msg, ok := hit_point(t, all_files, spec)
+    if !ok { return msg, false }
+    want, line, col, base, tokens, tok_i, at, hits, src_file := p.want, p.line, p.col, p.base, p.tokens, p.tok_i, p.at, p.hits, p.src
 
     sb := strings.builder_make()
     fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n", want, line, col, token_text(tokens[tok_i]))
@@ -236,4 +272,92 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         fmt.sbprint(&sb, "\n")
     }
     return strings.to_string(sb), true
+}
+
+// `mara ask what at <file>:<line>:<col>`: what is at the point, to read —
+// the name there, what it is and its type, where it's declared, the
+// definition it's in; then the expressions around it, innermost first, to
+// its statement, each with its type. (`ask at` lists every node, for the
+// tree's sake.)
+ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
+                          a: ^Annotations, spec: string) -> (string, bool) {
+    p, msg, ok := hit_point(t, all_files, spec)
+    if !ok { return msg, false }
+    hits := p.hits[:]
+    name := token_text(p.tokens[p.tok_i])
+    inner := hits[len(hits) - 1]
+    // (The point's own node: the innermost, when it ends at the point — a
+    // name, a field's name. Its type, the name's.)
+    own := int(t.end[inner]) - 1 == p.at && t.tag[inner] >= .Number
+    own_type := hit_type(a, inner) if own else ""
+
+    sb := strings.builder_make()
+    r, refers := hit_ref(t, a, hits, p.at, name)
+    // (As written: a string with its quotes.)
+    written := span_text(p.src.source, token_span(p.tokens[p.tok_i]))
+    fmt.sbprint(&sb, written)
+    if refers { fmt.sbprintf(&sb, " — %s", ref_kind_word(r.kind)) }
+    if own_type != "" { fmt.sbprintf(&sb, " : %s", own_type) }
+    fmt.sbprint(&sb, "\n")
+    if refers {
+        if r.decl == 0 {
+            fmt.sbprint(&sb, "  built into the compiler\n")
+        } else {
+            fmt.sbprintf(&sb, "  declared  %s\n", ask_loc(token_span(build_tokens[r.decl])))
+            // (A definition's first line: a fun's signature, a struct's params.)
+            if def := hit_definition_at(t, r.decl); def != 0 {
+                first := span_text(source_of(build_tokens[r.decl]), tree_span(t, def))
+                first = strings.trim_suffix(strings.trim_suffix(first, " …"), " {")
+                fmt.sbprintf(&sb, "  %s\n", first)
+            }
+        }
+    }
+    // (The definition it's in: the innermost Define holding it.)
+    #reverse for n in hits {
+        if t.tag[n] != .Define { continue }
+        text := span_text(p.src.source, tree_span(t, n))
+        if colons := strings.index(text, "::"); colons > 0 {
+            fmt.sbprintf(&sb, "  in        %s  %s\n", strings.trim_space(text[:colons]), ask_loc(tree_span(t, n)))
+        }
+        break
+    }
+
+    // The expressions around it, innermost first: each one line, to the
+    // first spanning lines (a body, a block).
+    fmt.sbprint(&sb, "\n")
+    prev: Span
+    shown := 0
+    #reverse for n in hits {
+        span := tree_span(t, n)
+        if span.tok == prev.tok && span.end == prev.end { continue }   // (a node and the one it wraps)
+        prev = span
+        text := span_text(p.src.source, span)
+        // (A node over lines shows its first, "…" after: a body, a block.)
+        if strings.contains(text, "\n") || strings.has_suffix(text, "…") || t.tag[n] == .Define || t.tag[n] == .Fun_Def { break }
+        if text == written { continue }   // (the name: said above)
+        ty := hit_type(a, n) if t.tag[n] >= .Number else ""
+        if len(text) > 100 { text = strings.concatenate({text[:100], "…"}, context.temp_allocator) }
+        fmt.sbprintf(&sb, "  %s", text)
+        if ty != "" { fmt.sbprintf(&sb, "   : %s", ty) }
+        fmt.sbprint(&sb, "\n")
+        shown += 1
+        if shown == 8 { break }
+    }
+    return strings.to_string(sb), true
+}
+
+// The Define whose name is the token `decl` — a fun's, a struct's, a
+// constant's; 0 for none (a local's, a param's, a field's).
+@(private="file")
+hit_definition_at :: proc(t: ^Tree, decl: Token_Id) -> Tree_Id {
+    for i in 1 ..< len(t.tag) {
+        if t.tag[i] == .Define && t.first[i] == decl { return Tree_Id(i) }
+    }
+    return 0
+}
+
+// The source text of the file a token is in.
+@(private="file")
+source_of :: proc(tok: Token) -> string {
+    return build_files[tok.file].source
 }

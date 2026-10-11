@@ -1067,6 +1067,7 @@ CLI_Args :: struct {
     ask_query:    Ask_Query,  // the one query (ask_parse_query)
     ask_words:    []string,   // ... as written: a window asked it (ask_via_view)
     show:         bool,       // -show — the window shows the query and its answer
+    cursor:       bool,       // -cursor — ... as what's at the editor's cursor; a window's only
 
     // `mara docs <words>` — the window open here looks the words up in the
     // docs: shown in its Docs panel, printed here (docs_via_view).
@@ -1164,10 +1165,15 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line
+    mara ask what at camera.mara:52:46   what is at that point: what the name there is,
+                                     its type, where it's declared, what it's in, and
+                                     the expressions around it, innermost first
 
   A window open here on the module (mara view) answers 'mara ask' when it
   can, from a check already made. -show: it shows the query and its answer
-  in its Ask panel too (an editor's queries, say).
+  in its Ask panel too (an editor's queries, say). -cursor: it shows the
+  answer at the top of its Ask panel, as what's at the editor's cursor —
+  only a window answers; with none open, nothing is checked here.
 
   Many queries, checked again as the files change:
     mara serve [module]              each line stdin sends is a query, answered
@@ -1224,6 +1230,7 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-release" { args.release = true; i += 1; continue }
         if arg == "-profile" { args.profile = true; i += 1; continue }
         if arg == "-show"    { args.show    = true; i += 1; continue }
+        if arg == "-cursor"  { args.cursor  = true; i += 1; continue }
         if arg == "-no" {
             // `-no <feature>` — explicit feature disabler, two argv tokens.
             if i + 1 >= len(os.args) {
@@ -1348,6 +1355,9 @@ main :: proc() {
             if failed { os.exit(1) }
             return
         }
+        // (-cursor: for a window to show as the cursor moves — none open on
+        // the module, nothing to show; no check here for each move.)
+        if args.cursor { return }
     }
 
     perf: Performance_Timer

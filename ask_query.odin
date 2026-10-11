@@ -181,6 +181,13 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // `at <file>:<line>:<col>` with no name — the position query. A point in
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.
+    // `what at <file>:<line>:<col>` — the same point, to read.
+    if q.kind == "what" {
+        if q.target != "" || strings.count(q.at, ":") != 2 {
+            return "mara ask: `what` is about a point — `mara ask what at <file>:<line>:<col>`\n", false
+        }
+        return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at)
+    }
     if q.target == "" && strings.count(q.at, ":") == 2 {
         return ask_at_point(&build_tree, s.all_files, s.checked.annot, q.at)
     }

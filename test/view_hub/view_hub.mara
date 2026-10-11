@@ -8,8 +8,9 @@ use mara.os
 // — view_hub <compiler> <module> <pipe name> — it listens on the pipe name,
 // keeps the compiler's `serve` running, and answers each connection's line
 // with what serve answers, its end line too; then closes the connection. A
-// "-show <query>" line is a query the window would show: here, answered as
-// any; a "-docs <words>" line, docs it has none of: answered as failed.
+// "-show <query>" or "-cursor <query>" line is a query the window would
+// show: here, answered as any; a "-docs <words>" line, docs it has none of:
+// answered as failed.
 // Each line goes in view_hub.log, in the directory it runs in, as does serve
 // starting and ending, and "ended" when it ends: once no one has connected
 // for a second or so.
@@ -109,6 +110,9 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	bytes : []byte = line[:]
 	if asked.len >= 6 {
 		if asked[0 : 6] == "-show " do bytes = line[6 : line.len]
+	}
+	if asked.len >= 8 {
+		if asked[0 : 8] == "-cursor " do bytes = line[8 : line.len]
 	}
 	_, we := file_write(s.process.input, &bytes)
 	if bool(we) {

@@ -12,6 +12,8 @@ use mara.sdl
 // --"), then closed:
 //   <query>          what serve answers it — as `mara ask <query>` would
 //   -show <query>    the same, shown in the Ask panel (an editor's queries)
+//   -cursor <query>  the same, shown at the Ask panel's top: what's at the
+//                    editor's cursor (`mara ask -cursor what at <point>`)
 // Docs aren't the module's: every window the compiler opens listens for
 // them on one name, the docs pipe name it's given too — the first window
 // opened answers there, the others try again every few seconds, so one
@@ -47,6 +49,8 @@ Hub :: struct {
 	asked:     Client         // the one whose query serve is answering
 	asking:    bool
 	shown:     bool           // ... a query the Ask panel shows
+	cursor:    bool           // ... what's at the editor's cursor, shown at its top
+	cursor_started: bool      // ... its first line come: the last one's replaced
 	gone:      bool           // ... its connection failed: the answer read on to its end
 	current:   [..4000]utf8   // serve's answer's line coming
 
@@ -281,8 +285,11 @@ send :: fun(id: File_Id, text: []utf8) -> bool {
 ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	line := line_of(&h.asked)
 	h.shown = starts_with(line, "-show ")
+	h.cursor = starts_with(line, "-cursor ")
+	h.cursor_started = false
 	query := line
 	if h.shown do query = line[6 : line.len]
+	if h.cursor do query = line[8 : line.len]
 	if h.shown {
 		lines_clear(&ui.asked)
 		heading : [..2100]utf8
@@ -356,6 +363,8 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 					lines_status(&ui.asked, "Answered.", STYLE_DIM)
 				}
 			}
+			// (Nothing at the cursor — a blank, a comment: nothing shown.)
+			if h.cursor and (line == ANSWER_FAILED or not h.cursor_started) do lines_clear(&ui.at_cursor)
 			ui.dirty = true
 			h.current.len = 0
 			return
@@ -364,8 +373,25 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 			lines_add(&ui.asked, h.current[:], STYLE_TEXT)
 			ui.dirty = true
 		}
+		if h.cursor {
+			if not h.cursor_started {
+				lines_clear(&ui.at_cursor)
+				h.cursor_started = true
+			}
+			lines_add(&ui.at_cursor, h.current[:], cursor_style(ui.at_cursor.lines.len, h.current[:]))
+			ui.dirty = true
+		}
 		h.current.len = 0
 	}
+}
+
+// How a line of `mara ask what at`'s answer is shown, the n-th: the first
+// (what the name is) a title; where it's declared, what it's in, dim; the
+// code — a signature, the expressions around it — as code.
+cursor_style :: fun(n: i64, line: []utf8) -> i64 {
+	if n == 0 do return STYLE_TITLE
+	if starts_with(line, "  declared") or starts_with(line, "  in ") or starts_with(line, "  built into") do return STYLE_DIM
+	return STYLE_CODE
 }
 
 // Serve running: started unless it is. False when it can't be.
