@@ -474,6 +474,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     case .Field, .Index, .Slice, .Deref:
         // (Into a constant: its storage is read-only.)
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+        if tc_in_program(k, target) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
         return
     case .Ident:
     case:
@@ -488,6 +489,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         return
     }
     if name == "this_program" {
+        if !tc_program_set_here(k, s) { tc_error(k, span, TYPE_PROGRAM_SET_OUTSIDE_MAIN) }
         tc_program_assign(k, value, env)
         return
     }
@@ -669,6 +671,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         case .Deref: tc_deref_assign(k, s, target, value, env, op_tok)
         }
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+        if tc_in_program(k, target) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
         return
     case .Ident:
     case:

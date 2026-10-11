@@ -1,0 +1,12 @@
+module program_address_neg
+//@ expect-fail: cannot take the address of 'this_program'
+
+// A pointer into this_program could write it: appending to its args takes
+// their address.
+
+use mara.core
+
+main :: fun() {
+	&this_program.args + this_program.args[0]
+	print(this_program.args.len)
+}

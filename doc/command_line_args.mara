@@ -1,7 +1,9 @@
 // How to read the command-line arguments a program was run with.
 //
 // They are `this_program.args`: args[0] is the program's own path, then
-// each argument, as text. `this_program.args.len` says how many.
+// each argument, as text. `this_program.args.len` says how many. They're
+// read only, like all of this_program: copy what you'd change into a
+// variable.
 module command_line_args
 
 use mara.core

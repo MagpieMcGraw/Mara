@@ -695,6 +695,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     k.annot.overrides[tc_sid(k, e)] = true
     tc_set_type(k, ty, vt)   // (the variable it writes into, named)
     tc_set_ref(k, ty, scope_find_ref(env, name))
+    if tc_in_program(k, ty) { tc_error(k, tree_span(tr, e), TYPE_PROGRAM_READ_ONLY, "write into", "") }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env)
     return true
 }

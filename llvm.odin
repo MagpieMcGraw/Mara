@@ -2829,7 +2829,7 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // The functional update `x = f(x, …)` (llvm_in_place_updates): x
                 // is both the argument and the result slot.
                 if e.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                if !llvm_call_reaches(e, op, result) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
+                if !llvm_call_reaches(e, op) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
     }
@@ -2859,24 +2859,22 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
 // that place while it runs: it would read, or write over, what it has already
 // written there. A call reaches what it's passed as storage (a pointer; an
 // aggregate, passed by its address) where its code — or a fun it calls —
-// reads or writes through it; and the one global, `this_program`, where it
-// names it or uses its arena.
+// reads or writes through it. Nothing else: `this_program`, which every fun
+// can read, is read only (tc_in_program) — no place being built is in it,
+// and its arena's bookkeeping is in it.
 
 // What a fun's code reaches (fun_summary).
 Fun_Summary :: struct {
     reaches:  []bool,   // by param: whether it reads or writes through it
     returned: []bool,   // by param: whether a pointer param may be in its result
-    program:  bool,     // whether it reaches `this_program`: names it, or uses its arena
     done:     bool,
 }
 
-// Whether a call may reach the place its result goes (`result` its type)
-// while it runs: through an argument passed as storage its callee reaches
-// through — unless the argument is constant text, which no place being built
-// can be — or through the program, when the place could be in it (it is no
-// bigger than the program is).
+// Whether a call may reach the place its result goes while it runs: through
+// an argument passed as storage its callee reaches through — unless the
+// argument is constant text, which no place being built can be.
 @(private="file")
-llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, result: Type) -> bool {
+llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id) -> bool {
     callee := graph_called(e.pg, op)
     if callee == nil { return true }   // (through a function value: unknown)
     s := fun_summary(e.g, callee)
@@ -2889,27 +2887,20 @@ llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, result: Type) -> bool {
         if _, is_text := llvm_text(e, at); is_text { continue }
         return true
     }
-    if s.program {
-        if program := e.g.checked.table.funs["Program"] or_else nil; program != nil && type_size(result) <= type_size(program) { return true }
-    }
     return false
 }
 
 // A fun's summary — a struct's code's too, which a construction runs —
 // worked out from its code once per codegen (each worker its own). A fun
-// with no code reaches through every param: a foreign one (C, which can't
-// name the program) or an intrinsic (expanded in place). A fun being worked
-// out — a call back into it — reaches through every param and the program.
+// with no code reaches through every param: a foreign one, or an intrinsic
+// (expanded in place). So does a fun being worked out — a call back into it.
 fun_summary :: proc(g: ^Codegen, f: ^Type_Scope) -> ^Fun_Summary {
     if s, known := g.summaries[f]; known && s.done { return s }
     n := len(f.cg_params)
     all := new(Fun_Summary)
     all.reaches, all.returned, all.done = make([]bool, n), make([]bool, n), true
     for &r in all.reaches { r = true }
-    if f in g.summaries {
-        all.program = true
-        return all
-    }
+    if f in g.summaries { return all }
     pg := g.checked.code.funs[f] or_else nil
     if _, src := f.origin.(Origin_Source); pg == nil || !src {
         g.summaries[f] = all
@@ -2918,10 +2909,7 @@ fun_summary :: proc(g: ^Codegen, f: ^Type_Scope) -> ^Fun_Summary {
     s := new(Fun_Summary)
     s.reaches, s.returned = make([]bool, n), make([]bool, n)
     g.summaries[f] = s
-    if !fun_summarize(g, f, pg, s) {
-        s^ = all^
-        s.program = true
-    }
+    if !fun_summarize(g, f, pg, s) { s^ = all^ }
     s.done = true
     return s
 }
@@ -2947,19 +2935,12 @@ fun_summarize :: proc(g: ^Codegen, f: ^Type_Scope, pg: ^Program_Graph, s: ^Fun_S
             for o, i in graph_operands(pg, id) {
                 if o.op > 0 && o.op <= pg.end { append(&uses[o.op], Use{id, i}) }
             }
-            #partial switch pg.op[id] {
-            case .Var:
+            if pg.op[id] == .Var {
                 d := pg.refers[id]
-                if d > pg.end { s.program = true }   // (outside the code: `this_program`)
-                if d > 0 && d <= pg.end {
+                if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
                     if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
                     append(&vars[d], id)
                 }
-            case .Arena_Alloc, .Arena_Mark, .Arena_Reset:
-                s.program = true
-            case .Call, .Construct:
-                c := graph_called(pg, id)
-                if c == nil || fun_summary(g, c).program { s.program = true }
             }
         }
     }

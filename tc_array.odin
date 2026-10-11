@@ -153,6 +153,11 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
         }
     }
+    // (A slice of an array in this_program — not of a slice, whose view it
+    // shares — would be a view that writes it.)
+    if _, of_slice := target.(^Type_Slice); !of_slice && tc_in_program(k, base_n) {
+        tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "slice", " (a slice can write what it views)")
+    }
     elem: Type
     #partial switch v in target {
     case ^Type_Fixed_Array:   elem = v.elem

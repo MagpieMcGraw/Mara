@@ -66,6 +66,41 @@ tc_scan_program_assign :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
+// Whether a place is in `this_program`'s storage — its arena, its args (each
+// arg's slot, not the text it views) — which is read only: written there,
+// pointed at or sliced, it could be changed. The place's name, before any
+// pointer or slice it goes through (past one, it's what that views).
+tc_in_program :: proc(k: ^TC, n: Tree_Id) -> bool {
+    tr := k.t
+    cur := n
+    for {
+        #partial switch tr.tag[cur] {
+        case .Paren:
+            cur = Tree_Id(tr.a[cur])
+            continue
+        case .Field, .Index, .Slice:
+            inner := Tree_Id(tr.a[cur])
+            #partial switch _ in distinct_base(tc_node_type(k, inner)) {
+            case ^Type_Ptr, ^Type_Slice: return false
+            }
+            cur = inner
+        case .Ident:
+            return tc_name(k, cur) == "this_program" && tc_ref(k, cur).kind == .Builtin
+        case:
+            return false
+        }
+    }
+}
+
+// `this_program = Program(…)` where it's set: a statement of main's body (a
+// shared build's, any fun's) — where tc_scan_allocator finds it.
+tc_program_set_here :: proc(k: ^TC, s: Tree_Id) -> bool {
+    f := k.body
+    if f == nil || f.kind != .Fun || f.node == 0 || (scope_display_name(f) != "main" && !k.shared) { return false }
+    for bs in scope_view(k.t, f.node).body { if bs == s { return true } }
+    return false
+}
+
 // `Program(args)`'s arguments.
 tc_program_args :: proc(k: ^TC, value: Tree_Id) -> ([]Tree_Id, bool) {
     call := tc_unparen(k, value)

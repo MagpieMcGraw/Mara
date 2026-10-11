@@ -269,6 +269,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
+        if tc_in_program(k, operand) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "take the address of", " (a pointer could write it)") }
         if tr.tag[operand] == .String { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL) }
         // (A part of a value — an if's, a literal's — is no storage; a
         // slice builds a header with nowhere to point.)
