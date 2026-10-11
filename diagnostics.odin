@@ -481,3 +481,5 @@ BUILD_FOREIGN_SOURCE_NOT_FOUND    :: "Error: foreign source '%s' not found under
 BUILD_PARSE_ERRORS_ABORT          :: "Found %d parse error(s) in '%s'. Aborting.\n"
 BUILD_NO_ENTRY_POINT              :: "Error: module '%s' has no `main` and no `#expose` function. Add an entry point, or pass `-shared` to build an empty DLL.\n"
 BUILD_TYPE_ERRORS_ABORT           :: "Found %d type error(s). Aborting.\n"
+VIEW_NOT_BUILT                    :: "mara view: the window isn't built: there is no %s. Build it there (`mara build view` in %s).\n"
+VIEW_NOT_STARTED                  :: "mara view: %s didn't start.\n"

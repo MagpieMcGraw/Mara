@@ -945,6 +945,29 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
     return strings.to_string(b)
 }
 
+// `mara view [module]`: the window, started on its own (start_detached) —
+// it outlives this command and the terminal — then this returns. It is
+// view/view(.exe) beside the compiler, run in the current directory as
+// `view <this compiler> <module>`: it starts that compiler's `serve` for
+// what it shows, so the two always agree.
+run_view :: proc(args: CLI_Args) {
+    all_files := discover_all_files(args.compiler_dir, ".")
+    if args.pkg_name not_in all_files {
+        fmt.print(module_missing(all_files, args.pkg_name))
+        os.exit(1)
+    }
+    view_dir, _ := filepath.join({args.compiler_dir, "view"})
+    view_exe, _ := filepath.join({view_dir, "view" + NATIVE_EXE_EXT})
+    if !os.is_file(view_exe) {
+        fmt.printf(VIEW_NOT_BUILT, view_exe, view_dir)
+        os.exit(1)
+    }
+    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name}) {
+        fmt.printf(VIEW_NOT_STARTED, view_exe)
+        os.exit(1)
+    }
+}
+
 // The front half every command shares: the module's files lexed, parsed and
 // checked. On a failure, what to say about it — the diagnostics, then a
 // summary — for build and ask to print and exit on, and serve to answer
@@ -1035,9 +1058,12 @@ CLI_Args :: struct {
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
     serve:        bool,
+
+    // `mara view [module]` — the window, started on its own (run_view).
+    view:         bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]\n       mara serve [module]\n       mara view [module]"
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1045,6 +1071,13 @@ SERVE_USAGE :: `Usage: mara serve [module]
   '-- end of answer --'. Before each answer, a .mara file changed since the
   check — the module's or the stdlib's — checks it again; one that doesn't
   check answers with its errors. Ends when stdin closes.`
+VIEW_USAGE :: `Usage: mara view [module]
+
+  Opens the window on the module (by default the current directory's) and
+  returns: the window runs on its own — closing the terminal leaves it open —
+  and starts a 'mara serve' of its own for what it shows. The window is
+  view/view(.exe) beside the compiler, run as 'view <this compiler> <module>'
+  in the current directory.`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
@@ -1188,15 +1221,16 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
-    if subcmd == "serve" && len(positional) >= 3 && is_help_flag(positional[2]) {
-        fmt.println(SERVE_USAGE)
+    if (subcmd == "serve" || subcmd == "view") && len(positional) >= 3 && is_help_flag(positional[2]) {
+        fmt.println(SERVE_USAGE if subcmd == "serve" else VIEW_USAGE)
         os.exit(0)
     }
-    if subcmd != "build" && subcmd != "serve" {
+    if subcmd != "build" && subcmd != "serve" && subcmd != "view" {
         fmt.println(USAGE)
         return args
     }
     args.serve = subcmd == "serve"
+    args.view = subcmd == "view"
 
     if len(positional) >= 3 {
         args.pkg_name = positional[2]
@@ -1223,6 +1257,10 @@ main :: proc() {
     // `serve` checks in a loop, again as the files change (serve.odin).
     if args.serve {
         serve(args)
+        return
+    }
+    if args.view {
+        run_view(args)
         return
     }
 
