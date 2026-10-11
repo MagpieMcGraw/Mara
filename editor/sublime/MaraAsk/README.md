@@ -37,9 +37,13 @@ appears in an output panel with every `file:line` clickable.
   anywhere, on any module, **selecting** a word, part of one, or a few on one line
   in any `.mara` file looks them up in its **Docs** panel (`mara docs`): the
   definitions they name — in that file's directory, the stdlib and doc/ — with
-  doc comments and signatures, to read after an alt-tab. The status bar says how many were found. A selection over several
-  lines isn't looked up. Off with `"show_in_window": false` /
-  `"docs_on_select": false`.
+  doc comments and signatures, to read after an alt-tab. In a saved file the
+  selection's place goes too: what the name there refers to — the compiler's
+  answer, a local's or a param's too — comes first, the text matches below.
+  Typing a call looks up the fun being called the same way (signature help).
+  The status bar says how many were found. A selection over several lines
+  isn't looked up. Off with `"show_in_window": false` / `"docs_on_select":
+  false` / `"signature_help": false`.
 
 ## Commands & keys
 
@@ -64,6 +68,7 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 - `show_in_window` — show queries in a `mara view` window's Ask panel (default `true`).
 - `docs_on_select` / `docs_delay_ms` — look up selections in the window's Docs
   panel, once the selection rests that long (default `true`, `300`).
+- `signature_help` — look up the fun whose call is being typed (default `true`).
 
 ## Install
 

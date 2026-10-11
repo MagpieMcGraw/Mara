@@ -1072,6 +1072,7 @@ CLI_Args :: struct {
     // docs: shown in its Docs panel, printed here (docs_via_view).
     docs:         bool,
     docs_words:   []string,
+    docs_at:      string,     // `at <file>:<line>:<col>`: the point the words are at
 
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
@@ -1081,8 +1082,8 @@ CLI_Args :: struct {
     view:         bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs <words>"
-DOCS_USAGE :: `Usage: mara docs <words>
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>"
+DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
 
   Asks a window this compiler opened (mara view — anywhere, on any module)
   to look the words up in the docs: this directory's .mara files, the
@@ -1090,7 +1091,15 @@ DOCS_USAGE :: `Usage: mara docs <words>
   them, its doc comment and its signature (a struct's fields too), best
   first. The window shows them in its Docs panel; they're printed here too.
   Part of a name finds it. Fails when nothing is found, or no window is
-  open.`
+  open.
+
+  at <file>:<line>:<col> — where the words are, in a file of the module
+  here: what the name there refers to, as 'mara ask at' finds it, is shown
+  first — a fun's, a struct's, a field's, a local's or a param's
+  definition — and the rest below. (The module is checked by its window,
+  when one is open on it, else here. A name there that isn't the words',
+  the file changed since it was saved, isn't shown.) With no words, the
+  name there is looked up.`
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1270,7 +1279,13 @@ parse_args :: proc() -> CLI_Args {
             os.exit(0 if len(positional) >= 3 else 1)
         }
         args.docs = true
-        args.docs_words = positional[2:]
+        rest := positional[2:]
+        // (`at <file>:<line>:<col>` first: the point the words are at.)
+        if len(rest) >= 2 && rest[0] == "at" && strings.count(rest[1], ":") >= 2 {
+            args.docs_at = rest[1]
+            rest = rest[2:]
+        }
+        args.docs_words = rest
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = filepath.base(cwd)
         args.ok = true

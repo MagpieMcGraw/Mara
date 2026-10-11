@@ -23,6 +23,9 @@ import "core:path/filepath"
 //
 // An expression's type is its annotation, in each instance it is checked in
 // (hit_type). What the checker types nothing — a module's name — shows none.
+// The innermost name holding the point says what it refers to (hit_refers):
+// its declaration's kind, name and file:line — `mara docs` shows that one
+// first.
 // ---------------------------------------------------------------------------
 
 // Whether a node is one a cursor names.
@@ -107,6 +110,44 @@ hit_label :: proc(t: Type) -> string {
 }
 
 
+// What the innermost name among the nodes holding a point (widest first)
+// refers to: "refers to: <kind> <name>  <file>:<line>", its declaration's —
+// a builtin's, which no source declares, without the place; `name`, the
+// point's token, names it then. "" when none refers to anything.
+@(private="file")
+hit_refers :: proc(a: ^Annotations, hits: []Tree_Id, name: string) -> string {
+    #reverse for n in hits {
+        for inst, i in a.instances {
+            if n < inst.lo || n > inst.hi || int(n - inst.lo) >= len(a.refs[i]) { continue }
+            r := annot_ref(a, Instance_Id(i), n)
+            if r.kind == .None { continue }
+            if r.decl == 0 { return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name) }
+            tok := build_tokens[r.decl]
+            return fmt.tprintf("refers to: %s %s  %s\n", ref_kind_word(r.kind), token_text(tok), ask_loc(token_span(tok)))
+        }
+    }
+    return ""
+}
+
+// A reference's kind as `ask at` says it.
+ref_kind_word :: proc(k: Ref_Kind) -> string {
+    switch k {
+    case .None:    return "nothing"
+    case .Local:   return "local"
+    case .Param:   return "param"
+    case .Result:  return "result"
+    case .Field:   return "field"
+    case .Global:  return "global"
+    case .Const:   return "const"
+    case .Variant: return "variant"
+    case .Fun:     return "fun"
+    case .Type:    return "type"
+    case .Module:  return "module"
+    case .Builtin: return "builtin"
+    }
+    return "?"
+}
+
 // Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
 // rendered text and whether anything was found.
 ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
@@ -168,7 +209,9 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     }
 
     sb := strings.builder_make()
-    fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n\n", want, line, col, token_text(tokens[tok_i]))
+    fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n", want, line, col, token_text(tokens[tok_i]))
+    fmt.sbprint(&sb, hit_refers(a, hits[:], token_text(tokens[tok_i])))
+    fmt.sbprint(&sb, "\n")
     prev: Span
     for n in hits {
         span := tree_span(t, n)

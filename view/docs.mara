@@ -25,6 +25,16 @@ DEF_TYPE   :: 1   // a struct, union, error set: its body shown
 DEF_FUN    :: 2   // its signature shown, to its `{`
 DEF_OTHER  :: 3   // a constant, a foreign fun: its line
 DEF_FIELD  :: 4   // a struct's: its line, and the struct named
+DEF_LINE   :: 5   // a line declaring what's at the cursor, no definition the scan finds: a local's, a param's
+
+// What the name at the editor's cursor refers to (`mara docs at`), as the
+// compiler found it: shown first. kind empty: none; path empty: a builtin.
+Exact :: struct {
+	kind: []utf8   // "fun", "type", "field", "local", "param", ... (as `mara ask at` says)
+	name: []utf8
+	path: []utf8
+	line: i64
+}
 
 Docs_File :: struct {
 	path: [..1000]utf8
@@ -52,17 +62,25 @@ Docs :: struct {
 	count:  i64                     // how many matched in all
 	query:  [..400]utf8             // the words, lower case
 	words:  [..16]Field             // in query
+	exact:  Found                   // the cursor's definition, as the scan found it
+	has_exact:   bool               // ... when it did
+	exact_shown: bool               // the cursor's shown first, found by the scan or not
 }
 
-// The words looked up: the Docs panel shows what's found, its status line
-// how much.
-docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8) {
+// The words looked up: the Docs panel shows what's found — what the name
+// at the cursor refers to first, when the editor said (ex) — its status
+// line how much.
+docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
 	d := &ui.search
 	l := &ui.docs
 	lines_clear(l)
 	docs_words(d, asked)
+	d.found.len = 0
+	d.count = 0
+	d.has_exact = false
+	d.exact_shown = false
 	shown_query := asked[0 : min_int(asked.len, 60)]
-	if d.words.len == 0 {
+	if d.words.len == 0 and ex.kind.len == 0 {
 		none : [..300]utf8
 		&none + "Nothing to look up in \""
 		&none + shown_query
@@ -71,15 +89,28 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8) {
 		return
 	}
 	docs_read(ui, d, dir)
-	d.found.len = 0
-	d.count = 0
 	for f in 0 .. d.files.len {
-		docs_scan(d, f)
+		docs_scan(d, f, ex)
 	}
+	if ex.kind.len > 0 do docs_show_exact(d, l, ex)
+	if d.exact_shown and d.found.len > 0 do lines_add(l, "Also found:", STYLE_DIM)
 	for fd in d.found {
 		docs_show(d, l, fd)
 	}
 	status : [..300]utf8
+	if d.exact_shown {
+		&status + "At the cursor: "
+		&status + ex.kind
+		&status + " "
+		&status + ex.name[0 : min_int(ex.name.len, 60)]
+		&status + ". "
+		if d.count == 0 {
+			&status + "Nothing more found."
+			lines_status(l, status[:], STYLE_DIM)
+			return
+		}
+		&status + "And "
+	}
 	if d.count == 0 {
 		&status + "Nothing found for \""
 		&status + shown_query
@@ -240,15 +271,33 @@ docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 			&path + sep
 		}
 		&path + name
-		buf : [..1 * MB]byte
-		if bool(read_entire_file(path, &buf)) do continue
-		text : []utf8 = buf[:]
-		if d.source.len + text.len > d.source.cap do return
-		file := Docs_File{at = d.source.len, len = text.len}
-		&file.path + path[:]
-		&d.source + text
-		&d.files + file
+		if not docs_add_file(d, path) and d.source.len == d.source.cap do return
 	}
+}
+
+// A file read into d.source, as the last of d.files: false when it can't be
+// read, or there's no room for it.
+docs_add_file :: fun(d: ^Docs, path: []utf8) -> bool {
+	if d.files.len == d.files.cap or path.len > 1000 do return false
+	buf : [..1 * MB]byte
+	if bool(read_entire_file(path, &buf)) do return false
+	text : []utf8 = buf[:]
+	if d.source.len + text.len > d.source.cap do return false
+	file := Docs_File{at = d.source.len, len = text.len}
+	&file.path + path
+	&d.source + text
+	&d.files + file
+	return true
+}
+
+// The file at a path among d.files — read now when it isn't: its place;
+// -1 when it can't be read.
+docs_file_of :: fun(d: ^Docs, path: []utf8) -> i64 {
+	for f in 0 .. d.files.len {
+		if same_path(d.files[f].path, path) do return f
+	}
+	if not docs_add_file(d, path) do return -1
+	return d.files.len - 1
 }
 
 // File f's text.
@@ -259,8 +308,11 @@ docs_text :: fun(d: ^Docs, f: i64) -> []utf8 {
 
 // File f's definitions, each scored against the words: the ones that match
 // counted, the best kept.
-docs_scan :: fun(d: ^Docs, f: i64) {
+docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 	text := docs_text(d, f)
+	// (The cursor's definition: in its file, on its line, by its name — kept
+	// aside, to be shown first.)
+	exact_file := ex.kind.len > 0 and ex.path.len > 0 and same_path(d.files[f].path, ex.path)
 	line : i64 = 0
 	at : i64 = 0
 	doc : i64 = -1             // the comment right above: its first line's start
@@ -286,7 +338,14 @@ docs_scan :: fun(d: ^Docs, f: i64) {
 				if indent == field_indent do field(rest, from, &fd)
 				if fd.kind == DEF_FIELD do fd.owner = owner
 			}
-			if fd.kind >= 0 do docs_score(d, text, &fd)
+			if fd.kind >= 0 {
+				if exact_file and line == ex.line and text[fd.name.at : fd.name.at + fd.name.len] == ex.name {
+					d.exact = fd
+					d.has_exact = true
+				else
+					docs_score(d, text, &fd)
+				}
+			}
 			// (A struct's body follows: its fields.)
 			if fd.kind == DEF_TYPE and rest[rest.len - 1] == '{' {
 				w := text[fd.name.at + fd.name.len : end]
@@ -419,6 +478,77 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 // A definition found, as the panel shows it: its name, a struct's for a
 // field, its file:line; its doc comment; its code — a fun's signature, a
 // type's body, the line — less its line's indentation. A blank line after.
+// What the name at the cursor refers to, first: its definition as the
+// search shows one; else — a local's, a param's — the line declaring it (a
+// param's: its fun's signature), the comment above it; a builtin, said.
+docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
+	title : [..1200]utf8
+	&title + ex.name[0 : min_int(ex.name.len, 200)]
+	&title + "   "
+	&title + ex.kind
+	if d.has_exact {
+		lines_add(l, "At the cursor:", STYLE_DIM)
+		d.exact_shown = true
+		docs_show(d, l, d.exact)
+		return
+	}
+	if ex.path.len == 0 {
+		lines_add(l, "At the cursor:", STYLE_DIM)
+		d.exact_shown = true
+		lines_add(l, title[:], STYLE_TITLE)
+		lines_add(l, "  Built into the compiler: no source defines it.", STYLE_TEXT)
+		lines_add(l, "", STYLE_TEXT)
+		return
+	}
+	f := docs_file_of(d, ex.path)
+	if f < 0 do return
+	text := docs_text(d, f)
+	at := line_start(text, ex.line)
+	if at < 0 do return
+	lines_add(l, "At the cursor:", STYLE_DIM)
+	d.exact_shown = true
+	&title + "   "
+	&title + d.files[f].path[:]
+	&title + ":"
+	&title + count_text(ex.line)
+	lines_add(l, title[:], STYLE_TITLE)
+	docs_show_body(d, l, Found{file = f, line = ex.line, at = at, doc = comment_above(text, at), kind = DEF_LINE})
+}
+
+// Where line n (from 1) of the text starts; -1 past its end.
+line_start :: fun(text: []utf8, n: i64) -> i64 {
+	if n < 1 do return -1
+	at : i64 = 0
+	line : i64 = 1
+	for line < n {
+		end := line_end(text, at)
+		if end >= text.len do return -1
+		at = end + 1
+		line += 1
+	}
+	return at
+}
+
+// The comment right above the line at `at`: its first line's start; -1
+// for none.
+comment_above :: fun(text: []utf8, at: i64) -> i64 {
+	doc : i64 = -1
+	k := at
+	for k > 0 {
+		prev_end := k - 1   // (the '\n' ending the line above)
+		prev := prev_end
+		for prev > 0 {
+			if text[prev - 1] == '\n' do break
+			prev -= 1
+		}
+		_, from := indentation(text, prev, prev_end)
+		if not starts_with(trimmed(text[from : prev_end]), "//") do break
+		doc = prev
+		k = prev
+	}
+	return doc
+}
+
 docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	text := docs_text(d, fd.file)
 	title : [..1200]utf8
@@ -432,7 +562,13 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	&title + ":"
 	&title + count_text(fd.line)
 	lines_add(l, title[:], STYLE_TITLE)
+	docs_show_body(d, l, fd)
+}
 
+// A definition's doc comment and code, as the panel shows them below its
+// title; a blank line after.
+docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
+	text := docs_text(d, fd.file)
 	// The doc comment: each line's words, after its //.
 	if fd.doc >= 0 {
 		at := fd.doc
@@ -479,12 +615,16 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 				last = true
 			}
 		}
-		if fd.kind == DEF_OTHER {
+		if fd.kind == DEF_OTHER or fd.kind == DEF_LINE {
 			for ch in rest {
 				if ch == '(' do depth += 1
 				if ch == ')' do depth -= 1
 			}
 			if depth <= 0 do last = true
+			// (A param's line, its fun's signature: its `{` left out.)
+			if last and fd.kind == DEF_LINE and rest.len > 0 {
+				if rest[rest.len - 1] == '{' do code = text[at : from + rest.len - 1]
+			}
 		}
 		if fd.kind == DEF_TYPE and shown > 0 and line_indent <= indent and rest.len > 0 {
 			if rest[0] == '}' do last = true

@@ -16,9 +16,10 @@ use mara.sdl
 // them on one name, the docs pipe name it's given too — the first window
 // opened answers there, the others try again every few seconds, so one
 // takes over when it closes. Its line:
-//   -docs <directory><tab><words>
+//   -docs <directory><tab><words>[<tab><kind><tab><name><tab><path><tab><line>]
 // what the Docs panel finds for the words, in that directory's .mara files
-// and the stdlib's, shown there. Never waiting: looked at between frames
+// and the stdlib's, shown there — the four more fields what the name at
+// the editor's cursor refers to: shown first. Never waiting: looked at between frames
 // (hub_poll). Queries go to serve one at a time, in the order their lines
 // came; docs are answered at once. Serve, ended — a compiler bug stops it —
 // is started again for the next query.
@@ -215,17 +216,35 @@ line_of :: fun(c: ^Client) -> []utf8 {
 // showing what's found; the connection sent it as text, its end line after.
 answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	line := line_of(c)
-	// (The directory before a tab; with none, the window's own.)
-	dir := line[0 : 0]
-	words := line[6 : line.len]
-	for k in 6 .. line.len {
-		if line[k] == '\t' {
-			dir = line[6 : k]
-			words = line[k + 1 : line.len]
-			break
+	// (Its fields, between tabs: the directory, the words, then the cursor's
+	// kind, name, path and line. One field alone: the words, the window's
+	// own directory.)
+	fields : [6][]utf8
+	n : i64 = 0
+	start : i64 = 6
+	for k in 6 .. line.len + 1 {
+		ends := k == line.len
+		if not ends do ends = line[k] == '\t'
+		if ends {
+			if n < 6 {
+				fields[n] = line[start : k]
+				n += 1
+			}
+			start = k + 1
 		}
 	}
-	docs_search(ui, dir, words)
+	dir := line[0 : 0]
+	words := fields[0]
+	if n >= 2 {
+		dir = fields[0]
+		words = fields[1]
+	}
+	ex : Exact
+	if n >= 6 {
+		at_line, _ := parse_number(fields[5])
+		ex = Exact{kind = fields[2], name = fields[3], path = fields[4], line = i64(at_line)}
+	}
+	docs_search(ui, dir, words, ex)
 	ui.dirty = true
 	out : [..64 * KB]utf8
 	&out + ui.docs.status[:]
@@ -239,7 +258,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 		&out + text[0 : min_int(text.len, out.cap - 1)]
 		&out + "\n"
 	}
-	if ui.search.count == 0 {
+	if ui.search.count == 0 and not ui.search.exact_shown {
 		&out + ANSWER_FAILED
 	else
 		&out + ANSWER_DONE

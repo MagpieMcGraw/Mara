@@ -3,6 +3,7 @@ package mara
 import "core:fmt"
 import "core:hash"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
@@ -16,7 +17,9 @@ import "core:time"
 // on one name for this compiler (docs_pipe_name) — the first opened answers
 // there, the others take it over when it closes — for "-docs <dir>\t<words>":
 // words looked up in that directory's .mara files and the stdlib's, shown in
-// its Docs panel and answered with what it found (`mara docs`).
+// its Docs panel and answered with what it found (`mara docs`). Four more
+// fields, "\t<kind>\t<name>\t<path>\t<line>", are what the name at the
+// editor's point refers to (`mara docs at`): shown first, the rest below.
 // ---------------------------------------------------------------------------
 
 // How long `mara ask` waits for a window's next byte before it checks here
@@ -76,7 +79,13 @@ ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool)
 docs_via_view :: proc(args: CLI_Args) {
     cwd, _ := os.get_working_directory(context.temp_allocator)
     words := strings.join(args.docs_words, " ", context.temp_allocator)
-    request := strings.concatenate({"-docs ", cwd, "\t", words}, context.temp_allocator)
+    exact := ""
+    if args.docs_at != "" {
+        name: string
+        exact, name = docs_exact(args, cwd, words)
+        if words == "" { words = name }
+    }
+    request := strings.concatenate({"-docs ", cwd, "\t", words, exact}, context.temp_allocator)
     answer, failed, how := view_request(docs_pipe_name(), request)
     switch how {
     case .No_Window:
@@ -89,6 +98,65 @@ docs_via_view :: proc(args: CLI_Args) {
         fmt.print(answer)
         if failed { os.exit(1) }
     }
+}
+
+// What the name at `mara docs at <point>` refers to, as the docs request's
+// last fields — "\t<kind>\t<name>\t<path>\t<line>", a builtin's path empty —
+// and its name. "" when nothing there refers to anything, or the point's
+// token isn't the words' (the file changed since it was saved: the point is
+// on something else now).
+docs_exact :: proc(args: CLI_Args, cwd, words: string) -> (exact, name: string) {
+    // (`mara ask at`'s first lines: "<file>:<l>:<c>  token '<t>'", then
+    // "refers to: <kind> <name>  <file>:<line>".)
+    lines := strings.split_lines(docs_point_answer(args), context.temp_allocator)
+    if len(lines) < 2 || !strings.has_prefix(lines[1], "refers to: ") { return }
+    token := ""
+    if at := strings.index(lines[0], "token '"); at >= 0 { token = strings.trim_suffix(lines[0][at + 7:], "'") }
+    if words != "" && !docs_same_word(token, words) { return }
+    s := lines[1][len("refers to: "):]
+    space := strings.index_byte(s, ' ')
+    if space < 0 { return }
+    kind := s[:space]
+    s = s[space + 1:]
+    loc := ""
+    if gap := strings.index(s, "  "); gap >= 0 {
+        loc = strings.trim_space(s[gap + 2:])
+        s = s[:gap]
+    }
+    name = s
+    if loc == "" { return fmt.tprintf("\t%s\t%s\t\t0", kind, name), name }   // (a builtin)
+    colon := strings.last_index_byte(loc, ':')
+    if colon < 0 { return "", name }
+    path, line := loc[:colon], loc[colon + 1:]
+    if !filepath.is_abs(path) { path, _ = filepath.join({cwd, path}, context.temp_allocator) }
+    return fmt.tprintf("\t%s\t%s\t%s\t%s", kind, name, path, line), name
+}
+
+// `mara ask at <point>`'s answer: the window's open here on the module, when
+// one is, else from a check made here. "" when it failed.
+docs_point_answer :: proc(args: CLI_Args) -> string {
+    query := []string{"at", args.docs_at}
+    answer, failed, how := view_request(view_pipe_name(args.pkg_name), strings.join(query, " ", context.temp_allocator))
+    if how == .Answered { return "" if failed else answer }
+    here := args
+    here.serve = true   // (a check for analysis: no code)
+    check: Serve_Check
+    serve_check(&check, here, serve_stamp(args.compiler_dir))
+    local, ok := serve_answer(&check, query)
+    return local if ok else ""
+}
+
+// Whether the point's token is the words' — one has the other in it (part
+// of a name selected; a selection starting with the name), case not minded.
+docs_same_word :: proc(token, words: string) -> bool {
+    if token == "" { return false }
+    t := strings.to_lower(token, context.temp_allocator)
+    w := strings.to_lower(words, context.temp_allocator)
+    first := w
+    for c, i in w {
+        if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { first = w[:i]; break }
+    }
+    return strings.contains(w, t) || (first != "" && strings.contains(t, first))
 }
 
 // One request to the window listening on the pipe name: its answer, without

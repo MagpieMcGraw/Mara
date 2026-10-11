@@ -361,6 +361,13 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 # comments and signatures — to read after an alt-tab.
 # Once the selection has settled (docs_delay_ms), and only when it changed; the
 # status bar says what was found. Off with "docs_on_select": false.
+#
+# A selection in a saved file also says where it is (`mara docs at <file>:<line>:
+# <col>`): what the name there refers to — the compiler's answer, not a text
+# match — comes first, the text matches below. Typing a call does the same for
+# the fun being called, once typing pauses: signature help (off with
+# "signature_help": false). In an unsaved file the place may be stale; the
+# window then shows the text matches alone.
 
 _docs_pending = [0]       # the latest selection's number: older ones don't send
 _docs_sent = [None]       # (cwd, text) last sent: the same again isn't
@@ -391,17 +398,80 @@ class MaraDocsOnSelect(sublime_plugin.EventListener):
         # (A selection over lines — a whole fun — isn't words to look up.)
         if not text or "\n" in text or len(text) > 200:
             return
-        _docs_pending[0] += 1
-        number = _docs_pending[0]
-        delay = _settings().get("docs_delay_ms", 300)
-        sublime.set_timeout_async(lambda: _docs_send(number, cwd, text), delay)
+        _docs_later(cwd, text, _docs_at(view, sel[0].begin()))
+
+    def on_modified_async(self, view):
+        # Signature help: the fun whose call is being typed, looked up.
+        if not _settings().get("signature_help", True):
+            return
+        sel = view.sel()
+        if len(sel) != 1 or not sel[0].empty():
+            return
+        fname = view.file_name()
+        if not fname or not fname.endswith(".mara"):
+            return
+        callee = _callee_at(view, sel[0].b)
+        if callee is not None:
+            name, point = callee
+            _docs_later(os.path.dirname(fname), name, _docs_at(view, point))
 
 
-def _docs_send(number, cwd, text):
-    if number != _docs_pending[0] or _docs_sent[0] == (cwd, text):
+# Words, in that directory, at that place (or None), sent once things have
+# rested for docs_delay_ms — unless something newer came first.
+def _docs_later(cwd, text, at):
+    _docs_pending[0] += 1
+    number = _docs_pending[0]
+    delay = _settings().get("docs_delay_ms", 300)
+    sublime.set_timeout_async(lambda: _docs_send(number, cwd, text, at), delay)
+
+
+# A point as `mara docs at` takes it: "<file>:<line>:<col>", from 1; None in a
+# view with no file (the output pane).
+def _docs_at(view, point):
+    fname = view.file_name()
+    if not fname:
+        return None
+    row, col = view.rowcol(point)
+    return "%s:%d:%d" % (os.path.basename(fname), row + 1, col + 1)
+
+
+_NOT_CALLS = frozenset(("fun", "if", "elif", "for", "match", "return", "and", "or", "not", "do"))
+
+
+# The call being typed at the caret: the name before its unclosed `(` on the
+# caret's line — a method's, after its `.` — and where that name starts. None
+# when the caret is in no call.
+def _callee_at(view, caret):
+    start = view.line(caret).begin()
+    text = view.substr(sublime.Region(start, caret))
+    depth = 0
+    i = len(text) - 1
+    while i >= 0:
+        c = text[i]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            if depth == 0:
+                break
+            depth -= 1
+        i -= 1
+    if i < 0:
+        return None
+    end = i
+    j = end
+    while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
+        j -= 1
+    name = text[j:end]
+    if not name or name[0].isdigit() or name in _NOT_CALLS:
+        return None
+    return name, start + j
+
+
+def _docs_send(number, cwd, text, at):
+    if number != _docs_pending[0] or _docs_sent[0] == (cwd, text, at):
         return
-    _docs_sent[0] = (cwd, text)
+    _docs_sent[0] = (cwd, text, at)
     mara = _settings().get("mara_path", "mara")
-    rc, out = _run_mara([mara, "docs", text], cwd)
+    rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [text], cwd)
     first = out.strip().splitlines()[0] if out.strip() else "no answer"
     sublime.status_message("Mara Docs: " + first)
