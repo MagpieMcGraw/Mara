@@ -1,0 +1,29 @@
+module err_ok_sets
+
+//@ expect-output: ok true
+//@ expect-output: Fruit_Error.Bruised false
+//@ expect-output: Tool_Error.Lost true
+
+// Two error sets: `e == .Ok` was "'.Ok' is ambiguous (defined in: ...)" — but
+// Ok is 0 in every set, the one no-error value, so `.Ok` names it. (A program
+// with an error set of its own and mara.os's two hit it.)
+
+Fruit_Error :: error { Bruised }
+Tool_Error :: error { Blunt Lost }
+
+pick :: fun(bad: bool) -> err {
+	if bad do return Bruised
+}
+
+sharpen :: fun() -> err {
+	return Lost
+}
+
+main :: fun() {
+	e := pick(false)
+	print("ok", e == .Ok)
+	e2 := pick(true)
+	print(e2, e2 == .Ok)
+	t := sharpen()
+	print(t, t != .Ok)
+}

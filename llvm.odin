@@ -160,6 +160,8 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     } else if e.sret != nil {
         append(&params, "ptr %sret")
     }
+    // (The result slots' names taken: a local named `sret` gets another.)
+    for p in params { if at := strings.index_byte(p, '%'); at >= 0 && strings.has_prefix(p[at:], "%sret") { e.used[p[at:]] = true } }
     // `#expose`: in a DLL's export table, and the host's program — its first
     // param — is the one the DLL's code reads, set first thing.
     linkage := "dllexport " if cf.is_exposed else ""

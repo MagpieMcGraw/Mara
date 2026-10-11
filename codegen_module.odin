@@ -545,9 +545,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Mara's main internally as i64 so user `return X` and the args-setup
     // size_t handling don't change, and emit a tiny i32 wrapper after.
     if g.web {
-        emit_raw(&g, "define i64 @__mara_main(i32 %argc, ptr %argv) {")
+        emit_raw(&g, "define i64 @__mara_main(i32 %.argc, ptr %.argv) {")
     } else {
-        emit_raw(&g, "define i64 @main(i32 %argc, ptr %argv) {")
+        emit_raw(&g, "define i64 @main(i32 %.argc, ptr %.argv) {")
     }
     emit_raw(&g, "entry:")
 
@@ -568,8 +568,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // truncating the return code so emscripten's runtime sees a regular int.
     if g.web {
         emit_raw(&g, "")
-        emit_raw(&g, "define i32 @main(i32 %argc, ptr %argv) {")
-        emit_raw(&g, "  %r = call i64 @__mara_main(i32 %argc, ptr %argv)")
+        emit_raw(&g, "define i32 @main(i32 %.argc, ptr %.argv) {")
+        emit_raw(&g, "  %r = call i64 @__mara_main(i32 %.argc, ptr %.argv)")
         emit_raw(&g, "  %r32 = trunc i64 %r to i32")
         emit_raw(&g, "  ret i32 %r32")
         emit_raw(&g, "}")
@@ -1133,14 +1133,14 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // truncation — a program handed a long file list must not quietly
         // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
         argc_over := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %argc, ", ARGS_CAP}))
+        emit_raw(g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %.argc, ", ARGS_CAP}))
         args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
         args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
         emit_raw(g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
         emit_raw(g, strings.concatenate({args_err_lbl, ":"}))
-        emit_fail(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n", "i32 %argc")
+        emit_fail(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n", "i32 %.argc")
         emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
-        argc_min := "%argc" // every argument fits from here on
+        argc_min := "%.argc" // every argument fits from here on
 
         // Its header: len argc (i32, as the loop counter below; the header's
         // i64), cap 64, ptr its elements (field 3).
@@ -1172,7 +1172,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
 
         emit_raw(g, strings.concatenate({body_lbl, ":"}))
         argv_i_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
+        emit_raw(g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %.argv, i32 ", cur_i}))
         argv_i := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
         // strlen returns size_t (i64 native, i32 on web), widened to the

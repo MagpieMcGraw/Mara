@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // Unions and enums in the checker. `Name :: union { A, B = 5 }` with no
@@ -209,8 +210,9 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
             for ename, edef in k.table.enums {
                 if edef.is_error_kind && name in edef.variants && is_enum_visible(env, ename) { append(&owners, ename) }
             }
+            tc_error_ok(k, name, &owners)
             if len(owners) > 1 {
-                tc_error(k, span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS, name, strings.join(owners[:], ", "), owners[0], name)
+                tc_variant_ambiguous(k, name, owners[:], span)
                 return nil, 0, true
             }
             if len(owners) == 1 {
@@ -224,8 +226,9 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
     for ename, edef in k.table.enums {
         if name in edef.variants && is_enum_visible(env, ename) { append(&owners, ename) }
     }
+    tc_error_ok(k, name, &owners)
     if len(owners) > 1 {
-        tc_error(k, span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS, name, strings.join(owners[:], ", "), owners[0], name)
+        tc_variant_ambiguous(k, name, owners[:], span)
         return nil, 0, true
     }
     if len(owners) == 1 {
@@ -233,6 +236,30 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
         return et, et.variants[name], true
     }
     return nil, 0, false
+}
+
+// Ok is 0 in every error set, the one no-error value: `.Ok` that only error
+// sets name is theirs, not an ambiguity — the first set's, the same one
+// every build.
+tc_error_ok :: proc(k: ^TC, name: string, owners: ^[dynamic]string) {
+    if name != "Ok" || len(owners) < 2 { return }
+    first := owners[0]
+    for o in owners {
+        et := k.table.enums[o]
+        if !et.is_error_kind { return }
+        if et.error_set_id < k.table.enums[first].error_set_id { first = o }
+    }
+    clear(owners)
+    append(owners, first)
+}
+
+// `.name` that more than one enum visible has: an error naming them as the
+// source does.
+tc_variant_ambiguous :: proc(k: ^TC, name: string, owners: []string, span: Span) {
+    names := make([dynamic]string, context.temp_allocator)
+    for o in owners { append(&names, type_name(k.table.enums[o])) }
+    slice.sort(names[:])
+    tc_error(k, span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS, name, strings.join(names[:], ", ", context.temp_allocator), names[0], name)
 }
 
 // A variant built at n — its literal, its name as a value: its constructor

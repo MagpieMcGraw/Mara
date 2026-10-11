@@ -1,0 +1,65 @@
+module process_pipes
+
+use mara.core
+use mara.os
+
+// Runs itself again as a child through pipes (os.mara's processes): writes
+// to the child's input, closes it, reads all the child prints, and waits for
+// its exit code. The child reads its input to the end (standard_input),
+// says what it got, and exits 3.
+
+//@ expect-output: child got: hello pipes
+//@ expect-output: exit 3
+
+main :: fun() -> i64 {
+	if this_program.args.len > 1 {
+		// The child: its whole input, then an answer.
+		got : [..200]byte
+		chunk : [..64]byte
+		for true {
+			e := file_read(standard_input(), &chunk)
+			if bool(e) or chunk.len == 0 do break
+			&got + chunk[:]
+		}
+		text : []utf8 = got[:]
+		print("child got:", text)
+		return 3
+	}
+	command : str256
+	&command + "\""
+	&command + this_program.args[0]
+	&command + "\" child"
+	p, e := process_start(command)
+	if bool(e) {
+		print("start failed:", e)
+		return 1
+	}
+	message := "hello pipes"
+	bytes : []byte = message[:]
+	_, we := file_write(p.input, &bytes)
+	if bool(we) {
+		print("write failed:", we)
+		return 1
+	}
+	process_close_input(&p)
+	out : [..400]byte
+	chunk : [..64]byte
+	for true {
+		re := file_read(p.output, &chunk)
+		if bool(re) {
+			print("read failed:", re)
+			return 1
+		}
+		if chunk.len == 0 do break
+		&out + chunk[:]
+	}
+	text : []utf8 = out[:]
+	print(text)
+	code, xe := process_wait(&p)
+	if bool(xe) {
+		print("wait failed:", xe)
+		return 1
+	}
+	print("exit", code)
+	return 0
+}

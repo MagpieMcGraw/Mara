@@ -1,0 +1,70 @@
+// How to run another program and talk to it, through its input and output.
+//
+// process_start runs a command line — a program, then its arguments — and
+// returns a Process: `p.input` is the program's input, written to with
+// file_write, and `p.output` its output (its error output too), read with
+// file_read. Closing its input, process_close_input, tells it there is no
+// more: its reads get 0 bytes. process_wait waits for it to end and returns
+// its exit code.
+//
+// A program reads its own input with standard_input(), and writes its
+// output with standard_output() or print.
+//
+// This program runs itself again, with an argument, as the one it talks to.
+module processes
+
+use mara.core
+use mara.os
+
+// The program talked to: reads its input to the end, then answers.
+child :: fun() {
+	got : [..200]byte
+	chunk : [..64]byte
+	for true {
+		e := file_read(standard_input(), &chunk)
+		if bool(e) or chunk.len == 0 do break   // 0 bytes: the end
+		&got + chunk[:]
+	}
+	text : []utf8 = got[:]
+	print("the child got:", text)
+}
+
+main :: fun() -> i64 {
+	if this_program.args.len > 1 {
+		child()
+		return 0
+	}
+	// Its own path, quoted (a path can have spaces), then an argument.
+	command : str256
+	&command + "\""
+	&command + this_program.args[0]
+	&command + "\" child"
+	p, e := process_start(command)
+	if bool(e) {
+		print("couldn't start it:", e)
+		return 1
+	}
+
+	// Write to its input, then close it: the child reads to its end.
+	message := "hello"
+	bytes : []byte = message[:]
+	_, we := file_write(p.input, &bytes)
+	if bool(we) do print("couldn't write to it:", we)
+	process_close_input(&p)
+
+	// Read what it writes, until its output ends: it has exited.
+	out : [..400]byte
+	chunk : [..64]byte
+	for true {
+		re := file_read(p.output, &chunk)
+		if bool(re) or chunk.len == 0 do break
+		&out + chunk[:]
+	}
+	text : []utf8 = out[:]
+	print("it said:", text)
+
+	code, xe := process_wait(&p)
+	if bool(xe) do print("couldn't wait for it:", xe)
+	print("it exited with", code)
+	return 0
+}
