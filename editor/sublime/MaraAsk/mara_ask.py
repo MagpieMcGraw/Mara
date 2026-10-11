@@ -353,28 +353,32 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
             _clear_flow(window)
 
 
-# ---- docs on select: what's selected, looked up in a `mara view` window ---------
+# ---- the cursor: docs and what's there, in a `mara view` window ----------------
 #
-# Selecting a word, part of one, or a few on one line sends them, with the file's
-# directory, to a `mara view` window open anywhere (`mara docs <text>`): its Docs
-# panel fills with the definitions they name there and in the stdlib — doc
-# comments and signatures — to read after an alt-tab.
-# Once the selection has settled (docs_delay_ms), and only when it changed; the
-# status bar says what was found. Off with "docs_on_select": false.
-#
-# A selection in a saved file also says where it is (`mara docs at <file>:<line>:
-# <col>`): what the name there refers to — the compiler's answer, not a text
-# match — comes first, the text matches below. Typing a call does the same for
-# the fun being called, once typing pauses: signature help (off with
-# "signature_help": false). In an unsaved file the place may be stale; the
-# window then shows the text matches alone.
+# When the cursor rests (delay_ms), and only when where it is changed, a window
+# is told two things, for reading after an alt-tab:
+#   Docs (mara docs): a window open anywhere looks the words up — what the name
+#     at the cursor refers to first, the compiler's answer, then the text
+#     matches in the file's directory, the stdlib and doc/.
+#   Ask (mara ask -cursor what at <point>): the window open on the file's
+#     module shows what's at the cursor at the top of its Ask panel — what the
+#     name is, its type, where it's declared, the expressions around it.
+# The words: what's highlighted, when something is (one line; a whole fun isn't
+# words); else the name under the cursor; else, in a call's parentheses, the fun
+# being called (signature help). The point: the cursor — with a highlight, its
+# cursor end, so what's under the cursor shows as well. An unsaved file's
+# places may be stale: Docs then shows the text matches alone, and Ask waits for
+# the save. Off with "docs_at_cursor" / "what_at_cursor" / "signature_help".
 
-_docs_pending = [0]       # the latest selection's number: older ones don't send
-_docs_sent = [None]       # (cwd, text) last sent: the same again isn't
+_cursor_pending = [0]   # the latest rest's number: older ones don't send
+_cursor_sent = [None]   # (file, words, point) last sent: the same again isn't
+
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NOT_CALLS = frozenset(("fun", "if", "elif", "for", "match", "return", "and", "or", "not", "do"))
 
 
 def _docs_cwd(view):
-    # The module the selection is in: its file's directory; in the output pane,
+    # The module the cursor is in: its file's directory; in the output pane,
     # the module of the query that filled it.
     if view.settings().get(VIEW_FLAG):
         return view.settings().get("mara_ask_cwd") or None
@@ -384,98 +388,55 @@ def _docs_cwd(view):
     return None
 
 
-class MaraDocsOnSelect(sublime_plugin.EventListener):
+class MaraCursor(sublime_plugin.EventListener):
     def on_selection_modified_async(self, view):
         sel = view.sel()
-        if len(sel) == 1 and sel[0].empty():
-            _what_later(view, sel[0].b)
-            return
-        if not _settings().get("docs_on_select", True):
-            return
         if len(sel) != 1:
             return
         cwd = _docs_cwd(view)
         if cwd is None:
             return
-        text = view.substr(sel[0]).strip()
-        # (A selection over lines — a whole fun — isn't words to look up.)
-        if not text or "\n" in text or len(text) > 200:
+        s = sel[0]
+        caret = s.b
+        words, point = None, caret
+        if not s.empty():
+            text = view.substr(s).strip()
+            # (A highlight over lines — a whole fun — isn't words to look up.)
+            if not text or "\n" in text or len(text) > 200:
+                return
+            words = text
+            # (The cursor end: just past the highlight when it was made left to
+            # right — its last character, then, not what follows it.)
+            point = s.b - 1 if s.b > s.a else s.b
+        else:
+            word = view.word(caret)
+            name = view.substr(word)
+            if _NAME_RE.match(name):
+                words, point = name, word.begin()
+            elif _settings().get("signature_help", True):
+                callee = _callee_at(view, caret)
+                if callee is not None:
+                    words, point = callee
+        if words is None:
             return
-        _docs_later(cwd, text, _docs_at(view, sel[0].begin()))
-
-    def on_modified_async(self, view):
-        # Signature help: the fun whose call is being typed, looked up.
-        if not _settings().get("signature_help", True):
-            return
-        sel = view.sel()
-        if len(sel) != 1 or not sel[0].empty():
-            return
-        fname = view.file_name()
-        if not fname or not fname.endswith(".mara"):
-            return
-        callee = _callee_at(view, sel[0].b)
-        if callee is not None:
-            name, point = callee
-            _docs_later(os.path.dirname(fname), name, _docs_at(view, point))
+        key = (view.file_name() or cwd, words, point)
+        _cursor_pending[0] += 1
+        number = _cursor_pending[0]
+        at = _docs_at(view, point)
+        # (Ask's places are the file on disk: an unsaved one's may be stale.)
+        what_at = at if not view.is_dirty() else None
+        delay = _settings().get("delay_ms", 300)
+        sublime.set_timeout_async(lambda: _cursor_send(number, key, cwd, words, at, what_at), delay)
 
 
-# ---- what's at the cursor: the window's Ask panel, its top --------------------
-#
-# When the cursor rests on a word in a saved .mara file, the window open on the
-# file's module shows what it is at the top of its Ask panel (`mara ask -cursor
-# what at <file>:<line>:<col>`): what the name is, its type, where it's declared,
-# what it's in, the expressions around it. Only a window answers — with none
-# open on the module, nothing is checked. An unsaved file's places may be stale:
-# it waits for the save. Off with "what_at_cursor": false.
-
-_what_pending = [0]   # the latest cursor rest's number: older ones don't send
-_what_sent = [None]   # the word last sent: the same again isn't
-
-
-def _what_later(view, caret):
-    if not _settings().get("what_at_cursor", True):
-        return
-    fname = view.file_name()
-    if not fname or not fname.endswith(".mara") or view.is_dirty():
-        return
-    word = view.word(caret)
-    key = (fname, word.begin(), word.end())
-    at = _docs_at(view, caret)
-    _what_pending[0] += 1
-    number = _what_pending[0]
-    delay = _settings().get("what_delay_ms", 400)
-    cwd = os.path.dirname(fname)
-    sublime.set_timeout_async(lambda: _what_send(number, cwd, at, key), delay)
-
-
-def _what_send(number, cwd, at, key):
-    if number != _what_pending[0] or _what_sent[0] == key:
-        return
-    _what_sent[0] = key
-    mara = _settings().get("mara_path", "mara")
-    _run_mara([mara, "ask", "-cursor", "what", "at", at], cwd)
-
-
-# Words, in that directory, at that place (or None), sent once things have
-# rested for docs_delay_ms — unless something newer came first.
-def _docs_later(cwd, text, at):
-    _docs_pending[0] += 1
-    number = _docs_pending[0]
-    delay = _settings().get("docs_delay_ms", 300)
-    sublime.set_timeout_async(lambda: _docs_send(number, cwd, text, at), delay)
-
-
-# A point as `mara docs at` takes it: "<file>:<line>:<col>", from 1; None in a
-# view with no file (the output pane).
+# A point as `mara docs at` and `mara ask what at` take it: "<file>:<line>:
+# <col>", from 1; None in a view with no file (the output pane).
 def _docs_at(view, point):
     fname = view.file_name()
     if not fname:
         return None
     row, col = view.rowcol(point)
     return "%s:%d:%d" % (os.path.basename(fname), row + 1, col + 1)
-
-
-_NOT_CALLS = frozenset(("fun", "if", "elif", "for", "match", "return", "and", "or", "not", "do"))
 
 
 # The call being typed at the caret: the name before its unclosed `(` on the
@@ -507,11 +468,15 @@ def _callee_at(view, caret):
     return name, start + j
 
 
-def _docs_send(number, cwd, text, at):
-    if number != _docs_pending[0] or _docs_sent[0] == (cwd, text, at):
+# The rest's two lookups, unless a newer rest came, or this one was sent already.
+def _cursor_send(number, key, cwd, words, at, what_at):
+    if number != _cursor_pending[0] or _cursor_sent[0] == key:
         return
-    _docs_sent[0] = (cwd, text, at)
+    _cursor_sent[0] = key
     mara = _settings().get("mara_path", "mara")
-    rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [text], cwd)
-    first = out.strip().splitlines()[0] if out.strip() else "no answer"
-    sublime.status_message("Mara Docs: " + first)
+    if _settings().get("docs_at_cursor", True):
+        rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
+        first = out.strip().splitlines()[0] if out.strip() else "no answer"
+        sublime.status_message("Mara Docs: " + first)
+    if what_at and _settings().get("what_at_cursor", True):
+        _run_mara([mara, "ask", "-cursor", "what", "at", what_at], cwd)

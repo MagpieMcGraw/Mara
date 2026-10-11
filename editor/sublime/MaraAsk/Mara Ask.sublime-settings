@@ -30,19 +30,20 @@
     // answer in the window's Ask panel too (mara ask -show).
     "show_in_window": true,
 
-    // With a `mara view` window open anywhere: look up what's selected — a
-    // word, part of one, a few on a line, in any .mara file — in the window's
-    // Docs panel (mara docs), once the selection has rested this long.
-    "docs_on_select": true,
-    "docs_delay_ms": 300,
+    // When the cursor rests this long in a .mara file, a `mara view` window is
+    // told where it is — the highlight's words, when there's one; else the
+    // name under the cursor; else, in a call's parentheses, the fun called:
+    "delay_ms": 300,
 
-    // With a `mara view` window open: while a call is typed, look up the fun
-    // being called — its signature and doc first — once typing rests.
-    "signature_help": true,
+    // ... a window open anywhere looks the words up in its Docs panel (mara
+    // docs): what the name at the cursor refers to first, the text matches below.
+    "docs_at_cursor": true,
 
-    // With a `mara view` window open on the module: when the cursor rests on
-    // a word in a saved file, the window's Ask panel shows what it is at its
-    // top (mara ask -cursor what at ...), once the cursor has rested this long.
+    // ... the window open on the module shows what's at the cursor at the top
+    // of its Ask panel (mara ask -cursor what at ...) — in a saved file.
     "what_at_cursor": true,
-    "what_delay_ms": 400
+
+    // ... in a call's parentheses, off a name, the fun being called is looked
+    // up (signature help).
+    "signature_help": true
 }

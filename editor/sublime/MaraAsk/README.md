@@ -33,20 +33,22 @@ appears in an output panel with every `file:line` clickable.
   the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
 - **The window** — with `mara view` open on the module, each query also shows in
-  the window's **Ask** panel (`mara ask -show`), and resting the cursor on a word
-  in a saved file shows what it is at the panel's top (`mara ask -cursor what at
-  <file>:<line>:<col>`): its kind and type, where it's declared, what it's in,
-  the expressions around it. With a `mara view` window open
-  anywhere, on any module, **selecting** a word, part of one, or a few on one line
-  in any `.mara` file looks them up in its **Docs** panel (`mara docs`): the
-  definitions they name — in that file's directory, the stdlib and doc/ — with
-  doc comments and signatures, to read after an alt-tab. In a saved file the
-  selection's place goes too: what the name there refers to — the compiler's
-  answer, a local's or a param's too — comes first, the text matches below.
-  Typing a call looks up the fun being called the same way (signature help).
-  The status bar says how many were found. A selection over several lines
-  isn't looked up. Off with `"show_in_window": false` / `"docs_on_select":
-  false` / `"signature_help": false`.
+  the window's **Ask** panel (`mara ask -show`). And when the **cursor rests** in
+  a `.mara` file, a window is told where it is, for reading after an alt-tab:
+  - its **Docs** panel (a window open anywhere, `mara docs`) looks the words up:
+    what the name at the cursor refers to first — the compiler's answer, a
+    local's or a param's too — then the text matches in the file's directory,
+    the stdlib and doc/, with doc comments and signatures;
+  - its **Ask** panel (the window open on the module, `mara ask -cursor what at
+    <file>:<line>:<col>`) shows what's at the cursor at its top: what the name
+    is, its type, where it's declared, what it's in, the expressions around it.
+
+  The words: what's **highlighted**, when something is (one line — a highlight
+  over lines isn't looked up); else the name under the cursor; else, in a
+  call's parentheses, the fun being called (signature help). The point: the
+  cursor — with a highlight, its cursor end, so what's under the cursor shows
+  too. In an unsaved file the places may be stale: Docs shows the text matches
+  alone, Ask waits for the save. The status bar says how many were found.
 
 ## Commands & keys
 
@@ -69,11 +71,12 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
   variable and the surfaced variables (default `region.bluish` / `region.yellowish`;
   any scope your color scheme defines).
 - `show_in_window` — show queries in a `mara view` window's Ask panel (default `true`).
-- `docs_on_select` / `docs_delay_ms` — look up selections in the window's Docs
-  panel, once the selection rests that long (default `true`, `300`).
-- `signature_help` — look up the fun whose call is being typed (default `true`).
-- `what_at_cursor` / `what_delay_ms` — when the cursor rests on a word in a saved
-  file, show what it is at the top of the window's Ask panel (default `true`, `400`).
+- `delay_ms` — how long the cursor rests before a window is told (default `300`).
+- `docs_at_cursor` — look the words up in the window's Docs panel (default `true`).
+- `what_at_cursor` — show what's at the cursor at the top of the window's Ask
+  panel (default `true`).
+- `signature_help` — in a call's parentheses, off a name, look up the fun being
+  called (default `true`).
 
 ## Install
 
