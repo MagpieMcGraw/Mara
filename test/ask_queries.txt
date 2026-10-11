@@ -41,6 +41,7 @@ test/askat.mara | at askat.mara:15:14
 test/askat.mara | at askat.mara:15:20
 test/askat.mara | at askat.mara:11:49
 test/askat.mara | at askat.mara:18:19
+test/askat.mara | no_such_name_here
 
 # Calls in operator form are call-graph edges.
 test/operator_calls.mara | sum
@@ -51,3 +52,7 @@ test/operator_calls.mara | flip call above
 # Constructions are calls: a bare `v : Small` and an anonymous `h : Cache_Header = {…}`.
 test/sibling_locals.mara | redeclared call above
 Pounce | cache_put_header call above
+
+# Failures: exit 1, and serve's failed end line for the same.
+Pounce | no_such_name_anywhere
+Pounce | camera types call

@@ -14,8 +14,11 @@ import "core:time"
 // once and talks to it through pipes; it ends when its input does.
 // ---------------------------------------------------------------------------
 
-// ASK_DONE ends each answer: a client reading them knows where one ends.
-ASK_DONE :: "-- end of answer --"
+// Each answer ends in one of these lines: a client reading them knows where
+// one ends, and whether `mara ask` would have failed with it (exit 1) — a
+// query it couldn't read, a name not found, a module that doesn't check.
+ASK_DONE   :: "-- end of answer --"
+ASK_FAILED :: "-- end of answer: failed --"
 
 // One check of the module, in an arena of its own: freed whole when a file
 // changes and the next check replaces it.
@@ -39,8 +42,9 @@ serve :: proc(args: CLI_Args) {
         if stamp := serve_stamp(args.compiler_dir); stamp != check.stamp {
             serve_check(&check, args, stamp)
         }
-        fmt.print(serve_answer(&check, ask_words(line)))
-        fmt.println(ASK_DONE)
+        answer, ok := serve_answer(&check, ask_words(line))
+        fmt.print(answer)
+        fmt.println(ASK_DONE if ok else ASK_FAILED)
         free_all(context.temp_allocator)
         if rerr != nil { break }
     }
@@ -75,20 +79,20 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string) {
     reset_diagnostics()   // (a check's warnings: about the code, not a query — answered by none)
 }
 
-// A query's answer — a mistake in it is its answer; when the module didn't
-// check, what's wrong with it is.
-serve_answer :: proc(c: ^Serve_Check, words: []string) -> string {
+// A query's answer, and whether it is one — false where `mara ask` would
+// fail: a mistake in the query (that is its answer), a name not found, the
+// module not checking (what's wrong with it is).
+serve_answer :: proc(c: ^Serve_Check, words: []string) -> (answer: string, ok: bool) {
     q, err := ask_parse_query(words)
-    if q.help { return ASK_USAGE + "\n" }
-    if err != "" { return strings.concatenate({err, "\n"}, context.temp_allocator) }
-    if c.failure != "" { return c.failure }
+    if q.help { return ASK_USAGE + "\n", true }
+    if err != "" { return strings.concatenate({err, "\n"}, context.temp_allocator), false }
+    if c.failure != "" { return c.failure, false }
     // (What a query keeps for the next, a fun's def-use, stays with its check.)
     context.allocator = virtual.arena_allocator(&c.arena)
     s := &c.session
     in_, in_err := ask_scopes(q, s.all_files, s.files, s.pkg)
-    if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator) }
-    out, _ := ask_run(s, q, in_)
-    return out
+    if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator), false }
+    return ask_run(s, q, in_)
 }
 
 // The sources a check reads, as one text: each .mara file's path, size and

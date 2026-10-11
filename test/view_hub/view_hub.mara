@@ -1,0 +1,98 @@
+module view_hub
+
+use mara.core
+use mara.os
+
+// A stand-in for the window (`mara view`), for test/ask.sh: the window's
+// side of `mara ask` asking it, with no window. Run as `mara view` runs one
+// — view_hub <compiler> <module> <pipe name> — it listens on the pipe name,
+// starts the compiler's `serve`, and answers each connection's line with
+// what serve answers, its end line too; then closes the connection. Each
+// line goes in view_hub.log, in the directory it runs in, and "ended" when
+// it ends: once no one has connected for a second or so.
+
+main :: fun() -> i64 {
+	if this_program.args.len < 4 do return 1
+	l, le := pipe_listen(this_program.args[3])
+	if bool(le) do return 1   // (another listens there: it answers)
+	defer pipe_listen_stop(&l)
+	command : str256
+	&command + "\""
+	&command + this_program.args[1]
+	&command + "\" serve "
+	&command + this_program.args[2]
+	serve, se := process_start(command)
+	if bool(se) do return 1
+	log, oe := file_open_write("view_hub.log")
+	if bool(oe) do return 1
+	defer file_close(log)
+
+	// (A look each 10 ms; 100 with no one: a second or so — Windows' sleeps
+	// run long.)
+	idle := 0
+	for idle < 100 {
+		c, ae := pipe_accept(&l)
+		if bool(ae) do break
+		if c == NO_FILE {
+			idle += 1
+			sleep_ms(10)
+			continue
+		}
+		idle = 0
+		e := answer(c, &serve, log)
+		file_close(c)
+		if bool(e) do break
+	}
+	note(log, "ended\n")
+	_, xe := process_wait(&serve)
+	if bool(xe) do return 1
+	return 0
+}
+
+// A connection's line asked of serve, and what serve answers passed back as
+// it comes, to its end line.
+answer :: fun(c: File_Id, serve: ^Process, log: File_Id) -> err {
+	line : [..500]byte
+	chunk : [..200]byte
+	for true {
+		file_read(c, &chunk)?
+		if chunk.len == 0 do break
+		&line + chunk[:]
+		text : []utf8 = line[:]
+		if text[text.len - 1] == '\n' do break
+	}
+	asked : []utf8 = line[:]
+	note(log, "asked: ")
+	note(log, asked)
+	bytes : []byte = line[:]
+	file_write(serve.input, &bytes)?
+
+	current : [..100]utf8   // the line coming, to know the end line
+	done := false
+	for not done {
+		file_read(serve.output, &chunk)?
+		if chunk.len == 0 do return Read_Failed   // (serve ended)
+		piece : []byte = chunk[:]
+		file_write(c, &piece)?
+		for ch in chunk[:] {
+			letter := utf8(ch)
+			if letter == '\n' {
+				if current.len >= 16 {
+					if current[0:16] == "-- end of answer" do done = true
+				}
+				current.len = 0
+				continue
+			}
+			if current.len < current.cap {
+				&current + letter
+			}
+		}
+	}
+}
+
+// Text written to the log.
+note :: fun(log: File_Id, text: []utf8) {
+	bytes : []byte = text[:]
+	_, we := file_write(log, &bytes)
+	if bool(we) do print("the log couldn't be written:", we)
+}

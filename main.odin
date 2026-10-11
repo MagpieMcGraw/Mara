@@ -948,8 +948,9 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
 // `mara view [module]`: the window, started on its own (start_detached) —
 // it outlives this command and the terminal — then this returns. It is
 // view/view(.exe) beside the compiler, run in the current directory as
-// `view <this compiler> <module>`: it starts that compiler's `serve` for
-// what it shows, so the two always agree.
+// `view <this compiler> <module> <pipe name>`: it starts that compiler's
+// `serve` for what it shows, so the two always agree, and answers `mara
+// ask` on the pipe name (view.odin).
 run_view :: proc(args: CLI_Args) {
     all_files := discover_all_files(args.compiler_dir, ".")
     if args.pkg_name not_in all_files {
@@ -958,11 +959,13 @@ run_view :: proc(args: CLI_Args) {
     }
     view_dir, _ := filepath.join({args.compiler_dir, "view"})
     view_exe, _ := filepath.join({view_dir, "view" + NATIVE_EXE_EXT})
+    // (MARA_VIEW names another: a window being written, or a test's stand-in.)
+    if other := os.get_env("MARA_VIEW", context.temp_allocator); other != "" { view_exe = other }
     if !os.is_file(view_exe) {
         fmt.printf(VIEW_NOT_BUILT, view_exe, view_dir)
         os.exit(1)
     }
-    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name}) {
+    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name, view_pipe_name(args.pkg_name)}) {
         fmt.printf(VIEW_NOT_STARTED, view_exe)
         os.exit(1)
     }
@@ -1054,6 +1057,7 @@ CLI_Args :: struct {
     // Runs the front half of the pipeline and stops after the check.
     ask:          bool,
     ask_query:    Ask_Query,  // the one query (ask_parse_query)
+    ask_words:    []string,   // ... as written: a window asked it (ask_via_view)
 
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
@@ -1076,8 +1080,11 @@ VIEW_USAGE :: `Usage: mara view [module]
   Opens the window on the module (by default the current directory's) and
   returns: the window runs on its own — closing the terminal leaves it open —
   and starts a 'mara serve' of its own for what it shows. The window is
-  view/view(.exe) beside the compiler, run as 'view <this compiler> <module>'
-  in the current directory.`
+  view/view(.exe) beside the compiler, run in the current directory as
+  'view <this compiler> <module> <pipe name>'. It listens on the pipe name
+  (os.mara's pipe_listen): each connection sends one line, a query as
+  'mara ask' takes it, and gets what its 'mara serve' answers, the end line
+  too; then it closes the connection. 'mara ask' here asks it first.`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
@@ -1120,6 +1127,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line
+
+  A window open here on the module (mara view) answers 'mara ask' when it
+  can: from a check already made, and showing the query.
 
   Many queries, checked again as the files change:
     mara serve [module]              each line stdin sends is a query, answered
@@ -1214,6 +1224,7 @@ parse_args :: proc() -> CLI_Args {
             return args
         }
         args.ask_query = q
+        args.ask_words = rest
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = filepath.base(cwd)
@@ -1262,6 +1273,17 @@ main :: proc() {
     if args.view {
         run_view(args)
         return
+    }
+
+    // A window open here on this module (`mara view`) answers from a check
+    // already made, and shows the query: asked first. None open, or one that
+    // stops answering: the check made here.
+    if args.ask {
+        if answer, failed, ok := ask_via_view(args); ok {
+            fmt.print(answer)
+            if failed { os.exit(1) }
+            return
+        }
     }
 
     perf: Performance_Timer

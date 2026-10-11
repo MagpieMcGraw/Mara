@@ -20,7 +20,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.math      4 types   · 51 funs
     mara.memory    3 types   · 0 funs
     mara.open_gl   19 types  · 61 funs
-    mara.os        10 types  · 57 funs
+    mara.os        10 types  · 59 funs
     mara.sdl       14 types  · 49 funs
     mara.skyline   2 types   · 6 funs
     mara.string    0 types   · 3 funs
@@ -648,6 +648,10 @@ askat.mara:18:19  token '.'
   Decl                     [118,129)  z := pick(f, v.y)
   Call                     [121,129)  pick(f, v.y)   : f32
   Field                    [125,128)  v.y   : f32
+=== test/askat.mara | no_such_name_here
+mara ask: no type or function named 'no_such_name_here' in askat
+  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
+[exit 1]
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
@@ -685,3 +689,10 @@ cache_put_header — fun  cache.mara:105   (module cache)
 
 above (calls)   (1 direct callee, full closure (depth ∞))
   cache.Cache_Header  (struct)
+=== Pounce | no_such_name_anywhere
+mara ask: no type or function named 'no_such_name_anywhere' in Pounce
+  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
+[exit 1]
+=== Pounce | camera types call
+mara ask: conflicting kind filters ('types' and 'call')
+[exit 1]
