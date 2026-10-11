@@ -303,14 +303,20 @@ lw_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     return {v = graph_read(b, graph_dest_place(b, at, span), ts, span), ok = true}
 }
 
-// `v{ x = 1 }` as a statement (tc_override): each field given written into v's.
+// `v{ x = 1 }` as a statement (tc_override): each field given written into v's
+// — through a pointer, into what it points at's (as `v.x = 1` is).
 lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     if !(k.annot.overrides[tc_sid(k, e)] or_else false) { return false }
     tr := k.t
     ty := Tree_Id(tr.a[e])
     vt := tc_node_type(k, ty)
     sd := resolve_to_struct_type(k.c, vt)
-    gl := graph_build_override(k.gb, graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt), sd)
+    d := graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt)
+    if pt, is_ptr := distinct_base(vt).(^Type_Ptr); is_ptr {
+        span := tree_span(tr, ty)
+        d = Dest{kind = .At, at = graph_op_value(k.gb, .Deref, .Implied, span, pt.elem, "", graph_dest_place(k.gb, d, span)), type_ = pt.elem}
+    }
+    gl := graph_build_override(k.gb, d, sd)
     lw_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, gl)
     return true
 }

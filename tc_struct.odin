@@ -679,8 +679,9 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
     }
 }
 
-// `v{ x = 1 }` as a statement, v a variable of a struct: each field given
-// written into v's, in place (marked: Annotations.overrides).
+// `v{ x = 1 }` as a statement, v a variable of a struct or a pointer to one:
+// each field given written into v's — or what it points at's — in place
+// (marked: Annotations.overrides).
 tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     tr := k.t
     if tr.tag[e] != .Literal { return false }

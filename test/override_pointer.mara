@@ -1,0 +1,30 @@
+module override_pointer
+
+use mara.core
+
+//@ expect-output: local 1 7
+//@ expect-output: param 6 8
+//@ expect-output: pointer 6 10
+
+// An override statement, `v{ x = 1 }`, writes the fields it gives into v in
+// place; through a pointer, into what it points at — as `v.x = 1` does. A
+// field's value is read before it's written: `p{ y = p.y + 1 }`.
+
+V :: struct { x: i64  y: i64 }
+
+set :: fun(v: ^V, c: bool) {
+	v{ x = 6, y = if c do 8 else 9 }
+}
+
+main :: fun() {
+	w := V{ x = 1, y = 2 }
+	w{ y = 7 }
+	print("local", w.x, w.y)
+	set(&w, true)
+	print("param", w.x, w.y)
+	p := &w
+	p{ x = 3 }
+	set(p, false)
+	p{ y = p.y + 1 }
+	print("pointer", w.x, w.y)
+}
