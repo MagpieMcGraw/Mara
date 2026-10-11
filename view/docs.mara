@@ -367,7 +367,7 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 	if fd.kind == DEF_FIELD {
 		end := line_end(text, fd.at)
 		line := text[fd.at : end]
-		for i in 0 .. max_int(line.len - 1, 0) {
+		for i in 0 .. line.len - 1 {
 			if line[i] == '/' and line[i + 1] == '/' {
 				trailing = line[i : line.len]
 				break
@@ -613,7 +613,6 @@ starts_with :: fun(s: []utf8, what: []utf8) -> bool {
 
 // Whether s has what in it.
 contains :: fun(s: []utf8, what: []utf8) -> bool {
-	if s.len < what.len do return false
 	for k in 0 .. s.len - what.len + 1 {
 		if s[k : k + what.len] == what do return true
 	}
@@ -622,7 +621,6 @@ contains :: fun(s: []utf8, what: []utf8) -> bool {
 
 // Whether s has `word` (lower case) in it, s's case not minded.
 contains_folded :: fun(s: []utf8, word: []utf8) -> bool {
-	if s.len < word.len do return false
 	for k in 0 .. s.len - word.len + 1 {
 		same := true
 		for i in 0 .. word.len {

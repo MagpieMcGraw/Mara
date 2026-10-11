@@ -1,0 +1,44 @@
+module range_empty
+
+use mara.core
+
+// A range whose end, worked out as the program runs, is below its start has
+// nothing in it: the loop runs zero times, as one whose end is its start
+// does. (It crashed: "Descending range".) A search over every place a word
+// can start in a text is one: a text shorter than the word has none.
+// (Both bounds constant, `10 .. 0`, the checker stops it: range_countdown.)
+
+//@ expect-output: runs: 0 1 0 0
+//@ expect-output: found: true false false
+
+contains :: fun(s: []utf8, word: []utf8) -> bool {
+	for k in 0 .. s.len - word.len + 1 {
+		if s[k : k + word.len] == word do return true
+	}
+	return false
+}
+
+main :: fun() -> i64 {
+	n := 5
+	same := 0
+	for _ in n .. n {
+		same += 1
+	}
+	one := 0
+	for _ in n .. n + 1 {
+		one += 1
+	}
+	below := 0
+	for _ in n .. n - 3 {
+		below += 1
+	}
+	lo : u32 = 5
+	hi : u32 = 2
+	unsigned := 0
+	for _ in lo .. hi {
+		unsigned += 1
+	}
+	print("runs:", same, one, below, unsigned)
+	print("found:", contains("xabcx", "abc"), contains("ab", "abc"), contains("", "abc"))
+	return 0
+}

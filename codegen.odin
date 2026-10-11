@@ -818,19 +818,6 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
     emit_label(g, ok_label)
 }
 
-// The check that a range counts up: crash, located, when `up` is false.
-emit_range_check :: proc(g: ^Codegen, up: string, span: Span) {
-    ok_label  := fresh_label(g, "range.ok")
-    bad_label := fresh_label(g, "range.bad")
-    emit_cond_br(g, up, ok_label, bad_label)
-
-    emit_label(g, bad_label)
-    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
-    emit_fail(g, fmt.tprintf("Descending range at %s -- `..` only counts up (low > high); use a C-style for to count down.\n", loc))
-
-    emit_label(g, ok_label)
-}
-
 // Emit an overflow-checked integer arithmetic operation using LLVM intrinsics.
 // `op` is one of "sadd"/"ssub"/"smul"/"uadd"/"usub"/"umul". Returns the result
 // temporary. On overflow: dispatches to the hoisted helper.

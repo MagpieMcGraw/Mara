@@ -1217,10 +1217,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if !ok { return false }
         llvm_ret(e, "  ret %s %s", e.ret, v)
     case .Assert:
-        if pg.written[op] != .Synthetic || graph_name(pg, op) != "range" { return llvm_assert(e, op, ops, span) }
-        c, ok := llvm_operand(e, ops[0], Type_Bool{})
-        if !ok { return false }
-        emit_range_check(g, c, span)
+        return llvm_assert(e, op, ops, span)
     case .Slice:
         return llvm_slice_op(e, op, ops)
     case .View:

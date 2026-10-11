@@ -1,0 +1,17 @@
+module range_countdown
+
+use mara.core
+
+// A range with both bounds constant and its end below its start: a
+// countdown written as a range. `..` only counts up — it would run zero
+// times — so the checker stops it. (Worked out as the program runs, such a
+// range just runs zero times: range_empty.)
+
+//@ expect-fail: descending range
+
+main :: fun() -> i64 {
+	for i in 10 .. 0 {
+		print(i)
+	}
+	return 0
+}

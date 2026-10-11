@@ -2823,17 +2823,15 @@ graph_build_range_bound :: proc(b: ^Graph_Builder, v: Operand, t, ct: Type, span
 }
 
 // The range's bounds built: the counter typed, the end held (a literal's is
-// itself), the check that the range counts up — where a bound is no
-// constant — and the counter's first value; then the check run.
+// itself), and the counter's first value; then the check run. An end below
+// the start, worked out as the program runs, is a range with nothing in it:
+// the check (counter < end) runs it zero times. (Both bounds constant, the
+// checker said so already: a countdown written as a range.)
 graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
     graph_retype(b, fl.counter, ct)
     if !fl.end_literal {
         fl.end_slot = graph_slot(b, "end", ct, fl.span)
         graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "end", fl.end_slot, ct, fl.span), fl.hi)
-    }
-    if fl.lo.op == NO_NODE || fl.hi.op == NO_NODE || b.g.op[fl.lo.op] != .Const || b.g.op[fl.hi.op] != .Const {
-        up := graph_op_value(b, .Compare, .Synthetic, fl.span, Type_Bool{}, "<=", fl.lo, fl.hi)
-        graph_op(b, .Assert, .Synthetic, fl.span, nil, "range", up)
     }
     graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, fl.span), fl.lo)
     graph_build_for_runs(b, fl)
