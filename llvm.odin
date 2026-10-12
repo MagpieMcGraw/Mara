@@ -52,6 +52,8 @@ Llvm :: struct {
     bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
     arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
     temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark (llvm_big_temps)
+    swaps:   map[Node_Id][2]Node_Id,    // a swap's first put → the two places it swaps (llvm_swaps)
+    swapped: map[Node_Id]bool,          // a swap's held locals: no storage, their operations skipped
     lazy:    map[Node_Id]bool,          // a big temporary in main's body: bumped where it's first named
     ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
     outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
@@ -265,7 +267,8 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_in_place(e)
     // A big variable lives on the arena, or in the caller's slot, or — a
     // temporary — where it's built in place, else on the arena too
-    // (llvm_big_temps).
+    // (llvm_big_temps); a swap's two held values, nowhere (llvm_swaps).
+    llvm_swaps(e)
     if !llvm_big_temps(e) { return false }
     llvm_probe(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
@@ -280,6 +283,130 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     emit(g, "}")
     if !e.main { emit_raw(g, "") }   // (@main's end: its caller's)
+    return true
+}
+
+// A swap — `a, b = b, a`: two big places of one type, each one's held value
+// read straight from the other — done in place, a piece at a time through a
+// small buffer (llvm_emit_swap), not held whole: its held locals take no
+// storage, their holds and the second put are skipped, the first put swaps.
+// Only when the two are one place or surely apart (llvm_disjoint): two that
+// may partly overlap are held as any parallel assignment's values are.
+@(private="file")
+llvm_swaps :: proc(e: ^Llvm) {
+    pg := e.pg
+    // (Each parallel local's writes; and the puts, in order: writes of one's
+    // value into its target.)
+    Put :: struct { w, target, local, read, var_op: Node_Id }
+    holds := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
+    puts := make([dynamic]Put, context.temp_allocator)
+    is_held :: proc(pg: ^Program_Graph, d: Node_Id) -> bool {
+        return d > 0 && d <= pg.end && pg.kind[d] == .Local && pg.written[d] == .Synthetic && graph_name(pg, d) == "parallel"
+    }
+    for r in e.runs {
+        for op in graph_run(pg, int(r)) {
+            if pg.op[op] != .Write { continue }
+            ops := graph_operands(pg, op)
+            dest, v := ops[0].op, ops[1].op
+            if pg.op[dest] == .Var && is_held(pg, pg.refers[dest]) {
+                d := pg.refers[dest]
+                if d not_in holds { holds[d] = make([dynamic]Node_Id, context.temp_allocator) }
+                append(&holds[d], op)
+                continue
+            }
+            if v != NO_NODE && pg.op[v] == .Read {
+                if src := graph_operands(pg, v)[0].op; pg.op[src] == .Var && is_held(pg, pg.refers[src]) {
+                    append(&puts, Put{op, dest, pg.refers[src], v, src})
+                }
+            }
+        }
+    }
+    // (A local's one hold — a read of a place: that place.)
+    held_from :: proc(e: ^Llvm, holds: map[Node_Id][dynamic]Node_Id, d: Node_Id) -> (w, read, src: Node_Id, ok: bool) {
+        pg := e.pg
+        ws, has := holds[d]
+        if !has || len(ws) != 1 || llvm_reads(e, d) != 1 { return }
+        w = ws[0]
+        read = graph_operands(pg, w)[1].op
+        if read == NO_NODE || pg.op[read] != .Read { return }
+        return w, read, graph_operands(pg, read)[0].op, true
+    }
+    for i := 0; i + 1 < len(puts); i += 1 {
+        p, q := puts[i], puts[i + 1]
+        t := graph_type(pg, p.local)
+        if !routes_to_arena(t) || !llvm_same_type(t, graph_type(pg, q.local)) || p.local == q.local { continue }
+        pw, pr, ps, pok := held_from(e, holds, p.local)
+        qw, qr, qs, qok := held_from(e, holds, q.local)
+        if !pok || !qok { continue }
+        if !llvm_same_place(e, ps, q.target) || !llvm_same_place(e, qs, p.target) { continue }
+        if !llvm_same_place(e, p.target, q.target) && !llvm_disjoint(e, p.target, q.target) { continue }
+        e.swaps[p.w] = {p.target, q.target}
+        e.swapped[p.local], e.swapped[q.local] = true, true
+        for skip in ([]Node_Id{pw, pr, graph_operands(pg, pw)[0].op, qw, qr, graph_operands(pg, qw)[0].op,
+                               p.read, p.var_op, q.w, q.read, q.var_op}) {
+            e.ahead[skip] = true   // (done: the swap is all of it)
+        }
+        i += 1
+    }
+}
+
+// Whether two places are one: from one variable by the same steps (elements
+// by number).
+@(private="file")
+llvm_same_place :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
+    ra, sa, oka := llvm_path(e, a)
+    rb, sb, okb := llvm_path(e, b)
+    if !oka || !okb || ra != rb || len(sa) != len(sb) { return false }
+    for x, i in sa {
+        y := sb[i]
+        if x.op != y.op || x.name != y.name || x.known != y.known || x.index != y.index { return false }
+        if x.op == .Index && !x.known { return false }
+    }
+    return true
+}
+
+// Two places of one type swapped (llvm_swaps): 64 bytes at a time through a
+// buffer of that size — copied out of a, b's into a, the buffer's into b —
+// then each one's partial arrays re-pointed at its own elements.
+@(private="file")
+llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
+    g, pg := e.g, e.pg
+    t := graph_type(pg, a)
+    pa, pb := llvm_place(e, a), llvm_place(e, b)
+    if pa == "" || pb == "" { return false }
+    size := type_size(t)
+    buf, slot := fresh_tmp(g), fresh_tmp(g)
+    emit_alloca(g, buf, "[64 x i8]")
+    emit_alloca(g, slot, "i64")
+    emit_store(g, "i64", "0", slot)
+    loop, body, done := fresh_label(g, "swap.loop"), fresh_label(g, "swap.body"), fresh_label(g, "swap.end")
+    emit_br(g, loop)
+    emit_label(g, loop)
+    off := fresh_tmp(g)
+    emit_load_into(g, off, "i64", slot)
+    more := fresh_tmp(g)
+    emit(g, "  %s = icmp slt i64 %s, %d", more, off, size)
+    emit_cond_br(g, more, body, done)
+    emit_label(g, body)
+    rest, small, n := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+    emit(g, "  %s = sub i64 %d, %s", rest, size, off)
+    emit(g, "  %s = icmp slt i64 %s, 64", small, rest)
+    emit(g, "  %s = select i1 %s, i64 %s, i64 64", n, small, rest)
+    xa, xb := fresh_tmp(g), fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", xa, pa, off)
+    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", xb, pb, off)
+    emit_memcpy_runtime(g, buf, xa, n)
+    emit_memcpy_runtime(g, xa, xb, n)
+    emit_memcpy_runtime(g, xb, buf, n)
+    next := fresh_tmp(g)
+    emit(g, "  %s = add i64 %s, 64", next, off)
+    emit_store(g, "i64", next, slot)
+    emit_br(g, loop)
+    emit_label(g, done)
+    if value_has_partial_array(g, t) {
+        reanchor_partial_arrays(g, t, pa)
+        reanchor_partial_arrays(g, t, pb)
+    }
     return true
 }
 
@@ -301,7 +428,7 @@ llvm_big_temps :: proc(e: ^Llvm) -> bool {
         #partial switch pg.kind[id] {
         case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
         }
-        if pg.kind[id] != .Local || !routes_to_arena(graph_type(pg, id)) || id in e.arena || id in e.in_place || id in e.carved || id in e.bound { continue }
+        if pg.kind[id] != .Local || !routes_to_arena(graph_type(pg, id)) || id in e.arena || id in e.in_place || id in e.carved || id in e.bound || id in e.swapped { continue }
         if e.value[id] == e.slot { continue }
         if pg.written[id] != .Synthetic { e.stop = id; return false }
         scope := NO_NODE
@@ -1003,6 +1130,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return false
         }
     case .Write:
+        if pair, is := e.swaps[op]; is { return llvm_emit_swap(e, pair[0], pair[1]) }   // (a swap's first put: the swap)
         place := ops[0].op
         if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
         if pg.op[place] == .Swizzle && len(graph_name(pg, place)) > 1 {

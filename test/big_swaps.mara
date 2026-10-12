@@ -1,0 +1,87 @@
+module big_swaps
+
+// A swap of two big places — `a, b = b, a` — done in place, 64 bytes at a
+// time through a buffer of that size: no temporary of the values' size (two
+// 2 MB ones here, the stack 1 MB). Two places that may be one — elements by
+// run-time indices — and any other assignment of several (a rotation) hold
+// their values in temporaries, on the arena. A swapped partial array's
+// header points at its own elements after.
+
+//@ expect-output: through a pointer: 2 22 1 11
+//@ expect-output: locals: 4 3
+//@ expect-output: elements: 7 6 5
+//@ expect-output: rotated: 6 5 7
+//@ expect-output: run-time indices: 7 5 6
+//@ expect-output: partial arrays: 3 2 9 1 1
+//@ expect-output: self: 4
+//@ expect-output: small: 9 8
+
+use mara.core
+include mara.memory
+Huge :: struct {
+	data: [262144]i64
+	tag: i64 = 0
+}
+G :: struct {
+	a: Huge
+	b: Huge
+}
+Pa :: struct {
+	items: [..300]i64
+	tag: i64 = 0
+}
+Small :: struct { x: i64 = 0 }
+
+swap_in :: fun(g: ^G) {
+	g.a, g.b = g.b, g.a
+}
+rotate :: fun(xs: ^[3]Huge) {
+	xs[0], xs[1], xs[2] = xs[1], xs[2], xs[0]
+}
+swap_at :: fun(xs: ^[3]Huge, i: i64, j: i64) {
+	xs[i], xs[j] = xs[j], xs[i]
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(64 * MB))
+	g : G
+	g.a.tag = 1
+	g.a.data[262143] = 11
+	g.b.tag = 2
+	g.b.data[0] = 22
+	swap_in(&g)
+	print("through a pointer:", g.a.tag, g.a.data[0], g.b.tag, g.b.data[262143])
+	x : Huge
+	y : Huge
+	x.tag = 3
+	y.tag = 4
+	x, y = y, x
+	print("locals:", x.tag, y.tag)
+	xs : [3]Huge
+	xs[0].tag = 5
+	xs[1].tag = 6
+	xs[2].tag = 7
+	xs[0], xs[2] = xs[2], xs[0]
+	print("elements:", xs[0].tag, xs[1].tag, xs[2].tag)
+	rotate(&xs)
+	print("rotated:", xs[0].tag, xs[1].tag, xs[2].tag)
+	swap_at(&xs, 1, 1)
+	swap_at(&xs, 0, 2)
+	print("run-time indices:", xs[0].tag, xs[1].tag, xs[2].tag)
+	p : Pa
+	q : Pa
+	&p.items + 1
+	&q.items + 2
+	&q.items + 3
+	p, q = q, p
+	&p.items + 9
+	print("partial arrays:", p.items.len, p.items[0], p.items[2], q.items.len, q.items[0])
+	x, x = x, x
+	print("self:", x.tag)
+	s : Small
+	t : Small
+	s.x = 8
+	t.x = 9
+	s, t = t, s
+	print("small:", s.x, t.x)
+}

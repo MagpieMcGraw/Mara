@@ -230,6 +230,13 @@ lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
     case .Assign:
         targets := tree_list(t, t.a[s])
         for tg in targets { if lw_big_in(k, tg, true) { return true } }
+        // (Assigned together, each value is held first — a swap's, in place,
+        // llvm_swaps; any other's, a temporary.)
+        if len(targets) > 1 {
+            for val in tree_list(t, t.b[s]) {
+                if ty := tc_node_type(k, val); ty != nil && routes_to_arena(ty) { return true }
+            }
+        }
         for val, i in tree_list(t, t.b[s]) {
             // (Into `_`: dropped — nowhere to go.)
             dropped := i < len(targets) && t.tag[targets[i]] == .Ident && tc_name(k, targets[i]) == "_"
