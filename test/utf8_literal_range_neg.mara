@@ -1,0 +1,10 @@
+module utf8_literal_range_neg
+//@ expect-fail: constant 321 overflows utf8 (range 0..255)
+
+// A number beside a utf8 is a byte's value: 321 is none (it compared as 65
+// once, truncated to the byte — utf8_order).
+
+main :: fun() {
+	ch : utf8 = 'A'
+	print(ch == 321)
+}

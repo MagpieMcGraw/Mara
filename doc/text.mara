@@ -12,8 +12,9 @@
 // parse_number.
 //
 // Two texts compare with `==` and `!=`, by their characters. Characters
-// aren't numbers: convert one with i64(c) to do arithmetic. A character
-// past ASCII's takes more than one utf8: char_at reads it whole.
+// order as their bytes do (`c >= 'a' and c <= 'z'`), but aren't numbers:
+// convert one with i64(c) to do arithmetic. A character past ASCII's takes
+// more than one utf8: char_at reads it whole.
 module text
 
 use mara.core

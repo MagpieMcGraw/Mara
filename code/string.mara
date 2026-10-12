@@ -113,15 +113,13 @@ line_end :: fun(text: []utf8, at: i64) -> i64 {
 
 // A letter in lower case (A to Z); any other character as it is.
 lower :: fun(ch: utf8) -> utf8 {
-	c := i64(ch)
-	if c >= i64('A') and c <= i64('Z') do return utf8(c + 32)
+	if ch >= 'A' and ch <= 'Z' do return utf8(i64(ch) + 32)
 	return ch
 }
 
 // A letter in upper case (a to z); any other character as it is.
 upper :: fun(ch: utf8) -> utf8 {
-	c := i64(ch)
-	if c >= i64('a') and c <= i64('z') do return utf8(c - 32)
+	if ch >= 'a' and ch <= 'z' do return utf8(i64(ch) - 32)
 	return ch
 }
 
@@ -159,10 +157,8 @@ compare :: fun(a: []utf8, b: []utf8) -> i64 {
 	n := a.len
 	if b.len < n do n = b.len
 	for i in 0 .. n {
-		ca := i64(a[i])
-		cb := i64(b[i])
-		if ca < cb do return -1
-		if ca > cb do return 1
+		if a[i] < b[i] do return -1
+		if a[i] > b[i] do return 1
 	}
 	if a.len < b.len do return -1
 	if a.len > b.len do return 1
@@ -175,8 +171,8 @@ compare_folded :: fun(a: []utf8, b: []utf8) -> i64 {
 	n := a.len
 	if b.len < n do n = b.len
 	for i in 0 .. n {
-		ca := i64(lower(a[i]))
-		cb := i64(lower(b[i]))
+		ca := lower(a[i])
+		cb := lower(b[i])
 		if ca < cb do return -1
 		if ca > cb do return 1
 	}

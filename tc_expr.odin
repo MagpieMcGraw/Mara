@@ -328,6 +328,32 @@ tc_in_range :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     return Type_Bool{}
 }
 
+is_utf8_type :: proc(t: Type) -> bool {
+    _, ok := distinct_base(t).(Type_Utf8)
+    return ok
+}
+
+// A comparison with utf8 on a side — utf8 is bytes for now (no codepoint
+// type yet), ordered as bytes are, unsigned. A number written beside one is
+// a byte's value, settled to it; to order, the other side is the same type.
+// (`==` / `!=` take what they took — only the number is checked there.)
+tc_utf8_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, types: [2]Type, env: ^Type_Scope) {
+    u := types[0] if is_utf8_type(types[0]) else types[1]
+    ordered := op != .Equal_Equal && op != .Not_Equal
+    for t, i in types {
+        if is_any(t) { continue }
+        if lit, is_int := t.(Type_Infer_Int); is_int && lit.cell == nil {
+            if v, known := tc_comptime_int(k, sides[i], env); known && (v < 0 || v > 255) {
+                tc_error(k, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, v, type_name(u), 255)
+            }
+            tc_settle(k, sides[i], u)
+        } else if ordered && (!types_equal(t, u) || !types_equal(u, t)) {
+            tc_error(k, span, TYPE_CANNOT_COMPARE_USING, type_name(solidify_type(types[0])), type_name(solidify_type(types[1])), op_str(op))
+            return
+        }
+    }
+}
+
 // `left op right`, where `span` is: a Binary's, or a compound assignment's
 // (`x += v` is `x = x op v`, at the `+=`). `at`: its node, where an operator
 // through `overload` is annotated as the call it is.
@@ -399,6 +425,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         if _, ok := rt.(Type_Bool); !ok && !is_any(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_BOOL, word, type_name(rt)) }
         t = Type_Bool{}
     case .Equal_Equal, .Not_Equal:
+        if is_utf8_type(lt) || is_utf8_type(rt) { tc_utf8_compare(k, span, op, sides, types, env) }
         if !is_any(lt) && !is_any(rt) {
             if !is_comparable(lt) || !is_comparable(rt) {
                 tc_error(k, span, TYPE_CANNOT_COMPARE_USING, type_name(lt), type_name(rt), "==" if op == .Equal_Equal else "!=")
@@ -407,9 +434,13 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         }
         t = Type_Bool{}
     case .Less, .Less_Equal, .Greater, .Greater_Equal:
-        if !is_numeric(lt) { tc_error(k, span, TYPE_LEFT_OPERAND_COMPARISON_NUMERIC, type_name(lt)) }
-        if !is_numeric(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_COMPARISON_NUMERIC, type_name(rt)) }
-        if is_numeric(lt) && is_numeric(rt) { promote_numeric(k.c, lt, rt, span) }
+        if is_utf8_type(lt) || is_utf8_type(rt) {
+            tc_utf8_compare(k, span, op, sides, types, env)
+        } else {
+            if !is_numeric(lt) { tc_error(k, span, TYPE_LEFT_OPERAND_COMPARISON_NUMERIC, type_name(lt)) }
+            if !is_numeric(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_COMPARISON_NUMERIC, type_name(rt)) }
+            if is_numeric(lt) && is_numeric(rt) { promote_numeric(k.c, lt, rt, span) }
+        }
         t = Type_Bool{}
     case .Plus:
         if !is_numeric(lt) || !is_numeric(rt) {

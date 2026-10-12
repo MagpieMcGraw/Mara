@@ -1,0 +1,26 @@
+module utf8_order
+
+// utf8 is bytes for now (no codepoint type yet): two order as their bytes
+// do, unsigned — a byte of a multi-byte character above every ASCII one. A
+// number written beside one is a byte's value (0..255). (Mixed:
+// utf8_compare_neg, utf8_literal_range_neg.)
+
+//@ expect-output: true true true true false false false
+//@ expect-output: false true true false true true true
+//@ expect-output: true false true
+//@ expect-output: high bytes: 2
+
+is_word_char :: fun(ch: utf8) -> bool {
+	return (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_'
+}
+
+main :: fun() {
+	print(is_word_char('q'), is_word_char('Q'), is_word_char('7'), is_word_char('_'), is_word_char('-'), is_word_char('{'), is_word_char('@'))
+	ch : utf8 = 'A'
+	hi := utf8(0xC3)
+	print(ch < 65, ch <= 65, hi >= 0x80, ch >= 0x80, 0x80 <= hi, 65 == ch, ch != 66)
+	print(ch in 'A'..'Z', hi in 'A'..'Z', 'm' in 'a'..'z')
+	n := 0
+	for c in "héllo" { if c >= 0x80 do n += 1 }
+	print("high bytes:", n)
+}

@@ -689,6 +689,5 @@ word_at :: fun(s: []utf8, k: i64) -> i64 {
 
 // Whether ch is a letter, a digit or _.
 is_word_char :: fun(ch: utf8) -> bool {
-	c := i64(ch)
-	return (c >= i64('a') and c <= i64('z')) or (c >= i64('A') and c <= i64('Z')) or (c >= i64('0') and c <= i64('9')) or ch == '_'
+	return (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_'
 }
