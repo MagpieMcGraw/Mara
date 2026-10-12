@@ -1,0 +1,12 @@
+module eq_mixed_neg
+//@ expect-fail: cannot compare bool with i64 using '=='
+
+// `==` takes two of one type: numbers at one width (mixwiden_neg), anything
+// else the same type. A bool beside an i64 got past the checker once and
+// failed in codegen; a utf8 beside one was widened.
+
+main :: fun() {
+	b : bool = true
+	n : i64 = 1
+	print(b == n)
+}

@@ -8,7 +8,7 @@ who    :: fun(n: ^byte = #caller_name) -> ^byte { return n }
 helper :: fun() -> ^byte { return who() }      // caller is `helper`
 
 main :: fun() {
-	assert(who()^ == 'm')        // called from main   -> "main"
-	assert(helper()^ == 'h')     // who's caller is helper -> "helper"
+	assert(utf8(who()^) == 'm')      // called from main   -> "main"
+	assert(utf8(helper()^) == 'h')   // who's caller is helper -> "helper"
 	print("callername ok")
 }
