@@ -268,28 +268,26 @@ cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> []byte, err {
     return buf
 }
 
-// Stream a mesh entry: read its payload into `scratch`, then reinterpret the bytes
-// into the caller's verts/inds backing (vao_add_mesh wants real []Vertex / []u32,
-// and those outlive any file buffer). `scratch` must hold e.data_size bytes. The
-// returned Mesh_Data views verts/inds, which the caller owns.
+// Stream a mesh entry: read its payload into `scratch`, then its bytes into the
+// caller's verts/inds backing, one read each (vao_add_mesh wants real []Vertex /
+// []u32, and those outlive any file buffer). `scratch` must hold e.data_size
+// bytes, verts and inds the entry's counts. An entry whose size isn't its
+// counts' bytes, or a payload cut short, is Bad_Header: rebuild from source.
+// The returned Mesh_Data views verts/inds, which the caller owns.
 cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Vertex, inds: ^[]u32) -> Mesh_Data, err {
     vcount := i64(e.meta[0])
     icount := i64(e.meta[1])
     size := i64(e.data_size)
+    vbytes := vcount * size_of(Vertex)
+    if size != vbytes + icount * size_of(u32) do return Mesh_Data{}, Bad_Header
 
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
     buf := scratch[0 : size]
     file_read(c.file, &buf)?
+    if buf.len != size do return Mesh_Data{}, Bad_Header
 
-    for v in 0..vcount {
-        vert : Vertex = buf[v * size_of(Vertex)]
-        verts[v] = vert
-    }
-    ioff := vcount * size_of(Vertex)
-    for k in 0..icount {
-        ix : u32 = buf[ioff + k * size_of(u32)]
-        inds[k] = ix
-    }
+    verts[0 : vcount] = buf[0 : vbytes]
+    inds[0 : icount] = buf[vbytes : size]
 
     return Mesh_Data{ verts[0:vcount], inds[0:icount] }
 }
