@@ -57,6 +57,94 @@ Type_Numeric :: struct {
     bits: i32,           // 8, 16, 32, 64 (Type: 16 bytes, every variant 8 or less)
 }
 
+// A type as the program holds it (Type_Table): each one once, by its index.
+// 0: none.
+Type_Id :: distinct u32
+
+// The program's types, each held once: a node's type, in the annotations and
+// in the graph, is its id here (type_id).
+Type_Table :: struct {
+    types: [dynamic]Type,                         // by id; [0]: none
+    slots: [dynamic]Type_Slot,                    // (type_id: open-addressed, hashed, probed)
+    last:  struct { raw: [2]u64, id: Type_Id },   // (the type asked for last)
+}
+
+type_table_new :: proc() -> ^Type_Table {
+    tt := new(Type_Table)
+    append(&tt.types, nil)   // (Type_Id 0: none)
+    return tt
+}
+
+// A type, as interning tells types apart: which of Type's variants, and its
+// value (a pointer, a cell, a width) — none of what it doesn't hold. Its bits:
+// the value in the first word, the variant in the second's low byte, numbered
+// as Type lists them; of the value, what the variant holds, by this mask.
+#assert(size_of(Type) == 16)
+@(private="file")
+TYPE_VALUE_MASK := [22]u64{
+    0,                      // (nil)
+    0,                      // Type_F64
+    max(u64), max(u64),     // Type_Infer_Int, Type_Infer_Float: their cells
+    0, 0, 0, 0,             // Type_Bool, Type_CString, Type_Utf8, Type_Byte
+    0xFFFF_FFFF_0000_00FF,  // Type_Numeric: its kind, its bits
+    max(u64), max(u64), max(u64), max(u64), // the pointers: ^Type_Ptr, ^Type_Scope,
+    max(u64), max(u64), max(u64), max(u64), // ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array,
+                                            // ^Type_Enum, ^Type_Union, ^Type_Distinct
+    max(u64),               // Type_Const_Int: its value
+    0, 0, 0, 0,             // Type_Any, Type_Void, Type_Error, Type_Err
+}
+
+// A type's id, made the first time the program has it.
+type_id :: proc(tt: ^Type_Table, t: Type) -> Type_Id {
+    // (The type asked for last, again: its id, its bits alike.)
+    t := t
+    raw := (^[2]u64)(&t)^
+    if raw == tt.last.raw && tt.last.id != 0 { return tt.last.id }
+    defer tt.last.raw = raw
+    tag := raw[1] & 0xFF
+    key := [2]u64{tag, raw[0] & TYPE_VALUE_MASK[tag]}
+    if key[0] == 0 {
+        tt.last.id = 0
+        return 0
+    }
+    if len(tt.slots) == 0 { resize(&tt.slots, 1 << 12) }
+    mask := u64(len(tt.slots) - 1)
+    h := (key[1] * 0x9E3779B97F4A7C15 ~ key[0] * 0xC2B2AE3D27D4EB4F) >> 20
+    for i := h & mask; ; i = (i + 1) & mask {
+        slot := &tt.slots[i]
+        if slot.id == 0 {   // (none here: made)
+            id := Type_Id(len(tt.types))
+            append(&tt.types, t)
+            slot^ = {key, id}
+            tt.last.id = id
+            if len(tt.types) * 2 > len(tt.slots) { type_slots_grow(tt) }
+            return id
+        }
+        if slot.key == key {
+            tt.last.id = slot.id
+            return slot.id
+        }
+    }
+}
+
+@(private="file")
+type_slots_grow :: proc(tt: ^Type_Table) {
+    old := tt.slots
+    tt.slots = make([dynamic]Type_Slot, 2 * len(old))
+    mask := u64(len(tt.slots) - 1)
+    for s in old {
+        if s.id == 0 { continue }
+        h := (s.key[1] * 0x9E3779B97F4A7C15 ~ s.key[0] * 0xC2B2AE3D27D4EB4F) >> 20
+        i := h & mask
+        for tt.slots[i].id != 0 { i = (i + 1) & mask }
+        tt.slots[i] = s
+    }
+    delete(old)
+}
+
+@(private="file")
+Type_Slot :: struct { key: [2]u64, id: Type_Id }   // (key: its variant, its value)
+
 Type_Ptr :: struct {
     elem: Type,    // the pointed-to type
 }

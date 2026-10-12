@@ -256,86 +256,10 @@ graph_intern :: proc(b: ^Graph_Builder, s: string) -> Name_Id {
     return id
 }
 
-// A node's type, as the program's types hold it (Program_Code.types): each
-// one once, by its index.
-Type_Id :: distinct u32
-
 // A node's type.
 graph_type :: proc(g: ^Program_Graph, id: Node_Id) -> Type {
     return g.types[g.type_[id]]
 }
-
-// A type, as interning tells types apart: which of Type's variants, and its
-// value (a pointer, a cell, a width) — none of what it doesn't hold. Its bits:
-// the value in the first word, the variant in the second's low byte, numbered
-// as Type lists them; of the value, what the variant holds, by this mask.
-#assert(size_of(Type) == 16)
-@(private="file")
-GRAPH_TYPE_VALUE_MASK := [22]u64{
-    0,                      // (nil)
-    0,                      // Type_F64
-    max(u64), max(u64),     // Type_Infer_Int, Type_Infer_Float: their cells
-    0, 0, 0, 0,             // Type_Bool, Type_CString, Type_Utf8, Type_Byte
-    0xFFFF_FFFF_0000_00FF,  // Type_Numeric: its kind, its bits
-    max(u64), max(u64), max(u64), max(u64), // the pointers: ^Type_Ptr, ^Type_Scope,
-    max(u64), max(u64), max(u64), max(u64), // ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array,
-                                            // ^Type_Enum, ^Type_Union, ^Type_Distinct
-    max(u64),               // Type_Const_Int: its value
-    0, 0, 0, 0,             // Type_Any, Type_Void, Type_Error, Type_Err
-}
-
-// A type's id, made the first time the program has it: found by its key in
-// an open-addressed table (Graph_Builder.type_slots) — hashed, probed.
-@(private="file")
-graph_type_id :: proc(b: ^Graph_Builder, t: Type) -> Type_Id {
-    // (The type the last node took, again: its id, its bits alike.)
-    t := t
-    raw := (^[2]u64)(&t)^
-    if raw == b.type_last.raw && b.type_last.id != 0 { return b.type_last.id }
-    defer b.type_last.raw = raw
-    tag := raw[1] & 0xFF
-    key := [2]u64{tag, raw[0] & GRAPH_TYPE_VALUE_MASK[tag]}
-    if key[0] == 0 {
-        b.type_last.id = 0
-        return 0
-    }
-    if len(b.type_slots) == 0 { resize(&b.type_slots, 1 << 12) }
-    mask := u64(len(b.type_slots) - 1)
-    h := (key[1] * 0x9E3779B97F4A7C15 ~ key[0] * 0xC2B2AE3D27D4EB4F) >> 20
-    for i := h & mask; ; i = (i + 1) & mask {
-        slot := &b.type_slots[i]
-        if slot.id == 0 {   // (none here: made)
-            id := Type_Id(len(b.pc.types))
-            append(b.pc.types, t)
-            slot^ = {key, id}
-            b.type_last.id = id
-            if len(b.pc.types) * 2 > len(b.type_slots) { graph_type_slots_grow(b) }
-            return id
-        }
-        if slot.key == key {
-            b.type_last.id = slot.id
-            return slot.id
-        }
-    }
-}
-
-@(private="file")
-graph_type_slots_grow :: proc(b: ^Graph_Builder) {
-    old := b.type_slots
-    b.type_slots = make([dynamic]Type_Slot, 2 * len(old))
-    mask := u64(len(b.type_slots) - 1)
-    for s in old {
-        if s.id == 0 { continue }
-        h := (s.key[1] * 0x9E3779B97F4A7C15 ~ s.key[0] * 0xC2B2AE3D27D4EB4F) >> 20
-        i := h & mask
-        for b.type_slots[i].id != 0 { i = (i + 1) & mask }
-        b.type_slots[i] = s
-    }
-    delete(old)
-}
-
-@(private="file")
-Type_Slot :: struct { key: [2]u64, id: Type_Id }   // (key: its variant, its value)
 
 // The last id of a node's subtree.
 graph_last :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
@@ -489,8 +413,7 @@ Graph_Builder :: struct {
     failure:  struct { name, reason: string, span: Span },
     pc:       Program_Code,   // the codes, as each is built
     name_ids:   map[string]Name_Id,   // (graph_intern)
-    type_slots: [dynamic]Type_Slot,   // (graph_type_id)
-    type_last:  struct { raw: [2]u64, id: Type_Id },
+    type_table: ^Type_Table,          // (the program's types: the annotations')
     name_cache: [1024]struct { data: [^]u8, len: int, id: Name_Id },
     value_ids:   map[Const_Key]Const_Id,   // (graph_set_value)
     value_small: [2][256]Const_Id,
@@ -606,8 +529,8 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     b.pc.regions = new([Graph_Column]Graph_Region, virtual.arena_allocator(b.pc.arena))
     b.pc.names = new([dynamic]string, virtual.arena_allocator(b.pc.arena))
     append(b.pc.names, "")   // (Name_Id 0: none)
-    b.pc.types = new([dynamic]Type, virtual.arena_allocator(b.pc.arena))
-    append(b.pc.types, nil)   // (Type_Id 0: none)
+    b.type_table = checked.annot.type_table
+    b.pc.types = &b.type_table.types
     b.pc.values = new([dynamic]Const_Value, virtual.arena_allocator(b.pc.arena))
     append(b.pc.values, Const_Value{})   // (Const_Id 0: none)
     graph_modules(b, modules)
@@ -674,7 +597,6 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.consts)
     delete(b.scope_of)
     delete(b.name_ids)
-    delete(b.type_slots)
     delete(b.value_ids)
     free(b)
 }
@@ -857,7 +779,7 @@ Program_Code :: struct {
     arena:       ^virtual.Arena,                   // where the codes' graphs are (they last as long as the program)
     regions:     ^[Graph_Column]Graph_Region,       // where their columns are
     names:       ^[dynamic]string,                 // every node's name, once (Name_Id)
-    types:       ^[dynamic]Type,                   // every node's type, once (Type_Id)
+    types:       ^[dynamic]Type,                   // every node's type, once (Type_Id): the annotations' table
     values:      ^[dynamic]Const_Value,            // every constant's value, once (Const_Id)
 }
 
@@ -1084,7 +1006,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.written[i] = written
     g.parent[i] = parent
     g.name[i] = graph_intern(b, name)
-    g.type_[i] = 0 if t == nil else graph_type_id(b, graph_settled(t))
+    g.type_[i] = 0 if t == nil else type_id(b.type_table, graph_settled(t))
     g.origin[i] = origin
     g.refers[i] = NO_NODE
     g.stmt[i] = b.stmt
@@ -1607,7 +1529,7 @@ graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node
 // (graph_node).
 graph_retype :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
     was := graph_type(b.g, id)
-    b.g.type_[id] = graph_type_id(b, graph_settled(t))
+    b.g.type_[id] = type_id(b.type_table, graph_settled(t))
     if b.g.kind[id] == .Local && b.g.written[id] == .Synthetic && (was == nil || !routes_to_arena(was)) { graph_temp_held(b, t) }
 }
 
@@ -2353,7 +2275,7 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     // Its variable's operations made before that was known (where a value
     // was built into it), typed as it is.
     g := b.g
-    settled := graph_type_id(b, graph_settled(t))
+    settled := type_id(b.type_table, graph_settled(t))
     for i in int(d) + 1 ..< b.nodes {
         id := Node_Id(i)
         if g.kind[id] == .Op && g.op[id] == .Var && g.refers[id] == d && g.type_[id] == 0 {
@@ -3227,7 +3149,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     d := f.const_decl
     if f.failed == "" {
         graph_build_typed(b, f.root, t)
-        b.g.type_[f.root] = graph_type_id(b, t)   // (an untyped one's own: each use's width, graph_fold_uses)
+        b.g.type_[f.root] = type_id(b.type_table, t)   // (an untyped one's own: each use's width, graph_fold_uses)
     }
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = -1

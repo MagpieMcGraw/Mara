@@ -84,7 +84,8 @@ Annot_Body :: struct {
 
 Annotations :: struct {
     instances: [dynamic]Instance,
-    types:     [dynamic][]Type,   // each instance's nodes' types, by n - lo
+    types:     [dynamic][]Type_Id,   // each instance's nodes' types, by n - lo
+    type_table: ^Type_Table,         // ... their table: the program's types
     refs:      [dynamic][]Ref,    // what each name refers to (a declaration's name, itself)
 
     // What only some nodes have, by node and instance (annot_key).
@@ -110,8 +111,9 @@ annot_key :: proc(i: Instance_Id, n: Tree_Id) -> Syntax_Id {
 
 annot_new :: proc(t: ^Tree) -> ^Annotations {
     a := new(Annotations)
+    a.type_table = type_table_new()
     append(&a.instances, Instance{lo = 0, hi = Tree_Id(len(t.tag) - 1)})
-    append(&a.types, make([]Type, len(t.tag)))
+    append(&a.types, make([]Type_Id, len(t.tag)))
     append(&a.refs, make([]Ref, len(t.tag)))
     return a
 }
@@ -119,7 +121,7 @@ annot_new :: proc(t: ^Tree) -> ^Annotations {
 // A generic's instance, its template's nodes [lo, hi]: its number.
 annot_instance :: proc(a: ^Annotations, lo, hi: Tree_Id, scope: ^Type_Scope) -> Instance_Id {
     append(&a.instances, Instance{lo = lo, hi = hi, scope = scope})
-    append(&a.types, make([]Type, int(hi - lo) + 1))
+    append(&a.types, make([]Type_Id, int(hi - lo) + 1))
     append(&a.refs, make([]Ref, int(hi - lo) + 1))
     return Instance_Id(len(a.instances) - 1)
 }
@@ -133,11 +135,11 @@ annot_set_ref :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id, r: Ref) {
 }
 
 annot_type :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id) -> Type {
-    return a.types[i][n - a.instances[i].lo]
+    return a.type_table.types[a.types[i][n - a.instances[i].lo]]
 }
 
 annot_set_type :: proc(a: ^Annotations, i: Instance_Id, n: Tree_Id, t: Type) {
-    a.types[i][n - a.instances[i].lo] = t
+    a.types[i][n - a.instances[i].lo] = type_id(a.type_table, t)
 }
 
 // A variable `owner`'s body binds.
