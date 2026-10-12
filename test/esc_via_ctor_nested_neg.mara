@@ -1,0 +1,23 @@
+module esc_via_ctor_nested_neg
+//@ expect-fail: `Deep(...)`: its return may reference local memory via parameter `bytes`
+
+// Deep's only view of its param sits one struct down, in `wrap.data` (the shape
+// of TTF.glyf.data), so the check has to look inside nested struct fields.
+
+Deep :: struct (bytes: ^[]byte) {
+	Wrap :: struct {
+		data : []byte
+	}
+	wrap := Wrap{data = bytes[0:4]}
+}
+
+leak_deep :: fun() -> Deep {
+	buf : [..8]byte
+	buf.len = 8
+	return Deep(&buf)
+}
+
+main :: fun() {
+	d := leak_deep()
+	print(i64(d.wrap.data[0]))
+}

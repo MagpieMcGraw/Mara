@@ -1,0 +1,27 @@
+module esc_via_ctor_neg
+//@ expect-fail: `Font(...)`: its return may reference local memory via parameter `bytes`
+
+// A constructor's result holds what its fields hold. Font's fields view its
+// `bytes` param, one directly and one inside a nested struct literal, so
+// returning Font over a local buffer dangles. This is `TTF(&file)` in
+// mara.font; the nested-only case is esc_via_ctor_nested_neg.
+
+Font :: struct (bytes: ^[]byte) {
+	Wrap :: struct {
+		data : []byte
+	}
+
+	wrap := Wrap{data = bytes[2:5]}   // nested-literal view of the param
+	view := bytes[3:6]                // direct view of the param
+}
+
+leak_font :: fun() -> Font {
+	buf : [..8]byte
+	buf.len = 8
+	return Font(&buf)
+}
+
+main :: fun() {
+	f := leak_font()
+	print(i64(f.view[0]))
+}

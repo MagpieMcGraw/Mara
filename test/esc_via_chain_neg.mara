@@ -1,0 +1,24 @@
+module esc_via_chain_neg
+//@ expect-fail: `middle(...)`: its return may reference local memory via parameter `storage`
+
+// The view passes through two calls: `leaf` returns a view of its param, and
+// `middle` returns leaf's result for its own param, so middle's summary carries
+// param 0 too. `outer` hands middle a local buffer and returns the result.
+
+leaf :: fun(storage: ^[]byte) -> []i64 {
+	return slice([:3]i64, storage)
+}
+
+middle :: fun(storage: ^[]byte) -> []i64 {
+	return leaf(storage)
+}
+
+outer :: fun() -> []i64 {
+	storage : [..512]byte
+	return middle(&storage)
+}
+
+main :: fun() {
+	sl := outer()
+	print(sl[0])
+}

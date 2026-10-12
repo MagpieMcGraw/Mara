@@ -1,0 +1,24 @@
+module esc_via_struct_neg
+//@ expect-fail: `inner(...)`: its return may reference local memory via parameter `storage`
+
+// The view comes back wrapped in a struct: `Holder` isn't a reference type, but
+// its slice field is, so returning inner's result over a local buffer dangles
+// all the same.
+
+Holder :: struct {
+	sl: []i64
+}
+
+inner :: fun(storage: ^[]byte) -> Holder {
+	return Holder{slice([:3]i64, storage)}
+}
+
+outer :: fun() -> Holder {
+	storage : [..512]byte
+	return inner(&storage)
+}
+
+main :: fun() {
+	h := outer()
+	print(h.sl[0])
+}
