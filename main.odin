@@ -1001,8 +1001,10 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     // codegen then silently fails on. Aborting at the parse phase keeps
     // the failure attributable to the bad source, not a downstream symptom.
     // The queued diagnostics, then a summary listing every package that
-    // errored.
-    if len(parse_errors) > 0 {
+    // errored. (mara lsp goes on: an editor's files are mid-edit, and what
+    // does parse is checked — the checker's notes on the rest are what
+    // hover and the like answer from; no code is made from it.)
+    if len(parse_errors) > 0 && !args.lsp {
         b := strings.builder_make()
         strings.write_string(&b, take_diagnostics())
         total_errs := 0
@@ -1040,8 +1042,9 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                target_os     = target_os,
                                analysis_only = analysis,
                                no_assert     = args.no_assert,
-                               perf          = perf)
-    if checked.errors > 0 {
+                               perf          = perf,
+                               lower         = !args.lsp)
+    if checked.errors > 0 || len(parse_errors) > 0 {
         return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
     }
     return checked, shared, ""

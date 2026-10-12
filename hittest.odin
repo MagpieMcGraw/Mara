@@ -398,7 +398,12 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         if strings.contains(text, "\n") || strings.has_suffix(text, "…") || t.tag[n] == .Define || t.tag[n] == .Fun_Def { break }
         if text == written { continue }   // (the name: said above)
         ty := hit_type(a, n) if t.tag[n] >= .Number else ""
-        if len(text) > 100 { text = strings.concatenate({text[:100], "…"}, context.temp_allocator) }
+        if len(text) > 100 {
+            // (At a character's start: a cut mid-character isn't text.)
+            cut := 100
+            for cut > 0 && text[cut] & 0xC0 == 0x80 { cut -= 1 }
+            text = strings.concatenate({text[:cut], "…"}, context.temp_allocator)
+        }
         fmt.sbprintf(&sb, "  %s", text)
         if ty != "" { fmt.sbprintf(&sb, "   : %s", ty) }
         fmt.sbprint(&sb, "\n")

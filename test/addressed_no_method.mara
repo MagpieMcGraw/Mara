@@ -1,0 +1,19 @@
+module addressed_no_method
+
+use mara.core
+
+// `&x.f()` with no f at all — no method of x's struct, no fun to call as
+// `f(&x)`: undefined. (Checking `f(&x)`'s argument — the `&` around this
+// call — checked this call again and again: a stack overflow.)
+
+//@ expect-fail: undefined function 'init'
+
+Known :: struct {
+	a: i64
+}
+
+f :: fun(game: ^Known) {
+	&game.init(1)
+}
+
+main :: fun() {}

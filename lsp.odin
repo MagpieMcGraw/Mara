@@ -575,19 +575,20 @@ json_id :: proc(v: json.Value) -> string {
     return "null"
 }
 
-// A string as JSON: quoted, escaped.
+// A string as JSON: quoted, escaped — and UTF-8, as JSON must be: a byte
+// that's no character's (a file's, say) is U+FFFD.
 json_str :: proc(s: string) -> string {
     b := strings.builder_make()
     strings.write_byte(&b, '"')
-    for c in transmute([]byte)s {
-        switch c {
+    for r in s {
+        switch r {
         case '"':  strings.write_string(&b, `\"`)
         case '\\': strings.write_string(&b, `\\`)
         case '\n': strings.write_string(&b, `\n`)
         case '\r': strings.write_string(&b, `\r`)
         case '\t': strings.write_string(&b, `\t`)
         case:
-            if c < 0x20 { fmt.sbprintf(&b, `\u%04x`, c) } else { strings.write_byte(&b, c) }
+            if r < 0x20 { fmt.sbprintf(&b, `\u%04x`, int(r)) } else { strings.write_rune(&b, r) }
         }
     }
     strings.write_byte(&b, '"')

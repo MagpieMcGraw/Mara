@@ -20,6 +20,10 @@ TC :: struct {
     table:         ^SymbolTable,
     checked:       ^Checked_Program,
     gb:            ^Graph_Builder,    // lowering's builder, while it runs (lower.odin)
+    // `&x.f()` calls being checked (tc_method_call). One checked again inside
+    // itself — `f(&x)` with no f: its argument, the `&` around the call,
+    // checked for the error — stops there.
+    addressed_calls: map[Tree_Id]bool,
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
     root:          ^Type_Scope,       // the main module's scope: the root env
@@ -187,7 +191,8 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows,
-                         analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil) -> ^Checked_Program {
+                         analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
+                         lower := true) -> ^Checked_Program {
     table := new(SymbolTable)
     main_mod := new(Type_Scope)
     main_mod.name = main_package
@@ -280,7 +285,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_allocator(k)
     tc_validate_main(k, main)
 
-    if c.errors == 0 {
+    // (lower false: the annotations are all that's wanted — mara lsp's.)
+    if c.errors == 0 && lower {
         // The checker only checks: the graph is lowered from the annotated
         // tree once it is done (lower.odin).
         if perf != nil { perf_timer_mark(perf, "lower") }

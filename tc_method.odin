@@ -12,6 +12,11 @@ import "core:strings"
 
 tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_Id(0)) -> Type {
     tr := k.t
+    if addressed != 0 {
+        if n in k.addressed_calls { return Type_Error{} }   // (inside itself: said where it began)
+        k.addressed_calls[n] = true
+    }
+    defer if addressed != 0 { delete_key(&k.addressed_calls, n) }
     span := tree_span(tr, n)
     mv := method_view(tr, n)
     name := tc_text(mv.name)

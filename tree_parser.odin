@@ -15,17 +15,24 @@ Tree_Parser :: struct {
     file:          string,
     errors:        int,
     no_struct_lit: bool,      // a `{` after an expression opens a body (a condition's)
+    // The statement's first error at a boundary — a line's end, a block's,
+    // the file's — where a token was missing; -1 for none. Recovery stops
+    // there, though the parse went on past it (tp_recover).
+    boundary_error: int,
+    stmt_start:     int,      // where the statement began: recovery never goes back that far
 }
 
 // Parse a file into the build's tree: its root, and how many errors.
 tree_parse_file :: proc(f: ^Source_File) -> (root: Tree_Id, errors: int) {
     t := &build_tree
     tree_init(t)
-    p := Tree_Parser{t = t, tokens = build_tokens[:f.end_token], first = int(f.first_token), pos = int(f.first_token), file = f.path}
+    p := Tree_Parser{t = t, tokens = build_tokens[:f.end_token], first = int(f.first_token), pos = int(f.first_token), file = f.path, boundary_error = -1}
     stmts := make([dynamic]Tree_Id, context.temp_allocator)
     tp_skip_newlines(&p)
     for tp_kind(&p) != .EOF {
         errs := p.errors
+        p.boundary_error = -1
+        p.stmt_start = p.pos
         append(&stmts, tp_stmt(&p))
         if p.errors > errs { tp_recover(&p) }
         tp_skip_separator(&p)
@@ -90,6 +97,7 @@ tp_number :: proc(p: ^Tree_Parser, tok: Token_Id) {
 tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
     tok := build_tokens[at]
+    if p.boundary_error < 0 && tp_is_boundary(tok.kind) { p.boundary_error = int(at) }
     emit_diagnostic(.Parse_Error, format_location(p.file, token_line(tok), token_col(tok)), msg, ..args)
 }
 
@@ -101,12 +109,24 @@ tp_skip_separator :: proc(p: ^Tree_Parser, commas := false) {
     for tp_kind(p) == .Newline || tp_kind(p) == .Semicolon || commas && tp_kind(p) == .Comma { p.pos += 1 }
 }
 
+// After a statement with errors: on to the next one — past the rest of
+// this one's line, to a boundary. (A boundary an error was reported at —
+// a token missing at a line's end — the parse may have gone past: back to
+// it, so the next line isn't skipped too — but never to the statement's
+// start: a statement that's a stray `}` goes on past it.)
 tp_recover :: proc(p: ^Tree_Parser) {
+    if p.boundary_error > p.stmt_start && p.boundary_error < p.pos { p.pos = p.boundary_error }
+    p.boundary_error = -1
     for {
         k := tp_kind(p)
         if k == .Newline || k == .Semicolon || k == .Right_Brace || k == .EOF { return }
         p.pos += 1
     }
+}
+
+// Whether a token ends a statement: a line's end, a `;`, a block's `}`, the file's end.
+tp_is_boundary :: proc(k: Token_Kind) -> bool {
+    return k == .Newline || k == .Semicolon || k == .Right_Brace || k == .EOF
 }
 
 // --- nodes ----------------------------------------------------------------
@@ -268,12 +288,16 @@ tp_block :: proc(p: ^Tree_Parser, commas := false) -> u32 {
     tp_expect(p, .Left_Brace)
     tp_skip_newlines(p)
     stmts := tp_items()
+    outer, outer_start := p.boundary_error, p.stmt_start   // (the statement holding the block's: its own)
     for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
         errs := p.errors
+        p.boundary_error = -1
+        p.stmt_start = p.pos
         append(&stmts, tp_stmt(p))
         if p.errors > errs { tp_recover(p) }
         tp_skip_separator(p, commas)
     }
+    p.boundary_error, p.stmt_start = outer, outer_start
     tp_expect(p, .Right_Brace)
     return tp_list(p, stmts)
 }

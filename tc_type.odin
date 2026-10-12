@@ -52,6 +52,9 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         return tc_primitive(k, tc_name(k, n), span)
     case .Type_Name:
         parts := tree_token_list(t, t.a[n])
+        // (None: a type missing where one was due — the parser said so; only
+        // mara lsp checks on past it.)
+        if len(parts) == 0 { return Type_Error{} }
         if len(parts) > 1 {
             if qt := tc_qualified_type(k, parts, env); qt != nil { return qt }
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))

@@ -1,0 +1,14 @@
+module addressed_unknown_type
+
+use mara.core
+
+// `&x.f()` with x of a type that doesn't exist: that type the one error
+// (the call was checked again and again: a stack overflow).
+
+//@ expect-fail: unknown type 'Nope'
+
+f :: fun(game: ^Nope) {
+	&game.assets.init(&game.vao, "x")
+}
+
+main :: fun() {}
