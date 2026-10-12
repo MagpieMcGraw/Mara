@@ -57,10 +57,10 @@ process :: fun(events: ^Event_State) {
             events.mouse.x = e.x
             events.mouse.y = e.y
         MouseButtonDown
-            events.mouse.pressed[i32(e.button)] = true
-            events.mouse.held[i32(e.button)] = true
+            events.mouse.pressed[i64(e.button)] = true
+            events.mouse.held[i64(e.button)] = true
         MouseButtonUp
-            events.mouse.held[i32(e.button)] = false
+            events.mouse.held[i64(e.button)] = false
         MouseWheel
             events.mouse.wheel += e.y
 

@@ -10,7 +10,7 @@ MAX_PERF_PHASES :: 16
 Performance_Timer :: struct {
     names: [MAX_PERF_PHASES][..64]utf8
     times: [MAX_PERF_PHASES]f64
-    count: i32
+    count: i64
     phase_start: u64
     total_start: u64
 }

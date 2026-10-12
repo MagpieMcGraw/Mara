@@ -51,7 +51,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
 
     // Mesh tracking
     meshes:         [MAX_VAO_MESHES]VAO_Mesh
-    mesh_count:     i32
+    mesh_count:     i64
 
     // Create OpenGL objects
     gl.GenVertexArrays(1, &vao)
@@ -178,7 +178,7 @@ vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
     state.meshes[mesh_index] = mesh
     state.mesh_count += 1
 
-    return i64(mesh_index)
+    return mesh_index
 }
 
 // Reset VAO state for reloading - clears offsets and mesh list but keeps GL resources
