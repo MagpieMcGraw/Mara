@@ -467,19 +467,3 @@ restore_window :: fun(ui: ^Ui) {
 	_ = SetWindowSize(ui.window, i32(w), i32(h))
 	measure(ui)
 }
-
-// A count as digits.
-count_text :: fun(n: i64) -> str64 {
-	backwards : [..24]utf8
-	v := n
-	for true {
-		&backwards + utf8(i64('0') + v % 10)
-		v /= 10
-		if v == 0 do break
-	}
-	out : str64
-	for i in 0 .. backwards.len {
-		&out + backwards[backwards.len - 1 - i]
-	}
-	return out
-}

@@ -1,5 +1,7 @@
 module mara.string
 
+use mara.core
+
 // (cstring lives in mara.core — it's the FFI boundary type, not a string op.)
 
 // Find the first occurrence of `needle` in `haystack`. Returns (offset, true)
@@ -41,4 +43,204 @@ starts_with :: fun(s: []utf8, prefix: []utf8) -> bool {
 		if s[i] != prefix[i] do return false
 	}
 	return true
+}
+
+// Whether s ends with `suffix` — a file's extension, say: ends_with(name, ".mara").
+ends_with :: fun(s: []utf8, suffix: []utf8) -> bool {
+	if s.len < suffix.len do return false
+	return s[s.len - suffix.len : s.len] == suffix
+}
+
+// Whether s has `what` anywhere in it.
+contains :: fun(s: []utf8, what: []utf8) -> bool {
+	for k in 0 .. s.len - what.len + 1 {
+		if s[k : k + what.len] == what do return true
+	}
+	return false
+}
+
+// Whether s has `what` anywhere in it, letters' case not minded: A to Z as a to z.
+contains_folded :: fun(s: []utf8, what: []utf8) -> bool {
+	for k in 0 .. s.len - what.len + 1 {
+		same := true
+		for i in 0 .. what.len {
+			if lower(s[k + i]) != lower(what[i]) {
+				same = false
+				break
+			}
+		}
+		if same do return true
+	}
+	return false
+}
+
+// The text without the spaces, tabs and line ends at its start and its end.
+trimmed :: fun(s: []utf8) -> []utf8 {
+	a : i64 = 0
+	b := s.len
+	for a < b {
+		if s[a] != ' ' and s[a] != '\t' and s[a] != '\r' and s[a] != '\n' do break
+		a += 1
+	}
+	for b > a {
+		if s[b - 1] != ' ' and s[b - 1] != '\t' and s[b - 1] != '\r' and s[b - 1] != '\n' do break
+		b -= 1
+	}
+	return s[a : b]
+}
+
+// Where the spaces and tabs from s[k] end: k itself when there are none.
+skip_spaces :: fun(s: []utf8, k: i64) -> i64 {
+	at := k
+	for at < s.len {
+		if s[at] != ' ' and s[at] != '\t' do break
+		at += 1
+	}
+	return at
+}
+
+// Where the line from `at` ends: at its '\n', or at the text's end. Step
+// through a text's lines with it: the next starts at end + 1.
+// (A '\r' before the '\n' is the line's last character.)
+line_end :: fun(text: []utf8, at: i64) -> i64 {
+	end := at
+	for end < text.len {
+		if text[end] == '\n' do break
+		end += 1
+	}
+	return end
+}
+
+// A letter in lower case (A to Z); any other character as it is.
+lower :: fun(ch: utf8) -> utf8 {
+	c := i64(ch)
+	if c >= i64('A') and c <= i64('Z') do return utf8(c + 32)
+	return ch
+}
+
+// A letter in upper case (a to z); any other character as it is.
+upper :: fun(ch: utf8) -> utf8 {
+	c := i64(ch)
+	if c >= i64('a') and c <= i64('z') do return utf8(c - 32)
+	return ch
+}
+
+// The character at s[at] — its code point, UTF-8 decoded — and how many
+// bytes it takes. Step through a text's characters with it: at += n.
+// (A byte that doesn't begin one, or one cut off at the text's end: U+FFFD,
+// and the bytes it has.)
+char_at :: fun(s: []utf8, at: i64) -> u32, i64 {
+	b := u32(s[at])
+	if b < 0x80 do return b, 1
+	n : i64 = 0
+	c : u32 = 0
+	if b >= 0xF0 {
+		n = 4
+		c = b & 0x07
+	elif b >= 0xE0
+		n = 3
+		c = b & 0x0F
+	elif b >= 0xC0
+		n = 2
+		c = b & 0x1F
+	else
+		return u32(0xFFFD), 1
+	}
+	if at + n > s.len do return u32(0xFFFD), s.len - at
+	for k in 1 .. n {
+		c = (c << 6) | (u32(s[at + k]) & 0x3F)
+	}
+	return c, n
+}
+
+// Which of two texts comes first, for sorting: -1 a, 0 the same, 1 b. Byte
+// by byte; a text that is the start of the other comes first.
+compare :: fun(a: []utf8, b: []utf8) -> i64 {
+	n := a.len
+	if b.len < n do n = b.len
+	for i in 0 .. n {
+		ca := i64(a[i])
+		cb := i64(b[i])
+		if ca < cb do return -1
+		if ca > cb do return 1
+	}
+	if a.len < b.len do return -1
+	if a.len > b.len do return 1
+	return 0
+}
+
+// Which of two texts comes first (see compare), letters' case not minded:
+// A to Z as a to z.
+compare_folded :: fun(a: []utf8, b: []utf8) -> i64 {
+	n := a.len
+	if b.len < n do n = b.len
+	for i in 0 .. n {
+		ca := i64(lower(a[i]))
+		cb := i64(lower(b[i]))
+		if ca < cb do return -1
+		if ca > cb do return 1
+	}
+	if a.len < b.len do return -1
+	if a.len > b.len do return 1
+	return 0
+}
+
+// The number a text spells — digits, maybe a point and more digits, maybe a
+// '-' first — and whether it is one: false when anything else is in it, or
+// it has no digit. ("12", "-0.5", "3." and ".5" are; "1e3" and "+1" aren't.)
+parse_number :: fun(s: []utf8) -> f64, bool {
+	v : f64 = 0
+	digits := 0
+	i : i64 = 0
+	negative := false
+	if s.len > 0 {
+		if s[0] == '-' {
+			negative = true
+			i = 1
+		}
+	}
+	for i < s.len {
+		d := i64(s[i]) - i64('0')
+		if d < 0 or d > 9 do break
+		v = v * 10.0 + f64(d)
+		digits += 1
+		i += 1
+	}
+	if i < s.len {
+		if s[i] == '.' {
+			i += 1
+			place : f64 = 0.1
+			for i < s.len {
+				d := i64(s[i]) - i64('0')
+				if d < 0 or d > 9 do break
+				v += f64(d) * place
+				place *= 0.1
+				digits += 1
+				i += 1
+			}
+		}
+	}
+	if negative do v = -v
+	return v, digits > 0 and i == s.len
+}
+
+// A whole number as text: its digits, a '-' first when it's below 0.
+int_text :: fun(n: i64) -> str64 {
+	backwards : [..24]utf8
+	v := n
+	for true {
+		// (Each digit off v's end without negating v: -v doesn't fit for the
+		// smallest i64.)
+		d := v % 10
+		if d < 0 do d = -d
+		&backwards + utf8(i64('0') + d)
+		v /= 10
+		if v == 0 do break
+	}
+	out : str64
+	if n < 0 do &out + '-'
+	for i in 0 .. backwards.len {
+		&out + backwards[backwards.len - 1 - i]
+	}
+	return out
 }

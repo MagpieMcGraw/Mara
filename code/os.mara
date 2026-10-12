@@ -46,6 +46,47 @@ SEEK_SET :: 0   // relative to the start of the file
 SEEK_CUR :: 1   // relative to the current position
 SEEK_END :: 2   // relative to the end of the file
 
+// The directory a path is in: the path up to its last separator ('/' or
+// '\'), without it. Empty for a name alone.
+parent_dir :: fun(path: []utf8) -> []utf8 {
+	end : i64 = 0
+	for i in 0 .. path.len {
+		if path[i] == '/' or path[i] == '\\' do end = i
+	}
+	return path[0 : end]
+}
+
+// The path without the separators at its end ('/' or '\').
+trim_separators :: fun(path: []utf8) -> []utf8 {
+	n := path.len
+	for n > 0 {
+		if path[n - 1] != '/' and path[n - 1] != '\\' do break
+		n -= 1
+	}
+	return path[0 : n]
+}
+
+// Whether two paths name the same place: '/' and '\' alike, separators at
+// their ends not minded, and on Windows letters' case not minded (as its
+// file system doesn't). Text only: neither path is looked up.
+same_path :: fun(a: []utf8, b: []utf8) -> bool {
+	x := trim_separators(a)
+	y := trim_separators(b)
+	if x.len != y.len do return false
+	for i in 0 .. x.len {
+		cx := x[i]
+		cy := y[i]
+		if cx == '/' do cx = '\\'
+		if cy == '/' do cy = '\\'
+		#if #windows {
+			cx = lower(cx)
+			cy = lower(cy)
+		}
+		if cx != cy do return false
+	}
+	return true
+}
+
 // DANGER BELOW
 
 // Scan a C-owned NUL-terminated buffer into an honest slice: len is the

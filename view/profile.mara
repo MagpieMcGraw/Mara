@@ -3,6 +3,7 @@ module view
 use mara.core
 use mara.os
 use mara.math
+use mara.string
 
 // A profile.txt (`mara build -profile`, written when the program ends):
 // header lines, the line naming the columns, then a row per fun — the
@@ -212,36 +213,6 @@ next_word :: fun(text: []utf8, at: i64) -> Field {
 	return Field{at = i, len = j - i}
 }
 
-// A number as profile.txt writes them — digits, a point, digits — and
-// whether it is one.
-parse_number :: fun(s: []utf8) -> f64, bool {
-	v : f64 = 0
-	digits := 0
-	i : i64 = 0
-	for i < s.len {
-		d := i64(s[i]) - i64('0')
-		if d < 0 or d > 9 do break
-		v = v * 10.0 + f64(d)
-		digits += 1
-		i += 1
-	}
-	if i < s.len {
-		if s[i] == '.' {
-			i += 1
-			place : f64 = 0.1
-			for i < s.len {
-				d := i64(s[i]) - i64('0')
-				if d < 0 or d > 9 do break
-				v += f64(d) * place
-				place *= 0.1
-				digits += 1
-				i += 1
-			}
-		}
-	}
-	return v, digits > 0 and i == s.len
-}
-
 // The rows' order: as in the file, or by the column sorted by — numbers
 // largest first when descending, text A to Z (reversed when descending);
 // rows that tie keep the file's order.
@@ -310,25 +281,7 @@ row_before :: fun(p: ^Profile, a: i64, b: i64) -> bool {
 // -1, 0 or 1: a before b, the same, or after — letters' case not minded
 // (Arena after append), then minded, so the order is one.
 compare_text :: fun(a: []utf8, b: []utf8) -> i64 {
-	order := compare_bytes(a, b, true)
+	order := compare_folded(a, b)
 	if order != 0 do return order
-	return compare_bytes(a, b, false)
-}
-
-// -1, 0 or 1, byte by byte; `fold`: A to Z as a to z.
-compare_bytes :: fun(a: []utf8, b: []utf8, fold: bool) -> i64 {
-	n := min_int(a.len, b.len)
-	for i in 0 .. n {
-		ca := i64(a[i])
-		cb := i64(b[i])
-		if fold {
-			if ca >= i64('A') and ca <= i64('Z') do ca += 32
-			if cb >= i64('A') and cb <= i64('Z') do cb += 32
-		}
-		if ca < cb do return -1
-		if ca > cb do return 1
-	}
-	if a.len < b.len do return -1
-	if a.len > b.len do return 1
-	return 0
+	return compare(a, b)
 }

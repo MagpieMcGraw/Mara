@@ -1,6 +1,7 @@
 module view
 
 use mara.core
+use mara.string
 use mara.math
 use mara.sdl
 
@@ -173,7 +174,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	// The status line.
 	status : [..300]utf8
 	&status + "profile.txt: "
-	&status + count_text(p.rows.len)
+	&status + int_text(p.rows.len)
 	&status + " funs"
 	if p.sort_by < 0 {
 		&status + ", as in the file (most total time first). Click a column title to sort by it."

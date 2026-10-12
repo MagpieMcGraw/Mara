@@ -1,0 +1,68 @@
+module string_helpers
+
+use mara.core
+use mara.string
+use mara.os
+
+// The text helpers mara.string has and the path helpers mara.os has, that
+// the view window (view/) wrote for itself first: each on its edges — empty
+// texts, a word longer than the text, the smallest i64, a cut-off number.
+
+//@ expect-output: ends: true false true
+//@ expect-output: contains: true false true false
+//@ expect-output: folded: true true false
+//@ expect-output: trimmed: [a b]
+//@ expect-output: skip: 2 0 3
+//@ expect-output: lines: one|two|three|
+//@ expect-output: case: a Z 1 a Z
+//@ expect-output: chars: 97 1 8212 3
+//@ expect-output: compare: -1 0 1 -1 -1
+//@ expect-output: folded compare: 0 1 -1
+//@ expect-output: numbers: true true true true false false false true true
+//@ expect-output: ints: 0 7 -42 9223372036854775807 -9223372036854775808
+//@ expect-output: paths: [C:\a\b] [] [dir] [a/b]
+//@ expect-output: same: true true false
+
+main :: fun() {
+	print("ends:", ends_with("view.mara", ".mara"), ends_with("ma", ".mara"), ends_with("x", ""))
+	print("contains:", contains("banana", "nan"), contains("ab", "abcd"), contains("", ""), contains("abc", "x"))
+	print("folded:", contains_folded("Read_Entire_File", "entire"), contains_folded("abc", "ABC"), contains_folded("ab", "abc"))
+	print("trimmed: [%]", trimmed("  \t a b \r\n"))
+	print("skip:", skip_spaces("  x", 0), skip_spaces("x", 0), skip_spaces("a \tb", 1))
+
+	// Each line, its '\r' trimmed off; a text ending in '\n' has an empty last line.
+	text := "one\ntwo\r\nthree\n"
+	lines : str64
+	at : i64 = 0
+	for at <= text.len {
+		end := line_end(text, at)
+		&lines + trimmed(text[at : end])
+		if end < text.len do &lines + '|'
+		at = end + 1
+	}
+	print("lines:", lines)
+
+	print("case:", lower('A'), upper('z'), lower('1'), lower('a'), upper('Z'))
+
+	dash := "a—b"
+	c0, n0 := char_at(dash, 0)
+	c1, n1 := char_at(dash, 1)
+	print("chars:", c0, n0, c1, n1)
+
+	print("compare:", compare("a", "b"), compare("ab", "ab"), compare("b", "a"), compare("ab", "abc"), compare("B", "a"))
+	print("folded compare:", compare_folded("ABC", "abc"), compare_folded("B", "a"), compare_folded("a", "B"))
+
+	a, ok_a := parse_number("12")
+	b, ok_b := parse_number("-0.5")
+	_, ok_c := parse_number("1e3")
+	_, ok_d := parse_number("-")
+	_, ok_e := parse_number("")
+	c, ok_f := parse_number("3.")
+	print("numbers:", a == 12.0, ok_a, b == -0.5, ok_b, ok_c, ok_d, ok_e, c == 3.0, ok_f)
+
+	big : i64 = 9223372036854775807
+	print("ints:", int_text(0), int_text(7), int_text(-42), int_text(big), int_text(-big - 1))
+
+	print("paths: [%] [%] [%] [%]", parent_dir("C:\\a\\b\\c.mara"), parent_dir("name"), trim_separators("dir//"), parent_dir("a/b\\c"))
+	print("same:", same_path("C:/Code/Mara/", "c:\\code\\mara"), same_path("a/b", "a/b"), same_path("a/b", "a/bc"))
+}

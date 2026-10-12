@@ -3,6 +3,7 @@ module view
 use mara.core
 use mara.os
 use mara.math
+use mara.string
 
 // The Docs panel's search: words — what's selected in the editor, sent by
 // `mara docs` — looked up in the .mara files of the directory they came from
@@ -120,14 +121,14 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
 		lines_status(l, status[:], STYLE_BAD)
 		return
 	}
-	&status + count_text(d.count)
+	&status + int_text(d.count)
 	&status + " found for \""
 	&status + shown_query
 	&status + "\""
 	where_looked(ui, dir, &status)
 	if d.count > d.found.len {
 		&status + ", the best "
-		&status + count_text(d.found.len)
+		&status + int_text(d.found.len)
 		&status + " shown"
 	}
 	&status + "."
@@ -240,41 +241,6 @@ stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 	&doc + ui.compiler_dir
 	&doc + "doc"
 	return same_path(dir, code) or same_path(dir, doc) or same_path(parent_dir(trim_separators(dir)), code)
-}
-
-// Whether two paths name one directory: a separator at the end, '/' or
-// '\', and letters' case not minded (as Windows doesn't).
-same_path :: fun(a: []utf8, b: []utf8) -> bool {
-	x := trim_separators(a)
-	y := trim_separators(b)
-	if x.len != y.len do return false
-	for i in 0 .. x.len {
-		cx := lower(x[i])
-		cy := lower(y[i])
-		if cx == '/' do cx = '\\'
-		if cy == '/' do cy = '\\'
-		if cx != cy do return false
-	}
-	return true
-}
-
-// The path without the separators at its end.
-trim_separators :: fun(path: []utf8) -> []utf8 {
-	n := path.len
-	for n > 0 {
-		if path[n - 1] != '/' and path[n - 1] != '\\' do break
-		n -= 1
-	}
-	return path[0 : n]
-}
-
-// The directory a path is in: the path to its last separator.
-parent_dir :: fun(path: []utf8) -> []utf8 {
-	end : i64 = 0
-	for i in 0 .. path.len {
-		if path[i] == '/' or path[i] == '\\' do end = i
-	}
-	return path[0 : end]
 }
 
 // The .mara files in a directory read into d.source, as many as fit — a
@@ -534,7 +500,7 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	&title + "   "
 	&title + d.files[f].path[:]
 	&title + ":"
-	&title + count_text(ex.line)
+	&title + int_text(ex.line)
 	lines_add(l, title[:], STYLE_TITLE)
 	docs_show_body(d, l, Found{file = f, line = ex.line, at = at, doc = comment_above(text, at), kind = DEF_LINE})
 }
@@ -584,7 +550,7 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	&title + "   "
 	&title + d.files[fd.file].path[:]
 	&title + ":"
-	&title + count_text(fd.line)
+	&title + int_text(fd.line)
 	lines_add(l, title[:], STYLE_TITLE)
 	docs_show_body(d, l, fd)
 }
@@ -692,16 +658,6 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 	lines_add(l, shown[:], STYLE_CODE)
 }
 
-// Where the line from `at` ends: its '\n', or the text's end.
-line_end :: fun(text: []utf8, at: i64) -> i64 {
-	end := at
-	for end < text.len {
-		if text[end] == '\n' do break
-		end += 1
-	}
-	return end
-}
-
 // The line's indentation in columns (a tab, TAB_SPACES), and where its text
 // begins — a carriage return at its end left off by the caller's end.
 indentation :: fun(text: []utf8, at: i64, end: i64) -> i64, i64 {
@@ -720,31 +676,6 @@ indentation :: fun(text: []utf8, at: i64, end: i64) -> i64, i64 {
 	return col, k
 }
 
-// The text without the spaces, tabs and carriage return at its ends.
-trimmed :: fun(s: []utf8) -> []utf8 {
-	a : i64 = 0
-	b := s.len
-	for a < b {
-		if s[a] != ' ' and s[a] != '\t' and s[a] != '\r' do break
-		a += 1
-	}
-	for b > a {
-		if s[b - 1] != ' ' and s[b - 1] != '\t' and s[b - 1] != '\r' do break
-		b -= 1
-	}
-	return s[a : b]
-}
-
-// Past the spaces from k.
-skip_spaces :: fun(s: []utf8, k: i64) -> i64 {
-	at := k
-	for at < s.len {
-		if s[at] != ' ' and s[at] != '\t' do break
-		at += 1
-	}
-	return at
-}
-
 // How long the name at s[k] is: letters, digits, _ and dots (a module's
 // name has them); 0 for none.
 word_at :: fun(s: []utf8, k: i64) -> i64 {
@@ -760,40 +691,4 @@ word_at :: fun(s: []utf8, k: i64) -> i64 {
 is_word_char :: fun(ch: utf8) -> bool {
 	c := i64(ch)
 	return (c >= i64('a') and c <= i64('z')) or (c >= i64('A') and c <= i64('Z')) or (c >= i64('0') and c <= i64('9')) or ch == '_'
-}
-
-// A letter in lower case; anything else as it is.
-lower :: fun(ch: utf8) -> utf8 {
-	c := i64(ch)
-	if c >= i64('A') and c <= i64('Z') do return utf8(c + 32)
-	return ch
-}
-
-// Whether s begins with what.
-starts_with :: fun(s: []utf8, what: []utf8) -> bool {
-	if s.len < what.len do return false
-	return s[0 : what.len] == what
-}
-
-// Whether s has what in it.
-contains :: fun(s: []utf8, what: []utf8) -> bool {
-	for k in 0 .. s.len - what.len + 1 {
-		if s[k : k + what.len] == what do return true
-	}
-	return false
-}
-
-// Whether s has `word` (lower case) in it, s's case not minded.
-contains_folded :: fun(s: []utf8, word: []utf8) -> bool {
-	for k in 0 .. s.len - word.len + 1 {
-		same := true
-		for i in 0 .. word.len {
-			if lower(s[k + i]) != word[i] {
-				same = false
-				break
-			}
-		}
-		if same do return true
-	}
-	return false
 }

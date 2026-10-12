@@ -1,6 +1,7 @@
 module view
 
 use mara.core
+use mara.string
 use mara.os
 use mara.math
 use mara.sdl

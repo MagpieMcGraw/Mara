@@ -15,6 +15,7 @@ module directories
 
 use mara.core
 use mara.os
+use mara.string
 include mara.memory
 
 main :: fun() {
@@ -31,7 +32,7 @@ main :: fun() {
 	for entry in entries {
 		name : []utf8 = entry.name[:]
 		if entry.dir do continue
-		if name.len > 5 and name[name.len - 5 : name.len] == ".mara" do pages += 1
+		if ends_with(name, ".mara") do pages += 1
 	}
 	print("doc/ has % pages, this one among them", pages)
 

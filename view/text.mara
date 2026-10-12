@@ -4,6 +4,7 @@ use mara.core
 use mara.math
 use mara.font
 use mara.sdl
+use mara.string
 
 // Text drawn pixel for pixel: a font's glyphs at one size (mara.font's
 // coverage), white in a texture, drawn in any color by color mod. Text is
@@ -98,32 +99,6 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 		pen += g.advance
 	}
 	return pen
-}
-
-// The character at s[at] — its code point — and how many bytes it takes.
-// (A byte that doesn't begin one, or one cut off: U+FFFD, the bytes it has.)
-char_at :: fun(s: []utf8, at: i64) -> u32, i64 {
-	b := u32(s[at])
-	if b < 0x80 do return b, 1
-	n : i64 = 0
-	c : u32 = 0
-	if b >= 0xF0 {
-		n = 4
-		c = b & 0x07
-	elif b >= 0xE0
-		n = 3
-		c = b & 0x0F
-	elif b >= 0xC0
-		n = 2
-		c = b & 0x1F
-	else
-		return u32(0xFFFD), 1
-	}
-	if at + n > s.len do return u32(0xFFFD), s.len - at
-	for k in 1 .. n {
-		c = (c << 6) | (u32(s[at + k]) & 0x3F)
-	}
-	return c, n
 }
 
 // A character's glyph: '?' for one the glyphs don't have.

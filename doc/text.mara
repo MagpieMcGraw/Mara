@@ -3,11 +3,17 @@
 // Text is utf8 characters. A literal "like this" can't change. A buffer
 // can: `name : str64` holds up to 64 characters (str256 and str1024 hold
 // more, `[..N]utf8` any N), and `&name + "more"` adds to it. `s[a:b]` is
-// part of a text, without a copy. Searching is in mara.string: find,
-// find_byte, starts_with.
+// part of a text, without a copy.
+//
+// The rest is in mara.string. Searching: find, find_byte, starts_with,
+// ends_with, contains, contains_folded (letters' case not minded). Taking a
+// text apart: trimmed, line_end, skip_spaces. Sorting: compare,
+// compare_folded. Case: lower, upper. A number to text and back: int_text,
+// parse_number.
 //
 // Two texts compare with `==` and `!=`, by their characters. Characters
-// aren't numbers: convert one with i64(c) to do arithmetic.
+// aren't numbers: convert one with i64(c) to do arithmetic. A character
+// past ASCII's takes more than one utf8: char_at reads it whole.
 module text
 
 use mara.core
@@ -35,7 +41,16 @@ main :: fun() {
 	print(starts_with(name, "Ada"))          // true
 	_, has_comma := find_byte(name, ',')
 	print(has_comma)                         // false
+	print(ends_with("text.mara", ".mara"), contains_folded(name, "LOVE"))   // true true
+	print(trimmed("  padded \r\n"))          // padded
+	print(compare("apple", "banana"))        // -1: apple comes first
 
 	digit := '7'
 	print(i64(digit) - i64('0'))             // 7
+
+	// A number to text, and back.
+	count := int_text(-42)
+	print(count, count.len)                  // -42 3
+	n, ok := parse_number("2.5")
+	print(n, ok)                             // 2.5 true
 }

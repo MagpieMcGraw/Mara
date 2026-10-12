@@ -1,6 +1,7 @@
 module view
 
 use mara.core
+use mara.string
 use mara.os
 use mara.math
 use mara.sdl
@@ -574,9 +575,9 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 layout_save :: fun(ui: ^Ui) {
 	text : [..1000]utf8
 	&text + "mara view layout\nwindow "
-	&text + count_text(i64(ui.width))
+	&text + int_text(i64(ui.width))
 	&text + " "
-	&text + count_text(i64(ui.height))
+	&text + int_text(i64(ui.height))
 	&text + "\ntheme "
 	if ui.light {
 		&text + "light"
@@ -588,15 +589,15 @@ layout_save :: fun(ui: ^Ui) {
 		&text + "panel "
 		&text + panel_name(pn.kind)
 		&text + " "
-		&text + count_text(i64(pn.shown))
+		&text + int_text(i64(pn.shown))
 		&text + " "
-		&text + count_text(i64(floor_f32(pn.box.x + 0.5)))
+		&text + int_text(i64(floor_f32(pn.box.x + 0.5)))
 		&text + " "
-		&text + count_text(i64(floor_f32(pn.box.y + 0.5)))
+		&text + int_text(i64(floor_f32(pn.box.y + 0.5)))
 		&text + " "
-		&text + count_text(i64(floor_f32(pn.box.w + 0.5)))
+		&text + int_text(i64(floor_f32(pn.box.w + 0.5)))
 		&text + " "
-		&text + count_text(i64(floor_f32(pn.box.h + 0.5)))
+		&text + int_text(i64(floor_f32(pn.box.h + 0.5)))
 		&text + "\n"
 	}
 	id, oe := file_open_write(ui.layout_path)
