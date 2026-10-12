@@ -7,8 +7,9 @@ use mara.memory
 //@ expect-output: tagged 5 7 true
 
 // Where a call's struct result is built (llvm_result_place, fun_summary).
-// `v = swap(&v)`: swap reads through p after it starts writing its result, so
-// the result goes in a temporary — built in v, it would read its own writes.
+// `v = swap(&v)` is an error (result_reads_dest_neg): swap would read
+// through p what its result overwrites. Built under a name of its own first,
+// `r := swap(&v)`, then assigned: r is fresh storage swap can't reach.
 // `h.big = tag(&h.n, "label")`: tag only keeps p in its result and reads
 // constant text, so the 4 KB result is built straight in h.big (a temporary
 // that big is an error: bigtemp_neg).
@@ -38,7 +39,8 @@ main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 
 	v := V{ x = 1, y = 2 }
-	v = swap(&v)
+	r := swap(&v)
+	v = r
 	print("swapped", v.x, v.y)
 
 	h : Holder

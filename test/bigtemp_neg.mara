@@ -1,10 +1,11 @@
 module bigtemp_neg
 //@ expect-fail: too large for the stack
 
-// A call's struct result goes into a place the call can reach through its
-// argument (`p` points into `h.big`), so it can't be built there: it needs a
-// temporary, and one of 4 KB is too large for the stack. An error here, not a
-// stack overflow when it runs.
+// A call's struct result goes into a place the call may reach through its
+// argument (`p` may point into `h.big`), so it can't be built there: it needs
+// a temporary, and one of 4 KB is too large for the stack. An error here, not
+// a stack overflow when it runs. (Handed `&h.big.a[0]` itself — surely its
+// result's place — the error says so: result_reads_dest_neg.)
 
 use mara.memory
 
@@ -27,6 +28,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 	h : Holder
 	h.big.a[0] = 21
-	h.big = first_doubled(&h.big.a[0])
+	p := &h.big.a[0]
+	h.big = first_doubled(p)
 	print(h.big.a[0])
 }

@@ -1,0 +1,24 @@
+module result_reads_dest_neg
+//@ expect-fail: 'swap' is handed &v while its result is written into v
+
+use mara.core
+
+// A call handed a place its own result is written into — `v = swap(&v)`,
+// `g.big = make(&g)` — would read what it overwrites: an error, not a hidden
+// copy. Built under a name of its own first (`r := swap(&v)`), then assigned:
+// inplace_result.
+
+V :: struct {
+	x: i64
+	y: i64
+}
+
+swap :: fun(p: ^V) -> V {
+	return V{x = p.y, y = p.x}
+}
+
+main :: fun() {
+	v := V{x = 1, y = 2}
+	v = swap(&v)
+	print(v.x, v.y)
+}

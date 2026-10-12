@@ -1,0 +1,49 @@
+module hoisted_reads
+
+// A value built in place over what it reads: a number read from the old
+// value — `p = P{x = p.y, y = p.x}`, `g.big = Big{n = g.big.n + 5}` — is read
+// before the first write, as a temporary would have read it; so it needs
+// none (one as big as Big had been an error). A call between — which may
+// change what's read — keeps the temporary: `bump` writes g.p.y first.
+
+//@ expect-output: fields swapped: 2 1 (want 2 1)
+//@ expect-output: big self-read: 15 (want 15)
+//@ expect-output: through a pointer: 20 (want 20)
+//@ expect-output: a call first: 1 104 (want 1 104)
+
+use mara.core
+include mara.memory
+P :: struct {
+	x: i64 = 0
+	y: i64 = 0
+}
+Big :: struct {
+	data: [200]i64
+	n: i64 = 1
+}
+G :: struct {
+	big: Big
+	p: P
+}
+bump :: fun(v: ^i64) -> i64 {
+	v^ += 100
+	return 1
+}
+grow :: fun(game: ^G) {
+	game.big = Big{n = game.big.n + 5}
+}
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+	p := P{x = 1, y = 2}
+	p = P{x = p.y, y = p.x}
+	print("fields swapped:", p.x, p.y, "(want 2 1)")
+	g : G
+	g.big.n = 10
+	g.big = Big{n = g.big.n + 5}
+	print("big self-read:", g.big.n, "(want 15)")
+	grow(&g)
+	print("through a pointer:", g.big.n, "(want 20)")
+	g.p = P{x = 3, y = 4}
+	g.p = P{x = bump(&g.p.y), y = g.p.y}
+	print("a call first:", g.p.x, g.p.y, "(want 1 104)")
+}

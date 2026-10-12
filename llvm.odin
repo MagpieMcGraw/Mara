@@ -54,6 +54,7 @@ Llvm :: struct {
     temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark (llvm_big_temps)
     swaps:   map[Node_Id][2]Node_Id,    // a swap's first put → the two places it swaps (llvm_swaps)
     swapped: map[Node_Id]bool,          // a swap's held locals: no storage, their operations skipped
+    hoist:   map[Node_Id][dynamic]Node_Id, // a value's first write in place → the reads of its place taken before it (llvm_builds_alone)
     lazy:    map[Node_Id]bool,          // a big temporary in main's body: bumped where it's first named
     ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
     outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
@@ -278,6 +279,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
             if d, is := e.alias[op]; is { e.value[op] = e.value[d]; continue }
             e.stop = op
+            if !llvm_hoist_reads(e, op) { return false }
             if !llvm_op(e, op) { return false }
         }
     }
@@ -738,21 +740,78 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
         for op in before[:first] { if op == x { known = true } }
         if !known { return false }
     }
-    // From its first write on, nothing read (or pointed at) is x's storage.
+    // From its first write on, nothing read (or pointed at) is x's storage —
+    // but a number read from it with nothing written anywhere else first (no
+    // call, no other write: `x = X{n = x.n + 5}`) is read before the first
+    // write instead, as the temporary would have read it (llvm_hoist_reads).
+    hoists := make([dynamic]Node_Id, context.temp_allocator)
+    clean := true   // (nothing but t's own writes and pure operations so far)
     for op in before[first:] {
         ops := graph_operands(pg, op)
         #partial switch pg.op[op] {
         case .Read, .Address:
             if llvm_where(e, ops[0].op).root == t { continue }
             if pg.op[op] == .Read && llvm_direct(e, ops[0].op) { continue }   // a value, in no memory
-            if llvm_overlaps(e, ops[0].op, x) { return false }
+            if llvm_overlaps(e, ops[0].op, x) {
+                if pg.op[op] == .Read && clean && llvm_scalar(graph_type(pg, op)) && llvm_ahead_able(e, ops[0].op) {
+                    append(&hoists, op)
+                    continue
+                }
+                return false
+            }
         case .Construct:
-            // t's own construction, handed arguments.
-            if len(ops) == 1 || pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { continue }
+            // t's own construction, handed arguments (handed no storage, its
+            // constructor writes nothing but t: still clean). Another's: not.
+            if pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { clean = false; continue }
+            if len(ops) == 1 { continue }
             callee := graph_called(e.pg, op)
-            if callee == nil || llvm_passes_storage(callee) { return false }
+            if callee == nil { return false }
+            if llvm_passes_storage(callee) {
+                reaches, mine := llvm_call_reaches(e, op, x, first = 1)
+                if mine != NO_NODE { llvm_reads_its_dest(e, op, mine, x, callee) }
+                if reaches { return false }
+            }
             if _, consumes := graph_consumed(&e.g.checked.code, callee).?; consumes { return false }
+        case .Write, .Zero, .Fill:
+            if llvm_where(e, ops[0].op).root != t { clean = false }
+        case .Var, .Field, .Variant, .Index, .Deref, .Const, .Arith, .Compare, .Unary, .Cast, .Swizzle, .Global:
+        case:
+            clean = false
         }
+    }
+    if len(hoists) > 0 {
+        if before[first] not_in e.hoist { e.hoist[before[first]] = make([dynamic]Node_Id, context.temp_allocator) }
+        append(&e.hoist[before[first]], ..hoists[:])
+    }
+    return true
+}
+
+// Whether place p's address can be had ahead of its turn (llvm_ahead, which
+// computes it): a variable, a field or variant of one such, a constant
+// element, what a pointer variable points at.
+@(private="file")
+llvm_ahead_able :: proc(e: ^Llvm, p: Node_Id) -> bool {
+    pg := e.pg
+    if pg.op[p] == .Var { return true }
+    ops := graph_operands(pg, p)
+    #partial switch pg.op[p] {
+    case .Field, .Variant, .Deref: return llvm_ahead_able(e, ops[0].op)
+    case .Index: return ops[1].op != NO_NODE && pg.op[ops[1].op] == .Const && llvm_ahead_able(e, ops[0].op)
+    }
+    return false
+}
+
+// The reads of a value's place taken before its first write in place
+// (llvm_builds_alone): each read now, its place computed ahead — then
+// skipped at its turn.
+@(private="file")
+llvm_hoist_reads :: proc(e: ^Llvm, at: Node_Id) -> bool {
+    reads, has := e.hoist[at]
+    if !has { return true }
+    for r in reads {
+        if !llvm_ahead(e, graph_operands(e.pg, r)[0].op) { return false }
+        if !llvm_op(e, r) { return false }
+        e.ahead[r] = true
     }
     return true
 }
@@ -3161,7 +3220,9 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // The functional update `x = f(x, …)` (llvm_in_place_updates): x
                 // is both the argument and the result slot.
                 if e.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                if !llvm_call_reaches(e, op, dest) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
+                reaches, mine := llvm_call_reaches(e, op, dest)
+                if mine != NO_NODE { llvm_reads_its_dest(e, op, mine, dest, callee) }
+                if !reaches && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
     }
@@ -3207,14 +3268,17 @@ Fun_Summary :: struct {
 // the argument is constant text, which no place being built can be, or the
 // storage it hands over is plain data apart from dest (llvm_overlaps): what
 // the callee reaches is that storage, and no pointer out of it.
+// (`mine`: an argument that is `&place`, place surely overlapping dest —
+// it would read what its result is overwriting: llvm_result_place's error.)
 @(private="file")
-llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id) -> bool {
+llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (reaches: bool, mine: Node_Id) {
     pg := e.pg
+    mine = NO_NODE
     callee := graph_called(pg, op)
-    if callee == nil { return true }   // (through a function value: unknown)
+    if callee == nil { return true, mine }   // (through a function value: unknown)
     s := fun_summary(e.g, callee)
-    ops := graph_operands(pg, op)
-    if len(ops) != len(s.reaches) { return true }
+    ops := graph_operands(pg, op)[first:]
+    if len(ops) != len(s.reaches) { return true, mine }
     for o, k in ops {
         if !s.reaches[k] { continue }
         at := o.op
@@ -3227,9 +3291,38 @@ llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id) -> bool {
         case .Var, .Field, .Index, .Deref, .Variant: place = at
         }
         if place != NO_NODE && is_plain_data(graph_type(pg, place)) && !llvm_overlaps(e, place, dest) { continue }
-        return true
+        if pg.op[at] == .Address && mine == NO_NODE && llvm_contains(e, place, dest) { mine = at }
+        reaches = true
     }
-    return false
+    return
+}
+
+// Whether two places surely overlap: from one variable by the same steps
+// (elements by number) until one ends — it holds the other, or is it.
+@(private="file")
+llvm_contains :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
+    ra, sa, oka := llvm_path(e, a)
+    rb, sb, okb := llvm_path(e, b)
+    if !oka || !okb || ra != rb { return false }
+    for i in 0 ..< min(len(sa), len(sb)) {
+        x, y := sa[i], sb[i]
+        if x.op != y.op || x.name != y.name || x.known != y.known || x.index != y.index { return false }
+        if x.op == .Index && !x.known { return false }
+    }
+    return true
+}
+
+// Building a result where it goes while handed that place — `v = swap(&v)`,
+// `g.big = make(&g)`: what it reads is what it overwrites. An error, not a
+// hidden copy: the result built under a name of its own first, then
+// assigned, says so.
+@(private="file")
+llvm_reads_its_dest :: proc(e: ^Llvm, op, arg, dest: Node_Id, callee: ^Type_Scope) -> ! {
+    pg := e.pg
+    name := scope_display_name(callee)
+    held := graph_place_name(pg, Operand{op = graph_operands(pg, arg)[0].op})
+    into := graph_place_name(pg, Operand{op = dest})
+    codegen_fatal(e.g, pg.origin[op], CODE_RESULT_READS_DEST, name, held, into, name, into)
 }
 
 // A fun's summary — a struct's code's too, which a construction runs —
@@ -3469,7 +3562,7 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     if e.value[p] != "" || pg.op[p] == .Var { return true }
     ops := graph_operands(pg, p)
     #partial switch pg.op[p] {
-    case .Field, .Variant:   // (a union's variant: the union's own address)
+    case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)
         if !llvm_ahead(e, ops[0].op) { return false }
     case .Index:
         if ops[1].op == NO_NODE || pg.op[ops[1].op] != .Const || !llvm_ahead(e, ops[0].op) { return false }
