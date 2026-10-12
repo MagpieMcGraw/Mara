@@ -49,6 +49,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 		return shader
 	}
 	vshader := compile(&vtext, gl.VERTEX_SHADER)?
+	// delete vshader on error?
 	fshader := compile(&ftext, gl.FRAGMENT_SHADER)?
 	return vshader, fshader
 }
