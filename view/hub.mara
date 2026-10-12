@@ -161,7 +161,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 		}
 		if h.waiting[i].whole and h.waiting[i].docs {
 			// (A query on the docs pipe: not this window's to answer.)
-			_ = send(h.waiting[i].id, "the docs pipe answers -docs lines only\n-- end of answer: failed --\n")
+			_ = file_write_text(h.waiting[i].id, "the docs pipe answers -docs lines only\n-- end of answer: failed --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue
@@ -260,7 +260,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	for k in 0 .. found.lines.len {
 		text := line_text(found, k)
 		if out.len + text.len + 1 > out.cap {
-			if not send(c.id, out[:]) do return
+			if bool(file_write_text(c.id, out[:])) do return
 			out.len = 0
 		}
 		&out + text[0 : min_int(text.len, out.cap - 1)]
@@ -272,15 +272,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 		&out + ANSWER_DONE
 	}
 	&out + "\n"
-	_ = send(c.id, out[:])
-}
-
-// Text written to a connection or a pipe: false when it can't be (the
-// other end's gone).
-send :: fun(id: File_Id, text: []utf8) -> bool {
-	bytes : []byte = text[:]
-	_, e := file_write(id, &bytes)
-	return not bool(e)
+	_ = file_write_text(c.id, out[:])
 }
 
 // The asked connection's query sent to serve — started if it isn't; one
@@ -310,13 +302,13 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	&sent + query
 	&sent + "\n"
 	if serve_up(h) {
-		if send(h.serve.input, sent[:]) {
+		if not bool(file_write_text(h.serve.input, sent[:])) {
 			h.asking = true
 			return
 		}
 		serve_down(h)
 		if serve_up(h) {
-			if send(h.serve.input, sent[:]) {
+			if not bool(file_write_text(h.serve.input, sent[:])) {
 				h.asking = true
 				return
 			}

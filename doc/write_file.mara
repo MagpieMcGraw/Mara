@@ -1,8 +1,9 @@
 // How to write a file, and delete one.
 //
 // file_open_write creates the file, or empties it if it's already there.
-// file_write takes bytes; text becomes bytes with `bytes : []byte = text[:]`
-// (the same memory, seen as bytes).
+// file_write_text writes text into it, all of it. file_write writes bytes —
+// text becomes bytes with `bytes : []byte = text[:]`, the same memory seen
+// as bytes — and may write only part of them: it says how many it wrote.
 module write_file
 
 use mara.core
@@ -13,8 +14,7 @@ include mara.memory
 save :: fun(path: []utf8, text: []utf8) -> err {
 	id := file_open_write(path)?
 	defer file_close(id)
-	bytes : []byte = text[:]
-	file_write(id, &bytes)?
+	file_write_text(id, text)?
 }
 
 main :: fun() {

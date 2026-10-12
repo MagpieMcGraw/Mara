@@ -7,7 +7,8 @@
 // connection once a program has connected, and NO_FILE while none has: it
 // doesn't wait, so a program with other work, a window drawing its frames,
 // looks each frame. pipe_connect is the other side. A connection is read
-// and written as a file is — file_read, pipe_read not to wait, file_write —
+// and written as a file is — file_read, pipe_read not to wait,
+// file_write_text (file_write for bytes) —
 // and file_close ends it. pipe_listen_stop frees the name.
 //
 // This program listens, then runs itself again as the one that connects
@@ -27,9 +28,7 @@ ask :: fun() {
 		return
 	}
 	defer file_close(id)
-	question := "what's six times seven?"
-	bytes : []byte = question[:]
-	_, we := file_write(id, &bytes)
+	we := file_write_text(id, "what's six times seven?")
 	if bool(we) do print("couldn't ask:", we)
 	answer : [..64]byte
 	re := file_read(id, &answer)
@@ -75,9 +74,7 @@ main :: fun() -> i64 {
 	if bool(qe) do print("couldn't read the question:", qe)
 	text : []utf8 = question[:]
 	print("asked:", text)
-	reply := "42"
-	bytes : []byte = reply[:]
-	_, we := file_write(c, &bytes)
+	we := file_write_text(c, "42")
 	if bool(we) do print("couldn't answer:", we)
 	file_close(c)
 

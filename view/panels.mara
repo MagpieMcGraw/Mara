@@ -602,10 +602,8 @@ layout_save :: fun(ui: ^Ui) {
 	}
 	id, oe := file_open_write(ui.layout_path)
 	if bool(oe) do return
-	bytes : []byte = text[:]
-	_, we := file_write(id, &bytes)
+	_ = file_write_text(id, text[:])
 	file_close(id)
-	if bool(we) do return
 }
 
 // The layout read from layout.txt: the theme, the panels it names, in its

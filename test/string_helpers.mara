@@ -22,6 +22,8 @@ use mara.os
 //@ expect-output: ints: 0 7 -42 9223372036854775807 -9223372036854775808
 //@ expect-output: paths: [C:\a\b] [] [dir] [a/b]
 //@ expect-output: same: true true false
+//@ expect-output: path_dir: [C:\a\b\] [] [a/b\] [/]
+//@ expect-output: written: Ok Ok Ok [hello there]
 
 main :: fun() {
 	print("ends:", ends_with("view.mara", ".mara"), ends_with("ma", ".mara"), ends_with("x", ""))
@@ -65,4 +67,21 @@ main :: fun() {
 
 	print("paths: [%] [%] [%] [%]", parent_dir("C:\\a\\b\\c.mara"), parent_dir("name"), trim_separators("dir//"), parent_dir("a/b\\c"))
 	print("same:", same_path("C:/Code/Mara/", "c:\\code\\mara"), same_path("a/b", "a/b"), same_path("a/b", "a/bc"))
+	print("path_dir: [%] [%] [%] [%]", path_dir("C:\\a\\b\\c.mara"), path_dir("name"), path_dir("a/b\\c"), path_dir("/x"))
+
+	// Text written whole; an empty one writes nothing, and that's no failure.
+	id, oe := file_open_write("string_helpers_demo.txt")
+	if bool(oe) {
+		print("couldn't open it:", oe)
+		return
+	}
+	e1 := file_write_text(id, "hello ")
+	e2 := file_write_text(id, "")
+	e3 := file_write_text(id, "there")
+	file_close(id)
+	data : [..64]byte
+	_ = read_entire_file("string_helpers_demo.txt", &data)
+	got : []utf8 = data[:]
+	print("written: % % % [%]", e1, e2, e3, got)
+	_ = file_delete("string_helpers_demo.txt")
 }

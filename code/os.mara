@@ -56,6 +56,17 @@ parent_dir :: fun(path: []utf8) -> []utf8 {
 	return path[0 : end]
 }
 
+// The directory a path is in, its separator kept at the end: what a file's
+// name goes after, for a file beside it — the program's own files, beside
+// its executable_path. Empty for a name alone. (parent_dir: without it.)
+path_dir :: fun(path: []utf8) -> []utf8 {
+	end : i64 = 0
+	for ch, i in path {
+		if ch == '/' or ch == '\\' do end = i + 1
+	}
+	return path[0 : end]
+}
+
 // The path without the separators at its end ('/' or '\').
 trim_separators :: fun(path: []utf8) -> []utf8 {
 	n := path.len
@@ -85,6 +96,18 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 		if cx != cy do return false
 	}
 	return true
+}
+
+// Writes text to a file, a pipe or a program's input — all of it, in as
+// many writes as that takes (file_write may take only part). Write_Failed
+// when a write fails: the other end gone, say.
+file_write_text :: fun(id: File_Id, text: []utf8) -> err {
+	bytes : []byte = text[:]
+	for bytes.len > 0 {
+		n := file_write(id, &bytes)?
+		if n <= 0 do return Write_Failed   // (nothing went: more tries won't either)
+		bytes = bytes[n : bytes.len]
+	}
 }
 
 // DANGER BELOW
@@ -354,7 +377,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The running program's own file: its path, whole — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
-	// that come with it, beside it. Into `path`, as much as it holds: Too_Large
+	// that come with it, beside it (path_dir: their directory, for their
+	// paths). Into `path`, as much as it holds: Too_Large
 	// when the path's longer; Read_Failed when the system won't say. A 0
 	// follows it in path's room (cstring takes it as it is).
 	// (GetModuleFileNameA: in the system's code page, as the other files'
@@ -973,7 +997,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The running program's own file: its path, whole — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
-	// that come with it, beside it. Into `path`, as much as it holds: Too_Large
+	// that come with it, beside it (path_dir: their directory, for their
+	// paths). Into `path`, as much as it holds: Too_Large
 	// when the path's longer; Read_Failed when the system won't say. A 0
 	// follows it in path's room (cstring takes it as it is).
 	// (/proc/self/exe: a link to the program's file, its path whole.)

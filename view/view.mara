@@ -133,27 +133,19 @@ main :: fun() -> i64 {
 		print("mara view: where its own file is, the system didn't say")
 		return 1
 	}
-	dir_end : i64 = 0
-	for ch, i in exe {
-		if ch == '\\' or ch == '/' do dir_end = i + 1
-	}
-	&ui.font + exe[0 : dir_end]
+	dir := path_dir(exe)
+	&ui.font + dir
 	&ui.font + "Inter.ttf"
-	&ui.layout_path + exe[0 : dir_end]
+	&ui.layout_path + dir
 	&ui.layout_path + "layout.txt"
 
-	// (The compiler's directory: its stdlib and doc pages, for the docs.)
+	// (The compiler's directory: its stdlib and doc pages, for the docs. Its
+	// separator, the paths made from it.)
 	if this_program.args.len > 1 {
-		compiler := this_program.args[1]
+		compiler_dir := path_dir(this_program.args[1])
+		&ui.compiler_dir + compiler_dir
 		ui.sep = '/'
-		end : i64 = 0
-		for ch, i in compiler {
-			if ch == '\\' or ch == '/' {
-				end = i + 1
-				ui.sep = ch
-			}
-		}
-		&ui.compiler_dir + compiler[0 : end]
+		if compiler_dir.len > 0 do ui.sep = compiler_dir[compiler_dir.len - 1]
 	}
 
 	title : str256

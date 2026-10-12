@@ -2,7 +2,7 @@
 //
 // process_start runs a command line — a program, then its arguments — and
 // returns a Process: `p.input` is the program's input, written to with
-// file_write, and `p.output` its output (its error output too), read with
+// file_write_text, and `p.output` its output (its error output too), read with
 // file_read. Closing its input, process_close_input, tells it there is no
 // more: its reads get 0 bytes. process_wait waits for it to end and returns
 // its exit code.
@@ -58,9 +58,7 @@ main :: fun() -> i64 {
 	print("so far:", early.len, "bytes; still open:", open)
 
 	// Write to its input, then close it: the child reads to its end.
-	message := "hello"
-	bytes : []byte = message[:]
-	_, we := file_write(p.input, &bytes)
+	we := file_write_text(p.input, "hello")
 	if bool(we) do print("couldn't write to it:", we)
 	process_close_input(&p)
 
