@@ -16,7 +16,7 @@ Font :: struct {
 	name: str64
 	layer: u32,
 	offset_x, offset_y: i32,  // Position within atlas layer
-	metrics: Line_Metrics     // from mara.font, same type load_glyphs returns
+	metrics: Line_Metrics     // from mara.font, filled by load_glyphs_and_metrics
 	glyphs: [..256]Glyph      // partial array: carries a slice header, so &glyphs
 }                             // flows into the loader's ^[]Glyph param directly
 
@@ -149,14 +149,19 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
 load_font_test :: fun(a: ^Assets, fname: []utf8) {
 	this_font := &a.fonts[.len]
-	pixels := load_glyphs_and_metrics(fname,
-		&this_font.glyphs, &this_font.metrics)
+	pixels : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	e := load_glyphs_and_metrics(fname,
+		&this_font.glyphs, &this_font.metrics, &pixels)
+	if bool(e) {
+		print("font", fname, "didn't load:", e)
+		return
+	}
 
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0,
         0, 0, i32(a.fonts.len),
         this_font.size, this_font.size, 1,
-        gl.RGB, gl.UNSIGNED_BYTE, &pixels)
+        gl.RGB, gl.UNSIGNED_BYTE, &pixels[0])
     gl.GenerateMipmap(gl.TEXTURE_2D_ARRAY)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 

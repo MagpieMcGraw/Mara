@@ -41,11 +41,20 @@ main :: fun() -> i64 {
 		print("read failed:", re)
 		return 1
 	}
+	ce := check_ttf(&ttf_file)
+	if bool(ce) {
+		print("not a font we read:", ce)
+		return 1
+	}
 	ttf := TTF(&ttf_file)
-	i_glyph := parse_glyph(&ttf, cmap_glyph_index(&ttf_file, ttf.cmap_sub, u32('i')))
+	i_glyph : Outline
+	l : Outline
+	if bool(parse_glyph(&ttf, char_glyph(&ttf, u32('i')), &i_glyph)) or bool(parse_glyph(&ttf, char_glyph(&ttf, u32('l')), &l)) {
+		print("glyph failed")
+		return 1
+	}
 	print("i has", i_glyph.contour_end_pts.len, "contours")
 
-	l := parse_glyph(&ttf, cmap_glyph_index(&ttf_file, ttf.cmap_sub, u32('l')))
 	scale := 64.0 / f32(ttf.head.units_per_em)
 	left := floor_f32(f32(l.header.x_min) * scale) - 1.0
 	right := ceil_f32(f32(l.header.x_max) * scale) + 1.0

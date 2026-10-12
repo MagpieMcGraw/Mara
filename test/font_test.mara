@@ -1,25 +1,33 @@
 module font_test
 
+use mara.core
 use mara.os
 use mara.memory
 use mara.font
 
-// Exercises the font loader on a real TTF without launching the game:
-// bake printable ASCII (32..127) into the atlas, then dump 'A'.
+// Exercises the MSDF loader on a real TTF without launching the game (Pounce's
+// font, the way Pounce loads it): bake printable ASCII (32..127) into the
+// atlas, then dump 'A'.
+
+//@ expect-output: glyph 'A': cell 29 x 32
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(64 * MB))
 
 	glyphs : [..96]Glyph
-	glyphs.len = 96
-	atlas, metrics := load_glyphs(
-		&glyphs, 32, "../Pounce/data/fonts/Inter_18pt-Regular.ttf")
+	metrics : Line_Metrics
+	atlas : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	e := load_glyphs_and_metrics("../Pounce/data/fonts/Inter_18pt-Regular.ttf",
+		&glyphs, &metrics, &atlas, 32)
+	if bool(e) {
+		print("load failed:", e)
+		return 1
+	}
 	print("line metrics: ascent", metrics.ascent,
 		"descent", metrics.descent, "line_gap", metrics.line_gap)
 
 	a := glyphs[65 - 32]   // 'A'
 	print("glyph 'A': cell", a.w, "x", a.h, "bearing", a.bearing_x, a.bearing_y, "advance", a.advance)
 	print("--- atlas cell for 'A' (median) ---")
-	ab : []byte = atlas[:]
-	dump_atlas_cell(&ab, 1024, a.x, a.y, a.w, a.h)
+	dump_atlas_cell(&atlas, MSDF_ATLAS, a.x, a.y, a.w, a.h)
 	return 0
 }

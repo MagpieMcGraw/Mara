@@ -1,4 +1,8 @@
 
+// Reading TrueType fonts and drawing their glyphs: coverage bitmaps for text
+// at one pixel size (load_coverage_glyphs, load_coverage_chars), multi-channel
+// distance fields for text at any size (load_glyphs_and_metrics). Below them,
+// the font file itself: check_ttf, TTF, char_glyph, parse_glyph.
 module mara.font
 
 use mara.core
@@ -18,84 +22,91 @@ Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
 
+// What reading a font and loading its glyphs can fail with.
+Font_Error :: error {
+	Atlas_Full         // the atlas has no room left for a glyph
+	Atlas_Too_Small    // the atlas's buffer holds fewer bytes than the atlas needs
+	Glyph_Too_Big      // a glyph's bitmap is bigger than the room to draw it in
+	Glyph_Too_Complex  // a glyph has more points, contours or edges than an outline holds
+	Too_Many_Chars     // more characters than the glyphs' list holds
+	Not_TrueType       // not a TrueType font: CFF outlines (most .otf), a collection (.ttc), not a font
+	Missing_Table      // the font lacks a table it must have
+	Bad_Table          // a table runs past the file's end, or its counts don't agree
+	Bad_Glyph          // a glyph record that doesn't decode, or a glyph past the font's last
+	Unsupported_Cmap   // no character map in a format this reads (0, 4, 6 or 12)
+}
+
+MSDF_ATLAS :: 1024   // an MSDF atlas's side, in pixels (3 bytes each)
+
 Atlas :: struct (bytes: []byte, u_per_em: u16) {
-	size := 1024
+	size := MSDF_ATLAS
 	pixels := 32 // used to scale em to pixels
 	pad : f32 = 4
 	px_scale := f32(pixels) / f32(u_per_em)
 	data := bytes
 }
 
+// A font's glyphs as multi-channel signed distance fields (MSDF), for text
+// drawn at any size: characters first .. first + glyphs.cap - 1, glyphs[i]
+// for first + i, packed into `atlas` (MSDF_ATLAS pixels a side, 3 bytes a
+// pixel: the median of the three is the distance to the outline, 128 on it,
+// more inside, MSDF_PX_RANGE pixels from 0 to 255), each one's place there
+// and metrics in glyphs; the font's line metrics in metrics. In the atlas's
+// pixels, 32 to the em, y down. (For text at one size, load_coverage_glyphs
+// is sharper.)
 load_glyphs_and_metrics :: fun(
- 	font: []utf8,
+	font: []utf8,
 	glyphs: ^[]Glyph,
 	metrics: ^Line_Metrics,
- 	first: u32 = 0) -> [3 * MB]byte
+	atlas: ^[]byte,
+	first: u32 = 0) -> err
 {
+	if atlas.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
 	ttf_file : [..2 * MB]byte = void
-	read_err := read_entire_file(font, &ttf_file)
-	if bool(read_err) do print(read_err)
+	read_entire_file(font, &ttf_file)?
+	check_ttf(&ttf_file)?
 	ttf := TTF(&ttf_file)
 
-	storage : [3 * MB]byte
-	atlas := Atlas(storage[:], ttf.head.units_per_em)
-	sky := Skyline(atlas.size, atlas.size)
+	atlas.len = MSDF_ATLAS * MSDF_ATLAS * 3
+	for i in 0 .. atlas.len {
+		atlas[i] = u8(0)
+	}
+	cells := Atlas(atlas^, ttf.head.units_per_em)
+	sky := Skyline(cells.size, cells.size)
 
-	metrics.ascent   = f32(ttf.hhea.ascent)   * atlas.px_scale
-	metrics.descent  = f32(ttf.hhea.descent)  * atlas.px_scale
-	metrics.line_gap = f32(ttf.hhea.line_gap) * atlas.px_scale
+	metrics.ascent   = f32(ttf.hhea.ascent)   * cells.px_scale
+	metrics.descent  = f32(ttf.hhea.descent)  * cells.px_scale
+	metrics.line_gap = f32(ttf.hhea.line_gap) * cells.px_scale
 
 	// Fill the whole provided buffer. Callers pass a partial array (len 0,
 	// cap = glyph count); mark it full so downstream lookups see every slot.
 	glyphs.len = glyphs.cap
+	outline : Outline
 	for i in 0..glyphs.len {
-		codepoint := first + u32(i)
-		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
-		outline := parse_glyph(&ttf, glyph_index)
+		glyph_index := char_glyph(&ttf, first + u32(i))
+		parse_glyph(&ttf, glyph_index, &outline)?
 
-		// Pack the glyph's pixel bbox into the atlas before rasterizing —
-		// rasterize_msdf writes pixels at glyph.x/y, so those must already
-		// point at the packer's chosen spot. Bbox math mirrors what
-		// rasterize_msdf derives from the same header; an empty glyph
-		// (no contours) packs at (0,0) with w=h=0 and touches nothing.
-		glyph_w : i32 = 0
-		glyph_h : i32 = 0
-		if outline.contour_end_pts.len > 0 {
-			xmin := f32(outline.header.x_min)
-			xmax := f32(outline.header.x_max)
-			ymin := f32(outline.header.y_min)
-			ymax := f32(outline.header.y_max)
-			glyph_w = i32((xmax - xmin) * atlas.px_scale + 2.0 * atlas.pad) + 1
-			glyph_h = i32((ymax - ymin) * atlas.px_scale + 2.0 * atlas.pad) + 1
-		}
-		px, py, ok := pack_rect(&sky, glyph_w, glyph_h)
-		assert(ok)
-		glyphs[i].x = i32(px)
-		glyphs[i].y = i32(py)
+		// Its cell packed first: rasterize_msdf draws at glyphs[i].x/y. An
+		// empty glyph (no contours) packs at (0,0) with w=h=0 and touches nothing.
+		w, h := msdf_cell(&outline, &cells)
+		px, py, ok := pack_rect(&sky, i64(w), i64(h))
+		if not ok do return Atlas_Full
+		glyphs[i] = Glyph{x = i32(px), y = i32(py)}
 
 		// hmtx holds full {advance, lsb} records only for the first
 		// num_of_long_hor_metrics glyphs; everything past that shares the
 		// last record's advance (the array degrades to 2-byte lsb entries).
 		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
 		advance := f32(ttf.hmtx.long_metrics[m].advance_width)
-		glyphs[i].advance = advance * atlas.px_scale
+		glyphs[i].advance = advance * cells.px_scale
 
-		rasterize_msdf(&outline, &glyphs[i], &atlas)
+		rasterize_msdf(&outline, &glyphs[i], &cells)?
 	}
-
-	return storage
 }
 
 // ---------------------------------------------------------------------------
 // Coverage: glyphs at one pixel size, pixel for pixel
 // ---------------------------------------------------------------------------
-
-// What loading glyphs for drawing at one size can fail with.
-Font_Error :: error {
-	Atlas_Full      // the atlas has no room left for a glyph
-	Glyph_Too_Big   // a glyph's bitmap is bigger than the room to draw it in
-	Too_Many_Chars  // more characters than the glyphs' list holds
-}
 
 COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
 
@@ -138,8 +149,10 @@ load_coverage_chars :: fun(
 	size: i64) -> err
 {
 	if chars.len > glyphs.cap do return Too_Many_Chars
+	if size < 0 or atlas.cap < size * size do return Atlas_Too_Small
 	ttf_file : [..2 * MB]byte = void
 	read_entire_file(font, &ttf_file)?
+	check_ttf(&ttf_file)?
 	ttf := TTF(&ttf_file)
 	scale := pixels / f32(ttf.head.units_per_em)
 	metrics.ascent   = f32(ttf.hhea.ascent)   * scale
@@ -155,9 +168,10 @@ load_coverage_chars :: fun(
 	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
 
 	glyphs.len = chars.len
+	outline : Outline
 	for i in 0 .. glyphs.len {
-		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, chars[i])
-		outline := parse_glyph(&ttf, glyph_index)
+		glyph_index := char_glyph(&ttf, chars[i])
+		parse_glyph(&ttf, glyph_index, &outline)?
 		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
 		glyphs[i] = Glyph{advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale}
 		if outline.contour_end_pts.len == 0 do continue   // (a space: nothing drawn)
@@ -372,63 +386,90 @@ coverage_line :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1:
 }
 
 
-MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
-rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
-{
-	// No contours = empty glyph (space) or an unparsed compound — the two
-	// are distinguishable via outline.header.num_contours (< 0 = compound)
-	// when composite resolution wants to route them differently.
-	Raster_Edge :: struct {
-		x0 : f32
-		y0 : f32
-		x1 : f32
-		y1 : f32
-		color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
-	}
-	RASTER_QUAD_STEPS :: 6
-	
-	if outline.contour_end_pts.len == 0 {
-		glyph.w = 0 glyph.h = 0 return }
+MSDF_PX_RANGE   :: 4.0      // signed-distance range (px) mapped onto 0..1 / 0..255
+MSDF_MAX_EDGES  :: 8192     // a glyph's outline in straight pieces, at most
+MSDF_CORNER_SIN :: 0.1411   // sin(3 rad): an outline point turning more than ~8° is a corner (msdfgen's default)
+MSDF_CLASH      :: 1.001    // neighbouring pixels' channels further apart (px) than this clash
 
-	scale := atlas.px_scale
-	pad   := atlas.pad
-
+// A glyph's cell in an MSDF atlas, in pixels: its box at the atlas's scale
+// with `pad` room around it; none for a glyph with no outline (a space).
+msdf_cell :: fun(outline: ^Outline, atlas: ^Atlas) -> i32, i32 {
+	if outline.contour_end_pts.len == 0 do return 0, 0
 	xmin := f32(outline.header.x_min)
 	xmax := f32(outline.header.x_max)
 	ymin := f32(outline.header.y_min)
 	ymax := f32(outline.header.y_max)
+	w := i32((xmax - xmin) * atlas.px_scale + 2.0 * atlas.pad) + 1
+	h := i32((ymax - ymin) * atlas.px_scale + 2.0 * atlas.pad) + 1
+	return w, h
+}
 
-	x_origin  := xmin - pad / scale
-	y_origin  := ymax + pad / scale
-
-	glyph.w = i32((xmax - xmin) * scale + 2.0 * pad) + 1
-	glyph.h = i32((ymax - ymin) * scale + 2.0 * pad) + 1
-	glyph.bearing_x = xmin * scale - pad
-	glyph.bearing_y = ymax * scale + pad
-
-	edges : [..4096]Raster_Edge
-
-	// contour_start holds (contours + 1) fenceposts — the coloring loop reads
-	// contour ci as the span [contour_start[ci], contour_start[ci+1]). Seed the
-	// first (edges always start at 0); each contour appends its end fencepost.
-	contour_start : [..512]i64
-	&contour_start + 0
-
+// A glyph's multi-channel signed distance field, drawn into its cell of the
+// atlas at glyph.x, glyph.y (msdf_cell's size: pack it first); glyph.w, h
+// and its bearings set. Each channel is the distance to the nearest edge of
+// its colour, carried on straight past the ends of that edge's line or curve
+// (a pseudo-distance); edges are coloured so that two meeting at a corner
+// share one channel only, so the median of the three is the distance to the
+// outline with its corners kept sharp. Chlumský's MSDF as msdfgen makes it:
+// simple edge colouring, the winding number deciding the sign (so contours
+// may overlap; edges inside the glyph don't count), and its error
+// correction. Glyph_Too_Complex past MSDF_MAX_EDGES straight pieces.
+rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
+{
+	// A straight piece of the outline; a curve is several. Where a piece
+	// begins or ends its line or curve (not partway along a curve), its
+	// distance carries on straight past that end.
+	Raster_Edge :: struct {
+		x0, y0, x1, y1 : f32
+		color : i32          // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
+		open_start : bool    // (x0, y0) begins its line or curve
+		open_end : bool      // (x1, y1) ends it
+		corner : bool        // a corner of the outline is at (x0, y0)
+		hidden : bool        // the glyph on both sides of it, or neither: not its outline
+	}
+	// An outline point, in the cell's pixels.
 	Node :: struct {
 		x, y: f32
 		on_curve : bool
+		implied : bool   // the on-curve midpoint of two points off it: never a corner
 	}
-	nodes : [..1024]Node
+	// One line or curve of a contour, from a to b (around c when a curve);
+	// t0 its direction leaving a, t1 arriving at b.
+	Segment :: struct {
+		ax, ay, cx, cy, bx, by : f32
+		t0x, t0y, t1x, t1y : f32
+		curve : bool
+		implied : bool   // a is an implied point
+		corner : bool    // the outline turns sharply at a
+	}
 
-	point_start := 0
-	for ci in 0..outline.contour_end_pts.len {
-		point_end := outline.contour_end_pts[ci]
+	cell_w, cell_h := msdf_cell(outline, atlas)
+	glyph.w = cell_w
+	glyph.h = cell_h
+	if cell_w == 0 do return   // (an empty glyph: a space)
+
+	scale := atlas.px_scale
+	pad   := atlas.pad
+	xmin := f32(outline.header.x_min)
+	ymax := f32(outline.header.y_max)
+	x_origin := xmin - pad / scale
+	y_origin := ymax + pad / scale
+	glyph.bearing_x = xmin * scale - pad
+	glyph.bearing_y = ymax * scale + pad
+
+	raw : [..MSDF_MAX_EDGES]Raster_Edge   // as the contours have them
+	nodes : [..2 * MAX_GLYPH_POINTS]Node
+	segments : [..2 * MAX_GLYPH_POINTS]Segment
+
+	point_start : i64 = 0
+	for ci in 0 .. outline.contour_end_pts.len {
+		point_end := i64(outline.contour_end_pts[ci])
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
 			// first on-curve point in the contour (relative index); n_points
-			// when there is none (an index is unsigned: -1 was 65535)
+			// when there is none
 			first_on_curve := n_points
-			for k in 0..n_points {
+			for k in 0 .. n_points {
 				if outline.points[point_start + k].on_curve {
 					first_on_curve = k
 					break
@@ -452,20 +493,15 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				point_b := outline.points[point_start + n_points - 1]
 				mid_x := (f32(point_a.x) + f32(point_b.x)) * 0.5
 				mid_y := (f32(point_a.y) + f32(point_b.y)) * 0.5
-				first_x := (mid_x - x_origin) * scale
-				first_y := (y_origin - mid_y) * scale
-				&nodes + Node{first_x, first_y, true}
+				&nodes + Node{(mid_x - x_origin) * scale, (y_origin - mid_y) * scale, true, true}
 				off_x = (f32(point_a.x) - x_origin) * scale
 				off_y = (y_origin - f32(point_a.y)) * scale
 				have_off = true
 			else
-				out_x := f32(outline.points[point_start + first_on_curve].x)
-				out_y := f32(outline.points[point_start + first_on_curve].y)
-				first_x := (out_x - x_origin) * scale
-				first_y := (y_origin - out_y) * scale
-				&nodes + Node{first_x, first_y, true}
+				start := outline.points[point_start + first_on_curve]
+				&nodes + Node{(f32(start.x) - x_origin) * scale, (y_origin - f32(start.y)) * scale, true, false}
 			}
-			for j in 1..n_points {
+			for j in 1 .. n_points {
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points do ring_idx -= n_points
 				point := outline.points[point_start + ring_idx]
@@ -473,184 +509,441 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				point_y := (y_origin - f32(point.y)) * scale
 				if point.on_curve {
 					if have_off {
-						&nodes + Node{off_x, off_y, false}
+						&nodes + Node{off_x, off_y, false, false}
 						have_off = false
 					}
-					&nodes + Node{point_x, point_y, true}
+					&nodes + Node{point_x, point_y, true, false}
 				elif have_off
 					// two consecutive off-curve controls — TrueType implies an
 					// on-curve point at their midpoint
-					&nodes + Node{off_x, off_y, false}
-					midpoint_x := (off_x + point_x) * 0.5
-					midpoint_y := (off_y + point_y) * 0.5
-					&nodes + Node{midpoint_x, midpoint_y, true}
+					&nodes + Node{off_x, off_y, false, false}
+					&nodes + Node{(off_x + point_x) * 0.5, (off_y + point_y) * 0.5, true, true}
+					off_x = point_x
+					off_y = point_y
+				else
 					off_x = point_x
 					off_y = point_y
 					have_off = true
-				else
-					off_x = point_x	off_y = point_y	have_off = true
 				}
 			}
 			// a contour can end on a trailing off-curve control
-			if have_off do &nodes + Node{off_x, off_y, false}
+			if have_off do &nodes + Node{off_x, off_y, false, false}
 
-			// Walk the ring, emitting flattened edges; close back to node 0.
-			pen_x := nodes[0].x
-			pen_y := nodes[0].y
-			node_i : i32 = 1
+			// The ring's lines and curves, closed back to node 0 (none of no length).
+			segments.len = 0
+			pen := 0
+			node_i := 1
 			for node_i < nodes.len {
 				if nodes[node_i].on_curve {
-					&edges + Raster_Edge{
-						pen_x, pen_y, nodes[node_i].x, nodes[node_i].y, 0}
-					pen_x = nodes[node_i].x
-					pen_y = nodes[node_i].y
+					if nodes[node_i].x != nodes[pen].x or nodes[node_i].y != nodes[pen].y {
+						&segments + make_segment(nodes[pen], nodes[node_i], nodes[node_i], false)
+					}
+					pen = node_i
 					node_i += 1
 				else
-					ctrl_x := nodes[node_i].x
-					ctrl_y := nodes[node_i].y
-					end_x : f32 = 0.0
-					end_y : f32 = 0.0
-					next_i := node_i + 1
-					if next_i >= nodes.len {
-						end_x = nodes[0].x
-						end_y = nodes[0].y
-					else
-						end_x = nodes[next_i].x
-						end_y = nodes[next_i].y
-					}
-					prev_x := pen_x
-					prev_y := pen_y
-					for step in 0..RASTER_QUAD_STEPS {
-						t := f32(step + 1) / f32(RASTER_QUAD_STEPS)
-						inv_t := 1.0 - t
-						curve_x := inv_t*inv_t*pen_x + 2.0*inv_t*t*ctrl_x + t*t*end_x
-						curve_y := inv_t*inv_t*pen_y + 2.0*inv_t*t*ctrl_y + t*t*end_y
-						&edges + Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0}
-						prev_x = curve_x
-						prev_y = curve_y
-					}
-					pen_x = end_x
-					pen_y = end_y
+					end := node_i + 1
+					if end >= nodes.len do end = 0
+					&segments + make_segment(nodes[pen], nodes[node_i], nodes[end], true)
+					pen = end
 					node_i += 2
 				}
 			}
-			&edges + Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0}
-			&contour_start + edges.len
+			if pen != 0 and (nodes[0].x != nodes[pen].x or nodes[0].y != nodes[pen].y) {
+				&segments + make_segment(nodes[pen], nodes[0], nodes[0], false)
+			}
+
+			// Corners: where the outline turns sharply at a point of its own.
+			n_seg := segments.len
+			for k in 0 .. n_seg {
+				before := segments[(k + n_seg - 1) % n_seg]
+				if not segments[k].implied and turns_sharply(before.t1x, before.t1y, segments[k].t0x, segments[k].t0y) {
+					segments[k].corner = true
+				}
+			}
+
+			// Each line one piece; a curve as many as keep it within ~0.04 px.
+			contour_lo := raw.len
+			for k in 0 .. n_seg {
+				s := segments[k]
+				pieces : i64 = 1
+				if s.curve {
+					devx := s.ax - 2.0 * s.cx + s.bx
+					devy := s.ay - 2.0 * s.cy + s.by
+					pieces = 1 + i64(floor_f32(2.0 * sqrt_f32(sqrt_f32(3.0 * (devx * devx + devy * devy)))))
+				}
+				if raw.len + pieces > raw.cap do return Glyph_Too_Complex
+				fx := s.ax
+				fy := s.ay
+				for p in 1 .. pieces + 1 {
+					qx := s.bx
+					qy := s.by
+					if p < pieces {
+						t := f32(p) / f32(pieces)
+						u := 1.0 - t
+						qx = u*u*s.ax + 2.0*u*t*s.cx + t*t*s.bx
+						qy = u*u*s.ay + 2.0*u*t*s.cy + t*t*s.by
+					}
+					&raw + Raster_Edge{x0 = fx, y0 = fy, x1 = qx, y1 = qy, color = 7,
+						open_start = (p == 1), open_end = (p == pieces), corner = (p == 1 and s.corner)}
+					fx = qx
+					fy = qy
+				}
+			}
+			color_contour(&raw, contour_lo, raw.len)
 		}
 		point_start = point_end + 1
 	}
 
-	is_corner : [..edges.cap]bool
-	for ci in 0..(contour_start.len - 1) {
-		edge_lo := contour_start[ci]
-		edge_hi := contour_start[ci + 1]
-		n_edges := edge_hi - edge_lo
-		if n_edges >= 1 {
-			corner_total := 0
-			for ei in 0..n_edges {
-				prev_ei := ei - 1
-				if prev_ei < 0 do prev_ei = n_edges - 1
-				prev_edge := edges[edge_lo + prev_ei]
-				this_edge := edges[edge_lo + ei]
-				if edge_is_corner(prev_edge,this_edge) {
-					is_corner[ei] = true
-					corner_total += 1
-				else
-					is_corner[ei] = false
+	// Where contours cross (a glyph drawn as overlapping strokes), pieces are
+	// cut there, so that each part is on the outline or inside the glyph
+	// whole. (A cut is no end of a line or curve: no pseudo-distance past it.)
+	edges : [..MSDF_MAX_EDGES]Raster_Edge
+	for ri in 0 .. raw.len {
+		e := raw[ri]
+		length := sqrt_f32((e.x1 - e.x0) * (e.x1 - e.x0) + (e.y1 - e.y0) * (e.y1 - e.y0))
+		near_end := 0.0001 / max_f32(length, 0.0001)   // (a cut closer than 1e-4 px to an end is none)
+		cuts : [..64]f32
+		for rj in 0 .. raw.len {
+			if rj == ri do continue
+			t := crossing(e, raw[rj])
+			if t > near_end and t < 1.0 - near_end and cuts.len < cuts.cap {
+				// (kept in order)
+				k := cuts.len
+				&cuts + t
+				for k > 0 and cuts[k - 1] > t {
+					cuts[k] = cuts[k - 1]
+					k -= 1
 				}
-			}
-			if corner_total <= 1 {
-				for ei in 0..n_edges do edges[edge_lo + ei].color = 7
-			else
-				first_corner := -1
-				for ei in 0..n_edges {
-					if is_corner[ei] {
-						if first_corner < 0 do first_corner = ei
-					}
-				}
-				color := 3
-				for step in 0..n_edges {
-					ei := first_corner + step
-					if ei >= n_edges do ei = ei - n_edges
-					if is_corner[ei] do color = next_edge_color(color)
-					edges[edge_lo + ei].color = color
-				}
+				cuts[k] = t
 			}
 		}
-	}
-	edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
-		dax := a.x1 - a.x0
-		day := a.y1 - a.y0
-		dbx := b.x1 - b.x0
-		dby := b.y1 - b.y0
-		la := sqrt(dax*dax + day*day)
-		lb := sqrt(dbx*dbx + dby*dby)
-		if la <= 0.0 or lb <= 0.0 { return false }
-		cosang := (dax*dbx + day*dby) / (la * lb)
-		return cosang < 0.7
-	}
-	next_edge_color :: fun(c: i32) -> i32 {
-		if c == 3 { return 5 }
-		if c == 5 { return 6 }
-		return 3
+		if edges.len + cuts.len + 1 > edges.cap do return Glyph_Too_Complex
+		x0 := e.x0
+		y0 := e.y0
+		for k in 0 .. cuts.len + 1 {
+			part := e
+			part.x0 = x0
+			part.y0 = y0
+			if k < cuts.len {
+				part.x1 = e.x0 + (e.x1 - e.x0) * cuts[k]
+				part.y1 = e.y0 + (e.y1 - e.y0) * cuts[k]
+			}
+			part.open_start = e.open_start and k == 0
+			part.open_end = e.open_end and k == cuts.len
+			part.corner = e.corner and k == 0
+			&edges + part
+			x0 = part.x1
+			y0 = part.y1
+		}
 	}
 
-	// Fill: per pixel, the signed distance — magnitude is the min distance to
-	// any edge, sign from the non-zero winding rule (positive inside). One
-	// sample per pixel; the field is smooth, so no supersampling.
-	for py in 0..glyph.h {
-		for px in 0..glyph.w {
+	// Pieces with the glyph on both sides of them (where contours overlap)
+	// or on neither aren't its outline: their distances don't count.
+	for ei in 0 .. edges.len {
+		e := edges[ei]
+		dx := e.x1 - e.x0
+		dy := e.y1 - e.y0
+		length := sqrt_f32(dx*dx + dy*dy)
+		if length <= 0.0 {
+			edges[ei].hidden = true
+		else
+			mx := (e.x0 + e.x1) * 0.5
+			my := (e.y0 + e.y1) * 0.5
+			nx := -dy / length * 0.01
+			ny := dx / length * 0.01
+			one_side := winding_at(&edges, mx + nx, my + ny) != 0
+			other_side := winding_at(&edges, mx - nx, my - ny) != 0
+			edges[ei].hidden = one_side == other_side
+		}
+	}
+
+	// Fill: per pixel, each channel's signed pseudo-distance to the nearest
+	// piece of its colour (positive inside). The winding number decides
+	// inside: where the channels' median says otherwise, all three flip.
+	w := i64(cell_w)
+	h := i64(cell_h)
+	field : [:w * h * 3]f32
+	field.len = w * h * 3
+	for py in 0 .. h {
+		for px in 0 .. w {
 			sample_x := f32(px) + 0.5
 			sample_y := f32(py) + 0.5
-			min_d2_r : f32 = 1000000.0
-			min_d2_g : f32 = 1000000.0
-			min_d2_b : f32 = 1000000.0
+			best := [3]i64{-1, -1, -1}
+			best_d := [3]f32{1000000.0, 1000000.0, 1000000.0}
+			best_slant := [3]f32{1.0, 1.0, 1.0}
 			winding : i32 = 0
-			for ei in 0..edges.len {
-				x0 := edges[ei].x0
-				y0 := edges[ei].y0
-				x1 := edges[ei].x1
-				y1 := edges[ei].y1
-				// squared distance from the sample to segment (x0,y0)→(x1,y1)
-				dx := x1 - x0
-				dy := y1 - y0
-				len2 := dx*dx + dy*dy
-				t : f32 = 0.0
-				if len2 > 0.0 {
-					t = max(0.0, min(1.0, ((sample_x - x0)*dx + (sample_y - y0)*dy) / len2))
-				}
-				proj_x := x0 + t*dx
-				proj_y := y0 + t*dy
-				dist_x := sample_x - proj_x
-				dist_y := sample_y - proj_y
-				d2 := dist_x*dist_x + dist_y*dist_y
-				// this edge contributes to the channels it is colored for
-				color := edges[ei].color
-				if (color & 1) != 0 and d2 < min_d2_r { min_d2_r = d2 }
-				if (color & 2) != 0 and d2 < min_d2_g { min_d2_g = d2 }
-				if (color & 4) != 0 and d2 < min_d2_b { min_d2_b = d2 }
-				// winding contribution (shared sign): the edge crosses this
-				// scanline when exactly one endpoint is at/above it
-				crosses := (y0 <= sample_y and y1 > sample_y) or (y0 > sample_y and y1 <= sample_y)
-				if crosses {
-					cross_t := (sample_y - y0) / (y1 - y0)
-					x_crossing := x0 + cross_t * (x1 - x0)
+			for ei in 0 .. edges.len {
+				e := edges[ei]
+				// (Every piece counts for the winding, hidden or not: the edge
+				// crosses this row when exactly one end is at or above it.)
+				if (e.y0 <= sample_y and e.y1 > sample_y) or (e.y0 > sample_y and e.y1 <= sample_y) {
+					x_crossing := e.x0 + (sample_y - e.y0) / (e.y1 - e.y0) * (e.x1 - e.x0)
 					if sample_x < x_crossing {
-						if y1 > y0 { winding += 1 else winding -= 1 }
+						if e.y1 > e.y0 {
+							winding += 1
+						else
+							winding -= 1
+						}
+					}
+				}
+				if e.hidden do continue
+				d, slant := edge_distance(e, sample_x, sample_y)
+				bit : i32 = 1
+				for ch in 0 .. 3 {
+					if (e.color & bit) != 0 {
+						if d < best_d[ch] or (d == best_d[ch] and slant < best_slant[ch]) {
+							best[ch] = ei
+							best_d[ch] = d
+							best_slant[ch] = slant
+						}
+					}
+					bit = bit * 2
+				}
+			}
+			sd : [3]f32
+			for ch in 0 .. 3 {
+				sd[ch] = -1000000.0   // (no piece of this colour: far outside)
+				if best[ch] >= 0 do sd[ch] = pseudo_distance(edges[best[ch]], sample_x, sample_y)
+			}
+			if (median3(sd[0], sd[1], sd[2]) > 0.0) != (winding != 0) {
+				for ch in 0 .. 3 {
+					sd[ch] = -sd[ch]
+				}
+			}
+			at := (py * w + px) * 3
+			for ch in 0 .. 3 {
+				field[at + ch] = sd[ch]
+			}
+		}
+	}
+
+	// Where two neighbouring pixels' channels clash (the shader blending them
+	// would draw a notch), the one farther from the outline takes the median
+	// in all three.
+	clash : [:w * h]bool
+	clash.len = w * h
+	for py in 0 .. h {
+		for px in 0 .. w {
+			at := py * w + px
+			c := false
+			if px > 0 do c = c or clashes(&field, at, at - 1)
+			if px < w - 1 do c = c or clashes(&field, at, at + 1)
+			if py > 0 do c = c or clashes(&field, at, at - w)
+			if py < h - 1 do c = c or clashes(&field, at, at + w)
+			clash[at] = c
+		}
+	}
+	for i in 0 .. w * h {
+		if clash[i] {
+			m := median3(field[3 * i], field[3 * i + 1], field[3 * i + 2])
+			field[3 * i] = m
+			field[3 * i + 1] = m
+			field[3 * i + 2] = m
+		}
+	}
+
+	for py in 0 .. h {
+		for px in 0 .. w {
+			at := (py * w + px) * 3
+			dst := ((i64(glyph.y) + py) * atlas.size + (i64(glyph.x) + px)) * 3
+			for ch in 0 .. 3 {
+				v := max_f32(0.0, min_f32(1.0, 0.5 + field[at + ch] / MSDF_PX_RANGE))
+				atlas.data[dst + ch] = u8(v * 255.0 + 0.5)
+			}
+		}
+	}
+
+	// A line (c = b) or curve from a to b, its end directions worked out.
+	make_segment :: fun(a: Node, c: Node, b: Node, curve: bool) -> Segment {
+		s := Segment{ax = a.x, ay = a.y, cx = c.x, cy = c.y, bx = b.x, by = b.y, curve = curve, implied = a.implied}
+		s.t0x = b.x - a.x
+		s.t0y = b.y - a.y
+		s.t1x = s.t0x
+		s.t1y = s.t0y
+		if curve {
+			if c.x != a.x or c.y != a.y {
+				s.t0x = c.x - a.x
+				s.t0y = c.y - a.y
+			}
+			if b.x != c.x or b.y != c.y {
+				s.t1x = b.x - c.x
+				s.t1y = b.y - c.y
+			}
+		}
+		return s
+	}
+	// Where piece a crosses piece b, as a fraction of the way along a; -1
+	// when they don't (or run side by side).
+	crossing :: fun(a: Raster_Edge, b: Raster_Edge) -> f32 {
+		rx := a.x1 - a.x0
+		ry := a.y1 - a.y0
+		sx := b.x1 - b.x0
+		sy := b.y1 - b.y0
+		denom := rx * sy - ry * sx
+		if abs_f32(denom) < 0.000000001 do return -1.0
+		qx := b.x0 - a.x0
+		qy := b.y0 - a.y0
+		u := (qx * ry - qy * rx) / denom
+		if u < 0.0 or u > 1.0 do return -1.0
+		return (qx * sy - qy * sx) / denom
+	}
+	// Whether going on in direction b after direction a is a corner.
+	turns_sharply :: fun(ax: f32, ay: f32, bx: f32, by: f32) -> bool {
+		la := sqrt(ax*ax + ay*ay)
+		lb := sqrt(bx*bx + by*by)
+		if la <= 0.0 or lb <= 0.0 do return false
+		cosine := (ax*bx + ay*by) / (la * lb)
+		sine := (ax*by - ay*bx) / (la * lb)
+		return cosine <= 0.0 or abs_f32(sine) > MSDF_CORNER_SIN
+	}
+	// One contour's pieces, edges[lo .. hi], coloured as msdfgen's
+	// edgeColoringSimple does: no corner, all white; one (a teardrop), a
+	// third each of two colours with white between; more, a colour per run
+	// between corners, the last unlike the first.
+	color_contour :: fun(edges: ^[]Raster_Edge, lo: i64, hi: i64) {
+		n := hi - lo
+		corners := 0
+		first := -1
+		for i in 0 .. n {
+			if edges[lo + i].corner {
+				if first < 0 do first = i
+				corners += 1
+			}
+		}
+		if corners == 0 or (corners == 1 and n < 3) {
+			for i in 0 .. n {
+				edges[lo + i].color = 7
+			}
+			return
+		}
+		if corners == 1 {
+			thirds := [3]i32{3, 7, 6}
+			for i in 0 .. n {
+				third := i64(3.0 + 2.875 * f32(i) / f32(n - 1) - 1.4375 + 0.5) - 3   // -1, 0 or 1
+				edges[lo + (first + i) % n].color = thirds[third + 1]
+			}
+			return
+		}
+		color : i32 = 3
+		initial := color
+		run := 0
+		for i in 0 .. n {
+			at := lo + (first + i) % n
+			if i > 0 and edges[at].corner {
+				run += 1
+				banned : i32 = 0
+				if run == corners - 1 do banned = initial
+				color = next_edge_color(color, banned)
+			}
+			edges[at].color = color
+		}
+	}
+	// The colour after c — yellow, cyan, magenta, round — or, when the
+	// next would share two channels with banned, the one that shares none.
+	next_edge_color :: fun(c: i32, banned: i32) -> i32 {
+		shared := c & banned
+		if shared == 1 or shared == 2 or shared == 4 do return 7 - shared
+		if c == 3 do return 6
+		if c == 6 do return 5
+		return 3
+	}
+	// The winding number at (x, y): how many times the outline goes round it.
+	winding_at :: fun(edges: ^[]Raster_Edge, x: f32, y: f32) -> i32 {
+		winding : i32 = 0
+		for ei in 0 .. edges.len {
+			e := edges[ei]
+			if (e.y0 <= y and e.y1 > y) or (e.y0 > y and e.y1 <= y) {
+				if x < e.x0 + (y - e.y0) / (e.y1 - e.y0) * (e.x1 - e.x0) {
+					if e.y1 > e.y0 {
+						winding += 1
+					else
+						winding -= 1
 					}
 				}
 			}
-			// signed per-channel distances (positive inside) → normalized RGB
-			dist_sign : f32 = -1.0
-			if winding != 0 { dist_sign = 1.0 }
-			out_r := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_r)) / MSDF_PX_RANGE))
-			out_g := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_g)) / MSDF_PX_RANGE))
-			out_b := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_b)) / MSDF_PX_RANGE))
-			dst_idx := ((glyph.y + py) * atlas.size + (glyph.x + px)) * 3
-			atlas.data[dst_idx + 0] = u8(out_r * 255.0)
-			atlas.data[dst_idx + 1] = u8(out_g * 255.0)
-			atlas.data[dst_idx + 2] = u8(out_b * 255.0)
 		}
+		return winding
+	}
+	// How far (x, y) is from piece e, and — when nearest at one of its ends,
+	// that end's own point, so two pieces meeting there measure alike — how
+	// squarely it meets e there (0 square on, 1 along it), to break ties.
+	edge_distance :: fun(e: Raster_Edge, x: f32, y: f32) -> f32, f32 {
+		abx := e.x1 - e.x0
+		aby := e.y1 - e.y0
+		aqx := x - e.x0
+		aqy := y - e.y0
+		len2 := abx*abx + aby*aby
+		t : f32 = 0.0
+		if len2 > 0.0 do t = (aqx*abx + aqy*aby) / len2
+		if t > 0.0 and t < 1.0 {
+			return abs_f32(abx*aqy - aby*aqx) / sqrt_f32(len2), 0.0
+		}
+		ex := e.x0
+		ey := e.y0
+		if t > 0.5 {
+			ex = e.x1
+			ey = e.y1
+		}
+		eqx := ex - x
+		eqy := ey - y
+		d := sqrt_f32(eqx*eqx + eqy*eqy)
+		if d <= 0.0 or len2 <= 0.0 do return d, 0.0
+		return d, abs_f32((abx*eqx + aby*eqy) / (sqrt_f32(len2) * d))
+	}
+	// The signed distance from (x, y) to piece e, positive on its inside
+	// (TrueType's outer contours run clockwise); past an end that begins or
+	// ends its line or curve, the distance to its line carried on straight.
+	pseudo_distance :: fun(e: Raster_Edge, x: f32, y: f32) -> f32 {
+		abx := e.x1 - e.x0
+		aby := e.y1 - e.y0
+		aqx := x - e.x0
+		aqy := y - e.y0
+		len2 := abx*abx + aby*aby
+		if len2 <= 0.0 do return -sqrt_f32(aqx*aqx + aqy*aqy)
+		t := (aqx*abx + aqy*aby) / len2
+		side := (abx*aqy - aby*aqx) / sqrt_f32(len2)
+		if t > 0.0 and t < 1.0 do return side
+		ex := e.x0
+		ey := e.y0
+		if t > 0.5 {
+			ex = e.x1
+			ey = e.y1
+		}
+		d := sqrt_f32((ex - x) * (ex - x) + (ey - y) * (ey - y))
+		if (t < 0.0 and e.open_start) or (t > 1.0 and e.open_end) {
+			if abs_f32(side) <= d do return side
+		}
+		if side > 0.0 do return d
+		return -d
+	}
+	// Whether pixels a and b of the field clash: the channel pair that
+	// differs most differs by more than a pixel's worth (a distance field
+	// can't), b isn't one already evened out, and a is the farther from
+	// the outline (msdfgen's detectClash).
+	clashes :: fun(field: ^[]f32, a: i64, b: i64) -> bool {
+		a0 := field[3 * a]
+		a1 := field[3 * a + 1]
+		a2 := field[3 * a + 2]
+		b0 := field[3 * b]
+		b1 := field[3 * b + 1]
+		b2 := field[3 * b + 2]
+		// (The pairs sorted by how much they differ, most first.)
+		if abs_f32(b0 - a0) < abs_f32(b1 - a1) {
+			a0, a1 = a1, a0
+			b0, b1 = b1, b0
+		}
+		if abs_f32(b1 - a1) < abs_f32(b2 - a2) {
+			a1, a2 = a2, a1
+			b1, b2 = b2, b1
+			if abs_f32(b0 - a0) < abs_f32(b1 - a1) {
+				a0, a1 = a1, a0
+				b0, b1 = b1, b0
+			}
+		}
+		return abs_f32(b0 - a0) >= MSDF_CLASH and not (b0 == b1 and b0 == b2) and abs_f32(a2) >= abs_f32(b2)
+	}
+	median3 :: fun(a: f32, b: f32, c: f32) -> f32 {
+		return max_f32(min_f32(a, b), min_f32(max_f32(a, b), c))
 	}
 }
 
@@ -710,88 +1003,138 @@ Glyph_Point :: struct {
 	on_curve : bool
 }
 
-// Decode glyph `glyph_index` out of the font's glyf table. Takes the TTF
-// rather than raw glyph bytes so the loca/glyf lookup lives here — and so
-// a compound glyph's components are fetched by index. (depth: how deep in
-// components of components.)
-parse_glyph :: fun(t: ^TTF, glyph_index: u16, depth: i64 = 0) -> Outline {
-	outline : Outline
-	goff := t.loca.offsets[glyph_index]
-	glen := t.loca.offsets[glyph_index + 1] - goff
-	if glen == 0 { return outline }   // empty glyph (e.g. space): no outline
+// Decode glyph `glyph_index` of the font into `outline`, a compound glyph's
+// components resolved into its points and contours. Bad_Glyph for an index
+// past the font's glyphs or a record that doesn't decode (or components
+// nested more than 8 deep); Glyph_Too_Complex past MAX_GLYPH_POINTS points
+// or MAX_GLYPH_CONTOURS contours. Takes the TTF rather than raw glyph bytes
+// so the loca/glyf lookup lives here — and so a compound glyph's
+// components are fetched by index. (depth: how deep in components of
+// components.)
+parse_glyph :: fun(t: ^TTF, glyph_index: u16, outline: ^Outline, depth: i64 = 0) -> err {
+	outline.header = TTF.Glyph_Header{}
+	outline.contour_end_pts.len = 0
+	outline.points.len = 0
+	if i64(glyph_index) >= i64(t.maxp.num_glyphs) do return Bad_Glyph
+	start := i64(t.loca.offsets[glyph_index])
+	end := i64(t.loca.offsets[i64(glyph_index) + 1])
+	if end == start do return   // empty glyph (e.g. space): no outline
+	if end - start < 10 do return Bad_Glyph   // (no room for its header)
 
-	glyph_bytes := t.glyf.data[goff : goff + glen]
+	glyph_bytes := t.glyf.data[start : end]
 	outline.header = #big_endian glyph_bytes[0]
 	if outline.header.num_contours > 0 {
-		parse_simple_glyph_body(&outline, glyph_bytes)
+		parse_simple_glyph_body(outline, glyph_bytes)?
 	elif outline.header.num_contours < 0
-		parse_compound_glyph_body(t, &outline, glyph_bytes, depth)
+		parse_compound_glyph_body(t, outline, glyph_bytes, depth)?
 	}
-	return outline
 }
 
 // A compound glyph's components (TTF.Glyph_On_Disk.Compound): each a glyph
 // of its own, moved — and scaled or turned, when it says — into this one,
-// its points and contours appended to the outline.
-parse_compound_glyph_body :: fun(t: ^TTF, outline: ^Outline, glyph_bytes: []byte, depth: i64) {
-	ARG_1_AND_2_ARE_WORDS    :: u16(0x0001)
-	ARGS_ARE_XY_VALUES       :: u16(0x0002)   // offsets (else points to match)
-	WE_HAVE_A_SCALE          :: u16(0x0008)
-	MORE_COMPONENTS          :: u16(0x0020)
-	WE_HAVE_AN_X_AND_Y_SCALE :: u16(0x0040)
-	WE_HAVE_A_TWO_BY_TWO     :: u16(0x0080)
+// its points and contours appended to the outline. Moved by an offset, or
+// so that a point of it lands on a point of the glyph so far.
+parse_compound_glyph_body :: fun(t: ^TTF, outline: ^Outline, glyph_bytes: []byte, depth: i64) -> err {
+	ARG_1_AND_2_ARE_WORDS     :: u16(0x0001)
+	ARGS_ARE_XY_VALUES        :: u16(0x0002)   // offsets (else point numbers to match)
+	WE_HAVE_A_SCALE           :: u16(0x0008)
+	MORE_COMPONENTS           :: u16(0x0020)
+	WE_HAVE_AN_X_AND_Y_SCALE  :: u16(0x0040)
+	WE_HAVE_A_TWO_BY_TWO      :: u16(0x0080)
+	SCALED_COMPONENT_OFFSET   :: u16(0x0800)   // the offset is scaled and turned too (Apple's way)
+	UNSCALED_COMPONENT_OFFSET :: u16(0x1000)   // it isn't (Microsoft's, and when neither says)
 
-	assert(depth < 8)   // (components nested deeper: a broken font)
+	if depth >= 8 do return Bad_Glyph   // (components nested deeper: a broken font, or a loop)
+	n_bytes := glyph_bytes.len
 	cursor := 10   // past the header
+	component : Outline
 	more := true
 	for more {
+		if cursor + 4 > n_bytes do return Bad_Glyph
 		flags := read_u16be(glyph_bytes[cursor])
 		index := read_u16be(glyph_bytes[cursor + 2])
 		cursor += 4
-		dx : i64 = 0
-		dy : i64 = 0
-		if (flags & ARG_1_AND_2_ARE_WORDS) != 0 {
-			dx = i64(read_i16be(glyph_bytes[cursor]))
-			dy = i64(read_i16be(glyph_bytes[cursor + 2]))
-			cursor += 4
-		else
-			dx = i64(glyph_bytes[cursor])
-			dy = i64(glyph_bytes[cursor + 1])
-			if dx > 127 do dx -= 256   // (signed bytes)
-			if dy > 127 do dy -= 256
-			cursor += 2
+		words := (flags & ARG_1_AND_2_ARE_WORDS) != 0
+		offsets := (flags & ARGS_ARE_XY_VALUES) != 0
+		transform_size := 0
+		if (flags & WE_HAVE_A_SCALE) != 0 {
+			transform_size = 2
+		elif (flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0
+			transform_size = 4
+		elif (flags & WE_HAVE_A_TWO_BY_TWO) != 0
+			transform_size = 8
 		}
-		// Placed by matching a point of it to one of the glyph's: not read.
-		assert((flags & ARGS_ARE_XY_VALUES) != 0)
+		arg_size := 2
+		if words do arg_size = 4
+		if cursor + arg_size + transform_size > n_bytes do return Bad_Glyph
+
+		// Its two arguments: an offset x, y (signed), or two point numbers.
+		arg1 : i64 = 0
+		arg2 : i64 = 0
+		if words {
+			if offsets {
+				arg1 = i64(read_i16be(glyph_bytes[cursor]))
+				arg2 = i64(read_i16be(glyph_bytes[cursor + 2]))
+			else
+				arg1 = i64(read_u16be(glyph_bytes[cursor]))
+				arg2 = i64(read_u16be(glyph_bytes[cursor + 2]))
+			}
+		else
+			arg1 = i64(glyph_bytes[cursor])
+			arg2 = i64(glyph_bytes[cursor + 1])
+			if offsets {
+				if arg1 > 127 do arg1 -= 256   // (signed bytes)
+				if arg2 > 127 do arg2 -= 256
+			}
+		}
+		cursor += arg_size
 
 		// (Its transform, F2Dot14 numbers: x' = xx*x + yx*y, y' = xy*x + yy*y.)
 		xx : f32 = 1
 		xy : f32 = 0
 		yx : f32 = 0
 		yy : f32 = 1
-		if (flags & WE_HAVE_A_SCALE) != 0 {
+		if transform_size == 2 {
 			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
 			yy = xx
-			cursor += 2
-		elif (flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0
+		elif transform_size == 4
 			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
 			yy = f2dot14(read_i16be(glyph_bytes[cursor + 2]))
-			cursor += 4
-		elif (flags & WE_HAVE_A_TWO_BY_TWO) != 0
+		elif transform_size == 8
 			xx = f2dot14(read_i16be(glyph_bytes[cursor]))
 			xy = f2dot14(read_i16be(glyph_bytes[cursor + 2]))
 			yx = f2dot14(read_i16be(glyph_bytes[cursor + 4]))
 			yy = f2dot14(read_i16be(glyph_bytes[cursor + 6]))
-			cursor += 8
 		}
+		cursor += transform_size
 
-		component := parse_glyph(t, index, depth + 1)
+		parse_glyph(t, index, &component, depth + 1)?
 		base := outline.points.len
-		assert(base + component.points.len <= MAX_GLYPH_POINTS)
-		assert(outline.contour_end_pts.len + component.contour_end_pts.len <= MAX_GLYPH_CONTOURS)
+		if base + component.points.len > MAX_GLYPH_POINTS do return Glyph_Too_Complex
+		if outline.contour_end_pts.len + component.contour_end_pts.len > MAX_GLYPH_CONTOURS do return Glyph_Too_Complex
+
+		dx : f32 = 0
+		dy : f32 = 0
+		if offsets {
+			dx = f32(arg1)
+			dy = f32(arg2)
+			if (flags & SCALED_COMPONENT_OFFSET) != 0 and (flags & UNSCALED_COMPONENT_OFFSET) == 0 {
+				sx := dx * xx + dy * yx
+				sy := dx * xy + dy * yy
+				dx = sx
+				dy = sy
+			}
+		else
+			// Placed by matching: its point arg2, transformed, on the glyph's point arg1.
+			if arg1 >= base or arg2 >= component.points.len do return Bad_Glyph
+			on := outline.points[arg1]
+			moved := component.points[arg2]
+			dx = f32(on.x) - (f32(moved.x) * xx + f32(moved.y) * yx)
+			dy = f32(on.y) - (f32(moved.x) * xy + f32(moved.y) * yy)
+		}
 		for p in component.points {
-			x := f32(p.x) * xx + f32(p.y) * yx + f32(dx)
-			y := f32(p.x) * xy + f32(p.y) * yy + f32(dy)
+			x := f32(p.x) * xx + f32(p.y) * yx + dx
+			y := f32(p.x) * xy + f32(p.y) * yy + dy
 			&outline.points + Glyph_Point{x = i16(floor_f32(x + 0.5)), y = i16(floor_f32(y + 0.5)), on_curve = p.on_curve}
 		}
 		for e in component.contour_end_pts {
@@ -799,7 +1142,6 @@ parse_compound_glyph_body :: fun(t: ^TTF, outline: ^Outline, glyph_bytes: []byte
 		}
 		more = (flags & MORE_COMPONENTS) != 0
 	}
-	assert(cursor <= glyph_bytes.len)
 }
 
 // A 2.14 fixed-point number (a compound glyph's scale): 16384 is 1.
@@ -808,10 +1150,10 @@ f2dot14 :: fun(v: i16) -> f32 {
 }
 
 // Decode one simple glyph's body (what TTF.Glyph_On_Disk's Simple variant
-// documents) into the outline's arrays. Reads are bounds-checked against the
-// glyph's OWN slice — a desynced decode traps at the bad read instead of
-// wandering into the next glyph's bytes.
-parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
+// documents) into the outline's arrays. Every read is checked against the
+// glyph's OWN slice first: a record that runs short, or contours that don't
+// end in order, is Bad_Glyph rather than a read of the next glyph's bytes.
+parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 	// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
 	GLYPH_FLAG_ON_CURVE :: u8(0x01)
 	GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
@@ -820,44 +1162,67 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 	GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
 	GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 
+	n_bytes := glyph_bytes.len
 	cursor := 10   // past the header
-	n_contours := outline.header.num_contours
-	assert(n_contours <= MAX_GLYPH_CONTOURS)
+	n_contours := i64(outline.header.num_contours)
+	if n_contours > MAX_GLYPH_CONTOURS do return Glyph_Too_Complex
+	if cursor + 2 * n_contours + 2 > n_bytes do return Bad_Glyph
 
+	// Each contour's last point, past the one before's.
 	outline.contour_end_pts.len = n_contours
+	last : i64 = -1
 	for i in 0..n_contours {
-		outline.contour_end_pts[i] = read_u16be(glyph_bytes[cursor])
+		end := read_u16be(glyph_bytes[cursor])
+		if i64(end) <= last do return Bad_Glyph
+		outline.contour_end_pts[i] = end
+		last = i64(end)
 		cursor += 2
 	}
-	n_points := outline.contour_end_pts[n_contours - 1] + 1
-	assert(n_points <= MAX_GLYPH_POINTS)
+	n_points := last + 1
+	if n_points > MAX_GLYPH_POINTS do return Glyph_Too_Complex
 	outline.points.len = n_points
 
 	// TrueType hinting bytecode sits inline between the endpoints and the
 	// flags. We don't interpret it; skip past.
-	instr_len := i32(read_u16be(glyph_bytes[cursor]))
+	instr_len := i64(read_u16be(glyph_bytes[cursor]))
 	cursor += 2 + instr_len
 
 	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
 	// is set, the NEXT byte counts additional points sharing the flag.
-	// Decoded flat so the coord loops index by point cheaply.
+	// Decoded flat so the coord loops index by point cheaply; the bytes the
+	// coordinates take counted on the way.
 	flags : [..MAX_GLYPH_POINTS]u8
 	flags.len = n_points
-	p : i32 = 0
+	x_bytes := 0
+	y_bytes := 0
+	p := 0
 	for p < n_points {
+		if cursor >= n_bytes do return Bad_Glyph
 		f := u8(glyph_bytes[cursor])
 		cursor += 1
-		flags[p] = f
-		p += 1
+		count := 1
 		if (f & GLYPH_FLAG_REPEAT) != 0 {
-			repeat := i32(glyph_bytes[cursor])
+			if cursor >= n_bytes do return Bad_Glyph
+			count += i64(glyph_bytes[cursor])
 			cursor += 1
-			for r in 0..repeat {
-				flags[p] = f
-				p += 1
-			}
+		}
+		if p + count > n_points do return Bad_Glyph
+		for r in 0..count {
+			flags[p] = f
+			p += 1
+		}
+		if (f & GLYPH_FLAG_X_SHORT) != 0 {
+			x_bytes += count
+		elif (f & GLYPH_FLAG_X_SAME) == 0
+			x_bytes += 2 * count
+		}
+		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
+			y_bytes += count
+		elif (f & GLYPH_FLAG_Y_SAME) == 0
+			y_bytes += 2 * count
 		}
 	}
+	if cursor + x_bytes + y_bytes > n_bytes do return Bad_Glyph
 
 	// X coordinates: each point's x is a signed delta from the previous
 	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
@@ -895,10 +1260,6 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 		}
 		outline.points[i].y = i16(y)
 	}
-	// Every read above was checked against the slice; this catches the
-	// quieter failure where the decode finishes but consumed past the
-	// glyph's end without a read landing there.
-	assert(cursor <= glyph_bytes.len)
 }
 
 // Spec type aliases. Transparent aliases over the underlying integer width —
@@ -915,8 +1276,10 @@ Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
 // them as TTF.Head etc.) and the tables we read, filled into fields by the
 // constructor's parse body at the bottom. Glyph outlines are NOT decoded here
 // — the glyf field keeps a view of the raw glyph records, and parse_glyph
-// (file scope, below) decodes one glyph at a time on request. The view
-// aliases the caller's file buffer, so the TTF must not outlive it.
+// (file scope, above) decodes one glyph at a time on request; char_glyph
+// maps characters to glyphs. The views (glyf, cmap_data) alias the caller's
+// file buffer, so the TTF must not outlive it. Check the file with
+// check_ttf first: this trusts it, and a broken one traps here.
 TTF :: struct (bytes: ^[]byte) {
 
 	Offset_Table :: struct {
@@ -925,7 +1288,7 @@ TTF :: struct (bytes: ^[]byte) {
 		search_range : u16
 		entry_selector: u16
 		range_shift : u16
-		tables: [..32]Table
+		tables: [..MAX_TTF_TABLES]Table
 	}
 
 	Table :: struct {
@@ -1067,131 +1430,258 @@ TTF :: struct (bytes: ^[]byte) {
 	}
 
 	// ─── parse: read the table directory, then the tables we use, into fields ───
-	h : Offset_Table = #big_endian bytes[0]
-	h.tables = #big_endian bytes[12]
-	h.tables.len = h.num_tables
+	// (check_ttf first: this trusts the file to hold every table it reads.)
+	// Arrays are read entry by entry, as many as the font says: a byte read
+	// into one fills its whole capacity, past a small font's end.
+	h := read_offset_table(bytes)
 
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_table_loc := h.tables.get_offset("glyf")
-	glyf_table_end := glyf_table_loc + h.tables.get_len("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
+	head_loc := table_at(bytes, "head")
+	maxp_loc := table_at(bytes, "maxp")
+	cmap_loc, cmap_len := ttf_table(bytes, "cmap")
+	loca_loc := table_at(bytes, "loca")
+	glyf_table_loc, glyf_table_len := ttf_table(bytes, "glyf")
+	hhea_loc := table_at(bytes, "hhea")
+	hmtx_loc := table_at(bytes, "hmtx")
 
 	head : Head = #big_endian bytes[head_loc]
 	maxp : Maxp = #big_endian bytes[maxp_loc]
-	cmap : Cmap = #big_endian bytes[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
+	cmap := read_cmap(bytes, cmap_loc)
+	loca := read_loca(head, maxp, bytes[loca_loc:])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx : Hmtx = hmtx_read_into_array(hhea, bytes[hmtx_loc:])
-	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_end]}
+	hmtx := read_hmtx(hhea, bytes[hmtx_loc:])
+	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_loc + glyf_table_len]}
 
-	// cmap encoding records sit right after the 4-byte header; fill them, then
-	// pick a Unicode subtable to map character codes through.
-	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = cmap.num_subtables
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+	// The character map characters go through (cmap_pick): its record, its
+	// subtable (to the cmap table's end), and whether it's a symbol font's.
+	cmap_used : Encoding_Record = #big_endian bytes[cmap_loc + 4 + 8 * cmap_pick(bytes, cmap_loc, cmap_len)]
+	cmap_data := bytes[cmap_loc + i64(cmap_used.offset) : cmap_loc + cmap_len]
+	cmap_symbol := cmap_used.platform_id == 3 and cmap_used.platform_specific_id == 0
 
 	// Helper funcions below
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i64 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return table.offset
-			}
-		}
-		print("Table '%' not found.", target)
-		return 0
+	table_at :: fun(bytes: ^[]byte, tag: []utf8) -> i64 {
+		start, length := ttf_table(bytes, tag)
+		return start
 	}
-	get_len :: fun(tables: [..32]Table, target: []utf8) -> i64 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return table.len
-			}
+	read_offset_table :: fun(bytes: ^[]byte) -> h: Offset_Table {
+		h.scaler_type    = read_u32be(bytes[0])
+		h.num_tables     = read_u16be(bytes[4])
+		h.search_range   = read_u16be(bytes[6])
+		h.entry_selector = read_u16be(bytes[8])
+		h.range_shift    = read_u16be(bytes[10])
+		for i in 0 .. i64(h.num_tables) {
+			table : Table = #big_endian bytes[12 + 16 * i]
+			&h.tables + table
 		}
-		print("Table '%' not found.", target)
-		return 0
+		return h
 	}
-	loca_correct_format :: fun(head: Head, maxp: Maxp,
-		bytes: []byte) -> loca: Loca 
-	{
+	read_cmap :: fun(bytes: ^[]byte, at: i64) -> c: Cmap {
+		c.version       = read_u16be(bytes[at])
+		c.num_subtables = read_u16be(bytes[at + 2])
+		for i in 0 .. min_int(i64(c.num_subtables), c.encodings.cap) {
+			record : Encoding_Record = #big_endian bytes[at + 4 + 8 * i]
+			&c.encodings + record
+		}
+		return c
+	}
+	read_loca :: fun(head: Head, maxp: Maxp, bytes: []byte) -> loca: Loca {
 		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
-		loca.offsets.len = i64(maxp.num_glyphs) + 1
-		if head.index_to_loc_format == 0 {
-			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
-			off16.len = loca.offsets.len
-			for item, i in off16 {
-				loca.offsets[i] = u32(item) * 2
+		for i in 0 .. i64(maxp.num_glyphs) + 1 {
+			if head.index_to_loc_format == 0 {
+				&loca.offsets + u32(read_u16be(bytes[2 * i])) * 2
+			else
+				&loca.offsets + read_u32be(bytes[4 * i])
 			}
-		else
-			loca.offsets = #big_endian bytes[0]
 		}
 		return loca
 	}
-	hmtx_read_into_array :: fun(hhea: Hhea, bytes: []byte) -> Hmtx {
-		hmtx : Hmtx
-		hmtx.long_metrics = #big_endian bytes[0]
-		hmtx.long_metrics.len = i64(hhea.num_of_long_hor_metrics)
-		return hmtx
-	}
-	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
-		best : i64 = -1
-		best_score : i32 = -1
-		for e, i in cmap.encodings {
-			score : i32 = 1
-			if e.platform_id == 0 { score = 2 }
-			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
-			if score > best_score {
-				best_score = score
-				best = i
-			}
+	read_hmtx :: fun(hhea: Hhea, bytes: []byte) -> hmtx: Hmtx {
+		for i in 0 .. i64(hhea.num_of_long_hor_metrics) {
+			metric : Long_Hor_Metric = #big_endian bytes[4 * i]
+			&hmtx.long_metrics + metric
 		}
-		if best < 0 { return 0 }
-		return cmap_loc + cmap.encodings[best].offset
+		return hmtx
 	}
 
 } // TTF END
 
-cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
-	if subtable_start == 0 { return 0 }
-	format := read_u16be(bytes[subtable_start])
-	if format == 4 {
-		return cmap_format4_lookup(bytes, subtable_start, char)
-	elif format == 0
-		return cmap_format0_lookup(bytes, subtable_start, char)
-	else
-		print("cmap: unsupported subtable format %", format)
+MAX_TTF_TABLES :: 64   // the tables a font's directory may list
+
+// Whether `bytes` hold a TrueType font TTF can read — and when not, why:
+// Not_TrueType for another kind of file (CFF outlines, as most .otf fonts
+// have; a .ttc collection; not a font at all); Missing_Table when a table
+// TTF reads isn't there; Bad_Table when one runs past the file's end, is too
+// short, or its counts don't agree; Unsupported_Cmap when no character map
+// is in a format char_glyph reads (0, 4, 6 or 12). Once this is Ok, TTF
+// reads only inside the file, and every glyph's record lies inside glyf.
+check_ttf :: fun(bytes: ^[]byte) -> err {
+	n := bytes.len
+	if n < 12 do return Not_TrueType
+	version := read_u32be(bytes[0])
+	if version != 0x00010000 and version != 0x74727565 do return Not_TrueType   // (1.0, or Apple's 'true')
+	num_tables := i64(read_u16be(bytes[4]))
+	if num_tables > MAX_TTF_TABLES or 12 + 16 * num_tables > n do return Bad_Table
+
+	head, _ := table_in_file(bytes, "head", 54)?
+	maxp, _ := table_in_file(bytes, "maxp", 32)?
+	hhea, _ := table_in_file(bytes, "hhea", 36)?
+	cmap, cmap_len := table_in_file(bytes, "cmap", 4)?
+	loca, loca_len := table_in_file(bytes, "loca", 0)?
+	_, glyf_len := table_in_file(bytes, "glyf", 0)?
+	_, hmtx_len := table_in_file(bytes, "hmtx", 0)?
+
+	if read_u32be(bytes[head + 12]) != 0x5F0F3CF5 do return Bad_Table   // (head's magic number)
+	units := read_u16be(bytes[head + 18])
+	if units < 16 or units > 16384 do return Bad_Table
+	loc_format := read_i16be(bytes[head + 50])
+	if loc_format != 0 and loc_format != 1 do return Bad_Table
+	glyphs := i64(read_u16be(bytes[maxp + 4]))
+	if glyphs == 0 do return Bad_Table
+	metrics := i64(read_u16be(bytes[hhea + 34]))
+	if metrics == 0 or 4 * metrics > hmtx_len do return Bad_Table
+
+	// Every glyph's record inside glyf, each starting where the one before ends or later.
+	entry : i64 = 2
+	if loc_format == 1 do entry = 4
+	if entry * (glyphs + 1) > loca_len do return Bad_Table
+	last : i64 = 0
+	for i in 0 .. glyphs + 1 {
+		at : i64 = 0
+		if loc_format == 0 {
+			at = 2 * i64(read_u16be(bytes[loca + 2 * i]))
+		else
+			at = i64(read_u32be(bytes[loca + 4 * i]))
+		}
+		if at < last or at > glyf_len do return Bad_Table
+		last = at
+	}
+
+	if 4 + 8 * i64(read_u16be(bytes[cmap + 2])) > cmap_len do return Bad_Table
+	if cmap_pick(bytes, cmap, cmap_len) < 0 do return Unsupported_Cmap
+}
+
+// Where table `tag` ("head", "glyf" ...) starts in a font's file and how many
+// bytes it is; -1, 0 when the font hasn't one. (The directory is in the
+// file: check_ttf.)
+ttf_table :: fun(bytes: ^[]byte, tag: []utf8) -> i64, i64 {
+	for i in 0 .. i64(read_u16be(bytes[4])) {
+		table : TTF.Table = #big_endian bytes[12 + 16 * i]
+		if starts_with(table.tag[:], tag) do return i64(table.offset), i64(table.len)
+	}
+	return -1, 0
+}
+
+// Table `tag`'s start and length, for check_ttf: Missing_Table when the font
+// hasn't one, Bad_Table when it is shorter than `least` bytes or runs past
+// the file's end.
+table_in_file :: fun(bytes: ^[]byte, tag: []utf8, least: i64) -> i64, i64, err {
+	start, length := ttf_table(bytes, tag)
+	if start < 0 do return 0, 0, Missing_Table
+	if length < least or start + length > bytes.len do return 0, 0, Bad_Table
+	return start, length
+}
+
+// The character map a font's characters go through: of its subtables in a
+// format char_glyph reads, the one that covers the most — all of Unicode,
+// then the Basic Multilingual Plane, then a symbol font's, then any other
+// (a Mac's). Its record's index in the cmap table; -1 when none is readable.
+cmap_pick :: fun(bytes: ^[]byte, cmap: i64, cmap_len: i64) -> i64 {
+	best : i64 = -1
+	best_score := -1
+	for i in 0 .. i64(read_u16be(bytes[cmap + 2])) {
+		record : TTF.Encoding_Record = #big_endian bytes[cmap + 4 + 8 * i]
+		if not cmap_readable(bytes, cmap + i64(record.offset), cmap + cmap_len) do continue
+		score := cmap_score(record.platform_id, record.platform_specific_id)
+		if score > best_score {
+			best = i
+			best_score = score
+		}
+	}
+	return best
+
+	cmap_score :: fun(platform: u16, encoding: u16) -> i64 {
+		if platform == 3 and encoding == 10 do return 6                    // Windows, all of Unicode
+		if platform == 0 and (encoding == 4 or encoding == 6) do return 5  // Unicode, all of it
+		if platform == 3 and encoding == 1 do return 4                     // Windows, the BMP
+		if platform == 0 do return 3                                       // Unicode, the BMP
+		if platform == 3 and encoding == 0 do return 2                     // Windows, a symbol font
+		return 1                                                           // a Mac's, and others
+	}
+	// Whether the subtable at `sub` is in a format char_glyph reads and its
+	// arrays end by `end` (the cmap table's end).
+	cmap_readable :: fun(bytes: ^[]byte, sub: i64, end: i64) -> bool {
+		if sub + 4 > end do return false
+		format := read_u16be(bytes[sub])
+		if format == 0 do return sub + 262 <= end
+		if format == 4 {
+			if sub + 14 > end do return false
+			seg_x2 := i64(read_u16be(bytes[sub + 6]))
+			return seg_x2 % 2 == 0 and sub + 16 + 4 * seg_x2 <= end
+		}
+		if format == 6 {
+			if sub + 10 > end do return false
+			return sub + 10 + 2 * i64(read_u16be(bytes[sub + 8])) <= end
+		}
+		if format == 12 {
+			if sub + 16 > end do return false
+			return sub + 16 + 12 * i64(read_u32be(bytes[sub + 12])) <= end
+		}
+		return false
+	}
+}
+
+// The glyph character `char` (a code point) is drawn with: its index in the
+// font, or 0 — the missing-glyph box — when the font hasn't it. A symbol
+// font keeps its characters at U+F020 .. U+F0FF; U+0020 .. U+00FF are
+// looked for there too, as Windows does.
+char_glyph :: fun(t: ^TTF, char: u32) -> u16 {
+	g := cmap_lookup(t.cmap_data, char)
+	if g == 0 and t.cmap_symbol and char <= 0xFF do g = cmap_lookup(t.cmap_data, 0xF000 + char)
+	if i64(g) >= i64(t.maxp.num_glyphs) do return 0   // (a broken map: past the last glyph)
+	return g
+
+	// Character `char`'s glyph in the character-map subtable `data` (one
+	// cmap_readable says is), 0 when it maps none.
+	cmap_lookup :: fun(data: []byte, char: u32) -> u16 {
+		format := read_u16be(data[0])
+		if format == 0 {
+			if char > 255 do return 0
+			return u16(data[6 + i64(char)])
+		elif format == 4
+			return cmap_format4_lookup(data, char)
+		elif format == 6
+			first := u32(read_u16be(data[6]))
+			count := u32(read_u16be(data[8]))
+			if char < first or char >= first + count do return 0
+			return read_u16be(data[10 + 2 * i64(char - first)])
+		elif format == 12
+			return cmap_format12_lookup(data, char)
+		}
 		return 0
 	}
 
-	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
-		if char > 255 { return 0 }
-		return u16(bytes[sub + 6 + char])
-	}
-
-	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
+	cmap_format4_lookup :: fun(data: []byte, char: u32) -> u16 {
 		// i64 pin: every derived offset and s * 2 then ride at address width.
-		seg_x2 := read_u16be(bytes[sub + 6])
-		end_codes   := sub + 14
+		seg_x2 := i64(read_u16be(data[6]))
+		end_codes   : i64 = 14
 		start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
 		id_deltas   := start_codes + seg_x2
 		id_ranges   := id_deltas + seg_x2
 		for s in 0..seg_x2 / 2 {
-			end_code := read_u16be(bytes[end_codes + s * 2])
+			end_code := read_u16be(data[end_codes + s * 2])
 			if char <= end_code {
-				start_code := read_u16be(bytes[start_codes + s * 2])
+				start_code := read_u16be(data[start_codes + s * 2])
 				if char < start_code do return 0
-				id_delta := read_u16be(bytes[id_deltas + s * 2])
-				id_range := read_u16be(bytes[id_ranges + s * 2])
+				id_delta := read_u16be(data[id_deltas + s * 2])
+				id_range := i64(read_u16be(data[id_ranges + s * 2]))
 				if id_range == 0 {
 					// Direct: (char + idDelta) mod 65536. u16() truncates the
 					// u32 sum to its low 16 bits, which is the modular reduction
 					// the spec wants (idDelta is a u16-encoded signed value).
 					return u16(char + id_delta)
 				else
-					addr := id_ranges + s * 2 + id_range + 2 * (char - start_code)
-					g := read_u16be(bytes[addr])
+					addr := id_ranges + s * 2 + id_range + 2 * i64(char - start_code)
+					if addr + 2 > data.len do return 0   // (a broken map: past its end)
+					g := read_u16be(data[addr])
 					if g == 0 { return 0 }
 					 // (g + idDelta) mod 65536 — the wrapping add IS the modular reduction the spec wants
 					return g +% id_delta
@@ -1200,5 +1690,26 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 		}
 		return 0
 	}
-}
 
+	// Format 12: groups of characters in a row mapping to glyphs in a row,
+	// in order — searched by halves.
+	cmap_format12_lookup :: fun(data: []byte, char: u32) -> u16 {
+		lo : i64 = 0
+		hi := i64(read_u32be(data[12]))
+		for lo < hi {
+			mid := (lo + hi) / 2
+			at := 16 + 12 * mid
+			start := read_u32be(data[at])
+			if char < start {
+				hi = mid
+			elif char > read_u32be(data[at + 4])
+				lo = mid + 1
+			else
+				g := u64(read_u32be(data[at + 8])) + u64(char - start)
+				if g > 0xFFFF do return 0
+				return u16(g)
+			}
+		}
+		return 0
+	}
+}

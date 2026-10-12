@@ -1,0 +1,81 @@
+module font_msdf_corner
+
+use mara.core
+use mara.math
+use mara.memory
+use mara.font
+
+// An MSDF keeps a glyph's corners sharp: its three channels, each blended
+// between pixels as a GPU samples them, then their median, put a square's
+// corner where it is. A point a quarter pixel inside a corner, along the
+// diagonal, reads a quarter pixel in; one as far outside, a quarter pixel
+// out. (A one-channel distance field rounds the corner off: the point inside
+// read 0.004 px, all but on the edge, the one outside 0.6 px.) The square
+// is 32 pixels a side, its corners on pixel edges at 4 and 36.
+
+//@ expect-output: corners sharp
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Debug(16 * MB))
+
+	outline : Outline
+	outline.header.num_contours = 1
+	outline.header.x_max = 1000
+	outline.header.y_max = 1000
+	outline.contour_end_pts.len = 1
+	outline.contour_end_pts[0] = 3
+	outline.points.len = 4
+	outline.points[0] = Glyph_Point{0, 0, true}       // (clockwise, y up, as TrueType's outer contours run)
+	outline.points[1] = Glyph_Point{0, 1000, true}
+	outline.points[2] = Glyph_Point{1000, 1000, true}
+	outline.points[3] = Glyph_Point{1000, 0, true}
+
+	storage : [3 * MB]byte
+	atlas := Atlas(storage[:], 1000)
+	glyph : Glyph
+	if bool(rasterize_msdf(&outline, &glyph, &atlas)) {
+		print("rasterize failed")
+		return 1
+	}
+	print("cell", glyph.w, "x", glyph.h)
+	ab : []byte = storage[:]
+
+	sharp := true
+	corners := [4][4]f32{{4, 4, 1, 1}, {36, 4, -1, 1}, {4, 36, 1, -1}, {36, 36, -1, -1}}
+	for c in corners {
+		inside := sample(&ab, c[0] + 0.25 * c[2], c[1] + 0.25 * c[3])
+		outside := sample(&ab, c[0] - 0.25 * c[2], c[1] - 0.25 * c[3])
+		print("corner", c[0], c[1], "a quarter pixel in:", inside, "out:", outside)
+		if inside < 0.2 or outside > -0.2 do sharp = false
+	}
+	// (And mid-side, the edge where it is.)
+	if sample(&ab, 20.0, 4.25) < 0.2 or sample(&ab, 20.0, 3.75) > -0.2 do sharp = false
+	if sharp do print("corners sharp")
+	return 0
+}
+
+// The distance (pixels, positive inside) a shader reads at (x, y) of the
+// atlas: each channel blended between the four nearest pixels, then the
+// median of the three.
+sample :: fun(atlas: ^[]byte, x: f32, y: f32) -> f32 {
+	fx := x - 0.5
+	fy := y - 0.5
+	x0 := i64(floor_f32(fx))
+	y0 := i64(floor_f32(fy))
+	tx := fx - f32(x0)
+	ty := fy - f32(y0)
+	ch : [3]f32
+	for c in 0 .. 3 {
+		a := texel(atlas, x0, y0, c)
+		b := texel(atlas, x0 + 1, y0, c)
+		d := texel(atlas, x0, y0 + 1, c)
+		e := texel(atlas, x0 + 1, y0 + 1, c)
+		ch[c] = (a * (1.0 - tx) + b * tx) * (1.0 - ty) + (d * (1.0 - tx) + e * tx) * ty
+	}
+	med := max_f32(min_f32(ch[0], ch[1]), min_f32(max_f32(ch[0], ch[1]), ch[2]))
+	return (med - 0.5) * MSDF_PX_RANGE
+
+	texel :: fun(atlas: ^[]byte, x: i64, y: i64, c: i64) -> f32 {
+		return f32(atlas[(y * MSDF_ATLAS + x) * 3 + c]) / 255.0
+	}
+}

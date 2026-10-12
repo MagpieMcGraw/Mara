@@ -31,7 +31,10 @@ main :: fun() -> i64 {
 	atlas := Atlas(storage[:], 256)
 
 	glyph : Glyph
-	rasterize_msdf(&outline, &glyph, &atlas)
+	if bool(rasterize_msdf(&outline, &glyph, &atlas)) {
+		print("rasterize failed")
+		return 1
+	}
 
 	print("cell", glyph.w, "x", glyph.h)
 	ab : []byte = storage[:]

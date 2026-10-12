@@ -42,8 +42,10 @@ uniform sampler2DArray base_text;
 
 void main()
 {
-  // Font atlas is single-channel (GL_RED) - glyph data is in red channel
-  float glyph = texture(base_text, vec3(tx_coords, float(v_layer))).r;
+  // Font atlas is an MSDF (mara.font's load_glyphs_and_metrics): the median
+  // of a texel's three channels is its distance to the glyph's edge, 0.5 on it
+  vec3 msdf = texture(base_text, vec3(tx_coords, float(v_layer))).rgb;
+  float glyph = max(min(msdf.r, msdf.g), min(max(msdf.r, msdf.g), msdf.b));
   if(glyph < 0.1)
     discard;
   // Apply color to the glyph

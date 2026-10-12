@@ -1,0 +1,98 @@
+module font_files
+
+use mara.core
+use mara.os
+use mara.math
+use mara.memory
+use mara.font
+
+// mara.font on small and broken font files (test/fonts/, written by
+// make_test_fonts.py). A font of a few hundred bytes reads: TTF once read
+// loca and hmtx a whole array's capacity at a time, which ran past the end
+// of every font under ~310 KB (Verdana, Georgia, Comic Sans ...). Each
+// character-map format maps A B C (and a b, and U+1F600 past the BMP, where
+// the format reaches): 4 with idDelta and with idRangeOffset, 12, 0, 6, and
+// a symbol font's U+F041.. found for A. B is a compound glyph: its second
+// square, half size, placed by matching its point 1 to the glyph's point 2.
+// A file cut short, an .otf with CFF outlines and a missing file are errors.
+
+//@ expect-output: tiny.ttf: A 1 B 2 C 3 a 3 b 1 U+1F600 1 Z 0
+//@ expect-output: tiny_bmp.ttf: A 1 B 2 C 3 a 3 b 1 U+1F600 0 Z 0
+//@ expect-output: tiny_mac0.ttf: A 1 B 2 C 3 a 0 b 0 U+1F600 0 Z 0
+//@ expect-output: tiny_mac6.ttf: A 1 B 2 C 3 a 0 b 0 U+1F600 0 Z 0
+//@ expect-output: tiny_symbol.ttf: A 1 B 2 C 3 a 0 b 0 U+1F600 0 Z 0
+//@ expect-output: B: 2 contours, the second at 500 250 .. 750 500, its point 1 at 500 500
+//@ expect-output: coverage: 3 drawn, A 18 x 18
+//@ expect-output: msdf: A 25 x 25, C 25 x 25
+//@ expect-output: tiny_cut.ttf: Font_Error.Bad_Table
+//@ expect-output: not_truetype.otf: Font_Error.Not_TrueType
+//@ expect-output: missing.ttf: File_Error.Open_Failed
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Basic(64 * MB))
+	names := [8][]utf8{"tiny.ttf", "tiny_bmp.ttf", "tiny_mac0.ttf", "tiny_mac6.ttf",
+		"tiny_symbol.ttf", "tiny_cut.ttf", "not_truetype.otf", "missing.ttf"}
+	for name in names {
+		e := show_chars(name)
+		if bool(e) do print("%: %", name, e)
+	}
+	e := show_compound()
+	if bool(e) do print("compound:", e)
+	e = show_loads()
+	if bool(e) do print("loads:", e)
+	return 0
+}
+
+// The glyphs a font's characters map to.
+show_chars :: fun(name: []utf8) -> err {
+	file : [..64 * KB]byte
+	path : [..64]utf8
+	&path + "fonts/"
+	&path + name
+	read_entire_file(path, &file)?   // (the buffer, not a slice of it: cstring finds the 0 after the name)
+	check_ttf(&file)?
+	ttf := TTF(&file)
+	print("%: A % B % C % a % b % U+1F600 % Z %", name,
+		char_glyph(&ttf, u32('A')), char_glyph(&ttf, u32('B')), char_glyph(&ttf, u32('C')),
+		char_glyph(&ttf, u32('a')), char_glyph(&ttf, u32('b')), char_glyph(&ttf, 0x1F600),
+		char_glyph(&ttf, u32('Z')))
+}
+
+// The compound glyph B, its components resolved.
+show_compound :: fun() -> err {
+	file : [..64 * KB]byte
+	read_entire_file("fonts/tiny.ttf", &file)?
+	check_ttf(&file)?
+	ttf := TTF(&file)
+	b : Outline
+	parse_glyph(&ttf, char_glyph(&ttf, u32('B')), &b)?
+	lo_x := i64(b.points[4].x)
+	lo_y := i64(b.points[4].y)
+	hi_x := lo_x
+	hi_y := lo_y
+	for i in 4 .. b.points.len {
+		lo_x = min_int(lo_x, i64(b.points[i].x))
+		lo_y = min_int(lo_y, i64(b.points[i].y))
+		hi_x = max_int(hi_x, i64(b.points[i].x))
+		hi_y = max_int(hi_y, i64(b.points[i].y))
+	}
+	print("B: % contours, the second at % % .. % %, its point 1 at % %", b.contour_end_pts.len,
+		lo_x, lo_y, hi_x, hi_y, b.points[5].x, b.points[5].y)
+}
+
+// Both loaders on the tiny font: A (a square) and C (all points off the curve).
+show_loads :: fun() -> err {
+	glyphs : [..3]Glyph
+	metrics : Line_Metrics
+	coverage : [..128 * 128]byte
+	load_coverage_glyphs("fonts/tiny.ttf", 32.0, &glyphs, &metrics, &coverage, 128, u32('A'))?
+	drawn := 0
+	for g in glyphs {
+		if g.w > 0 do drawn += 1
+	}
+	print("coverage: % drawn, A % x %", drawn, glyphs[0].w, glyphs[0].h)
+
+	msdf : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	load_glyphs_and_metrics("fonts/tiny.ttf", &glyphs, &metrics, &msdf, u32('A'))?
+	print("msdf: A % x %, C % x %", glyphs[0].w, glyphs[0].h, glyphs[2].w, glyphs[2].h)
+}
