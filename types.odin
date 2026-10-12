@@ -1536,7 +1536,10 @@ solidify_type :: proc(t: Type) -> Type {
 // is the one all its uses decide together, in any order (infer_constrain) —
 // every place it meets a width: arithmetic against a sized operand, an
 // argument, an assignment either way, a return, a field, an array literal's
-// element, a pointer to it. No use at all → i64/f64 at codegen. Two bindings
+// element, a pointer to it. Decided as the uses come; one that moves after a
+// decision read it (an operation's type, say) has the program checked again
+// with every width known first (tc_check_program) — the separate pass, only
+// when needed. No use at all → i64/f64 at codegen. Two bindings
 // combined in arithmetic are union-find linked so they resolve together. Uses
 // no one width serves (a u8 and an i8; a write of an i64 where it goes into an
 // i32) are a hard error asking for an explicit annotation (no silent
@@ -1550,6 +1553,10 @@ Infer_Cell :: struct {
     name:          string,      // binding name — for the conflict diagnostic
     span:          Span,        // binding decl site — for the conflict diagnostic
     uses:          [dynamic]Infer_Use,   // (at the root) every use's demand on the width, in order
+    sid:           Syntax_Id,   // the binding, as the checker keys nodes: its width found again in a later pass
+    fixed:         bool,        // its width known before its uses (a later pass: tc_check_program) — kept while each use takes it
+    read:          bool,        // a decision read its width (resolve_infer)
+    stale:         bool,        // ... and it moved after: what read it, checked again (tc_check_program)
 }
 
 // How a use of a binding of no written width bears on its width W.
@@ -1589,7 +1596,10 @@ resolve_infer :: proc(t: Type) -> Type {
     cell := infer_cell_of(t)
     if cell == nil { return t }
     r := infer_root(cell)
-    if r.resolved != nil { return resolve_infer(r.resolved) }
+    if r.resolved != nil {
+        r.read = true
+        return resolve_infer(r.resolved)
+    }
     return t
 }
 
@@ -1609,6 +1619,11 @@ infer_constrain :: proc(c: ^Checker, cell: ^Infer_Cell, kind: Infer_Use_Kind, ta
     }
     use := Infer_Use{kind, tgt, span}
     append(&r.uses, use)
+    // (Its width known in advance: kept while each use takes it.)
+    if r.fixed {
+        if infer_takes([]Infer_Use{use}, r.resolved) { return }
+        r.fixed = false
+    }
     if infer_solve(r) { return }
     pop(&r.uses)
     if c == nil { return }
@@ -1636,8 +1651,14 @@ infer_solve :: proc(r: ^Infer_Cell) -> bool {
         if infer_takes(r.uses[:], u.t) { best, best_span = u.t, u.span }
     }
     if best == nil { return len(r.uses) == 0 }
+    if r.read && r.resolved != nil && !infer_same(best, r.resolved) { r.stale = true }
     r.resolved, r.resolved_span = best, best_span
     return true
+}
+
+@(private="file")
+infer_same :: proc(a, b: Type) -> bool {
+    return types_equal(a, b) && types_equal(b, a)
 }
 
 // Whether width w meets every use's demand.
@@ -1665,14 +1686,27 @@ infer_narrower :: proc(a, b: Type) -> bool {
 }
 
 // Two bindings of no written width that must share one (`m := n`, `a + b`):
-// one cell, its uses both's, the width decided from all. None takes them
-// all: a conflict, and b's uses kept apart again.
+// one cell, its uses both's, the width decided from all (a width known in
+// advance, either's, kept while they all take it). None takes them all: a
+// conflict, and b's uses kept apart again.
 unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Span) {
     ra := infer_root(a); rb := infer_root(b)
     if ra == rb { return }
     had := len(ra.uses)
     for u in rb.uses { append(&ra.uses, u) }
+    known: Type
+    if ra.fixed { known = ra.resolved } else if rb.fixed { known = rb.resolved }
+    if known != nil && infer_takes(ra.uses[:], known) {
+        ra.resolved, ra.fixed = known, true
+        ra.read = ra.read || rb.read
+        rb.link = ra
+        return
+    }
+    ra.fixed = false
     if infer_solve(ra) {
+        if rb.read && rb.resolved != nil && !infer_same(rb.resolved, ra.resolved) { ra.stale = true }
+        ra.read = ra.read || rb.read
+        ra.stale = ra.stale || rb.stale
         rb.link = ra
         return
     }

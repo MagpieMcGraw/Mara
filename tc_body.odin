@@ -248,8 +248,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         return
     } else if is_infer(vt) {
         // Its width is the one all its uses decide together (infer_constrain).
-        cell := new(Infer_Cell)
-        cell.name, cell.span = name, span
+        cell := tc_infer_cell(k, name, span, target)
         if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
         if _, is_float := vt.(Type_Infer_Float); is_float {
             final = Type_Infer_Float{cell = cell}
