@@ -206,6 +206,7 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
         v := decl_view(t, s)
         if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
         for tg, i in v.targets {
+            if tc_name(k, tg) == "_" { continue }   // (no local: its value, lw_big_temps')
             lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
             if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }
         }
@@ -226,7 +227,12 @@ lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
         return lw_big_in(k, Tree_Id(t.a[s]), false)
     case .Decl:
         v := decl_view(t, s)
-        for val in v.values { if lw_big_in(k, val, true) { return true } }
+        for val, i in v.values {
+            // (Into `_`: dropped — nowhere to go. A destructure's one value
+            // goes to its names, `_` or not.)
+            dropped := len(v.values) == len(v.targets) && t.tag[v.targets[i]] == .Ident && tc_name(k, v.targets[i]) == "_"
+            if lw_big_in(k, val, !dropped) { return true }
+        }
     case .Assign:
         targets := tree_list(t, t.a[s])
         for tg in targets { if lw_big_in(k, tg, true) { return true } }
@@ -468,6 +474,17 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     b := k.gb
     span := tree_span(t, s)
     name := tc_name(k, target)
+    if name == "_" {
+        // (`_ := v`: nothing declared — v built for its own sake, as `_ = v`;
+        // a big one in a temporary of its own, on the arena.)
+        if value == 0 {   // (`_ : T`: nothing at all)
+            graph_build_stmt_none(b)
+            return
+        }
+        if _, held := lw_big_held(k, value, tc_node_type(k, value), .Explicit, span); held { return }
+        lw_expr(k, value, .Value)
+        return
+    }
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)

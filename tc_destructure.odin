@@ -58,9 +58,11 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         if !is_any(ann_t) && !is_any(rt) && !types_equal(ann_t, rt) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(ann_t))
         }
-        if names[i] != "" {
+        if names[i] == "_" {
+            // (Names nothing, declared or written: its output dropped.)
+        } else if names[i] != "" {
             name := names[i]
-            if !is_decl && name != "_" {
+            if !is_decl {
                 // (Written: at the variable's own type — the result's, or a
                 // width still open, settled to it.)
                 existing, _, ok := tc_name_write(k, tg, name, env, span)
@@ -74,7 +76,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))
             }
             // (A struct's field: its value its slot of the call's.)
-            if fields_of != nil && name != "_" { tc_add_field(fields_of, name, k.t.main[tg], rt, value, i) }
+            if fields_of != nil { tc_add_field(fields_of, name, k.t.main[tg], rt, value, i) }
         } else {
             if pname, immutable := tc_write_root_param(k, tg, env); immutable {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)

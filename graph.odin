@@ -2295,6 +2295,9 @@ graph_build_fields :: proc(b: ^Graph_Builder, names: []string, toks: []Token_Id,
     f := b.body
     ids := make([]Node_Id, len(names))
     for name, i in names {
+        // (`_` names nothing: no field — its output, its value, dropped.)
+        ids[i] = NO_NODE
+        if name == "_" { continue }
         d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, span, toks[i])
         ids[i] = d
         if i < len(lowered) {

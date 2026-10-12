@@ -149,7 +149,10 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     // first, together: annotated, typed as they are made.)
     if len(v.targets) > 1 && fields_of != nil && v.type_ != 0 {
         ft := tc_type(k, v.type_, env, span)
-        for tg, i in v.targets { tc_add_field(fields_of, tc_name(k, tg), k.t.main[tg], ft, v.values[i] if i < len(v.values) else 0) }
+        for tg, i in v.targets {
+            if tc_name(k, tg) == "_" { continue }   // (no field)
+            tc_add_field(fields_of, tc_name(k, tg), k.t.main[tg], ft, v.values[i] if i < len(v.values) else 0)
+        }
     }
     for tg, i in v.targets {
         tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, env, fields_of)
@@ -161,6 +164,13 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     t := k.t
     span := tree_span(t, s)
     name := tc_name(k, target)
+    if name == "_" {
+        // (`_ := v` names nothing — no variable, no field: v checked for its
+        // own sake, as `_ = v` does.)
+        k.hint = tc_type(k, ann_node, env, span) if ann_node != 0 else nil
+        if value != 0 { tc_check(k, value, env) }
+        return
+    }
     ref := tc_decl_ref(k, target, fields_of)
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}

@@ -1435,13 +1435,13 @@ TTF :: struct (bytes: ^[]byte) {
 	// into one fills its whole capacity, past a small font's end.
 	h := read_offset_table(bytes)
 
-	head_loc := table_at(bytes, "head")
-	maxp_loc := table_at(bytes, "maxp")
+	head_loc, _ := ttf_table(bytes, "head")
+	maxp_loc, _ := ttf_table(bytes, "maxp")
 	cmap_loc, cmap_len := ttf_table(bytes, "cmap")
-	loca_loc := table_at(bytes, "loca")
+	loca_loc, _ := ttf_table(bytes, "loca")
 	glyf_table_loc, glyf_table_len := ttf_table(bytes, "glyf")
-	hhea_loc := table_at(bytes, "hhea")
-	hmtx_loc := table_at(bytes, "hmtx")
+	hhea_loc, _ := ttf_table(bytes, "hhea")
+	hmtx_loc, _ := ttf_table(bytes, "hmtx")
 
 	head : Head = #big_endian bytes[head_loc]
 	maxp : Maxp = #big_endian bytes[maxp_loc]
@@ -1458,10 +1458,6 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap_symbol := cmap_used.platform_id == 3 and cmap_used.platform_specific_id == 0
 
 	// Helper funcions below
-	table_at :: fun(bytes: ^[]byte, tag: []utf8) -> i64 {
-		start, length := ttf_table(bytes, tag)
-		return start
-	}
 	read_offset_table :: fun(bytes: ^[]byte) -> h: Offset_Table {
 		h.scaler_type    = read_u32be(bytes[0])
 		h.num_tables     = read_u16be(bytes[4])

@@ -1,0 +1,58 @@
+module blank_decl
+
+include mara.memory
+
+// `_` in a declaration names nothing, as in `_ = e` (discard_mixed): no
+// variable, no field, its value still built. In a struct's body `a, _ := f()`
+// made a field named `_` the graph then lacked ("field '_' is missing", an
+// internal error); `c, _ := 7, f()` and a second `_ := f()` in one scope were
+// "variable '_' already declared"; and a destructure's `_` could be read.
+
+//@ expect-output: noisy 3
+//@ expect-output: noisy 6
+//@ expect-output: fields 3 8 7 8 26
+//@ expect-output: big 9
+//@ expect-output: locals 5 12 7 8 10
+
+pair :: fun(x: i64) -> i64, i64 { return x, x * 2 }
+
+noisy :: fun(x: i64) -> i64 {
+	print("noisy", x)
+	return x + 100
+}
+
+Big :: struct { data: [512]i64 }
+
+big :: fun(n: i64) -> Big {
+	b : Big
+	b.data[0] = n
+	print("big", n)
+	return b
+}
+
+S :: struct (n: i64) {
+	a, _ := pair(n)
+	_, b := pair(n + 1)
+	c, _ := 7, noisy(n)
+	_, d := noisy(n + 1), 8
+	_ := noisy(n + 2)
+	_ := noisy(n + 3)
+	e := a + b + c + d
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	s := S(3)
+	print("fields", s.a, s.b, s.c, s.d, s.e)
+	x, _ := pair(5)
+	_, y := pair(6)
+	p, _ := 7, noisy(1)
+	_, q := noisy(2), 8
+	_ := noisy(3)
+	_ := noisy(4)
+	_ := big(9)   // (a big value dropped: held on the arena)
+	_ : i64
+	z : i64 = 0
+	z, _ = pair(10)
+	print("locals", x, y, p, q, z)
+}

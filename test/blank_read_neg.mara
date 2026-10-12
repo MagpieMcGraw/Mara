@@ -1,0 +1,11 @@
+module blank_read_neg
+//@ expect-fail: undefined identifier '_'
+
+// A destructure's `_` names nothing: there is no `_` to read after it.
+
+pair :: fun(x: i64) -> i64, i64 { return x, x * 2 }
+
+main :: fun() {
+	a, _ := pair(1)
+	print(a, _)
+}
