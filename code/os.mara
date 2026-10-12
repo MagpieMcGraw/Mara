@@ -310,6 +310,30 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		size_low:           u32
 	}
 
+	// The running program's own file: its path, whole — however it was
+	// started (by a name its PATH found, a relative path, a link), unlike
+	// this_program.args[0], which is what its starter wrote — for the files
+	// that come with it, beside it. Into `path`, as much as it holds: Too_Large
+	// when the path's longer; Read_Failed when the system won't say. A 0
+	// follows it in path's room (cstring takes it as it is).
+	// (GetModuleFileNameA: in the system's code page, as the other files'
+	// functions here take paths — the path opens with file_open_read.)
+	executable_path :: fun(path: ^[]utf8) -> err {
+		path.len = path.cap
+		if path.cap == 0 do return Too_Large
+		n := i64(GetModuleFileNameA(void, &path[0], u32(path.cap)))
+		if n == 0 {
+			path.len = 0
+			return Read_Failed
+		}
+		// (As long as the room, it was cut off: no room for its 0.)
+		if n >= path.cap {
+			path.len = 0
+			return Too_Large
+		}
+		path.len = n
+	}
+
 	// The files and directories in a directory, to look through what's there:
 	// each one's name and whether it's a directory, into `entries` — not "."
 	// or "..", in no order to count on. Fails with Open_Failed when there's no
@@ -695,6 +719,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun FindNextFileA(search: File_Id, found: ^WIN32_FIND_DATAA) -> i32
 		fun FindClose(search: File_Id) -> i32
 
+		// A loaded library's file — void: the program's own — its path into name.
+		fun GetModuleFileNameA(library: ^byte, name: ^utf8, size: u32) -> u32
+
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
 		fun FreeLibrary(mod: ^byte) -> i32
@@ -900,6 +927,31 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		st : Stat
 		if fstat(id, &st) < 0 do return 0
 		return st.mtime
+	}
+
+	// The running program's own file: its path, whole — however it was
+	// started (by a name its PATH found, a relative path, a link), unlike
+	// this_program.args[0], which is what its starter wrote — for the files
+	// that come with it, beside it. Into `path`, as much as it holds: Too_Large
+	// when the path's longer; Read_Failed when the system won't say. A 0
+	// follows it in path's room (cstring takes it as it is).
+	// (/proc/self/exe: a link to the program's file, its path whole.)
+	executable_path :: fun(path: ^[]utf8) -> err {
+		path.len = path.cap
+		if path.cap == 0 do return Too_Large
+		link := "/proc/self/exe"
+		n := readlink(cstring(link), &path[0], usize(path.cap))
+		if n < 0 {
+			path.len = 0
+			return Read_Failed
+		}
+		// (As long as the room, it may be cut off — and there's no room for its 0.)
+		if n >= path.cap {
+			path.len = 0
+			return Too_Large
+		}
+		path[n] = utf8(0)
+		path.len = n
 	}
 
 	// The files and directories in a directory, to look through what's there:
@@ -1348,6 +1400,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun opendir(path: cstring) -> ^byte
 		fun readdir(dir: ^byte) -> ^Dirent
 		fun closedir(dir: ^byte) -> i32
+
+		// Where a link points: its path, not 0-ended, into buf; its length, -1 failing.
+		fun readlink(path: cstring, buf: ^utf8, size: usize) -> i64
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte

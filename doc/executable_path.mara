@@ -1,0 +1,42 @@
+// How a program finds the files that come with it — a font, a config, a
+// folder of data beside it: executable_path, its own file's path.
+//
+// this_program.args[0] is no good for it: it's what started the program
+// wrote, and that may be just its name (found on the PATH), a path from
+// another directory, or a link's. executable_path asks the system: the
+// program's file, its path whole, however it was started. The directory is
+// the path up to its last separator ('\' on Windows, '/' elsewhere).
+//
+// It fills a buffer you declare, as file_read does: Too_Large when the path
+// doesn't fit. A 0 follows the path in the buffer, so it opens as it is.
+module executable_path
+
+use mara.core
+use mara.os
+include mara.memory
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+
+	path : [..1000]utf8
+	e := executable_path(&path)
+	if bool(e) {
+		print("couldn't tell:", e)
+		return
+	}
+
+	// Its directory: up to the last separator.
+	end : i64 = 0
+	for ch, i in path {
+		if ch == '\\' or ch == '/' do end = i + 1
+	}
+	dir := path[0 : end]
+	print("this program's directory ends with a separator:", end > 0)
+
+	// A file beside it: the directory, then the file's name.
+	beside : [..1100]utf8
+	&beside + dir
+	&beside + "executable_path.mara"
+	data : [..64 * KB]byte
+	print("its source beside it reads:", not bool(read_entire_file(beside, &data)))
+}

@@ -1,0 +1,44 @@
+module executable_path
+
+use mara.core
+use mara.os
+include mara.memory
+
+// executable_path: the program's own file — its path whole (a drive's or
+// the root's at its start), its own name in it — whatever this_program.args[0]
+// says (run.sh starts it by a relative path). The path opens with
+// file_open_read as it is: a 0 follows it. A room too small: Too_Large.
+
+//@ expect-output: has its own name: true
+//@ expect-output: whole: true
+//@ expect-output: opens: true
+//@ expect-output: too small: File_Error.Too_Large
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Basic(4 * MB))
+	path : [..1000]utf8
+	e := executable_path(&path)
+	if bool(e) {
+		print("executable_path:", e)
+		return 1
+	}
+	text : []utf8 = path
+	print("has its own name:", has(text, "executable_path"))
+	whole := text.len > 2 and (text[0] == '/' or text[1] == ':')
+	print("whole:", whole)
+	id, oe := file_open_read(path)
+	print("opens:", not bool(oe))
+	file_close(id)
+	small : [..4]utf8
+	print("too small:", executable_path(&small))
+	return 0
+}
+
+// Whether text has `part` in it.
+has :: fun(text: []utf8, part: []utf8) -> bool {
+	if text.len < part.len do return false
+	for k in 0 .. text.len - part.len + 1 {
+		if text[k : k + part.len] == part do return true
+	}
+	return false
+}

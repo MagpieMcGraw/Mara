@@ -125,8 +125,14 @@ main :: fun() -> i64 {
 	hub : Hub
 	theme_set(&ui, false)
 
-	// (Its font and its layout beside it: the directory of its own path.)
-	exe := this_program.args[0]
+	// (Its font and its layout beside it: the directory of its own file —
+	// executable_path's, however it was started; args[0] is what its
+	// starter wrote, maybe just its name.)
+	exe : [..1000]utf8
+	if bool(executable_path(&exe)) {
+		print("mara view: where its own file is, the system didn't say")
+		return 1
+	}
 	dir_end : i64 = 0
 	for ch, i in exe {
 		if ch == '\\' or ch == '/' do dir_end = i + 1
