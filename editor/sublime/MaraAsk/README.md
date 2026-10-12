@@ -82,8 +82,10 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 
 Besides this plugin, the compiler is a language server: `mara lsp` speaks the
 Language Server Protocol, so Sublime's **LSP** package (or any editor's client)
-gets Goto Definition, Find References, Goto Symbol, hover and errors from it.
-Each file is checked with its module as the editor has it — saved or not. In
+gets Goto Definition, Find References, Goto Symbol, completion, hover and errors
+from it.
+Each file is checked with its module as the editor has it — saved or not, and
+half-written: what parses is checked. In
 `Preferences → Package Settings → LSP → Settings`, under `"clients"`:
 
 ```
@@ -97,6 +99,7 @@ Each file is checked with its module as the editor has it — saved or not. In
         "definition": true,    // Goto Definition
         "references": true,    // Find References
         "symbols": true,       // Goto Symbol: the file's definitions
+        "completion": true,    // the names that fit where you type, after `x.` too
     }
 }
 ```

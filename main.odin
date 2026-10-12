@@ -1097,9 +1097,9 @@ LSP_USAGE :: `Usage: mara lsp
   it's in, the module named as the directory — the editor's open files as
   they are in the editor, saved or not. It answers hover (what's at the
   point, its declaration's doc comment), definition, references and
-  document symbols, and publishes each check's errors and warnings.
+  document symbols and completion, and publishes each check's errors and warnings.
   initializationOptions turn each off: {"hover": false, "definition":
-  false, "references": false, "symbols": false, "diagnostics": false}.`
+  false, "references": false, "symbols": false, "completion": false, "diagnostics": false}.`
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
 
   Asks a window this compiler opened (mara view — anywhere, on any module)

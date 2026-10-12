@@ -119,7 +119,14 @@ def main():
             try:
                 server.change(path, broken, version)
                 line = rng.randrange(max(1, broken.count("\n")))
-                server.request("textDocument/hover", {"textDocument": {"uri": uri(path)}, "position": {"line": line, "character": 2}})
+                # (A hover, or — every other edit — completion at the edit's
+                # end, where typing is: its own check, a placeholder typed in.)
+                where = {"line": line, "character": 2}
+                if version % 2:
+                    ends = broken.rstrip("\n").split("\n")
+                    where = {"line": len(ends) - 1, "character": len(ends[-1].encode("utf-8"))}
+                method = "textDocument/completion" if version % 2 else "textDocument/hover"
+                server.request(method, {"textDocument": {"uri": uri(path)}, "position": where})
             except (EOFError, queue.Empty, OSError, BrokenPipeError) as e:
                 crashed += 1
                 name = "%s_%d_%s.mara" % (os.path.basename(path)[:-5], version, kind)

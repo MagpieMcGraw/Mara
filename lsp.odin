@@ -21,11 +21,14 @@ import "core:strings"
 //   definition        where the name at the point is declared
 //   references        every name referring to the same declaration
 //   document symbols  the file's definitions
+//   completion        the names that can be written at the point (completion.odin)
 // and publishes each check's errors and warnings, by file. A check is made
 // when a request needs one and something changed — a file on disk, an edit
 // in the editor — and after an edit, once the editor has nothing more to
-// send. initializationOptions turn each off: {"hover": false, "definition":
-// false, "references": false, "symbols": false, "diagnostics": false}.
+// send. Code that doesn't parse is checked as far as it does (check_module).
+// initializationOptions turn each off: {"hover": false, "definition": false,
+// "references": false, "symbols": false, "completion": false,
+// "diagnostics": false}.
 // ---------------------------------------------------------------------------
 
 Lsp :: struct {
@@ -36,7 +39,7 @@ Lsp :: struct {
     open_uris: map[string]string,  // ... its URI, as the editor spells it
     edits:    int,                 // overlay changes so far
     utf8:     bool,                // positions count bytes; else UTF-16 units (LSP's default)
-    hover, definition, references, symbols, diagnostics: bool,   // offered (initializationOptions)
+    hover, definition, references, symbols, completion, diagnostics: bool,   // offered (initializationOptions)
     check:    Serve_Check,
     checked:  bool,                // a check made
     dir:      string,              // its module's directory
@@ -56,7 +59,7 @@ lsp :: proc(args: CLI_Args) {
     s.overlays = make(map[string]string, allocator = s.heap)
     s.published = make(map[string]bool, allocator = s.heap)
     s.open_uris = make(map[string]string, allocator = s.heap)
-    s.hover, s.definition, s.references, s.symbols, s.diagnostics = true, true, true, true, true
+    s.hover, s.definition, s.references, s.symbols, s.completion, s.diagnostics = true, true, true, true, true, true
     bufio.reader_init(&s.reader, os.to_stream(os.stdin))
     context.allocator = context.temp_allocator   // (each message's work, freed after it)
     for {
@@ -151,6 +154,8 @@ lsp_handle :: proc(s: ^Lsp, msg: json.Value) {
         lsp_respond(id, lsp_references(s, params))
     case "textDocument/documentSymbol":
         lsp_respond(id, lsp_symbols(s, params))
+    case "textDocument/completion":
+        lsp_respond(id, lsp_completion(s, params))
     case:
         // (A notification not heeded is fine; a request needs an answer.)
         if id != nil && !strings.has_prefix(method, "$/") {
@@ -166,6 +171,7 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
     s.definition  = json_bool(json_at(opts, "definition"), true)
     s.references  = json_bool(json_at(opts, "references"), true)
     s.symbols     = json_bool(json_at(opts, "symbols"), true)
+    s.completion  = json_bool(json_at(opts, "completion"), true)
     s.diagnostics = json_bool(json_at(opts, "diagnostics"), true)
     // (UTF-8 positions, the compiler's, when the client takes them.)
     if encodings, is_list := json_at(json_at(json_at(params, "capabilities"), "general"), "positionEncodings").(json.Array); is_list {
@@ -173,9 +179,10 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
     }
     lsp_respond(id, fmt.tprintf(
         `{{"capabilities":{{"positionEncoding":%s,"textDocumentSync":{{"openClose":true,"change":1,"save":{{"includeText":false}}}},` +
-        `"hoverProvider":%v,"definitionProvider":%v,"referencesProvider":%v,"documentSymbolProvider":%v}},` +
+        `"hoverProvider":%v,"definitionProvider":%v,"referencesProvider":%v,"documentSymbolProvider":%v%s}},` +
         `"serverInfo":{{"name":"mara lsp"}}}}`,
-        json_str("utf-8" if s.utf8 else "utf-16"), s.hover, s.definition, s.references, s.symbols))
+        json_str("utf-8" if s.utf8 else "utf-16"), s.hover, s.definition, s.references, s.symbols,
+        `,"completionProvider":{"triggerCharacters":["."]}` if s.completion else ""))
 }
 
 // --- the editor's files -----------------------------------------------------
@@ -330,6 +337,58 @@ lsp_references :: proc(s: ^Lsp, params: json.Value) -> string {
         append(&items, lsp_location(s, tok))
     }
     return strings.concatenate({"[", strings.join(items[:], ","), "]"})
+}
+
+// Completion: the names that can be written at the point. The editor's text
+// with a placeholder typed in there (COMPLETE_HERE) is checked, and what the
+// placeholder is says which (completions_at). That check isn't of the
+// editor's text: the next request checks again.
+lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
+    if !s.completion { return "null" }
+    path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
+    position := json_at(params, "position")
+    line := json_int(json_at(position, "line")) + 1
+    key := path_key(path)
+    src, open := s.overlays[key]
+    if !open {
+        data, err := os.read_entire_file_from_path(path, context.allocator)
+        if err != nil { return "null" }
+        src = string(data)
+    }
+    start, text := line_at(src, line)
+    col := lsp_byte_col(s, text, json_int(json_at(position, "character")))
+    files := make(map[string]string)
+    for k, v in s.overlays { files[k] = v }
+    files[key] = strings.concatenate({src[:start + col], COMPLETE_HERE, src[start + col:]})
+    dir := filepath.dir(path)
+    if os.change_directory(dir) != nil { return "null" }
+    args := s.args
+    args.pkg_name = filepath.base(dir)
+    serve_check(&s.check, args, serve_stamp(s.args.compiler_dir), &files)
+    lsp_keep(s, &s.dir, dir)
+    s.checked = false   // (not the editor's text: the next request checks again)
+    session := &s.check.session
+    file := lsp_file(s, path)
+    if session.checked == nil || file == nil { return "null" }
+    // (Where the placeholder starts: after what of the name is typed.)
+    spec := fmt.tprintf("%s:%d:%d", filepath.base(path), line, col + 1)
+    items := make([dynamic]string)
+    for c in completions_at(&build_tree, session.all_files, session.checked.annot, session.checked, file.module, spec) {
+        kind, rank := 6, 0
+        switch c.kind {
+        case .Field:    kind = 5
+        case .Method:   kind = 2
+        case .Variable: kind = 6
+        case .Function: kind, rank = 3, 1
+        case .Type:     kind, rank = 22, 1
+        case .Module:   kind, rank = 9, 1
+        case .Variant:  kind = 20
+        case .Keyword:  kind, rank = 14, 2
+        }
+        append(&items, fmt.tprintf(`{{"label":%s,"kind":%d,"detail":%s,"sortText":%s}}`,
+                                   json_str(c.label), kind, json_str(c.detail), json_str(fmt.tprintf("%d%s", rank, c.label))))
+    }
+    return strings.concatenate({`{"isIncomplete":false,"items":[`, strings.join(items[:], ","), "]}"})
 }
 
 // Document symbols: the file's definitions — funs, structs, unions, error

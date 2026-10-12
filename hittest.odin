@@ -277,6 +277,14 @@ point_reference :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a
     return
 }
 
+// The nodes holding a point, widest first, and its token (mara lsp's
+// completion); ok false when nothing's there.
+point_hits :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: string) -> (hits: []Tree_Id, at: Token_Id, ok: bool) {
+    p, _, found := hit_point(t, all_files, spec)
+    if !found { return }
+    return p.hits[:], Token_Id(p.at), true
+}
+
 // Every name that refers to the declaration whose name is the token `decl`,
 // as its token: the declaration's own first, each once.
 references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {

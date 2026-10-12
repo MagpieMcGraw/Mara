@@ -25,6 +25,7 @@ def uri(path):
 
 class Client:
     def __init__(self, options=None, utf8=True):
+        self.notes = []   # what came while waiting for an answer
         self.p = subprocess.Popen([MARA, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, cwd=ROOT)
         self.inbox = queue.Queue()
@@ -68,8 +69,6 @@ class Client:
                     raise RuntimeError(msg["error"])
                 return msg["result"]
             self.notes.append(msg)
-
-    notes = []
 
     def diagnostics_for(self, path, timeout=30):
         """The next diagnostics published for the path."""
@@ -158,6 +157,36 @@ def main():
 
     h = c.request("textDocument/hover", {"textDocument": doc, "position": {"line": 0, "character": 0}})
     check("hover in a comment: nothing", h is None, h)
+
+    # Completion, each in an unsaved edit that doesn't parse as it stands.
+    def complete(edited, line_no, before):
+        """Items offered on 1-based line `line_no`, just after `before` there."""
+        c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": 9}, "contentChanges": [{"text": edited}]})
+        line = edited.split("\n")[line_no - 1]
+        at = line.index(before) + len(before)
+        r = c.request("textDocument/completion", {"textDocument": doc, "position": {"line": line_no - 1, "character": len(line[:at].encode("utf-8"))}})
+        return {i["label"]: i for i in (r or {}).get("items", [])}
+
+    member = text.replace("obj_get_directions(camera.obj.dir)", "obj_get_directions(camera.)", 1)
+    items = complete(member, 52, "camera.")
+    check("completion after camera.: Camera's fields, its method", {"obj", "proj", "fov_y", "view_and_projections"} <= set(items)
+          and items["obj"]["kind"] == 5 and items["view_and_projections"]["kind"] == 2, sorted(items)[:30])
+
+    name = text.replace("\tfwd, up, right := obj_get_directions(camera.obj.dir)", "\tfwd, up, right := obj_get_directions(camera.obj.dir)\n\tcam", 1)
+    items = complete(name, 53, "\tcam")
+    check("completion of a name: the param, the fun, a local before, keywords", {"camera", "camera_move", "fwd", "return"} <= set(items)
+          and items["camera"]["kind"] == 6 and items["camera_move"]["kind"] == 3, sorted(items)[:40])
+
+    module = text.replace("if keyboard.held[sdl.Scancode.W] {", "if keyboard.held[sdl.] {", 1)
+    items = complete(module, 56, "sdl.")
+    check("completion after a module: its names", "Scancode" in items, sorted(items)[:30])
+
+    variant = text.replace("if keyboard.held[sdl.Scancode.W] {", "if keyboard.held[sdl.Scancode.] {", 1)
+    items = complete(variant, 56, "sdl.Scancode.")
+    check("completion after a union: its variants", {"W", "A", "Escape"} <= set(items), sorted(items)[:30])
+
+    h = c.request("textDocument/hover", {"textDocument": doc, "position": pos(variant, 52, "obj", 1)})
+    check("after completion, hover checks the editor's text again", h is not None and "obj — field" in h["contents"]["value"], h)
 
     c.notify("textDocument/didClose", {"textDocument": doc})
     code = c.close()
