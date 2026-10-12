@@ -787,6 +787,15 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
 // strings — either SSA tmp names (`%t42`) or literal integer text (`5`).
 // `strconv.parse_i64` returns false for SSA tmps (the leading `%` rejects),
 // so this is a safe narrow check.
+// True when a slice assignment's value surely holds the run it fills: lo, hi
+// and the value's length all integer literals, hi - lo no more than it.
+can_elide_source_check :: proc(lo, hi, have: string) -> bool {
+    l, l_ok := strconv.parse_i64(lo)
+    h, h_ok := strconv.parse_i64(hi)
+    n, n_ok := strconv.parse_i64(have)
+    return l_ok && h_ok && n_ok && h - l <= n
+}
+
 can_elide_bounds_check :: proc(idx: string, len_val: string) -> bool {
     idx_i, idx_ok := strconv.parse_i64(idx)
     if !idx_ok { return false }

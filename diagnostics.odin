@@ -342,6 +342,7 @@ TYPE_BYTE_SLICE_WRITE_BYTES_SLICE :: "byte slice write: %s is %d bytes, but slic
 TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE :: "byte array write: %s is %d bytes, but slice span is %d bytes"
 TYPE_CANNOT_SLICE_ASSIGN_INTO :: "cannot slice-assign [%d]%s into [%d]%s"
 TYPE_CANNOT_SLICE_ASSIGN_INTO_2 :: "cannot slice-assign []%s into [%d]%s"
+TYPE_SLICE_ASSIGN_VALUE_SHORT :: "slice assignment [%d:%d] fills %d elements, but the value has %d"
 TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE :: "slice assignment requires an array or slice on the right-hand side, got %s"
 TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER :: "cannot write to field '%s' of immutable parameter '%s' (declare it with ^ to allow mutation)"
 TYPE_CANNOT_ASSIGN_FIELD_TYPE :: "cannot assign %s to %s of type %s"

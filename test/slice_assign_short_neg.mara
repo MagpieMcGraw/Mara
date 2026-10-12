@@ -1,0 +1,13 @@
+module slice_assign_short_neg
+//@ expect-fail: fills 3 elements, but the value has 2
+
+use mara.core
+
+// A run's value shorter than the run, both bounds known: an error — the
+// copy would read past the value's end.
+
+main :: fun() {
+	b : [4]i64 = [1, 2, 3, 4]
+	b[0:3] = [7, 7]
+	print(b)
+}

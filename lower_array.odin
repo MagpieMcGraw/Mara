@@ -75,7 +75,15 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     placed := want != .Into && temp_span != {}
     at := temp_span if temp || placed else span
     d := dest
-    if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
+    if in_temp {
+        tt := build_temp_type(d)
+        // (Into a slice — `a[1:3] = [9, 9]` — the elements are built in an
+        // array of their own, then copied in: a slice's header holds none.)
+        if sl, to_slice := distinct_base(tt).(^Type_Slice); to_slice {
+            tt = new_clone(Type_Fixed_Array{size = len(elems), elem = sl.elem})
+        }
+        d = graph_build_temp(b, at, tt)
+    }
     ga := graph_build_array(b, span, d)
     if ga.elem_t == nil {
         r := lw_expr(k, elems[0], .Either)

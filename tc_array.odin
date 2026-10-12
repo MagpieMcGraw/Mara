@@ -223,6 +223,20 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     }
     if is_byte_buffer(tt) {
         if view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span); view != nil { return }
+    } else if v := tc_unparen(k, value); tr.tag[v] == .Array {
+        // (An array literal at the elements' type — `f[2:4] = [0.5, 0.25]`
+        // into f32s: an array of f32s, tc_settle.)
+        if elem := index_elem_type(tt); elem != nil { tc_settle(k, v, new_clone(Type_Slice{elem = elem})) }
+    }
+    // (A run lo:hi, both known, from an array shorter than it: said now —
+    // else the copy would stop the program, its value run past.)
+    if hi_n != 0 {
+        lo, lo_known := i64(0), true
+        if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n, env) }
+        hi, hi_known := tc_comptime_int(k, hi_n, env)
+        if va, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && lo_known && hi_known && hi - lo > i64(va.size) {
+            tc_error(k, span, TYPE_SLICE_ASSIGN_VALUE_SHORT, lo, hi, hi - lo, va.size)
+        }
     }
     fa, is_array := distinct_base(tt).(^Type_Fixed_Array)
     if !is_array { return }

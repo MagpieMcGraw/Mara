@@ -1994,6 +1994,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     from := side(e, src, -1) or_return
     if !llvm_same_type(dst.elem, from.elem) { return false }
     w := SLICE_LEN_IR
+    run_given := hi != ""   // (hi written: the run's hi - lo, which src must have)
     if hi == "" {
         n := fmt.tprintf("%d", from.fixed)
         if from.fixed == 0 {
@@ -2016,6 +2017,24 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_fail(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", name),
               fail_i64(hi), fail_i64(dst.bound))
     emit_label(g, hi_ok)
+    // (A run written, lo:hi: src holds hi - lo elements, else the copy would
+    // read past its end. A longer src gives its first hi - lo.)
+    if run_given {
+        have := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        if !can_elide_source_check(lo, hi, have) {
+            want := fresh_tmp(g)
+            emit(g, "  %s = sub %s %s, %s", want, w, hi, lo)
+            src_ok, src_err := fresh_label(g, "slice.src.ok"), fresh_label(g, "slice.src.err")
+            src_cmp := fresh_tmp(g)
+            emit(g, "  %s = icmp sgt %s %s, %s", src_cmp, w, want, have)
+            emit_cond_br(g, src_cmp, src_err, src_ok)
+            emit_label(g, src_err)
+            loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+            emit_fail(g, fmt.tprintf("%s runtime error: slice assignment of %%lld elements into '%s', from a value of %%lld\n", loc, name),
+                      fail_i64(want), fail_i64(have))
+            emit_label(g, src_ok)
+        }
+    }
     loop, body, done := fresh_label(g, "slice.loop"), fresh_label(g, "slice.body"), fresh_label(g, "slice.end")
     i_slot := fresh_tmp(g)
     emit_alloca(g, i_slot, w)

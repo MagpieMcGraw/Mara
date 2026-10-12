@@ -66,6 +66,11 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     ut := tc_make_union(k, k.pkg, name, span, h, variants[:], env)
     register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name)
     scope_bind(mod, name, ut, {k.t.main[def], .Type})
+    // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
+    // enum's variant is — declared where the union is; unless the name's taken.)
+    if _, taken := scope_lookup(mod, ut.tag_enum.source_name); !taken {
+        scope_bind(mod, ut.tag_enum.source_name, ut.tag_enum, {k.t.main[def], .Type})
+    }
 }
 
 // A union's header, as written: its tag's type, its least size, its pad

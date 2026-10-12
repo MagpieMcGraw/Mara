@@ -1,0 +1,36 @@
+module union_tag_compare
+
+use mara.core
+
+// A union's tag compared with a variant: `u.tag == .B` — the shorthand is
+// the tag enum's, the other side's type its hint (either side) — and the tag
+// enum by its name, `U_Tag.A`, a value as an enum's variant is: declared
+// where the union is. A distinct union's tag too; a tag matched.
+
+//@ expect-output: compare: true false true true
+//@ expect-output: by name: U_Tag.A true
+//@ expect-output: typed: U_Tag.A true
+//@ expect-output: matched: B
+//@ expect-output: distinct: true false
+
+U :: union {
+	A { x: i64 }
+	B
+}
+UD :: distinct U
+
+main :: fun() {
+	u : U = .B
+	print("compare:", u.tag == .B, u.tag == .A, .B == u.tag, u.tag != .A)
+	print("by name:", U_Tag.A, u.tag == U_Tag.B)
+	t : U_Tag = .A
+	print("typed:", t, t == .A)
+	match u.tag {
+	.A
+		print("matched: A")
+	.B
+		print("matched: B")
+	}
+	ud : UD = A{x = 1}
+	print("distinct:", ud.tag == .A, (ud.tag) == .B)
+}

@@ -1,0 +1,61 @@
+module slice_assign_literal
+
+use mara.core
+
+// An array literal where a slice takes it: `a[1:3] = [9, 9]` — built in an
+// array of its own at the elements' type (f32s into f32s, not the f64s an
+// open number would be), then copied in; it had been built in the run's
+// header, len 0 ("index 0 out of bounds"). A literal into a slice param the
+// same way. A run's value must hold it: one shorter, its bounds known, is
+// slice_assign_short_neg's error; at run time, the copy stops the program
+// rather than read past the value. A longer value gives its first elements.
+
+//@ expect-output: var: [7, 7, 3, 4]
+//@ expect-output: slice: [1, 2, 7, 7]
+//@ expect-output: literal: [1, 9, 9, 4]
+//@ expect-output: named: [5, 6, 3, 4]
+//@ expect-output: floats: [1, 2, 0.5, 0.25]
+//@ expect-output: i32s: [3, 4, 0]
+//@ expect-output: partial: [8, 8, 3]
+//@ expect-output: param: 6
+//@ expect-output: longer: [1, 2, 3, 0]
+
+Arr :: type [4]i64
+
+total :: fun(xs: []i64) -> i64 {
+	t := 0
+	for x in xs { t += x }
+	return t
+}
+
+main :: fun() {
+	a : [4]i64 = [1, 2, 3, 4]
+	two : [2]i64 = [7, 7]
+	a[0:2] = two
+	print("var:", a)
+	b : [4]i64 = [1, 2, 3, 4]
+	b[2:4] = a[0:2]
+	print("slice:", b)
+	c : [4]i64 = [1, 2, 3, 4]
+	c[1:3] = [9, 9]
+	print("literal:", c)
+	d : Arr = [1, 2, 3, 4]
+	d[0:2] = [5, 6]
+	print("named:", d)
+	f : [4]f32 = [1, 2, 3, 4]
+	f[2:4] = [0.5, 0.25]
+	print("floats:", f)
+	n : [3]i32
+	n[0:2] = [3, 4]
+	print("i32s:", n)
+	g : [..8]i64
+	&g + 1
+	&g + 2
+	&g + 3
+	g[0:2] = [8, 8]
+	print("partial:", g[:])
+	print("param:", total([1, 2, 3]))
+	h : [4]i64
+	h[0:3] = [1, 2, 3, 4, 5]
+	print("longer:", h)
+}

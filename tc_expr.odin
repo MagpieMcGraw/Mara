@@ -119,8 +119,16 @@ tc_number :: proc(k: ^TC, n: Tree_Id) -> Type {
 // graph_settled.)
 tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
     if n == 0 || t == nil || tc_open(t) || !tc_open_node(k, n) { return }
-    tc_set_type(k, n, t)
     tr := k.t
+    t := t
+    // (An array literal a slice takes — `f([1, 2, 3])`, `a[0:2] = [9, 9]` —
+    // is an array the slice views: of its elements, as many as it has.)
+    if tr.tag[n] == .Array {
+        if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
+            t = new_clone(Type_Fixed_Array{size = len(tree_list(tr, tr.a[n])), elem = sl.elem})
+        }
+    }
+    tc_set_type(k, n, t)
     #partial switch tr.tag[n] {
     case .Paren:
         tc_settle(k, Tree_Id(tr.a[n]), t)
@@ -341,9 +349,20 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     }
     hint := k.hint
     types: [2]Type
-    for side, i in ([2]Tree_Id{left, right}) {
+    sides := [2]Tree_Id{left, right}
+    // (`x == .B`, `.B != x`: the shorthand's enum or union the other side's —
+    // a union's tag's, a value's — that side checked first.)
+    shorthand := -1
+    if in_range == nil && (op == .Equal_Equal || op == .Not_Equal) {
+        for side, i in sides {
+            if s := tc_unparen(k, side); tr.tag[s] == .Dot_Ident && tc_sid(k, s) not_in k.annot.dot_bases { shorthand = i }
+        }
+    }
+    order := [2]int{1, 0} if shorthand == 0 else [2]int{0, 1}
+    for i in order {
         k.hint = hint
-        types[i] = side_of(k, in_range, i, side, env)
+        if i == shorthand { k.hint = types[1 - i] }
+        types[i] = side_of(k, in_range, i, sides[i], env)
     }
     lt, rt := types[0], types[1]
     and_or := op == .And || op == .Or
