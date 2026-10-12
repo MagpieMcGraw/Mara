@@ -492,8 +492,9 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if token_text(build_tokens[tok]) != graph_name(g, id) {
                     report_var(&problems, tok, ts, "the graph's %v is named '%s'", g.kind[id], graph_name(g, id))
                 }
-                // (A distinct type the graph holds as its base: a destructured local's, a loop's element.)
-                if !types_equal(distinct_base(solidify_type(v.type_)), distinct_base(solidify_type(graph_type(g, id)))) {
+                // (A distinct type the graph holds as its base: a destructured local's, a loop's element.
+                // A width never decided, as the graph settles it: `p := &x`, x's never used as a width.)
+                if !types_equal(distinct_base(solidify_type(graph_settled(v.type_))), distinct_base(solidify_type(graph_type(g, id)))) {
                     report_var(&problems, tok, ts, "is annotated %s; the graph's %v is %s", type_name(v.type_), g.kind[id], type_name(graph_type(g, id)))
                 }
             }

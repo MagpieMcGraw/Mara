@@ -693,6 +693,10 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // No array→slice decay through a pointer: ^[N]T must not satisfy
         // ^[]T / ^[..M]T (a fixed array has no slice header to alias).
         if ptr_pointee_layout_mismatch(va.elem, vb.elem) { return false }
+        // (A pointee whose width isn't decided yet matches no decided one —
+        // what's written through the pointer is the pointee's width:
+        // coerce_deferred decides it first, exactly.)
+        if is_infer(resolve_infer(va.elem)) != is_infer(resolve_infer(vb.elem)) { return false }
         return types_equal(va.elem, vb.elem)
     case ^Type_Scope:
         vb, ok := b.(^Type_Scope)
@@ -1617,12 +1621,32 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
 // Anonymous infers, concretes, and cross-family (int↔float) return false so the
 // normal check still runs.
 coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
+    if _, is_ptr := val.(^Type_Ptr); is_ptr { return coerce_deferred_pointee(c, val, target, span) }
     cell := infer_cell_of(val)
     if cell == nil { return false }
     tgt := resolve_infer(target)
     _, tkind, tok := numeric_info(tgt)
     if !tok { return false }
     _, is_float_infer := val.(Type_Infer_Float)
+    if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
+    unify_infer_concrete(c, cell, tgt, span)
+    return true
+}
+
+// A pointer to a number whose width isn't decided yet, where a pointer to a
+// number goes (`n := 0; f(&n)`, f taking ^i32): its width that one, exactly —
+// through a pointer a width can't widen. (Decided already: compared as it
+// is, types_equal.) Whether it was decided here.
+coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
+    vp, is_ptr := val.(^Type_Ptr)
+    tp, to_ptr := unwrap_alias(target).(^Type_Ptr)
+    if !is_ptr || !to_ptr { return false }
+    cell := infer_cell_of(vp.elem)
+    if cell == nil || infer_root(cell).resolved != nil { return false }
+    tgt := resolve_infer(tp.elem)
+    _, tkind, tok := numeric_info(tgt)
+    if !tok { return false }
+    _, is_float_infer := vp.elem.(Type_Infer_Float)
     if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
     unify_infer_concrete(c, cell, tgt, span)
     return true

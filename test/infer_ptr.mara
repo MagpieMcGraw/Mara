@@ -1,0 +1,29 @@
+module infer_ptr
+
+// A number whose width isn't decided yet (`n := 0`) takes it from its first
+// concrete use — its address passed where a pointer to a number goes is
+// one: `f(&n)`, f taking ^i32, makes n an i32, exactly (through a pointer a
+// width can't widen). It used to pass the check undecided, n then an i64:
+// a call to Mara stopped in codegen ("can't lower ... argument 'p'"); a
+// foreign one, like gl.GetProgramInfoLog's ^i32 length in Pounce, got an
+// i64's address and wrote half of it. (A float pointer: infer_ptr_float_neg.)
+
+//@ expect-output: settled by a call: 7 4
+//@ expect-output: through a pointer: 7 4
+//@ expect-output: wider later: 9
+
+take :: fun(p: ^i32) { p^ = 7 }
+
+main :: fun() {
+	n := 0
+	take(&n)
+	print("settled by a call:", n, size_of(n))
+	m := 0
+	p := &m
+	take(p)
+	print("through a pointer:", m, size_of(m))
+	k := 0
+	take(&k)
+	wide : i64 = k + 2   // (an i32 widens as a value)
+	print("wider later:", wide)
+}

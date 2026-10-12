@@ -1,0 +1,14 @@
+module infer_ptr_float_neg
+//@ expect-fail: parameter 'p' expects ^f32
+
+// An integer whose width isn't decided can't become a float through its
+// address: what's written through a ^f32 is a float's bits. (It reached
+// codegen and stopped there: "can't lower ... argument 'p'".)
+
+takef :: fun(p: ^f32) { p^ = 1.5 }
+
+main :: fun() {
+	n := 0
+	takef(&n)
+	print(n)
+}

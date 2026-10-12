@@ -129,7 +129,8 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     if len(elems) == 0 { return Type_Error{} }
     et := tc_check(k, elems[0], env)
     for e, i in elems[1:] {
-        if t := tc_check(k, e, env); types_incompatible(et, t) {
+        // (A pointee's width not yet decided, either side: decided by the other.)
+        if t := tc_check(k, e, env); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }

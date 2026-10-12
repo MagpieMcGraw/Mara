@@ -480,7 +480,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         for e, i in entries {
             hint_for(k, e, fa.elem)
             vt := tc_check(k, e, env)
-            if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
+            if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
             tc_value_at(k, e, vt, fa.elem, span)
         }
         return
@@ -500,7 +500,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         value := Tree_Id(tr.a[e])
         hint_for(k, value, fa.elem)
         vt := tc_check(k, value, env)
-        if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
+        if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
         tc_value_at(k, value, vt, fa.elem, span)
         set[idx] = true
     }
