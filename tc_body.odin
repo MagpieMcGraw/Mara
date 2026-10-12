@@ -589,7 +589,7 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 // What a loop over a collection of type `ct` walks: its elements' type — an
 // array's, a slice's, a partial array's (nil: no collection).
 loop_elem :: proc(ct: Type) -> Type {
-    #partial switch c in ct {
+    #partial switch c in distinct_base(ct) {
     case ^Type_Fixed_Array:   return c.elem
     case ^Type_Slice:         return c.elem
     case ^Type_Partial_Array: return c.elem
@@ -873,9 +873,11 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     arms := tree_list(tr, tr.b[s])
     if subj == 0 { return }
     st := tc_check(k, subj, env)
-    ut, is_union := st.(^Type_Union)
-    et, is_enum := st.(^Type_Enum)
-    _, is_err := st.(Type_Err)
+    // (A named union — `type U`, `distinct U` — matched as U is.)
+    sb := distinct_base(st)
+    ut, is_union := sb.(^Type_Union)
+    et, is_enum := sb.(^Type_Enum)
+    _, is_err := sb.(Type_Err)
     if !is_union && !is_enum && !is_err {
         tc_error(k, span, TYPE_MATCH_REQUIRES_UNION, type_name(st))
         return

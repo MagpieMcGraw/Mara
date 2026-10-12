@@ -107,10 +107,10 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     held := !lw_pure_place(k, base_n)
     tt := tc_node_type(k, base_n)
     is_self := tc_is_self(k, base_n)
-    target := tt
+    target := distinct_base(tt)   // (as tc_slice reads it: a named one as its base)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
-        case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
+        case ^Type_Slice, ^Type_Fixed_Array, ^Type_Partial_Array: target = distinct_base(pt.elem)
         }
     }
     elem: Type

@@ -29,7 +29,7 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     }
     // (What reads no value of its base — a union's variant, an enum's, a
     // fun — builds none of it.)
-    if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
+    if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has { return lw_union_variant(k, ut, field, span, want, w, dest, temp, temp_span) }
     }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
@@ -66,7 +66,7 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: strin
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
     if _, found := scope_lookup(sd_module_scope(sd), field); !found {
-        et, is_enum := t.(^Type_Enum)
+        et, is_enum := distinct_base(t).(^Type_Enum)
         if !is_enum { lw_fail(k, n, "a module's member of no enum") }
         return lw_enum_value(k, et, et.variants[field], field, span, want, w)
     }
@@ -81,8 +81,10 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: strin
 // an enum's, its value.
 lw_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span, want: Build_Want, w: Written,
                       dest: Dest, temp: bool, temp_span: Span) -> Built {
-    if ut, is_union := t.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
-    return lw_enum_value(k, t.(^Type_Enum), lw_variant_value(t, name), name, span, want, w)
+    // (A named one's — `type U`, `distinct E` — as its base's.)
+    tb := distinct_base(t)
+    if ut, is_union := tb.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
+    return lw_enum_value(k, tb.(^Type_Enum), lw_variant_value(t, name), name, span, want, w)
 }
 
 // An enum's variant, as a value: its tag, known.
@@ -169,9 +171,10 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     empty := fd == nil && ty != 0 && tr.tag[ty] != .Ident && tr.tag[ty] != .Field && is_partial_array(t)
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
-    ts, _ := t.(^Type_Scope)
+    // (A named struct or union — `type P`, `distinct U` — built as its base.)
+    ts, _ := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
-    if variant != "" { vst = t.(^Type_Union).variant_structs[variant] }
+    if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
     zero := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
     sd: ^Scope_Body
     if vst != nil {

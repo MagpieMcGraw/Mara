@@ -1145,8 +1145,9 @@ is_any :: proc(t: Type) -> bool {
 }
 
 is_array_type :: proc(t: Type) -> bool {
-    if _, ok := t.(^Type_Fixed_Array); ok { return true }
-    if _, ok := t.(^Type_Slice); ok { return true }
+    bt := distinct_base(t)   // (a named one — `type []T` — as its base)
+    if _, ok := bt.(^Type_Fixed_Array); ok { return true }
+    if _, ok := bt.(^Type_Slice); ok { return true }
     return false
 }
 

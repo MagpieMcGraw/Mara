@@ -1,0 +1,168 @@
+module named_types
+
+use mara.core
+use mara.string
+
+// A named type — `type T`, an alias, T itself by another name; `distinct T`,
+// a type of its own with T's shape — does what T's shape does: sliced,
+// indexed, looped over, through a pointer too; a named union matched, its
+// tag read, its variants built into it (a distinct one's too: a variant is a
+// struct, built into it); a named struct built by a literal, its fields and
+// methods its base's; a named enum's variants. (Each was refused where the
+// checker looked at the type without seeing through its name: str64 was
+// sliced nowhere.) And an enum matched by its variants' names alone.
+
+//@ expect-output: str64: jel jello h jello 5 64 5 true
+//@ expect-output: loop: j e l l o
+//@ expect-output: pointer: j je 5
+//@ expect-output: distinct buffer: 0 64 0
+//@ expect-output: arrays: [2, 3] 4 [2, 3] 4 1 7 3
+//@ expect-output: array loops: 10 10
+//@ expect-output: slice alias: [6, 7] 5 26
+//@ expect-output: union alias: 7 U_Tag.A 7 B {}
+//@ expect-output: distinct union: 8 U_Tag.A 5 -1 -1 6
+//@ expect-output: field union: B Color.Red U_Tag.B
+//@ expect-output: structs: 2 3 20 30 5 5
+//@ expect-output: enums: Color.Green Color.Green Color.Red green true
+//@ expect-output: plain enum: green
+
+Buf  :: type [..64]utf8
+DBuf :: distinct [..64]utf8
+Arr  :: type [4]i64
+DArr :: distinct [4]i64
+Sl   :: type []i64
+
+U :: union {
+	A { x: i64 }
+	B
+}
+UA :: type U
+UD :: distinct U
+
+Color :: union {
+	Red
+	Green
+}
+CA :: type Color
+CD :: distinct Color
+
+P :: struct {
+	x: i64 = 1
+	y: i64 = 5   // (not written by the literals: the constructor sets it)
+	get :: fun(p: Self) -> i64 { return p.x * 10 }
+}
+PA :: type P
+PD :: distinct P
+
+Holder :: struct {
+	u: UA
+	c: CD
+}
+
+takes_u :: fun(u: U) -> i64 {
+	match u {
+	A a
+		return a.x
+	B
+		return -1
+	}
+	return 0
+}
+make_ud :: fun(x: i64) -> UD { return A{x = x} }
+make_ua :: fun() -> UA { return .B }
+which :: fun(u: UD) -> i64 {
+	match u {
+	A a
+		return a.x
+	B
+		return -1
+	}
+	return 0
+}
+first :: fun(xs: []$T) -> T { return xs[0] }
+
+main :: fun() {
+	s : str64
+	&s + "hello"
+	head := s[0:3]
+	whole := s[:]
+	h0 := s[0]
+	s[0] = 'j'
+	print("str64:", head, whole, h0, s, s.len, s.cap, len(s[:]), s.starts_with("je"))
+	letters : str64
+	for c in s {
+		&letters + c
+		&letters + ' '
+	}
+	print("loop:", letters)
+	sp := &s
+	print("pointer:", sp[0], sp[0:2], sp.len)
+
+	d : DBuf
+	print("distinct buffer:", d.len, d.cap, d[0:0].len)
+
+	a : Arr = [1, 2, 3, 4]
+	da : DArr = [1, 2, 3, 4]
+	backing : [3]i64 = [7, 8, 9]
+	sl : Sl = backing[:]
+	print("arrays:", a[1:3], a.len, da[1:3], da.len, first(a[:]), first(sl), len(sl))
+	sum_a := 0
+	for x in a { sum_a += x }
+	sum_da := 0
+	for x in da { sum_da += x }
+	print("array loops:", sum_a, sum_da)
+	more : [4]i64 = [5, 6, 7, 8]
+	sl = more[:]
+	sum_sl := 0
+	for x in sl { sum_sl += x }
+	print("slice alias:", sl[1:3], sl[0], sum_sl)
+
+	ua : UA = A{x = 7}
+	got := 0
+	match ua {
+	A a
+		got = a.x
+	B
+		got = -1
+	}
+	print_tag := ua.tag
+	passed := takes_u(ua)
+	ua = .B
+	print("union alias:", got, print_tag, passed, ua)
+
+	ud : UD = A{x = 8}
+	print("distinct union:", which(ud), ud.tag, which(make_ud(5)), which(UD.B), which(.B), which(A{x = 6}))
+	holder := Holder{u = make_ua(), c = .Red}
+	in_field := ""
+	match holder.u {
+	A a
+		in_field = "A"
+	B
+		in_field = "B"
+	}
+	print("field union:", in_field, holder.c, holder.u.tag)
+
+	pa := PA{x = 2}
+	pd := PD{x = 3}
+	print("structs:", pa.x, pd.x, pa.get(), pd.get(), pa.y, pd.y)
+
+	ca : CA = .Green
+	cd : CD = .Green
+	cd2 := CD.Red
+	said := ""
+	match cd {
+	Red
+		said = "red"
+	Green
+		said = "green"
+	}
+	print("enums:", ca, cd, cd2, said, cd == .Green)
+
+	plain : Color = .Green
+	match plain {
+	Red
+		print("plain enum: red")
+	Green
+		print("plain enum: green")
+	}
+}

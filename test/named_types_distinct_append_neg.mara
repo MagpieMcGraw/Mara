@@ -1,0 +1,16 @@
+module named_types_distinct_append_neg
+//@ expect-fail: mismatched types for '+'
+
+use mara.core
+
+// A distinct buffer is a type of its own: the overloads its base's are
+// (`&buf + text`, mara.core's for []utf8) aren't its. (An alias, `type`, is
+// its base: str64 appends.)
+
+DBuf :: distinct [..64]utf8
+
+main :: fun() {
+	d : DBuf
+	&d + "hello"
+	print(d.len)
+}

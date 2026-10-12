@@ -125,6 +125,20 @@ tc_self_args :: proc(k: ^TC, n: Tree_Id, fn: ^Type_Scope, sd: ^Scope_Body, qt: T
     return tc_with_receiver(recv, args), false
 }
 
+// Whether a receiver of type `at` is the struct its method's Self param `pt`
+// takes — a distinct struct's is its base's — by value or through a pointer.
+tc_own_receiver :: proc(at, pt: Type) -> bool {
+    a, p := distinct_base(at), distinct_base(pt)
+    if ap, is_ptr := a.(^Type_Ptr); is_ptr {
+        pp, also := p.(^Type_Ptr)
+        if !also { return false }
+        a, p = distinct_base(ap.elem), distinct_base(pp.elem)
+    }
+    as, a_ok := a.(^Type_Scope)
+    ps, p_ok := p.(^Type_Scope)
+    return a_ok && p_ok && as == ps && as.kind == .Struct
+}
+
 tc_with_receiver :: proc(recv: Tree_Id, args: []Tree_Id) -> []Tree_Id {
     out := make([]Tree_Id, len(args) + 1, context.temp_allocator)
     out[0] = recv

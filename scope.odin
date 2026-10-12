@@ -225,7 +225,7 @@ scope_find_ref :: proc(env: ^Type_Scope, name: string, below_module := false) ->
 
 // What declares an enum's or a union's variant, by its name (0: none).
 variant_decl :: proc(t: Type, name: string) -> Token_Id {
-    #partial switch v in t {
+    #partial switch v in distinct_base(t) {
     case ^Type_Enum:
         return v.variant_decls[name] or_else 0
     case ^Type_Union:
@@ -355,7 +355,8 @@ resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
     if pt, pt_ok := t.(^Type_Ptr); pt_ok {
         inner = pt.elem
     }
-    if sd := as_scope_body(inner); sd != nil && len(sd.fields) > 0 { return sd }
+    // (A named struct — `type P`, `distinct P` — has P's functions.)
+    if sd := as_scope_body(distinct_base(inner)); sd != nil && len(sd.fields) > 0 { return sd }
     // Check by type name in the struct table
     tn := type_name(t)
     if st, ok := c.table.structs[tn]; ok { return &st.sd }

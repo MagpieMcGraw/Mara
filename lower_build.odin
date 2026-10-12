@@ -127,7 +127,7 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
             _, found := scope_lookup(sd_module_scope(sd), field)
             return found   // (else an enum's variant it holds)
         }
-        if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
+        if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
             if _, has := ut.tag_map[field]; has { return false }
         }
         ft, is_member, _, known_ok := tc_field_type(k, e, base, bt, field, tree_span(t, e))

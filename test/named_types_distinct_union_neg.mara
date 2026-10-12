@@ -1,0 +1,20 @@
+module named_types_distinct_union_neg
+//@ expect-fail: cannot assign
+
+use mara.core
+
+// A distinct union is a type of its own: a variant goes in (a variant is a
+// struct, built into it), a value of its base doesn't.
+
+U :: union {
+	A { x: i64 }
+	B
+}
+UD :: distinct U
+
+main :: fun() {
+	u : U = A{x = 1}
+	ud : UD = .B
+	ud = u
+	print(ud)
+}

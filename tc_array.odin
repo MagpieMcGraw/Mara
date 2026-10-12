@@ -13,7 +13,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     target := distinct_base(bt)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
-        case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
+        case ^Type_Slice, ^Type_Fixed_Array, ^Type_Partial_Array: target = distinct_base(pt.elem)
         }
     }
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
@@ -147,10 +147,11 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     tc_lower_dots(k, base_n, lo_n)
     tc_lower_dots(k, base_n, hi_n)
     tt := tc_check(k, base_n, env)
-    target := tt
+    // (A named type — `str64`, a distinct array — sliced as its base is.)
+    target := distinct_base(tt)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
-        case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
+        case ^Type_Slice, ^Type_Fixed_Array, ^Type_Partial_Array: target = distinct_base(pt.elem)
         }
     }
     // (A slice of an array in this_program — not of a slice, whose view it
@@ -223,9 +224,9 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     if is_byte_buffer(tt) {
         if view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span); view != nil { return }
     }
-    fa, is_array := tt.(^Type_Fixed_Array)
+    fa, is_array := distinct_base(tt).(^Type_Fixed_Array)
     if !is_array { return }
-    #partial switch v in vt {
+    #partial switch v in distinct_base(vt) {
     case ^Type_Fixed_Array:
         if types_incompatible(fa.elem, v.elem) {
             tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO, v.size, type_name(v.elem), fa.size, type_name(fa.elem))

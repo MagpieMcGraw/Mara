@@ -27,8 +27,8 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     } else {
         subject = lw_expr(k, subj, .Place).v
     }
-    ut, is_union := st.(^Type_Union)
-    et, is_enum := st.(^Type_Enum)
+    ut, is_union := distinct_base(st).(^Type_Union)
+    et, is_enum := distinct_base(st).(^Type_Enum)
     gm := graph_build_match_begin(b, span, len(arms), slot, subject, st, tr.tag[tc_unparen(k, subj)] == .Self)
     for arm, i in arms {
         tag := tr.tag[arm]
@@ -49,10 +49,12 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     for arm, i in arms {
         a := tc_match_arm(k, subj, arm, et, ut)
         tag := tr.tag[arm]
+        // (A variant arm binds a union's payload; an enum's variants carry
+        // none — `Red` alone on an enum is its tag, as `.Red` is.)
         ra := Graph_Arm{variant = a.variant, bound = a.bound, bound_tok = a.bound_tok,
-                        is_else = tag == .Arm_Else, is_union = tag == .Arm_Variant}
-        // (Its tag, and a union's payload: a variant arm's on a union only.)
-        if a.variant != "" && (tag != .Arm_Variant || is_union) {
+                        is_else = tag == .Arm_Else, is_union = tag == .Arm_Variant && is_union}
+        // (Its tag, and a union's payload.)
+        if a.variant != "" {
             switch {
             case is_enum:  ra.tag = et.variants[a.variant]
             case is_union: ra.tag, ra.payload = ut.tag_map[a.variant], lw_variant_struct(ut, a.variant)

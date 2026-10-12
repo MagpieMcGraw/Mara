@@ -879,7 +879,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
 
 // A variant's value, by its name: an enum's, or a union's tag.
 lw_variant_value :: proc(t: Type, name: string) -> int {
-    #partial switch v in t {
+    #partial switch v in distinct_base(t) {
     case ^Type_Enum:  return v.variants[name]
     case ^Type_Union: return v.tag_map[name]
     }

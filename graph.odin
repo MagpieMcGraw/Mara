@@ -3002,7 +3002,7 @@ Graph_Literal :: struct {
 // params' defaults, the checker's); a union's variant zeroed and tagged; an
 // array zeroed.
 graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_init: bool, t: Type, d: Dest, args: []Operand = nil) -> ^Graph_Literal {
-    ts, is_scope := t.(^Type_Scope)
+    ts, is_scope := distinct_base(t).(^Type_Scope)   // (a named struct's: its base's constructor)
     if is_scope && ts.kind == .Struct && !ts.is_module && zero_init {
         graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span))
     } else if is_scope && ts.kind == .Struct && !ts.is_module {

@@ -199,13 +199,16 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
 // has it.
 tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot: bool, span: Span) -> (Type, int, bool) {
     if hint != nil {
-        if et, is_enum := hint.(^Type_Enum); is_enum {
-            if v, has := et.variants[name]; has { return et, v, true }
+        // (A named enum or union — `type E`, `distinct U` — looked in as its
+        // base is; the variant is of the named one, so a distinct one takes it.)
+        hb := distinct_base(hint)
+        if et, is_enum := hb.(^Type_Enum); is_enum {
+            if v, has := et.variants[name]; has { return hint, v, true }
         }
-        if ut, is_union := hint.(^Type_Union); is_union {
-            if v, has := ut.tag_map[name]; has { return ut, v, true }
+        if ut, is_union := hb.(^Type_Union); is_union {
+            if v, has := ut.tag_map[name]; has { return hint, v, true }
         }
-        if _, is_err := hint.(Type_Err); is_err {
+        if _, is_err := hb.(Type_Err); is_err {
             owners := make([dynamic]string, context.temp_allocator)
             for ename, edef in k.table.enums {
                 if edef.is_error_kind && name in edef.variants && is_enum_visible(env, ename) { append(&owners, ename) }

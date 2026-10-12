@@ -574,7 +574,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
                 reinterpret = tc_check_byte_flow(k, pt, a, at, span) == .Read
             }
         }
-        if !reinterpret && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
+        // (A method's receiver of a distinct struct — `distinct P` — is a P
+        // to it: the struct's methods are its too.)
+        own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
+        if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))

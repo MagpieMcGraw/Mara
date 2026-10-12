@@ -9,9 +9,10 @@ import "core:strings"
 
 // The struct a type is, or points at (its fields found first).
 tc_struct_of :: proc(k: ^TC, t: Type) -> ^Scope_Body {
-    sd := as_scope_body(t)
+    // (A named struct — `type P`, `distinct P` — is P's.)
+    sd := as_scope_body(distinct_base(t))
     if sd == nil {
-        if pt, is_ptr := t.(^Type_Ptr); is_ptr { sd = as_scope_body(pt.elem) }
+        if pt, is_ptr := t.(^Type_Ptr); is_ptr { sd = as_scope_body(distinct_base(pt.elem)) }
     }
     if sd != nil { tc_struct_ensure(k, sd_type_scope(sd)) }
     return sd
@@ -42,12 +43,13 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return tc_module_member(k, n, sd, field)
     }
-    // (A union's variant: a value of its own.)
-    if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
+    // (A union's variant: a value of its own — of the union as named: a
+    // distinct one's variant is its.)
+    if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has {
             tc_set_ref(k, n, {variant_decl(ut, field), .Variant})
             tc_variant_built(k, n, ut, field)
-            return ut
+            return bt
         }
     }
     t, is_member, _, _ := tc_field_type(k, n, base, bt, field, span)
@@ -60,7 +62,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 // source declares (a header's len, a swizzle, a union's tag).
 tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
     if _, is_error := t.(Type_Error); is_error || t == nil { return {} }
-    if et, is_enum := t.(^Type_Enum); is_enum && !member { return {variant_decl(et, field), .Variant} }
+    if et, is_enum := distinct_base(t).(^Type_Enum); is_enum && !member { return {variant_decl(et, field), .Variant} }
     if fun, is_fun := t.(^Type_Scope); is_fun && !member && fun.kind == .Fun { return {fun.decl, .Fun} }
     if member {
         if sd := tc_struct_of(k, bt); sd != nil {
@@ -73,11 +75,11 @@ tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
 // A field's type: whether it names part of the value (a member), or a
 // fixed array's length (its value, else -1).
 tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, known: i128, known_ok: bool) {
-    // (An enum's variant: its value, known. A union's tag or pad: part of the
-    // value; its variant: a value of its own.)
-    #partial switch v in bt {
+    // (An enum's variant: its value, known — of the enum as named. A union's
+    // tag or pad: part of the value; its variant: a value of its own.)
+    #partial switch v in distinct_base(bt) {
     case ^Type_Enum:
-        if val, has := v.variants[field]; has { return v, false, i128(val), true }
+        if val, has := v.variants[field]; has { return bt, false, i128(val), true }
         tc_error(k, span, TYPE_ENUM_VARIANT, type_name(v), field)
         return Type_Error{}, false, 0, false
     case ^Type_Union:
@@ -297,6 +299,9 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
                 return tc_unknown_literal(k, n, name, entries, env)
             }
             t, variant = vut, name
+            // (Where a named union of it goes — `distinct U` — the union as
+            // named: a variant is a struct, built as one into it.)
+            if hu, is_union := distinct_base(k.hint).(^Type_Union); is_union && hu == vut { t = k.hint }
         } else if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && ts.name != name && !strings.has_suffix(ts.name, strings.concatenate({"_", name}, context.temp_allocator)) {
             // (A struct's variable, not its type: `new := var{…}`.)
             tc_error(k, span, TYPE_STRUCT_COPY_FORM, name, name, name)
@@ -350,9 +355,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     }
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
-    ts, is_scope := t.(^Type_Scope)
+    // (A named struct or union — `type P`, `distinct P` — built as its base.)
+    ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
-    if variant != "" { vst = t.(^Type_Union).variant_structs[variant] }
+    if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
     if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
@@ -374,9 +380,9 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     // (Its construction: a struct's — `{0}` is its zero.)
-    if lt, is_scope := t.(^Type_Scope); is_scope && lt.kind == .Struct && !lt.is_module && !zero {
-        tc_set_callee(k, n, lt)
-        tc_set_args(k, n, tc_default_args(lt))
+    if is_scope && ts.kind == .Struct && !ts.is_module && !zero {
+        tc_set_callee(k, n, ts)
+        tc_set_args(k, n, tc_default_args(ts))
     }
     if fa == nil && fd == nil && !empty {
         // (What its construction runs: its constructor's defaults. A
@@ -540,8 +546,9 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 
 tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span,
                          env: ^Type_Scope, positional := false, probed: Type = nil) {
-    // (An anonymous literal takes its shape from the field.)
-    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) { k.hint = f.type_ }
+    // (An anonymous literal takes its shape from the field; a `.Variant`, its
+    // enum or union — a distinct one's too.)
+    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) || k.t.tag[v] == .Dot_Ident { k.hint = f.type_ }
     vt := probed if probed != nil else tc_check(k, value, env)   // (a spread that wasn't: checked as one)
     if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) && !value_preserving_widen(vt, f.type_) {
         if positional {
