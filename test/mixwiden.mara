@@ -1,25 +1,31 @@
 module mixwiden
 
+// Arithmetic on two widths takes a cast to one (no implicit mixing — it was,
+// until the user dropped widening): written, it keeps out of C's "unsigned
+// wins" swamp the same way — -1 cast to i64 stays -1 beside a u32 cast to
+// i64. (Unwritten: mixwiden_neg.)
+
+//@ expect-output: over by 904
+//@ expect-output: a+b: 1000100
+//@ expect-output: neg<u: true
+//@ expect-output: neg+u: 4
+//@ expect-output: x+y: 1200
+
 main :: fun() {
 	size : i64 = 5000
 	cap  : i32 = 4096
+	if size > i64(cap) do print("over by", size - i64(cap))
 
-	// the line that started this: i64 vs i32 comparison, no cast
-	if size > cap do print("over by", size - cap)   // over by 904
-
-	// same-sign width mix in arithmetic
 	a : i32 = 100
 	b : i64 = 1000000
-	print("a+b:", a + b)        // 1000100  (i32 widens to i64)
+	print("a+b:", i64(a) + b)
 
-	// cross-sign mix: i32 vs u32 -> i64 common, value-preserving
 	neg : i32 = -1
 	u   : u32 = 5
-	print("neg<u:", neg < u)    // true  (-1 < 5, NOT C's "huge unsigned")
-	print("neg+u:", neg + u)    // 4     (-1 + 5 in i64)
+	print("neg<u:", i64(neg) < i64(u))
+	print("neg+u:", i64(neg) + i64(u))
 
-	// unsigned same-sign mix
 	x : u8  = 200
 	y : u16 = 1000
-	print("x+y:", x + y)        // 1200  (u8 zext to u16)
+	print("x+y:", u16(x) + y)
 }

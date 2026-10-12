@@ -1,0 +1,11 @@
+module mixwiden_neg
+//@ expect-fail: mismatched types in arithmetic: i64 and i32
+
+// Two widths in one operation: a cast says which (mixwiden) — no implicit
+// mixing.
+
+main :: fun() {
+	size : i64 = 5000
+	cap  : i32 = 4096
+	if size > cap do print("over")
+}

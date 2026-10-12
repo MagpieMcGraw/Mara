@@ -127,7 +127,7 @@ control_flow :: fun() {
 
 	some_numbers : [5]u8 = [11, 22, 33, 44, 55]
 	for number, index in some_numbers {
-		if number == index + 10 do continue
+		if i64(number) == index + 10 do continue
 		print("The number:", number)
 		print("The index: ", index)
 	}
@@ -148,7 +148,7 @@ functions :: fun() {
 
 	local_add :: fun(count: u32, number: i32) -> named : i64
 	{
-		result := count + number
+		result := i64(count) + i64(number)
 		named = result // already declared
 		return named // return statement required
 	}

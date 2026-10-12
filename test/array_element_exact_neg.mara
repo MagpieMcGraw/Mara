@@ -1,0 +1,11 @@
+module array_element_exact_neg
+//@ expect-fail: element 0 has type i32, expected i64
+
+// An array literal's element is the element type, or a cast to it — no
+// implicit widening, as anywhere a value goes.
+
+main :: fun() {
+	x : i32 = -5
+	arr : [2]i64 = {x, 1}
+	print(arr[0])
+}

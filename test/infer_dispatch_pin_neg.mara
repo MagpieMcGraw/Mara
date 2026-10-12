@@ -1,0 +1,18 @@
+module infer_dispatch_pin_neg
+//@ expect-fail: inferred binding 'e' is used at conflicting widths: i64
+
+// A dispatch on a binding no use has given a width yet chooses by its
+// default width — i64, show_i64 — and that's its width from there: the i32
+// use after is a conflict. Give it the width first, or annotate it.
+
+show_i32 :: fun(x: i32) -> i64 { return 32 }
+show_i64 :: fun(x: i64) -> i64 { return 64 }
+show2 :: dispatch{ show_i32, show_i64 }
+
+t32 :: fun(x: i32) {}
+
+main :: fun() {
+	e := 0
+	print(show2(e))
+	t32(e)
+}

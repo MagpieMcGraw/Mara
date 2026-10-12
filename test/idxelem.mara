@@ -47,12 +47,12 @@ main :: fun() -> i64 {
 		return 1
 	}
 
-	// value-preserving widening into a WIDER element — the index-store codegen
-	// must materialize the zext/sext (gen_expr_coerced), so no cast is needed.
+	// a WIDER element, its value cast to it (no implicit widening) — the
+	// index-store codegen materializes the zext/sext.
 	wide : [..4]u32
 	wide.len = 0
 	small : u16 = 60000                 // high bit set: zext, not sext
-	wide[wide.len] = small              // u16 -> u32 element (zext)
+	wide[wide.len] = u32(small)         // u16 -> u32 element (zext)
 	wide.len += 1
 	if wide[0] != 60000 {
 		print("idxelem widen u16->u32 FAIL:", wide[0])
@@ -61,7 +61,7 @@ main :: fun() -> i64 {
 	swide : [..4]i64
 	swide.len = 0
 	neg : i32 = -7
-	swide[swide.len] = neg              // i32 -> i64 element (sext)
+	swide[swide.len] = i64(neg)         // i32 -> i64 element (sext)
 	swide.len += 1
 	if swide[0] != -7 {
 		print("idxelem widen i32->i64 FAIL:", swide[0])

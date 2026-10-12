@@ -3,9 +3,8 @@ package mara
 import "core:strings"
 
 // Dispatch groups and operator overloads in the checker: `add(a, b)`
-// calls the function of the group its arguments fit closest — each as it
-// is, or a number widened as it would be into any param; `a + b` with an
-// operand no number calls the best fit of the groups `overload +` names.
+// calls the one function of the group its argument types fit; `a + b` with
+// an operand no number calls the best fit of the groups `overload +` names.
 
 // Whether a binding of no written width (an int's or a float's) can take a
 // param's type: a number of its kind.
@@ -16,46 +15,9 @@ tc_binding_kind_fits :: proc(t, param: Type) -> bool {
     return is_float == (pk == .Float)
 }
 
-// How far an argument's type is from a param's, for a dispatch's choice:
-// 0 when it fits as it is; a number that widens into it, the bits it gains
-// (one more when it turns signed, so u16 → u32 comes before u16 → i32); -1
-// when it doesn't fit. An untyped number, or a binding whose width isn't
-// decided yet, takes the param's width: 0 for any number of its kind.
-tc_dispatch_distance :: proc(at, pt: Type) -> int {
-    if tc_open_binding(at) {
-        if !tc_binding_kind_fits(at, pt) || types_incompatible(pt, at) { return -1 }
-        return 0
-    }
-    if !types_incompatible(pt, at) { return 0 }
-    if value_preserving_widen(resolve_infer(at), resolve_infer(pt)) {
-        fb, fk, _ := numeric_info(at)
-        tb, tk, _ := numeric_info(pt)
-        return tb - fb + (1 if fk != tk else 0)
-    }
-    return -1
-}
-
-// The members no other is closer than: closer on some argument, and no
-// farther on any (each one's distances, per argument).
-tc_dispatch_closest :: proc(dist: [][]int) -> [dynamic]int {
-    best := make([dynamic]int, context.temp_allocator)
-    members: for d, m in dist {
-        for o, j in dist {
-            if j == m { continue }
-            closer, farther := false, false
-            for i in 0 ..< len(d) {
-                if o[i] < d[i] { closer = true }
-                if o[i] > d[i] { farther = true }
-            }
-            if closer && !farther { continue members }
-        }
-        append(&best, m)
-    }
-    return best
-}
-
-// `f(args)` where f is a dispatch group: each argument checked, the member
-// they fit closest chosen (tc_dispatch_distance), then the call.
+// `f(args)` where f is a dispatch group: each argument checked, the one
+// member they fit chosen — each argument its param's type (a binding no use
+// has given a width yet: a param of its kind) — then the call.
 tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]string, args: []Tree_Id,
                          env: ^Type_Scope) -> Type {
     tr := k.t
@@ -66,10 +28,8 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
     arg_types := make([dynamic]Type, context.temp_allocator)
     for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a, env)) }
-    // Each member the arguments fit, and how far each argument is from its param.
-    fit_names := make([dynamic]string, context.temp_allocator)
-    fit_fts := make([dynamic]^Type_Scope, context.temp_allocator)
-    fit_dist := make([dynamic][]int, context.temp_allocator)
+    matched := make([dynamic]string, context.temp_allocator)
+    matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
     candidates: for f in members {
         found, ok := scope_lookup(env, f)
         if !ok { continue }
@@ -78,70 +38,41 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         for i := len(arg_types); i < len(ft.params); i += 1 {
             if !field_has_default(ft.params[i]) { continue candidates }
         }
-        dist := make([]int, len(arg_types), context.temp_allocator)
         for at, i in arg_types {
             if underscore[i] {
                 if !field_has_default(ft.params[i]) { continue candidates }
                 continue
             }
-            dist[i] = tc_dispatch_distance(at, ft.params[i].type_)
-            if dist[i] < 0 { continue candidates }
+            if types_incompatible(ft.params[i].type_, at) { continue candidates }
+            // (A binding of no width yet fits a param of its kind only: a whole
+            // number's no float.)
+            if tc_open_binding(at) && !tc_binding_kind_fits(at, ft.params[i].type_) { continue candidates }
         }
-        append(&fit_names, f)
-        append(&fit_fts, ft)
-        append(&fit_dist, dist)
+        append(&matched, f)
+        append(&matched_fts, ft)
     }
-    // The closest of them. A binding among the arguments whose uses haven't
-    // decided its width yet (`n := 0; f(n)`) takes any member's width, and
-    // when that leaves more than one: in a first pass, the one its default
-    // width would choose, for now, and the program checked again once every
-    // width is known (TC.deferred); after that — no use decided it — the
-    // one its default width chooses.
-    closest := tc_dispatch_closest(fit_dist[:])
+    // (More than one fitting a binding no use has given a width yet: the one
+    // its default width fits — that width the binding's from here,
+    // tc_pin_default's way.)
     open_args := false
     for at, i in arg_types { if !underscore[i] && tc_open_binding(at) { open_args = true } }
-    provisional := false
-    if open_args && len(closest) > 1 {
-        at_default := make([dynamic][]int, context.temp_allocator)
-        for m in closest {
-            dist := make([]int, len(arg_types), context.temp_allocator)
-            copy(dist, fit_dist[m])
+    if open_args && len(matched) > 1 {
+        by_default := make([dynamic]string, context.temp_allocator)
+        by_default_fts := make([dynamic]^Type_Scope, context.temp_allocator)
+        defaults: for f, m in matched {
             for at, i in arg_types {
                 if underscore[i] || !tc_open_binding(at) { continue }
-                dist[i] = tc_dispatch_distance(solidify_type(at), fit_fts[m].params[i].type_)
+                if !infer_same(matched_fts[m].params[i].type_, solidify_type(at)) { continue defaults }
             }
-            append(&at_default, dist)
+            append(&by_default, f)
+            append(&by_default_fts, matched_fts[m])
         }
-        // (Fitting at the default width: closest among those.)
-        fits := make([dynamic][]int, context.temp_allocator)
-        which := make([dynamic]int, context.temp_allocator)
-        for d, j in at_default {
-            ok := true
-            for x in d { if x < 0 { ok = false } }
-            if ok {
-                append(&fits, d)
-                append(&which, closest[j])
-            }
+        if len(by_default) > 0 {
+            clear(&matched)
+            clear(&matched_fts)
+            append(&matched, ..by_default[:])
+            append(&matched_fts, ..by_default_fts[:])
         }
-        by_default := make([dynamic]int, context.temp_allocator)
-        for j in tc_dispatch_closest(fits[:]) { append(&by_default, which[j]) }
-        if k.pass == 1 {
-            k.deferred = true
-            provisional = true
-            pick := closest[0]
-            if len(by_default) > 0 { pick = by_default[0] }
-            clear(&closest)
-            append(&closest, pick)
-        } else if len(by_default) > 0 {
-            clear(&closest)
-            append(&closest, ..by_default[:])
-        }
-    }
-    matched := make([dynamic]string, context.temp_allocator)
-    matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
-    for m in closest {
-        append(&matched, fit_names[m])
-        append(&matched_fts, fit_fts[m])
     }
     if len(matched) == 0 {
         names := make([dynamic]string, context.temp_allocator)
@@ -154,14 +85,11 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         return Type_Error{}
     }
     ft := matched_fts[0]
-    // (A binding's argument: a use of its width, the member's param as any
-    // param is — widened into. Not for a choice made for now.)
-    if !provisional {
-        for at, i in arg_types {
-            if underscore[i] || i >= len(ft.params) { continue }
-            if cell := infer_cell_of(at); cell != nil && tc_binding_kind_fits(at, ft.params[i].type_) {
-                infer_constrain(k.c, cell, .Into, ft.params[i].type_, span)
-            }
+    // (A binding's argument: a use of its width, the member's param's.)
+    for at, i in arg_types {
+        if underscore[i] || i >= len(ft.params) { continue }
+        if cell := infer_cell_of(at); cell != nil && tc_binding_kind_fits(at, ft.params[i].type_) {
+            unify_infer_concrete(k.c, cell, ft.params[i].type_, span)
         }
     }
     tc_set_callee(k, n, ft)

@@ -1,62 +1,53 @@
 module infer_any_order
 
-// A binding of no written width (`n := 5`) takes the width all its uses
-// decide together, in any order — the narrowest of the widths they name that
-// each takes: a value use takes any width that widens into its own, a value
-// written in needs one it widens into, a pointer use needs its own exactly,
-// arithmetic one with a common type. Every flow counts: an array literal's
-// element too. (It was the first use that decided: `t64(n); t32(n)` and
-// `t64(m); p32(&m)` were conflicts the other way round, and an element
-// didn't count.) A width that moves after something read it — an
-// operation's type — has the program checked again, every width known first.
+// A binding of no written width (`n := 5`) takes the width its uses give it
+// — all the same one, so the order they come in changes nothing: an
+// argument, an array literal's element, a pointer to it, a value written
+// in, arithmetic, an if's other branch — whichever comes first, the others
+// agree with it, or it's a conflict either way round (inferconflict,
+// inferconflict_other_order). No widening: a use at another width is never
+// let through.
 
-//@ expect-output: one order: 4 7 7
-//@ expect-output: the other: 4 7 7
-//@ expect-output: narrowed after a call: 4 40000 40000 40007 4
-//@ expect-output: a pointer after a value: 4 5 6
-//@ expect-output: an element: 2 3
-//@ expect-output: written in and read out: 2 300 300
-//@ expect-output: read early, decided late: 30000 4 100000 130000 4
+//@ expect-output: call then element: 4 7 7
+//@ expect-output: element then call: 4 7 7
+//@ expect-output: pointer then value: 4 6
+//@ expect-output: written in then passed: 2 300
+//@ expect-output: arithmetic: 2 30007
+//@ expect-output: an if: 2 2 10
 
-t32 :: fun(x: i32) -> i64 { return i64(x) }
-t64 :: fun(x: i64) -> i64 { return x }
+t32 :: fun(x: i32) -> i32 { return x }
+t16 :: fun(x: i16) -> i16 { return x }
+use16 :: fun(x: i16) {}
 p32 :: fun(p: ^i32) { p^ = p^ + 1 }
 
 main :: fun() {
 	a := 7
-	print("one order:", size_of(a), t32(a), t64(a))
+	x := t32(a)
+	arr : [2]i32 = {a, 1}
+	print("call then element:", size_of(a), x, arr[0])
 	b := 7
-	print("the other:", size_of(b), t64(b), t32(b))
-
-	n := 40000
-	x := t64(n)
-	x32 : i32 = 7
-	y := n + x32
-	z := t32(n)
-	print("narrowed after a call:", size_of(n), x, z, y, size_of(y))
+	brr : [2]i32 = {b, 1}
+	y := t32(b)
+	print("element then call:", size_of(b), brr[0], y)
 
 	m := 5
-	c := t64(m)
 	p32(&m)
-	print("a pointer after a value:", size_of(m), c, m)
-
-	k := 3
-	arr : [2]i16 = {k, 1}
-	print("an element:", size_of(k), arr[0])
+	c := t32(m)
+	print("pointer then value:", size_of(m), c)
 
 	w := 0
 	h : i16 = 300
-	w = h          // (an i16 written in: at least i16)
-	print("written in and read out:", size_of(w), w, t64(w))
+	w = h
+	print("written in then passed:", size_of(w), t16(w))
 
-	// (q is read as an i16 at the first sum — its only use so far — then
-	// written an i32: the program is checked again knowing q is an i32, so
-	// that sum is an i32's too.)
-	q := 0
+	q := 7
 	s16 : i16 = 30000
-	early := q + s16
-	big : i32 = 100000
-	q = big
-	late := q + s16
-	print("read early, decided late:", early, size_of(early), q, late, size_of(late))
+	sum := q + s16
+	print("arithmetic:", size_of(q), sum)
+
+	g := 10
+	cond := true
+	v := if cond do g else 0
+	use16(g)
+	print("an if:", size_of(v), size_of(g), v)
 }

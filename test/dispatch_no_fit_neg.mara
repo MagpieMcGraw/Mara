@@ -1,8 +1,8 @@
 module dispatch_no_fit_neg
 //@ expect-fail: no matching function in dispatch group 'w' for argument types (u32)
 
-// A number fits a member only by widening without loss: a u32 doesn't fit
-// an i32 (it may hold more), nor an i16.
+// A dispatch group's member fits an argument of its param's own type only
+// (no widening): a u32 fits neither an i32 nor an i16 — a cast picks one.
 
 w_i32 :: fun(x: i32) {}
 w_i16 :: fun(x: i16) {}

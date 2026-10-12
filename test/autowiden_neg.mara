@@ -1,0 +1,12 @@
+module autowiden_neg
+//@ expect-fail: cannot assign i32 to variable 'b' of type i64
+
+// No implicit widening: an i32 doesn't go where an i64 goes — `i64(a)` says
+// so (autowiden).
+
+main :: fun() {
+	a : i32 = 100
+	b : i64 = 0
+	b = a
+	print(b)
+}

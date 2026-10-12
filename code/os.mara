@@ -325,7 +325,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			// (A pipe whose writer closed: its end, as a file's is — 0 bytes.)
 			if GetLastError() != ERROR_BROKEN_PIPE do return Read_Failed
 		}
-		data.len = read
+		data.len = i64(read)
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. Win32

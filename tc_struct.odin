@@ -205,7 +205,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     // (Bytes read as the field's type: no conversion to check.)
     flow := tc_check_byte_flow(k, ft, value, vt, span)
     if flow == .Read && is_byte_buffer(vt) { tc_span_read_size(k, value, ft, true, span) }
-    if flow == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
+    if flow == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
     tc_value_at(k, diag, vt, ft, span)
@@ -480,7 +480,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         for e, i in entries {
             hint_for(k, e, fa.elem)
             vt := tc_check(k, e, env)
-            if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) && !value_preserving_widen(vt, fa.elem) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
+            if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
             tc_value_at(k, e, vt, fa.elem, span)
         }
         return
@@ -500,7 +500,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         value := Tree_Id(tr.a[e])
         hint_for(k, value, fa.elem)
         vt := tc_check(k, value, env)
-        if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) && !value_preserving_widen(vt, fa.elem) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
+        if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
         tc_value_at(k, value, vt, fa.elem, span)
         set[idx] = true
     }
@@ -550,7 +550,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
     // enum or union — a distinct one's too.)
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) || k.t.tag[v] == .Dot_Ident { k.hint = f.type_ }
     vt := probed if probed != nil else tc_check(k, value, env)   // (a spread that wasn't: checked as one)
-    if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) && !value_preserving_widen(vt, f.type_) {
+    if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) {
         if positional {
             tc_error(k, span, TYPE_FIELD_POSITION_EXPECTED, f.name, i, type_name(f.type_), type_name(vt))
         } else {
@@ -625,7 +625,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
         tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
         return
     }
-    if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !is_infer(vt) && !value_preserving_widen(vt, ft) {
+    if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !is_infer(vt) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
     tc_value_at(k, diag, vt, ft, span)

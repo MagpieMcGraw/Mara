@@ -192,8 +192,11 @@ tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) 
     case .Type_Generic:
         tc_unsupported(k, n, "a generic instance's type param inferred")
     }
-    // (An untyped argument binds its settled type, as a declaration would.)
-    if name != "" && name in subst^ && subst[name] == nil { subst[name] = solidify_type(actual) }
+    // (An untyped argument binds its settled type, as a declaration would; a
+    // binding no use has given a width yet, its default — from here on.)
+    if name != "" && name in subst^ && subst[name] == nil {
+        subst[name] = tc_pin_default(k, actual, k.infer_at if k.infer_at != {} else tree_span(t, n))
+    }
 }
 
 // A call of a generic fun: each argument checked, the type params bound from
@@ -215,7 +218,11 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     for g in v.params {
         pv := params_view(tr, g)
         for _ in pv.names {
-            if i < len(arg_types) { tc_infer(k, &subst, pv.type_, arg_types[i]) }
+            if i < len(arg_types) {
+                k.infer_at = tree_span(tr, args[i])
+                tc_infer(k, &subst, pv.type_, arg_types[i])
+                k.infer_at = {}
+            }
             i += 1
         }
     }

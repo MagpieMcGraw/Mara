@@ -62,7 +62,7 @@ tc_wide_clause :: proc(k: ^TC, target: Type, roots: ..Tree_Id) -> string {
         }
         nt := tc_node_type(k, n)
         if nt == nil || !is_numeric(nt) || is_infer(nt) { return }
-        if !types_incompatible(target, nt) || value_preserving_widen(nt, target) { return }
+        if !types_incompatible(target, nt) { return }
         name := tc_diag_name(k, n)
         if name == "" { return }
         entry := fmt.tprintf("%s (%s)", name, type_name(nt))

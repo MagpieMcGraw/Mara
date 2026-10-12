@@ -843,7 +843,7 @@ Loca :: struct {
 }
 
 make_loca :: fun(n: i32) -> loca: Loca {
-	loca.offsets.len = n
+	loca.offsets.len = i64(n)
 	for i in 0..n {
 		loca.offsets[i] = u32(i * 10)
 	}
@@ -1083,7 +1083,7 @@ test_runtime_cap :: fun() {
 
 fill_manual :: fun(n: i32, buf: []byte) {
 	off : [..64]u16
-	off.len = n
+	off.len = i64(n)
 	for i in 0..n {
 		off[i] = (u16(buf[i*2]) << 8) | u16(buf[i*2 + 1])
 	}
@@ -1204,7 +1204,7 @@ test_field_byte_read :: fun() {
 
 read_into :: fun(n: i32, buf: []byte) {
 	off16 : [..16]u16
-	off16.len = n
+	off16.len = i64(n)
 	off16 = #big_endian buf[0]
 	print("reassign index-read -> len:", off16.len, "cap:", off16.cap)
 	for v, i in off16 {

@@ -84,7 +84,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     case:
         return
     }
-    if !is_infer(vt) && !buffer_elem_compatible(elem, vt) && !value_preserving_widen(vt, elem) {
+    if !is_infer(vt) && !buffer_elem_compatible(elem, vt) {
         if size >= 0 {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_ELEMENT, type_name(vt), size, type_name(elem))
         } else {

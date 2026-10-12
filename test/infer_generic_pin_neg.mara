@@ -1,0 +1,16 @@
+module infer_generic_pin_neg
+//@ expect-fail: inferred binding 'h' is used at conflicting widths: i64
+
+// A generic's type param bound from a binding no use has given a width yet
+// takes its default width — i64 — and that's the binding's width from there:
+// the i16 use after is a conflict.
+
+t16 :: fun(x: i16) {}
+ident :: fun(x: $T) -> T { return x }
+
+main :: fun() {
+	h := 10
+	w := ident(h)
+	t16(h)
+	print(w)
+}

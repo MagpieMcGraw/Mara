@@ -596,7 +596,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         // (A method's receiver of a distinct struct — `distinct P` — is a P
         // to it: the struct's methods are its too.)
         own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
-        if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
+        if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) {
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))
@@ -625,16 +625,16 @@ tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     tc_settle(k, n, t)
 }
 
-// Every flow is a use of a binding of no written width (infer_constrain): its
-// value into a width, a width written into it, a pointer to it where one to a
-// width goes — wherever the check that let it through didn't count it
-// already (an array literal's element, say; counted twice, it's one use).
+// Every flow is a use of a binding of no written width (unify_infer_concrete):
+// its value into a width, a width written into it, a pointer to it where one
+// to a width goes — wherever the check that let it through didn't count it
+// already (an array literal's element, say).
 tc_flow_use :: proc(k: ^TC, vt, t: Type, span: Span) {
     if coerce_deferred_pointee(k.c, vt, t, span) { return }
     if infer_cell_of(vt) != nil {
         _ = coerce_deferred(k.c, vt, t, span)
     } else if infer_cell_of(t) != nil && !is_infer(resolve_infer(vt)) {
-        _ = coerce_deferred(k.c, t, vt, span, from = true)
+        _ = coerce_deferred(k.c, t, vt, span)
     }
 }
 

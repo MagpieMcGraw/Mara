@@ -67,7 +67,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 // width still open, settled to it.)
                 existing, _, ok := tc_name_write(k, tg, name, env, span)
                 if !ok { return }
-                if !coerce_deferred(k.c, existing, rt, span, from = true) && !is_any(existing) && !is_any(rt) && !types_equal(existing, rt) {
+                if !coerce_deferred(k.c, existing, rt, span) && !is_any(existing) && !is_any(rt) && !types_equal(existing, rt) {
                     tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
             } else {

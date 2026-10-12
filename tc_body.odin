@@ -237,7 +237,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         if to_array && flow == .None {
             // (A fixed array: its elements', and room for them.)
             tc_array_assign(k, span, name, fa, vt, value)
-        } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
+        } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) {
             tc_assign_error(k, span, vt, name, ann, value)
         }
         tc_value_at(k, value, vt, ann, span)
@@ -247,8 +247,9 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         tc_check_write(k, value, vt, existing, name, span)
         return
     } else if is_infer(vt) {
-        // Its width is the one all its uses decide together (infer_constrain).
-        cell := tc_infer_cell(k, name, span, target)
+        // Its width is the one its uses give it (unify_infer_concrete): all the same.
+        cell := new(Infer_Cell)
+        cell.name, cell.span = name, span
         if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
         if _, is_float := vt.(Type_Infer_Float); is_float {
             final = Type_Infer_Float{cell = cell}
@@ -437,8 +438,8 @@ tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (
 tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string, span: Span) {
     tc_no_literal_slice(k, existing, value, span)
     if tc_check_byte_flow(k, existing, value, vt, span) != .None { return }
-    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span, from = true) &&
-       types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+       types_incompatible(existing, vt) {
         tc_assign_error(k, span, vt, name, existing, value)
     }
     tc_value_at(k, value, vt, existing, span)
@@ -563,7 +564,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         k.hint = want
         vt := tc_check(k, val, env)
         if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
-           !types_equal(want, vt) && !value_preserving_widen(vt, want) {
+           !types_equal(want, vt) {
             if expected > 1 {
                 tc_error(k, span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED, i + 1, type_name(vt), type_name(want))
             } else {
@@ -696,8 +697,8 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     k.hint = existing if !is_untyped(existing) else nil
     vt := tc_compound_value(k, s, op_tok, target, value, env)
-    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span, from = true) &&
-       types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+       types_incompatible(existing, vt) {
         tc_assign_error(k, span, vt, name, existing, target, value)
     }
 }

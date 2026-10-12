@@ -4,26 +4,23 @@ use mara.math
 include mara.memory
 
 // A decision that needs a binding's width — which member of a dispatch
-// group, a generic's type, an if's type, how many bytes a byte write takes —
-// met while the binding's uses haven't decided it yet (`n := 0`, used later):
-// made with the width all its uses decide. A dispatch takes the member that
-// width fits closest (dispatch_closest); one member of the binding's kind
-// fits: chosen, and its param a use of the width; more fit: the closest to
-// its decided width, else to its default width. (Before: a single member
-// was chosen but didn't count — `n` stayed an i64 into an i32 param,
-// stopping codegen; several were "ambiguous" even when a later use decided;
-// a generic took i64; an if took an untied width, stopping codegen; a byte
-// write was "untyped".)
+// group, a generic's type, how many bytes a byte write takes — takes the
+// width its uses have given it so far. None yet: its default from there on
+// (a byte write: the untyped error), and a use at another width, before or
+// after in the code, is a conflict (infer_dispatch_pin_neg,
+// infer_generic_pin_neg, infer_byte_write_neg). A dispatch matches exactly:
+// one member of the binding's kind fits: chosen, its param the binding's
+// width; more: the one its width fits, else its default width's. (Before
+// 1169eaa: a single member was chosen but didn't count — `n` stayed an i64
+// into an i32 param, stopping codegen; several were "ambiguous"; a generic
+// took i64 regardless.)
 
 //@ expect-output: one member: 32 4
-//@ expect-output: one member, a wider use: 32 4
-//@ expect-output: two, no use decides: 64 8
-//@ expect-output: two, decided first: 32 4
-//@ expect-output: two, decided later: 32 4
-//@ expect-output: min, no use decides: 0 8
-//@ expect-output: if: 10 2 2
-//@ expect-output: generic: 10 2 2
-//@ expect-output: byte write: 2 10 0
+//@ expect-output: two, no use gives one: 64 8
+//@ expect-output: two, given one before: 32 4
+//@ expect-output: min, no use gives one: 0 8
+//@ expect-output: generic, given one before: 10 2
+//@ expect-output: byte write, given one before: 10 0
 
 show_i32 :: fun(x: i32) -> i64 { return 32 }
 show_i64 :: fun(x: i64) -> i64 { return 64 }
@@ -33,41 +30,28 @@ show1 :: dispatch{ show_i32, show_str }
 
 t16 :: fun(x: i16) {}
 t32 :: fun(x: i32) {}
-t64 :: fun(x: i64) {}
 ident :: fun(x: $T) -> T { return x }
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
 	a := 0
 	print("one member:", show1(a), size_of(a))
-	b := 0
-	print("one member, a wider use:", show1(b), size_of(b))
-	t64(b)
 	c := 0
-	print("two, no use decides:", show2(c), size_of(c))
+	print("two, no use gives one:", show2(c), size_of(c))
 	d := 0
 	t32(d)
-	print("two, decided first:", show2(d), size_of(d))
-	e := 0
-	print("two, decided later:", show2(e), size_of(e))
-	t32(e)
+	print("two, given one before:", show2(d), size_of(d))
 	f := 0
-	print("min, no use decides:", min(f, 3), size_of(f))
-
-	g := 10
-	cond := true
-	v := if cond do g else 0
-	t16(g)
-	print("if:", v, size_of(v), size_of(g))
+	print("min, no use gives one:", min(f, 3), size_of(f))
 
 	h := 10
-	w := ident(h)
 	t16(h)
-	print("generic:", w, size_of(w), size_of(h))
+	w := ident(h)
+	print("generic, given one before:", w, size_of(w))
 
 	m := 10
+	t16(m)
 	buf : [..16]byte
 	buf[0] = m
-	t16(m)
-	print("byte write:", size_of(m), buf[0], buf[1])
+	print("byte write, given one before:", buf[0], buf[1])
 }

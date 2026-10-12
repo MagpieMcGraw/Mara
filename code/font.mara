@@ -1237,7 +1237,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 			if (f & GLYPH_FLAG_X_SAME) == 0 do dx = -dx
 			x += dx
 		elif (f & GLYPH_FLAG_X_SAME) == 0
-			x += read_i16be(glyph_bytes[cursor])
+			x += i32(read_i16be(glyph_bytes[cursor]))
 			cursor += 2
 		}
 		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
@@ -1255,7 +1255,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 			if (f & GLYPH_FLAG_Y_SAME) == 0 do dy = -dy
 			y += dy
 		elif (f & GLYPH_FLAG_Y_SAME) == 0
-			y += read_i16be(glyph_bytes[cursor])
+			y += i32(read_i16be(glyph_bytes[cursor]))
 			cursor += 2
 		}
 		outline.points[i].y = i16(y)
@@ -1663,9 +1663,9 @@ char_glyph :: fun(t: ^TTF, char: u32) -> u16 {
 		id_deltas   := start_codes + seg_x2
 		id_ranges   := id_deltas + seg_x2
 		for s in 0..seg_x2 / 2 {
-			end_code := read_u16be(data[end_codes + s * 2])
+			end_code := u32(read_u16be(data[end_codes + s * 2]))
 			if char <= end_code {
-				start_code := read_u16be(data[start_codes + s * 2])
+				start_code := u32(read_u16be(data[start_codes + s * 2]))
 				if char < start_code do return 0
 				id_delta := read_u16be(data[id_deltas + s * 2])
 				id_range := i64(read_u16be(data[id_ranges + s * 2]))
@@ -1673,7 +1673,7 @@ char_glyph :: fun(t: ^TTF, char: u32) -> u16 {
 					// Direct: (char + idDelta) mod 65536. u16() truncates the
 					// u32 sum to its low 16 bits, which is the modular reduction
 					// the spec wants (idDelta is a u16-encoded signed value).
-					return u16(char + id_delta)
+					return u16(char + u32(id_delta))
 				else
 					addr := id_ranges + s * 2 + id_range + 2 * i64(char - start_code)
 					if addr + 2 > data.len do return 0   // (a broken map: past its end)

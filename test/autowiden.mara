@@ -1,36 +1,51 @@
 module autowiden
 
+// Widening a value is written: a cast — no implicit widening (it was, until
+// the user dropped it: a value goes where its own type goes). The same
+// conversions the implicit kind made, each a cast now: sext, zext, fpext,
+// at an assignment, an argument, a return, a field. (Implicit: autowiden_neg.)
+
+//@ expect-output: b: 100
+//@ expect-output: c: 100
+//@ expect-output: d: 7
+//@ expect-output: e: 200
+//@ expect-output: gg: 1.5
+//@ expect-output: h: 1.5
+//@ expect-output: b2: -3
+//@ expect-output: p: 100 1.5
+
 P :: struct { big: i64, wide: f64 }
 
 takes_i64 :: fun(x: i64) -> i64 { return x }
-widen_ret :: fun(x: i32) -> i64 { return x }      // return widen i32 -> i64
+widen_ret :: fun(x: i32) -> i64 { return i64(x) }   // return: i32 -> i64
 takes_f64 :: fun(x: f64) -> f64 { return x }
 
 main :: fun() {
 	a : i32 = 100
-	b : i64 = a               // assign widen i32 -> i64
-	print("b:", b)            // 100
+	b : i64 = i64(a)               // assignment: i32 -> i64 (sext)
+	print("b:", b)
 
-	c : i64 = takes_i64(a)    // argument widen
-	print("c:", c)            // 100
+	c : i64 = takes_i64(i64(a))    // argument
+	print("c:", c)
 
-	d : i64 = widen_ret(7)    // return widen (inside widen_ret)
-	print("d:", d)            // 7
+	d : i64 = widen_ret(7)
+	print("d:", d)
 
 	u : u8 = 200
-	e : i32 = u               // unsigned -> wider signed (zext), value-preserving
-	print("e:", e)            // 200
+	e : i32 = i32(u)               // unsigned -> wider signed (zext)
+	print("e:", e)
 
 	f : f32 = 1.5
-	gg : f64 = f              // f32 -> f64 (fpext)
-	print("gg:", gg)          // 1.5
+	gg : f64 = f64(f)              // f32 -> f64 (fpext)
+	print("gg:", gg)
 
-	h : f64 = takes_f64(f)    // f32 argument -> f64
-	print("h:", h)            // 1.5
+	h : f64 = takes_f64(f64(f))
+	print("h:", h)
 
-	b = a                     // reassignment widen i32 -> i64
-	print("b2:", b)           // 100
+	a = -3
+	b = i64(a)                     // reassignment, a negative one: sext
+	print("b2:", b)
 
-	p : P = P{big = a, wide = f}   // struct field init widen (i32->i64, f32->f64)
-	print("p:", p.big, p.wide)   // 100 1.5
+	p : P = P{big = 100, wide = f64(f)}   // field init
+	print("p:", p.big, p.wide)
 }

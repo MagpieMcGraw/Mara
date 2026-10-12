@@ -45,10 +45,7 @@ TC :: struct {
     salt:          u64,               // the instance being checked's number (0: none): tc_sid
     salt_lo, salt_hi: Tree_Id,        // its template's body's nodes
     instance_count: u64,
-    infer_cells:   [dynamic]^Infer_Cell,   // each binding's of no written width, as this pass made them
-    pass:          int,               // which check of the program this is (tc_check_program): 1 the first
-    deferred:      bool,              // a decision that needs a binding's width, put off till it's known: check again
-    presolved:     map[Syntax_Id]Type,     // a later pass's: each one's width, as the pass before decided it (tc_check_program)
+    infer_at:      Span,              // the argument a generic's type param is bound from (tc_generic_call)
     templates:     map[string]TC_Template,   // the generic definitions, by name
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
     const_owners:  map[string]string,        // each bare name's module ("": more than one)
@@ -196,8 +193,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
-                         lower := true, presolved: map[Syntax_Id]Type = nil, pass := 1) -> ^Checked_Program {
-    diagnostics_from := diagnostics_mark()
+                         lower := true) -> ^Checked_Program {
     table := new(SymbolTable)
     main_mod := new(Type_Scope)
     main_mod.name = main_package
@@ -214,7 +210,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert, presolved = presolved, pass = pass}
+    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
     k.annot = annot_new(t)
     checked.annot = k.annot
 
@@ -289,18 +285,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_event(k, {kind = .Program_Struct})
     tc_validate_allocator(k)
     tc_validate_main(k, main)
-
-    // A binding's width that moved after a decision read it (an operation's
-    // type, a generic's instance), one assumed while it had none, or a
-    // decision put off till it's known (a dispatch's pick, a byte write): the
-    // program checked again from the start, each binding's width known
-    // before its uses — the one the pass before decided from all of them —
-    // until none moves. (Errors too: a choice made for now may have made
-    // them; real ones come again.)
-    if pass < INFER_PASSES && (k.deferred || tc_infer_stale(k)) {
-        diagnostics_rewind(diagnostics_from)
-        return tc_check_program(t, modules, main_package, shared, web, target_os, analysis_only, no_assert, perf, lower, tc_infer_widths(k), pass + 1)
-    }
 
     // (lower false: the annotations are all that's wanted — mara lsp's.)
     if c.errors == 0 && lower {
@@ -858,38 +842,19 @@ tc_is_definition :: proc(tag: Tree_Tag) -> bool {
     return false
 }
 
-INFER_PASSES :: 4   // checks of a program at most: the first, and again while a width moves
-
-// A binding's cell (`n := 0`, a param's whole-number default): kept for the
-// pass's end; in a later pass, its width the one the pass before decided.
-tc_infer_cell :: proc(k: ^TC, name: string, span: Span, at: Tree_Id) -> ^Infer_Cell {
-    cell := new(Infer_Cell)
-    cell.name, cell.span, cell.sid = name, span, tc_sid(k, at)
-    if w, ok := k.presolved[cell.sid]; ok { cell.resolved, cell.resolved_span, cell.fixed = w, span, true }
-    append(&k.infer_cells, cell)
-    return cell
-}
-
-// Whether a binding's width moved after a decision read it.
-tc_infer_stale :: proc(k: ^TC) -> bool {
-    for cell in k.infer_cells {
-        if infer_stale(cell) { return true }
-    }
-    return false
-}
-
-// A binding whose uses haven't decided its width yet (`n := 0`, so far).
+// A binding whose uses haven't given it a width yet (`n := 0`, so far).
 tc_open_binding :: proc(t: Type) -> bool {
     return infer_cell_of(t) != nil && is_infer(t)
 }
 
-// Each binding's width, as this pass decided it.
-tc_infer_widths :: proc(k: ^TC) -> map[Syntax_Id]Type {
-    widths := make(map[Syntax_Id]Type)
-    for cell in k.infer_cells {
-        if r := infer_root(cell); r.resolved != nil { widths[cell.sid] = r.resolved }
-    }
-    return widths
+// A decision that needs a width, met by a binding no use has given one yet
+// (a generic's type param, a byte view's size, a dispatch's member): the
+// binding's default from here on — any other use, after or before in the
+// code, a conflict. The width, solid.
+tc_pin_default :: proc(k: ^TC, t: Type, span: Span) -> Type {
+    w := solidify_type(t)
+    if tc_open_binding(t) { unify_infer_concrete(k.c, infer_cell_of(t), w, span) }
+    return w
 }
 
 // A param's type: as written; else its default's — a whole number's width
@@ -909,7 +874,9 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
     }
     if k.t.tag[def] == .Number {
         if strings.index_byte(tc_text(k.t.main[def]), '.') >= 0 { return Type_F64{} }
-        return Type_Infer_Int{cell = tc_infer_cell(k, name, span, def)}
+        cell := new(Infer_Cell)
+        cell.name, cell.span = name, span
+        return Type_Infer_Int{cell = cell}
     }
     return solidify_type(tc_check(k, def, env))
 }

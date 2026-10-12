@@ -1,0 +1,14 @@
+module inferconflict_other_order
+//@ expect-fail: inferred binding 'n' is used at conflicting widths: i16
+
+// inferconflict the other way round: the same conflict — the order of a
+// binding's uses changes nothing.
+
+take_i32 :: fun(x: i32) {}
+take_i16 :: fun(x: i16) {}
+
+main :: fun() {
+	n := 5
+	take_i16(n)
+	take_i32(n)
+}

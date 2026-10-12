@@ -1,20 +1,15 @@
 module inferconflict
+//@ expect-fail: inferred binding 'n' is used at conflicting widths: i32
 
-// `n := 5` used where an i32 goes, then where an i16 goes: once a hard
-// error ("conflicting widths" — the first use pinned i32, and i32 can't
-// narrow to i16). Now a binding's width is the one all its uses decide
-// together, in any order: the narrowest that each takes, i16 here, which
-// widens into the i32. Nothing narrows. (A real conflict, two widths no one
-// width serves: infer_conflict_neg.)
+// `n := 5` used where an i32 goes, then where an i16 goes: one binding, one
+// width — and no widening to reconcile two. A conflict, whichever use comes
+// first; annotate it, or cast at a use.
 
-//@ expect-output: n is 2 bytes: 5 5
-
-take_i32 :: fun(x: i32) -> i32 { return x }
-take_i16 :: fun(x: i16) -> i16 { return x }
+take_i32 :: fun(x: i32) {}
+take_i16 :: fun(x: i16) {}
 
 main :: fun() {
 	n := 5
-	a := take_i32(n)   // (an i16 widened)
-	b := take_i16(n)
-	print("n is % bytes: % %", size_of(n), a, b)
+	take_i32(n)
+	take_i16(n)
 }

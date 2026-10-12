@@ -216,7 +216,7 @@ draw_state_render :: fun(state: ^DrawState) {
 	    // (the append operator maintains it). No second counter to fall out of sync.
 	    count := batch.instances.len
 	    if count == 0 do continue
-	    if batch.mesh_id not in 0..vao_info.mesh_count do continue
+	    if batch.mesh_id not in 0..i64(vao_info.mesh_count) do continue
 	    if state.command_count > 255 do break
 	    mesh := vao_info.meshes[batch.mesh_id]
 	    state.commands[state.command_count] = DrawCommand{

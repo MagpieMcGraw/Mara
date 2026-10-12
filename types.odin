@@ -998,8 +998,10 @@ numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
     return 0, .Signed, false
 }
 
-// True when a value of type `from` converts to `to` with NO loss — the rule
-// for implicit widening (everything else stays an explicit cast). Same-kind
+// True when a value of type `from` converts to `to` with NO loss — what a
+// count, a bound or an index takes into the slice header's width
+// (coerces_to_index_width); a value going anywhere else is its own type or an
+// explicit cast — no implicit widening (a73f20b and before had it). Same-kind
 // only: int→int and float→float. int↔float is always explicit (its lossless
 // cases are a precision table, not a rule). The integer test is value-
 // preserving, which is about representable range, not just bit width:
@@ -1025,8 +1027,8 @@ value_preserving_widen :: proc(from: Type, to: Type) -> bool {
 }
 
 // The smallest numeric type that represents EVERY value of both a and b — the
-// common type for value-preserving operand mixing in binary ops. (nil,false)
-// when none exists, so the op stays an explicit cast. Same-kind → the wider;
+// width lowering compares two operands at (graph_work; the checker makes them
+// one type: no mixing). (nil,false) when none exists. Same-kind → the wider;
 // cross-sign → a SIGNED type wide enough for the unsigned operand's range and
 // the signed operand (u32 vs i32 → i64; i64 vs u64 → none); int↔float → none.
 // Two-sided analogue of value_preserving_widen, and the rule that keeps mixed
@@ -1518,17 +1520,8 @@ is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
-    // (A binding of no width yet given its default: a decision that assumes
-    // it — a generic's type, a byte view's size — checked again if its uses
-    // decide another, tc_infer_stale.)
-    if _, ok := rt.(Type_Infer_Int); ok {
-        if cell := infer_cell_of(t); cell != nil { infer_assume(cell, Type_Numeric{kind = .Signed, bits = 64}) }
-        return Type_Numeric{kind = .Signed, bits = 64}
-    }
-    if _, ok := rt.(Type_Infer_Float); ok {
-        if cell := infer_cell_of(t); cell != nil { infer_assume(cell, Type_F64{}) }
-        return Type_F64{}
-    }
+    if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
+    if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
     // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
     // needs a width — the elements' default.
     if fa, ok := rt.(^Type_Fixed_Array); ok && is_infer(fa.elem) {
@@ -1542,45 +1535,25 @@ solidify_type :: proc(t: Type) -> Type {
 // ---------------------------------------------------------------------------
 // A `:=` binding whose initializer is an untyped literal/const no longer
 // solidifies to i64 at the declaration. It gets a fresh Infer_Cell; its width
-// is the one all its uses decide together, in any order (infer_constrain) —
-// every place it meets a width: arithmetic against a sized operand, an
-// argument, an assignment either way, a return, a field, an array literal's
-// element, a pointer to it. Decided as the uses come; one that moves after a
-// decision read it (an operation's type, say) has the program checked again
-// with every width known first (tc_check_program) — the separate pass, only
-// when needed. No use at all → i64/f64 at codegen. Two bindings
-// combined in arithmetic are union-find linked so they resolve together. Uses
-// no one width serves (a u8 and an i8; a write of an i64 where it goes into an
-// i32) are a hard error asking for an explicit annotation (no silent
-// narrowing). Literals and constant references stay ANONYMOUS (nil cell):
-// each use adopts its own context independently — only a named binding
-// carries a cell, since only it has one storage slot.
+// is the one its uses give it — every place it meets a width: arithmetic
+// against a sized operand, an argument, an assignment either way, a return, a
+// field, an array literal's element, a pointer to it, a dispatch member's
+// param. All the same width: Roc's way, a use is a fact, and two that
+// disagree are a conflict whichever comes first — the order of the uses
+// changes nothing (there is no widening: a value is its type, or a cast).
+// No use at all → i64/f64 at codegen. A decision that needs the width before
+// any use gave one (a generic's type, a byte view's size, which member of a
+// dispatch group) gives it its default then (tc_pin_default). Two bindings
+// combined in arithmetic are union-find linked: one width. Literals and
+// constant references stay ANONYMOUS (nil cell): each use adopts its own
+// context independently — only a named binding carries a cell, since only it
+// has one storage slot.
 Infer_Cell :: struct {
-    resolved:      Type,        // the width its uses so far decide (infer_solve); nil while none has
-    resolved_span: Span,        // the use that named it
+    resolved:      Type,        // its width, once a use gave it; nil while none has
+    resolved_span: Span,        // the use that did — for the conflict diagnostic
     link:          ^Infer_Cell, // union-find parent; nil at the root
     name:          string,      // binding name — for the conflict diagnostic
     span:          Span,        // binding decl site — for the conflict diagnostic
-    uses:          [dynamic]Infer_Use,   // (at the root) every use's demand on the width, in order
-    sid:           Syntax_Id,   // the binding, as the checker keys nodes: its width found again in a later pass
-    fixed:         bool,        // its width known before its uses (a later pass: tc_check_program) — kept while each use takes it
-    read:          bool,        // a decision read its width (resolve_infer)
-    stale:         bool,        // ... and it moved after: what read it, checked again (tc_check_program)
-    assumed:       Type,        // the width a decision took while it had none: its default (solidify_type)
-}
-
-// How a use of a binding of no written width bears on its width W.
-Infer_Use_Kind :: enum u8 {
-    Into,    // its value goes where a T goes: W is T, or widens into it
-    From,    // a T is written into it: T is W, or widens into it
-    Exact,   // a pointer to it goes where a ^T goes: W is T
-    Arith,   // an operand beside a T: W and T have a common type
-}
-
-Infer_Use :: struct {
-    kind: Infer_Use_Kind,
-    t:    Type,
-    span: Span,
 }
 
 infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
@@ -1606,150 +1579,55 @@ resolve_infer :: proc(t: Type) -> Type {
     cell := infer_cell_of(t)
     if cell == nil { return t }
     r := infer_root(cell)
-    if r.resolved != nil {
-        r.read = true
-        return resolve_infer(r.resolved)
-    }
+    if r.resolved != nil { return resolve_infer(r.resolved) }
     return t
 }
 
-// A binding of no written width (`n := 0`) takes the width all its uses
-// decide together, in any order (Roc's way: every use counts, none first),
-// with Mara's widening: the narrowest of the widths the uses name that each
-// of them takes (infer_takes). Each use is kept and the width decided again
-// from all so far; one that no width shares with the rest is a conflict,
-// reported with a use it can't share one with, and not kept — the width
-// stays what the others decide. (A target of no width yet decides nothing.)
-infer_constrain :: proc(c: ^Checker, cell: ^Infer_Cell, kind: Infer_Use_Kind, target: Type, span: Span) {
+// A use of a binding of no written width at a width: the first gives it its
+// width; any other must be that one — a conflict otherwise, whichever came
+// first. (A target of no width yet gives nothing.)
+unify_infer_concrete :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span: Span) {
     tgt := resolve_infer(target)
     if is_infer(tgt) { return }
     r := infer_root(cell)
-    for u in r.uses {
-        if u.kind == kind && u.span == span && types_equal(u.t, tgt) && types_equal(tgt, u.t) { return }   // (seen: one flow, two checks)
+    if r.resolved == nil {
+        r.resolved, r.resolved_span = tgt, span
+        return
     }
-    use := Infer_Use{kind, tgt, span}
-    append(&r.uses, use)
-    // (Its width known in advance: kept while each use takes it.)
-    if r.fixed {
-        if infer_takes([]Infer_Use{use}, r.resolved) { return }
-        r.fixed = false
+    if infer_same(r.resolved, tgt) { return }
+    if c != nil {
+        check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
+            r.name, type_name(r.resolved), span_loc(r.resolved_span), type_name(tgt), span_loc(span))
     }
-    if infer_solve(r) { return }
-    pop(&r.uses)
-    if c == nil { return }
-    // (A use it can't share a width with, alone: else the first.)
-    other := r.uses[0] if len(r.uses) > 0 else use
-    for u in r.uses {
-        pair := []Infer_Use{u, use}
-        if !infer_takes(pair, u.t) && !infer_takes(pair, use.t) {
-            other = u
-            break
-        }
-    }
-    check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, type_name(other.t), span_loc(other.span), type_name(tgt), span_loc(span))
-}
-
-// The width the uses decide: of the widths they name, the narrowest every
-// use takes (the first named, among equally narrow ones). False — and the
-// width as it was — when none does.
-@(private="file")
-infer_solve :: proc(r: ^Infer_Cell) -> bool {
-    best: Type
-    best_span: Span
-    for u in r.uses {
-        if best != nil && !infer_narrower(u.t, best) { continue }
-        if infer_takes(r.uses[:], u.t) { best, best_span = u.t, u.span }
-    }
-    if best == nil { return len(r.uses) == 0 }
-    if r.read && r.resolved != nil && !infer_same(best, r.resolved) { r.stale = true }
-    r.resolved, r.resolved_span = best, best_span
-    return true
 }
 
 infer_same :: proc(a, b: Type) -> bool {
     return types_equal(a, b) && types_equal(b, a)
 }
 
-// A decision taking width w for a binding that has none yet.
-infer_assume :: proc(cell: ^Infer_Cell, w: Type) {
-    r := infer_root(cell)
-    if r.assumed == nil { r.assumed = w }
-}
-
-// Whether a decision read or assumed a binding's width that its uses then
-// decided otherwise.
-infer_stale :: proc(cell: ^Infer_Cell) -> bool {
-    r := infer_root(cell)
-    return cell.stale || r.stale || r.assumed != nil && r.resolved != nil && !infer_same(r.resolved, r.assumed)
-}
-
-// Whether width w meets every use's demand.
-infer_takes :: proc(uses: []Infer_Use, w: Type) -> bool {
-    for u in uses {
-        same := types_equal(w, u.t)
-        switch u.kind {
-        case .Into:  if !same && !value_preserving_widen(w, u.t) { return false }
-        case .From:  if !same && !value_preserving_widen(u.t, w) { return false }
-        case .Exact: if !same { return false }
-        case .Arith:
-            if !same {
-                if _, ok := common_numeric_type(w, u.t); !ok { return false }
-            }
-        }
-    }
-    return true
-}
-
-@(private="file")
-infer_narrower :: proc(a, b: Type) -> bool {
-    ab, _, aok := numeric_info(a)
-    bb, _, bok := numeric_info(b)
-    return aok && bok && ab < bb
-}
-
 // Two bindings of no written width that must share one (`m := n`, `a + b`):
-// one cell, its uses both's, the width decided from all (a width known in
-// advance, either's, kept while they all take it). None takes them all: a
-// conflict, and b's uses kept apart again.
+// one cell — when both have a width already, the same one.
 unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Span) {
     ra := infer_root(a); rb := infer_root(b)
     if ra == rb { return }
-    had := len(ra.uses)
-    for u in rb.uses { append(&ra.uses, u) }
-    known: Type
-    if ra.fixed { known = ra.resolved } else if rb.fixed { known = rb.resolved }
-    if known != nil && infer_takes(ra.uses[:], known) {
-        ra.resolved, ra.fixed = known, true
-        ra.read = ra.read || rb.read
-        if ra.assumed == nil { ra.assumed = rb.assumed }
-        rb.link = ra
+    if ra.resolved != nil && rb.resolved != nil && !infer_same(ra.resolved, rb.resolved) {
+        if c != nil {
+            check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
+                ra.name, type_name(ra.resolved), span_loc(ra.resolved_span),
+                type_name(rb.resolved), span_loc(rb.resolved_span))
+        }
         return
     }
-    ra.fixed = false
-    if infer_solve(ra) {
-        if rb.read && rb.resolved != nil && !infer_same(rb.resolved, ra.resolved) { ra.stale = true }
-        ra.read = ra.read || rb.read
-        ra.stale = ra.stale || rb.stale
-        if ra.assumed == nil { ra.assumed = rb.assumed }
-        rb.link = ra
-        return
-    }
-    resize(&ra.uses, had)
-    if c != nil && ra.resolved != nil && rb.resolved != nil {
-        check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
-            ra.name, type_name(ra.resolved), span_loc(ra.resolved_span),
-            type_name(rb.resolved), span_loc(rb.resolved_span))
-    }
+    if rb.resolved != nil { ra.link = rb } else { rb.link = ra }
 }
 
-// At a site where `val` flows into a concrete `target` (argument, assignment,
-// field init, return) — or, `from`, a binding `val` is written a `target`: if
-// val is a deferred binding whose family matches the target's (int→int,
-// float→float), the flow is a use of it (infer_constrain) and handled, so the
-// caller skips its normal compat check (the use owns the diagnostic).
-// Anonymous infers, concretes, and cross-family (int↔float) return false so the
-// normal check still runs.
-coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span, from := false) -> bool {
+// At a site where `val` meets a concrete `target` (argument, assignment either
+// way, field init, return): if val is a deferred binding whose family matches
+// the target's (int→int, float→float), the meeting is a use of it at that
+// width (unify_infer_concrete) and handled, so the caller skips its normal
+// compat check (the use owns the diagnostic). Anonymous infers, concretes,
+// and cross-family (int↔float) return false so the normal check still runs.
+coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
     if _, is_ptr := val.(^Type_Ptr); is_ptr { return coerce_deferred_pointee(c, val, target, span) }
     cell := infer_cell_of(val)
     if cell == nil { return false }
@@ -1758,13 +1636,12 @@ coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span, from :
     if !tok { return false }
     _, is_float_infer := val.(Type_Infer_Float)
     if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
-    infer_constrain(c, cell, .From if from else .Into, tgt, span)
+    unify_infer_concrete(c, cell, tgt, span)
     return true
 }
 
-// A pointer to a number whose width isn't decided yet, where a pointer to a
-// number goes (`n := 0; f(&n)`, f taking ^i32): a use that takes that width
-// exactly — through a pointer a width can't widen (infer_constrain). Whether
+// A pointer to a binding whose width isn't given yet, where a pointer to a
+// number goes (`n := 0; f(&n)`, f taking ^i32): a use at that width. Whether
 // it was such a use.
 coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
     vp, is_ptr := val.(^Type_Ptr)
@@ -1777,7 +1654,7 @@ coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span
     if !tok { return false }
     _, is_float_infer := vp.elem.(Type_Infer_Float)
     if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
-    infer_constrain(c, cell, .Exact, tgt, span)
+    unify_infer_concrete(c, cell, tgt, span)
     return true
 }
 
@@ -1961,7 +1838,7 @@ variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
 // codegen. Without this, `c : u8 = 200 + 100` would type-check as Type_Infer_Int
 // and codegen would default to signed arithmetic — wrong overflow semantics.
 // If the infer carries a binding cell (a `:=` local or a deferred default param),
-// the hint is a use of the cell as well (infer_constrain) — otherwise the binding
+// the hint is a use of the cell as well (unify_infer_concrete) — otherwise the binding
 // may stay open and later solidify to i64, disagreeing with the width the hint
 // forced here (for a param that surfaced as a signature-i64-vs-body-i32 mismatch
 // → bad IR). The use mirrors coerce_deferred at a direct decl/arg/return; this
@@ -1969,13 +1846,13 @@ variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
 coerce_infer_to_hint :: proc(c: ^Checker, t, hint: Type, span: Span) -> Type {
     if _, ok := t.(Type_Infer_Int); ok {
         if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind != .Float {
-            if cell := infer_cell_of(t); cell != nil { infer_constrain(c, cell, .Into, hint, span) }
+            if cell := infer_cell_of(t); cell != nil { unify_infer_concrete(c, cell, hint, span) }
             return hint
         }
     }
     if _, ok := t.(Type_Infer_Float); ok {
         if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind == .Float {
-            if cell := infer_cell_of(t); cell != nil { infer_constrain(c, cell, .Into, hint, span) }
+            if cell := infer_cell_of(t); cell != nil { unify_infer_concrete(c, cell, hint, span) }
             return hint
         }
     }
@@ -2006,26 +1883,16 @@ try_promote_numeric :: proc(a: Type, b: Type) -> Type {
     if is_any(a) || is_any(b) { return Type_Error{} }
 
     if types_equal(a, b) { return a }
-
-    // Value-preserving operand mixing: widen both to the smallest type that
-    // holds every value of both (i32 vs i64 → i64, i32 vs u32 → i64). No such
-    // type (i64 vs u64, int vs float) → Type_Error → explicit cast required.
-    if common, ok := common_numeric_type(a, b); ok { return common }
-
-    return Type_Error{}
+    return Type_Error{}   // (two widths: a cast says which)
 }
 
 promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
-    // Deferred-inference aware: a binding meeting a sized operand is a use of
-    // it (`.Arith`); two open bindings are union-linked so they co-resolve.
-    // ca/cb are the raw cells (nil for anonymous/concrete); a_open / b_open ask
-    // whether each side is still unbound after resolution.
+    // Deferred-inference aware: an open binding meeting a sized operand is a
+    // use of it at that width; two open bindings are union-linked so they
+    // co-resolve. ca/cb are the raw cells (nil for anonymous/concrete); a_open
+    // / b_open ask whether each side is still unbound after resolution.
     ca := infer_cell_of(a)
     cb := infer_cell_of(b)
-    // (A binding's operand beside one of a width — the binding's decided or
-    // not: a use, `.Arith`. Two open ones: one width for both.)
-    if ca != nil && !is_infer(resolve_infer(b)) { infer_constrain(c, ca, .Arith, b, span) }
-    if cb != nil && !is_infer(resolve_infer(a)) { infer_constrain(c, cb, .Arith, a, span) }
     ra := resolve_infer(a)
     rb := resolve_infer(b)
     a_open := is_infer(ra)
@@ -2036,8 +1903,14 @@ promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
         if cb != nil { return b }
         return ra
     }
-    if a_open { return rb }
-    if b_open { return ra }
+    if a_open {
+        if ca != nil { unify_infer_concrete(c, ca, rb, span) }
+        return rb
+    }
+    if b_open {
+        if cb != nil { unify_infer_concrete(c, cb, ra, span) }
+        return ra
+    }
     result := try_promote_numeric(ra, rb)
     if _, ok := result.(Type_Error); ok && !is_any(ra) && !is_any(rb) {
         check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT,

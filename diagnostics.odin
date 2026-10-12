@@ -54,16 +54,6 @@ reset_diagnostics :: proc() {
     g_diagnostics = {}
 }
 
-// Where the queue is now — and back to it: what a check queued, dropped, as
-// when the check is done again from the start (tc_check_program's passes).
-diagnostics_mark :: proc() -> int {
-    return len(g_diagnostics)
-}
-
-diagnostics_rewind :: proc(mark: int) {
-    if mark <= len(g_diagnostics) { resize(&g_diagnostics, mark) }
-}
-
 // Queue one diagnostic. msg + args are formatted now (so the args
 // don't have to outlive the call); the resulting string lives until
 // flush. Order at flush time is the order emitted.

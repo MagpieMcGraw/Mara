@@ -178,7 +178,7 @@ vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
     state.meshes[mesh_index] = mesh
     state.mesh_count += 1
 
-    return mesh_index
+    return i64(mesh_index)
 }
 
 // Reset VAO state for reloading - clears offsets and mesh list but keeps GL resources
