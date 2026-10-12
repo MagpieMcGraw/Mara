@@ -1,0 +1,13 @@
+module infer_byte_write_neg
+//@ expect-fail: writing an untyped number into a byte buffer has no defined width
+
+// A byte write takes as many bytes as the value's width: a binding whose
+// uses decide one writes that many (infer_open_decisions), but one no use
+// decides has no width to write — as an untyped number hasn't. Cast it.
+
+main :: fun() {
+	n := 10
+	buf : [..16]byte
+	buf[0] = n
+	print(buf[0])
+}

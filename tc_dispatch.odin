@@ -6,6 +6,15 @@ import "core:strings"
 // calls the one function of the group its argument types fit; `a + b` with
 // an operand no number calls the best fit of the groups `overload +` names.
 
+// Whether a binding of no written width (an int's or a float's) can take a
+// param's type: a number of its kind.
+tc_binding_kind_fits :: proc(t, param: Type) -> bool {
+    _, pk, ok := numeric_info(resolve_infer(param))
+    if !ok { return false }
+    _, is_float := t.(Type_Infer_Float)
+    return is_float == (pk == .Float)
+}
+
 // `f(args)` where f is a dispatch group: each argument checked, the one
 // member they fit chosen, then the call.
 tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]string, args: []Tree_Id,
@@ -34,9 +43,50 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
                 continue
             }
             if types_incompatible(ft.params[i].type_, at) { continue candidates }
+            // (A binding of no width yet fits a param of its kind only: a whole
+            // number's no float.)
+            if tc_open_binding(at) && !tc_binding_kind_fits(at, ft.params[i].type_) { continue candidates }
         }
         append(&matched, f)
         append(&matched_fts, ft)
+    }
+    // A binding among the arguments whose uses haven't decided its width
+    // yet (`n := 0; f(n)`), and more than one member fits it: in a first
+    // pass, the one its default width would choose, for now, and the
+    // program checked again once every width is known (TC.deferred); after
+    // that — no use decided it — the one its default width chooses.
+    open_args := false
+    for at, i in arg_types { if !underscore[i] && tc_open_binding(at) { open_args = true } }
+    provisional := false
+    if open_args && len(matched) > 1 {
+        by_default := make([dynamic]string, context.temp_allocator)
+        by_default_fts := make([dynamic]^Type_Scope, context.temp_allocator)
+        defaults: for f, m in matched {
+            for at, i in arg_types {
+                if underscore[i] || !tc_open_binding(at) { continue }
+                if !infer_same(matched_fts[m].params[i].type_, solidify_type(at)) { continue defaults }
+            }
+            append(&by_default, f)
+            append(&by_default_fts, matched_fts[m])
+        }
+        if k.pass == 1 {
+            k.deferred = true
+            provisional = true
+            pick := 0
+            if len(by_default) > 0 {
+                for f, m in matched { if f == by_default[0] { pick = m } }
+            }
+            first, first_ft := matched[pick], matched_fts[pick]
+            clear(&matched)
+            clear(&matched_fts)
+            append(&matched, first)
+            append(&matched_fts, first_ft)
+        } else if len(by_default) > 0 {
+            clear(&matched)
+            clear(&matched_fts)
+            append(&matched, ..by_default[:])
+            append(&matched_fts, ..by_default_fts[:])
+        }
     }
     if len(matched) == 0 {
         names := make([dynamic]string, context.temp_allocator)
@@ -49,6 +99,16 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
         return Type_Error{}
     }
     ft := matched_fts[0]
+    // (A binding's argument: the member's param a use of its width, exactly
+    // — a dispatch matches exactly. Not for a choice made for now.)
+    if !provisional {
+        for at, i in arg_types {
+            if underscore[i] || i >= len(ft.params) { continue }
+            if cell := infer_cell_of(at); cell != nil && tc_binding_kind_fits(at, ft.params[i].type_) {
+                infer_constrain(k.c, cell, .Exact, ft.params[i].type_, span)
+            }
+        }
+    }
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
     k.annot.forms[tc_sid(k, n)] = .Dispatch

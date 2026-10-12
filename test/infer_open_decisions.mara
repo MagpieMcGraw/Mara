@@ -1,0 +1,72 @@
+module infer_open_decisions
+
+use mara.math
+include mara.memory
+
+// A decision that needs a binding's width — which member of a dispatch
+// group, a generic's type, an if's type, how many bytes a byte write takes —
+// met while the binding's uses haven't decided it yet (`n := 0`, used later):
+// made with the width all its uses decide. A dispatch matches exactly; one
+// member of the binding's kind fits: chosen, and its param decides the
+// width; more fit: the one its decided width matches, else its default
+// width's. (Before: a single member was chosen but didn't count — `n` stayed
+// an i64 into an i32 param, stopping codegen; several were "ambiguous" even
+// when a later use decided; a generic took i64; an if took an untied width,
+// stopping codegen; a byte write was "untyped".)
+
+//@ expect-output: one member: 32 4
+//@ expect-output: one member, a wider use: 32 4
+//@ expect-output: two, no use decides: 64 8
+//@ expect-output: two, decided first: 32 4
+//@ expect-output: two, decided later: 32 4
+//@ expect-output: min, no use decides: 0 8
+//@ expect-output: if: 10 2 2
+//@ expect-output: generic: 10 2 2
+//@ expect-output: byte write: 2 10 0
+
+show_i32 :: fun(x: i32) -> i64 { return 32 }
+show_i64 :: fun(x: i64) -> i64 { return 64 }
+show_str :: fun(x: []utf8) -> i64 { return 0 }
+show2 :: dispatch{ show_i32, show_i64 }
+show1 :: dispatch{ show_i32, show_str }
+
+t16 :: fun(x: i16) {}
+t32 :: fun(x: i32) {}
+t64 :: fun(x: i64) {}
+ident :: fun(x: $T) -> T { return x }
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	a := 0
+	print("one member:", show1(a), size_of(a))
+	b := 0
+	print("one member, a wider use:", show1(b), size_of(b))
+	t64(b)
+	c := 0
+	print("two, no use decides:", show2(c), size_of(c))
+	d := 0
+	t32(d)
+	print("two, decided first:", show2(d), size_of(d))
+	e := 0
+	print("two, decided later:", show2(e), size_of(e))
+	t32(e)
+	f := 0
+	print("min, no use decides:", min(f, 3), size_of(f))
+
+	g := 10
+	cond := true
+	v := if cond do g else 0
+	t16(g)
+	print("if:", v, size_of(v), size_of(g))
+
+	h := 10
+	w := ident(h)
+	t16(h)
+	print("generic:", w, size_of(w), size_of(h))
+
+	m := 10
+	buf : [..16]byte
+	buf[0] = m
+	t16(m)
+	print("byte write:", size_of(m), buf[0], buf[1])
+}

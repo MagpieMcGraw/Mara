@@ -46,6 +46,8 @@ TC :: struct {
     salt_lo, salt_hi: Tree_Id,        // its template's body's nodes
     instance_count: u64,
     infer_cells:   [dynamic]^Infer_Cell,   // each binding's of no written width, as this pass made them
+    pass:          int,               // which check of the program this is (tc_check_program): 1 the first
+    deferred:      bool,              // a decision that needs a binding's width, put off till it's known: check again
     presolved:     map[Syntax_Id]Type,     // a later pass's: each one's width, as the pass before decided it (tc_check_program)
     templates:     map[string]TC_Template,   // the generic definitions, by name
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
@@ -212,7 +214,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert, presolved = presolved}
+    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert, presolved = presolved, pass = pass}
     k.annot = annot_new(t)
     checked.annot = k.annot
 
@@ -289,10 +291,13 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_main(k, main)
 
     // A binding's width that moved after a decision read it (an operation's
-    // type, a dispatch's pick, a generic's instance): the program checked
-    // again from the start, each binding's width known before its uses — the
-    // one the pass before decided from all of them — until none moves.
-    if c.errors == 0 && pass < INFER_PASSES && tc_infer_stale(k) {
+    // type, a generic's instance), one assumed while it had none, or a
+    // decision put off till it's known (a dispatch's pick, a byte write): the
+    // program checked again from the start, each binding's width known
+    // before its uses — the one the pass before decided from all of them —
+    // until none moves. (Errors too: a choice made for now may have made
+    // them; real ones come again.)
+    if pass < INFER_PASSES && (k.deferred || tc_infer_stale(k)) {
         diagnostics_rewind(diagnostics_from)
         return tc_check_program(t, modules, main_package, shared, web, target_os, analysis_only, no_assert, perf, lower, tc_infer_widths(k), pass + 1)
     }
@@ -868,9 +873,14 @@ tc_infer_cell :: proc(k: ^TC, name: string, span: Span, at: Tree_Id) -> ^Infer_C
 // Whether a binding's width moved after a decision read it.
 tc_infer_stale :: proc(k: ^TC) -> bool {
     for cell in k.infer_cells {
-        if cell.stale || infer_root(cell).stale { return true }
+        if infer_stale(cell) { return true }
     }
     return false
+}
+
+// A binding whose uses haven't decided its width yet (`n := 0`, so far).
+tc_open_binding :: proc(t: Type) -> bool {
+    return infer_cell_of(t) != nil && is_infer(t)
 }
 
 // Each binding's width, as this pass decided it.

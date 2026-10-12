@@ -1518,8 +1518,17 @@ is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
-    if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
-    if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
+    // (A binding of no width yet given its default: a decision that assumes
+    // it — a generic's type, a byte view's size — checked again if its uses
+    // decide another, tc_infer_stale.)
+    if _, ok := rt.(Type_Infer_Int); ok {
+        if cell := infer_cell_of(t); cell != nil { infer_assume(cell, Type_Numeric{kind = .Signed, bits = 64}) }
+        return Type_Numeric{kind = .Signed, bits = 64}
+    }
+    if _, ok := rt.(Type_Infer_Float); ok {
+        if cell := infer_cell_of(t); cell != nil { infer_assume(cell, Type_F64{}) }
+        return Type_F64{}
+    }
     // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
     // needs a width — the elements' default.
     if fa, ok := rt.(^Type_Fixed_Array); ok && is_infer(fa.elem) {
@@ -1557,6 +1566,7 @@ Infer_Cell :: struct {
     fixed:         bool,        // its width known before its uses (a later pass: tc_check_program) — kept while each use takes it
     read:          bool,        // a decision read its width (resolve_infer)
     stale:         bool,        // ... and it moved after: what read it, checked again (tc_check_program)
+    assumed:       Type,        // the width a decision took while it had none: its default (solidify_type)
 }
 
 // How a use of a binding of no written width bears on its width W.
@@ -1656,9 +1666,21 @@ infer_solve :: proc(r: ^Infer_Cell) -> bool {
     return true
 }
 
-@(private="file")
 infer_same :: proc(a, b: Type) -> bool {
     return types_equal(a, b) && types_equal(b, a)
+}
+
+// A decision taking width w for a binding that has none yet.
+infer_assume :: proc(cell: ^Infer_Cell, w: Type) {
+    r := infer_root(cell)
+    if r.assumed == nil { r.assumed = w }
+}
+
+// Whether a decision read or assumed a binding's width that its uses then
+// decided otherwise.
+infer_stale :: proc(cell: ^Infer_Cell) -> bool {
+    r := infer_root(cell)
+    return cell.stale || r.stale || r.assumed != nil && r.resolved != nil && !infer_same(r.resolved, r.assumed)
 }
 
 // Whether width w meets every use's demand.
@@ -1699,6 +1721,7 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
     if known != nil && infer_takes(ra.uses[:], known) {
         ra.resolved, ra.fixed = known, true
         ra.read = ra.read || rb.read
+        if ra.assumed == nil { ra.assumed = rb.assumed }
         rb.link = ra
         return
     }
@@ -1707,6 +1730,7 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
         if rb.read && rb.resolved != nil && !infer_same(rb.resolved, ra.resolved) { ra.stale = true }
         ra.read = ra.read || rb.read
         ra.stale = ra.stale || rb.stale
+        if ra.assumed == nil { ra.assumed = rb.assumed }
         rb.link = ra
         return
     }

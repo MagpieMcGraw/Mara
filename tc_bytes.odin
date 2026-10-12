@@ -78,8 +78,14 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, env: ^Type_Sc
     if pname, immutable := tc_write_root_param(k, target, env); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
     }
-    // (An untyped number has no width to write: cast it.)
+    // (An untyped number has no width to write: cast it. A binding's whose
+    // uses haven't decided one yet: in a first pass, put off — the program
+    // checked again once its width is known; after that, it has none.)
     if is_infer(vt) {
+        if tc_open_binding(vt) && k.pass == 1 {
+            k.deferred = true
+            return
+        }
         tc_error(k, span, TYPE_BYTE_BUFFER_WRITE_UNTYPED)
         return
     }
@@ -107,6 +113,11 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
     if why := byte_slice_reason(k.c, vt); why != "" {
         tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why)
         return nil
+    }
+    // (A binding's of no width yet: in a first pass, its size put off.)
+    if tc_open_binding(vt) && k.pass == 1 {
+        k.deferred = true
+        return solidify_type(vt)
     }
     view := solidify_type(vt)
     lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)

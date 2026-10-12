@@ -1,0 +1,17 @@
+module infer_dispatch_exact_neg
+//@ expect-fail: no matching function in dispatch group 'min' for argument types (i16
+
+// A dispatch group matches its members exactly: `n`'s width is the one its
+// uses decide — an i16, by t16 — and min has no i16 member, wherever in the
+// code that use comes. (Annotate it, or cast: min(i64(n), 3).)
+
+use mara.math
+
+t16 :: fun(x: i16) {}
+
+main :: fun() {
+	n := 0
+	m := min(n, 3)
+	t16(n)
+	print(m)
+}
