@@ -126,7 +126,11 @@ def main():
                     ends = broken.rstrip("\n").split("\n")
                     where = {"line": len(ends) - 1, "character": len(ends[-1].encode("utf-8"))}
                 method = "textDocument/completion" if version % 2 else "textDocument/hover"
-                server.request(method, {"textDocument": {"uri": uri(path)}, "position": where})
+                params = {"textDocument": {"uri": uri(path)}, "position": where}
+                if version % 3 == 0:   # (a third: code actions on the line — the renames)
+                    method = "textDocument/codeAction"
+                    params = {"textDocument": {"uri": uri(path)}, "range": {"start": where, "end": where}, "context": {"diagnostics": []}}
+                server.request(method, params)
             except (EOFError, queue.Empty, OSError, BrokenPipeError) as e:
                 crashed += 1
                 name = "%s_%d_%s.mara" % (os.path.basename(path)[:-5], version, kind)

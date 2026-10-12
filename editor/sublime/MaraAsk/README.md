@@ -82,8 +82,10 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 
 Besides this plugin, the compiler is a language server: `mara lsp` speaks the
 Language Server Protocol, so Sublime's **LSP** package (or any editor's client)
-gets Goto Definition, Find References, Goto Symbol, completion, hover and errors
-from it.
+gets Goto Definition, Find References, Goto Symbol, completion, Rename, hover
+and errors from it. When you rename a declaration by hand, a code action (the
+lightbulb, or `LSP: Code Action`) offers to rename its uses too, or to put the
+name back — offered, never asked.
 Each file is checked with its module as the editor has it — saved or not, and
 half-written: what parses is checked. In
 `Preferences → Package Settings → LSP → Settings`, under `"clients"`:
@@ -100,6 +102,7 @@ half-written: what parses is checked. In
         "references": true,    // Find References
         "symbols": true,       // Goto Symbol: the file's definitions
         "completion": true,    // the names that fit where you type, after `x.` too
+        "renames": true,       // Rename; a declaration renamed by hand: its uses offered too
     }
 }
 ```

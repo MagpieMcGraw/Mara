@@ -188,6 +188,65 @@ def main():
     h = c.request("textDocument/hover", {"textDocument": doc, "position": pos(variant, 52, "obj", 1)})
     check("after completion, hover checks the editor's text again", h is not None and "obj — field" in h["contents"]["value"], h)
 
+    # Renames. The file as it was, checked: its names and their uses kept.
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": 20}, "contentChanges": [{"text": text}]})
+    c.request("textDocument/hover", {"textDocument": doc, "position": pos(text, 52, "obj", 1)})
+
+    def actions_at(line_no):
+        r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": line_no - 1, "character": 0},
+                      "end": {"line": line_no - 1, "character": 0}}, "context": {"diagnostics": []}})
+        return {a["title"]: a for a in r or []}
+
+    # camera_move renamed at its definition, a keystroke at a time; its use is in Pounce.mara, not open.
+    version = 20
+    for name in ["camera_mov", "camera_mo", "camera_", "camera_s", "camera_st", "camera_step"]:
+        version += 1
+        typed = text.replace("camera_move :: fun", name + " :: fun", 1)
+        c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": version}, "contentChanges": [{"text": typed}]})
+    acts = actions_at(48)
+    rename = acts.get("Rename the 1 use of camera_move to camera_step")
+    edits = rename and rename["edit"]["changes"] or {}
+    pounce = [e for u, es in edits.items() if u.lower().endswith("/pounce.mara") for e in es]
+    check("renamed at its definition: rename its use in Pounce.mara offered", len(pounce) == 1 and pounce[0]["newText"] == "camera_step", acts)
+    check("... and putting the name back", "Put the name back: camera_move" in acts, acts)
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": version + 1}, "contentChanges": [{"text": text}]})
+    check("name put back: nothing offered", actions_at(48) == {}, actions_at(48))
+
+    # A local renamed: its use further down the same file.
+    version += 2
+    local = text.replace("\tspeed: f32 = 500", "\tvelocity: f32 = 500", 1)
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": version}, "contentChanges": [{"text": local}]})
+    decl_line = 1 + next(i for i, l in enumerate(local.split("\n")) if l.rstrip("\r") == "\tvelocity: f32 = 500")
+    acts = actions_at(decl_line)
+    rename = next((a for t, a in acts.items() if t.startswith("Rename the") and "speed to velocity" in t), None)
+    edits = rename and [e for es in rename["edit"]["changes"].values() for e in es] or []
+    check("a local renamed: its uses offered", len(edits) >= 1 and all(e["newText"] == "velocity" for e in edits), acts)
+    # The offer taken: its edits made, then nothing more to offer.
+    lines = local.split("\n")
+    for e in sorted(edits, key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True):
+        r = e["range"]
+        line = lines[r["start"]["line"]].encode("utf-8")
+        lines[r["start"]["line"]] = (line[:r["start"]["character"]] + e["newText"].encode() + line[r["end"]["character"]:]).decode("utf-8")
+    done = "\n".join(lines)
+    version += 1
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": version}, "contentChanges": [{"text": done}]})
+    check("the offer taken: nothing more offered", actions_at(decl_line) == {}, actions_at(decl_line))
+    diags = [n for n in c.notes if n.get("method") == "textDocument/publishDiagnostics"]
+    c.notes.clear()
+
+    # F2: a name, its declaration and every use.
+    version += 1
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": version}, "contentChanges": [{"text": text}]})
+    r = c.request("textDocument/rename", {"textDocument": doc, "position": pos(text, 48, "camera_move"), "newName": "camera_step"})
+    files = {u.rsplit("/", 1)[1]: es for u, es in (r or {}).get("changes", {}).items()}
+    check("rename: the declaration in camera.mara, the use in Pounce.mara", set(files) == {"camera.mara", "Pounce.mara"}
+          and all(e["newText"] == "camera_step" for es in files.values() for e in es), r)
+    try:
+        c.request("textDocument/rename", {"textDocument": doc, "position": pos(text, 48, "camera_move"), "newName": "1st"})
+        check("rename to no name: refused", False, "accepted")
+    except RuntimeError as e:
+        check("rename to no name: refused", "isn't a name" in str(e), str(e))
+
     c.notify("textDocument/didClose", {"textDocument": doc})
     code = c.close()
     check("shut down: exit 0", code == 0, code)

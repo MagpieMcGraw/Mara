@@ -285,6 +285,33 @@ point_hits :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: 
     return p.hits[:], Token_Id(p.at), true
 }
 
+// Every reference in the program, by the declaration it names (its name's
+// token): each the name's token where it's written, once — mara lsp keeps
+// them to tell a declaration renamed from its uses (lsp.odin's names).
+references_by_declaration :: proc(t: ^Tree, a: ^Annotations) -> map[Token_Id][dynamic]Token_Id {
+    out := make(map[Token_Id][dynamic]Token_Id)
+    seen := make(map[Token_Id]bool)
+    for inst, i in a.instances {
+        for r, k in a.refs[i] {
+            if r.decl == 0 { continue }
+            n := inst.lo + Tree_Id(k)
+            name := token_text(build_tokens[r.decl])
+            tok: Token_Id
+            switch {
+            case token_text(build_tokens[t.end[n] - 1]) == name: tok = t.end[n] - 1
+            case token_text(build_tokens[t.first[n]]) == name:   tok = t.first[n]
+            case: continue
+            }
+            if tok == r.decl || seen[tok] { continue }
+            seen[tok] = true
+            uses := out[r.decl]
+            append(&uses, tok)
+            out[r.decl] = uses
+        }
+    }
+    return out
+}
+
 // Every name that refers to the declaration whose name is the token `decl`,
 // as its token: the declaration's own first, each once.
 references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {

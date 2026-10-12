@@ -22,13 +22,15 @@ import "core:strings"
 //   references        every name referring to the same declaration
 //   document symbols  the file's definitions
 //   completion        the names that can be written at the point (completion.odin)
+//   code actions      a declaration being renamed: its uses renamed too, or its name put back
+//   rename            a name, its declaration and every use (lsp_rename.odin)
 // and publishes each check's errors and warnings, by file. A check is made
 // when a request needs one and something changed — a file on disk, an edit
 // in the editor — and after an edit, once the editor has nothing more to
 // send. Code that doesn't parse is checked as far as it does (check_module).
 // initializationOptions turn each off: {"hover": false, "definition": false,
-// "references": false, "symbols": false, "completion": false,
-// "diagnostics": false}.
+// "references": false, "symbols": false, "completion": false, "renames":
+// false, "diagnostics": false}.
 // ---------------------------------------------------------------------------
 
 Lsp :: struct {
@@ -39,7 +41,8 @@ Lsp :: struct {
     open_uris: map[string]string,  // ... its URI, as the editor spells it
     edits:    int,                 // overlay changes so far
     utf8:     bool,                // positions count bytes; else UTF-16 units (LSP's default)
-    hover, definition, references, symbols, completion, diagnostics: bool,   // offered (initializationOptions)
+    hover, definition, references, symbols, completion, renames, diagnostics: bool,   // offered (initializationOptions)
+    names:    Lsp_Names,           // the open files' declarations and their uses (lsp_rename.odin)
     check:    Serve_Check,
     checked:  bool,                // a check made
     dir:      string,              // its module's directory
@@ -59,7 +62,7 @@ lsp :: proc(args: CLI_Args) {
     s.overlays = make(map[string]string, allocator = s.heap)
     s.published = make(map[string]bool, allocator = s.heap)
     s.open_uris = make(map[string]string, allocator = s.heap)
-    s.hover, s.definition, s.references, s.symbols, s.completion, s.diagnostics = true, true, true, true, true, true
+    s.hover, s.definition, s.references, s.symbols, s.completion, s.renames, s.diagnostics = true, true, true, true, true, true, true
     bufio.reader_init(&s.reader, os.to_stream(os.stdin))
     context.allocator = context.temp_allocator   // (each message's work, freed after it)
     for {
@@ -156,6 +159,14 @@ lsp_handle :: proc(s: ^Lsp, msg: json.Value) {
         lsp_respond(id, lsp_symbols(s, params))
     case "textDocument/completion":
         lsp_respond(id, lsp_completion(s, params))
+    case "textDocument/codeAction":
+        lsp_respond(id, lsp_code_actions(s, params))
+    case "textDocument/rename":
+        if result, refused := lsp_rename(s, params); refused != "" {
+            lsp_fail(id, -32602, refused)
+        } else {
+            lsp_respond(id, result)
+        }
     case:
         // (A notification not heeded is fine; a request needs an answer.)
         if id != nil && !strings.has_prefix(method, "$/") {
@@ -172,6 +183,7 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
     s.references  = json_bool(json_at(opts, "references"), true)
     s.symbols     = json_bool(json_at(opts, "symbols"), true)
     s.completion  = json_bool(json_at(opts, "completion"), true)
+    s.renames     = json_bool(json_at(opts, "renames"), true)
     s.diagnostics = json_bool(json_at(opts, "diagnostics"), true)
     // (UTF-8 positions, the compiler's, when the client takes them.)
     if encodings, is_list := json_at(json_at(json_at(params, "capabilities"), "general"), "positionEncodings").(json.Array); is_list {
@@ -182,7 +194,8 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
         `"hoverProvider":%v,"definitionProvider":%v,"referencesProvider":%v,"documentSymbolProvider":%v%s}},` +
         `"serverInfo":{{"name":"mara lsp"}}}}`,
         json_str("utf-8" if s.utf8 else "utf-16"), s.hover, s.definition, s.references, s.symbols,
-        `,"completionProvider":{"triggerCharacters":["."]}` if s.completion else ""))
+        strings.concatenate({`,"completionProvider":{"triggerCharacters":["."]}` if s.completion else "",
+                             `,"renameProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}` if s.renames else ""})))
 }
 
 // --- the editor's files -----------------------------------------------------
@@ -191,6 +204,7 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
 lsp_set_overlay :: proc(s: ^Lsp, uri, text: string) {
     key := path_key(uri_path(uri))
     if old, had := s.overlays[key]; had {
+        lsp_map_edit(s, key, old, text)   // (the kept names' places moved with the edit)
         delete(old, s.heap)
         s.overlays[key] = strings.clone(text, s.heap)
     } else {
@@ -249,6 +263,7 @@ lsp_check :: proc(s: ^Lsp, dir: string) -> bool {
     lsp_keep(s, &s.stamp, stamp)
     s.checked = true
     s.checked_edits = s.edits
+    lsp_keep_names(s)
     if path_key(dir) == path_key(s.edit_dir) { s.dirty = false }
     if s.diagnostics { lsp_publish(s) }
     return s.check.session.checked != nil
