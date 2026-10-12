@@ -281,9 +281,8 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) 
 }
 
 // Bounds check for byte-buffer access at offset [low, low+size), at
-// SLICE_LEN_IR: the caller has low and cap_val at that width (`bound_name`:
-// what cap_val is — a read's bound is the buffer's length).
-emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string, span: Span = {}, bound_name := "capacity") {
+// SLICE_LEN_IR: the caller has low and cap_val at that width.
+emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string, span: Span = {}) {
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, low, fmt.tprintf("%d", size), cap_val)
@@ -295,7 +294,7 @@ emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, s
         loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
         at = strings.concatenate({loc, " "}, context.temp_allocator)
     }
-    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %d > %s %%lld\n", at, label, size, bound_name),
+    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", at, label, size),
               fail_i64(low), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 }
@@ -529,13 +528,12 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
 
     w := SLICE_LEN_IR
 
-    // Runtime check 0: the span within the source buffer — its length (the
-    // bytes it holds: llvm_bytes' bound for a read).
+    // Runtime check 0: the span within the source buffer.
     src_ok := fresh_label(g, "byte.view.ok")
     src_err := fresh_label(g, "byte.view.err")
     emit_cond_br(g, emit_byte_span_outside(g, src_low, src_bytes, src_cap), src_err, src_ok)
     emit_label(g, src_err)
-    emit_fail(g, "runtime error: byte buffer read out of bounds: offset %lld + %lld > length %lld\n",
+    emit_fail(g, "runtime error: byte buffer view out of bounds: offset %lld + %lld > capacity %lld\n",
               fail_i64(src_low), fail_i64(src_bytes), fail_i64(src_cap))
     emit_label(g, src_ok)
 

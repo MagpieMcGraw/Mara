@@ -1,0 +1,14 @@
+module byte_fill_past_cap
+
+// A partial array filled from bytes at an offset inside the source's cap
+// clips to what fits (byte_fill_bounds); at an offset past it, there is no
+// memory there: an error. Ends at the failure (the run differential
+// compares it): "offset 17 + 8 > capacity 16".
+
+main :: fun() {
+	bytes : [..16]byte
+	pa : [..4]u16 = bytes[12]
+	print("clipped:", pa.len)
+	past : [..4]u16 = bytes[17]
+	print("unreached", past.len)
+}

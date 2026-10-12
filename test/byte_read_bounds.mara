@@ -1,0 +1,45 @@
+module byte_read_bounds
+
+use mara.endian
+include mara.memory
+
+// A byte buffer's len is a cursor — the bytes it holds, what appends and a
+// file read move; its cap, the room it has. A value at an offset, read or
+// written (`x : T = bytes[k]`, `bytes[k] = x`), is memory, as indexing is:
+// checked against the cap, the len not moved. For only the bytes it holds,
+// slice to the len: `bytes[k:]`, `bytes[k:len]`. A `let` names memory to
+// fill. (Past the cap: byte_view_union_bounds, byte_fill_past_cap.)
+
+//@ expect-output: wrote into an empty buffer: len 0
+//@ expect-output: read back past the len: 42 7 1234
+//@ expect-output: an open slice ends at the len: 12
+//@ expect-output: let on empty storage: 40 2
+
+Pair :: struct { a: i64, b: i64 }
+
+u32_at_8 :: fun(bytes: ^[]byte) -> u32 {
+	v : u32 = #big_endian bytes[8]
+	return v
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	buf : [..64]byte
+	buf[0:8] = i64(42)
+	buf[8] = i64(7)
+	buf[16:20] = u32(0xD2040000)   // (1234, big-endian)
+	print("wrote into an empty buffer: len", buf.len)
+	a : i64 = buf[0]
+	b : i64 = buf[8]
+	part := buf[8:20]
+	print("read back past the len:", a, b, u32_at_8(&part))
+	buf.len = 20
+	tail := buf[8:]
+	print("an open slice ends at the len:", tail.len)
+
+	mem : [..64]byte
+	pair := let(Pair, &mem[0])
+	pair.a = 40
+	pair.b = 2
+	print("let on empty storage:", pair.a, pair.b)
+}
