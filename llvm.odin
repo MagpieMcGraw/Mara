@@ -483,36 +483,6 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Ty
     }
 }
 
-// storage_overlaps, asked as a call's result is placed while the fun is
-// emitted (llvm_result_place): by then a temporary built in place in the
-// result slot is in it as well (llvm_in_result). (Goes when where a call's
-// result goes is a storage fact too.)
-@(private="file")
-llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
-    pg := e.pg
-    if pg.op[read] == .Global { return false }   // a constant table is never written
-    r, d := storage_where(e.st, read), storage_where(e.st, dest)
-    if r.root == NO_NODE || d.root == NO_NODE || r.explicit { return true }
-    if places_disjoint(e.pg, e.st.bound, read, dest) { return false }
-    if !d.via_ptr && llvm_in_result(e, d.root) && pg.kind[r.root] == .Param { return false }
-    if !r.via_ptr && !d.via_ptr && r.root == d.root { return true }
-    if !is_plain_data(graph_type(pg, read)) { return true }
-    if !r.via_ptr && !d.via_ptr { return false }   // two variables' own storage
-    read_own := !r.via_ptr && !llvm_in_result(e, r.root) && pg.kind[r.root] != .Param
-    dest_own := !d.via_ptr && !llvm_in_result(e, d.root)
-    if r.region == nil || d.region == nil { return true }
-    return (!read_own && type_can_contain(d.region, r.region)) || (!dest_own && type_can_contain(r.region, d.region))
-}
-
-// Whether a variable lives in the caller's result slot: Self and its fields in
-// a constructor, a named result, the local every return returns — and, once
-// its storage is had, a temporary built in place there.
-@(private="file")
-llvm_in_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
-    if e.ctor && (d == 0 || (e.pg.kind[d] == .Field && e.pg.parent[d] == 0)) { return true }
-    return d > 0 && d <= e.pg.end && e.value[d] == e.slot
-}
-
 // --- operations ------------------------------------------------------------------
 
 @(private="file")
@@ -1154,21 +1124,6 @@ llvm_output :: proc(e: ^Llvm, o: Operand, at: []string, want: Type) -> (string, 
     emit_load_into(e.g, v, llvm_type_from_checker(t), at[o.out])
     if e.run == e.out_run[o.op] { e.loaded[o] = v }
     return v, true
-}
-
-// Where a declaration takes a call's result, when that is all the result does:
-// the declared variable's storage (the write then has nothing to copy).
-@(private="file")
-llvm_declared_at :: proc(e: ^Llvm, o: Operand) -> string {
-    pg := e.pg
-    u, ok := e.st.out_user[o]
-    if !ok || u < 0 || pg.op[u] != .Write { return "" }
-    uops := graph_operands(pg, u)
-    dest := uops[0].op
-    if uops[1] != o || pg.op[dest] != .Var || llvm_direct(e, dest) { return "" }
-    d := pg.refers[dest]
-    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && pg.stmt[d] != pg.stmt[u]) { return "" }
-    return llvm_place(e, dest)
 }
 
 // The type of an operation's output: a call's k-th result, else its own.
@@ -2430,7 +2385,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         at := make([]string, len(callee.cg_returns))
         for rt, i in callee.cg_returns {
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
-            if llvm_aggregate(rt) { at[i] = llvm_declared_at(e, Operand{op, i32(i)}) }
+            if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
             if at[i] == "" { at[i] = llvm_temporary(e, op, callee, rt, llvm_alloca_type(rt)) }
             append(&args, fmt.tprintf("ptr %s", at[i]))
         }
@@ -2617,34 +2572,18 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
 // in by the write). Anything else is a temporary.
 @(private="file")
 llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Type) -> (string, bool) {
-    pg := e.pg
-    u := e.st.user[op]
-    if u >= 0 {
-        uops := graph_operands(pg, u)
-        #partial switch pg.op[u] {
-        case .Return:
-            if e.sret != nil { return e.slot, true }
-        case .Write:
-            dest := uops[0].op
-            // (Several components of an array aren't one's storage: a temporary.)
-            if uops[1].op == op && !llvm_direct(e, dest) && pg.op[dest] != .Swizzle {
-                fresh := false
-                if pg.op[dest] == .Var {
-                    d := pg.refers[dest]
-                    s := pg.stmt[u]
-                    fresh = pg.written[d] == .Synthetic || (s >= 0 && pg.stmts[s].kind == .Decl)
-                }
-                // (The result slot is no fresher than any place: the local
-                // every return returns lives there, and `x = f(x)` passes it.)
-                if fresh && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                // The functional update `x = f(x, …)` (storage_in_place_updates): x
-                // is both the argument and the result slot.
-                if e.st.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                reaches, mine := llvm_call_reaches(e, op, dest)
-                if mine != NO_NODE { storage_reads_its_dest(pg, op, mine, dest, callee) }
-                if !reaches && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-            }
+    switch e.st.calls[op] {
+    case .Result_Slot:
+        return e.slot, true
+    case .Dest:
+        // (Its address at hand, as storage_had found: computed now if not yet.)
+        dest := graph_operands(e.pg, e.st.user[op])[0].op
+        if !llvm_ahead(e, dest) {
+            e.note = "a call's destination ahead of it"
+            return "", false
         }
+        return llvm_place(e, dest), true
+    case .Temporary:
     }
     return llvm_temporary(e, op, callee, result), true
 }
@@ -2675,40 +2614,10 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
     return tmp
 }
 
-// --- what a call can reach ---------------------------------------------------------
-
-// storage_call_reaches, asked as a call's result is placed (llvm_overlaps).
-@(private="file")
-llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (reaches: bool, mine: Node_Id) {
-    pg := e.pg
-    mine = NO_NODE
-    callee := graph_called(pg, op)
-    if callee == nil { return true, mine }   // (through a function value: unknown)
-    s := reach_summary(&e.g.checked.code, &e.g.summaries, callee)
-    ops := graph_operands(pg, op)[first:]
-    if len(ops) != len(s.reaches) { return true, mine }
-    for o, k in ops {
-        if !s.reaches[k] { continue }
-        at := o.op
-        for pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }   // (text as a slice: over it)
-        if _, is_text := llvm_text(e, at); is_text { continue }
-        // (The storage handed over: `&place`'s place, an aggregate's own.)
-        place := NO_NODE
-        #partial switch pg.op[at] {
-        case .Address, .Read: place = graph_operands(pg, at)[0].op
-        case .Var, .Field, .Index, .Deref, .Variant: place = at
-        }
-        if place != NO_NODE && is_plain_data(graph_type(pg, place)) && !llvm_overlaps(e, place, dest) { continue }
-        if pg.op[at] == .Address && mine == NO_NODE && places_contain(e.pg, e.st.bound, place, dest) { mine = at }
-        reaches = true
-    }
-    return
-}
-
-// Whether place p's address is at hand for a call to build its result in: it
-// was computed, or it is a variable, or a field or constant index of one —
-// computed now, ahead of its turn (the graph has the value before the place;
-// its turn then skips it).
+// Place p's address, for a call to build its result in: computed, or — a
+// variable, or a field or constant index of one — computed now, ahead of its
+// turn (the graph has the value before the place; its turn then skips it).
+// False when it can't be had (storage_had says when it can).
 @(private="file")
 llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     pg := e.pg

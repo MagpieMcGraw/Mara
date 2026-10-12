@@ -39,9 +39,18 @@ Storage :: struct {
     marked:   map[Node_Id]bool,             // the scopes that mark the arena
     temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark
     lazy:     map[Node_Id]bool,             // a big temporary in main's body: bumped where it's first named
+    calls:    map[Node_Id]Call_Place,       // a call's aggregate result: where it's built (none: a temporary of its own)
+    out_at:   map[Operand]Node_Id,          // one of several results, an aggregate: the declared variable it's built in (none: a temporary)
+    placed:   bool,                         // the temporaries built in place are known (storage_in_result)
+    pos:      []i32,                        // by id: an operation's place in the order the code runs its own runs (-1: none)
 
     stop: Node_Id,   // a variable no storage can be found for (the backend stops there); NO_NODE: none
 }
+
+// Where a call builds its aggregate result: in a temporary of its own, in the
+// fun's result slot (its user returns it), or in the place its user writes it
+// to (the user's destination).
+Call_Place :: enum u8 { Temporary, Result_Slot, Dest }
 
 // A fun's storage. (`sret`, `rets`: its result, built in the caller's slot —
 // a struct or array, or several results each in one.)
@@ -59,6 +68,7 @@ storage_of :: proc(checked: ^Checked_Program, pg: ^Program_Graph, summaries: ^Re
     storage_in_place(s)
     storage_swaps(s)
     storage_big_temps(s, checked.table.has_scope_allocator)
+    if s.stop == NO_NODE { storage_calls(s, sret) }
     return s
 }
 
@@ -437,11 +447,40 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
 
 // Whether a variable lives in the fun's result slot — the one slot, not one
 // of several: Self and its fields in a constructor, a named result, the local
-// every return returns.
+// every return returns; once the temporaries built in place are known, one
+// built there.
 @(private="file")
 storage_in_result :: proc(s: ^Storage, d: Node_Id) -> bool {
     if s.ctor && (d == 0 || (s.pg.kind[d] == .Field && s.pg.parent[d] == 0)) { return true }
-    return d > 0 && d <= s.pg.end && s.one_slot && d in s.result
+    if d <= 0 || d > s.pg.end { return false }
+    if s.one_slot && d in s.result { return true }
+    at, built := s.in_place[d]
+    return s.placed && built && storage_is_slot(s, at)
+}
+
+// Whether a place is the result slot itself, not a part of it: a variable
+// there, a union's variant of one, a temporary built in one, a match arm's
+// binding of one.
+@(private="file")
+storage_is_slot :: proc(s: ^Storage, p: Node_Id) -> bool {
+    pg := s.pg
+    at := p
+    for {
+        #partial switch pg.op[at] {
+        case .Variant:
+            at = graph_operands(pg, at)[0].op
+            continue
+        case .Var:
+            d := pg.refers[at]
+            if s.ctor && d == 0 { return true }
+            if d <= 0 || d > pg.end || pg.kind[d] == .Param || pg.kind[d] == .Field { return false }
+            if s.one_slot && d in s.result { return true }
+            if d in s.arena { return false }
+            if x, built := s.in_place[d]; built { at = x; continue }
+            if v, bound := s.bound[d]; bound { at = v; continue }
+        }
+        return false
+    }
 }
 
 // Whether every write to variable v is in run r.
@@ -824,6 +863,123 @@ storage_big_temps :: proc(s: ^Storage, scope_allocator: bool) {
             storage_fatal(pg.origin[id], msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
         }
     }
+}
+
+// --- calls ------------------------------------------------------------------------
+
+// Where each call to a Mara fun with several results builds each aggregate
+// one: the variable a declaration takes it into (storage_declared_at), else
+// a temporary. And where one with one aggregate result builds it: the
+// fun's result slot when it's returned; the place it's written to when that
+// place is fresh — a declaration's, a temporary's — or the functional update
+// `x = f(x, …)`'s x, or one the call can't reach while it runs
+// (storage_call_reaches) — and that place's address can be had when the call
+// is made; else a temporary of its own. A call handed `&place` whose result
+// goes over that place is an error (storage_reads_its_dest).
+@(private="file")
+storage_calls :: proc(s: ^Storage, sret: Type) {
+    pg := s.pg
+    s.placed = true
+    s.pos = make([]i32, int(pg.end) + 1)
+    for &p in s.pos { p = -1 }
+    n := i32(0)
+    for r in s.runs[:s.own] {
+        for op in graph_run(pg, int(r)) {
+            s.pos[op] = n
+            n += 1
+        }
+    }
+    for r in s.runs {
+        for op in graph_run(pg, int(r)) {
+            if pg.op[op] != .Call { continue }
+            callee := graph_called(pg, op)
+            args := len(graph_operands(pg, op))
+            if callee == nil {   // (through a function value, its first operand: by its type's signature)
+                callee = graph_signature(pg, op)
+                args -= 1
+                if callee == nil { continue }
+            } else {
+                if callee.kind != .Fun { continue }
+                if _, src := callee.origin.(Origin_Source); !src { continue }
+            }
+            if args != len(callee.cg_params) { continue }
+            if len(callee.cg_returns) > 1 {
+                for rt, i in callee.cg_returns {
+                    if !llvm_aggregate(rt) { continue }
+                    o := Operand{op, i32(i)}
+                    if d := storage_declared_at(s, o); d != NO_NODE { s.out_at[o] = d }
+                }
+                continue
+            }
+            if len(callee.cg_returns) != 1 { continue }
+            if result := callee.cg_returns[0]; llvm_scalar(result) || !llvm_aggregate(result) { continue }
+            if at := storage_call_place(s, op, callee, sret); at != .Temporary { s.calls[op] = at }
+        }
+    }
+}
+
+@(private="file")
+storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: Type) -> Call_Place {
+    pg := s.pg
+    u := s.user[op]
+    if u < 0 { return .Temporary }
+    uops := graph_operands(pg, u)
+    #partial switch pg.op[u] {
+    case .Return:
+        if sret != nil { return .Result_Slot }
+    case .Write:
+        dest := uops[0].op
+        // (Several components of an array aren't one's storage: a temporary.)
+        if uops[1].op != op || storage_direct(s, dest) || pg.op[dest] == .Swizzle { return .Temporary }
+        fresh := false
+        if pg.op[dest] == .Var {
+            d := pg.refers[dest]
+            st := pg.stmt[u]
+            fresh = pg.written[d] == .Synthetic || (st >= 0 && pg.stmts[st].kind == .Decl)
+        }
+        // (The result slot is no fresher than any place: the local every
+        // return returns lives there, and `x = f(x)` passes it.)
+        if fresh && storage_had(s, dest, op) { return .Dest }
+        if s.update[op] && storage_had(s, dest, op) { return .Dest }
+        reaches, mine := storage_call_reaches(s, op, dest)
+        if mine != NO_NODE { storage_reads_its_dest(pg, op, mine, dest, callee) }
+        if !reaches && storage_had(s, dest, op) { return .Dest }
+    }
+    return .Temporary
+}
+
+// Where a declaration takes one of a call's several results, when that is all
+// the result does: the declared variable (the write then has nothing to
+// copy). NO_NODE: none.
+@(private="file")
+storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
+    pg := s.pg
+    u, ok := s.out_user[o]
+    if !ok || u < 0 || pg.op[u] != .Write { return NO_NODE }
+    uops := graph_operands(pg, u)
+    dest := uops[0].op
+    if uops[1] != o || pg.op[dest] != .Var || storage_direct(s, dest) { return NO_NODE }
+    d := pg.refers[dest]
+    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && pg.stmt[d] != pg.stmt[u]) { return NO_NODE }
+    return dest
+}
+
+// Whether place p's address is at hand when operation `at` runs: it was
+// computed before it, or it is a variable, or a field or constant index of
+// one (computed then, ahead of its turn).
+@(private="file")
+storage_had :: proc(s: ^Storage, p, at: Node_Id) -> bool {
+    pg := s.pg
+    if s.pos[p] >= 0 && s.pos[at] >= 0 && s.pos[p] < s.pos[at] { return true }
+    if pg.op[p] == .Var { return true }
+    ops := graph_operands(pg, p)
+    #partial switch pg.op[p] {
+    case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)
+        return storage_had(s, ops[0].op, at)
+    case .Index:
+        return ops[1].op != NO_NODE && pg.op[ops[1].op] == .Const && storage_had(s, ops[0].op, at)
+    }
+    return false
 }
 
 // Whether a call's operation is constant text, read or not: its text.
