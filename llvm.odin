@@ -52,6 +52,7 @@ Llvm :: struct {
     bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
     arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
     temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark (llvm_big_temps)
+    marked:  map[Node_Id]bool,          // the scopes that mark the arena (llvm_big_temps)
     swaps:   map[Node_Id][2]Node_Id,    // a swap's first put → the two places it swaps (llvm_swaps)
     swapped: map[Node_Id]bool,          // a swap's held locals: no storage, their operations skipped
     hoist:   map[Node_Id][dynamic]Node_Id, // a value's first write in place → the reads of its place taken before it (llvm_builds_alone)
@@ -292,7 +293,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 // read straight from the other — done in place, a piece at a time through a
 // small buffer (llvm_emit_swap), not held whole: its held locals take no
 // storage, their holds and the second put are skipped, the first put swaps.
-// Only when the two are one place or surely apart (llvm_disjoint): two that
+// Only when the two are one place or surely apart (places_disjoint): two that
 // may partly overlap are held as any parallel assignment's values are.
 @(private="file")
 llvm_swaps :: proc(e: ^Llvm) {
@@ -340,8 +341,8 @@ llvm_swaps :: proc(e: ^Llvm) {
         pw, pr, ps, pok := held_from(e, holds, p.local)
         qw, qr, qs, qok := held_from(e, holds, q.local)
         if !pok || !qok { continue }
-        if !llvm_same_place(e, ps, q.target) || !llvm_same_place(e, qs, p.target) { continue }
-        if !llvm_same_place(e, p.target, q.target) && !llvm_disjoint(e, p.target, q.target) { continue }
+        if !places_same(e.pg, e.bound, ps, q.target) || !places_same(e.pg, e.bound, qs, p.target) { continue }
+        if !places_same(e.pg, e.bound, p.target, q.target) && !places_disjoint(e.pg, e.bound, p.target, q.target) { continue }
         e.swaps[p.w] = {p.target, q.target}
         e.swapped[p.local], e.swapped[q.local] = true, true
         for skip in ([]Node_Id{pw, pr, graph_operands(pg, pw)[0].op, qw, qr, graph_operands(pg, qw)[0].op,
@@ -350,21 +351,6 @@ llvm_swaps :: proc(e: ^Llvm) {
         }
         i += 1
     }
-}
-
-// Whether two places are one: from one variable by the same steps (elements
-// by number).
-@(private="file")
-llvm_same_place :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
-    ra, sa, oka := llvm_path(e, a)
-    rb, sb, okb := llvm_path(e, b)
-    if !oka || !okb || ra != rb || len(sa) != len(sb) { return false }
-    for x, i in sa {
-        y := sb[i]
-        if x.op != y.op || x.name != y.name || x.known != y.known || x.index != y.index { return false }
-        if x.op == .Index && !x.known { return false }
-    }
-    return true
 }
 
 // Two places of one type swapped (llvm_swaps): 64 bytes at a time through a
@@ -422,7 +408,8 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
 @(private="file")
 llvm_big_temps :: proc(e: ^Llvm) -> bool {
     pg := e.pg
-    marked := make(map[Node_Id]bool, context.temp_allocator)
+    e.marked = make(map[Node_Id]bool, context.temp_allocator)
+    marked := &e.marked
     for r in e.runs {
         for op in graph_run(pg, int(r)) { if pg.op[op] == .Arena_Mark { marked[pg.parent[op]] = true } }
     }
@@ -435,7 +422,7 @@ llvm_big_temps :: proc(e: ^Llvm) -> bool {
         if pg.written[id] != .Synthetic { e.stop = id; return false }
         scope := NO_NODE
         for s := pg.parent[id]; s != NO_NODE; s = pg.parent[s] {
-            if s in marked { scope = s; break }
+            if s in marked^ { scope = s; break }
             if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
         }
         switch {
@@ -903,7 +890,7 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
     if pg.op[read] == .Global { return false }   // a constant table is never written
     r, d := llvm_where(e, read), llvm_where(e, dest)
     if r.root == NO_NODE || d.root == NO_NODE || r.explicit { return true }
-    if llvm_disjoint(e, read, dest) { return false }
+    if places_disjoint(e.pg, e.bound, read, dest) { return false }
     if !d.via_ptr && llvm_in_result(e, d.root) && pg.kind[r.root] == .Param { return false }
     if !r.via_ptr && !d.via_ptr && r.root == d.root { return true }
     if !is_plain_data(graph_type(pg, read)) { return true }
@@ -912,82 +899,6 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
     dest_own := !d.via_ptr && !llvm_in_result(e, d.root)
     if r.region == nil || d.region == nil { return true }
     return (!read_own && type_can_contain(d.region, r.region)) || (!dest_own && type_can_contain(r.region, d.region))
-}
-
-// A step of a place's path from its variable: a field's, a variant's, an
-// element's (its index when it's a number), a pointer's (`cross`: a deref, or
-// a slice's element — its data is through a pointer), or another kind.
-@(private="file")
-Llvm_Step :: struct {
-    op:    Op_Kind,
-    name:  string,
-    index: i128,
-    known: bool,
-    cross: bool,
-}
-
-// A place's path, root first: its variable and each step from it (ok false:
-// no variable at its root, or a step no path names).
-@(private="file")
-llvm_path :: proc(e: ^Llvm, p: Node_Id) -> (root: Node_Id, steps: [dynamic]Llvm_Step, ok: bool) {
-    pg := e.pg
-    steps = make([dynamic]Llvm_Step, context.temp_allocator)
-    for id := p; id != NO_NODE; {
-        ops := graph_operands(pg, id)
-        s := Llvm_Step{op = pg.op[id]}
-        #partial switch pg.op[id] {
-        case .Var:
-            if v, bound := e.bound[pg.refers[id]]; bound {   // (a match arm's binding: its scrutinee's payload)
-                id = v
-                continue
-            }
-            for i in 0 ..< len(steps) / 2 { steps[i], steps[len(steps) - 1 - i] = steps[len(steps) - 1 - i], steps[i] }
-            return pg.refers[id], steps, true
-        case .Field, .Variant:
-            s.name = graph_name(pg, id)
-        case .Index:
-            at := ops[1].op
-            for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
-            if c, has := graph_value(pg, at); has && !c.is_float && !c.is_text { s.index, s.known = c.int, true }
-            _, s.cross = distinct_base(graph_type(pg, ops[0].op)).(^Type_Slice)
-        case .Deref:
-            s.cross = true
-        case .Slice, .Swizzle:
-        case:
-            return NO_NODE, steps, false
-        }
-        append(&steps, s)
-        id = ops[0].op
-    }
-    return NO_NODE, steps, false
-}
-
-// Whether two places surely don't overlap: from one variable by the same steps,
-// then apart — different fields of a struct, different elements by number —
-// with no pointer crossed past where they part (one there could lead anywhere,
-// the other place included). Different variants of a union share storage.
-@(private="file")
-llvm_disjoint :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
-    ra, sa, oka := llvm_path(e, a)
-    rb, sb, okb := llvm_path(e, b)
-    if !oka || !okb || ra != rb { return false }
-    n := min(len(sa), len(sb))
-    for i in 0 ..< n {
-        x, y := sa[i], sb[i]
-        if x.op == y.op && x.name == y.name && x.known == y.known && x.index == y.index && (x.op != .Index || x.known) {
-            continue   // (the same step: on along it)
-        }
-        apart := false
-        #partial switch x.op {
-        case .Field: apart = y.op == .Field && x.name != y.name
-        case .Index: apart = y.op == .Index && x.known && y.known && x.index != y.index
-        }
-        if !apart { return false }
-        for s in sa[i + 1:] { if s.cross { return false } }
-        for s in sb[i + 1:] { if s.cross { return false } }
-        return true
-    }
-    return false   // (one is the other, or inside it)
 }
 
 // Whether a variable lives in the caller's result slot: Self and its fields in
@@ -3229,17 +3140,26 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
     return llvm_temporary(e, op, callee, result), true
 }
 
-// A temporary on the stack for a call's result. One as big as a local gets
-// an arena for (routes_to_arena) is an error at the call, not a stack that
-// overflows when it runs. (A Mara fun's struct or union result is one only
-// when it can't be built where it goes, llvm_result_place: a declaration's
-// always can. A C fun's slot always is.)
+// A temporary for a call's result: on the stack — or one as big as a local
+// gets an arena for (routes_to_arena), on the arena, bumped here in a scope
+// that marks it (lowering foresaw it: lw_big_temps), its reset freeing it;
+// in main's body, which marks nothing, as it is. (A Mara fun's struct or
+// union result is one only when it can't be built where it goes,
+// llvm_result_place: a declaration's always can. A C fun's slot always is.)
 @(private="file")
 llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: string = "") -> string {
     if routes_to_arena(t) {
-        name := scope_display_name(callee)
-        hint := "" if callee.calling_conv == .C else fmt.tprintf(CODE_TEMPORARY_TOO_LARGE_CALL, name, name)
-        codegen_fatal(e.g, e.pg.origin[op], CODE_TEMPORARY_TOO_LARGE, name, type_name(t), type_size(t), hint)
+        pg := e.pg
+        marked := false
+        for s := pg.parent[op]; s != NO_NODE; s = pg.parent[s] {
+            if s in e.marked { marked = true; break }
+            if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
+        }
+        if !marked && !e.main {
+            msg := CODE_TEMPORARY_NO_ARENA_SCOPE if e.g.checked.table.has_scope_allocator else CODE_TEMPORARY_NO_ARENA
+            codegen_fatal(e.g, pg.origin[op], msg, type_name(t), type_size(t))
+        }
+        return emit_arena_bump(e.g, type_size(t), "temp", span_location(pg.origin[op]))
     }
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, ir if ir != "" else llvm_type_from_checker(t))
@@ -3256,13 +3176,6 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
 // can read, is read only (tc_in_program) — no place being built is in it,
 // and its arena's bookkeeping is in it.
 
-// What a fun's code reaches (fun_summary).
-Fun_Summary :: struct {
-    reaches:  []bool,   // by param: whether it reads or writes through it
-    returned: []bool,   // by param: whether a pointer param may be in its result
-    done:     bool,
-}
-
 // Whether a call may reach `dest`, the place its result goes, while it runs:
 // through an argument passed as storage its callee reaches through — unless
 // the argument is constant text, which no place being built can be, or the
@@ -3276,7 +3189,7 @@ llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (
     mine = NO_NODE
     callee := graph_called(pg, op)
     if callee == nil { return true, mine }   // (through a function value: unknown)
-    s := fun_summary(e.g, callee)
+    s := reach_summary(&e.g.checked.code, &e.g.summaries, callee)
     ops := graph_operands(pg, op)[first:]
     if len(ops) != len(s.reaches) { return true, mine }
     for o, k in ops {
@@ -3291,25 +3204,10 @@ llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (
         case .Var, .Field, .Index, .Deref, .Variant: place = at
         }
         if place != NO_NODE && is_plain_data(graph_type(pg, place)) && !llvm_overlaps(e, place, dest) { continue }
-        if pg.op[at] == .Address && mine == NO_NODE && llvm_contains(e, place, dest) { mine = at }
+        if pg.op[at] == .Address && mine == NO_NODE && places_contain(e.pg, e.bound, place, dest) { mine = at }
         reaches = true
     }
     return
-}
-
-// Whether two places surely overlap: from one variable by the same steps
-// (elements by number) until one ends — it holds the other, or is it.
-@(private="file")
-llvm_contains :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
-    ra, sa, oka := llvm_path(e, a)
-    rb, sb, okb := llvm_path(e, b)
-    if !oka || !okb || ra != rb { return false }
-    for i in 0 ..< min(len(sa), len(sb)) {
-        x, y := sa[i], sb[i]
-        if x.op != y.op || x.name != y.name || x.known != y.known || x.index != y.index { return false }
-        if x.op == .Index && !x.known { return false }
-    }
-    return true
 }
 
 // Building a result where it goes while handed that place — `v = swap(&v)`,
@@ -3322,124 +3220,7 @@ llvm_reads_its_dest :: proc(e: ^Llvm, op, arg, dest: Node_Id, callee: ^Type_Scop
     name := scope_display_name(callee)
     held := graph_place_name(pg, Operand{op = graph_operands(pg, arg)[0].op})
     into := graph_place_name(pg, Operand{op = dest})
-    codegen_fatal(e.g, pg.origin[op], CODE_RESULT_READS_DEST, name, held, into, name, into)
-}
-
-// A fun's summary — a struct's code's too, which a construction runs —
-// worked out from its code once per codegen (each worker its own). A fun
-// with no code reaches through every param: a foreign one, or an intrinsic
-// (expanded in place). So does a fun being worked out — a call back into it.
-fun_summary :: proc(g: ^Codegen, f: ^Type_Scope) -> ^Fun_Summary {
-    if s, known := g.summaries[f]; known && s.done { return s }
-    n := len(f.cg_params)
-    all := new(Fun_Summary)
-    all.reaches, all.returned, all.done = make([]bool, n), make([]bool, n), true
-    for &r in all.reaches { r = true }
-    if f in g.summaries { return all }
-    pg := g.checked.code.funs[f] or_else nil
-    if _, src := f.origin.(Origin_Source); pg == nil || !src {
-        g.summaries[f] = all
-        return all
-    }
-    s := new(Fun_Summary)
-    s.reaches, s.returned = make([]bool, n), make([]bool, n)
-    g.summaries[f] = s
-    if !fun_summarize(g, f, pg, s) { s^ = all^ }
-    s.done = true
-    return s
-}
-
-// A summary from a fun's code (false: its params aren't the code's). A param
-// passed as storage is reached through when its code uses it: an aggregate,
-// by any use (it's read where it is); a pointer, unless its value is only
-// compared, returned, kept in the result being built, or passed where it
-// isn't reached through or returned.
-@(private="file")
-fun_summarize :: proc(g: ^Codegen, f: ^Type_Scope, pg: ^Program_Graph, s: ^Fun_Summary) -> bool {
-    // Each node's uses (what it's an operand of, and where), each
-    // declaration's variable operations, the params in order.
-    Use :: struct { by: Node_Id, at: int }
-    uses := make([][dynamic]Use, int(pg.end) + 1, context.temp_allocator)
-    vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
-    params := make([dynamic]Node_Id, context.temp_allocator)
-    for id := Node_Id(1); id <= pg.end; id += 1 {
-        #partial switch pg.kind[id] {
-        case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
-        case .Param: append(&params, id)
-        case .Op:
-            for o, i in graph_operands(pg, id) {
-                if o.op > 0 && o.op <= pg.end { append(&uses[o.op], Use{id, i}) }
-            }
-            if pg.op[id] == .Var {
-                d := pg.refers[id]
-                if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
-                    if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
-                    append(&vars[d], id)
-                }
-            }
-        }
-    }
-    if len(params) != len(f.cg_params) { return false }
-
-    // A place in a local that only becomes the result: written, built, and
-    // read only to be returned — a value kept there is returned, not read.
-    in_result :: proc(pg: ^Program_Graph, uses: [][dynamic]Use, vars: map[Node_Id][dynamic]Node_Id, place: Node_Id) -> bool {
-        at := place
-        for pg.op[at] == .Field || pg.op[at] == .Index { at = graph_operands(pg, at)[0].op }
-        if pg.op[at] != .Var { return false }
-        d := pg.refers[at]
-        if d <= 0 || d > pg.end || (pg.kind[d] != .Local && pg.kind[d] != .Result) { return false }
-        written_only :: proc(pg: ^Program_Graph, uses: [][dynamic]Use, x: Node_Id) -> bool {
-            for u in uses[x] {
-                if u.at != 0 { return false }
-                #partial switch pg.op[u.by] {
-                case .Write, .Construct, .Zero, .Fill, .Arena_Alloc:
-                case .Field, .Index: if !written_only(pg, uses, u.by) { return false }
-                case .Read:
-                    for r in uses[u.by] { if pg.op[r.by] != .Return { return false } }
-                case: return false
-                }
-            }
-            return true
-        }
-        for v in vars[d] { if !written_only(pg, uses, v) { return false } }
-        return true
-    }
-
-    for pn, k in params {
-        t := distinct_base(f.cg_params[k].type_)
-        if ir, _ := llvm_param_type(t); ir != "ptr" { continue }   // a value: nothing behind it
-        if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun { continue }
-        if _, is_ptr := t.(^Type_Ptr); !is_ptr {
-            s.reaches[k] = len(vars[pn]) > 0
-            continue
-        }
-        for v in vars[pn] {
-            for u in uses[v] {
-                if pg.op[u.by] != .Read { s.reaches[k] = true; continue }
-                for r in uses[u.by] {
-                    ok := false
-                    #partial switch pg.op[r.by] {
-                    case .Compare:
-                        ok = true
-                    case .Return:
-                        ok, s.returned[k] = true, true
-                    case .Write:
-                        if r.at == 1 && in_result(pg, uses[:], vars, graph_operands(pg, r.by)[0].op) { ok, s.returned[k] = true, true }
-                    case .Call, .Construct:
-                        c := graph_called(pg, r.by)
-                        j := r.at - (1 if pg.op[r.by] == .Construct else 0)
-                        if c != nil && j >= 0 {
-                            cs := fun_summary(g, c)
-                            ok = j < len(cs.reaches) && !cs.reaches[j] && !cs.returned[j]
-                        }
-                    }
-                    if !ok { s.reaches[k] = true }
-                }
-            }
-        }
-    }
-    return true
+    codegen_fatal(e.g, pg.origin[op], TYPE_RESULT_READS_DEST, name, held, into, name, into)
 }
 
 // Each functional update `x = f(x, …)` — f consumes that argument (builds its
@@ -3709,7 +3490,6 @@ llvm_zero :: proc(t: Type) -> string {
 }
 
 // A param's IR type: an aggregate goes by address.
-@(private="file")
 llvm_param_type :: proc(t: Type) -> (string, bool) {
     if llvm_scalar(t) { return llvm_type_from_checker(t), true }
     if llvm_aggregate(t) { return "ptr", true }

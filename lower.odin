@@ -241,6 +241,7 @@ lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
             // (Into `_`: dropped — nowhere to go.)
             dropped := i < len(targets) && t.tag[targets[i]] == .Ident && tc_name(k, targets[i]) == "_"
             if lw_big_in(k, val, !dropped) { return true }
+            if !dropped && lw_big_call(k, val) { return true }
         }
     case .Return:
         for val in tree_list(t, t.a[s]) { if lw_big_in(k, val, true) { return true } }
@@ -258,6 +259,18 @@ lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
         return (fv.init != 0 && lw_big_temps(k, fv.init)) || lw_big_in(k, fv.cond, false) || (fv.post != 0 && lw_big_temps(k, fv.post))
     }
     return false
+}
+
+// Whether a value is a call's big result — one assigned to a place the call
+// may reach (a value it's handed, a pointer that may point there) is held
+// first, on the arena (codegen's llvm_temporary): its scope marks for it.
+// (A call handed nothing reaches nothing: built in place.)
+lw_big_call :: proc(k: ^TC, val: Tree_Id) -> bool {
+    u := tc_unparen(k, val)
+    if k.t.tag[u] != .Call && k.t.tag[u] != .Method_Call { return false }
+    if k.t.tag[u] == .Call && len(tree_list(k.t, k.t.a[u])) == 0 { return false }
+    ty := tc_node_type(k, u)
+    return ty != nil && routes_to_arena(ty)
 }
 
 // Whether an expression, or one inside it, is a big value with nowhere to go
@@ -384,6 +397,8 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Decl:
         lw_decl(k, s)
     case .Assign:
+        // (A call's big result assigned: maybe held on the arena — its scope's.)
+        for val in tree_list(t, t.b[s]) { if lw_big_call(k, val) { graph_held_here(k.gb) } }
         lw_assign(k, s)
     case .Return:
         lw_return(k, s)

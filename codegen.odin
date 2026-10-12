@@ -108,7 +108,7 @@ Codegen :: struct {
     // when they're entered and left (llvm.odin, llvm_probe).
     profile: string,
     // What each fun's code reaches through its params (llvm.odin,
-    // fun_summary): worked out as calls ask, once — each worker its own.
+    // reach_summary): worked out as calls ask, once — each worker its own.
     summaries: map[^Type_Scope]^Fun_Summary,
     // Every function's code comes from the program graph (llvm.odin).
 

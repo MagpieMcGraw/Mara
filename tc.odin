@@ -308,6 +308,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     if len(checked.code.codes) > 0 { void_defaults = tc_void_defaults(k, checked, fns) }
     flow_analyze_program(c, checked, fns, void_defaults)
     escape_analyze_program(c, checked)
+    reach_analyze_program(c, checked)
     annot_check(k.annot, t, &checked.code, c.errors)
     checked.errors = c.errors
     return checked

@@ -1611,6 +1611,13 @@ graph_retype :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
     if b.g.kind[id] == .Local && b.g.written[id] == .Synthetic && (was == nil || !routes_to_arena(was)) { graph_temp_held(b, t) }
 }
 
+// A big value codegen may hold in a temporary of its own (a call's result,
+// lw_big_call): the current scope's to hold on the arena.
+graph_held_here :: proc(b: ^Graph_Builder) {
+    if !b.arena { return }
+    if n := len(b.code.scopes); n > 0 { b.code.scopes[n - 1].held += 1 }
+}
+
 // A big temporary, its scope's to hold on the arena as a big local's is
 // (lw_big_temps foresaw it; codegen bumps it at the scope's mark).
 @(private="file")

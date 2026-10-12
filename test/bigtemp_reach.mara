@@ -1,0 +1,44 @@
+module bigtemp_reach
+
+//@ expect-output: 42 3
+
+// A call's struct result goes into a place the call may reach through its
+// argument (`p` may point into `h.big`), so it can't be built there: it's
+// held in a temporary first, and one of 4 KB lives on the arena, not the
+// stack. So does a value's (`step(g.big)`: the result is built from what it
+// overwrites), round after round of a loop. (Handed `&h.big.a[0]` itself —
+// surely its result's place — it's an error: result_reads_dest_neg.)
+
+use mara.memory
+
+Big :: struct {
+	a: [512]i64
+}
+
+Holder :: struct {
+	big: Big
+	n: i64
+}
+
+first_doubled :: fun(p: ^i64) -> Big {
+	b : Big
+	b.a[0] = p^ * 2
+	return b
+}
+
+step :: fun(b: Big) -> Big {
+	r : Big
+	r.a[0] = b.a[0]
+	r.a[1] = b.a[1] + 1
+	return r
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+	h : Holder
+	h.big.a[0] = 21
+	p := &h.big.a[0]
+	h.big = first_doubled(p)
+	for i in 0 .. 3 { h.big = step(h.big) }
+	print(h.big.a[0], h.big.a[1])
+}
