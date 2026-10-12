@@ -31,7 +31,6 @@ Llvm :: struct {
     held:  []bool,              // by id: a variable held as its one value
     ret:   string,              // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
-    by_value: Type,             // a union result: returned as an IR value (a slot like the rest: later)
     rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
     slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
     consumed: string,           // a param the result is built from (graph_consumed): its argument
@@ -52,6 +51,8 @@ Llvm :: struct {
     carved:  map[Node_Id]Node_Id,       // a local declared from a `let` take → that take (it is the memory)
     bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
     arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
+    temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark (llvm_big_temps)
+    lazy:    map[Node_Id]bool,          // a big temporary in main's body: bumped where it's first named
     ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
     outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
     out_run: map[Node_Id]i32,           // the run such a call is in
@@ -213,7 +214,6 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         rt := cf.cg_returns[0]
         switch {
         case llvm_scalar(rt):        e.ret = llvm_type_from_checker(rt)
-        case llvm_union(rt) != nil:   e.ret, e.by_value = llvm_type_from_checker(rt), rt
         case llvm_aggregate(rt):     e.sret = rt
         case:                        e.note = "result type"; return false
         }
@@ -264,14 +264,9 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     if e.sret != nil || e.rets != nil { llvm_result_slot(e) }
     llvm_in_place(e)
     // A big variable lives on the arena, or in the caller's slot, or — a
-    // temporary — where it's built in place (a big temporary elsewhere: later).
-    for id := Node_Id(1); id <= e.pg.end; id += 1 {
-        #partial switch e.pg.kind[id] {
-        case .Fun, .Struct: id = graph_last(e.pg, id); continue   // (another scope's)
-        }
-        if e.pg.kind[id] != .Local || !routes_to_arena(graph_type(e.pg, id)) || id in e.arena || id in e.in_place || id in e.carved { continue }
-        if e.value[id] != e.slot { e.stop = id; return false }
-    }
+    // temporary — where it's built in place, else on the arena too
+    // (llvm_big_temps).
+    if !llvm_big_temps(e) { return false }
     llvm_probe(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
         if i > 0 { emit_label(g, e.label[r]) }
@@ -285,6 +280,46 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     emit(g, "}")
     if !e.main { emit_raw(g, "") }   // (@main's end: its caller's)
+    return true
+}
+
+// Where each big local that has no arena alloc of its own lives. A named one
+// always has one (lowering's), unless it's in the caller's slot. A temporary
+// not built in place lives on the arena as a big local does: bumped at the
+// mark of the nearest scope around it that has one — once each time that
+// scope is entered, its reset freeing it — or, in main's body (which marks
+// nothing: its scope ends with the program), where it's first named. A
+// temporary with neither is lowering's miss (lw_big_temps): an error.
+@(private="file")
+llvm_big_temps :: proc(e: ^Llvm) -> bool {
+    pg := e.pg
+    marked := make(map[Node_Id]bool, context.temp_allocator)
+    for r in e.runs {
+        for op in graph_run(pg, int(r)) { if pg.op[op] == .Arena_Mark { marked[pg.parent[op]] = true } }
+    }
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
+        }
+        if pg.kind[id] != .Local || !routes_to_arena(graph_type(pg, id)) || id in e.arena || id in e.in_place || id in e.carved || id in e.bound { continue }
+        if e.value[id] == e.slot { continue }
+        if pg.written[id] != .Synthetic { e.stop = id; return false }
+        scope := NO_NODE
+        for s := pg.parent[id]; s != NO_NODE; s = pg.parent[s] {
+            if s in marked { scope = s; break }
+            if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
+        }
+        switch {
+        case scope != NO_NODE:
+            if scope not_in e.temps_at { e.temps_at[scope] = make([dynamic]Node_Id, context.temp_allocator) }
+            append(&e.temps_at[scope], id)
+        case e.main:
+            e.lazy[id] = true
+        case:
+            msg := CODE_TEMPORARY_NO_ARENA_SCOPE if e.g.checked.table.has_scope_allocator else CODE_TEMPORARY_NO_ARENA
+            codegen_fatal(e.g, pg.origin[id], msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
+        }
+    }
     return true
 }
 
@@ -374,6 +409,10 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     }
     if c, ok := e.carved[d]; ok { return e.value[c] }   // the carved memory
     if v, ok := e.bound[d]; ok { return e.value[v] }    // the payload
+    if d in e.lazy {   // (a big temporary in main's body: on the arena, from here — llvm_big_temps)
+        e.value[d] = emit_arena_bump(e.g, type_size(graph_type(pg, d)), graph_name(pg, d), span_location(pg.origin[d]))
+        return e.value[d]
+    }
     ir := llvm_type_from_checker(graph_type(pg, d))
     explicit := pg.written[d] == .Explicit
     key := fmt.tprintf("%s %s", graph_name(pg, d), ir)
@@ -1267,15 +1306,6 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             llvm_ret(e, "  ret void")
             return true
         }
-        if e.by_value != nil {
-            // A union: its value, loaded from where it is.
-            if len(ops) != 1 { return false }
-            at := llvm_operand(e, ops[0], e.by_value) or_return
-            v := fresh_tmp(g)
-            emit_load_into(g, v, e.ret, at)
-            llvm_ret(e, "  ret %s %s", e.ret, v)
-            return true
-        }
         if len(ops) == 0 {
             if e.main {   // the C entry point: 0, the program went well
                 llvm_ret(e, "  ret i64 0")
@@ -1346,6 +1376,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_run_defer(e, op)
     case .Arena_Mark:
         emit_arena_mark(g)
+        // (The scope's big temporaries: their storage, bumped now — llvm_big_temps.)
+        temps, _ := e.temps_at[pg.parent[op]]   // (bound first: `for x in m[k]` faults on a missing key)
+        for t in temps {
+            e.value[t] = emit_arena_bump(g, type_size(graph_type(pg, t)), graph_name(pg, t), span_location(span))
+        }
     case .Arena_Reset:
         emit_arena_reset(g)
     case .Arena_Alloc:
@@ -2765,7 +2800,6 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         result = callee.cg_returns[0]
         switch {
         case llvm_scalar(result):        ret = llvm_type_from_checker(result)
-        case llvm_union(result) != nil:  ret = llvm_type_from_checker(result)   // as a value
         case llvm_aggregate(result):
         case:                            e.note = "result type"; return false
         }
@@ -2814,26 +2848,6 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     tmp := fresh_tmp(g)
     emit(g, "  %s = call %s %s(%s)", tmp, ret, name, joined)
     e.value[op] = tmp
-    if llvm_union(result) != nil {
-        // A union value, kept where it can be read as one: the synthetic
-        // local it initializes (a match's subject), else a temporary the
-        // write copies from (a slot like a struct's: later).
-        at := ""
-        pg := e.pg
-        if u := e.user[op]; u >= 0 && pg.op[u] == .Write {
-            dest := graph_operands(pg, u)[0].op
-            if pg.op[dest] == .Var && pg.written[pg.refers[dest]] == .Synthetic &&
-               !llvm_direct(e, dest) && llvm_ahead(e, dest) {
-                at = llvm_place(e, dest)
-            }
-        }
-        if at == "" { at = llvm_temporary(e, op, callee, result, ret) }
-        emit_store(g, ret, tmp, at)
-        // Its partial arrays pointed into the callee's frame, gone: re-pointed
-        // at its own elements.
-        reanchor_partial_arrays(g, result, at)
-        e.value[op] = at
-    }
     return true
 }
 
@@ -3028,14 +3042,14 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
 
 // A temporary on the stack for a call's result. One as big as a local gets
 // an arena for (routes_to_arena) is an error at the call, not a stack that
-// overflows when it runs. (A Mara fun's struct result is one only when it
-// can't be built where it goes, llvm_result_place: a declaration's always
-// can. A C fun's slot and a union's value always are.)
+// overflows when it runs. (A Mara fun's struct or union result is one only
+// when it can't be built where it goes, llvm_result_place: a declaration's
+// always can. A C fun's slot always is.)
 @(private="file")
 llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: string = "") -> string {
     if routes_to_arena(t) {
         name := scope_display_name(callee)
-        hint := "" if callee.calling_conv == .C || llvm_union(t) != nil else fmt.tprintf(CODE_TEMPORARY_TOO_LARGE_CALL, name, name)
+        hint := "" if callee.calling_conv == .C else fmt.tprintf(CODE_TEMPORARY_TOO_LARGE_CALL, name, name)
         codegen_fatal(e.g, e.pg.origin[op], CODE_TEMPORARY_TOO_LARGE, name, type_name(t), type_size(t), hint)
     }
     tmp := fresh_tmp(e.g)
@@ -3327,7 +3341,7 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     if e.value[p] != "" || pg.op[p] == .Var { return true }
     ops := graph_operands(pg, p)
     #partial switch pg.op[p] {
-    case .Field:
+    case .Field, .Variant:   // (a union's variant: the union's own address)
         if !llvm_ahead(e, ops[0].op) { return false }
     case .Index:
         if ops[1].op == NO_NODE || pg.op[ops[1].op] != .Const || !llvm_ahead(e, ops[0].op) { return false }

@@ -490,6 +490,8 @@ CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeh
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
 CODE_GRAPH_UNLOWERED :: "can't lower '%s' from the program graph: its %s '%s'%s"
 CODE_TEMPORARY_TOO_LARGE :: "the result of '%s' (%s, %d bytes) is held in a temporary here, and that's too large for the stack%s"
+CODE_TEMPORARY_NO_ARENA :: "a %s (%d bytes) is held in a temporary here, too large for the stack: it lives on the program's arena, and there is none — set one at the top of main (`this_program = Program(Arena_Basic(16 * MB))`)"
+CODE_TEMPORARY_NO_ARENA_SCOPE :: "a %s (%d bytes) is held in a temporary here, and no scope around it marks the arena for it (a compiler bug: lowering's lw_big_temps missed it)"
 CODE_TEMPORARY_TOO_LARGE_CALL :: ". It can't be built where it goes while the call may reach that through what it's passed: declare it first (`x := %s(…)` is built in place), or have '%s' fill a pointer instead"
 CODE_GRAPH_NO_SCOPE :: "'%s' has no scope in the program graph"
 CODE_GRAPH_NO_CODE :: "'%s' has no code in the program graph"

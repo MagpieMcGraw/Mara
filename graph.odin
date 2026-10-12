@@ -1598,13 +1598,25 @@ graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Op
 
 // A synthetic local of the current block, for a value that outlives a run.
 graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node_Id {
-    return graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
+    id := graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
+    if t != nil { graph_temp_held(b, t) }
+    return id
 }
 
 // A node's type, given after it is made: settled as it is when it is made
 // (graph_node).
 graph_retype :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
+    was := graph_type(b.g, id)
     b.g.type_[id] = graph_type_id(b, graph_settled(t))
+    if b.g.kind[id] == .Local && b.g.written[id] == .Synthetic && (was == nil || !routes_to_arena(was)) { graph_temp_held(b, t) }
+}
+
+// A big temporary, its scope's to hold on the arena as a big local's is
+// (lw_big_temps foresaw it; codegen bumps it at the scope's mark).
+@(private="file")
+graph_temp_held :: proc(b: ^Graph_Builder, t: Type) {
+    if !b.arena || t == nil || !routes_to_arena(t) { return }
+    if n := len(b.code.scopes); n > 0 { b.code.scopes[n - 1].held += 1 }
 }
 
 // A plain place walked once more (another run): the operations that name it

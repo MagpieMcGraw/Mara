@@ -201,6 +201,7 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
     if !k.gb.arena { return false }
     t := k.t
     for s in tc_live(k, stmts) {
+        if lw_big_temps(k, s) { return true }
         if t.tag[s] != .Decl { continue }
         v := decl_view(t, s)
         if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
@@ -208,6 +209,84 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
             lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
             if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }
         }
+    }
+    return false
+}
+
+// Whether a statement's own expressions hold a big value with nowhere to go
+// — an argument, a dropped result, a field's base, a match's subject, an
+// `if` expression's: a temporary that lives on the arena, as a big local
+// does (codegen bumps it at its scope's mark). A declaration's, an
+// assignment's or a return's value is built where it goes; what's inside it
+// may not be. (A body — an if's, a loop's, an arm's — is its own scope's.)
+lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[s] {
+    case .Expr_Stmt:
+        return lw_big_in(k, Tree_Id(t.a[s]), false)
+    case .Decl:
+        v := decl_view(t, s)
+        for val in v.values { if lw_big_in(k, val, true) { return true } }
+    case .Assign:
+        targets := tree_list(t, t.a[s])
+        for tg in targets { if lw_big_in(k, tg, true) { return true } }
+        for val, i in tree_list(t, t.b[s]) {
+            // (Into `_`: dropped — nowhere to go.)
+            dropped := i < len(targets) && t.tag[targets[i]] == .Ident && tc_name(k, targets[i]) == "_"
+            if lw_big_in(k, val, !dropped) { return true }
+        }
+    case .Return:
+        for val in tree_list(t, t.a[s]) { if lw_big_in(k, val, true) { return true } }
+    case .Compound:
+        return lw_big_in(k, Tree_Id(t.a[s]), true) || lw_big_in(k, Tree_Id(tree_rec(t, t.b[s], 2)[1]), true)
+    case .If, .Elif, .Match, .For_Cond:
+        return lw_big_in(k, Tree_Id(t.a[s]), false)
+    case .For_Each:
+        return lw_big_in(k, for_view(t, s).collection, false)
+    case .For_Range:
+        fv := for_view(t, s)
+        return lw_big_in(k, fv.lo, false) || lw_big_in(k, fv.hi, false)
+    case .For_C:
+        fv := for_view(t, s)
+        return (fv.init != 0 && lw_big_temps(k, fv.init)) || lw_big_in(k, fv.cond, false) || (fv.post != 0 && lw_big_temps(k, fv.post))
+    }
+    return false
+}
+
+// Whether an expression, or one inside it, is a big value with nowhere to go
+// (lw_big_temps): `direct`, it's a statement's own value, built where it goes.
+lw_big_in :: proc(k: ^TC, n: Tree_Id, direct: bool) -> bool {
+    if n == 0 { return false }
+    t := k.t
+    u := tc_unparen(k, n)
+    if (!direct || t.tag[u] == .If_Expr) && lw_placeless(k, u) {
+        if ty := tc_node_type(k, u); ty != nil && routes_to_arena(ty) { return true }
+    }
+    kids := make([dynamic]Tree_Id, context.temp_allocator)
+    tree_children(t, u, &kids)
+    for c in kids { if lw_big_in(k, c, false) { return true } }
+    return false
+}
+
+// A big value with nowhere to go (lw_big_temps) — an argument, a dropped
+// result — built in a temporary of its own, which lives on the arena; its
+// read (held false: not one, built nothing).
+lw_big_held :: proc(k: ^TC, n: Tree_Id, t: Type, w: Written, span: Span) -> (Built, bool) {
+    if t == nil || !lw_placeless(k, tc_unparen(k, n)) || !routes_to_arena(t) || !graph_aggregate(t) { return {}, false }
+    b := k.gb
+    slot := graph_slot(b, "temp", t, span)
+    d := graph_dest_var("temp", slot, t)
+    r := lw_expr(k, n, .Into, w, dest = d)
+    lw_store(k, n, t, r, d, span)
+    return {v = graph_read(b, graph_var(b, "temp", slot, t, span), t, span), ok = true}, true
+}
+
+// Whether an expression's value is made, not read from a place: a call's
+// result, a literal, an array, a union's variant, an `if` expression's.
+lw_placeless :: proc(k: ^TC, n: Tree_Id) -> bool {
+    #partial switch k.t.tag[n] {
+    case .Call, .Method_Call, .Literal, .Array, .Dot_Ident, .If_Expr, .Broadcast: return true
+    case .Field: return tc_ref(k, n).kind == .Variant
     }
     return false
 }
@@ -292,6 +371,8 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
         if lw_override(k, e) { return }
+        // (A big result dropped: built in a temporary of its own, on the arena.)
+        if _, held := lw_big_held(k, e, tc_node_type(k, e), .Explicit, tree_span(t, s)); held { return }
         lw_expr(k, e, .Value)
     case .Decl:
         lw_decl(k, s)
@@ -505,6 +586,8 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     name := tc_name(k, target)
     if name == "_" {
+        // (A big value dropped: built in a temporary of its own, on the arena.)
+        if _, held := lw_big_held(k, value, tc_node_type(k, value), .Explicit, span); held { return }
         lw_expr(k, value, .Value)
         return
     }
@@ -1204,7 +1287,9 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
                     r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
                 }
             case .Written, .Receiver:
-                r = lw_expr(k, a, .Either, w, dest = use, temp_span = use_at)
+                held_big := false
+                if held == NO_NODE { r, held_big = lw_big_held(k, a, at, w, span) }
+                if !held_big { r = lw_expr(k, a, .Either, w, dest = use, temp_span = use_at) }
             }
             append(&ops, lw_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, held))
         }

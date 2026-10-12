@@ -1,0 +1,68 @@
+module big_temps
+
+use mara.core
+include mara.memory
+
+// A big value with nowhere to go — an argument, a dropped result, a field's
+// base, a match's subject, an `if` expression's — lives on the arena as a
+// big local does: bumped once when its scope is entered, freed when it's
+// left, so a loop doesn't pile them up (each round here takes 1.6 KB at
+// least four times; 200,000 rounds in a 16 MB arena). A big union is built in
+// its caller's slot, as a struct is: `return .B`, `return A{b = …}`. (They
+// had been stack temporaries — the stack is 1 MB — and too big: errors.)
+
+//@ expect-output: work: 50000234333
+//@ expect-output: main's own: 7 8
+
+Big :: struct {
+	data: [200]i64
+	n: i64 = 1
+}
+
+U :: union {
+	A { b: Big }
+	B
+}
+
+plain_big :: fun(n: i64) -> Big {
+	b : Big
+	b.n = n
+	return b
+}
+
+pick :: fun(i: i64) -> U {
+	if i % 2 == 0 do return .B
+	return A{b = plain_big(i)}
+}
+
+total :: fun(b: Big) -> i64 { return b.n }
+
+drop :: fun(n: i64) -> Big { return plain_big(n) }
+
+// Every kind, in a function of its own, in a loop.
+work :: fun(rounds: i64) -> i64 {
+	sum := 0
+	for i in 0 .. rounds {
+		sum += total(plain_big(i))               // an argument
+		_ = drop(i)                              // a dropped result
+		sum += plain_big(i).n                    // a field of a call's result
+		match pick(i) {                          // a match on a call's result
+		A a
+			sum += a.b.n
+		B
+			sum += 1
+		}
+		x := if i % 3 == 0 do plain_big(1) else plain_big(2)   // an if expression's
+		sum += x.n
+	}
+	// (A loop's condition: its temporary bumped once, reused each round.)
+	j := 0
+	for total(plain_big(j)) < 1000 { j += 1 }
+	return sum + j
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+	print("work:", work(200000))
+	print("main's own:", total(plain_big(7)), plain_big(8).n)
+}
