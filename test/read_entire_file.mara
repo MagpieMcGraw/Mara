@@ -1,0 +1,52 @@
+module read_entire_file
+
+use mara.core
+use mara.os
+
+// read_entire_file: all of a file or Too_Large, never one cut off — the
+// room exactly its size, a byte short, an empty file into a room that held
+// something (its len becomes 0), a file that isn't there. (Its reads go on
+// until the file's all in: one read may stop short. To see that run, make
+// file_read's per-call cap tiny for a moment — it isn't, here.)
+
+//@ expect-output: exact: Ok 100 true
+//@ expect-output: short: File_Error.Too_Large
+//@ expect-output: empty: Ok 0
+//@ expect-output: missing: File_Error.Open_Failed
+
+PATH :: "read_entire_file_demo.txt"
+EMPTY :: "read_entire_file_empty.txt"
+
+// Writes text as the whole of the file at path.
+save :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_write(path)?
+	defer file_close(id)
+	file_write_text(id, text)?
+}
+
+main :: fun() {
+	text : str256
+	for _ in 0 .. 10 {
+		&text + "0123456789"
+	}
+	if bool(save(PATH, text)) or bool(save(EMPTY, "")) {
+		print("couldn't write the files")
+		return
+	}
+
+	room : [..100]byte
+	e := read_entire_file(PATH, &room)
+	got : []utf8 = room[:]
+	print("exact:", e, room.len, got == text)
+
+	short : [..99]byte
+	print("short:", read_entire_file(PATH, &short))
+
+	// (The room still holds the 100 bytes: its len goes to 0.)
+	print("empty:", read_entire_file(EMPTY, &room), room.len)
+
+	print("missing:", read_entire_file("no_such_file.txt", &room))
+
+	_ = file_delete(PATH)
+	_ = file_delete(EMPTY)
+}

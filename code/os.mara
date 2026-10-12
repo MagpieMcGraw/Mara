@@ -110,6 +110,24 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 	}
 }
 
+// Reads a whole file into data: all of it, or Too_Large when it's bigger
+// than data's capacity — never a file cut off. data.len becomes its size.
+// (As many reads as that takes: one read may stop short.)
+read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
+	id := file_open_read(path)?
+	defer file_close(id)
+	size := file_size(id)?
+	if size > data.cap do return Too_Large
+	got : i64 = 0
+	for got < size {
+		rest := data[got : size]
+		file_read(id, &rest)?
+		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
+		got += rest.len
+	}
+	data.len = got
+}
+
 // DANGER BELOW
 
 // Scan a C-owned NUL-terminated buffer into an honest slice: len is the
@@ -292,26 +310,22 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return size
 	}
 
-	// Reads from the file into data, as much as its capacity holds; data.len
-	// becomes the number of bytes read (0 at the end of the file, or of a pipe
-	// whose writer closed).
+	// Reads the next piece of a file, a pipe or a program's output into data:
+	// one read, up to data's capacity — less when less has come, or when the
+	// system reads less at a time. data.len becomes the number of bytes read
+	// (0 at the end of the file, or of a pipe whose writer closed). For all
+	// of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
 		read: u32 = 0
-		if not bool(ReadFile(id, &data[0], u32(data.cap), &read, void)) {
+		// (ReadFile counts in a u32: at most 1 GB a call, so a room of 4 GB
+		// or more doesn't wrap to a small count — 4 GB to none.)
+		want := data.cap
+		if want > 1 << 30 do want = 1 << 30
+		if not bool(ReadFile(id, &data[0], u32(want), &read, void)) {
 			// (A pipe whose writer closed: its end, as a file's is — 0 bytes.)
 			if GetLastError() != ERROR_BROKEN_PIPE do return Read_Failed
 		}
 		data.len = read
-	}
-
-	// Reads a whole file into data. Fails with Too_Large when the file is
-	// bigger than data's capacity.
-	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
-		id := file_open_read(path)?
-		defer file_close(id)
-		size := file_size(id)?
-		if size > data.cap do return Too_Large
-		file_read(id, data)?
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. Win32
@@ -919,23 +933,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return st.size
 	}
 
-	// Reads from the file into data, as much as its capacity holds; data.len
-	// becomes the number of bytes read (0 at the end of the file, or of a pipe
-	// whose writer closed).
+	// Reads the next piece of a file, a pipe or a program's output into data:
+	// one read, up to data's capacity — less when less has come, or when the
+	// system reads less at a time. data.len becomes the number of bytes read
+	// (0 at the end of the file, or of a pipe whose writer closed). For all
+	// of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
 		n := read(id, &data[0], usize(data.cap))
 		if n < 0 do return Read_Failed
 		data.len = n
-	}
-
-	// Reads a whole file into data. Fails with Too_Large when the file is
-	// bigger than data's capacity.
-	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
-		id := file_open_read(path)?
-		defer file_close(id)
-		size := file_size(id)?
-		if size > data.cap do return Too_Large
-		file_read(id, data)?
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. POSIX
