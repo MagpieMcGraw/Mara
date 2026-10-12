@@ -1,5 +1,10 @@
 module disttest
 
+// A distinct struct prints under its own name: DPoint, not Point.
+//@ expect-output: distinct var:   DPoint { x: 1, y: 2 }
+//@ expect-output: distinct field: Holder { p: DPoint { x: 1, y: 2 } }
+//@ expect-output: distinct call:  DPoint { x: 1, y: 2 }
+
 Point :: struct {
 	x : i64 = 1
 	y : i64 = 2

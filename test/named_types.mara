@@ -21,9 +21,10 @@ use mara.string
 //@ expect-output: slice alias: [6, 7] 5 26
 //@ expect-output: union alias: 7 U_Tag.A 7 B {}
 //@ expect-output: distinct union: 8 U_Tag.A 5 -1 -1 6
-//@ expect-output: field union: B Color.Red U_Tag.B
+//@ expect-output: field union: B CD.Red U_Tag.B
 //@ expect-output: structs: 2 3 20 30 5 5
-//@ expect-output: enums: Color.Green Color.Green Color.Red green true
+//@ expect-output: printed: P { x: 2, y: 5 } PD { x: 3, y: 5 } Holder { u: B {}, c: CD.Red }
+//@ expect-output: enums: Color.Green CD.Green CD.Red green true
 //@ expect-output: plain enum: green
 
 Buf  :: type [..64]utf8
@@ -145,6 +146,8 @@ main :: fun() {
 	pa := PA{x = 2}
 	pd := PD{x = 3}
 	print("structs:", pa.x, pd.x, pa.get(), pd.get(), pa.y, pd.y)
+	// (An alias prints as its base; a distinct type under its own name.)
+	print("printed:", pa, pd, holder)
 
 	ca : CA = .Green
 	cd : CD = .Green

@@ -95,7 +95,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
                 emit(g, "  %s = %s %s %s to %s", w, op, ir_type, side.val, tag_ir)
                 v = w
             }
-            gen_print_enum(g, v, tag_ir, et)
+            gen_print_enum(g, v, tag_ir, et, label = print_type_label(side.t))
             continue
         }
         // A utf8 side renders as the glyph, same as print() — the value
@@ -485,7 +485,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         return
     }
     if et, ok := bt.(^Type_Enum); ok {
-        gen_print_enum(g, val, llvm_type_from_checker(et), et)
+        gen_print_enum(g, val, llvm_type_from_checker(et), et, label = print_type_label(ty))
         return
     }
     if _, ok := bt.(Type_Err); ok {
@@ -536,12 +536,13 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
 // recurse. This is what lets struct fields and array elements render like a bare
 // print at any nesting depth (struct-in-struct, array-of-structs, ...).
 emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
+    // (A distinct one's, under its own name: print_type_label.)
     if ut, is_union := distinct_base(ty).(^Type_Union); is_union {
-        gen_print_union(g, addr, ut)
+        gen_print_union(g, addr, ut, print_type_label(ty))
         return
     }
     if sd := as_struct_body(distinct_base(ty)); sd != nil {
-        gen_print_struct(g, addr, sd)
+        gen_print_struct(g, addr, sd, print_type_label(ty))
         return
     }
     bt := distinct_base(ty)
@@ -612,7 +613,7 @@ gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "")
 // A union printed: the variant it holds, as that variant prints — `Rect {
 // w: 3 }` — chosen by its tag when the program runs (a niche union's, its
 // pointer's nullness). A tag no variant has prints `Shape(7)`.
-gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
+gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union, label := "") {
     tag_ir := union_tag_ir_type(ut)
     tag := load_union_tag(g, ut, addr)
     unknown, done := fresh_label(g, "union.unknown"), fresh_label(g, "union.done")
@@ -636,11 +637,21 @@ gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
         emit_br(g, done)
     }
     emit_label(g, unknown)
-    emit_print_literal(g, strings.concatenate({type_name(ut), "("}, context.temp_allocator))
+    emit_print_literal(g, strings.concatenate({label if label != "" else type_name(ut), "("}, context.temp_allocator))
     emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = i32(ir_type_bits(tag_ir))})
     emit_print_literal(g, ")")
     emit_br(g, done)
     emit_label(g, done)
+}
+
+// The name a value prints under when its type is a distinct one — `PD {
+// x: 3 }`, `CD.Green` — its own, as written ("": its base's, as an alias's
+// is: `type P` is P, and prints as one).
+print_type_label :: proc(ty: Type) -> string {
+    if dt, is_distinct := unwrap_alias(ty).(^Type_Distinct); is_distinct {
+        return dt.source_name if dt.source_name != "" else dt.name
+    }
+    return ""
 }
 
 // A struct's name as print shows it: as written — `P`, `Box(i64)`.
@@ -664,7 +675,9 @@ print_struct_name :: proc(sd: ^Scope_Body) -> string {
 // tag). Variants are sorted by value for stable IR; same-value aliases keep
 // the first in name order — LLVM's switch requires unique case values, so
 // duplicates are folded into one case.
-gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum, named := true) {
+gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum, named := true, label := "") {
+    // (Its name: a distinct enum's own — label — else the enum's.)
+    enum_name := label if label != "" else et.source_name if et.source_name != "" else et.name
     Variant :: struct { name: string, value: int }
     entries := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
     for name, value in et.variants {
@@ -700,7 +713,7 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum,
     // a union's tag `Shape_Tag.Rect`): a variant's name alone can be any enum's.
     // (Not `named`: the variant's alone, as a union variant's struct is named.)
     name_prefix := ""
-    if named { name_prefix = strings.concatenate({et.source_name if et.source_name != "" else et.name, "."}, context.temp_allocator) }
+    if named { name_prefix = strings.concatenate({enum_name, "."}, context.temp_allocator) }
 
     for entry, i in dedup {
         emit_label(g, case_labels[i])
@@ -709,7 +722,7 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum,
     }
 
     emit_label(g, unknown_lbl)
-    emit_print_literal(g, fmt.tprintf("%s(", et.source_name if et.source_name != "" else et.name))
+    emit_print_literal(g, fmt.tprintf("%s(", enum_name))
     switch tag_ir {
     case "i64":
         emit_printf(g, "%lld", fmt.tprintf("i64 %s", val))
