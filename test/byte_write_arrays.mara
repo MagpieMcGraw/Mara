@@ -1,0 +1,82 @@
+module byte_write_arrays
+
+use mara.core
+use mara.string
+
+// Into a byte buffer, a value's raw bytes — an array's too, not its elements:
+// a fixed array as a view of its own type (`buf[0:8] = two`, the index form
+// `buf[4] = two` alike; `[2]u8{5, 6}` — what the untyped literal's error
+// says to write); a slice's or partial array's elements, as many as it holds
+// (text's bytes, a []u32's). Its bounds may be worked out as the program
+// runs: the write is checked within the buffer's cap, and a span lo:hi is
+// the value's size — run-time errors both (bounds known, the span's size is
+// the checker's: byte_write_span_neg). A struct literal written straight in
+// is built as itself, then its bytes written.
+
+//@ expect-output: slice form: 1 0 0 0 2 0 0 0 0 0 0 0
+//@ expect-output: index form: 0 0 0 0 1 0 0 0 2 0 0 0
+//@ expect-output: u8 literal: 0 5 6 0
+//@ expect-output: struct: 7 0 0 0 9 0 0 0
+//@ expect-output: struct literals: 7 7 3
+//@ expect-output: run-time lo:hi: 0 0 1 0 0 0 2 0 0 0 0 0
+//@ expect-output: slice source: 1 0 0 0 2 0 0 0 3 0 0 0 0 0 0 0
+//@ expect-output: open hi: 0 0 0 0 1 0 0 0 2 0 0 0 3 0 0 0
+//@ expect-output: text: 104 105 0 0
+//@ expect-output: partial target: 0 16
+
+P :: struct {
+	a: u32 = 7
+	b: u32 = 9
+}
+
+// The bytes, as numbers.
+show :: fun(label: []utf8, buf: []byte) {
+	text : str256
+	for c, i in buf {
+		if i > 0 do &text + ' '
+		&text + int_text(i64(c))
+	}
+	print(label, text)
+}
+
+main :: fun() {
+	two : [2]u32 = [1, 2]
+	a : [12]byte
+	a[0:8] = two
+	show("slice form:", a[:])
+	b : [12]byte
+	b[4] = two
+	show("index form:", b[:])
+	c : [4]byte
+	c[1:3] = [2]u8{5, 6}
+	show("u8 literal:", c[:])
+	d : [8]byte
+	p := P{}
+	d[0:8] = p
+	show("struct:", d[:])
+	lit : [16]byte
+	lit[4] = P{}
+	lit[8:16] = P{b = 3}
+	print("struct literals:", lit[4], lit[8], lit[12])
+
+	e : [12]byte
+	i := 2
+	e[i:i + 8] = two
+	show("run-time lo:hi:", e[:])
+	three : [3]u32 = [1, 2, 3]
+	s : []u32 = three[:]
+	f : [16]byte
+	f[0:12] = s
+	show("slice source:", f[:])
+	g : [16]byte
+	g[4:] = s
+	show("open hi:", g[:])
+	t : [4]byte
+	t[0:] = "hi"
+	show("text:", t[:])
+
+	// (Within its cap: its len is its own to say.)
+	h : [..16]byte
+	h[0:8] = two
+	print("partial target:", h.len, h.cap)
+}

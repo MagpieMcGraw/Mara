@@ -282,13 +282,19 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) 
 
 // Bounds check for byte-buffer access at offset [low, low+size), at
 // SLICE_LEN_IR: the caller has low and cap_val at that width.
-emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
+emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string, span: Span = {}) {
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, low, fmt.tprintf("%d", size), cap_val)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    emit_fail(g, fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size),
+    // (Where, when the caller knows: as a bounds check's message says it.)
+    at := ""
+    if span != {} {
+        loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+        at = strings.concatenate({loc, " "}, context.temp_allocator)
+    }
+    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", at, label, size),
               fail_i64(low), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 }

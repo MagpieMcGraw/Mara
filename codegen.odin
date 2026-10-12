@@ -796,6 +796,14 @@ can_elide_source_check :: proc(lo, hi, have: string) -> bool {
     return l_ok && h_ok && n_ok && h - l <= n
 }
 
+// True when a span written into bytes surely is the value's size: lo and hi
+// integer literals (the checker has said so already when they differ).
+can_elide_span_check :: proc(lo, hi: string) -> bool {
+    _, l_ok := strconv.parse_i64(lo)
+    _, h_ok := strconv.parse_i64(hi)
+    return l_ok && h_ok
+}
+
 can_elide_bounds_check :: proc(idx: string, len_val: string) -> bool {
     idx_i, idx_ok := strconv.parse_i64(idx)
     if !idx_ok { return false }

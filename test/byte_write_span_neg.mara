@@ -1,0 +1,14 @@
+module byte_write_span_neg
+//@ expect-fail: [2]u32 is 8 bytes, but slice span is 4 bytes
+
+use mara.core
+
+// An array written into bytes is its raw bytes: a span of known bounds must
+// be its size.
+
+main :: fun() {
+	two : [2]u32 = [1, 2]
+	buf : [16]byte
+	buf[0:4] = two
+	print(buf[0])
+}

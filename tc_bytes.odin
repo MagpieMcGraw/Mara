@@ -86,18 +86,28 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, env: ^Type_Sc
     check_byte_write(k.c, vt, span)
 }
 
-// Into a span of bytes: a value no array is its raw bytes — plain data, as
-// many as the span has when its bounds are numbers — and the view's type is
-// its own; an array's elements are copied (of a width: no untyped ones).
+// Into a span of bytes, a value's raw bytes: a value no array, or a fixed
+// array — `[2]u32`, `[2]u8{1, 2}` — a view of its own type, as many bytes as
+// the span has when its bounds are numbers; a slice's or a partial array's
+// elements, theirs, as many as it holds (tc_slice_assign leaves them to the
+// copy; byte elements are copied as they are). Plain data, of a width: no
+// references, no untyped numbers.
 tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Span) -> Type {
-    shaped := is_array_shaped(vt)
-    if !shaped {
-        if why := byte_slice_reason(k.c, vt); why != "" { tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why) }
-    }
-    if fa, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+    fa, fixed := distinct_base(vt).(^Type_Fixed_Array)
+    if fixed && is_infer(fa.elem) {
         tc_error(k, span, TYPE_BYTE_BUFFER_COPY_UNTYPED, fa.size)
+        return nil
     }
-    if shaped { return nil }
+    if is_array_shaped(vt) && !fixed {
+        if elem := index_elem_type(vt); elem != nil {
+            if why := byte_slice_reason(k.c, elem); why != "" { tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why) }
+        }
+        return nil
+    }
+    if why := byte_slice_reason(k.c, vt); why != "" {
+        tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why)
+        return nil
+    }
     view := solidify_type(vt)
     lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)
     hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)

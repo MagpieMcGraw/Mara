@@ -480,6 +480,7 @@ du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
         du_walk_value(w, ops[0])
         // A loop's element read is the collection's data; its position is not.
         if g.written[o.op] != .Synthetic { du_walk_value(w, ops[1]) }
+        if len(ops) > 2 { du_walk_value(w, ops[2]) }   // (a span written into bytes: its hi)
     case .Call, .Construct:
         du_walk_call(w, o.op)
     case .Arith, .Compare, .Unary, .Cast, .Slice, .Carve:

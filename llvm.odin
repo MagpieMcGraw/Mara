@@ -1956,7 +1956,25 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
     data, bound := llvm_bytes(e, base) or_return
-    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view")
+    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view", span)
+    // (A span written, lo:hi: as many bytes as the value has — where its
+    // bounds aren't numbers; the checker said so where they are.)
+    if len(ops) > 2 && ops[2].op != NO_NODE {
+        hi := llvm_operand(e, ops[2], slice_header_width_type) or_return
+        if !can_elide_span_check(off, hi) {
+            w := SLICE_LEN_IR
+            n := fresh_tmp(g)
+            emit(g, "  %s = sub %s %s, %s", n, w, hi, off)
+            ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
+            cmp := fresh_tmp(g)
+            emit(g, "  %s = icmp ne %s %s, %d", cmp, w, n, type_size(t))
+            emit_cond_br(g, cmp, bad, ok)
+            emit_label(g, bad)
+            loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+            emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write: the span is %%lld bytes, the value %d\n", loc, type_size(t)), fail_i64(n))
+            emit_label(g, ok)
+        }
+    }
     tmp := fresh_tmp(g)
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", tmp, data, SLICE_LEN_IR, off)
     e.value[op] = tmp
@@ -1992,8 +2010,39 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     }
     dst := side(e, base, SLICE.cap) or_return
     from := side(e, src, -1) or_return
-    if !llvm_same_type(dst.elem, from.elem) { return false }
     w := SLICE_LEN_IR
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+    if !llvm_same_type(dst.elem, from.elem) {
+        if !is_byte_elem(dst.elem) || is_byte_elem(from.elem) { return false }
+        // Into bytes, src's elements' raw bytes (a slice's, a partial array's:
+        // tc_byte_span_checks): count × size, from lo — within the bytes' cap,
+        // and the span's size when hi is written.
+        size := type_size(from.elem)
+        count := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        nbytes := fresh_tmp(g)
+        emit(g, "  %s = mul %s %s, %d", nbytes, w, count, size)
+        if hi != "" {
+            span_n := fresh_tmp(g)
+            emit(g, "  %s = sub %s %s, %s", span_n, w, hi, lo)
+            ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
+            cmp := fresh_tmp(g)
+            emit(g, "  %s = icmp ne %s %s, %s", cmp, w, span_n, nbytes)
+            emit_cond_br(g, cmp, bad, ok)
+            emit_label(g, bad)
+            emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write: the span is %%lld bytes, the value %%lld\n", loc), fail_i64(span_n), fail_i64(nbytes))
+            emit_label(g, ok)
+        }
+        ok, bad := fresh_label(g, "byte.copy.ok"), fresh_label(g, "byte.copy.err")
+        emit_cond_br(g, emit_byte_span_outside(g, lo, count, dst.bound, size), bad, ok)
+        emit_label(g, bad)
+        emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write out of bounds: offset %%lld + %%lld bytes > capacity %%lld\n", loc),
+                  fail_i64(lo), fail_i64(nbytes), fail_i64(dst.bound))
+        emit_label(g, ok)
+        at := fresh_tmp(g)
+        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", at, dst.data, w, lo)
+        emit_memcpy_runtime(g, at, from.data, nbytes)
+        return true
+    }
     run_given := hi != ""   // (hi written: the run's hi - lo, which src must have)
     if hi == "" {
         n := fmt.tprintf("%d", from.fixed)
@@ -2029,7 +2078,6 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             emit(g, "  %s = icmp sgt %s %s, %s", src_cmp, w, want, have)
             emit_cond_br(g, src_cmp, src_err, src_ok)
             emit_label(g, src_err)
-            loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
             emit_fail(g, fmt.tprintf("%s runtime error: slice assignment of %%lld elements into '%s', from a value of %%lld\n", loc, name),
                       fail_i64(want), fail_i64(have))
             emit_label(g, src_ok)

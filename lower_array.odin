@@ -55,9 +55,10 @@ lw_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
     b := k.gb
     span := tree_span(k.t, s)
     if op_tok != 0 { lw_fail(k, s, "a compound assignment into bytes") }
-    pt := graph_type(b.g, place.op) if place.op != NO_NODE else nil
-    r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = place, type_ = pt}, temp = true, temp_span = span)
+    // (The value built at its own type — `buf[4] = P{}` a P, not the byte
+    // the element is: the place becomes a view of it, graph_build_view.)
     vt := tc_node_type(k, value)
+    r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = place, type_ = solidify_type(vt)}, temp = true, temp_span = span)
     _, big := tc_byte_node(k, target)
     graph_build_view(b, place, solidify_type(vt), big, span)
     lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
@@ -185,16 +186,24 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     bytes := is_byte_buffer(tt)
     if bytes && tc_is_void(k, value) { lw_fail(k, s, "void written into bytes") }
     vt := tc_node_type(k, value)
-    // (The view's type: a value no array's own — tc_byte_span_checks.)
+    // (The view's type: a value no array's, or a fixed array's, own — its
+    // raw bytes: tc_byte_span_checks. A slice's or partial array's, the copy's.)
     view: Type
-    if bytes && !is_array_shaped(vt) { view = solidify_type(vt) }
+    if _, fixed := distinct_base(vt).(^Type_Fixed_Array); bytes && (!is_array_shaped(vt) || fixed) { view = solidify_type(vt) }
     place: Operand
     if view != nil {
         vplace := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, span, is_self)
         at := NO_VALUE
         if lo_n != 0 { at = graph_build_widen(b, lw_bound(k, lo_n, .Explicit, sl_span, raw = true), span, {to = slice_header_width_type}) }
         if at == NO_VALUE { at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{}) }
-        place = graph_op_value(b, .View, .Explicit, span, view, "", vplace, at)
+        // (Its hi, written: the span is the value's size — checked where the
+        // bounds aren't numbers, llvm_view.)
+        if hi_n != 0 {
+            hi := graph_build_widen(b, lw_bound(k, hi_n, .Explicit, sl_span, raw = true), span, {to = slice_header_width_type})
+            place = graph_op_value(b, .View, .Explicit, span, view, "", vplace, at, hi)
+        } else {
+            place = graph_op_value(b, .View, .Explicit, span, view, "", vplace, at)
+        }
     } else {
         lo, hi := NO_VALUE, NO_VALUE
         if lo_n != 0 {

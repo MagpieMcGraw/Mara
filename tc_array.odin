@@ -222,7 +222,9 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
     }
     if is_byte_buffer(tt) {
-        if view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span); view != nil { return }
+        // (Into bytes, a value's bytes — an array's too, not its elements:
+        // all checked there.)
+        if view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span); view != nil || is_array_shaped(vt) { return }
     } else if v := tc_unparen(k, value); tr.tag[v] == .Array {
         // (An array literal at the elements' type — `f[2:4] = [0.5, 0.25]`
         // into f32s: an array of f32s, tc_settle.)
