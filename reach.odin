@@ -7,7 +7,7 @@ import "core:slice"
 // shared by the analysis that holds a program to the rule a result isn't
 // built over what its call reads (reach_analyze_program) and by codegen,
 // which builds results in place where nothing they read can be that place
-// (llvm_result_place, llvm_in_place).
+// (llvm_result_place, storage_in_place).
 
 // Each fun's summary, worked out once: reach_summary's cache.
 Reach_Summaries :: map[^Type_Scope]^Fun_Summary

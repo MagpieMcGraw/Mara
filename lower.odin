@@ -237,7 +237,7 @@ lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
         targets := tree_list(t, t.a[s])
         for tg in targets { if lw_big_in(k, tg, true) { return true } }
         // (Assigned together, each value is held first — a swap's, in place,
-        // llvm_swaps; any other's, a temporary.)
+        // storage_swaps; any other's, a temporary.)
         if len(targets) > 1 {
             for val in tree_list(t, t.b[s]) {
                 if ty := tc_node_type(k, val); ty != nil && routes_to_arena(ty) { return true }

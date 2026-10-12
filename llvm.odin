@@ -39,31 +39,18 @@ Llvm :: struct {
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
     head:  string,              // its `define` line
     probe: string,              // -profile: its slot, when it's timed (llvm_probe)
-    user:  []Node_Id,           // by id: the one operation using an operation's value
+    st:    ^Storage,            // where each value lives (storage.odin): read here, decided there
 
     // Its named allocas: one for the named locals of one name and type (their
     // scopes never overlap — a name can't be declared again where it is
     // visible).
     shared:  map[string]string,
     used:    map[string]bool,
-    in_place: map[Node_Id]Node_Id,  // a temporary → the place it is built in (llvm_in_place)
-    hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (llvm_holds_header)
-    carved:  map[Node_Id]Node_Id,       // a local declared from a `let` take → that take (it is the memory)
-    bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
-    arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
-    temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark (llvm_big_temps)
-    marked:  map[Node_Id]bool,          // the scopes that mark the arena (llvm_big_temps)
-    swaps:   map[Node_Id][2]Node_Id,    // a swap's first put → the two places it swaps (llvm_swaps)
-    swapped: map[Node_Id]bool,          // a swap's held locals: no storage, their operations skipped
-    hoist:   map[Node_Id][dynamic]Node_Id, // a value's first write in place → the reads of its place taken before it (llvm_builds_alone)
-    lazy:    map[Node_Id]bool,          // a big temporary in main's body: bumped where it's first named
-    ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
+    hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (Storage.views): those values
+    ahead:   map[Node_Id]bool,          // operations done ahead of their turn (a call builds its result there; a swap's)
     outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
     out_run: map[Node_Id]i32,           // the run such a call is in
     loaded:  map[Operand]string,        // a result loaded in its call's run (which dominates every use)
-    out_user: map[Operand]Node_Id,      // each output's user, as `user` is each operation's (-2: several)
-    update:  map[Node_Id]bool,          // a call updating its destination in place (llvm_in_place_updates)
-    alias:   map[Node_Id]Node_Id,       // an operation that is another, computed already: its value that one's
     stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
@@ -261,24 +248,25 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     e.used["%entry"] = true
     for i in 1 ..< e.own { e.used[fmt.tprintf("%%run%d", i)] = true }
 
-    llvm_users(e)
     if !llvm_variables(e) { return false }
-    llvm_in_place_updates(e)
-    llvm_carved(e)
-    if e.sret != nil || e.rets != nil { llvm_result_slot(e) }
-    llvm_in_place(e)
-    // A big variable lives on the arena, or in the caller's slot, or — a
-    // temporary — where it's built in place, else on the arena too
-    // (llvm_big_temps); a swap's two held values, nowhere (llvm_swaps).
-    llvm_swaps(e)
-    if !llvm_big_temps(e) { return false }
+    // Where each value lives — held as a value, in the caller's slot, built in
+    // place, on the arena — decided for the whole fun (storage.odin).
+    e.st = storage_of(g.checked, pg, &g.summaries, e.runs[:], e.own, e.ctor, e.main, e.sret, e.rets)
+    if e.st.stop != NO_NODE {
+        e.stop = e.st.stop
+        return false
+    }
+    copy(e.held, e.st.held)
+    for v in e.st.views { e.hdr[v] = {} }
+    for op in e.st.done { e.ahead[op] = true }
+    for v, k in e.st.result { e.value[v] = e.slot if e.st.one_slot else fmt.tprintf("%%sret.%d", k) }
     llvm_probe(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
         if i > 0 { emit_label(g, e.label[r]) }
         e.run = r
         for op in graph_run(pg, int(r)) {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
-            if d, is := e.alias[op]; is { e.value[op] = e.value[d]; continue }
+            if d, is := e.st.alias[op]; is { e.value[op] = e.value[d]; continue }
             e.stop = op
             if !llvm_hoist_reads(e, op) { return false }
             if !llvm_op(e, op) { return false }
@@ -289,71 +277,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     return true
 }
 
-// A swap — `a, b = b, a`: two big places of one type, each one's held value
-// read straight from the other — done in place, a piece at a time through a
-// small buffer (llvm_emit_swap), not held whole: its held locals take no
-// storage, their holds and the second put are skipped, the first put swaps.
-// Only when the two are one place or surely apart (places_disjoint): two that
-// may partly overlap are held as any parallel assignment's values are.
-@(private="file")
-llvm_swaps :: proc(e: ^Llvm) {
-    pg := e.pg
-    // (Each parallel local's writes; and the puts, in order: writes of one's
-    // value into its target.)
-    Put :: struct { w, target, local, read, var_op: Node_Id }
-    holds := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
-    puts := make([dynamic]Put, context.temp_allocator)
-    is_held :: proc(pg: ^Program_Graph, d: Node_Id) -> bool {
-        return d > 0 && d <= pg.end && pg.kind[d] == .Local && pg.written[d] == .Synthetic && graph_name(pg, d) == "parallel"
-    }
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Write { continue }
-            ops := graph_operands(pg, op)
-            dest, v := ops[0].op, ops[1].op
-            if pg.op[dest] == .Var && is_held(pg, pg.refers[dest]) {
-                d := pg.refers[dest]
-                if d not_in holds { holds[d] = make([dynamic]Node_Id, context.temp_allocator) }
-                append(&holds[d], op)
-                continue
-            }
-            if v != NO_NODE && pg.op[v] == .Read {
-                if src := graph_operands(pg, v)[0].op; pg.op[src] == .Var && is_held(pg, pg.refers[src]) {
-                    append(&puts, Put{op, dest, pg.refers[src], v, src})
-                }
-            }
-        }
-    }
-    // (A local's one hold — a read of a place: that place.)
-    held_from :: proc(e: ^Llvm, holds: map[Node_Id][dynamic]Node_Id, d: Node_Id) -> (w, read, src: Node_Id, ok: bool) {
-        pg := e.pg
-        ws, has := holds[d]
-        if !has || len(ws) != 1 || llvm_reads(e, d) != 1 { return }
-        w = ws[0]
-        read = graph_operands(pg, w)[1].op
-        if read == NO_NODE || pg.op[read] != .Read { return }
-        return w, read, graph_operands(pg, read)[0].op, true
-    }
-    for i := 0; i + 1 < len(puts); i += 1 {
-        p, q := puts[i], puts[i + 1]
-        t := graph_type(pg, p.local)
-        if !routes_to_arena(t) || !llvm_same_type(t, graph_type(pg, q.local)) || p.local == q.local { continue }
-        pw, pr, ps, pok := held_from(e, holds, p.local)
-        qw, qr, qs, qok := held_from(e, holds, q.local)
-        if !pok || !qok { continue }
-        if !places_same(e.pg, e.bound, ps, q.target) || !places_same(e.pg, e.bound, qs, p.target) { continue }
-        if !places_same(e.pg, e.bound, p.target, q.target) && !places_disjoint(e.pg, e.bound, p.target, q.target) { continue }
-        e.swaps[p.w] = {p.target, q.target}
-        e.swapped[p.local], e.swapped[q.local] = true, true
-        for skip in ([]Node_Id{pw, pr, graph_operands(pg, pw)[0].op, qw, qr, graph_operands(pg, qw)[0].op,
-                               p.read, p.var_op, q.w, q.read, q.var_op}) {
-            e.ahead[skip] = true   // (done: the swap is all of it)
-        }
-        i += 1
-    }
-}
-
-// Two places of one type swapped (llvm_swaps): 64 bytes at a time through a
+// Two places of one type swapped (storage_swaps): 64 bytes at a time through a
 // buffer of that size — copied out of a, b's into a, the buffer's into b —
 // then each one's partial arrays re-pointed at its own elements.
 @(private="file")
@@ -398,47 +322,6 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     return true
 }
 
-// Where each big local that has no arena alloc of its own lives. A named one
-// always has one (lowering's), unless it's in the caller's slot. A temporary
-// not built in place lives on the arena as a big local does: bumped at the
-// mark of the nearest scope around it that has one — once each time that
-// scope is entered, its reset freeing it — or, in main's body (which marks
-// nothing: its scope ends with the program), where it's first named. A
-// temporary with neither is lowering's miss (lw_big_temps): an error.
-@(private="file")
-llvm_big_temps :: proc(e: ^Llvm) -> bool {
-    pg := e.pg
-    e.marked = make(map[Node_Id]bool, context.temp_allocator)
-    marked := &e.marked
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) { if pg.op[op] == .Arena_Mark { marked[pg.parent[op]] = true } }
-    }
-    for id := Node_Id(1); id <= pg.end; id += 1 {
-        #partial switch pg.kind[id] {
-        case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
-        }
-        if pg.kind[id] != .Local || !routes_to_arena(graph_type(pg, id)) || id in e.arena || id in e.in_place || id in e.carved || id in e.bound || id in e.swapped { continue }
-        if e.value[id] == e.slot { continue }
-        if pg.written[id] != .Synthetic { e.stop = id; return false }
-        scope := NO_NODE
-        for s := pg.parent[id]; s != NO_NODE; s = pg.parent[s] {
-            if s in marked^ { scope = s; break }
-            if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
-        }
-        switch {
-        case scope != NO_NODE:
-            if scope not_in e.temps_at { e.temps_at[scope] = make([dynamic]Node_Id, context.temp_allocator) }
-            append(&e.temps_at[scope], id)
-        case e.main:
-            e.lazy[id] = true
-        case:
-            msg := CODE_TEMPORARY_NO_ARENA_SCOPE if e.g.checked.table.has_scope_allocator else CODE_TEMPORARY_NO_ARENA
-            codegen_fatal(e.g, pg.origin[id], msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
-        }
-    }
-    return true
-}
-
 // The first operation of the run a scope's code enters.
 @(private="file")
 llvm_first_then :: proc(pg: ^Program_Graph, scope: Node_Id) -> Node_Id {
@@ -474,8 +357,6 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
         case .Local:
             t := graph_type(pg, id)
             if !llvm_scalar(t) && !llvm_aggregate(t) { return false }
-            if pg.written[id] == .Synthetic && llvm_scalar(t) && llvm_holds(e, id) { e.held[id] = true }
-            if pg.written[id] == .Synthetic && llvm_slice(t) != nil && llvm_holds_header(e, id) { e.hdr[id] = {} }
         case .Field:
             // The program's struct is set up by main's entry (`this_program =
             // Program(…)` names the arena), never constructed: its fields,
@@ -519,13 +400,13 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
 llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     pg := e.pg
     if slot := e.value[d]; slot != "" { return slot }
-    if at, ok := e.in_place[d]; ok {
+    if at, ok := e.st.in_place[d]; ok {
         e.value[d] = llvm_place(e, at)
         return e.value[d]
     }
-    if c, ok := e.carved[d]; ok { return e.value[c] }   // the carved memory
-    if v, ok := e.bound[d]; ok { return e.value[v] }    // the payload
-    if d in e.lazy {   // (a big temporary in main's body: on the arena, from here — llvm_big_temps)
+    if c, ok := e.st.carved[d]; ok { return e.value[c] }   // the carved memory
+    if v, ok := e.st.bound[d]; ok { return e.value[v] }    // the payload
+    if d in e.st.lazy {   // (a big temporary in main's body: on the arena, from here — storage_big_temps)
         e.value[d] = emit_arena_bump(e.g, type_size(graph_type(pg, d)), graph_name(pg, d), span_location(pg.origin[d]))
         return e.value[d]
     }
@@ -570,230 +451,12 @@ llvm_copy :: proc(e: ^Llvm, dest, src: string, t: Type) {
     reanchor_partial_arrays(e.g, t, dest)
 }
 
-// Each operation's user, when it has exactly one (-1 for none, -2 for
-// several); and each match binding's variant place.
-@(private="file")
-llvm_users :: proc(e: ^Llvm) {
-    pg := e.pg
-    e.user = make([]Node_Id, len(e.value))
-    for &u in e.user { u = -1 }
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) {
-            for o in graph_operands(pg, op) {
-                if o.op == NO_NODE { continue }
-                u := &e.user[o.op]
-                u^ = op if u^ == -1 else -2
-                ou, seen := e.out_user[o]
-                e.out_user[o] = -2 if seen && ou != op else op
-            }
-            // A match arm's binding is the payload's place.
-            if pg.op[op] == .Variant && pg.refers[op] != NO_NODE { e.bound[pg.refers[op]] = op }
-            if pg.op[op] == .Arena_Alloc { e.arena[pg.refers[graph_operands(pg, op)[0].op]] = true }
-        }
-    }
-}
-
-// What a fun returning aggregates builds in its caller's slots rather than in
-// storage of its own: the local every return returns (NRVO), and a
-// temporary whose one read is a return (a literal or construction returned).
-// With several results, each aggregate one's slot — a returned local only
-// when a fixed array (the others: later).
-@(private="file")
-llvm_result_slot :: proc(e: ^Llvm) {
-    if e.rets == nil || e.ctor {
-        llvm_result_slot_at(e, 0, 1, e.slot, named = true)
-        return
-    }
-    for rt, i in e.rets {
-        if !llvm_aggregate(rt) { continue }
-        llvm_result_slot_at(e, i, len(e.rets), fmt.tprintf("%%sret.%d", i), named = llvm_array(rt) != nil)
-    }
-}
-
-// The k-th result's slot, of n: what lives there (a `?`'s return, of zeros,
-// returns no local).
-@(private="file")
-llvm_result_slot_at :: proc(e: ^Llvm, k, n: int, slot: string, named: bool) {
-    pg := e.pg
-    returned := NO_NODE   // the local every return returns, so far
-    every := true
-    for r in e.runs[:e.own] {   // (a defer block's return goes back where it ran)
-        for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Return || pg.written[op] == .Implied { continue }
-            ops := graph_operands(pg, op)
-            v := NO_NODE
-            if len(ops) == n && ops[k].op != NO_NODE && pg.op[ops[k].op] == .Read {
-                place := graph_operands(pg, ops[k].op)[0].op
-                if pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local { v = pg.refers[place] }
-            }
-            if v in e.carved { v, every = NO_NODE, false }   // the carved memory: copied out
-            if v != NO_NODE && pg.written[v] == .Synthetic {
-                // (Not an `if` expression's, written by its arms: its own.)
-                if llvm_reads(e, v) == 1 && llvm_written_only_in(e, v, r) { e.value[v] = slot }
-                v = NO_NODE   // a temporary is no named local
-            }
-            switch {
-            case v == NO_NODE:                        every = false
-            case returned == NO_NODE:                 returned = v
-            case returned != v:                       every = false
-            }
-        }
-    }
-    if named && every && returned != NO_NODE { e.value[returned] = slot }
-}
-
-// Whether every write to variable v is in run r.
-@(private="file")
-llvm_written_only_in :: proc(e: ^Llvm, v: Node_Id, r: i32) -> bool {
-    pg := e.pg
-    for q in e.runs {
-        if q == r { continue }
-        for op in graph_run(pg, int(q)) {
-            #partial switch pg.op[op] {
-            case .Zero, .Construct, .Fill, .Write, .Byte_Read:
-                if llvm_where(e, graph_operands(pg, op)[0].op).root == v { return false }
-            }
-        }
-    }
-    return true
-}
-
-// Which temporaries are built in the storage they are then written to. The
-// graph builds a literal or construction assigned to existing storage whole,
-// in a temporary — it may read what it replaces; it is built in place when,
-// from its first write on, nothing it reads can be that storage
-// (llvm_overlaps), and — a construction — its callee is handed none of the
-// caller's storage (the rule for calls, as in llvm_result_place).
-@(private="file")
-llvm_in_place :: proc(e: ^Llvm) {
-    pg := e.pg
-    for r in e.runs {
-        ops := graph_run(pg, int(r))
-        for w, at in ops {
-            if pg.op[w] != .Write { continue }
-            wops := graph_operands(pg, w)
-            x, v := wops[0].op, wops[1].op
-            if v == NO_NODE || wops[1].out != 0 || pg.op[v] != .Read || !llvm_aggregate(graph_type(pg, v)) { continue }
-            tv := graph_operands(pg, v)[0].op
-            if pg.op[tv] != .Var || llvm_direct(e, x) { continue }
-            if pg.op[x] == .Swizzle { continue }   // components, not one array's storage
-            if pg.op[x] == .Slice { continue }     // a run of elements the value's are copied into, no storage of one type
-            t := pg.refers[tv]
-            if t <= 0 || t > pg.end || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
-            if e.value[t] != "" || llvm_reads(e, t) != 1 { continue }
-            if llvm_builds_alone(e, ops[:at], t, x) { e.in_place[t] = x }
-        }
-    }
-}
-
-// Which locals are declared from a `let` take: such a local is the carved
-// memory itself — its declaration binds it, copying nothing.
-@(private="file")
-llvm_carved :: proc(e: ^Llvm) {
-    pg := e.pg
-    for r in e.runs {
-        for w in graph_run(pg, int(r)) {
-            if pg.op[w] != .Write { continue }
-            ops := graph_operands(pg, w)
-            c, dest := ops[1].op, ops[0].op
-            if c == NO_NODE || pg.op[c] != .Carve || graph_name(pg, c) != "let" || pg.op[dest] != .Var { continue }
-            s := pg.stmt[w]
-            if d := pg.refers[dest]; pg.kind[d] == .Local && s >= 0 && pg.stmts[s].kind == .Decl { e.carved[d] = c }
-        }
-    }
-}
-
-// Whether temporary t, built in `before` (the operations of one run ahead of
-// the write that reads it), can be built at place x instead.
-@(private="file")
-llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
-    pg := e.pg
-    // All of t's code is here, and x is known before t's first write.
-    uses, here := 0, 0
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) { if pg.op[op] == .Var && pg.refers[op] == t { uses += 1 } }
-    }
-    first := -1
-    for op, i in before {
-        if pg.op[op] == .Var && pg.refers[op] == t { here += 1 }
-        #partial switch pg.op[op] {
-        case .Zero, .Construct, .Fill, .Write:
-            if first < 0 && llvm_where(e, graph_operands(pg, op)[0].op).root == t { first = i }
-        }
-    }
-    if uses != here || first < 0 { return false }
-    if pg.op[x] != .Var {
-        known := false
-        for op in before[:first] { if op == x { known = true } }
-        if !known { return false }
-    }
-    // From its first write on, nothing read (or pointed at) is x's storage —
-    // but a number read from it with nothing written anywhere else first (no
-    // call, no other write: `x = X{n = x.n + 5}`) is read before the first
-    // write instead, as the temporary would have read it (llvm_hoist_reads).
-    hoists := make([dynamic]Node_Id, context.temp_allocator)
-    clean := true   // (nothing but t's own writes and pure operations so far)
-    for op in before[first:] {
-        ops := graph_operands(pg, op)
-        #partial switch pg.op[op] {
-        case .Read, .Address:
-            if llvm_where(e, ops[0].op).root == t { continue }
-            if pg.op[op] == .Read && llvm_direct(e, ops[0].op) { continue }   // a value, in no memory
-            if llvm_overlaps(e, ops[0].op, x) {
-                if pg.op[op] == .Read && clean && llvm_scalar(graph_type(pg, op)) && llvm_ahead_able(e, ops[0].op) {
-                    append(&hoists, op)
-                    continue
-                }
-                return false
-            }
-        case .Construct:
-            // t's own construction, handed arguments (handed no storage, its
-            // constructor writes nothing but t: still clean). Another's: not.
-            if pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { clean = false; continue }
-            if len(ops) == 1 { continue }
-            callee := graph_called(e.pg, op)
-            if callee == nil { return false }
-            if llvm_passes_storage(callee) {
-                reaches, mine := llvm_call_reaches(e, op, x, first = 1)
-                if mine != NO_NODE { llvm_reads_its_dest(e, op, mine, x, callee) }
-                if reaches { return false }
-            }
-            if _, consumes := graph_consumed(&e.g.checked.code, callee).?; consumes { return false }
-        case .Write, .Zero, .Fill:
-            if llvm_where(e, ops[0].op).root != t { clean = false }
-        case .Var, .Field, .Variant, .Index, .Deref, .Const, .Arith, .Compare, .Unary, .Cast, .Swizzle, .Global:
-        case:
-            clean = false
-        }
-    }
-    if len(hoists) > 0 {
-        if before[first] not_in e.hoist { e.hoist[before[first]] = make([dynamic]Node_Id, context.temp_allocator) }
-        append(&e.hoist[before[first]], ..hoists[:])
-    }
-    return true
-}
-
-// Whether place p's address can be had ahead of its turn (llvm_ahead, which
-// computes it): a variable, a field or variant of one such, a constant
-// element, what a pointer variable points at.
-@(private="file")
-llvm_ahead_able :: proc(e: ^Llvm, p: Node_Id) -> bool {
-    pg := e.pg
-    if pg.op[p] == .Var { return true }
-    ops := graph_operands(pg, p)
-    #partial switch pg.op[p] {
-    case .Field, .Variant, .Deref: return llvm_ahead_able(e, ops[0].op)
-    case .Index: return ops[1].op != NO_NODE && pg.op[ops[1].op] == .Const && llvm_ahead_able(e, ops[0].op)
-    }
-    return false
-}
-
 // The reads of a value's place taken before its first write in place
-// (llvm_builds_alone): each read now, its place computed ahead — then
+// (storage_builds_alone): each read now, its place computed ahead — then
 // skipped at its turn.
 @(private="file")
 llvm_hoist_reads :: proc(e: ^Llvm, at: Node_Id) -> bool {
-    reads, has := e.hoist[at]
+    reads, has := e.st.hoist[at]
     if !has { return true }
     for r in reads {
         if !llvm_ahead(e, graph_operands(e.pg, r)[0].op) { return false }
@@ -820,77 +483,17 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Ty
     }
 }
 
-// Whether a variable is `this_program`, the compiler's global: a declaration
-// the code names from outside it.
-@(private="file")
-llvm_this_program :: proc(e: ^Llvm, d: Node_Id) -> bool {
-    return d > e.pg.end && graph_name(e.pg, d) == "this_program"
-}
-
-// Where a place lives: the variable at the root of its path; whether the
-// path crosses a pointer (then the root says nothing about where it is), and
-// once it does, `region`, the type of the object the last crossing lands in —
-// else the root variable's type; whether a pointer is dereferenced as written.
-@(private="file")
-Llvm_Where :: struct {
-    root:     Node_Id,
-    via_ptr:  bool,
-    region:   Type,
-    explicit: bool,
-}
-
-@(private="file")
-llvm_where :: proc(e: ^Llvm, p: Node_Id) -> Llvm_Where {
-    pg := e.pg
-    w := Llvm_Where{root = NO_NODE}
-    for id := p; id != NO_NODE; {
-        ops := graph_operands(pg, id)
-        #partial switch pg.op[id] {
-        case .Var:
-            // A match arm's binding is its scrutinee's payload: where that is.
-            if v, bound := e.bound[pg.refers[id]]; bound {
-                id = v
-                continue
-            }
-            w.root = pg.refers[id]
-            // this_program is an object of its type, reached through the
-            // pointer @__mara_program.
-            if !w.via_ptr { w.via_ptr, w.region = llvm_this_program(e, w.root), graph_type(pg, id) }
-            return w
-        case .Deref:
-            if pg.written[id] != .Implied { w.explicit = true }
-            if !w.via_ptr { w.via_ptr, w.region = true, graph_type(pg, id) }
-            id = ops[0].op
-        case .Index:
-            if _, is_slice := distinct_base(graph_type(pg, ops[0].op)).(^Type_Slice); is_slice && !w.via_ptr {
-                w.via_ptr, w.region = true, graph_type(pg, id)
-            }
-            id = ops[0].op
-        case .Field, .Swizzle, .Variant, .Slice:
-            id = ops[0].op
-        case:
-            return w   // unknown: no root
-        }
-    }
-    return w
-}
-
-// Whether reading place `read` can observe place `dest`. Yes when both are
-// one variable's own storage, when what is read holds pointers, or when
-// either is unknown. Otherwise it comes down to where each can live: a
-// variable's own storage is an object of its type, one through a pointer an
-// object of the pointee's; two overlap only if one's object type can hold
-// the other's, and a local's own storage is never
-// inside anything — but the caller's (a param, the result slot) can be. And
-// the result slot never overlaps what a param reaches: a caller hands over a
-// fresh slot whenever an argument carries storage.
+// storage_overlaps, asked as a call's result is placed while the fun is
+// emitted (llvm_result_place): by then a temporary built in place in the
+// result slot is in it as well (llvm_in_result). (Goes when where a call's
+// result goes is a storage fact too.)
 @(private="file")
 llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
     pg := e.pg
     if pg.op[read] == .Global { return false }   // a constant table is never written
-    r, d := llvm_where(e, read), llvm_where(e, dest)
+    r, d := storage_where(e.st, read), storage_where(e.st, dest)
     if r.root == NO_NODE || d.root == NO_NODE || r.explicit { return true }
-    if places_disjoint(e.pg, e.bound, read, dest) { return false }
+    if places_disjoint(e.pg, e.st.bound, read, dest) { return false }
     if !d.via_ptr && llvm_in_result(e, d.root) && pg.kind[r.root] == .Param { return false }
     if !r.via_ptr && !d.via_ptr && r.root == d.root { return true }
     if !is_plain_data(graph_type(pg, read)) { return true }
@@ -902,121 +505,12 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
 }
 
 // Whether a variable lives in the caller's result slot: Self and its fields in
-// a constructor, the local every return returns.
+// a constructor, a named result, the local every return returns — and, once
+// its storage is had, a temporary built in place there.
 @(private="file")
 llvm_in_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     if e.ctor && (d == 0 || (e.pg.kind[d] == .Field && e.pg.parent[d] == 0)) { return true }
     return d > 0 && d <= e.pg.end && e.value[d] == e.slot
-}
-
-// How many reads a variable has.
-@(private="file")
-llvm_reads :: proc(e: ^Llvm, v: Node_Id) -> int {
-    pg := e.pg
-    n := 0
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Read { continue }
-            place := graph_operands(pg, op)[0].op
-            if pg.op[place] == .Var && pg.refers[place] == v { n += 1 }
-        }
-    }
-    return n
-}
-
-// Whether a synthetic local is written once, before each of its reads: then
-// it is that value, and needs no storage.
-@(private="file")
-llvm_holds :: proc(e: ^Llvm, v: Node_Id) -> bool {
-    return llvm_once_before(e, v, false)
-}
-
-// Whether a synthetic slice local — a view — is its header's values: written
-// once, from a slice, before every use, and used only through its len or cap
-// (read) and its elements. Then its header is read once, where the slice is
-// taken, into registers (a collection loop's view of its collection).
-@(private="file")
-llvm_holds_header :: proc(e: ^Llvm, v: Node_Id) -> bool {
-    if !llvm_once_before(e, v, true) { return false }
-    pg := e.pg
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Write { continue }
-            ops := graph_operands(pg, op)
-            if pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != v { continue }
-            s := ops[1].op
-            return s != NO_NODE && pg.op[s] == .Slice && e.user[s] == op
-        }
-    }
-    return false
-}
-
-// Whether a variable is written once, before each of its uses: reads — or, a
-// view (`header`), reads of its len or cap and its elements.
-@(private="file")
-llvm_once_before :: proc(e: ^Llvm, v: Node_Id, header: bool) -> bool {
-    pg := e.pg
-    write_run, write_at := -1, -1
-    Read :: struct { run, at: int }
-    reads := make([dynamic]Read, 0, 4, context.temp_allocator)
-    for r, ri in e.runs {
-        for op, at in graph_run(pg, int(r)) {
-            ops := graph_operands(pg, op)
-            for o, k in ops {
-                if o.op == NO_NODE || pg.op[o.op] != .Var || pg.refers[o.op] != v { continue }
-                u := e.user[op]
-                switch {
-                case pg.op[op] == .Write && k == 0:
-                    if write_run >= 0 { return false }
-                    write_run, write_at = ri, at
-                case (pg.op[op] == .Read || pg.op[op] == .Deref) && !header:   // (a pointer's deref reads it)
-                    append(&reads, Read{ri, at})
-                case header && pg.op[op] == .Field && llvm_header_field(graph_name(pg, op)) >= 0 && u >= 0 && pg.op[u] == .Read,
-                     header && pg.op[op] == .Index && k == 0:
-                    append(&reads, Read{ri, at})
-                case:
-                    return false   // addressed, or a place of something larger
-                }
-            }
-        }
-    }
-    if write_run < 0 { return false }
-    for rd in reads {
-        if rd.run == write_run {
-            if rd.at < write_at { return false }
-        } else if !llvm_dominates(e, write_run, rd.run) {
-            return false
-        }
-    }
-    return true
-}
-
-// Whether every path from the entry to run b passes through run a (both
-// positions in e.runs).
-@(private="file")
-llvm_dominates :: proc(e: ^Llvm, a, b: int) -> bool {
-    // Reach b from the entry without passing through a: then a doesn't dominate.
-    pg := e.pg
-    at: map[i32]int
-    defer delete(at)
-    for r, i in e.runs { at[r] = i }
-    seen := make([]bool, len(e.runs), context.temp_allocator)
-    todo := make([dynamic]int, 0, 8, context.temp_allocator)
-    if a == 0 { return true }
-    append(&todo, 0)
-    seen[0] = true
-    for len(todo) > 0 {
-        i := pop(&todo)
-        if i == b { return false }
-        ops := graph_run(pg, int(e.runs[i]))
-        for edge in graph_out(pg, ops[len(ops) - 1]) {
-            j, ok := at[e.pg.run_starts[edge.to]]
-            if !ok || seen[j] || j == a { continue }
-            seen[j] = true
-            append(&todo, j)
-        }
-    }
-    return true
 }
 
 // --- operations ------------------------------------------------------------------
@@ -1033,7 +527,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op] = e.slot
             return true
         }
-        if llvm_this_program(e, d) {
+        if storage_this_program(e.pg, d) {
             // The program's own storage, which main hands over: at each use,
             // where @__mara_program points.
             at := fresh_tmp(g)
@@ -1046,7 +540,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if d in e.hdr { return true }   // a view held as values: no storage
         switch {
         case pg.kind[d] == .Param || pg.kind[d] == .Field: e.value[op] = e.value[d]
-        case d in e.arena:                                 e.value[op] = e.value[d]   // its arena alloc gives it storage
+        case d in e.st.arena:                                 e.value[op] = e.value[d]   // its arena alloc gives it storage
         case !e.held[d]:                          e.value[op] = llvm_storage(e, d)
         }
     case .Const:
@@ -1081,7 +575,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case llvm_aggregate(t):
             // A big-endian view's bytes are swapped as they're copied: only
             // a write of them can.
-            if u := e.user[op]; big && (u < 0 || pg.op[u] != .Write || graph_operands(pg, u)[1].op != op) {
+            if u := e.st.user[op]; big && (u < 0 || pg.op[u] != .Write || graph_operands(pg, u)[1].op != op) {
                 return false
             }
             e.value[op] = e.value[place]
@@ -1100,7 +594,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return false
         }
     case .Write:
-        if pair, is := e.swaps[op]; is { return llvm_emit_swap(e, pair[0], pair[1]) }   // (a swap's first put: the swap)
+        if pair, is := e.st.swaps[op]; is { return llvm_emit_swap(e, pair[0], pair[1]) }   // (a swap's first put: the swap)
         place := ops[0].op
         if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
         if pg.op[place] == .Swizzle && len(graph_name(pg, place)) > 1 {
@@ -1131,7 +625,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         val, ok := llvm_operand(e, ops[1], t)
         if !ok { e.note = "the value's type"; return false }
         if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
-        if pg.op[place] == .Var && e.carved[pg.refers[place]] == ops[1].op && ops[1].op != NO_NODE {
+        if pg.op[place] == .Var && e.st.carved[pg.refers[place]] == ops[1].op && ops[1].op != NO_NODE {
             return true   // a `let` declaration: the name is the carved memory
         }
         if pg.op[place] == .View && graph_name(pg, place) != "" { return false }   // a big-endian write (none yet)
@@ -1308,7 +802,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op] = tmp
             return true
         }
-        if u := e.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op {
+        if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op {
             e.value[op] = from
             return true
         }
@@ -1474,8 +968,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_run_defer(e, op)
     case .Arena_Mark:
         emit_arena_mark(g)
-        // (The scope's big temporaries: their storage, bumped now — llvm_big_temps.)
-        temps, _ := e.temps_at[pg.parent[op]]   // (bound first: `for x in m[k]` faults on a missing key)
+        // (The scope's big temporaries: their storage, bumped now — storage_big_temps.)
+        temps, _ := e.st.temps_at[pg.parent[op]]   // (bound first: `for x in m[k]` faults on a missing key)
         for t in temps {
             e.value[t] = emit_arena_bump(g, type_size(graph_type(pg, t)), graph_name(pg, t), span_location(span))
         }
@@ -1667,7 +1161,7 @@ llvm_output :: proc(e: ^Llvm, o: Operand, at: []string, want: Type) -> (string, 
 @(private="file")
 llvm_declared_at :: proc(e: ^Llvm, o: Operand) -> string {
     pg := e.pg
-    u, ok := e.out_user[o]
+    u, ok := e.st.out_user[o]
     if !ok || u < 0 || pg.op[u] != .Write { return "" }
     uops := graph_operands(pg, u)
     dest := uops[0].op
@@ -2065,10 +1559,10 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     if graph_name(pg, op) != "" { return false }
     // Written to, it's the run of elements a write fills (llvm_copy_into).
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op { return true }
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op { return true }
     // A whole fixed array viewed only to be copied from: the array itself, no
     // header (llvm_copy_into reads it as the array).
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op &&
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op &&
        pg.op[graph_operands(pg, u)[0].op] == .Slice && llvm_whole_array(e, op) {
         e.value[op] = e.value[ops[0].op]
         return true
@@ -2076,7 +1570,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     // A whole fixed array — not a constant's table — viewed into a slice's
     // place (a field, an element, what a pointer points at): its header built
     // there (the write then has nothing to copy).
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op && llvm_whole_array(e, op) && pg.op[ops[0].op] != .Global {
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op && llvm_whole_array(e, op) && pg.op[ops[0].op] != .Global {
         dest := graph_operands(pg, u)[0].op
         #partial switch pg.op[dest] {
         case .Field, .Index, .Deref:
@@ -2134,7 +1628,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit(g, "  %s = sub %s %s, %s", n, SLICE_LEN_IR, hi, lo)
     }
     // Written to a held view: its values, no header in memory.
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Write {
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
         if d := graph_operands(pg, u)[0].op; pg.op[d] == .Var && pg.refers[d] in e.hdr {
             e.hdr[pg.refers[d]] = {data, n, n}
             return true
@@ -2154,15 +1648,15 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     base := ops[0].op
     t := graph_type(pg, op)
     // A positional slice carve takes its own run of the bytes (llvm_carve).
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Carve && graph_name(pg, u) == "slice" { return true }
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Carve && graph_name(pg, u) == "slice" { return true }
     // A partial array in the bytes: bound by a `let`, it is the memory
     // itself; copied out whole into a place (`h : T = bytes[0]`), its header
     // comes with the bytes, as they are — what fills it next restamps it
     // (a view read any other way: later).
-    u := e.user[op]
+    u := e.st.user[op]
     bound_here := u >= 0 && pg.op[u] == .Carve && graph_name(pg, u) == "let"
-    copied := u >= 0 && pg.op[u] == .Read && e.user[u] >= 0 && pg.op[e.user[u]] == .Write &&
-              graph_operands(pg, e.user[u])[1].op == u
+    copied := u >= 0 && pg.op[u] == .Read && e.st.user[u] >= 0 && pg.op[e.st.user[u]] == .Write &&
+              graph_operands(pg, e.st.user[u])[1].op == u
     if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
     data, bound := llvm_bytes(e, base) or_return
@@ -2374,12 +1868,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
 // or a read of it.
 @(private="file")
 llvm_text :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
-    pg := e.pg
-    at := op
-    if pg.op[at] == .Read { at = graph_operands(pg, at)[0].op }
-    if at == NO_NODE || pg.op[at] != .Global { return "", false }
-    c, has := graph_value(pg, at)
-    return c.text, has && c.is_text
+    return graph_const_text(e.pg, op)
 }
 
 // Text into a partial array: its bytes into the elements — with the
@@ -2607,7 +2096,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     }
     if llvm_header_elem(graph_type(pg, storage)) == nil { return false }
     // A `let` is only a declaration's (it names the memory); anything else later.
-    if u := e.user[op]; let && (u < 0 || pg.op[u] != .Write || pg.refers[graph_operands(pg, u)[0].op] not_in e.carved) {
+    if u := e.st.user[op]; let && (u < 0 || pg.op[u] != .Write || pg.refers[graph_operands(pg, u)[0].op] not_in e.st.carved) {
         return false
     }
     t := graph_type(pg, op)
@@ -2673,7 +2162,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: string) {
     g, pg := e.g, e.pg
     out := ""
-    if u := e.user[op]; u >= 0 && pg.op[u] == .Write {
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
         dest := graph_operands(pg, u)[0].op
         if pg.op[dest] == .Var {
             s := pg.stmt[u]
@@ -2821,7 +2310,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 @(private="file")
 llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
     pg := e.pg
-    root := llvm_where(e, dest).root
+    root := storage_where(e.st, dest).root
     after := false
     for o in graph_run(pg, int(e.run)) {
         if o == op { after = true; continue }
@@ -2829,7 +2318,7 @@ llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
         p := graph_operands(pg, o)[0].op
         if pg.op[p] != .Field { continue }
         v := graph_operands(pg, p)[0].op
-        if pg.op[v] == .Variant && llvm_where(e, v).root == root { return true }
+        if pg.op[v] == .Variant && storage_where(e.st, v).root == root { return true }
     }
     return false
 }
@@ -2879,7 +2368,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     return true
 }
 
-// A view held as its header's values (llvm_holds_header).
+// A view held as its header's values (Storage.views).
 @(private="file")
 Llvm_Header :: struct {
     data, len, cap: string,
@@ -3129,7 +2618,7 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
 @(private="file")
 llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Type) -> (string, bool) {
     pg := e.pg
-    u := e.user[op]
+    u := e.st.user[op]
     if u >= 0 {
         uops := graph_operands(pg, u)
         #partial switch pg.op[u] {
@@ -3148,11 +2637,11 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // (The result slot is no fresher than any place: the local
                 // every return returns lives there, and `x = f(x)` passes it.)
                 if fresh && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                // The functional update `x = f(x, …)` (llvm_in_place_updates): x
+                // The functional update `x = f(x, …)` (storage_in_place_updates): x
                 // is both the argument and the result slot.
-                if e.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
+                if e.st.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
                 reaches, mine := llvm_call_reaches(e, op, dest)
-                if mine != NO_NODE { llvm_reads_its_dest(e, op, mine, dest, callee) }
+                if mine != NO_NODE { storage_reads_its_dest(pg, op, mine, dest, callee) }
                 if !reaches && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
@@ -3172,7 +2661,7 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
         pg := e.pg
         marked := false
         for s := pg.parent[op]; s != NO_NODE; s = pg.parent[s] {
-            if s in e.marked { marked = true; break }
+            if s in e.st.marked { marked = true; break }
             if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
         }
         if !marked && !e.main {
@@ -3187,22 +2676,8 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
 }
 
 // --- what a call can reach ---------------------------------------------------------
-//
-// A call's struct result is built where it goes only if the call can't reach
-// that place while it runs: it would read, or write over, what it has already
-// written there. A call reaches what it's passed as storage (a pointer; an
-// aggregate, passed by its address) where its code — or a fun it calls —
-// reads or writes through it. Nothing else: `this_program`, which every fun
-// can read, is read only (tc_in_program) — no place being built is in it,
-// and its arena's bookkeeping is in it.
 
-// Whether a call may reach `dest`, the place its result goes, while it runs:
-// through an argument passed as storage its callee reaches through — unless
-// the argument is constant text, which no place being built can be, or the
-// storage it hands over is plain data apart from dest (llvm_overlaps): what
-// the callee reaches is that storage, and no pointer out of it.
-// (`mine`: an argument that is `&place`, place surely overlapping dest —
-// it would read what its result is overwriting: llvm_result_place's error.)
+// storage_call_reaches, asked as a call's result is placed (llvm_overlaps).
 @(private="file")
 llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (reaches: bool, mine: Node_Id) {
     pg := e.pg
@@ -3224,133 +2699,10 @@ llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id, first := 0) -> (
         case .Var, .Field, .Index, .Deref, .Variant: place = at
         }
         if place != NO_NODE && is_plain_data(graph_type(pg, place)) && !llvm_overlaps(e, place, dest) { continue }
-        if pg.op[at] == .Address && mine == NO_NODE && places_contain(e.pg, e.bound, place, dest) { mine = at }
+        if pg.op[at] == .Address && mine == NO_NODE && places_contain(e.pg, e.st.bound, place, dest) { mine = at }
         reaches = true
     }
     return
-}
-
-// Building a result where it goes while handed that place — `v = swap(&v)`,
-// `g.big = make(&g)`: what it reads is what it overwrites. An error, not a
-// hidden copy: the result built under a name of its own first, then
-// assigned, says so.
-@(private="file")
-llvm_reads_its_dest :: proc(e: ^Llvm, op, arg, dest: Node_Id, callee: ^Type_Scope) -> ! {
-    pg := e.pg
-    name := scope_display_name(callee)
-    held := graph_place_name(pg, Operand{op = graph_operands(pg, arg)[0].op})
-    into := graph_place_name(pg, Operand{op = dest})
-    codegen_fatal(e.g, pg.origin[op], TYPE_RESULT_READS_DEST, name, held, into, name, into)
-}
-
-// Each functional update `x = f(x, …)` — f consumes that argument (builds its
-// result from it alone, graph_consumed) and nothing else it's handed can
-// reach x: x is both the argument and the result slot, and f skips its
-// opening copy. The argument's place is the destination's, computed before it
-// (a write's place comes first): the same operations, not done again.
-@(private="file")
-llvm_in_place_updates :: proc(e: ^Llvm) {
-    pg := e.pg
-    for r in e.runs {
-        for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Call { continue }
-            callee := graph_called(e.pg, op)
-            if callee == nil { continue }
-            k, consumes := graph_consumed(&e.g.checked.code, callee).?
-            u := e.user[op]
-            if !consumes || u < 0 || pg.op[u] != .Write { continue }
-            uops := graph_operands(pg, u)
-            dest := uops[0].op
-            if uops[1].op != op || llvm_direct(e, dest) || !llvm_updates_in_place(e, op, k, dest) { continue }
-            e.update[op] = true
-            llvm_alias_place(e, graph_operands(pg, graph_operands(pg, op)[k].op)[0].op, dest)
-        }
-    }
-}
-
-// Place a — the same storage as d, spelled the same (llvm_same_storage) — as
-// d's operations, computed before it: each of a's, and its index's read, d's.
-// (A variable's operation computes nothing: not aliased.)
-@(private="file")
-llvm_alias_place :: proc(e: ^Llvm, a, d: Node_Id) {
-    pg := e.pg
-    if a == NO_NODE || d == NO_NODE || a == d || d > a || pg.op[a] == .Var { return }
-    e.alias[a] = d
-    ao, do_ := graph_operands(pg, a), graph_operands(pg, d)
-    #partial switch pg.op[a] {
-    case .Field, .Deref, .Read:
-        llvm_alias_place(e, ao[0].op, do_[0].op)
-    case .Index:
-        llvm_alias_place(e, ao[0].op, do_[0].op)
-        if ai, di := ao[1].op, do_[1].op; ai != NO_NODE && di != NO_NODE && pg.op[ai] == .Read && pg.op[di] == .Read {
-            llvm_alias_place(e, ai, di)   // the index's read
-        }
-    }
-}
-
-// Whether a call's k-th argument is its destination's storage (a read of
-// it, spelled the same) and each other argument can't reach that storage.
-@(private="file")
-llvm_updates_in_place :: proc(e: ^Llvm, call: Node_Id, k: int, dest: Node_Id) -> bool {
-    pg := e.pg
-    ops := graph_operands(pg, call)
-    if k >= len(ops) || ops[k].op == NO_NODE || pg.op[ops[k].op] != .Read { return false }
-    if !llvm_same_storage(e, graph_operands(pg, ops[k].op)[0].op, dest) { return false }
-    d := llvm_where(e, dest)
-    if d.root == NO_NODE { return false }
-    for a, i in ops {
-        if i != k && !llvm_cannot_reach(e, a, d) { return false }
-    }
-    return true
-}
-
-// Whether two places are one storage, as spelled: the same variable, the same
-// field of it, the same element (by the same constant, or variable's value),
-// what the same pointer points at.
-@(private="file")
-llvm_same_storage :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
-    pg := e.pg
-    if a == NO_NODE || b == NO_NODE || pg.op[a] != pg.op[b] { return false }
-    ao, bo := graph_operands(pg, a), graph_operands(pg, b)
-    #partial switch pg.op[a] {
-    case .Var:
-        return pg.refers[a] == pg.refers[b]
-    case .Field:
-        return graph_name(pg, a) == graph_name(pg, b) && llvm_same_storage(e, ao[0].op, bo[0].op)
-    case .Index:
-        if !llvm_same_storage(e, ao[0].op, bo[0].op) { return false }
-        ai, bi := ao[1].op, bo[1].op
-        if ai == NO_NODE || bi == NO_NODE || pg.op[ai] != pg.op[bi] { return false }
-        #partial switch pg.op[ai] {
-        case .Const:
-            av, aok := graph_value(pg, ai)
-            bv, bok := graph_value(pg, bi)
-            return aok && bok && !av.is_float && !bv.is_float && av.int == bv.int
-        case .Read:
-            ap, bp := graph_operands(pg, ai)[0].op, graph_operands(pg, bi)[0].op
-            return pg.op[ap] == .Var && pg.op[bp] == .Var && pg.refers[ap] == pg.refers[bp]
-        }
-    case .Deref:
-        return llvm_same_storage(e, ao[0].op, bo[0].op)   // the pointer's place (or its read)
-    case .Read:
-        return llvm_same_storage(e, ao[0].op, bo[0].op)
-    }
-    return false
-}
-
-// Whether an argument can't reach storage `d` while the callee runs: it holds
-// no pointers, and it's a value in a register, or read from a different
-// variable's own storage (a temporary included), no pointer on either path.
-@(private="file")
-llvm_cannot_reach :: proc(e: ^Llvm, a: Operand, d: Llvm_Where) -> bool {
-    pg := e.pg
-    if a.op == NO_NODE { return true }
-    t := llvm_type_of(e, a)
-    if !is_plain_data(t) { return false }
-    if llvm_scalar(t) { return true }
-    if pg.op[a.op] != .Read { return false }
-    w := llvm_where(e, graph_operands(pg, a.op)[0].op)
-    return w.root != NO_NODE && !d.via_ptr && !w.via_ptr && w.root != d.root
 }
 
 // Whether place p's address is at hand for a call to build its result in: it
@@ -3381,19 +2733,9 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     return true
 }
 
-// Whether a call hands its callee storage: a param passed by address.
-@(private="file")
-llvm_passes_storage :: proc(callee: ^Type_Scope) -> bool {
-    for p in callee.cg_params {
-        if ir, _ := llvm_param_type(p.type_); ir == "ptr" { return true }
-    }
-    return false
-}
-
 // --- types -----------------------------------------------------------------------
 
 // A value held in one register: a number, a bool, a byte, an enum, a pointer.
-@(private="file")
 llvm_scalar :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(resolve_infer(t)) {
     case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err:
@@ -3449,7 +2791,6 @@ llvm_header_elem :: proc(t: Type) -> Type {
 }
 
 // A slice: its header, {len, cap, ptr}, is the aggregate.
-@(private="file")
 llvm_slice :: proc(t: Type) -> ^Type_Slice {
     if t == nil || is_infer(t) { return nil }
     sl, ok := distinct_base(t).(^Type_Slice)
@@ -3458,7 +2799,6 @@ llvm_slice :: proc(t: Type) -> ^Type_Slice {
 }
 
 // A slice header's field by name; -1 for none.
-@(private="file")
 llvm_header_field :: proc(name: string) -> int {
     switch name {
     case "len": return SLICE.len
@@ -3468,7 +2808,6 @@ llvm_header_field :: proc(name: string) -> int {
     return -1
 }
 
-@(private="file")
 llvm_struct :: proc(t: Type) -> ^Scope_Body {
     if t == nil { return nil }
     sd := as_struct_body(distinct_base(t))   // a distinct struct's is its base's
@@ -3476,7 +2815,6 @@ llvm_struct :: proc(t: Type) -> ^Scope_Body {
 }
 
 // A fixed array of register values or aggregates.
-@(private="file")
 llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
     if t == nil || is_infer(t) { return nil }
     fa, ok := distinct_base(t).(^Type_Fixed_Array)
@@ -3486,7 +2824,6 @@ llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
 
 // Whether two types lower to one IR type. An unresolved one matches nothing:
 // the fun is refused rather than guessed at.
-@(private="file")
 llvm_same_type :: proc(a, b: Type) -> bool {
     if a == nil || b == nil || is_infer(a) || is_infer(b) { return false }
     // Pointers lower alike; what they point to must match too (a byte
