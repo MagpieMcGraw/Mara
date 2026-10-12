@@ -1,0 +1,42 @@
+module byte_read_len
+
+use mara.endian
+include mara.memory
+
+// A byte buffer's len is the bytes it holds (what a file read put there, or
+// what it was set to); its cap, the room it has. A read from it stays within
+// the len; a write into it, within the cap — and doesn't move the len. A
+// `let` names memory to fill: its view is bound by the cap, as a write is.
+// (Reads past the len, inside the cap: byte_read_past_len, byte_fill_bounds.)
+
+//@ expect-output: wrote into an empty buffer: len 0
+//@ expect-output: read back: 42 7 1234
+//@ expect-output: let on empty storage: 40 2
+
+Pair :: struct { a: i64, b: i64 }
+
+u32_at_8 :: fun(bytes: ^[]byte) -> u32 {
+	v : u32 = #big_endian bytes[8]
+	return v
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	buf : [..64]byte
+	buf[0:8] = i64(42)
+	buf[8] = i64(7)
+	buf[16:20] = u32(0xD2040000)   // (1234, big-endian)
+	print("wrote into an empty buffer: len", buf.len)
+	buf.len = 20
+	a : i64 = buf[0]
+	tail := buf[8:]
+	b : i64 = tail[0]
+	c := u32_at_8(&tail)
+	print("read back:", a, b, c)
+
+	mem : [..64]byte
+	pair := let(Pair, &mem[0])
+	pair.a = 40
+	pair.b = 2
+	print("let on empty storage:", pair.a, pair.b)
+}

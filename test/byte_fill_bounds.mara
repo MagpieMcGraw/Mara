@@ -1,16 +1,18 @@
 module byte_fill_bounds
 
 // A partial array filled from bytes, `pa : [..N]T = bytes[off]`, reads a
-// full N elements' bytes at off: they must lie within the source. It never
-// checked — a [..4096]u16 filled from a 16-byte buffer copied 8 KB past it.
+// full N elements' bytes at off: they must lie within the source's len — the
+// bytes it holds, not the room it has (its cap). It never checked — a
+// [..4096]u16 filled from a 16-byte buffer copied 8 KB past it — then
+// checked the cap, which read the bytes past a file's end in a 2 MB buffer.
 // Ends at the failure (the run differential compares it).
 
 main :: fun() {
 	bytes : [..16]byte
-	bytes.len = 4
+	bytes.len = 8
 	bytes[1] = u8(9)
 	head : [..4]u16 = #big_endian bytes[0]
 	print("in bounds:", head.len, head[0])
-	tail : [..4]u16 = bytes[10]
+	tail : [..4]u16 = bytes[4]
 	print("unreached", tail.len)
 }

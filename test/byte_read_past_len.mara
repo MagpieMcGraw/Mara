@@ -1,0 +1,17 @@
+module byte_read_past_len
+
+use mara.endian
+
+// A read from a byte buffer stops at its len, the bytes it holds — not at its
+// cap: past it are the bytes of no file (a 2 MB buffer's, after a small
+// font). It read there before, unchecked. Ends at the failure (the run
+// differential compares it): "offset 8 + 8 > length 10".
+
+main :: fun() {
+	file : [..64]byte
+	file.len = 10
+	x : u32 = #big_endian file[4]
+	print("in the bytes:", x)
+	y : u64 = #big_endian file[8]
+	print("unreached", y)
+}

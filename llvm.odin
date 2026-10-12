@@ -2165,8 +2165,9 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
               graph_operands(pg, e.user[u])[1].op == u
     if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
-    data, bound := llvm_bytes(e, base) or_return
-    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view", span)
+    read := llvm_view_read(e, op)
+    data, bound := llvm_bytes(e, base, read = read) or_return
+    emit_byte_size_bounds_check(g, bound, off, type_size(t), "read" if read else "view", span, "length" if read else "capacity")
     // (A span written, lo:hi: as many bytes as the value has — where its
     // bounds aren't numbers; the checker said so where they are.)
     if len(ops) > 2 && ops[2].op != NO_NODE {
@@ -2419,9 +2420,10 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
 }
 
 // A byte buffer's data and its bound: a byte slice's or partial array's
-// pointer and cap, a byte array's own address and size.
+// pointer and — read from, its len (the bytes it holds: a file read's, say);
+// written into, its cap (the room it has) — a byte array's own address and size.
 @(private="file")
-llvm_bytes :: proc(e: ^Llvm, base: Node_Id) -> (data, bound: string, ok: bool) {
+llvm_bytes :: proc(e: ^Llvm, base: Node_Id, read := false) -> (data, bound: string, ok: bool) {
     g, pg := e.g, e.pg
     if llvm_direct(e, base) { return }
     bt := graph_type(pg, base)
@@ -2432,8 +2434,30 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id) -> (data, bound: string, ok: bool) {
     elem := llvm_header_elem(bt)
     if elem == nil || !is_byte_elem(elem) { return }
     data = emit_header_field(g, at, SLICE.ptr)
-    bound = emit_header_field(g, at, SLICE.cap)
+    bound = emit_header_field(g, at, SLICE.len if read else SLICE.cap)
     return data, bound, true
+}
+
+// Whether a view of bytes is only read: its value, or a part of it (a field,
+// an element), read — not written, its address not taken, not bound by a
+// `let` (memory that may be written).
+@(private="file")
+llvm_view_read :: proc(e: ^Llvm, view: Node_Id) -> bool {
+    pg := e.pg
+    n := view
+    for {
+        u := e.user[n]
+        if u < 0 { return false }
+        #partial switch pg.op[u] {
+        case .Read:
+            return true
+        case .Field, .Index, .Swizzle, .Variant:
+            if graph_operands(pg, u)[0].op != n { return true }   // (an index's value, not its base)
+            n = u
+        case:
+            return false
+        }
+    }
 }
 
 // Bytes read into a partial array: its header stamped, the span's elements
@@ -2453,7 +2477,7 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
     spanned := len(ops) > 3
     hi := ""
     if spanned && ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
-    data, bound := llvm_bytes(e, ops[1].op) or_return
+    data, bound := llvm_bytes(e, ops[1].op, read = true) or_return
     bytes := fmt.tprintf("%d", pa.size * type_size(pa.elem))
     if spanned {
         if hi == "" { hi = bound }
@@ -2488,7 +2512,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     if ops[2].op != NO_NODE { lo = llvm_operand(e, ops[2], slice_header_width_type) or_return }
     hi := ""
     if ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
-    data, bound := llvm_bytes(e, ops[1].op) or_return
+    data, bound := llvm_bytes(e, ops[1].op, read = true) or_return
     if hi == "" { hi = bound }
     w := SLICE_LEN_IR
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
