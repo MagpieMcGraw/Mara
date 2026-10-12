@@ -146,9 +146,9 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
     }
 }
 
-// `toc` holds header+TOC; `data` stages the concatenated vertex/index bytes
-// (no []T -> []byte view exists outside mara.os, so each value is blitted in).
-// `data` must hold the summed payload bytes.
+// `toc` holds header+TOC; `data` stages the concatenated vertex/index bytes —
+// each mesh's arrays written in as their raw bytes, one write each. `data`
+// must hold the summed payload bytes (a write past its cap stops the program).
 cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err {
     count := blobs.len
     base := cache_put_header(toc, count)   // absolute payload start
@@ -169,13 +169,9 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
         e.data_size = u64(vbytes + ibytes)
         toc[HEADER_SIZE + i * ENTRY_SIZE] = e
 
-        for v in 0..vcount {
-            data[dcur + v * size_of(Vertex)] = b.mesh.vertices[v]
-        }
+        data[dcur : dcur + vbytes] = b.mesh.vertices
         ioff := dcur + vbytes
-        for k in 0..icount {
-            data[ioff + k * size_of(u32)] = b.mesh.indices[k]
-        }
+        data[ioff : ioff + ibytes] = b.mesh.indices
         dcur += vbytes + ibytes
     }
 
