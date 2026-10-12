@@ -678,6 +678,7 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
     if pg.op[read] == .Global { return false }   // a constant table is never written
     r, d := llvm_where(e, read), llvm_where(e, dest)
     if r.root == NO_NODE || d.root == NO_NODE || r.explicit { return true }
+    if llvm_disjoint(e, read, dest) { return false }
     if !d.via_ptr && llvm_in_result(e, d.root) && pg.kind[r.root] == .Param { return false }
     if !r.via_ptr && !d.via_ptr && r.root == d.root { return true }
     if !is_plain_data(graph_type(pg, read)) { return true }
@@ -686,6 +687,82 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
     dest_own := !d.via_ptr && !llvm_in_result(e, d.root)
     if r.region == nil || d.region == nil { return true }
     return (!read_own && type_can_contain(d.region, r.region)) || (!dest_own && type_can_contain(r.region, d.region))
+}
+
+// A step of a place's path from its variable: a field's, a variant's, an
+// element's (its index when it's a number), a pointer's (`cross`: a deref, or
+// a slice's element — its data is through a pointer), or another kind.
+@(private="file")
+Llvm_Step :: struct {
+    op:    Op_Kind,
+    name:  string,
+    index: i128,
+    known: bool,
+    cross: bool,
+}
+
+// A place's path, root first: its variable and each step from it (ok false:
+// no variable at its root, or a step no path names).
+@(private="file")
+llvm_path :: proc(e: ^Llvm, p: Node_Id) -> (root: Node_Id, steps: [dynamic]Llvm_Step, ok: bool) {
+    pg := e.pg
+    steps = make([dynamic]Llvm_Step, context.temp_allocator)
+    for id := p; id != NO_NODE; {
+        ops := graph_operands(pg, id)
+        s := Llvm_Step{op = pg.op[id]}
+        #partial switch pg.op[id] {
+        case .Var:
+            if v, bound := e.bound[pg.refers[id]]; bound {   // (a match arm's binding: its scrutinee's payload)
+                id = v
+                continue
+            }
+            for i in 0 ..< len(steps) / 2 { steps[i], steps[len(steps) - 1 - i] = steps[len(steps) - 1 - i], steps[i] }
+            return pg.refers[id], steps, true
+        case .Field, .Variant:
+            s.name = graph_name(pg, id)
+        case .Index:
+            at := ops[1].op
+            for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
+            if c, has := graph_value(pg, at); has && !c.is_float && !c.is_text { s.index, s.known = c.int, true }
+            _, s.cross = distinct_base(graph_type(pg, ops[0].op)).(^Type_Slice)
+        case .Deref:
+            s.cross = true
+        case .Slice, .Swizzle:
+        case:
+            return NO_NODE, steps, false
+        }
+        append(&steps, s)
+        id = ops[0].op
+    }
+    return NO_NODE, steps, false
+}
+
+// Whether two places surely don't overlap: from one variable by the same steps,
+// then apart — different fields of a struct, different elements by number —
+// with no pointer crossed past where they part (one there could lead anywhere,
+// the other place included). Different variants of a union share storage.
+@(private="file")
+llvm_disjoint :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
+    ra, sa, oka := llvm_path(e, a)
+    rb, sb, okb := llvm_path(e, b)
+    if !oka || !okb || ra != rb { return false }
+    n := min(len(sa), len(sb))
+    for i in 0 ..< n {
+        x, y := sa[i], sb[i]
+        if x.op == y.op && x.name == y.name && x.known == y.known && x.index == y.index && (x.op != .Index || x.known) {
+            continue   // (the same step: on along it)
+        }
+        apart := false
+        #partial switch x.op {
+        case .Field: apart = y.op == .Field && x.name != y.name
+        case .Index: apart = y.op == .Index && x.known && y.known && x.index != y.index
+        }
+        if !apart { return false }
+        for s in sa[i + 1:] { if s.cross { return false } }
+        for s in sb[i + 1:] { if s.cross { return false } }
+        return true
+    }
+    return false   // (one is the other, or inside it)
 }
 
 // Whether a variable lives in the caller's result slot: Self and its fields in
@@ -2942,7 +3019,7 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // The functional update `x = f(x, …)` (llvm_in_place_updates): x
                 // is both the argument and the result slot.
                 if e.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                if !llvm_call_reaches(e, op) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
+                if !llvm_call_reaches(e, op, dest) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
     }
@@ -2983,21 +3060,31 @@ Fun_Summary :: struct {
     done:     bool,
 }
 
-// Whether a call may reach the place its result goes while it runs: through
-// an argument passed as storage its callee reaches through — unless the
-// argument is constant text, which no place being built can be.
+// Whether a call may reach `dest`, the place its result goes, while it runs:
+// through an argument passed as storage its callee reaches through — unless
+// the argument is constant text, which no place being built can be, or the
+// storage it hands over is plain data apart from dest (llvm_overlaps): what
+// the callee reaches is that storage, and no pointer out of it.
 @(private="file")
-llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id) -> bool {
-    callee := graph_called(e.pg, op)
+llvm_call_reaches :: proc(e: ^Llvm, op: Node_Id, dest: Node_Id) -> bool {
+    pg := e.pg
+    callee := graph_called(pg, op)
     if callee == nil { return true }   // (through a function value: unknown)
     s := fun_summary(e.g, callee)
-    ops := graph_operands(e.pg, op)
+    ops := graph_operands(pg, op)
     if len(ops) != len(s.reaches) { return true }
     for o, k in ops {
         if !s.reaches[k] { continue }
         at := o.op
-        for e.pg.op[at] == .Cast { at = graph_operands(e.pg, at)[0].op }   // (text as a slice: over it)
+        for pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }   // (text as a slice: over it)
         if _, is_text := llvm_text(e, at); is_text { continue }
+        // (The storage handed over: `&place`'s place, an aggregate's own.)
+        place := NO_NODE
+        #partial switch pg.op[at] {
+        case .Address, .Read: place = graph_operands(pg, at)[0].op
+        case .Var, .Field, .Index, .Deref, .Variant: place = at
+        }
+        if place != NO_NODE && is_plain_data(graph_type(pg, place)) && !llvm_overlaps(e, place, dest) { continue }
         return true
     }
     return false
