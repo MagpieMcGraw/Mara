@@ -1,0 +1,49 @@
+module infer_any_order
+
+// A binding of no written width (`n := 5`) takes the width all its uses
+// decide together, in any order — the narrowest of the widths they name that
+// each takes: a value use takes any width that widens into its own, a value
+// written in needs one it widens into, a pointer use needs its own exactly,
+// arithmetic one with a common type. Every flow counts: an array literal's
+// element too. (It was the first use that decided: `t64(n); t32(n)` and
+// `t64(m); p32(&m)` were conflicts the other way round, and an element
+// didn't count.)
+
+//@ expect-output: one order: 4 7 7
+//@ expect-output: the other: 4 7 7
+//@ expect-output: narrowed after a call: 4 40000 40000 40007 4
+//@ expect-output: a pointer after a value: 4 5 6
+//@ expect-output: an element: 2 3
+//@ expect-output: written in and read out: 2 300 300
+
+t32 :: fun(x: i32) -> i64 { return i64(x) }
+t64 :: fun(x: i64) -> i64 { return x }
+p32 :: fun(p: ^i32) { p^ = p^ + 1 }
+
+main :: fun() {
+	a := 7
+	print("one order:", size_of(a), t32(a), t64(a))
+	b := 7
+	print("the other:", size_of(b), t64(b), t32(b))
+
+	n := 40000
+	x := t64(n)
+	x32 : i32 = 7
+	y := n + x32
+	z := t32(n)
+	print("narrowed after a call:", size_of(n), x, z, y, size_of(y))
+
+	m := 5
+	c := t64(m)
+	p32(&m)
+	print("a pointer after a value:", size_of(m), c, m)
+
+	k := 3
+	arr : [2]i16 = {k, 1}
+	print("an element:", size_of(k), arr[0])
+
+	w := 0
+	h : i16 = 300
+	w = h          // (an i16 written in: at least i16)
+	print("written in and read out:", size_of(w), w, t64(w))
+}

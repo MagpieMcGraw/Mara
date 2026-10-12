@@ -27,7 +27,7 @@ cd "$(dirname "$0")" || exit 2
 MARA=../Mara.exe
 
 
-LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg inferconflict widenneg"
+LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
 # won't auto-skip). Clean these up and the entries go away.
 LEGACY_SKIP="leak_consumer:stale-multimodule-uses-removed-Arena_Basic mandelbrot_bench_simd:preexisting-not-applied-to-err"

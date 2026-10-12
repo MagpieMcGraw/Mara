@@ -247,7 +247,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         tc_check_write(k, value, vt, existing, name, span)
         return
     } else if is_infer(vt) {
-        // Its width is the one its first concrete use decides.
+        // Its width is the one all its uses decide together (infer_constrain).
         cell := new(Infer_Cell)
         cell.name, cell.span = name, span
         if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
@@ -438,7 +438,7 @@ tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (
 tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string, span: Span) {
     tc_no_literal_slice(k, existing, value, span)
     if tc_check_byte_flow(k, existing, value, vt, span) != .None { return }
-    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span, from = true) &&
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, value)
     }
@@ -697,7 +697,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     k.hint = existing if !is_untyped(existing) else nil
     vt := tc_compound_value(k, s, op_tok, target, value, env)
-    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span, from = true) &&
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, target, value)
     }

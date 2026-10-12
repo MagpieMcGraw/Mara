@@ -620,8 +620,22 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
 // A value at the type its use takes it at, `t`: one of no width of its own
 // settled to it (tc_settle), a literal's range checked.
 tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
+    tc_flow_use(k, vt, t, span)
     if is_infer(vt) { tc_literal_overflow(k, n, t, span) }
     tc_settle(k, n, t)
+}
+
+// Every flow is a use of a binding of no written width (infer_constrain): its
+// value into a width, a width written into it, a pointer to it where one to a
+// width goes — wherever the check that let it through didn't count it
+// already (an array literal's element, say; counted twice, it's one use).
+tc_flow_use :: proc(k: ^TC, vt, t: Type, span: Span) {
+    if coerce_deferred_pointee(k.c, vt, t, span) { return }
+    if infer_cell_of(vt) != nil {
+        _ = coerce_deferred(k.c, vt, t, span)
+    } else if infer_cell_of(t) != nil && !is_infer(resolve_infer(vt)) {
+        _ = coerce_deferred(k.c, t, vt, span, from = true)
+    }
 }
 
 tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {

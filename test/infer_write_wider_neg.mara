@@ -1,0 +1,16 @@
+module infer_write_wider_neg
+//@ expect-fail: inferred binding 'n' is used at conflicting widths: i32
+
+// A binding whose uses need it no wider than i32, written an i64: no width
+// takes both. The checker let it through (the first use had decided i32, and
+// an i64 "widened" from it) and codegen stopped ("can't lower ... its write").
+
+t32 :: fun(x: i32) {}
+
+main :: fun() {
+	n := 0
+	t32(n)
+	big : i64 = 5000000000
+	n = big
+	print(n)
+}

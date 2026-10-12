@@ -1,0 +1,12 @@
+module infer_element_overflow_neg
+//@ expect-fail: constant 70000 overflows i16
+
+// An array literal's element is a use like any other: `k` goes into an i16,
+// so k is an i16 — and 70000 doesn't fit one. (The element didn't count: k
+// stayed an i64, and codegen stopped at the store into the i16.)
+
+main :: fun() {
+	k := 70000
+	arr : [2]i16 = {k, 1}
+	print(arr[0])
+}

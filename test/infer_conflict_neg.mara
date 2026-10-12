@@ -1,0 +1,14 @@
+module infer_conflict_neg
+//@ expect-fail: inferred binding 'n' is used at conflicting widths: u8
+
+// Two uses no one width serves: a u8 doesn't widen into an i8, nor an i8
+// into a u8. Whatever order they come in, annotate it.
+
+take_u8 :: fun(x: u8) {}
+take_i8 :: fun(x: i8) {}
+
+main :: fun() {
+	n := 5
+	take_u8(n)
+	take_i8(n)
+}
