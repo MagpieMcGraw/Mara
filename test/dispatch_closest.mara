@@ -1,0 +1,56 @@
+module dispatch_closest
+
+use mara.math
+
+// A dispatch group's call takes the member its arguments fit closest: each
+// as it is, or a number widened as it would be into any param — closer
+// the fewer bits it gains, and at equal width without turning signed (u16
+// → u32 before u16 → i32). The member closer on some argument and no
+// farther on any wins (else: ambiguous, dispatch_tie_neg). A binding of no
+// written width (`n := 0`) is taken at the width its uses decide. (Members
+// had to match exactly: an i16 fit no member of {i32, i64}, and min had no
+// i16 one.)
+
+//@ expect-output: i16 into {i32, i64}: i32
+//@ expect-output: u16 into {u32, i32}: u32
+//@ expect-output: u8 into {i16, u64}: i16
+//@ expect-output: i64 into {i32, i64}: i64
+//@ expect-output: f32 into {f64, i64}: f64
+//@ expect-output: min of an i16: 3
+//@ expect-output: a binding its uses make an i16: i32 2
+
+w_i32 :: fun(x: i32) -> []utf8 { return "i32" }
+w_i64 :: fun(x: i64) -> []utf8 { return "i64" }
+w :: dispatch{ w_i32, w_i64 }
+
+s_u32 :: fun(x: u32) -> []utf8 { return "u32" }
+s_i32 :: fun(x: i32) -> []utf8 { return "i32" }
+s :: dispatch{ s_u32, s_i32 }
+
+b_i16 :: fun(x: i16) -> []utf8 { return "i16" }
+b_u64 :: fun(x: u64) -> []utf8 { return "u64" }
+b :: dispatch{ b_i16, b_u64 }
+
+f_f64 :: fun(x: f64) -> []utf8 { return "f64" }
+f_i64 :: fun(x: i64) -> []utf8 { return "i64" }
+f :: dispatch{ f_f64, f_i64 }
+
+t16 :: fun(x: i16) {}
+
+main :: fun() {
+	a : i16 = 5
+	print("i16 into {i32, i64}:", w(a))
+	c : u16 = 5
+	print("u16 into {u32, i32}:", s(c))
+	d : u8 = 5
+	print("u8 into {i16, u64}:", b(d))
+	e : i64 = 5
+	print("i64 into {i32, i64}:", w(e))
+	g : f32 = 1.5
+	print("f32 into {f64, i64}:", f(g))
+	h : i16 = 9
+	print("min of an i16:", min(h, 3))
+	n := 0
+	print("a binding its uses make an i16:", w(n), size_of(n))
+	t16(n)
+}

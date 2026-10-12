@@ -1,0 +1,14 @@
+module dispatch_no_fit_neg
+//@ expect-fail: no matching function in dispatch group 'w' for argument types (u32)
+
+// A number fits a member only by widening without loss: a u32 doesn't fit
+// an i32 (it may hold more), nor an i16.
+
+w_i32 :: fun(x: i32) {}
+w_i16 :: fun(x: i16) {}
+w :: dispatch{ w_i32, w_i16 }
+
+main :: fun() {
+	u : u32 = 7
+	w(u)
+}

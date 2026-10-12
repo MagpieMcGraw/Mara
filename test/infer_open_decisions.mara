@@ -6,13 +6,14 @@ include mara.memory
 // A decision that needs a binding's width — which member of a dispatch
 // group, a generic's type, an if's type, how many bytes a byte write takes —
 // met while the binding's uses haven't decided it yet (`n := 0`, used later):
-// made with the width all its uses decide. A dispatch matches exactly; one
-// member of the binding's kind fits: chosen, and its param decides the
-// width; more fit: the one its decided width matches, else its default
-// width's. (Before: a single member was chosen but didn't count — `n` stayed
-// an i64 into an i32 param, stopping codegen; several were "ambiguous" even
-// when a later use decided; a generic took i64; an if took an untied width,
-// stopping codegen; a byte write was "untyped".)
+// made with the width all its uses decide. A dispatch takes the member that
+// width fits closest (dispatch_closest); one member of the binding's kind
+// fits: chosen, and its param a use of the width; more fit: the closest to
+// its decided width, else to its default width. (Before: a single member
+// was chosen but didn't count — `n` stayed an i64 into an i32 param,
+// stopping codegen; several were "ambiguous" even when a later use decided;
+// a generic took i64; an if took an untied width, stopping codegen; a byte
+// write was "untyped".)
 
 //@ expect-output: one member: 32 4
 //@ expect-output: one member, a wider use: 32 4
