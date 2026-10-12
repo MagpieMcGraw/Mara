@@ -1081,9 +1081,22 @@ CLI_Args :: struct {
 
     // `mara view [module]` — the window, started on its own (run_view).
     view:         bool,
+
+    // `mara lsp` — the Language Server Protocol on stdin/stdout (lsp.odin).
+    lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara lsp"
+LSP_USAGE :: `Usage: mara lsp
+
+  A language server for editors: the Language Server Protocol on stdin and
+  stdout. Each file asked about is checked with its module — the directory
+  it's in, the module named as the directory — the editor's open files as
+  they are in the editor, saved or not. It answers hover (what's at the
+  point, its declaration's doc comment), definition, references and
+  document symbols, and publishes each check's errors and warnings.
+  initializationOptions turn each off: {"hover": false, "definition":
+  false, "references": false, "symbols": false, "diagnostics": false}.`
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
 
   Asks a window this compiler opened (mara view — anywhere, on any module)
@@ -1279,6 +1292,17 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
+    // `mara lsp` — a language server on stdin/stdout (LSP_USAGE).
+    if subcmd == "lsp" {
+        if len(positional) >= 3 && is_help_flag(positional[2]) {
+            fmt.println(LSP_USAGE)
+            os.exit(0)
+        }
+        args.lsp = true
+        args.ok = true
+        return args
+    }
+
     // `mara docs <words>` — the window open here looks them up (DOCS_USAGE).
     if subcmd == "docs" {
         if len(positional) < 3 || is_help_flag(positional[2]) {
@@ -1343,6 +1367,10 @@ main :: proc() {
     }
     if args.docs {
         docs_via_view(args)
+        return
+    }
+    if args.lsp {
+        lsp(args)
         return
     }
 

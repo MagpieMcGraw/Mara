@@ -78,6 +78,37 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 - `signature_help` — in a call's parentheses, off a name, look up the fun being
   called (default `true`).
 
+## The language server (`mara lsp`)
+
+Besides this plugin, the compiler is a language server: `mara lsp` speaks the
+Language Server Protocol, so Sublime's **LSP** package (or any editor's client)
+gets Goto Definition, Find References, Goto Symbol, hover and errors from it.
+Each file is checked with its module as the editor has it — saved or not. In
+`Preferences → Package Settings → LSP → Settings`, under `"clients"`:
+
+```
+"mara": {
+    "command": ["C:/Code/Mara/Mara.exe", "lsp"],
+    "enabled": true,
+    "selector": "source.mara",
+    "initializationOptions": {
+        "hover": false,        // a popup: what's under the mouse, its doc comment
+        "diagnostics": false,  // errors and warnings: squiggles, the diagnostics panel
+        "definition": true,    // Goto Definition
+        "references": true,    // Find References
+        "symbols": true,       // Goto Symbol: the file's definitions
+    }
+}
+```
+
+Each option turns a feature off on the server's side: it isn't offered, so
+nothing shows. After a change, `LSP: Restart Servers`. (The LSP package's own
+`disabled_capabilities` per client does the same from the client's side, and
+its settings style what's shown — `diagnostics_highlight_style` and the like —
+for every language.) While Sublime runs `mara lsp`, Mara.exe is in use: to
+rebuild the compiler, restart the servers after, or rename the running exe
+aside first.
+
 ## Install
 
 Copy this `MaraAsk/` folder into your Sublime `Packages/` directory

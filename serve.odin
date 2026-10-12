@@ -4,6 +4,7 @@ import "core:bufio"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
@@ -27,6 +28,7 @@ Serve_Check :: struct {
     session: Ask_Session,   // (its program, when there is one, even one with errors)
     failure: string,   // what every answer is instead, when it didn't check
     stamp:   string,   // the sources it read (serve_stamp)
+    diagnostics: [dynamic]Diagnostic,   // its errors and warnings, each at its place
 }
 
 serve :: proc(args: CLI_Args) {
@@ -53,7 +55,7 @@ serve :: proc(args: CLI_Args) {
 // The module as it is on disk now, checked in a new arena — the last check's
 // freed first, whole. (The build's globals, its tokens, tree and diagnostics,
 // pointed into it: emptied, they fill with this check's.)
-serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string) {
+serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^map[string]string = nil) {
     if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
     virtual.arena_destroy(&c.arena)
     c^ = {}
@@ -64,10 +66,13 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string) {
     }
     context.allocator = virtual.arena_allocator(&c.arena)
     c.stamp = strings.clone(stamp)
+    diagnostics_keep(&c.diagnostics)
+    defer diagnostics_keep_end()
 
     perf := Performance_Timer{quiet = true}
     perf_timer_begin(&perf, "discover")
     all_files := discover_all_files(args.compiler_dir, ".")
+    if overlays != nil { serve_overlay(all_files, overlays^) }
     if args.pkg_name not_in all_files {
         c.failure = module_missing(all_files, args.pkg_name)
         return
@@ -76,7 +81,34 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string) {
     checked, _, failure := check_module(args, files, &perf)
     c.session = Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
     c.failure = failure
+    diagnostics_keep_end()
     reset_diagnostics()   // (a check's warnings: about the code, not a query — answered by none)
+}
+
+// Files as an editor has them, saved or not (mara lsp), in place of what's on
+// disk: `overlays`, each one's text by its path_key. Its module and its uses
+// read again from it.
+serve_overlay :: proc(all_files: map[string][dynamic]^Source_File, overlays: map[string]string) {
+    cwd, _ := os.get_working_directory(context.temp_allocator)
+    for _, files in all_files {
+        for f in files {
+            path := f.path
+            if !filepath.is_abs(path) { path, _ = filepath.join({cwd, path}, context.temp_allocator) }
+            text, open := overlays[path_key(path)]
+            if !open { continue }
+            f.source = strings.clone(text)
+            f.imports = extract_imports(f.source)
+        }
+    }
+}
+
+// A path as a key: one however it's spelled — separators one way, and on
+// Windows, letters' case not minded.
+path_key :: proc(path: string) -> string {
+    cleaned, _ := filepath.clean(path, context.temp_allocator)
+    key, _ := strings.replace_all(cleaned, "\\", "/", context.temp_allocator)
+    when ODIN_OS == .Windows { key = strings.to_lower(key, context.temp_allocator) }
+    return key
 }
 
 // A query's answer, and whether it is one — false where `mara ask` would

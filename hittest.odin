@@ -145,7 +145,30 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
             return r, true
         }
     }
+    // (A definition's own name refers to nothing — it's what's declared
+    // there: itself, then.)
+    for n in hits {
+        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = hit_define_kind(t, n)}, true }
+    }
     return {}, false
+}
+
+// What a definition defines, as a reference's kind: a fun, a type (a
+// struct, a union, an enum, an error set), else a constant.
+@(private="file")
+hit_define_kind :: proc(t: ^Tree, n: Tree_Id) -> Ref_Kind {
+    first, last := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]
+    text := build_files[first.file].source[first.offset:last.offset + last.len]
+    colons := strings.index(text, "::")
+    if colons < 0 { return .Const }
+    what := strings.trim_left_space(text[colons + 2:])
+    switch {
+    case strings.has_prefix(what, "fun"): return .Fun
+    case strings.has_prefix(what, "struct"), strings.has_prefix(what, "class"), strings.has_prefix(what, "union"),
+         strings.has_prefix(what, "enum"), strings.has_prefix(what, "error"):
+        return .Type
+    }
+    return .Const
 }
 
 // A reference's kind as `ask at` says it.
@@ -243,6 +266,45 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
     return Hit_Point{src_file, want, line, col, base, tokens, tok_i, at, hits}, "", true
 }
 
+// The reference the name at `<file>:<line>:<col>` makes (mara lsp): its
+// declaration's token — 0 for a builtin — and kind, and the name there; ok
+// false when nothing there refers to anything.
+point_reference :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a: ^Annotations, spec: string) -> (r: Ref, name: string, ok: bool) {
+    p, _, found := hit_point(t, all_files, spec)
+    if !found { return }
+    name = token_text(p.tokens[p.tok_i])
+    r, ok = hit_ref(t, a, p.hits[:], p.at, name)
+    return
+}
+
+// Every name that refers to the declaration whose name is the token `decl`,
+// as its token: the declaration's own first, each once.
+references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {
+    name := token_text(build_tokens[decl])
+    seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    seen[decl] = true
+    append(&out, decl)
+    for inst, i in a.instances {
+        for r, k in a.refs[i] {
+            if r.decl != decl { continue }
+            n := inst.lo + Tree_Id(k)
+            // (The name among its node's tokens: a field's is its last.)
+            tok: Token_Id
+            switch {
+            case token_text(build_tokens[t.end[n] - 1]) == name: tok = t.end[n] - 1
+            case token_text(build_tokens[t.first[n]]) == name:   tok = t.first[n]
+            case: continue
+            }
+            if !seen[tok] {
+                seen[tok] = true
+                append(&out, tok)
+            }
+        }
+    }
+    return out[:]
+}
+
 // Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
 // rendered text and whether anything was found.
 ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
@@ -314,7 +376,7 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     }
     // (The definition it's in: the innermost Define holding it.)
     #reverse for n in hits {
-        if t.tag[n] != .Define { continue }
+        if t.tag[n] != .Define || int(t.first[n]) == p.at { continue }   // (its own definition: said above)
         text := span_text(p.src.source, tree_span(t, n))
         if colons := strings.index(text, "::"); colons > 0 {
             fmt.sbprintf(&sb, "  in        %s  %s\n", strings.trim_space(text[:colons]), ask_loc(tree_span(t, n)))

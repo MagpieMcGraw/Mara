@@ -32,6 +32,23 @@ Diagnostic :: struct {
 @(private="file")
 g_diagnostics: [dynamic]Diagnostic
 
+// Where take_diagnostics also puts what it takes, when somewhere: a check
+// that keeps its diagnostics by place (mara lsp publishes them).
+@(private="file")
+g_keep: ^[dynamic]Diagnostic
+
+// What's taken from now on kept in `into` too (diagnostics_keep_end stops).
+diagnostics_keep :: proc(into: ^[dynamic]Diagnostic) {
+    g_keep = into
+}
+
+// Keeping stopped — what's queued still, untaken, kept first: a check that
+// went well leaves its warnings queued.
+diagnostics_keep_end :: proc() {
+    if g_keep != nil { append(g_keep, ..g_diagnostics[:]) }
+    g_keep = nil
+}
+
 // The queue let go of, unread: a new check's (mara serve) starts its own.
 reset_diagnostics :: proc() {
     g_diagnostics = {}
@@ -81,6 +98,7 @@ take_diagnostics :: proc() -> string {
             fmt.sbprintf(&b, "%s: %s\n", label, d.message)
         }
     }
+    if g_keep != nil { append(g_keep, ..g_diagnostics[:]) }
     clear(&g_diagnostics)
     return strings.to_string(b)
 }
