@@ -306,7 +306,7 @@ above (types)   (33 types, depth 2)
       max_vertices : i64
       max_indices : i64
       max_instances : i64
-      mesh_count : i32
+      mesh_count : i64
     texture_id : u32
     texture_size : i32
     font_texture_id : u32
@@ -348,9 +348,9 @@ above (types)   (33 types, depth 2)
     shader : u32
     texture : u32
     command_buffer : u32
-    batch_count : i32
+    batch_count : i64
     instance_capacity : i64
-    command_count : i32
+    command_count : i64
   draw_state_object : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
   gl_context : mara.sdl.GLContext
@@ -610,11 +610,11 @@ below (flow) — what this variable affects  (forward slice)
 === Pounce | at gfx_mesh_generation.mara:69:11
 gfx_mesh_generation.mara:69:11  token '0'
 
-  Define                   [430,1487)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
-  Fun_Def                  [432,1487)  fun() -> [24]Vertex, [36]u32 { …
-  Assign                   [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
-  Index                    [463,467)  verts[0]   : Vertex
-  Number                   [465,466)  0   : i64
+  Define                   [428,1485)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
+  Fun_Def                  [430,1485)  fun() -> [24]Vertex, [36]u32 { …
+  Assign                   [461,498)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+  Index                    [461,465)  verts[0]   : Vertex
+  Number                   [463,464)  0   : i64
 === Pounce | at Pounce.mara:112:13
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
