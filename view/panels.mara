@@ -338,7 +338,7 @@ cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
 // over them, its menu when one's open.
 draw_window :: fun(ui: ^Ui, p: ^Profile) {
 	r := ui.renderer
-	_ = SetRenderDrawColor(r, ui.ground.r, ui.ground.g, ui.ground.b, u8(255))
+	_ = SetRenderDrawColor(r, ui.ground.r, ui.ground.g, ui.ground.b, 255)
 	_ = RenderClear(r)
 	front := front_panel(ui)
 	for pn, i in ui.panels {

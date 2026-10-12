@@ -112,7 +112,7 @@ glyph_of :: fun(t: ^Text, c: u32) -> i64 {
 
 // A rectangle filled with a color, in pixels.
 fill :: fun(renderer: Renderer, x: f32, y: f32, w: f32, h: f32, color: Color) {
-	_ = SetRenderDrawColor(renderer, color.r, color.g, color.b, u8(255))
+	_ = SetRenderDrawColor(renderer, color.r, color.g, color.b, 255)
 	r := SDL_FRect{x = x, y = y, w = w, h = h}
 	_ = RenderFillRect(renderer, &r)
 }
