@@ -2012,6 +2012,50 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     from := side(e, src, -1) or_return
     w := SLICE_LEN_IR
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+    if !llvm_same_type(dst.elem, from.elem) && is_byte_elem(from.elem) && !is_byte_elem(dst.elem) {
+        // From bytes into another type's elements (tc_byte_read_run): the
+        // bytes copied in raw — an open run as many elements as they make (a
+        // whole number), a written one exactly its elements' bytes — within
+        // dst's cap. (Elements holding a partial array: their headers would
+        // point into the bytes — later.)
+        if value_has_partial_array(g, dst.elem) { return false }
+        size := type_size(dst.elem)
+        elem_name := type_name(dst.elem)
+        nbytes := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        count := fresh_tmp(g)
+        ok, bad := fresh_label(g, "byte.read.ok"), fresh_label(g, "byte.read.err")
+        cmp := fresh_tmp(g)
+        if hi == "" {
+            rem := fresh_tmp(g)
+            emit(g, "  %s = urem %s %s, %d", rem, w, nbytes, size)
+            emit(g, "  %s = icmp ne %s %s, 0", cmp, w, rem)
+            emit_cond_br(g, cmp, bad, ok)
+            emit_label(g, bad)
+            emit_fail(g, fmt.tprintf("%s runtime error: byte read: %%lld bytes aren't a whole number of %s (%d bytes each)\n", loc, elem_name, size), fail_i64(nbytes))
+            emit_label(g, ok)
+            emit(g, "  %s = udiv %s %s, %d", count, w, nbytes, size)
+        } else {
+            emit(g, "  %s = sub %s %s, %s", count, w, hi, lo)
+            want := fresh_tmp(g)
+            emit(g, "  %s = mul %s %s, %d", want, w, count, size)
+            emit(g, "  %s = icmp ne %s %s, %s", cmp, w, want, nbytes)
+            emit_cond_br(g, cmp, bad, ok)
+            emit_label(g, bad)
+            emit_fail(g, fmt.tprintf("%s runtime error: byte read: a run of %%lld %s is %%lld bytes, but the bytes are %%lld\n", loc, elem_name),
+                      fail_i64(count), fail_i64(want), fail_i64(nbytes))
+            emit_label(g, ok)
+        }
+        in_ok, in_bad := fresh_label(g, "byte.read.in"), fresh_label(g, "byte.read.past")
+        emit_cond_br(g, emit_byte_span_outside(g, lo, count, dst.bound), in_bad, in_ok)
+        emit_label(g, in_bad)
+        emit_fail(g, fmt.tprintf("%s runtime error: byte read out of bounds: offset %%lld + %%lld elements > capacity %%lld\n", loc),
+                  fail_i64(lo), fail_i64(count), fail_i64(dst.bound))
+        emit_label(g, in_ok)
+        at := fresh_tmp(g)
+        emit_elem_gep(g, at, llvm_type_from_checker(dst.elem), dst.data, lo, w)
+        emit_memcpy_runtime(g, at, from.data, nbytes)
+        return true
+    }
     if !llvm_same_type(dst.elem, from.elem) {
         if !is_byte_elem(dst.elem) || is_byte_elem(from.elem) { return false }
         // Into bytes, src's elements' raw bytes (a slice's, a partial array's:

@@ -225,6 +225,11 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         // (Into bytes, a value's bytes — an array's too, not its elements:
         // all checked there.)
         if view := tc_byte_span_checks(k, lo_n, hi_n, tt, vt, span); view != nil || is_array_shaped(vt) { return }
+    } else if te := index_elem_type(tt); te != nil && is_byte_buffer(vt) {
+        // (From bytes into a run of another type's elements — `verts[0:n] =
+        // buf[0:nbytes]` — their raw bytes read in.)
+        tc_byte_read_run(k, lo_n, hi_n, value, vt, te, span)
+        return
     } else if v := tc_unparen(k, value); tr.tag[v] == .Array {
         // (An array literal at the elements' type — `f[2:4] = [0.5, 0.25]`
         // into f32s: an array of f32s, tc_settle.)
@@ -241,7 +246,22 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         }
     }
     fa, is_array := distinct_base(tt).(^Type_Fixed_Array)
-    if !is_array { return }
+    if !is_array {
+        // (A slice's or partial array's run: the value's elements its own type.)
+        te := index_elem_type(tt)
+        if te == nil || is_any(vt) { return }
+        ve: Type
+        #partial switch v in distinct_base(vt) {
+        case ^Type_Fixed_Array:   ve = v.elem
+        case ^Type_Slice:         ve = v.elem
+        case ^Type_Partial_Array: ve = v.elem
+        case:
+            tc_error(k, span, TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE, type_name(vt))
+            return
+        }
+        if !is_infer(ve) && types_incompatible(te, ve) { tc_error(k, span, TYPE_SLICE_ASSIGN_ELEMENTS, type_name(ve), type_name(te)) }
+        return
+    }
     #partial switch v in distinct_base(vt) {
     case ^Type_Fixed_Array:
         if types_incompatible(fa.elem, v.elem) {

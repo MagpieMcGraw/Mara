@@ -1,0 +1,17 @@
+module byte_read_run_size_neg
+//@ expect-fail: a run of 2 V is 16 bytes, but the bytes are 24
+
+use mara.core
+
+// Bytes read into a run of known bounds: exactly its elements' bytes.
+
+V :: struct {
+	a: u32
+	b: u32
+}
+
+main :: fun() {
+	buf : [..64]byte
+	room : [..8]V
+	room[0:2] = buf[0:24]
+}

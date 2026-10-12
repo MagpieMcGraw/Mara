@@ -1,0 +1,14 @@
+module slice_assign_elements_neg
+//@ expect-fail: cannot slice-assign []f32 into a run of i64
+
+use mara.core
+
+// A slice's or partial array's run takes elements of its own type (it had
+// passed the checker and failed in codegen).
+
+main :: fun() {
+	fs : [3]f32 = [1, 2, 3]
+	is : [..4]i64
+	f := fs[:]
+	is[0:3] = f
+}

@@ -118,6 +118,44 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
     return view
 }
 
+// From bytes into a run of another type's elements — `verts[0:n] =
+// buf[0:nbytes]`: the bytes are the elements', raw. Plain data only. Its
+// bounds and the bytes' count known: the run's elements take exactly the
+// bytes (an open run, `verts[lo:]`, a whole number of elements of them);
+// else checked as the program runs (llvm_copy_into).
+tc_byte_read_run :: proc(k: ^TC, lo_n, hi_n, value: Tree_Id, vt, elem: Type, span: Span) {
+    if why := byte_slice_reason(k.c, elem); why != "" {
+        tc_error(k, span, TYPE_BYTE_READ_REFERENCE, type_name(elem), why)
+        return
+    }
+    size := type_size(elem)
+    if size <= 0 { return }
+    // (The bytes' count, when it's known: an array's size, a span's bounds.)
+    nbytes, known := 0, false
+    if fa, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array { nbytes, known = fa.size, true }
+    if v := tc_unparen(k, value); k.t.tag[v] == .Slice {
+        known = false
+        blo_n, bhi_n := tree_pair(k.t, v)
+        if bhi_n != 0 {
+            blo, blo_ok := i64(0), true
+            if blo_n != 0 { blo, blo_ok = tc_comptime_int(k, blo_n, nil, names = false) }
+            bhi, bhi_ok := tc_comptime_int(k, bhi_n, nil, names = false)
+            if blo_ok && bhi_ok { nbytes, known = int(bhi - blo), true }
+        }
+    }
+    if !known { return }
+    if hi_n == 0 {
+        if nbytes % size != 0 { tc_error(k, span, TYPE_BYTE_READ_RUN_WHOLE, nbytes, type_name(elem), size) }
+        return
+    }
+    lo, lo_ok := i64(0), true
+    if lo_n != 0 { lo, lo_ok = tc_comptime_int(k, lo_n, nil, names = false) }
+    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
+    if lo_ok && hi_ok && int(hi - lo) * size != nbytes {
+        tc_error(k, span, TYPE_BYTE_READ_RUN_SIZE, hi - lo, type_name(elem), int(hi - lo) * size, nbytes)
+    }
+}
+
 // A span of bytes read as a type, its bounds numbers: as many bytes as the
 // type has — a struct or an array may take fewer (the tail zero), a partial
 // array whole elements up to its size; a distinct type or a field (`exact`),

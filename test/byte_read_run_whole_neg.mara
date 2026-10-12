@@ -1,0 +1,17 @@
+module byte_read_run_whole_neg
+//@ expect-fail: 20 bytes aren't a whole number of V
+
+use mara.core
+
+// Bytes read into an open run: a whole number of its elements.
+
+V :: struct {
+	a: u32
+	b: u32
+}
+
+main :: fun() {
+	buf : [..64]byte
+	room : [..8]V
+	room[0:] = buf[0:20]
+}

@@ -1,0 +1,46 @@
+module byte_read_runs
+
+use mara.core
+
+// From bytes into a run of another type's elements — `dst[lo:hi] = bytes` —
+// their raw bytes read in, one copy: through a pointer to a slice (as a
+// caller's room is filled), an open run (as many elements as the bytes
+// make), into numbers. A run's size known, the bytes must be exactly its
+// elements' (byte_read_run_size_neg, byte_read_run_whole_neg); else checked as
+// the program runs, within the run's cap.
+
+//@ expect-output: through a pointer: 3 3 30
+//@ expect-output: open run: 1 30
+//@ expect-output: numbers: [1, 10, 2, 20, 3, 30]
+
+V :: struct {
+	a: u32
+	b: u32
+}
+
+// Three Vs' bytes into buf.
+fill :: fun(buf: ^[]byte) {
+	src : [3]V
+	for k in 0 .. 3 { src[k] = V{a = u32(k + 1), b = u32(10 * (k + 1))} }
+	buf[0:24] = src
+}
+
+// n Vs read out of buf into the caller's room.
+get :: fun(buf: []byte, n: i64, dst: ^[]V) -> []V {
+	dst[0:n] = buf[0 : n * size_of(V)]
+	return dst[0:n]
+}
+
+main :: fun() {
+	buf : [..64]byte
+	fill(&buf)
+	room : [..8]V
+	got := get(buf[:], 3, &room)
+	print("through a pointer:", got.len, got[2].a, got[2].b)
+	open : [..8]V
+	open[0:] = buf[0:24]
+	print("open run:", open[0].a, open[2].b)
+	ints : [6]u32
+	ints[0:] = buf[0:24]
+	print("numbers:", ints)
+}
