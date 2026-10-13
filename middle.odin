@@ -2,7 +2,6 @@ package mara
 
 import "core:mem/virtual"
 import "core:os"
-import os_old "core:os/old"
 import "core:slice"
 import "core:strconv"
 import "core:sync"
@@ -60,9 +59,9 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     pc.lock = &p.lock
     g_infer_frozen = true
     defer g_infer_frozen = false
-    // The workers: a thread each, as many as the cores (MARA_LOWER_WORKERS:
-    // as many as it says).
-    n := max(1, os_old.processor_core_count())
+    // The workers: one — a build is sequential, its time the work's
+    // (MARA_LOWER_WORKERS: a thread each, as many as it says).
+    n := 1
     if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.parse_int(s) or_else 1) }
     for _ in 0 ..< n {
         mw := new(Middle_Worker)
