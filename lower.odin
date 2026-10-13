@@ -79,6 +79,9 @@ lw_const :: proc(k: ^TC, kc: ^TC_Const) {
     b := k.gb
     if tc_sid(k, kc.def) in b.consts { return }
     span := tree_span(k.t, kc.def)
+    lowering := b.at
+    b.at = tc_sid(k, kc.def)
+    defer b.at = lowering
     f := graph_const_begin(b, tc_graph_decl(k, kc.def))
     ann: Type = Type_Any{}
     if kc.ann != 0 { ann = tc_node_type(k, kc.ann) }
@@ -119,6 +122,9 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) {
     saved := k.lower
     k.lower = {ts = ts}
     defer k.lower = saved
+    at := b.at
+    b.at = tc_sid(k, sc.def)
+    defer b.at = at
     returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
     f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
@@ -377,6 +383,7 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
             continue
         }
         span := tree_span(t, s)
+        at := lw_at(k, s)
         graph_build_body_stmt(b, span)
         saved := graph_build_stmt(b, span, tc_stmt_kind(k, s))
         if t.tag[s] == .Using && fields_of != nil {
@@ -387,12 +394,24 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
             lw_stmt(k, s)
         }
         graph_build_stmt_end(b, saved)
+        b.at = at
     }
+}
+
+// The tree node whose operations are built from here (Graph_Builder.at, each
+// node's syntax): n, in the instance being lowered. The one it was is
+// returned, to be put back.
+lw_at :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
+    at := k.gb.at
+    k.gb.at = tc_sid(k, n)
+    return at
 }
 
 lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
+    at := lw_at(k, s)
+    defer k.gb.at = at
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
@@ -859,6 +878,8 @@ lw_expr :: proc(k: ^TC, n: Tree_Id, want := Build_Want.Value, w := Written.Expli
                 dest := Dest{}, temp := false, temp_span := Span{}) -> Built {
     if n == 0 { return {} }
     b := k.gb
+    at := lw_at(k, n)
+    defer b.at = at
     // (A compound assignment's target, read in its operation: through the
     // place already built.)
     if n == k.lower.compound.target {
@@ -1131,7 +1152,9 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         arrays[i] = is_array && !r.place
         as := Graph_Widen{work = work, binary = true}
         if callee != nil { as = {sig = callee, param = i} if i < len(callee.params) else {} }
+        at := lw_at(k, side)   // (its read and its widening: the side's)
         sides[i] = graph_build_as(b, r.v, r.place, st, tree_span(tr, side), span, as)
+        b.at = at
     }
     if callee != nil {
         ret := fn_primary_return(callee)

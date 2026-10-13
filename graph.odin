@@ -117,6 +117,7 @@ Program_Graph :: struct {
     defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
     stmt:    [dynamic]i32,      // an operation → the statement it comes from (in `stmts`), or -1
     decl_tok: [dynamic]Token_Id,      // a variable's declaration — a param, a named result, a local — → the token that declares it (0: none)
+    syntax:  [dynamic]Syntax_Id,      // the tree node it was lowered from, in its instance (0: none) — what's written that made it
 
     // A node's operands are operands[operand_first[id] : operand_first[id+1]].
     operands:      [dynamic]Operand,
@@ -374,6 +375,7 @@ Graph_Builder :: struct {
     g:       ^Program_Graph,  // the code being built
     checked: ^Checked_Program,
     stmt:    i32,     // the statement being lowered (in g.stmts), or -1
+    at:      Syntax_Id,   // the tree node being lowered: each node made is its (Program_Graph.syntax)
     stmt_from: int,         // (the nodes there were when the newest entry was made)
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
@@ -634,7 +636,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok, Value,
+    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok, Syntax, Value,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
 }
 
@@ -726,6 +728,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
     g.stmt = make([dynamic]i32, at(r, .Stmt))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
+    g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
     g.value = make([dynamic]Const_Id, at(r, .Value))
     g.values = b.pc.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
@@ -750,7 +753,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
     }
     trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n)
     trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n)
-    trim(&g.stmt, n); trim(&g.decl_tok, n); trim(&g.value, n)
+    trim(&g.stmt, n); trim(&g.decl_tok, n); trim(&g.syntax, n); trim(&g.value, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
     trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
@@ -1011,6 +1014,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.refers[i] = NO_NODE
     g.stmt[i] = b.stmt
     g.decl_tok[i] = 0
+    g.syntax[i] = b.at
     g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))
     b.nodes += 1
@@ -1031,6 +1035,7 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.refers, n)
     non_zero_resize(&g.stmt, n)
     non_zero_resize(&g.decl_tok, n)
+    non_zero_resize(&g.syntax, n)
     non_zero_resize(&g.value, n)
     non_zero_resize(&g.operand_first, n)
 }

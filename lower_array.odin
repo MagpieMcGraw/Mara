@@ -39,9 +39,11 @@ lw_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     tt := distinct_base(ct)
     elem := tc_node_type(k, target)
     base := cr.v
+    at := lw_at(k, target)   // (the element's place: the target's)
     if pt, is_ptr := tt.(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, ix_span, pt.elem, "", cr.v) }
     ir := lw_expr(k, idx_n, .Value)
     place := graph_op_value(b, .Index, .Explicit, ix_span, elem, "", base, build_index_value(b, ir.v, tc_node_type(k, idx_n), ix_span))
+    b.at = at
     if is_byte_buffer(ct) {
         lw_byte_write(k, s, target, value, place, tt, op_tok)
         return

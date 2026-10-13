@@ -73,7 +73,9 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
            tr.tag[u] == .Slice && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
             lw_fail(k, a, "bytes as a dispatch's argument")
         }
+        at := lw_at(k, a)   // (its read and its widening: the argument's)
         append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
+        b.at = at
         append(&array_values, is_array && !r.place)
     }
     for i := len(args); i < len(ft.params); i += 1 {
@@ -126,7 +128,9 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         if mr.on {
             if !r.ok { lw_fail(k, v, "a `?` on no call built") }
             graph_retype(b, r.v.op, nil)
+            at := lw_at(k, v)   // (the `?`'s branch and return: its)
             mr.call = graph_try_after(b, tree_span(t, v), r.v)
+            b.at = at
         }
         rets := tc_call_returns(k, call, nil)
         returns = rets[:len(rets) - 1]

@@ -345,12 +345,18 @@ lw_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         // (A header's field, an array's swizzle.)
         ft := build_target_field_type(bt, field)
         if ft == nil { lw_fail(k, target, "a write to an unknown field") }
-        lw_store_at(k, value, lw_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
+        at := lw_at(k, target)   // (the field's place: the target's)
+        place := lw_member_place(k, target, field, br, bt, ft)
+        k.gb.at = at
+        lw_store_at(k, value, place, span, op_tok, target, s)
         return
     }
     ft := resolve_struct_field(sd, field)
     if ft == nil { lw_fail(k, target, "a write to an unknown field") }
-    lw_store_at(k, value, lw_member_place(k, target, field, br, bt, ft), span, op_tok, target, s)
+    at := lw_at(k, target)   // (the field's place: the target's)
+    place := lw_member_place(k, target, field, br, bt, ft)
+    k.gb.at = at
+    lw_store_at(k, value, place, span, op_tok, target, s)
 }
 
 // `p^ = v` (tc_deref_assign): the place p points at, then v into it.
@@ -361,7 +367,9 @@ lw_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     pr := lw_expr(k, Tree_Id(tr.a[target]), .Place, temp_span = at)
     place := NO_VALUE
     if p, is_ptr := tc_node_type(k, Tree_Id(tr.a[target])).(^Type_Ptr); is_ptr {
+        lowering := lw_at(k, target)   // (what it points at: the target's)
         place = graph_op_value(k.gb, .Deref, .Explicit, at, p.elem, "", pr.v)
+        k.gb.at = lowering
     }
     lw_store_at(k, value, place, span, op_tok, target, s)
 }

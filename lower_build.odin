@@ -88,6 +88,9 @@ Built_Span_Read :: struct {
 lw_value :: proc(k: ^TC, r: Built, n: Tree_Id, t: Type) -> Operand {
     b := k.gb
     if b == nil || !r.place { return r.v }
+    at := b.at
+    b.at = tc_sid(k, n)   // (the read is n's value)
+    defer b.at = at
     return graph_read(b, r.v, t, tree_span(k.t, n))
 }
 
@@ -206,6 +209,9 @@ lw_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
 lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span, w: Graph_Widen,
                     held := NO_NODE) -> Operand {
     b := k.gb
+    at := b.at
+    b.at = tc_sid(k, e)   // (what it takes to give e at its use's type is e's)
+    defer b.at = at
     used := false
     defer if held != NO_NODE && !used { lw_fail(k, e, "a temporary made before a value it never holds") }
     if to != nil {
