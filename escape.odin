@@ -71,7 +71,36 @@ Esc_Roots :: struct {
     deep:   Esc_Param_Set,   // caller memory reachable further through them
     global: bool,
     temp:   int,             // deepest block holding a value it views in place; 0 = none
-    vars:   [dynamic]i32,    // variables' own storage, by index in the fun's
+    vars:   Esc_Vars,        // variables' own storage, by index in the fun's
+}
+
+// Variables, by index in the fun's: a value's are mostly none or one — two
+// kept in place, and past two, all in a list.
+Esc_Vars :: struct {
+    n:    i32,
+    one:  [2]i32,
+    more: [dynamic]i32,
+}
+
+esc_var_count :: proc(v: Esc_Vars) -> int {
+    return len(v.more) if len(v.more) > 0 else int(v.n)
+}
+
+esc_var_at :: proc(v: Esc_Vars, i: int) -> i32 {
+    return v.more[i] if len(v.more) > 0 else v.one[i]
+}
+
+esc_vars_has :: proc(v: Esc_Vars, k: i32) -> bool {
+    for i in 0 ..< esc_var_count(v) { if esc_var_at(v, i) == k { return true } }
+    return false
+}
+
+esc_vars_push :: proc(v: ^Esc_Vars, k: i32) {
+    switch {
+    case len(v.more) > 0: append(&v.more, k)
+    case v.n < 2:         v.one[v.n] = k; v.n += 1
+    case:                 append(&v.more, v.one[0], v.one[1], k)
+    }
 }
 
 // A parameter's memory stored into another's (a function-summary edge): memory
@@ -450,7 +479,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         // does, so for its lifetime, s's own.
         val: Esc_Roots
         if len(ops) > 1 {
-            if k := esc_var_named(e, ops[0]); k >= 0 { append(&val.vars, i32(k)) }
+            if k := esc_var_named(e, ops[0]); k >= 0 { esc_vars_push(&val.vars, i32(k)) }
         }
         esc_write(e, op, ops[0], val, state)
     case .Fill:
@@ -487,12 +516,12 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
         if v.view {
             esc_join(r, state[v.slot])
         } else {
-            append(&r.vars, i32(k))
+            esc_vars_push(&r.vars, i32(k))
         }
         return
     }
     if e.ctor && d == 0 {
-        for v, k in e.vars { if e.g.kind[v.node] == .Field { append(&r.vars, i32(k)) } }
+        for v, k in e.vars { if e.g.kind[v.node] == .Field { esc_vars_push(&r.vars, i32(k)) } }
         return
     }
     r.global = true   // a constant, a function, the program's globals
@@ -578,7 +607,8 @@ esc_write :: proc(e: ^Esc, op: Node_Id, dest: Operand, val: Esc_Roots, state: []
 @(private="file")
 esc_store :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots, state: []Esc_Roots) {
     esc_check(e, site, dst, val)
-    for k in dst.vars {
+    for vi in 0 ..< esc_var_count(dst.vars) {
+        k := esc_var_at(dst.vars, vi)
         if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(&state[s], val) }
     }
 }
@@ -597,7 +627,8 @@ esc_check :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots) {
     for i in dst.deep   { esc_record_stores(e, i, true, val) }
     if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, false, val) }
     // A constructor's field is part of the constructed result.
-    for k in dst.vars {
+    for vi in 0 ..< esc_var_count(dst.vars) {
+        k := esc_var_at(dst.vars, vi)
         if e.vars[k].depth == ESC_CALLER {
             e.sum.ret += val.params
             e.sum.ret_deep += val.deep
@@ -744,7 +775,8 @@ esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, deep: boo
 @(private="file")
 esc_clear :: proc(r: ^Esc_Roots) {
     r.params, r.deep, r.global, r.temp = {}, {}, false, 0
-    clear(&r.vars)
+    r.vars.n = 0
+    clear(&r.vars.more)
 }
 
 @(private="file")
@@ -753,8 +785,8 @@ esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
     if !(src.deep <= dst.deep)     { dst.deep += src.deep; changed = true }
     if src.global && !dst.global   { dst.global = true; changed = true }
     if src.temp > dst.temp         { dst.temp = src.temp; changed = true }
-    for k in src.vars {
-        if !slice.contains(dst.vars[:], k) { append(&dst.vars, k); changed = true }
+    for i in 0 ..< esc_var_count(src.vars) {
+        if k := esc_var_at(src.vars, i); !esc_vars_has(dst.vars, k) { esc_vars_push(&dst.vars, k); changed = true }
     }
     return
 }
@@ -768,8 +800,8 @@ esc_copy :: proc(dst: ^Esc_Roots, src: Esc_Roots) {
 @(private="file")
 esc_equal :: proc(a, b: Esc_Roots) -> bool {
     if a.params != b.params || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
-    if len(a.vars) != len(b.vars) { return false }
-    for k in a.vars { if !slice.contains(b.vars[:], k) { return false } }
+    if esc_var_count(a.vars) != esc_var_count(b.vars) { return false }
+    for i in 0 ..< esc_var_count(a.vars) { if !esc_vars_has(b.vars, esc_var_at(a.vars, i)) { return false } }
     return true
 }
 
@@ -793,7 +825,8 @@ esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
     dst.deep += r.params + r.deep
     if r.global { dst.global = true }
     dst.temp = max(dst.temp, r.temp)
-    for k in r.vars {
+    for vi in 0 ..< esc_var_count(r.vars) {
+        k := esc_var_at(r.vars, vi)
         if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(dst, state[s]) }
     }
 }
@@ -803,8 +836,9 @@ esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
 @(private="file")
 esc_slice_data :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
     esc_deref(e, dst, r, state)
-    for k in r.vars {
-        if esc_self_pointing(e.vars[k].type_) && !slice.contains(dst.vars[:], k) { append(&dst.vars, k) }
+    for i in 0 ..< esc_var_count(r.vars) {
+        k := esc_var_at(r.vars, i)
+        if esc_self_pointing(e.vars[k].type_) && !esc_vars_has(dst.vars, k) { esc_vars_push(&dst.vars, k) }
     }
 }
 
@@ -826,7 +860,7 @@ esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
     d := -1
     if r.global { d = ESC_GLOBAL }
     if r.temp > 0 { d = max(d, r.temp) }
-    for k in r.vars { d = max(d, e.vars[k].depth) }
+    for vi in 0 ..< esc_var_count(r.vars) { d = max(d, e.vars[esc_var_at(r.vars, vi)].depth) }
     return d
 }
 
@@ -837,7 +871,7 @@ esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
     if r.global { d = ESC_GLOBAL }
     if r.params != {} || r.deep != {} { d = min(d, ESC_CALLER) }
     if r.temp > 0 { d = min(d, r.temp) }
-    for k in r.vars { d = min(d, e.vars[k].depth) }
+    for vi in 0 ..< esc_var_count(r.vars) { d = min(d, e.vars[esc_var_at(r.vars, vi)].depth) }
     return d
 }
 
@@ -999,7 +1033,8 @@ esc_param_name :: proc(callee: ^Type_Scope, i: int) -> string {
 esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
     g := e.g
     worst := -1
-    for k in r.vars {
+    for vi in 0 ..< esc_var_count(r.vars) {
+        k := esc_var_at(r.vars, vi)
         v := e.vars[k]
         if worst < 0 { worst = int(k); continue }
         w := e.vars[worst]

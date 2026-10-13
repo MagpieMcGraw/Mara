@@ -87,21 +87,62 @@ reach_scc :: proc(code: ^Program_Code, rp: ^Reach_Pass, members: []^Type_Scope) 
 // by any use (it's read where it is); a pointer, unless its value is only
 // compared, returned, kept in the result being built, or passed where it
 // isn't reached through or returned.
+// A code's operations' uses, each node's a run of `all` from first[node]:
+// what it's an operand of, and where (reach_summarize).
+Reach_Use :: struct { by: Node_Id, at: int }
+Reach_Uses :: struct { first: []i32, all: []Reach_Use }
+
+reach_uses :: proc(u: Reach_Uses, x: Node_Id) -> []Reach_Use {
+    return u.all[u.first[x]:u.first[x + 1]]
+}
+
 reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Scope, pg: ^Program_Graph, s: ^Fun_Summary) -> bool {
-    // Each node's uses (what it's an operand of, and where), each
-    // declaration's variable operations, the params in order.
-    Use :: struct { by: Node_Id, at: int }
-    uses := make([][dynamic]Use, int(pg.end) + 1, context.temp_allocator)
-    for &u in uses { u.allocator = context.temp_allocator }   // (each list grows where the walk's things are)
-    vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
+    // Its params, in order.
     params := make([dynamic]Node_Id, context.temp_allocator)
     for id := Node_Id(1); id <= pg.end; id += 1 {
         #partial switch pg.kind[id] {
         case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
         case .Param: append(&params, id)
+        }
+    }
+    if len(params) != len(f.params) { return false }
+    // (Only a param passed as storage is reached through: with none, none is
+    // — no use need be looked for.)
+    stored := false
+    for p in f.params {
+        t := distinct_base(p.type_)
+        if ir, _ := llvm_param_type(t); ir != "ptr" { continue }
+        if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun { continue }
+        stored = true
+        break
+    }
+    if !stored { return true }
+
+    // Each node's uses — what it's an operand of, and where — in one array, a
+    // node's a run of it (counted, then laid out); each declaration's
+    // variable operations.
+    first := make([]i32, int(pg.end) + 2, context.temp_allocator)
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: id = graph_last(pg, id); continue
+        case .Op:
+            for o in graph_operands(pg, id) { if o.op > 0 && o.op <= pg.end { first[o.op + 1] += 1 } }
+        }
+    }
+    for i in 1 ..< len(first) { first[i] += first[i - 1] }
+    uses := Reach_Uses{first = first, all = make([]Reach_Use, first[len(first) - 1], context.temp_allocator)}
+    next := make([]i32, len(first), context.temp_allocator)
+    copy(next, first)
+    vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: id = graph_last(pg, id); continue
         case .Op:
             for o, i in graph_operands(pg, id) {
-                if o.op > 0 && o.op <= pg.end { append(&uses[o.op], Use{id, i}) }
+                if o.op > 0 && o.op <= pg.end {
+                    uses.all[next[o.op]] = {id, i}
+                    next[o.op] += 1
+                }
             }
             if pg.op[id] == .Var {
                 d := pg.refers[id]
@@ -112,24 +153,23 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
             }
         }
     }
-    if len(params) != len(f.params) { return false }
 
     // A place in a local that only becomes the result: written, built, and
     // read only to be returned — a value kept there is returned, not read.
-    in_result :: proc(pg: ^Program_Graph, uses: [][dynamic]Use, vars: map[Node_Id][dynamic]Node_Id, place: Node_Id) -> bool {
+    in_result :: proc(pg: ^Program_Graph, uses: Reach_Uses, vars: map[Node_Id][dynamic]Node_Id, place: Node_Id) -> bool {
         at := place
         for pg.op[at] == .Field || pg.op[at] == .Index { at = graph_operands(pg, at)[0].op }
         if pg.op[at] != .Var { return false }
         d := pg.refers[at]
         if d <= 0 || d > pg.end || (pg.kind[d] != .Local && pg.kind[d] != .Result) { return false }
-        written_only :: proc(pg: ^Program_Graph, uses: [][dynamic]Use, x: Node_Id) -> bool {
-            for u in uses[x] {
+        written_only :: proc(pg: ^Program_Graph, uses: Reach_Uses, x: Node_Id) -> bool {
+            for u in reach_uses(uses, x) {
                 if u.at != 0 { return false }
                 #partial switch pg.op[u.by] {
                 case .Write, .Construct, .Zero, .Fill, .Arena_Alloc:
                 case .Field, .Index: if !written_only(pg, uses, u.by) { return false }
                 case .Read:
-                    for r in uses[u.by] { if pg.op[r.by] != .Return { return false } }
+                    for r in reach_uses(uses, u.by) { if pg.op[r.by] != .Return { return false } }
                 case: return false
                 }
             }
@@ -150,9 +190,9 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
         }
         named, _ := vars[pn]   // (bound first: `for x in m[k]` faults on a missing key — a param never named)
         for v in named {
-            for u in uses[v] {
+            for u in reach_uses(uses, v) {
                 if pg.op[u.by] != .Read { s.reaches[k] = true; continue }
-                for r in uses[u.by] {
+                for r in reach_uses(uses, u.by) {
                     ok := false
                     #partial switch pg.op[r.by] {
                     case .Compare:
@@ -160,7 +200,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
                     case .Return:
                         ok, s.returned[k] = true, true
                     case .Write:
-                        if r.at == 1 && in_result(pg, uses[:], vars, graph_operands(pg, r.by)[0].op) { ok, s.returned[k] = true, true }
+                        if r.at == 1 && in_result(pg, uses, vars, graph_operands(pg, r.by)[0].op) { ok, s.returned[k] = true, true }
                     case .Call, .Construct:
                         c := graph_called(pg, r.by)
                         j := r.at - (1 if pg.op[r.by] == .Construct else 0)
