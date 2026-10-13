@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:slice"
 import "core:sync"
 
@@ -50,10 +51,16 @@ reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Sco
 // what its callee's summary says; one within it, through every param it's
 // handed, whichever is worked out first — and kept for everyone
 // (Program_Code.summaries): the middle end's reach check, codegen.
-reach_scc :: proc(code: ^Program_Code, cache: ^Reach_Summaries, members: []^Type_Scope) {
+reach_scc :: proc(code: ^Program_Code, rp: ^Reach_Pass, members: []^Type_Scope) {
+    cache := &rp.cache
     for f in members { cache^[f] = new(Fun_Summary) }   // (being worked out: a call to one reaches all)
     out := make([]^Fun_Summary, len(members), context.temp_allocator)
+    if rp.walk.curr_block == nil { _ = virtual.arena_init_growing(&rp.walk) }
     for f, i in members {
+        // (What a summary's walk makes — each node's uses — is let go of
+        // once it's worked out: every fun's is.)
+        context.temp_allocator = virtual.arena_allocator(&rp.walk)
+        defer virtual.arena_free_all(&rp.walk)
         n := len(f.cg_params)
         s := new(Fun_Summary)
         s.reaches, s.returned = make([]bool, n), make([]bool, n)
@@ -81,6 +88,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
     // declaration's variable operations, the params in order.
     Use :: struct { by: Node_Id, at: int }
     uses := make([][dynamic]Use, int(pg.end) + 1, context.temp_allocator)
+    for &u in uses { u.allocator = context.temp_allocator }   // (each list grows where the walk's things are)
     vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
     params := make([dynamic]Node_Id, context.temp_allocator)
     for id := Node_Id(1); id <= pg.end; id += 1 {
@@ -284,6 +292,7 @@ graph_bound :: proc(pg: ^Program_Graph) -> map[Node_Id]Node_Id {
 Reach_Pass :: struct {
     cache: Reach_Summaries,
     diags: [dynamic]Reach_Diag,
+    walk:  virtual.Arena,   // what working out a summary makes, until the next (reach_scc)
 }
 
 Reach_Diag :: struct { span: Span, msg: string }
@@ -375,4 +384,5 @@ reach_report :: proc(c: ^Checker, passes: []^Reach_Pass) {
         return a.msg < b.msg
     })
     for d in diags { check_error(c, d.span, "%s", d.msg) }
+    for rp in passes { virtual.arena_destroy(&rp.walk) }
 }

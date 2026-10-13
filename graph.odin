@@ -108,6 +108,11 @@ Program_Graph :: struct {
     // A subtree is one run of ids, [id, its last] (graph_last): the code's,
     // [0, end]; a block's, by it (a node not here: itself).
     end:     Node_Id,
+    // The fun or struct it's the code of (nil: a constant's), and whether it
+    // was dropped once analysed (graph_drop_codes): then its header is what's
+    // left of it — its columns' room was given back.
+    root:    ^Type_Scope,
+    dropped: bool,
     last:    map[Node_Id]Node_Id,
     name:    [dynamic]Name_Id,  // (its text: graph_name)
     names:   ^[dynamic]string,  // (its tables' names, a node's by its Name_Id)
@@ -706,10 +711,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
     graph_table_names(b, &pc)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
-        for c in pc.codes {
-            graph_check_runs(c)
-            graph_check_refers(c)
-        }
+        for c in pc.codes { if !c.dropped { graph_check_code(c) } }
     }
     graph_dump(&pc)
     return pc
@@ -842,7 +844,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.run_first = make([dynamic]i32, at(r, .Run_First))
     g.edges = make([dynamic]Edge, at(r, .Edges))
     g.stmts = make([dynamic]Graph_Stmt, at(r, .Stmts))
-    g.unreachable = make([dynamic]Span, at(r, .Unreachable))
+    g.unreachable = make([dynamic]Span)   // (not in a region: kept when the code is dropped, for the program's list)
     g.settled = make([dynamic]Node_Id, at(r, .Settled))
     return g
 }
@@ -902,6 +904,7 @@ graph_fun_code :: proc(pc: ^Program_Code, ts: ^Type_Scope) -> ^Program_Graph {
     if pc.lock != nil { sync.mutex_lock(pc.lock) }
     g := pc.funs[ts] or_else nil
     if pc.lock != nil { sync.mutex_unlock(pc.lock) }
+    if g != nil && g.dropped { return nil }   // (dropped once analysed: lowered again to be read)
     return g
 }
 
@@ -947,6 +950,13 @@ Graph_Mark :: [Graph_Column]uint
 graph_code_mark :: proc(b: ^Graph_Builder) -> (m: Graph_Mark) {
     for c in Graph_Column { m[c] = b.store.regions[c].used }
     return
+}
+
+// Codes analysed, dropped: their columns' room given back (graph_code_drop)
+// — they were the last built — and each marked so.
+graph_drop_codes :: proc(b: ^Graph_Builder, m: Graph_Mark, codes: []^Program_Graph) {
+    for g in codes { g.dropped = true }
+    graph_code_drop(b, m)
 }
 
 // The codes built since the mark, dropped: their columns' room given back,
@@ -997,6 +1007,7 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         if e.to == NO_NODE { graph_fatal(g.origin[e.from], "a then from '%s' into a run that never had an operation", graph_name(g, e.from)) }
     }
     when ODIN_DEBUG { graph_check_built(b) }
+    if g.kind[0] == .Fun || g.kind[0] == .Struct { g.root = graph_type(g, 0).(^Type_Scope) }
     graph_trim(g, b.nodes)
     graph_find_consumes(g)
     graph_index_edges(g)
@@ -1055,7 +1066,7 @@ graph_check_built :: proc(b: ^Graph_Builder) {
 graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
     place := Code_Place{graph_scope_name(ts, name, written), stmt}
     p.pc.places[ts] = place
-    graph_code_placed(c.g, place)
+    if !c.g.dropped { graph_code_placed(c.g, place) }
     graph_place(p, c)
 }
 
@@ -3392,7 +3403,7 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     count: map[^Type_Scope]int
     defer delete(count)
     for c in pc.codes {
-        if c.kind[0] == .Fun || c.kind[0] == .Struct { count[graph_type(c, 0).(^Type_Scope)] += 1 }
+        if c.root != nil { count[c.root] += 1 }
     }
     bad := 0
     check :: proc(count: ^map[^Type_Scope]int, bad: ^int, t: ^Type_Scope, span: Span) {
@@ -3418,6 +3429,13 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
 }
 
 // Refers-to is complete: every var operation names a declaration.
+// A code as built: its runs and its refers-to whole (a debug build checks
+// each code as it's analysed: middle_analyse; and what's kept, at the end).
+graph_check_code :: proc(g: ^Program_Graph) {
+    graph_check_runs(g)
+    graph_check_refers(g)
+}
+
 @(private="file")
 graph_check_refers :: proc(g: ^Program_Graph) {
     bad := 0

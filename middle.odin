@@ -31,6 +31,7 @@ Middle :: struct {
     workers: [dynamic]^Middle_Worker,
     escape:  [dynamic][dynamic]Esc_Diag,   // each worker's escape diagnostics
     bodies:  map[^Type_Scope]int,          // each fun's and struct's event (Lower_Again)
+    keep:    bool,                         // the funs' codes kept once analysed (else dropped)
 }
 
 // One worker of the middle end: its lowering and what its analyses keep.
@@ -41,9 +42,12 @@ Middle_Worker :: struct {
     fold:  Folder,
 }
 
-// Every code lowered and analysed, then put in place in written order.
-middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> Middle {
-    mid := Middle{on = true}
+// Every code lowered and analysed, then put in place in written order. A
+// fun's code is dropped once it's analysed — codegen lowers it again — unless
+// what comes after reads it (`keep`: ask and serve, a dump, the annotations'
+// check).
+middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope, keep: bool) -> Middle {
+    mid := Middle{on = true, keep = keep}
     saved_salt, saved_pkg, saved_subst := TC_Salt{k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
     defer {
         tc_instance_end(k, saved_salt)
@@ -91,7 +95,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     middle_components(&run)
     middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
         for s in middle_ready(run) {
-            middle_scc(mw, run.codes, run.cg, run.cg.sccs[s][:])
+            middle_scc(mw, run.codes, run.cg, run.cg.sccs[s][:], run.mid.keep)
             middle_done(run, s)
         }
     })
@@ -102,8 +106,13 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     for e, i in k.events { if e.kind != .Module_Stmt { append(&run.list, i) } }
     middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
         for i in middle_take(run) {
+            mark := graph_code_mark(mw.k.gb)
+            fresh := !run.codes.done[i]
             lw_code(mw.k, run.codes, i)
             middle_analyse(mw, run.codes, i)
+            if g := run.codes.code[i]; fresh && g != nil && g.kind[0] == .Fun && !run.mid.keep {
+                graph_drop_codes(mw.k.gb, mark, {g})
+            }
         }
     })
     pc.lock = nil
@@ -222,17 +231,26 @@ middle_done :: proc(run: ^Middle_Run, s: int) {
 
 // A component of the call graph: its funs lowered, its escape analysis run,
 // each fun analysed — a worker's, once its callees' are done.
-middle_scc :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, cg: ^Call_Graph, scc: []int) {
+middle_scc :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, cg: ^Call_Graph, scc: []int, keep: bool) {
     members := make([dynamic]^Type_Scope, 0, len(scc), context.temp_allocator)
+    built := make([dynamic]^Program_Graph, 0, len(scc), context.temp_allocator)   // (the funs' codes lowered here: dropped after)
+    mark := graph_code_mark(mw.k.gb)
     for node in scc {
-        if i, checked := codes.bodies[cg.nodes[node]]; checked { lw_code(mw.k, codes, i) }
+        if i, checked := codes.bodies[cg.nodes[node]]; checked {
+            fresh := !codes.done[i]
+            lw_code(mw.k, codes, i)
+            if g := codes.code[i]; fresh && g != nil && g.kind[0] == .Fun { append(&built, g) }
+        }
         if cg.nodes[node] != nil { append(&members, cg.nodes[node]) }   // (nil: a constant's value's calls, run at no fun's)
     }
-    reach_scc(&mw.k.gb.prog.pc, &mw.reach.cache, members[:])
+    reach_scc(&mw.k.gb.prog.pc, &mw.reach, members[:])
     escape_scc(cg, scc)
     for node in scc {
         if i, checked := codes.bodies[cg.nodes[node]]; checked { middle_analyse(mw, codes, i) }
     }
+    // Analysed: what's left of a fun's code is what was kept of it (its
+    // summary, its findings); codegen lowers it again.
+    if !keep && len(built) > 0 { graph_drop_codes(mw.k.gb, mark, built[:]) }
 }
 
 // An event's code analysed, once: folded where it uses constants, then its
@@ -243,6 +261,7 @@ middle_analyse :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, i: int) {
     g := codes.code[i]
     if g == nil { return }
     b := mw.k.gb
+    when ODIN_DEBUG { graph_check_code(g) }
     when ODIN_DEBUG {   // (what it calls is built — else what a call reaches would be guessed at)
         for id := Node_Id(0); id <= g.end; id += 1 {
             if g.kind[id] != .Op || (g.op[id] != .Call && g.op[id] != .Construct) { continue }

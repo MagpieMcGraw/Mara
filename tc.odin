@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -296,7 +297,11 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         if perf != nil { perf_timer_mark(perf, "lower") }
         checked.call_graph = build_call_graph(checked)
         c.cg = &checked.call_graph
-        mid = middle_program(k, c, checked, fns)
+        // (A fun's code is dropped once analysed, codegen lowering it again —
+        // unless what comes after reads every code: ask and serve, a dump of
+        // the graph, the annotations' check.)
+        keep := analysis_only || os.get_env("MARA_GRAPH", context.temp_allocator) != "" || os.get_env("MARA_ANNOT", context.temp_allocator) == "check"
+        mid = middle_program(k, c, checked, fns, keep)
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { mid.prog.constant_names[key] = kc.sid }
