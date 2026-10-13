@@ -78,8 +78,13 @@ Module_Task :: struct {
     globals:             [dynamic]Ir_Global,
     overflow_intrinsics: map[string]bool,
     bswap_intrinsics:    map[int]bool,
-    imports:             map[string]bool,
     const_tables:        map[string]Const_Table,
+    // What its functions name (codegen_note): the globals they reference,
+    // themselves and their declares, the types they use.
+    refs:                map[string]bool,
+    defs:                map[string]bool,
+    declares:            map[string]string,
+    types_used:          [dynamic]bool,
 
     // The x86 backend: whether it's the one, and the module's object.
     use_x86:             bool,
@@ -142,6 +147,9 @@ module_codegen_worker :: proc(t: thread.Task) {
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
     task.const_tables        = local.const_tables
+    task.refs, task.defs     = local.refs, local.defs
+    task.declares            = local.declares
+    task.types_used          = local.types_used
 }
 
 // Build a Codegen suitable for one worker. Read-only fields (checked,
@@ -157,8 +165,10 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.string_literals = make(map[string]string, keep)
     g.string_names = make(map[string]bool, keep)
     g.globals = make([dynamic]Ir_Global, keep)
-    g.struct_decls = make([dynamic]string, keep)
     g.registered_structs = make(map[string]bool, keep)
+    g.refs, g.defs = make(map[string]bool, keep), make(map[string]bool, keep)
+    g.declares = make(map[string]string, keep)
+    g.types_used = make([dynamic]bool, keep)
     g.overflow_intrinsics = make(map[string]bool, keep)
     g.bswap_intrinsics = make(map[int]bool, keep)
     g.const_tables = make(map[string]Const_Table, keep)
@@ -184,10 +194,8 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     safe, _ := strings.replace_all(task.module_name, ".", "_")
     g.string_name_prefix = strings.concatenate({safe, "_"})
 
-    // Struct decls live on main_g; workers reach into g.checked.* for
-    // type metadata they need. We deliberately do NOT copy struct_decls
-    // here — the .ll-write phase uses main_g.struct_decls as the shared
-    // type-definition block in every TU's prelude.
+    // The structs and unions the program defines are main_g's (named_types):
+    // the .ll-write phase defines each module's from them.
 }
 
 // Capture g.out's current state back to its module slot. Call once after the
@@ -200,142 +208,54 @@ flush_current_module :: proc(g: ^Codegen) {
     }
 }
 
-// True if `c` is a legal continuation byte in an LLVM identifier. LLVM
-// allows letters, digits, '_', '.', and '$' inside identifiers (and dollars
-// don't actually appear in Mara-emitted IR but we keep them for safety).
-@(private="file")
-is_ir_ident_byte :: proc(c: byte) -> bool {
-    return (c >= 'a' && c <= 'z') ||
-           (c >= 'A' && c <= 'Z') ||
-           (c >= '0' && c <= '9') ||
-           c == '_' || c == '.' || c == '$'
-}
-
-// True if the `@<name>` token at `at` in `ir` is a definition (the start of
-// a `define ...` line or a global-variable assignment `@name = ...`). The
-// heuristic: check what's at the start of the current line — `define ` /
-// `declare ` mean a function definition/declaration; otherwise look for a
-// ` = ` right after the identifier (global initializer). Anything else is a
-// reference.
-@(private="file")
-is_ir_definition :: proc(ir: string, at_token, end_of_token: int) -> bool {
-    // Walk back to the start of this line.
-    line_start := at_token
-    for line_start > 0 && ir[line_start-1] != '\n' { line_start -= 1 }
-    line_prefix := ir[line_start:at_token]
-    if strings.has_prefix(strings.trim_left(line_prefix, " \t"), "define ") { return true }
-    if strings.has_prefix(strings.trim_left(line_prefix, " \t"), "declare ") { return true }
-    // Global initializer: `@name = ...`
-    j := end_of_token
-    for j < len(ir) && (ir[j] == ' ' || ir[j] == '\t') { j += 1 }
-    if j < len(ir) && ir[j] == '=' { return true }
-    return false
-}
-
-// Build module_imports by walking each module's buffer for `@<name>`
-// references and subtracting the locally-defined names. Skips well-known
-// categories every TU declares anyway (libc, LLVM intrinsics, the per-TU
-// `@.str.N` globals). Pass `main_extras_ir` to fold extra IR text
-// (typically the @main entry-point block) into the main TU's import set.
-compute_module_imports :: proc(g: ^Codegen, main_package, main_extras_ir: string) {
+// Each module's imports: the globals its functions name but don't define —
+// not LLVM's intrinsics, its private strings (`.`-named) or libc's three.
+// The main TU's take in @main's (main_refs, main_defs).
+compute_module_imports :: proc(g: ^Codegen, main_package: string, main_refs, main_defs: map[string]bool) {
     g.module_imports = make(map[string]map[string]bool)
-    // Parallel pass: each module with an emission task computes its own import
-    // set into its task slot, reusing that task's arena.
-    itasks := make([dynamic]^Module_Imports_Task, 0, len(g.module_tasks))
-    datas  := make([dynamic]rawptr, 0, len(g.module_tasks))
-    in_tasks: map[string]bool
-    defer {
-        for it in itasks { free(it) }
-        delete(itasks)
-        delete(datas)
-        delete(in_tasks)
+    none: map[string]bool
+    imports_of :: proc(refs, defs, more_refs, more_defs: map[string]bool) -> map[string]bool {
+        imports: map[string]bool
+        take :: proc(refs, defs, more_defs: map[string]bool, imports: ^map[string]bool) {
+            for name in refs {
+                if name in defs || name in more_defs { continue }
+                if strings.has_prefix(name, "llvm.") { continue }
+                if len(name) > 0 && name[0] == '.' { continue }
+                if import_skip_libc(name) { continue }
+                imports[name] = true
+            }
+        }
+        take(refs, defs, more_defs, &imports)
+        take(more_refs, defs, more_defs, &imports)
+        return imports
     }
+    in_tasks: map[string]bool
+    defer delete(in_tasks)
     for mt in g.module_tasks {
         in_tasks[mt.module_name] = true
-        it := new(Module_Imports_Task)
-        it.mt = mt
-        it.main_package = main_package
-        it.main_extras_ir = main_extras_ir
-        append(&itasks, it)
-        append(&datas, rawptr(it))
+        main := mt.module_name == main_package
+        g.module_imports[mt.module_name] = imports_of(mt.refs, mt.defs, main_refs if main else none, main_defs if main else none)
     }
-    run_module_pool(datas[:], module_imports_worker)
-    for mt in g.module_tasks {
-        g.module_imports[mt.module_name] = mt.imports
-    }
-    // Serial pass: module_order entries without an emission task (e.g. the main
-    // TU when the main package has no non-`main` functions — its only content
-    // is @main, emitted into main_builder). Few in number; main allocator.
+    // (A module with no emission task — the main TU when the main package has
+    // no functions but `main` — has only @main's.)
     for module_name in g.module_order {
         if module_name in in_tasks { continue }
-        module_ir := ""
-        if buf, ok := g.module_outs[module_name]; ok {
-            module_ir = strings.to_string(buf)
-        }
-        g.module_imports[module_name] = imports_from_ir(
-            module_ir, main_extras_ir, module_name == main_package)
+        main := module_name == main_package
+        g.module_imports[module_name] = imports_of(none, none, main_refs if main else none, main_defs if main else none)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Parallel post-emission passes
+// Parallel post-emission pass
 //
-// Import-set computation and per-module .ll assembly are both independent per
-// module — each reads already-frozen shared state (g.module_outs, the declare
-// indexes) and writes only its own slot — so they reuse the emission phase's
-// worker-pool pattern. Each worker allocates into its module's existing
-// per-emission arena (alive for all of generate_program); the main thread
-// collects results after pool_finish.
+// Per-module .ll assembly is independent per module — each reads
+// already-frozen shared state (g.module_outs, the declare index) and writes
+// only its own file — so it reuses the emission phase's worker-pool pattern.
 // ---------------------------------------------------------------------------
 
 @(private="file")
 import_skip_libc :: proc(name: string) -> bool {
     return name == "printf" || name == "exit" || name == "strlen"
-}
-
-@(private="file")
-scan_ir_symbols :: proc(ir: string, defined, referenced: ^map[string]bool) {
-    i := 0
-    for i < len(ir) {
-        if ir[i] != '@' { i += 1; continue }
-        start := i + 1
-        end := start
-        for end < len(ir) && is_ir_ident_byte(ir[end]) { end += 1 }
-        if end == start { i += 1; continue }
-        name := ir[start:end]
-        if is_ir_definition(ir, i, end) {
-            defined[name] = true
-        } else {
-            referenced[name] = true
-        }
-        i = end
-    }
-}
-
-// Compute one module's import set: symbols it references but doesn't define,
-// minus llvm intrinsics, private `.`-locals, and the libc trio. The main TU
-// folds in @main's references (main_extras_ir). Result is allocated in the
-// caller's context.allocator.
-@(private="file")
-imports_from_ir :: proc(module_ir, main_extras_ir: string, is_main: bool) -> map[string]bool {
-    defined: map[string]bool
-    referenced: map[string]bool
-    defer { delete(defined); delete(referenced) }
-    scan_ir_symbols(module_ir, &defined, &referenced)
-    if is_main && main_extras_ir != "" {
-        scan_ir_symbols(main_extras_ir, &defined, &referenced)
-    }
-    imports: map[string]bool
-    for name in referenced {
-        if name in defined { continue }
-        if strings.has_prefix(name, "llvm.") { continue }
-        // String globals (`.str.N` / `.<module>_str.N`) are private-linkage
-        // locals, never imports.
-        if len(name) > 0 && name[0] == '.' { continue }
-        if import_skip_libc(name) { continue }
-        imports[name] = true
-    }
-    return imports
 }
 
 // Run `worker` over each pointer in `datas` on a core-sized pool. Pool
@@ -358,23 +278,6 @@ run_module_pool :: proc(datas: []rawptr, worker: thread.Task_Proc) {
 }
 
 @(private="file")
-Module_Imports_Task :: struct {
-    mt:             ^Module_Task,
-    main_package:   string,
-    main_extras_ir: string,
-}
-
-@(private="file")
-module_imports_worker :: proc(t: thread.Task) {
-    it := cast(^Module_Imports_Task)t.data
-    mt := it.mt
-    context.allocator = virtual.arena_allocator(&mt.arena)
-    context.temp_allocator = context.allocator
-    mt.imports = imports_from_ir(strings.to_string(mt.out), it.main_extras_ir,
-                                 mt.module_name == it.main_package)
-}
-
-@(private="file")
 Module_Build_Shared :: struct {
     g:                   ^Codegen,
     checked:             ^Checked_Program,
@@ -383,7 +286,7 @@ Module_Build_Shared :: struct {
     main_builder_str:    string,
     foreign_declares:    map[string]string,
     fn_declares:         map[string]string,
-    struct_decl_by_name: map[string]string,
+    main_types:          []bool,
     build_dir:           string,
 }
 
@@ -409,8 +312,7 @@ module_build_worker :: proc(t: thread.Task) {
     is_main_tu := mt.module_name == s.checked.main_package
     content := build_module_ll(s.g, s.checked, mt.module_name, is_main_tu, s.web,
                                s.fail_helpers_ir, s.main_builder_str,
-                               s.foreign_declares, s.fn_declares,
-                               s.struct_decl_by_name, mt)
+                               s.foreign_declares, s.fn_declares, s.main_types, mt)
     path := module_ll_path(s.build_dir, mt.module_name)
     werr := os.write_entire_file(path, transmute([]u8)content)
     bt.write_err = werr != nil
@@ -456,6 +358,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // switch_to_module on first reference).
     main_builder: strings.Builder
     strings.builder_init(&main_builder)
+    g.refs, g.defs = make(map[string]bool), make(map[string]bool)
+    g.declares = make(map[string]string)
+    g.types_used = make([dynamic]bool)
 
     // Generate LLVM type declarations for all structs from checked type data.
     // Map iteration order is hash-seeded and not deterministic between runs,
@@ -635,6 +540,11 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     }  // end `if !g.shared` (Phase 2 — @main / web wrapper)
 
+    // What @main names: the main TU's imports take them in. (The runtime's
+    // helpers, next, name only what every TU declares.)
+    main_refs, main_defs := g.refs, g.defs
+    g.refs, g.defs = make(map[string]bool), make(map[string]bool)
+
     // Build the runtime fail-block helpers FIRST so any templates they
     // register (via get_string_literal) land in g.globals before the
     // string section below writes it out. The returned text is appended
@@ -683,7 +593,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Phase 1.6: Compute per-module imports now that both function bodies
     // and @main are emitted. The main TU's import set folds in @main's
     // references (arena init, args setup, dispatch into user `main`).
-    compute_module_imports(&g, checked.main_package, main_builder_str)
+    compute_module_imports(&g, checked.main_package, main_refs, main_defs)
 
     // Pre-build foreign declares as a name→declare map. Each per-module .ll
     // emits only the foreign symbols its function bodies actually reference,
@@ -691,19 +601,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     foreign_declares := build_foreign_declares(&g, checked)
     defer delete(foreign_declares)
 
-    // Build a name→decl map for struct/union types so each per-module .ll
-    // emits only the types it (transitively) references. The IR-level type
-    // name namespace is per-TU so the full set isn't needed everywhere;
-    // each TU previously paid ~144 decls of duplication.
-    struct_decl_by_name := build_struct_decl_index(g.struct_decls[:])
-    defer delete(struct_decl_by_name)
-
-    // Walk every module's emitted IR for `define ... @name(args) {` lines
-    // and convert each to its corresponding `declare ... @name(args)` form.
-    // The per-module `.ll` files use this table to emit extern declares for
-    // any cross-module call (the module's import set).
-    fn_declares := build_cross_module_declares(&g)
+    // Every module's functions' `declare` lines (codegen_note), by name: a
+    // module's .ll declares the ones it imports.
+    fn_declares := make(map[string]string)
     defer delete(fn_declares)
+    for mt in g.module_tasks {
+        for name, decl in mt.declares { fn_declares[name] = decl }
+    }
 
     // Per-module output: each home_package gets its own .ll file. Main TU
     // owns the runtime helper definitions, @__mara_program globals, and
@@ -729,7 +633,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         main_builder_str    = main_builder_str,
         foreign_declares    = foreign_declares,
         fn_declares         = fn_declares,
-        struct_decl_by_name = struct_decl_by_name,
+        main_types          = g.types_used[:],
         build_dir           = build_dir,
     }
     btasks := make([dynamic]^Module_Build_Task, 0, len(g.module_tasks))
@@ -772,8 +676,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         is_main_tu := module_name == checked.main_package
         content := build_module_ll(&g, checked, module_name, is_main_tu, web,
                                     fail_helpers_ir, main_builder_str,
-                                    foreign_declares, fn_declares,
-                                    struct_decl_by_name, nil)
+                                    foreign_declares, fn_declares, g.types_used[:], nil)
         path := module_ll_path(build_dir, module_name)
         werr := os.write_entire_file(path, transmute([]u8)content)
         if werr != nil {
@@ -820,7 +723,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
                         fail_helpers_ir, main_builder_str: string,
                         foreign_declares: map[string]string,
                         fn_declares: map[string]string,
-                        struct_decl_by_name: map[string]string,
+                        main_types: []bool,
                         module_task: ^Module_Task) -> string {
     b: strings.Builder
     strings.builder_init_len_cap(&b, 0, 1024 * 1024)
@@ -842,41 +745,53 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
 
     // Constant tables: all of them defined here in the main TU, extern-declared
     // wherever else they're read.
-    const_ir := module_const_ir(g, module_name, is_main_tu)
+    consts := module_const_globals(g, module_name, is_main_tu)
 
     // Struct/union type definitions — TU-local LLVM type namespace means we
-    // only need the types this module actually references (plus the transitive
-    // closure of their field types). Collect from the module's own IR + the
-    // main TU's @main / fail-helper IR, and the constant tables' types.
+    // only need the types this module uses (and those their bodies hold):
+    // its functions' — the main TU's, @main's and the runtime helpers' too —
+    // and its constant tables'. The `@__mara_program_storage` global below
+    // names the program's context in every TU (the main TU defines it, the
+    // others declare it), so its type is always one. Defined in the order the
+    // program's are (g.named_types).
     {
-        used := collect_used_types(g.module_outs[module_name], struct_decl_by_name)
-        collect_used_types_into(const_ir, struct_decl_by_name, &used)
-        if is_main_tu {
-            collect_used_types_into(main_builder_str, struct_decl_by_name, &used)
-            collect_used_types_into(fail_helpers_ir, struct_decl_by_name, &used)
+        used: map[Ir_Type]bool
+        defer delete(used)
+        mark :: proc(t: Ir_Type, used: ^map[Ir_Type]bool) {
+            info := ir_type_info(t)
+            #partial switch info.kind {
+            case .Named:
+                if t in used { return }
+                used[t] = true
+                mark(info.elem, used)
+            case .Array, .Vector, .Ptr:
+                if info.elem != IR_NONE { mark(info.elem, used) }
+            case .Struct:
+                for f in info.fields { mark(f, used) }
+            }
         }
-        // The `@__mara_program_storage` global below references %class.Program
-        // in every TU (main TU defines it, others extern-declare it), so seed
-        // its transitive closure into the used set even if the module's body
-        // never names the type directly.
-        program_name := ir_type_text(program_ir_name(checked))
-        if _, ok := struct_decl_by_name[program_name]; ok && !(program_name in used) {
-            used[program_name] = true
-            seed_ir := struct_decl_by_name[program_name]
-            collect_used_types_into(seed_ir, struct_decl_by_name, &used)
+        mark_all :: proc(types: []bool, used: ^map[Ir_Type]bool) {
+            for u, t in types { if u { mark(Ir_Type(t), used) } }
         }
-        // Emit in the same order as g.struct_decls so the output stays
-        // deterministic and matches the original layout for diffability.
+        mark_const :: proc(c: Ir_Const, used: ^map[Ir_Type]bool) {
+            mark(c.ty, used)
+            mark(c.src, used)
+            for part in c.parts { mark_const(part, used) }
+        }
+        if module_task != nil { mark_all(module_task.types_used[:], &used) }
+        if is_main_tu { mark_all(main_types, &used) }
+        for gl in consts {
+            mark(gl.ty, &used)
+            mark_const(gl.init, &used)
+        }
+        mark(program_ir_name(checked), &used)
         wrote_any := false
-        for decl in g.struct_decls {
-            name := struct_decl_name(decl)
-            if name == "" || !(name in used) { continue }
-            strings.write_string(&b, decl)
-            strings.write_byte(&b, '\n')
+        for t in g.named_types {
+            if t not_in used { continue }
+            ir_print_type_def(&b, t)
             wrote_any = true
         }
         if wrote_any { strings.write_byte(&b, '\n') }
-        delete(used)
     }
 
     // String literal globals — private linkage means no link collision
@@ -902,7 +817,11 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     strings.write_string(&b, "; Context system\n")
     for gl in program_globals(checked, is_main_tu) { ir_print_global(&b, gl) }
     strings.write_byte(&b, '\n')
-    strings.write_string(&b, const_ir)
+    if len(consts) > 0 {
+        strings.write_string(&b, "; Constant tables\n")
+        for gl in consts { ir_print_global(&b, gl) }
+        strings.write_byte(&b, '\n')
+    }
 
     // libc + intrinsic + foreign declares — every TU declares regardless.
     // Intrinsics are per-module (only what this TU actually uses);
@@ -1041,127 +960,6 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     }
 
     return strings.to_string(b)
-}
-
-// Scan every module's emitted IR for `define ... @name(...) {` headers and
-// produce a flat-name → `declare ... @name(...)` map. Each per-module .ll
-// uses this to emit extern declares for the cross-module functions it
-// imports.
-//
-// Why text-based: the alternative is rebuilding the declare from the
-// Type_Scope + signature info via the same code that builds the define
-// header (llvm.odin's). That path is involved
-// enough — sret routing, NRVO, escape args, calling-conv lowering — that
-// reusing it for declares means refactoring it to take a write-target arg.
-// Reading the already-emitted text is simpler and the dependency is just
-// "the define line is on the line right after a label-less open." If the
-// emission format changes, this breaks loudly at the next clang invocation.
-@(private="file")
-build_cross_module_declares :: proc(g: ^Codegen) -> map[string]string {
-    declares := make(map[string]string)
-    for module_name in g.module_order {
-        buf := g.module_outs[module_name]
-        ir := strings.to_string(buf)
-        i := 0
-        for i < len(ir) {
-            line_end := strings.index_byte(ir[i:], '\n')
-            line: string
-            if line_end < 0 { line = ir[i:]; i = len(ir) } else { line = ir[i:i+line_end]; i += line_end + 1 }
-            if !strings.has_prefix(line, "define ") { continue }
-            // Parse "define <linkage>? <retty> @<name>(<params>) {"
-            at := strings.index_byte(line, '@')
-            if at < 0 { continue }
-            // The signature ends just before the trailing " {".
-            sig_end := strings.last_index(line, "{")
-            if sig_end < 0 { continue }
-            sig := strings.trim_right(line[at:sig_end], " ")
-            // Extract just the bare name for the map key.
-            paren := strings.index_byte(sig, '(')
-            if paren < 0 { continue }
-            name := sig[1:paren]  // skip the leading '@'
-            // Reconstruct the declare with the same return type prefix.
-            ret_prefix := strings.trim(line[len("define "):at], " ")
-            declares[name] = strings.concatenate({"declare ", ret_prefix, " ", sig})
-        }
-    }
-    return declares
-}
-
-// Extract the type name (`%class.X` or `%union.X`) from a type-decl line
-// like `%class.X = type { ... }`. Returns "" if the line isn't shaped that
-// way (defensive — every entry in struct_decls follows the convention).
-@(private="file")
-struct_decl_name :: proc(decl: string) -> string {
-    if len(decl) == 0 || decl[0] != '%' { return "" }
-    eq := strings.index_byte(decl, '=')
-    if eq <= 1 { return "" }
-    end := eq
-    for end > 1 && decl[end-1] == ' ' { end -= 1 }
-    return decl[:end]
-}
-
-// Build the name → decl-line index used by per-module struct-decl filtering.
-@(private="file")
-build_struct_decl_index :: proc(decls: []string) -> map[string]string {
-    result := make(map[string]string)
-    for d in decls {
-        if name := struct_decl_name(d); name != "" {
-            result[name] = d
-        }
-    }
-    return result
-}
-
-// Collect every `%class.X` / `%union.X` name referenced in `ir`, then add
-// the transitive closure (types whose fields mention other types). Anything
-// not in `index` (LLVM's own anonymous struct shapes etc.) is ignored.
-@(private="file")
-collect_used_types :: proc(buf: strings.Builder, index: map[string]string) -> map[string]bool {
-    used: map[string]bool
-    collect_used_types_into(strings.to_string(buf), index, &used)
-    return used
-}
-
-@(private="file")
-collect_used_types_into :: proc(ir: string, index: map[string]string, used: ^map[string]bool) {
-    // Scan `ir` for `%class.<ident>` and `%union.<ident>` occurrences. The
-    // hot loop uses strings.index_byte to jump straight from one `%` to the
-    // next, skipping the (much more common) non-`%` bytes in one step
-    // instead of one-byte-at-a-time.
-    add :: proc(name: string, index: map[string]string, used: ^map[string]bool) -> bool {
-        if name in used { return false }
-        if _, ok := index[name]; !ok { return false }
-        used[name] = true
-        return true
-    }
-    scan :: proc(s: string, index: map[string]string, used: ^map[string]bool, worklist: ^[dynamic]string) {
-        pos := 0
-        for pos < len(s) {
-            jump := strings.index_byte(s[pos:], '%')
-            if jump < 0 { break }
-            i := pos + jump
-            j := i + 1
-            for j < len(s) && is_ir_ident_byte(s[j]) { j += 1 }
-            if j > i + 1 {
-                name := s[i:j]
-                // Only %class.* / %union.* are user struct/union types.
-                if strings.has_prefix(name, "%class.") || strings.has_prefix(name, "%union.") {
-                    if add(name, index, used) { append(worklist, name) }
-                }
-            }
-            pos = j
-            if pos == i { pos += 1 }  // defensive — never re-scan the same byte
-        }
-    }
-    worklist: [dynamic]string
-    defer delete(worklist)
-    scan(ir, index, used, &worklist)
-    // Transitive closure: each used type's decl may reference more types
-    // in its field list (`{ ..., %class.Y, ... }`). Drain the worklist.
-    for len(worklist) > 0 {
-        name := pop(&worklist)
-        scan(index[name], index, used, &worklist)
-    }
 }
 
 // Pre-build foreign `declare` entries keyed by C link_name (the actual

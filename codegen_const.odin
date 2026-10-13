@@ -347,14 +347,4 @@ module_const_globals :: proc(g: ^Codegen, module_name: string, is_main_tu: bool)
     return out[:]
 }
 
-// ... as LLVM IR.
-module_const_ir :: proc(g: ^Codegen, module_name: string, is_main_tu: bool) -> string {
-    gls := module_const_globals(g, module_name, is_main_tu)
-    if len(gls) == 0 { return "" }
-    b := strings.builder_make()
-    strings.write_string(&b, "; Constant tables\n")
-    for gl in gls { ir_print_global(&b, gl) }
-    strings.write_byte(&b, '\n')
-    return strings.to_string(b)
-}
 

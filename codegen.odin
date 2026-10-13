@@ -54,13 +54,20 @@ Codegen :: struct {
     module_order:        [dynamic]string,
     current_module_home: string,  // the package whose buffer g.out currently holds (empty = not in a module section)
 
-    // Imports per module: each module's set of `@<symbol>` references that
-    // aren't defined locally. Populated by a post-emission walk of each
-    // module's buffer. Used by the eventual per-`.ll` writer to emit
-    // `declare` lines at the top of each module's file. LLVM intrinsics and
-    // libc names (always declared per TU regardless) are excluded from this
-    // set.
+    // Imports per module: the globals its functions name that it doesn't
+    // define (compute_module_imports, from what each function printed named:
+    // codegen_note). Used by the per-`.ll` writer to emit `declare` lines at
+    // the top of each module's file. LLVM intrinsics and libc names (always
+    // declared per TU regardless) are excluded from this set.
     module_imports:      map[string]map[string]bool,
+
+    // What the functions printed as LLVM IR name (codegen_note): the globals
+    // they reference, themselves (defined, and each one's `declare` for other
+    // modules), the types they use — by type id.
+    refs:       map[string]bool,
+    defs:       map[string]bool,
+    declares:   map[string]string,
+    types_used: [dynamic]bool,
 
     // Filesystem paths produced by generate_program — one .ll per module.
     // Populated at write time; read by main.odin to feed clang.
@@ -87,7 +94,7 @@ Codegen :: struct {
     // name them: llvm_probe).
     globals: [dynamic]Ir_Global,
     // Struct support (no shadow map — reads directly from checked.table.funs)
-    struct_decls:       [dynamic]string,        // LLVM type definitions
+    named_types:        [dynamic]Ir_Type,       // the structs and unions the program defines, in order
     registered_structs: map[string]bool,         // dedup guard for struct decl emission
     // Enum values: read from checked.enums directly (no shadow map)
     // Union support: read from checked.table.unions directly
@@ -291,12 +298,49 @@ codegen_function :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir, entry := true
         x86_function(g.x86, head, code)
         return
     }
+    codegen_note(g, head, code)
     b := &g.out
     ir_print_head(b, head)
     strings.write_string(b, "\nentry:\n" if entry else "\n")
     for part in code { ir_print_all(b, part) }
     strings.write_string(b, "}\n")
     if gap { strings.write_string(b, "\n") }
+}
+
+// What a function printed as LLVM IR names, for its module's .ll: the
+// globals it references (not its labels' or locals' names: they're its
+// own), the types it uses; itself, defined, and its `declare`.
+@(private="file")
+codegen_note :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir) {
+    keep := codegen_keep(g)
+    ref :: proc(g: ^Codegen, v: Val) {
+        if v.kind != .Global || v.name in g.refs { return }
+        g.refs[strings.clone(v.name, codegen_keep(g))] = true
+    }
+    use :: proc(g: ^Codegen, t: Ir_Type) {
+        if int(t) >= len(g.types_used) { resize(&g.types_used, int(t) + 256) }
+        g.types_used[t] = true
+    }
+    for part in code {
+        for &ins in part {
+            use(g, ins.ty)
+            use(g, ins.to)
+            ref(g, ins.a)
+            ref(g, ins.b)
+            ref(g, ins.c)
+            for x in ins.args {
+                use(g, x.ty)
+                ref(g, x.v)
+            }
+        }
+    }
+    use(g, head.ret)
+    for x in head.params { use(g, x.ty) }
+    name := strings.clone(head.name, keep)
+    g.defs[name] = true
+    b := strings.builder_make(keep)
+    ir_print_declare(&b, head)
+    g.declares[name] = strings.to_string(b)
 }
 
 // Begin a function's body: its allocas hoisted to its entry (emit_alloca),
@@ -890,8 +934,7 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     // #packed → LLVM packed struct `<{ ... }>` (no inter-field padding), so
     // field indices map 1:1 to byte offsets and #big_endian reads of on-disk
     // packed formats land correctly.
-    t := ir_class_type(sd)
-    append(&g.struct_decls, strings.concatenate({ir_type_text(t), " = type ", ir_type_text(ir_type_info(t).elem)}))
+    append(&g.named_types, ir_class_type(sd))
 }
 
 
@@ -906,8 +949,7 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
     context.temp_allocator = context.allocator
     g.registered_structs[ukey] = true
-    t := ir_union_type(ut)
-    append(&g.struct_decls, strings.concatenate({ir_type_text(t), " = type ", ir_type_text(ir_type_info(t).elem)}))
+    append(&g.named_types, ir_union_type(ut))
 }
 
 // ---------------------------------------------------------------------------

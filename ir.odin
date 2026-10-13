@@ -644,8 +644,20 @@ ir_print_all :: proc(b: ^strings.Builder, code: []Ir) {
 
 // A function's `define` line, its `{` ending it.
 ir_print_head :: proc(b: ^strings.Builder, h: Ir_Head) {
+    strings.write_string(b, "define ")
+    ir_print_signature(b, h)
+    strings.write_string(b, " {")
+}
+
+// Its `declare` line, for another module that calls it.
+ir_print_declare :: proc(b: ^strings.Builder, h: Ir_Head) {
+    strings.write_string(b, "declare ")
+    ir_print_signature(b, h)
+}
+
+@(private="file")
+ir_print_signature :: proc(b: ^strings.Builder, h: Ir_Head) {
     w :: strings.write_string
-    w(b, "define ")
     if h.export { w(b, "dllexport ") }
     w(b, ir_type_text(h.ret))
     w(b, " @")
@@ -655,7 +667,15 @@ ir_print_head :: proc(b: ^strings.Builder, h: Ir_Head) {
         if i > 0 { w(b, ", ") }
         ir_print_arg(b, x)
     }
-    w(b, ") {")
+    w(b, ")")
+}
+
+// A named type's definition, `%class.X = type { … }`.
+ir_print_type_def :: proc(b: ^strings.Builder, t: Ir_Type) {
+    strings.write_string(b, ir_type_text(t))
+    strings.write_string(b, " = type ")
+    strings.write_string(b, ir_type_text(ir_type_info(t).elem))
+    strings.write_byte(b, '\n')
 }
 
 // A global's line, its newline ending it.
