@@ -1,5 +1,7 @@
 package mara
 
+import "core:slice"
+
 // middle.odin — the middle end, a code at a time. Each code is lowered on
 // its own (lw_code), then folded and analysed while what it calls is
 // analysed already: callees first, a recursive group of funs together (the
@@ -10,24 +12,28 @@ package mara
 // program-wide passes reported it.
 
 Middle :: struct {
-    on:    bool,
-    flow:  Flow_Pass,
-    reach: Reach_Pass,
+    on:      bool,
+    prog:    ^Graph_Program,   // the codes lowered
+    workers: [dynamic]^TC,     // the lowerings that built them (lw_worker)
+    flow:    Flow_Pass,
+    reach:   Reach_Pass,
 }
 
 // Every code lowered and analysed, then put in place in written order.
 middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> Middle {
     mid := Middle{on = true, flow = flow_pass_make(fns)}
-    k.lowering = true
-    defer k.lowering = false
     saved_salt, saved_pkg, saved_subst := TC_Salt{k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
     defer {
         tc_instance_end(k, saved_salt)
         k.pkg, k.subst = saved_pkg, saved_subst
     }
-    codes := lower_begin(k)
-    b := k.gb
-    pc := &b.prog.pc
+    p, codes := lower_begin(k)
+    shared := lw_shared_sizes(k) if ODIN_DEBUG else nil
+    mid.prog = p
+    w := lw_worker(k, p)
+    append(&mid.workers, w)
+    b := w.gb
+    pc := &p.pc
     fold := graph_fold_begin(pc, checked)
     escape_begin(c, pc)
     analysed: map[^Program_Graph]bool
@@ -55,8 +61,8 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // Constants, and the structs a constant's value may construct.
     for e, i in k.events {
         #partial switch e.kind {
-        case .Const, .Program_Struct: lw_code(k, &codes, i)
-        case .Body:                   if e.sc.ts.kind == .Struct { lw_code(k, &codes, i) }
+        case .Const, .Program_Struct: lw_code(w, &codes, i)
+        case .Body:                   if e.sc.ts.kind == .Struct { lw_code(w, &codes, i) }
         }
     }
     // Each component's funs, then the component's escape analysis, then each
@@ -64,7 +70,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     cg := c.cg
     for scc in cg.sccs {
         for n in scc {
-            if i, checked := codes.bodies[cg.nodes[n]]; checked { lw_code(k, &codes, i) }
+            if i, checked := codes.bodies[cg.nodes[n]]; checked { lw_code(w, &codes, i) }
         }
         escape_scc(cg, scc[:])
         for n in scc { analyse(&mid, &fold, b, &analysed, &codes, pc.funs[cg.nodes[n]] or_else nil) }
@@ -73,18 +79,24 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // or calls, the program's struct — in the order checked.
     for e, i in k.events {
         if e.kind == .Module_Stmt { continue }
-        lw_code(k, &codes, i)
+        lw_code(w, &codes, i)
         #partial switch e.kind {
         case .Const:
-            if c, built := b.prog.consts[tc_sid_of_const(k, e)]; built { analyse(&mid, &fold, b, &analysed, &codes, c.g) }
+            if c, built := b.prog.consts[tc_sid_of_const(w, e)]; built { analyse(&mid, &fold, b, &analysed, &codes, c.g) }
         case .Body:
             analyse(&mid, &fold, b, &analysed, &codes, pc.funs[e.sc.ts] or_else nil)
         case .Program_Struct:
             if pt := k.table.funs["Program"] or_else nil; pt != nil { analyse(&mid, &fold, b, &analysed, &codes, pc.funs[pt] or_else nil) }
         }
     }
-    lower_place(k, &codes)
+    lower_place(w, &codes)
     graph_fold_end(&fold)
+    when ODIN_DEBUG {
+        before, after, worker := shared, lw_shared_sizes(k), lw_shared_sizes(w)
+        if !slice.equal(before[:], after[:]) || !slice.equal(before[:], worker[:]) {
+            graph_fatal({}, "lowering added to what lowerings share: %v, then %v (its view: %v)", before[:], after[:], worker[:])
+        }
+    }
     return mid
 }
 

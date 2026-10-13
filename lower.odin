@@ -31,10 +31,9 @@ Lower :: struct {
     compound:   struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
-lower_begin :: proc(k: ^TC) -> LW_Codes {
+lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
     p := graph_program_new(k.checked, tc_module_graph_decls(k))
-    b := graph_builder_new(p)
-    k.gb = b
+    lw_const_index(k)
     // What each module statement was settled as; each code's event — where
     // it was checked: a body's by its fun or struct (and the statement that
     // declares it), a constant's by its declaration.
@@ -54,7 +53,40 @@ lower_begin :: proc(k: ^TC) -> LW_Codes {
         }
     }
     graph_index(p)
-    return codes
+    return p, codes
+}
+
+// A lowering's own view of the checker (TC): a copy of it, with a builder of
+// its own (lw_code builds through it). What lowering changes as it goes —
+// the instance, the module, the type params bound, the body's state — is the
+// copy's; the rest — the tree, the annotations, the tables — every lowering
+// shares, and only reads (a debug build checks: lw_shared_sizes).
+lw_worker :: proc(k: ^TC, p: ^Graph_Program) -> ^TC {
+    w := new(TC)
+    w^ = k^
+    w.gb = graph_builder_new(p)
+    w.lowering = true
+    w.lower = {}
+    w.field_default = {}
+    return w
+}
+
+// How much each table lowerings share holds — the checker's, the
+// annotations', the symbol table's. A lowering that added to one would have
+// written what another lowering reads: the sizes, taken before and after,
+// and a lowering's view's after, are all the same.
+lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
+    s := make([dynamic]int, context.temp_allocator)
+    append(&s, len(k.addressed_calls), len(k.modules), len(k.events), len(k.const_by_decl), len(k.scopes), len(k.scope_of),
+        len(k.checked_modules), len(k.in_progress), len(k.templates), len(k.consts), len(k.const_owners), len(k.scope_consts),
+        len(k.instances), len(k.instance_order), len(k.vars), len(k.struct_instances), len(k.variant_scopes),
+        len(k.union_templates), len(k.exposed))
+    a := k.annot
+    append(&s, len(a.instances), len(a.types), len(a.refs), len(a.callees), len(a.args), len(a.forms), len(a.overrides),
+        len(a.receivers), len(a.call_names), len(a.size_of), len(a.dot_bases), len(a.vars), len(a.bodies),
+        len(a.type_table.types))
+    append(&s, len(k.checked.functions), len(k.table.funs), len(k.table.structs))
+    return s
 }
 
 // Each code put in place where the program writes it — lowered there, if it
@@ -1116,17 +1148,22 @@ lw_variant_value :: proc(t: Type, name: string) -> int {
     return 0
 }
 
+// Each constant by its instance and the token that declares it
+// (TC.const_by_decl): made before any code is lowered, which only reads it.
+lw_const_index :: proc(k: ^TC) {
+    for _, kc in k.consts { k.const_by_decl[lw_const_key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc }
+    for _, list in k.scope_consts { for _, kc in list { k.const_by_decl[lw_const_key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc } }
+}
+
+@(private="file")
+lw_const_key :: proc(salt: u64, decl: Token_Id) -> u64 { return salt << 32 | u64(decl) }
+
 // The constant a declaring token names.
 // (A body's constant in a generic's instance is that instance's own: the
 // use's instance first, then the tree's.)
 lw_const_of :: proc(k: ^TC, use: Tree_Id, decl: Token_Id) -> ^TC_Const {
-    key :: proc(salt: u64, decl: Token_Id) -> u64 { return salt << 32 | u64(decl) }
-    if k.const_by_decl == nil {
-        for _, kc in k.consts { k.const_by_decl[key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc }
-        for _, list in k.scope_consts { for _, kc in list { k.const_by_decl[key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc } }
-    }
-    kc := k.const_by_decl[key(u64(tc_instance(k, use)), decl)] or_else nil
-    if kc == nil { kc = k.const_by_decl[key(0, decl)] or_else nil }
+    kc := k.const_by_decl[lw_const_key(u64(tc_instance(k, use)), decl)] or_else nil
+    if kc == nil { kc = k.const_by_decl[lw_const_key(0, decl)] or_else nil }
     if kc == nil { graph_fatal(Span{at = decl}, "lower: no constant is declared here") }
     return kc
 }
