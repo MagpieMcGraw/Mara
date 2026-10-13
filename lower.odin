@@ -266,8 +266,9 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
 // --- the arena ------------------------------------------------------------------
 // Where the program has a scope arena, a local whose value is big lives on
 // it (routes_to_arena): its space taken where it is declared, the arena
-// marked where its scope begins and reset at each exit. Lowering finds, from
-// the tree as it builds it, which locals do — before it builds them.
+// marked where its scope begins and reset at each exit. Which scopes mark it
+// is read off their declarations' types before they are built. (A big
+// temporary is the fun's, from its entry: storage_big_temps.)
 
 // The local every `return` of a fun with one result returns as it is: what
 // its code builds in its caller's slot, not on the arena (the token that
@@ -338,12 +339,11 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
     if !k.gb.arena { return false }
     t := k.t
     for s in tc_live(k, stmts) {
-        if lw_big_temps(k, s) { return true }
         if t.tag[s] != .Decl { continue }
         v := decl_view(t, s)
         if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
         for tg, i in v.targets {
-            if tc_name(k, tg) == "_" { continue }   // (no local: its value, lw_big_temps')
+            if tc_name(k, tg) == "_" { continue }   // (no local)
             lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
             if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }
         }
@@ -351,90 +351,8 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
     return false
 }
 
-// Whether a statement's own expressions hold a big value with nowhere to go
-// — an argument, a dropped result, a field's base, a match's subject, an
-// `if` expression's: a temporary that lives on the arena, as a big local
-// does (codegen bumps it at its scope's mark). A declaration's, an
-// assignment's or a return's value is built where it goes; what's inside it
-// may not be. (A body — an if's, a loop's, an arm's — is its own scope's.)
-lw_big_temps :: proc(k: ^TC, s: Tree_Id) -> bool {
-    t := k.t
-    #partial switch t.tag[s] {
-    case .Expr_Stmt:
-        return lw_big_in(k, Tree_Id(t.a[s]), false)
-    case .Decl:
-        v := decl_view(t, s)
-        for val, i in v.values {
-            // (Into `_`: dropped — nowhere to go. A destructure's one value
-            // goes to its names, `_` or not.)
-            dropped := len(v.values) == len(v.targets) && t.tag[v.targets[i]] == .Ident && tc_name(k, v.targets[i]) == "_"
-            if lw_big_in(k, val, !dropped) { return true }
-        }
-    case .Assign:
-        targets := tree_list(t, t.a[s])
-        for tg in targets { if lw_big_in(k, tg, true) { return true } }
-        // (Assigned together, each value is held first — a swap's, in place,
-        // storage_swaps; any other's, a temporary.)
-        if len(targets) > 1 {
-            for val in tree_list(t, t.b[s]) {
-                if ty := tc_node_type(k, val); ty != nil && routes_to_arena(ty) { return true }
-            }
-        }
-        for val, i in tree_list(t, t.b[s]) {
-            // (Into `_`: dropped — nowhere to go.)
-            dropped := i < len(targets) && t.tag[targets[i]] == .Ident && tc_name(k, targets[i]) == "_"
-            if lw_big_in(k, val, !dropped) { return true }
-            if !dropped && lw_big_call(k, val) { return true }
-        }
-    case .Return:
-        for val in tree_list(t, t.a[s]) { if lw_big_in(k, val, true) { return true } }
-    case .Compound:
-        return lw_big_in(k, Tree_Id(t.a[s]), true) || lw_big_in(k, Tree_Id(tree_rec(t, t.b[s], 2)[1]), true)
-    case .If, .Elif, .Match, .For_Cond:
-        return lw_big_in(k, Tree_Id(t.a[s]), false)
-    case .For_Each:
-        return lw_big_in(k, for_view(t, s).collection, false)
-    case .For_Range:
-        fv := for_view(t, s)
-        return lw_big_in(k, fv.lo, false) || lw_big_in(k, fv.hi, false)
-    case .For_C:
-        fv := for_view(t, s)
-        return (fv.init != 0 && lw_big_temps(k, fv.init)) || lw_big_in(k, fv.cond, false) || (fv.post != 0 && lw_big_temps(k, fv.post))
-    }
-    return false
-}
-
-// Whether a value is a call's big result — one assigned to a place the call
-// may reach (a value it's handed, a pointer that may point there) is held
-// first, on the arena (codegen's llvm_temporary): its scope marks for it.
-// (A call handed nothing reaches nothing: built in place.)
-lw_big_call :: proc(k: ^TC, val: Tree_Id) -> bool {
-    u := tc_unparen(k, val)
-    if k.t.tag[u] != .Call && k.t.tag[u] != .Method_Call { return false }
-    if k.t.tag[u] == .Call && len(tree_list(k.t, k.t.a[u])) == 0 { return false }
-    ty := tc_node_type(k, u)
-    return ty != nil && routes_to_arena(ty)
-}
-
-// Whether an expression, or one inside it, is a big value with nowhere to go
-// (lw_big_temps): `direct`, it's a statement's own value, built where it goes.
-lw_big_in :: proc(k: ^TC, n: Tree_Id, direct: bool) -> bool {
-    if n == 0 { return false }
-    t := k.t
-    u := tc_unparen(k, n)
-    big :: proc(k: ^TC, n: Tree_Id) -> bool {
-        if !lw_placeless(k, n) { return false }
-        ty := tc_node_type(k, n)
-        return ty != nil && routes_to_arena(ty)
-    }
-    if (!direct || t.tag[u] == .If_Expr) && big(k, u) { return true }
-    // (Each one inside it: its subtree is one run of ids, [its lowest, it].)
-    for m in tree_lo(t, u) ..< u { if big(k, m) { return true } }
-    return false
-}
-
-// A big value with nowhere to go (lw_big_temps) — an argument, a dropped
-// result — built in a temporary of its own, which lives on the arena; its
+// A big value with nowhere to go — an argument, a dropped result — built in
+// a temporary of its own, which lives on the arena (storage_big_temps); its
 // read (held false: not one, built nothing).
 lw_big_held :: proc(k: ^TC, n: Tree_Id, t: Type, w: Written, span: Span) -> (Built, bool) {
     if t == nil || !lw_placeless(k, tc_unparen(k, n)) || !routes_to_arena(t) || !graph_aggregate(t) { return {}, false }
@@ -564,8 +482,6 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Decl:
         lw_decl(k, s)
     case .Assign:
-        // (A call's big result assigned: maybe held on the arena — its scope's.)
-        for val in tree_list(t, t.b[s]) { if lw_big_call(k, val) { graph_held_here(k.gb) } }
         lw_assign(k, s)
     case .Return:
         lw_return(k, s)

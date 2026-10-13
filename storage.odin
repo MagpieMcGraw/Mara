@@ -5,8 +5,8 @@ package mara
 // and which are a value, a view's header values, carved memory, a match's
 // payload or the caller's result slot; which temporaries are built in the
 // place they are then written to; which functional updates build into their
-// argument; which swaps are done in place; where big temporaries go on the
-// arena. A backend reads these facts; it decides none of them.
+// argument; which swaps are done in place; which big temporaries the fun
+// holds on the arena. A backend reads these facts; it decides none of them.
 //
 // (Read off a fun's code in the lowered program, the third layer, as codegen
 // read them while it emitted.)
@@ -36,9 +36,7 @@ Storage :: struct {
     swaps:    map[Node_Id][2]Node_Id,       // a swap's first put → the two places it swaps
     swapped:  map[Node_Id]bool,             // a swap's held locals: no storage
     done:     map[Node_Id]bool,             // operations a swap does: nothing to do where they are
-    marked:   map[Node_Id]bool,             // the scopes that mark the arena
-    temps_at: map[Node_Id][dynamic]Node_Id, // a marked scope → its big temporaries, bumped at its mark
-    lazy:     map[Node_Id]bool,             // a big temporary in main's body: bumped where it's first named
+    temps:    [dynamic]Storage_Temp,        // its big temporaries: on the arena from its entry until it returns (main's, its run's)
     calls:    map[Node_Id]Call_Place,       // a call's aggregate result: where it's built (none: a temporary of its own)
     out_at:   map[Operand]Node_Id,          // one of several results, an aggregate: the declared variable it's built in (none: a temporary)
     placed:   bool,                         // the temporaries built in place are known (storage_in_result)
@@ -51,6 +49,13 @@ Storage :: struct {
 // fun's result slot (its user returns it), or in the place its user writes it
 // to (the user's destination).
 Call_Place :: enum u8 { Temporary, Result_Slot, Dest }
+
+// A big temporary: a synthetic local's storage (`at` the local), or where a
+// call builds a result that has no place to go (`at` that output).
+Storage_Temp :: struct {
+    at: Operand,
+    t:  Type,
+}
 
 // A fun's storage. (`sret`, `rets`: its result, built in the caller's slot —
 // a struct or array, or several results each in one.)
@@ -67,8 +72,12 @@ storage_of :: proc(checked: ^Checked_Program, pg: ^Program_Graph, summaries: ^Re
     if sret != nil || rets != nil { storage_result_slot(s, rets) }
     storage_in_place(s)
     storage_swaps(s)
-    storage_big_temps(s, checked.table.has_scope_allocator)
+    storage_big_temps(s)
     if s.stop == NO_NODE { storage_calls(s, sret) }
+    if len(s.temps) > 0 && !checked.table.has_scope_allocator && !checked.table.context_expected_at_runtime {
+        tp := s.temps[0]
+        storage_fatal(graph_origin(pg, tp.at.op), CODE_TEMPORARY_NO_ARENA, type_name(tp.t), type_size(tp.t))
+    }
     return s
 }
 
@@ -824,19 +833,14 @@ storage_swaps :: proc(s: ^Storage) {
 
 // --- the arena ------------------------------------------------------------------
 
-// Where each big local that has no arena alloc of its own lives. A named one
-// always has one (lowering's), unless it's in the caller's slot. A temporary
-// not built in place lives on the arena as a big local does: bumped at the
-// mark of the nearest scope around it that has one — once each time that
-// scope is entered, its reset freeing it — or, in main's body (which marks
-// nothing: its scope ends with the program), where it's first named. A
-// temporary with neither is lowering's miss (lw_big_temps): an error.
+// The big temporaries: each big local that has no arena alloc of its own and
+// no other storage — built in place, carved, a payload, swapped, the
+// caller's slot. A named one always has its alloc (lowering's); a temporary
+// is the fun's, on the arena from its entry until it returns, as a call's
+// big result with nowhere to go is (storage_calls).
 @(private="file")
-storage_big_temps :: proc(s: ^Storage, scope_allocator: bool) {
+storage_big_temps :: proc(s: ^Storage) {
     pg := s.pg
-    for r in s.runs {
-        for op in graph_run(pg, int(r)) { if pg.op[op] == .Arena_Mark { s.marked[pg.parent[op]] = true } }
-    }
     for id := Node_Id(1); id <= pg.end; id += 1 {
         #partial switch pg.kind[id] {
         case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
@@ -847,22 +851,15 @@ storage_big_temps :: proc(s: ^Storage, scope_allocator: bool) {
             s.stop = id
             return
         }
-        scope := NO_NODE
-        for sc := pg.parent[id]; sc != NO_NODE; sc = pg.parent[sc] {
-            if sc in s.marked { scope = sc; break }
-            if pg.kind[sc] == .Fun || pg.kind[sc] == .Struct { break }
-        }
-        switch {
-        case scope != NO_NODE:
-            if scope not_in s.temps_at { s.temps_at[scope] = make([dynamic]Node_Id, context.temp_allocator) }
-            append(&s.temps_at[scope], id)
-        case s.main:
-            s.lazy[id] = true
-        case:
-            msg := CODE_TEMPORARY_NO_ARENA_SCOPE if scope_allocator else CODE_TEMPORARY_NO_ARENA
-            storage_fatal(graph_origin(pg, id), msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
-        }
+        append(&s.temps, Storage_Temp{{id, 0}, graph_type(pg, id)})
     }
+}
+
+// A call's aggregate result built in a temporary of its own: a big one, one
+// of the fun's big temporaries (storage_big_temps).
+@(private="file")
+storage_held :: proc(s: ^Storage, o: Operand, t: Type) {
+    if routes_to_arena(t) { append(&s.temps, Storage_Temp{o, t}) }
 }
 
 // --- calls ------------------------------------------------------------------------
@@ -894,27 +891,39 @@ storage_calls :: proc(s: ^Storage, sret: Type) {
             if pg.op[op] != .Call { continue }
             callee := graph_called(pg, op)
             args := len(graph_operands(pg, op))
+            placed := true
             if callee == nil {   // (through a function value, its first operand: by its type's signature)
                 callee = graph_signature(pg, op)
                 args -= 1
                 if callee == nil { continue }
             } else {
-                if callee.kind != .Fun { continue }
-                if _, src := callee.origin.(Origin_Source); !src { continue }
+                // (A C fun's results, and what isn't a fun's: each aggregate
+                // one in a temporary.)
+                _, src := callee.origin.(Origin_Source)
+                placed = callee.kind == .Fun && src
             }
-            if args != len(callee.params) { continue }
+            placed = placed && args == len(callee.params)
             if fn_result_count(callee) > 1 {
                 for i in 0 ..< fn_result_count(callee) {
                     rt := fn_result(callee, i)
                     if !llvm_aggregate(rt) { continue }
                     o := Operand{op, i32(i)}
-                    if d := storage_declared_at(s, o); d != NO_NODE { s.out_at[o] = d }
+                    if d := storage_declared_at(s, o) if placed else NO_NODE; d != NO_NODE {
+                        s.out_at[o] = d
+                    } else {
+                        storage_held(s, o, rt)
+                    }
                 }
                 continue
             }
             if fn_result_count(callee) != 1 { continue }
-            if result := fn_result(callee, 0); llvm_scalar(result) || !llvm_aggregate(result) { continue }
-            if at := storage_call_place(s, op, callee, sret); at != .Temporary { s.calls[op] = at }
+            result := fn_result(callee, 0)
+            if llvm_scalar(result) || !llvm_aggregate(result) { continue }
+            if at := storage_call_place(s, op, callee, sret) if placed else .Temporary; at != .Temporary {
+                s.calls[op] = at
+            } else {
+                storage_held(s, {op, 0}, result)
+            }
         }
     }
 }

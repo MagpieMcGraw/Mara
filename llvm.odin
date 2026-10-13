@@ -51,6 +51,7 @@ Llvm :: struct {
     outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
     out_run: map[Node_Id]i32,           // the run such a call is in
     loaded:  map[Operand]string,        // a result loaded in its call's run (which dominates every use)
+    temps:   map[Operand]string,        // a call's big result's temporary: on the arena from the fun's entry (Storage.temps)
     stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
@@ -171,11 +172,26 @@ llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> b
     return false
 }
 
-// A return, after the profiler is told the fun is left (llvm_probe).
+// A return, after the profiler is told the fun is left (llvm_probe) and its
+// big temporaries are freed (llvm_temps).
 @(private="file")
 llvm_ret :: proc(e: ^Llvm, ret: string, args: ..any) {
     if e.probe != "" { emit(e.g, "  call void @__mara_prof_exit(ptr %s)", e.probe) }
+    if len(e.st.temps) > 0 && !e.main { emit_arena_reset(e.g) }
     emit(e.g, ret, ..args)
+}
+
+// The fun's big temporaries (Storage.temps), each bumped on the arena now,
+// at its entry, after a mark its returns reset to (llvm_ret). Main's are
+// the program's: no mark, no reset.
+@(private="file")
+llvm_temps :: proc(e: ^Llvm) {
+    pg := e.pg
+    if len(e.st.temps) > 0 && !e.main { emit_arena_mark(e.g) }
+    for tp in e.st.temps {
+        at := emit_arena_bump(e.g, type_size(tp.t), graph_name(pg, tp.at.op) if pg.kind[tp.at.op] == .Local else "temp", span_location(graph_origin(pg, tp.at.op)))
+        if pg.kind[tp.at.op] == .Local { e.value[tp.at.op] = at } else { e.temps[tp.at] = at }
+    }
 }
 
 @(private="file")
@@ -263,6 +279,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     for op in e.st.done { e.ahead[op] = true }
     for v, k in e.st.result { e.value[v] = e.slot if e.st.one_slot else fmt.tprintf("%%sret.%d", k) }
     llvm_probe(e)
+    llvm_temps(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
         if i > 0 { emit_label(g, e.label[r]) }
         e.run = r
@@ -408,10 +425,6 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     }
     if c, ok := e.st.carved[d]; ok { return e.value[c] }   // the carved memory
     if v, ok := e.st.bound[d]; ok { return e.value[v] }    // the payload
-    if d in e.st.lazy {   // (a big temporary in main's body: on the arena, from here — storage_big_temps)
-        e.value[d] = emit_arena_bump(e.g, type_size(graph_type(pg, d)), graph_name(pg, d), span_location(graph_origin(pg, d)))
-        return e.value[d]
-    }
     ir := llvm_type_from_checker(graph_type(pg, d))
     explicit := pg.written[d] == .Explicit
     key := fmt.tprintf("%s %s", graph_name(pg, d), ir)
@@ -939,11 +952,6 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_run_defer(e, op)
     case .Arena_Mark:
         emit_arena_mark(g)
-        // (The scope's big temporaries: their storage, bumped now — storage_big_temps.)
-        temps, _ := e.st.temps_at[pg.parent[op]]   // (bound first: `for x in m[k]` faults on a missing key)
-        for t in temps {
-            e.value[t] = emit_arena_bump(g, type_size(graph_type(pg, t)), graph_name(pg, t), span_location(span))
-        }
     case .Arena_Reset:
         emit_arena_reset(g)
     case .Arena_Alloc:
@@ -2352,7 +2360,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             rt := fn_result(callee, i)
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
             if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
-            if at[i] == "" { at[i] = llvm_temporary(e, op, callee, rt, llvm_alloca_type(rt)) }
+            if at[i] == "" { at[i] = llvm_temporary(e, {op, i32(i)}, rt, llvm_alloca_type(rt)) }
             append(&args, fmt.tprintf("ptr %s", at[i]))
         }
         emit(g, "  call void %s(%s)", name, strings.join(args[:], ", ", context.temp_allocator))
@@ -2403,7 +2411,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
-            slot = llvm_temporary(e, op, callee, result)
+            slot = llvm_temporary(e, {op, 0}, result)
             append(&args, fmt.tprintf("ptr sret(%s) %s", llvm_type_from_checker(result), slot))
         }
     }
@@ -2553,29 +2561,19 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
         return llvm_place(e, dest), true
     case .Temporary:
     }
-    return llvm_temporary(e, op, callee, result), true
+    return llvm_temporary(e, {op, 0}, result), true
 }
 
-// A temporary for a call's result: on the stack — or one as big as a local
-// gets an arena for (routes_to_arena), on the arena, bumped here in a scope
-// that marks it (lowering foresaw it: lw_big_temps), its reset freeing it;
-// in main's body, which marks nothing, as it is. (A Mara fun's struct or
-// union result is one only when it can't be built where it goes,
-// llvm_result_place: a declaration's always can. A C fun's slot always is.)
+// A temporary for a call's result `o`: on the stack — or one as big as a
+// local gets an arena for (routes_to_arena), the fun's, on the arena from
+// its entry (llvm_temps). (A Mara fun's struct or union result is one only
+// when it can't be built where it goes, llvm_result_place: a declaration's
+// always can. A C fun's slot always is.)
 @(private="file")
-llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: string = "") -> string {
+llvm_temporary :: proc(e: ^Llvm, o: Operand, t: Type, ir: string = "") -> string {
     if routes_to_arena(t) {
-        pg := e.pg
-        marked := false
-        for s := pg.parent[op]; s != NO_NODE; s = pg.parent[s] {
-            if s in e.st.marked { marked = true; break }
-            if pg.kind[s] == .Fun || pg.kind[s] == .Struct { break }
-        }
-        if !marked && !e.main {
-            msg := CODE_TEMPORARY_NO_ARENA_SCOPE if e.g.checked.table.has_scope_allocator else CODE_TEMPORARY_NO_ARENA
-            codegen_fatal(e.g, graph_origin(pg, op), msg, type_name(t), type_size(t))
-        }
-        return emit_arena_bump(e.g, type_size(t), "temp", span_location(graph_origin(pg, op)))
+        if at, held := e.temps[o]; held { return at }
+        codegen_fatal(e.g, graph_origin(e.pg, o.op), CODE_TEMPORARY_UNLISTED, type_name(t), type_size(t))
     }
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, ir if ir != "" else llvm_type_from_checker(t))
