@@ -205,7 +205,7 @@ cg_runs_free :: proc(rc: ^Cg_Runs) {
 // body.
 @(private="file")
 cg_runs_in :: proc(rc: ^Cg_Runs, key: Syntax_Id) -> (callers: []^Type_Scope, implied: bool) {
-    inst, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
+    inst, n := annot_split(key)
     if def, in_default := rc.in_default[n]; in_default {
         if found, ok := rc.callers[def]; ok { return found, true }
         rc.callers[def] = nil   // (a default that takes itself: none more)

@@ -60,8 +60,10 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
     for a, i in args {
         if tr.tag[a] == .Ident && tc_name(k, a) == "_" {
             def := ft.params[i].default_node
+            pin := lw_pin(k)   // (lowered here: the call's)
             t, r := default_at(k, def, w, tree_span(tr, a))
             append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
+            k.gb.pin = pin
             append(&array_values, false)
             continue
         }
@@ -80,8 +82,10 @@ lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, 
     }
     for i := len(args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_node
+        pin := lw_pin(k)
         t, r := default_at(k, def, w, span)
         append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
+        k.gb.pin = pin
     }
     if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a dispatch's param") }
     return {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}

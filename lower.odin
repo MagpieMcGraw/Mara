@@ -248,7 +248,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     k.lower = {ts = ts}
     defer k.lower = saved
     at := b.at
-    b.at = tc_sid(k, sc.def)
+    b.at = tc_sid(k, sc.node)   // (its node: an instance's own — its definition is the template's)
     defer b.at = at
     returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
@@ -532,6 +532,15 @@ lw_at :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
     return at
 }
 
+// A default lowered where a call leaves it off: what it's built of is the
+// call's (Graph_Builder.pin) — a tree node's nodes in one code. What to put
+// back once it's built.
+lw_pin :: proc(k: ^TC) -> Syntax_Id {
+    pin := k.gb.pin
+    if pin == 0 { k.gb.pin = k.gb.at }
+    return pin
+}
+
 lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
@@ -726,6 +735,8 @@ lw_ctor_args :: proc(k: ^TC, ts: ^Type_Scope, span: Span) -> []Operand {
 
 // A default, built where what leaves it off runs it (tc_default).
 lw_default :: proc(k: ^TC, def: Tree_Id, t: Type, span: Span, w: Graph_Widen) -> Operand {
+    pin := lw_pin(k)
+    defer k.gb.pin = pin
     use, at := lw_use_type(k, def, t, span)
     r := lw_expr(k, def, .Either, .Implied, dest = use, temp_span = at)
     return lw_value_as(k, def, tc_node_type(k, def), r, t, span, w)
@@ -1445,6 +1456,8 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     given := k.annot.args[tc_sid(k, n)] or_else nil
     for arg, i in given {
         a := arg.node
+        pin := lw_pin(k) if arg.kind == .Default || arg.kind == .Call_Site else k.gb.pin   // (a default: lowered here, the call's)
+        defer k.gb.pin = pin
         pt := ft.params[i].type_
         use, use_at := lw_use_type(k, a, pt, span)
         if arg.kind == .Receiver {

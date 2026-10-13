@@ -386,6 +386,7 @@ Graph_Builder :: struct {
     checked: ^Checked_Program,
     stmt:    i32,     // the statement being lowered (in g.stmts), or -1
     at:      Syntax_Id,   // the tree node being lowered: each node made is its (Program_Graph.syntax)
+    pin:     Syntax_Id,   // ... unless a default a call leaves off is: then the call's (lw_pin)
     stmt_from: int,         // (the nodes there were when the newest entry was made)
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run the code being built made, kept for the next once it is done
@@ -699,11 +700,17 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
     pc := b.pc
     pc.lock = nil
     graph_table_names(b, &pc)
+    graph_index_ops(&pc, checked.annot)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
         for c in pc.codes {
             graph_check_runs(c)
             graph_check_refers(c)
+            for s, id in c.syntax[:c.end + 1] {   // (each node found by its tree node)
+                if s == 0 { continue }
+                g, first := graph_ops(&pc, checked.annot, s)
+                if g != c || first > Node_Id(id) || c.syntax[first] != s { graph_fatal(c.origin[id], "'%s' isn't found by its tree node", graph_name(c, Node_Id(id))) }
+            }
         }
     }
     graph_dump(&pc)
@@ -1097,7 +1104,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.refers[i] = NO_NODE
     g.stmt[i] = b.stmt
     g.decl_tok[i] = 0
-    g.syntax[i] = b.at
+    g.syntax[i] = b.pin if b.pin != 0 else b.at
     g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))
     b.nodes += 1
@@ -1160,6 +1167,65 @@ graph_index :: proc(b: ^Graph_Program) {
 // What the builder keys a statement or an expression by: its node in the
 // tree, salted in a generic's instance (tc_sid). 0 is none.
 Syntax_Id :: distinct u64
+
+// --- the tree's ids ---------------------------------------------------------------
+// Every node of the lowered program is a tree node's, in its instance
+// (Program_Graph.syntax): the node lowered to make it — or, for a default a
+// call leaves off, the call (Graph_Builder.pin). A tree node's nodes are all
+// in one code, so a node's id in the tree's terms is its tree node and its
+// rank among that node's: the lowered program and the annotations share ids,
+// and each tree node's first node is a column beside its annotations
+// (Annotations.ops). Only code the compiler makes of nothing written — the
+// program's struct — has no tree node.
+
+// Where a tree node was lowered to: its code (Program_Code.codes[code - 1];
+// 0: nothing was) and the first of its nodes there.
+Op_At :: struct {
+    code:  i32,
+    first: Node_Id,
+}
+
+// Each tree node's first node, beside the annotations — checking that every
+// node has its tree node, in its code's instance, and one code each.
+graph_index_ops :: proc(pc: ^Program_Code, a: ^Annotations) {
+    a.ops = make([dynamic][]Op_At, len(a.instances))
+    for inst, i in a.instances { a.ops[i] = make([]Op_At, int(inst.hi - inst.lo) + 1) }
+    for g, ci in pc.codes {
+        code := i32(ci) + 1
+        root, _ := annot_split(g.syntax[0])
+        #reverse for s, id in g.syntax[:g.end + 1] {   // (the lowest id last: a node's first)
+            if s == 0 {
+                if g.syntax[0] == 0 { continue }   // (the program's struct)
+                graph_fatal(g.origin[id], "'%s' in '%s' was lowered from no tree node", graph_name(g, Node_Id(id)), graph_name(g, 0))
+            }
+            i, n := annot_split(s)
+            if i != root { graph_fatal(g.origin[id], "'%s' in '%s' was lowered from another instance's tree node", graph_name(g, Node_Id(id)), graph_name(g, 0)) }
+            at := &a.ops[i][n - a.instances[i].lo]
+            if at.code != 0 && at.code != code {
+                graph_fatal(g.origin[id], "a tree node lowered into '%s' and '%s'", graph_name(pc.codes[at.code - 1], 0), graph_name(g, 0))
+            }
+            at^ = {code, Node_Id(id)}
+        }
+    }
+}
+
+// A tree node's first node in the lowered program, and its code (nil,
+// NO_NODE: none); graph_ops_next gives the rest, in order.
+graph_ops :: proc(pc: ^Program_Code, a: ^Annotations, s: Syntax_Id) -> (^Program_Graph, Node_Id) {
+    i, n := annot_split(s)
+    if int(i) >= len(a.ops) || n < a.instances[i].lo || n > a.instances[i].hi { return nil, NO_NODE }
+    at := a.ops[i][n - a.instances[i].lo]
+    if at.code == 0 { return nil, NO_NODE }
+    return pc.codes[at.code - 1], at.first
+}
+
+// The next node of the same tree node's (NO_NODE: it was the last).
+graph_ops_next :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    for next := id + 1; next <= g.end; next += 1 {
+        if g.syntax[next] == g.syntax[id] { return next }
+    }
+    return NO_NODE
+}
 
 // What a statement outside any body declares — a module's, a body's
 // definition — as the checker reads it, for the builder

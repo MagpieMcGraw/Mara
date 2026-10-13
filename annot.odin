@@ -87,6 +87,7 @@ Annotations :: struct {
     types:     [dynamic][]Type_Id,   // each instance's nodes' types, by n - lo
     type_table: ^Type_Table,         // ... their table: the program's types
     refs:      [dynamic][]Ref,    // what each name refers to (a declaration's name, itself)
+    ops:       [dynamic][]Op_At,  // where each was lowered to, once the program is (graph_index_ops)
 
     // What only some nodes have, by node and instance (annot_key).
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)
@@ -107,6 +108,11 @@ Annotations :: struct {
 // A node in an instance, as one key: the builder's Syntax_Id (tc_sid).
 annot_key :: proc(i: Instance_Id, n: Tree_Id) -> Syntax_Id {
     return Syntax_Id(u64(i) << 32 | u64(n))
+}
+
+// ... and back.
+annot_split :: proc(key: Syntax_Id) -> (Instance_Id, Tree_Id) {
+    return Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
 }
 
 annot_new :: proc(t: ^Tree) -> ^Annotations {
@@ -374,7 +380,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
         // a call through a function value (the honest seam: no Calls edge).
         for key, ts in a.callees {
             if key in made { continue }
-            i, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
+            i, n := annot_split(key)
             #partial switch annot_ref(a, i, n).kind {
             case .Local, .Param, .Result, .Field, .Global: continue
             }
@@ -426,7 +432,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             g, op := m.g, m.op
             if g not_in code_writes { code_writes[g] = writes_of(g) }
             writes := code_writes[g]
-            i, n := Instance_Id(u64(key) >> 32), Tree_Id(u64(key) & 0xffff_ffff)
+            i, n := annot_split(key)
             given, has := a.args[key]
             if !has {
                 report(&problems, t, n, i, "calls with no arguments annotated")
