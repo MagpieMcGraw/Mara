@@ -15,23 +15,105 @@ import "core:strings"
 // slice or a `void` scalar), the void checks, literal ranges and constants
 // that can't be known before the program runs.
 
-// Entry point — called post-check (after build_call_graph). Walks every source
-// function and raises the intraprocedural diagnostics it owns. Takes the Checker
-// purely as the error sink (check_error); the analysis itself reads only the
-// durable Checked_Program.
+// What flow analysis found in one code (flow_code), kept until every code is
+// analysed and then reported (flow_report) in the checks' own order: each
+// over the program's codes in written order, or its funs in name order — as
+// one pass over the whole program would. A check that reports a span once
+// (a generic's instances share their template's) does so as it reports.
+Flow_Pass :: struct {
+    found:   map[^Program_Graph][dynamic]Flow_Finding,
+    sources: map[^Type_Scope]bool,   // the checked source funs (whose codes the fun checks read)
+    walk:    virtual.Arena,          // what a walk makes, until the next (flow_init_fun)
+}
+
+Flow_Finding :: struct {
+    check: Flow_Check,
+    span:  Span,
+    msg:   string,
+}
+
+Flow_Check :: enum u8 { Literal_Range, Unused, Init, Defer_Write, Void, Missing_Return }
+
+flow_pass_make :: proc(fns: []^Type_Scope) -> Flow_Pass {
+    fp: Flow_Pass
+    for ft in fns {
+        if ft == nil { continue }
+        if _, src := ft.origin.(Origin_Source); src { fp.sources[ft] = true }
+    }
+    if err := virtual.arena_init_static(&fp.walk, reserved = 64 * mem.Gigabyte); err != nil {
+        fmt.panicf("flow analysis: no arena for its walks (%v)", err)
+    }
+    return fp
+}
+
+flow_pass_free :: proc(fp: ^Flow_Pass) {
+    virtual.arena_destroy(&fp.walk)
+    for _, list in fp.found { delete(list) }
+    delete(fp.found)
+    delete(fp.sources)
+}
+
+// The program's flow diagnostics: every code analysed, then reported.
+// Takes the Checker purely as the error sink (check_error); the analysis
+// itself reads only the durable Checked_Program.
 // (`fns`: the checked functions in name order, flow_functions. `void_defaults`:
 // the spans of params' `void` defaults the checker reported, tc_void_defaults.)
 flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope, void_defaults: map[Span]bool) {
-    // Missing-return reads the program graph's runs, built from a clean check.
-    graphed := len(checked.code.codes) > 0
+    fp := flow_pass_make(fns)
+    defer flow_pass_free(&fp)
+    for g in checked.code.codes { flow_code(&fp, g) }
+    flow_report(c, checked, &fp, fns, void_defaults)
+}
+
+// One code's findings: its literals' ranges, its unused errs, the void it
+// stores into pointers; a source fun's reads before assignment, its defers'
+// writes to what it returns, and whether it falls off its end.
+flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
+    if g not_in fp.found { fp.found[g] = {} }   // (`&m[k]` takes no missing key's place)
+    found := &fp.found[g]
+    flow_literal_ranges(g, found)
+    flow_unused(g, found)
+    if ts, is_scope := graph_type(g, 0).(^Type_Scope); is_scope && fp.sources[ts] {
+        flow_init_fun(g, found, &fp.walk)
+        if g.kind[0] == .Fun { flow_defers(g, found) }
+        if !scope_body_is_empty(ts) && flow_missing_return(g, ts) {
+            name := ts.source_name if ts.source_name != "" else ts.name
+            append(found, Flow_Finding{.Missing_Return, ts.body_span, fmt.aprintf(TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)})
+        }
+    }
+    flow_void(g, found)
+}
+
+// Every code's findings reported, check by check.
+flow_report :: proc(c: ^Checker, checked: ^Checked_Program, fp: ^Flow_Pass, fns: []^Type_Scope, void_defaults: map[Span]bool) {
+    codes := checked.code.codes[:]
+    graphed := len(codes) > 0
+    of_codes :: proc(c: ^Checker, fp: ^Flow_Pass, codes: []^Program_Graph, check: Flow_Check, seen: ^map[Span]bool = nil) {
+        for g in codes { flow_report_found(c, fp.found[g][:], check, seen) }
+    }
+    of_funs :: proc(c: ^Checker, checked: ^Checked_Program, fp: ^Flow_Pass, fns: []^Type_Scope, check: Flow_Check, seen: ^map[Span]bool = nil) {
+        for ft in fns {
+            if ft == nil || !fp.sources[ft] { continue }
+            if g := checked.code.funs[ft] or_else nil; g != nil { flow_report_found(c, fp.found[g][:], check, seen) }
+        }
+    }
     if graphed {
-        flow_check_unreachable(c, checked)
-        flow_check_literal_ranges(c, checked)
-        flow_check_unused(c, checked)
-        flow_check_init(c, checked, fns)
-        flow_check_defer_writes(c, checked, fns)
-        flow_check_void(c, checked, void_defaults)
-        flow_check_constants(c, checked)
+        // (Generic instances share their template's spans: check_error
+        // reports one once — and the checks that say so, once a span.)
+        for span in checked.code.unreachable { check_error(c, span, TYPE_UNREACHABLE_CODE) }
+        of_codes(c, fp, codes, .Literal_Range)
+        of_codes(c, fp, codes, .Unused)
+        reads: map[Span]bool
+        defer delete(reads)
+        of_funs(c, checked, fp, fns, .Init, &reads)
+        writes: map[Span]bool
+        defer delete(writes)
+        of_funs(c, checked, fp, fns, .Defer_Write, &writes)
+        voids: map[Span]bool   // (a parameter's default: the checker's, tc_void_defaults)
+        defer delete(voids)
+        for sp in void_defaults { voids[sp] = true }
+        of_codes(c, fp, codes, .Void, &voids)
+        for e in checked.code.fold_errors { check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name) }
     }
     for ft in fns {
         if ft == nil { continue }
@@ -39,48 +121,53 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Typ
         // empty one declares a shape (`Arena`'s methods, which a `~Arena`
         // param's type must have): nothing to return from.
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
-        if scope_body_is_empty(ft) { continue }
-        if graphed && flow_missing_return(checked, ft) {
-            name := ft.source_name if ft.source_name != "" else ft.name
-            check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
+        if scope_body_is_empty(ft) || !graphed { continue }
+        g := checked.code.funs[ft] or_else nil
+        if g == nil { fmt.panicf("missing return: '%s' has no code", ft.name) }
+        flow_report_found(c, fp.found[g][:], .Missing_Return)
+    }
+}
+
+// One code's findings of one check, reported (`seen`: the spans reported,
+// one a span).
+@(private="file")
+flow_report_found :: proc(c: ^Checker, found: []Flow_Finding, check: Flow_Check, seen: ^map[Span]bool = nil) {
+    for f in found {
+        if f.check != check { continue }
+        if seen != nil {
+            if f.span in seen^ { continue }
+            seen^[f.span] = true
         }
+        check_error(c, f.span, "%s", f.msg)
     }
 }
 
 // Missing-return: a non-void function whose first return isn't `any` and whose
 // returns aren't all-err must return on every path: no path through its runs
 // reaches the synthetic return that ends its body (graph_falls_off).
-flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
+flow_missing_return :: proc(g: ^Program_Graph, ft: ^Type_Scope) -> bool {
     if len(ft.return_types) == 0 { return false }       // void
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
-    g := checked.code.funs[ft] or_else nil
-    if g == nil { fmt.panicf("missing return: '%s' has no code", ft.name) }
     return graph_falls_off(g, 0)
 }
 
 // Unreachable code: a statement right after a return, break or continue (the
-// graph records the first of each stretch). Codegen would put it after the
-// terminator.
-flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
-    // (Generic instances share their template's spans: check_error reports
-    // one once.)
-    for span in checked.code.unreachable {
-        check_error(c, span, TYPE_UNREACHABLE_CODE)
-    }
-}
+// graph records the first of each stretch, Program_Code.unreachable; flow_report
+// reports them). Codegen would put it after the terminator.
 
 // Literal ranges: a literal whose type is its use's — the width its `:=`
 // adopted, an operand's — must fit it, as one written at that type must
 // (`first := -1` adopting a u16 index's width was 65535, never below 0).
-flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
+@(private="file")
+flow_literal_ranges :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
     // (Generic instances share their template's spans: an error repeated at
     // one is reported once, check_error's rule; each instance is checked.)
-    for g in checked.code.codes {
-        for id in g.settled {
-            v, ok := graph_value(g, id)
-            if !ok || v.is_text { continue }
-            check_value_range(c, v.float if v.is_float else f64(v.int), v.int, graph_type(g, id), g.origin[id])
+    for id in g.settled {
+        v, ok := graph_value(g, id)
+        if !ok || v.is_text { continue }
+        if msg := value_range_error(v.float if v.is_float else f64(v.int), v.int, graph_type(g, id)); msg != "" {
+            append(found, Flow_Finding{.Literal_Range, g.origin[id], msg})
         }
     }
 }
@@ -92,25 +179,24 @@ flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
 // except where a whole write lands (`e = f()` writes e, it reads nothing);
 // refers-to has resolved shadowing, and a read in a nested block or a defer's
 // block is a read like any other.
-flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
-    for g in checked.code.codes {
-        dest := make([]bool, len(g.kind), context.temp_allocator)   // where a whole write lands
-        read := make([]bool, len(g.kind), context.temp_allocator)
-        for k, id in g.kind {
-            if k != .Op { continue }
-            if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
-        }
-        for k, id in g.kind {
-            if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
-        }
-        for k, id in g.kind {
-            if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(graph_type(g, Node_Id(id))) { continue }
-            // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
-            // variable or a match arm's binding.
-            s := g.stmt[id]
-            if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
-            check_error(c, g.origin[id], TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))
-        }
+@(private="file")
+flow_unused :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
+    dest := make([]bool, len(g.kind), context.temp_allocator)   // where a whole write lands
+    read := make([]bool, len(g.kind), context.temp_allocator)
+    for k, id in g.kind {
+        if k != .Op { continue }
+        if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
+    }
+    for k, id in g.kind {
+        if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
+    }
+    for k, id in g.kind {
+        if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(graph_type(g, Node_Id(id))) { continue }
+        // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
+        // variable or a match arm's binding.
+        s := g.stmt[id]
+        if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
+        append(found, Flow_Finding{.Unused, g.origin[id], fmt.aprintf(TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))})
     }
 }
 
@@ -121,37 +207,29 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
 // or not depending on how the value travels (a copy, or built in place), so
 // it is an error. A value the return computes is no local; a write through a
 // pointer that aliases one is not seen (field-insensitive, like escape).
-flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
+@(private="file")
+flow_defers :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
     runs, block: [dynamic]i32
     defer { delete(runs); delete(block) }
-    for ft in fns {
-        if ft == nil { continue }
-        if _, src := ft.origin.(Origin_Source); !src { continue }
-        g := checked.code.funs[ft] or_else nil
-        if g == nil || g.kind[0] != .Fun { continue }
-        clear(&runs)
-        own := graph_code_runs(g, 0, &runs)
-        for r in runs[:own] {
-            ops := graph_run(g, int(r))
-            ret := ops[len(ops) - 1]
-            if g.op[ret] != .Return { continue }
-            // The defers it runs: the run defers just before it.
-            for k := len(ops) - 2; k >= 0; k -= 1 {
-                if g.op[ops[k]] == .Arena_Reset { continue }
-                if g.op[ops[k]] != .Run_Defer { break }
-                clear(&block)
-                graph_code_runs(g, g.defer_of[ops[k]], &block)
-                flow_defer_writes(c, g, ret, block[:], &seen)
-            }
+    own := graph_code_runs(g, 0, &runs)
+    for r in runs[:own] {
+        ops := graph_run(g, int(r))
+        ret := ops[len(ops) - 1]
+        if g.op[ret] != .Return { continue }
+        // The defers it runs: the run defers just before it.
+        for k := len(ops) - 2; k >= 0; k -= 1 {
+            if g.op[ops[k]] == .Arena_Reset { continue }
+            if g.op[ops[k]] != .Run_Defer { break }
+            clear(&block)
+            graph_code_runs(g, g.defer_of[ops[k]], &block)
+            flow_defer_writes(g, ret, block[:], found)
         }
     }
 }
 
 // A defer block's changes to what `ret` returns.
 @(private="file")
-flow_defer_writes :: proc(c: ^Checker, g: ^Program_Graph, ret: Node_Id, block: []i32, seen: ^map[Span]bool) {
+flow_defer_writes :: proc(g: ^Program_Graph, ret: Node_Id, block: []i32, found: ^[dynamic]Flow_Finding) {
     for o in graph_operands(g, ret) {
         v := flow_returned_local(g, o.op)
         if v == NO_NODE { continue }
@@ -165,9 +243,7 @@ flow_defer_writes :: proc(c: ^Checker, g: ^Program_Graph, ret: Node_Id, block: [
                 ops := graph_operands(g, op)
                 if len(ops) == 0 || flow_storage_root(g, ops[0].op) != v { continue }
                 span := g.origin[op]
-                if span in seen^ { continue }
-                seen[span] = true
-                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, graph_name(g, v), span_line(g.origin[ret]))
+                append(found, Flow_Finding{.Defer_Write, span, fmt.aprintf(TYPE_DEFER_CHANGES_RETURNED, graph_name(g, v), span_line(g.origin[ret]))})
             }
         }
     }
@@ -227,8 +303,7 @@ Init :: struct {
     alias:   map[Node_Id]Node_Id,   // a pointer local → the local it always points at
     user:    []Node_Id,        // an operation → the one that takes its output (0: none)
     words:   int,
-    c:       ^Checker,
-    seen:    ^map[Span]bool,   // reads reported (generic instances share spans)
+    found:   ^[dynamic]Flow_Finding,   // the reads found unset
 }
 
 @(private="file")
@@ -237,25 +312,8 @@ Init_Field :: struct {
     bit:  i32,
 }
 
-flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
-    walk: virtual.Arena
-    if err := virtual.arena_init_static(&walk, reserved = 64 * mem.Gigabyte); err != nil {
-        fmt.panicf("flow analysis: no arena for its walks (%v)", err)
-    }
-    defer virtual.arena_destroy(&walk)
-    for ft in fns {
-        if ft == nil { continue }
-        if _, src := ft.origin.(Origin_Source); !src { continue }
-        g := checked.code.funs[ft] or_else nil
-        if g == nil { continue }
-        flow_init_fun(c, g, &seen, &walk)
-    }
-}
-
 @(private="file")
-flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, seen: ^map[Span]bool, walk: ^virtual.Arena) {
+flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^virtual.Arena) {
     // (What the fun's walk makes is `walk`'s, the last fun's freed; the
     // diagnostics, the reads', outlive it.)
     kept := context.allocator
@@ -266,7 +324,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, seen: ^map[Span]bool, walk
     if len(runs) == 0 { return }
 
     size := int(g.end) + 1
-    s := Init{g = g, c = c, seen = seen}
+    s := Init{g = g, found = found}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
 
@@ -449,9 +507,7 @@ flow_read_by :: proc(s: ^Init, op: Node_Id) -> bool {
 flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     g := s.g
     report :: proc(s: ^Init, span: Span, msg: string, args: ..any) {
-        if span in s.seen^ { return }
-        s.seen^[span] = true
-        check_error(s.c, span, msg, ..args)
+        append(s.found, Flow_Finding{.Init, span, fmt.aprintf(msg, ..args)})
     }
     #partial switch g.op[op] {
     case .Var:
@@ -535,13 +591,8 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 
 // --- constants -----------------------------------------------------------------
 // A use of a constant whose value can't be known before the program runs
-// (graph_fold_uses: a call in it, a struct's construction with arguments).
-
-flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
-    for e in checked.code.fold_errors {
-        check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name)
-    }
-}
+// (graph_fold_uses: a call in it, a struct's construction with arguments):
+// Program_Code.fold_errors, reported by flow_report.
 
 // --- void into pointers ------------------------------------------------------
 // A pointer always points at something that exists in the program. `void` is no
@@ -551,24 +602,20 @@ flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
 // else a void headed for a pointer — a return, an argument, a field, an element,
 // a store through a field/index/deref, an if-branch, a default — is an error.
 
-flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
-    // (A parameter's default: the checker's, tc_void_defaults.)
-    for sp in void_defaults { seen[sp] = true }
-    // Every other: a void as written, where the operation that takes it
-    // stores it — its type its use's.
-    for g in checked.code.codes {
-        for i in 0 ..< len(g.kind) {
-            id := Node_Id(i)
-            if g.kind[id] != .Op { continue }
-            for o, k in graph_operands(g, id) {
-                v := o.op
-                if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
-                if g.written[v] != .Explicit { continue }
-                if where_, stored := void_where(g, id, k); stored {
-                    void_error(c, &seen, g.origin[v], graph_type(g, v), where_)
-                }
+@(private="file")
+flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
+    // A void as written, where the operation that takes it stores it — its
+    // type its use's. (A parameter's default: the checker's,
+    // tc_void_defaults; flow_report reports a span once.)
+    for i in 0 ..< len(g.kind) {
+        id := Node_Id(i)
+        if g.kind[id] != .Op { continue }
+        for o, k in graph_operands(g, id) {
+            v := o.op
+            if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
+            if g.written[v] != .Explicit { continue }
+            if where_, stored := void_where(g, id, k); stored && void_is_pointer(graph_type(g, v)) {
+                append(found, Flow_Finding{.Void, g.origin[v], fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(graph_type(g, v)))})
             }
         }
     }

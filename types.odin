@@ -1749,45 +1749,51 @@ coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span
 // Check that a constant's value fits the target type's range (as an integer,
 // i_val; as a float, val).
 check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span: Span) {
+    if msg := value_range_error(val, i_val, target); msg != "" { check_error(c, span, "%s", msg) }
+}
+
+// What's wrong with a constant's value at a type it doesn't fit; "" when it
+// fits.
+value_range_error :: proc(val: f64, i_val: i128, target: Type) -> string {
     #partial switch v in target {
     case Type_Numeric:
         // Word-sized (bits=0): skip — width is decided at codegen, and the 32-bit
         // case is conservative (anything that would overflow there already
         // overflows on the 64-bit case worth catching).
-        if v.bits == 0 { return }
+        if v.bits == 0 { return "" }
         switch v.kind {
         case .Signed:
             // i128 covers the storage range exactly — anything that reached us
             // already fits. Width=128 also skips the formula below where
             // `1 << 127` would wrap.
-            if v.bits == 128 { return }
+            if v.bits == 128 { return "" }
             max_v := (i128(1) << uint(v.bits - 1)) - 1
             min_v := -(i128(1) << uint(v.bits - 1))
             if i_val < min_v || i_val > max_v {
-                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE, i_val, type_name(target), min_v, max_v)
+                return fmt.aprintf(TYPE_CONSTANT_OVERFLOWS_RANGE, i_val, type_name(target), min_v, max_v)
             }
         case .Unsigned:
             // For u128, the i128 storage caps at 2^127-1, so the parser's u64
             // ceiling is already much tighter. Just sanity-check non-negative.
             if v.bits == 128 {
                 if i_val < 0 {
-                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_128, i_val, type_name(target))
+                    return fmt.aprintf(TYPE_CONSTANT_OVERFLOWS_RANGE_128, i_val, type_name(target))
                 }
-                return
+                return ""
             }
             max_v := (i128(1) << uint(v.bits)) - 1
             if i_val < 0 || i_val > max_v {
-                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, i_val, type_name(target), max_v)
+                return fmt.aprintf(TYPE_CONSTANT_OVERFLOWS_RANGE_2, i_val, type_name(target), max_v)
             }
         case .Float:
             // f16: ~65504 max magnitude.
             if v.bits == 16 {
                 if val > 65504 || val < -65504 {
-                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_F16, val)
+                    return fmt.aprintf(TYPE_CONSTANT_OVERFLOWS_F16, val)
                 }
             } else if v.bits == 32 {
                 if val > 3.4028235e+38 || val < -3.4028235e+38 {
-                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_F32, val)
+                    return fmt.aprintf(TYPE_CONSTANT_OVERFLOWS_F32, val)
                 }
             }
         }
@@ -1796,6 +1802,7 @@ check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span
     case:
         // Non-numeric target — nothing to check
     }
+    return ""
 }
 
 // ---------------------------------------------------------------------------
