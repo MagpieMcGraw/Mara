@@ -74,21 +74,21 @@ Codegen :: struct {
     // overflow_intrinsics used. Read at .ll-write time.
     module_tasks:        []^Module_Task,
     hoist_allocas: bool,           // true during function body codegen
-    tmp_counter: int,              // bumped per fresh_tmp (and a few inline temp names)
-    tmp_pool:    []string,         // pre-formatted "%.tN" names; indexed by tmp_counter
-    label_counter: int,            // label numbering
+    tmp_counter: int,              // the function's temporaries so far (fresh_tmp)
+    label_counter: int,            // label numbering (fresh_label's names)
+    label_ids:   i32,              // the function's labels so far (ir_label)
     // Type info from the type checker
     checked:     ^Checked_Program,       // resolved type info from type checker
-    // String literal table: value -> global name
+    // String literal table: value -> its global's symbol
     string_literals: map[string]string,
-    string_names:    map[string]bool,   // names handed out, to catch a hash collision
+    string_names:    map[string]bool,   // symbols handed out, to catch a hash collision
     // Per-Codegen prefix for `@.str.<hash>` names. Empty for the main thread;
     // set to a module-specific tag by parallel codegen workers so each TU's
     // strings live in its own namespace.
     string_name_prefix: string,
-    // Track all string globals to emit at top of module (and -profile's slots,
-    // which name them: llvm_probe)
-    string_decls: [dynamic]string,
+    // The module's globals: its string literals (and -profile's slots, which
+    // name them: llvm_probe).
+    globals: [dynamic]Ir_Global,
     // Struct support (no shadow map — reads directly from checked.table.funs)
     struct_decls:       [dynamic]string,        // LLVM type definitions
     registered_structs: map[string]bool,         // dedup guard for struct decl emission
@@ -131,64 +131,22 @@ Codegen :: struct {
     tee: bool,
 }
 
-// Get a fresh temporary: %t1, %t2, etc.
-//
-// Called for every GEP, load, and store-to-tmp in codegen — millions of
-// times on a large module. Returns a slice into a pre-allocated pool of
-// `%t<N>` strings owned by the Codegen. The pool is built once at codegen
-// start (grow_tmp_pool); subsequent fresh_tmp calls just index in.
-// No per-call allocation, no format parsing.
 // What outlives a function's emission is made with (Codegen.keep).
 codegen_keep :: proc(g: ^Codegen) -> mem.Allocator {
     return g.keep if g.keep.procedure != nil else context.allocator
 }
 
-fresh_tmp :: proc(g: ^Codegen) -> string {
+// A fresh temporary, `%.t<n>`. (The `.` keeps it apart from a local: a
+// Mara name has none, and a local is `%<name>`.)
+fresh_tmp :: proc(g: ^Codegen) -> Val {
     g.tmp_counter += 1
-    if g.tmp_counter >= len(g.tmp_pool) {
-        grow_tmp_pool(g, g.tmp_counter + 1)
-    }
-    return g.tmp_pool[g.tmp_counter]
+    return {kind = .Temp, n = i128(g.tmp_counter)}
 }
 
-// Build (or grow) the tmp-name pool so that every counter value up to
-// `min_size - 1` has a pre-formatted `%.t<N>` string. Each name is laid out
-// in a single contiguous byte slab so the pool is just a `[]string` of
-// views into that slab.
-//
-// The `.` matters: a Mara identifier can't contain one, but user locals are
-// emitted verbatim as `%<name>`. So a temp (`%.t7`) can never collide with a
-// user variable named `t7` — which previously produced two `%t7` defs and an
-// LLVM "multiple definition" error. (Functions already live in their own
-// `@mara_*` namespace; this gives temps the same guarantee against locals.)
-@(private="file")
-grow_tmp_pool :: proc(g: ^Codegen, min_size: int) {
-    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
-    context.temp_allocator = context.allocator
-    new_cap := max(min_size, len(g.tmp_pool) * 2, 16 * 1024)
-    new_pool := make([]string, new_cap)
-    // Each name fits in 13 bytes ("%.t" + up to 10 digits). Slab in one
-    // contiguous block so the pool is friendly to the prefetcher.
-    NAME_W :: 13
-    slab := make([]byte, new_cap * NAME_W)
-    for i in 0..<new_cap {
-        off := i * NAME_W
-        slab[off]   = '%'
-        slab[off+1] = '.'
-        slab[off+2] = 't'
-        digits := strconv.write_int(slab[off+3:off+NAME_W], i64(i), 10)
-        new_pool[i] = string(slab[off : off + 3 + len(digits)])
-    }
-    g.tmp_pool = new_pool
-}
-
-// Get a fresh label. Same hot-path concern as fresh_tmp.
-fresh_label :: proc(g: ^Codegen, prefix: string) -> string {
+// A fresh label: its prefix, then the function's next label number.
+fresh_label :: proc(g: ^Codegen, prefix: string) -> Ir_Label {
     g.label_counter += 1
-    buf := make([]byte, len(prefix) + 12, context.temp_allocator)
-    copy(buf, prefix)
-    digits := strconv.write_int(buf[len(prefix):], i64(g.label_counter), 10)
-    return string(buf[:len(prefix) + len(digits)])
+    return ir_label(g, prefix, g.label_counter)
 }
 
 // Codegen-stage error: print a diagnostic and abort. Codegen runs only after
@@ -207,24 +165,29 @@ codegen_fatal :: proc(g: ^Codegen, span: Span, format: string, args: ..any) -> !
 }
 
 
-// Generate the IR name for a user-defined function.
-// Names are already flat (e.g., "sdl_Init") — flattened during type-checking
-// by make_flat_name at registration.
+// A user-defined function's symbol. Names are already flat (e.g.,
+// "sdl_Init") — flattened during type-checking by make_flat_name at
+// registration.
 mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
-    if name == "main" { return "@main" }
+    if name == "main" { return "main" }
     // `#expose fun foo` → unmangled `@foo` so a DLL host can call
     // GetProcAddress("foo") directly without knowing Mara's flat-naming rule.
     // Mara-internal call sites resolve to the same symbol, so callers in the
     // same package stay wired up.
     if cs, ok := g.checked.functions[name]; ok && cs.is_exposed {
-        return fmt.tprintf("@%s", cs.name)
+        return cs.name
     }
     // IR symbols are prefixed with "mara_" to namespace them against system
     // libraries. flat names from stdlib modules (`mara.math`) already include
     // it via make_flat_name's dot→underscore conversion; user-module flats
     // like `camera_init` get prepended here.
-    if strings.has_prefix(name, "mara_") { return fmt.tprintf("@%s", name) }
-    return fmt.tprintf("@mara_%s", name)
+    if strings.has_prefix(name, "mara_") { return name }
+    return strings.concatenate({"mara_", name}, context.temp_allocator)
+}
+
+// A user-defined function's address.
+mara_fn :: proc(g: ^Codegen, name: string) -> Val {
+    return ir_global(mara_fn_name(g, name))
 }
 
 // The struct a function returns through its sret slot, when its one
@@ -242,112 +205,98 @@ fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
 // ---------------------------------------------------------------------------
 
 // `store <ir_type> <val>, ptr <ptr>`
-emit_store :: proc(g: ^Codegen, ir_type, val, ptr: string) {
+emit_store :: proc(g: ^Codegen, ir_type: string, val, ptr: Val) {
     ir_store(g, ir_type, val, ptr)
 }
 
 // `<dst> = load <ir_type>, ptr <ptr>`: a load into a name the caller has
 // picked out.
-emit_load_into :: proc(g: ^Codegen, dst, ir_type, src_ptr: string) {
+emit_load_into :: proc(g: ^Codegen, dst: Val, ir_type: string, src_ptr: Val) {
     ir_load(g, dst, ir_type, src_ptr)
 }
 
 // A struct field's address, into a name the caller has picked out:
 // `getelementptr <agg_type>, ptr <base>, i32 0, i32 <idx>`.
-emit_field_gep_into :: proc(g: ^Codegen, dst, agg_type, base: string, idx: int) {
-    ir_emit(g, {op = .Gep, dest = dst, ty = agg_type, a = base, args = ir_indices({"i32", "0", ""}, {"i32", ir_int(idx), ""})})
+emit_field_gep_into :: proc(g: ^Codegen, dst: Val, agg_type: string, base: Val, idx: int) {
+    ir_gep(g, dst, agg_type, base, {"i32", ir_int(0), {}}, {"i32", ir_int(idx), {}})
 }
 
 // A constant-index array element's address: `getelementptr <arr_type>, ptr
 // <base>, i64 0, i64 <idx>`.
-emit_array_gep_const :: proc(g: ^Codegen, dst, arr_type, base: string, idx: int) {
-    ir_emit(g, {op = .Gep, dest = dst, ty = arr_type, a = base, args = ir_indices({"i64", "0", ""}, {"i64", ir_int(idx), ""})})
+emit_array_gep_const :: proc(g: ^Codegen, dst: Val, arr_type: string, base: Val, idx: int) {
+    ir_gep(g, dst, arr_type, base, {"i64", ir_int(0), {}}, {"i64", ir_int(idx), {}})
 }
 
 // A variable-index array element's address: `getelementptr <arr_type>, ptr
 // <base>, i64 0, <idx_ir> <idx>`. Every call site states the index's width
 // (SLICE_LEN_IR for a user's index or a slice header's, "i32" for a
 // fixed-position counter).
-emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx, idx_ir: string) {
-    ir_emit(g, {op = .Gep, dest = dst, ty = arr_type, a = base, args = ir_indices({"i64", "0", ""}, {idx_ir, idx, ""})})
+emit_array_gep_var :: proc(g: ^Codegen, dst: Val, arr_type: string, base, idx: Val, idx_ir: string) {
+    ir_gep(g, dst, arr_type, base, {"i64", ir_int(0), {}}, {idx_ir, idx, {}})
 }
 
 // An element's address from a raw element pointer (a slice's data):
 // `getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>`.
-emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx, idx_ir: string) {
-    ir_emit(g, {op = .Gep, dest = dst, ty = elem_type, a = base, args = ir_indices({idx_ir, idx, ""})})
+emit_elem_gep :: proc(g: ^Codegen, dst: Val, elem_type: string, base, idx: Val, idx_ir: string) {
+    ir_gep(g, dst, elem_type, base, {idx_ir, idx, {}})
 }
 
-// Indices as a GEP's operands.
-ir_indices :: proc(xs: ..Ir_Arg) -> []Ir_Arg {
-    out := make([]Ir_Arg, len(xs))
-    copy(out, xs)
-    return out
-}
-
-// `<dst> = alloca <ir_type>` — `ir_type` may end `, align <n>` — with the
-// hoisted allocas while hoisting. (Each is made once: llvm_storage names
-// them.)
-emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
-    ins := Ir{op = .Alloca, dest = dst, ty = ir_type}
-    if at := strings.index(ir_type, ", align "); at >= 0 {
-        n, _ := strconv.parse_int(ir_type[at + 8:])
-        ins.ty, ins.align = ir_type[:at], i32(n)
-    }
-    append(&g.allocas if g.hoist_allocas else &g.code, ins)
+// `<dst> = alloca <ir_type>[, align <align>]`, with the hoisted allocas while
+// hoisting. (Each is made once: llvm_storage names them.)
+emit_alloca :: proc(g: ^Codegen, dst: Val, ir_type: string, align: i32 = 0) {
+    append(&g.allocas if g.hoist_allocas else &g.code, Ir{op = .Alloca, dest = dst, ty = ir_type, align = align})
 }
 
 // `call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)`
-emit_memcpy :: proc(g: ^Codegen, dst, src: string, bytes: int) {
-    ir_emit(g, {op = .Call, ty = "void", inst = "@llvm.memcpy.p0.p0.i64",
-                args = ir_indices({"ptr", dst, ""}, {"ptr", src, ""}, {"i64", ir_int(bytes), ""}, {"i1", "false", ""})})
+emit_memcpy :: proc(g: ^Codegen, dst, src: Val, bytes: int) {
+    ir_call(g, {}, "void", ir_global("llvm.memcpy.p0.p0.i64"), {"ptr", dst, {}}, {"ptr", src, {}}, {"i64", ir_int(bytes), {}}, {"i1", IR_FALSE, {}})
 }
 
 // `call void @llvm.memset.p0.i64(ptr <dst>, i8 0, i64 <bytes>, i1 false)`
-emit_memset_zero :: proc(g: ^Codegen, dst: string, bytes: int) {
-    ir_emit(g, {op = .Call, ty = "void", inst = "@llvm.memset.p0.i64",
-                args = ir_indices({"ptr", dst, ""}, {"i8", "0", ""}, {"i64", ir_int(bytes), ""}, {"i1", "false", ""})})
+emit_memset_zero :: proc(g: ^Codegen, dst: Val, bytes: int) {
+    ir_call(g, {}, "void", ir_global("llvm.memset.p0.i64"), {"ptr", dst, {}}, {"i8", ir_int(0), {}}, {"i64", ir_int(bytes), {}}, {"i1", IR_FALSE, {}})
 }
 
-emit_br :: proc(g: ^Codegen, label: string) {
-    ir_emit(g, {op = .Br, a = label})
+emit_br :: proc(g: ^Codegen, label: Ir_Label) {
+    ir_emit(g, {op = .Br, l = label})
 }
 
-emit_cond_br :: proc(g: ^Codegen, cond, true_label, false_label: string) {
-    ir_emit(g, {op = .Cond_Br, a = cond, b = true_label, c = false_label})
+emit_cond_br :: proc(g: ^Codegen, cond: Val, true_label, false_label: Ir_Label) {
+    ir_emit(g, {op = .Cond_Br, a = cond, l = true_label, l2 = false_label})
 }
 
 // A block's label.
-emit_label :: proc(g: ^Codegen, name: string) {
-    ir_emit(g, {op = .Label, inst = name})
+emit_label :: proc(g: ^Codegen, label: Ir_Label) {
+    ir_emit(g, {op = .Label, l = label})
 }
 
 // The printf symbol for the current emission context: @printf normally,
 // @__mara_tee_printf inside an assert/crash fail block (g.tee) so the
 // message also lands in crash.txt.
-printf_sym :: proc(g: ^Codegen) -> string {
-    return g.tee ? "@__mara_tee_printf" : "@printf"
+printf_sym :: proc(g: ^Codegen) -> Val {
+    return ir_global("__mara_tee_printf" if g.tee else "printf")
 }
 
 // `call i32 (ptr, ...) @printf(ptr <format>, <args>)` — `format` a C format
-// (a string literal of its own), each arg "<IR type> <value>".
-emit_printf :: proc(g: ^Codegen, format: string, args: ..string) {
+// (a string literal of its own).
+emit_printf :: proc(g: ^Codegen, format: string, args: ..Ir_Arg) {
     all := make([]Ir_Arg, len(args) + 1)
     all[0] = {ty = "ptr", v = get_string_literal(g, format)}
-    for a, i in args { all[i + 1] = ir_arg(a) }
-    ir_emit(g, {op = .Call, ty = "i32", to = "(ptr, ...)", inst = printf_sym(g), args = all})
+    copy(all[1:], args)
+    ir_emit(g, {op = .Call, ty = "i32", to = "(ptr, ...)", a = printf_sym(g), args = all})
 }
 
-// A function made — its `define` line `head`, its code's parts in order —
-// into the module's x86 object, or as LLVM IR into its text: its entry
-// labeled (`entry`), a blank line after it (`gap`).
-codegen_function :: proc(g: ^Codegen, head: string, code: [][]Ir, entry := true, gap := true) {
+// A function made — its head, its code's parts in order — into the module's
+// x86 object, or as LLVM IR into its text: its entry labeled (`entry`), a
+// blank line after it (`gap`). Its labels' ids start over for the next.
+codegen_function :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir, entry := true, gap := true) {
+    defer g.label_ids = 0
     if g.x86 != nil {
         x86_function(g.x86, head, code)
         return
     }
     b := &g.out
-    strings.write_string(b, head)
+    ir_print_head(b, head)
     strings.write_string(b, "\nentry:\n" if entry else "\n")
     for part in code { ir_print_all(b, part) }
     strings.write_string(b, "}\n")
@@ -507,15 +456,15 @@ llvm_type_from_checker :: proc(t: Type) -> string {
 // Get or create a string literal global
 // ---------------------------------------------------------------------------
 
-get_string_literal :: proc(g: ^Codegen, s: string) -> string {
-    if name, ok := g.string_literals[s]; ok { return name }
+get_string_literal :: proc(g: ^Codegen, s: string) -> Val {
+    if name, ok := g.string_literals[s]; ok { return ir_global(name) }
     context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
     context.temp_allocator = context.allocator
     // Named by content, not by order: a string's name doesn't depend on the
     // strings emitted before it, so one function's IR stays the same when
     // another changes. The per-worker prefix keeps the parallel codegens'
     // namespaces apart (empty on the main thread: `@.str.<hash>`).
-    name := fmt.tprintf("@.%sstr.%016x", g.string_name_prefix, hash.fnv64a(transmute([]byte)s))
+    name := fmt.tprintf(".%sstr.%016x", g.string_name_prefix, hash.fnv64a(transmute([]byte)s))
     if name in g.string_names {
         codegen_fatal(g, {}, "internal: two string literals hash to %s", name)
     }
@@ -525,14 +474,10 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> string {
     // map — `" "` then matched a stale `"="` entry.
     g.string_literals[strings.clone(s)] = name
 
-    // Escape the string for LLVM IR
-    escaped := llvm_escape_string(s)
-    byte_length := llvm_string_byte_length(s)
-
-    decl := fmt.tprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"", name, byte_length + 1, escaped)
-    append(&g.string_decls, decl)
-
-    return name
+    // Its bytes, then a 0.
+    append(&g.globals, Ir_Global{name = name, linkage = .Private, unnamed = true, constant = true,
+        ty = fmt.tprintf("[%d x i8]", len(s) + 1), init = {kind = .Bytes, bytes = strings.concatenate({s, "\x00"})}})
+    return ir_global(name)
 }
 
 // Escape string for LLVM IR constant — iterates over raw bytes to preserve
@@ -560,11 +505,6 @@ llvm_escape_string :: proc(s: string) -> string {
     return strings.to_string(b)
 }
 
-// Count actual bytes (after escape processing)
-llvm_string_byte_length :: proc(s: string) -> int {
-    return len(s) // source string is already unescaped by lexer
-}
-
 // ---------------------------------------------------------------------------
 // Runtime safety checks
 // ---------------------------------------------------------------------------
@@ -574,20 +514,21 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // — where it failed first, a string global's address — and its message.
 // Each reports as any runtime failure does (emit_fail). (An assert's message
 // is its own, built where it is: emit_assert_fail.)
-__MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
-__MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
-__MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
-__MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
-__MARA_MATCH_FAIL     :: "@__mara_match_fail"
+__MARA_BOUNDS_FAIL    :: "__mara_bounds_fail"
+__MARA_OVERFLOW_FAIL  :: "__mara_overflow_fail"
+__MARA_DIVZ_FAIL      :: "__mara_divz_fail"
+__MARA_SLICE_LEN_FAIL :: "__mara_slice_len_fail"
+__MARA_MATCH_FAIL     :: "__mara_match_fail"
 
-Runtime_Fail :: struct { name, params, message: string }
+Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
+Runtime_Param :: struct { ty, name: string }
 
 RUNTIME_FAILS := [?]Runtime_Fail{
-    {__MARA_BOUNDS_FAIL,    "ptr %loc, i64 %idx, i64 %len, ptr %name",    "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
-    {__MARA_OVERFLOW_FAIL,  "ptr %loc",                                   "%s runtime error: integer overflow\n"},
-    {__MARA_DIVZ_FAIL,      "ptr %loc",                                   "%s runtime error: division by zero\n"},
-    {__MARA_SLICE_LEN_FAIL, "ptr %loc, i64 %new_len, i64 %cap, ptr %name", "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
-    {__MARA_MATCH_FAIL,     "ptr %loc, i64 %tag",                         "%s runtime error: match on an invalid tag %lld\n"},
+    {__MARA_BOUNDS_FAIL,    {{"ptr", "loc"}, {"i64", "idx"}, {"i64", "len"}, {"ptr", "name"}},     "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
+    {__MARA_OVERFLOW_FAIL,  {{"ptr", "loc"}},                                                    "%s runtime error: integer overflow\n"},
+    {__MARA_DIVZ_FAIL,      {{"ptr", "loc"}},                                                    "%s runtime error: division by zero\n"},
+    {__MARA_SLICE_LEN_FAIL, {{"ptr", "loc"}, {"i64", "new_len"}, {"i64", "cap"}, {"ptr", "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
+    {__MARA_MATCH_FAIL,     {{"ptr", "loc"}, {"i64", "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -599,16 +540,18 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&g.out, "; Runtime fail-block helpers (hoisted)\n")
     for f in RUNTIME_FAILS {
         g.code = {}
-        if !g.web { ir_call(g, "", "void", "@__mara_crash_begin") }
-        args := make([dynamic]string, context.temp_allocator)
-        append(&args, fmt.tprintf("ptr %s", get_string_literal(g, f.message)))
-        append(&args, ..strings.split(f.params, ", ", context.temp_allocator))
-        ir_call_va(g, "", "i32", "(ptr, ...)", "@printf" if g.web else "@__mara_tee_printf", ..args[:])
-        if !g.web { ir_call(g, "", "void", "@__mara_crash_end") }
-        ir_call(g, "", "void", "@exit", "i32 1")
+        if !g.web { ir_call(g, {}, "void", ir_global("__mara_crash_begin")) }
+        params := make([]Ir_Arg, len(f.params))
+        for p, i in f.params { params[i] = {ty = p.ty, v = ir_local(p.name)} }
+        args := make([dynamic]Ir_Arg, context.temp_allocator)
+        append(&args, Ir_Arg{ty = "ptr", v = get_string_literal(g, f.message)})
+        append(&args, ..params)
+        ir_call_va(g, {}, "i32", "(ptr, ...)", ir_global("printf" if g.web else "__mara_tee_printf"), ..args[:])
+        if !g.web { ir_call(g, {}, "void", ir_global("__mara_crash_end")) }
+        ir_call(g, {}, "void", ir_global("exit"), {"i32", ir_int(1), {}})
         ir_unreachable(g)
         code := [?][]Ir{g.code[:]}
-        codegen_function(g, strings.concatenate({"define void ", f.name, "(", f.params, ") {"}), code[:], entry = false)
+        codegen_function(g, {name = f.name, ret = "void", params = params}, code[:], entry = false)
     }
     // print_err: prints the qualified name of a u32 error value (set_id<<16 |
     // tag). One switch case per (set_id, tag) pair across all error_kinds
@@ -638,33 +581,37 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     ok_str := get_string_literal(g, "Ok")
     fmt_str_s := get_string_literal(g, "%s")
     fmt_unknown := get_string_literal(g, "?(%u)")
-    case_strs := make([dynamic]string, 0, len(cases), context.temp_allocator)
+    case_strs := make([dynamic]Val, 0, len(cases), context.temp_allocator)
     for c in cases {
         s := get_string_literal(g, c.qualified_name)
         append(&case_strs, s)
     }
 
     g.code = {}
+    val := ir_local("val")
+    ok, unknown := ir_label(g, "ok"), ir_label(g, "unknown")
     arms := make([]Ir_Arg, len(cases) + 1)
-    arms[0] = {"i32", "0", "ok"}
-    for c, i in cases { arms[i + 1] = {"i32", fmt.tprintf("%d", c.value), fmt.tprintf("case_%d", i)} }
-    ir_switch(g, "i32", "%val", "unknown", arms)
-    say :: proc(g: ^Codegen, label, format, arg: string) {
+    arms[0] = {"i32", ir_int(0), ok}
+    for c, i in cases { arms[i + 1] = {"i32", ir_int(c.value), ir_label(g, "case_", i)} }
+    ir_switch(g, "i32", val, unknown, arms)
+    say :: proc(g: ^Codegen, label: Ir_Label, format: Val, arg: Ir_Arg) {
         emit_label(g, label)
-        ir_call_va(g, "", "i32", "(ptr, ...)", "@printf", fmt.tprintf("ptr %s", format), arg)
+        ir_call_va(g, {}, "i32", "(ptr, ...)", ir_global("printf"), {"ptr", format, {}}, arg)
         ir_ret(g, "void")
     }
-    say(g, "ok", fmt_str_s, fmt.tprintf("ptr %s", ok_str))
-    for s, i in case_strs { say(g, fmt.tprintf("case_%d", i), fmt_str_s, fmt.tprintf("ptr %s", s)) }
-    say(g, "unknown", fmt_unknown, "i32 %val")
+    say(g, ok, fmt_str_s, {"ptr", ok_str, {}})
+    for s, i in case_strs { say(g, arms[i + 1].l, fmt_str_s, {"ptr", s, {}}) }
+    say(g, unknown, fmt_unknown, {"i32", val, {}})
     code := [?][]Ir{g.code[:]}
-    codegen_function(g, "define void @__mara_print_err(i32 %val) {", code[:], gap = false)
+    params := make([]Ir_Arg, 1)
+    params[0] = {ty = "i32", v = val}
+    codegen_function(g, {name = "__mara_print_err", ret = "void", params = params}, code[:], gap = false)
 }
 
 // A runtime bounds check: idx < 0 or idx >= len fails (__mara_bounds_fail);
 // both at slice header width (SLICE_LEN_IR). `name` is the array's, for the
 // message.
-emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}) {
+emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Span = {}) {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
     // entirely. Covers `arr[3]` against a fixed-size array and other
@@ -679,7 +626,7 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     // idx and len_val are both at the slice header's width.
     w := SLICE_LEN_IR
     neg_cmp := fresh_tmp(g)
-    ir_icmp(g, neg_cmp, "slt", w, idx, "0")
+    ir_icmp(g, neg_cmp, "slt", w, idx, ir_int(0))
     upper_cmp := fresh_tmp(g)
     ir_icmp(g, upper_cmp, "sge", w, idx, len_val)
     combined := fresh_tmp(g)
@@ -690,61 +637,48 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
     name_global := get_string_literal(g, name)
-    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_BOUNDS_FAIL,
-                args = ir_indices({"ptr", loc_global, ""}, {w, idx, ""}, {w, len_val, ""}, {"ptr", name_global, ""})})
+    ir_call(g, {}, "void", ir_global(__MARA_BOUNDS_FAIL), {"ptr", loc_global, {}}, {w, idx, {}}, {w, len_val, {}}, {"ptr", name_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
 }
 
-// True if `idx` and `len_val` are both integer-literal IR operands and the
-// index would always pass the bounds check. Both come into codegen as
-// strings — either SSA tmp names (`%t42`) or literal integer text (`5`).
-// `strconv.parse_i64` returns false for SSA tmps (the leading `%` rejects),
-// so this is a safe narrow check.
 // True when a slice assignment's value surely holds the run it fills: lo, hi
-// and the value's length all integer literals, hi - lo no more than it.
-can_elide_source_check :: proc(lo, hi, have: string) -> bool {
-    l, l_ok := strconv.parse_i64(lo)
-    h, h_ok := strconv.parse_i64(hi)
-    n, n_ok := strconv.parse_i64(have)
-    return l_ok && h_ok && n_ok && h - l <= n
+// and the value's length all integer constants, hi - lo no more than it.
+can_elide_source_check :: proc(lo, hi, have: Val) -> bool {
+    return lo.kind == .Int && hi.kind == .Int && have.kind == .Int && hi.n - lo.n <= have.n
 }
 
 // True when a span written into bytes surely is the value's size: lo and hi
-// integer literals (the checker has said so already when they differ).
-can_elide_span_check :: proc(lo, hi: string) -> bool {
-    _, l_ok := strconv.parse_i64(lo)
-    _, h_ok := strconv.parse_i64(hi)
-    return l_ok && h_ok
+// integer constants (the checker has said so already when they differ).
+can_elide_span_check :: proc(lo, hi: Val) -> bool {
+    return lo.kind == .Int && hi.kind == .Int
 }
 
-can_elide_bounds_check :: proc(idx: string, len_val: string) -> bool {
-    idx_i, idx_ok := strconv.parse_i64(idx)
-    if !idx_ok { return false }
-    len_i, len_ok := strconv.parse_i64(len_val)
-    if !len_ok { return false }
-    return idx_i >= 0 && idx_i < len_i
+// True when an index surely passes its bounds check: it and the length
+// integer constants, 0 <= idx < len.
+can_elide_bounds_check :: proc(idx, len_val: Val) -> bool {
+    return idx.kind == .Int && len_val.kind == .Int && idx.n >= 0 && idx.n < len_val.n
 }
 
 // Emit a runtime division-by-zero check. Compile-time elide when the divisor
 // is a non-zero integer literal — `x / 4` never traps. Per-site cost otherwise
 // is the compare + branch + 2 lines fail tail.
-emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span: Span = {}) {
-    if d, ok := strconv.parse_i64(divisor); ok && d != 0 {
+emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Span = {}) {
+    if divisor.kind == .Int && divisor.n != 0 {
         return
     }
     ok_label := fresh_label(g, "divz.ok")
     fail_label := fresh_label(g, "divz.fail")
 
     cmp := fresh_tmp(g)
-    ir_icmp(g, cmp, "eq", ir_type, divisor, "0")
+    ir_icmp(g, cmp, "eq", ir_type, divisor, ir_int(0))
     emit_cond_br(g, cmp, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_DIVZ_FAIL, args = ir_indices({"ptr", loc_global, ""})})
+    ir_call(g, {}, "void", ir_global(__MARA_DIVZ_FAIL), {"ptr", loc_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -758,7 +692,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
 // provably fits in the target type, skip the intrinsic and emit a plain
 // add/sub/mul. If the result would overflow, fall through to the runtime check
 // (LLVM will then const-fold it to an unconditional trap).
-emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: string, right: string, span: Span = {}) -> string {
+emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right: Val, span: Span = {}) -> Val {
     if can_elide_overflow(op, ir_type, left, right) {
         result := fresh_tmp(g)
         ir_bin(g, result, op[1:], ir_type, left, right)   // ("sadd"/"uadd" → "add", etc.)
@@ -769,24 +703,23 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
     fail_label := fresh_label(g, "overflow.fail")
 
     intrinsic_name := fmt.tprintf("llvm.%s.with.overflow.%s", op, ir_type)
-    if intrinsic_name not_in g.overflow_intrinsics { g.overflow_intrinsics[strings.clone(intrinsic_name, codegen_keep(g))] = true }
+    if intrinsic_name not_in g.overflow_intrinsics { intrinsic_name = strings.clone(intrinsic_name, codegen_keep(g)); g.overflow_intrinsics[intrinsic_name] = true }
 
     pair := fresh_tmp(g)
     ret_type := strings.concatenate({"{ ", ir_type, ", i1 }"})
-    ir_emit(g, {op = .Call, dest = pair, ty = ret_type, inst = strings.concatenate({"@", intrinsic_name}),
-                args = ir_indices({ir_type, left, ""}, {ir_type, right, ""})})
+    ir_call(g, pair, ret_type, ir_global(intrinsic_name), {ir_type, left, {}}, {ir_type, right, {}})
 
     result   := fresh_tmp(g)
     overflow := fresh_tmp(g)
-    ir_extract(g, result, ret_type, pair, "0")
-    ir_extract(g, overflow, ret_type, pair, "1")
+    ir_extract(g, result, ret_type, pair, 0)
+    ir_extract(g, overflow, ret_type, pair, 1)
 
     emit_cond_br(g, overflow, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_OVERFLOW_FAIL, args = ir_indices({"ptr", loc_global, ""})})
+    ir_call(g, {}, "void", ir_global(__MARA_OVERFLOW_FAIL), {"ptr", loc_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -797,11 +730,9 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
 // fits in `ir_type`. For i64 (or unknown widths) we conservatively decline so
 // we never need to detect i64 arithmetic overflow at codegen time; the runtime
 // intrinsic handles those cases (LLVM folds it in optimized builds).
-can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
-    l_val, lok := strconv.parse_i64(left)
-    if !lok { return false }
-    r_val, rok := strconv.parse_i64(right)
-    if !rok { return false }
+can_elide_overflow :: proc(op, ir_type: string, left, right: Val) -> bool {
+    if left.kind != .Int || right.kind != .Int { return false }
+    l_val, r_val := i64(left.n), i64(right.n)
 
     bits: uint
     switch ir_type {
@@ -833,9 +764,9 @@ can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
 // ---------------------------------------------------------------------------
 
 // Load the context's arena pointer (field 0 of Context struct).
-get_context_arena_ptr :: proc(g: ^Codegen) -> string {
+get_context_arena_ptr :: proc(g: ^Codegen) -> Val {
     ctx_ptr := fresh_tmp(g)
-    ir_load(g, ctx_ptr, "ptr", "@__mara_program")
+    ir_load(g, ctx_ptr, "ptr", ir_global("__mara_program"))
     arena_ptr := fresh_tmp(g)
     emit_field_gep_into(g, arena_ptr, program_ir_name(g.checked), ctx_ptr, 0)
     return arena_ptr
@@ -844,19 +775,19 @@ get_context_arena_ptr :: proc(g: ^Codegen) -> string {
 // Emit a call to the Mara mark() function from the memory package.
 emit_arena_mark :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
-    mark_ir := mara_fn_name(g, g.arena_mark_name)
+    mark_ir := mara_fn(g, g.arena_mark_name)
     if ret := fn_ret_struct(g, g.arena_mark_name); ret != "" {
         dummy := fresh_tmp(g)
         emit_alloca(g, dummy, struct_llvm_name(ret))
-        ir_emit(g, {op = .Call, ty = "void", inst = mark_ir, args = ir_indices({"ptr", arena_ptr, ""}, {"ptr", dummy, ""})})
+        ir_call(g, {}, "void", mark_ir, {"ptr", arena_ptr, {}}, {"ptr", dummy, {}})
     } else {
-        ir_emit(g, {op = .Call, ty = "void", inst = mark_ir, args = ir_indices({"ptr", arena_ptr, ""})})
+        ir_call(g, {}, "void", mark_ir, {"ptr", arena_ptr, {}})
     }
 }
 
 // Emit a call to arena_alloc() for a compile-time known size. Returns the data pointer.
-emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: string = "<unknown>") -> string {
-    return emit_arena_bump_val(g, fmt.tprintf("%d", size), name, loc)
+emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: string = "<unknown>") -> Val {
+    return emit_arena_bump_val(g, ir_int(size), name, loc)
 }
 
 // Call the Mara arena_alloc() function from the memory package.
@@ -866,7 +797,7 @@ emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: s
 // pass in. No codegen-side check; if the user supplies a buggy arena
 // that returns an invalid slice, downstream code crashes when it
 // accesses the null ptr, same as any other broken function.
-emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<alloc>", loc: string = "<unknown>") -> string {
+emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>", loc: string = "<unknown>") -> Val {
     // Deferred check: only fires if some code actually wants the arena. A
     // shared-build DLL with `#expose` fn(s) but no `context.scope_allocator
     // = X` declaration reaches here with no allocator name. Tell the user
@@ -890,13 +821,12 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     // sret goes last, after the regular params. The size operand width matches
     // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
     // alloc hands back a `[]byte`, the size shares the slice header width.
-    alloc_ir := mara_fn_name(g, g.arena_alloc_name)
+    alloc_ir := mara_fn(g, g.arena_alloc_name)
     w := SLICE_LEN_IR
     if g.arena_alloc_has_debug {
-        ir_emit(g, {op = .Call, ty = "void", inst = alloc_ir,
-                    args = ir_indices({"ptr", arena_ptr, ""}, {w, size_val, ""}, {"ptr", name_ptr, ""}, {"ptr", span_ptr, ""}, {"ptr", tmp_slice, ""})})
+        ir_call(g, {}, "void", alloc_ir, {"ptr", arena_ptr, {}}, {w, size_val, {}}, {"ptr", name_ptr, {}}, {"ptr", span_ptr, {}}, {"ptr", tmp_slice, {}})
     } else {
-        ir_emit(g, {op = .Call, ty = "void", inst = alloc_ir, args = ir_indices({"ptr", arena_ptr, ""}, {w, size_val, ""}, {"ptr", tmp_slice, ""})})
+        ir_call(g, {}, "void", alloc_ir, {"ptr", arena_ptr, {}}, {w, size_val, {}}, {"ptr", tmp_slice, {}})
     }
     // Extract raw data pointer from the returned slice header
     data_ptr := emit_header_field(g, tmp_slice, SLICE.ptr)
@@ -907,13 +837,13 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
 // Emit a call to the Mara reset() function from the memory package.
 emit_arena_reset :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
-    reset_ir := mara_fn_name(g, g.arena_reset_name)
+    reset_ir := mara_fn(g, g.arena_reset_name)
     if ret := fn_ret_struct(g, g.arena_reset_name); ret != "" {
         dummy := fresh_tmp(g)
         emit_alloca(g, dummy, struct_llvm_name(ret))
-        ir_emit(g, {op = .Call, ty = "void", inst = reset_ir, args = ir_indices({"ptr", arena_ptr, ""}, {"ptr", dummy, ""})})
+        ir_call(g, {}, "void", reset_ir, {"ptr", arena_ptr, {}}, {"ptr", dummy, {}})
     } else {
-        ir_emit(g, {op = .Call, ty = "void", inst = reset_ir, args = ir_indices({"ptr", arena_ptr, ""})})
+        ir_call(g, {}, "void", reset_ir, {"ptr", arena_ptr, {}})
     }
 }
 
@@ -991,14 +921,14 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // A union value's tag, read from its storage. A tagged union keeps it in field
 // 0. A niche union stores none — its storage is the Some variant's pointer — so
 // its tag is whichever variant the pointer's nullness says it holds.
-load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: string) -> string {
+load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: Val) -> Val {
     tag_ir := union_tag_ir_type(ut)
     if some := ut.niche_some; some != "" {
         none := union_niche_none(ut)
         ptr := fresh_tmp(g)
         emit_load_into(g, ptr, "ptr", union_ptr)
         live := fresh_tmp(g)
-        ir_icmp(g, live, "ne", "ptr", ptr, "null")
+        ir_icmp(g, live, "ne", "ptr", ptr, IR_NULL)
         tag := fresh_tmp(g)
         ir_select(g, tag, live, tag_ir, ir_int(ut.tag_map[some]), ir_int(ut.tag_map[none]))
         return tag
@@ -1012,14 +942,14 @@ load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: string) -> strin
 
 // A match's failure: its subject holds no arm's tag — corrupt memory, since
 // every match covers every variant. `tag` (of IR type `tag_ir`) is reported.
-emit_match_fail :: proc(g: ^Codegen, span: Span, tag, tag_ir: string, unsigned: bool) {
+emit_match_fail :: proc(g: ^Codegen, span: Span, tag: Val, tag_ir: string, unsigned: bool) {
     wide := tag
     if tag_ir != "i64" {
         wide = fresh_tmp(g)
         ir_cast(g, wide, "zext" if unsigned else "sext", tag_ir, tag, "i64")
     }
     loc_global := get_string_literal(g, span_location(span))
-    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_MATCH_FAIL, args = ir_indices({"ptr", loc_global, ""}, {"i64", wide, ""})})
+    ir_call(g, {}, "void", ir_global(__MARA_MATCH_FAIL), {"ptr", loc_global, {}}, {"i64", wide, {}})
     ir_unreachable(g)
 }
 

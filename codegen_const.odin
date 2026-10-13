@@ -11,7 +11,8 @@ import "core:strings"
 // `RED :: [3]f32{...}`) is compile-time data: its value is computed from its
 // code (graph_fold.odin) and laid out here as an LLVM constant initializer,
 // stored once for the whole program — the main TU defines the table, every
-// other TU that reads it declares it external. A reference is the table's
+// other TU that reads it declares it external. Laid out as data (Ir_Const):
+// the LLVM backend prints it, the x86 backend writes its bytes. A reference is the table's
 // global: reads load from it, copies copy out of it, and passing it to a
 // function passes its address with no copy. Scalars (PI, sizes) aren't
 // tabled — they stay immediates. The checker keeps writes, `&` and slice
@@ -24,8 +25,8 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 
 Const_Table :: struct {
-    def:  string, // the definition, plus any private string globals it points at
-    decl: string, // the external declaration other TUs use
+    defs: []Ir_Global, // the definition, then the private string globals it points at
+    decl: Ir_Global,   // the external declaration other TUs use
 }
 
 // State for laying out one table's initializer.
@@ -33,10 +34,10 @@ Const_Table :: struct {
 Const_Ctx :: struct {
     g:      ^Codegen,
     span:   Span,
-    global: string,           // the table's symbol
-    gtype:  string,           // its IR type — a partial array's header points into it
-    path:   [dynamic]string,  // GEP indices from the table's root to the value being built
-    extras: strings.Builder,  // private globals the initializer points at
+    global: string,                // the table's symbol
+    gtype:  string,                // its IR type — a partial array's header points into it
+    path:   [dynamic]Ir_Const,     // GEP indices from the table's root to the value being built
+    extras: [dynamic]Ir_Global,    // private globals the initializer points at
     n_extra: int,
 }
 
@@ -53,16 +54,16 @@ is_table_const :: proc(t: Type) -> bool {
 
 // The global of constant `c`'s table, laid out the first time this TU reads
 // it; `span` is the reference's.
-const_table :: proc(g: ^Codegen, pc: ^Program_Code, c: Syntax_Id, span: Span) -> string {
+const_table :: proc(g: ^Codegen, pc: ^Program_Code, c: Syntax_Id, span: Span) -> Val {
     context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
     context.temp_allocator = context.allocator
     key, named := pc.table_names[c]
     if !named { codegen_fatal(g, span, CODE_CONST_TABLE_UNNAMED) }
-    name := strings.concatenate({"@mara_const.", ir_safe_name(key)})
+    name := strings.concatenate({"mara_const.", ir_safe_name(key)})
     if name not_in g.const_tables {
         g.const_tables[name] = build_const_table(g, name, pc.tables[c], graph_type(pc.consts[c], 0), span)
     }
-    return name
+    return ir_global(name)
 }
 
 @(private="file")
@@ -80,16 +81,18 @@ ir_safe_name :: proc(key: string) -> string {
 build_const_table :: proc(g: ^Codegen, name: string, v: ^Fold, t: Type, span: Span) -> Const_Table {
     cx := Const_Ctx{g = g, span = span, global = name}
     base := distinct_base(t)
-    init: string
+    init: Ir_Const
     if ut, is_union := base.(^Type_Union); is_union {
         cx.gtype, init = const_union_table(&cx, ut, v)
     } else {
         cx.gtype = llvm_type_from_checker(base)
         init = const_init(&cx, v, base)
     }
-    def := fmt.tprintf("%s = unnamed_addr constant %s %s, align 16\n%s", name, cx.gtype, init, strings.to_string(cx.extras))
-    decl := fmt.tprintf("%s = external constant %s, align 16", name, cx.gtype)
-    return Const_Table{def = def, decl = decl}
+    defs := make([dynamic]Ir_Global, 0, 1 + len(cx.extras))
+    append(&defs, Ir_Global{name = name, unnamed = true, constant = true, ty = cx.gtype, init = init, align = 16})
+    append(&defs, ..cx.extras[:])
+    decl := Ir_Global{name = name, linkage = .External, constant = true, ty = cx.gtype, align = 16}
+    return Const_Table{defs = defs[:], decl = decl}
 }
 
 // A value no layout here holds (the evaluation computed it: this is a gap).
@@ -104,9 +107,9 @@ const_unset :: proc(v: ^Fold) -> bool {
     return v == nil || !v.known && v.parts == nil && v.variant == nil
 }
 
-// Value `v` (nil = never written) as an initializer of type `t`: its text.
+// Value `v` (nil = never written) as an initializer of type `t`.
 @(private="file")
-const_init :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> string {
+const_init :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> Ir_Const {
     base := distinct_base(t)
     if const_unset(v) { return const_default(cx, base) }
     if sd := as_struct_body(base); sd != nil { return const_struct(cx, sd, v) }
@@ -124,77 +127,74 @@ const_init :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> string {
 
 // A slot never written: zero, with partial-array headers set.
 @(private="file")
-const_default :: proc(cx: ^Const_Ctx, t: Type) -> string {
+const_default :: proc(cx: ^Const_Ctx, t: Type) -> Ir_Const {
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil { return const_struct(cx, sd, nil) }
     #partial switch a in base {
     case ^Type_Fixed_Array:   return const_elements(cx, a.elem, a.size, nil)
     case ^Type_Partial_Array:
-        push_index(cx, fmt.tprintf("i32 %d", PARTIAL_ELEMENTS_FIELD))
+        push_index(cx, "i32", PARTIAL_ELEMENTS_FIELD)
         elems := const_elements(cx, a.elem, a.size, nil)
         pop_index(cx)
         return const_partial_with(cx, a, 0, elems)
     }
-    return "zeroinitializer"
+    return {v = IR_ZERO}
 }
 
 @(private="file")
-push_index :: proc(cx: ^Const_Ctx, index: string) { append(&cx.path, index) }
+push_index :: proc(cx: ^Const_Ctx, ty: string, k: int) { append(&cx.path, ir_const(ty, ir_int(k))) }
 @(private="file")
 pop_index :: proc(cx: ^Const_Ctx) { pop(&cx.path) }
 
 @(private="file")
-const_struct :: proc(cx: ^Const_Ctx, sd: ^Scope_Body, v: ^Fold) -> string {
-    parts := make([]string, len(sd.fields), context.temp_allocator)
+const_struct :: proc(cx: ^Const_Ctx, sd: ^Scope_Body, v: ^Fold) -> Ir_Const {
+    parts := make([]Ir_Const, len(sd.fields))
     all_zero := true
     for &f, i in sd.fields {
-        push_index(cx, fmt.tprintf("i32 %d", i))
-        text: string
+        push_index(cx, "i32", i)
+        part: Ir_Const
         if sd.is_union_variant && i == 0 {
-            text = fmt.tprintf("%d", sd.union_variant_tag) // the discriminant, always set
+            part = {v = ir_int(int(sd.union_variant_tag))} // the discriminant, always set
         } else {
-            part: ^Fold
-            if v != nil && i < len(v.parts) { part = v.parts[i] }
-            text = const_init(cx, part, f.type_)
+            fv: ^Fold
+            if v != nil && i < len(v.parts) { fv = v.parts[i] }
+            part = const_init(cx, fv, f.type_)
         }
         pop_index(cx)
-        if text != "zeroinitializer" { all_zero = false }
-        parts[i] = strings.concatenate({field_ir_type(&f), " ", text})
+        if !ir_const_zero(part) { all_zero = false }
+        part.ty = field_ir_type(&f)
+        parts[i] = part
     }
-    if all_zero { return "zeroinitializer" }
-    open, close := "{ ", " }"
-    if sd.is_packed { open, close = "<{ ", " }>" }
-    return strings.concatenate({open, strings.join(parts, ", "), close})
+    if all_zero { return {v = IR_ZERO} }
+    return {kind = .Packed if sd.is_packed else .Struct, parts = parts}
 }
 
-// `n` elements of type `elem` from `parts` (none: each its zero), as
-// `[T a, T b, ...]` — or zeroinitializer when all zero.
+// `n` elements of type `elem` from `parts` (none: each its zero) — or
+// zeroinitializer when all zero.
 @(private="file")
-const_elements :: proc(cx: ^Const_Ctx, elem: Type, n: int, parts: []^Fold) -> string {
+const_elements :: proc(cx: ^Const_Ctx, elem: Type, n: int, parts: []^Fold) -> Ir_Const {
     elem_ir := llvm_type_from_checker(elem)
-    texts := make([]string, n, context.temp_allocator)
+    elems := make([]Ir_Const, n)
     all_zero := true
     for k in 0..<n {
-        push_index(cx, fmt.tprintf("i64 %d", k))
-        text := const_init(cx, parts[k] if k < len(parts) else nil, elem)
+        push_index(cx, "i64", k)
+        c := const_init(cx, parts[k] if k < len(parts) else nil, elem)
         pop_index(cx)
-        if text != "zeroinitializer" { all_zero = false }
-        texts[k] = strings.concatenate({elem_ir, " ", text})
+        if !ir_const_zero(c) { all_zero = false }
+        c.ty = elem_ir
+        elems[k] = c
     }
-    if all_zero { return "zeroinitializer" }
-    return strings.concatenate({"[", strings.join(texts, ", "), "]"})
+    if all_zero { return {v = IR_ZERO} }
+    return {kind = .Array, parts = elems}
 }
 
 // A byte string's bytes as a `[n x i8]` initializer, zero-padded.
 @(private="file")
-const_bytes :: proc(cx: ^Const_Ctx, s: string, n: int) -> string {
+const_bytes :: proc(cx: ^Const_Ctx, s: string, n: int) -> Ir_Const {
     if len(s) > n { const_fail(cx) }
-    b := strings.builder_make()
-    strings.write_string(&b, "c\"")
-    strings.write_string(&b, llvm_escape_string(s))
-    for _ in len(s)..<n { strings.write_string(&b, "\\00") }
-    strings.write_byte(&b, '"')
-    return strings.to_string(b)
+    b := make([]byte, n)
+    copy(b, s)
+    return {kind = .Bytes, bytes = string(b)}
 }
 
 @(private="file")
@@ -214,7 +214,7 @@ const_text :: proc(v: ^Fold) -> (string, bool) {
 }
 
 @(private="file")
-const_array :: proc(cx: ^Const_Ctx, fa: ^Type_Fixed_Array, v: ^Fold) -> string {
+const_array :: proc(cx: ^Const_Ctx, fa: ^Type_Fixed_Array, v: ^Fold) -> Ir_Const {
     if s, is_text := const_text(v); is_text {
         if !is_byte_elem_type(fa.elem) { const_fail(cx) }
         return const_bytes(cx, s, fa.size)
@@ -226,43 +226,51 @@ const_array :: proc(cx: ^Const_Ctx, fa: ^Type_Fixed_Array, v: ^Fold) -> string {
 // A partial array of text: its header (len, cap, and a pointer to its own
 // elements, the way construction stamps it) and its bytes.
 @(private="file")
-const_partial :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, v: ^Fold) -> string {
+const_partial :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, v: ^Fold) -> Ir_Const {
     s, is_text := const_text(v)
     if !is_text || !is_byte_elem_type(pa.elem) { const_fail(cx) }
     return const_partial_with(cx, pa, len(s), const_bytes(cx, s, pa.size))
 }
 
 @(private="file")
-const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elems: string) -> string {
+const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elems: Ir_Const) -> Ir_Const {
     elem_ir := llvm_type_from_checker(pa.elem)
-    self := strings.concatenate({
-        "getelementptr inbounds (", cx.gtype, ", ptr ", cx.global, ", i32 0",
-        ", " if len(cx.path) > 0 else "", strings.join(cx.path[:], ", "),
-        fmt.tprintf(", i32 %d)", PARTIAL_ELEMENTS_FIELD),
-    })
-    return fmt.tprintf("{{ %s %d, %s %d, ptr %s, [%d x %s] %s }}",
-        SLICE_LEN_IR, n, SLICE_LEN_IR, pa.size, self, pa.size, elem_ir, elems)
+    // Its pointer: its own elements' address, from the table's root.
+    index := make([dynamic]Ir_Const, 0, len(cx.path) + 2)
+    append(&index, ir_const("i32", ir_int(0)))
+    append(&index, ..cx.path[:])
+    append(&index, ir_const("i32", ir_int(PARTIAL_ELEMENTS_FIELD)))
+    parts := make([]Ir_Const, 4)
+    parts[0] = ir_const(SLICE_LEN_IR, ir_int(n))
+    parts[1] = ir_const(SLICE_LEN_IR, ir_int(pa.size))
+    parts[2] = {kind = .Gep, ty = "ptr", v = ir_global(cx.global), src = cx.gtype, parts = index[:]}
+    parts[3] = elems
+    parts[3].ty = fmt.tprintf("[%d x %s]", pa.size, elem_ir)
+    return {kind = .Struct, parts = parts}
 }
 
 // A slice field: a view of a string (its bytes in a private global, len =
 // byte count and cap one more, like a string passed as a slice).
 @(private="file")
-const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> string {
+const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
     s, is_text := const_text(v)
     if !is_text || !is_byte_elem_type(sl.elem) { const_fail(cx) }
     cx.n_extra += 1
     name := fmt.tprintf("%s.s%d", cx.global, cx.n_extra)
-    fmt.sbprintf(&cx.extras, "%s = private unnamed_addr constant [%d x i8] %s\n",
-        name, len(s) + 1, const_bytes(cx, s, len(s) + 1))
-    return fmt.tprintf("{{ %s %d, %s %d, ptr %s }}",
-        SLICE_LEN_IR, len(s), SLICE_LEN_IR, len(s) + 1, name)
+    append(&cx.extras, Ir_Global{name = name, linkage = .Private, unnamed = true, constant = true,
+        ty = fmt.tprintf("[%d x i8]", len(s) + 1), init = const_bytes(cx, s, len(s) + 1)})
+    parts := make([]Ir_Const, 3)
+    parts[0] = ir_const(SLICE_LEN_IR, ir_int(len(s)))
+    parts[1] = ir_const(SLICE_LEN_IR, ir_int(len(s) + 1))
+    parts[2] = ir_const("ptr", ir_global(name))
+    return {kind = .Struct, parts = parts}
 }
 
 // A union constant's table: the variant's struct (tag included) padded out to
 // the union's size — its own IR type, since pointers are opaque and every
 // access types the load at the use site.
 @(private="file")
-const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: string, init: string) {
+const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: string, init: Ir_Const) {
     g := cx.g
     if v.variant == nil || ut.niche_some != "" { const_fail(cx) }
     vsd := as_struct_body(distinct_base(v.variant))
@@ -274,10 +282,14 @@ const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: 
         return vname, const_struct(cx, vsd, v)
     }
     cx.gtype = fmt.tprintf("<{{ %s, [%d x i8] }}>", vname, tail)
-    push_index(cx, "i32 0")
+    push_index(cx, "i32", 0)
     body := const_struct(cx, vsd, v)
     pop_index(cx)
-    return cx.gtype, fmt.tprintf("<{{ %s %s, [%d x i8] zeroinitializer }}>", vname, body, tail)
+    parts := make([]Ir_Const, 2)
+    parts[0] = body
+    parts[0].ty = vname
+    parts[1] = ir_const(fmt.tprintf("[%d x i8]", tail), IR_ZERO)
+    return cx.gtype, {kind = .Packed, parts = parts}
 }
 
 // Wrap `i` to a `bits`-wide two's-complement value, as the IR prints it.
@@ -292,20 +304,20 @@ wrap_int :: proc(i: i128, bits: int) -> i128 {
 }
 
 @(private="file")
-const_scalar :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> string {
+const_scalar :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> Ir_Const {
     ir := llvm_type_from_checker(t)
     c := v.c
     if c.is_text { const_fail(cx) }
     switch ir {
     case "ptr":
-        return "null"   // (`void`: the one pointer a constant holds)
+        return {v = IR_NULL}   // (`void`: the one pointer a constant holds)
     case "i1":
-        return "true" if (c.float if c.is_float else f64(c.int)) != 0 else "false"
+        return {v = IR_TRUE if (c.float if c.is_float else f64(c.int)) != 0 else IR_FALSE}
     case "half", "float", "double":
-        return emit_number_literal(ir, c.float if c.is_float else f64(c.int), 0, true)
+        return {v = emit_number_literal(ir, c.float if c.is_float else f64(c.int), 0, true)}
     }
     if c.is_float { const_fail(cx) }
-    return fmt.tprintf("%d", wrap_int(c.int, ir_type_bits(ir)))
+    return {v = ir_int128(wrap_int(c.int, ir_type_bits(ir)))}
 }
 
 // ---------------------------------------------------------------------------
@@ -313,30 +325,34 @@ const_scalar :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> string {
 // declares the ones it imports.
 // ---------------------------------------------------------------------------
 
-module_const_ir :: proc(g: ^Codegen, module_name: string, is_main_tu: bool) -> string {
+// A module's constant-table globals: the main TU's, every table's
+// definitions; another's, the declarations of those it reads.
+module_const_globals :: proc(g: ^Codegen, module_name: string, is_main_tu: bool) -> []Ir_Global {
     names: [dynamic]string
     defer delete(names)
     if is_main_tu {
         for name in g.const_tables { append(&names, name) }
     } else if imports, ok := g.module_imports[module_name]; ok {
         for name in imports {
-            full := strings.concatenate({"@", name}, context.temp_allocator)
-            if full in g.const_tables { append(&names, full) }
+            if name in g.const_tables { append(&names, name) }
         }
     }
-    if len(names) == 0 { return "" }
     slice.sort(names[:])
-    b := strings.builder_make()
-    strings.write_string(&b, "; Constant tables\n")
+    out := make([dynamic]Ir_Global)
     for name in names {
         table := g.const_tables[name]
-        if is_main_tu {
-            strings.write_string(&b, table.def)
-        } else {
-            strings.write_string(&b, table.decl)
-            strings.write_byte(&b, '\n')
-        }
+        if is_main_tu { append(&out, ..table.defs) } else { append(&out, table.decl) }
     }
+    return out[:]
+}
+
+// ... as LLVM IR.
+module_const_ir :: proc(g: ^Codegen, module_name: string, is_main_tu: bool) -> string {
+    gls := module_const_globals(g, module_name, is_main_tu)
+    if len(gls) == 0 { return "" }
+    b := strings.builder_make()
+    strings.write_string(&b, "; Constant tables\n")
+    for gl in gls { ir_print_global(&b, gl) }
     strings.write_byte(&b, '\n')
     return strings.to_string(b)
 }

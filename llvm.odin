@@ -26,32 +26,32 @@ Llvm :: struct {
     ft:    ^Type_Scope,
     runs:  [dynamic]i32,        // the runs its entry reaches: the entry's, then as built; then its defers'
     own:   int,                 // how many of the runs are its own code's (the rest, defer blocks')
-    label: map[i32]string,      // a run → its block's label
-    value: []string,            // by id: an operation's result, a variable's storage
+    label: map[i32]Ir_Label,    // a run → its block's label
+    value: []Val,               // by id: an operation's result, a variable's storage
     held:  []bool,              // by id: a variable held as its one value
     ret:   string,              // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
     rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
-    slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
-    consumed: string,           // a param the result is built from (graph_consumed): its argument
+    slot:    Val,               // the result slot: %sret, or a fallible constructor's Self, %sret.0
+    consumed: Val,              // a param the result is built from (graph_consumed): its argument
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: [dynamic]Ir,        // a constructor's field addresses, first in its entry
-    head:  string,              // its `define` line
-    probe: string,              // -profile: its slot, when it's timed (llvm_probe)
+    head:  Ir_Head,             // its `define` line
+    probe: string,              // -profile: its slot's symbol, when it's timed (llvm_probe)
     st:    ^Storage,            // where each value lives (storage.odin): read here, decided there
 
     // Its named allocas: one for the named locals of one name and type (their
     // scopes never overlap — a name can't be declared again where it is
     // visible).
-    shared:  map[string]string,
-    used:    map[string]bool,
+    shared:  map[string]Val,
+    used:    map[string]bool,                // the names taken: locals', params', labels'
     hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (Storage.views): those values
     ahead:   map[Node_Id]bool,          // operations done ahead of their turn (a call builds its result there; a swap's)
-    outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
+    outs:    map[Node_Id][]Val,         // a call with several results: where each is (a temporary it wrote)
     out_run: map[Node_Id]i32,           // the run such a call is in
-    loaded:  map[Operand]string,        // a result loaded in its call's run (which dominates every use)
-    temps:   map[Operand]string,        // a call's big result's temporary: on the arena from the fun's entry (Storage.temps)
+    loaded:  map[Operand]Val,           // a result loaded in its call's run (which dominates every use)
+    temps:   map[Operand]Val,           // a call's big result's temporary: on the arena from the fun's entry (Storage.temps)
     stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
@@ -66,19 +66,19 @@ llvm_function :: proc(g: ^Codegen, cf: ^Type_Scope) {
 // Main's body, after the program's setup (emit_main_prologue, made in
 // g.code) — its `define` line `head`, the caller's. Its falling off the end,
 // or a bare return, returns 0.
-llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope, head: string) {
+llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope, head: Ir_Head) {
     llvm_code(g, cf, main = true, head = head)
 }
 
 @(private="file")
-llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := "") {
+llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := Ir_Head{}) {
     pg := g.checked.code.funs[cf] or_else nil
     if pg == nil || (pg.kind[0] != .Fun && pg.kind[0] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, ctor = pg.kind[0] == .Struct, main = main}
     e.own = graph_code_runs(pg, 0, &e.runs)
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
     size := int(pg.end) + 1
-    e.value = make([]string, size)
+    e.value = make([]Val, size)
     e.held = make([]bool, size)
 
     // Allocas hoisted: every alloca into the entry's in the order code first
@@ -120,10 +120,11 @@ llvm_probe :: proc(e: ^Llvm) {
     if g.profile == "" || !(e.main || llvm_works(&g.checked.code, e.pg, constructs = true)) { return }
     name := llvm_probe_name(cf)
     at := fmt.tprintf("%s:%d", filepath.base(span_file(cf.body_span)), span_line(cf.body_span))
-    e.probe = strings.concatenate({"@.prof.", mara_fn_name(g, cf.name)[1:]}, codegen_keep(g))
-    append(&g.string_decls, strings.concatenate({e.probe, " = internal global { ptr, ptr, ptr } { ptr ",
-        get_string_literal(g, name), ", ptr ", get_string_literal(g, at), ", ptr null }"}, codegen_keep(g)))
-    ir_call(g, "", "void", "@__mara_prof_enter", strings.concatenate({"ptr ", e.probe}, context.temp_allocator))
+    e.probe = strings.concatenate({".prof.", mara_fn_name(g, cf.name)}, codegen_keep(g))
+    parts := make([]Ir_Const, 3, codegen_keep(g))
+    parts[0], parts[1], parts[2] = ir_const("ptr", get_string_literal(g, name)), ir_const("ptr", get_string_literal(g, at)), ir_const("ptr", IR_NULL)
+    append(&g.globals, Ir_Global{name = e.probe, linkage = .Internal, ty = "{ ptr, ptr, ptr }", init = {kind = .Struct, parts = parts}})
+    ir_call(g, {}, "void", ir_global("__mara_prof_enter"), {"ptr", ir_global(e.probe), {}})
 }
 
 // A fun's name in the profile: as written, after the structs and funs it's in
@@ -174,8 +175,8 @@ llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> b
 // told the fun is left (llvm_probe) and its big temporaries are freed
 // (llvm_temps).
 @(private="file")
-llvm_ret :: proc(e: ^Llvm, ty: string, v := "") {
-    if e.probe != "" { ir_call(e.g, "", "void", "@__mara_prof_exit", strings.concatenate({"ptr ", e.probe}, context.temp_allocator)) }
+llvm_ret :: proc(e: ^Llvm, ty: string, v := Val{}) {
+    if e.probe != "" { ir_call(e.g, {}, "void", ir_global("__mara_prof_exit"), {"ptr", ir_global(e.probe), {}}) }
     if len(e.st.temps) > 0 && !e.main { emit_arena_reset(e.g) }
     ir_ret(e.g, ty, v)
 }
@@ -200,7 +201,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     // The signature: its params, then its result — a scalar returned, or a
     // struct built in the caller's slot (a constructor's is Self).
     e.ret = "void"
-    e.slot = "%sret"
+    e.slot = ir_local("sret")
     if e.ctor {
         // Self, built in the caller's slot; a fallible constructor's declared
         // results (its err) follow it, each in the slot after.
@@ -208,7 +209,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         e.sret = fn_result(cf, 0)
         if fn_result_count(cf) > 1 {
             for ri in 1 ..< fn_result_count(cf) { if !llvm_scalar(fn_result(cf, ri)) { e.note = "result type"; return false } }
-            e.slot, e.rets = "%sret.0", fn_results(cf)
+            e.slot, e.rets = ir_local("sret.0"), fn_results(cf)
         }
     } else if fn_result_count(cf) > 1 {
         // Several results: each written into the caller's slot for it.
@@ -227,28 +228,26 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // A fun that consumes a param into its result: its opening copy is
     // skipped when the caller passes that storage as the slot.
-    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.params[k].name) }
-    params := make([dynamic]string, 0, len(cf.params), context.temp_allocator)
+    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = ir_local(fmt.tprintf("%s.arg", cf.params[k].name)) }
+    params := make([dynamic]Ir_Arg, 0, len(cf.params))
     for _, pi in cf.params {
         p := fn_param(cf, pi)
         ir, ok := llvm_param_type(p.type_)
         if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
-        append(&params, fmt.tprintf("%s %%%s.arg", ir, p.name))
+        append(&params, Ir_Arg{ty = ir, v = ir_local(fmt.tprintf("%s.arg", p.name))})
     }
     if e.rets != nil {
-        for _, i in e.rets { append(&params, fmt.tprintf("ptr %%sret.%d", i)) }
+        for _, i in e.rets { append(&params, Ir_Arg{ty = "ptr", v = ir_local(fmt.tprintf("sret.%d", i))}) }
     } else if e.sret != nil {
-        append(&params, "ptr %sret")
+        append(&params, Ir_Arg{ty = "ptr", v = ir_local("sret")})
     }
     // (The result slots' names taken: a local named `sret` gets another.)
-    for p in params { if at := strings.index_byte(p, '%'); at >= 0 && strings.has_prefix(p[at:], "%sret") { e.used[p[at:]] = true } }
+    for p in params { if strings.has_prefix(p.v.name, "sret") { e.used[p.v.name] = true } }
     // `#expose`: in a DLL's export table, and the host's program — its first
     // param — is the one the DLL's code reads, set first thing.
-    linkage := "dllexport " if cf.is_exposed else ""
-    e.head = strings.concatenate({"define ", linkage, e.ret, " ", mara_fn_name(g, cf.name), "(",
-        strings.join(params[:], ", ", context.temp_allocator), ") {"})
+    e.head = {name = mara_fn_name(g, cf.name), ret = e.ret, params = params[:], export = cf.is_exposed}
     if cf.is_exposed && len(cf.params) > 0 {
-        append(&e.fields, Ir{op = .Store, ty = "ptr", a = fmt.tprintf("%%%s.arg", cf.params[0].name), b = "@__mara_program"})
+        append(&e.fields, Ir{op = .Store, ty = "ptr", a = params[0].v, b = ir_global("__mara_program")})
     }
 
     // Entry first, then the runs as they were built; each gets its label, by
@@ -259,11 +258,11 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         if r == entry { e.runs[0], e.runs[i] = e.runs[i], e.runs[0] }
     }
     llvm_sort_runs(e.runs[1:e.own])
-    for r, i in e.runs[1:e.own] { e.label[r] = fmt.tprintf("run%d", i + 1) }
+    for r, i in e.runs[1:e.own] { e.label[r] = ir_label(g, "run", i + 1) }
     // (Labels share the locals' names: a variable named entry or run1 is
     // %entry.2, %run1.2.)
-    e.used["%entry"] = true
-    for i in 1 ..< e.own { e.used[fmt.tprintf("%%run%d", i)] = true }
+    e.used["entry"] = true
+    for i in 1 ..< e.own { e.used[fmt.tprintf("run%d", i)] = true }
 
     if !llvm_variables(e) { return false }
     // Where each value lives — held as a value, in the caller's slot, built in
@@ -276,7 +275,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     copy(e.held, e.st.held)
     for v in e.st.views { e.hdr[v] = {} }
     for op in e.st.done { e.ahead[op] = true }
-    for v, k in e.st.result { e.value[v] = e.slot if e.st.one_slot else fmt.tprintf("%%sret.%d", k) }
+    for v, k in e.st.result { e.value[v] = e.slot if e.st.one_slot else ir_local(fmt.tprintf("sret.%d", k)) }
     llvm_probe(e)
     llvm_temps(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
@@ -301,12 +300,12 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     g, pg := e.g, e.pg
     t := graph_type(pg, a)
     pa, pb := llvm_place(e, a), llvm_place(e, b)
-    if pa == "" || pb == "" { return false }
+    if pa.kind == .None || pb.kind == .None { return false }
     size := type_size(t)
     buf, slot := fresh_tmp(g), fresh_tmp(g)
     emit_alloca(g, buf, "[64 x i8]")
     emit_alloca(g, slot, "i64")
-    emit_store(g, "i64", "0", slot)
+    emit_store(g, "i64", ir_int(0), slot)
     loop, body, done := fresh_label(g, "swap.loop"), fresh_label(g, "swap.body"), fresh_label(g, "swap.end")
     emit_br(g, loop)
     emit_label(g, loop)
@@ -318,16 +317,16 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     emit_label(g, body)
     rest, small, n := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
     ir_bin(g, rest, "sub", "i64", ir_int(int(size)), off)
-    ir_icmp(g, small, "slt", "i64", rest, "64")
-    ir_select(g, n, small, "i64", rest, "64")
+    ir_icmp(g, small, "slt", "i64", rest, ir_int(64))
+    ir_select(g, n, small, "i64", rest, ir_int(64))
     xa, xb := fresh_tmp(g), fresh_tmp(g)
-    ir_gep(g, xa, "i8", pa, strings.concatenate({"i64 ", off}, context.temp_allocator))
-    ir_gep(g, xb, "i8", pb, strings.concatenate({"i64 ", off}, context.temp_allocator))
+    ir_gep(g, xa, "i8", pa, {"i64", off, {}})
+    ir_gep(g, xb, "i8", pb, {"i64", off, {}})
     emit_memcpy_runtime(g, buf, xa, n)
     emit_memcpy_runtime(g, xa, xb, n)
     emit_memcpy_runtime(g, xb, buf, n)
     next := fresh_tmp(g)
-    ir_bin(g, next, "add", "i64", off, "64")
+    ir_bin(g, next, "add", "i64", off, ir_int(64))
     emit_store(g, "i64", next, slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -367,7 +366,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             id = graph_last(pg, id)
         case .Param:
             _ = llvm_param_type(graph_type(pg, id)) or_return
-            e.value[id] = fmt.tprintf("%%%s.arg", graph_name(pg, id))
+            e.value[id] = ir_local(fmt.tprintf("%s.arg", graph_name(pg, id)))
         case .Result:
             if pg.written[id] == .Explicit && !llvm_named_result(e, id) { return false }
         case .Local:
@@ -385,7 +384,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             if i < 0 { return false }
             at := fresh_tmp(e.g)
             append(&e.fields, Ir{op = .Gep, dest = at, ty = llvm_type_from_checker(e.sret), a = e.slot,
-                                 args = ir_indices({"i32", "0", ""}, {"i32", ir_int(i), ""})})
+                                 args = ir_indices({"i32", ir_int(0), {}}, {"i32", ir_int(i), {}})})
             e.value[id] = at
             // A partial array: its header stamped over its elements, and those
             // constructed, right after its address (its zero is not all zeros).
@@ -414,9 +413,9 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
 // A local's alloca, made where its code first needs it: named after it, and
 // one for the named locals of one name and type.
 @(private="file")
-llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
+llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> Val {
     pg := e.pg
-    if slot := e.value[d]; slot != "" { return slot }
+    if slot := e.value[d]; slot.kind != .None { return slot }
     if at, ok := e.st.in_place[d]; ok {
         e.value[d] = llvm_place(e, at)
         return e.value[d]
@@ -430,22 +429,24 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
         e.value[d] = slot
         return slot
     }
-    name := fmt.tprintf("%%%s", graph_name(pg, d))
-    for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%%%s.%d", graph_name(pg, d), n) }
+    name := graph_name(pg, d)
+    for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%s.%d", graph_name(pg, d), n) }
     e.used[name] = true
-    if explicit { e.shared[key] = name }
-    e.value[d] = name
-    emit_alloca(e.g, name, llvm_alloca_type(graph_type(pg, d)))
-    return name
+    local := ir_local(name)
+    if explicit { e.shared[key] = local }
+    e.value[d] = local
+    ty, align := llvm_alloca_type(graph_type(pg, d))
+    emit_alloca(e.g, local, ty, align)
+    return local
 }
 
-// A local's IR type as allocated: bytes held inline aligned for any value
-// viewed in them.
+// A local's IR type and alignment as allocated: bytes held inline aligned for
+// any value viewed in them.
 @(private="file")
-llvm_alloca_type :: proc(t: Type) -> string {
+llvm_alloca_type :: proc(t: Type) -> (string, i32) {
     ir := llvm_type_from_checker(t)
-    if pa := llvm_partial(t); pa != nil && llvm_type_from_checker(pa.elem) == "i8" { return strings.concatenate({ir, ", align 16"}) }
-    return ir
+    if pa := llvm_partial(t); pa != nil && llvm_type_from_checker(pa.elem) == "i8" { return ir, 16 }
+    return ir, 0
 }
 
 // Point the emit helpers' output at a constructor's entry prefix (e.fields),
@@ -459,7 +460,7 @@ llvm_into_fields :: proc(e: ^Llvm, on: bool) {
 // A value copied: its bytes, then the partial arrays in it re-pointed at the
 // copy's own elements.
 @(private="file")
-llvm_copy :: proc(e: ^Llvm, dest, src: string, t: Type) {
+llvm_copy :: proc(e: ^Llvm, dest, src: Val, t: Type) {
     emit_memcpy(e.g, dest, src, type_size(t))
     reanchor_partial_arrays(e.g, t, dest)
 }
@@ -483,7 +484,7 @@ llvm_hoist_reads :: proc(e: ^Llvm, at: Node_Id) -> bool {
 // and an array of just them (`part`, of type `pt`), element by element:
 // gathered into part, or scattered from it.
 @(private="file")
-llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Type, part: string, gather: bool) {
+llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: Val, pt: Type, part: Val, gather: bool) {
     g := e.g
     ir := llvm_type_from_checker(llvm_array(at).elem)
     for c, i in transmute([]u8)name {
@@ -514,7 +515,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // The program's own storage, which main hands over: at each use,
             // where @__mara_program points.
             at := fresh_tmp(g)
-            ir_load(g, at, "ptr", "@__mara_program")
+            ir_load(g, at, "ptr", ir_global("__mara_program"))
             e.value[op] = at
             return true
         }
@@ -533,15 +534,15 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if graph_name(pg, op) == "void" {
             t := graph_type(pg, op)
             switch {
-            case !llvm_scalar(t):                        e.value[op] = "void"
-            case llvm_type_from_checker(t) == "ptr":    e.value[op] = "null"
+            case !llvm_scalar(t):                        e.value[op] = IR_ZERO   // (its write is llvm_write_void's)
+            case llvm_type_from_checker(t) == "ptr":    e.value[op] = IR_NULL
             case:                                        e.value[op] = llvm_zero(t)
             }
             return true
         }
         // A result's zero value (what `?` returns beside an error), of any type.
         if pg.written[op] == .Implied && graph_name(pg, op) == "zero" {
-            e.value[op] = "zeroinitializer"
+            e.value[op] = IR_ZERO
             return true
         }
         v, ok := llvm_const(e, op)
@@ -684,7 +685,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             case "pad":
                 if ut.tag_pad == nil { return false }
                 pad := fresh_tmp(g)
-                ir_gep(g, pad, "i8", at, strings.concatenate({"i32 ", ir_int(int(tag_bytes(ut.tag_type)))}, context.temp_allocator))
+                ir_gep(g, pad, "i8", at, {"i32", ir_int(int(tag_bytes(ut.tag_type))), {}})
                 e.value[op] = pad
             case: return false
             }
@@ -744,9 +745,9 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if text, is_text := llvm_text(e, base); is_text {
             i := llvm_operand(e, ops[1], slice_header_width_type) or_return
             global := get_string_literal(g, text)
-            n := llvm_string_byte_length(text) + 1
+            n := len(text) + 1
             name := graph_place_name(pg, ops[0])
-            emit_bounds_check(g, i, fmt.tprintf("%d", n), name if name != "" else "array", span)
+            emit_bounds_check(g, i, ir_int(n), name if name != "" else "array", span)
             tmp := fresh_tmp(g)
             emit_array_gep_var(g, tmp, fmt.tprintf("[%d x i8]", n), global, i, "i64")
             e.value[op] = tmp
@@ -760,7 +761,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         i := llvm_operand(e, ops[1], slice_header_width_type) or_return
         if pg.written[op] != .Synthetic {
             name := graph_place_name(pg, ops[0])
-            emit_bounds_check(g, i, fmt.tprintf("%d", fa.size), name if name != "" else "array", span)
+            emit_bounds_check(g, i, ir_int(fa.size), name if name != "" else "array", span)
         }
         tmp := fresh_tmp(g)
         emit_array_gep_var(g, tmp, llvm_type_from_checker(at), e.value[base], i, "i64")
@@ -811,7 +812,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // counts the terminating zero).
             if text, is_text := llvm_text(e, x); is_text {
                 n := len(text)
-                e.value[op] = emit_build_temp_slice(g, e.value[x], fmt.tprintf("%d", n), fmt.tprintf("%d", n + 1))
+                e.value[op] = emit_build_temp_slice(g, e.value[x], ir_int(n), ir_int(n + 1))
                 return true
             }
             e.value[op] = e.value[x]
@@ -843,7 +844,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             for o, i in ops {
                 rt := e.rets[i + 1]
                 v := llvm_operand(e, o, rt) or_return
-                emit_store(g, llvm_type_from_checker(rt), v, fmt.tprintf("%%sret.%d", i + 1))
+                emit_store(g, llvm_type_from_checker(rt), v, ir_local(fmt.tprintf("sret.%d", i + 1)))
             }
             llvm_ret(e, "void")
             return true
@@ -868,10 +869,10 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // an aggregate copied (unless built there), a zero value stored whole.
             if len(ops) != len(e.rets) { return false }
             for rt, i in e.rets {
-                at := fmt.tprintf("%%sret.%d", i)
+                at := ir_local(fmt.tprintf("sret.%d", i))
                 v := llvm_operand(e, ops[i], rt) or_return
                 switch {
-                case v == "zeroinitializer" || llvm_scalar(rt):
+                case v.kind == .Zero || llvm_scalar(rt):
                     emit_store(g, llvm_type_from_checker(rt), v, at)
                 case v != at:
                     llvm_copy(e, at, v, rt)
@@ -882,7 +883,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
         if len(ops) == 0 {
             if e.main {   // the C entry point: 0, the program went well
-                llvm_ret(e, "i64", "0")
+                llvm_ret(e, "i64", ir_int(0))
                 return true
             }
             if e.ret != "void" && fell_off {
@@ -911,11 +912,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // function: its symbol.
         if ft, is_fn := graph_type(pg, op).(^Type_Scope); is_fn && ft.kind == .Fun {
             if fo, is_foreign := ft.origin.(Origin_Foreign); is_foreign {   // a C function: its link symbol
-                e.value[op] = strings.concatenate({"@", fo.link_name if fo.link_name != "" else ft.name})
+                e.value[op] = ir_global(fo.link_name if fo.link_name != "" else ft.name)
                 return true
             }
             if _, src := ft.origin.(Origin_Source); !src { return false }   // (an intrinsic's: later)
-            e.value[op] = mara_fn_name(g, ft.name)
+            e.value[op] = mara_fn(g, ft.name)
             return true
         }
         if c, has := graph_value(pg, op); has && c.is_text {
@@ -932,7 +933,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_print(e, op, ops, span)
     case .Crash:
         // Its message is text (one computed at runtime: later).
-        msg := ""
+        msg: Val
         if len(ops) == 1 {
             if _, is_text := llvm_text(e, ops[0].op); !is_text { return false }
             msg = e.value[ops[0].op]
@@ -965,7 +966,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
 // A place's address, even before its operation is reached: a variable names
 // its storage whatever comes first (a declaration's value precedes its var).
 @(private="file")
-llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
+llvm_place :: proc(e: ^Llvm, place: Node_Id) -> Val {
     pg := e.pg
     if pg.op[place] != .Var { return e.value[place] }
     d := pg.refers[place]
@@ -990,15 +991,16 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     if e.rets != nil && !e.ctor {
         switch {
         case llvm_struct(t) != nil || llvm_array(t) != nil:
-            e.value[d] = fmt.tprintf("%%sret.%d", i)
+            e.value[d] = ir_local(fmt.tprintf("sret.%d", i))
         case llvm_scalar(t):
             // (At the entry, before the code's own allocas.)
-            name := fmt.tprintf("%%%s", graph_name(pg, d))
-            for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%%%s.%d", graph_name(pg, d), n) }
+            name := graph_name(pg, d)
+            for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%s.%d", graph_name(pg, d), n) }
             e.used[name] = true
             ir := llvm_type_from_checker(t)
-            append(&e.fields, Ir{op = .Alloca, dest = name, ty = ir}, Ir{op = .Store, ty = ir, a = llvm_zero(t), b = name})
-            e.value[d] = name
+            local := ir_local(name)
+            append(&e.fields, Ir{op = .Alloca, dest = local, ty = ir}, Ir{op = .Store, ty = ir, a = llvm_zero(t), b = local})
+            e.value[d] = local
         case:
             e.note = "a named result's type"
             return false
@@ -1043,14 +1045,14 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     for k in 0 ..< n {
         slot := fresh_tmp(g)
         if pa != nil {
-            ir_gep_inbounds(g, slot, partial_array_ir_type(ir, pa.size), to, "i32 0", strings.concatenate({"i32 ", ir_int(int(PARTIAL_ELEMENTS_FIELD))}, context.temp_allocator), strings.concatenate({"i32 ", ir_int(int(k))}, context.temp_allocator))
+            ir_gep_inbounds(g, slot, partial_array_ir_type(ir, pa.size), to, {"i32", ir_int(0), {}}, {"i32", ir_int(PARTIAL_ELEMENTS_FIELD), {}}, {"i32", ir_int(k), {}})
         } else {
             emit_array_gep_const(g, slot, llvm_type_from_checker(at), to, k)
         }
         if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
     }
     if pa != nil {
-        emit_header_set(g, to, SLICE.len, fmt.tprintf("%d", pa.size))
+        emit_header_set(g, to, SLICE.len, ir_int(pa.size))
     }
     return true
 }
@@ -1072,7 +1074,7 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
     switch {
     case llvm_scalar(t):
         ir := llvm_type_from_checker(t)
-        if ir == "ptr" { emit_store(g, ir, "null", e.value[place]) }
+        if ir == "ptr" { emit_store(g, ir, IR_NULL, e.value[place]) }
         else if decl { emit_store(g, ir, llvm_zero(t), e.value[place]) }
     case llvm_partial(t) != nil:
         if decl { emit_partial_array_zero(g, e.value[place], llvm_partial(t), zero = false) }
@@ -1101,29 +1103,29 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
 }
 
 @(private="file")
-llvm_direct_value :: proc(e: ^Llvm, place: Node_Id) -> string {
+llvm_direct_value :: proc(e: ^Llvm, place: Node_Id) -> Val {
     if e.pg.op[place] != .Var { return e.value[place] }
     return e.value[e.pg.refers[place]]
 }
 
 // An operand's IR value, which must already be of the type its use takes.
 @(private="file")
-llvm_operand :: proc(e: ^Llvm, o: Operand, want: Type) -> (string, bool) {
-    if o.op == NO_NODE { return "", false }
+llvm_operand :: proc(e: ^Llvm, o: Operand, want: Type) -> (Val, bool) {
+    if o.op == NO_NODE { return {}, false }
     if at, several := e.outs[o.op]; several { return llvm_output(e, o, at, want) }
-    if o.out != 0 { return "", false }
+    if o.out != 0 { return {}, false }
     have := graph_type(e.pg, o.op)
-    if !llvm_same_type(have, want) { return "", false }
+    if !llvm_same_type(have, want) { return {}, false }
     return e.value[o.op], true
 }
 
 // A call's k-th result, from the temporary it wrote it into: a register value
 // loaded where it is used, an aggregate its temporary.
 @(private="file")
-llvm_output :: proc(e: ^Llvm, o: Operand, at: []string, want: Type) -> (string, bool) {
-    if int(o.out) >= len(at) { return "", false }
+llvm_output :: proc(e: ^Llvm, o: Operand, at: []Val, want: Type) -> (Val, bool) {
+    if int(o.out) >= len(at) { return {}, false }
     t := llvm_type_of(e, o)
-    if !llvm_same_type(t, want) { return "", false }
+    if !llvm_same_type(t, want) { return {}, false }
     if !llvm_scalar(t) { return at[o.out], true }
     if v, done := e.loaded[o]; done { return v, true }
     v := fresh_tmp(e.g)
@@ -1153,14 +1155,14 @@ llvm_target :: proc(e: ^Llvm, op: Node_Id, k: int) -> i32 {
     return -1
 }
 
-// A constant's IR literal at its type.
+// A constant's value at its type.
 @(private="file")
-llvm_const :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
+llvm_const :: proc(e: ^Llvm, op: Node_Id) -> (Val, bool) {
     t := graph_type(e.pg, op)
     v, ok := graph_value(e.pg, op)
-    if !ok || !llvm_scalar(t) { return "", false }
+    if !ok || !llvm_scalar(t) { return {}, false }
     ir := llvm_type_from_checker(t)
-    if ir == "i1" { return "true" if v.int != 0 else "false", true }
+    if ir == "i1" { return IR_TRUE if v.int != 0 else IR_FALSE, true }
     return emit_number_literal(ir, v.float if v.is_float else f64(v.int), v.int, v.is_float), true
 }
 
@@ -1174,7 +1176,7 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     if !lok || !rok { return false }
     ir := llvm_type_from_checker(t)
     name := graph_name(pg, op)
-    tmp: string
+    tmp: Val
     if is_ir_float(ir) {
         inst := ""
         switch name {
@@ -1269,7 +1271,7 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     x, ok := llvm_operand(e, ops[0], t)
     if !ok { return false }
     ir := llvm_type_from_checker(t)
-    tmp: string
+    tmp: Val
     switch graph_name(pg, op) {
     case "-":
         if is_ir_float(ir) {
@@ -1277,17 +1279,17 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
             ir_fneg(g, tmp, ir, x)
         } else {
             // Integer negation is `0 - x`, overflow-checked: -MIN traps.
-            tmp = emit_checked_arith(g, "usub" if llvm_unsigned(t) else "ssub", ir, "0", x, span)
+            tmp = emit_checked_arith(g, "usub" if llvm_unsigned(t) else "ssub", ir, ir_int(0), x, span)
         }
     case "-%":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "sub", ir, "0", x)
+        ir_bin(g, tmp, "sub", ir, ir_int(0), x)
     case "not":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "xor", "i1", x, "true")
+        ir_bin(g, tmp, "xor", "i1", x, IR_TRUE)
     case "~":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "xor", ir, x, "-1")
+        ir_bin(g, tmp, "xor", ir, x, ir_int(-1))
     case:
         return false
     }
@@ -1299,13 +1301,13 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 // truncation, between ints and floats by the target's (to an int) or the
 // source's (from one) signedness; to a bool, whether it's nonzero.
 @(private="file")
-llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
+llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type) -> Val {
     g := e.g
     fi, ti := llvm_type_from_checker(from), llvm_type_from_checker(to)
     if fi == ti { return v }
     tmp := fresh_tmp(g)
     if ti == "i1" && fi == "ptr" {   // to bool: whether it's not null
-        ir_icmp(g, tmp, "ne", "ptr", v, "null")
+        ir_icmp(g, tmp, "ne", "ptr", v, IR_NULL)
         return tmp
     }
     // A pointer as a number (`i64(w)`, a handle), or back: its address.
@@ -1315,7 +1317,7 @@ llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
     }
     ff, tf := is_ir_float(fi), is_ir_float(ti)
     if ti == "i1" && !ff {   // to bool: whether it's nonzero
-        ir_icmp(g, tmp, "ne", fi, v, "0")
+        ir_icmp(g, tmp, "ne", fi, v, ir_int(0))
         return tmp
     }
     fb, tb := ir_type_bits(fi), ir_type_bits(ti)
@@ -1341,18 +1343,18 @@ llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
 }
 
 // A construction's arguments, past its place: each at its constructor's
-// param's type, typed ("i64 6").
+// param's type.
 @(private="file")
-llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string, ok: bool) {
+llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []Ir_Arg, ok: bool) {
     if len(ops) == 1 { return nil, true }
     callee := graph_called(e.pg, op)
     if callee == nil || len(ops) - 1 != len(callee.params) { return nil, false }
-    args = make([]string, len(callee.params), context.temp_allocator)
+    args = make([]Ir_Arg, len(callee.params), context.temp_allocator)
     for _, i in callee.params {
         p := fn_param(callee, i)
         ir := llvm_param_type(p.type_) or_return
         v := llvm_operand(e, ops[i + 1], p.type_) or_return
-        args[i] = fmt.tprintf("%s %s", ir, v)
+        args[i] = {ty = ir, v = v}
     }
     return args, true
 }
@@ -1362,14 +1364,14 @@ llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string
 // built is an error. (The arguments are the caller's to compute first: the
 // union is zeroed before the call.)
 @(private="file")
-llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: string, args: []string) -> bool {
+llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: Val, args: []Ir_Arg) -> bool {
     callee := graph_called(e.pg, op)
     if callee == nil || callee.node == 0 { return len(args) == 0 }
     if _, built := e.g.checked.functions[callee.name]; !built { e.note = "a variant's constructor"; return false }
-    all := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
+    all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
     append(&all, ..args)
-    append(&all, fmt.tprintf("ptr %s", at))
-    ir_call(e.g, "", "void", mara_fn_name(e.g, callee.name), ..all[:])
+    append(&all, Ir_Arg{ty = "ptr", v = at})
+    ir_call(e.g, {}, "void", mara_fn(e.g, callee.name), ..all[:])
     return true
 }
 
@@ -1391,7 +1393,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if some := ut.niche_some; some != "" {
             // A niche union is its Some variant's pointer: None is null, Some
             // the pointer its literal writes next (none written: null).
-            if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
+            if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", IR_NULL, at) }
             return llvm_variant_ctor(e, op, at, args)
         }
         st := ut.variant_structs[graph_name(pg, op)]
@@ -1399,7 +1401,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit_memset_zero(g, at, type_size(graph_type(pg, dest)))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
-        emit_store(g, union_tag_ir_type(ut), fmt.tprintf("%d", ut.tag_map[graph_name(pg, op)]), tag)
+        emit_store(g, union_tag_ir_type(ut), ir_int(ut.tag_map[graph_name(pg, op)]), tag)
         stamp_zero_partial_arrays(g, at, st)   // (a partial array's zero isn't all zeros: no constructor stamps a variant's)
         return llvm_variant_ctor(e, op, at, args)
     }
@@ -1429,7 +1431,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         emit_memset_zero(g, at, type_size(t))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
-        emit_store(g, field_ir_type(&callee.fields[0]), fmt.tprintf("%d", callee.union_variant_tag), tag)
+        emit_store(g, field_ir_type(&callee.fields[0]), ir_int(int(callee.union_variant_tag)), tag)
         stamp_zero_partial_arrays(g, at, callee)
         return llvm_variant_ctor(e, op, at, args)
     }
@@ -1441,27 +1443,27 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     if _, src := callee.origin.(Origin_Source); !src { return false }
     ctor := llvm_ctor_args(e, op, ops) or_return
-    args := make([dynamic]string, 0, len(ops), context.temp_allocator)
+    args := make([dynamic]Ir_Arg, 0, len(ops), context.temp_allocator)
     append(&args, ..ctor)
     at := e.value[dest]
-    append(&args, fmt.tprintf("ptr %s", at))
+    append(&args, Ir_Arg{ty = "ptr", v = at})
     // A fallible constructor's declared results (its err) after Self: each
     // into a temporary, where its uses find it (Self is the place).
     if fn_result_count(callee) > 1 {
-        outs := make([]string, fn_result_count(callee))
+        outs := make([]Val, fn_result_count(callee))
         outs[0] = at
         for ri in 1 ..< fn_result_count(callee) {
             rt, i := fn_result(callee, ri), ri - 1
             if !llvm_scalar(rt) { e.note = "result type"; return false }
             outs[i + 1] = fresh_tmp(g)
             emit_alloca(g, outs[i + 1], llvm_type_from_checker(rt))
-            append(&args, fmt.tprintf("ptr %s", outs[i + 1]))
+            append(&args, Ir_Arg{ty = "ptr", v = outs[i + 1]})
         }
         e.outs[op], e.out_run[op] = outs, e.run
     }
     // A bare field of a constructor is already zero; a literal is a fresh value anywhere.
     if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, at, type_size(t)) }
-    ir_call(g, "", "void", mara_fn_name(g, callee.name), ..args[:])
+    ir_call(g, {}, "void", mara_fn(g, callee.name), ..args[:])
     return true
 }
 
@@ -1541,7 +1543,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
         if dest != NO_NODE && llvm_slice(graph_type(pg, dest)) != nil && !llvm_direct(e, dest) && llvm_ahead(e, dest) {
             at := llvm_place(e, dest)
-            n := fmt.tprintf("%d", llvm_array(graph_type(pg, ops[0].op)).size)
+            n := ir_int(llvm_array(graph_type(pg, ops[0].op)).size)
             emit_slice_header_at(g, at, e.value[ops[0].op], n, n)
             e.value[op] = at
             return true
@@ -1549,34 +1551,34 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     base := ops[0].op
     if base == NO_NODE || llvm_direct(e, base) { return false }
-    lo, hi: string
+    lo, hi: Val
     if len(ops) > 1 && ops[1].op != NO_NODE { lo = llvm_operand(e, ops[1], slice_header_width_type) or_return }
     if len(ops) > 2 && ops[2].op != NO_NODE { hi = llvm_operand(e, ops[2], slice_header_width_type) or_return }
     bt := graph_type(pg, base)
     at := e.value[base]
-    data: string
+    data: Val
     if text, is_text := llvm_text(e, base); is_text {
         // Text in its global (a constant's, a literal's): its bytes' address,
         // its length known — no header there to read.
         data = at
-        if hi == "" { hi = fmt.tprintf("%d", len(text)) }
-        if lo != "" {
+        if hi.kind == .None { hi = ir_int(len(text)) }
+        if lo.kind != .None {
             data = fresh_tmp(g)
             emit_elem_gep(g, data, "i8", at, lo, SLICE_LEN_IR)
         }
     } else if fa := llvm_array(bt); fa != nil {
         data = at
-        if hi == "" { hi = fmt.tprintf("%d", fa.size) }
-        if lo != "" {
+        if hi.kind == .None { hi = ir_int(fa.size) }
+        if lo.kind != .None {
             data = fresh_tmp(g)
             emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, SLICE_LEN_IR)
         }
     } else if elem := llvm_header_elem(bt); elem != nil {
         data = emit_header_field(g, at, SLICE.ptr)
-        if hi == "" {
+        if hi.kind == .None {
             hi = emit_header_field(g, at, SLICE.len)
         }
-        if lo != "" {
+        if lo.kind != .None {
             from := data
             data = fresh_tmp(g)
             emit_elem_gep(g, data, llvm_type_from_checker(elem), from, lo, SLICE_LEN_IR)
@@ -1585,7 +1587,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         return false   // a partial array (later)
     }
     n := hi
-    if lo != "" {
+    if lo.kind != .None {
         n = fresh_tmp(g)
         ir_bin(g, n, "sub", SLICE_LEN_IR, hi, lo)
     }
@@ -1642,7 +1644,7 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         }
     }
     tmp := fresh_tmp(g)
-    ir_gep(g, tmp, "i8", data, strings.concatenate({SLICE_LEN_IR, " ", off}, context.temp_allocator))
+    ir_gep(g, tmp, "i8", data, {SLICE_LEN_IR, off, {}})
     e.value[op] = tmp
     return true
 }
@@ -1658,16 +1660,16 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     base, src := rops[0].op, ops[1].op
     if graph_name(pg, run) != "" || len(rops) < 2 || rops[1].op == NO_NODE || src == NO_NODE || llvm_direct(e, base) { return false }
     lo := llvm_operand(e, rops[1], slice_header_width_type) or_return
-    hi := ""
+    hi: Val
     if len(rops) > 2 && rops[2].op != NO_NODE { hi = llvm_operand(e, rops[2], slice_header_width_type) or_return }
     // Each side's data and extent: a fixed array's own, else its header's.
-    Side :: struct { data, bound: string, fixed: int, elem: Type }
+    Side :: struct { data, bound: Val, fixed: int, elem: Type }
     side :: proc(e: ^Llvm, at: Node_Id, bound_field: int) -> (s: Side, ok: bool) {
         g, pg := e.g, e.pg
         t := graph_type(pg, at)
         if llvm_whole_array(e, at) { t = graph_type(pg, graph_operands(pg, at)[0].op) }   // the array it views
         addr := e.value[at]
-        if fa := llvm_array(t); fa != nil { return {addr, fmt.tprintf("%d", fa.size), fa.size, fa.elem}, true }
+        if fa := llvm_array(t); fa != nil { return {addr, ir_int(fa.size), fa.size, fa.elem}, true }
         s.elem = llvm_header_elem(t)
         if s.elem == nil { return }
         s.data = emit_header_field(g, addr, SLICE.ptr)
@@ -1687,14 +1689,14 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         if value_has_partial_array(g, dst.elem) { return false }
         size := type_size(dst.elem)
         elem_name := type_name(dst.elem)
-        nbytes := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        nbytes := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
         count := fresh_tmp(g)
         ok, bad := fresh_label(g, "byte.read.ok"), fresh_label(g, "byte.read.err")
         cmp := fresh_tmp(g)
-        if hi == "" {
+        if hi.kind == .None {
             rem := fresh_tmp(g)
             ir_bin(g, rem, "urem", w, nbytes, ir_int(int(size)))
-            ir_icmp(g, cmp, "ne", w, rem, "0")
+            ir_icmp(g, cmp, "ne", w, rem, ir_int(0))
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte read: %%lld bytes aren't a whole number of %s (%d bytes each)\n", loc, elem_name, size), fail_i64(nbytes))
@@ -1728,10 +1730,10 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         // tc_byte_span_checks): count × size, from lo — within the bytes' cap,
         // and the span's size when hi is written.
         size := type_size(from.elem)
-        count := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        count := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
         nbytes := fresh_tmp(g)
         ir_bin(g, nbytes, "mul", w, count, ir_int(int(size)))
-        if hi != "" {
+        if hi.kind != .None {
             span_n := fresh_tmp(g)
             ir_bin(g, span_n, "sub", w, hi, lo)
             ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
@@ -1749,13 +1751,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
                   fail_i64(lo), fail_i64(nbytes), fail_i64(dst.bound))
         emit_label(g, ok)
         at := fresh_tmp(g)
-        ir_gep(g, at, "i8", dst.data, strings.concatenate({w, " ", lo}, context.temp_allocator))
+        ir_gep(g, at, "i8", dst.data, {w, lo, {}})
         emit_memcpy_runtime(g, at, from.data, nbytes)
         return true
     }
-    run_given := hi != ""   // (hi written: the run's hi - lo, which src must have)
-    if hi == "" {
-        n := fmt.tprintf("%d", from.fixed)
+    run_given := hi.kind != .None   // (hi written: the run's hi - lo, which src must have)
+    if hi.kind == .None {
+        n := ir_int(from.fixed)
         if from.fixed == 0 {
             n = emit_header_field(g, e.value[src], SLICE.len)
         }
@@ -1779,7 +1781,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     // (A run written, lo:hi: src holds hi - lo elements, else the copy would
     // read past its end. A longer src gives its first hi - lo.)
     if run_given {
-        have := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
+        have := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
         if !can_elide_source_check(lo, hi, have) {
             want := fresh_tmp(g)
             ir_bin(g, want, "sub", w, hi, lo)
@@ -1796,7 +1798,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     loop, body, done := fresh_label(g, "slice.loop"), fresh_label(g, "slice.body"), fresh_label(g, "slice.end")
     i_slot := fresh_tmp(g)
     emit_alloca(g, i_slot, w)
-    emit_store(g, w, "0", i_slot)
+    emit_store(g, w, ir_int(0), i_slot)
     count := fresh_tmp(g)
     ir_bin(g, count, "sub", w, hi, lo)
     emit_br(g, loop)
@@ -1819,7 +1821,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_store(g, elem_ir, v, dst_gep)
     reanchor_partial_arrays(g, dst.elem, dst_gep)
     next := fresh_tmp(g)
-    ir_bin(g, next, "add", w, i, "1")
+    ir_bin(g, next, "add", w, i, ir_int(1))
     emit_store(g, w, next, i_slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -1846,7 +1848,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
         src := get_string_literal(g, text)
         emit_memcpy(g, elements, src, len(text) + 1 if pa.size > len(text) else len(text))
     }
-    emit_header_set(g, at, SLICE.len, fmt.tprintf("%d", len(text)))
+    emit_header_set(g, at, SLICE.len, ir_int(len(text)))
     return true
 }
 
@@ -1864,7 +1866,7 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     n := fresh_tmp(g); ir_select(g, n, cmp, w, n0, ir_int(int(pa.size)))
     elements := partial_elements(g, at, pa)
     nbytes := fresh_tmp(g); ir_bin(g, nbytes, "mul", w, n, ir_int(int(type_size(pa.elem))))
-    ir_call(g, "", "void", "@llvm.memcpy.p0.p0.i64", strings.concatenate({"ptr ", elements}, context.temp_allocator), strings.concatenate({"ptr ", data}, context.temp_allocator), strings.concatenate({"i64 ", nbytes}, context.temp_allocator), "i1 false")
+    emit_memcpy_runtime(g, elements, data, nbytes)
     emit_header_set(g, at, SLICE.len, n)
     return true
 }
@@ -1874,13 +1876,13 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
 // byte array's own address and size. `held`: its len instead (the bytes it
 // holds) — where an open span `bytes[lo:]` ends, as an open slice does.
 @(private="file")
-llvm_bytes :: proc(e: ^Llvm, base: Node_Id, held := false) -> (data, bound: string, ok: bool) {
+llvm_bytes :: proc(e: ^Llvm, base: Node_Id, held := false) -> (data, bound: Val, ok: bool) {
     g, pg := e.g, e.pg
     if llvm_direct(e, base) { return }
     bt := graph_type(pg, base)
     at := e.value[base]
     if fa := llvm_array(bt); fa != nil && is_byte_elem(fa.elem) {
-        return at, fmt.tprintf("%d", fa.size), true
+        return at, ir_int(fa.size), true
     }
     elem := llvm_header_elem(bt)
     if elem == nil || !is_byte_elem(elem) { return }
@@ -1904,14 +1906,14 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
     if llvm_direct(e, dest) || len(ops) < 3 { return false }
     pa := llvm_partial(graph_type(pg, dest))
     if pa == nil { return llvm_sized_read(e, op, ops, span) }
-    lo := "0"
+    lo := ir_int(0)
     if ops[2].op != NO_NODE { lo = llvm_operand(e, ops[2], slice_header_width_type) or_return }
     spanned := len(ops) > 3
-    hi := ""
+    hi: Val
     if spanned && ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
     data, bound := llvm_bytes(e, ops[1].op) or_return
     w := SLICE_LEN_IR
-    bytes := ""
+    bytes: Val
     if !spanned {
         // (The room past off, in whole elements, or the array's worth when
         // less. Unsigned: off past the cap leaves the room huge, the array's
@@ -1928,7 +1930,7 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         bytes = fresh_tmp(g)
         ir_select(g, bytes, short, w, whole, ir_int(int(pa.size * size)))
     } else {
-        if hi == "" { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
+        if hi.kind == .None { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
         inv_ok, inv_err := fresh_label(g, "pa.inv.ok"), fresh_label(g, "pa.inv.err")
         inv_cmp := fresh_tmp(g)
         ir_icmp(g, inv_cmp, "slt", w, hi, lo)
@@ -1955,12 +1957,12 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     t := graph_type(pg, dest)
     sd := llvm_struct(t)
     if len(ops) < 4 || (sd == nil && llvm_array(t) == nil) { return false }
-    lo := "0"
+    lo := ir_int(0)
     if ops[2].op != NO_NODE { lo = llvm_operand(e, ops[2], slice_header_width_type) or_return }
-    hi := ""
+    hi: Val
     if ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
     data, bound := llvm_bytes(e, ops[1].op) or_return
-    if hi == "" { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
+    if hi.kind == .None { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
     w := SLICE_LEN_IR
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     size := type_size(t)
@@ -1980,7 +1982,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     emit_fail(g, fmt.tprintf("<%s> runtime error: sized read of %%lld bytes exceeds destination (%d bytes)\n", loc, size), fail_i64(n))
     emit_label(g, dst_ok)
     src := fresh_tmp(g)
-    ir_gep(g, src, "i8", data, strings.concatenate({w, " ", lo}, context.temp_allocator))
+    ir_gep(g, src, "i8", data, {w, lo, {}})
     at := e.value[dest]
     emit_memset_zero(g, at, size)
     emit_memcpy_runtime(g, at, src, n)
@@ -2026,7 +2028,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     }
     t := graph_type(pg, op)
     elem := t
-    count := ""
+    count: Val
     if !let {
         sl := llvm_slice(t)
         if sl == nil || len(ops) < 2 { return false }
@@ -2038,7 +2040,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     hdr := e.value[storage]
     data := emit_header_field(g, hdr, SLICE.ptr)
     cursor := emit_header_field(g, hdr, SLICE.len)
-    advance := fmt.tprintf("%d", size)
+    advance := ir_int(size)
     if !let {
         advance = fresh_tmp(g)
         ir_bin(g, advance, "mul", w, count, ir_int(int(size)))
@@ -2050,13 +2052,13 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         ir_bin(g, cursor, "and", w, bumped, ir_int(int(-align)))
     }
     at := fresh_tmp(g)
-    ir_gep(g, at, "i8", data, strings.concatenate({w, " ", cursor}, context.temp_allocator))
+    ir_gep(g, at, "i8", data, {w, cursor, {}})
     moved := fresh_tmp(g)
     ir_bin(g, moved, "add", w, cursor, advance)
     cap_val := emit_header_field(g, hdr, SLICE.cap)
     // (Its count of elements, or its one value, in the room past the aligned
     // cursor: a negative count is outside.)
-    over := ""
+    over: Val
     if let {
         over = emit_byte_span_outside(g, cursor, advance, cap_val)
     } else {
@@ -2068,7 +2070,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     name := graph_place_name(pg, ops[0])
     // What was asked for, as asked (the advance itself may have wrapped).
-    asked := "1" if let else count
+    asked := ir_int(1) if let else count
     emit_fail(g, fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name),
               fail_i64(asked), fail_i64(cursor), fail_i64(cap_val))
     emit_label(g, ok)
@@ -2084,16 +2086,16 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 // A carved slice's header over `count` elements at `at` (len = cap = count):
 // in a fresh declaration's (or the result's) slot, else a temporary.
 @(private="file")
-llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: string) {
+llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: Val) {
     g, pg := e.g, e.pg
-    out := ""
+    out: Val
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
         dest := graph_operands(pg, u)[0].op
         if pg.op[dest] == .Var {
             if graph_stmt(pg, u).kind == .Decl || llvm_place(e, dest) == e.slot { out = llvm_place(e, dest) }
         }
     }
-    if out == "" {
+    if out.kind == .None {
         out = fresh_tmp(g)
         emit_alloca(g, out, SLICE_IR_TYPE)
     }
@@ -2114,7 +2116,7 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     for o in ops {
         if o.op == NO_NODE || o.out != 0 { return false }
         t, v := graph_type(pg, o.op), e.value[o.op]
-        if v == "" { return false }   // a held view (later)
+        if v.kind == .None { return false }   // a held view (later)
         text, is_text := llvm_text(e, o.op)
         switch {
         case is_text && llvm_aggregate(t):   // (text at a ^byte prints as a C string)
@@ -2125,8 +2127,8 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         }
     }
     if spec, ir, raw := raw_print(graph_name(pg, op)); raw {
-        if len(args) != 1 || args[0].addr != "" || llvm_type_from_checker(args[0].t) != ir { return false }
-        emit_printf(g, spec, fmt.tprintf("%s %s", ir, args[0].val))
+        if len(args) != 1 || args[0].addr.kind != .None || llvm_type_from_checker(args[0].t) != ir { return false }
+        emit_printf(g, spec, {ir, args[0].val, {}})
         return true
     }
     if len(args) > 0 && args[0].is_text && string_has_format_pct(args[0].text) {
@@ -2185,7 +2187,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     cases := ops[1:]
     targets := len(graph_out(pg, op))
     if targets != len(cases) && targets != len(cases) + 1 { return false }
-    target :: proc(e: ^Llvm, op: Node_Id, k: int) -> string { return e.label[llvm_target(e, op, k)] }
+    target :: proc(e: ^Llvm, op: Node_Id, k: int) -> Ir_Label { return e.label[llvm_target(e, op, k)] }
     fail := targets == len(cases)
     subject := ops[0].op
     if ut := llvm_union(graph_type(pg, subject)); ut != nil {
@@ -2196,7 +2198,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         for c, i in cases {
             v, has := graph_value(pg, c.op)
             if !has || v.is_float { return false }
-            arms[i] = {ir, fmt.tprintf("%d", v.int), target(e, op, i)}
+            arms[i] = {ir, ir_int128(v.int), target(e, op, i)}
         }
         ir_switch(g, ir, tag, default, arms)
         if fail {
@@ -2265,7 +2267,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     }
     for r in body[1:] { e.label[r] = fresh_label(g, "defer") }
-    end := ""
+    end: Ir_Label
     saved := e.run
     defer e.run = saved
     for r, i in body {
@@ -2277,7 +2279,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 // The block's end: back where it ran — straight on from the
                 // last of its code.
                 if i == len(body) - 1 && k == len(ops) - 1 { continue }
-                if end == "" { end = fresh_label(g, "defer.end") }
+                if end.id == 0 { end = fresh_label(g, "defer.end") }
                 emit_br(g, end)
                 continue
             }
@@ -2286,14 +2288,14 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if !llvm_op(e, o) { return false }
         }
     }
-    if end != "" { emit_label(g, end) }
+    if end.id != 0 { emit_label(g, end) }
     return true
 }
 
 // A view held as its header's values (Storage.views).
 @(private="file")
 Llvm_Header :: struct {
-    data, len, cap: string,
+    data, len, cap: Val,
 }
 
 @(private="file")
@@ -2309,7 +2311,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     // What's called: the callee, or — through a function value, the first
     // operand — that value, by its type's signature (the same ABI).
     callee := graph_called(e.pg, op)
-    name := ""
+    name: Val
     if callee == nil {
         callee = graph_signature(e.pg, op)
         if callee == nil { e.note = "a function value"; return false }
@@ -2320,7 +2322,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
-        name = mara_fn_name(g, callee.name)
+        name = mara_fn(g, callee.name)
     }
     if len(ops) != len(callee.params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
@@ -2333,7 +2335,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         case:                            e.note = "result type"; return false
         }
     }
-    args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
+    args := make([dynamic]Ir_Arg, 0, len(ops) + 1, context.temp_allocator)
     for _, i in callee.params {
         p := fn_param(callee, i)
         ir, ok := llvm_param_type(p.type_)
@@ -2343,22 +2345,22 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // Text taken as a partial array is only its bytes in memory: the
         // callee gets a header over them (it reads the elements through ptr).
         if text, is_text := llvm_text(e, ops[i].op); is_text && llvm_partial(p.type_) != nil {
-            v = emit_build_temp_slice(g, v, fmt.tprintf("%d", len(text)), fmt.tprintf("%d", len(text) + 1))
+            v = emit_build_temp_slice(g, v, ir_int(len(text)), ir_int(len(text) + 1))
         }
-        append(&args, fmt.tprintf("%s %s", ir, v))
+        append(&args, Ir_Arg{ty = ir, v = v})
     }
     if fn_result_count(callee) > 1 {
         // Several results: each into a temporary, where its uses find it —
         // an aggregate that a declaration takes, straight into its storage.
-        at := make([]string, fn_result_count(callee))
+        at := make([]Val, fn_result_count(callee))
         for i in 0 ..< fn_result_count(callee) {
             rt := fn_result(callee, i)
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
             if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
-            if at[i] == "" { at[i] = llvm_temporary(e, {op, i32(i)}, rt, llvm_alloca_type(rt)) }
-            append(&args, fmt.tprintf("ptr %s", at[i]))
+            if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, rt, as_local = true) }
+            append(&args, Ir_Arg{ty = "ptr", v = at[i]})
         }
-        ir_call(g, "", "void", name, ..args[:])
+        ir_call(g, {}, "void", name, ..args[:])
         e.outs[op], e.out_run[op] = at, e.run
         e.value[op] = at[0]
         return true
@@ -2366,13 +2368,13 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if ret == "void" && result != nil {
         // A struct result, built where it goes (llvm_result_place).
         at := llvm_result_place(e, op, callee, result) or_return
-        append(&args, fmt.tprintf("ptr %s", at))
-        ir_call(g, "", "void", name, ..args[:])
+        append(&args, Ir_Arg{ty = "ptr", v = at})
+        ir_call(g, {}, "void", name, ..args[:])
         e.value[op] = at
         return true
     }
     if ret == "void" {
-        ir_call(g, "", "void", name, ..args[:])
+        ir_call(g, {}, "void", name, ..args[:])
         return true
     }
     tmp := fresh_tmp(g)
@@ -2391,12 +2393,12 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
     g := e.g
     os := g.checked.target_os
     if len(ops) != len(callee.params) { e.note = "a foreign call's variadic arguments"; return false }
-    args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
+    args := make([dynamic]Ir_Arg, 0, len(ops) + 1, context.temp_allocator)
     // The result: none, returned, or in a hidden slot (first).
     result: Type
     if fn_result_count(callee) == 1 && !is_untyped(fn_result(callee, 0)) { result = fn_result(callee, 0) }
     if fn_result_count(callee) > 1 { e.note = "a foreign call's results"; return false }
-    ret_ir, slot := "void", ""
+    ret_ir, slot := "void", Val{}
     ret_low: Lowering
     if result != nil {
         if !llvm_scalar(result) && !llvm_aggregate(result) { e.note = "result type"; return false }
@@ -2406,13 +2408,13 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
             slot = llvm_temporary(e, {op, 0}, result)
-            append(&args, fmt.tprintf("ptr sret(%s) %s", llvm_type_from_checker(result), slot))
+            append(&args, Ir_Arg{ty = fmt.tprintf("ptr sret(%s)", llvm_type_from_checker(result)), v = slot})
         }
     }
     for _, i in callee.params {
         p := fn_param(callee, i)
         pt := p.type_
-        v := ""
+        v: Val
         if _, is_text := llvm_text(e, ops[i].op); is_text && llvm_is_cstring(pt) {
             v = e.value[ops[i].op]   // text for a cstring: its bytes, already terminated
         } else {
@@ -2432,24 +2434,24 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
                     at := v
                     if k > 0 {
                         at = fresh_tmp(g)
-                        ir_gep(g, at, "i8", v, strings.concatenate({"i64 ", ir_int(int(k * 8))}, context.temp_allocator))
+                        ir_gep(g, at, "i8", v, {"i64", ir_int(k * 8), {}})
                     }
                     loaded := fresh_tmp(g)
                     emit_load_into(g, loaded, part, at)
-                    append(&args, fmt.tprintf("%s %s", part, loaded))
+                    append(&args, Ir_Arg{ty = part, v = loaded})
                 }
                 continue
             }
-            if pl.parts[0] == "ptr" && v == "0" { v = "null" }
-            append(&args, fmt.tprintf("%s %s", pl.parts[0], v))
+            if pl.parts[0] == "ptr" && v.kind == .Int && v.n == 0 { v = IR_NULL }
+            append(&args, Ir_Arg{ty = pl.parts[0], v = v})
         case Lowering_Indirect:
-            append(&args, fmt.tprintf("ptr byval(%s) %s", llvm_type_from_checker(pt), v))
+            append(&args, Ir_Arg{ty = fmt.tprintf("ptr byval(%s)", llvm_type_from_checker(pt)), v = v})
         }
     }
-    callee_sym := strings.concatenate({"@", name}, context.temp_allocator)
+    callee_sym := ir_global(name)
     if ret_ir == "void" {
-        ir_call(g, "", "void", callee_sym, ..args[:])
-        if slot != "" { e.value[op] = slot }
+        ir_call(g, {}, "void", callee_sym, ..args[:])
+        if slot.kind != .None { e.value[op] = slot }
         return true
     }
     tmp := fresh_tmp(g)
@@ -2465,11 +2467,11 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         } else {
             for part, k in direct.parts {
                 ev := fresh_tmp(g)
-                ir_extract(g, ev, ret_ir, tmp, ir_int(int(k)))
+                ir_extract(g, ev, ret_ir, tmp, k)
                 to := at
                 if k > 0 {
                     to = fresh_tmp(g)
-                    ir_gep(g, to, "i8", at, strings.concatenate({"i64 ", ir_int(int(k * 8))}, context.temp_allocator))
+                    ir_gep(g, to, "i8", at, {"i64", ir_int(k * 8), {}})
                 }
                 emit_store(g, part, ev, to)
             }
@@ -2488,7 +2490,7 @@ llvm_cstring :: proc(e: ^Llvm, op, x: Node_Id, span: Span) -> bool {
         e.value[op] = e.value[x]
         return true
     }
-    if llvm_header_elem(graph_type(pg, x)) == nil || e.value[x] == "" { return false }
+    if llvm_header_elem(graph_type(pg, x)) == nil || e.value[x].kind == .None { return false }
     hdr := e.value[x]
     n := emit_header_field(g, hdr, SLICE.len)
     c := emit_header_field(g, hdr, SLICE.cap)
@@ -2514,7 +2516,7 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.note = "an intrinsic's shape"
         return false
     }
-    args := make([dynamic]string, 0, len(ops), context.temp_allocator)
+    args := make([dynamic]Ir_Arg, 0, len(ops), context.temp_allocator)
     for _, i in callee.params {
         p := fn_param(callee, i)
         v := llvm_operand(e, ops[i], p.type_) or_return
@@ -2527,10 +2529,10 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
             e.note = fmt.tprintf("param '%s'", p.name)
             return false
         }
-        append(&args, fmt.tprintf("%s %s", ir, v))
+        append(&args, Ir_Arg{ty = ir, v = v})
     }
     tmp := fresh_tmp(g)
-    ir_call(g, tmp, llvm_type_from_checker(fn_result(callee, 0)), strings.concatenate({"@", name}, context.temp_allocator), ..args[:])
+    ir_call(g, tmp, llvm_type_from_checker(fn_result(callee, 0)), ir_global(name), ..args[:])
     e.value[op] = tmp
     return true
 }
@@ -2541,7 +2543,7 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
 // it while it writes the result (llvm_call_reaches; else a temporary, copied
 // in by the write). Anything else is a temporary.
 @(private="file")
-llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Type) -> (string, bool) {
+llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Type) -> (Val, bool) {
     switch e.st.calls[op] {
     case .Result_Slot:
         return e.slot, true
@@ -2550,7 +2552,7 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
         dest := graph_operands(e.pg, e.st.user[op])[0].op
         if !llvm_ahead(e, dest) {
             e.note = "a call's destination ahead of it"
-            return "", false
+            return {}, false
         }
         return llvm_place(e, dest), true
     case .Temporary:
@@ -2564,13 +2566,18 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
 // when it can't be built where it goes, llvm_result_place: a declaration's
 // always can. A C fun's slot always is.)
 @(private="file")
-llvm_temporary :: proc(e: ^Llvm, o: Operand, t: Type, ir: string = "") -> string {
+llvm_temporary :: proc(e: ^Llvm, o: Operand, t: Type, as_local := false) -> Val {
     if routes_to_arena(t) {
         if at, held := e.temps[o]; held { return at }
         codegen_fatal(e.g, graph_origin(e.pg, o.op), CODE_TEMPORARY_UNLISTED, type_name(t), type_size(t))
     }
     tmp := fresh_tmp(e.g)
-    emit_alloca(e.g, tmp, ir if ir != "" else llvm_type_from_checker(t))
+    if as_local {
+        ty, align := llvm_alloca_type(t)
+        emit_alloca(e.g, tmp, ty, align)
+    } else {
+        emit_alloca(e.g, tmp, llvm_type_from_checker(t))
+    }
     return tmp
 }
 
@@ -2581,7 +2588,7 @@ llvm_temporary :: proc(e: ^Llvm, o: Operand, t: Type, ir: string = "") -> string
 @(private="file")
 llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     pg := e.pg
-    if e.value[p] != "" || pg.op[p] == .Var { return true }
+    if e.value[p].kind != .None || pg.op[p] == .Var { return true }
     ops := graph_operands(pg, p)
     #partial switch pg.op[p] {
     case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)
@@ -2593,7 +2600,7 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     case:
         return false
     }
-    if pg.op[ops[0].op] == .Var && e.value[ops[0].op] == "" {
+    if pg.op[ops[0].op] == .Var && e.value[ops[0].op].kind == .None {
         if !llvm_op(e, ops[0].op) { return false }
         e.ahead[ops[0].op] = true
     }
@@ -2706,13 +2713,13 @@ llvm_same_type :: proc(a, b: Type) -> bool {
 
 // A register value's zero.
 @(private="file")
-llvm_zero :: proc(t: Type) -> string {
+llvm_zero :: proc(t: Type) -> Val {
     switch ir := llvm_type_from_checker(t); {
-    case is_ir_float(ir): return "0.0"
-    case ir == "ptr":     return "null"
-    case ir == "i1":      return "false"
+    case is_ir_float(ir): return IR_FZERO
+    case ir == "ptr":     return IR_NULL
+    case ir == "i1":      return IR_FALSE
     }
-    return "0"
+    return ir_int(0)
 }
 
 // A param's IR type: an aggregate goes by address.

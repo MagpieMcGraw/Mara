@@ -54,7 +54,7 @@ switch_to_module :: proc(g: ^Codegen, home_package: string) {
 //
 // Workers run a stripped-down Codegen with the same read-only state as the
 // main thread (checked, target settings, registered struct types) but
-// private mutable state (tmp_pool, string_decls, etc.). After
+// private mutable state (globals, intrinsics, etc.). After
 // pool_finish, the main thread copies each task's outputs into main_g and
 // continues with the sequential @main + .ll write phases.
 
@@ -68,14 +68,14 @@ Module_Task :: struct {
     shared_mode: bool,
 
     // Per-worker arena. Outlives the worker proc so the main thread can
-    // read task.out / string_decls / overflow_intrinsics in arena memory.
+    // read task.out / globals / overflow_intrinsics in arena memory.
     // Destroyed when generate_program is fully done (or just left to be
     // reclaimed at process exit — Mara's overall arena does the same).
     arena:       virtual.Arena,
 
     // Outputs — populated by the worker proc
     out:                 strings.Builder,
-    string_decls:        [dynamic]string,
+    globals:             [dynamic]Ir_Global,
     overflow_intrinsics: map[string]bool,
     bswap_intrinsics:    map[int]bool,
     imports:             map[string]bool,
@@ -138,7 +138,7 @@ module_codegen_worker :: proc(t: thread.Task) {
         task.out = buf
     }
 
-    task.string_decls        = local.string_decls
+    task.globals             = local.globals
     task.x86                 = local.x86
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
@@ -147,7 +147,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
 // Build a Codegen suitable for one worker. Read-only fields (checked,
 // target flags, arena_*_name, registered struct decls) come straight from
-// main_g. Mutable per-function state (tmp_pool, …) starts empty
+// main_g. Mutable per-function state starts empty
 // and lives in the worker's arena.
 @(private="file")
 init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
@@ -157,7 +157,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.keep = keep
     g.string_literals = make(map[string]string, keep)
     g.string_names = make(map[string]bool, keep)
-    g.string_decls = make([dynamic]string, keep)
+    g.globals = make([dynamic]Ir_Global, keep)
     g.struct_decls = make([dynamic]string, keep)
     g.registered_structs = make(map[string]bool, keep)
     g.overflow_intrinsics = make(map[string]bool, keep)
@@ -568,7 +568,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     // Collect each worker's output into main_g. module_outs[name] gets the
-    // worker's IR buffer; the per-task string_decls / intrinsics are kept
+    // worker's IR buffer; the per-task globals / intrinsics are kept
     // on the task struct itself and read at .ll-write time.
     for t in tasks {
         g.module_outs[t.module_name] = t.out
@@ -602,13 +602,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // On web (wasm32), the C entry point's `int` is i32, not i64. We keep
     // Mara's main internally as i64 so user `return X` and the args-setup
     // size_t handling don't change, and emit a tiny i32 wrapper after.
-    main_head := "define i64 @__mara_main(i32 %.argc, ptr %.argv) {" if g.web else "define i64 @main(i32 %.argc, ptr %.argv) {"
+    main_params := make([]Ir_Arg, 2)
+    main_params[0], main_params[1] = {ty = "i32", v = ir_local(".argc")}, {ty = "ptr", v = ir_local(".argv")}
+    main_head := Ir_Head{name = "__mara_main" if g.web else "main", ret = "i64", params = main_params}
     // A crash the program doesn't report itself (a stack overflow, a bad
     // memory access) reported as an assert is (runtime/mara_crash.c).
-    if !g.web { ir_call(&g, "", "void", "@__mara_crash_install") }
+    if !g.web { ir_call(&g, {}, "void", ir_global("__mara_crash_install")) }
 
     emit_main_prologue(&g, checked)
-    if g.profile != "" { ir_call(&g, "", "void", "@__mara_prof_start", fmt.tprintf("ptr %s", get_string_literal(&g, g.profile))) }
+    if g.profile != "" { ir_call(&g, {}, "void", ir_global("__mara_prof_start"), {"ptr", get_string_literal(&g, g.profile), {}}) }
 
     main_cf, main_ok := checked.functions["main"]
     if !main_ok {
@@ -635,7 +637,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }  // end `if !g.shared` (Phase 2 — @main / web wrapper)
 
     // Build the runtime fail-block helpers FIRST so any templates they
-    // register (via get_string_literal) land in g.string_decls before the
+    // register (via get_string_literal) land in g.globals before the
     // string section below writes it out. The returned text is appended
     // after the external declarations.
     fail_helpers_ir := runtime_fail_helpers_ir(&g)
@@ -792,13 +794,12 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 x86_write_module :: proc(g: ^Codegen, m: ^X86_Module, build_dir, module_name: string, mt: ^Module_Task) -> (string, bool) {
     path := module_ll_path(build_dir, module_name, ".o")
     main := module_name == g.checked.main_package
-    if mt != nil { for d in mt.string_decls { x86_globals(m, d) } }
+    if mt != nil { for gl in mt.globals { x86_global(m, gl) } }
     if main {
-        for d in g.string_decls { x86_globals(m, d) }
-        x86_globals(m, "@__mara_program = global ptr null")
-        x86_globals(m, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(g.checked), " zeroinitializer"}))
+        for gl in g.globals { x86_global(m, gl) }
+        for gl in program_globals(g.checked, true) { x86_global(m, gl) }
     }
-    x86_globals(m, module_const_ir(g, module_name, main))
+    for gl in module_const_globals(g, module_name, main) { x86_global(m, gl) }
     out := make([dynamic]u8, runtime.heap_allocator())
     defer delete(out)
     x86_finish(m, &out)
@@ -881,20 +882,18 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
 
     // String literal globals — private linkage means no link collision
     // between TUs. Per-module workers contribute their own @.<module>_str.N
-    // entries; the main TU also folds in main_g.string_decls (used by
+    // entries; the main TU also folds in main_g.globals (used by
     // @main emission and the fail-helper format strings).
     wrote_any_string := false
     if module_task != nil {
-        for decl in module_task.string_decls {
-            strings.write_string(&b, decl)
-            strings.write_byte(&b, '\n')
+        for gl in module_task.globals {
+            ir_print_global(&b, gl)
             wrote_any_string = true
         }
     }
     if is_main_tu {
-        for decl in g.string_decls {
-            strings.write_string(&b, decl)
-            strings.write_byte(&b, '\n')
+        for gl in g.globals {
+            ir_print_global(&b, gl)
             wrote_any_string = true
         }
     }
@@ -902,13 +901,8 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
 
     // Context globals: main TU defines, others declare external.
     strings.write_string(&b, "; Context system\n")
-    if is_main_tu {
-        strings.write_string(&b, "@__mara_program = global ptr null\n")
-        strings.write_string(&b, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(checked), " zeroinitializer\n\n"}))
-    } else {
-        strings.write_string(&b, "@__mara_program = external global ptr\n")
-        strings.write_string(&b, strings.concatenate({"@__mara_program_storage = external global ", program_ir_name(checked), "\n\n"}))
-    }
+    for gl in program_globals(checked, is_main_tu) { ir_print_global(&b, gl) }
+    strings.write_byte(&b, '\n')
     strings.write_string(&b, const_ir)
 
     // libc + intrinsic + foreign declares — every TU declares regardless.
@@ -999,7 +993,11 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, fail_helpers_ir)
     } else {
         strings.write_string(&b, "; Runtime fail-block helpers (extern)\n")
-        for f in RUNTIME_FAILS { fmt.sbprintf(&b, "declare void %s(%s)\n", f.name, f.params) }
+        for f in RUNTIME_FAILS {
+            fmt.sbprintf(&b, "declare void @%s(", f.name)
+            for p, i in f.params { fmt.sbprintf(&b, "%s%s %%%s", ", " if i > 0 else "", p.ty, p.name) }
+            strings.write_string(&b, ")\n")
+        }
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')
@@ -1202,6 +1200,17 @@ module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
     return strings.concatenate({build_dir, "/", safe, ext})
 }
 
+// The program's globals: its context's pointer and the context itself — the
+// main TU's own, every other's to link to.
+@(private="file")
+program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
+    gls := make([]Ir_Global, 2)
+    linkage: Ir_Linkage = .Default if own else .External
+    gls[0] = {name = "__mara_program", linkage = linkage, ty = "ptr", init = {v = IR_NULL}}
+    gls[1] = {name = "__mara_program_storage", linkage = linkage, ty = program_ir_name(checked), init = {v = IR_ZERO}}
+    return gls
+}
+
 @(private="file")
 ensure_dir :: proc(path: string) -> bool {
     if os.exists(path) { return true }
@@ -1221,23 +1230,23 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
     // reading 0 and the very first byte-buffer write tripping the bounds
     // check). Native is unaffected: same global lifetime, same fields.
     {
-        ctx_alloca := "@__mara_program_storage"
-        ir_store(g, "ptr", ctx_alloca, "@__mara_program")
+        ctx_alloca := ir_global("__mara_program_storage")
+        ir_store(g, "ptr", ctx_alloca, ir_global("__mara_program"))
 
         // Arena init (if scope allocator is active).
         if g.context_enabled {
             arena_ptr := fresh_tmp(g)
             emit_field_gep_into(g, arena_ptr, program_ir_name(checked), ctx_alloca, 0)
-            new_ir := mara_fn_name(g, g.arena_new_name)
-            alloc_size := "268435456"  // default 256 MB
-            if n, sized := checked.table.scope_allocator_size.?; sized { alloc_size = fmt.tprintf("%d", n) }
-            ir_call(g, "", "void", new_ir, strings.concatenate({"i64 ", alloc_size}), strings.concatenate({"ptr ", arena_ptr}))
+            new_ir := mara_fn(g, g.arena_new_name)
+            alloc_size := 268435456  // default 256 MB
+            if n, sized := checked.table.scope_allocator_size.?; sized { alloc_size = int(n) }
+            ir_call(g, {}, "void", new_ir, {"i64", ir_int(alloc_size), {}}, {"ptr", arena_ptr, {}})
         }
 
         // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
         // embedded as a field of Context.
         args_field_idx := 1 if g.context_enabled else 0
-        ARGS_CAP :: "64"
+        ARGS_CAP :: 64
         pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
 
         // GEP to the partial-array field within Context
@@ -1248,21 +1257,22 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // truncation — a program handed a long file list must not quietly
         // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
         argc_over := fresh_tmp(g)
-        ir_icmp(g, argc_over, "sgt", "i32", "%.argc", ARGS_CAP)
-        args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
-        args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
+        argc := ir_local(".argc")
+        ir_icmp(g, argc_over, "sgt", "i32", argc, ir_int(ARGS_CAP))
+        args_err_lbl := ir_label(g, "args_too_many_", g.label_counter)
+        args_ok_lbl := ir_label(g, "args_ok_", g.label_counter)
         emit_cond_br(g, argc_over, args_err_lbl, args_ok_lbl)
         emit_label(g, args_err_lbl)
-        emit_fail(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n", "i32 %.argc")
+        emit_fail(g, fmt.tprintf("runtime error: too many command-line arguments: %%d (the limit is %d)\n", ARGS_CAP), {"i32", argc, {}})
         emit_label(g, args_ok_lbl)
-        argc_min := "%.argc" // every argument fits from here on
+        argc_min := argc // every argument fits from here on
 
         // Its header: len argc (i32, as the loop counter below; the header's
         // i64), cap 64, ptr its elements (field 3).
         len_store_val := fresh_tmp(g)
         ir_cast(g, len_store_val, "sext", "i32", argc_min, SLICE_LEN_IR)
         emit_header_set(g, args_ptr, SLICE.len, len_store_val)
-        emit_header_set(g, args_ptr, SLICE.cap, ARGS_CAP)
+        emit_header_set(g, args_ptr, SLICE.cap, ir_int(ARGS_CAP))
         elements_ptr := fresh_tmp(g)
         emit_field_gep_into(g, elements_ptr, pa_ir, args_ptr, 3)
         emit_header_set(g, args_ptr, SLICE.ptr, elements_ptr)
@@ -1271,10 +1281,10 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // Counter is i32 to match argc and the slice header — no widen/trunc.
         loop_i := fresh_tmp(g)
         emit_alloca(g, loop_i, "i32")
-        ir_store(g, "i32", "0", loop_i)
-        loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
-        body_lbl := fmt.tprintf("args_body_%d", g.label_counter)
-        done_lbl := fmt.tprintf("args_done_%d", g.label_counter)
+        ir_store(g, "i32", ir_int(0), loop_i)
+        loop_lbl := ir_label(g, "args_loop_", g.label_counter)
+        body_lbl := ir_label(g, "args_body_", g.label_counter)
+        done_lbl := ir_label(g, "args_done_", g.label_counter)
         g.label_counter += 1
         emit_br(g, loop_lbl)
 
@@ -1287,7 +1297,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
 
         emit_label(g, body_lbl)
         argv_i_ptr := fresh_tmp(g)
-        ir_gep(g, argv_i_ptr, "ptr", "%.argv", strings.concatenate({"i32 ", cur_i}))
+        ir_gep(g, argv_i_ptr, "ptr", ir_local(".argv"), {"i32", cur_i, {}})
         argv_i := fresh_tmp(g)
         ir_load(g, argv_i, "ptr", argv_i_ptr)
         // strlen returns size_t (i64 native, i32 on web), widened to the
@@ -1295,24 +1305,24 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         str_len := fresh_tmp(g)
         if g.web {
             str_len_32 := fresh_tmp(g)
-            ir_call(g, str_len_32, "i32", "@strlen", strings.concatenate({"ptr ", argv_i}))
+            ir_call(g, str_len_32, "i32", ir_global("strlen"), {"ptr", argv_i, {}})
             ir_cast(g, str_len, "zext", "i32", str_len_32, SLICE_LEN_IR)
         } else {
-            ir_call(g, str_len, "i64", "@strlen", strings.concatenate({"ptr ", argv_i}))
+            ir_call(g, str_len, "i64", ir_global("strlen"), {"ptr", argv_i, {}})
         }
         // elements[i] is a slice — write len, cap, ptr. cap counts argv's
         // terminating 0 (as a string literal's does), so cstring(arg) finds it
         // at [len] — passing an argument to a file open or any C call works.
         elem_ptr := fresh_tmp(g)
-        ir_gep(g, elem_ptr, strings.concatenate({"[64 x ", SLICE_IR_TYPE, "]"}), elements_ptr, "i32 0", strings.concatenate({"i32 ", cur_i}))
+        ir_gep(g, elem_ptr, strings.concatenate({"[64 x ", SLICE_IR_TYPE, "]"}), elements_ptr, {"i32", ir_int(0), {}}, {"i32", cur_i, {}})
         emit_header_set(g, elem_ptr, SLICE.len, str_len)
         str_cap := fresh_tmp(g)
-        ir_bin(g, str_cap, "add", SLICE_LEN_IR, str_len, "1")
+        ir_bin(g, str_cap, "add", SLICE_LEN_IR, str_len, ir_int(1))
         emit_header_set(g, elem_ptr, SLICE.cap, str_cap)
         emit_header_set(g, elem_ptr, SLICE.ptr, argv_i)
         // i++
         next_i := fresh_tmp(g)
-        ir_bin(g, next_i, "add", "i32", cur_i, "1")
+        ir_bin(g, next_i, "add", "i32", cur_i, ir_int(1))
         ir_store(g, "i32", next_i, loop_i)
         emit_br(g, loop_lbl)
 

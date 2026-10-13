@@ -10,10 +10,11 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 // The x86-64 backend (Windows). Each function's low-level instructions — what
 // llvm.odin and the emit helpers make of it (ir.odin: the LLVM subset, no
-// phi) — encoded as x86-64 machine code as the function is made, into its
-// module's COFF object, which lld links. It decides nothing about the
-// program: every check, layout and conversion is in the instructions already;
-// what's here is how each one is done on the machine.
+// phi, its values and labels data) — encoded as x86-64 machine code as the
+// function is made, and the module's globals as their bytes, into its COFF
+// object, which lld links. Only types are read from their text. It decides
+// nothing about the program: every check, layout and conversion is in the
+// instructions already; what's here is how each one is done on the machine.
 //
 // Every value has a slot in its function's frame; an instruction loads what
 // it uses into registers, does its work and stores its result. An address in
@@ -96,10 +97,11 @@ X86_Module :: struct {
     exports: [dynamic]string,        // dllexport functions
 }
 
-// A value: a local (an instruction's result, a param, an alloca's address),
-// a global's address, a number (a float's bits), or zero.
+// A value: a local — a temporary (an instruction's result) by its number, a
+// named one (a param, an alloca's address) by its name — a global's address,
+// a number (a float's bits), or zero.
 @(private="file")
-X86_Val_Kind :: enum u8 { Zero, Int, Local, Global }
+X86_Val_Kind :: enum u8 { Zero, Int, Temp, Local, Global }
 
 @(private="file")
 X86_Val :: struct {
@@ -126,8 +128,10 @@ X86_Slot :: struct {
 @(private="file")
 X86_Fixup :: struct {
     at:    int,      // a jump's rel32, in the body
-    label: string,
+    label: i32,      // an Ir_Label's id; less than 0, the backend's own (X86_EXIT, x86_label)
 }
+
+@(private="file") X86_EXIT :: -1   // the function's epilogue
 
 // One function's translation: its body's code, made before its prologue
 // (which needs the frame's size).
@@ -136,13 +140,13 @@ X86_Fn :: struct {
     m:      ^X86_Module,
     code:   [dynamic]u8,
     relocs: [dynamic]X86_Reloc,
-    slots:  map[string]X86_Slot,
-    temps:  [dynamic]X86_Slot,   // (the `%.t<n>` locals', by n: most of them)
-    labels: map[string]int,
+    slots:  map[string]X86_Slot,  // the named locals'
+    temps:  [dynamic]X86_Slot,    // the temporaries', by number: most of them
+    labels: [dynamic]int,         // where each label is, by id (-1: not yet)
+    own:    [dynamic]int,         // the backend's own labels', by -id
     fixups: [dynamic]X86_Fixup,
     out:    int,     // the outgoing arguments' area, at the frame's bottom
     top:    int,     // the slots' bytes so far, above it
-    nlabel: int,
 }
 
 // Registers by their encoding.
@@ -209,7 +213,7 @@ x86_program_view :: proc(named: ^map[string]string) -> ^X86_Program {
 }
 
 // A module's object, begun: its functions (x86_function) and globals
-// (x86_globals) go in as they're made; x86_finish writes it.
+// (x86_global) go in as they're made; x86_finish writes it.
 x86_begin :: proc(p: ^X86_Program) -> ^X86_Module {
     m := new(X86_Module)
     m.p, m.keep = p, context.allocator
@@ -221,17 +225,6 @@ x86_begin :: proc(p: ^X86_Program) -> ^X86_Module {
         append(&m.syms, X86_Sym{name = X86_SEC_NAME[s], sec = int(s) + 1, section = true})
     }
     return m
-}
-
-// Global definitions, as LLVM writes them (`@name = …`), a line each.
-x86_globals :: proc(m: ^X86_Module, text: string) {
-    x86_ins = nil
-    rest := text
-    for len(rest) > 0 {
-        line := rest
-        if nl := strings.index_byte(rest, '\n'); nl >= 0 { line, rest = rest[:nl], rest[nl + 1:] } else { rest = "" }
-        if strings.has_prefix(line, "@") { x86_global(m, line) }
-    }
 }
 
 // The module's object, written into `out`: its exports' directives, then
@@ -305,7 +298,7 @@ x86_atoi :: proc(s: string) -> int {
     return n
 }
 
-// --- reading the IR ----------------------------------------------------------------
+// --- types, from their text ---------------------------------------------------------
 
 @(private="file")
 X86_Lex :: struct {
@@ -342,15 +335,6 @@ x86_word :: proc(l: ^X86_Lex) -> string {
     start := l.i
     for l.i < len(l.s) && !X86_STOP[l.s[l.i]] { l.i += 1 }
     return l.s[start:l.i]
-}
-
-// Whether the next word is w: then it's read.
-@(private="file")
-x86_is :: proc(l: ^X86_Lex, w: string) -> bool {
-    save := l.i
-    if x86_word(l) == w { return true }
-    l.i = save
-    return false
 }
 
 // A type's text: a word, or a bracketed array or struct.
@@ -452,52 +436,29 @@ x86_float :: proc(t: ^X86_Type) -> bool {
     return t.kind == .F32 || t.kind == .F64
 }
 
-// A value of type t.
+// An operand of type t: a local or a global as itself, a constant as its
+// bits — a float's value as a double's made a float's when t is one. (An int
+// wider than 64 bits: its low ones.)
 @(private="file")
-x86_value :: proc(l: ^X86_Lex, t: ^X86_Type) -> X86_Val {
-    w := x86_word(l)
-    if w == "" { return {} }
-    switch w[0] {
-    case '%': return {kind = .Local, name = w}
-    case '@': return {kind = .Global, name = w[1:]}
-    }
-    switch w {
-    case "true":                                                 return {kind = .Int, n = 1}
-    case "false", "null", "zeroinitializer", "undef", "poison": return {}
-    }
-    if strings.has_prefix(w, "0xH") {   // a half's bits
-        u, _ := strconv.parse_u64_of_base(w[3:], 16)
-        return {kind = .Int, n = i64(u)}
-    }
-    if strings.has_prefix(w, "0x") {    // a float's or double's, written as a double's bits
-        u, _ := strconv.parse_u64_of_base(w[2:], 16)
+x86_val :: proc(v: Val, t: ^X86_Type) -> X86_Val {
+    switch v.kind {
+    case .None, .Null, .Zero, .Fzero: return {}
+    case .Temp:   return {kind = .Temp, n = i64(v.n)}
+    case .Local:  return {kind = .Local, name = v.name}
+    case .Global: return {kind = .Global, name = v.name}
+    case .Int, .Bool, .Half: return {kind = .Int, n = i64(v.n)}
+    case .Float:
+        u := u64(v.n)
         if t != nil && t.kind == .F32 { u = u64(transmute(u32)f32(transmute(f64)u)) }
         return {kind = .Int, n = transmute(i64)u}
     }
-    if t != nil && (t.kind == .F16 || t.kind == .F32 || t.kind == .F64) {
-        v, _ := strconv.parse_f64(w)
-        #partial switch t.kind {
-        case .F16: return {kind = .Int, n = i64(transmute(u16)f16(v))}
-        case .F32: return {kind = .Int, n = i64(transmute(u32)f32(v))}
-        }
-        return {kind = .Int, n = transmute(i64)v}
-    }
-    // (An integer, maybe wider than i64 holds as written: its low bits.)
-    neg := w[0] == '-'
-    u: u64
-    for c in transmute([]u8)w[1 if neg else 0:] {
-        if c < '0' || c > '9' { x86_fail("a value", w) }
-        u = u * 10 + u64(c - '0')
-    }
-    if neg { u = -u }
-    return {kind = .Int, n = transmute(i64)u}
+    return {}
 }
 
-// An operand of type t, from its text.
+// Whether a value is a local's: in its slot.
 @(private="file")
-x86_val :: proc(s: string, t: ^X86_Type) -> X86_Val {
-    l := X86_Lex{s, 0}
-    return x86_value(&l, t)
+x86_local :: proc(v: X86_Val) -> bool {
+    return v.kind == .Temp || v.kind == .Local
 }
 
 // --- encoding ----------------------------------------------------------------------
@@ -682,7 +643,7 @@ x86_fpre :: proc(t: ^X86_Type) -> u8 {
 
 // A jump to a label of this function's: jmp, or jcc when cc is given.
 @(private="file")
-x86_jump :: proc(f: ^X86_Fn, label: string, cc: Maybe(X86_CC) = nil) {
+x86_jump :: proc(f: ^X86_Fn, label: i32, cc: Maybe(X86_CC) = nil) {
     if c, conditional := cc.?; conditional {
         append(&f.code, 0x0F, 0x80 + u8(c))
     } else {
@@ -693,16 +654,20 @@ x86_jump :: proc(f: ^X86_Fn, label: string, cc: Maybe(X86_CC) = nil) {
 }
 
 @(private="file")
-x86_place :: proc(f: ^X86_Fn, label: string) {
-    f.labels[label] = len(f.code)
+x86_place :: proc(f: ^X86_Fn, label: i32) {
+    at := &f.labels
+    k := int(label)
+    if label < 0 { at, k = &f.own, int(-label) }
+    for len(at^) <= k { append(at, -1) }
+    at^[k] = len(f.code)
 }
 
-// A label of the code's own making.
+// A label of the code's own making (from -2: -1 is the exit's).
 @(private="file")
-x86_label :: proc(f: ^X86_Fn) -> string {
-    f.nlabel += 1
-    buf := make([]byte, 24)
-    return strconv.write_int(buf, i64(f.nlabel), 10)
+x86_label :: proc(f: ^X86_Fn) -> i32 {
+    for len(f.own) < 2 { append(&f.own, -1) }
+    append(&f.own, -1)
+    return -i32(len(f.own) - 1)
 }
 
 @(private="file")
@@ -714,39 +679,22 @@ x86_call_sym :: proc(f: ^X86_Fn, name: string) {
 
 // --- a function --------------------------------------------------------------------
 
-// A function into the module's object: its `define` line, its code's parts
-// in order (codegen_function).
-x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
-    x86_line, x86_ins = header, nil
-    l := X86_Lex{header, 0}
-    x86_word(&l)   // define
-    export, local := false, false
-    words: for {
-        save := l.i
-        switch x86_word(&l) {
-        case "dllexport":           export = true
-        case "internal", "private": local = true
-        case "dso_local":
-        case:
-            l.i = save
-            break words
-        }
-    }
-    x86_type_text(&l)   // its result's type: its returns say
-    sym := x86_sym(x86_word(&l)[1:])
+// A function into the module's object: its head, its code's parts in order
+// (codegen_function).
+x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir) {
+    x86_line, x86_ins = head.name, nil
+    sym := x86_sym(head.name)
     f := X86_Fn{m = m}
     f.out = x86_out_area(code)
     f.slots = make(map[string]X86_Slot)
     f.temps = make([dynamic]X86_Slot)
-    f.labels = make(map[string]int)
+    f.labels = make([dynamic]int)
+    f.own = make([dynamic]int)
     params := make([dynamic]X86_Arg)
-    x86_eat(&l, '(')
-    for !x86_eat(&l, ')') {
-        t := x86_type(m.p, x86_type_text(&l))
-        name := x86_word(&l)
-        x86_slot(&f, name, 8, 8)
-        append(&params, X86_Arg{t, {kind = .Local, name = name}})
-        x86_eat(&l, ',')
+    for x in head.params {
+        v := x86_val(x.v, nil)
+        x86_slot(&f, v, 8, 8)
+        append(&params, X86_Arg{x86_type(m.p, x.ty), v})
     }
     for part in code {
         for &ins in part { x86_inst(&f, &ins) }
@@ -756,14 +704,15 @@ x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
     // Its frame: the outgoing arguments, then the slots — rsp 16-aligned
     // after the two pushes and the allocation. Its one epilogue.
     frame := x86_align(f.out + f.top, 16) + 8
-    x86_place(&f, ".exit")
+    x86_place(&f, X86_EXIT)
     append(&f.code, 0x48, 0x81, 0xC4)   // add rsp, frame
     x86_u32(&f.code, u32(frame))
     append(&f.code, 0x5F, 0x5E, 0xC3)   // pop rdi; pop rsi; ret
     for fx in f.fixups {
-        to, ok := f.labels[fx.label]
-        if !ok { x86_fail("a jump to no label", fx.label) }
-        x86_put32(f.code[:], fx.at, u32(i32(to - (fx.at + 4))))
+        at, k := f.labels[:], int(fx.label)
+        if fx.label < 0 { at, k = f.own[:], int(-fx.label) }
+        if k >= len(at) || at[k] < 0 { x86_fail("a jump to no label", fmt.tprint(fx.label)) }
+        x86_put32(f.code[:], fx.at, u32(i32(at[k] - (fx.at + 4))))
     }
 
     // Its prologue: rsi and rdi pushed (rep movs/stos use them), the frame
@@ -771,7 +720,7 @@ x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
     text := &m.sec[.Text]
     x86_pad(text, 16, 0xCC)
     start := len(text)
-    x86_define(m, sym, .Text, start, !local, true)
+    x86_define(m, sym, .Text, start, true, true)
     append(text, 0x56, 0x57)   // push rsi; push rdi
     if frame >= 4096 {
         append(text, 0xB8)   // mov eax, frame
@@ -790,7 +739,7 @@ x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
     {
         g := X86_Fn{m = m, out = f.out}
         for p, i in params {
-            at := x86_mem(&f, x86_find(&f, p.v.name)^, 0)
+            at := x86_mem(&f, x86_find(&f, p.v)^, 0)
             switch {
             case i < 4 && x86_float(p.t):
                 x86_enc_rm(&g, 0x66, false, {0x0F, 0xD6}, u8(i), at)   // movq [slot], xmm<i>
@@ -828,7 +777,7 @@ x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
         append(&m.relocs[.Pdata], X86_Reloc{u32(len(p)), u32(X86_Sec.Xdata if k == 2 else X86_Sec.Text), X86_ADDR32NB})
         x86_u32(p, u32(at))
     }
-    if export { append(&m.exports, strings.clone(sym, m.keep)) }
+    if head.export { append(&m.exports, strings.clone(sym, m.keep)) }
 }
 
 // The outgoing arguments' area: the most any call passes, 8 bytes each, and
@@ -847,47 +796,38 @@ x86_out_area :: proc(code: [][]Ir) -> int {
 // A local's slot, made when it's first named: memory (an alloca's), or 8
 // bytes for a value (more for an aggregate's).
 @(private="file")
-x86_slot :: proc(f: ^X86_Fn, name: string, size, align: int, memory := false) -> X86_Slot {
-    if s := x86_find(f, name); s != nil { return s^ }
+x86_slot :: proc(f: ^X86_Fn, v: X86_Val, size, align: int, memory := false) -> X86_Slot {
+    if s := x86_find(f, v); s != nil { return s^ }
     a := max(align, 1 if memory else 8)
     f.top = x86_align(f.top, a)
     s := X86_Slot{off = f.top, memory = memory, made = true}
     f.top += max(size, 1) if memory else x86_align(max(size, 8), 8)
-    x86_set_slot(f, name, s)
+    x86_set_slot(f, v, s)
     return s
 }
 
-// A local's slot, if it has one: a `%.t<n>` one's by n.
+// A local's slot, if it has one: a temporary's by its number, a named one's
+// by its name.
 @(private="file")
-x86_find :: proc(f: ^X86_Fn, name: string) -> ^X86_Slot {
-    if n, is_temp := x86_temp_number(name); is_temp {
-        if n < len(f.temps) && f.temps[n].made { return &f.temps[n] }
+x86_find :: proc(f: ^X86_Fn, v: X86_Val) -> ^X86_Slot {
+    if v.kind == .Temp {
+        if int(v.n) < len(f.temps) && f.temps[v.n].made { return &f.temps[v.n] }
         return nil
     }
-    return &f.slots[name] or_else nil
+    return &f.slots[v.name] or_else nil
 }
 
 @(private="file")
-x86_set_slot :: proc(f: ^X86_Fn, name: string, s: X86_Slot) {
+x86_set_slot :: proc(f: ^X86_Fn, v: X86_Val, s: X86_Slot) {
     s := s
     s.made = true
-    if n, is_temp := x86_temp_number(name); is_temp {
+    if v.kind == .Temp {
+        n := int(v.n)
         if n >= len(f.temps) { resize(&f.temps, max(n + 1, 2 * len(f.temps))) }
         f.temps[n] = s
         return
     }
-    f.slots[name] = s
-}
-
-@(private="file")
-x86_temp_number :: proc(name: string) -> (int, bool) {
-    if len(name) < 4 || name[1] != '.' || name[2] != 't' { return 0, false }
-    n := 0
-    for c in transmute([]u8)name[3:] {
-        if c < '0' || c > '9' { return 0, false }
-        n = n * 10 + int(c - '0')
-    }
-    return n, true
+    f.slots[v.name] = s
 }
 
 // The memory `off` bytes into a slot.
@@ -901,8 +841,8 @@ x86_mem :: proc(f: ^X86_Fn, s: X86_Slot, off: int) -> X86_Mem {
 @(private="file")
 x86_get :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) {
     switch v.kind {
-    case .Local:
-        s := x86_slot(f, v.name, 8, 8)
+    case .Temp, .Local:
+        s := x86_slot(f, v, 8, 8)
         if s.memory { x86_lea(f, r, x86_mem(f, s, 0)) } else { x86_load(f, r, x86_mem(f, s, 0), 8) }
     case .Global:
         x86_lea(f, r, {base = X86_RIP, sym = x86_symbol(f.m, x86_sym(v.name))})
@@ -918,8 +858,8 @@ x86_get :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) {
 @(private="file")
 x86_ptr :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) -> X86_Mem {
     #partial switch v.kind {
-    case .Local:
-        if s := x86_slot(f, v.name, 8, 8); s.memory { return x86_mem(f, s, 0) }
+    case .Temp, .Local:
+        if s := x86_slot(f, v, 8, 8); s.memory { return x86_mem(f, s, 0) }
     case .Global:
         return {base = X86_RIP, sym = x86_symbol(f.m, x86_sym(v.name))}
     }
@@ -929,9 +869,9 @@ x86_ptr :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) -> X86_Mem {
 
 // The result, in rax, into its slot.
 @(private="file")
-x86_put :: proc(f: ^X86_Fn, dest: string) {
-    if dest == "" { return }
-    x86_store(f, x86_mem(f, x86_slot(f, dest, 8, 8), 0), .AX, 8)
+x86_put :: proc(f: ^X86_Fn, dest: Val) {
+    if dest.kind == .None { return }
+    x86_store(f, x86_mem(f, x86_slot(f, x86_val(dest, nil), 8, 8), 0), .AX, 8)
 }
 
 // size bytes from rsi to rdi (rep movsb), or zeroed at rdi (rep stosb).
@@ -958,18 +898,18 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
     dest := ins.dest
     switch ins.op {
     case .Label:
-        x86_place(f, ins.inst)
+        x86_place(f, ins.l.id)
 
     case .Alloca:
         t := x86_type(p, ins.ty)
-        x86_slot(f, dest, t.size, max(t.align, int(ins.align)), memory = true)
+        x86_slot(f, x86_val(dest, nil), t.size, max(t.align, int(ins.align)), memory = true)
 
     case .Load:
         t := x86_type(p, ins.ty)
         at := x86_ptr(f, x86_val(ins.a, p.ptr), .CX)
         if x86_aggregate(t) {
             x86_lea(f, .SI, at)
-            x86_lea(f, .DI, x86_mem(f, x86_slot(f, dest, t.size, t.align), 0))
+            x86_lea(f, .DI, x86_mem(f, x86_slot(f, x86_val(dest, nil), t.size, t.align), 0))
             x86_copy(f, t.size)
             return
         }
@@ -983,13 +923,13 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         if x86_aggregate(t) {
             x86_lea(f, .DI, at)
             switch {
-            case v.kind == .Local:
-                x86_lea(f, .SI, x86_mem(f, x86_slot(f, v.name, t.size, t.align), 0))
+            case x86_local(v):
+                x86_lea(f, .SI, x86_mem(f, x86_slot(f, v, t.size, t.align), 0))
                 x86_copy(f, t.size)
             case v.kind == .Zero || (v.kind == .Int && v.n == 0):
                 x86_zero(f, t.size)
             case:
-                x86_fail("an aggregate's value", ins.a)
+                x86_fail("an aggregate's value", "")
             }
             return
         }
@@ -1012,7 +952,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
             case k == 0:
                 scale = cur.size   // (the first steps over whole Ts)
             case cur.kind == .Struct:
-                if idx.kind == .Local { x86_fail("a field by a variable", x.v) }
+                if x86_local(idx) { x86_fail("a field by a variable", "") }
                 off += cur.offsets[idx.n]
                 cur = cur.fields[idx.n]
                 continue
@@ -1020,14 +960,14 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
                 scale = cur.elem.size
                 cur = cur.elem
             case:
-                x86_fail("an index", x.v)
+                x86_fail("an index", "")
             }
-            if idx.kind == .Local { append(&vars, Scaled{it, idx, scale}) } else { off += int(idx.n) * scale }
+            if x86_local(idx) { append(&vars, Scaled{it, idx, scale}) } else { off += int(idx.n) * scale }
         }
         // Into a local's memory at a constant offset: that memory, no value.
-        if len(vars) == 0 && base.kind == .Local && x86_find(f, dest) == nil {
-            if s := x86_slot(f, base.name, 8, 8); s.memory {
-                x86_set_slot(f, dest, {off = s.off + off, memory = true})
+        if d := x86_val(dest, nil); len(vars) == 0 && x86_local(base) && x86_find(f, d) == nil {
+            if s := x86_slot(f, base, 8, 8); s.memory {
+                x86_set_slot(f, d, {off = s.off + off, memory = true})
                 return
             }
         }
@@ -1184,15 +1124,15 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
     case .Extract:
         at := x86_type(p, ins.ty)
         v := x86_val(ins.a, at)
-        if v.kind != .Local { x86_fail("a part of a constant", ins.a) }
-        k := x86_atoi(ins.b)
+        if !x86_local(v) { x86_fail("a part of a constant", "") }
+        k := int(ins.b.n)
         off, cur := 0, at
         if cur.kind == .Struct {
             off, cur = cur.offsets[k], cur.fields[k]
         } else {
             off, cur = k * cur.elem.size, cur.elem
         }
-        x86_load(f, .AX, x86_mem(f, x86_slot(f, v.name, at.size, at.align), off), cur.size)
+        x86_load(f, .AX, x86_mem(f, x86_slot(f, v, at.size, at.align), off), cur.size)
         x86_put(f, dest)
 
     case .Call:
@@ -1202,10 +1142,10 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
             t := x86_type(p, x.ty)
             args[i] = {t, x86_val(x.v, t)}
         }
-        if strings.has_prefix(ins.inst, "@llvm.") {
-            x86_intrinsic(f, ins.inst[6:], rt, args, dest)
+        if ins.a.kind == .Global && strings.has_prefix(ins.a.name, "llvm.") {
+            x86_intrinsic(f, ins.a.name[5:], rt, args, dest)
         } else {
-            x86_call(f, ins.inst, rt, args, dest)
+            x86_call(f, x86_val(ins.a, p.ptr), rt, args, dest)
         }
 
     case .Ret:
@@ -1214,17 +1154,17 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
             x86_get(f, x86_val(ins.a, t), .AX)
             if x86_float(t) { x86_to_xmm(f, 0, .AX) }
         }
-        x86_jump(f, ".exit")
+        x86_jump(f, X86_EXIT)
 
     case .Br:
-        x86_jump(f, ins.a)
+        x86_jump(f, ins.l.id)
 
     case .Cond_Br:
         x86_get(f, x86_val(ins.a, p.i1), .AX)
         x86_grp3(f, 1, 0, .AX)   // test al, 1
         append(&f.code, 1)
-        x86_jump(f, ins.b, X86_CC.NE)
-        x86_jump(f, ins.c)
+        x86_jump(f, ins.l.id, X86_CC.NE)
+        x86_jump(f, ins.l2.id)
 
     case .Switch:
         t := x86_type(p, ins.ty)
@@ -1237,9 +1177,9 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
                 x86_get(f, c, .CX)
                 x86_rr(f, 8, 0x38, .AX, .CX)
             }
-            x86_jump(f, x.label, X86_CC.E)
+            x86_jump(f, x.l.id, X86_CC.E)
         }
-        x86_jump(f, ins.b)
+        x86_jump(f, ins.l.id)
 
     case .Unreachable:
         append(&f.code, 0x0F, 0x0B)   // ud2
@@ -1316,7 +1256,7 @@ x86_convert :: proc(f: ^X86_Fn, op: string, ft, tt: ^X86_Type) {
 // variadic callee — the rest on the stack past the 32-byte home area; the
 // result in rax or xmm0.
 @(private="file")
-x86_call :: proc(f: ^X86_Fn, callee: string, rt: ^X86_Type, args: []X86_Arg, dest: string) {
+x86_call :: proc(f: ^X86_Fn, callee: X86_Val, rt: ^X86_Type, args: []X86_Arg, dest: Val) {
     for a, i in args {
         if i < 4 { continue }
         x86_get(f, a.v, .AX)
@@ -1327,13 +1267,13 @@ x86_call :: proc(f: ^X86_Fn, callee: string, rt: ^X86_Type, args: []X86_Arg, des
         x86_get(f, a.v, X86_ARGS[i])
         if x86_float(a.t) { x86_to_xmm(f, u8(i), X86_ARGS[i]) }
     }
-    if callee[0] == '@' {
-        x86_call_sym(f, x86_sym(callee[1:]))
+    if callee.kind == .Global {
+        x86_call_sym(f, x86_sym(callee.name))
     } else {   // a function value
-        x86_get(f, {kind = .Local, name = callee}, .R11)
+        x86_get(f, callee, .R11)
         append(&f.code, 0x41, 0xFF, 0xD3)   // call r11
     }
-    if rt.kind == .Void || dest == "" { return }
+    if rt.kind == .Void || dest.kind == .None { return }
     if x86_float(rt) { x86_from_xmm(f, .AX, 0) }
     x86_put(f, dest)
 }
@@ -1341,7 +1281,7 @@ x86_call :: proc(f: ^X86_Fn, callee: string, rt: ^X86_Type, args: []X86_Arg, des
 // An LLVM intrinsic: the machine's instruction for it, or the C library's
 // function.
 @(private="file")
-x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, dest: string) {
+x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, dest: Val) {
     op := name
     if dot := strings.index_byte(name, '.'); dot >= 0 { op = name[:dot] }
     switch op {
@@ -1370,7 +1310,7 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
             x86_grp3(f, n, 4, .CX)
         }
         x86_setcc(f, .B if op == "uadd" || op == "usub" else .O, .DX)
-        s := x86_slot(f, dest, rt.size, rt.align)
+        s := x86_slot(f, x86_val(dest, nil), rt.size, rt.align)
         x86_store(f, x86_mem(f, s, 0), .AX, n)
         x86_store(f, x86_mem(f, s, rt.offsets[1]), .DX, 1)
     case "smin", "smax", "umin", "umax":
@@ -1429,7 +1369,7 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
         case "maxnum": c = "fmax"
         }
         if args[0].t.kind == .F32 { c = strings.concatenate({c, "f"}) }
-        x86_call(f, strings.concatenate({"@", c}), rt, args, dest)
+        x86_call(f, {kind = .Global, name = c}, rt, args, dest)
     case:
         x86_fail("the intrinsic", name)
     }
@@ -1439,92 +1379,53 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
 
 // A global: its section, its alignment, its symbol, its bytes. (An external
 // one is another object's: a name its uses link to.)
-@(private="file")
-x86_global :: proc(m: ^X86_Module, line: string) {
-    x86_line = line
-    l := X86_Lex{line, 0}
-    name := x86_word(&l)
-    x86_eat(&l, '=')
-    local, constant := false, false
-    words: for {
-        save := l.i
-        switch x86_word(&l) {
-        case "private", "internal": local = true
-        case "unnamed_addr", "local_unnamed_addr", "dso_local":
-        case "external":            return
-        case "constant":
-            constant = true
-            break words
-        case "global":
-            break words
-        case:
-            l.i = save
-            break words
-        }
-    }
-    t := x86_type(m.p, x86_type_text(&l))
-    align := t.align
-    if !strings.has_suffix(line, "\"") {
-        if a := strings.last_index(line, ", align "); a >= 0 { align = max(align, x86_atoi(line[a + 8:])) }
-    }
-    zero := false
-    {
-        save := l.i
-        zero = x86_word(&l) == "zeroinitializer"
-        l.i = save
-    }
-    sym := x86_sym(name[1:])
-    if zero && !constant {   // .bss: its room, no bytes
+x86_global :: proc(m: ^X86_Module, gl: Ir_Global) {
+    x86_line, x86_ins = gl.name, nil
+    if gl.linkage == .External { return }
+    local := gl.linkage == .Private || gl.linkage == .Internal
+    t := x86_type(m.p, gl.ty)
+    align := max(t.align, int(gl.align))
+    sym := x86_sym(gl.name)
+    if ir_const_zero(gl.init) && !gl.constant {   // .bss: its room, no bytes
         m.bss = x86_align(m.bss, max(align, 1))
         x86_define(m, sym, .Bss, m.bss, !local, false)
         m.bss += t.size
         return
     }
-    sec: X86_Sec = .Rdata if constant else .Data
+    sec: X86_Sec = .Rdata if gl.constant else .Data
     x86_pad(&m.sec[sec], max(align, 1))
     x86_define(m, sym, sec, len(m.sec[sec]), !local, false)
-    x86_data(m, sec, t, &l)
+    x86_data(m, sec, t, gl.init)
 }
 
 // A constant of type t, as bytes in sec.
 @(private="file")
-x86_data :: proc(m: ^X86_Module, sec: X86_Sec, t: ^X86_Type, l: ^X86_Lex) {
+x86_data :: proc(m: ^X86_Module, sec: X86_Sec, t: ^X86_Type, c: Ir_Const) {
     b := &m.sec[sec]
-    if x86_is(l, "zeroinitializer") || x86_is(l, "undef") || x86_is(l, "poison") {
+    if c.kind == .Val && (c.v.kind == .Zero || c.v.kind == .Null || c.v.kind == .Fzero) {
         for _ in 0 ..< t.size { append(b, 0) }
         return
     }
     switch t.kind {
     case .Void:
     case .Int, .F16, .F32, .F64:
-        v := x86_value(l, t)
-        n := u64(v.n)
-        for k in 0 ..< min(t.size, 8) { append(b, u8(n >> uint(8 * k))) }
-        for _ in 8 ..< t.size { append(b, 0xFF if v.n < 0 else 0) }
+        if c.kind != .Val { x86_fail("a number's value", "") }
+        n := u128(c.v.n) if c.v.kind == .Int else u128(u64(x86_val(c.v, t).n))
+        for k in 0 ..< t.size { append(b, u8(n >> uint(8 * k))) }
     case .Ptr:
         sym: u32
         off := 0
-        switch {
-        case x86_is(l, "null"):
-            x86_u64(b, 0)
-            return
-        case x86_is(l, "getelementptr"):
+        #partial switch c.kind {
+        case .Gep:
             // An address into a global: its symbol, at the offset its
             // constant indices reach.
-            x86_is(l, "inbounds")
-            x86_eat(l, '(')
-            cur := x86_type(m.p, x86_type_text(l))
-            x86_eat(l, ',')
-            x86_type_text(l)
-            sym = x86_symbol(m, x86_sym(x86_word(l)[1:]))
-            first := true
-            for x86_eat(l, ',') {
-                x86_type_text(l)
-                k := x86_atoi(x86_word(l))
+            cur := x86_type(m.p, c.src)
+            sym = x86_symbol(m, x86_sym(c.v.name))
+            for x, i in c.parts {
+                k := int(x.v.n)
                 switch {
-                case first:
+                case i == 0:
                     off += k * cur.size
-                    first = false
                 case cur.kind == .Struct:
                     off += cur.offsets[k]
                     cur = cur.fields[k]
@@ -1533,53 +1434,31 @@ x86_data :: proc(m: ^X86_Module, sec: X86_Sec, t: ^X86_Type, l: ^X86_Lex) {
                     cur = cur.elem
                 }
             }
-            x86_eat(l, ')')
+        case .Val:
+            if c.v.kind != .Global { x86_fail("a pointer's value", "") }
+            sym = x86_symbol(m, x86_sym(c.v.name))
         case:
-            w := x86_word(l)
-            if len(w) == 0 || w[0] != '@' { x86_fail("a pointer's value", w) }
-            sym = x86_symbol(m, x86_sym(w[1:]))
+            x86_fail("a pointer's value", "")
         }
         append(&m.relocs[sec], X86_Reloc{u32(len(b)), sym, X86_ADDR64})
         x86_u64(b, u64(off))
     case .Array:
-        if x86_at(l, 'c') {   // c"…", its bytes (\XX for those not written as they are)
-            l.i += 2
-            n := 0
-            for l.i < len(l.s) && l.s[l.i] != '"' {
-                c := l.s[l.i]
-                if c == '\\' {
-                    u, _ := strconv.parse_u64_of_base(l.s[l.i + 1:l.i + 3], 16)
-                    c = u8(u)
-                    l.i += 3
-                } else {
-                    l.i += 1
-                }
-                append(b, c)
-                n += 1
-            }
-            l.i += 1
-            for _ in n ..< t.size { append(b, 0) }
-            return
+        #partial switch c.kind {
+        case .Bytes:
+            append(b, c.bytes)
+            for _ in len(c.bytes) ..< t.size { append(b, 0) }
+        case .Array:
+            for part in c.parts { x86_data(m, sec, t.elem, part) }
+        case:
+            x86_fail("an array's value", "")
         }
-        x86_eat(l, '[')
-        for k in 0 ..< t.count {
-            if k > 0 { x86_eat(l, ',') }
-            x86_type_text(l)
-            x86_data(m, sec, t.elem, l)
-        }
-        x86_eat(l, ']')
     case .Struct:
-        packed := x86_eat(l, '<')
-        x86_eat(l, '{')
+        if c.kind != .Struct && c.kind != .Packed { x86_fail("a struct's value", "") }
         start := len(b)
         for ft, k in t.fields {
-            if k > 0 { x86_eat(l, ',') }
             for len(b) - start < t.offsets[k] { append(b, 0) }
-            x86_type_text(l)
-            x86_data(m, sec, ft, l)
+            x86_data(m, sec, ft, c.parts[k])
         }
-        x86_eat(l, '}')
-        if packed { x86_eat(l, '>') }
         for len(b) - start < t.size { append(b, 0) }
     }
 }
