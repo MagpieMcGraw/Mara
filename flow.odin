@@ -310,6 +310,7 @@ Init_Field :: struct {
 flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^virtual.Arena) {
     // (What the fun's walk makes is `walk`'s, the last fun's freed; the
     // diagnostics, the reads', outlive it.)
+    if !flow_init_unsets(g) { return }
     kept := context.allocator
     virtual.arena_free_all(walk)
     context.allocator = virtual.arena_allocator(walk)
@@ -386,6 +387,52 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
     // The reads, against the fixpoint, in the order the runs list them.
     context.allocator = kept
     run_flow_replay(&fl, &s, proc(s: ^Init, ri: int, op: Node_Id, state: []u64) { flow_init_op(s, op, state, true) })
+}
+
+// Whether anything in a code can leave one of its variables unset — `void`
+// written to it, a bare pointer or slice, a struct built bare or from braces
+// with pointer or slice fields that have no default. Without, nothing is
+// ever unset: there's no unset read to find.
+@(private="file")
+flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
+    for id := Node_Id(1); id <= g.end; id += 1 {
+        #partial switch g.kind[id] {
+        case .Fun, .Struct:
+            id = graph_last(g, id)
+            continue
+        case .Op:
+        case:
+            continue
+        }
+        #partial switch g.op[id] {
+        case .Write, .Zero, .Construct:
+        case:
+            continue
+        }
+        ops := graph_operands(g, id)
+        d := ops[0].op if len(ops) > 0 else NO_NODE
+        if d == NO_NODE || g.kind[d] != .Op || g.op[d] != .Var { continue }   // (only a whole variable is made unset)
+        v := g.refers[d]
+        if v <= 0 || v > g.end { continue }   // (its own only: flow_own)
+        #partial switch g.op[id] {
+        case .Write:
+            val := ops[1].op
+            if val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void" { return true }
+        case .Zero:
+            if g.written[id] != .Synthetic || len(ops) != 1 { continue }
+            #partial switch _ in distinct_base(graph_type(g, v)) {
+            case ^Type_Ptr, ^Type_Slice: return true
+            }
+        case .Construct:
+            if g.written[id] != .Synthetic && !strings.has_suffix(graph_name(g, id), "{}") { continue }
+            if sd := as_scope_body(distinct_base(graph_type(g, v))); sd != nil {
+                for &f in sd.fields {
+                    if !field_has_default(f) && flow_field_can_be_unset(f.type_) { return true }
+                }
+            }
+        }
+    }
+    return false
 }
 
 // Whether a variable of this type can be read unset: a pointer, a slice, or a

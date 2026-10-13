@@ -293,6 +293,9 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     if len(ft.params) > ESC_MAX_PARAMS {
         fmt.panicf("escape analysis: %s has %d parameters (max %d)", ft.name, len(ft.params), ESC_MAX_PARAMS)
     }
+    // (Nothing in it can hold a reference: nothing can escape — its summary
+    // is empty, and there is nothing to report.)
+    if !esc_any_refs(g, ft) { return {}, true }
     size := int(g.end) + 1
     e.memo = make([]Esc_Roots, size)
     e.var_of = make([]i32, size)
@@ -306,6 +309,27 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     run_flow_replay(&e.flow, &e, esc_op)
     if report { append(&g_esc.diags, ..e.diags[:]) }
     return e.sum, true
+}
+
+// Whether anything in a code can hold a reference: a param, a result, a
+// node's value — its own subtree's, less what it defines.
+@(private="file")
+esc_any_refs :: proc(g: ^Program_Graph, ft: ^Type_Scope) -> bool {
+    for p in ft.params { if esc_has_refs(p.type_) { return true } }
+    for t in ft.return_types { if esc_has_refs(t) { return true } }
+    without: Type_Id = 0   // (the last type found to hold none: a run of nodes is mostly one type)
+    for id := Node_Id(1); id <= g.end; id += 1 {
+        #partial switch g.kind[id] {
+        case .Fun, .Struct:
+            id = graph_last(g, id)
+            continue
+        }
+        t := g.type_[id]
+        if t == 0 || t == without { continue }   // (0: no value)
+        if esc_has_refs(g.types[t]) { return true }
+        without = t
+    }
+    return false
 }
 
 // The variables: its own subtree's params, results, locals and (a struct's)
