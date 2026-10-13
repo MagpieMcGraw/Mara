@@ -395,7 +395,12 @@ module_build_worker :: proc(t: thread.Task) {
     bt := cast(^Module_Build_Task)t.data
     s := bt.shared
     mt := bt.mt
-    context.allocator = virtual.arena_allocator(&mt.arena)
+    // (The module's .ll — its text copied in with what it declares — is
+    // only written: assembled in scratch, let go of once it is.)
+    scratch: virtual.Arena
+    _ = virtual.arena_init_growing(&scratch)
+    defer virtual.arena_destroy(&scratch)
+    context.allocator = virtual.arena_allocator(&scratch)
     context.temp_allocator = context.allocator
     is_main_tu := mt.module_name == s.checked.main_package
     content := build_module_ll(s.g, s.checked, mt.module_name, is_main_tu, s.web,

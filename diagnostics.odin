@@ -59,7 +59,9 @@ reset_diagnostics :: proc() {
 // flush. Order at flush time is the order emitted.
 emit_diagnostic :: proc(kind: Diagnostic_Kind, location: string, msg: string, args: ..any) {
     body := fmt.aprintf(msg, ..args)
-    append(&g_diagnostics, Diagnostic{kind = kind, location = location, message = body})
+    // (Its own copy of where: a location is often a temporary string, and a
+    // phase's scratch is let go of before the queue is printed.)
+    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body})
 }
 
 // Queue a diagnostic unless the same one is queued at the same place already;
@@ -69,7 +71,7 @@ emit_diagnostic_once :: proc(kind: Diagnostic_Kind, location: string, msg: strin
     for d in g_diagnostics {
         if d.kind == kind && d.location == location && d.message == body { return false }
     }
-    append(&g_diagnostics, Diagnostic{kind = kind, location = location, message = body})
+    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body})
     return true
 }
 

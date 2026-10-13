@@ -59,6 +59,8 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
     if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
     virtual.arena_destroy(&c.arena)
     c^ = {}
+    delete(build_tokens)   // (the tokens and the tree are on the heap)
+    tree_free(&build_tree)
     build_tokens, build_files, build_literals, build_tree = {}, {}, {}, {}
     reset_diagnostics()
     if err := virtual.arena_init_growing(&c.arena); err != nil {

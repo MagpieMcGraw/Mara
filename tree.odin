@@ -1,5 +1,6 @@
 package mara
 
+import "base:runtime"
 import "core:slice"
 
 // The syntax tree, flat (design/flat_tree.md): every file's nodes in one table
@@ -242,10 +243,23 @@ tree_shapes := [Tree_Tag]Tree_Shape{
 // the empty list's.
 tree_init :: proc(t: ^Tree) {
     if len(t.tag) > 0 { return }
+    // (Its columns grow on the heap, which gives back what they outgrow — a
+    // build's arena keeps every size they pass. tree_free lets them go.)
+    h := runtime.heap_allocator()
+    t.tag = make([dynamic]Tree_Tag, 0, 1 << 16, h)
+    t.main, t.first, t.end = make([dynamic]Token_Id, 0, 1 << 16, h), make([dynamic]Token_Id, 0, 1 << 16, h), make([dynamic]Token_Id, 0, 1 << 16, h)
+    t.a, t.b, t.extra = make([dynamic]u32, 0, 1 << 16, h), make([dynamic]u32, 0, 1 << 16, h), make([dynamic]u32, 0, 1 << 16, h)
     append(&t.tag, Tree_Tag.None)
     append(&t.main, 0); append(&t.first, 0); append(&t.end, 0)
     append(&t.a, 0); append(&t.b, 0)
     append(&t.extra, 0)
+}
+
+// The tree's columns let go of (a check of serve's, before the next).
+tree_free :: proc(t: ^Tree) {
+    delete(t.tag); delete(t.main); delete(t.first); delete(t.end)
+    delete(t.a); delete(t.b); delete(t.extra)
+    t^ = {}
 }
 
 tree_add :: proc(t: ^Tree, tag: Tree_Tag, main: Token_Id, a: u32 = 0, b: u32 = 0) -> Tree_Id {

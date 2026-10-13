@@ -299,9 +299,16 @@ lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
 // per file, in build_files' order); each module's parse errors, its lexer's
 // counted as its files'.
 parse_target_files :: proc() -> (errors: map[string]int) {
+    // (The parser's scratch — the lists it builds each node's from — let go
+    // of after each file: what it makes is the tree's.)
+    scratch: virtual.Arena
+    _ = virtual.arena_init_growing(&scratch)
+    defer virtual.arena_destroy(&scratch)
     for f in build_files {
+        context.temp_allocator = virtual.arena_allocator(&scratch)
         _, n := tree_parse_file(f)
         if n += f.lex_errors; n > 0 { errors[f.module] += n }
+        virtual.arena_free_all(&scratch)
     }
     return
 }

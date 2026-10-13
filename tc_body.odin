@@ -65,12 +65,11 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
     // (Its declarations, for the stack's size guard at its end.)
     saved := k.decls
-    decls: [dynamic]TC_Decl_Note
+    decls := make([dynamic]TC_Decl_Note, virtual.arena_allocator(k.blocks))   // (scratch, with the block scopes)
     k.decls = &decls
     defer {
         tc_storage_sizes(k, decls[:])
         k.decls = saved
-        delete(decls)
     }
     for s in stmts {
         if t.tag[s] == .Define {
