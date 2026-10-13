@@ -679,11 +679,11 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         sc := k.scopes[k.scope_of[fields_of]]
         k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
     }
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann, tc_sid(k, target)), temp_span = span)
     k.field_default = saved_field
     if !is_any(ann) { lw_byte_view_address(k, ann, value) }
     graph_build_typed(b, decl, final)
-    wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
+    wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(name, decl, final, tc_sid(k, target)), span, settle = true)
     if prefixed && (zeroed || wrote && fills) != zero { lw_fail(k, s, "a partial array zeroed first, or not, other than lowering found") }
     if zeroed && !prefixed { lw_fail(k, s, "a new partial array read from bytes") }
 }
@@ -795,9 +795,9 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         return
     }
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, lw_local(k, target), vt), temp = true, temp_span = span)
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, lw_local(k, target), vt, tc_sid(k, target)), temp = true, temp_span = span)
     lw_byte_view_address(k, existing, value)
-    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(name, lw_local(k, target), distinct_base(existing)), span), span)
+    lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(name, lw_local(k, target), distinct_base(existing), tc_sid(k, target)), span), span)
 }
 
 // `x op= v` (tc_compound): `x = x op v`, at the `op=`.
@@ -821,7 +821,7 @@ lw_compound :: proc(k: ^TC, s: Tree_Id) {
     name := tc_name(k, target)
     existing := tc_node_type(k, target)
     fr := lw_compound_value(k, s, op_tok, target, value, .Into)
-    lw_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, lw_local(k, target), distinct_base(existing)), span)
+    lw_store(k, 0, tc_node_type(k, s), fr, graph_dest_var(name, lw_local(k, target), distinct_base(existing), tc_sid(k, target)), span)
 }
 
 // A compound assignment's operation (tc_compound_value).
@@ -1058,6 +1058,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_ident(k, n, want, w, dest, temp, temp_span)
     case .Unary:
         if m := Tree_Id(t.a[n]); build_tokens[t.main[n]].kind == .Ampersand && t.tag[m] == .Method_Call {
+            lw_at(k, m)   // (the call's; the `&`, its receiver's address)
             return lw_call(k, m, want, w, dest, temp, temp_span, addressed = n)
         }
         return lw_unary(k, n, want, w)

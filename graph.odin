@@ -1646,6 +1646,7 @@ Dest :: struct {
     at:     Operand,   // .At: the place, already computed
     decl:   Node_Id,   // .Var: its declaration, when known here
     name:   string,    // .Var: the variable; .Field: the field; .Variant: the variant
+    syntax: Syntax_Id, // .Var: the name it's written as, its Var's node (0: none — a temporary's)
     index:  int,       // .Index
     type_:  Type,
     parent: ^Dest,     // .Field, .Index, .Variant: the value they are part of
@@ -1653,14 +1654,18 @@ Dest :: struct {
 
 Dest_Kind :: enum u8 { Var, At, Field, Index, Variant }
 
-graph_dest_var :: proc(name: string, decl: Node_Id, t: Type) -> Dest {
-    return Dest{kind = .Var, name = name, decl = decl, type_ = t}
+graph_dest_var :: proc(name: string, decl: Node_Id, t: Type, syntax := Syntax_Id(0)) -> Dest {
+    return Dest{kind = .Var, name = name, decl = decl, type_ = t, syntax = syntax}
 }
 
 // Emit a destination's place in the current run.
 graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     switch d.kind {
-    case .Var:   return graph_var(b, d.name, d.decl, d.type_, span)
+    case .Var:
+        at := b.at
+        if d.syntax != 0 { b.at = d.syntax }   // (the name's, written: what's built into it is the value's)
+        defer b.at = at
+        return graph_var(b, d.name, d.decl, d.type_, span)
     case .At:    return d.at
     case .Field: return graph_op_value(b, .Field, .Explicit, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     case .Index: return graph_op_value(b, .Index, .Explicit, span, d.type_, "", graph_dest_place(b, d.parent^, span), graph_const_index(b, d.index, span))
@@ -1722,6 +1727,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     n := graph_op_value(b, g.op[id], g.written[id], g.origin[id], graph_type(g, id), graph_name(g, id), ..ops)
     g.refers[n.op] = g.refers[id]
     g.value[n.op] = g.value[id]
+    g.syntax[n.op] = g.syntax[id]   // (walked again: the same node's)
     if g.op[id] == .Const && slice.contains(g.settled[:], id) { append(&g.settled, n.op) }   // (graph_const_settles)
     if c, named := g.constant[id]; named { g.constant[n.op] = c }
     return Operand{n.op, p.out}

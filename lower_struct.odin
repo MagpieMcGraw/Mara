@@ -314,7 +314,7 @@ lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     ty := Tree_Id(tr.a[e])
     vt := tc_node_type(k, ty)
     sd := resolve_to_struct_type(k.c, vt)
-    d := graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt)
+    d := graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt, tc_sid(k, ty))
     if pt, is_ptr := distinct_base(vt).(^Type_Ptr); is_ptr {
         span := tree_span(tr, ty)
         d = Dest{kind = .At, at = graph_op_value(k.gb, .Deref, .Implied, span, pt.elem, "", graph_dest_place(k.gb, d, span)), type_ = pt.elem}

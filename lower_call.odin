@@ -33,7 +33,9 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
         k.lower.recv = {node = arg, t = qt}
         if len(args) > 0 && args[0] == arg {
             if addressed != 0 {
+                at := lw_at(k, addressed)
                 k.lower.recv.r = lw_unary(k, addressed, .Either, w, of = recv)
+                k.gb.at = at
             } else {
                 k.lower.recv.r = lw_expr(k, recv, .Either, w)
             }
@@ -260,9 +262,9 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     decl := lw_field_decl(k, fields_of, name, target, value, span)
     field := decl != NO_NODE
     if !field { decl = graph_build_decl(b, name, t.main[target], span, tc_node_type(k, target), bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann))
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann, tc_sid(k, target)))
     final := tc_node_type(k, target)
     if field { final = graph_type(b.g, decl) }
     graph_build_typed(b, decl, final)
-    lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final), span, settle = true)
+    lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final, tc_sid(k, target)), span, settle = true)
 }

@@ -231,9 +231,9 @@ lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, fields_of, name, target, 0, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
-    r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann))
+    r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann, tc_sid(k, target)))
     graph_build_typed(b, decl, ann)
-    lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann), span, settle = true)
+    lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann, tc_sid(k, target)), span, settle = true)
 }
 
 // `{inner = Box(5)}` of the shape shortcut (tc_shape_literal).
