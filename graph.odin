@@ -134,7 +134,11 @@ Program_Graph :: struct {
     types:   ^[dynamic]Type,    // (the program's types, a node's by its Type_Id)
     origins: map[Node_Id]Span,  // where a node is written, where that isn't its tree node's (graph_origin)
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
-    callee:  map[Node_Id]^Type_Scope,   // a call or construct operation → the fun or struct it runs (none through a fun's value)
+    // What a call or construction runs is its tree node's annotated callee
+    // (graph_called) — but where lowering says otherwise: a call through a
+    // fun's value, none; one written in a default a call leaves off, its own.
+    callee:    map[Node_Id]^Type_Scope,
+    annotated: ^map[Syntax_Id]^Type_Scope,   // (the annotations' callees: Annotations.callees)
     defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
     decl_tok: [dynamic]Token_Id,      // a variable's declaration — a param, a named result, a local — → the token that declares it (0: none)
     syntax:  [dynamic]Syntax_Id,      // the tree node it was lowered from, in its instance (0: none) — what's written that made it
@@ -293,9 +297,24 @@ graph_last :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
     return g.last[id] or_else id
 }
 
-// The fun or struct a call or construction runs; nil through a function value.
+// The fun or struct a call or construction runs, as the checker annotated
+// its tree node — unless lowering says otherwise (Program_Graph.callee);
+// nil through a function value.
 graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
-    return g.callee[op]
+    if g.kind[op] != .Op || (g.op[op] != .Call && g.op[op] != .Construct) { return nil }
+    if len(g.callee) > 0 {
+        if callee, own := g.callee[op]; own { return callee }
+    }
+    return g.annotated^[g.syntax[op]] or_else nil
+}
+
+// What a call runs, kept only where its tree node's annotation doesn't say so.
+graph_set_callee :: proc(g: ^Program_Graph, op: Node_Id, callee: ^Type_Scope) {
+    if callee == (g.annotated^[g.syntax[op]] or_else nil) {
+        if len(g.callee) > 0 { delete_key(&g.callee, op) }
+        return
+    }
+    g.callee[op] = callee
 }
 
 // The signature a call runs by: its callee's, or — through a function value,
@@ -839,6 +858,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
     g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
+    g.annotated = &b.checked.annot.callees
     g.value = make([dynamic]Const_Id, at(r, .Value))
     g.values = &b.tables.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
@@ -1629,6 +1649,13 @@ graph_switch :: proc(b: ^Graph_Builder, operands: []Operand, arms: []^Run, span:
 // --- operations -----------------------------------------------------------
 
 graph_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, t: Type = nil, name := "", operands: ..Operand) -> Node_Id {
+    id := graph_op_made(b, kind, w, span, t, name, operands)
+    if kind == .Call || kind == .Construct { graph_set_callee(b.g, id, nil) }   // (made as no call of something: through a fun's value)
+    return id
+}
+
+@(private="file")
+graph_op_made :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, t: Type, name: string, operands: []Operand) -> Node_Id {
     id := graph_node(b, .Op, w, b.code.block, name, t, span)
     b.g.op[id] = kind
     append(&b.g.operands, ..operands)
@@ -1860,7 +1887,7 @@ graph_outputs_op :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Node_Id {
 // signature's.
 @(private="file")
 graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
-    callee := b.g.callee[op]
+    callee := graph_called(b.g, op)
     if callee == nil && b.g.op[op] == .Call {
         ops := graph_built_operands(b, op)
         if len(ops) > 0 && ops[0].op != NO_NODE {
@@ -1874,8 +1901,8 @@ graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
 
 // A call or construct operation, with a Calls edge to what it runs.
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
-    op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)
-    b.g.callee[op] = callee
+    op := graph_op_made(b, kind, w, span, t, graph_call_name(callee), operands)
+    graph_set_callee(b.g, op, callee)
     return op
 }
 
@@ -3173,7 +3200,7 @@ graph_build_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> De
 // `Foo{call()}`, the call built: each field its
 // result. False when it resolved to no function.
 graph_build_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, span: Span, c: Operand) -> bool {
-    callee := b.g.callee[c.op] if c.op != NO_NODE else nil
+    callee := graph_called(b.g, c.op) if c.op != NO_NODE else nil
     if callee == nil || gl.sd == nil { return false }
     graph_spread_results(b, span, gl.sd, &gl.parent, callee, c)
     return true
@@ -3224,9 +3251,9 @@ graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, s
     ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
     append(&ops, graph_dest_place(b, d, span))
     append(&ops, ..args)
-    op := graph_op(b, .Construct, .Explicit, span, t, name, ..ops[:])
+    op := graph_op_made(b, .Construct, .Explicit, span, t, name, ops[:])
     st := graph_variant_struct(b, t, name)
-    if st != nil && st.node != 0 { b.g.callee[op] = st }   // (its body: its constructor)
+    graph_set_callee(b.g, op, st if st != nil && st.node != 0 else nil)   // (its body: its constructor)
     return st
 }
 
@@ -3630,7 +3657,8 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
     span :: proc(s: Span) -> string {
         return fmt.tprintf("%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) if span_file(s) != "" else "-"
     }
-    calls := len(g.callee)
+    calls := 0
+    for id in 0 ..< len(g.kind) { if graph_called(g, Node_Id(id)) != nil { calls += 1 } }
     fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges) + calls + len(g.defer_of))
     for id in 0 ..< len(g.kind) {
         b := strings.builder_make(context.temp_allocator)

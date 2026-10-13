@@ -693,9 +693,13 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     } else if b.g.type_[decl] == 0 {
         graph_build_typed(b, decl, ann)
     }
+    // (Its construction is the name's, where it's written — as the checker
+    // annotates it.)
+    at := lw_at(k, target)
+    defer b.at = at
     args: []Operand
     if st != nil && constructs_bare(st) { args = lw_ctor_args(k, st, span) }
-    graph_build_bare(b, decl, ann, nil, args, span)
+    graph_build_bare(b, decl, ann, nil, args, tree_span(k.t, target))
 }
 
 // `s : [:n]T` (tc_decl_bare): its local, then n of T for it.

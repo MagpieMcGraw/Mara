@@ -160,11 +160,11 @@ llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> b
         }
         #partial switch pg.op[id] {
         case .Call:
-            if callee := pg.callee[id] or_else nil; callee == nil || !scope_is_intrinsic(callee) { return true }
+            if callee := graph_called(pg, id); callee == nil || !scope_is_intrinsic(callee) { return true }
         case .Print, .Arena_Alloc:
             return true
         case .Construct:
-            callee := pg.callee[id] or_else nil
+            callee := graph_called(pg, id)
             if c := pc.funs[callee] or_else nil; constructs && c != nil && llvm_works(pc, c, constructs = false) { return true }
         }
     }
