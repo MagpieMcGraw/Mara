@@ -349,6 +349,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         middle_free(&mid)
     }
     annot_check(k.annot, t, &checked.code, c.errors)
+    resolve_check(k)
     checked.errors = c.errors
     return checked
 }

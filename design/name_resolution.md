@@ -37,8 +37,8 @@ with the kind:
   it — never in a nested fun or struct. A module's variables are no different: no fun sees
   them.
 - **Uses**: `use m` makes m's definitions seen in the scope it is written in (a file's: that
-  file); `include m` makes them the module's too, and its users'. `name :: use m` names the
-  module, in the file.
+  file); `include m` makes them seen in the whole module too (not by its users: a use brings
+  in a module's own definitions only). `name :: use m` names the module, in the file.
 - **Lookup** goes from the innermost scope out: a variable seen there, else a definition;
   only when none is found, what the uses bring in, from the nearest scope that has it — two
   different ones there is ambiguous.
@@ -81,9 +81,42 @@ member, a literal's field names. The checker finds those in the type's declarati
 4. **Faster.** Each module's bodies resolved in parallel (the definitions in sight are read
    only); a generic's body once, not per instance.
 
+## Stage 1, as found
+
+The rules above, and what the checker does that they had to say (`test/resolvecheck.sh`):
+
+- **Order**: a scope's definitions are pushed when it's entered (a module's from all its
+  files, before any is walked); a declaration's value and type are resolved before its names
+  are in sight. Builtin calls (`print`, `len`, the casts, …) are the builtin's before any
+  definition of the name.
+- **Type params**: a fun's or a struct's generics, a `$T` in a param's or a result's type,
+  a generic union's params — and a struct's param of a type `$T` or a shape `~S`
+  (`struct(item: $T)`: `item` is a type its methods name), a definition, not a variable.
+- **`Self`**: the innermost struct or fun; in a signature, the one it is in.
+- **A union match's arm** with no binding rebinds a subject that is a name: the variant's
+  payload, declared by the subject's token.
+- **Qualified names** (`A.B.C`, `m.f(…)`, `Color.Red`, `TTF.Glyph_Header`): the first part
+  in sight, each next one a member — a module's definitions (else its enums' variants), a
+  struct's own definitions, a union's or an error set's variants, a distinct type's or an
+  alias's base's. A module's own name is no name in it: `pkg.X` inside pkg is its constant
+  X, and only that (a module named as a fun it uses is the fun).
+- **What the checker records otherwise, by design** (counted apart, not disagreements): a
+  dispatch's call — the member its arguments chose, where the resolver has the dispatch; a
+  variable named in a type (`size_of(x)`, `fn f`) or as a callee (`h(1)`, h holding a fun)
+  — the declaration of what it holds; a type param — the declaration of the type it's bound
+  to.
+- **Left to the checker** (what a name means by a type): fields and methods of values,
+  header fields (`.len`), variants by the type expected (`.Red`, a bare `Red`), a union's
+  variant built by its params (`Rect(5)`).
+
+Over the corpus's 252 programs with no errors: 120,789 names agree, none differ; 461 are a
+dispatch's member, 87 what a variable holds; 22,754 only the checker resolves (all by type);
+1,511 only the resolver (names the checker never reads: an uninstantiated generic's body, a
+default's value).
+
 ## Checklist
 
-- [ ] 1. The resolver, checked against the checker
+- [x] 1. The resolver, checked against the checker (2026-10-13)
 - [ ] 2. The checker reads the refs
 - [ ] 3. The environments go
 - [ ] 4. Faster
