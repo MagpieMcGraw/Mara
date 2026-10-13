@@ -32,7 +32,8 @@ Lower :: struct {
 }
 
 lower_begin :: proc(k: ^TC) -> LW_Codes {
-    b := graph_builder_new(k.checked, tc_module_graph_decls(k))
+    p := graph_program_new(k.checked, tc_module_graph_decls(k))
+    b := graph_builder_new(p)
     k.gb = b
     // What each module statement was settled as; each code's event — where
     // it was checked: a body's by its fun or struct (and the statement that
@@ -42,7 +43,7 @@ lower_begin :: proc(k: ^TC) -> LW_Codes {
         tc_instance_end(k, e.salt)
         switch e.kind {
         case .Module_Stmt:
-            graph_module_stmt(b, e.sid, e.declared)
+            graph_module_stmt(p, e.sid, e.declared)
         case .Body:
             codes.bodies[e.sc.ts] = i
             codes.scopes[tc_sid(k, e.sc.def)] = e.sc.ts
@@ -52,7 +53,7 @@ lower_begin :: proc(k: ^TC) -> LW_Codes {
             if pt := k.table.funs["Program"] or_else nil; pt != nil { codes.bodies[pt] = i }
         }
     }
-    graph_index(b)
+    graph_index(p)
     return codes
 }
 
@@ -61,7 +62,7 @@ lower_begin :: proc(k: ^TC) -> LW_Codes {
 // checked.
 lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
     b := k.gb
-    for ms in b.module_list {
+    for ms in b.prog.module_list {
         if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
         lw_place_decl(k, codes, ms.d, ms.declared)
     }
@@ -102,8 +103,8 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
 lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_Declared = {}) {
     b := k.gb
     if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
-    if c, built := b.consts[d.id]; built {
-        graph_place(b, c)
+    if c, built := b.prog.consts[d.id]; built {
+        graph_place(b.prog, c)
         return
     }
     #partial switch d.form {
@@ -115,7 +116,7 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_D
             lw_place_scope(k, codes, ts, d.name, d.span, .Explicit, stmt)
             return
         }
-        list, ok := b.by_span[d.span]
+        list, ok := b.prog.by_span[d.span]
         if !ok {
             if d.generic { return }   // a generic nothing instantiates: syntax only
             graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
@@ -134,9 +135,9 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_D
 lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, span: Span, written: Written, stmt: Graph_Stmt) {
     b := k.gb
     if i, checked := codes.bodies[ts]; checked { lw_code(k, codes, i) }
-    c, built := b.bodies[ts]
+    c, built := b.prog.bodies[ts]
     if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
-    graph_place_scope(b, c, ts, name, written, stmt)
+    graph_place_scope(b.prog, c, ts, name, written, stmt)
     for d in c.defs { lw_place_decl(k, codes, d) }
 }
 
@@ -163,7 +164,7 @@ lw_fail :: proc(k: ^TC, n: Tree_Id, reason: string) -> ! {
 // A constant's value, built into its declaration (tc_check_const).
 lw_const :: proc(k: ^TC, kc: ^TC_Const) {
     b := k.gb
-    if tc_sid(k, kc.def) in b.consts { return }
+    if tc_sid(k, kc.def) in b.prog.consts { return }
     span := tree_span(k.t, kc.def)
     lowering := b.at
     b.at = tc_sid(k, kc.def)

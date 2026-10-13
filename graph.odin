@@ -199,8 +199,8 @@ graph_set_value :: proc(b: ^Graph_Builder, g: ^Program_Graph, id: Node_Id, c: Co
     key := Const_Key{c.int, transmute(u64)c.float, c.is_float, c.is_text, c.text}
     v, seen := b.value_ids[key]
     if !seen {
-        v = Const_Id(len(b.pc.values))
-        append(b.pc.values, c)
+        v = Const_Id(len(b.values))
+        append(b.values, c)
         b.value_ids[key] = v
     }
     if small { b.value_small[as][c.int] = v }
@@ -244,7 +244,7 @@ graph_name :: proc(g: ^Program_Graph, id: Node_Id) -> string {
 @(private="file")
 graph_intern :: proc(b: ^Graph_Builder, s: string) -> Name_Id {
     if len(s) == 0 { return 0 }
-    names := b.pc.names
+    names := b.names
     slot := &b.name_cache[(uintptr(raw_data(s)) >> 3 ~ uintptr(len(s))) & (len(b.name_cache) - 1)]
     if slot.data == raw_data(s) && slot.len == len(s) && names[slot.id] == s { return slot.id }
     id, found := b.name_ids[s]
@@ -372,14 +372,12 @@ graph_is_terminator :: proc(k: Op_Kind) -> bool {
 // finished (graph_code_close); once every code is, each is put in written
 // order (graph_place_codes).
 Graph_Builder :: struct {
+    prog:    ^Graph_Program,  // the program's: what every code built goes into
     g:       ^Program_Graph,  // the code being built
     checked: ^Checked_Program,
     stmt:    i32,     // the statement being lowered (in g.stmts), or -1
     at:      Syntax_Id,   // the tree node being lowered: each node made is its (Program_Graph.syntax)
     stmt_from: int,         // (the nodes there were when the newest entry was made)
-    // Checked types by the span of the statement declaring them. A generic's
-    // instances share their template's span, so one span can hold several.
-    by_span: map[Span][dynamic]^Type_Scope,
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run the code being built made, kept for the next once it is done
     run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
@@ -396,8 +394,30 @@ Graph_Builder :: struct {
     outside_named: bool,
     self:       Node_Id,         // what `Self` names in a struct's code
     main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
+    // The body being built.
+    body:     ^Graph_Body,
+    // What the codes it builds are made in, its own: their columns, and the
+    // names, types and values they hold by id (each code points at these:
+    // Program_Graph.names, .types, .values) — one builder's never another's.
+    store:      Graph_Store,
+    names:      ^[dynamic]string,
+    name_ids:   map[string]Name_Id,   // (graph_intern)
+    name_cache: [1024]struct { data: [^]u8, len: int, id: Name_Id },
+    type_table: ^Type_Table,
+    values:      ^[dynamic]Const_Value,
+    value_ids:   map[Const_Key]Const_Id,   // (graph_set_value)
+    value_small: [2][256]Const_Id,
+}
+
+// The program's lowering: what every code built goes into, whichever builder
+// built it.
+Graph_Program :: struct {
+    checked: ^Checked_Program,
+    // Checked types by the span of the statement declaring them. A generic's
+    // instances share their template's span, so one span can hold several.
+    by_span: map[Span][dynamic]^Type_Scope,
     // Each module's statements, in written order: where the code each
-    // defines goes (graph_place_codes).
+    // defines goes (lower_place).
     module_stmts: map[Syntax_Id]int,
     module_list:  [dynamic]Graph_Module_Stmt,
     // Every name the checker's table has a constant under, by its value's id
@@ -409,16 +429,17 @@ Graph_Builder :: struct {
     bodies:   map[^Type_Scope]^Built_Code,
     consts:   map[Syntax_Id]^Built_Code,
     scope_of: map[Syntax_Id]^Type_Scope,   // each scope statement's, as the checker built it
-    // The body being built; the first the checker couldn't build (an
-    // internal error, reported once the check is found clean).
-    body:     ^Graph_Body,
+    // The first body the checker couldn't build (an internal error, reported
+    // once the check is found clean).
     failure:  struct { name, reason: string, span: Span },
     pc:       Program_Code,   // the codes, as each is built
-    name_ids:   map[string]Name_Id,   // (graph_intern)
-    type_table: ^Type_Table,          // (the program's types: the annotations')
-    name_cache: [1024]struct { data: [^]u8, len: int, id: Name_Id },
-    value_ids:   map[Const_Key]Const_Id,   // (graph_set_value)
-    value_small: [2][256]Const_Id,
+}
+
+// Where a builder's codes are made: an arena (their graphs, the tables they
+// hold by id) and a region per column.
+Graph_Store :: struct {
+    arena:   ^virtual.Arena,
+    regions: ^[Graph_Column]Graph_Region,
 }
 
 // A code built, waiting to be put in place; a body's definitions go after
@@ -426,6 +447,7 @@ Graph_Builder :: struct {
 @(private="file")
 Built_Code :: struct {
     g:      ^Program_Graph,
+    b:      ^Graph_Builder,   // the builder it was built by (its names: graph_place_scope)
     defs:   [dynamic]Graph_Decl,
     value:  Syntax_Id,   // a constant's: its value's node (Program_Code.consts' key)
     placed: bool,
@@ -516,9 +538,19 @@ Decl_Site :: struct {
     owner: ^Type_Scope,  // the struct, for .Field
 }
 
-// The builder, made once the program is checked (lower_begin).
-graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph_Decl) -> ^Graph_Builder {
+// The program's lowering, made once the program is checked (lower_begin).
+graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph_Decl) -> ^Graph_Program {
+    p := new(Graph_Program)
+    p.checked = checked
+    graph_modules(p, modules)
+    return p
+}
+
+// A builder for the program's codes, with storage and tables of its own.
+graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
+    checked := p.checked
     b := new(Graph_Builder)
+    b.prog = p
     b.checked = checked
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
@@ -526,16 +558,18 @@ graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     for name, i in ([]string{"this_program", "context"}) {
         if root := checked.table.root_env; root != nil { b.globals[i], _ = scope_defines(root, name) }
     }
-    b.pc.arena = new(virtual.Arena)
-    if err := virtual.arena_init_growing(b.pc.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
-    b.pc.regions = new([Graph_Column]Graph_Region, virtual.arena_allocator(b.pc.arena))
-    b.pc.names = new([dynamic]string, virtual.arena_allocator(b.pc.arena))
-    append(b.pc.names, "")   // (Name_Id 0: none)
-    b.type_table = checked.annot.type_table
-    b.pc.types = &b.type_table.types
-    b.pc.values = new([dynamic]Const_Value, virtual.arena_allocator(b.pc.arena))
-    append(b.pc.values, Const_Value{})   // (Const_Id 0: none)
-    graph_modules(b, modules)
+    b.store.arena = new(virtual.Arena)
+    if err := virtual.arena_init_growing(b.store.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
+    in_store := virtual.arena_allocator(b.store.arena)
+    b.store.regions = new([Graph_Column]Graph_Region, in_store)
+    b.names = new([dynamic]string, in_store)
+    b.names.allocator = in_store
+    append(b.names, "")   // (Name_Id 0: none)
+    b.type_table = type_table_new()
+    b.values = new([dynamic]Const_Value, in_store)
+    b.values.allocator = in_store
+    append(b.values, Const_Value{})   // (Const_Id 0: none)
+    append(&p.pc.stores, b.store)
     return b
 }
 
@@ -557,7 +591,7 @@ Graph_Declared :: struct {
 // The program's modules' statements: the modules in name order, each's in
 // written order — where the code each defines goes.
 @(private="file")
-graph_modules :: proc(b: ^Graph_Builder, programs: map[string][]Graph_Decl) {
+graph_modules :: proc(b: ^Graph_Program, programs: map[string][]Graph_Decl) {
     modules := make([dynamic]string, 0, len(programs), context.temp_allocator)
     for name in programs { append(&modules, name) }
     slice.sort(modules[:])
@@ -570,16 +604,15 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string][]Graph_Decl) {
 }
 
 // A module's statement the checker has met: what it declares, as settled.
-graph_module_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, declared: Graph_Declared) {
+graph_module_stmt :: proc(b: ^Graph_Program, id: Syntax_Id, declared: Graph_Declared) {
     i, is_module := b.module_stmts[id]
     if !is_module || b.module_list[i].settled { return }
     b.module_list[i].declared = declared
     if b.module_list[i].d.settles { b.module_list[i].settled = true }
 }
 
+// A builder done with (its codes, and what they hold, stay: Program_Code.stores).
 graph_builder_free :: proc(b: ^Graph_Builder) {
-    for _, list in b.by_span { delete(list) }
-    delete(b.by_span)
     delete(b.runs)
     for r in b.run_pool {
         delete(r.ops)
@@ -590,23 +623,31 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     for f in b.body_pool { graph_body_drop(f) }
     delete(b.body_pool)
     delete(b.locals)
-    delete(b.constant_names)
-    delete(b.module_stmts)
-    delete(b.module_list)
-    for _, c in b.bodies { delete(c.defs); free(c) }
-    delete(b.bodies)
-    for _, c in b.consts { free(c) }
-    delete(b.consts)
-    delete(b.scope_of)
     delete(b.name_ids)
     delete(b.value_ids)
     free(b)
 }
 
+// The program's lowering done with, its codes kept (build_program_graph).
+@(private="file")
+graph_program_free :: proc(p: ^Graph_Program) {
+    for _, list in p.by_span { delete(list) }
+    delete(p.by_span)
+    delete(p.constant_names)
+    delete(p.module_stmts)
+    delete(p.module_list)
+    for _, c in p.bodies { delete(c.defs); free(c) }
+    delete(p.bodies)
+    for _, c in p.consts { free(c) }
+    delete(p.consts)
+    delete(p.scope_of)
+    free(p)
+}
+
 // Every code lowered, each finished as it was: put in written order, and
 // what reads across codes — the constants' values at their uses — worked out.
-build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
-    defer graph_builder_free(b)
+build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
+    defer graph_program_free(b)
     if f := b.failure; f.reason != "" { graph_fatal(f.span, "the checker built no graph of '%s': %s", f.name, f.reason) }
     checked := b.checked
     for _, c in b.consts {
@@ -713,16 +754,16 @@ graph_region_proc :: proc(data: rawptr, mode: mem.Allocator_Mode, size, alignmen
 // A new code's graph: each column empty, in its region.
 @(private="file")
 graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
-    g := new(Program_Graph, virtual.arena_allocator(b.pc.arena))
-    r := b.pc.regions
+    g := new(Program_Graph, virtual.arena_allocator(b.store.arena))
+    r := b.store.regions
     at :: proc(r: ^[Graph_Column]Graph_Region, c: Graph_Column) -> mem.Allocator { return graph_region_allocator(&r[c]) }
     g.kind = make([dynamic]Node_Kind, at(r, .Kind))
     g.op = make([dynamic]Op_Kind, at(r, .Op))
     g.written = make([dynamic]Written, at(r, .Written))
     g.parent = make([dynamic]Node_Id, at(r, .Parent))
     g.name = make([dynamic]Name_Id, at(r, .Name))
-    g.names = b.pc.names
-    g.types = b.pc.types
+    g.names = b.names
+    g.types = &b.type_table.types
     g.type_ = make([dynamic]Type_Id, at(r, .Type))
     g.origin = make([dynamic]Span, at(r, .Origin))
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
@@ -730,7 +771,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
     g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
     g.value = make([dynamic]Const_Id, at(r, .Value))
-    g.values = b.pc.values
+    g.values = b.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
@@ -779,26 +820,23 @@ Program_Code :: struct {
     fold_errors: [dynamic]Fold_Error,              // the uses of constants with no value
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
-    arena:       ^virtual.Arena,                   // where the codes' graphs are (they last as long as the program)
-    regions:     ^[Graph_Column]Graph_Region,       // where their columns are
-    names:       ^[dynamic]string,                 // every node's name, once (Name_Id)
-    types:       ^[dynamic]Type,                   // every node's type, once (Type_Id): the annotations' table
-    values:      ^[dynamic]Const_Value,            // every constant's value, once (Const_Id)
+    stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
 }
 
 // A program's code let go of: its columns' regions, then its arena. (A
 // build's goes with its process; `mara serve` checks again, and again.)
 program_code_free :: proc(pc: ^Program_Code) {
-    if pc.arena == nil { return }
-    if pc.regions != nil {
-        for &r in pc.regions {
-            if r.base != nil { virtual.release(r.base, r.reserved) }
+    for s in pc.stores {
+        if s.regions != nil {
+            for &r in s.regions {
+                if r.base != nil { virtual.release(r.base, r.reserved) }
+            }
         }
+        virtual.arena_destroy(s.arena)
     }
-    virtual.arena_destroy(pc.arena)
+    delete(pc.stores)
     pc^ = {}
 }
-
 // --- one code at a time ---------------------------------------------------------
 
 // A code begins: the builder's graph emptied for it. (Lowering builds one
@@ -894,16 +932,16 @@ graph_check_built :: proc(b: ^Graph_Builder) {
 // A fun's or struct's code, built: named — an instance by its mangled name —
 // and in its statement, then put in place (lw_place_decl walks the program
 // in written order; its body's definitions' codes go after it).
-graph_place_scope :: proc(b: ^Graph_Builder, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
+graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
     c.g.stmts[0] = stmt
-    c.g.name[0] = graph_intern(b, graph_scope_name(ts, name, written))
-    graph_place(b, c)
+    c.g.name[0] = graph_intern(c.b, graph_scope_name(ts, name, written))
+    graph_place(p, c)
 }
 
 // A code put in place: next in Program_Code.codes, the program's written
 // order. (Found by its fun or struct, or its constant's value, from when it
 // was built: graph_code_found.)
-graph_place :: proc(b: ^Graph_Builder, c: ^Built_Code) {
+graph_place :: proc(b: ^Graph_Program, c: ^Built_Code) {
     g := c.g
     if c.placed { graph_fatal(g.origin[0], "'%s' is put in place twice", graph_name(g, 0)) }
     c.placed = true
@@ -917,7 +955,7 @@ graph_place :: proc(b: ^Graph_Builder, c: ^Built_Code) {
 // (folding, the analyses' summaries) needs no more than that it was built.
 @(private="file")
 graph_code_found :: proc(b: ^Graph_Builder, g: ^Program_Graph, value: Syntax_Id) {
-    pc := &b.pc
+    pc := &b.prog.pc
     if g.kind[0] == .Const {
         pc.consts[value] = g
         return
@@ -1013,8 +1051,8 @@ graph_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
 
 // Each checked fun's and struct's scopes by the span of the statement that
 // declares them — a generic's instances, all of them (Graph_Builder.by_span).
-graph_index :: proc(b: ^Graph_Builder) {
-    add :: proc(b: ^Graph_Builder, span: Span, ts: ^Type_Scope) {
+graph_index :: proc(b: ^Graph_Program) {
+    add :: proc(b: ^Graph_Program, span: Span, ts: ^Type_Scope) {
         if span == {} { return }
         if span not_in b.by_span { b.by_span[span] = {} }
         list := &b.by_span[span]
@@ -1768,7 +1806,7 @@ graph_token_text :: proc(op: Token_Kind) -> string {
 // module's is there under its flat name and its bare one), the first of
 // those alike.
 @(private="file")
-graph_table_names :: proc(b: ^Graph_Builder, pc: ^Program_Code) {
+graph_table_names :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     for key, v in b.constant_names {
         if v not_in pc.tables { continue }
         if name, named := pc.table_names[v]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
@@ -1988,7 +2026,7 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
-    b.scope_of[id] = ts
+    b.prog.scope_of[id] = ts
     f := graph_body_new(b)
     f.ts = ts
     b.body = f
@@ -2006,8 +2044,8 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
 graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     if f.failed != "" { return }
     f.failed = reason
-    if b.failure.reason == "" {
-        b.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else graph_name(b.g, f.root), reason, b.g.origin[f.root]}
+    if b.prog.failure.reason == "" {
+        b.prog.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else graph_name(b.g, f.root), reason, b.g.origin[f.root]}
     }
 }
 
@@ -2019,7 +2057,7 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     b.body = nil
     // (Its end can find what it can't build: a scope's values on the arena.)
     if c := graph_code_close(b, f); c != nil {
-        b.bodies[f.ts] = new_clone(Built_Code{g = c, defs = f.defs})
+        b.prog.bodies[f.ts] = new_clone(Built_Code{g = c, b = b, defs = f.defs})
         f.defs = nil
         graph_code_found(b, c, 0)
     }
@@ -3119,7 +3157,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     b.stmt = -1
     b.body = nil
     if c := graph_code_close(b, f); c != nil {
-        b.consts[d.id] = new_clone(Built_Code{g = c, value = d.value})
+        b.prog.consts[d.id] = new_clone(Built_Code{g = c, b = b, value = d.value})
         graph_code_found(b, c, d.value)
     }
     graph_body_free(b, f)
@@ -3205,7 +3243,7 @@ graph_tag_type :: proc(t: Type) -> Type {
 
 // Every checked fun and struct with code is exactly one node.
 @(private="file")
-graph_check_coverage :: proc(b: ^Graph_Builder, pc: ^Program_Code) {
+graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     count: map[^Type_Scope]int
     defer delete(count)
     for c in pc.codes {

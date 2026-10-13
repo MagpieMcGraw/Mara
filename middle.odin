@@ -27,7 +27,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     }
     codes := lower_begin(k)
     b := k.gb
-    pc := &b.pc
+    pc := &b.prog.pc
     fold := graph_fold_begin(pc, checked)
     escape_begin(c, pc)
     analysed: map[^Program_Graph]bool
@@ -41,7 +41,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
             for id := Node_Id(0); id <= g.end; id += 1 {
                 if g.kind[id] != .Op || (g.op[id] != .Call && g.op[id] != .Construct) { continue }
                 callee := graph_called(g, id)
-                if callee == nil || callee in b.pc.funs { continue }
+                if callee == nil || callee in b.prog.pc.funs { continue }
                 if i, checked := codes.bodies[callee]; checked && !codes.done[i] {
                     graph_fatal(g.origin[id], "'%s' analysed before '%s', which it calls, is built", graph_name(g, 0), callee.name)
                 }
@@ -49,7 +49,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         }
         graph_fold_code(fold, b, g)
         flow_code(&mid.flow, g)
-        if g.kind[0] != .Const { reach_code(&mid.reach, &b.pc, g) }
+        if g.kind[0] != .Const { reach_code(&mid.reach, &b.prog.pc, g) }
     }
 
     // Constants, and the structs a constant's value may construct.
@@ -76,7 +76,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         lw_code(k, &codes, i)
         #partial switch e.kind {
         case .Const:
-            if c, built := b.consts[tc_sid_of_const(k, e)]; built { analyse(&mid, &fold, b, &analysed, &codes, c.g) }
+            if c, built := b.prog.consts[tc_sid_of_const(k, e)]; built { analyse(&mid, &fold, b, &analysed, &codes, c.g) }
         case .Body:
             analyse(&mid, &fold, b, &analysed, &codes, pc.funs[e.sc.ts] or_else nil)
         case .Program_Struct:

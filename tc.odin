@@ -298,8 +298,10 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         mid = middle_program(k, c, checked, fns)
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
-        for key, kc in k.consts { k.gb.constant_names[key] = kc.sid }
-        checked.code = build_program_graph(k.gb)
+        for key, kc in k.consts { k.gb.prog.constant_names[key] = kc.sid }
+        prog := k.gb.prog
+        graph_builder_free(k.gb)
+        checked.code = build_program_graph(prog)
         if perf != nil { perf_timer_mark(perf, "analysis") }
     } else {
         if k.gb != nil { graph_builder_free(k.gb) }
