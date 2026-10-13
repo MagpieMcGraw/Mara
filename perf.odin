@@ -27,6 +27,17 @@ perf_timer_mark :: proc(timer: ^Performance_Timer, next_phase: string) {
     timer.phase, timer.phase_start = next_phase, now
 }
 
+// End the current phase but for `carried` of it — work done during it that
+// is the next phase's (the middle end's analyses, run as each code is
+// lowered) — and start the next with that much of it.
+perf_timer_mark_carry :: proc(timer: ^Performance_Timer, next_phase: string, carried: time.Duration) {
+    now := time.now()
+    carried := min(carried, time.diff(timer.phase_start, now))   // (several workers' sum: at most the phase)
+    timer.phase_start = time.time_add(timer.phase_start, carried)
+    perf_timer_print(timer, now)
+    timer.phase, timer.phase_start = next_phase, time.time_add(now, -carried)
+}
+
 // End the final phase and print the total.
 perf_timer_end :: proc(timer: ^Performance_Timer) {
     now := time.now()

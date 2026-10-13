@@ -332,14 +332,14 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         c.cg = &checked.call_graph
         tree_parents(t)   // (each code's statements are the tree's: graph_stmt climbs to them)
         mid = middle_program(k, c, checked, fns)
-        if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { mid.prog.constant_names[key] = kc.sid }
         checked.code = build_program_graph(mid.prog)
-        if perf != nil { perf_timer_mark(perf, "analysis") }
+        // (The analyses ran as each code was lowered: their time is
+        // analysis's, with the report of what they found.)
+        if perf != nil { perf_timer_mark_carry(perf, "analysis", mid.analysed) }
     } else {
         if k.gb != nil { graph_builder_free(k.gb) }
-        if perf != nil { perf_timer_mark(perf, "analysis") }
     }
     k.gb = nil
     void_defaults: map[Span]bool

@@ -6,6 +6,7 @@ import "core:slice"
 import "core:strconv"
 import "core:sync"
 import "core:thread"
+import "core:time"
 
 // middle.odin — the middle end, a code at a time. Each code is lowered on
 // its own (lw_code), then folded and analysed while what it calls is
@@ -30,6 +31,7 @@ Middle :: struct {
     prog:    ^Graph_Program,     // the codes lowered
     workers: [dynamic]^Middle_Worker,
     escape:  [dynamic][dynamic]Esc_Diag,   // each worker's escape diagnostics
+    analysed: time.Duration,               // the analyses' time, every worker's: told apart from lowering's in the build's timings
 }
 
 // One worker of the middle end: its lowering and what its analyses keep.
@@ -38,6 +40,7 @@ Middle_Worker :: struct {
     flow:  Flow_Pass,
     reach: Reach_Pass,
     fold:  Folder,
+    analysed: time.Duration,   // its analyses' time (Middle.analysed)
 }
 
 // Every code lowered and analysed, then put in place in written order.
@@ -80,11 +83,13 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     })
     // ... folded now, before any fun is lowered: what folding a constant
     // runs — a struct's code — is done changing before it's read.
+    folding := time.tick_now()
     for g, i in codes.code {
         if g == nil || codes.folded[i] { continue }
         graph_fold_code(&mid.workers[0].fold, mid.workers[0].k.gb, g)
         codes.folded[i] = true
     }
+    mid.analysed += time.tick_since(folding)
     // Each component's funs, then the component's escape analysis, then each
     // one's own — once the components it calls are done.
     middle_components(&run)
@@ -109,7 +114,10 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     lower_place(mid.workers[0].k, &codes)
     folders := make([dynamic]^Folder, context.temp_allocator)
     for mw in mid.workers { append(&folders, &mw.fold) }
+    ending := time.tick_now()
     graph_fold_end(folders[:])
+    mid.analysed += time.tick_since(ending)
+    for mw in mid.workers { mid.analysed += mw.analysed }
     when ODIN_DEBUG {
         after := lw_shared_sizes(k)
         for mw in mid.workers {
@@ -226,8 +234,10 @@ middle_scc :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, cg: ^Call_Graph, scc: [
         if i, checked := codes.bodies[cg.nodes[node]]; checked { lw_code(mw.k, codes, i) }
         if cg.nodes[node] != nil { append(&members, cg.nodes[node]) }   // (nil: a constant's value's calls, run at no fun's)
     }
+    analysing := time.tick_now()
     reach_scc(&mw.k.gb.prog.pc, &mw.reach, members[:])
     escape_scc(cg, scc)
+    mw.analysed += time.tick_since(analysing)
     for node in scc {
         if i, checked := codes.bodies[cg.nodes[node]]; checked { middle_analyse(mw, codes, i) }
     }
@@ -241,6 +251,8 @@ middle_analyse :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, i: int) {
     g := codes.code[i]
     if g == nil { return }
     b := mw.k.gb
+    analysing := time.tick_now()
+    defer mw.analysed += time.tick_since(analysing)
     when ODIN_DEBUG {   // (what it calls is built — else what a call reaches would be guessed at)
         for id := Node_Id(0); id <= g.end; id += 1 {
             if g.kind[id] != .Op || (g.op[id] != .Call && g.op[id] != .Construct) { continue }
