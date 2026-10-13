@@ -314,7 +314,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         key := make_flat_name(ft.home_package, mangled)
         ft.name, ft.body_span = key, tree_span(k.t, sc.def)
         ft.origin = Origin_Source{}
-        populate_cg_signature(ft)
         checked.functions[key] = ft
     }
     tc_event(k, {kind = .Program_Struct})
@@ -674,7 +673,6 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
             key := make_flat_name(module, name)
             ft.origin = Origin_Source{}
             ft.body_span = tree_span(k.t, sc.def)
-            populate_cg_signature(ft)
             _, already := checked.functions[key]
             ft.name = key
             checked.functions[key] = ft
@@ -701,7 +699,6 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
             ft.origin = Origin_Intrinsic{llvm_name = tc_intrinsic_name(k, v.intrinsic)}
         }
         ft.body_span = tree_span(k.t, sc.def)
-        populate_cg_signature(ft)
         _, already := checked.functions[key]
         ft.name = key
         checked.functions[key] = ft

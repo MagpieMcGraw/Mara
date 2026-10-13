@@ -189,20 +189,21 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     if e.ctor {
         // Self, built in the caller's slot; a fallible constructor's declared
         // results (its err) follow it, each in the slot after.
-        if len(cf.cg_returns) < 1 || llvm_struct(cf.cg_returns[0]) == nil { return false }
-        e.sret = cf.cg_returns[0]
-        if len(cf.cg_returns) > 1 {
-            for rt in cf.cg_returns[1:] { if !llvm_scalar(rt) { e.note = "result type"; return false } }
-            e.slot, e.rets = "%sret.0", cf.cg_returns[:]
+        if fn_result_count(cf) < 1 || llvm_struct(fn_result(cf, 0)) == nil { return false }
+        e.sret = fn_result(cf, 0)
+        if fn_result_count(cf) > 1 {
+            for ri in 1 ..< fn_result_count(cf) { if !llvm_scalar(fn_result(cf, ri)) { e.note = "result type"; return false } }
+            e.slot, e.rets = "%sret.0", fn_results(cf)
         }
-    } else if len(cf.cg_returns) > 1 {
+    } else if fn_result_count(cf) > 1 {
         // Several results: each written into the caller's slot for it.
-        for rt in cf.cg_returns {
+        for ri in 0 ..< fn_result_count(cf) {
+            rt := fn_result(cf, ri)
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
         }
-        e.rets = cf.cg_returns[:]
-    } else if len(cf.cg_returns) == 1 {
-        rt := cf.cg_returns[0]
+        e.rets = fn_results(cf)
+    } else if fn_result_count(cf) == 1 {
+        rt := fn_result(cf, 0)
         switch {
         case llvm_scalar(rt):        e.ret = llvm_type_from_checker(rt)
         case llvm_aggregate(rt):     e.sret = rt
@@ -211,9 +212,10 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // A fun that consumes a param into its result: its opening copy is
     // skipped when the caller passes that storage as the slot.
-    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
-    params := make([dynamic]string, 0, len(cf.cg_params), context.temp_allocator)
-    for p in cf.cg_params {
+    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.params[k].name) }
+    params := make([dynamic]string, 0, len(cf.params), context.temp_allocator)
+    for _, pi in cf.params {
+        p := fn_param(cf, pi)
         ir, ok := llvm_param_type(p.type_)
         if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
         append(&params, fmt.tprintf("%s %%%s.arg", ir, p.name))
@@ -230,8 +232,8 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     linkage := "dllexport " if cf.is_exposed else ""
     e.head = strings.concatenate({"define ", linkage, e.ret, " ", mara_fn_name(g, cf.name), "(",
         strings.join(params[:], ", ", context.temp_allocator), ") {"})
-    if cf.is_exposed && len(cf.cg_params) > 0 {
-        fmt.sbprintf(&e.fields, "  store ptr %%%s.arg, ptr @__mara_program\n", cf.cg_params[0].name)
+    if cf.is_exposed && len(cf.params) > 0 {
+        fmt.sbprintf(&e.fields, "  store ptr %%%s.arg, ptr @__mara_program\n", cf.params[0].name)
     }
 
     // Entry first, then the runs as they were built; each gets its label, by
@@ -874,7 +876,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 return true
             }
             if e.ret != "void" && fell_off {
-                llvm_ret(e, "  ret %s %s", e.ret, llvm_zero(e.ft.cg_returns[0]))
+                llvm_ret(e, "  ret %s %s", e.ret, llvm_zero(fn_result(e.ft, 0)))
                 return true
             }
             if e.ret != "void" { return false }
@@ -882,7 +884,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if len(ops) != 1 || e.ret == "void" { return false }
-        v, ok := llvm_operand(e, ops[0], e.ft.cg_returns[0])
+        v, ok := llvm_operand(e, ops[0], fn_result(e.ft, 0))
         if !ok { return false }
         llvm_ret(e, "  ret %s %s", e.ret, v)
     case .Assert:
@@ -1130,7 +1132,7 @@ llvm_output :: proc(e: ^Llvm, o: Operand, at: []string, want: Type) -> (string, 
 llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
     if o.op in e.outs {
         callee := graph_signature(e.pg, o.op)
-        if callee != nil && int(o.out) < len(callee.cg_returns) { return callee.cg_returns[o.out] }
+        if callee != nil && int(o.out) < fn_result_count(callee) { return fn_result(callee, int(o.out)) }
     }
     return graph_type(e.pg, o.op)
 }
@@ -1339,9 +1341,10 @@ llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
 llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string, ok: bool) {
     if len(ops) == 1 { return nil, true }
     callee := graph_called(e.pg, op)
-    if callee == nil || len(ops) - 1 != len(callee.cg_params) { return nil, false }
-    args = make([]string, len(callee.cg_params), context.temp_allocator)
-    for p, i in callee.cg_params {
+    if callee == nil || len(ops) - 1 != len(callee.params) { return nil, false }
+    args = make([]string, len(callee.params), context.temp_allocator)
+    for _, i in callee.params {
+        p := fn_param(callee, i)
         ir := llvm_param_type(p.type_) or_return
         v := llvm_operand(e, ops[i + 1], p.type_) or_return
         args[i] = fmt.tprintf("%s %s", ir, v)
@@ -1439,10 +1442,11 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     append(&args, fmt.tprintf("ptr %s", at))
     // A fallible constructor's declared results (its err) after Self: each
     // into a temporary, where its uses find it (Self is the place).
-    if len(callee.cg_returns) > 1 {
-        outs := make([]string, len(callee.cg_returns))
+    if fn_result_count(callee) > 1 {
+        outs := make([]string, fn_result_count(callee))
         outs[0] = at
-        for rt, i in callee.cg_returns[1:] {
+        for ri in 1 ..< fn_result_count(callee) {
+            rt, i := fn_result(callee, ri), ri - 1
             if !llvm_scalar(rt) { e.note = "result type"; return false }
             outs[i + 1] = fresh_tmp(g)
             emit_alloca(g, outs[i + 1], llvm_type_from_checker(rt))
@@ -2353,11 +2357,11 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn_name(g, callee.name)
     }
-    if len(ops) != len(callee.cg_params) { e.note = "arguments left to defaults"; return false }
+    if len(ops) != len(callee.params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
     result: Type
-    if len(callee.cg_returns) == 1 {
-        result = callee.cg_returns[0]
+    if fn_result_count(callee) == 1 {
+        result = fn_result(callee, 0)
         switch {
         case llvm_scalar(result):        ret = llvm_type_from_checker(result)
         case llvm_aggregate(result):
@@ -2365,7 +2369,8 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
     }
     args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
-    for p, i in callee.cg_params {
+    for _, i in callee.params {
+        p := fn_param(callee, i)
         ir, ok := llvm_param_type(p.type_)
         if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
         v, vok := llvm_operand(e, ops[i], p.type_)
@@ -2377,11 +2382,12 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
-    if len(callee.cg_returns) > 1 {
+    if fn_result_count(callee) > 1 {
         // Several results: each into a temporary, where its uses find it —
         // an aggregate that a declaration takes, straight into its storage.
-        at := make([]string, len(callee.cg_returns))
-        for rt, i in callee.cg_returns {
+        at := make([]string, fn_result_count(callee))
+        for i in 0 ..< fn_result_count(callee) {
+            rt := fn_result(callee, i)
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
             if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
             if at[i] == "" { at[i] = llvm_temporary(e, op, callee, rt, llvm_alloca_type(rt)) }
@@ -2420,12 +2426,12 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
 llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
     g := e.g
     os := g.checked.target_os
-    if len(ops) != len(callee.cg_params) { e.note = "a foreign call's variadic arguments"; return false }
+    if len(ops) != len(callee.params) { e.note = "a foreign call's variadic arguments"; return false }
     args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
     // The result: none, returned, or in a hidden slot (first).
     result: Type
-    if len(callee.cg_returns) == 1 && !is_untyped(callee.cg_returns[0]) { result = callee.cg_returns[0] }
-    if len(callee.cg_returns) > 1 { e.note = "a foreign call's results"; return false }
+    if fn_result_count(callee) == 1 && !is_untyped(fn_result(callee, 0)) { result = fn_result(callee, 0) }
+    if fn_result_count(callee) > 1 { e.note = "a foreign call's results"; return false }
     ret_ir, slot := "void", ""
     ret_low: Lowering
     if result != nil {
@@ -2439,7 +2445,8 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             append(&args, fmt.tprintf("ptr sret(%s) %s", llvm_type_from_checker(result), slot))
         }
     }
-    for p, i in callee.cg_params {
+    for _, i in callee.params {
+        p := fn_param(callee, i)
         pt := p.type_
         v := ""
         if _, is_text := llvm_text(e, ops[i].op); is_text && llvm_is_cstring(pt) {
@@ -2539,12 +2546,13 @@ llvm_is_cstring :: proc(t: Type) -> bool {
 @(private="file")
 llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
     g := e.g
-    if name == "" || len(ops) != len(callee.cg_params) || len(callee.cg_returns) != 1 || !llvm_scalar(callee.cg_returns[0]) {
+    if name == "" || len(ops) != len(callee.params) || fn_result_count(callee) != 1 || !llvm_scalar(fn_result(callee, 0)) {
         e.note = "an intrinsic's shape"
         return false
     }
     args := make([dynamic]string, 0, len(ops), context.temp_allocator)
-    for p, i in callee.cg_params {
+    for _, i in callee.params {
+        p := fn_param(callee, i)
         v := llvm_operand(e, ops[i], p.type_) or_return
         ir := llvm_type_from_checker(p.type_)
         if fa := llvm_array(p.type_); fa != nil {
@@ -2558,7 +2566,7 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
     tmp := fresh_tmp(g)
-    emit(g, "  %s = call %s @%s(%s)", tmp, llvm_type_from_checker(callee.cg_returns[0]), name, strings.join(args[:], ", ", context.temp_allocator))
+    emit(g, "  %s = call %s @%s(%s)", tmp, llvm_type_from_checker(fn_result(callee, 0)), name, strings.join(args[:], ", ", context.temp_allocator))
     e.value[op] = tmp
     return true
 }

@@ -2098,8 +2098,8 @@ graph_find_consumes :: proc(g: ^Program_Graph) {
     for fun, local in returned {
         if local == NO_NODE { continue }
         ft, is_scope := graph_type(g, fun).(^Type_Scope)
-        if !is_scope || ft.kind != .Fun || len(ft.cg_returns) != 1 { continue }
-        ret := distinct_base(ft.cg_returns[0])
+        if !is_scope || ft.kind != .Fun || fn_result_count(ft) != 1 { continue }
+        ret := distinct_base(fn_result(ft, 0))
         by_slot := as_struct_body(ret) != nil
         #partial switch _ in ret {
         case ^Type_Fixed_Array, ^Type_Partial_Array: by_slot = true
@@ -2115,7 +2115,7 @@ graph_find_consumes :: proc(g: ^Program_Graph) {
             w := graph_user(g, read, fun_end)
             if w == NO_NODE || g.op[w] != .Write || graph_stmt(g, w).kind != .Decl { continue }
             if ops := graph_operands(g, w); ops[1].op != read || g.op[ops[0].op] != .Var || g.refers[ops[0].op] != local { continue }
-            for cp, k in ft.cg_params {
+            for cp, k in ft.params {
                 if cp.name == graph_name(g, p) && types_equal(distinct_base(cp.type_), ret) { g.consumes[fun] = k }
             }
             break

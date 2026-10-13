@@ -431,9 +431,9 @@ type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
 emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string, args: []string = nil) {
     init_fn, has_init := g.checked.functions[st_name]
     if !has_init { return }
-    if init_fn != nil && len(init_fn.cg_params) > 0 {
-        if len(args) != len(init_fn.cg_params) {
-            codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_ARGUMENT, st_name, init_fn.cg_params[len(args) if len(args) < len(init_fn.cg_params) else 0].name)
+    if init_fn != nil && len(init_fn.params) > 0 {
+        if len(args) != len(init_fn.params) {
+            codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_ARGUMENT, st_name, init_fn.params[len(args) if len(args) < len(init_fn.params) else 0].name)
         }
         arg_strs := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
         append(&arg_strs, ..args)

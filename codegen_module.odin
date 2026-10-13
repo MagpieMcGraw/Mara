@@ -406,7 +406,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         if fn, ok := alloc_type.functions["reset"]; ok && fn != nil { g.arena_reset_name = fn.name }
         // (alloc() may take debug params, name and span, past (arena, size).)
         if alloc_cf, af_ok := checked.functions[g.arena_alloc_name]; af_ok {
-            g.arena_alloc_has_debug = len(alloc_cf.cg_params) > 2
+            g.arena_alloc_has_debug = len(alloc_cf.params) > 2
         }
     }
 

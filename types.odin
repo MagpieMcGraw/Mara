@@ -283,39 +283,37 @@ Scope_Body :: struct {
     is_exposed:           bool,             // `#expose` → dllexport linkage + unmangled symbol
     return_binding_names: [dynamic]string,  // named-return locals (`fun() -> (fwd, up: Vec3)`)
     return_binding_decls: [dynamic]Token_Id,  // ... and the tokens that declare them
-    // Codegen-facing signature caches (see populate_cg_signature). cg_returns
-    // prepends a struct ctor's Self (sret slot 0); both pre-unwrap distinct.
-    // Built at CHECK time: codegen's parallel workers read them, and must
-    // not write a shared Type_Scope.
-    cg_returns:           [dynamic]Type,
-    cg_params:            [dynamic]Struct_Type_Field,
 }
 
-// Build the codegen-facing signature caches (cg_returns + cg_params) into ft.
-// Both pre-unwrap distinct wrappers; cg_returns Self-prepends a struct ctor's
-// sret slot 0. Runs at CHECK time: computing them during codegen, under a
-// worker's transient arena, would dangle — and write a shared Type_Scope from
-// parallel workers.
-populate_cg_signature :: proc(ft: ^Type_Scope) {
-    clear(&ft.cg_returns)
-    if len(ft.return_types) == 0 && ft.kind == .Struct {
-        append(&ft.cg_returns, distinct_base(Type(ft)))
-    } else if len(ft.return_types) > 0 && ft.kind == .Struct {
-        append(&ft.cg_returns, distinct_base(Type(ft)))
-        for rt in ft.return_types {
-            append(&ft.cg_returns, distinct_base(rt))
-        }
-    } else {
-        for rt in ft.return_types {
-            append(&ft.cg_returns, distinct_base(rt))
-        }
+// A fun's params and results as codegen passes them — distinct types as
+// their bases; among a struct's constructor's results, Self first (its sret
+// slot) — read off its one signature as they're asked for. (Reading only:
+// codegen's workers share the scopes.)
+fn_param :: proc(ft: ^Type_Scope, i: int) -> Struct_Type_Field {
+    p := ft.params[i]
+    p.type_ = distinct_base(p.type_)
+    return p
+}
+
+fn_result_count :: proc(ft: ^Type_Scope) -> int {
+    if ft.kind == .Struct && !ft.is_module { return 1 + len(ft.return_types) }
+    return len(ft.return_types)
+}
+
+fn_result :: proc(ft: ^Type_Scope, i: int) -> Type {
+    if ft.kind == .Struct && !ft.is_module {
+        if i == 0 { return Type(ft) }
+        return distinct_base(ft.return_types[i - 1])
     }
-    clear(&ft.cg_params)
-    for p in ft.params {
-        pp := p
-        pp.type_ = distinct_base(p.type_)
-        append(&ft.cg_params, pp)
-    }
+    return distinct_base(ft.return_types[i])
+}
+
+// ... all of them, in a list of its own: what a fun's emission lays its
+// results out by.
+fn_results :: proc(ft: ^Type_Scope, allocator := context.temp_allocator) -> []Type {
+    out := make([]Type, fn_result_count(ft), allocator)
+    for &r, i in out { r = fn_result(ft, i) }
+    return out
 }
 
 // A scope: a struct, a fun, a block, a file or a module — one per

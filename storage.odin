@@ -749,7 +749,8 @@ storage_reads_its_dest :: proc(pg: ^Program_Graph, op, arg, dest: Node_Id, calle
 
 // Whether a call hands its callee storage: a param passed by address.
 storage_passes_storage :: proc(callee: ^Type_Scope) -> bool {
-    for p in callee.cg_params {
+    for _, i in callee.params {
+        p := fn_param(callee, i)
         if ir, _ := llvm_param_type(p.type_); ir == "ptr" { return true }
     }
     return false
@@ -901,17 +902,18 @@ storage_calls :: proc(s: ^Storage, sret: Type) {
                 if callee.kind != .Fun { continue }
                 if _, src := callee.origin.(Origin_Source); !src { continue }
             }
-            if args != len(callee.cg_params) { continue }
-            if len(callee.cg_returns) > 1 {
-                for rt, i in callee.cg_returns {
+            if args != len(callee.params) { continue }
+            if fn_result_count(callee) > 1 {
+                for i in 0 ..< fn_result_count(callee) {
+                    rt := fn_result(callee, i)
                     if !llvm_aggregate(rt) { continue }
                     o := Operand{op, i32(i)}
                     if d := storage_declared_at(s, o); d != NO_NODE { s.out_at[o] = d }
                 }
                 continue
             }
-            if len(callee.cg_returns) != 1 { continue }
-            if result := callee.cg_returns[0]; llvm_scalar(result) || !llvm_aggregate(result) { continue }
+            if fn_result_count(callee) != 1 { continue }
+            if result := fn_result(callee, 0); llvm_scalar(result) || !llvm_aggregate(result) { continue }
             if at := storage_call_place(s, op, callee, sret); at != .Temporary { s.calls[op] = at }
         }
     }

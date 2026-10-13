@@ -72,7 +72,6 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         ft.kind = .Fun
         for p in tree_list(t, t.a[n]) { append(&ft.params, Struct_Type_Field{type_ = tc_type(k, p, env, span)}) }
         for r in tree_list(t, t.b[n]) { append(&ft.return_types, tc_type(k, r, env, span)) }
-        populate_cg_signature(ft)
         return ft
     case .Type_Generic:
         return tc_generic_type(k, n, env, span)

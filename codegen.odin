@@ -211,8 +211,8 @@ mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
 // result is one: "" otherwise.
 fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
     cf, found := g.checked.functions[fn_name]
-    if !found || len(cf.cg_returns) != 1 { return "" }
-    if sd := as_struct_body(cf.cg_returns[0]); sd != nil { return sd.name }
+    if !found || fn_result_count(cf) != 1 { return "" }
+    if sd := as_struct_body(fn_result(cf, 0)); sd != nil { return sd.name }
     return ""
 }
 

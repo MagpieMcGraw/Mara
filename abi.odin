@@ -322,8 +322,8 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     // Return lowering. C ABI has no multi-return; foreign return list is 0 or 1.
     ret_ir := "void"
     ret_single: Type
-    has_void_return := len(cs.cg_returns) == 0
-    if !has_void_return { ret_single = cs.cg_returns[0] }
+    has_void_return := fn_result_count(cs) == 0
+    if !has_void_return { ret_single = fn_result(cs, 0) }
     if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     if !has_void_return {
         ret_low := classify(ret_single, os)
@@ -338,7 +338,8 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     }
 
     // Argument lowering.
-    for p in cs.cg_params {
+    for _, pi in cs.params {
+        p := fn_param(cs, pi)
         plow := classify(p.type_, os)
         switch pp in plow {
         case Lowering_Direct:

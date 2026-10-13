@@ -28,7 +28,7 @@ Fun_Summary :: struct {
 reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Scope) -> ^Fun_Summary {
     if s := graph_fun_summary(code, f); s != nil { return s }   // (worked out for everyone: reach_scc)
     if s, known := cache^[f]; known && s.done { return s }
-    n := len(f.cg_params)
+    n := len(f.params)
     all := new(Fun_Summary)
     all.reaches, all.returned, all.done = make([]bool, n), make([]bool, n), true
     for &r in all.reaches { r = true }
@@ -61,7 +61,7 @@ reach_scc :: proc(code: ^Program_Code, rp: ^Reach_Pass, members: []^Type_Scope) 
         // once it's worked out: every fun's is.)
         context.temp_allocator = virtual.arena_allocator(&rp.walk)
         defer virtual.arena_free_all(&rp.walk)
-        n := len(f.cg_params)
+        n := len(f.params)
         s := new(Fun_Summary)
         s.reaches, s.returned = make([]bool, n), make([]bool, n)
         pg := graph_fun_code(code, f)
@@ -108,7 +108,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
             }
         }
     }
-    if len(params) != len(f.cg_params) { return false }
+    if len(params) != len(f.params) { return false }
 
     // A place in a local that only becomes the result: written, built, and
     // read only to be returned — a value kept there is returned, not read.
@@ -137,7 +137,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
     }
 
     for pn, k in params {
-        t := distinct_base(f.cg_params[k].type_)
+        t := distinct_base(f.params[k].type_)
         if ir, _ := llvm_param_type(t); ir != "ptr" { continue }   // a value: nothing behind it
         if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun { continue }
         if _, is_ptr := t.(^Type_Ptr); !is_ptr {
@@ -359,7 +359,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
             // number comes back as a value — nothing built over anything.)
             if v := ops[1]; v.op != NO_NODE && pg.op[v.op] == .Call {
                 callee := graph_called(pg, v.op)
-                if callee == nil || int(v.out) >= len(callee.cg_returns) || !graph_aggregate(callee.cg_returns[v.out]) { continue }
+                if callee == nil || int(v.out) >= fn_result_count(callee) || !graph_aggregate(fn_result(callee, int(v.out))) { continue }
                 if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &rp.cache, pg, bound, v.op, x, 0, &rp.diags) }
             }
         case .Construct:
