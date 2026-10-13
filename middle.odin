@@ -1,8 +1,12 @@
 package mara
 
+import "core:mem/virtual"
 import "core:os"
+import os_old "core:os/old"
 import "core:slice"
 import "core:strconv"
+import "core:sync"
+import "core:thread"
 
 // middle.odin — the middle end, a code at a time. Each code is lowered on
 // its own (lw_code), then folded and analysed while what it calls is
@@ -13,16 +17,19 @@ import "core:strconv"
 // and reported once every code is (middle_report), in the order the
 // program-wide passes reported it.
 //
-// The work is a worker's at a time (Middle_Worker): a lowering of its own
-// (lw_worker), its own state for each analysis. What workers share they only
-// read, or add to under the program's lock (Graph_Program.lock): the codes
-// built, the constants' tables.
+// The work is shared out to workers, each a thread (Middle_Worker): a
+// lowering of its own (lw_worker), its own state for each analysis, its own
+// memory (its builder's store). What workers share they only read, or add to
+// under the program's lock (Graph_Program.lock): the codes built, the
+// constants' tables. Constants and structs are any worker's; a component of
+// the call graph is a worker's once every component it calls is done; what's
+// left, any worker's.
 
 Middle :: struct {
     on:      bool,
     prog:    ^Graph_Program,     // the codes lowered
     workers: [dynamic]^Middle_Worker,
-    escape:  [dynamic][dynamic]Esc_Diag,   // each thread's escape diagnostics
+    escape:  [dynamic][dynamic]Esc_Diag,   // each worker's escape diagnostics
 }
 
 // One worker of the middle end: its lowering and what its analyses keep.
@@ -48,34 +55,29 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     pc.lock = &p.lock
     g_infer_frozen = true
     defer g_infer_frozen = false
-    // The workers: one. (A debug build can deal codes out to several in
-    // turn, MARA_LOWER_WORKERS — what one builds next to another's.)
-    n := 1
-    when ODIN_DEBUG {
-        if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.parse_int(s) or_else 1) }
-    }
+    // The workers: a thread each, as many as the cores (MARA_LOWER_WORKERS:
+    // as many as it says).
+    n := max(1, os_old.processor_core_count())
+    if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.parse_int(s) or_else 1) }
     for _ in 0 ..< n {
         mw := new(Middle_Worker)
         mw^ = {k = lw_worker(k, p), flow = flow_pass_make(fns), fold = graph_fold_begin(pc, checked)}
         append(&mid.workers, mw)
     }
+    resize(&mid.escape, n)
     escape_begin(c, pc)
-    escape_thread_begin(pc)
-    turn := 0
-    next :: proc(mid: ^Middle, turn: ^int) -> ^Middle_Worker {
-        mw := mid.workers[turn^ % len(mid.workers)]
-        turn^ += 1
-        return mw
-    }
+    run := Middle_Run{mid = &mid, codes = &codes, cg = c.cg}
 
     // Constants, and the structs a constant's value may construct.
     for e, i in k.events {
-        mw := next(&mid, &turn)
         #partial switch e.kind {
-        case .Const, .Program_Struct: lw_code(mw.k, &codes, i)
-        case .Body:                   if e.sc.ts.kind == .Struct { lw_code(mw.k, &codes, i) }
+        case .Const, .Program_Struct: append(&run.list, i)
+        case .Body:                   if e.sc.ts.kind == .Struct { append(&run.list, i) }
         }
     }
+    middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
+        for i in middle_take(run) { lw_code(mw.k, run.codes, i) }
+    })
     // ... folded now, before any fun is lowered: what folding a constant
     // runs — a struct's code — is done changing before it's read.
     for g, i in codes.code {
@@ -84,18 +86,25 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         codes.folded[i] = true
     }
     // Each component's funs, then the component's escape analysis, then each
-    // one's own.
-    cg := c.cg
-    for scc in cg.sccs { middle_scc(next(&mid, &turn), &codes, cg, scc[:]) }
+    // one's own — once the components it calls are done.
+    middle_components(&run)
+    middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
+        for s in middle_ready(run) {
+            middle_scc(mw, run.codes, run.cg, run.cg.sccs[s][:])
+            middle_done(run, s)
+        }
+    })
     // What no call graph node is: the constants, a struct nothing constructs
-    // or calls, the program's struct — in the order checked.
-    for e, i in k.events {
-        if e.kind == .Module_Stmt { continue }
-        mw := next(&mid, &turn)
-        lw_code(mw.k, &codes, i)
-        middle_analyse(mw, &codes, i)
-    }
-    append(&mid.escape, escape_thread_end())
+    // or calls, the program's struct.
+    clear(&run.list)
+    run.next = 0
+    for e, i in k.events { if e.kind != .Module_Stmt { append(&run.list, i) } }
+    middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
+        for i in middle_take(run) {
+            lw_code(mw.k, run.codes, i)
+            middle_analyse(mw, run.codes, i)
+        }
+    })
     pc.lock = nil
     lower_place(mid.workers[0].k, &codes)
     folders := make([dynamic]^Folder, context.temp_allocator)
@@ -111,6 +120,102 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         }
     }
     return mid
+}
+
+// The work the workers share out, and where it's at.
+Middle_Run :: struct {
+    mid:     ^Middle,
+    codes:   ^LW_Codes,
+    cg:      ^Call_Graph,
+    lock:    sync.Mutex,
+    // Events, any worker's: the next one to take.
+    list:    [dynamic]int,
+    next:    int,
+    // The call graph's components: each one's callees' left to be done; who
+    // calls each; those ready, with none left; how many aren't done.
+    waits:   []int,
+    callers: [][dynamic]int,
+    ready:   [dynamic]int,
+    left:    int,
+    changed: sync.Cond,   // (one done: more may be ready, or none left)
+}
+
+// Each worker's thread runs `work`, its memory its own (its builder's
+// store); then each is joined.
+middle_threads :: proc(run: ^Middle_Run, work: proc(run: ^Middle_Run, mw: ^Middle_Worker)) {
+    Job :: struct { run: ^Middle_Run, mw: ^Middle_Worker, work: proc(run: ^Middle_Run, mw: ^Middle_Worker), index: int }
+    jobs := make([]Job, len(run.mid.workers), context.temp_allocator)
+    threads := make([]^thread.Thread, len(run.mid.workers), context.temp_allocator)
+    for mw, i in run.mid.workers {
+        jobs[i] = {run, mw, work, i}
+        threads[i] = thread.create(proc(t: ^thread.Thread) {
+            job := (^Job)(t.data)
+            in_store := virtual.arena_allocator(job.mw.k.gb.store.arena)
+            context.allocator = in_store
+            context.temp_allocator = in_store
+            escape_thread_begin(&job.run.mid.prog.pc)
+            job.work(job.run, job.mw)
+            esc := escape_thread_end()
+            append(&job.run.mid.escape[job.index], ..esc[:])
+        })
+        threads[i].data = &jobs[i]
+        thread.start(threads[i])
+    }
+    for t in threads {
+        thread.join(t)
+        thread.destroy(t)
+    }
+}
+
+// The events left, a worker's turn at a time: the next one it takes.
+middle_take :: proc(run: ^Middle_Run) -> (i: int, ok: bool) {
+    sync.mutex_lock(&run.lock)
+    defer sync.mutex_unlock(&run.lock)
+    if run.next >= len(run.list) { return }
+    i, ok = run.list[run.next], true
+    run.next += 1
+    return
+}
+
+// The call graph's components, each with the components it calls to wait
+// for (bottom-up: none, first).
+middle_components :: proc(run: ^Middle_Run) {
+    cg := run.cg
+    run.waits = make([]int, len(cg.sccs))
+    run.callers = make([][dynamic]int, len(cg.sccs))
+    for scc, s in cg.sccs {
+        for node in scc {
+            for to in cg.out_edges[node] {
+                callee := cg.scc_of[to]
+                if callee == s || slice.contains(run.callers[callee][:], s) { continue }
+                append(&run.callers[callee], s)
+                run.waits[s] += 1
+            }
+        }
+    }
+    run.left = len(cg.sccs)
+    for w, s in run.waits { if w == 0 { append(&run.ready, s) } }
+}
+
+// The next component ready — waiting for one, while any is left.
+middle_ready :: proc(run: ^Middle_Run) -> (s: int, ok: bool) {
+    sync.mutex_lock(&run.lock)
+    defer sync.mutex_unlock(&run.lock)
+    for len(run.ready) == 0 && run.left > 0 { sync.cond_wait(&run.changed, &run.lock) }
+    if len(run.ready) == 0 { return }
+    return pop(&run.ready), true
+}
+
+// A component done: the components calling it wait for one less.
+middle_done :: proc(run: ^Middle_Run, s: int) {
+    sync.mutex_lock(&run.lock)
+    defer sync.mutex_unlock(&run.lock)
+    run.left -= 1
+    for caller in run.callers[s] {
+        run.waits[caller] -= 1
+        if run.waits[caller] == 0 { append(&run.ready, caller) }
+    }
+    sync.cond_broadcast(&run.changed)
 }
 
 // A component of the call graph: its funs lowered, its escape analysis run,
@@ -169,7 +274,7 @@ middle_report :: proc(c: ^Checker, checked: ^Checked_Program, mid: ^Middle, fns:
 // The workers let go of: their lowerings' builders and views.
 middle_free :: proc(mid: ^Middle) {
     for mw in mid.workers {
-        graph_builder_free(mw.k.gb)
+        graph_builder_free(mw.k.gb, virtual.arena_allocator(mw.k.gb.store.arena))
         free(mw.k)
         free(mw)
     }

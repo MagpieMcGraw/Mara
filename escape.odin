@@ -181,7 +181,7 @@ escape_thread_begin :: proc(code: ^Program_Code) {
         diags    = make([dynamic]Esc_Diag),
         kept     = context.allocator,
     }
-    if err := virtual.arena_init_static(&g_esc.walk, reserved = 64 * mem.Gigabyte); err != nil {
+    if err := virtual.arena_init_growing(&g_esc.walk); err != nil {
         fmt.panicf("escape analysis: no arena for its walks (%v)", err)
     }
     // (The type caches fill during walks: kept, with their own allocator —

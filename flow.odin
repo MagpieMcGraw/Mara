@@ -41,7 +41,7 @@ flow_pass_make :: proc(fns: []^Type_Scope) -> Flow_Pass {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); src { fp.sources[ft] = true }
     }
-    if err := virtual.arena_init_static(&fp.walk, reserved = 64 * mem.Gigabyte); err != nil {
+    if err := virtual.arena_init_growing(&fp.walk); err != nil {
         fmt.panicf("flow analysis: no arena for its walks (%v)", err)
     }
     return fp

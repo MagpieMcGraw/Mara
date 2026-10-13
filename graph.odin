@@ -454,6 +454,8 @@ Graph_Program :: struct {
     // What builders on several threads add here, and look up in pc while
     // they do (pc.lock), is added and looked up under it.
     lock:     sync.Mutex,
+    allocator: mem.Allocator,   // what it's made with (the codes built are kept with it)
+    region_size: uint,          // what each builder's regions reserve (graph_region_size)
 }
 
 // Where a builder's codes are made: an arena (their graphs, the tables they
@@ -564,6 +566,18 @@ graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     p := new(Graph_Program)
     p.checked = checked
     graph_modules(p, modules)
+    // What builders on other threads add to, made here: it grows with this
+    // thread's allocator (Graph_Program.allocator), which only one thread uses
+    // at a time — under the lock while they run, this one waiting for them.
+    p.allocator = context.allocator
+    p.region_size = graph_region_size()
+    p.bodies = make(map[^Type_Scope]^Built_Code)
+    p.consts = make(map[Syntax_Id]^Built_Code)
+    p.scope_of = make(map[Syntax_Id]^Type_Scope)
+    p.pc.funs = make(map[^Type_Scope]^Program_Graph)
+    p.pc.consts = make(map[Syntax_Id]^Program_Graph)
+    p.pc.consumes = make(map[^Type_Scope]int)
+    p.pc.tables = make(map[Syntax_Id]^Fold)
     return p
 }
 
@@ -583,6 +597,7 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     if err := virtual.arena_init_growing(b.store.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
     in_store := virtual.arena_allocator(b.store.arena)
     b.store.regions = new([Graph_Column]Graph_Region, in_store)
+    for &r in b.store.regions { r.want = p.region_size }
     b.tables = new(Graph_Tables, in_store)
     r := b.store.regions
     b.tables.names = make([dynamic]string, graph_region_allocator(&r[.Names]))
@@ -635,15 +650,17 @@ graph_module_stmt :: proc(b: ^Graph_Program, id: Syntax_Id, declared: Graph_Decl
 }
 
 // A builder done with (its codes, and what they hold, stay: Program_Code.stores).
-graph_builder_free :: proc(b: ^Graph_Builder) {
+// (`made_in`: what its runs and bodies were made with — a worker's, its
+// store's arena.)
+graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
     delete(b.runs)
     for r in b.run_pool {
         delete(r.ops)
         delete(r.waiting)
-        free(r)
+        free(r, made_in)
     }
     delete(b.run_pool)
-    for f in b.body_pool { graph_body_drop(f) }
+    for f in b.body_pool { graph_body_drop(f, made_in) }
     delete(b.body_pool)
     delete(b.locals)
     // (What finds an id is done with — the codes read the tables' entries.)
@@ -716,10 +733,20 @@ Graph_Region :: struct {
     reserved:   uint,
     committed:  uint,
     last, used: uint,   // its newest allocation: [last, used)
+    want:       uint,   // what to reserve, once it's first used (graph_region_size)
+}
+
+// What a column's region reserves: more than one builder can put in it —
+// no code has more nodes, operands, runs or statements than its tokens
+// three times over, none takes over 16 bytes, so 64 a token is room for
+// the whole program's (a builder builds part of it). Reserving costs with
+// the size (Windows): what builders don't need, they don't take.
+graph_region_size :: proc() -> uint {
+    return clamp(mem.align_forward_uint(uint(len(build_tokens)) * 64, GRAPH_REGION_COMMIT), uint(64) << 20, GRAPH_REGION_RESERVE)
 }
 
 @(private="file")
-GRAPH_REGION_RESERVE :: uint(64) << 30   // (each column's: more than any program's)
+GRAPH_REGION_RESERVE :: uint(64) << 30   // (the most a column's region reserves)
 @(private="file")
 GRAPH_REGION_COMMIT :: uint(1) << 20     // (committed so much at a time)
 
@@ -751,7 +778,7 @@ graph_region_proc :: proc(data: rawptr, mode: mem.Allocator_Mode, size, alignmen
     switch mode {
     case .Alloc, .Alloc_Non_Zeroed:
         if r.base == nil {
-            space := virtual.reserve(GRAPH_REGION_RESERVE) or_return
+            space := virtual.reserve(r.want if r.want != 0 else GRAPH_REGION_RESERVE) or_return
             r.base, r.reserved = raw_data(space), uint(len(space))
         }
         start := mem.align_forward_uint(r.used, uint(alignment))
@@ -2112,11 +2139,10 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     // (Its end can find what it can't build: a scope's values on the arena.)
     c := graph_code_close(b, f)
     if c != nil {
-        built := new_clone(Built_Code{g = c, b = b, defs = f.defs})
-        f.defs = nil
         sync.mutex_lock(&b.prog.lock)
-        b.prog.bodies[f.ts] = built
+        b.prog.bodies[f.ts] = new_clone(Built_Code{g = c, b = b, defs = f.defs}, b.prog.allocator)
         sync.mutex_unlock(&b.prog.lock)
+        f.defs = nil
         graph_code_found(b, c, 0)
     }
     graph_body_free(b, f)
@@ -2145,9 +2171,9 @@ graph_body_free :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
 }
 
 @(private="file")
-graph_body_drop :: proc(f: ^Graph_Body) {
+graph_body_drop :: proc(f: ^Graph_Body, made_in := context.allocator) {
     delete(f.arena_types); delete(f.fields); delete(f.field_inits); delete(f.field_outs)
-    free(f)
+    free(f, made_in)
 }
 
 // A map emptied for its next use — or, grown big, given back: emptying
@@ -3217,9 +3243,8 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) -> ^Program_
     b.body = nil
     c := graph_code_close(b, f)
     if c != nil {
-        built := new_clone(Built_Code{g = c, b = b, value = d.value})
         sync.mutex_lock(&b.prog.lock)
-        b.prog.consts[d.id] = built
+        b.prog.consts[d.id] = new_clone(Built_Code{g = c, b = b, value = d.value}, b.prog.allocator)
         sync.mutex_unlock(&b.prog.lock)
         graph_code_found(b, c, d.value)
     }
