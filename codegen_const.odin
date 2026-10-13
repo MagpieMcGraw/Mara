@@ -35,7 +35,7 @@ Const_Ctx :: struct {
     g:      ^Codegen,
     span:   Span,
     global: string,                // the table's symbol
-    gtype:  string,                // its IR type — a partial array's header points into it
+    gtype:  Ir_Type,               // its IR type — a partial array's header points into it
     path:   [dynamic]Ir_Const,     // GEP indices from the table's root to the value being built
     extras: [dynamic]Ir_Global,    // private globals the initializer points at
     n_extra: int,
@@ -133,7 +133,7 @@ const_default :: proc(cx: ^Const_Ctx, t: Type) -> Ir_Const {
     #partial switch a in base {
     case ^Type_Fixed_Array:   return const_elements(cx, a.elem, a.size, nil)
     case ^Type_Partial_Array:
-        push_index(cx, "i32", PARTIAL_ELEMENTS_FIELD)
+        push_index(cx, IR_I32, PARTIAL_ELEMENTS_FIELD)
         elems := const_elements(cx, a.elem, a.size, nil)
         pop_index(cx)
         return const_partial_with(cx, a, 0, elems)
@@ -142,7 +142,7 @@ const_default :: proc(cx: ^Const_Ctx, t: Type) -> Ir_Const {
 }
 
 @(private="file")
-push_index :: proc(cx: ^Const_Ctx, ty: string, k: int) { append(&cx.path, ir_const(ty, ir_int(k))) }
+push_index :: proc(cx: ^Const_Ctx, ty: Ir_Type, k: int) { append(&cx.path, ir_const(ty, ir_int(k))) }
 @(private="file")
 pop_index :: proc(cx: ^Const_Ctx) { pop(&cx.path) }
 
@@ -151,7 +151,7 @@ const_struct :: proc(cx: ^Const_Ctx, sd: ^Scope_Body, v: ^Fold) -> Ir_Const {
     parts := make([]Ir_Const, len(sd.fields))
     all_zero := true
     for &f, i in sd.fields {
-        push_index(cx, "i32", i)
+        push_index(cx, IR_I32, i)
         part: Ir_Const
         if sd.is_union_variant && i == 0 {
             part = {v = ir_int(int(sd.union_variant_tag))} // the discriminant, always set
@@ -177,7 +177,7 @@ const_elements :: proc(cx: ^Const_Ctx, elem: Type, n: int, parts: []^Fold) -> Ir
     elems := make([]Ir_Const, n)
     all_zero := true
     for k in 0..<n {
-        push_index(cx, "i64", k)
+        push_index(cx, IR_I64, k)
         c := const_init(cx, parts[k] if k < len(parts) else nil, elem)
         pop_index(cx)
         if !ir_const_zero(c) { all_zero = false }
@@ -237,15 +237,15 @@ const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elem
     elem_ir := llvm_type_from_checker(pa.elem)
     // Its pointer: its own elements' address, from the table's root.
     index := make([dynamic]Ir_Const, 0, len(cx.path) + 2)
-    append(&index, ir_const("i32", ir_int(0)))
+    append(&index, ir_const(IR_I32, ir_int(0)))
     append(&index, ..cx.path[:])
-    append(&index, ir_const("i32", ir_int(PARTIAL_ELEMENTS_FIELD)))
+    append(&index, ir_const(IR_I32, ir_int(PARTIAL_ELEMENTS_FIELD)))
     parts := make([]Ir_Const, 4)
     parts[0] = ir_const(SLICE_LEN_IR, ir_int(n))
     parts[1] = ir_const(SLICE_LEN_IR, ir_int(pa.size))
-    parts[2] = {kind = .Gep, ty = "ptr", v = ir_global(cx.global), src = cx.gtype, parts = index[:]}
+    parts[2] = {kind = .Gep, ty = IR_PTR, v = ir_global(cx.global), src = cx.gtype, parts = index[:]}
     parts[3] = elems
-    parts[3].ty = fmt.tprintf("[%d x %s]", pa.size, elem_ir)
+    parts[3].ty = ir_array_type(pa.size, elem_ir)
     return {kind = .Struct, parts = parts}
 }
 
@@ -258,11 +258,11 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
     cx.n_extra += 1
     name := fmt.tprintf("%s.s%d", cx.global, cx.n_extra)
     append(&cx.extras, Ir_Global{name = name, linkage = .Private, unnamed = true, constant = true,
-        ty = fmt.tprintf("[%d x i8]", len(s) + 1), init = const_bytes(cx, s, len(s) + 1)})
+        ty = ir_array_type(len(s) + 1, IR_I8), init = const_bytes(cx, s, len(s) + 1)})
     parts := make([]Ir_Const, 3)
     parts[0] = ir_const(SLICE_LEN_IR, ir_int(len(s)))
     parts[1] = ir_const(SLICE_LEN_IR, ir_int(len(s) + 1))
-    parts[2] = ir_const("ptr", ir_global(name))
+    parts[2] = ir_const(IR_PTR, ir_global(name))
     return {kind = .Struct, parts = parts}
 }
 
@@ -270,25 +270,26 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
 // the union's size — its own IR type, since pointers are opaque and every
 // access types the load at the use site.
 @(private="file")
-const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: string, init: Ir_Const) {
+const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: Ir_Type, init: Ir_Const) {
     g := cx.g
     if v.variant == nil || ut.niche_some != "" { const_fail(cx) }
     vsd := as_struct_body(distinct_base(v.variant))
     if vsd == nil { const_fail(cx) }
-    vname := struct_llvm_name(vsd.name)
+    vname := ir_class_type(vsd)
     tail := type_size(ut) - struct_layout(vsd).size
     if tail <= 0 {
         cx.gtype = vname
         return vname, const_struct(cx, vsd, v)
     }
-    cx.gtype = fmt.tprintf("<{{ %s, [%d x i8] }}>", vname, tail)
-    push_index(cx, "i32", 0)
+    padded := [2]Ir_Type{vname, ir_array_type(tail, IR_I8)}
+    cx.gtype = ir_struct_type(padded[:], packed = true)
+    push_index(cx, IR_I32, 0)
     body := const_struct(cx, vsd, v)
     pop_index(cx)
     parts := make([]Ir_Const, 2)
     parts[0] = body
     parts[0].ty = vname
-    parts[1] = ir_const(fmt.tprintf("[%d x i8]", tail), IR_ZERO)
+    parts[1] = ir_const(ir_array_type(tail, IR_I8), IR_ZERO)
     return cx.gtype, {kind = .Packed, parts = parts}
 }
 
@@ -309,11 +310,11 @@ const_scalar :: proc(cx: ^Const_Ctx, v: ^Fold, t: Type) -> Ir_Const {
     c := v.c
     if c.is_text { const_fail(cx) }
     switch ir {
-    case "ptr":
+    case IR_PTR:
         return {v = IR_NULL}   // (`void`: the one pointer a constant holds)
-    case "i1":
+    case IR_I1:
         return {v = IR_TRUE if (c.float if c.is_float else f64(c.int)) != 0 else IR_FALSE}
-    case "half", "float", "double":
+    case IR_HALF, IR_FLOAT, IR_DOUBLE:
         return {v = emit_number_literal(ir, c.float if c.is_float else f64(c.int), 0, true)}
     }
     if c.is_float { const_fail(cx) }

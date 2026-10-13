@@ -23,7 +23,7 @@ emit_header_field :: proc(g: ^Codegen, header: Val, field: int) -> Val {
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, header, field)
     v := fresh_tmp(g)
-    emit_load_into(g, v, "ptr" if field == SLICE.ptr else SLICE_LEN_IR, gep)
+    emit_load_into(g, v, IR_PTR if field == SLICE.ptr else SLICE_LEN_IR, gep)
     return v
 }
 
@@ -31,7 +31,7 @@ emit_header_field :: proc(g: ^Codegen, header: Val, field: int) -> Val {
 emit_header_set :: proc(g: ^Codegen, header: Val, field: int, v: Val) {
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, header, field)
-    emit_store(g, "ptr" if field == SLICE.ptr else SLICE_LEN_IR, v, gep)
+    emit_store(g, IR_PTR if field == SLICE.ptr else SLICE_LEN_IR, v, gep)
 }
 
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
@@ -54,7 +54,7 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
     }
     sd := as_struct_body(base)
     if sd == nil { return }
-    llvm_name := struct_llvm_name(sd.name)
+    llvm_name := ir_class_type(sd)
     for &f, i in sd.fields {
         if !value_has_partial_array(g, f.type_) { continue }
         #partial switch _ in distinct_base(f.type_) {
@@ -70,7 +70,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
     if !value_has_partial_array(g, t) { return }
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil {
-        llvm_name := struct_llvm_name(sd.name)
+        llvm_name := ir_class_type(sd)
         for &f, i in sd.fields {
             if !value_has_partial_array(g, f.type_) { continue }
             gep := fresh_tmp(g)
@@ -85,10 +85,10 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
         elements_ptr := partial_elements(g, ptr, v)
         emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
         if value_has_partial_array(g, v.elem) {
-            reanchor_slots(g, v.elem, fmt.tprintf("[%d x %s]", v.size, elem_ir), elements_ptr, ir_int(v.size))
+            reanchor_slots(g, v.elem, ir_array_type(v.size, elem_ir), elements_ptr, ir_int(v.size))
         }
     case ^Type_Fixed_Array:
-        arr_ir := fmt.tprintf("[%d x %s]", v.size, llvm_type_from_checker(v.elem))
+        arr_ir := ir_array_type(v.size, llvm_type_from_checker(v.elem))
         if v.size <= 4 {
             for i in 0..<v.size {
                 gep := fresh_tmp(g)
@@ -120,7 +120,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
 
 // reanchor_partial_arrays over `count` consecutive `elem` slots of array type
 // `arr_ir` at `base` — a runtime loop, so a big array doesn't unroll.
-reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: string, base, count: Val) {
+reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: Ir_Type, base, count: Val) {
     l := emit_loop_begin(g, count, "reanchor")
     gep := fresh_tmp(g)
     emit_array_gep_var(g, gep, arr_ir, base, l.i, SLICE_LEN_IR)
@@ -246,7 +246,7 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, 
     emit_label(g, ok_lbl)
 
     elem_ptr := fresh_tmp(g)
-    emit_elem_gep(g, elem_ptr, "i8", data_ptr, offset, w)
+    emit_elem_gep(g, elem_ptr, IR_I8, data_ptr, offset, w)
     return elem_ptr
 }
 
@@ -270,7 +270,7 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: Val, size := 1) -> 
     over := fresh_tmp(g)
     ir_icmp(g, over, .Ugt, w, n, room)
     outside := fresh_tmp(g)
-    ir_bin(g, outside, .Or, "i1", past, over)
+    ir_bin(g, outside, .Or, IR_I1, past, over)
     return outside
 }
 
@@ -301,7 +301,7 @@ emit_bswap_value :: proc(g: ^Codegen, val: Val, t: Type) -> Val {
     if bits < 16 { return val }
     g.bswap_intrinsics[bits] = true
     swapped := fresh_tmp(g)
-    ty := fmt.tprintf("i%d", bits)
+    ty := ir_int_type(bits)
     ir_call(g, swapped, ty, ir_global(fmt.tprintf("llvm.bswap.i%d", bits)), {ty, val, {}})
     return swapped
 }
@@ -316,11 +316,11 @@ emit_bswap_value :: proc(g: ^Codegen, val: Val, t: Type) -> Val {
 //
 // Skipped leaves: 1-byte primitives (byte/utf8/c8/u8/i8/bool — already in
 // order); floats, pointers, slices, partial arrays (bswap is meaningless).
-emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: Val, base_ir_type: string, ty: Type) {
+emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: Val, base_ir_type: Ir_Type, ty: Type) {
     base := distinct_base(ty)
 
     if sd := as_struct_body(base); sd != nil {
-        st_llvm := struct_llvm_name(sd.name)
+        st_llvm := ir_class_type(sd)
         for &f, idx in sd.fields {
             field_ir := field_ir_type(&f)
             field_gep := fresh_tmp(g)
@@ -363,7 +363,7 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: Val, base_ir_type: string, ty
     intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
     g.bswap_intrinsics[bits] = true
     loaded := fresh_tmp(g)
-    ty := fmt.tprintf("i%d", bits)
+    ty := ir_int_type(bits)
     ir_load(g, loaded, ty, base_ptr, 1)
     swapped := fresh_tmp(g)
     ir_call(g, swapped, ty, ir_global(intrinsic), {ty, loaded, {}})
@@ -432,10 +432,10 @@ emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: Val, args: []I
         }
         all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
         append(&all, ..args)
-        append(&all, Ir_Arg{ty = "ptr", v = addr})
-        ir_call(g, {}, "void", mara_fn(g, st_name), ..all[:])
+        append(&all, Ir_Arg{ty = IR_PTR, v = addr})
+        ir_call(g, {}, IR_VOID, mara_fn(g, st_name), ..all[:])
     } else {
-        ir_call(g, {}, "void", mara_fn(g, st_name), {"ptr", addr, {}})
+        ir_call(g, {}, IR_VOID, mara_fn(g, st_name), {IR_PTR, addr, {}})
     }
 }
 
@@ -488,7 +488,7 @@ emit_each_element :: proc(g: ^Codegen, elements_ptr: Val, elem: Type, count: int
 partial_elements :: proc(g: ^Codegen, addr: Val, pa: ^Type_Partial_Array) -> Val {
     elements_ptr := fresh_tmp(g)
     ir_gep_inbounds(g, elements_ptr, partial_array_ir_type(llvm_type_from_checker(pa.elem), pa.size), addr,
-                    {"i32", ir_int(0), {}}, {"i32", ir_int(PARTIAL_ELEMENTS_FIELD), {}}, {"i32", ir_int(0), {}})
+                    {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(PARTIAL_ELEMENTS_FIELD), {}}, {IR_I32, ir_int(0), {}})
     return elements_ptr
 }
 
@@ -562,7 +562,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
 
     // memcpy(elements_ptr, src_data_ptr + src_low, src_bytes).
     src_offset_ptr := fresh_tmp(g)
-    emit_elem_gep(g, src_offset_ptr, "i8", src_data_ptr, src_low, w)
+    emit_elem_gep(g, src_offset_ptr, IR_I8, src_data_ptr, src_low, w)
     emit_memcpy_runtime(g, elements_ptr, src_offset_ptr, src_bytes)
 
     // `#big_endian` decorator on the source: byte-swap each element in
@@ -621,7 +621,7 @@ type_has_swappable_leaf :: proc(ty: Type) -> bool {
 // source span size is computed from runtime slice bounds. `bytes` is at
 // slice header width (SLICE_LEN_IR: i64), the intrinsic's.
 emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: Val) {
-    ir_call(g, {}, "void", ir_global("llvm.memcpy.p0.p0.i64"), {"ptr", dst, {}}, {"ptr", src, {}}, {"i64", bytes, {}}, {"i1", IR_FALSE, {}})
+    ir_call(g, {}, IR_VOID, ir_global("llvm.memcpy.p0.p0.i64"), {IR_PTR, dst, {}}, {IR_PTR, src, {}}, {IR_I64, bytes, {}}, {IR_I1, IR_FALSE, {}})
 }
 
 // ---------------------------------------------------------------------------
@@ -643,14 +643,14 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: Val, span: Span) {
     upper_cmp := fresh_tmp(g)
     ir_icmp(g, upper_cmp, .Sgt, w, val, cap_val)
     combined := fresh_tmp(g)
-    ir_bin(g, combined, .Or, "i1", neg_cmp, upper_cmp)
+    ir_bin(g, combined, .Or, IR_I1, neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
     name_global := get_string_literal(g, "slice")
-    ir_call(g, {}, "void", ir_global(__MARA_SLICE_LEN_FAIL), {"ptr", loc_global, {}}, {w, val, {}}, {w, cap_val, {}}, {"ptr", name_global, {}})
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_SLICE_LEN_FAIL), {IR_PTR, loc_global, {}}, {w, val, {}}, {w, cap_val, {}}, {IR_PTR, name_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -667,7 +667,7 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: Val, span: Span) {
 // e.g. a function's named struct return, whose %sret the caller zero-filled.
 // (A constructor stamps its own fields as it builds them.)
 fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: Val, sd: ^Scope_Body) {
-    st_llvm := struct_llvm_name(sd.name)
+    st_llvm := ir_class_type(sd)
     for &f, i in sd.fields {
         ft := distinct_base(f.type_)
         #partial switch v in ft {

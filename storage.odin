@@ -760,7 +760,7 @@ storage_reads_its_dest :: proc(pg: ^Program_Graph, op, arg, dest: Node_Id, calle
 storage_passes_storage :: proc(callee: ^Type_Scope) -> bool {
     for _, i in callee.params {
         p := fn_param(callee, i)
-        if ir, _ := llvm_param_type(p.type_); ir == "ptr" { return true }
+        if ir, _ := llvm_param_type(p.type_); ir == IR_PTR { return true }
     }
     return false
 }

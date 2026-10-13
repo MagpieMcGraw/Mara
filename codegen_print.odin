@@ -12,19 +12,19 @@ import "core:strings"
 // A numeric literal as a constant of the given IR type. A float is its exact
 // IEEE-754 bits (a float's value as a double's, LLVM's `0x…`; a half's, its
 // own); an integer its exact i128 value (an f64 loses precision above 2^53).
-emit_number_literal :: proc(target_type: string, value: f64, int_value: i128, is_float: bool) -> Val {
+emit_number_literal :: proc(target_type: Ir_Type, value: f64, int_value: i128, is_float: bool) -> Val {
     tt := target_type
-    if tt == "" {
-        tt = is_float ? "double" : "i64"
+    if tt == IR_NONE {
+        tt = is_float ? IR_DOUBLE : IR_I64
     }
     switch tt {
-    case "half":
+    case IR_HALF:
         return ir_half(transmute(u16)f16(value))
-    case "float":
+    case IR_FLOAT:
         return ir_float(transmute(u64)f64(f32(value)))
-    case "double":
+    case IR_DOUBLE:
         return ir_float(transmute(u64)value)
-    case "i8", "i16", "i32", "i64", "i128":
+    case IR_I8, IR_I16, IR_I32, IR_I64, IR_I128:
         return ir_int128(int_value)
     case:
         if is_float {
@@ -40,9 +40,9 @@ emit_number_literal :: proc(target_type: string, value: f64, int_value: i128, is
 
 // Whether an assert on a comparison in this IR type reports its sides'
 // values: what printf can carry — bools, ints up to 64 bits, floats.
-assert_reports :: proc(ir_type: string) -> bool {
+assert_reports :: proc(ir_type: Ir_Type) -> bool {
     switch ir_type {
-    case "i1", "i8", "i16", "i32", "i64", "half", "float", "double": return true
+    case IR_I1, IR_I8, IR_I16, IR_I32, IR_I64, IR_HALF, IR_FLOAT, IR_DOUBLE: return true
     }
     return false
 }
@@ -60,7 +60,7 @@ Assert_Side :: struct {
 // what was expected, and each reported side's value, or with no sides, that
 // the condition was false — and the program exits. The message is one
 // printf format assembled here; only the values are runtime arguments.
-emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []Assert_Side, ir_type: string, is_unsigned: bool) {
+emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []Assert_Side, ir_type: Ir_Type, is_unsigned: bool) {
     emit_crash_journal_begin(g)
     loc := span_location(span)
     // Embedded source text must not smuggle conversion specs into the
@@ -71,7 +71,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
     fmt.sbprintf(&msg, "Assert failed at %s\nExpected %s", loc, esc_cond)
     if len(sides) == 0 { strings.write_string(&msg, ", but it was false") }
     is_float := is_ir_float(ir_type)
-    is_bool  := ir_type == "i1"
+    is_bool  := ir_type == IR_I1
     spec := is_bool ? "%s" : (is_float ? "%g" : (is_unsigned ? "%llu" : "%lld"))
     joiner := ", but "
     for side in sides {
@@ -107,33 +107,33 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
             t_global := get_string_literal(g, "true")
             f_global := get_string_literal(g, "false")
             sel := fresh_tmp(g)
-            ir_select(g, sel, side.val, "ptr", t_global, f_global)
-            append(&args, Ir_Arg{"ptr", sel, {}})
+            ir_select(g, sel, side.val, IR_PTR, t_global, f_global)
+            append(&args, Ir_Arg{IR_PTR, sel, {}})
         case is_float:
-            if ir_type != "double" {
+            if ir_type != IR_DOUBLE {
                 v = fresh_tmp(g)
-                ir_cast(g, v, .Fpext, ir_type, side.val, "double")
+                ir_cast(g, v, .Fpext, ir_type, side.val, IR_DOUBLE)
             }
-            append(&args, Ir_Arg{"double", v, {}})
+            append(&args, Ir_Arg{IR_DOUBLE, v, {}})
         case is_char:
             // %c reads an i32 vararg (default promotion).
-            if ir_type != "i32" {
+            if ir_type != IR_I32 {
                 v = fresh_tmp(g)
-                ir_cast(g, v, ir_type == "i64" ? Ir_Inst.Trunc : .Zext, ir_type, side.val, "i32")
+                ir_cast(g, v, ir_type == IR_I64 ? Ir_Inst.Trunc : .Zext, ir_type, side.val, IR_I32)
             }
-            append(&args, Ir_Arg{"i32", v, {}})
+            append(&args, Ir_Arg{IR_I32, v, {}})
         case:
-            if ir_type != "i64" {
+            if ir_type != IR_I64 {
                 v = fresh_tmp(g)
-                ir_cast(g, v, is_unsigned ? Ir_Inst.Zext : .Sext, ir_type, side.val, "i64")
+                ir_cast(g, v, is_unsigned ? Ir_Inst.Zext : .Sext, ir_type, side.val, IR_I64)
             }
-            append(&args, Ir_Arg{"i64", v, {}})
+            append(&args, Ir_Arg{IR_I64, v, {}})
         }
     }
     strings.write_string(&msg, "\n")
     assert_flush_printf(g, &msg, &args)
     emit_crash_journal_end(g)
-    ir_call(g, {}, "void", ir_global("exit"), {"i32", ir_int(1), {}})
+    ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
     ir_unreachable(g)
 }
 
@@ -144,9 +144,9 @@ assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^[dynamic]
     if strings.builder_len(msg^) == 0 { return }
     msg_global := get_string_literal(g, strings.to_string(msg^))
     all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
-    append(&all, Ir_Arg{"ptr", msg_global, {}})
+    append(&all, Ir_Arg{IR_PTR, msg_global, {}})
     append(&all, ..args[:])
-    ir_call_va(g, {}, "i32", "(ptr, ...)", printf_sym(g), ..all[:])
+    ir_call_va(g, {}, IR_I32, IR_PRINTF, printf_sym(g), ..all[:])
     strings.builder_reset(msg)
     clear(args)
 }
@@ -157,14 +157,14 @@ assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^[dynamic]
 // message lands in the journal as well as on stdout.
 emit_crash_journal_begin :: proc(g: ^Codegen) {
     if g.web { return }
-    ir_call(g, {}, "void", ir_global("__mara_crash_begin"))
+    ir_call(g, {}, IR_VOID, ir_global("__mara_crash_begin"))
     g.tee = true
 }
 
 emit_crash_journal_end :: proc(g: ^Codegen) {
     if g.web { return }
     g.tee = false
-    ir_call(g, {}, "void", ir_global("__mara_crash_end"))
+    ir_call(g, {}, IR_VOID, ir_global("__mara_crash_end"))
 }
 
 // A runtime failure: the journal opens, the message prints — `message`, a C
@@ -172,40 +172,36 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
 emit_fail :: proc(g: ^Codegen, message: string, args: ..Ir_Arg) {
     emit_crash_journal_begin(g)
     all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
-    append(&all, Ir_Arg{"ptr", get_string_literal(g, message), {}})
+    append(&all, Ir_Arg{IR_PTR, get_string_literal(g, message), {}})
     append(&all, ..args)
-    ir_call_va(g, {}, "i32", "(ptr, ...)", printf_sym(g), ..all[:])
+    ir_call_va(g, {}, IR_I32, IR_PRINTF, printf_sym(g), ..all[:])
     emit_crash_journal_end(g)
-    ir_call(g, {}, "void", ir_global("exit"), {"i32", ir_int(1), {}})
+    ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
     ir_unreachable(g)
 }
 
 // A value at slice header width (SLICE_LEN_IR), as emit_fail's argument.
 fail_i64 :: proc(v: Val) -> Ir_Arg {
-    return {"i64", v, {}}
+    return {IR_I64, v, {}}
 }
 
 // ---------------------------------------------------------------------------
 // Type cast codegen: i32(x), f64(x), etc.
 // ---------------------------------------------------------------------------
 
-ir_type_bits :: proc(t: string) -> int {
-    switch t {
-    case "i1":     return 1
-    case "i8":     return 8
-    case "i16":    return 16
-    case "i32":    return 32
-    case "i64":    return 64
-    case "i128":   return 128
-    case "half":   return 16
-    case "float":  return 32
-    case "double": return 64
+// A number type's bits; 0 for any other type.
+ir_type_bits :: proc(t: Ir_Type) -> int {
+    #partial switch info := ir_type_info(t); info.kind {
+    case .Int:    return info.n
+    case .Half:   return 16
+    case .Float:  return 32
+    case .Double: return 64
     }
     return 0
 }
 
-is_ir_float :: proc(t: string) -> bool {
-    return t == "half" || t == "float" || t == "double"
+is_ir_float :: proc(t: Ir_Type) -> bool {
+    return t == IR_HALF || t == IR_FLOAT || t == IR_DOUBLE
 }
 
 // ---------------------------------------------------------------------------
@@ -229,11 +225,11 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     // len < cap: terminator sits right after the content.
     emit_label(g, at_len_lbl)
     p1 := fresh_tmp(g)
-    emit_elem_gep(g, p1, "i8", src_ptr, len_val, w)
+    emit_elem_gep(g, p1, IR_I8, src_ptr, len_val, w)
     b1 := fresh_tmp(g)
-    emit_load_into(g, b1, "i8", p1)
+    emit_load_into(g, b1, IR_I8, p1)
     ok1 := fresh_tmp(g)
-    ir_icmp(g, ok1, .Eq, "i8", b1, ir_int(0))
+    ir_icmp(g, ok1, .Eq, IR_I8, b1, ir_int(0))
     emit_cond_br(g, ok1, pass_lbl, crash_lbl)
     // len == cap: full view — the last byte must be 0 (and cap > 0 so
     // the [cap-1] read stays inside the storage).
@@ -245,11 +241,11 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     last := fresh_tmp(g)
     ir_bin(g, last, .Sub, w, cap_val, ir_int(1))
     p2 := fresh_tmp(g)
-    emit_elem_gep(g, p2, "i8", src_ptr, last, w)
+    emit_elem_gep(g, p2, IR_I8, src_ptr, last, w)
     b2 := fresh_tmp(g)
-    emit_load_into(g, b2, "i8", p2)
+    emit_load_into(g, b2, IR_I8, p2)
     ok2 := fresh_tmp(g)
-    ir_icmp(g, ok2, .Eq, "i8", b2, ir_int(0))
+    ir_icmp(g, ok2, .Eq, IR_I8, b2, ir_int(0))
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
@@ -325,7 +321,7 @@ emit_crash :: proc(g: ^Codegen, span: Span, msg: Val) {
     // (The location line, as an assert's.)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     if msg.kind != .None {
-        emit_fail(g, fmt.tprintf("Crashed at %s\n%%s\n", loc), {"ptr", msg, {}})
+        emit_fail(g, fmt.tprintf("Crashed at %s\n%%s\n", loc), {IR_PTR, msg, {}})
     } else {
         emit_fail(g, fmt.tprintf("Crashed at %s\n", loc))
     }
@@ -356,11 +352,11 @@ emit_print_operand :: proc(g: ^Codegen, v: Print_Arg) {
 
 // print_cstr, print_int, print_float: the printf spec each prints its value
 // with, and the value's IR type.
-raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
+raw_print :: proc(name: string) -> (spec: string, ir: Ir_Type, ok: bool) {
     switch name {
-    case "print_cstr":  return "%s", "ptr", true
-    case "print_int":   return "%lld", "i64", true
-    case "print_float": return "%g", "double", true
+    case "print_cstr":  return "%s", IR_PTR, true
+    case "print_int":   return "%lld", IR_I64, true
+    case "print_float": return "%g", IR_DOUBLE, true
     }
     return
 }
@@ -369,8 +365,8 @@ raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
 // it needs no terminating 0. (`%.*s` takes an int: n, narrowed.)
 emit_print_text :: proc(g: ^Codegen, data, n: Val) {
     prec := fresh_tmp(g)
-    ir_cast(g, prec, .Trunc, SLICE_LEN_IR, n, "i32")
-    emit_printf(g, "%.*s", {"i32", prec, {}}, {"ptr", data, {}})
+    ir_cast(g, prec, .Trunc, SLICE_LEN_IR, n, IR_I32)
+    emit_printf(g, "%.*s", {IR_I32, prec, {}}, {IR_PTR, data, {}})
 }
 
 // True if `s` contains a `%` placeholder (i.e. an unescaped `%`). `%%` is the
@@ -445,7 +441,7 @@ emit_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Print_Arg, call_
 
 // Emit a printf("%s", literal) for an inline static string.
 emit_print_literal :: proc(g: ^Codegen, s: string) {
-    emit_printf(g, "%s", {"ptr", get_string_literal(g, s), {}})
+    emit_printf(g, "%s", {IR_PTR, get_string_literal(g, s), {}})
 }
 
 emit_print_newline :: proc(g: ^Codegen) {
@@ -461,8 +457,8 @@ gen_print_bool :: proc(g: ^Codegen, val_i1: Val) {
     true_ptr := get_string_literal(g, "true")
     false_ptr := get_string_literal(g, "false")
     bool_str := fresh_tmp(g)
-    ir_select(g, bool_str, val_i1, "ptr", true_ptr, false_ptr)
-    emit_printf(g, "%s", {"ptr", bool_str, {}})
+    ir_select(g, bool_str, val_i1, IR_PTR, true_ptr, false_ptr)
+    emit_printf(g, "%s", {IR_PTR, bool_str, {}})
 }
 
 // Print an already-loaded scalar VALUE given its Mara type — the single source
@@ -478,8 +474,8 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
     if _, ok := bt.(Type_Utf8); ok {
         // utf8 scalar = a character: render the glyph, not the code point.
         ext := fresh_tmp(g)
-        ir_cast(g, ext, .Zext, "i8", val, "i32")
-        emit_printf(g, "%c", {"i32", ext, {}})
+        ir_cast(g, ext, .Zext, IR_I8, val, IR_I32)
+        emit_printf(g, "%c", {IR_I32, ext, {}})
         return
     }
     if et, ok := bt.(^Type_Enum); ok {
@@ -487,18 +483,18 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         return
     }
     if _, ok := bt.(Type_Err); ok {
-        ir_call(g, {}, "void", ir_global("__mara_print_err"), {"i32", val, {}})
+        ir_call(g, {}, IR_VOID, ir_global("__mara_print_err"), {IR_I32, val, {}})
         return
     }
     if pt, ok := bt.(^Type_Ptr); ok {
         spec := "%p"
         if _, b := pt.elem.(Type_Byte); b { spec = "%s" }
         if _, u := pt.elem.(Type_Utf8); u { spec = "%s" }
-        emit_printf(g, spec, {"ptr", val, {}})
+        emit_printf(g, spec, {IR_PTR, val, {}})
         return
     }
     if _, ok := bt.(Type_CString); ok {
-        emit_printf(g, "%s", {"ptr", val, {}})
+        emit_printf(g, "%s", {IR_PTR, val, {}})
         return
     }
 
@@ -508,22 +504,22 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
     is_unsigned := llvm_unsigned(ty)
     nt := llvm_type_from_checker(ty)
     switch nt {
-    case "double":
-        emit_printf(g, "%g", {"double", val, {}})
-    case "float", "half":
+    case IR_DOUBLE:
+        emit_printf(g, "%g", {IR_DOUBLE, val, {}})
+    case IR_FLOAT, IR_HALF:
         ext := fresh_tmp(g)
-        ir_cast(g, ext, .Fpext, nt, val, "double")
-        emit_printf(g, "%g", {"double", ext, {}})
-    case "i64":
-        emit_printf(g, is_unsigned ? "%llu" : "%lld", {"i64", val, {}})
-    case "i32":
-        emit_printf(g, is_unsigned ? "%u" : "%d", {"i32", val, {}})
-    case "i1":
+        ir_cast(g, ext, .Fpext, nt, val, IR_DOUBLE)
+        emit_printf(g, "%g", {IR_DOUBLE, ext, {}})
+    case IR_I64:
+        emit_printf(g, is_unsigned ? "%llu" : "%lld", {IR_I64, val, {}})
+    case IR_I32:
+        emit_printf(g, is_unsigned ? "%u" : "%d", {IR_I32, val, {}})
+    case IR_I1:
         gen_print_bool(g, val)
-    case "i8", "i16":
+    case IR_I8, IR_I16:
         ext := fresh_tmp(g)
-        ir_cast(g, ext, is_unsigned ? Ir_Inst.Zext : .Sext, nt, val, "i32")
-        emit_printf(g, is_unsigned ? "%u" : "%d", {"i32", ext, {}})
+        ir_cast(g, ext, is_unsigned ? Ir_Inst.Zext : .Sext, nt, val, IR_I32)
+        emit_printf(g, is_unsigned ? "%u" : "%d", {IR_I32, ext, {}})
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
     }
@@ -578,7 +574,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: Val, ty: Type) {
 // not a field.
 gen_print_struct :: proc(g: ^Codegen, addr: Val, st: ^Scope_Body, name := "") {
     say :: proc(g: ^Codegen, text: string) { emit_printf(g, text) }
-    st_llvm := struct_llvm_name(st.name)
+    st_llvm := ir_class_type(st)
     first := first_user_field(st)
     if name != "" {
         say(g, name)
@@ -671,7 +667,7 @@ print_struct_name :: proc(sd: ^Scope_Body) -> string {
 // tag). Variants are sorted by value for stable IR; same-value aliases keep
 // the first in name order — LLVM's switch requires unique case values, so
 // duplicates are folded into one case.
-gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: string, et: ^Type_Enum, named := true, label := "") {
+gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: Ir_Type, et: ^Type_Enum, named := true, label := "") {
     // (Its name: a distinct enum's own — label — else the enum's.)
     enum_name := label if label != "" else et.source_name if et.source_name != "" else et.name
     Variant :: struct { name: string, value: int }
@@ -716,17 +712,17 @@ gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: string, et: ^Type_Enum, na
     emit_label(g, unknown_lbl)
     emit_print_literal(g, fmt.tprintf("%s(", enum_name))
     switch tag_ir {
-    case "i64":
-        emit_printf(g, "%lld", {"i64", val, {}})
-    case "i32":
-        emit_printf(g, "%d", {"i32", val, {}})
+    case IR_I64:
+        emit_printf(g, "%lld", {IR_I64, val, {}})
+    case IR_I32:
+        emit_printf(g, "%d", {IR_I32, val, {}})
     case:
         // i16 / i8: zext to i32 for printf's default-int varargs promotion.
         // zext (not sext) — enum tags are unsigned-shaped values, no two's-
         // complement bits to preserve.
         ext := fresh_tmp(g)
-        ir_cast(g, ext, .Zext, tag_ir, val, "i32")
-        emit_printf(g, "%d", {"i32", ext, {}})
+        ir_cast(g, ext, .Zext, tag_ir, val, IR_I32)
+        emit_printf(g, "%d", {IR_I32, ext, {}})
     }
     emit_print_literal(g, ")")
     emit_br(g, done_lbl)
@@ -738,7 +734,7 @@ gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: string, et: ^Type_Enum, na
 // element an array, as its own — [[1, 2], [3, 4]]).
 gen_print_array_inline :: proc(g: ^Codegen, data: Val, size: int, elem: Type) {
     emit_printf(g, "[")
-    arr_type := fmt.tprintf("[%d x %s]", size, llvm_type_from_checker(elem))
+    arr_type := ir_array_type(size, llvm_type_from_checker(elem))
     for i := 0; i < size; i += 1 {
         if i > 0 { emit_printf(g, ", ") }
         gep := fresh_tmp(g)

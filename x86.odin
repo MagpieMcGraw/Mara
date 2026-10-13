@@ -2,9 +2,7 @@ package mara
 
 import "base:runtime"
 import "core:fmt"
-import "core:mem/virtual"
 import "core:os"
-import "core:strconv"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -12,7 +10,8 @@ import "core:strings"
 // llvm.odin and the emit helpers make of it (ir.odin: the LLVM subset, no
 // phi, its values and labels data) — encoded as x86-64 machine code as the
 // function is made, and the module's globals as their bytes, into its COFF
-// object, which lld links. Only types are read from their text. It decides
+// object, which lld links. It reads no text: types are laid out from their
+// structure (ir.odin's table). It decides
 // nothing about the program: every check, layout and conversion is in the
 // instructions already; what's here is how each one is done on the machine.
 //
@@ -24,7 +23,7 @@ import "core:strings"
 // its returns jump to.
 // ---------------------------------------------------------------------------
 
-// A type's layout, as the IR's types lay out on x86-64.
+// A type's layout, as the IR's types lay out on x86-64 (x86_layout).
 X86_Kind :: enum u8 { Void, Int, F16, F32, F64, Ptr, Array, Struct }
 
 X86_Type :: struct {
@@ -76,13 +75,12 @@ X86_Sym :: struct {
     section: bool,   // a section's own symbol
 }
 
-// The program's types: every module's IR names the same ones. A worker's view
-// of them (x86_program_view) shares their names and lays them out itself.
+// The types' layouts, as one worker asks for them (the table of types is the
+// program's; each worker lays out the ones it meets, itself).
 X86_Program :: struct {
-    keep:  runtime.Allocator,
-    named: ^map[string]string,      // %class.X → its body's text (shared, read only)
-    types: map[string]^X86_Type,    // a type's text → its layout
-    i1, i8, i16, i32, i64, ptr, f32, f64, void: ^X86_Type,   // (the common ones, without a lookup)
+    keep:    runtime.Allocator,
+    layouts: [dynamic]^X86_Type,    // by type id; nil until asked for
+    i1, i8, i16, i32, i64, ptr, f32, f64, void: ^X86_Type,   // (the common ones, at hand)
 }
 
 // One module's object, as its functions and globals go in.
@@ -190,25 +188,13 @@ x86_fail :: proc(what, part: string) -> ! {
 
 // --- a module ----------------------------------------------------------------------
 
-// The program's types, from its type definitions (`%class.X = type {…}`).
-x86_program :: proc(type_decls: []string) -> ^X86_Program {
-    named := new(map[string]string)
-    named^ = make(map[string]string)
-    for d in type_decls {
-        if eq := strings.index(d, " = type "); eq > 0 { named^[d[:eq]] = strings.trim_space(d[eq + 8:]) }
-    }
-    return x86_program_view(named)
-}
-
-// The program's types, laid out by one worker: their names shared, their
-// layouts its own.
-x86_program_view :: proc(named: ^map[string]string) -> ^X86_Program {
+// A worker's layouts of the program's types.
+x86_program :: proc() -> ^X86_Program {
     p := new(X86_Program)
     p.keep = context.allocator
-    p.named = named
-    p.types = make(map[string]^X86_Type)
-    p.i1, p.i8, p.i16, p.i32, p.i64 = x86_type(p, "i1"), x86_type(p, "i8"), x86_type(p, "i16"), x86_type(p, "i32"), x86_type(p, "i64")
-    p.ptr, p.f32, p.f64, p.void = x86_type(p, "ptr"), x86_type(p, "float"), x86_type(p, "double"), x86_type(p, "void")
+    p.layouts = make([dynamic]^X86_Type)
+    p.i1, p.i8, p.i16, p.i32, p.i64 = x86_layout(p, IR_I1), x86_layout(p, IR_I8), x86_layout(p, IR_I16), x86_layout(p, IR_I32), x86_layout(p, IR_I64)
+    p.ptr, p.f32, p.f64, p.void = x86_layout(p, IR_PTR), x86_layout(p, IR_FLOAT), x86_layout(p, IR_DOUBLE), x86_layout(p, IR_VOID)
     return p
 }
 
@@ -292,137 +278,51 @@ x86_put32 :: proc(b: []u8, at: int, v: u32) {
     b[at], b[at + 1], b[at + 2], b[at + 3] = u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24)
 }
 
+// --- types ---------------------------------------------------------------------------
+
+// A type's layout: laid out when first asked for — an array's elements, a
+// struct's fields at their alignments (packed: none), a named one's body.
 @(private="file")
-x86_atoi :: proc(s: string) -> int {
-    n, _ := strconv.parse_int(s)
-    return n
-}
-
-// --- types, from their text ---------------------------------------------------------
-
-@(private="file")
-X86_Lex :: struct {
-    s: string,
-    i: int,
-}
-
-@(private="file")
-x86_ws :: proc(l: ^X86_Lex) {
-    for l.i < len(l.s) && (l.s[l.i] == ' ' || l.s[l.i] == '\t' || l.s[l.i] == '\r') { l.i += 1 }
-}
-
-@(private="file")
-x86_at :: proc(l: ^X86_Lex, c: byte) -> bool {
-    x86_ws(l)
-    return l.i < len(l.s) && l.s[l.i] == c
-}
-
-@(private="file")
-x86_eat :: proc(l: ^X86_Lex, c: byte) -> bool {
-    if !x86_at(l, c) { return false }
-    l.i += 1
-    return true
-}
-
-// What ends a word.
-@(private="file", rodata)
-X86_STOP := [256]bool{' ' = true, '\t' = true, '\r' = true, ',' = true, '(' = true, ')' = true, '[' = true, ']' = true, '{' = true, '}' = true, '<' = true, '>' = true, '"' = true, '=' = true}
-
-// A word: a name, a number, a keyword.
-@(private="file")
-x86_word :: proc(l: ^X86_Lex) -> string {
-    x86_ws(l)
-    start := l.i
-    for l.i < len(l.s) && !X86_STOP[l.s[l.i]] { l.i += 1 }
-    return l.s[start:l.i]
-}
-
-// A type's text: a word, or a bracketed array or struct.
-@(private="file")
-x86_type_text :: proc(l: ^X86_Lex) -> string {
-    x86_ws(l)
-    if l.i >= len(l.s) { return "" }
-    start := l.i
-    switch l.s[l.i] {
-    case '[', '{', '<':
-        depth := 0
-        for l.i < len(l.s) {
-            c := l.s[l.i]
-            l.i += 1
-            switch c {
-            case '[', '{', '<': depth += 1
-            case ']', '}', '>': depth -= 1
-            }
-            if depth == 0 { break }
-        }
-        return l.s[start:l.i]
+x86_layout :: proc(p: ^X86_Program, t: Ir_Type) -> ^X86_Type {
+    if int(t) < len(p.layouts) {
+        if l := p.layouts[t]; l != nil { return l }
     }
-    return x86_word(l)
-}
-
-// A type's layout, by its text.
-@(private="file")
-x86_type :: proc(m: ^X86_Program, text: string) -> ^X86_Type {
-    if m.void != nil && len(text) <= 6 {
-        switch text {
-        case "i64":    return m.i64
-        case "ptr":    return m.ptr
-        case "i1":     return m.i1
-        case "i32":    return m.i32
-        case "i8":     return m.i8
-        case "i16":    return m.i16
-        case "double": return m.f64
-        case "float":  return m.f32
-        case "void":   return m.void
-        }
-    }
-    if t, ok := m.types[text]; ok { return t }
-    t := new(X86_Type, m.keep)
-    m.types[strings.clone(text, m.keep)] = t   // (its own copy of the text: an instruction's may be its function's scratch)
-    switch {
-    case text == "void":   t^ = {kind = .Void, align = 1}
-    case text == "ptr":    t^ = {kind = .Ptr, size = 8, align = 8}
-    case text == "half":   t^ = {kind = .F16, size = 2, align = 2}
-    case text == "float":  t^ = {kind = .F32, size = 4, align = 4}
-    case text == "double": t^ = {kind = .F64, size = 8, align = 8}
-    case len(text) > 1 && text[0] == 'i':
-        bits := x86_atoi(text[1:])
+    info := ir_type_info(t)
+    l := new(X86_Type, p.keep)
+    switch info.kind {
+    case .None, .Sig: x86_fail("a type", info.text)
+    case .Vector:     x86_fail("a vector type", info.text)
+    case .Void:   l^ = {kind = .Void, align = 1}
+    case .Ptr:    l^ = {kind = .Ptr, size = 8, align = 8}
+    case .Half:   l^ = {kind = .F16, size = 2, align = 2}
+    case .Float:  l^ = {kind = .F32, size = 4, align = 4}
+    case .Double: l^ = {kind = .F64, size = 8, align = 8}
+    case .Int:
         size := 1
-        for size * 8 < bits { size *= 2 }
-        t^ = {kind = .Int, bits = bits, size = size, align = size}
-    case text[0] == '%':
-        body, ok := m.named^[text]
-        if !ok { x86_fail("a type with no definition", text) }
-        t^ = x86_type(m, body)^
-    case text[0] == '[':
-        l := X86_Lex{text[1:len(text) - 1], 0}
-        n := x86_atoi(x86_word(&l))
-        x86_word(&l)   // x
-        elem := x86_type(m, x86_type_text(&l))
-        t^ = {kind = .Array, elem = elem, count = n, size = elem.size * n, align = elem.align}
-    case text[0] == '{' || text[0] == '<':
-        packed := text[0] == '<'
-        l := X86_Lex{text[2:len(text) - 2] if packed else text[1:len(text) - 1], 0}
-        fields := make([dynamic]^X86_Type, m.keep)
-        offsets := make([dynamic]int, m.keep)
+        for size * 8 < info.n { size *= 2 }
+        l^ = {kind = .Int, bits = info.n, size = size, align = size}
+    case .Array:
+        elem := x86_layout(p, info.elem)
+        l^ = {kind = .Array, elem = elem, count = info.n, size = elem.size * info.n, align = elem.align}
+    case .Struct:
+        fields := make([]^X86_Type, len(info.fields), p.keep)
+        offsets := make([]int, len(info.fields), p.keep)
         size, align := 0, 1
-        for {
-            x86_ws(&l)
-            if l.i >= len(l.s) { break }
-            f := x86_type(m, x86_type_text(&l))
-            a := 1 if packed else f.align
+        for ft, k in info.fields {
+            f := x86_layout(p, ft)
+            a := 1 if info.packed else f.align
             size = x86_align(size, a)
-            append(&fields, f)
-            append(&offsets, size)
+            fields[k], offsets[k] = f, size
             size += f.size
             align = max(align, a)
-            x86_eat(&l, ',')
         }
-        t^ = {kind = .Struct, fields = fields[:], offsets = offsets[:], size = x86_align(size, align), align = align}
-    case:
-        x86_fail("a type", text)
+        l^ = {kind = .Struct, fields = fields, offsets = offsets, size = x86_align(size, align), align = align}
+    case .Named:
+        l^ = x86_layout(p, info.elem)^
     }
-    return t
+    for len(p.layouts) <= int(t) { append(&p.layouts, nil) }
+    p.layouts[t] = l
+    return l
 }
 
 // A value held in memory, not a register: an array, a struct, a wide int.
@@ -694,7 +594,7 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir) {
     for x in head.params {
         v := x86_val(x.v, nil)
         x86_slot(&f, v, 8, 8)
-        append(&params, X86_Arg{x86_type(m.p, x.ty), v})
+        append(&params, X86_Arg{x86_layout(m.p, x.ty), v})
     }
     for part in code {
         for &ins in part { x86_inst(&f, &ins) }
@@ -901,11 +801,11 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_place(f, ins.l.id)
 
     case .Alloca:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         x86_slot(f, x86_val(dest, nil), t.size, max(t.align, int(ins.align)), memory = true)
 
     case .Load:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         at := x86_ptr(f, x86_val(ins.a, p.ptr), .CX)
         if x86_aggregate(t) {
             x86_lea(f, .SI, at)
@@ -917,7 +817,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Store:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         v := x86_val(ins.a, t)
         at := x86_ptr(f, x86_val(ins.b, p.ptr), .DI)
         if x86_aggregate(t) {
@@ -943,9 +843,9 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         Scaled :: struct { t: ^X86_Type, v: X86_Val, scale: int }
         vars := make([dynamic]Scaled, context.temp_allocator)
         off := 0
-        cur := x86_type(p, ins.ty)
+        cur := x86_layout(p, ins.ty)
         for x, k in ins.args {
-            it := x86_type(p, x.ty)
+            it := x86_layout(p, x.ty)
             idx := x86_val(x.v, it)
             scale := 0
             switch {
@@ -985,7 +885,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Bin:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         a, b := x86_val(ins.a, t), x86_val(ins.b, t)
         x86_get(f, a, .AX)
         x86_get(f, b, .CX)
@@ -1033,7 +933,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Fneg:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         x86_get(f, x86_val(ins.a, t), .AX)
         if t.kind == .F32 {
             x86_ri(f, 4, 6, .AX, 0x80000000)   // xor eax, sign
@@ -1044,7 +944,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Icmp:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         x86_get(f, x86_val(ins.a, t), .AX)
         x86_get(f, x86_val(ins.b, t), .CX)
         x86_rr(f, t.size, 0x38, .AX, .CX)
@@ -1069,7 +969,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
     case .Fcmp:
         // (Ordered: false when either is NaN — ucomis says unordered with
         // ZF, PF and CF all set; une, true then.)
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         x86_get(f, x86_val(ins.a, t), .AX)
         x86_get(f, x86_val(ins.b, t), .CX)
         x86_to_xmm(f, 0, .AX)
@@ -1105,8 +1005,8 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Select:
-        t := x86_type(p, ins.ty)
-        if x86_aggregate(t) { x86_fail("a select of aggregates", ins.ty) }
+        t := x86_layout(p, ins.ty)
+        if x86_aggregate(t) { x86_fail("a select of aggregates", ir_type_text(ins.ty)) }
         x86_get(f, x86_val(ins.a, p.i1), .DX)
         x86_get(f, x86_val(ins.b, t), .AX)
         x86_get(f, x86_val(ins.c, t), .CX)
@@ -1116,13 +1016,13 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Cast:
-        ft, tt := x86_type(p, ins.ty), x86_type(p, ins.to)
+        ft, tt := x86_layout(p, ins.ty), x86_layout(p, ins.to)
         x86_get(f, x86_val(ins.a, ft), .AX)
         x86_convert(f, ins.inst, ft, tt)
         x86_put(f, dest)
 
     case .Extract:
-        at := x86_type(p, ins.ty)
+        at := x86_layout(p, ins.ty)
         v := x86_val(ins.a, at)
         if !x86_local(v) { x86_fail("a part of a constant", "") }
         k := int(ins.b.n)
@@ -1136,10 +1036,10 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_put(f, dest)
 
     case .Call:
-        rt := x86_type(p, ins.ty)
+        rt := x86_layout(p, ins.ty)
         args := make([]X86_Arg, len(ins.args), context.temp_allocator)
         for x, i in ins.args {
-            t := x86_type(p, x.ty)
+            t := x86_layout(p, x.ty)
             args[i] = {t, x86_val(x.v, t)}
         }
         if ins.a.kind == .Global && strings.has_prefix(ins.a.name, "llvm.") {
@@ -1149,7 +1049,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         }
 
     case .Ret:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         if t.kind != .Void {
             x86_get(f, x86_val(ins.a, t), .AX)
             if x86_float(t) { x86_to_xmm(f, 0, .AX) }
@@ -1167,7 +1067,7 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_jump(f, ins.l2.id)
 
     case .Switch:
-        t := x86_type(p, ins.ty)
+        t := x86_layout(p, ins.ty)
         x86_get(f, x86_val(ins.a, t), .AX)
         for x in ins.args {
             c := x86_val(x.v, t)
@@ -1383,7 +1283,7 @@ x86_global :: proc(m: ^X86_Module, gl: Ir_Global) {
     x86_line, x86_ins = gl.name, nil
     if gl.linkage == .External { return }
     local := gl.linkage == .Private || gl.linkage == .Internal
-    t := x86_type(m.p, gl.ty)
+    t := x86_layout(m.p, gl.ty)
     align := max(t.align, int(gl.align))
     sym := x86_sym(gl.name)
     if ir_const_zero(gl.init) && !gl.constant {   // .bss: its room, no bytes
@@ -1419,7 +1319,7 @@ x86_data :: proc(m: ^X86_Module, sec: X86_Sec, t: ^X86_Type, c: Ir_Const) {
         case .Gep:
             // An address into a global: its symbol, at the offset its
             // constant indices reach.
-            cur := x86_type(m.p, c.src)
+            cur := x86_layout(m.p, c.src)
             sym = x86_symbol(m, x86_sym(c.v.name))
             for x, i in c.parts {
                 k := int(x.v.n)

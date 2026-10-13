@@ -29,10 +29,10 @@ Lowering :: union {
 }
 
 Lowering_Direct :: struct {
-    // LLVM IR types for each register slot — usually 1 entry (scalars,
+    // IR types for each register slot — usually 1 entry (scalars,
     // small aggregates) but can be 2 for SysV when an aggregate spans
     // two eightbytes.
-    parts: [dynamic]string,
+    parts: [dynamic]Ir_Type,
 }
 
 Lowering_Indirect :: struct {
@@ -69,10 +69,10 @@ classify_win64 :: proc(t: Type) -> Lowering {
     }
     size := type_size(t)
     switch size {
-    case 1: return direct_single("i8")
-    case 2: return direct_single("i16")
-    case 4: return direct_single("i32")
-    case 8: return direct_single("i64")
+    case 1: return direct_single(IR_I8)
+    case 2: return direct_single(IR_I16)
+    case 4: return direct_single(IR_I32)
+    case 8: return direct_single(IR_I64)
     }
     return Lowering_Indirect{}
 }
@@ -108,7 +108,7 @@ classify_sysv :: proc(t: Type) -> Lowering {
         }
     }
 
-    parts: [dynamic]string
+    parts: [dynamic]Ir_Type
     for i in 0..<eb_count {
         eb_size := min(8, size - i*8)
         ir := sysv_eightbyte_ir(classes[i], eb_size, t, i*8)
@@ -211,31 +211,31 @@ merge_class :: proc(cls: ^ABI_Class, other: ABI_Class) {
 }
 
 // Convert an eightbyte's class + occupied size to the IR type at the boundary.
-sysv_eightbyte_ir :: proc(cls: ABI_Class, eb_size: int, t: Type, eb_start: int) -> string {
+sysv_eightbyte_ir :: proc(cls: ABI_Class, eb_size: int, t: Type, eb_start: int) -> Ir_Type {
     switch cls {
     case .Integer:
         switch eb_size {
-        case 1: return "i8"
-        case 2: return "i16"
-        case 4: return "i32"
-        case 8: return "i64"
+        case 1: return IR_I8
+        case 2: return IR_I16
+        case 4: return IR_I32
+        case 8: return IR_I64
         }
-        return "i64"
+        return IR_I64
     case .SSE:
         return choose_sse_ir(t, eb_start, eb_size)
     case .Memory, .No_Class:
-        return "i64" // unreachable in well-formed lowering
+        return IR_I64 // unreachable in well-formed lowering
     }
-    return "i64"
+    return IR_I64
 }
 
 // Pick the SSE-class IR type for an eightbyte by inspecting its contents.
 // Two contiguous floats → <2 x float>; one double → double; one float → float.
-choose_sse_ir :: proc(t: Type, eb_start, eb_size: int) -> string {
+choose_sse_ir :: proc(t: Type, eb_start, eb_size: int) -> Ir_Type {
     f_count, d_count := count_floats_doubles(t, eb_start, eb_size, 0)
-    if d_count > 0 { return "double" }
-    if f_count >= 2 { return "<2 x float>" }
-    return "float"
+    if d_count > 0 { return IR_DOUBLE }
+    if f_count >= 2 { return ir_vector_type(2, IR_FLOAT) }
+    return IR_FLOAT
 }
 
 count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (floats, doubles: int) {
@@ -289,14 +289,14 @@ count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (
 // -----------------------------------------------------------------------------
 
 
-scalar_parts :: proc(t: Type) -> [dynamic]string {
-    parts: [dynamic]string
+scalar_parts :: proc(t: Type) -> [dynamic]Ir_Type {
+    parts: [dynamic]Ir_Type
     append(&parts, llvm_type_from_checker(t))
     return parts
 }
 
-direct_single :: proc(ir: string) -> Lowering {
-    parts: [dynamic]string
+direct_single :: proc(ir: Ir_Type) -> Lowering {
+    parts: [dynamic]Ir_Type
     append(&parts, ir)
     return Lowering_Direct{parts = parts}
 }
@@ -320,7 +320,7 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     defer delete(parts)
 
     // Return lowering. C ABI has no multi-return; foreign return list is 0 or 1.
-    ret_ir := "void"
+    ret_ir := IR_VOID
     ret_single: Type
     has_void_return := fn_result_count(cs) == 0
     if !has_void_return { ret_single = fn_result(cs, 0) }
@@ -331,9 +331,7 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
-            ret_struct_ir := llvm_type_from_checker(ret_single)
-            sret := strings.concatenate({"ptr sret(", ret_struct_ir, ")"})
-            append(&parts, sret)
+            append(&parts, ir_type_text(ir_ptr_attr("sret", llvm_type_from_checker(ret_single))))
         }
     }
 
@@ -344,24 +342,21 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
         switch pp in plow {
         case Lowering_Direct:
             for part in pp.parts {
-                append(&parts, part)
+                append(&parts, ir_type_text(part))
             }
         case Lowering_Indirect:
-            arg_struct_ir := llvm_type_from_checker(p.type_)
-            byval := strings.concatenate({"ptr byval(", arg_struct_ir, ")"})
-            append(&parts, byval)
+            append(&parts, ir_type_text(ir_ptr_attr("byval", llvm_type_from_checker(p.type_))))
         }
     }
 
     params_joined := strings.join(parts[:], ", ")
-    return strings.concatenate({"declare ", ret_ir, " @", link_name, "(", params_joined, ")"})
+    return strings.concatenate({"declare ", ir_type_text(ret_ir), " @", link_name, "(", params_joined, ")"})
 }
 
-// Render a Direct-return as its IR type. Single-part is just the type;
-// multi-part packs into an anonymous struct so LLVM splits across registers.
-direct_ir_for_return :: proc(parts: []string) -> string {
+// A Direct-return's IR type. Single-part is just the type; multi-part packs
+// into an anonymous struct so LLVM splits across registers.
+direct_ir_for_return :: proc(parts: []Ir_Type) -> Ir_Type {
     if len(parts) == 1 { return parts[0] }
-    joined := strings.join(parts, ", ")
-    return strings.concatenate({"{ ", joined, " }"})
+    return ir_struct_type(parts)
 }
 

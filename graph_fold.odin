@@ -113,7 +113,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
             #partial switch g.op[id] {
             case .Const:
                 v := fold_decl(fo, c, fold_width_of(graph_type(g, id)))
-                if v == nil || !fold_scalar(v) || llvm_type_from_checker(graph_type(g, id)) == "ptr" {
+                if v == nil || !fold_scalar(v) || llvm_type_from_checker(graph_type(g, id)) == IR_PTR {
                     fold_error(fo, g, id, c)
                     continue
                 }
@@ -150,7 +150,7 @@ fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
 // computed as a double.
 @(private="file")
 fold_width_of :: proc(t: Type) -> Fold_Width {
-    return .Single if llvm_type_from_checker(t) == "float" else .Double
+    return .Single if llvm_type_from_checker(t) == IR_FLOAT else .Double
 }
 
 // Whether a computed value is one number (or a zero one).
@@ -458,7 +458,7 @@ fold_single :: proc(fc: ^Fold_Code, t: Type) -> bool {
     switch fc.width {
     case .Single: return true
     case .Double: return false
-    case .Own:    return llvm_type_from_checker(t) == "float"
+    case .Own:    return llvm_type_from_checker(t) == IR_FLOAT
     }
     return false
 }

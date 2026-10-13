@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:hash"
 import "core:mem"
 import "core:slice"
-import "core:strconv"
 import "core:strings"
 import "core:os"
 
@@ -18,8 +17,8 @@ import "core:os"
 
 // A slice's header, `{ len, cap, ptr }`, its length and capacity i64s on
 // every target; a partial array is the header with its elements after.
-SLICE_IR_TYPE :: "{ i64, i64, ptr }"
-SLICE_LEN_IR  :: "i64"   // a header's len's and cap's IR type
+SLICE_IR_TYPE :: IR_SLICE
+SLICE_LEN_IR  :: IR_I64   // a header's len's and cap's IR type
 
 // Slice header field positions. A partial array's elements follow the
 // header at PARTIAL_ELEMENTS_FIELD.
@@ -27,12 +26,10 @@ Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
 
-// Build the LLVM IR type for a `[..N]T` partial array.
-partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
-    return strings.concatenate({
-        "{ ", SLICE_LEN_IR, ", ", SLICE_LEN_IR, ", ptr, [",
-        fmt.tprintf("%d", cap), " x ", elem_ir, "] }",
-    })
+// A `[..N]T` partial array's IR type: the header, then its elements.
+partial_array_ir_type :: proc(elem_ir: Ir_Type, cap: int) -> Ir_Type {
+    fields := [4]Ir_Type{SLICE_LEN_IR, SLICE_LEN_IR, IR_PTR, ir_array_type(cap, elem_ir)}
+    return ir_struct_type(fields[:])
 }
 
 Codegen :: struct {
@@ -191,12 +188,11 @@ mara_fn :: proc(g: ^Codegen, name: string) -> Val {
 }
 
 // The struct a function returns through its sret slot, when its one
-// result is one: "" otherwise.
-fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
+// result is one: nil otherwise.
+fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> ^Scope_Body {
     cf, found := g.checked.functions[fn_name]
-    if !found || fn_result_count(cf) != 1 { return "" }
-    if sd := as_struct_body(fn_result(cf, 0)); sd != nil { return sd.name }
-    return ""
+    if !found || fn_result_count(cf) != 1 { return nil }
+    return as_struct_body(fn_result(cf, 0))
 }
 
 
@@ -205,56 +201,56 @@ fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
 // ---------------------------------------------------------------------------
 
 // `store <ir_type> <val>, ptr <ptr>`
-emit_store :: proc(g: ^Codegen, ir_type: string, val, ptr: Val) {
+emit_store :: proc(g: ^Codegen, ir_type: Ir_Type, val, ptr: Val) {
     ir_store(g, ir_type, val, ptr)
 }
 
 // `<dst> = load <ir_type>, ptr <ptr>`: a load into a name the caller has
 // picked out.
-emit_load_into :: proc(g: ^Codegen, dst: Val, ir_type: string, src_ptr: Val) {
+emit_load_into :: proc(g: ^Codegen, dst: Val, ir_type: Ir_Type, src_ptr: Val) {
     ir_load(g, dst, ir_type, src_ptr)
 }
 
 // A struct field's address, into a name the caller has picked out:
 // `getelementptr <agg_type>, ptr <base>, i32 0, i32 <idx>`.
-emit_field_gep_into :: proc(g: ^Codegen, dst: Val, agg_type: string, base: Val, idx: int) {
-    ir_gep(g, dst, agg_type, base, {"i32", ir_int(0), {}}, {"i32", ir_int(idx), {}})
+emit_field_gep_into :: proc(g: ^Codegen, dst: Val, agg_type: Ir_Type, base: Val, idx: int) {
+    ir_gep(g, dst, agg_type, base, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(idx), {}})
 }
 
 // A constant-index array element's address: `getelementptr <arr_type>, ptr
 // <base>, i64 0, i64 <idx>`.
-emit_array_gep_const :: proc(g: ^Codegen, dst: Val, arr_type: string, base: Val, idx: int) {
-    ir_gep(g, dst, arr_type, base, {"i64", ir_int(0), {}}, {"i64", ir_int(idx), {}})
+emit_array_gep_const :: proc(g: ^Codegen, dst: Val, arr_type: Ir_Type, base: Val, idx: int) {
+    ir_gep(g, dst, arr_type, base, {IR_I64, ir_int(0), {}}, {IR_I64, ir_int(idx), {}})
 }
 
 // A variable-index array element's address: `getelementptr <arr_type>, ptr
 // <base>, i64 0, <idx_ir> <idx>`. Every call site states the index's width
 // (SLICE_LEN_IR for a user's index or a slice header's, "i32" for a
 // fixed-position counter).
-emit_array_gep_var :: proc(g: ^Codegen, dst: Val, arr_type: string, base, idx: Val, idx_ir: string) {
-    ir_gep(g, dst, arr_type, base, {"i64", ir_int(0), {}}, {idx_ir, idx, {}})
+emit_array_gep_var :: proc(g: ^Codegen, dst: Val, arr_type: Ir_Type, base, idx: Val, idx_ir: Ir_Type) {
+    ir_gep(g, dst, arr_type, base, {IR_I64, ir_int(0), {}}, {idx_ir, idx, {}})
 }
 
 // An element's address from a raw element pointer (a slice's data):
 // `getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>`.
-emit_elem_gep :: proc(g: ^Codegen, dst: Val, elem_type: string, base, idx: Val, idx_ir: string) {
+emit_elem_gep :: proc(g: ^Codegen, dst: Val, elem_type: Ir_Type, base, idx: Val, idx_ir: Ir_Type) {
     ir_gep(g, dst, elem_type, base, {idx_ir, idx, {}})
 }
 
 // `<dst> = alloca <ir_type>[, align <align>]`, with the hoisted allocas while
 // hoisting. (Each is made once: llvm_storage names them.)
-emit_alloca :: proc(g: ^Codegen, dst: Val, ir_type: string, align: i32 = 0) {
+emit_alloca :: proc(g: ^Codegen, dst: Val, ir_type: Ir_Type, align: i32 = 0) {
     append(&g.allocas if g.hoist_allocas else &g.code, Ir{op = .Alloca, dest = dst, ty = ir_type, align = align})
 }
 
 // `call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)`
 emit_memcpy :: proc(g: ^Codegen, dst, src: Val, bytes: int) {
-    ir_call(g, {}, "void", ir_global("llvm.memcpy.p0.p0.i64"), {"ptr", dst, {}}, {"ptr", src, {}}, {"i64", ir_int(bytes), {}}, {"i1", IR_FALSE, {}})
+    ir_call(g, {}, IR_VOID, ir_global("llvm.memcpy.p0.p0.i64"), {IR_PTR, dst, {}}, {IR_PTR, src, {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
 }
 
 // `call void @llvm.memset.p0.i64(ptr <dst>, i8 0, i64 <bytes>, i1 false)`
 emit_memset_zero :: proc(g: ^Codegen, dst: Val, bytes: int) {
-    ir_call(g, {}, "void", ir_global("llvm.memset.p0.i64"), {"ptr", dst, {}}, {"i8", ir_int(0), {}}, {"i64", ir_int(bytes), {}}, {"i1", IR_FALSE, {}})
+    ir_call(g, {}, IR_VOID, ir_global("llvm.memset.p0.i64"), {IR_PTR, dst, {}}, {IR_I8, ir_int(0), {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
 }
 
 emit_br :: proc(g: ^Codegen, label: Ir_Label) {
@@ -281,9 +277,9 @@ printf_sym :: proc(g: ^Codegen) -> Val {
 // (a string literal of its own).
 emit_printf :: proc(g: ^Codegen, format: string, args: ..Ir_Arg) {
     all := make([]Ir_Arg, len(args) + 1)
-    all[0] = {ty = "ptr", v = get_string_literal(g, format)}
+    all[0] = {ty = IR_PTR, v = get_string_literal(g, format)}
     copy(all[1:], args)
-    ir_emit(g, {op = .Call, ty = "i32", to = "(ptr, ...)", a = printf_sym(g), args = all})
+    ir_emit(g, {op = .Call, ty = IR_I32, to = IR_PRINTF, a = printf_sym(g), args = all})
 }
 
 // A function made — its head, its code's parts in order — into the module's
@@ -315,25 +311,29 @@ begin_alloca_hoist :: proc(g: ^Codegen) {
 // IR names for types (a type's name is flat already: the checker's)
 // ---------------------------------------------------------------------------
 
-// Get the LLVM type name for a struct, e.g. "%class.Point"
-struct_llvm_name :: proc(key: string) -> string {
-    return fmt.tprintf("%%class.%s", key)
+// A struct's IR type, `%class.<name>`: its fields its body (packed: `<{…}>`).
+ir_class_type :: proc(sd: ^Scope_Body) -> Ir_Type {
+    if t, made := ir_type_recalled(sd); made { return t }
+    fields := make([]Ir_Type, len(sd.fields), context.temp_allocator)
+    for &f, i in sd.fields { fields[i] = field_ir_type(&f) }
+    t := ir_named_type(strings.concatenate({"class.", sd.name}, context.temp_allocator), ir_struct_type(fields, sd.is_packed))
+    return ir_type_remember(sd, t)
 }
 
-// IR type name of the synthetic Program context struct. The type checker names
+// IR type of the synthetic Program context struct. The type checker names
 // the synthetic struct (it may be a bare "Program" or a mangled "mara_core_Program"
 // depending on how it interns alongside the user's generic Program template), and
 // register_struct_decl emits `%class.<that name>`. Codegen's global + its GEPs must
 // follow the SAME name rather than hardcode "%class.Program", or the storage global
 // references a type that was emitted under a different name. Falls back to the bare
 // name when there's no Program (a context-free build emits no global anyway).
-program_ir_name :: proc(checked: ^Checked_Program) -> string {
+program_ir_name :: proc(checked: ^Checked_Program) -> Ir_Type {
     if checked != nil && checked.table != nil {
         if prog, ok := checked.table.funs["Program"]; ok && prog != nil {
-            return struct_llvm_name(prog.name)
+            return ir_class_type(&prog.sd)
         }
     }
-    return "%class.Program"
+    return ir_named_type("class.Program", IR_EMPTY)
 }
 
 // Get the LLVM field index of a named field. Returns -1 if not found.
@@ -345,88 +345,108 @@ struct_field_index :: proc(st: ^Scope_Body, field_name: string) -> int {
 }
 
 
-// Get the LLVM IR type string for a struct field.
-field_ir_type :: proc(f: ^Struct_Type_Field) -> string {
+// A struct field's IR type.
+field_ir_type :: proc(f: ^Struct_Type_Field) -> Ir_Type {
     return llvm_type_from_checker(f.type_)
 }
 
-// Get the LLVM type name for a union, e.g. "%union.Shape"
-union_llvm_name :: proc(ukey: string) -> string {
-    return fmt.tprintf("%%union.%s", ukey)
+// A union's IR type, `%union.<name>`. Its body: its tag (with a pad, the
+// bytes they take), then the rest of its size — the payload its variants
+// overlay; a niche union's, the Some variant's pointer alone.
+//
+//   pad bytes == 0: { tag_ir, [payload_bytes x i8] }              — payload at offset tag_bytes
+//   pad bytes >  0: { [(tag_bytes+pad_bytes) x i8], [N x i8] }    — payload at offset tag_bytes+pad_bytes
+//
+// The padded form uses a byte array for the tag area so the typed load/store
+// of `tag_ir` at field 0 still works (opaque ptr, type at the access site),
+// while shifting the payload start to where the variants' natural alignment
+// expects it (e.g. SDL3's u64 timestamp at byte 8 with a u32 tag).
+ir_union_type :: proc(ut: ^Type_Union) -> Ir_Type {
+    if t, made := ir_type_recalled(ut); made { return t }
+    body: Ir_Type
+    if ut.niche_some != "" {
+        ptr := [1]Ir_Type{IR_PTR}
+        body = ir_struct_type(ptr[:])
+    } else {
+        header := union_header_bytes(ut)
+        tag_field := union_tag_ir_type(ut) if ut.tag_pad == nil else ir_array_type(header, IR_I8)
+        fields := [2]Ir_Type{tag_field, ir_array_type(type_size(ut) - header, IR_I8)}
+        body = ir_struct_type(fields[:])
+    }
+    t := ir_named_type(strings.concatenate({"union.", ut.name}, context.temp_allocator), body)
+    return ir_type_remember(ut, t)
 }
 
 
 // Get the IR type for a union's tag field
-union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
+union_tag_ir_type :: proc(ut: ^Type_Union) -> Ir_Type {
     if ut.tag_type != "" {
         return tag_type_to_ir(ut.tag_type)
     }
-    return "i64"
+    return IR_I64
 }
 
 // Convert a Mara tag_type string (e.g. "u32", "i16") to LLVM IR integer type.
-tag_type_to_ir :: proc(tag: string) -> string {
+tag_type_to_ir :: proc(tag: string) -> Ir_Type {
     switch tag {
-    case "i8", "u8":   return "i8"
-    case "i16", "u16": return "i16"
-    case "i32", "u32": return "i32"
-    case "i64", "u64": return "i64"
+    case "i8", "u8":   return IR_I8
+    case "i16", "u16": return IR_I16
+    case "i32", "u32": return IR_I32
+    case "i64", "u64": return IR_I64
     }
     panic(fmt.tprintf("tag_type_to_ir: unknown tag type '%s'", tag))
 }
 
-llvm_type_from_checker :: proc(t: Type) -> string {
+// A checker type's IR type.
+llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     t := resolve_infer(t)
     switch v in t {
-    case Type_F64:          return "double"
-    case Type_Infer_Int:    return "i64"    // default when no context
-    case Type_Infer_Float:  return "double" // default when no context
+    case Type_F64:          return IR_DOUBLE
+    case Type_Infer_Int:    return IR_I64    // default when no context
+    case Type_Infer_Float:  return IR_DOUBLE // default when no context
     case Type_Numeric:
         switch v.kind {
         case .Signed, .Unsigned:
-            // Width comes from a closed set — return interned constants
-            // instead of allocating a fresh "i%d" string each call (a hot
-            // path).
             // bits=0 → word-sized (usize/isize); read the module-local flag
             // set by generate_program — wasm32 → i32, x86-64 → i64.
             switch v.bits {
-            case 0:   return "i32" if word_size_is_32 else "i64"
-            case 8:   return "i8"
-            case 16:  return "i16"
-            case 32:  return "i32"
-            case 64:  return "i64"
-            case 128: return "i128"
+            case 0:   return IR_I32 if word_size_is_32 else IR_I64
+            case 8:   return IR_I8
+            case 16:  return IR_I16
+            case 32:  return IR_I32
+            case 64:  return IR_I64
+            case 128: return IR_I128
             }
             panic(fmt.tprintf("llvm_type_from_checker: unexpected integer width %d", v.bits))
         case .Float:
             switch v.bits {
-            case 16: return "half"
-            case 32: return "float"
-            case 64: return "double"
+            case 16: return IR_HALF
+            case 32: return IR_FLOAT
+            case 64: return IR_DOUBLE
             }
             panic(fmt.tprintf("llvm_type_from_checker: unexpected float width %d", v.bits))
         }
-    case Type_Bool:         return "i1"
-    case Type_Utf8:         return "i8"
-    case Type_Byte:         return "i8"
-    case Type_CString:      return "ptr"
-    case ^Type_Ptr:         return "ptr"
+    case Type_Bool:         return IR_I1
+    case Type_Utf8:         return IR_I8
+    case Type_Byte:         return IR_I8
+    case Type_CString:      return IR_PTR
+    case ^Type_Ptr:         return IR_PTR
     case ^Type_Scope:
         if v.kind == .Struct {
-            return fmt.tprintf("%%class.%s", v.name)
+            return ir_class_type(&v.sd)
         }
-        return "ptr" // callable fun (function pointer)
+        return IR_PTR // callable fun (function pointer)
     case ^Type_Fixed_Array:
-        elem_t := llvm_type_from_checker(v.elem)
-        return fmt.tprintf("[%d x %s]", v.size, elem_t)
+        if at, made := ir_type_recalled(v); made { return at }
+        return ir_type_remember(v, ir_array_type(v.size, llvm_type_from_checker(v.elem)))
     case ^Type_Slice:       return SLICE_IR_TYPE
     case ^Type_Partial_Array:
-        elem_t := llvm_type_from_checker(v.elem)
-        return partial_array_ir_type(elem_t, v.size)
+        if at, made := ir_type_recalled(v); made { return at }
+        return ir_type_remember(v, partial_array_ir_type(llvm_type_from_checker(v.elem), v.size))
     case ^Type_Enum:
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
-        return "i64"
-    case ^Type_Union:       return fmt.tprintf("%%union.%s", v.name)
+        return IR_I64
+    case ^Type_Union:       return ir_union_type(v)
     case ^Type_Distinct:    return llvm_type_from_checker(v.base_type)
     // The following three never legitimately reach codegen as a value type:
     // codegen only runs when the checker reported zero errors (see main.odin),
@@ -439,10 +459,10 @@ llvm_type_from_checker :: proc(t: Type) -> string {
 
     case Type_Any:
         panic("llvm_type_from_checker: Type_Any reached codegen as a value type — the checker minted an untyped value without a diagnostic. Type_Any is only valid as an opaque-pointer element (^Type_Ptr.elem)")
-    case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
+    case Type_Void:         return IR_EMPTY  // zero-sized struct — LLVM coalesces
     case Type_Error:
         panic("llvm_type_from_checker: Type_Error reached codegen — codegen runs only on a clean check")
-    case Type_Err:          return "i32" // open error type — u32 (set_id<<16 | tag)
+    case Type_Err:          return IR_I32 // open error type — u32 (set_id<<16 | tag)
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
         // violation as Type_Any above — abort loudly instead of silently sizing
@@ -476,7 +496,7 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> Val {
 
     // Its bytes, then a 0.
     append(&g.globals, Ir_Global{name = name, linkage = .Private, unnamed = true, constant = true,
-        ty = fmt.tprintf("[%d x i8]", len(s) + 1), init = {kind = .Bytes, bytes = strings.concatenate({s, "\x00"})}})
+        ty = ir_array_type(len(s) + 1, IR_I8), init = {kind = .Bytes, bytes = strings.concatenate({s, "\x00"})}})
     return ir_global(name)
 }
 
@@ -521,14 +541,14 @@ __MARA_SLICE_LEN_FAIL :: "__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "__mara_match_fail"
 
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
-Runtime_Param :: struct { ty, name: string }
+Runtime_Param :: struct { ty: Ir_Type, name: string }
 
 RUNTIME_FAILS := [?]Runtime_Fail{
-    {__MARA_BOUNDS_FAIL,    {{"ptr", "loc"}, {"i64", "idx"}, {"i64", "len"}, {"ptr", "name"}},     "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
-    {__MARA_OVERFLOW_FAIL,  {{"ptr", "loc"}},                                                    "%s runtime error: integer overflow\n"},
-    {__MARA_DIVZ_FAIL,      {{"ptr", "loc"}},                                                    "%s runtime error: division by zero\n"},
-    {__MARA_SLICE_LEN_FAIL, {{"ptr", "loc"}, {"i64", "new_len"}, {"i64", "cap"}, {"ptr", "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
-    {__MARA_MATCH_FAIL,     {{"ptr", "loc"}, {"i64", "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
+    {__MARA_BOUNDS_FAIL,    {{IR_PTR, "loc"}, {IR_I64, "idx"}, {IR_I64, "len"}, {IR_PTR, "name"}},     "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
+    {__MARA_OVERFLOW_FAIL,  {{IR_PTR, "loc"}},                                                    "%s runtime error: integer overflow\n"},
+    {__MARA_DIVZ_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: division by zero\n"},
+    {__MARA_SLICE_LEN_FAIL, {{IR_PTR, "loc"}, {IR_I64, "new_len"}, {IR_I64, "cap"}, {IR_PTR, "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
+    {__MARA_MATCH_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -540,18 +560,18 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&g.out, "; Runtime fail-block helpers (hoisted)\n")
     for f in RUNTIME_FAILS {
         g.code = {}
-        if !g.web { ir_call(g, {}, "void", ir_global("__mara_crash_begin")) }
+        if !g.web { ir_call(g, {}, IR_VOID, ir_global("__mara_crash_begin")) }
         params := make([]Ir_Arg, len(f.params))
         for p, i in f.params { params[i] = {ty = p.ty, v = ir_local(p.name)} }
         args := make([dynamic]Ir_Arg, context.temp_allocator)
-        append(&args, Ir_Arg{ty = "ptr", v = get_string_literal(g, f.message)})
+        append(&args, Ir_Arg{ty = IR_PTR, v = get_string_literal(g, f.message)})
         append(&args, ..params)
-        ir_call_va(g, {}, "i32", "(ptr, ...)", ir_global("printf" if g.web else "__mara_tee_printf"), ..args[:])
-        if !g.web { ir_call(g, {}, "void", ir_global("__mara_crash_end")) }
-        ir_call(g, {}, "void", ir_global("exit"), {"i32", ir_int(1), {}})
+        ir_call_va(g, {}, IR_I32, IR_PRINTF, ir_global("printf" if g.web else "__mara_tee_printf"), ..args[:])
+        if !g.web { ir_call(g, {}, IR_VOID, ir_global("__mara_crash_end")) }
+        ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
         ir_unreachable(g)
         code := [?][]Ir{g.code[:]}
-        codegen_function(g, {name = f.name, ret = "void", params = params}, code[:], entry = false)
+        codegen_function(g, {name = f.name, ret = IR_VOID, params = params}, code[:], entry = false)
     }
     // print_err: prints the qualified name of a u32 error value (set_id<<16 |
     // tag). One switch case per (set_id, tag) pair across all error_kinds
@@ -591,21 +611,21 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     val := ir_local("val")
     ok, unknown := ir_label(g, "ok"), ir_label(g, "unknown")
     arms := make([]Ir_Arg, len(cases) + 1)
-    arms[0] = {"i32", ir_int(0), ok}
-    for c, i in cases { arms[i + 1] = {"i32", ir_int(c.value), ir_label(g, "case_", i)} }
-    ir_switch(g, "i32", val, unknown, arms)
+    arms[0] = {IR_I32, ir_int(0), ok}
+    for c, i in cases { arms[i + 1] = {IR_I32, ir_int(c.value), ir_label(g, "case_", i)} }
+    ir_switch(g, IR_I32, val, unknown, arms)
     say :: proc(g: ^Codegen, label: Ir_Label, format: Val, arg: Ir_Arg) {
         emit_label(g, label)
-        ir_call_va(g, {}, "i32", "(ptr, ...)", ir_global("printf"), {"ptr", format, {}}, arg)
-        ir_ret(g, "void")
+        ir_call_va(g, {}, IR_I32, IR_PRINTF, ir_global("printf"), {IR_PTR, format, {}}, arg)
+        ir_ret(g, IR_VOID)
     }
-    say(g, ok, fmt_str_s, {"ptr", ok_str, {}})
-    for s, i in case_strs { say(g, arms[i + 1].l, fmt_str_s, {"ptr", s, {}}) }
-    say(g, unknown, fmt_unknown, {"i32", val, {}})
+    say(g, ok, fmt_str_s, {IR_PTR, ok_str, {}})
+    for s, i in case_strs { say(g, arms[i + 1].l, fmt_str_s, {IR_PTR, s, {}}) }
+    say(g, unknown, fmt_unknown, {IR_I32, val, {}})
     code := [?][]Ir{g.code[:]}
     params := make([]Ir_Arg, 1)
-    params[0] = {ty = "i32", v = val}
-    codegen_function(g, {name = "__mara_print_err", ret = "void", params = params}, code[:], gap = false)
+    params[0] = {ty = IR_I32, v = val}
+    codegen_function(g, {name = "__mara_print_err", ret = IR_VOID, params = params}, code[:], gap = false)
 }
 
 // A runtime bounds check: idx < 0 or idx >= len fails (__mara_bounds_fail);
@@ -630,14 +650,14 @@ emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Sp
     upper_cmp := fresh_tmp(g)
     ir_icmp(g, upper_cmp, .Sge, w, idx, len_val)
     combined := fresh_tmp(g)
-    ir_bin(g, combined, .Or, "i1", neg_cmp, upper_cmp)
+    ir_bin(g, combined, .Or, IR_I1, neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
     name_global := get_string_literal(g, name)
-    ir_call(g, {}, "void", ir_global(__MARA_BOUNDS_FAIL), {"ptr", loc_global, {}}, {w, idx, {}}, {w, len_val, {}}, {"ptr", name_global, {}})
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_BOUNDS_FAIL), {IR_PTR, loc_global, {}}, {w, idx, {}}, {w, len_val, {}}, {IR_PTR, name_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -664,7 +684,7 @@ can_elide_bounds_check :: proc(idx, len_val: Val) -> bool {
 // Emit a runtime division-by-zero check. Compile-time elide when the divisor
 // is a non-zero integer literal — `x / 4` never traps. Per-site cost otherwise
 // is the compare + branch + 2 lines fail tail.
-emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Span = {}) {
+emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: Span = {}) {
     if divisor.kind == .Int && divisor.n != 0 {
         return
     }
@@ -678,7 +698,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Sp
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    ir_call(g, {}, "void", ir_global(__MARA_DIVZ_FAIL), {"ptr", loc_global, {}})
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_DIVZ_FAIL), {IR_PTR, loc_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -692,7 +712,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Sp
 // provably fits in the target type, skip the intrinsic and emit a plain
 // add/sub/mul. If the result would overflow, fall through to the runtime check
 // (LLVM will then const-fold it to an unconditional trap).
-emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right: Val, span: Span = {}) -> Val {
+emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: Ir_Type, left, right: Val, span: Span = {}) -> Val {
     if can_elide_overflow(op, ir_type, left, right) {
         result := fresh_tmp(g)
         inst: Ir_Inst   // ("sadd"/"uadd" → add, etc.)
@@ -709,11 +729,12 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right
     ok_label   := fresh_label(g, "overflow.ok")
     fail_label := fresh_label(g, "overflow.fail")
 
-    intrinsic_name := fmt.tprintf("llvm.%s.with.overflow.%s", op, ir_type)
+    intrinsic_name := fmt.tprintf("llvm.%s.with.overflow.%s", op, ir_type_text(ir_type))
     if intrinsic_name not_in g.overflow_intrinsics { intrinsic_name = strings.clone(intrinsic_name, codegen_keep(g)); g.overflow_intrinsics[intrinsic_name] = true }
 
     pair := fresh_tmp(g)
-    ret_type := strings.concatenate({"{ ", ir_type, ", i1 }"})
+    fields := [2]Ir_Type{ir_type, IR_I1}
+    ret_type := ir_struct_type(fields[:])
     ir_call(g, pair, ret_type, ir_global(intrinsic_name), {ir_type, left, {}}, {ir_type, right, {}})
 
     result   := fresh_tmp(g)
@@ -726,7 +747,7 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    ir_call(g, {}, "void", ir_global(__MARA_OVERFLOW_FAIL), {"ptr", loc_global, {}})
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_OVERFLOW_FAIL), {IR_PTR, loc_global, {}})
     ir_unreachable(g)
 
     emit_label(g, ok_label)
@@ -737,15 +758,15 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right
 // fits in `ir_type`. For i64 (or unknown widths) we conservatively decline so
 // we never need to detect i64 arithmetic overflow at codegen time; the runtime
 // intrinsic handles those cases (LLVM folds it in optimized builds).
-can_elide_overflow :: proc(op, ir_type: string, left, right: Val) -> bool {
+can_elide_overflow :: proc(op: string, ir_type: Ir_Type, left, right: Val) -> bool {
     if left.kind != .Int || right.kind != .Int { return false }
     l_val, r_val := i64(left.n), i64(right.n)
 
     bits: uint
     switch ir_type {
-    case "i8":  bits = 8
-    case "i16": bits = 16
-    case "i32": bits = 32
+    case IR_I8:  bits = 8
+    case IR_I16: bits = 16
+    case IR_I32: bits = 32
     case:       return false   // i64 or unknown — defer to runtime check
     }
 
@@ -773,7 +794,7 @@ can_elide_overflow :: proc(op, ir_type: string, left, right: Val) -> bool {
 // Load the context's arena pointer (field 0 of Context struct).
 get_context_arena_ptr :: proc(g: ^Codegen) -> Val {
     ctx_ptr := fresh_tmp(g)
-    ir_load(g, ctx_ptr, "ptr", ir_global("__mara_program"))
+    ir_load(g, ctx_ptr, IR_PTR, ir_global("__mara_program"))
     arena_ptr := fresh_tmp(g)
     emit_field_gep_into(g, arena_ptr, program_ir_name(g.checked), ctx_ptr, 0)
     return arena_ptr
@@ -783,12 +804,12 @@ get_context_arena_ptr :: proc(g: ^Codegen) -> Val {
 emit_arena_mark :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
     mark_ir := mara_fn(g, g.arena_mark_name)
-    if ret := fn_ret_struct(g, g.arena_mark_name); ret != "" {
+    if ret := fn_ret_struct(g, g.arena_mark_name); ret != nil {
         dummy := fresh_tmp(g)
-        emit_alloca(g, dummy, struct_llvm_name(ret))
-        ir_call(g, {}, "void", mark_ir, {"ptr", arena_ptr, {}}, {"ptr", dummy, {}})
+        emit_alloca(g, dummy, ir_class_type(ret))
+        ir_call(g, {}, IR_VOID, mark_ir, {IR_PTR, arena_ptr, {}}, {IR_PTR, dummy, {}})
     } else {
-        ir_call(g, {}, "void", mark_ir, {"ptr", arena_ptr, {}})
+        ir_call(g, {}, IR_VOID, mark_ir, {IR_PTR, arena_ptr, {}})
     }
 }
 
@@ -831,9 +852,9 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>"
     alloc_ir := mara_fn(g, g.arena_alloc_name)
     w := SLICE_LEN_IR
     if g.arena_alloc_has_debug {
-        ir_call(g, {}, "void", alloc_ir, {"ptr", arena_ptr, {}}, {w, size_val, {}}, {"ptr", name_ptr, {}}, {"ptr", span_ptr, {}}, {"ptr", tmp_slice, {}})
+        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_PTR, name_ptr, {}}, {IR_PTR, span_ptr, {}}, {IR_PTR, tmp_slice, {}})
     } else {
-        ir_call(g, {}, "void", alloc_ir, {"ptr", arena_ptr, {}}, {w, size_val, {}}, {"ptr", tmp_slice, {}})
+        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_PTR, tmp_slice, {}})
     }
     // Extract raw data pointer from the returned slice header
     data_ptr := emit_header_field(g, tmp_slice, SLICE.ptr)
@@ -845,12 +866,12 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>"
 emit_arena_reset :: proc(g: ^Codegen) {
     arena_ptr := get_context_arena_ptr(g)
     reset_ir := mara_fn(g, g.arena_reset_name)
-    if ret := fn_ret_struct(g, g.arena_reset_name); ret != "" {
+    if ret := fn_ret_struct(g, g.arena_reset_name); ret != nil {
         dummy := fresh_tmp(g)
-        emit_alloca(g, dummy, struct_llvm_name(ret))
-        ir_call(g, {}, "void", reset_ir, {"ptr", arena_ptr, {}}, {"ptr", dummy, {}})
+        emit_alloca(g, dummy, ir_class_type(ret))
+        ir_call(g, {}, IR_VOID, reset_ir, {IR_PTR, arena_ptr, {}}, {IR_PTR, dummy, {}})
     } else {
-        ir_call(g, {}, "void", reset_ir, {"ptr", arena_ptr, {}})
+        ir_call(g, {}, IR_VOID, reset_ir, {IR_PTR, arena_ptr, {}})
     }
 }
 
@@ -866,22 +887,11 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     key := sd.name
     if key in g.registered_structs { return }
     g.registered_structs[key] = true
-    llvm_name := struct_llvm_name(key)
-    field_types: [dynamic]string
-    for &f in sd.fields {
-        append(&field_types, field_ir_type(&f))
-    }
-    fields_joined := strings.join(field_types[:], ", ")
     // #packed → LLVM packed struct `<{ ... }>` (no inter-field padding), so
     // field indices map 1:1 to byte offsets and #big_endian reads of on-disk
     // packed formats land correctly.
-    type_decl: string
-    if sd.is_packed {
-        type_decl = strings.concatenate({llvm_name, " = type <{ ", fields_joined, " }>"})
-    } else {
-        type_decl = strings.concatenate({llvm_name, " = type { ", fields_joined, " }"})
-    }
-    append(&g.struct_decls, type_decl)
+    t := ir_class_type(sd)
+    append(&g.struct_decls, strings.concatenate({ir_type_text(t), " = type ", ir_type_text(ir_type_info(t).elem)}))
 }
 
 
@@ -891,34 +901,13 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
     register_struct_decl_sd(g, &st.sd)
 }
 
-// Register a union's LLVM type declaration and compute its payload size.
-//
-// Layout produced:
-//   pad bytes == 0: { tag_ir, [payload_bytes x i8] }              — payload at offset tag_bytes
-//   pad bytes >  0: { [(tag_bytes+pad_bytes) x i8], [N x i8] }    — payload at offset tag_bytes+pad_bytes
-//
-// The padded form uses a byte array for the tag area so the typed load/store
-// of `tag_ir` at field 0 still works (opaque ptr, type at the access site),
-// while shifting the payload start to where the variants' natural alignment
-// expects it (e.g. SDL3's u64 timestamp at byte 8 with a u32 tag).
+// Register a union's LLVM type declaration (ir_union_type: its layout).
 register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
     context.temp_allocator = context.allocator
     g.registered_structs[ukey] = true
-    llvm_name := union_llvm_name(ukey)
-
-    // Niche layout: single pointer slot, no tag. Identifies None via null
-    // and Some via a live pointer at the same offset.
-    if ut.niche_some != "" {
-        type_decl := strings.concatenate({llvm_name, " = type { ptr }"})
-        append(&g.struct_decls, type_decl)
-        return
-    }
-    // Its tag (with a pad: the bytes they take), then the rest of its size.
-    header := union_header_bytes(ut)
-    tag_field := union_tag_ir_type(ut) if ut.tag_pad == nil else fmt.tprintf("[%d x i8]", header)
-    type_decl := strings.concatenate({llvm_name, " = type { ", tag_field, ", ", fmt.tprintf("[%d x i8]", type_size(ut) - header), " }"})
-    append(&g.struct_decls, type_decl)
+    t := ir_union_type(ut)
+    append(&g.struct_decls, strings.concatenate({ir_type_text(t), " = type ", ir_type_text(ir_type_info(t).elem)}))
 }
 
 // ---------------------------------------------------------------------------
@@ -933,15 +922,15 @@ load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: Val) -> Val {
     if some := ut.niche_some; some != "" {
         none := union_niche_none(ut)
         ptr := fresh_tmp(g)
-        emit_load_into(g, ptr, "ptr", union_ptr)
+        emit_load_into(g, ptr, IR_PTR, union_ptr)
         live := fresh_tmp(g)
-        ir_icmp(g, live, .Ne, "ptr", ptr, IR_NULL)
+        ir_icmp(g, live, .Ne, IR_PTR, ptr, IR_NULL)
         tag := fresh_tmp(g)
         ir_select(g, tag, live, tag_ir, ir_int(ut.tag_map[some]), ir_int(ut.tag_map[none]))
         return tag
     }
     tag_ptr := fresh_tmp(g)
-    emit_field_gep_into(g, tag_ptr, union_llvm_name(ut.name), union_ptr, 0)
+    emit_field_gep_into(g, tag_ptr, ir_union_type(ut), union_ptr, 0)
     tag_val := fresh_tmp(g)
     emit_load_into(g, tag_val, tag_ir, tag_ptr)
     return tag_val
@@ -949,14 +938,14 @@ load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: Val) -> Val {
 
 // A match's failure: its subject holds no arm's tag — corrupt memory, since
 // every match covers every variant. `tag` (of IR type `tag_ir`) is reported.
-emit_match_fail :: proc(g: ^Codegen, span: Span, tag: Val, tag_ir: string, unsigned: bool) {
+emit_match_fail :: proc(g: ^Codegen, span: Span, tag: Val, tag_ir: Ir_Type, unsigned: bool) {
     wide := tag
-    if tag_ir != "i64" {
+    if tag_ir != IR_I64 {
         wide = fresh_tmp(g)
-        ir_cast(g, wide, Ir_Inst.Zext if unsigned else .Sext, tag_ir, tag, "i64")
+        ir_cast(g, wide, Ir_Inst.Zext if unsigned else .Sext, tag_ir, tag, IR_I64)
     }
     loc_global := get_string_literal(g, span_location(span))
-    ir_call(g, {}, "void", ir_global(__MARA_MATCH_FAIL), {"ptr", loc_global, {}}, {"i64", wide, {}})
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_MATCH_FAIL), {IR_PTR, loc_global, {}}, {IR_I64, wide, {}})
     ir_unreachable(g)
 }
 

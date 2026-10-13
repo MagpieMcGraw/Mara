@@ -111,7 +111,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
     stored := false
     for p in f.params {
         t := distinct_base(p.type_)
-        if ir, _ := llvm_param_type(t); ir != "ptr" { continue }
+        if ir, _ := llvm_param_type(t); ir != IR_PTR { continue }
         if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun { continue }
         stored = true
         break
@@ -182,7 +182,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
 
     for pn, k in params {
         t := distinct_base(f.params[k].type_)
-        if ir, _ := llvm_param_type(t); ir != "ptr" { continue }   // a value: nothing behind it
+        if ir, _ := llvm_param_type(t); ir != IR_PTR { continue }   // a value: nothing behind it
         if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun { continue }
         if _, is_ptr := t.(^Type_Ptr); !is_ptr {
             s.reaches[k] = len(vars[pn]) > 0
