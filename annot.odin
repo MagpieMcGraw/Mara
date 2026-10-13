@@ -88,6 +88,9 @@ Annotations :: struct {
     type_table: ^Type_Table,         // ... their table: the program's types
     refs:      [dynamic][]Ref,    // what each name refers to (a declaration's name, itself)
     ops:       [dynamic][]Op_At,  // where each was lowered to, once the program is (graph_index_ops)
+    // Each fun's and struct's definition node (its Fun_Def or Struct_Def; a
+    // variant's body), in its instance → its scope (tc_scope_body).
+    decls:     map[Syntax_Id]^Type_Scope,
 
     // What only some nodes have, by node and instance (annot_key).
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)

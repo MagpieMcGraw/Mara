@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -46,14 +47,12 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
             graph_module_stmt(p, e.sid)
         case .Body:
             codes.bodies[e.sc.ts] = i
-            codes.scopes[tc_sid(k, e.sc.def)] = e.sc.ts
         case .Const:
             codes.consts[tc_sid(k, e.kc.def)] = i
         case .Program_Struct:
             if pt := k.table.funs["Program"] or_else nil; pt != nil { codes.bodies[pt] = i }
         }
     }
-    graph_index(p)
     return p, codes
 }
 
@@ -106,7 +105,6 @@ lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
 // lowered yet.
 LW_Codes :: struct {
     bodies: map[^Type_Scope]int,    // a fun's or a struct's body's
-    scopes: map[Syntax_Id]^Type_Scope,   // the scope each defining statement's body is (an instance's: by_span)
     consts: map[Syntax_Id]int,      // a constant's, by its declaration
     // By event, each written by the lowering that lowers it alone: whether
     // it's lowered, its code (nil: it failed, or isn't one), whether the code
@@ -148,24 +146,33 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl) {
     }
     #partial switch d.form {
     case .Scope:
-        // (One scope, the checker's for this statement — a generic fun's
-        // instance's own copy of a nested fun, say, which shares its span.)
-        if ts, checked := codes.scopes[d.id]; checked && !d.generic {
-            lw_place_scope(k, codes, ts, d.name, d.span, .Explicit)
-            return
-        }
-        list, ok := b.prog.by_span[d.span]
-        if !ok {
+        // (Each scope the checker made of it — one; a generic's, each
+        // instance's — lowered and put in place.)
+        list := lw_decl_scopes(k, d)
+        if len(list) == 0 {
             if d.generic { return }   // a generic nothing instantiates: syntax only
             graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
         }
-        for ts in list {
-            if ts.is_module { continue }
-            lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit)
-        }
+        for ts in list { lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit) }
     case .Code:
         graph_fatal(d.span, "code outside a body reached the graph")
     }
+}
+
+// The scopes a definition is — one; a generic's, each instance's (by name:
+// ids stable) — as the checker recorded them by its node (Annotations.decls).
+lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl) -> []^Type_Scope {
+    a := k.annot
+    out := make([dynamic]^Type_Scope, context.temp_allocator)
+    if ts := a.decls[d.node] or_else nil; ts != nil { append(&out, ts) }   // (a generic's too: the compiler's Program, one scope)
+    if !d.generic { return out[:] }
+    _, n := annot_split(d.node)
+    for _, i in a.instances {   // (its body as each instance checked it: a generic's, a generic union's variant's)
+        ts := a.decls[annot_key(Instance_Id(i), n)] or_else nil
+        if ts != nil && !ts.is_module && !slice.contains(out[:], ts) { append(&out, ts) }
+    }
+    slice.sort_by(out[:], proc(x, y: ^Type_Scope) -> bool { return ask_type_name(x) < ask_type_name(y) })
+    return out[:]
 }
 
 // A fun's or struct's code (a clean check checked every one), lowered and
@@ -251,7 +258,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     defer b.at = at
     returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
-    f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
+    f := graph_body_begin(b, ts, span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
     if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil, top = true) }
     return graph_body_end(b, f)
 }
@@ -481,7 +488,7 @@ lw_program_struct :: proc(k: ^TC) -> ^Program_Graph {
         b := k.gb
         at := lw_at(k, tmpl.node)
         defer b.at = at
-        f := graph_body_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
+        f := graph_body_begin(k.gb, pt, span, v.intrinsic != 0, .Synthetic)
         for s in v.body {
             if t.tag[s] != .Decl {
                 graph_body_fail(b, f, "the program's struct declares no field")

@@ -466,9 +466,6 @@ Graph_Tables :: struct {
 // built it.
 Graph_Program :: struct {
     checked: ^Checked_Program,
-    // Checked types by the span of the statement declaring them. A generic's
-    // instances share their template's span, so one span can hold several.
-    by_span: map[Span][dynamic]^Type_Scope,
     // Each module's statements, in written order: where the code each
     // defines goes (lower_place).
     module_stmts: map[Syntax_Id]int,
@@ -481,7 +478,6 @@ Graph_Program :: struct {
     // struct's by its scope, each constant's by its statement.
     bodies:   map[^Type_Scope]^Built_Code,
     consts:   map[Syntax_Id]^Built_Code,
-    scope_of: map[Syntax_Id]^Type_Scope,   // each scope statement's, as the checker built it
     // The first body the checker couldn't build (an internal error, reported
     // once the check is found clean).
     failure:  struct { name, reason: string, span: Span },
@@ -608,7 +604,6 @@ graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     p.region_size = graph_region_size()
     p.bodies = make(map[^Type_Scope]^Built_Code)
     p.consts = make(map[Syntax_Id]^Built_Code)
-    p.scope_of = make(map[Syntax_Id]^Type_Scope)
     p.pc.funs = make(map[^Type_Scope]^Program_Graph)
     p.pc.consts = make(map[Syntax_Id]^Program_Graph)
     p.pc.consumes = make(map[^Type_Scope]int)
@@ -699,8 +694,6 @@ graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
 // The program's lowering done with, its codes kept (build_program_graph).
 @(private="file")
 graph_program_free :: proc(p: ^Graph_Program) {
-    for _, list in p.by_span { delete(list) }
-    delete(p.by_span)
     delete(p.constant_names)
     delete(p.module_stmts)
     delete(p.module_list)
@@ -708,7 +701,6 @@ graph_program_free :: proc(p: ^Graph_Program) {
     delete(p.bodies)
     for _, c in p.consts { free(c) }
     delete(p.consts)
-    delete(p.scope_of)
     free(p)
 }
 
@@ -1154,25 +1146,6 @@ graph_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
     os.exit(1)
 }
 
-// Each checked fun's and struct's scopes by the span of the statement that
-// declares them — a generic's instances, all of them (Graph_Builder.by_span).
-graph_index :: proc(b: ^Graph_Program) {
-    add :: proc(b: ^Graph_Program, span: Span, ts: ^Type_Scope) {
-        if span == {} { return }
-        if span not_in b.by_span { b.by_span[span] = {} }
-        list := &b.by_span[span]
-        if !slice.contains(list[:], ts) { append(list, ts) }
-    }
-    t := b.checked.table
-    for _, st in t.structs          { add(b, st.body_span, st) }
-    for _, ft in t.funs             { add(b, ft.body_span, ft) }
-    for _, ft in b.checked.functions { add(b, ft.body_span, ft) }
-    // The tables are maps; order a span's instances by name so ids are stable.
-    for _, list in b.by_span {
-        slice.sort_by(list[:], proc(x, y: ^Type_Scope) -> bool { return ask_type_name(x) < ask_type_name(y) })
-    }
-}
-
 // --- statements ---------------------------------------------------------------
 
 // What the builder keys a statement or an expression by: its node in the
@@ -1276,6 +1249,7 @@ Graph_Decl :: struct {
     name:    string,             // what it names: a constant, a scope
     value:   Syntax_Id,          // a constant's value (0: none), which its uses find it by
     generic: bool,               // .Scope: a generic's, built for each instance
+    node:    Syntax_Id,          // .Scope: its definition's node (a Fun_Def, a Struct_Def; a variant's body): what its scope is found by (Annotations.decls)
 }
 
 Graph_Decl_Form :: enum u8 {
@@ -2229,12 +2203,9 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 // definition's, made where it is put in place (graph_place_scope). As
 // lowering finds them: the local every return returns (its token), and
 // whether a local of the body's own lives on the arena.
-graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
+graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, intrinsic: bool, written: Written,
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
-    sync.mutex_lock(&b.prog.lock)
-    b.prog.scope_of[id] = ts
-    sync.mutex_unlock(&b.prog.lock)
     f := graph_body_new(b)
     f.ts = ts
     b.body = f

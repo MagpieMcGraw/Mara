@@ -671,6 +671,7 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
             found, _ := scope_lookup(sc.env, name)
             if ft = found.(^Type_Scope) or_else nil; ft == nil { continue }
             key := make_flat_name(module, name)
+            k.annot.decls[tc_sid(k, sc.node)] = ft
             ft.origin = Origin_Source{}
             ft.body_span = tree_span(k.t, sc.def)
             _, already := checked.functions[key]
@@ -776,7 +777,7 @@ tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) 
     for vn in tree_list(t, t.b[node]) {
         if v := tc_variant(k, vn, 0); v.fields {
             name := strings.concatenate({tc_name(k, s), "_", v.name}, context.temp_allocator)
-            append(decls, Graph_Decl{id = tc_sid(k, vn), span = tree_span(t, vn), form = .Scope, name = name, generic = generic})
+            append(decls, Graph_Decl{id = tc_sid(k, vn), span = tree_span(t, vn), form = .Scope, name = name, generic = generic, node = tc_sid(k, Tree_Id(t.b[vn]))})
         }
     }
 }
@@ -796,7 +797,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         tag := t.tag[value] if value != 0 else .Define
         #partial switch tag {
         case .Fun_Def, .Struct_Def:
-            d.form, d.generic = .Scope, tc_is_generic(k, value)
+            d.form, d.generic, d.node = .Scope, tc_is_generic(k, value), tc_sid(k, value)
         case .Import:
             d.settles = true
         case .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def:

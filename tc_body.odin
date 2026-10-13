@@ -35,6 +35,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
+    k.annot.decls[tc_sid(k, sc.node)] = ts
     tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
     // (A fun's definitions are checked before its code; a struct's once its
     // fields are known: its methods read them.)
