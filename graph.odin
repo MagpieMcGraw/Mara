@@ -108,11 +108,6 @@ Program_Graph :: struct {
     // A subtree is one run of ids, [id, its last] (graph_last): the code's,
     // [0, end]; a block's, by it (a node not here: itself).
     end:     Node_Id,
-    // The fun or struct it's the code of (nil: a constant's), and whether it
-    // was dropped once analysed (graph_drop_codes): then its header is what's
-    // left of it — its columns' room was given back.
-    root:    ^Type_Scope,
-    dropped: bool,
     last:    map[Node_Id]Node_Id,
     name:    [dynamic]Name_Id,  // (its text: graph_name)
     names:   ^[dynamic]string,  // (its tables' names, a node's by its Name_Id)
@@ -410,10 +405,6 @@ Graph_Builder :: struct {
     main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
     // The body being built.
     body:     ^Graph_Body,
-    // Lowering a code again (codegen's, lower_again): nothing about it is
-    // kept — no scope, no code found, no failure — and it's dropped once
-    // used (graph_code_drop).
-    again:      bool,
     // What the codes it builds are made in, its own: their columns, and the
     // names, types and values they hold by id — one builder's never
     // another's.
@@ -588,12 +579,11 @@ graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     p.pc.consumes = make(map[^Type_Scope]int)
     p.pc.tables = make(map[Syntax_Id]^Fold)
     p.pc.summaries = make(map[^Type_Scope]^Fun_Summary)
-    p.pc.places = make(map[^Type_Scope]Code_Place)
     return p
 }
 
 // A builder for the program's codes, with storage and tables of its own.
-graph_builder_new :: proc(p: ^Graph_Program, kept := true) -> ^Graph_Builder {
+graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     checked := p.checked
     b := new(Graph_Builder)
     b.prog = p
@@ -618,7 +608,7 @@ graph_builder_new :: proc(p: ^Graph_Program, kept := true) -> ^Graph_Builder {
     b.tables.values = make([dynamic]Const_Value, graph_region_allocator(&r[.Values]))
     append(&b.tables.values, Const_Value{})   // (Const_Id 0: none)
     b.type_table = &b.tables.types
-    if kept { append(&p.pc.stores, b.store) }
+    append(&p.pc.stores, b.store)
     return b
 }
 
@@ -711,7 +701,10 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
     graph_table_names(b, &pc)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
-        for c in pc.codes { if !c.dropped { graph_check_code(c) } }
+        for c in pc.codes {
+            graph_check_runs(c)
+            graph_check_refers(c)
+        }
     }
     graph_dump(&pc)
     return pc
@@ -844,7 +837,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.run_first = make([dynamic]i32, at(r, .Run_First))
     g.edges = make([dynamic]Edge, at(r, .Edges))
     g.stmts = make([dynamic]Graph_Stmt, at(r, .Stmts))
-    g.unreachable = make([dynamic]Span)   // (not in a region: kept when the code is dropped, for the program's list)
+    g.unreachable = make([dynamic]Span, at(r, .Unreachable))
     g.settled = make([dynamic]Node_Id, at(r, .Settled))
     return g
 }
@@ -888,15 +881,7 @@ Program_Code :: struct {
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
     stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
     summaries:   map[^Type_Scope]^Fun_Summary,     // what each fun reaches through its params, worked out once its code is built (reach_scc)
-    places:      map[^Type_Scope]Code_Place,       // each fun's or struct's code's name and statement, where the program writes it (a code lowered again takes them)
     lock:        ^sync.Mutex,                      // while codes are built on several threads: funs, consts and tables are read and written under it
-}
-
-// What putting a fun's or struct's code in place gives it: its name (an
-// instance's, mangled) and its statement (graph_place_scope).
-Code_Place :: struct {
-    name: string,
-    stmt: Graph_Stmt,
 }
 
 // A fun's or struct's code, built (nil: none, or not yet).
@@ -904,7 +889,6 @@ graph_fun_code :: proc(pc: ^Program_Code, ts: ^Type_Scope) -> ^Program_Graph {
     if pc.lock != nil { sync.mutex_lock(pc.lock) }
     g := pc.funs[ts] or_else nil
     if pc.lock != nil { sync.mutex_unlock(pc.lock) }
-    if g != nil && g.dropped { return nil }   // (dropped once analysed: lowered again to be read)
     return g
 }
 
@@ -927,45 +911,16 @@ graph_const_code :: proc(pc: ^Program_Code, value: Syntax_Id) -> ^Program_Graph 
 // A program's code let go of: its columns' regions, then its arena. (A
 // build's goes with its process; `mara serve` checks again, and again.)
 program_code_free :: proc(pc: ^Program_Code) {
-    for s in pc.stores { graph_store_free(s) }
+    for s in pc.stores {
+        if s.regions != nil {
+            for &r in s.regions {
+                if r.base != nil { virtual.release(r.base, r.reserved) }
+            }
+        }
+        virtual.arena_destroy(s.arena)
+    }
     delete(pc.stores)
     pc^ = {}
-}
-
-// A builder's store let go of: its columns' regions, then its arena.
-graph_store_free :: proc(s: Graph_Store) {
-    if s.regions != nil {
-        for &r in s.regions {
-            if r.base != nil { virtual.release(r.base, r.reserved) }
-        }
-    }
-    virtual.arena_destroy(s.arena)
-}
-
-// Where a builder's codes' columns end — what building one more, then
-// dropping it, goes back to (graph_code_drop). Its tables are kept: what
-// they hold, other codes may hold too.
-Graph_Mark :: [Graph_Column]uint
-
-graph_code_mark :: proc(b: ^Graph_Builder) -> (m: Graph_Mark) {
-    for c in Graph_Column { m[c] = b.store.regions[c].used }
-    return
-}
-
-// Codes analysed, dropped: their columns' room given back (graph_code_drop)
-// — they were the last built — and each marked so.
-graph_drop_codes :: proc(b: ^Graph_Builder, m: Graph_Mark, codes: []^Program_Graph) {
-    for g in codes { g.dropped = true }
-    graph_code_drop(b, m)
-}
-
-// The codes built since the mark, dropped: their columns' room given back,
-// to build the next in.
-graph_code_drop :: proc(b: ^Graph_Builder, m: Graph_Mark) {
-    for c in Graph_Column.Kind ..= Graph_Column.Settled {
-        r := &b.store.regions[c]
-        r.used, r.last = m[c], m[c]
-    }
 }
 // --- one code at a time ---------------------------------------------------------
 
@@ -1007,7 +962,6 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         if e.to == NO_NODE { graph_fatal(g.origin[e.from], "a then from '%s' into a run that never had an operation", graph_name(g, e.from)) }
     }
     when ODIN_DEBUG { graph_check_built(b) }
-    if g.kind[0] == .Fun || g.kind[0] == .Struct { g.root = graph_type(g, 0).(^Type_Scope) }
     graph_trim(g, b.nodes)
     graph_find_consumes(g)
     graph_index_edges(g)
@@ -1064,17 +1018,9 @@ graph_check_built :: proc(b: ^Graph_Builder) {
 // and in its statement, then put in place (lw_place_decl walks the program
 // in written order; its body's definitions' codes go after it).
 graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
-    place := Code_Place{graph_scope_name(ts, name, written), stmt}
-    p.pc.places[ts] = place
-    if !c.g.dropped { graph_code_placed(c.g, place) }
+    c.g.stmts[0] = stmt
+    c.g.name[0] = graph_intern_in(c.g.tables, graph_scope_name(ts, name, written))
     graph_place(p, c)
-}
-
-// A code given its name and statement (a code lowered again, the ones it
-// had).
-graph_code_placed :: proc(g: ^Program_Graph, place: Code_Place) {
-    g.stmts[0] = place.stmt
-    g.name[0] = graph_intern_in(g.tables, place.name)
 }
 
 // A code put in place: next in Program_Code.codes, the program's written
@@ -2167,11 +2113,9 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
-    if !b.again {
-        sync.mutex_lock(&b.prog.lock)
-        b.prog.scope_of[id] = ts
-        sync.mutex_unlock(&b.prog.lock)
-    }
+    sync.mutex_lock(&b.prog.lock)
+    b.prog.scope_of[id] = ts
+    sync.mutex_unlock(&b.prog.lock)
     f := graph_body_new(b)
     f.ts = ts
     b.body = f
@@ -2189,7 +2133,6 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
 graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     if f.failed != "" { return }
     f.failed = reason
-    if b.again { return }
     sync.mutex_lock(&b.prog.lock)
     defer sync.mutex_unlock(&b.prog.lock)
     if b.prog.failure.reason == "" {
@@ -2205,7 +2148,7 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     b.body = nil
     // (Its end can find what it can't build: a scope's values on the arena.)
     c := graph_code_close(b, f)
-    if c != nil && !b.again {
+    if c != nil {
         sync.mutex_lock(&b.prog.lock)
         b.prog.bodies[f.ts] = new_clone(Built_Code{g = c, b = b, defs = f.defs}, b.prog.allocator)
         sync.mutex_unlock(&b.prog.lock)
@@ -3403,7 +3346,7 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     count: map[^Type_Scope]int
     defer delete(count)
     for c in pc.codes {
-        if c.root != nil { count[c.root] += 1 }
+        if c.kind[0] == .Fun || c.kind[0] == .Struct { count[graph_type(c, 0).(^Type_Scope)] += 1 }
     }
     bad := 0
     check :: proc(count: ^map[^Type_Scope]int, bad: ^int, t: ^Type_Scope, span: Span) {
@@ -3429,13 +3372,6 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
 }
 
 // Refers-to is complete: every var operation names a declaration.
-// A code as built: its runs and its refers-to whole (a debug build checks
-// each code as it's analysed: middle_analyse; and what's kept, at the end).
-graph_check_code :: proc(g: ^Program_Graph) {
-    graph_check_runs(g)
-    graph_check_refers(g)
-}
-
 @(private="file")
 graph_check_refers :: proc(g: ^Program_Graph) {
     bad := 0

@@ -71,15 +71,7 @@ llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope) {
 
 @(private="file")
 llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
-    // Its code: lowered again, kept while it's emitted.
-    pg: ^Program_Graph
-    mark: Graph_Mark
-    if g.relower != nil {
-        pg, mark = lower_again(g.relower, cf)
-    } else {
-        pg = g.checked.code.funs[cf] or_else nil
-    }
-    defer if g.relower != nil { lower_again_drop(g.relower, mark) }
+    pg := g.checked.code.funs[cf] or_else nil
     if pg == nil || (pg.kind[0] != .Fun && pg.kind[0] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, ctor = pg.kind[0] == .Struct, main = main}
     e.own = graph_code_runs(pg, 0, &e.runs)

@@ -8,8 +8,8 @@ package mara
 // argument; which swaps are done in place; where big temporaries go on the
 // arena. A backend reads these facts; it decides none of them.
 //
-// (Read off the program graph for now, as codegen read them while it emitted;
-// they move to the typed tree with the rest of the third layer.)
+// (Read off a fun's code in the lowered program, the third layer, as codegen
+// read them while it emitted.)
 
 Storage :: struct {
     pc:        ^Program_Code,
