@@ -609,8 +609,9 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
     defer graph_builder_free(b)
     if f := b.failure; f.reason != "" { graph_fatal(f.span, "the checker built no graph of '%s': %s", f.name, f.reason) }
     checked := b.checked
-    graph_index(b)
-    graph_place_codes(b)
+    for _, c in b.consts {
+        if !c.placed { graph_fatal(c.g.origin[0], "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
+    }
     pc := b.pc
     graph_fold_uses(b, &pc, checked)
     graph_table_names(b, &pc)
@@ -891,68 +892,17 @@ graph_check_built :: proc(b: ^Graph_Builder) {
     }
 }
 
-// Every code built, put in written order (Program_Code.codes): each
-// module's statements in turn — a constant's code, each instance of a fun or
-// a struct, each followed by its body's definitions'.
-@(private="file")
-graph_place_codes :: proc(b: ^Graph_Builder) {
-    for ms in b.module_list {
-        if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
-        graph_place_decl(b, ms.d, ms.declared)
-    }
-    for _, c in b.consts {
-        if !c.placed { graph_fatal(c.g.origin[0], "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
-    }
-}
-
-// The code a statement outside any body defines — a module's, a body's
-// definition: a constant's, or a fun's or struct's, each of its instances.
-// (What runs nothing — a variable, which no function sees, an import, a
-// type, a dispatch group, a foreign fun, a constant nothing uses — is no
-// code.)
-@(private="file")
-graph_place_decl :: proc(b: ^Graph_Builder, d: Graph_Decl, declared: Graph_Declared = {}) {
-    if c, built := b.consts[d.id]; built {
-        graph_place(b, c)
-        return
-    }
-    #partial switch d.form {
-    case .Scope:
-        stmt := Graph_Stmt{span = d.span, kind = declared.kind if declared.set else d.kind}
-        // (One scope, the checker's for this statement — a generic fun's
-        // instance's own copy of a nested fun, say, which shares its span.)
-        if ts, built := b.scope_of[d.id]; built && !d.generic {
-            graph_place_scope(b, ts, d.name, d.span, .Explicit, stmt)
-            return
-        }
-        list, ok := b.by_span[d.span]
-        if !ok {
-            if d.generic { return }   // a generic nothing instantiates: syntax only
-            graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
-        }
-        for ts in list {
-            if ts.is_module { continue }
-            graph_place_scope(b, ts, d.name, d.span, .Synthetic if d.generic else .Explicit, stmt)
-        }
-    case .Code:
-        graph_fatal(d.span, "code outside a body reached the graph")
-    }
-}
-
-// A fun's or struct's code (a clean check built every one): named — an
-// instance by its mangled name — and in its statement; then its body's
-// definitions' codes.
-@(private="file")
-graph_place_scope :: proc(b: ^Graph_Builder, ts: ^Type_Scope, name: string, span: Span, written: Written, stmt: Graph_Stmt) {
-    c, built := b.bodies[ts]
-    if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
+// A fun's or struct's code, built: named — an instance by its mangled name —
+// and in its statement, then put in place (lw_place_decl walks the program
+// in written order; its body's definitions' codes go after it).
+graph_place_scope :: proc(b: ^Graph_Builder, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
     c.g.stmts[0] = stmt
     c.g.name[0] = graph_intern(b, graph_scope_name(ts, name, written))
     graph_place(b, c)
-    for d in c.defs { graph_place_decl(b, d) }
 }
 
-@(private="file")
+// A code put in place: next in Program_Code.codes, the program's written
+// order, and found by its fun or struct, or its constant's value.
 graph_place :: proc(b: ^Graph_Builder, c: ^Built_Code) {
     g := c.g
     if c.placed { graph_fatal(g.origin[0], "'%s' is put in place twice", graph_name(g, 0)) }
@@ -1053,7 +1003,8 @@ graph_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
     os.exit(1)
 }
 
-@(private="file")
+// Each checked fun's and struct's scopes by the span of the statement that
+// declares them — a generic's instances, all of them (Graph_Builder.by_span).
 graph_index :: proc(b: ^Graph_Builder) {
     add :: proc(b: ^Graph_Builder, span: Span, ts: ^Type_Scope) {
         if span == {} { return }
@@ -1966,7 +1917,6 @@ graph_scope_root :: proc(b: ^Graph_Builder, ts: ^Type_Scope, span: Span, written
 }
 
 // A scope's name: as written, or an instance's, from its mangled one.
-@(private="file")
 graph_scope_name :: proc(ts: ^Type_Scope, name: string, written: Written) -> string {
     return name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
 }

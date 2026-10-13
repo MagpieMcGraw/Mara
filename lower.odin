@@ -41,17 +41,105 @@ lower_program :: proc(k: ^TC) -> ^Graph_Builder {
         tc_instance_end(k, saved_salt)
         k.pkg, k.subst = saved_pkg, saved_subst
     }
-    for e in k.events {
+    // What each module statement was settled as; each code's event — where
+    // it was checked: a body's by its fun or struct (and the statement that
+    // declares it), a constant's by its declaration.
+    codes := LW_Codes{done = make([]bool, len(k.events))}
+    for e, i in k.events {
         tc_instance_end(k, e.salt)
-        k.pkg, k.subst = e.pkg, e.subst
         switch e.kind {
-        case .Module_Stmt:    graph_module_stmt(b, e.sid, e.declared)
-        case .Const:          lw_const(k, e.kc)
-        case .Body:           lw_body(k, e.sc)
-        case .Program_Struct: lw_program_struct(k)
+        case .Module_Stmt:
+            graph_module_stmt(b, e.sid, e.declared)
+        case .Body:
+            codes.bodies[e.sc.ts] = i
+            codes.scopes[tc_sid(k, e.sc.def)] = e.sc.ts
+        case .Const:
+            codes.consts[tc_sid(k, e.kc.def)] = i
+        case .Program_Struct:
+            if pt := k.table.funs["Program"] or_else nil; pt != nil { codes.bodies[pt] = i }
         }
     }
+    graph_index(b)
+    // Each code lowered where the program writes it, and put in place there.
+    for ms in b.module_list {
+        if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
+        lw_place_decl(k, &codes, ms.d, ms.declared)
+    }
+    // (One no statement places is built all the same, as it was checked.)
+    for e, i in k.events { if e.kind != .Module_Stmt { lw_code(k, &codes, i) } }
     return b
+}
+
+// Each code's event (TC.events): where it was checked, and whether it is
+// lowered yet.
+LW_Codes :: struct {
+    bodies: map[^Type_Scope]int,    // a fun's or a struct's body's
+    scopes: map[Syntax_Id]^Type_Scope,   // the scope each defining statement's body is (an instance's: by_span)
+    consts: map[Syntax_Id]int,      // a constant's, by its declaration
+    done:   []bool,
+}
+
+// One code lowered, on its own: from the tree and the annotations, in the
+// instance it was checked in — no code needs another's. (Once.)
+lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
+    if codes.done[i] { return }
+    codes.done[i] = true
+    e := k.events[i]
+    tc_instance_end(k, e.salt)
+    k.pkg, k.subst = e.pkg, e.subst
+    #partial switch e.kind {
+    case .Const:          lw_const(k, e.kc)
+    case .Body:           lw_body(k, e.sc)
+    case .Program_Struct: lw_program_struct(k)
+    }
+}
+
+// The code a statement outside any body defines — a module's, a body's
+// definition: a constant's, or a fun's or struct's, each of its instances —
+// lowered and put in place (Program_Code.codes, the program's written order:
+// each module's statements in turn, a code's body's definitions after it).
+// (What runs nothing — a variable, which no function sees, an import, a
+// type, a dispatch group, a foreign fun, a constant nothing uses — is no
+// code.)
+lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_Declared = {}) {
+    b := k.gb
+    if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
+    if c, built := b.consts[d.id]; built {
+        graph_place(b, c)
+        return
+    }
+    #partial switch d.form {
+    case .Scope:
+        stmt := Graph_Stmt{span = d.span, kind = declared.kind if declared.set else d.kind}
+        // (One scope, the checker's for this statement — a generic fun's
+        // instance's own copy of a nested fun, say, which shares its span.)
+        if ts, checked := codes.scopes[d.id]; checked && !d.generic {
+            lw_place_scope(k, codes, ts, d.name, d.span, .Explicit, stmt)
+            return
+        }
+        list, ok := b.by_span[d.span]
+        if !ok {
+            if d.generic { return }   // a generic nothing instantiates: syntax only
+            graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
+        }
+        for ts in list {
+            if ts.is_module { continue }
+            lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit, stmt)
+        }
+    case .Code:
+        graph_fatal(d.span, "code outside a body reached the graph")
+    }
+}
+
+// A fun's or struct's code (a clean check checked every one), lowered and
+// put in place; then its body's definitions'.
+lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, span: Span, written: Written, stmt: Graph_Stmt) {
+    b := k.gb
+    if i, checked := codes.bodies[ts]; checked { lw_code(k, codes, i) }
+    c, built := b.bodies[ts]
+    if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
+    graph_place_scope(b, c, ts, name, written, stmt)
+    for d in c.defs { lw_place_decl(k, codes, d) }
 }
 
 // The declaration of the variable a name refers to: in the code being built,
