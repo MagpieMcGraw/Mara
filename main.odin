@@ -1460,6 +1460,13 @@ main :: proc() {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)
     }
+    // (MARA_NO_LINK: the IR, then nothing — what the differentials compare,
+    // with no program made of it.)
+    if os.get_env("MARA_NO_LINK", context.temp_allocator) != "" {
+        perf_timer_end(&perf)
+        flush_diagnostics()
+        return
+    }
 
     // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
     out_ext: string

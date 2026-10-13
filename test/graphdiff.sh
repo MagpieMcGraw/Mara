@@ -35,7 +35,7 @@ one_program() {  # dir module [build flags]
   for side in old new; do
     exe=$BASE
     [ $side = new ] && exe=$WORK
-    ( cd "$dir" && { rm -rf "${mod}_build" 2>/dev/null; MARA_GRAPH=full "$exe" build "$mod" $flags 2>&1; } ) \
+    ( cd "$dir" && { rm -rf "${mod}_build" 2>/dev/null; MARA_GRAPH=full MARA_NO_LINK=1 "$exe" build "$mod" $flags 2>&1; } ) \
       | grep -E '^(graph:|n |e |r |s |u |settled |scope |\[)' | grep -v 'is ambiguous (defined in' \
       | awk '/^\[/ { d[n++] = $0; next } { print } END { for (i = 0; i < n; i++) print d[i] | "sort"; close("sort") }' > "$OUT/$side/$mod.dump"
   done

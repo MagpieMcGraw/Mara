@@ -13,7 +13,8 @@
 #   test/irdiff.sh -j N N programs at a time (default: every core)
 #
 # Build output (diagnostics, minus timings) must match either way. Both sides
-# are kept under $OUT for inspection: $OUT/old and $OUT/new.
+# are kept under $OUT for inspection: $OUT/old and $OUT/new. Without -r no
+# program is linked (MARA_NO_LINK): the IR is all that's compared.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-${TMP:-/tmp}/mara_irdiff}
 NORMALIZE=0 RUN=0
@@ -35,6 +36,7 @@ fi
 rm -rf "$OUT"
 for s in $SIDES; do mkdir -p "$OUT/${s%%:*}" "$OUT/run/${s%%:*}"; done
 export ROOT OUT NORMALIZE RUN SIDES
+[ $RUN = 1 ] || export MARA_NO_LINK=1
 
 # One program, every side: built, its IR kept (and normalized), then — a
 # program to run — run from its directory, output and exit code kept. The
