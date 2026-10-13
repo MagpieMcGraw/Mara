@@ -22,9 +22,10 @@ written_through_alias :: fun(src: ^Node) -> bool {
 	return root.next == src
 }
 
-// A sized slice has its storage from the start.
+// A slice taken from storage is set from the start.
 sized_slice :: fun() -> i64 {
-	s : [:4]Node
+	room : [..128]byte
+	s := slice([:4]Node, &room[0])
 	return s.cap
 }
 

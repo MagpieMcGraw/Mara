@@ -84,10 +84,12 @@ redeclared :: fun() {
 
 runtime_sized :: fun(which: bool, n: i64) -> i64 {
 	if which {
-		a : [:n]i64
+		room : [..64]byte
+		a := slice([:n]i64, &room[0])
 		return a.cap()
 	else
-		a : [:n]i64
+		room : [..64]byte
+		a := slice([:n]i64, &room[0])
 		return a.cap()
 	}
 }

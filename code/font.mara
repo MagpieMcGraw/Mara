@@ -388,6 +388,7 @@ coverage_line :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1:
 
 MSDF_PX_RANGE   :: 4.0      // signed-distance range (px) mapped onto 0..1 / 0..255
 MSDF_MAX_EDGES  :: 8192     // a glyph's outline in straight pieces, at most
+MSDF_CELL       :: 256      // the biggest MSDF glyph cell, each side, in pixels
 MSDF_CORNER_SIN :: 0.1411   // sin(3 rad): an outline point turning more than ~8° is a corner (msdfgen's default)
 MSDF_CLASH      :: 1.001    // neighbouring pixels' channels further apart (px) than this clash
 
@@ -413,7 +414,8 @@ msdf_cell :: fun(outline: ^Outline, atlas: ^Atlas) -> i32, i32 {
 // outline with its corners kept sharp. Chlumský's MSDF as msdfgen makes it:
 // simple edge colouring, the winding number deciding the sign (so contours
 // may overlap; edges inside the glyph don't count), and its error
-// correction. Glyph_Too_Complex past MSDF_MAX_EDGES straight pieces.
+// correction. Glyph_Too_Complex past MSDF_MAX_EDGES straight pieces;
+// Glyph_Too_Big past MSDF_CELL pixels a side.
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 {
 	// A straight piece of the outline; a curve is several. Where a piece
@@ -447,6 +449,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	glyph.w = cell_w
 	glyph.h = cell_h
 	if cell_w == 0 do return   // (an empty glyph: a space)
+	if cell_w > MSDF_CELL or cell_h > MSDF_CELL do return Glyph_Too_Big
 
 	scale := atlas.px_scale
 	pad   := atlas.pad
@@ -662,8 +665,9 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// inside: where the channels' median says otherwise, all three flip.
 	w := i64(cell_w)
 	h := i64(cell_h)
-	field : [:w * h * 3]f32
-	field.len = w * h * 3
+	room : [..MSDF_CELL * MSDF_CELL * 3]f32
+	room.len = w * h * 3
+	field := room[:]
 	for py in 0 .. h {
 		for px in 0 .. w {
 			sample_x := f32(px) + 0.5
@@ -720,7 +724,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// Where two neighbouring pixels' channels clash (the shader blending them
 	// would draw a notch), the one farther from the outline takes the median
 	// in all three.
-	clash : [:w * h]bool
+	clash : [..MSDF_CELL * MSDF_CELL]bool
 	clash.len = w * h
 	for py in 0 .. h {
 		for px in 0 .. w {

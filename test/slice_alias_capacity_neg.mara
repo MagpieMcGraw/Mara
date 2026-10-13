@@ -1,8 +1,8 @@
 module slice_alias_capacity_neg
-//@ expect-fail: a slice's capacity goes on the declaration that allocates it
+//@ expect-fail: a slice has no storage of its own, so a type can't carry a count
 
 // A slice type holds no storage of its own, so a type alias can't carry a
-// capacity: `s : [:128]utf8` sizes one declaration's.
+// count: n of T are taken from memory, `slice([:n]T, &memory)`.
 
 use mara.core
 

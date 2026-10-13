@@ -419,7 +419,7 @@ flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
             val := ops[1].op
             if val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void" { return true }
         case .Zero:
-            if g.written[id] != .Synthetic || len(ops) != 1 { continue }
+            if g.written[id] != .Synthetic { continue }
             #partial switch _ in distinct_base(graph_type(g, v)) {
             case ^Type_Ptr, ^Type_Slice: return true
             }
@@ -583,10 +583,9 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
                 unset = val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void"
                 fields_unset = unset
             case .Zero:
-                // A bare `p : ^T` or `s : []T` (a sized slice has its storage, a
-                // bare scalar is zero).
+                // A bare `p : ^T` or `s : []T` (a bare scalar is zero).
                 #partial switch _ in distinct_base(graph_type(g, v)) {
-                case ^Type_Ptr, ^Type_Slice: unset = g.written[op] == .Synthetic && len(ops) == 1
+                case ^Type_Ptr, ^Type_Slice: unset = g.written[op] == .Synthetic
                 }
             case .Construct:
                 // Built bare or from braces, a struct has only what it is given

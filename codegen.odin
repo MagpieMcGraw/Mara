@@ -373,27 +373,6 @@ emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
     strings.write_byte(b, '\n')
 }
 
-// Emit an `alloca T, <w> %count` form where the count is a runtime SSA. This
-// must stay at the point of use rather than the entry block (the standard
-// emit_alloca hoists for static allocas), because an entry-block alloca
-// referencing a later-computed SSA would fail LLVM's domination check.
-// Writes straight to the body buffer to bypass the hoist.
-emit_alloca_runtime :: proc(g: ^Codegen, dst, elem_ir, count_ir, count_ssa: string, align: int) {
-    line: string
-    if align > 0 {
-        line = fmt.tprintf("  %s = alloca %s, %s %s, align %d", dst, elem_ir, count_ir, count_ssa, align)
-    } else {
-        line = fmt.tprintf("  %s = alloca %s, %s %s", dst, elem_ir, count_ir, count_ssa)
-    }
-    if g.hoist_allocas {
-        strings.write_string(&g.body_buf, line)
-        strings.write_byte(&g.body_buf, '\n')
-    } else {
-        strings.write_string(&g.out, line)
-        strings.write_byte(&g.out, '\n')
-    }
-}
-
 // `  call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)\n`
 emit_memcpy :: proc(g: ^Codegen, dst, src: string, bytes: int) {
     b := emit_target(g)

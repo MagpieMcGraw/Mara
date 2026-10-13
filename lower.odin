@@ -638,7 +638,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
-    form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
+    form, _, bindings := tc_decl_form(k, value, ann_node, ann)
     #partial switch form {
     case .Void:
         lw_decl_void(k, s, target, value, name, ann, fields_of)
@@ -650,7 +650,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
         return
     case .Bare:
-        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, 0, span), cap_n)
+        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, 0, span))
         return
     }
     decl := lw_field_decl(k, fields_of, name, target, value, span)
@@ -687,13 +687,9 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
 }
 
 // `x : T` (tc_decl_bare): its zero, or its construction.
-lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
+lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Span, field: Node_Id) {
     b := k.gb
     if _, is_error := ann.(Type_Error); is_error { return }
-    if cap_n != 0 {
-        lw_decl_sized(k, name, k.t.main[target], ann, span, field, cap_n)
-        return
-    }
     st := tc_bare_struct(ann)
     decl := field
     if decl == NO_NODE {
@@ -708,21 +704,7 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     defer b.at = at
     args: []Operand
     if st != nil && constructs_bare(st) { args = lw_ctor_args(k, st, span) }
-    graph_build_bare(b, decl, ann, nil, args, tree_span(k.t, target))
-}
-
-// `s : [:n]T` (tc_decl_bare): its local, then n of T for it.
-lw_decl_sized :: proc(k: ^TC, name: string, tok: Token_Id, ann: Type, span: Span, field: Node_Id, cap_n: Tree_Id) {
-    b := k.gb
-    decl := field
-    if decl == NO_NODE { decl = graph_build_decl(b, name, tok, span, ann) }
-    r := lw_expr(k, cap_n, .Value)
-    if field != NO_NODE {
-        graph_build_bare(b, decl, graph_type(b.g, decl), nil, nil, span)
-        return
-    }
-    graph_build_typed(b, decl, ann)
-    graph_build_bare(b, decl, ann, r.v, nil, span)
+    graph_build_bare(b, decl, ann, args, tree_span(k.t, target))
 }
 
 // A construction's arguments (tc_ctor_args): its params' defaults.

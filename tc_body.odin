@@ -179,6 +179,17 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
     if !tc_declarable(k, env, name, span, fields_of != nil) { return }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
+    if cap_n != 0 {
+        // (`s : [:n]T`: a slice views storage that exists — it would be
+        // storage of its own.)
+        if sl, is_slice := ann.(^Type_Slice); is_slice {
+            e := type_name(sl.elem)
+            tc_error(k, span, TYPE_SLICE_SIZED_DECLARATION, name, e, e, e)
+        }
+        tc_set_type(k, target, ann)
+        tc_bind(k, env, name, ann, ref)
+        return
+    }
     if form == .Void {
         tc_decl_void(k, s, target, value, name, ann, env, fields_of)
         return
@@ -192,11 +203,8 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
         return
     case .Bare:
-        tc_decl_bare(k, target, name, ref, ann, env, span, cap_n)
+        tc_decl_bare(k, target, name, ref, ann, env, span)
         return
-    }
-    if cap_n != 0 {
-        if ct := tc_check_at(k, cap_n, env, slice_header_width_type); !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
     }
     k.hint = ann
     errors_before := k.c.errors
@@ -213,8 +221,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         tc_bind(k, env, name, Type_Error{}, ref)
         return
     }
-    // (A sized slice's text is copied into what it allocates.)
-    if cap_n == 0 { tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span) }
+    tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span)
     tc_check_big_endian(k, value, span)
     if returns := tc_call_returns(k, value, env); len(returns) > 1 {
         // (One name for several results: `a, b := f()` takes them.)
@@ -275,7 +282,8 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
 // What a declaration is, as written — the checker and lowering each read it
 // here: `x : T = void`, T no pointer (uninitialized: a pointer's void is its
 // null, a value); `x := take(…)`; `x : T` with no value, by a shape's
-// `bindings` or bare; or one of a value. `cap_n`: `[:n]T`'s capacity, n.
+// `bindings` or bare; or one of a value. `cap_n`: `[:n]T`'s count, n — on a
+// declaration, an error (a slice has no storage of its own).
 Decl_Form :: enum u8 { Value, Void, Take, Shape, Bare }
 
 tc_decl_form :: proc(k: ^TC, value, ann_node: Tree_Id, ann: Type) -> (form: Decl_Form, cap_n: Tree_Id, bindings: []TC_Binding) {
@@ -334,19 +342,13 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span, field:
 
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each) — what it constructs annotated, its constructor's defaults checked.
-tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span, cap_n := Tree_Id(0)) {
+tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span) {
     tc_set_type(k, target, ann)
     defer tc_bind(k, env, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
     tc_bare_construction(k, name, ann, env, span)
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
-    if cap_n != 0 {
-        // (`s : [:n]T`: n of T allocated for it.)
-        ct := tc_check_at(k, cap_n, env, slice_header_width_type)
-        if !is_any(ct) && !is_numeric(ct) { tc_error(k, span, TYPE_SLICE_CAPACITY_INTEGER, type_name(ct)) }
-        return
-    }
     st := tc_bare_struct(ann)
     // (Its construction, implied: its struct's — each element's, an array's —
     // when one can be built without arguments; else it is zero.)

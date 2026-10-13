@@ -244,9 +244,9 @@ test_len_cap :: fun() {
 	fa : [16]utf8 = "hi"
 	print(len(fa))   // 16
 	print(cap(fa))   // 16
-	ss : [:32]utf8
-	print(len(ss))   // 0
-	print(cap(ss))   // 32
+	ss : [..32]utf8
+	print(ss.len)   // 0
+	print(ss.cap)   // 32
 }
 
 test_struct_arr_minimal :: fun() {
@@ -1066,18 +1066,19 @@ test_pa_literal :: fun() {
 }
 
 test_runtime_cap :: fun() {
+	// (A count known at run time: that many taken from storage.)
+	room : [..128]byte
 	n : i32 = 7
-	buf : [:n]i32
+	buf := slice([:n]i32, &room[0])
 	print("buf.len:", buf.len, "buf.cap:", buf.cap)
 	for i in 0..7 {
 		buf[i32(i)] = i32(i) * 10
-		buf.len += 1
 	}
 	for v, i in buf {
 		print(i, ":", v)
 	}
 	m : i32 = 3
-	buf2 : [:m * 2 + 1]i32
+	buf2 := slice([:m * 2 + 1]i32, &room[64])
 	print("buf2.cap:", buf2.cap)
 }
 
@@ -1489,7 +1490,7 @@ test_string_append :: fun() {
 	&many + "cd"
 	&many + "ef"
 	print(many)
-	sized : [:64]utf8
+	sized : [..64]utf8
 	&sized + "from sized"
 	print(sized)
 	grt := "hello"

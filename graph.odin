@@ -2533,14 +2533,8 @@ graph_build_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Op
     return graph_read(b, graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
 }
 
-// A bare declaration's value: its type's construction, or zero;
-// a sized slice's zero takes its capacity.
-graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Operand), args: []Operand, span: Span) {
-    if c, has := cap.?; has {
-        n := graph_build_widen(b, c, span, {to = slice_header_width_type})
-        graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, graph_name(b.g, d), d, t, span), n)
-        return
-    }
+// A bare declaration's value: its type's construction, or zero.
+graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, args: []Operand, span: Span) {
     graph_construct_bare(b, graph_var(b, graph_name(b.g, d), d, t, span), t, args, span)
 }
 

@@ -499,13 +499,8 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         if callee := graph_called(e.g, op); callee != nil { esc_call(e, &val, op, callee, ops[1:], state) }
         esc_write(e, op, ops[0], val, state)
     case .Zero:
-        // `s : [:n]T` (a capacity): s views storage that lives as long as s
-        // does, so for its lifetime, s's own.
-        val: Esc_Roots
-        if len(ops) > 1 {
-            if k := esc_var_named(e, ops[0]); k >= 0 { esc_vars_push(&val.vars, i32(k)) }
-        }
-        esc_write(e, op, ops[0], val, state)
+        // (Zero holds no reference.)
+        esc_write(e, op, ops[0], {}, state)
     case .Fill:
         val: Esc_Roots
         if esc_has_refs(graph_type(g, ops[0].op)) { esc_join(&val, esc_at(e, ops[1])) }

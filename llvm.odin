@@ -715,7 +715,6 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // A bare declaration, or the start of a literal: zero.
         place := ops[0].op
         t := graph_type(pg, place)
-        if len(ops) == 2 { return llvm_sized_slice(e, op, ops) }
         if len(ops) != 1 || llvm_direct(e, place) { return false }
         if llvm_zeroed(e, place) && pg.written[op] == .Synthetic { return true }
         switch {
@@ -1982,43 +1981,6 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     emit_memcpy_runtime(g, at, src, n)
     if sd != nil { fixup_partial_array_fields(g, at, sd) }
     if graph_name(pg, op) == "#big_endian" { emit_bswap_in_place(g, at, llvm_type_from_checker(t), t) }
-    return true
-}
-
-// A sized slice, `s : [:n]T`: storage for n elements on the stack (bytes
-// 16-aligned, for what's taken from them), zeroed, and s's header over it —
-// len 0, cap n. (A big one, on the arena: later.)
-@(private="file")
-llvm_sized_slice :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
-    g, pg := e.g, e.pg
-    dest := ops[0].op
-    sl := llvm_slice(graph_type(pg, dest))
-    if sl == nil || pg.op[dest] != .Var || llvm_direct(e, dest) { return false }
-    n := llvm_operand(e, ops[1], slice_header_width_type) or_return
-    w := SLICE_LEN_IR
-    elem_ir := llvm_type_from_checker(sl.elem)
-    size := type_size(sl.elem)
-    name := fmt.tprintf("%%%s.data", graph_name(pg, pg.refers[dest]))
-    for k := 2; e.used[name]; k += 1 { name = fmt.tprintf("%%%s.data.%d", graph_name(pg, pg.refers[dest]), k) }
-    e.used[name] = true
-    if c, is_const := graph_value(pg, ops[1].op); is_const {
-        total := int(c.int) * size
-        if total >= 1024 { return false }
-        emit_alloca(g, name, fmt.tprintf("[%d x %s]%s", c.int, elem_ir, ", align 16" if elem_ir == "i8" else ""))
-        emit_memset_zero(g, name, total)
-    } else {
-        emit_alloca_runtime(g, name, elem_ir, w, n, 16 if elem_ir == "i8" else 0)
-        bytes := n
-        if size != 1 {
-            bytes = fresh_tmp(g)
-            emit(g, "  %s = mul %s %s, %d", bytes, w, n, size)
-        }
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", name, bytes)
-    }
-    hdr := e.value[dest]
-    emit_header_set(g, hdr, SLICE.ptr, name)
-    emit_header_set(g, hdr, SLICE.len, "0")
-    emit_header_set(g, hdr, SLICE.cap, n)
     return true
 }
 

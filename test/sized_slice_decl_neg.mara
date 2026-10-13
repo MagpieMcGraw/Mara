@@ -1,0 +1,13 @@
+module sized_slice_decl_neg
+//@ expect-fail: is declared a sized slice, but a slice has no storage of its own
+
+// A slice views storage that exists: `s : [:n]T` would be storage of its
+// own. Take n of T from memory with `slice([:n]T, &memory)`, or make a list
+// with room of its own, `[..n]T`.
+
+use mara.core
+
+main :: fun() {
+	s : [:4]i64
+	print(s.cap)
+}
