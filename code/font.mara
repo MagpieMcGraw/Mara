@@ -665,9 +665,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// inside: where the channels' median says otherwise, all three flip.
 	w := i64(cell_w)
 	h := i64(cell_h)
-	room : [..MSDF_CELL * MSDF_CELL * 3]f32
-	room.len = w * h * 3
-	field := room[:]
+	field_room : [MSDF_CELL * MSDF_CELL * 3]f32 = void   // (each one written before it's read)
+	field := field_room[0 : w * h * 3]
 	for py in 0 .. h {
 		for px in 0 .. w {
 			sample_x := f32(px) + 0.5
@@ -724,8 +723,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// Where two neighbouring pixels' channels clash (the shader blending them
 	// would draw a notch), the one farther from the outline takes the median
 	// in all three.
-	clash : [..MSDF_CELL * MSDF_CELL]bool
-	clash.len = w * h
+	clash_room : [MSDF_CELL * MSDF_CELL]bool = void
+	clash := clash_room[0 : w * h]
 	for py in 0 .. h {
 		for px in 0 .. w {
 			at := py * w + px

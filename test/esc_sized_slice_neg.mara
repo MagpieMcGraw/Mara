@@ -1,15 +1,15 @@
 module esc_sized_slice_neg
 //@ expect-fail: cannot return local reference
 
-// A slice taken from a local's storage views memory that dies with it (the
-// scope allocator resets when make_it returns): the second call would reuse
-// it, and `t[0]` read back 9.
+// A slice of a local array views memory that dies with it (the scope
+// allocator resets when make_it returns): the second call would reuse it,
+// and `t[0]` read back 9.
 
 use mara.memory
 
 make_it :: fun(n: i64) -> []i64 {
-	room : [..256]byte
-	s := slice([:n]i64, &room[0])
+	room : [16]i64
+	s := room[0:n]
 	s[0] = 7
 	return s[0:4]
 }

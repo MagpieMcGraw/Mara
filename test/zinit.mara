@@ -12,16 +12,16 @@ main :: fun() {
 	assert(z[0] == 0)
 	assert(z[7] == 0)
 
-	// A slice taken from a list's room too.
-	room : [..256]byte
-	s := slice([:16]i64, &room[0])
+	// A slice of an array too.
+	arr : [16]i64
+	s := arr[0:16]
 	assert(s[3] == 0)
 	assert(s[15] == 0)
 
 	// A count known at run time.
 	n := 12
-	more : [..128]byte
-	r := slice([:n]i64, &more[0])
+	more : [16]i64
+	r := more[0:n]
 	assert(r[11] == 0)
 
 	// The payoff: a utf8 buffer filled by ELEMENT WRITES (no appends, no

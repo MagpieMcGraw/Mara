@@ -184,7 +184,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         // storage of its own.)
         if sl, is_slice := ann.(^Type_Slice); is_slice {
             e := type_name(sl.elem)
-            tc_error(k, span, TYPE_SLICE_SIZED_DECLARATION, name, e, e, e)
+            tc_error(k, span, TYPE_SLICE_SIZED_DECLARATION, name, e)
         }
         tc_set_type(k, target, ann)
         tc_bind(k, env, name, ann, ref)
