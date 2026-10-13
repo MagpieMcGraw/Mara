@@ -287,29 +287,28 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_main(k, main)
 
     // (lower false: the annotations are all that's wanted — mara lsp's.)
+    fns := flow_functions(checked)   // (in name order, once)
+    mid: Middle
     if c.errors == 0 && lower {
-        // The checker only checks: the graph is lowered from the annotated
-        // tree once it is done (lower.odin).
+        // The checker only checks: each code is lowered from the annotated
+        // tree once it is done, and analysed (middle.odin).
         if perf != nil { perf_timer_mark(perf, "lower") }
-        k.gb = lower_program(k)
+        checked.call_graph = build_call_graph(checked)
+        c.cg = &checked.call_graph
+        mid = middle_program(k, c, checked, fns)
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { k.gb.constant_names[key] = kc.sid }
         checked.code = build_program_graph(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
-        checked.call_graph = build_call_graph(checked)
-        c.cg = &checked.call_graph
     } else {
         if k.gb != nil { graph_builder_free(k.gb) }
         if perf != nil { perf_timer_mark(perf, "analysis") }
     }
     k.gb = nil
     void_defaults: map[Span]bool
-    fns := flow_functions(checked)   // (in name order, once)
     if len(checked.code.codes) > 0 { void_defaults = tc_void_defaults(k, checked, fns) }
-    flow_analyze_program(c, checked, fns, void_defaults)
-    escape_analyze_program(c, checked)
-    reach_analyze_program(c, checked)
+    if mid.on { middle_report(c, checked, &mid, fns, void_defaults) }
     annot_check(k.annot, t, &checked.code, c.errors)
     checked.errors = c.errors
     return checked

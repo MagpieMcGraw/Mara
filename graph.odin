@@ -516,7 +516,7 @@ Decl_Site :: struct {
     owner: ^Type_Scope,  // the struct, for .Field
 }
 
-// The builder, made once the program is checked (lower_program).
+// The builder, made once the program is checked (lower_begin).
 graph_builder_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph_Decl) -> ^Graph_Builder {
     b := new(Graph_Builder)
     b.checked = checked
@@ -613,7 +613,6 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Code {
         if !c.placed { graph_fatal(c.g.origin[0], "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
     }
     pc := b.pc
-    graph_fold_uses(b, &pc, checked)
     graph_table_names(b, &pc)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
@@ -775,7 +774,7 @@ Program_Code :: struct {
     codes:       [dynamic]^Program_Graph,          // each, in written order
     funs:        map[^Type_Scope]^Program_Graph,   // a fun's, a struct's constructor's
     consts:      map[Syntax_Id]^Program_Graph,     // a constant's, by its value's node
-    tables:      map[Syntax_Id]^Fold,              // each table's value, by its constant (graph_fold_uses)
+    tables:      map[Syntax_Id]^Fold,              // each table's value, by its constant (graph_fold_code)
     table_names: map[Syntax_Id]string,             // ... its symbol's name
     fold_errors: [dynamic]Fold_Error,              // the uses of constants with no value
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
@@ -1697,7 +1696,7 @@ graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: st
 
 // The value a name resolved to stands for, when the resolution holds it: an
 // enum variant's, an array's length. (A named constant's is its code's:
-// graph_fold_uses.)
+// graph_fold_code.)
 //
 // What a name that stands for a constant is, as the builder builds it: a
 // declared constant's value (its id — the code its uses are folded from), or
@@ -1709,7 +1708,7 @@ Graph_Named :: struct {
 
 // A named register-value constant where it's used: its declaration's
 // value, computed at the use's width once every code is built
-// (graph_fold_uses). An enum's variant, a length: its value.
+// (graph_fold_code). An enum's variant, a length: its value.
 graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named, untyped := false) -> Operand {
     if n.value == 0 { return graph_const(b, w, span, t, name, n.known, untyped) }
     o := graph_op_value(b, .Const, w, span, t, name)
@@ -3114,7 +3113,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     d := f.const_decl
     if f.failed == "" {
         graph_build_typed(b, f.root, t)
-        b.g.type_[f.root] = type_id(b.type_table, t)   // (an untyped one's own: each use's width, graph_fold_uses)
+        b.g.type_[f.root] = type_id(b.type_table, t)   // (an untyped one's own: each use's width, graph_fold_code)
     }
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = -1

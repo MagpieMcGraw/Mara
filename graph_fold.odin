@@ -16,7 +16,7 @@ import "core:slice"
 // as it would be done there. One with a type of its own is computed at it.
 //
 // Each use takes its constant's value once the graph is put together
-// (graph_fold_uses). What can't be computed before the program runs — a
+// (graph_fold_code). What can't be computed before the program runs — a
 // call, a read of anything but a constant, a struct's construction with
 // arguments — is an error at the use (flow_check_constants).
 // ---------------------------------------------------------------------------
@@ -47,7 +47,6 @@ Fold_Error :: struct {
     name: string,
 }
 
-@(private="file")
 Folder :: struct {
     pc:      ^Program_Code,
     checked: ^Checked_Program,
@@ -55,6 +54,8 @@ Folder :: struct {
     busy:   map[Fold_Key]bool,   // being computed (a constant defined by itself)
     failed: bool,
     at:     Span,                // what couldn't be computed, when it's an operation
+    code:   ^Program_Graph,      // the code whose uses are being folded
+    errors: map[^Program_Graph][dynamic]Fold_Error,   // each code's uses with no value
 }
 
 // What one piece of code computes: the values its operations output, the
@@ -69,14 +70,32 @@ Fold_Code :: struct {
     values: map[Node_Id]^Fold,
 }
 
-// Every use of a constant outside a constant's own code, given its value:
+// Constants folded at their uses a code at a time (graph_fold_code), once
+// every constant's code, and every struct's a constant's value may
+// construct, is built.
+graph_fold_begin :: proc(pc: ^Program_Code, checked: ^Checked_Program) -> Folder {
+    return Folder{pc = pc, checked = checked}
+}
+
+// Done: the uses with no value, listed in written order (pc.fold_errors).
+graph_fold_end :: proc(fo: ^Folder) {
+    for g in fo.pc.codes {
+        if list, has := fo.errors[g]; has { append(&fo.pc.fold_errors, ..list[:]) }
+    }
+    for _, list in fo.errors { delete(list) }
+    delete(fo.errors)
+    delete(fo.done)
+    delete(fo.busy)
+}
+
+// Every use of a constant in a code (not a constant's own), given its value:
 // a number or text as a use's constant, a table's whole value kept for its
-// global (pc.tables). A use with no value is listed (pc.fold_errors).
-graph_fold_uses :: proc(b: ^Graph_Builder, pc: ^Program_Code, checked: ^Checked_Program) {
-    fo := Folder{pc = pc, checked = checked}
-    defer { delete(fo.done); delete(fo.busy) }
-    for g in pc.codes {
-        if g.kind[0] == .Const || len(g.constant) == 0 { continue }   // (a constant's own code: computed where it's used)
+// global (pc.tables). A use with no value is listed (graph_fold_end).
+graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
+    pc := fo.pc
+    fo.code = g
+    {
+        if g.kind[0] == .Const || len(g.constant) == 0 { return }   // (a constant's own code: computed where it's used)
         uses := make([dynamic]Node_Id, 0, len(g.constant), context.temp_allocator)   // (in order)
         for id in g.constant { append(&uses, id) }
         slice.sort(uses[:])
@@ -85,16 +104,16 @@ graph_fold_uses :: proc(b: ^Graph_Builder, pc: ^Program_Code, checked: ^Checked_
             if c == 0 || c not_in pc.consts { continue }
             #partial switch g.op[id] {
             case .Const:
-                v := fold_decl(&fo, c, fold_width_of(graph_type(g, id)))
+                v := fold_decl(fo, c, fold_width_of(graph_type(g, id)))
                 if v == nil || !fold_scalar(v) || llvm_type_from_checker(graph_type(g, id)) == "ptr" {
-                    fold_error(&fo, g, id, c)
+                    fold_error(fo, g, id, c)
                     continue
                 }
                 graph_set_value(b, g, id, v.c)
             case .Global:
-                v := fold_decl(&fo, c, .Own)
+                v := fold_decl(fo, c, .Own)
                 if v == nil {
-                    fold_error(&fo, g, id, c)
+                    fold_error(fo, g, id, c)
                     continue
                 }
                 if v.known && v.c.is_text {
@@ -112,7 +131,8 @@ graph_fold_uses :: proc(b: ^Graph_Builder, pc: ^Program_Code, checked: ^Checked_
 @(private="file")
 fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
     at := fo.at if fo.at != {} else g.origin[id]
-    append(&fo.pc.fold_errors, Fold_Error{at, graph_name(fo.pc.consts[c], 0)})
+    if fo.code not_in fo.errors { fo.errors[fo.code] = {} }
+    append(&fo.errors[fo.code], Fold_Error{at, graph_name(fo.pc.consts[c], 0)})
     fo.failed, fo.at = false, {}
 }
 

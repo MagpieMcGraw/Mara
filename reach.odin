@@ -5,7 +5,7 @@ import "core:slice"
 
 // What a call can reach, and where places are, from the program graph alone —
 // shared by the analysis that holds a program to the rule a result isn't
-// built over what its call reads (reach_analyze_program) and by codegen,
+// built over what its call reads (reach_code) and by codegen,
 // which builds results in place where nothing they read can be that place
 // (llvm_result_place, storage_in_place).
 
@@ -247,88 +247,94 @@ graph_bound :: proc(pg: ^Program_Graph) -> map[Node_Id]Node_Id {
 // A call or a construction handed `&place` where its result is written —
 // place that result's place, or holding it, or inside it (places_contain):
 // `v = swap(&v)`, `g.big = make(&g)` would read what it overwrites. The
-// program is held to it here, once the graph is built, as escape analysis
-// holds it to its references; codegen, which would otherwise have to hide a
-// copy, stops at it too (llvm_result_place), should a program get past.
-reach_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
-    code := &checked.code
-    if len(code.funs) == 0 { return }
-    cache := make(Reach_Summaries)
-    defer delete(cache)
-    Diag :: struct { span: Span, msg: string }
-    diags := make([dynamic]Diag, context.temp_allocator)
-    for _, pg in code.funs {
-        bound := graph_bound(pg)
-        // (A temporary's one put: the place its value is written to.)
-        puts := make(map[Node_Id]Node_Id, allocator = context.temp_allocator)
-        for id := Node_Id(1); id <= pg.end; id += 1 {
-            if pg.kind[id] != .Op || pg.op[id] != .Write { continue }
-            ops := graph_operands(pg, id)
-            v := ops[1].op
-            if v == NO_NODE || pg.op[v] != .Read { continue }
-            t := graph_operands(pg, v)[0].op
-            if pg.op[t] != .Var { continue }
-            d := pg.refers[t]
-            if d <= 0 || d > pg.end || pg.kind[d] != .Local || pg.written[d] != .Synthetic { continue }
-            puts[d] = NO_NODE if d in puts else ops[0].op   // (two: no one place)
+// program is held to it here, a code at a time once its callees' codes are
+// built (reach_code), as escape analysis holds it to its references; codegen,
+// which would otherwise have to hide a copy, stops at it too
+// (storage_reads_its_dest), should a program get past.
+Reach_Pass :: struct {
+    cache: Reach_Summaries,
+    diags: [dynamic]Reach_Diag,
+}
+
+Reach_Diag :: struct { span: Span, msg: string }
+
+reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
+    bound := graph_bound(pg)
+    // (A temporary's one put: the place its value is written to.)
+    puts := make(map[Node_Id]Node_Id, allocator = context.temp_allocator)
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        if pg.kind[id] != .Op || pg.op[id] != .Write { continue }
+        ops := graph_operands(pg, id)
+        v := ops[1].op
+        if v == NO_NODE || pg.op[v] != .Read { continue }
+        t := graph_operands(pg, v)[0].op
+        if pg.op[t] != .Var { continue }
+        d := pg.refers[t]
+        if d <= 0 || d > pg.end || pg.kind[d] != .Local || pg.written[d] != .Synthetic { continue }
+        puts[d] = NO_NODE if d in puts else ops[0].op   // (two: no one place)
+    }
+    // (Where a value written to place `dest` by operation `w` ends up: a
+    // temporary's put; nowhere to check when it's fresh storage — a
+    // declaration's local, a temporary with no one put.)
+    lands :: proc(pg: ^Program_Graph, puts: map[Node_Id]Node_Id, w, dest: Node_Id) -> (Node_Id, bool) {
+        if pg.op[dest] != .Var { return dest, true }
+        d := pg.refers[dest]
+        if d <= 0 || d > pg.end { return dest, true }
+        if pg.kind[d] == .Local && pg.written[d] == .Synthetic {
+            x, has := puts[d]
+            return x, has && x != NO_NODE
         }
-        // (Where a value written to place `dest` by operation `w` ends up: a
-        // temporary's put; nowhere to check when it's fresh storage — a
-        // declaration's local, a temporary with no one put.)
-        lands :: proc(pg: ^Program_Graph, puts: map[Node_Id]Node_Id, w, dest: Node_Id) -> (Node_Id, bool) {
-            if pg.op[dest] != .Var { return dest, true }
-            d := pg.refers[dest]
-            if d <= 0 || d > pg.end { return dest, true }
-            if pg.kind[d] == .Local && pg.written[d] == .Synthetic {
-                x, has := puts[d]
-                return x, has && x != NO_NODE
-            }
-            if s := pg.stmt[w]; s >= 0 && pg.stmts[s].kind == .Decl { return NO_NODE, false }
-            return dest, true
+        if s := pg.stmt[w]; s >= 0 && pg.stmts[s].kind == .Decl { return NO_NODE, false }
+        return dest, true
+    }
+    check :: proc(code: ^Program_Code, cache: ^Reach_Summaries, pg: ^Program_Graph, bound: map[Node_Id]Node_Id,
+                  op, x: Node_Id, first: int, diags: ^[dynamic]Reach_Diag) {
+        callee := graph_called(pg, op)
+        if callee == nil { return }
+        s := reach_summary(code, cache, callee)
+        args := graph_operands(pg, op)[first:]
+        if len(args) != len(s.reaches) { return }
+        for a, k in args {
+            if !s.reaches[k] { continue }
+            at := a.op
+            for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
+            if at == NO_NODE || pg.op[at] != .Address { continue }
+            place := graph_operands(pg, at)[0].op
+            if !places_contain(pg, bound, place, x) { continue }
+            name := scope_display_name(callee)
+            into := graph_place_name(pg, Operand{op = x})
+            msg := fmt.aprintf(TYPE_RESULT_READS_DEST, name, graph_place_name(pg, Operand{op = place}), into, name, into)
+            append(diags, Reach_Diag{pg.origin[op], msg})
+            return
         }
-        check :: proc(code: ^Program_Code, cache: ^Reach_Summaries, pg: ^Program_Graph, bound: map[Node_Id]Node_Id,
-                      op, x: Node_Id, first: int, diags: ^[dynamic]Diag) {
-            callee := graph_called(pg, op)
-            if callee == nil { return }
-            s := reach_summary(code, cache, callee)
-            args := graph_operands(pg, op)[first:]
-            if len(args) != len(s.reaches) { return }
-            for a, k in args {
-                if !s.reaches[k] { continue }
-                at := a.op
-                for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
-                if at == NO_NODE || pg.op[at] != .Address { continue }
-                place := graph_operands(pg, at)[0].op
-                if !places_contain(pg, bound, place, x) { continue }
-                name := scope_display_name(callee)
-                into := graph_place_name(pg, Operand{op = x})
-                msg := fmt.tprintf(TYPE_RESULT_READS_DEST, name, graph_place_name(pg, Operand{op = place}), into, name, into)
-                append(diags, Diag{pg.origin[op], msg})
-                return
-            }
+    }
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: if id != 0 { id = graph_last(pg, id); continue }   // (another scope's)
         }
-        for id := Node_Id(1); id <= pg.end; id += 1 {
-            #partial switch pg.kind[id] {
-            case .Fun, .Struct: if id != 0 { id = graph_last(pg, id); continue }   // (another scope's)
+        if pg.kind[id] != .Op { continue }
+        ops := graph_operands(pg, id)
+        #partial switch pg.op[id] {
+        case .Write:
+            // (A result built where it's written: an aggregate's. A
+            // number comes back as a value — nothing built over anything.)
+            if v := ops[1]; v.op != NO_NODE && pg.op[v.op] == .Call {
+                callee := graph_called(pg, v.op)
+                if callee == nil || int(v.out) >= len(callee.cg_returns) || !graph_aggregate(callee.cg_returns[v.out]) { continue }
+                if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &rp.cache, pg, bound, v.op, x, 0, &rp.diags) }
             }
-            if pg.kind[id] != .Op { continue }
-            ops := graph_operands(pg, id)
-            #partial switch pg.op[id] {
-            case .Write:
-                // (A result built where it's written: an aggregate's. A
-                // number comes back as a value — nothing built over anything.)
-                if v := ops[1]; v.op != NO_NODE && pg.op[v.op] == .Call {
-                    callee := graph_called(pg, v.op)
-                    if callee == nil || int(v.out) >= len(callee.cg_returns) || !graph_aggregate(callee.cg_returns[v.out]) { continue }
-                    if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &cache, pg, bound, v.op, x, 0, &diags) }
-                }
-            case .Construct:
-                if len(ops) > 1 {
-                    if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &cache, pg, bound, id, x, 1, &diags) }
-                }
+        case .Construct:
+            if len(ops) > 1 {
+                if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &rp.cache, pg, bound, id, x, 1, &rp.diags) }
             }
         }
     }
-    slice.sort_by(diags[:], proc(a, b: Diag) -> bool { return span_before(a.span, b.span) })
-    for d in diags { check_error(c, d.span, "%s", d.msg) }
+}
+
+// Every code's, reported in source order.
+reach_report :: proc(c: ^Checker, rp: ^Reach_Pass) {
+    slice.sort_by(rp.diags[:], proc(a, b: Reach_Diag) -> bool { return span_before(a.span, b.span) })
+    for d in rp.diags { check_error(c, d.span, "%s", d.msg) }
+    delete(rp.diags)
+    delete(rp.cache)
 }

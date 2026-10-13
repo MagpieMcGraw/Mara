@@ -15,8 +15,9 @@ import "core:strings"
 // slice or a `void` scalar), the void checks, literal ranges and constants
 // that can't be known before the program runs.
 
-// What flow analysis found in one code (flow_code), kept until every code is
-// analysed and then reported (flow_report) in the checks' own order: each
+// What flow analysis found in one code (flow_code: the middle end runs it on
+// each, middle.odin), kept until every code is analysed and then reported
+// (flow_report) in the checks' own order: each
 // over the program's codes in written order, or its funs in name order — as
 // one pass over the whole program would. A check that reports a span once
 // (a generic's instances share their template's) does so as it reports.
@@ -51,18 +52,6 @@ flow_pass_free :: proc(fp: ^Flow_Pass) {
     for _, list in fp.found { delete(list) }
     delete(fp.found)
     delete(fp.sources)
-}
-
-// The program's flow diagnostics: every code analysed, then reported.
-// Takes the Checker purely as the error sink (check_error); the analysis
-// itself reads only the durable Checked_Program.
-// (`fns`: the checked functions in name order, flow_functions. `void_defaults`:
-// the spans of params' `void` defaults the checker reported, tc_void_defaults.)
-flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope, void_defaults: map[Span]bool) {
-    fp := flow_pass_make(fns)
-    defer flow_pass_free(&fp)
-    for g in checked.code.codes { flow_code(&fp, g) }
-    flow_report(c, checked, &fp, fns, void_defaults)
 }
 
 // One code's findings: its literals' ranges, its unused errs, the void it
@@ -591,7 +580,7 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 
 // --- constants -----------------------------------------------------------------
 // A use of a constant whose value can't be known before the program runs
-// (graph_fold_uses: a call in it, a struct's construction with arguments):
+// (graph_fold_code: a call in it, a struct's construction with arguments):
 // Program_Code.fold_errors, reported by flow_report.
 
 // --- void into pointers ------------------------------------------------------

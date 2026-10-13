@@ -8,10 +8,10 @@ import "core:strings"
 // the flat tree and what the checker found about it (annot.odin), once the
 // check is done — the checker only checks.
 //
-// It replays what the checker checked, in the order it did (TC.events): each
-// module's statements settled, each constant, each body — in the instance it
-// was checked in (its salt, so tc_node_type and the rest read that
-// instance's annotations). A body's statements and expressions are built in
+// Each code is lowered on its own (lw_code), in the instance it was checked
+// in (its event in TC.events: its salt, so tc_node_type and the rest read
+// that instance's annotations) — when the middle end asks for it
+// (middle_program), or where the program writes it (lower_place). A body's statements and expressions are built in
 // the order the checker checked them, through the one builder, each value's
 // type the one annotated on its node.
 //
@@ -31,16 +31,9 @@ Lower :: struct {
     compound:   struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
-lower_program :: proc(k: ^TC) -> ^Graph_Builder {
+lower_begin :: proc(k: ^TC) -> LW_Codes {
     b := graph_builder_new(k.checked, tc_module_graph_decls(k))
     k.gb = b
-    k.lowering = true
-    defer k.lowering = false
-    saved_salt, saved_pkg, saved_subst := TC_Salt{k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
-    defer {
-        tc_instance_end(k, saved_salt)
-        k.pkg, k.subst = saved_pkg, saved_subst
-    }
     // What each module statement was settled as; each code's event — where
     // it was checked: a body's by its fun or struct (and the statement that
     // declares it), a constant's by its declaration.
@@ -60,14 +53,19 @@ lower_program :: proc(k: ^TC) -> ^Graph_Builder {
         }
     }
     graph_index(b)
-    // Each code lowered where the program writes it, and put in place there.
+    return codes
+}
+
+// Each code put in place where the program writes it — lowered there, if it
+// wasn't yet — and one no statement places lowered all the same, as it was
+// checked.
+lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
+    b := k.gb
     for ms in b.module_list {
         if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
-        lw_place_decl(k, &codes, ms.d, ms.declared)
+        lw_place_decl(k, codes, ms.d, ms.declared)
     }
-    // (One no statement places is built all the same, as it was checked.)
-    for e, i in k.events { if e.kind != .Module_Stmt { lw_code(k, &codes, i) } }
-    return b
+    for e, i in k.events { if e.kind != .Module_Stmt { lw_code(k, codes, i) } }
 }
 
 // Each code's event (TC.events): where it was checked, and whether it is

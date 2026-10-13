@@ -158,16 +158,14 @@ Esc_Pass :: struct {
 
 @(private="file") g_esc: Esc_Pass
 
-// Entry point, after build_call_graph: summaries bottom-up, each fun's
-// diagnostics against its callees' final summaries. A fun outside recursion
-// reports in its summary walk; a recursive one walks again once its SCC is
-// done, with the summaries final.
-escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
+// Escape analysis, a strongly connected component of the call graph at a
+// time (escape_scc), bottom-up — once its funs' codes are built, its
+// callees' summaries final — then its diagnostics reported (escape_report).
+escape_begin :: proc(c: ^Checker, code: ^Program_Code) {
     cg := c.cg
-    if cg == nil { return }
     resize(&cg.esc, len(cg.nodes))
     g_esc = Esc_Pass{
-        code     = &checked.code,
+        code     = code,
 
         reported = make([]bool, len(cg.nodes)),
         diags    = make([dynamic]Esc_Diag),
@@ -176,17 +174,34 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     if err := virtual.arena_init_static(&g_esc.walk, reserved = 64 * mem.Gigabyte); err != nil {
         fmt.panicf("escape analysis: no arena for its walks (%v)", err)
     }
-    defer virtual.arena_destroy(&g_esc.walk)
     // (The type caches fill during walks: kept, with their own allocator —
     // new each run, as its types are: `mara serve` checks again.)
     g_esc_refs_cache = make(map[^Type_Scope]bool, 64)
     g_esc_self_cache = make(map[^Type_Scope]bool, 64)
-    cg_bottom_up(cg, esc_summary_transfer)
-    for _, n in cg.nodes {
+}
+
+// One component's summaries, to their fixpoint (cg_bottom_up's step), then
+// each fun's diagnostics against them: a fun outside recursion reports in
+// its summary walk; a recursive one walks again, the summaries final.
+escape_scc :: proc(cg: ^Call_Graph, scc: []int) {
+    if len(scc) == 1 && !cg_is_recursive(cg, scc[0]) {
+        esc_summary_transfer(cg, scc[0])
+    } else {
+        for {
+            changed := false
+            for n in scc { if esc_summary_transfer(cg, n) { changed = true } }
+            if !changed { break }
+        }
+    }
+    for n in scc {
         if !g_esc.reported[n] { esc_walk(cg, n, true) }
     }
-    // In source order (check_error reports one once: a generic's instances
-    // share their spans).
+}
+
+// Every component's diagnostics, in source order (check_error reports one
+// once: a generic's instances share their spans).
+escape_report :: proc(c: ^Checker) {
+    defer virtual.arena_destroy(&g_esc.walk)
     slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
         if span_before(a.span, b.span) { return true }
         if span_before(b.span, a.span) { return false }
