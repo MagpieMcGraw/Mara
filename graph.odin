@@ -902,21 +902,30 @@ graph_place_scope :: proc(b: ^Graph_Builder, c: ^Built_Code, ts: ^Type_Scope, na
 }
 
 // A code put in place: next in Program_Code.codes, the program's written
-// order, and found by its fun or struct, or its constant's value.
+// order. (Found by its fun or struct, or its constant's value, from when it
+// was built: graph_code_found.)
 graph_place :: proc(b: ^Graph_Builder, c: ^Built_Code) {
     g := c.g
     if c.placed { graph_fatal(g.origin[0], "'%s' is put in place twice", graph_name(g, 0)) }
     c.placed = true
     pc := &b.pc
     append(&pc.codes, g)
-    if g.kind[0] == .Const {
-        pc.consts[c.value] = g
-    } else {
-        ts := graph_type(g, 0).(^Type_Scope)
-        pc.funs[ts] = g
-        if k, consumes := g.consumes[0]; consumes { pc.consumes[ts] = k }
-    }
     append(&pc.unreachable, ..g.unreachable[:])
+}
+
+// A code built: found from here by its fun or struct (and which param its
+// result consumes), or by its constant's value — what reads across codes
+// (folding, the analyses' summaries) needs no more than that it was built.
+@(private="file")
+graph_code_found :: proc(b: ^Graph_Builder, g: ^Program_Graph, value: Syntax_Id) {
+    pc := &b.pc
+    if g.kind[0] == .Const {
+        pc.consts[value] = g
+        return
+    }
+    ts := graph_type(g, 0).(^Type_Scope)
+    pc.funs[ts] = g
+    if k, consumes := g.consumes[0]; consumes { pc.consumes[ts] = k }
 }
 
 // A type with its widths settled: a `:=` binding's, the one it adopted;
@@ -2013,6 +2022,7 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     if c := graph_code_close(b, f); c != nil {
         b.bodies[f.ts] = new_clone(Built_Code{g = c, defs = f.defs})
         f.defs = nil
+        graph_code_found(b, c, 0)
     }
     graph_body_free(b, f)
 }
@@ -3111,6 +3121,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     b.body = nil
     if c := graph_code_close(b, f); c != nil {
         b.consts[d.id] = new_clone(Built_Code{g = c, value = d.value})
+        graph_code_found(b, c, d.value)
     }
     graph_body_free(b, f)
 }
