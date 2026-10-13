@@ -80,6 +80,11 @@ Module_Task :: struct {
     bswap_intrinsics:    map[int]bool,
     imports:             map[string]bool,
     const_tables:        map[string]Const_Table,
+
+    // The x86 backend: the program's type names (its input), the module's
+    // object (its output); nil for LLVM's.
+    x86_named:           ^map[string]string,
+    x86:                 ^X86_Module,
 }
 
 // Worker entry point. Sets up an isolated arena allocator, builds a local
@@ -101,6 +106,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     local: Codegen
     init_worker_codegen(&local, task)
+    if task.x86_named != nil { local.x86 = x86_begin(x86_program_view(task.x86_named)) }
 
     // Emit this module's functions. switch_to_module + flush handle the
     // g.out buffer swap so emit_target routes correctly. Each function's
@@ -133,6 +139,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     }
 
     task.string_decls        = local.string_decls
+    task.x86                 = local.x86
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
     task.const_tables        = local.const_tables
@@ -159,8 +166,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.summaries = make(map[^Type_Scope]^Fun_Summary, keep)
     g.module_outs = make(map[string]strings.Builder, keep)
     g.module_order = make([dynamic]string, keep)
-    g.alloca_buf = strings.builder_make(keep)
-    g.body_buf = strings.builder_make(keep)
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode
@@ -487,6 +492,11 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
     }
 
+    // The x86 backend's types: their names, the program's; each worker lays
+    // them out for itself.
+    x86_types: ^X86_Program
+    if x86 { x86_types = x86_program(g.struct_decls[:]) }
+
     // Build set of explicitly declared function names (in written order)
     declared_fns: map[string]bool
     for fn_name in checked.function_order {
@@ -536,6 +546,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         task.fn_names    = fns_by_module[module_name][:]
         task.web         = web
         task.shared_mode = shared
+        if x86 { task.x86_named = x86_types.named }
         append(&tasks, task)
     }
 
@@ -570,6 +581,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // (Phase 1.6 — compute imports — runs after Phase 2 below so the @main
     // body in main_builder is scanned too.)
 
+    // The x86 backend: @main and the runtime's helpers go into the main
+    // package's object — its worker's, or one of its own.
+    x86_main: ^X86_Module
+    if x86 {
+        for t in tasks { if t.module_name == checked.main_package { x86_main = t.x86 } }
+        if x86_main == nil { x86_main = x86_begin(x86_types) }
+        g.x86 = x86_main
+    }
+
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
     // handover into @__mara_program on entry, so there's nothing for a single
@@ -582,18 +602,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // On web (wasm32), the C entry point's `int` is i32, not i64. We keep
     // Mara's main internally as i64 so user `return X` and the args-setup
     // size_t handling don't change, and emit a tiny i32 wrapper after.
-    if g.web {
-        emit_raw(&g, "define i64 @__mara_main(i32 %.argc, ptr %.argv) {")
-    } else {
-        emit_raw(&g, "define i64 @main(i32 %.argc, ptr %.argv) {")
-    }
-    emit_raw(&g, "entry:")
+    main_head := "define i64 @__mara_main(i32 %.argc, ptr %.argv) {" if g.web else "define i64 @main(i32 %.argc, ptr %.argv) {"
     // A crash the program doesn't report itself (a stack overflow, a bad
     // memory access) reported as an assert is (runtime/mara_crash.c).
-    if !g.web { emit_raw(&g, "  call void @__mara_crash_install()") }
+    if !g.web { ir_call(&g, "", "void", "@__mara_crash_install") }
 
     emit_main_prologue(&g, checked)
-    if g.profile != "" { emit(&g, "  call void @__mara_prof_start(ptr %s)", get_string_literal(&g, g.profile)) }
+    if g.profile != "" { ir_call(&g, "", "void", "@__mara_prof_start", fmt.tprintf("ptr %s", get_string_literal(&g, g.profile))) }
 
     main_cf, main_ok := checked.functions["main"]
     if !main_ok {
@@ -604,17 +619,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         codegen_fatal(&g, {}, "`main` was declared but never extracted as a function")
     }
     // Main's body, from the graph.
-    llvm_main(&g, main_cf)
+    llvm_main(&g, main_cf, main_head)
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
     // truncating the return code so emscripten's runtime sees a regular int.
     if g.web {
-        emit_raw(&g, "")
-        emit_raw(&g, "define i32 @main(i32 %.argc, ptr %.argv) {")
-        emit_raw(&g, "  %r = call i64 @__mara_main(i32 %.argc, ptr %.argv)")
-        emit_raw(&g, "  %r32 = trunc i64 %r to i32")
-        emit_raw(&g, "  ret i32 %r32")
-        emit_raw(&g, "}")
+        strings.write_string(&g.out, "\ndefine i32 @main(i32 %.argc, ptr %.argv) {\n")
+        strings.write_string(&g.out, "  %r = call i64 @__mara_main(i32 %.argc, ptr %.argv)\n")
+        strings.write_string(&g.out, "  %r32 = trunc i64 %r to i32\n")
+        strings.write_string(&g.out, "  ret i32 %r32\n}\n")
     }
 
     main_builder = g.out
@@ -637,29 +650,29 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         flush_current_module(&g)
     }
 
-    // The x86 backend: each module's IR — its strings, constants, functions,
-    // and in the main one the program's globals, the runtime's helpers and
-    // @main — translated (x86.odin) and written as an object, one after
-    // another. (What only a .ll needs — its imports' declares, the types it
-    // names — isn't made.)
+    // The x86 backend: each module's object — its functions in it already,
+    // made as they were — given its globals (its strings, its constants; in
+    // the main one the program's) and written, one after another. (What only
+    // a .ll needs — its imports' declares, the types it names — isn't made.)
     if x86 {
         build_dir := derive_build_dir(output_path)
         if !ensure_dir(build_dir) {
             fmt.printf("Error: could not create build dir '%s'\n", build_dir)
             return nil, false
         }
-        types := x86_program(g.struct_decls[:])
         g.module_ll_paths = make([dynamic]string)
         named: map[string]bool
         for mt in g.module_tasks {
             named[mt.module_name] = true
-            path := x86_write_module(&g, types, build_dir, mt.module_name, mt, fail_helpers_ir, main_builder_str) or_else ""
+            m := x86_main if mt.module_name == checked.main_package else mt.x86
+            path := x86_write_module(&g, m, build_dir, mt.module_name, mt) or_else ""
             if path == "" { return nil, false }
             append(&g.module_ll_paths, path)
         }
         for module_name in g.module_order {
             if module_name in named { continue }
-            path := x86_write_module(&g, types, build_dir, module_name, nil, fail_helpers_ir, main_builder_str) or_else ""
+            m := x86_main if module_name == checked.main_package else x86_begin(x86_types)
+            path := x86_write_module(&g, m, build_dir, module_name, nil) or_else ""
             if path == "" { return nil, false }
             append(&g.module_ll_paths, path)
         }
@@ -772,33 +785,23 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     return g.module_ll_paths[:], true
 }
 
-// One module's object (x86.odin), from the parts of its IR a .ll would be
-// made of: made in scratch, the object on the heap, both let go of once it's
-// written.
+// One module's object (x86.odin): its functions in it already; its globals
+// — its strings, its constants, the main one's the program's — put in now,
+// and it's written, on the heap, let go of once it is.
 @(private="file")
-x86_write_module :: proc(g: ^Codegen, types: ^X86_Program, build_dir, module_name: string, mt: ^Module_Task,
-                         fail_helpers_ir, main_builder_str: string) -> (string, bool) {
+x86_write_module :: proc(g: ^Codegen, m: ^X86_Module, build_dir, module_name: string, mt: ^Module_Task) -> (string, bool) {
     path := module_ll_path(build_dir, module_name, ".o")
-    scratch: virtual.Arena
-    _ = virtual.arena_init_growing(&scratch)
-    defer virtual.arena_destroy(&scratch)
-    context.allocator = virtual.arena_allocator(&scratch)
-    context.temp_allocator = context.allocator
     main := module_name == g.checked.main_package
-    parts := make([dynamic]string)
-    if mt != nil { append(&parts, ..mt.string_decls[:]) }
+    if mt != nil { for d in mt.string_decls { x86_globals(m, d) } }
     if main {
-        append(&parts, ..g.string_decls[:])
-        append(&parts, "@__mara_program = global ptr null")
-        append(&parts, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(g.checked), " zeroinitializer"}))
+        for d in g.string_decls { x86_globals(m, d) }
+        x86_globals(m, "@__mara_program = global ptr null")
+        x86_globals(m, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(g.checked), " zeroinitializer"}))
     }
-    append(&parts, module_const_ir(g, module_name, main))
-    if main { append(&parts, fail_helpers_ir) }
-    if buf, ok := g.module_outs[module_name]; ok { append(&parts, strings.to_string(buf)) }
-    if main { append(&parts, main_builder_str) }
+    x86_globals(m, module_const_ir(g, module_name, main))
     out := make([dynamic]u8, runtime.heap_allocator())
     defer delete(out)
-    x86_module(types, parts[:], &out)
+    x86_finish(m, &out)
     if os.write_entire_file(path, out[:]) != nil {
         fmt.printfln("Error: could not write '%s'", path)
         return path, false
@@ -1219,100 +1222,100 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
     // check). Native is unaffected: same global lifetime, same fields.
     {
         ctx_alloca := "@__mara_program_storage"
-        emit_raw(g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
+        ir_store(g, "ptr", ctx_alloca, "@__mara_program")
 
         // Arena init (if scope allocator is active).
         if g.context_enabled {
             arena_ptr := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 0"}))
+            emit_field_gep_into(g, arena_ptr, program_ir_name(checked), ctx_alloca, 0)
             new_ir := mara_fn_name(g, g.arena_new_name)
             alloc_size := "268435456"  // default 256 MB
             if n, sized := checked.table.scope_allocator_size.?; sized { alloc_size = fmt.tprintf("%d", n) }
-            emit_raw(g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
+            ir_call(g, "", "void", new_ir, strings.concatenate({"i64 ", alloc_size}), strings.concatenate({"ptr ", arena_ptr}))
         }
 
         // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
         // embedded as a field of Context.
-        args_field_idx := "1" if g.context_enabled else "0"
+        args_field_idx := 1 if g.context_enabled else 0
         ARGS_CAP :: "64"
         pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
 
         // GEP to the partial-array field within Context
         args_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", args_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
+        emit_field_gep_into(g, args_ptr, program_ir_name(checked), ctx_alloca, args_field_idx)
 
         // More arguments than the args array holds is an error, not a silent
         // truncation — a program handed a long file list must not quietly
         // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
         argc_over := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %.argc, ", ARGS_CAP}))
+        ir_icmp(g, argc_over, "sgt", "i32", "%.argc", ARGS_CAP)
         args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
         args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
-        emit_raw(g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
-        emit_raw(g, strings.concatenate({args_err_lbl, ":"}))
+        emit_cond_br(g, argc_over, args_err_lbl, args_ok_lbl)
+        emit_label(g, args_err_lbl)
         emit_fail(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n", "i32 %.argc")
-        emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
+        emit_label(g, args_ok_lbl)
         argc_min := "%.argc" // every argument fits from here on
 
         // Its header: len argc (i32, as the loop counter below; the header's
         // i64), cap 64, ptr its elements (field 3).
         len_store_val := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", SLICE_LEN_IR}))
+        ir_cast(g, len_store_val, "sext", "i32", argc_min, SLICE_LEN_IR)
         emit_header_set(g, args_ptr, SLICE.len, len_store_val)
         emit_header_set(g, args_ptr, SLICE.cap, ARGS_CAP)
         elements_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 3"}))
+        emit_field_gep_into(g, elements_ptr, pa_ir, args_ptr, 3)
         emit_header_set(g, args_ptr, SLICE.ptr, elements_ptr)
 
         // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
         // Counter is i32 to match argc and the slice header — no widen/trunc.
         loop_i := fresh_tmp(g)
         emit_alloca(g, loop_i, "i32")
-        emit_raw(g, strings.concatenate({"  store i32 0, ptr ", loop_i}))
+        ir_store(g, "i32", "0", loop_i)
         loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
         body_lbl := fmt.tprintf("args_body_%d", g.label_counter)
         done_lbl := fmt.tprintf("args_done_%d", g.label_counter)
         g.label_counter += 1
-        emit_raw(g, strings.concatenate({"  br label %", loop_lbl}))
+        emit_br(g, loop_lbl)
 
-        emit_raw(g, strings.concatenate({loop_lbl, ":"}))
+        emit_label(g, loop_lbl)
         cur_i := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", cur_i, " = load i32, ptr ", loop_i}))
+        ir_load(g, cur_i, "i32", loop_i)
         cmp := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", cmp, " = icmp slt i32 ", cur_i, ", ", argc_min}))
-        emit_raw(g, strings.concatenate({"  br i1 ", cmp, ", label %", body_lbl, ", label %", done_lbl}))
+        ir_icmp(g, cmp, "slt", "i32", cur_i, argc_min)
+        emit_cond_br(g, cmp, body_lbl, done_lbl)
 
-        emit_raw(g, strings.concatenate({body_lbl, ":"}))
+        emit_label(g, body_lbl)
         argv_i_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %.argv, i32 ", cur_i}))
+        ir_gep(g, argv_i_ptr, "ptr", "%.argv", strings.concatenate({"i32 ", cur_i}))
         argv_i := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
+        ir_load(g, argv_i, "ptr", argv_i_ptr)
         // strlen returns size_t (i64 native, i32 on web), widened to the
         // header's i64 for the len/cap store.
         str_len := fresh_tmp(g)
         if g.web {
             str_len_32 := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
-            emit_raw(g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", SLICE_LEN_IR}))
+            ir_call(g, str_len_32, "i32", "@strlen", strings.concatenate({"ptr ", argv_i}))
+            ir_cast(g, str_len, "zext", "i32", str_len_32, SLICE_LEN_IR)
         } else {
-            emit_raw(g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
+            ir_call(g, str_len, "i64", "@strlen", strings.concatenate({"ptr ", argv_i}))
         }
         // elements[i] is a slice — write len, cap, ptr. cap counts argv's
         // terminating 0 (as a string literal's does), so cstring(arg) finds it
         // at [len] — passing an argument to a file open or any C call works.
         elem_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
+        ir_gep(g, elem_ptr, strings.concatenate({"[64 x ", SLICE_IR_TYPE, "]"}), elements_ptr, "i32 0", strings.concatenate({"i32 ", cur_i}))
         emit_header_set(g, elem_ptr, SLICE.len, str_len)
         str_cap := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", SLICE_LEN_IR, " ", str_len, ", 1"}))
+        ir_bin(g, str_cap, "add", SLICE_LEN_IR, str_len, "1")
         emit_header_set(g, elem_ptr, SLICE.cap, str_cap)
         emit_header_set(g, elem_ptr, SLICE.ptr, argv_i)
         // i++
         next_i := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", next_i, " = add i32 ", cur_i, ", 1"}))
-        emit_raw(g, strings.concatenate({"  store i32 ", next_i, ", ptr ", loop_i}))
-        emit_raw(g, strings.concatenate({"  br label %", loop_lbl}))
+        ir_bin(g, next_i, "add", "i32", cur_i, "1")
+        ir_store(g, "i32", next_i, loop_i)
+        emit_br(g, loop_lbl)
 
-        emit_raw(g, strings.concatenate({done_lbl, ":"}))
+        emit_label(g, done_lbl)
     }
 }

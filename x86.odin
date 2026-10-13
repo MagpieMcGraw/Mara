@@ -8,13 +8,12 @@ import "core:strconv"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// The x86-64 backend (Windows). A module's low-level IR — what llvm.odin and
-// the emit helpers write for it: the LLVM subset with no phi, ~40
-// instructions (loads, stores, address arithmetic, integer and float
-// operations, conversions, calls, branches) and a few intrinsics — read and
-// encoded as x86-64 machine code into a COFF object, which lld links. It
-// decides nothing about the program: every check, layout and conversion is in
-// the IR already; what's here is how each instruction is done on the machine.
+// The x86-64 backend (Windows). Each function's low-level instructions — what
+// llvm.odin and the emit helpers make of it (ir.odin: the LLVM subset, no
+// phi) — encoded as x86-64 machine code as the function is made, into its
+// module's COFF object, which lld links. It decides nothing about the
+// program: every check, layout and conversion is in the instructions already;
+// what's here is how each one is done on the machine.
 //
 // Every value has a slot in its function's frame; an instruction loads what
 // it uses into registers, does its work and stores its result. An address in
@@ -76,16 +75,16 @@ X86_Sym :: struct {
     section: bool,   // a section's own symbol
 }
 
-// The program's types: every module's IR names the same ones, laid out once.
+// The program's types: every module's IR names the same ones. A worker's view
+// of them (x86_program_view) shares their names and lays them out itself.
 X86_Program :: struct {
     keep:  runtime.Allocator,
-    named: map[string]string,       // %class.X → its body's text
+    named: ^map[string]string,      // %class.X → its body's text (shared, read only)
     types: map[string]^X86_Type,    // a type's text → its layout
     i1, i8, i16, i32, i64, ptr, f32, f64, void: ^X86_Type,   // (the common ones, without a lookup)
 }
 
-// One module's translation: its object.
-@(private="file")
+// One module's object, as its functions and globals go in.
 X86_Module :: struct {
     p:       ^X86_Program,
     keep:    runtime.Allocator,      // (what outlives one function)
@@ -168,13 +167,20 @@ X86_Mem :: struct {
 @(private="file") X86_SP  :: 4
 @(private="file") X86_RIP :: 255
 
-// What the backend can't translate: an error, not a guess — with the IR line
-// it was reading.
-@(private="file") x86_line: string
+// What the backend can't translate: an error, not a guess — with what it was
+// reading: an instruction, or a line (a global's, a function's head).
+@(private="file", thread_local) x86_line: string
+@(private="file", thread_local) x86_ins: ^Ir
 
 @(private="file")
 x86_fail :: proc(what, part: string) -> ! {
-    fmt.eprintf("x86 backend: can't translate %s (%s) in: %s\n(`mara build -llvm` builds it with LLVM)\n", what, strings.trim_space(part), strings.trim_space(x86_line))
+    at := strings.trim_space(x86_line)
+    if x86_ins != nil {
+        b := strings.builder_make()
+        ir_print(&b, x86_ins^)
+        at = strings.trim_space(strings.to_string(b))
+    }
+    fmt.eprintf("x86 backend: can't translate %s (%s) in: %s\n(`mara build -llvm` builds it with LLVM)\n", what, strings.trim_space(part), at)
     os.exit(1)
 }
 
@@ -182,60 +188,60 @@ x86_fail :: proc(what, part: string) -> ! {
 
 // The program's types, from its type definitions (`%class.X = type {…}`).
 x86_program :: proc(type_decls: []string) -> ^X86_Program {
+    named := new(map[string]string)
+    named^ = make(map[string]string)
+    for d in type_decls {
+        if eq := strings.index(d, " = type "); eq > 0 { named^[d[:eq]] = strings.trim_space(d[eq + 8:]) }
+    }
+    return x86_program_view(named)
+}
+
+// The program's types, laid out by one worker: their names shared, their
+// layouts its own.
+x86_program_view :: proc(named: ^map[string]string) -> ^X86_Program {
     p := new(X86_Program)
     p.keep = context.allocator
-    p.named = make(map[string]string)
+    p.named = named
     p.types = make(map[string]^X86_Type)
-    for d in type_decls {
-        if eq := strings.index(d, " = type "); eq > 0 { p.named[d[:eq]] = strings.trim_space(d[eq + 8:]) }
-    }
     p.i1, p.i8, p.i16, p.i32, p.i64 = x86_type(p, "i1"), x86_type(p, "i8"), x86_type(p, "i16"), x86_type(p, "i32"), x86_type(p, "i64")
     p.ptr, p.f32, p.f64, p.void = x86_type(p, "ptr"), x86_type(p, "float"), x86_type(p, "double"), x86_type(p, "void")
     return p
 }
 
-// A module's IR — its parts' lines: globals and functions, in order — as a
-// COFF object, into `out`.
-x86_module :: proc(p: ^X86_Program, parts: []string, out: ^[dynamic]u8) {
-    m := X86_Module{p = p, keep = context.allocator}
+// A module's object, begun: its functions (x86_function) and globals
+// (x86_globals) go in as they're made; x86_finish writes it.
+x86_begin :: proc(p: ^X86_Program) -> ^X86_Module {
+    m := new(X86_Module)
+    m.p, m.keep = p, context.allocator
     m.sym_of = make(map[string]u32)
     m.exports = make([dynamic]string)
-    size := 0
-    for part in parts { size += len(part) }
     for s in X86_Sec {
-        m.sec[s] = make([dynamic]u8, 0, size / 2 if s == .Text else 0)
+        m.sec[s] = make([dynamic]u8)
         m.relocs[s] = make([dynamic]X86_Reloc)
         append(&m.syms, X86_Sym{name = X86_SEC_NAME[s], sec = int(s) + 1, section = true})
     }
-    // (Each function's own work is scratch, let go of once it's in the object.)
-    scratch: virtual.Arena
-    _ = virtual.arena_init_growing(&scratch)
-    defer virtual.arena_destroy(&scratch)
-    for part in parts {
-        rest := part
-        for len(rest) > 0 {
-            line := rest
-            nl := strings.index_byte(rest, '\n')
-            if nl >= 0 { line, rest = rest[:nl], rest[nl + 1:] } else { rest = "" }
-            switch {
-            case strings.has_prefix(line, "define "):
-                body, out := x86_body(&rest)
-                {
-                    context.allocator = virtual.arena_allocator(&scratch)
-                    context.temp_allocator = context.allocator
-                    x86_function(&m, line, body, out)
-                }
-                virtual.arena_free_all(&scratch)
-            case strings.has_prefix(line, "@"):
-                x86_global(&m, line)
-            }
-        }
+    return m
+}
+
+// Global definitions, as LLVM writes them (`@name = …`), a line each.
+x86_globals :: proc(m: ^X86_Module, text: string) {
+    x86_ins = nil
+    rest := text
+    for len(rest) > 0 {
+        line := rest
+        if nl := strings.index_byte(rest, '\n'); nl >= 0 { line, rest = rest[:nl], rest[nl + 1:] } else { rest = "" }
+        if strings.has_prefix(line, "@") { x86_global(m, line) }
     }
+}
+
+// The module's object, written into `out`: its exports' directives, then
+// the COFF.
+x86_finish :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
     for name in m.exports {
         append(&m.sec[.Drectve], " /EXPORT:")
         append(&m.sec[.Drectve], name)
     }
-    x86_coff(&m, out)
+    x86_coff(m, out)
 }
 
 // A global's symbol name: a private one (`@.str…`) the module's own.
@@ -388,7 +394,7 @@ x86_type :: proc(m: ^X86_Program, text: string) -> ^X86_Type {
     }
     if t, ok := m.types[text]; ok { return t }
     t := new(X86_Type, m.keep)
-    m.types[text] = t
+    m.types[strings.clone(text, m.keep)] = t   // (its own copy of the text: an instruction's may be its function's scratch)
     switch {
     case text == "void":   t^ = {kind = .Void, align = 1}
     case text == "ptr":    t^ = {kind = .Ptr, size = 8, align = 8}
@@ -401,7 +407,7 @@ x86_type :: proc(m: ^X86_Program, text: string) -> ^X86_Type {
         for size * 8 < bits { size *= 2 }
         t^ = {kind = .Int, bits = bits, size = size, align = size}
     case text[0] == '%':
-        body, ok := m.named[text]
+        body, ok := m.named^[text]
         if !ok { x86_fail("a type with no definition", text) }
         t^ = x86_type(m, body)^
     case text[0] == '[':
@@ -487,10 +493,11 @@ x86_value :: proc(l: ^X86_Lex, t: ^X86_Type) -> X86_Val {
     return {kind = .Int, n = transmute(i64)u}
 }
 
+// An operand of type t, from its text.
 @(private="file")
-x86_typed :: proc(f: ^X86_Fn, l: ^X86_Lex) -> (^X86_Type, X86_Val) {
-    t := x86_type(f.m.p, x86_type_text(l))
-    return t, x86_value(l, t)
+x86_val :: proc(s: string, t: ^X86_Type) -> X86_Val {
+    l := X86_Lex{s, 0}
+    return x86_value(&l, t)
 }
 
 // --- encoding ----------------------------------------------------------------------
@@ -707,9 +714,10 @@ x86_call_sym :: proc(f: ^X86_Fn, name: string) {
 
 // --- a function --------------------------------------------------------------------
 
-@(private="file")
-x86_function :: proc(m: ^X86_Module, header: string, body: string, out: int) {
-    x86_line = header
+// A function into the module's object: its `define` line, its code's parts
+// in order (codegen_function).
+x86_function :: proc(m: ^X86_Module, header: string, code: [][]Ir) {
+    x86_line, x86_ins = header, nil
     l := X86_Lex{header, 0}
     x86_word(&l)   // define
     export, local := false, false
@@ -727,7 +735,7 @@ x86_function :: proc(m: ^X86_Module, header: string, body: string, out: int) {
     x86_type_text(&l)   // its result's type: its returns say
     sym := x86_sym(x86_word(&l)[1:])
     f := X86_Fn{m = m}
-    f.out = out
+    f.out = x86_out_area(code)
     f.slots = make(map[string]X86_Slot)
     f.temps = make([dynamic]X86_Slot)
     f.labels = make(map[string]int)
@@ -740,25 +748,10 @@ x86_function :: proc(m: ^X86_Module, header: string, body: string, out: int) {
         append(&params, X86_Arg{t, {kind = .Local, name = name}})
         x86_eat(&l, ',')
     }
-    rest := body
-    for len(rest) > 0 {
-        line := rest
-        if nl := strings.index_byte(rest, '\n'); nl >= 0 { line, rest = rest[:nl], rest[nl + 1:] } else { rest = "" }
-        if len(line) == 0 || line[0] == ';' { continue }
-        if line[0] != ' ' {   // a label
-            x86_place(&f, strings.trim_suffix(line, ":"))
-            continue
-        }
-        if strings.has_prefix(line, "  switch ") {   // its cases, a line each, then `]`
-            end := strings.index(rest, "\n  ]")
-            if end < 0 { x86_fail("a switch with no end", line) }
-            cases, _ := strings.replace_all(rest[:end + 4], "\n", " ")
-            line = strings.concatenate({line, " ", cases})
-            rest = rest[end + 4:]
-            if len(rest) > 0 && rest[0] == '\n' { rest = rest[1:] }
-        }
-        x86_inst(&f, line)
+    for part in code {
+        for &ins in part { x86_inst(&f, &ins) }
     }
+    x86_ins = nil
 
     // Its frame: the outgoing arguments, then the slots — rsp 16-aligned
     // after the two pushes and the allocation. Its one epilogue.
@@ -838,59 +831,17 @@ x86_function :: proc(m: ^X86_Module, header: string, body: string, out: int) {
     if export { append(&m.exports, strings.clone(sym, m.keep)) }
 }
 
-// A function's body — its lines up to its closing `}`, read past — and its
-// outgoing arguments' area: the most any call in it passes, 8 bytes each, and
+// The outgoing arguments' area: the most any call passes, 8 bytes each, and
 // at least the 32 the callee may keep its register arguments in; none for a
 // function that calls nothing.
 @(private="file")
-x86_body :: proc(rest: ^string) -> (body: string, out: int) {
+x86_out_area :: proc(code: [][]Ir) -> int {
     most := -1
-    text := rest^
-    pos := 0
-    for {
-        if pos >= len(text) { x86_fail("a function with no end", "") }
-        line := text[pos:]
-        next := len(text)
-        if nl := strings.index_byte(line, '\n'); nl >= 0 {
-            line = line[:nl]
-            next = pos + nl + 1
-        }
-        if len(line) > 0 && line[0] == '}' {
-            body, rest^ = text[:pos], text[next:]
-            break
-        }
-        pos = next
-        // (A call: `  call …`, or `  %x = call …`.)
-        if len(line) < 3 || line[0] != ' ' { continue }
-        at := 2
-        if line[2] == '%' {
-            eq := strings.index_byte(line, '=')
-            if eq < 0 { continue }
-            at = eq + 2
-        }
-        if !strings.has_prefix(line[min(at, len(line)):], "call ") { continue }
-        rest := line[at + 5:]
-        c := strings.index_any(rest, "@%")   // the callee: past its result's type and signature
-        if c < 0 { continue }
-        p := strings.index_byte(rest[c:], '(')
-        if p < 0 { continue }
-        n, depth, any := 0, 0, false
-        count: for ch in transmute([]u8)rest[c + p + 1:] {
-            switch ch {
-            case '(', '[', '{', '<': depth += 1
-            case ')', ']', '}', '>':
-                if depth == 0 { break count }
-                depth -= 1
-            case ',':
-                if depth == 0 { n += 1 }
-            }
-            if ch != ' ' { any = true }
-        }
-        if any { n += 1 }
-        most = max(most, n)
+    for part in code {
+        for ins in part { if ins.op == .Call { most = max(most, len(ins.args)) } }
     }
-    if most >= 0 { out = x86_align(max(32, 8 * most), 16) }
-    return
+    if most < 0 { return 0 }
+    return x86_align(max(32, 8 * most), 16)
 }
 
 // A local's slot, made when it's first named: memory (an alloca's), or 8
@@ -1000,30 +951,22 @@ x86_zero :: proc(f: ^X86_Fn, size: int) {
 // --- instructions --------------------------------------------------------------------
 
 @(private="file")
-x86_inst :: proc(f: ^X86_Fn, line: string) {
+x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
     m := f.m
-    x86_line = line
-    l := X86_Lex{line, 0}
-    dest := ""
-    op := x86_word(&l)
-    if len(op) > 0 && op[0] == '%' {
-        dest = op
-        x86_eat(&l, '=')
-        op = x86_word(&l)
-    }
-    for x86_is(&l, "inbounds") || x86_is(&l, "nsw") || x86_is(&l, "nuw") || x86_is(&l, "exact") {}
-    switch op {
-    case "alloca":
-        t := x86_type(m.p, x86_type_text(&l))
-        align := t.align
-        if x86_eat(&l, ',') && x86_is(&l, "align") { align = max(align, x86_atoi(x86_word(&l))) }
-        x86_slot(f, dest, t.size, align, memory = true)
+    x86_ins = ins
+    p := m.p
+    dest := ins.dest
+    switch ins.op {
+    case .Label:
+        x86_place(f, ins.inst)
 
-    case "load":
-        t := x86_type(m.p, x86_type_text(&l))
-        x86_eat(&l, ',')
-        _, p := x86_typed(f, &l)
-        at := x86_ptr(f, p, .CX)
+    case .Alloca:
+        t := x86_type(p, ins.ty)
+        x86_slot(f, dest, t.size, max(t.align, int(ins.align)), memory = true)
+
+    case .Load:
+        t := x86_type(p, ins.ty)
+        at := x86_ptr(f, x86_val(ins.a, p.ptr), .CX)
         if x86_aggregate(t) {
             x86_lea(f, .SI, at)
             x86_lea(f, .DI, x86_mem(f, x86_slot(f, dest, t.size, t.align), 0))
@@ -1033,11 +976,10 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
         x86_load(f, .AX, at, t.size)
         x86_put(f, dest)
 
-    case "store":
-        t, v := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        _, p := x86_typed(f, &l)
-        at := x86_ptr(f, p, .DI)
+    case .Store:
+        t := x86_type(p, ins.ty)
+        v := x86_val(ins.a, t)
+        at := x86_ptr(f, x86_val(ins.b, p.ptr), .DI)
         if x86_aggregate(t) {
             x86_lea(f, .DI, at)
             switch {
@@ -1047,7 +989,7 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
             case v.kind == .Zero || (v.kind == .Int && v.n == 0):
                 x86_zero(f, t.size)
             case:
-                x86_fail("an aggregate's value", line)
+                x86_fail("an aggregate's value", ins.a)
             }
             return
         }
@@ -1055,25 +997,22 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
         if t.kind == .Int && t.bits == 1 { x86_ri(f, 4, 4, .AX, 1) }   // (a bool: 0 or 1)
         x86_store(f, at, .AX, t.size)
 
-    case "getelementptr":
-        t := x86_type(m.p, x86_type_text(&l))
-        x86_eat(&l, ',')
-        _, base := x86_typed(f, &l)
+    case .Gep:
+        base := x86_val(ins.a, p.ptr)
         // Its constant offset, and the variable indices scaled.
         Scaled :: struct { t: ^X86_Type, v: X86_Val, scale: int }
         vars := make([dynamic]Scaled, context.temp_allocator)
         off := 0
-        cur := t
-        first := true
-        for x86_eat(&l, ',') {
-            it, idx := x86_typed(f, &l)
+        cur := x86_type(p, ins.ty)
+        for x, k in ins.args {
+            it := x86_type(p, x.ty)
+            idx := x86_val(x.v, it)
             scale := 0
             switch {
-            case first:
+            case k == 0:
                 scale = cur.size   // (the first steps over whole Ts)
-                first = false
             case cur.kind == .Struct:
-                if idx.kind == .Local { x86_fail("a field by a variable", line) }
+                if idx.kind == .Local { x86_fail("a field by a variable", x.v) }
                 off += cur.offsets[idx.n]
                 cur = cur.fields[idx.n]
                 continue
@@ -1081,7 +1020,7 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
                 scale = cur.elem.size
                 cur = cur.elem
             case:
-                x86_fail("an index", line)
+                x86_fail("an index", x.v)
             }
             if idx.kind == .Local { append(&vars, Scaled{it, idx, scale}) } else { off += int(idx.n) * scale }
         }
@@ -1105,13 +1044,12 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
         if off != 0 { x86_lea(f, .AX, {base = u8(X86_Reg.AX), disp = i32(off)}) }
         x86_put(f, dest)
 
-    case "add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "sdiv", "srem", "udiv", "urem":
-        t, a := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        b := x86_value(&l, t)
+    case .Bin:
+        t := x86_type(p, ins.ty)
+        a, b := x86_val(ins.a, t), x86_val(ins.b, t)
         x86_get(f, a, .AX)
         x86_get(f, b, .CX)
-        switch op {
+        switch ins.inst {
         case "add": x86_rr(f, 8, 0x00, .AX, .CX)
         case "sub": x86_rr(f, 8, 0x28, .AX, .CX)
         case "and": x86_rr(f, 8, 0x20, .AX, .CX)
@@ -1130,38 +1068,33 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
             x86_extend(f, .CX, t.bits, true)
             append(&f.code, 0x48, 0x99)   // cqo
             x86_grp3(f, 8, 7, .CX)        // idiv rcx
-            if op == "srem" { x86_mov(f, .AX, .DX) }
+            if ins.inst == "srem" { x86_mov(f, .AX, .DX) }
         case "udiv", "urem":
             x86_extend(f, .AX, t.bits, false)
             x86_extend(f, .CX, t.bits, false)
             x86_imm(f, .DX, 0)
             x86_grp3(f, 8, 6, .CX)        // div rcx
-            if op == "urem" { x86_mov(f, .AX, .DX) }
+            if ins.inst == "urem" { x86_mov(f, .AX, .DX) }
+        case "fadd", "fsub", "fmul", "fdiv":
+            x86_to_xmm(f, 0, .AX)
+            x86_to_xmm(f, 1, .CX)
+            code: u8
+            switch ins.inst {
+            case "fadd": code = 0x58
+            case "fsub": code = 0x5C
+            case "fmul": code = 0x59
+            case "fdiv": code = 0x5E
+            }
+            x86_sse(f, x86_fpre(t), false, code, 0, 1)
+            x86_from_xmm(f, .AX, 0)
+        case:
+            x86_fail("the operation", ins.inst)
         }
         x86_put(f, dest)
 
-    case "fadd", "fsub", "fmul", "fdiv":
-        t, a := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        b := x86_value(&l, t)
-        x86_get(f, a, .AX)
-        x86_get(f, b, .CX)
-        x86_to_xmm(f, 0, .AX)
-        x86_to_xmm(f, 1, .CX)
-        code: u8
-        switch op {
-        case "fadd": code = 0x58
-        case "fsub": code = 0x5C
-        case "fmul": code = 0x59
-        case "fdiv": code = 0x5E
-        }
-        x86_sse(f, x86_fpre(t), false, code, 0, 1)
-        x86_from_xmm(f, .AX, 0)
-        x86_put(f, dest)
-
-    case "fneg":
-        t, a := x86_typed(f, &l)
-        x86_get(f, a, .AX)
+    case .Fneg:
+        t := x86_type(p, ins.ty)
+        x86_get(f, x86_val(ins.a, t), .AX)
         if t.kind == .F32 {
             x86_ri(f, 4, 6, .AX, 0x80000000)   // xor eax, sign
         } else {
@@ -1170,16 +1103,13 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
         }
         x86_put(f, dest)
 
-    case "icmp":
-        pred := x86_word(&l)
-        t, a := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        b := x86_value(&l, t)
-        x86_get(f, a, .AX)
-        x86_get(f, b, .CX)
+    case .Icmp:
+        t := x86_type(p, ins.ty)
+        x86_get(f, x86_val(ins.a, t), .AX)
+        x86_get(f, x86_val(ins.b, t), .CX)
         x86_rr(f, t.size, 0x38, .AX, .CX)
         cc: X86_CC
-        switch pred {
+        switch ins.inst {
         case "eq":  cc = .E
         case "ne":  cc = .NE
         case "slt": cc = .L
@@ -1190,25 +1120,22 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
         case "ule": cc = .BE
         case "ugt": cc = .A
         case "uge": cc = .AE
-        case:       x86_fail("a comparison", pred)
+        case:       x86_fail("a comparison", ins.inst)
         }
         x86_setcc(f, cc, .AX)
         x86_bool(f)
         x86_put(f, dest)
 
-    case "fcmp":
+    case .Fcmp:
         // (Ordered: false when either is NaN — ucomis says unordered with
         // ZF, PF and CF all set; une, true then.)
-        pred := x86_word(&l)
-        t, a := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        b := x86_value(&l, t)
-        x86_get(f, a, .AX)
-        x86_get(f, b, .CX)
+        t := x86_type(p, ins.ty)
+        x86_get(f, x86_val(ins.a, t), .AX)
+        x86_get(f, x86_val(ins.b, t), .CX)
         x86_to_xmm(f, 0, .AX)
         x86_to_xmm(f, 1, .CX)
         ucomis :: proc(f: ^X86_Fn, t: ^X86_Type, a, b: u8) { x86_sse(f, 0 if t.kind == .F32 else 0x66, false, 0x2E, a, b) }
-        switch pred {
+        switch ins.inst {
         case "oeq":
             ucomis(f, t, 0, 1)
             x86_setcc(f, .E, .AX)
@@ -1232,130 +1159,90 @@ x86_inst :: proc(f: ^X86_Fn, line: string) {
             ucomis(f, t, 0, 1)
             x86_setcc(f, .AE, .AX)
         case:
-            x86_fail("a float comparison", pred)
+            x86_fail("a float comparison", ins.inst)
         }
         x86_bool(f)
         x86_put(f, dest)
 
-    case "select":
-        _, c := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        t, a := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        _, b := x86_typed(f, &l)
-        if x86_aggregate(t) { x86_fail("a select of aggregates", op) }
-        x86_get(f, c, .DX)
-        x86_get(f, a, .AX)
-        x86_get(f, b, .CX)
+    case .Select:
+        t := x86_type(p, ins.ty)
+        if x86_aggregate(t) { x86_fail("a select of aggregates", ins.ty) }
+        x86_get(f, x86_val(ins.a, p.i1), .DX)
+        x86_get(f, x86_val(ins.b, t), .AX)
+        x86_get(f, x86_val(ins.c, t), .CX)
         x86_grp3(f, 1, 0, .DX)   // test dl, 1
         append(&f.code, 1)
         x86_cmov(f, .E, .AX, .CX)
         x86_put(f, dest)
 
-    case "zext", "sext", "trunc", "fpext", "fptrunc", "sitofp", "uitofp", "fptosi", "fptoui", "ptrtoint", "inttoptr", "bitcast":
-        ft, v := x86_typed(f, &l)
-        x86_is(&l, "to")
-        tt := x86_type(m.p, x86_type_text(&l))
-        x86_get(f, v, .AX)
-        x86_convert(f, op, ft, tt)
+    case .Cast:
+        ft, tt := x86_type(p, ins.ty), x86_type(p, ins.to)
+        x86_get(f, x86_val(ins.a, ft), .AX)
+        x86_convert(f, ins.inst, ft, tt)
         x86_put(f, dest)
 
-    case "extractvalue":
-        at, v := x86_typed(f, &l)
-        if v.kind != .Local { x86_fail("a part of a constant", op) }
-        off := 0
-        cur := at
-        for x86_eat(&l, ',') {
-            k := x86_atoi(x86_word(&l))
-            if cur.kind == .Struct {
-                off += cur.offsets[k]
-                cur = cur.fields[k]
-            } else {
-                off += k * cur.elem.size
-                cur = cur.elem
-            }
+    case .Extract:
+        at := x86_type(p, ins.ty)
+        v := x86_val(ins.a, at)
+        if v.kind != .Local { x86_fail("a part of a constant", ins.a) }
+        k := x86_atoi(ins.b)
+        off, cur := 0, at
+        if cur.kind == .Struct {
+            off, cur = cur.offsets[k], cur.fields[k]
+        } else {
+            off, cur = k * cur.elem.size, cur.elem
         }
         x86_load(f, .AX, x86_mem(f, x86_slot(f, v.name, at.size, at.align), off), cur.size)
         x86_put(f, dest)
 
-    case "call":
-        rt := x86_type(m.p, x86_type_text(&l))
-        if x86_at(&l, '(') {   // a variadic callee's signature: its arguments say what they are
-            depth := 0
-            for l.i < len(l.s) {
-                c := l.s[l.i]
-                l.i += 1
-                if c == '(' { depth += 1 }
-                if c == ')' { depth -= 1; if depth == 0 { break } }
-            }
+    case .Call:
+        rt := x86_type(p, ins.ty)
+        args := make([]X86_Arg, len(ins.args), context.temp_allocator)
+        for x, i in ins.args {
+            t := x86_type(p, x.ty)
+            args[i] = {t, x86_val(x.v, t)}
         }
-        callee := x86_word(&l)
-        x86_eat(&l, '(')
-        args := make([dynamic]X86_Arg, context.temp_allocator)
-        for !x86_eat(&l, ')') {
-            at, av := x86_typed(f, &l)
-            append(&args, X86_Arg{at, av})
-            x86_eat(&l, ',')
-        }
-        if strings.has_prefix(callee, "@llvm.") {
-            x86_intrinsic(f, callee[6:], rt, args[:], dest)
+        if strings.has_prefix(ins.inst, "@llvm.") {
+            x86_intrinsic(f, ins.inst[6:], rt, args, dest)
         } else {
-            x86_call(f, callee, rt, args[:], dest)
+            x86_call(f, ins.inst, rt, args, dest)
         }
 
-    case "ret":
-        t := x86_type(m.p, x86_type_text(&l))
+    case .Ret:
+        t := x86_type(p, ins.ty)
         if t.kind != .Void {
-            x86_get(f, x86_value(&l, t), .AX)
+            x86_get(f, x86_val(ins.a, t), .AX)
             if x86_float(t) { x86_to_xmm(f, 0, .AX) }
         }
         x86_jump(f, ".exit")
 
-    case "br":
-        if x86_is(&l, "label") {
-            x86_jump(f, x86_word(&l)[1:])
-            return
-        }
-        _, c := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        x86_is(&l, "label")
-        yes := x86_word(&l)
-        x86_eat(&l, ',')
-        x86_is(&l, "label")
-        no := x86_word(&l)
-        x86_get(f, c, .AX)
+    case .Br:
+        x86_jump(f, ins.a)
+
+    case .Cond_Br:
+        x86_get(f, x86_val(ins.a, p.i1), .AX)
         x86_grp3(f, 1, 0, .AX)   // test al, 1
         append(&f.code, 1)
-        x86_jump(f, yes[1:], X86_CC.NE)
-        x86_jump(f, no[1:])
+        x86_jump(f, ins.b, X86_CC.NE)
+        x86_jump(f, ins.c)
 
-    case "switch":
-        t, v := x86_typed(f, &l)
-        x86_eat(&l, ',')
-        x86_is(&l, "label")
-        default := x86_word(&l)
-        x86_eat(&l, '[')
-        x86_get(f, v, .AX)
-        for !x86_eat(&l, ']') {
-            _, c := x86_typed(f, &l)
-            x86_eat(&l, ',')
-            x86_is(&l, "label")
-            to := x86_word(&l)
+    case .Switch:
+        t := x86_type(p, ins.ty)
+        x86_get(f, x86_val(ins.a, t), .AX)
+        for x in ins.args {
+            c := x86_val(x.v, t)
             if c.n >= i64(min(i32)) && c.n <= i64(max(i32)) {
                 x86_ri(f, t.size, 7, .AX, c.n)
             } else {
                 x86_get(f, c, .CX)
                 x86_rr(f, 8, 0x38, .AX, .CX)
             }
-            x86_jump(f, to[1:], X86_CC.E)
+            x86_jump(f, x.label, X86_CC.E)
         }
-        x86_jump(f, default[1:])
+        x86_jump(f, ins.b)
 
-    case "unreachable":
+    case .Unreachable:
         append(&f.code, 0x0F, 0x0B)   // ud2
-
-    case:
-        x86_fail("the instruction", op)
     }
 }
 

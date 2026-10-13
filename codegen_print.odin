@@ -70,7 +70,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
     // format string (`a % b == 0`), so escape every %.
     esc_cond, _ := strings.replace_all(cond_text, "%", "%%", context.temp_allocator)
     msg := strings.builder_make(context.temp_allocator)
-    args := strings.builder_make(context.temp_allocator)
+    args := make([dynamic]string, context.temp_allocator)
     fmt.sbprintf(&msg, "Assert failed at %s\nExpected %s", loc, esc_cond)
     if len(sides) == 0 { strings.write_string(&msg, ", but it was false") }
     is_float := is_ir_float(ir_type)
@@ -92,7 +92,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
             if ir_type != tag_ir {
                 w := fresh_tmp(g)
                 op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? "trunc" : "zext"
-                emit(g, "  %s = %s %s %s to %s", w, op, ir_type, side.val, tag_ir)
+                ir_cast(g, w, op, ir_type, side.val, tag_ir)
                 v = w
             }
             gen_print_enum(g, v, tag_ir, et, label = print_type_label(side.t))
@@ -110,45 +110,48 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
             t_global := get_string_literal(g, "true")
             f_global := get_string_literal(g, "false")
             sel := fresh_tmp(g)
-            emit(g, "  %s = select i1 %s, ptr %s, ptr %s", sel, side.val, t_global, f_global)
-            fmt.sbprintf(&args, ", ptr %s", sel)
+            ir_select(g, sel, side.val, "ptr", t_global, f_global)
+            append(&args, fmt.tprintf("ptr %s", sel))
         case is_float:
             if ir_type != "double" {
                 v = fresh_tmp(g)
-                emit(g, "  %s = fpext %s %s to double", v, ir_type, side.val)
+                ir_cast(g, v, "fpext", ir_type, side.val, "double")
             }
-            fmt.sbprintf(&args, ", double %s", v)
+            append(&args, fmt.tprintf("double %s", v))
         case is_char:
             // %c reads an i32 vararg (default promotion).
             if ir_type != "i32" {
                 v = fresh_tmp(g)
-                emit(g, "  %s = %s %s %s to i32", v, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val)
+                ir_cast(g, v, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val, "i32")
             }
-            fmt.sbprintf(&args, ", i32 %s", v)
+            append(&args, fmt.tprintf("i32 %s", v))
         case:
             if ir_type != "i64" {
                 v = fresh_tmp(g)
-                emit(g, "  %s = %s %s %s to i64", v, is_unsigned ? "zext" : "sext", ir_type, side.val)
+                ir_cast(g, v, is_unsigned ? "zext" : "sext", ir_type, side.val, "i64")
             }
-            fmt.sbprintf(&args, ", i64 %s", v)
+            append(&args, fmt.tprintf("i64 %s", v))
         }
     }
     strings.write_string(&msg, "\n")
     assert_flush_printf(g, &msg, &args)
     emit_crash_journal_end(g)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    ir_call(g, "", "void", "@exit", "i32 1")
+    ir_unreachable(g)
 }
 
 // Emit the pending assert-message segment as one printf and reset the
 // builders. Segmented because enum sides print through gen_print_enum's
 // inline switch, which does its own printf calls mid-message.
-assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^strings.Builder) {
+assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^[dynamic]string) {
     if strings.builder_len(msg^) == 0 { return }
     msg_global := get_string_literal(g, strings.to_string(msg^))
-    emit(g, "  call i32 (ptr, ...) %s(ptr %s%s)", printf_sym(g), msg_global, strings.to_string(args^))
+    all := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
+    append(&all, fmt.tprintf("ptr %s", msg_global))
+    append(&all, ..args[:])
+    ir_call_va(g, "", "i32", "(ptr, ...)", printf_sym(g), ..all[:])
     strings.builder_reset(msg)
-    strings.builder_reset(args)
+    clear(args)
 }
 
 // Open/close a crash.txt journal entry around a fail block's message
@@ -157,14 +160,14 @@ assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^strings.B
 // message lands in the journal as well as on stdout.
 emit_crash_journal_begin :: proc(g: ^Codegen) {
     if g.web { return }
-    emit(g, "  call void @__mara_crash_begin()")
+    ir_call(g, "", "void", "@__mara_crash_begin")
     g.tee = true
 }
 
 emit_crash_journal_end :: proc(g: ^Codegen) {
     if g.web { return }
     g.tee = false
-    emit(g, "  call void @__mara_crash_end()")
+    ir_call(g, "", "void", "@__mara_crash_end")
 }
 
 // A runtime failure: the journal opens, the message prints — `message`, a C
@@ -172,14 +175,13 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
 // Nothing runs after it.
 emit_fail :: proc(g: ^Codegen, message: string, args: ..string) {
     emit_crash_journal_begin(g)
-    call := strings.builder_make(context.temp_allocator)
-    fmt.sbprintf(&call, "  call i32 (ptr, ...) %s(ptr %s", printf_sym(g), get_string_literal(g, message))
-    for a in args { fmt.sbprintf(&call, ", %s", a) }
-    strings.write_byte(&call, ')')
-    emit_raw(g, strings.to_string(call))
+    all := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
+    append(&all, fmt.tprintf("ptr %s", get_string_literal(g, message)))
+    append(&all, ..args)
+    ir_call_va(g, "", "i32", "(ptr, ...)", printf_sym(g), ..all[:])
     emit_crash_journal_end(g)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
+    ir_call(g, "", "void", "@exit", "i32 1")
+    ir_unreachable(g)
 }
 
 // A value at slice header width (SLICE_LEN_IR), as emit_fail's argument.
@@ -226,32 +228,32 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span:
     pass_lbl    := fresh_label(g, "cstring.pass")
     crash_lbl   := fresh_label(g, "cstring.fail")
     has_room := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", has_room, w, len_val, cap_val)
+    ir_icmp(g, has_room, "slt", w, len_val, cap_val)
     emit_cond_br(g, has_room, at_len_lbl, at_end_lbl)
     // len < cap: terminator sits right after the content.
     emit_label(g, at_len_lbl)
     p1 := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p1, src_ptr, w, len_val)
+    emit_elem_gep(g, p1, "i8", src_ptr, len_val, w)
     b1 := fresh_tmp(g)
     emit_load_into(g, b1, "i8", p1)
     ok1 := fresh_tmp(g)
-    emit(g, "  %s = icmp eq i8 %s, 0", ok1, b1)
+    ir_icmp(g, ok1, "eq", "i8", b1, "0")
     emit_cond_br(g, ok1, pass_lbl, crash_lbl)
     // len == cap: full view — the last byte must be 0 (and cap > 0 so
     // the [cap-1] read stays inside the storage).
     emit_label(g, at_end_lbl)
     cap_pos := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt %s %s, 0", cap_pos, w, cap_val)
+    ir_icmp(g, cap_pos, "sgt", w, cap_val, "0")
     emit_cond_br(g, cap_pos, end_ok_lbl, crash_lbl)
     emit_label(g, end_ok_lbl)
     last := fresh_tmp(g)
-    emit(g, "  %s = sub %s %s, 1", last, w, cap_val)
+    ir_bin(g, last, "sub", w, cap_val, "1")
     p2 := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p2, src_ptr, w, last)
+    emit_elem_gep(g, p2, "i8", src_ptr, last, w)
     b2 := fresh_tmp(g)
     emit_load_into(g, b2, "i8", p2)
     ok2 := fresh_tmp(g)
-    emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
+    ir_icmp(g, ok2, "eq", "i8", b2, "0")
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
@@ -371,7 +373,7 @@ raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
 // it needs no terminating 0. (`%.*s` takes an int: n, narrowed.)
 emit_print_text :: proc(g: ^Codegen, data, n: string) {
     prec := fresh_tmp(g)
-    emit(g, "  %s = trunc %s %s to i32", prec, SLICE_LEN_IR, n)
+    ir_cast(g, prec, "trunc", SLICE_LEN_IR, n, "i32")
     emit_printf(g, "%.*s", fmt.tprintf("i32 %s", prec), fmt.tprintf("ptr %s", data))
 }
 
@@ -463,7 +465,7 @@ gen_print_bool :: proc(g: ^Codegen, val_i1: string) {
     true_ptr := get_string_literal(g, "true")
     false_ptr := get_string_literal(g, "false")
     bool_str := fresh_tmp(g)
-    emit(g, "  %s = select i1 %s, ptr %s, ptr %s", bool_str, val_i1, true_ptr, false_ptr)
+    ir_select(g, bool_str, val_i1, "ptr", true_ptr, false_ptr)
     emit_printf(g, "%s", fmt.tprintf("ptr %s", bool_str))
 }
 
@@ -480,7 +482,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
     if _, ok := bt.(Type_Utf8); ok {
         // utf8 scalar = a character: render the glyph, not the code point.
         ext := fresh_tmp(g)
-        emit(g, "  %s = zext i8 %s to i32", ext, val)
+        ir_cast(g, ext, "zext", "i8", val, "i32")
         emit_printf(g, "%c", fmt.tprintf("i32 %s", ext))
         return
     }
@@ -489,7 +491,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         return
     }
     if _, ok := bt.(Type_Err); ok {
-        emit(g, "  call void @__mara_print_err(i32 %s)", val)
+        ir_call(g, "", "void", "@__mara_print_err", fmt.tprintf("i32 %s", val))
         return
     }
     if pt, ok := bt.(^Type_Ptr); ok {
@@ -514,7 +516,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         emit_printf(g, "%g", fmt.tprintf("double %s", val))
     case "float", "half":
         ext := fresh_tmp(g)
-        emit(g, "  %s = fpext %s %s to double", ext, nt, val)
+        ir_cast(g, ext, "fpext", nt, val, "double")
         emit_printf(g, "%g", fmt.tprintf("double %s", ext))
     case "i64":
         emit_printf(g, is_unsigned ? "%llu" : "%lld", fmt.tprintf("i64 %s", val))
@@ -524,7 +526,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
         gen_print_bool(g, val)
     case "i8", "i16":
         ext := fresh_tmp(g)
-        emit(g, "  %s = %s %s %s to i32", ext, is_unsigned ? "zext" : "sext", nt, val)
+        ir_cast(g, ext, is_unsigned ? "zext" : "sext", nt, val, "i32")
         emit_printf(g, is_unsigned ? "%u" : "%d", fmt.tprintf("i32 %s", ext))
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
@@ -618,14 +620,12 @@ gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union, label := "")
     tag := load_union_tag(g, ut, addr)
     unknown, done := fresh_label(g, "union.unknown"), fresh_label(g, "union.done")
     arms := make([]string, len(ut.variants), context.temp_allocator)
-    sw := strings.builder_make(context.temp_allocator)
-    fmt.sbprintf(&sw, "  switch %s %s, label %%%s [\n", tag_ir, tag, unknown)
+    cases := make([]Ir_Arg, len(ut.variants))
     for vname, i in ut.variants {
         arms[i] = fresh_label(g, "union.variant")
-        fmt.sbprintf(&sw, "    %s %d, label %%%s\n", tag_ir, ut.tag_map[vname], arms[i])
+        cases[i] = {tag_ir, ir_int(ut.tag_map[vname]), arms[i]}
     }
-    strings.write_string(&sw, "  ]")
-    emit_raw(g, strings.to_string(sw))
+    ir_switch(g, tag_ir, tag, unknown, cases)
     for vname, i in ut.variants {
         emit_label(g, arms[i])
         // (Each variant overlays the union's storage at its start.)
@@ -701,13 +701,9 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum,
         case_labels[i] = fresh_label(g, "enum.case")
     }
 
-    sw: strings.Builder
-    strings.write_string(&sw, fmt.tprintf("  switch %s %s, label %%%s [\n", tag_ir, val, unknown_lbl))
-    for entry, i in dedup {
-        strings.write_string(&sw, fmt.tprintf("    %s %d, label %%%s\n", tag_ir, entry.value, case_labels[i]))
-    }
-    strings.write_string(&sw, "  ]")
-    emit_raw(g, strings.to_string(sw))
+    cases := make([]Ir_Arg, len(dedup))
+    for entry, i in dedup { cases[i] = {tag_ir, ir_int(entry.value), case_labels[i]} }
+    ir_switch(g, tag_ir, val, unknown_lbl, cases)
 
     // A variant prints with its enum's name (`Color.Green`, `File_Error.Not_Found`,
     // a union's tag `Shape_Tag.Rect`): a variant's name alone can be any enum's.
@@ -733,7 +729,7 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum,
         // zext (not sext) — enum tags are unsigned-shaped values, no two's-
         // complement bits to preserve.
         ext := fresh_tmp(g)
-        emit(g, "  %s = zext %s %s to i32", ext, tag_ir, val)
+        ir_cast(g, ext, "zext", tag_ir, val, "i32")
         emit_printf(g, "%d", fmt.tprintf("i32 %s", ext))
     }
     emit_print_literal(g, ")")
@@ -763,14 +759,14 @@ gen_print_elements :: proc(g: ^Codegen, data, n: string, elem: Type) {
     l := emit_loop_begin(g, n, "pah")
     sep, after := fresh_label(g, "pah.sep"), fresh_label(g, "pah.after")
     first := fresh_tmp(g)
-    emit(g, "  %s = icmp eq %s %s, 0", first, SLICE_LEN_IR, l.i)
+    ir_icmp(g, first, "eq", SLICE_LEN_IR, l.i, "0")
     emit_cond_br(g, first, after, sep)
     emit_label(g, sep)
     emit_printf(g, ", ")
     emit_br(g, after)
     emit_label(g, after)
     gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", gep, llvm_type_from_checker(elem), data, SLICE_LEN_IR, l.i)
+    emit_elem_gep(g, gep, llvm_type_from_checker(elem), data, l.i, SLICE_LEN_IR)
     emit_print_at_addr(g, gep, elem)
     emit_loop_end(g, l)
     emit_printf(g, "]")

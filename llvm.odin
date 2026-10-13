@@ -36,7 +36,7 @@ Llvm :: struct {
     consumed: string,           // a param the result is built from (graph_consumed): its argument
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
-    fields: strings.Builder,    // a constructor's field addresses, first in its entry
+    fields: [dynamic]Ir,        // a constructor's field addresses, first in its entry
     head:  string,              // its `define` line
     probe: string,              // -profile: its slot, when it's timed (llvm_probe)
     st:    ^Storage,            // where each value lives (storage.odin): read here, decided there
@@ -63,15 +63,15 @@ llvm_function :: proc(g: ^Codegen, cf: ^Type_Scope) {
     llvm_code(g, cf, main = false)
 }
 
-// Main's body, after the program's setup (emit_main_prologue) — `@main`'s
-// `define` and entry the caller has written. Its falling off the end, or a
-// bare return, returns 0.
-llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope) {
-    llvm_code(g, cf, main = true)
+// Main's body, after the program's setup (emit_main_prologue, made in
+// g.code) — its `define` line `head`, the caller's. Its falling off the end,
+// or a bare return, returns 0.
+llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope, head: string) {
+    llvm_code(g, cf, main = true, head = head)
 }
 
 @(private="file")
-llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
+llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := "") {
     pg := g.checked.code.funs[cf] or_else nil
     if pg == nil || (pg.kind[0] != .Fun && pg.kind[0] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, ctor = pg.kind[0] == .Struct, main = main}
@@ -81,20 +81,18 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     e.value = make([]string, size)
     e.held = make([]bool, size)
 
-    // Allocas hoisted: every alloca into the entry's buffer in the order code
-    // first needs it, the rest into the body's; then the `define`, the entry's
-    // field addresses and allocas, and the body.
+    // Allocas hoisted: every alloca into the entry's in the order code first
+    // needs it, the rest into the body; then its code in order — what was
+    // made before its body (main's setup), the entry's field addresses and
+    // allocas, the body.
     begin_alloca_hoist(g)
     e.stop = 0
     if !llvm_emit(&e) { llvm_unlowered(&e) }
     g.hoist_allocas = false
-    if !main {
-        strings.write_string(&g.out, e.head)
-        strings.write_string(&g.out, "\nentry:\n")
-    }
-    strings.write_string(&g.out, strings.to_string(e.fields))
-    strings.write_string(&g.out, strings.to_string(g.alloca_buf))
-    strings.write_string(&g.out, strings.to_string(g.body_buf))
+    if main { e.head = head }
+    code := [?][]Ir{g.code[:], e.fields[:], g.allocas[:], g.body[:]}
+    codegen_function(g, e.head, code[:], gap = !main)   // (@main's end: its caller's)
+    g.code = {}
 }
 
 // What the emitter doesn't lower: an error at the operation or
@@ -125,7 +123,7 @@ llvm_probe :: proc(e: ^Llvm) {
     e.probe = strings.concatenate({"@.prof.", mara_fn_name(g, cf.name)[1:]}, codegen_keep(g))
     append(&g.string_decls, strings.concatenate({e.probe, " = internal global { ptr, ptr, ptr } { ptr ",
         get_string_literal(g, name), ", ptr ", get_string_literal(g, at), ", ptr null }"}, codegen_keep(g)))
-    emit(g, "  call void @__mara_prof_enter(ptr %s)", e.probe)
+    ir_call(g, "", "void", "@__mara_prof_enter", strings.concatenate({"ptr ", e.probe}, context.temp_allocator))
 }
 
 // A fun's name in the profile: as written, after the structs and funs it's in
@@ -172,13 +170,14 @@ llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> b
     return false
 }
 
-// A return, after the profiler is told the fun is left (llvm_probe) and its
-// big temporaries are freed (llvm_temps).
+// A return (of `v`, of IR type `ty`; "void" for none), after the profiler is
+// told the fun is left (llvm_probe) and its big temporaries are freed
+// (llvm_temps).
 @(private="file")
-llvm_ret :: proc(e: ^Llvm, ret: string, args: ..any) {
-    if e.probe != "" { emit(e.g, "  call void @__mara_prof_exit(ptr %s)", e.probe) }
+llvm_ret :: proc(e: ^Llvm, ty: string, v := "") {
+    if e.probe != "" { ir_call(e.g, "", "void", "@__mara_prof_exit", strings.concatenate({"ptr ", e.probe}, context.temp_allocator)) }
     if len(e.st.temps) > 0 && !e.main { emit_arena_reset(e.g) }
-    emit(e.g, ret, ..args)
+    ir_ret(e.g, ty, v)
 }
 
 // The fun's big temporaries (Storage.temps), each bumped on the arena now,
@@ -249,7 +248,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     e.head = strings.concatenate({"define ", linkage, e.ret, " ", mara_fn_name(g, cf.name), "(",
         strings.join(params[:], ", ", context.temp_allocator), ") {"})
     if cf.is_exposed && len(cf.params) > 0 {
-        fmt.sbprintf(&e.fields, "  store ptr %%%s.arg, ptr @__mara_program\n", cf.params[0].name)
+        append(&e.fields, Ir{op = .Store, ty = "ptr", a = fmt.tprintf("%%%s.arg", cf.params[0].name), b = "@__mara_program"})
     }
 
     // Entry first, then the runs as they were built; each gets its label, by
@@ -291,8 +290,6 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
             if !llvm_op(e, op) { return false }
         }
     }
-    emit(g, "}")
-    if !e.main { emit_raw(g, "") }   // (@main's end: its caller's)
     return true
 }
 
@@ -316,21 +313,21 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     off := fresh_tmp(g)
     emit_load_into(g, off, "i64", slot)
     more := fresh_tmp(g)
-    emit(g, "  %s = icmp slt i64 %s, %d", more, off, size)
+    ir_icmp(g, more, "slt", "i64", off, ir_int(int(size)))
     emit_cond_br(g, more, body, done)
     emit_label(g, body)
     rest, small, n := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
-    emit(g, "  %s = sub i64 %d, %s", rest, size, off)
-    emit(g, "  %s = icmp slt i64 %s, 64", small, rest)
-    emit(g, "  %s = select i1 %s, i64 %s, i64 64", n, small, rest)
+    ir_bin(g, rest, "sub", "i64", ir_int(int(size)), off)
+    ir_icmp(g, small, "slt", "i64", rest, "64")
+    ir_select(g, n, small, "i64", rest, "64")
     xa, xb := fresh_tmp(g), fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", xa, pa, off)
-    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", xb, pb, off)
+    ir_gep(g, xa, "i8", pa, strings.concatenate({"i64 ", off}, context.temp_allocator))
+    ir_gep(g, xb, "i8", pb, strings.concatenate({"i64 ", off}, context.temp_allocator))
     emit_memcpy_runtime(g, buf, xa, n)
     emit_memcpy_runtime(g, xa, xb, n)
     emit_memcpy_runtime(g, xb, buf, n)
     next := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, 64", next, off)
+    ir_bin(g, next, "add", "i64", off, "64")
     emit_store(g, "i64", next, slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -387,7 +384,8 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             i := struct_field_index(llvm_struct(e.sret), graph_name(pg, id))
             if i < 0 { return false }
             at := fresh_tmp(e.g)
-            fmt.sbprintf(&e.fields, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d\n", at, llvm_type_from_checker(e.sret), e.slot, i)
+            append(&e.fields, Ir{op = .Gep, dest = at, ty = llvm_type_from_checker(e.sret), a = e.slot,
+                                 args = ir_indices({"i32", "0", ""}, {"i32", ir_int(i), ""})})
             e.value[id] = at
             // A partial array: its header stamped over its elements, and those
             // constructed, right after its address (its zero is not all zeros).
@@ -454,7 +452,7 @@ llvm_alloca_type :: proc(t: Type) -> string {
 // where its fields' addresses go, or back.
 @(private="file")
 llvm_into_fields :: proc(e: ^Llvm, on: bool) {
-    e.fields, e.g.out = e.g.out, e.fields
+    e.fields, e.g.code = e.g.code, e.fields
     e.g.hoist_allocas = !on
 }
 
@@ -516,7 +514,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // The program's own storage, which main hands over: at each use,
             // where @__mara_program points.
             at := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", at, " = load ptr, ptr @__mara_program"}))
+            ir_load(g, at, "ptr", "@__mara_program")
             e.value[op] = at
             return true
         }
@@ -569,7 +567,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case llvm_scalar(t) && pg.op[place] == .View:
             // From bytes at any address: align 1; big-endian, swapped.
             tmp := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s, align 1", tmp, llvm_type_from_checker(t), e.value[place])
+            ir_load(g, tmp, llvm_type_from_checker(t), e.value[place], 1)
             e.value[op] = emit_bswap_value(g, tmp, t) if big else tmp
         case llvm_scalar(t):
             tmp := fresh_tmp(g)
@@ -622,7 +620,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 // The consumed param into the result: nothing to copy when the
                 // caller passed its storage as the slot (`x = f(x, …)`).
                 same := fresh_tmp(g)
-                emit(g, "  %s = icmp eq ptr %s, %s", same, e.slot, val)
+                ir_icmp(g, same, "eq", "ptr", e.slot, val)
                 copy, done := fresh_label(g, "consume.copy"), fresh_label(g, "consume.done")
                 emit_cond_br(g, same, done, copy)
                 emit_label(g, copy)
@@ -659,7 +657,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if llvm_header_elem(graph_type(pg, hdr)) != nil { emit_slice_len_check(g, e.value[hdr], val, span) }
         }
         if pg.op[place] == .View {   // into bytes at any address
-            emit(g, "  store %s %s, ptr %s, align 1", llvm_type_from_checker(t), val, e.value[place])
+            ir_store(g, llvm_type_from_checker(t), val, e.value[place], 1)
             return true
         }
         emit_store(g, llvm_type_from_checker(t), val, e.value[place])
@@ -686,7 +684,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             case "pad":
                 if ut.tag_pad == nil { return false }
                 pad := fresh_tmp(g)
-                emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad, at, tag_bytes(ut.tag_type))
+                ir_gep(g, pad, "i8", at, strings.concatenate({"i32 ", ir_int(int(tag_bytes(ut.tag_type)))}, context.temp_allocator))
                 e.value[op] = pad
             case: return false
             }
@@ -847,7 +845,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 v := llvm_operand(e, o, rt) or_return
                 emit_store(g, llvm_type_from_checker(rt), v, fmt.tprintf("%%sret.%d", i + 1))
             }
-            llvm_ret(e, "  ret void")
+            llvm_ret(e, "void")
             return true
         }
         // Falling off the end with a result (a shape's method, no body — the
@@ -855,14 +853,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         fell_off := len(ops) == 0 && pg.written[op] == .Synthetic
         if e.sret != nil {
             if fell_off {
-                llvm_ret(e, "  ret void")
+                llvm_ret(e, "void")
                 return true
             }
             // Into the caller's slot, unless it was built there.
             if len(ops) != 1 { return false }
             v := llvm_operand(e, ops[0], e.sret) or_return
             if v != e.slot { llvm_copy(e, e.slot, v, e.sret) }
-            llvm_ret(e, "  ret void")
+            llvm_ret(e, "void")
             return true
         }
         if e.rets != nil {
@@ -879,26 +877,26 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                     llvm_copy(e, at, v, rt)
                 }
             }
-            llvm_ret(e, "  ret void")
+            llvm_ret(e, "void")
             return true
         }
         if len(ops) == 0 {
             if e.main {   // the C entry point: 0, the program went well
-                llvm_ret(e, "  ret i64 0")
+                llvm_ret(e, "i64", "0")
                 return true
             }
             if e.ret != "void" && fell_off {
-                llvm_ret(e, "  ret %s %s", e.ret, llvm_zero(fn_result(e.ft, 0)))
+                llvm_ret(e, e.ret, llvm_zero(fn_result(e.ft, 0)))
                 return true
             }
             if e.ret != "void" { return false }
-            llvm_ret(e, "  ret void")
+            llvm_ret(e, "void")
             return true
         }
         if len(ops) != 1 || e.ret == "void" { return false }
         v, ok := llvm_operand(e, ops[0], fn_result(e.ft, 0))
         if !ok { return false }
-        llvm_ret(e, "  ret %s %s", e.ret, v)
+        llvm_ret(e, e.ret, v)
     case .Assert:
         return llvm_assert(e, op, ops, span)
     case .Slice:
@@ -999,7 +997,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
             for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%%%s.%d", graph_name(pg, d), n) }
             e.used[name] = true
             ir := llvm_type_from_checker(t)
-            fmt.sbprintf(&e.fields, "  %s = alloca %s\n  store %s %s, ptr %s\n", name, ir, ir, llvm_zero(t), name)
+            append(&e.fields, Ir{op = .Alloca, dest = name, ty = ir}, Ir{op = .Store, ty = ir, a = llvm_zero(t), b = name})
             e.value[d] = name
         case:
             e.note = "a named result's type"
@@ -1045,7 +1043,7 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     for k in 0 ..< n {
         slot := fresh_tmp(g)
         if pa != nil {
-            emit(g, "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d, i32 %d", slot, partial_array_ir_type(ir, pa.size), to, PARTIAL_ELEMENTS_FIELD, k)
+            ir_gep_inbounds(g, slot, partial_array_ir_type(ir, pa.size), to, "i32 0", strings.concatenate({"i32 ", ir_int(int(PARTIAL_ELEMENTS_FIELD))}, context.temp_allocator), strings.concatenate({"i32 ", ir_int(int(k))}, context.temp_allocator))
         } else {
             emit_array_gep_const(g, slot, llvm_type_from_checker(at), to, k)
         }
@@ -1188,7 +1186,7 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         case:     return false
         }
         tmp = fresh_tmp(g)
-        emit(g, "  %s = %s %s %s, %s", tmp, inst, ir, l, r)
+        ir_bin(g, tmp, inst, ir, l, r)
     } else {
         unsigned := llvm_unsigned(t)
         switch name {
@@ -1200,7 +1198,7 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
             inst := "udiv" if unsigned else "sdiv"
             if name == "%" { inst = "urem" if unsigned else "srem" }
             tmp = fresh_tmp(g)
-            emit(g, "  %s = %s %s %s, %s", tmp, inst, ir, l, r)
+            ir_bin(g, tmp, inst, ir, l, r)
         case:
             inst := ""
             switch name {
@@ -1215,7 +1213,7 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
             case:      return false
             }
             tmp = fresh_tmp(g)
-            emit(g, "  %s = %s %s %s, %s", tmp, inst, ir, l, r)
+            ir_bin(g, tmp, inst, ir, l, r)
         }
     }
     e.value[op] = tmp
@@ -1244,7 +1242,7 @@ llvm_compare :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         case ">=": pred = "oge"
         case:      return false
         }
-        emit(g, "  %s = fcmp %s %s %s, %s", tmp, pred, ir, l, r)
+        ir_fcmp(g, tmp, pred, ir, l, r)
     } else {
         unsigned := llvm_unsigned(t)
         pred := ""
@@ -1257,7 +1255,7 @@ llvm_compare :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         case ">=": pred = "uge" if unsigned else "sge"
         case:      return false
         }
-        emit(g, "  %s = icmp %s %s %s, %s", tmp, pred, ir, l, r)
+        ir_icmp(g, tmp, pred, ir, l, r)
     }
     e.value[op] = tmp
     return true
@@ -1276,20 +1274,20 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     case "-":
         if is_ir_float(ir) {
             tmp = fresh_tmp(g)
-            emit(g, "  %s = fneg %s %s", tmp, ir, x)
+            ir_fneg(g, tmp, ir, x)
         } else {
             // Integer negation is `0 - x`, overflow-checked: -MIN traps.
             tmp = emit_checked_arith(g, "usub" if llvm_unsigned(t) else "ssub", ir, "0", x, span)
         }
     case "-%":
         tmp = fresh_tmp(g)
-        emit(g, "  %s = sub %s 0, %s", tmp, ir, x)
+        ir_bin(g, tmp, "sub", ir, "0", x)
     case "not":
         tmp = fresh_tmp(g)
-        emit(g, "  %s = xor i1 %s, true", tmp, x)
+        ir_bin(g, tmp, "xor", "i1", x, "true")
     case "~":
         tmp = fresh_tmp(g)
-        emit(g, "  %s = xor %s %s, -1", tmp, ir, x)
+        ir_bin(g, tmp, "xor", ir, x, "-1")
     case:
         return false
     }
@@ -1307,17 +1305,17 @@ llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
     if fi == ti { return v }
     tmp := fresh_tmp(g)
     if ti == "i1" && fi == "ptr" {   // to bool: whether it's not null
-        emit(g, "  %s = icmp ne ptr %s, null", tmp, v)
+        ir_icmp(g, tmp, "ne", "ptr", v, "null")
         return tmp
     }
     // A pointer as a number (`i64(w)`, a handle), or back: its address.
     if fi == "ptr" || ti == "ptr" {
-        emit(g, "  %s = %s %s %s to %s", tmp, "ptrtoint" if fi == "ptr" else "inttoptr", fi, v, ti)
+        ir_cast(g, tmp, "ptrtoint" if fi == "ptr" else "inttoptr", fi, v, ti)
         return tmp
     }
     ff, tf := is_ir_float(fi), is_ir_float(ti)
     if ti == "i1" && !ff {   // to bool: whether it's nonzero
-        emit(g, "  %s = icmp ne %s %s, 0", tmp, fi, v)
+        ir_icmp(g, tmp, "ne", fi, v, "0")
         return tmp
     }
     fb, tb := ir_type_bits(fi), ir_type_bits(ti)
@@ -1330,7 +1328,7 @@ llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
     case fb < tb:   inst = "zext" if llvm_unsigned(from) else "sext"
     case:           inst = "trunc"
     }
-    emit(g, "  %s = %s %s %s to %s", tmp, inst, fi, v, ti)
+    ir_cast(g, tmp, inst, fi, v, ti)
     return tmp
 }
 
@@ -1371,7 +1369,7 @@ llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: string, args: []string) -> 
     all := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
     append(&all, ..args)
     append(&all, fmt.tprintf("ptr %s", at))
-    emit_raw(e.g, strings.concatenate({"  call void ", mara_fn_name(e.g, callee.name), "(", strings.join(all[:], ", ", context.temp_allocator), ")"}))
+    ir_call(e.g, "", "void", mara_fn_name(e.g, callee.name), ..all[:])
     return true
 }
 
@@ -1463,8 +1461,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     // A bare field of a constructor is already zero; a literal is a fresh value anywhere.
     if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, at, type_size(t)) }
-    emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, callee.name), "(",
-        strings.join(args[:], ", ", context.temp_allocator), ")"}))
+    ir_call(g, "", "void", mara_fn_name(g, callee.name), ..args[:])
     return true
 }
 
@@ -1590,7 +1587,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     n := hi
     if lo != "" {
         n = fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, %s", n, SLICE_LEN_IR, hi, lo)
+        ir_bin(g, n, "sub", SLICE_LEN_IR, hi, lo)
     }
     // Written to a held view: its values, no header in memory.
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
@@ -1633,10 +1630,10 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         if !can_elide_span_check(off, hi) {
             w := SLICE_LEN_IR
             n := fresh_tmp(g)
-            emit(g, "  %s = sub %s %s, %s", n, w, hi, off)
+            ir_bin(g, n, "sub", w, hi, off)
             ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
             cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp ne %s %s, %d", cmp, w, n, type_size(t))
+            ir_icmp(g, cmp, "ne", w, n, ir_int(int(type_size(t))))
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
@@ -1645,7 +1642,7 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         }
     }
     tmp := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", tmp, data, SLICE_LEN_IR, off)
+    ir_gep(g, tmp, "i8", data, strings.concatenate({SLICE_LEN_IR, " ", off}, context.temp_allocator))
     e.value[op] = tmp
     return true
 }
@@ -1696,18 +1693,18 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         cmp := fresh_tmp(g)
         if hi == "" {
             rem := fresh_tmp(g)
-            emit(g, "  %s = urem %s %s, %d", rem, w, nbytes, size)
-            emit(g, "  %s = icmp ne %s %s, 0", cmp, w, rem)
+            ir_bin(g, rem, "urem", w, nbytes, ir_int(int(size)))
+            ir_icmp(g, cmp, "ne", w, rem, "0")
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte read: %%lld bytes aren't a whole number of %s (%d bytes each)\n", loc, elem_name, size), fail_i64(nbytes))
             emit_label(g, ok)
-            emit(g, "  %s = udiv %s %s, %d", count, w, nbytes, size)
+            ir_bin(g, count, "udiv", w, nbytes, ir_int(int(size)))
         } else {
-            emit(g, "  %s = sub %s %s, %s", count, w, hi, lo)
+            ir_bin(g, count, "sub", w, hi, lo)
             want := fresh_tmp(g)
-            emit(g, "  %s = mul %s %s, %d", want, w, count, size)
-            emit(g, "  %s = icmp ne %s %s, %s", cmp, w, want, nbytes)
+            ir_bin(g, want, "mul", w, count, ir_int(int(size)))
+            ir_icmp(g, cmp, "ne", w, want, nbytes)
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte read: a run of %%lld %s is %%lld bytes, but the bytes are %%lld\n", loc, elem_name),
@@ -1733,13 +1730,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         size := type_size(from.elem)
         count := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
         nbytes := fresh_tmp(g)
-        emit(g, "  %s = mul %s %s, %d", nbytes, w, count, size)
+        ir_bin(g, nbytes, "mul", w, count, ir_int(int(size)))
         if hi != "" {
             span_n := fresh_tmp(g)
-            emit(g, "  %s = sub %s %s, %s", span_n, w, hi, lo)
+            ir_bin(g, span_n, "sub", w, hi, lo)
             ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
             cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp ne %s %s, %s", cmp, w, span_n, nbytes)
+            ir_icmp(g, cmp, "ne", w, span_n, nbytes)
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write: the span is %%lld bytes, the value %%lld\n", loc), fail_i64(span_n), fail_i64(nbytes))
@@ -1752,7 +1749,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
                   fail_i64(lo), fail_i64(nbytes), fail_i64(dst.bound))
         emit_label(g, ok)
         at := fresh_tmp(g)
-        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", at, dst.data, w, lo)
+        ir_gep(g, at, "i8", dst.data, strings.concatenate({w, " ", lo}, context.temp_allocator))
         emit_memcpy_runtime(g, at, from.data, nbytes)
         return true
     }
@@ -1763,7 +1760,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             n = emit_header_field(g, e.value[src], SLICE.len)
         }
         hi = fresh_tmp(g)
-        emit(g, "  %s = add %s %s, %s", hi, w, lo, n)
+        ir_bin(g, hi, "add", w, lo, n)
     }
     name := ""
     #partial switch pg.op[base] {
@@ -1773,7 +1770,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_bounds_check(g, lo, dst.bound, name, span)
     hi_ok, hi_err := fresh_label(g, "slice.high.ok"), fresh_label(g, "slice.high.err")
     hi_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt %s %s, %s", hi_cmp, w, hi, dst.bound)
+    ir_icmp(g, hi_cmp, "sgt", w, hi, dst.bound)
     emit_cond_br(g, hi_cmp, hi_err, hi_ok)
     emit_label(g, hi_err)
     emit_fail(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", name),
@@ -1785,10 +1782,10 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         have := from.bound if from.bound != "" else emit_header_field(g, e.value[src], SLICE.len)
         if !can_elide_source_check(lo, hi, have) {
             want := fresh_tmp(g)
-            emit(g, "  %s = sub %s %s, %s", want, w, hi, lo)
+            ir_bin(g, want, "sub", w, hi, lo)
             src_ok, src_err := fresh_label(g, "slice.src.ok"), fresh_label(g, "slice.src.err")
             src_cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp sgt %s %s, %s", src_cmp, w, want, have)
+            ir_icmp(g, src_cmp, "sgt", w, want, have)
             emit_cond_br(g, src_cmp, src_err, src_ok)
             emit_label(g, src_err)
             emit_fail(g, fmt.tprintf("%s runtime error: slice assignment of %%lld elements into '%s', from a value of %%lld\n", loc, name),
@@ -1801,13 +1798,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_alloca(g, i_slot, w)
     emit_store(g, w, "0", i_slot)
     count := fresh_tmp(g)
-    emit(g, "  %s = sub %s %s, %s", count, w, hi, lo)
+    ir_bin(g, count, "sub", w, hi, lo)
     emit_br(g, loop)
     emit_label(g, loop)
     i := fresh_tmp(g)
     emit_load_into(g, i, w, i_slot)
     more := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", more, w, i, count)
+    ir_icmp(g, more, "slt", w, i, count)
     emit_cond_br(g, more, body, done)
     emit_label(g, body)
     elem_ir := llvm_type_from_checker(dst.elem)
@@ -1816,13 +1813,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     v := fresh_tmp(g)
     emit_load_into(g, v, elem_ir, src_gep)
     at := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %s", at, w, lo, i)
+    ir_bin(g, at, "add", w, lo, i)
     dst_gep := fresh_tmp(g)
     emit_array_gep_var(g, dst_gep, fmt.tprintf("[%d x %s]", dst.fixed, elem_ir), dst.data, at, w)
     emit_store(g, elem_ir, v, dst_gep)
     reanchor_partial_arrays(g, dst.elem, dst_gep)
     next := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, 1", next, w, i)
+    ir_bin(g, next, "add", w, i, "1")
     emit_store(g, w, next, i_slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -1863,11 +1860,11 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     at, hdr := e.value[place], e.value[src]
     data := emit_header_field(g, hdr, SLICE.ptr)
     n0 := emit_header_field(g, hdr, SLICE.len)
-    cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, n0, pa.size)
-    n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, n0, w, pa.size)
+    cmp := fresh_tmp(g); ir_icmp(g, cmp, "slt", w, n0, ir_int(int(pa.size)))
+    n := fresh_tmp(g); ir_select(g, n, cmp, w, n0, ir_int(int(pa.size)))
     elements := partial_elements(g, at, pa)
-    nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, type_size(pa.elem))
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", elements, data, nbytes)
+    nbytes := fresh_tmp(g); ir_bin(g, nbytes, "mul", w, n, ir_int(int(type_size(pa.elem))))
+    ir_call(g, "", "void", "@llvm.memcpy.p0.p0.i64", strings.concatenate({"ptr ", elements}, context.temp_allocator), strings.concatenate({"ptr ", data}, context.temp_allocator), strings.concatenate({"i64 ", nbytes}, context.temp_allocator), "i1 false")
     emit_header_set(g, at, SLICE.len, n)
     return true
 }
@@ -1921,27 +1918,27 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         // worth asked for, and the span check fails on off.)
         size := type_size(pa.elem)
         room := fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, %s", room, w, bound, lo)
+        ir_bin(g, room, "sub", w, bound, lo)
         part := fresh_tmp(g)
-        emit(g, "  %s = urem %s %s, %d", part, w, room, size)
+        ir_bin(g, part, "urem", w, room, ir_int(int(size)))
         whole := fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, %s", whole, w, room, part)
+        ir_bin(g, whole, "sub", w, room, part)
         short := fresh_tmp(g)
-        emit(g, "  %s = icmp ult %s %s, %d", short, w, whole, pa.size * size)
+        ir_icmp(g, short, "ult", w, whole, ir_int(int(pa.size * size)))
         bytes = fresh_tmp(g)
-        emit(g, "  %s = select i1 %s, %s %s, %s %d", bytes, short, w, whole, w, pa.size * size)
+        ir_select(g, bytes, short, w, whole, ir_int(int(pa.size * size)))
     } else {
         if hi == "" { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
         inv_ok, inv_err := fresh_label(g, "pa.inv.ok"), fresh_label(g, "pa.inv.err")
         inv_cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, hi, lo)
+        ir_icmp(g, inv_cmp, "slt", w, hi, lo)
         emit_cond_br(g, inv_cmp, inv_err, inv_ok)
         emit_label(g, inv_err)
         emit_fail(g, "runtime error: partial-array byte read slice bounds inverted (low=%lld, high=%lld) for partial-array byte read\n",
                   fail_i64(lo), fail_i64(hi))
         emit_label(g, inv_ok)
         bytes = fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, %s", bytes, w, hi, lo)
+        ir_bin(g, bytes, "sub", w, hi, lo)
     }
     gen_partial_array_byte_fill_at_core(g, e.value[dest], pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span)
     return true
@@ -1968,7 +1965,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     size := type_size(t)
     n := fresh_tmp(g)
-    emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
+    ir_bin(g, n, "sub", w, hi, lo)
     src_ok, src_err := fresh_label(g, "span.src.ok"), fresh_label(g, "span.src.err")
     src_cmp := emit_byte_span_outside(g, lo, n, bound)
     emit_cond_br(g, src_cmp, src_err, src_ok)
@@ -1977,13 +1974,13 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     emit_label(g, src_ok)
     dst_ok, dst_err := fresh_label(g, "span.dst.ok"), fresh_label(g, "span.dst.err")
     dst_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt %s %s, %d", dst_cmp, w, n, size)
+    ir_icmp(g, dst_cmp, "ugt", w, n, ir_int(int(size)))
     emit_cond_br(g, dst_cmp, dst_err, dst_ok)
     emit_label(g, dst_err)
     emit_fail(g, fmt.tprintf("<%s> runtime error: sized read of %%lld bytes exceeds destination (%d bytes)\n", loc, size), fail_i64(n))
     emit_label(g, dst_ok)
     src := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src, data, w, lo)
+    ir_gep(g, src, "i8", data, strings.concatenate({w, " ", lo}, context.temp_allocator))
     at := e.value[dest]
     emit_memset_zero(g, at, size)
     emit_memcpy_runtime(g, at, src, n)
@@ -2044,18 +2041,18 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     advance := fmt.tprintf("%d", size)
     if !let {
         advance = fresh_tmp(g)
-        emit(g, "  %s = mul %s %s, %d", advance, w, count, size)
+        ir_bin(g, advance, "mul", w, count, ir_int(int(size)))
     }
     if align > 1 {
         bumped := fresh_tmp(g)
-        emit(g, "  %s = add %s %s, %d", bumped, w, cursor, align - 1)
+        ir_bin(g, bumped, "add", w, cursor, ir_int(int(align - 1)))
         cursor = fresh_tmp(g)
-        emit(g, "  %s = and %s %s, %d", cursor, w, bumped, -align)
+        ir_bin(g, cursor, "and", w, bumped, ir_int(int(-align)))
     }
     at := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", at, data, w, cursor)
+    ir_gep(g, at, "i8", data, strings.concatenate({w, " ", cursor}, context.temp_allocator))
     moved := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %s", moved, w, cursor, advance)
+    ir_bin(g, moved, "add", w, cursor, advance)
     cap_val := emit_header_field(g, hdr, SLICE.cap)
     // (Its count of elements, or its one value, in the room past the aligned
     // cursor: a negative count is outside.)
@@ -2195,15 +2192,13 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         if llvm_direct(e, subject) { return false }
         tag, ir := load_union_tag(g, ut, e.value[subject]), union_tag_ir_type(ut)
         default := fresh_label(g, "match.fail") if fail else target(e, op, len(cases))
-        sw := strings.builder_make(context.temp_allocator)
-        fmt.sbprintf(&sw, "  switch %s %s, label %%%s [\n", ir, tag, default)
+        arms := make([]Ir_Arg, len(cases))
         for c, i in cases {
             v, has := graph_value(pg, c.op)
             if !has || v.is_float { return false }
-            fmt.sbprintf(&sw, "    %s %d, label %%%s\n", ir, v.int, target(e, op, i))
+            arms[i] = {ir, fmt.tprintf("%d", v.int), target(e, op, i)}
         }
-        strings.write_string(&sw, "  ]")
-        emit_raw(g, strings.to_string(sw))
+        ir_switch(g, ir, tag, default, arms)
         if fail {
             emit_label(g, default)
             emit_match_fail(g, span, tag, ir, union_tag_unsigned(ut))
@@ -2221,7 +2216,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         next := last
         if i < len(cases) - 1 { next = fresh_label(g, "match.next") }
         cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp eq %s %s, %s", cmp, ir, value, v)
+        ir_icmp(g, cmp, "eq", ir, value, v)
         emit_cond_br(g, cmp, target(e, op, i), next)
         if i < len(cases) - 1 { emit_label(g, next) }
     }
@@ -2363,7 +2358,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             if at[i] == "" { at[i] = llvm_temporary(e, {op, i32(i)}, rt, llvm_alloca_type(rt)) }
             append(&args, fmt.tprintf("ptr %s", at[i]))
         }
-        emit(g, "  call void %s(%s)", name, strings.join(args[:], ", ", context.temp_allocator))
+        ir_call(g, "", "void", name, ..args[:])
         e.outs[op], e.out_run[op] = at, e.run
         e.value[op] = at[0]
         return true
@@ -2372,17 +2367,16 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // A struct result, built where it goes (llvm_result_place).
         at := llvm_result_place(e, op, callee, result) or_return
         append(&args, fmt.tprintf("ptr %s", at))
-        emit(g, "  call void %s(%s)", name, strings.join(args[:], ", ", context.temp_allocator))
+        ir_call(g, "", "void", name, ..args[:])
         e.value[op] = at
         return true
     }
-    joined := strings.join(args[:], ", ", context.temp_allocator)
     if ret == "void" {
-        emit(g, "  call void %s(%s)", name, joined)
+        ir_call(g, "", "void", name, ..args[:])
         return true
     }
     tmp := fresh_tmp(g)
-    emit(g, "  %s = call %s %s(%s)", tmp, ret, name, joined)
+    ir_call(g, tmp, ret, name, ..args[:])
     e.value[op] = tmp
     return true
 }
@@ -2438,7 +2432,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
                     at := v
                     if k > 0 {
                         at = fresh_tmp(g)
-                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", at, v, k * 8)
+                        ir_gep(g, at, "i8", v, strings.concatenate({"i64 ", ir_int(int(k * 8))}, context.temp_allocator))
                     }
                     loaded := fresh_tmp(g)
                     emit_load_into(g, loaded, part, at)
@@ -2452,14 +2446,14 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             append(&args, fmt.tprintf("ptr byval(%s) %s", llvm_type_from_checker(pt), v))
         }
     }
-    joined := strings.join(args[:], ", ", context.temp_allocator)
+    callee_sym := strings.concatenate({"@", name}, context.temp_allocator)
     if ret_ir == "void" {
-        emit(g, "  call void @%s(%s)", name, joined)
+        ir_call(g, "", "void", callee_sym, ..args[:])
         if slot != "" { e.value[op] = slot }
         return true
     }
     tmp := fresh_tmp(g)
-    emit(g, "  %s = call %s @%s(%s)", tmp, ret_ir, name, joined)
+    ir_call(g, tmp, ret_ir, callee_sym, ..args[:])
     e.value[op] = tmp
     // An aggregate returned in registers: put back together where it can be
     // read as one.
@@ -2471,11 +2465,11 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         } else {
             for part, k in direct.parts {
                 ev := fresh_tmp(g)
-                emit(g, "  %s = extractvalue %s %s, %d", ev, ret_ir, tmp, k)
+                ir_extract(g, ev, ret_ir, tmp, ir_int(int(k)))
                 to := at
                 if k > 0 {
                     to = fresh_tmp(g)
-                    emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", to, at, k * 8)
+                    ir_gep(g, to, "i8", at, strings.concatenate({"i64 ", ir_int(int(k * 8))}, context.temp_allocator))
                 }
                 emit_store(g, part, ev, to)
             }
@@ -2536,7 +2530,7 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
     tmp := fresh_tmp(g)
-    emit(g, "  %s = call %s @%s(%s)", tmp, llvm_type_from_checker(fn_result(callee, 0)), name, strings.join(args[:], ", ", context.temp_allocator))
+    ir_call(g, tmp, llvm_type_from_checker(fn_result(callee, 0)), strings.concatenate({"@", name}, context.temp_allocator), ..args[:])
     e.value[op] = tmp
     return true
 }

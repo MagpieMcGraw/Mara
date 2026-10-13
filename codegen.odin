@@ -9,10 +9,11 @@ import "core:strings"
 import "core:os"
 
 // ---------------------------------------------------------------------------
-// The LLVM IR toolkit the emitter writes with: its state (Codegen), the
-// instruction emitters, types' IR names and declarations, string globals,
-// the runtime checks and the arena's calls. llvm.odin lowers each function
-// from the program graph with it; codegen_module.odin assembles the .ll files.
+// The toolkit the emitter makes a function's instructions with (ir.odin):
+// its state (Codegen), the instruction emitters, types' IR names and
+// declarations, string globals, the runtime checks and the arena's calls.
+// llvm.odin lowers each function from the program graph with it;
+// codegen_module.odin assembles the .ll files.
 // ---------------------------------------------------------------------------
 
 // A slice's header, `{ len, cap, ptr }`, its length and capacity i64s on
@@ -36,8 +37,14 @@ partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
 
 Codegen :: struct {
     out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
-    alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
-    body_buf:    strings.Builder,  // temporary buffer for function body during alloca hoisting
+    // The function being made: its instructions (ir.odin) — where they're
+    // made, its allocas (hoisted to its entry while its body is), its body.
+    code:        [dynamic]Ir,
+    allocas:     [dynamic]Ir,
+    body:        [dynamic]Ir,
+    // The x86 backend's object for the module (nil: LLVM's — its text): each
+    // function made goes into it (codegen_function).
+    x86:         ^X86_Module,
     // Aggregate constants live in read-only tables (codegen_const.odin): the
     // tables this Codegen's functions referenced (symbol -> table).
     const_tables: map[string]Const_Table,
@@ -230,197 +237,89 @@ fn_ret_struct :: proc(g: ^Codegen, fn_name: string) -> string {
 }
 
 
-// Write a line of a function's code (its body, while its allocas are
-// hoisted: emit_alloca).
-emit_raw :: proc(g: ^Codegen, line: string) {
-    b := &g.body_buf if g.hoist_allocas else &g.out
-    strings.write_string(b, line)
-    strings.write_byte(b, '\n')
-}
-
-emit :: proc(g: ^Codegen, s: string, args: ..any) {
-    emit_raw(g, s if len(args) == 0 else fmt.tprintf(s, ..args))
-}
-
 // ---------------------------------------------------------------------------
-// Fast IR emitters — direct builder writes, no fmt.tprintf
-//
-// emit() routes through fmt.tprintf, which parses the format string and
-// reflects on each ..any argument for every call. For the half-dozen IR
-// patterns that account for ~250+ call sites and the bulk of generated
-// bytes, that overhead adds up — codegen on a 1M-line module spends a
-// meaningful fraction of its time in tprintf machinery. These typed
-// helpers write straight to the builder with no format parsing or
-// reflection. Use them for any pattern that shows up in the hot IR path;
-// reach for emit() when the pattern is one-off or fmt's flexibility is
-// actually needed.
+// The common instructions (ir.odin), by what they do
 // ---------------------------------------------------------------------------
 
-// Pick the builder a non-alloca line should land in, honoring the alloca-
-// hoist mode (allocas go through emit_alloca).
-@(private="file")
-emit_target :: proc(g: ^Codegen) -> ^strings.Builder {
-    if g.hoist_allocas { return &g.body_buf }
-    return &g.out
-}
-
-// `  store <ir_type> <val>, ptr <ptr>\n`
+// `store <ir_type> <val>, ptr <ptr>`
 emit_store :: proc(g: ^Codegen, ir_type, val, ptr: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  store ")
-    strings.write_string(b, ir_type)
-    strings.write_byte(b, ' ')
-    strings.write_string(b, val)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, ptr)
-    strings.write_byte(b, '\n')
+    ir_store(g, ir_type, val, ptr)
 }
 
-// `  <dst> = load <ir_type>, ptr <ptr>\n`
-// A load into a name the caller has picked out.
+// `<dst> = load <ir_type>, ptr <ptr>`: a load into a name the caller has
+// picked out.
 emit_load_into :: proc(g: ^Codegen, dst, ir_type, src_ptr: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = load ")
-    strings.write_string(b, ir_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, src_ptr)
-    strings.write_byte(b, '\n')
+    ir_load(g, dst, ir_type, src_ptr)
 }
 
-// `  <dst> = getelementptr <agg_type>, ptr <base>, i32 0, i32 <idx>\n`
-// A struct field's address, into a name the caller has picked out.
+// A struct field's address, into a name the caller has picked out:
+// `getelementptr <agg_type>, ptr <base>, i32 0, i32 <idx>`.
 emit_field_gep_into :: proc(g: ^Codegen, dst, agg_type, base: string, idx: int) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = getelementptr ")
-    strings.write_string(b, agg_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, base)
-    strings.write_string(b, ", i32 0, i32 ")
-    strings.write_int(b, idx)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Gep, dest = dst, ty = agg_type, a = base, args = ir_indices({"i32", "0", ""}, {"i32", ir_int(idx), ""})})
 }
 
-// `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, i64 <idx>\n`
-// Constant-index array GEP. Same shape as emit_field_gep_into but i64 for
-// the element index, matching the array-element GEP convention.
+// A constant-index array element's address: `getelementptr <arr_type>, ptr
+// <base>, i64 0, i64 <idx>`.
 emit_array_gep_const :: proc(g: ^Codegen, dst, arr_type, base: string, idx: int) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = getelementptr ")
-    strings.write_string(b, arr_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, base)
-    strings.write_string(b, ", i64 0, i64 ")
-    strings.write_int(b, idx)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Gep, dest = dst, ty = arr_type, a = base, args = ir_indices({"i64", "0", ""}, {"i64", ir_int(idx), ""})})
 }
 
-// `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, <idx_ir> <idx>\n`
-// Variable-index array GEP — `idx` is an SSA name string, not a constant.
-// `idx_ir` is the LLVM IR type of `idx`; callers pass SLICE_LEN_IR
-// when the index comes from a user expression / slice header, "i32" when
-// it comes from a fixed-position counter, etc. No default — every call
-// site states the index width explicitly so the slice-header width flip
-// (i32 ↔ i64) propagates correctly.
+// A variable-index array element's address: `getelementptr <arr_type>, ptr
+// <base>, i64 0, <idx_ir> <idx>`. Every call site states the index's width
+// (SLICE_LEN_IR for a user's index or a slice header's, "i32" for a
+// fixed-position counter).
 emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx, idx_ir: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = getelementptr ")
-    strings.write_string(b, arr_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, base)
-    strings.write_string(b, ", i64 0, ")
-    strings.write_string(b, idx_ir)
-    strings.write_byte(b, ' ')
-    strings.write_string(b, idx)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Gep, dest = dst, ty = arr_type, a = base, args = ir_indices({"i64", "0", ""}, {idx_ir, idx, ""})})
 }
 
-// `  <dst> = getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>\n`
-// Element-step GEP for raw element pointers (slice data pointers, VLA bases).
-// One-dimensional version: no outer `i64 0` because base already points at
-// the element-typed array. `idx_ir` is the LLVM type of `idx` — no default
-// so every call site states the index width.
+// An element's address from a raw element pointer (a slice's data):
+// `getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>`.
 emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx, idx_ir: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = getelementptr ")
-    strings.write_string(b, elem_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, base)
-    strings.write_string(b, ", ")
-    strings.write_string(b, idx_ir)
-    strings.write_byte(b, ' ')
-    strings.write_string(b, idx)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Gep, dest = dst, ty = elem_type, a = base, args = ir_indices({idx_ir, idx, ""})})
 }
 
-// `  <dst> = alloca <ir_type>\n`, with the hoisted allocas while hoisting. (Each
-// is made once: llvm_storage names them.)
+// Indices as a GEP's operands.
+ir_indices :: proc(xs: ..Ir_Arg) -> []Ir_Arg {
+    out := make([]Ir_Arg, len(xs))
+    copy(out, xs)
+    return out
+}
+
+// `<dst> = alloca <ir_type>` — `ir_type` may end `, align <n>` — with the
+// hoisted allocas while hoisting. (Each is made once: llvm_storage names
+// them.)
 emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
-    b := &g.alloca_buf if g.hoist_allocas else &g.out
-    strings.write_string(b, "  ")
-    strings.write_string(b, dst)
-    strings.write_string(b, " = alloca ")
-    strings.write_string(b, ir_type)
-    strings.write_byte(b, '\n')
+    ins := Ir{op = .Alloca, dest = dst, ty = ir_type}
+    if at := strings.index(ir_type, ", align "); at >= 0 {
+        n, _ := strconv.parse_int(ir_type[at + 8:])
+        ins.ty, ins.align = ir_type[:at], i32(n)
+    }
+    append(&g.allocas if g.hoist_allocas else &g.code, ins)
 }
 
-// `  call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)\n`
+// `call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)`
 emit_memcpy :: proc(g: ^Codegen, dst, src: string, bytes: int) {
-    b := emit_target(g)
-    strings.write_string(b, "  call void @llvm.memcpy.p0.p0.i64(ptr ")
-    strings.write_string(b, dst)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, src)
-    strings.write_string(b, ", i64 ")
-    strings.write_int(b, bytes)
-    strings.write_string(b, ", i1 false)\n")
+    ir_emit(g, {op = .Call, ty = "void", inst = "@llvm.memcpy.p0.p0.i64",
+                args = ir_indices({"ptr", dst, ""}, {"ptr", src, ""}, {"i64", ir_int(bytes), ""}, {"i1", "false", ""})})
 }
 
-// `  call void @llvm.memset.p0.i64(ptr <dst>, i8 0, i64 <bytes>, i1 false)\n`
+// `call void @llvm.memset.p0.i64(ptr <dst>, i8 0, i64 <bytes>, i1 false)`
 emit_memset_zero :: proc(g: ^Codegen, dst: string, bytes: int) {
-    b := emit_target(g)
-    strings.write_string(b, "  call void @llvm.memset.p0.i64(ptr ")
-    strings.write_string(b, dst)
-    strings.write_string(b, ", i8 0, i64 ")
-    strings.write_int(b, bytes)
-    strings.write_string(b, ", i1 false)\n")
+    ir_emit(g, {op = .Call, ty = "void", inst = "@llvm.memset.p0.i64",
+                args = ir_indices({"ptr", dst, ""}, {"i8", "0", ""}, {"i64", ir_int(bytes), ""}, {"i1", "false", ""})})
 }
 
-// `  br label %<label>\n`
 emit_br :: proc(g: ^Codegen, label: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  br label %")
-    strings.write_string(b, label)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Br, a = label})
 }
 
-// `  br i1 <cond>, label %<true_label>, label %<false_label>\n`
 emit_cond_br :: proc(g: ^Codegen, cond, true_label, false_label: string) {
-    b := emit_target(g)
-    strings.write_string(b, "  br i1 ")
-    strings.write_string(b, cond)
-    strings.write_string(b, ", label %")
-    strings.write_string(b, true_label)
-    strings.write_string(b, ", label %")
-    strings.write_string(b, false_label)
-    strings.write_byte(b, '\n')
+    ir_emit(g, {op = .Cond_Br, a = cond, b = true_label, c = false_label})
 }
 
-// `<name>:\n` — basic-block label. No leading indent (it's a target, not an
-// instruction).
+// A block's label.
 emit_label :: proc(g: ^Codegen, name: string) {
-    b := emit_target(g)
-    strings.write_string(b, name)
-    strings.write_string(b, ":\n")
+    ir_emit(g, {op = .Label, inst = name})
 }
 
 // The printf symbol for the current emission context: @printf normally,
@@ -430,25 +329,36 @@ printf_sym :: proc(g: ^Codegen) -> string {
     return g.tee ? "@__mara_tee_printf" : "@printf"
 }
 
-// `  call i32 (ptr, ...) @printf(ptr <format>, <args>)\n` — `format` a C
-// format (a string literal of its own), each arg "<IR type> <value>".
+// `call i32 (ptr, ...) @printf(ptr <format>, <args>)` — `format` a C format
+// (a string literal of its own), each arg "<IR type> <value>".
 emit_printf :: proc(g: ^Codegen, format: string, args: ..string) {
-    b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) ")
-    strings.write_string(b, printf_sym(g))
-    strings.write_string(b, "(ptr ")
-    strings.write_string(b, get_string_literal(g, format))
-    for a in args {
-        strings.write_string(b, ", ")
-        strings.write_string(b, a)
-    }
-    strings.write_string(b, ")\n")
+    all := make([]Ir_Arg, len(args) + 1)
+    all[0] = {ty = "ptr", v = get_string_literal(g, format)}
+    for a, i in args { all[i + 1] = ir_arg(a) }
+    ir_emit(g, {op = .Call, ty = "i32", to = "(ptr, ...)", inst = printf_sym(g), args = all})
 }
 
-// Begin alloca hoisting: emit() will redirect allocas to alloca_buf, body code to body_buf.
+// A function made — its `define` line `head`, its code's parts in order —
+// into the module's x86 object, or as LLVM IR into its text: its entry
+// labeled (`entry`), a blank line after it (`gap`).
+codegen_function :: proc(g: ^Codegen, head: string, code: [][]Ir, entry := true, gap := true) {
+    if g.x86 != nil {
+        x86_function(g.x86, head, code)
+        return
+    }
+    b := &g.out
+    strings.write_string(b, head)
+    strings.write_string(b, "\nentry:\n" if entry else "\n")
+    for part in code { ir_print_all(b, part) }
+    strings.write_string(b, "}\n")
+    if gap { strings.write_string(b, "\n") }
+}
+
+// Begin a function's body: its allocas hoisted to its entry (emit_alloca),
+// the rest its body.
 begin_alloca_hoist :: proc(g: ^Codegen) {
-    strings.builder_reset(&g.alloca_buf)
-    strings.builder_reset(&g.body_buf)
+    g.allocas = make([dynamic]Ir)
+    g.body = make([dynamic]Ir)
     g.hoist_allocas = true
 }
 
@@ -680,15 +590,25 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_MATCH_FAIL,     "ptr %loc, i64 %tag",                         "%s runtime error: match on an invalid tag %lld\n"},
 }
 
+// The runtime's helpers, made as functions are (codegen_function): into the
+// x86 object, or as LLVM IR — the text returned.
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
-    b := strings.builder_make()
-    strings.write_string(&b, "; Runtime fail-block helpers (hoisted)\n")
+    saved := g.out
+    defer g.out = saved
+    g.out = strings.builder_make()
+    strings.write_string(&g.out, "; Runtime fail-block helpers (hoisted)\n")
     for f in RUNTIME_FAILS {
-        fmt.sbprintf(&b, "define void %s(%s) %s\n", f.name, f.params, "{")
-        if !g.web { strings.write_string(&b, "  call void @__mara_crash_begin()\n") }
-        fmt.sbprintf(&b, "  call i32 (ptr, ...) %s(ptr %s, %s)\n", "@printf" if g.web else "@__mara_tee_printf", get_string_literal(g, f.message), f.params)
-        if !g.web { strings.write_string(&b, "  call void @__mara_crash_end()\n") }
-        strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+        g.code = {}
+        if !g.web { ir_call(g, "", "void", "@__mara_crash_begin") }
+        args := make([dynamic]string, context.temp_allocator)
+        append(&args, fmt.tprintf("ptr %s", get_string_literal(g, f.message)))
+        append(&args, ..strings.split(f.params, ", ", context.temp_allocator))
+        ir_call_va(g, "", "i32", "(ptr, ...)", "@printf" if g.web else "@__mara_tee_printf", ..args[:])
+        if !g.web { ir_call(g, "", "void", "@__mara_crash_end") }
+        ir_call(g, "", "void", "@exit", "i32 1")
+        ir_unreachable(g)
+        code := [?][]Ir{g.code[:]}
+        codegen_function(g, strings.concatenate({"define void ", f.name, "(", f.params, ") {"}), code[:], entry = false)
     }
     // print_err: prints the qualified name of a u32 error value (set_id<<16 |
     // tag). One switch case per (set_id, tag) pair across all error_kinds
@@ -696,11 +616,12 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // back to "?(<val>)" for stray bits / out-of-range tags. Open-`err`-typed
     // print sites call this; concrete error_kind print sites still use the
     // inline switch from gen_print_enum.
-    strings.write_string(&b, runtime_print_err_helper_ir(g))
-    return strings.to_string(b)
+    runtime_print_err_helper_ir(g)
+    g.code = {}
+    return strings.to_string(g.out)
 }
 
-runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
+runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     Variant_Case :: struct { value: int, qualified_name: string }
     cases := make([dynamic]Variant_Case, 0, 16, context.temp_allocator)
     for _, et in g.checked.table.enums {
@@ -723,21 +644,21 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
         append(&case_strs, s)
     }
 
-    b: strings.Builder
-    strings.builder_init(&b)
-    strings.write_string(&b, "define void @__mara_print_err(i32 %val) {\nentry:\n")
-    strings.write_string(&b, "  switch i32 %val, label %unknown [\n")
-    strings.write_string(&b, "    i32 0, label %ok\n")
-    for c, i in cases {
-        strings.write_string(&b, fmt.tprintf("    i32 %d, label %%case_%d\n", c.value, i))
+    g.code = {}
+    arms := make([]Ir_Arg, len(cases) + 1)
+    arms[0] = {"i32", "0", "ok"}
+    for c, i in cases { arms[i + 1] = {"i32", fmt.tprintf("%d", c.value), fmt.tprintf("case_%d", i)} }
+    ir_switch(g, "i32", "%val", "unknown", arms)
+    say :: proc(g: ^Codegen, label, format, arg: string) {
+        emit_label(g, label)
+        ir_call_va(g, "", "i32", "(ptr, ...)", "@printf", fmt.tprintf("ptr %s", format), arg)
+        ir_ret(g, "void")
     }
-    strings.write_string(&b, "  ]\nok:\n")
-    fmt.sbprintf(&b, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)\n  ret void\n", fmt_str_s, ok_str)
-    for s, i in case_strs {
-        fmt.sbprintf(&b, "case_%d:\n  call i32 (ptr, ...) @printf(ptr %s, ptr %s)\n  ret void\n", i, fmt_str_s, s)
-    }
-    fmt.sbprintf(&b, "unknown:\n  call i32 (ptr, ...) @printf(ptr %s, i32 %%val)\n  ret void\n}\n", fmt_unknown)
-    return strings.to_string(b)
+    say(g, "ok", fmt_str_s, fmt.tprintf("ptr %s", ok_str))
+    for s, i in case_strs { say(g, fmt.tprintf("case_%d", i), fmt_str_s, fmt.tprintf("ptr %s", s)) }
+    say(g, "unknown", fmt_unknown, "i32 %val")
+    code := [?][]Ir{g.code[:]}
+    codegen_function(g, "define void @__mara_print_err(i32 %val) {", code[:], gap = false)
 }
 
 // A runtime bounds check: idx < 0 or idx >= len fails (__mara_bounds_fail);
@@ -758,20 +679,20 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     // idx and len_val are both at the slice header's width.
     w := SLICE_LEN_IR
     neg_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, idx)
+    ir_icmp(g, neg_cmp, "slt", w, idx, "0")
     upper_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp sge %s %s, %s", upper_cmp, w, idx, len_val)
+    ir_icmp(g, upper_cmp, "sge", w, idx, len_val)
     combined := fresh_tmp(g)
-    emit(g, "  %s = or i1 %s, %s", combined, neg_cmp, upper_cmp)
+    ir_bin(g, combined, "or", "i1", neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
     name_global := get_string_literal(g, name)
-    emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
-        __MARA_BOUNDS_FAIL, loc_global, w, idx, w, len_val, name_global)
-    emit(g, "  unreachable")
+    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_BOUNDS_FAIL,
+                args = ir_indices({"ptr", loc_global, ""}, {w, idx, ""}, {w, len_val, ""}, {"ptr", name_global, ""})})
+    ir_unreachable(g)
 
     emit_label(g, ok_label)
 }
@@ -817,14 +738,14 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
     fail_label := fresh_label(g, "divz.fail")
 
     cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp eq %s %s, 0", cmp, ir_type, divisor)
+    ir_icmp(g, cmp, "eq", ir_type, divisor, "0")
     emit_cond_br(g, cmp, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    emit(g, "  call void %s(ptr %s)", __MARA_DIVZ_FAIL, loc_global)
-    emit(g, "  unreachable")
+    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_DIVZ_FAIL, args = ir_indices({"ptr", loc_global, ""})})
+    ir_unreachable(g)
 
     emit_label(g, ok_label)
 }
@@ -840,8 +761,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
 emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: string, right: string, span: Span = {}) -> string {
     if can_elide_overflow(op, ir_type, left, right) {
         result := fresh_tmp(g)
-        op_short := op[1:]  // "sadd"/"uadd" → "add", etc.
-        emit(g, "  %s = %s %s %s, %s", result, op_short, ir_type, left, right)
+        ir_bin(g, result, op[1:], ir_type, left, right)   // ("sadd"/"uadd" → "add", etc.)
         return result
     }
 
@@ -853,20 +773,21 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
 
     pair := fresh_tmp(g)
     ret_type := strings.concatenate({"{ ", ir_type, ", i1 }"})
-    emit_raw(g, strings.concatenate({"  ", pair, " = call ", ret_type, " @", intrinsic_name, "(", ir_type, " ", left, ", ", ir_type, " ", right, ")"}))
+    ir_emit(g, {op = .Call, dest = pair, ty = ret_type, inst = strings.concatenate({"@", intrinsic_name}),
+                args = ir_indices({ir_type, left, ""}, {ir_type, right, ""})})
 
     result   := fresh_tmp(g)
     overflow := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", result,   " = extractvalue ", ret_type, " ", pair, ", 0"}))
-    emit_raw(g, strings.concatenate({"  ", overflow, " = extractvalue ", ret_type, " ", pair, ", 1"}))
+    ir_extract(g, result, ret_type, pair, "0")
+    ir_extract(g, overflow, ret_type, pair, "1")
 
     emit_cond_br(g, overflow, fail_label, ok_label)
 
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    emit(g, "  call void %s(ptr %s)", __MARA_OVERFLOW_FAIL, loc_global)
-    emit(g, "  unreachable")
+    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_OVERFLOW_FAIL, args = ir_indices({"ptr", loc_global, ""})})
+    ir_unreachable(g)
 
     emit_label(g, ok_label)
     return result
@@ -914,9 +835,9 @@ can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
 // Load the context's arena pointer (field 0 of Context struct).
 get_context_arena_ptr :: proc(g: ^Codegen) -> string {
     ctx_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_program"}))
+    ir_load(g, ctx_ptr, "ptr", "@__mara_program")
     arena_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(g.checked), ", ptr ", ctx_ptr, ", i32 0, i32 0"}))
+    emit_field_gep_into(g, arena_ptr, program_ir_name(g.checked), ctx_ptr, 0)
     return arena_ptr
 }
 
@@ -927,9 +848,9 @@ emit_arena_mark :: proc(g: ^Codegen) {
     if ret := fn_ret_struct(g, g.arena_mark_name); ret != "" {
         dummy := fresh_tmp(g)
         emit_alloca(g, dummy, struct_llvm_name(ret))
-        emit_raw(g, strings.concatenate({"  call void ", mark_ir, "(ptr ", arena_ptr, ", ptr ", dummy, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = mark_ir, args = ir_indices({"ptr", arena_ptr, ""}, {"ptr", dummy, ""})})
     } else {
-        emit_raw(g, strings.concatenate({"  call void ", mark_ir, "(ptr ", arena_ptr, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = mark_ir, args = ir_indices({"ptr", arena_ptr, ""})})
     }
 }
 
@@ -972,9 +893,10 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     alloc_ir := mara_fn_name(g, g.arena_alloc_name)
     w := SLICE_LEN_IR
     if g.arena_alloc_has_debug {
-        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", name_ptr, ", ptr ", span_ptr, ", ptr ", tmp_slice, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = alloc_ir,
+                    args = ir_indices({"ptr", arena_ptr, ""}, {w, size_val, ""}, {"ptr", name_ptr, ""}, {"ptr", span_ptr, ""}, {"ptr", tmp_slice, ""})})
     } else {
-        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", tmp_slice, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = alloc_ir, args = ir_indices({"ptr", arena_ptr, ""}, {w, size_val, ""}, {"ptr", tmp_slice, ""})})
     }
     // Extract raw data pointer from the returned slice header
     data_ptr := emit_header_field(g, tmp_slice, SLICE.ptr)
@@ -989,9 +911,9 @@ emit_arena_reset :: proc(g: ^Codegen) {
     if ret := fn_ret_struct(g, g.arena_reset_name); ret != "" {
         dummy := fresh_tmp(g)
         emit_alloca(g, dummy, struct_llvm_name(ret))
-        emit_raw(g, strings.concatenate({"  call void ", reset_ir, "(ptr ", arena_ptr, ", ptr ", dummy, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = reset_ir, args = ir_indices({"ptr", arena_ptr, ""}, {"ptr", dummy, ""})})
     } else {
-        emit_raw(g, strings.concatenate({"  call void ", reset_ir, "(ptr ", arena_ptr, ")"}))
+        ir_emit(g, {op = .Call, ty = "void", inst = reset_ir, args = ir_indices({"ptr", arena_ptr, ""})})
     }
 }
 
@@ -1076,14 +998,13 @@ load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: string) -> strin
         ptr := fresh_tmp(g)
         emit_load_into(g, ptr, "ptr", union_ptr)
         live := fresh_tmp(g)
-        emit(g, "  %s = icmp ne ptr %s, null", live, ptr)
+        ir_icmp(g, live, "ne", "ptr", ptr, "null")
         tag := fresh_tmp(g)
-        emit(g, "  %s = select i1 %s, %s %d, %s %d", tag, live,
-             tag_ir, ut.tag_map[some], tag_ir, ut.tag_map[none])
+        ir_select(g, tag, live, tag_ir, ir_int(ut.tag_map[some]), ir_int(ut.tag_map[none]))
         return tag
     }
     tag_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, union_llvm_name(ut.name), union_ptr)
+    emit_field_gep_into(g, tag_ptr, union_llvm_name(ut.name), union_ptr, 0)
     tag_val := fresh_tmp(g)
     emit_load_into(g, tag_val, tag_ir, tag_ptr)
     return tag_val
@@ -1095,11 +1016,11 @@ emit_match_fail :: proc(g: ^Codegen, span: Span, tag, tag_ir: string, unsigned: 
     wide := tag
     if tag_ir != "i64" {
         wide = fresh_tmp(g)
-        emit(g, "  %s = %s %s %s to i64", wide, "zext" if unsigned else "sext", tag_ir, tag)
+        ir_cast(g, wide, "zext" if unsigned else "sext", tag_ir, tag, "i64")
     }
     loc_global := get_string_literal(g, span_location(span))
-    emit(g, "  call void %s(ptr %s, i64 %s)", __MARA_MATCH_FAIL, loc_global, wide)
-    emit(g, "  unreachable")
+    ir_emit(g, {op = .Call, ty = "void", inst = __MARA_MATCH_FAIL, args = ir_indices({"ptr", loc_global, ""}, {"i64", wide, ""})})
+    ir_unreachable(g)
 }
 
 // Whether a union's tag is unsigned (`union(tag u32)`); the default i64 isn't.
