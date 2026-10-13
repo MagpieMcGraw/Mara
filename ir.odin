@@ -42,12 +42,74 @@ Ir :: struct {
     op:       Ir_Op,
     inbounds: bool,
     align:    i32,
-    inst:     string,      // the operation: add, slt, sext …
+    inst:     Ir_Inst,     // a Bin's, a comparison's, a Cast's operation
     ty, to:   string,
     dest:     Val,
     a, b, c:  Val,
     l, l2:    Ir_Label,
     args:     []Ir_Arg,
+}
+
+// An operation: a Bin's, a comparison's predicate (Icmp: Eq…Uge; Fcmp,
+// ordered: Oeq…Oge, and Une), a Cast's.
+Ir_Inst :: enum u8 {
+    None,
+    Add, Sub, Mul, Sdiv, Udiv, Srem, Urem, And, Or, Xor, Shl, Lshr, Ashr,
+    Fadd, Fsub, Fmul, Fdiv, Frem,
+    Eq, Ne, Slt, Sle, Sgt, Sge, Ult, Ule, Ugt, Uge,
+    Oeq, Une, Olt, Ole, Ogt, Oge,
+    Zext, Sext, Trunc, Fpext, Fptrunc, Sitofp, Uitofp, Fptosi, Fptoui, Ptrtoint, Inttoptr, Bitcast,
+}
+
+// Each as LLVM writes it.
+IR_INST_NAME := [Ir_Inst]string{
+    .None = "",
+    .Add = "add",
+    .Sub = "sub",
+    .Mul = "mul",
+    .Sdiv = "sdiv",
+    .Udiv = "udiv",
+    .Srem = "srem",
+    .Urem = "urem",
+    .And = "and",
+    .Or = "or",
+    .Xor = "xor",
+    .Shl = "shl",
+    .Lshr = "lshr",
+    .Ashr = "ashr",
+    .Fadd = "fadd",
+    .Fsub = "fsub",
+    .Fmul = "fmul",
+    .Fdiv = "fdiv",
+    .Frem = "frem",
+    .Eq = "eq",
+    .Ne = "ne",
+    .Slt = "slt",
+    .Sle = "sle",
+    .Sgt = "sgt",
+    .Sge = "sge",
+    .Ult = "ult",
+    .Ule = "ule",
+    .Ugt = "ugt",
+    .Uge = "uge",
+    .Oeq = "oeq",
+    .Une = "une",
+    .Olt = "olt",
+    .Ole = "ole",
+    .Ogt = "ogt",
+    .Oge = "oge",
+    .Zext = "zext",
+    .Sext = "sext",
+    .Trunc = "trunc",
+    .Fpext = "fpext",
+    .Fptrunc = "fptrunc",
+    .Sitofp = "sitofp",
+    .Uitofp = "uitofp",
+    .Fptosi = "fptosi",
+    .Fptoui = "fptoui",
+    .Ptrtoint = "ptrtoint",
+    .Inttoptr = "inttoptr",
+    .Bitcast = "bitcast",
 }
 
 // A typed operand — a GEP's index, a call's argument, a param — or a
@@ -161,15 +223,15 @@ ir_emit :: proc(g: ^Codegen, ins: Ir) {
     append(&g.body if g.hoist_allocas else &g.code, ins)
 }
 
-ir_bin :: proc(g: ^Codegen, dest: Val, inst, ty: string, a, b: Val) {
+ir_bin :: proc(g: ^Codegen, dest: Val, inst: Ir_Inst, ty: string, a, b: Val) {
     ir_emit(g, {op = .Bin, dest = dest, inst = inst, ty = ty, a = a, b = b})
 }
 
-ir_icmp :: proc(g: ^Codegen, dest: Val, pred, ty: string, a, b: Val) {
+ir_icmp :: proc(g: ^Codegen, dest: Val, pred: Ir_Inst, ty: string, a, b: Val) {
     ir_emit(g, {op = .Icmp, dest = dest, inst = pred, ty = ty, a = a, b = b})
 }
 
-ir_fcmp :: proc(g: ^Codegen, dest: Val, pred, ty: string, a, b: Val) {
+ir_fcmp :: proc(g: ^Codegen, dest: Val, pred: Ir_Inst, ty: string, a, b: Val) {
     ir_emit(g, {op = .Fcmp, dest = dest, inst = pred, ty = ty, a = a, b = b})
 }
 
@@ -177,7 +239,7 @@ ir_select :: proc(g: ^Codegen, dest, cond: Val, ty: string, a, b: Val) {
     ir_emit(g, {op = .Select, dest = dest, ty = ty, a = cond, b = a, c = b})
 }
 
-ir_cast :: proc(g: ^Codegen, dest: Val, inst, from: string, v: Val, to: string) {
+ir_cast :: proc(g: ^Codegen, dest: Val, inst: Ir_Inst, from: string, v: Val, to: string) {
     ir_emit(g, {op = .Cast, dest = dest, inst = inst, ty = from, a = v, to = to})
 }
 
@@ -320,16 +382,16 @@ ir_print :: proc(b: ^strings.Builder, ins: Ir) {
         w(b, ins.ty); w(b, ", ptr "); v(b, ins.a)
         for x in ins.args { w(b, ", "); ir_print_arg(b, x) }
     case .Bin:
-        w(b, ins.inst); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, ", "); v(b, ins.b)
+        w(b, IR_INST_NAME[ins.inst]); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, ", "); v(b, ins.b)
     case .Icmp, .Fcmp:
         w(b, "icmp " if ins.op == .Icmp else "fcmp ")
-        w(b, ins.inst); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, ", "); v(b, ins.b)
+        w(b, IR_INST_NAME[ins.inst]); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, ", "); v(b, ins.b)
     case .Select:
         w(b, "select i1 "); v(b, ins.a); w(b, ", ")
         w(b, ins.ty); w(b, " "); v(b, ins.b); w(b, ", ")
         w(b, ins.ty); w(b, " "); v(b, ins.c)
     case .Cast:
-        w(b, ins.inst); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, " to "); w(b, ins.to)
+        w(b, IR_INST_NAME[ins.inst]); w(b, " "); w(b, ins.ty); w(b, " "); v(b, ins.a); w(b, " to "); w(b, ins.to)
     case .Fneg:
         w(b, "fneg "); w(b, ins.ty); w(b, " "); v(b, ins.a)
     case .Extract:

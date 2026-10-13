@@ -106,7 +106,7 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
             vst := v.variant_structs[name]
             if vst == nil || !value_has_partial_array(g, vst) { continue }
             is_it := fresh_tmp(g)
-            ir_icmp(g, is_it, "eq", tag_ir, tag, ir_int(v.tag_map[name]))
+            ir_icmp(g, is_it, .Eq, tag_ir, tag, ir_int(v.tag_map[name]))
             fix_label := fresh_label(g, "reanchor.variant")
             next_label := fresh_label(g, "reanchor.next")
             emit_cond_br(g, is_it, fix_label, next_label)
@@ -147,7 +147,7 @@ emit_loop_begin :: proc(g: ^Codegen, count: Val, name: string) -> (l: Count_Loop
     l.i = fresh_tmp(g)
     emit_load_into(g, l.i, w, l.slot)
     more := fresh_tmp(g)
-    ir_icmp(g, more, "slt", w, l.i, count)
+    ir_icmp(g, more, .Slt, w, l.i, count)
     emit_cond_br(g, more, body, l.end)
     emit_label(g, body)
     return
@@ -155,7 +155,7 @@ emit_loop_begin :: proc(g: ^Codegen, count: Val, name: string) -> (l: Count_Loop
 
 emit_loop_end :: proc(g: ^Codegen, l: Count_Loop) {
     next := fresh_tmp(g)
-    ir_bin(g, next, "add", SLICE_LEN_IR, l.i, ir_int(1))
+    ir_bin(g, next, .Add, SLICE_LEN_IR, l.i, ir_int(1))
     emit_store(g, SLICE_LEN_IR, next, l.slot)
     emit_br(g, l.cond)
     emit_label(g, l.end)
@@ -240,7 +240,7 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, 
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
     bytes := fresh_tmp(g)
-    ir_bin(g, bytes, "mul", w, count, ir_int(size))
+    ir_bin(g, bytes, .Mul, w, count, ir_int(size))
     emit_fail(g, fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld\n", label),
               fail_i64(offset), fail_i64(bytes), fail_i64(cap_val))
     emit_label(g, ok_lbl)
@@ -259,18 +259,18 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, 
 emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: Val, size := 1) -> Val {
     w := SLICE_LEN_IR
     past := fresh_tmp(g)
-    ir_icmp(g, past, "ugt", w, off, cap_val)
+    ir_icmp(g, past, .Ugt, w, off, cap_val)
     room := fresh_tmp(g)
-    ir_bin(g, room, "sub", w, cap_val, off)
+    ir_bin(g, room, .Sub, w, cap_val, off)
     if size > 1 {
         fits := fresh_tmp(g)
-        ir_bin(g, fits, "udiv", w, room, ir_int(size))
+        ir_bin(g, fits, .Udiv, w, room, ir_int(size))
         room = fits
     }
     over := fresh_tmp(g)
-    ir_icmp(g, over, "ugt", w, n, room)
+    ir_icmp(g, over, .Ugt, w, n, room)
     outside := fresh_tmp(g)
-    ir_bin(g, outside, "or", "i1", past, over)
+    ir_bin(g, outside, .Or, "i1", past, over)
     return outside
 }
 
@@ -534,11 +534,11 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
 
     // Runtime check 1: src_bytes % elem_bytes == 0.
     rem := fresh_tmp(g)
-    ir_bin(g, rem, "urem", w, src_bytes, ir_int(elem_bytes))
+    ir_bin(g, rem, .Urem, w, src_bytes, ir_int(elem_bytes))
     rem_ok := fresh_label(g, "pa.div.ok")
     rem_err := fresh_label(g, "pa.div.err")
     rem_cmp := fresh_tmp(g)
-    ir_icmp(g, rem_cmp, "ne", w, rem, ir_int(0))
+    ir_icmp(g, rem_cmp, .Ne, w, rem, ir_int(0))
     emit_cond_br(g, rem_cmp, rem_err, rem_ok)
     emit_label(g, rem_err)
     emit_fail(g, fmt.tprintf("runtime error: partial-array byte read at offset %%lld: %%lld bytes not divisible by elem size %d\n", elem_bytes),
@@ -547,13 +547,13 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
 
     // count = src_bytes / elem_bytes.
     count := fresh_tmp(g)
-    ir_bin(g, count, "udiv", w, src_bytes, ir_int(elem_bytes))
+    ir_bin(g, count, .Udiv, w, src_bytes, ir_int(elem_bytes))
 
     // Runtime check 2: count <= cap.
     cap_ok := fresh_label(g, "pa.cap.ok")
     cap_err := fresh_label(g, "pa.cap.err")
     cap_cmp := fresh_tmp(g)
-    ir_icmp(g, cap_cmp, "ugt", w, count, ir_int(cap_n))
+    ir_icmp(g, cap_cmp, .Ugt, w, count, ir_int(cap_n))
     emit_cond_br(g, cap_cmp, cap_err, cap_ok)
     emit_label(g, cap_err)
     emit_fail(g, fmt.tprintf("runtime error: partial-array byte read at offset %%lld: produced %%lld elements, exceeds cap %d\n", cap_n),
@@ -575,7 +575,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
     // Auto-add to len. For a fresh decl this is + 0, so the final len = count.
     cur_len := emit_header_field(g, slot_ptr, SLICE.len)
     new_len := fresh_tmp(g)
-    ir_bin(g, new_len, "add", w, cur_len, count)
+    ir_bin(g, new_len, .Add, w, cur_len, count)
     emit_header_set(g, slot_ptr, SLICE.len, new_len)
 }
 
@@ -639,11 +639,11 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: Val, span: Span) {
     fail_label := fresh_label(g, "slice_len.fail")
 
     neg_cmp := fresh_tmp(g)
-    ir_icmp(g, neg_cmp, "slt", w, val, ir_int(0))
+    ir_icmp(g, neg_cmp, .Slt, w, val, ir_int(0))
     upper_cmp := fresh_tmp(g)
-    ir_icmp(g, upper_cmp, "sgt", w, val, cap_val)
+    ir_icmp(g, upper_cmp, .Sgt, w, val, cap_val)
     combined := fresh_tmp(g)
-    ir_bin(g, combined, "or", "i1", neg_cmp, upper_cmp)
+    ir_bin(g, combined, .Or, "i1", neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)

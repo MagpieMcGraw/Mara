@@ -989,46 +989,46 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         a, b := x86_val(ins.a, t), x86_val(ins.b, t)
         x86_get(f, a, .AX)
         x86_get(f, b, .CX)
-        switch ins.inst {
-        case "add": x86_rr(f, 8, 0x00, .AX, .CX)
-        case "sub": x86_rr(f, 8, 0x28, .AX, .CX)
-        case "and": x86_rr(f, 8, 0x20, .AX, .CX)
-        case "or":  x86_rr(f, 8, 0x08, .AX, .CX)
-        case "xor": x86_rr(f, 8, 0x30, .AX, .CX)
-        case "mul": x86_enc_rr(f, 0, true, {0x0F, 0xAF}, u8(X86_Reg.AX), u8(X86_Reg.CX))
-        case "shl": x86_enc_rr(f, 0, true, {0xD3}, 4, u8(X86_Reg.AX))
-        case "lshr":
+        #partial switch ins.inst {
+        case .Add: x86_rr(f, 8, 0x00, .AX, .CX)
+        case .Sub: x86_rr(f, 8, 0x28, .AX, .CX)
+        case .And: x86_rr(f, 8, 0x20, .AX, .CX)
+        case .Or:  x86_rr(f, 8, 0x08, .AX, .CX)
+        case .Xor: x86_rr(f, 8, 0x30, .AX, .CX)
+        case .Mul: x86_enc_rr(f, 0, true, {0x0F, 0xAF}, u8(X86_Reg.AX), u8(X86_Reg.CX))
+        case .Shl: x86_enc_rr(f, 0, true, {0xD3}, 4, u8(X86_Reg.AX))
+        case .Lshr:
             x86_extend(f, .AX, t.bits, false)
             x86_enc_rr(f, 0, true, {0xD3}, 5, u8(X86_Reg.AX))
-        case "ashr":
+        case .Ashr:
             x86_extend(f, .AX, t.bits, true)
             x86_enc_rr(f, 0, true, {0xD3}, 7, u8(X86_Reg.AX))
-        case "sdiv", "srem":
+        case .Sdiv, .Srem:
             x86_extend(f, .AX, t.bits, true)
             x86_extend(f, .CX, t.bits, true)
             append(&f.code, 0x48, 0x99)   // cqo
             x86_grp3(f, 8, 7, .CX)        // idiv rcx
-            if ins.inst == "srem" { x86_mov(f, .AX, .DX) }
-        case "udiv", "urem":
+            if ins.inst == .Srem { x86_mov(f, .AX, .DX) }
+        case .Udiv, .Urem:
             x86_extend(f, .AX, t.bits, false)
             x86_extend(f, .CX, t.bits, false)
             x86_imm(f, .DX, 0)
             x86_grp3(f, 8, 6, .CX)        // div rcx
-            if ins.inst == "urem" { x86_mov(f, .AX, .DX) }
-        case "fadd", "fsub", "fmul", "fdiv":
+            if ins.inst == .Urem { x86_mov(f, .AX, .DX) }
+        case .Fadd, .Fsub, .Fmul, .Fdiv:
             x86_to_xmm(f, 0, .AX)
             x86_to_xmm(f, 1, .CX)
             code: u8
-            switch ins.inst {
-            case "fadd": code = 0x58
-            case "fsub": code = 0x5C
-            case "fmul": code = 0x59
-            case "fdiv": code = 0x5E
+            #partial switch ins.inst {
+            case .Fadd: code = 0x58
+            case .Fsub: code = 0x5C
+            case .Fmul: code = 0x59
+            case .Fdiv: code = 0x5E
             }
             x86_sse(f, x86_fpre(t), false, code, 0, 1)
             x86_from_xmm(f, .AX, 0)
         case:
-            x86_fail("the operation", ins.inst)
+            x86_fail("the operation", IR_INST_NAME[ins.inst])
         }
         x86_put(f, dest)
 
@@ -1049,18 +1049,18 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_get(f, x86_val(ins.b, t), .CX)
         x86_rr(f, t.size, 0x38, .AX, .CX)
         cc: X86_CC
-        switch ins.inst {
-        case "eq":  cc = .E
-        case "ne":  cc = .NE
-        case "slt": cc = .L
-        case "sle": cc = .LE
-        case "sgt": cc = .G
-        case "sge": cc = .GE
-        case "ult": cc = .B
-        case "ule": cc = .BE
-        case "ugt": cc = .A
-        case "uge": cc = .AE
-        case:       x86_fail("a comparison", ins.inst)
+        #partial switch ins.inst {
+        case .Eq:  cc = .E
+        case .Ne:  cc = .NE
+        case .Slt: cc = .L
+        case .Sle: cc = .LE
+        case .Sgt: cc = .G
+        case .Sge: cc = .GE
+        case .Ult: cc = .B
+        case .Ule: cc = .BE
+        case .Ugt: cc = .A
+        case .Uge: cc = .AE
+        case:       x86_fail("a comparison", IR_INST_NAME[ins.inst])
         }
         x86_setcc(f, cc, .AX)
         x86_bool(f)
@@ -1075,31 +1075,31 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_to_xmm(f, 0, .AX)
         x86_to_xmm(f, 1, .CX)
         ucomis :: proc(f: ^X86_Fn, t: ^X86_Type, a, b: u8) { x86_sse(f, 0 if t.kind == .F32 else 0x66, false, 0x2E, a, b) }
-        switch ins.inst {
-        case "oeq":
+        #partial switch ins.inst {
+        case .Oeq:
             ucomis(f, t, 0, 1)
             x86_setcc(f, .E, .AX)
             x86_setcc(f, .NP, .CX)
             x86_rr(f, 1, 0x20, .AX, .CX)
-        case "une":
+        case .Une:
             ucomis(f, t, 0, 1)
             x86_setcc(f, .NE, .AX)
             x86_setcc(f, .P, .CX)
             x86_rr(f, 1, 0x08, .AX, .CX)
-        case "olt":
+        case .Olt:
             ucomis(f, t, 1, 0)
             x86_setcc(f, .A, .AX)
-        case "ole":
+        case .Ole:
             ucomis(f, t, 1, 0)
             x86_setcc(f, .AE, .AX)
-        case "ogt":
+        case .Ogt:
             ucomis(f, t, 0, 1)
             x86_setcc(f, .A, .AX)
-        case "oge":
+        case .Oge:
             ucomis(f, t, 0, 1)
             x86_setcc(f, .AE, .AX)
         case:
-            x86_fail("a float comparison", ins.inst)
+            x86_fail("a float comparison", IR_INST_NAME[ins.inst])
         }
         x86_bool(f)
         x86_put(f, dest)
@@ -1188,24 +1188,24 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
 
 // A conversion of the value in rax, from ft to tt.
 @(private="file")
-x86_convert :: proc(f: ^X86_Fn, op: string, ft, tt: ^X86_Type) {
-    switch op {
-    case "zext":
+x86_convert :: proc(f: ^X86_Fn, op: Ir_Inst, ft, tt: ^X86_Type) {
+    #partial switch op {
+    case .Zext:
         x86_extend(f, .AX, ft.bits, false)
-    case "sext":
+    case .Sext:
         x86_extend(f, .AX, ft.bits, true)
-    case "trunc":
+    case .Trunc:
         if tt.bits == 1 { x86_ri(f, 4, 4, .AX, 1) }
-    case "fpext", "fptrunc":
-        if !x86_float(ft) || !x86_float(tt) { x86_fail("a conversion", op) }
+    case .Fpext, .Fptrunc:
+        if !x86_float(ft) || !x86_float(tt) { x86_fail("a conversion", IR_INST_NAME[op]) }
         x86_to_xmm(f, 0, .AX)
         x86_sse(f, x86_fpre(ft), false, 0x5A, 0, 0)   // cvtss2sd / cvtsd2ss
         x86_from_xmm(f, .AX, 0)
-    case "sitofp":
+    case .Sitofp:
         x86_extend(f, .AX, ft.bits, true)
         x86_sse(f, x86_fpre(tt), true, 0x2A, 0, u8(X86_Reg.AX))   // cvtsi2s? xmm0, rax
         x86_from_xmm(f, .AX, 0)
-    case "uitofp":
+    case .Uitofp:
         x86_extend(f, .AX, ft.bits, false)
         if ft.bits < 64 {   // (below 2^63: as a signed one)
             x86_sse(f, x86_fpre(tt), true, 0x2A, 0, u8(X86_Reg.AX))
@@ -1227,9 +1227,9 @@ x86_convert :: proc(f: ^X86_Fn, op: string, ft, tt: ^X86_Type) {
             x86_place(f, done)
         }
         x86_from_xmm(f, .AX, 0)
-    case "fptosi", "fptoui":
+    case .Fptosi, .Fptoui:
         x86_to_xmm(f, 0, .AX)
-        if op == "fptosi" || tt.bits < 64 {   // (below 2^63: as a signed one)
+        if op == .Fptosi || tt.bits < 64 {   // (below 2^63: as a signed one)
             x86_sse(f, x86_fpre(ft), true, 0x2C, u8(X86_Reg.AX), 0)   // cvtts?2si rax, xmm0
             return
         }
@@ -1247,7 +1247,7 @@ x86_convert :: proc(f: ^X86_Fn, op: string, ft, tt: ^X86_Type) {
         x86_enc_rr(f, 0, true, {0x0F, 0xBA}, 7, u8(X86_Reg.AX))   // btc rax, 63
         append(&f.code, 63)
         x86_place(f, done)
-    case "ptrtoint", "inttoptr", "bitcast":
+    case .Ptrtoint, .Inttoptr, .Bitcast:
     }
 }
 

@@ -626,11 +626,11 @@ emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Sp
     // idx and len_val are both at the slice header's width.
     w := SLICE_LEN_IR
     neg_cmp := fresh_tmp(g)
-    ir_icmp(g, neg_cmp, "slt", w, idx, ir_int(0))
+    ir_icmp(g, neg_cmp, .Slt, w, idx, ir_int(0))
     upper_cmp := fresh_tmp(g)
-    ir_icmp(g, upper_cmp, "sge", w, idx, len_val)
+    ir_icmp(g, upper_cmp, .Sge, w, idx, len_val)
     combined := fresh_tmp(g)
-    ir_bin(g, combined, "or", "i1", neg_cmp, upper_cmp)
+    ir_bin(g, combined, .Or, "i1", neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
@@ -672,7 +672,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Sp
     fail_label := fresh_label(g, "divz.fail")
 
     cmp := fresh_tmp(g)
-    ir_icmp(g, cmp, "eq", ir_type, divisor, ir_int(0))
+    ir_icmp(g, cmp, .Eq, ir_type, divisor, ir_int(0))
     emit_cond_br(g, cmp, fail_label, ok_label)
 
     emit_label(g, fail_label)
@@ -695,7 +695,14 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: string, span: Sp
 emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left, right: Val, span: Span = {}) -> Val {
     if can_elide_overflow(op, ir_type, left, right) {
         result := fresh_tmp(g)
-        ir_bin(g, result, op[1:], ir_type, left, right)   // ("sadd"/"uadd" → "add", etc.)
+        inst: Ir_Inst   // ("sadd"/"uadd" → add, etc.)
+        switch op[1:] {
+        case "add": inst = .Add
+        case "sub": inst = .Sub
+        case "mul": inst = .Mul
+        case:       codegen_fatal(g, span, "internal: no checked operation %s", op)
+        }
+        ir_bin(g, result, inst, ir_type, left, right)
         return result
     }
 
@@ -928,7 +935,7 @@ load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: Val) -> Val {
         ptr := fresh_tmp(g)
         emit_load_into(g, ptr, "ptr", union_ptr)
         live := fresh_tmp(g)
-        ir_icmp(g, live, "ne", "ptr", ptr, IR_NULL)
+        ir_icmp(g, live, .Ne, "ptr", ptr, IR_NULL)
         tag := fresh_tmp(g)
         ir_select(g, tag, live, tag_ir, ir_int(ut.tag_map[some]), ir_int(ut.tag_map[none]))
         return tag
@@ -946,7 +953,7 @@ emit_match_fail :: proc(g: ^Codegen, span: Span, tag: Val, tag_ir: string, unsig
     wide := tag
     if tag_ir != "i64" {
         wide = fresh_tmp(g)
-        ir_cast(g, wide, "zext" if unsigned else "sext", tag_ir, tag, "i64")
+        ir_cast(g, wide, Ir_Inst.Zext if unsigned else .Sext, tag_ir, tag, "i64")
     }
     loc_global := get_string_literal(g, span_location(span))
     ir_call(g, {}, "void", ir_global(__MARA_MATCH_FAIL), {"ptr", loc_global, {}}, {"i64", wide, {}})

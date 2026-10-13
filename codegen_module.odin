@@ -1258,7 +1258,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
         argc_over := fresh_tmp(g)
         argc := ir_local(".argc")
-        ir_icmp(g, argc_over, "sgt", "i32", argc, ir_int(ARGS_CAP))
+        ir_icmp(g, argc_over, .Sgt, "i32", argc, ir_int(ARGS_CAP))
         args_err_lbl := ir_label(g, "args_too_many_", g.label_counter)
         args_ok_lbl := ir_label(g, "args_ok_", g.label_counter)
         emit_cond_br(g, argc_over, args_err_lbl, args_ok_lbl)
@@ -1270,7 +1270,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // Its header: len argc (i32, as the loop counter below; the header's
         // i64), cap 64, ptr its elements (field 3).
         len_store_val := fresh_tmp(g)
-        ir_cast(g, len_store_val, "sext", "i32", argc_min, SLICE_LEN_IR)
+        ir_cast(g, len_store_val, .Sext, "i32", argc_min, SLICE_LEN_IR)
         emit_header_set(g, args_ptr, SLICE.len, len_store_val)
         emit_header_set(g, args_ptr, SLICE.cap, ir_int(ARGS_CAP))
         elements_ptr := fresh_tmp(g)
@@ -1292,7 +1292,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         cur_i := fresh_tmp(g)
         ir_load(g, cur_i, "i32", loop_i)
         cmp := fresh_tmp(g)
-        ir_icmp(g, cmp, "slt", "i32", cur_i, argc_min)
+        ir_icmp(g, cmp, .Slt, "i32", cur_i, argc_min)
         emit_cond_br(g, cmp, body_lbl, done_lbl)
 
         emit_label(g, body_lbl)
@@ -1306,7 +1306,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         if g.web {
             str_len_32 := fresh_tmp(g)
             ir_call(g, str_len_32, "i32", ir_global("strlen"), {"ptr", argv_i, {}})
-            ir_cast(g, str_len, "zext", "i32", str_len_32, SLICE_LEN_IR)
+            ir_cast(g, str_len, .Zext, "i32", str_len_32, SLICE_LEN_IR)
         } else {
             ir_call(g, str_len, "i64", ir_global("strlen"), {"ptr", argv_i, {}})
         }
@@ -1317,12 +1317,12 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         ir_gep(g, elem_ptr, strings.concatenate({"[64 x ", SLICE_IR_TYPE, "]"}), elements_ptr, {"i32", ir_int(0), {}}, {"i32", cur_i, {}})
         emit_header_set(g, elem_ptr, SLICE.len, str_len)
         str_cap := fresh_tmp(g)
-        ir_bin(g, str_cap, "add", SLICE_LEN_IR, str_len, ir_int(1))
+        ir_bin(g, str_cap, .Add, SLICE_LEN_IR, str_len, ir_int(1))
         emit_header_set(g, elem_ptr, SLICE.cap, str_cap)
         emit_header_set(g, elem_ptr, SLICE.ptr, argv_i)
         // i++
         next_i := fresh_tmp(g)
-        ir_bin(g, next_i, "add", "i32", cur_i, ir_int(1))
+        ir_bin(g, next_i, .Add, "i32", cur_i, ir_int(1))
         ir_store(g, "i32", next_i, loop_i)
         emit_br(g, loop_lbl)
 

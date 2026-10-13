@@ -88,7 +88,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
             v := side.val
             if ir_type != tag_ir {
                 w := fresh_tmp(g)
-                op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? "trunc" : "zext"
+                op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? Ir_Inst.Trunc : .Zext
                 ir_cast(g, w, op, ir_type, side.val, tag_ir)
                 v = w
             }
@@ -112,20 +112,20 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
         case is_float:
             if ir_type != "double" {
                 v = fresh_tmp(g)
-                ir_cast(g, v, "fpext", ir_type, side.val, "double")
+                ir_cast(g, v, .Fpext, ir_type, side.val, "double")
             }
             append(&args, Ir_Arg{"double", v, {}})
         case is_char:
             // %c reads an i32 vararg (default promotion).
             if ir_type != "i32" {
                 v = fresh_tmp(g)
-                ir_cast(g, v, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val, "i32")
+                ir_cast(g, v, ir_type == "i64" ? Ir_Inst.Trunc : .Zext, ir_type, side.val, "i32")
             }
             append(&args, Ir_Arg{"i32", v, {}})
         case:
             if ir_type != "i64" {
                 v = fresh_tmp(g)
-                ir_cast(g, v, is_unsigned ? "zext" : "sext", ir_type, side.val, "i64")
+                ir_cast(g, v, is_unsigned ? Ir_Inst.Zext : .Sext, ir_type, side.val, "i64")
             }
             append(&args, Ir_Arg{"i64", v, {}})
         }
@@ -224,7 +224,7 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     pass_lbl    := fresh_label(g, "cstring.pass")
     crash_lbl   := fresh_label(g, "cstring.fail")
     has_room := fresh_tmp(g)
-    ir_icmp(g, has_room, "slt", w, len_val, cap_val)
+    ir_icmp(g, has_room, .Slt, w, len_val, cap_val)
     emit_cond_br(g, has_room, at_len_lbl, at_end_lbl)
     // len < cap: terminator sits right after the content.
     emit_label(g, at_len_lbl)
@@ -233,23 +233,23 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     b1 := fresh_tmp(g)
     emit_load_into(g, b1, "i8", p1)
     ok1 := fresh_tmp(g)
-    ir_icmp(g, ok1, "eq", "i8", b1, ir_int(0))
+    ir_icmp(g, ok1, .Eq, "i8", b1, ir_int(0))
     emit_cond_br(g, ok1, pass_lbl, crash_lbl)
     // len == cap: full view — the last byte must be 0 (and cap > 0 so
     // the [cap-1] read stays inside the storage).
     emit_label(g, at_end_lbl)
     cap_pos := fresh_tmp(g)
-    ir_icmp(g, cap_pos, "sgt", w, cap_val, ir_int(0))
+    ir_icmp(g, cap_pos, .Sgt, w, cap_val, ir_int(0))
     emit_cond_br(g, cap_pos, end_ok_lbl, crash_lbl)
     emit_label(g, end_ok_lbl)
     last := fresh_tmp(g)
-    ir_bin(g, last, "sub", w, cap_val, ir_int(1))
+    ir_bin(g, last, .Sub, w, cap_val, ir_int(1))
     p2 := fresh_tmp(g)
     emit_elem_gep(g, p2, "i8", src_ptr, last, w)
     b2 := fresh_tmp(g)
     emit_load_into(g, b2, "i8", p2)
     ok2 := fresh_tmp(g)
-    ir_icmp(g, ok2, "eq", "i8", b2, ir_int(0))
+    ir_icmp(g, ok2, .Eq, "i8", b2, ir_int(0))
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
@@ -369,7 +369,7 @@ raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
 // it needs no terminating 0. (`%.*s` takes an int: n, narrowed.)
 emit_print_text :: proc(g: ^Codegen, data, n: Val) {
     prec := fresh_tmp(g)
-    ir_cast(g, prec, "trunc", SLICE_LEN_IR, n, "i32")
+    ir_cast(g, prec, .Trunc, SLICE_LEN_IR, n, "i32")
     emit_printf(g, "%.*s", {"i32", prec, {}}, {"ptr", data, {}})
 }
 
@@ -478,7 +478,7 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
     if _, ok := bt.(Type_Utf8); ok {
         // utf8 scalar = a character: render the glyph, not the code point.
         ext := fresh_tmp(g)
-        ir_cast(g, ext, "zext", "i8", val, "i32")
+        ir_cast(g, ext, .Zext, "i8", val, "i32")
         emit_printf(g, "%c", {"i32", ext, {}})
         return
     }
@@ -512,7 +512,7 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         emit_printf(g, "%g", {"double", val, {}})
     case "float", "half":
         ext := fresh_tmp(g)
-        ir_cast(g, ext, "fpext", nt, val, "double")
+        ir_cast(g, ext, .Fpext, nt, val, "double")
         emit_printf(g, "%g", {"double", ext, {}})
     case "i64":
         emit_printf(g, is_unsigned ? "%llu" : "%lld", {"i64", val, {}})
@@ -522,7 +522,7 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         gen_print_bool(g, val)
     case "i8", "i16":
         ext := fresh_tmp(g)
-        ir_cast(g, ext, is_unsigned ? "zext" : "sext", nt, val, "i32")
+        ir_cast(g, ext, is_unsigned ? Ir_Inst.Zext : .Sext, nt, val, "i32")
         emit_printf(g, is_unsigned ? "%u" : "%d", {"i32", ext, {}})
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
@@ -725,7 +725,7 @@ gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: string, et: ^Type_Enum, na
         // zext (not sext) — enum tags are unsigned-shaped values, no two's-
         // complement bits to preserve.
         ext := fresh_tmp(g)
-        ir_cast(g, ext, "zext", tag_ir, val, "i32")
+        ir_cast(g, ext, .Zext, tag_ir, val, "i32")
         emit_printf(g, "%d", {"i32", ext, {}})
     }
     emit_print_literal(g, ")")
@@ -755,7 +755,7 @@ gen_print_elements :: proc(g: ^Codegen, data, n: Val, elem: Type) {
     l := emit_loop_begin(g, n, "pah")
     sep, after := fresh_label(g, "pah.sep"), fresh_label(g, "pah.after")
     first := fresh_tmp(g)
-    ir_icmp(g, first, "eq", SLICE_LEN_IR, l.i, ir_int(0))
+    ir_icmp(g, first, .Eq, SLICE_LEN_IR, l.i, ir_int(0))
     emit_cond_br(g, first, after, sep)
     emit_label(g, sep)
     emit_printf(g, ", ")

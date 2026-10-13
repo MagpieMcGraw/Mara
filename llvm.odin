@@ -312,12 +312,12 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     off := fresh_tmp(g)
     emit_load_into(g, off, "i64", slot)
     more := fresh_tmp(g)
-    ir_icmp(g, more, "slt", "i64", off, ir_int(int(size)))
+    ir_icmp(g, more, .Slt, "i64", off, ir_int(int(size)))
     emit_cond_br(g, more, body, done)
     emit_label(g, body)
     rest, small, n := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
-    ir_bin(g, rest, "sub", "i64", ir_int(int(size)), off)
-    ir_icmp(g, small, "slt", "i64", rest, ir_int(64))
+    ir_bin(g, rest, .Sub, "i64", ir_int(int(size)), off)
+    ir_icmp(g, small, .Slt, "i64", rest, ir_int(64))
     ir_select(g, n, small, "i64", rest, ir_int(64))
     xa, xb := fresh_tmp(g), fresh_tmp(g)
     ir_gep(g, xa, "i8", pa, {"i64", off, {}})
@@ -326,7 +326,7 @@ llvm_emit_swap :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
     emit_memcpy_runtime(g, xa, xb, n)
     emit_memcpy_runtime(g, xb, buf, n)
     next := fresh_tmp(g)
-    ir_bin(g, next, "add", "i64", off, ir_int(64))
+    ir_bin(g, next, .Add, "i64", off, ir_int(64))
     emit_store(g, "i64", next, slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -621,7 +621,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 // The consumed param into the result: nothing to copy when the
                 // caller passed its storage as the slot (`x = f(x, …)`).
                 same := fresh_tmp(g)
-                ir_icmp(g, same, "eq", "ptr", e.slot, val)
+                ir_icmp(g, same, .Eq, "ptr", e.slot, val)
                 copy, done := fresh_label(g, "consume.copy"), fresh_label(g, "consume.done")
                 emit_cond_br(g, same, done, copy)
                 emit_label(g, copy)
@@ -1178,13 +1178,13 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     name := graph_name(pg, op)
     tmp: Val
     if is_ir_float(ir) {
-        inst := ""
+        inst: Ir_Inst
         switch name {
-        case "+": inst = "fadd"
-        case "-": inst = "fsub"
-        case "*": inst = "fmul"
-        case "/": inst = "fdiv"
-        case "%": inst = "frem"
+        case "+": inst = .Fadd
+        case "-": inst = .Fsub
+        case "*": inst = .Fmul
+        case "/": inst = .Fdiv
+        case "%": inst = .Frem
         case:     return false
         }
         tmp = fresh_tmp(g)
@@ -1197,21 +1197,21 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         case "*":  tmp = emit_checked_arith(g, "umul" if unsigned else "smul", ir, l, r, span)
         case "/", "%":
             emit_div_zero_check(g, r, ir, span)
-            inst := "udiv" if unsigned else "sdiv"
-            if name == "%" { inst = "urem" if unsigned else "srem" }
+            inst := Ir_Inst.Udiv if unsigned else .Sdiv
+            if name == "%" { inst = .Urem if unsigned else .Srem }
             tmp = fresh_tmp(g)
             ir_bin(g, tmp, inst, ir, l, r)
         case:
-            inst := ""
+            inst: Ir_Inst
             switch name {
-            case "+%": inst = "add"
-            case "-%": inst = "sub"
-            case "*%": inst = "mul"
-            case "&":  inst = "and"
-            case "|":  inst = "or"
-            case "~":  inst = "xor"
-            case "<<": inst = "shl"
-            case ">>": inst = "lshr" if unsigned else "ashr"
+            case "+%": inst = .Add
+            case "-%": inst = .Sub
+            case "*%": inst = .Mul
+            case "&":  inst = .And
+            case "|":  inst = .Or
+            case "~":  inst = .Xor
+            case "<<": inst = .Shl
+            case ">>": inst = .Lshr if unsigned else .Ashr
             case:      return false
             }
             tmp = fresh_tmp(g)
@@ -1234,27 +1234,27 @@ llvm_compare :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     name := graph_name(pg, op)
     tmp := fresh_tmp(g)
     if is_ir_float(ir) {
-        pred := ""
+        pred: Ir_Inst
         switch name {
-        case "==": pred = "oeq"
-        case "!=": pred = "une"
-        case "<":  pred = "olt"
-        case "<=": pred = "ole"
-        case ">":  pred = "ogt"
-        case ">=": pred = "oge"
+        case "==": pred = .Oeq
+        case "!=": pred = .Une
+        case "<":  pred = .Olt
+        case "<=": pred = .Ole
+        case ">":  pred = .Ogt
+        case ">=": pred = .Oge
         case:      return false
         }
         ir_fcmp(g, tmp, pred, ir, l, r)
     } else {
         unsigned := llvm_unsigned(t)
-        pred := ""
+        pred: Ir_Inst
         switch name {
-        case "==": pred = "eq"
-        case "!=": pred = "ne"
-        case "<":  pred = "ult" if unsigned else "slt"
-        case "<=": pred = "ule" if unsigned else "sle"
-        case ">":  pred = "ugt" if unsigned else "sgt"
-        case ">=": pred = "uge" if unsigned else "sge"
+        case "==": pred = .Eq
+        case "!=": pred = .Ne
+        case "<":  pred = .Ult if unsigned else .Slt
+        case "<=": pred = .Ule if unsigned else .Sle
+        case ">":  pred = .Ugt if unsigned else .Sgt
+        case ">=": pred = .Uge if unsigned else .Sge
         case:      return false
         }
         ir_icmp(g, tmp, pred, ir, l, r)
@@ -1283,13 +1283,13 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         }
     case "-%":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "sub", ir, ir_int(0), x)
+        ir_bin(g, tmp, .Sub, ir, ir_int(0), x)
     case "not":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "xor", "i1", x, IR_TRUE)
+        ir_bin(g, tmp, .Xor, "i1", x, IR_TRUE)
     case "~":
         tmp = fresh_tmp(g)
-        ir_bin(g, tmp, "xor", ir, x, ir_int(-1))
+        ir_bin(g, tmp, .Xor, ir, x, ir_int(-1))
     case:
         return false
     }
@@ -1307,28 +1307,28 @@ llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type) -> Val {
     if fi == ti { return v }
     tmp := fresh_tmp(g)
     if ti == "i1" && fi == "ptr" {   // to bool: whether it's not null
-        ir_icmp(g, tmp, "ne", "ptr", v, IR_NULL)
+        ir_icmp(g, tmp, .Ne, "ptr", v, IR_NULL)
         return tmp
     }
     // A pointer as a number (`i64(w)`, a handle), or back: its address.
     if fi == "ptr" || ti == "ptr" {
-        ir_cast(g, tmp, "ptrtoint" if fi == "ptr" else "inttoptr", fi, v, ti)
+        ir_cast(g, tmp, Ir_Inst.Ptrtoint if fi == "ptr" else .Inttoptr, fi, v, ti)
         return tmp
     }
     ff, tf := is_ir_float(fi), is_ir_float(ti)
     if ti == "i1" && !ff {   // to bool: whether it's nonzero
-        ir_icmp(g, tmp, "ne", fi, v, ir_int(0))
+        ir_icmp(g, tmp, .Ne, fi, v, ir_int(0))
         return tmp
     }
     fb, tb := ir_type_bits(fi), ir_type_bits(ti)
-    inst := ""
+    inst: Ir_Inst
     switch {
-    case ff && tf:  inst = "fpext" if fb < tb else "fptrunc"
-    case ff:        inst = "fptoui" if llvm_unsigned(to) else "fptosi"
-    case tf:        inst = "uitofp" if llvm_unsigned(from) else "sitofp"
+    case ff && tf:  inst = .Fpext if fb < tb else .Fptrunc
+    case ff:        inst = .Fptoui if llvm_unsigned(to) else .Fptosi
+    case tf:        inst = .Uitofp if llvm_unsigned(from) else .Sitofp
     case fb == tb:  return v
-    case fb < tb:   inst = "zext" if llvm_unsigned(from) else "sext"
-    case:           inst = "trunc"
+    case fb < tb:   inst = .Zext if llvm_unsigned(from) else .Sext
+    case:           inst = .Trunc
     }
     ir_cast(g, tmp, inst, fi, v, ti)
     return tmp
@@ -1589,7 +1589,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     n := hi
     if lo.kind != .None {
         n = fresh_tmp(g)
-        ir_bin(g, n, "sub", SLICE_LEN_IR, hi, lo)
+        ir_bin(g, n, .Sub, SLICE_LEN_IR, hi, lo)
     }
     // Written to a held view: its values, no header in memory.
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
@@ -1632,10 +1632,10 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         if !can_elide_span_check(off, hi) {
             w := SLICE_LEN_IR
             n := fresh_tmp(g)
-            ir_bin(g, n, "sub", w, hi, off)
+            ir_bin(g, n, .Sub, w, hi, off)
             ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
             cmp := fresh_tmp(g)
-            ir_icmp(g, cmp, "ne", w, n, ir_int(int(type_size(t))))
+            ir_icmp(g, cmp, .Ne, w, n, ir_int(int(type_size(t))))
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
@@ -1695,18 +1695,18 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         cmp := fresh_tmp(g)
         if hi.kind == .None {
             rem := fresh_tmp(g)
-            ir_bin(g, rem, "urem", w, nbytes, ir_int(int(size)))
-            ir_icmp(g, cmp, "ne", w, rem, ir_int(0))
+            ir_bin(g, rem, .Urem, w, nbytes, ir_int(int(size)))
+            ir_icmp(g, cmp, .Ne, w, rem, ir_int(0))
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte read: %%lld bytes aren't a whole number of %s (%d bytes each)\n", loc, elem_name, size), fail_i64(nbytes))
             emit_label(g, ok)
-            ir_bin(g, count, "udiv", w, nbytes, ir_int(int(size)))
+            ir_bin(g, count, .Udiv, w, nbytes, ir_int(int(size)))
         } else {
-            ir_bin(g, count, "sub", w, hi, lo)
+            ir_bin(g, count, .Sub, w, hi, lo)
             want := fresh_tmp(g)
-            ir_bin(g, want, "mul", w, count, ir_int(int(size)))
-            ir_icmp(g, cmp, "ne", w, want, nbytes)
+            ir_bin(g, want, .Mul, w, count, ir_int(int(size)))
+            ir_icmp(g, cmp, .Ne, w, want, nbytes)
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte read: a run of %%lld %s is %%lld bytes, but the bytes are %%lld\n", loc, elem_name),
@@ -1732,13 +1732,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         size := type_size(from.elem)
         count := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
         nbytes := fresh_tmp(g)
-        ir_bin(g, nbytes, "mul", w, count, ir_int(int(size)))
+        ir_bin(g, nbytes, .Mul, w, count, ir_int(int(size)))
         if hi.kind != .None {
             span_n := fresh_tmp(g)
-            ir_bin(g, span_n, "sub", w, hi, lo)
+            ir_bin(g, span_n, .Sub, w, hi, lo)
             ok, bad := fresh_label(g, "byte.span.ok"), fresh_label(g, "byte.span.err")
             cmp := fresh_tmp(g)
-            ir_icmp(g, cmp, "ne", w, span_n, nbytes)
+            ir_icmp(g, cmp, .Ne, w, span_n, nbytes)
             emit_cond_br(g, cmp, bad, ok)
             emit_label(g, bad)
             emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write: the span is %%lld bytes, the value %%lld\n", loc), fail_i64(span_n), fail_i64(nbytes))
@@ -1762,7 +1762,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             n = emit_header_field(g, e.value[src], SLICE.len)
         }
         hi = fresh_tmp(g)
-        ir_bin(g, hi, "add", w, lo, n)
+        ir_bin(g, hi, .Add, w, lo, n)
     }
     name := ""
     #partial switch pg.op[base] {
@@ -1772,7 +1772,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_bounds_check(g, lo, dst.bound, name, span)
     hi_ok, hi_err := fresh_label(g, "slice.high.ok"), fresh_label(g, "slice.high.err")
     hi_cmp := fresh_tmp(g)
-    ir_icmp(g, hi_cmp, "sgt", w, hi, dst.bound)
+    ir_icmp(g, hi_cmp, .Sgt, w, hi, dst.bound)
     emit_cond_br(g, hi_cmp, hi_err, hi_ok)
     emit_label(g, hi_err)
     emit_fail(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", name),
@@ -1784,10 +1784,10 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         have := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
         if !can_elide_source_check(lo, hi, have) {
             want := fresh_tmp(g)
-            ir_bin(g, want, "sub", w, hi, lo)
+            ir_bin(g, want, .Sub, w, hi, lo)
             src_ok, src_err := fresh_label(g, "slice.src.ok"), fresh_label(g, "slice.src.err")
             src_cmp := fresh_tmp(g)
-            ir_icmp(g, src_cmp, "sgt", w, want, have)
+            ir_icmp(g, src_cmp, .Sgt, w, want, have)
             emit_cond_br(g, src_cmp, src_err, src_ok)
             emit_label(g, src_err)
             emit_fail(g, fmt.tprintf("%s runtime error: slice assignment of %%lld elements into '%s', from a value of %%lld\n", loc, name),
@@ -1800,13 +1800,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_alloca(g, i_slot, w)
     emit_store(g, w, ir_int(0), i_slot)
     count := fresh_tmp(g)
-    ir_bin(g, count, "sub", w, hi, lo)
+    ir_bin(g, count, .Sub, w, hi, lo)
     emit_br(g, loop)
     emit_label(g, loop)
     i := fresh_tmp(g)
     emit_load_into(g, i, w, i_slot)
     more := fresh_tmp(g)
-    ir_icmp(g, more, "slt", w, i, count)
+    ir_icmp(g, more, .Slt, w, i, count)
     emit_cond_br(g, more, body, done)
     emit_label(g, body)
     elem_ir := llvm_type_from_checker(dst.elem)
@@ -1815,13 +1815,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     v := fresh_tmp(g)
     emit_load_into(g, v, elem_ir, src_gep)
     at := fresh_tmp(g)
-    ir_bin(g, at, "add", w, lo, i)
+    ir_bin(g, at, .Add, w, lo, i)
     dst_gep := fresh_tmp(g)
     emit_array_gep_var(g, dst_gep, fmt.tprintf("[%d x %s]", dst.fixed, elem_ir), dst.data, at, w)
     emit_store(g, elem_ir, v, dst_gep)
     reanchor_partial_arrays(g, dst.elem, dst_gep)
     next := fresh_tmp(g)
-    ir_bin(g, next, "add", w, i, ir_int(1))
+    ir_bin(g, next, .Add, w, i, ir_int(1))
     emit_store(g, w, next, i_slot)
     emit_br(g, loop)
     emit_label(g, done)
@@ -1862,10 +1862,10 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     at, hdr := e.value[place], e.value[src]
     data := emit_header_field(g, hdr, SLICE.ptr)
     n0 := emit_header_field(g, hdr, SLICE.len)
-    cmp := fresh_tmp(g); ir_icmp(g, cmp, "slt", w, n0, ir_int(int(pa.size)))
+    cmp := fresh_tmp(g); ir_icmp(g, cmp, .Slt, w, n0, ir_int(int(pa.size)))
     n := fresh_tmp(g); ir_select(g, n, cmp, w, n0, ir_int(int(pa.size)))
     elements := partial_elements(g, at, pa)
-    nbytes := fresh_tmp(g); ir_bin(g, nbytes, "mul", w, n, ir_int(int(type_size(pa.elem))))
+    nbytes := fresh_tmp(g); ir_bin(g, nbytes, .Mul, w, n, ir_int(int(type_size(pa.elem))))
     emit_memcpy_runtime(g, elements, data, nbytes)
     emit_header_set(g, at, SLICE.len, n)
     return true
@@ -1920,27 +1920,27 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         // worth asked for, and the span check fails on off.)
         size := type_size(pa.elem)
         room := fresh_tmp(g)
-        ir_bin(g, room, "sub", w, bound, lo)
+        ir_bin(g, room, .Sub, w, bound, lo)
         part := fresh_tmp(g)
-        ir_bin(g, part, "urem", w, room, ir_int(int(size)))
+        ir_bin(g, part, .Urem, w, room, ir_int(int(size)))
         whole := fresh_tmp(g)
-        ir_bin(g, whole, "sub", w, room, part)
+        ir_bin(g, whole, .Sub, w, room, part)
         short := fresh_tmp(g)
-        ir_icmp(g, short, "ult", w, whole, ir_int(int(pa.size * size)))
+        ir_icmp(g, short, .Ult, w, whole, ir_int(int(pa.size * size)))
         bytes = fresh_tmp(g)
         ir_select(g, bytes, short, w, whole, ir_int(int(pa.size * size)))
     } else {
         if hi.kind == .None { _, hi = llvm_bytes(e, ops[1].op, held = true) or_return }
         inv_ok, inv_err := fresh_label(g, "pa.inv.ok"), fresh_label(g, "pa.inv.err")
         inv_cmp := fresh_tmp(g)
-        ir_icmp(g, inv_cmp, "slt", w, hi, lo)
+        ir_icmp(g, inv_cmp, .Slt, w, hi, lo)
         emit_cond_br(g, inv_cmp, inv_err, inv_ok)
         emit_label(g, inv_err)
         emit_fail(g, "runtime error: partial-array byte read slice bounds inverted (low=%lld, high=%lld) for partial-array byte read\n",
                   fail_i64(lo), fail_i64(hi))
         emit_label(g, inv_ok)
         bytes = fresh_tmp(g)
-        ir_bin(g, bytes, "sub", w, hi, lo)
+        ir_bin(g, bytes, .Sub, w, hi, lo)
     }
     gen_partial_array_byte_fill_at_core(g, e.value[dest], pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span)
     return true
@@ -1967,7 +1967,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
     size := type_size(t)
     n := fresh_tmp(g)
-    ir_bin(g, n, "sub", w, hi, lo)
+    ir_bin(g, n, .Sub, w, hi, lo)
     src_ok, src_err := fresh_label(g, "span.src.ok"), fresh_label(g, "span.src.err")
     src_cmp := emit_byte_span_outside(g, lo, n, bound)
     emit_cond_br(g, src_cmp, src_err, src_ok)
@@ -1976,7 +1976,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     emit_label(g, src_ok)
     dst_ok, dst_err := fresh_label(g, "span.dst.ok"), fresh_label(g, "span.dst.err")
     dst_cmp := fresh_tmp(g)
-    ir_icmp(g, dst_cmp, "ugt", w, n, ir_int(int(size)))
+    ir_icmp(g, dst_cmp, .Ugt, w, n, ir_int(int(size)))
     emit_cond_br(g, dst_cmp, dst_err, dst_ok)
     emit_label(g, dst_err)
     emit_fail(g, fmt.tprintf("<%s> runtime error: sized read of %%lld bytes exceeds destination (%d bytes)\n", loc, size), fail_i64(n))
@@ -2043,18 +2043,18 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     advance := ir_int(size)
     if !let {
         advance = fresh_tmp(g)
-        ir_bin(g, advance, "mul", w, count, ir_int(int(size)))
+        ir_bin(g, advance, .Mul, w, count, ir_int(int(size)))
     }
     if align > 1 {
         bumped := fresh_tmp(g)
-        ir_bin(g, bumped, "add", w, cursor, ir_int(int(align - 1)))
+        ir_bin(g, bumped, .Add, w, cursor, ir_int(int(align - 1)))
         cursor = fresh_tmp(g)
-        ir_bin(g, cursor, "and", w, bumped, ir_int(int(-align)))
+        ir_bin(g, cursor, .And, w, bumped, ir_int(int(-align)))
     }
     at := fresh_tmp(g)
     ir_gep(g, at, "i8", data, {w, cursor, {}})
     moved := fresh_tmp(g)
-    ir_bin(g, moved, "add", w, cursor, advance)
+    ir_bin(g, moved, .Add, w, cursor, advance)
     cap_val := emit_header_field(g, hdr, SLICE.cap)
     // (Its count of elements, or its one value, in the room past the aligned
     // cursor: a negative count is outside.)
@@ -2218,7 +2218,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         next := last
         if i < len(cases) - 1 { next = fresh_label(g, "match.next") }
         cmp := fresh_tmp(g)
-        ir_icmp(g, cmp, "eq", ir, value, v)
+        ir_icmp(g, cmp, .Eq, ir, value, v)
         emit_cond_br(g, cmp, target(e, op, i), next)
         if i < len(cases) - 1 { emit_label(g, next) }
     }
