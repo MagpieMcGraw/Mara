@@ -4,6 +4,8 @@
 
 The program shouldn't re-describe what the text already describes one-to-one.
 
+Code generation still decides what the program means in places (void by statement kind, checks and their messages, representations chosen from an op's user, type mismatches as refusals, print, text without a header): move each into lowering or storage. The list: design/codegen_concerns.md.
+
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
