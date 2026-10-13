@@ -37,7 +37,8 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
     // What each module statement was settled as; each code's event — where
     // it was checked: a body's by its fun or struct (and the statement that
     // declares it), a constant's by its declaration.
-    codes := LW_Codes{done = make([]bool, len(k.events)), code = make([]^Program_Graph, len(k.events)), analysed = make([]bool, len(k.events))}
+    n := len(k.events)
+    codes := LW_Codes{done = make([]bool, n), code = make([]^Program_Graph, n), folded = make([]bool, n), analysed = make([]bool, n)}
     for e, i in k.events {
         tc_instance_end(k, e.salt)
         switch e.kind {
@@ -112,6 +113,7 @@ LW_Codes :: struct {
     // is analysed (middle.odin).
     done:     []bool,
     code:     []^Program_Graph,
+    folded:   []bool,
     analysed: []bool,
 }
 

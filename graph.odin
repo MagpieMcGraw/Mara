@@ -584,10 +584,12 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     in_store := virtual.arena_allocator(b.store.arena)
     b.store.regions = new([Graph_Column]Graph_Region, in_store)
     b.tables = new(Graph_Tables, in_store)
-    b.tables.names.allocator = in_store
+    r := b.store.regions
+    b.tables.names = make([dynamic]string, graph_region_allocator(&r[.Names]))
     append(&b.tables.names, "")   // (Name_Id 0: none)
+    b.tables.types.types = make([dynamic]Type, graph_region_allocator(&r[.Types]))
     append(&b.tables.types.types, nil)   // (Type_Id 0: none)
-    b.tables.values.allocator = in_store
+    b.tables.values = make([dynamic]Const_Value, graph_region_allocator(&r[.Values]))
     append(&b.tables.values, Const_Value{})   // (Const_Id 0: none)
     b.type_table = &b.tables.types
     append(&p.pc.stores, b.store)
@@ -703,6 +705,10 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
 Graph_Column :: enum u8 {
     Kind, Op, Written, Parent, Name, Type, Origin, Refers, Stmt, Decl_Tok, Syntax, Value,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Stmts, Unreachable, Settled,
+    // A builder's tables (Graph_Tables): each a region of its own, so what's
+    // in one never moves — a code another builder built is read, on another
+    // thread, while its builder adds to them.
+    Names, Types, Values,
 }
 
 Graph_Region :: struct {

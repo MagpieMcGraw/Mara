@@ -76,6 +76,13 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         case .Body:                   if e.sc.ts.kind == .Struct { lw_code(mw.k, &codes, i) }
         }
     }
+    // ... folded now, before any fun is lowered: what folding a constant
+    // runs — a struct's code — is done changing before it's read.
+    for g, i in codes.code {
+        if g == nil || codes.folded[i] { continue }
+        graph_fold_code(&mid.workers[0].fold, mid.workers[0].k.gb, g)
+        codes.folded[i] = true
+    }
     // Each component's funs, then the component's escape analysis, then each
     // one's own.
     cg := c.cg
@@ -136,7 +143,10 @@ middle_analyse :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, i: int) {
             }
         }
     }
-    graph_fold_code(&mw.fold, b, g)
+    if !codes.folded[i] {
+        graph_fold_code(&mw.fold, b, g)
+        codes.folded[i] = true
+    }
     flow_code(&mw.flow, g)
     if g.kind[0] != .Const { reach_code(&mw.reach, &b.prog.pc, g) }
 }
