@@ -74,7 +74,13 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
 }
 
 // Every code's findings reported, check by check.
-flow_report :: proc(c: ^Checker, checked: ^Checked_Program, fp: ^Flow_Pass, fns: []^Type_Scope, void_defaults: map[Span]bool) {
+flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass, fns: []^Type_Scope, void_defaults: map[Span]bool) {
+    // (Each code is one pass's: their findings, together.)
+    fp := passes[0]
+    for other in passes[1:] {
+        for g, list in other.found { fp.found[g] = list }
+        clear(&other.found)
+    }
     codes := checked.code.codes[:]
     graphed := len(codes) > 0
     of_codes :: proc(c: ^Checker, fp: ^Flow_Pass, codes: []^Program_Graph, check: Flow_Check, seen: ^map[Span]bool = nil) {

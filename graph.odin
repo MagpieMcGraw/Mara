@@ -1,5 +1,7 @@
 package mara
 
+import "core:sync"
+
 import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
@@ -449,6 +451,9 @@ Graph_Program :: struct {
     // once the check is found clean).
     failure:  struct { name, reason: string, span: Span },
     pc:       Program_Code,   // the codes, as each is built
+    // What builders on several threads add here, and look up in pc while
+    // they do (pc.lock), is added and looked up under it.
+    lock:     sync.Mutex,
 }
 
 // Where a builder's codes are made: an arena (their graphs, the tables they
@@ -672,6 +677,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
         if !c.placed { graph_fatal(c.g.origin[0], "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
     }
     pc := b.pc
+    pc.lock = nil
     graph_table_names(b, &pc)
     when ODIN_DEBUG {
         graph_check_coverage(b, &pc)
@@ -840,6 +846,23 @@ Program_Code :: struct {
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
     stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
+    lock:        ^sync.Mutex,                      // while codes are built on several threads: funs, consts and tables are read and written under it
+}
+
+// A fun's or struct's code, built (nil: none, or not yet).
+graph_fun_code :: proc(pc: ^Program_Code, ts: ^Type_Scope) -> ^Program_Graph {
+    if pc.lock != nil { sync.mutex_lock(pc.lock) }
+    g := pc.funs[ts] or_else nil
+    if pc.lock != nil { sync.mutex_unlock(pc.lock) }
+    return g
+}
+
+// A constant's code, by its value's node, built (nil: none, or not yet).
+graph_const_code :: proc(pc: ^Program_Code, value: Syntax_Id) -> ^Program_Graph {
+    if pc.lock != nil { sync.mutex_lock(pc.lock) }
+    g := pc.consts[value] or_else nil
+    if pc.lock != nil { sync.mutex_unlock(pc.lock) }
+    return g
 }
 
 // A program's code let go of: its columns' regions, then its arena. (A
@@ -974,6 +997,8 @@ graph_place :: proc(b: ^Graph_Program, c: ^Built_Code) {
 // (folding, the analyses' summaries) needs no more than that it was built.
 @(private="file")
 graph_code_found :: proc(b: ^Graph_Builder, g: ^Program_Graph, value: Syntax_Id) {
+    sync.mutex_lock(&b.prog.lock)
+    defer sync.mutex_unlock(&b.prog.lock)
     pc := &b.prog.pc
     if g.kind[0] == .Const {
         pc.consts[value] = g
@@ -2045,7 +2070,9 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
+    sync.mutex_lock(&b.prog.lock)
     b.prog.scope_of[id] = ts
+    sync.mutex_unlock(&b.prog.lock)
     f := graph_body_new(b)
     f.ts = ts
     b.body = f
@@ -2063,6 +2090,8 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
 graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     if f.failed != "" { return }
     f.failed = reason
+    sync.mutex_lock(&b.prog.lock)
+    defer sync.mutex_unlock(&b.prog.lock)
     if b.prog.failure.reason == "" {
         b.prog.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else graph_name(b.g, f.root), reason, b.g.origin[f.root]}
     }
@@ -2070,17 +2099,22 @@ graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
 
 // The body is built: finished, to be put in place —
 // or, if it failed, left out.
-graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
+graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = -1
     b.body = nil
     // (Its end can find what it can't build: a scope's values on the arena.)
-    if c := graph_code_close(b, f); c != nil {
-        b.prog.bodies[f.ts] = new_clone(Built_Code{g = c, b = b, defs = f.defs})
+    c := graph_code_close(b, f)
+    if c != nil {
+        built := new_clone(Built_Code{g = c, b = b, defs = f.defs})
         f.defs = nil
+        sync.mutex_lock(&b.prog.lock)
+        b.prog.bodies[f.ts] = built
+        sync.mutex_unlock(&b.prog.lock)
         graph_code_found(b, c, 0)
     }
     graph_body_free(b, f)
+    return c
 }
 
 @(private="file")
@@ -3166,7 +3200,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, d: Graph_Decl) -> ^Graph_Body {
 
 // Its value built, of type t: its code ends, finished, to be put
 // where it is written. One not built is left out (graph_body_fail).
-graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
+graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) -> ^Program_Graph {
     d := f.const_decl
     if f.failed == "" {
         graph_build_typed(b, f.root, t)
@@ -3175,11 +3209,16 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Body, t: Type) {
     graph_contents_end(b, f.contents, finish = f.failed == "")
     b.stmt = -1
     b.body = nil
-    if c := graph_code_close(b, f); c != nil {
-        b.prog.consts[d.id] = new_clone(Built_Code{g = c, b = b, value = d.value})
+    c := graph_code_close(b, f)
+    if c != nil {
+        built := new_clone(Built_Code{g = c, b = b, value = d.value})
+        sync.mutex_lock(&b.prog.lock)
+        b.prog.consts[d.id] = built
+        sync.mutex_unlock(&b.prog.lock)
         graph_code_found(b, c, d.value)
     }
     graph_body_free(b, f)
+    return c
 }
 
 

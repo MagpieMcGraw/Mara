@@ -113,7 +113,8 @@ Esc_Site :: struct {
     st:     Esc_Store,
 }
 
-@(private="file")
+// A diagnostic a walk found, kept until every component is walked
+// (escape_report).
 Esc_Diag :: struct {
     span: Span,
     msg:  string,
@@ -150,13 +151,18 @@ Esc :: struct {
 Esc_Pass :: struct {
     code:     ^Program_Code,
 
-    reported: []bool,
     diags:    [dynamic]Esc_Diag,
     kept:     mem.Allocator,    // what outlives a walk: its diagnostics
     walk:     virtual.Arena,    // what a walk makes, until the next (esc_walk)
 }
 
-@(private="file") g_esc: Esc_Pass
+// A thread's: each thread of the middle end walks with its own
+// (escape_thread_begin).
+@(private="file", thread_local) g_esc: Esc_Pass
+
+// Which call graph nodes have reported (by node: each written by the thread
+// that walks its component).
+@(private="file") g_esc_reported: []bool
 
 // Escape analysis, a strongly connected component of the call graph at a
 // time (escape_scc), bottom-up — once its funs' codes are built, its
@@ -164,10 +170,14 @@ Esc_Pass :: struct {
 escape_begin :: proc(c: ^Checker, code: ^Program_Code) {
     cg := c.cg
     resize(&cg.esc, len(cg.nodes))
+    g_esc_reported = make([]bool, len(cg.nodes))
+}
+
+// A thread's escape analysis begins: a walk arena, diagnostics, the type
+// caches its walks fill, its own.
+escape_thread_begin :: proc(code: ^Program_Code) {
     g_esc = Esc_Pass{
         code     = code,
-
-        reported = make([]bool, len(cg.nodes)),
         diags    = make([dynamic]Esc_Diag),
         kept     = context.allocator,
     }
@@ -178,6 +188,16 @@ escape_begin :: proc(c: ^Checker, code: ^Program_Code) {
     // new each run, as its types are: `mara serve` checks again.)
     g_esc_refs_cache = make(map[^Type_Scope]bool, 64)
     g_esc_self_cache = make(map[^Type_Scope]bool, 64)
+}
+
+// ... and ends: what it found, handed back.
+escape_thread_end :: proc() -> [dynamic]Esc_Diag {
+    virtual.arena_destroy(&g_esc.walk)
+    delete(g_esc_refs_cache)
+    delete(g_esc_self_cache)
+    diags := g_esc.diags
+    g_esc = {}
+    return diags
 }
 
 // One component's summaries, to their fixpoint (cg_bottom_up's step), then
@@ -194,27 +214,28 @@ escape_scc :: proc(cg: ^Call_Graph, scc: []int) {
         }
     }
     for n in scc {
-        if !g_esc.reported[n] { esc_walk(cg, n, true) }
+        if !g_esc_reported[n] { esc_walk(cg, n, true) }
     }
 }
 
 // Every component's diagnostics, in source order (check_error reports one
 // once: a generic's instances share their spans).
-escape_report :: proc(c: ^Checker) {
-    defer virtual.arena_destroy(&g_esc.walk)
-    slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
+escape_report :: proc(c: ^Checker, threads: [][dynamic]Esc_Diag) {
+    diags := make([dynamic]Esc_Diag, context.temp_allocator)
+    for list in threads { append(&diags, ..list[:]) }
+    slice.sort_by(diags[:], proc(a, b: Esc_Diag) -> bool {
         if span_before(a.span, b.span) { return true }
         if span_before(b.span, a.span) { return false }
         return a.msg < b.msg
     })
-    for d in g_esc.diags { check_error(c, d.span, "%s", d.msg) }
+    for d in diags { check_error(c, d.span, "%s", d.msg) }
+    delete(g_esc_reported)
 }
-
 @(private="file")
 esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
     report := !cg_is_recursive(cg, n)
     s, ok := esc_walk(cg, n, report)
-    if report || !ok { g_esc.reported[n] = true }
+    if report || !ok { g_esc_reported[n] = true }
     if !ok { return false }
     cur := &cg.esc[n]
     changed := false
@@ -231,7 +252,7 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
 @(private="file")
 esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     ft := cg.nodes[n]
-    g := g_esc.code.funs[ft] or_else nil
+    g := graph_fun_code(g_esc.code, ft)
     if g == nil { return {}, false }
     // (All a walk makes is the walk arena's, the last walk's freed: its
     // summary is read before the next.)
@@ -834,8 +855,8 @@ esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
 
 // --- types ---------------------------------------------------------------------
 
-@(private="file") g_esc_refs_cache: map[^Type_Scope]bool
-@(private="file") g_esc_self_cache: map[^Type_Scope]bool
+@(private="file", thread_local) g_esc_refs_cache: map[^Type_Scope]bool
+@(private="file", thread_local) g_esc_self_cache: map[^Type_Scope]bool
 
 // Can a value of this type hold a reference? (Unknown: assume it can.)
 esc_has_refs :: proc(t: Type) -> bool {

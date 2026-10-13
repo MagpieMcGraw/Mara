@@ -299,10 +299,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { mid.prog.constant_names[key] = kc.sid }
-        for w in mid.workers {
-            graph_builder_free(w.gb)
-            free(w)
-        }
         checked.code = build_program_graph(mid.prog)
         if perf != nil { perf_timer_mark(perf, "analysis") }
     } else {
@@ -312,7 +308,10 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.gb = nil
     void_defaults: map[Span]bool
     if len(checked.code.codes) > 0 { void_defaults = tc_void_defaults(k, checked, fns) }
-    if mid.on { middle_report(c, checked, &mid, fns, void_defaults) }
+    if mid.on {
+        middle_report(c, checked, &mid, fns, void_defaults)
+        middle_free(&mid)
+    }
     annot_check(k.annot, t, &checked.code, c.errors)
     checked.errors = c.errors
     return checked

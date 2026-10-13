@@ -1,6 +1,7 @@
 package mara
 
 import "core:slice"
+import "core:sync"
 
 // ---------------------------------------------------------------------------
 // Constants, evaluated at compile time
@@ -77,15 +78,22 @@ graph_fold_begin :: proc(pc: ^Program_Code, checked: ^Checked_Program) -> Folder
     return Folder{pc = pc, checked = checked}
 }
 
-// Done: the uses with no value, listed in written order (pc.fold_errors).
-graph_fold_end :: proc(fo: ^Folder) {
-    for g in fo.pc.codes {
-        if list, has := fo.errors[g]; has { append(&fo.pc.fold_errors, ..list[:]) }
+// Done: the uses with no value — each folder's, for the codes it folded —
+// listed in written order (pc.fold_errors).
+graph_fold_end :: proc(folders: []^Folder) {
+    if len(folders) == 0 { return }
+    pc := folders[0].pc
+    for g in pc.codes {
+        for fo in folders {
+            if list, has := fo.errors[g]; has { append(&pc.fold_errors, ..list[:]) }
+        }
     }
-    for _, list in fo.errors { delete(list) }
-    delete(fo.errors)
-    delete(fo.done)
-    delete(fo.busy)
+    for fo in folders {
+        for _, list in fo.errors { delete(list) }
+        delete(fo.errors)
+        delete(fo.done)
+        delete(fo.busy)
+    }
 }
 
 // Every use of a constant in a code (not a constant's own), given its value:
@@ -119,7 +127,9 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
                 if v.known && v.c.is_text {
                     graph_set_value(g, id, v.c)
                 } else {
+                    if pc.lock != nil { sync.mutex_lock(pc.lock) }
                     pc.tables[c] = v
+                    if pc.lock != nil { sync.mutex_unlock(pc.lock) }
                 }
             }
         }
@@ -132,7 +142,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
 fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
     at := fo.at if fo.at != {} else g.origin[id]
     if fo.code not_in fo.errors { fo.errors[fo.code] = {} }
-    append(&fo.errors[fo.code], Fold_Error{at, graph_name(fo.pc.consts[c], 0)})
+    append(&fo.errors[fo.code], Fold_Error{at, graph_name(graph_const_code(fo.pc, c), 0)})
     fo.failed, fo.at = false, {}
 }
 
@@ -152,7 +162,7 @@ fold_scalar :: proc(v: ^Fold) -> bool {
 // A constant's value at a width: its code, run once for it.
 @(private="file")
 fold_decl :: proc(fo: ^Folder, c: Syntax_Id, width: Fold_Width) -> ^Fold {
-    g := fo.pc.consts[c]
+    g := graph_const_code(fo.pc, c)
     t := graph_type(g, 0)
     width := Fold_Width.Own if !is_infer(t) else width
     key := Fold_Key{c, width}
@@ -434,7 +444,7 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
     } else if ts == nil {
         return fold_fail(fo) != nil
     }
-    sc := fo.pc.funs[ts] or_else nil
+    sc := graph_fun_code(fo.pc, ts)
     if sc == nil { return fold_fail(fo) != nil }
     code := Fold_Code{g = sc, self = 0, root = dst, width = .Own}
     defer delete(code.values)

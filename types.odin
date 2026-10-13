@@ -1655,10 +1655,15 @@ infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
 infer_root :: proc(cell: ^Infer_Cell) -> ^Infer_Cell {
     root := cell
     for root.link != nil { root = root.link }
+    if g_infer_frozen { return root }   // (read on several threads: no writes)
     node := cell
     for node.link != nil { next := node.link; node.link = root; node = next } // path-compress
     return root
 }
+
+// Inference is done — the program is checked — and its cells are only read:
+// while the middle end lowers and analyses codes, on several threads.
+g_infer_frozen: bool
 
 // Follow a bound inference cell to its concrete type. Unbound / anonymous /
 // non-infer types return unchanged. Every helper that inspects a type's

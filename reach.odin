@@ -30,7 +30,7 @@ reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Sco
     all.reaches, all.returned, all.done = make([]bool, n), make([]bool, n), true
     for &r in all.reaches { r = true }
     if f in cache^ { return all }
-    pg := code.funs[f] or_else nil
+    pg := graph_fun_code(code, f)
     if _, src := f.origin.(Origin_Source); pg == nil || !src {
         cache^[f] = all
         return all
@@ -331,10 +331,18 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
     }
 }
 
-// Every code's, reported in source order.
-reach_report :: proc(c: ^Checker, rp: ^Reach_Pass) {
-    slice.sort_by(rp.diags[:], proc(a, b: Reach_Diag) -> bool { return span_before(a.span, b.span) })
-    for d in rp.diags { check_error(c, d.span, "%s", d.msg) }
-    delete(rp.diags)
-    delete(rp.cache)
+// Every code's — every pass's — reported in source order.
+reach_report :: proc(c: ^Checker, passes: []^Reach_Pass) {
+    diags := make([dynamic]Reach_Diag, context.temp_allocator)
+    for rp in passes {
+        append(&diags, ..rp.diags[:])
+        delete(rp.diags)
+        delete(rp.cache)
+    }
+    slice.sort_by(diags[:], proc(a, b: Reach_Diag) -> bool {
+        if span_before(a.span, b.span) { return true }
+        if span_before(b.span, a.span) { return false }
+        return a.msg < b.msg
+    })
+    for d in diags { check_error(c, d.span, "%s", d.msg) }
 }

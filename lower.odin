@@ -37,7 +37,7 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
     // What each module statement was settled as; each code's event — where
     // it was checked: a body's by its fun or struct (and the statement that
     // declares it), a constant's by its declaration.
-    codes := LW_Codes{done = make([]bool, len(k.events))}
+    codes := LW_Codes{done = make([]bool, len(k.events)), code = make([]^Program_Graph, len(k.events)), analysed = make([]bool, len(k.events))}
     for e, i in k.events {
         tc_instance_end(k, e.salt)
         switch e.kind {
@@ -107,7 +107,12 @@ LW_Codes :: struct {
     bodies: map[^Type_Scope]int,    // a fun's or a struct's body's
     scopes: map[Syntax_Id]^Type_Scope,   // the scope each defining statement's body is (an instance's: by_span)
     consts: map[Syntax_Id]int,      // a constant's, by its declaration
-    done:   []bool,
+    // By event, each written by the lowering that lowers it alone: whether
+    // it's lowered, its code (nil: it failed, or isn't one), whether the code
+    // is analysed (middle.odin).
+    done:     []bool,
+    code:     []^Program_Graph,
+    analysed: []bool,
 }
 
 // One code lowered, on its own: from the tree and the annotations, in the
@@ -119,9 +124,9 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     tc_instance_end(k, e.salt)
     k.pkg, k.subst = e.pkg, e.subst
     #partial switch e.kind {
-    case .Const:          lw_const(k, e.kc)
-    case .Body:           lw_body(k, e.sc)
-    case .Program_Struct: lw_program_struct(k)
+    case .Const:          codes.code[i] = lw_const(k, e.kc)
+    case .Body:           codes.code[i] = lw_body(k, e.sc)
+    case .Program_Struct: codes.code[i] = lw_program_struct(k)
     }
 }
 
@@ -194,9 +199,8 @@ lw_fail :: proc(k: ^TC, n: Tree_Id, reason: string) -> ! {
 // --- constants and bodies -------------------------------------------------------
 
 // A constant's value, built into its declaration (tc_check_const).
-lw_const :: proc(k: ^TC, kc: ^TC_Const) {
+lw_const :: proc(k: ^TC, kc: ^TC_Const) -> ^Program_Graph {
     b := k.gb
-    if tc_sid(k, kc.def) in b.prog.consts { return }
     span := tree_span(k.t, kc.def)
     lowering := b.at
     b.at = tc_sid(k, kc.def)
@@ -210,7 +214,7 @@ lw_const :: proc(k: ^TC, kc: ^TC_Const) {
     at := graph_dest_var(kc.name, f.root, nil if is_untyped(ann) else ann)
     r := lw_expr(k, kc.value, .Into, dest = at, temp_span = span)
     lw_store(k, kc.value, tc_node_type(k, kc.value), r, graph_dest_var(kc.name, f.root, kc.t), span, settle = true)
-    graph_const_end(b, f, kc.t)
+    return graph_const_end(b, f, kc.t)
 }
 
 // A use of a constant: its value (a table's global, read; asked its place, the
@@ -231,7 +235,7 @@ lw_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Wan
 
 // A fun's or a struct's body (tc_scope_body): its code, statement by
 // statement — a struct's top block's declarations its fields.
-lw_body :: proc(k: ^TC, sc: ^TC_Scope) {
+lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     b := k.gb
     t := k.t
     ts := sc.ts
@@ -248,7 +252,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) {
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
     f := graph_body_begin(b, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
     if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil, top = true) }
-    graph_body_end(b, f)
+    return graph_body_end(b, f)
 }
 
 // --- the arena ------------------------------------------------------------------
@@ -465,9 +469,9 @@ lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
 // The program's struct (the compiler's): built from mara.core's declaration
 // of it — its fields, each a declaration, and no code (nothing constructs
 // it: main's entry sets up its storage).
-lw_program_struct :: proc(k: ^TC) {
+lw_program_struct :: proc(k: ^TC) -> ^Program_Graph {
     pt := k.table.funs["Program"] or_else nil
-    if pt == nil || pt.body_span == {} { return }
+    if pt == nil || pt.body_span == {} { return nil }
     t := k.t
     for _, tmpl in k.templates {
         span := tree_span(t, tmpl.def)
@@ -486,9 +490,9 @@ lw_program_struct :: proc(k: ^TC) {
             for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), t.main[target], ss) }
             graph_build_stmt_end(b, saved)
         }
-        graph_body_end(b, f)
-        return
+        return graph_body_end(b, f)
     }
+    return nil
 }
 
 // A block's statements (tc_scope).
