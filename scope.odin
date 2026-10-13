@@ -192,9 +192,7 @@ raw_type_key :: proc(t: Type) -> rawptr {
 // Bind a name in scope s: its type, and what declares it.
 scope_bind :: proc(s: ^Type_Scope, name: string, t: Type, ref: Ref) {
     if s == nil { return }
-    if s.types == nil { s.types = make(map[string]Type) }
-    s.types[name] = t
-    if s.refs == nil { s.refs = make(map[string]Ref) }
+    s.types[name] = t   // (a block's maps grow in its arena: tc_block)
     s.refs[name] = ref
 }
 
@@ -243,14 +241,6 @@ type_decl :: proc(t: Type) -> Token_Id {
     case ^Type_Distinct: return v.span.at
     }
     return 0
-}
-
-// A new block's scope (an if's, a loop's, a defer's), inside parent.
-new_block_scope :: proc(parent: ^Type_Scope) -> ^Type_Scope {
-    s := new(Type_Scope)
-    s.parent_scope = parent
-    s.kind = .Block
-    return s
 }
 
 // The enclosing function's name (for #caller_name).
@@ -306,18 +296,29 @@ make_flat_name :: proc(prefix, name: string) -> string {
     return strings.concatenate({flat_prefix, "_", name})
 }
 
+// A name in a module, flat (make_flat_name), as a key to look up: made once
+// a check — made at each lookup, it was millions of strings, all kept.
+tc_flat_name :: proc(k: ^TC, prefix, name: string) -> string {
+    key := [2]string{prefix, name}
+    if s, made := k.flat_names[key]; made { return s }
+    s := make_flat_name(prefix, name)
+    k.flat_names[key] = s
+    return s
+}
+
 // A type name as written, resolved to its flat key in the table: through
 // `qualifier`, a module alias ("" when it is none — the caller handles union
 // inner types etc.); else the module that defines or exports it, from env;
 // else module pkg's.
-resolve_type_name :: proc(pkg: string, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
+resolve_type_name :: proc(k: ^TC, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
+    pkg := k.pkg
     if qualifier != "" {
         // Try module-qualified resolution: look up qualifier in env
         if env != nil {
             qual_type, found := scope_lookup(env, qualifier)
             if found {
                 if mod_sd := as_scope_body(qual_type); sd_is_module(mod_sd) {
-                    return make_flat_name(mod_sd.name, bare_name)
+                    return tc_flat_name(k, mod_sd.name, bare_name)
                 }
             }
         }
@@ -331,13 +332,13 @@ resolve_type_name :: proc(pkg: string, bare_name: string, qualifier: string = ""
         for s := env; s != nil; s = s.parent_scope {
             if s.is_module {
                 if _, found := scope_defines(s, bare_name); found {
-                    return make_flat_name(pkg, bare_name)
+                    return tc_flat_name(k, pkg, bare_name)
                 }
             }
             for inc in s.includes {
                 if inc == nil { continue }
                 if _, found := include_lookup(inc, bare_name); found {
-                    return make_flat_name(inc.name, bare_name)
+                    return tc_flat_name(k, inc.name, bare_name)
                 }
             }
             if s.is_module { break }
@@ -345,7 +346,7 @@ resolve_type_name :: proc(pkg: string, bare_name: string, qualifier: string = ""
     }
     // Local fallback for purely-local names (callers without env, or names
     // declared in the module itself).
-    return make_flat_name(pkg, bare_name)
+    return tc_flat_name(k, pkg, bare_name)
 }
 
 // Resolve a type to its underlying Scope_Body, handling pointers (auto-deref).

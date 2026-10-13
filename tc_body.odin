@@ -1,5 +1,6 @@
 package mara
 
+import "core:mem/virtual"
 import "core:strings"
 
 // Bodies, checked statement by statement in the order they run: a fun's
@@ -26,7 +27,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
     if is_struct { tc_early_self(k, v.body) }
-    body := new_block_scope(ts)
+    body := tc_block(k, ts)
     // (A struct's params its constants may use; its and a fun's constants
     // checked before its code.)
     if is_struct { for p in ts.params { tc_bind(k, body, p.name, p.type_, {p.decl, .Param}) } }
@@ -63,11 +64,12 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
     // (Its declarations, for the stack's size guard at its end.)
     saved := k.decls
-    decls := make([dynamic]TC_Decl_Note, context.temp_allocator)
+    decls: [dynamic]TC_Decl_Note
     k.decls = &decls
     defer {
         tc_storage_sizes(k, decls[:])
         k.decls = saved
+        delete(decls)
     }
     for s in stmts {
         if t.tag[s] == .Define {
@@ -112,7 +114,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     case .Compound:
         tc_compound(k, s, env)
     case .Defer:
-        tc_scope(k, tree_list(t, t.a[s]), new_block_scope(env))
+        tc_scope(k, tree_list(t, t.a[s]), tc_block(k, env))
     case .Match:
         tc_match(k, s, env)
     case .Break, .Continue:
@@ -588,8 +590,8 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     ct := tc_check(k, v.cond, env)
     if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
-    tc_scope(k, v.then, new_block_scope(env))
-    if len(v.else_) > 0 { tc_scope(k, v.else_, new_block_scope(env)) }
+    tc_scope(k, v.then, tc_block(k, env))
+    if len(v.else_) > 0 { tc_scope(k, v.else_, tc_block(k, env)) }
 }
 
 // --- loops ------------------------------------------------------------------
@@ -620,7 +622,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
     v := for_view(t, s)
-    child := new_block_scope(env)
+    child := tc_block(k, env)
     #partial switch t.tag[s] {
     case .For_Each:
         ct := tc_check(k, v.collection, child)
@@ -902,7 +904,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     for arm in arms {
         a := tc_match_arm(k, subj, arm, et, ut)
         name := a.variant
-        child := new_block_scope(env)
+        child := tc_block(k, env)
         #partial switch tr.tag[arm] {
         case .Arm_Dot:
             switch {
@@ -1169,4 +1171,17 @@ tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, en
         if !has { continue }
         tc_literal_field(k, bd.call, sd.fields[idx], 0, bd.field, span, env)
     }
+}
+
+// A block's scope — an if's, a loop's, a defer's, a match arm's, a body's —
+// inside parent: scratch, in the check's block arena (TC.blocks), and the
+// names bound in it too (its maps grow where they're made).
+tc_block :: proc(k: ^TC, parent: ^Type_Scope) -> ^Type_Scope {
+    a := virtual.arena_allocator(k.blocks)
+    s := new(Type_Scope, a)
+    s.parent_scope = parent
+    s.kind = .Block
+    s.types = make(map[string]Type, a)
+    s.refs = make(map[string]Ref, a)
+    return s
 }

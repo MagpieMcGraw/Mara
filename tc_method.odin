@@ -47,7 +47,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
                     // an instance's when it takes Self.)
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
-                    flat := resolve_type_name(k.pkg, qname, "", env)
+                    flat := resolve_type_name(k, qname, "", env)
                     is_type := flat != "" && (flat in k.table.structs || flat in k.table.funs)
                     if !is_type && !sd_is_module(qsd) {
                         args, failed = tc_self_args(k, n, fn, qsd, qt, recv, args)
@@ -65,7 +65,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
         }
         // (A type the module has, bound nowhere the env sees.)
         if !resolved {
-            flat := resolve_type_name(k.pkg, qname, "", env)
+            flat := resolve_type_name(k, qname, "", env)
             sd: ^Scope_Body
             if ss, is_struct := k.table.structs[flat]; is_struct { sd = &ss.sd } else if sf, is_fun := k.table.funs[flat]; is_fun { sd = &sf.sd }
             if sd != nil {
@@ -165,7 +165,7 @@ tc_type_path_scope :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> ^Scope_Body 
         if t, found := scope_lookup(env, name); found {
             if sd := as_scope_body(t); sd != nil { return sd }
         }
-        flat := resolve_type_name(k.pkg, name, "", env)
+        flat := resolve_type_name(k, name, "", env)
         if ss, is_struct := k.table.structs[flat]; is_struct { return &ss.sd }
         if sf, is_fun := k.table.funs[flat]; is_fun { return &sf.sd }
     case .Field:

@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // Constants in the checker: `X :: v`, `X : T : v`. Each is its value,
@@ -72,16 +73,21 @@ tc_const_ref :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> (^TC
         if s.is_module { break }
     }
     if own == "" { own = k.pkg }
-    seen := make(map[string]bool, context.temp_allocator)
-    seen[own] = true
+    // (Each module once — its own, then each one used as the walk meets it:
+    // a handful, compared where they are; past sixteen, kept apart.)
+    seen_at: [16]string
+    seen_at[0] = own
+    n_seen := 1
+    more: [dynamic]string
+    defer delete(more)
     found: ^TC_Const
     count := 0
-    if kc, ok := k.consts[make_flat_name(own, name)]; ok { found, count = kc, 1 }
+    if kc, ok := k.consts[tc_flat_name(k, own, name)]; ok { found, count = kc, 1 }
     for s := env; s != nil; s = s.parent_scope {
         for inc in s.includes {
-            if inc == nil || seen[inc.name] { continue }
-            seen[inc.name] = true
-            if kc, ok := k.consts[make_flat_name(inc.name, name)]; ok { found, count = kc, count + 1 }
+            if inc == nil || slice.contains(seen_at[:n_seen], inc.name) || slice.contains(more[:], inc.name) { continue }
+            if n_seen < len(seen_at) { seen_at[n_seen] = inc.name; n_seen += 1 } else { append(&more, inc.name) }
+            if kc, ok := k.consts[tc_flat_name(k, inc.name, name)]; ok { found, count = kc, count + 1 }
         }
         if s.is_module { break }
     }

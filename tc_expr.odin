@@ -218,7 +218,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     }
     if !ok {
         // (A type named as a value: said so.)
-        flat := resolve_type_name(k.pkg, name, "", env)
+        flat := resolve_type_name(k, name, "", env)
         if flat in k.table.funs || flat in k.table.enums || flat in k.table.unions {
             tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name)
         } else {

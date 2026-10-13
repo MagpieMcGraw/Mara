@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
 
@@ -27,6 +28,11 @@ TC :: struct {
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
     root:          ^Type_Scope,       // the main module's scope: the root env
+    // The block scopes and the names bound in them: what name resolution
+    // works in while the check runs — scratch, gone once it's done
+    // (tc_blocks_end); the annotations keep what each name refers to.
+    blocks:        ^virtual.Arena,
+    flat_names:    map[[2]string]string,   // a name in a module, flat — each made once (resolve_type_name)
     main_package:  string,
     shared:        bool,
     no_assert:     bool,              // -no assert: each assert lowered behind a branch never taken (lw_assert)
@@ -98,6 +104,34 @@ tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
     case .Local, .Param, .Result:
         if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
     }
+}
+
+// The check done: its block scopes go, and the names bound in them — what
+// each name refers to is the annotations'. What's declared in a block is,
+// from here on, the enclosing fun's or struct's (the scope it's in, past
+// any blocks): nothing after the check resolves a name.
+tc_blocks_end :: proc(k: ^TC) {
+    past :: proc(s: ^Type_Scope) -> ^Type_Scope {
+        s := s
+        for s != nil && s.kind == .Block { s = s.parent_scope }
+        return s
+    }
+    out :: proc(ts: ^Type_Scope) { if ts != nil { ts.parent_scope = past(ts.parent_scope) } }
+    for &sc in k.scopes { out(sc.ts); sc.env = past(sc.env) }
+    for _, ts in k.instances { out(ts) }
+    for _, ts in k.table.structs { out(ts) }
+    for _, ts in k.table.funs { out(ts) }
+    for _, ts in k.table.mono_cache { out(ts) }
+    for _, ts in k.checked.functions { out(ts) }
+    for _, ut in k.table.unions { for _, vst in ut.variant_structs { out(vst) } }
+    for _, &tmpl in k.templates { tmpl.env = past(tmpl.env) }
+    for _, &tmpl in k.union_templates { tmpl.env = past(tmpl.env) }
+    for _, kc in k.consts { kc.env, kc.pub = past(kc.env), past(kc.pub) }
+    for _, list in k.scope_consts { for _, kc in list { kc.env, kc.pub = past(kc.env), past(kc.pub) } }
+    k.body, k.arena_env = past(k.body), past(k.arena_env)
+    virtual.arena_destroy(k.blocks)
+    free(k.blocks)
+    k.blocks = nil
 }
 
 tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id) {
@@ -212,6 +246,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
     k.annot = annot_new(t)
     checked.annot = k.annot
+    k.blocks = new(virtual.Arena)
+    if err := virtual.arena_init_growing(k.blocks); err != nil { fmt.panicf("no arena for the block scopes (%v)", err) }
 
     files, ok := modules[main_package]
     if !ok {
@@ -284,6 +320,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_event(k, {kind = .Program_Struct})
     tc_validate_allocator(k)
     tc_validate_main(k, main)
+    tc_blocks_end(k)
 
     // (lower false: the annotations are all that's wanted — mara lsp's.)
     fns := flow_functions(checked)   // (in name order, once)
