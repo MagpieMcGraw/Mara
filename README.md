@@ -35,6 +35,8 @@ odin build .
 
 Mara uses clang and lld to build it's executables. For the windows build, I placed these in the tools folder so you don't have to download LLVM. For the linux build, I recommend you download them via the package manager.
 
+On Windows, Mara compiles to x86-64 machine code itself and uses lld only to link. `mara build -llvm` compiles through clang instead, as `-release` (optimized) and web builds do.
+
 I also recommend grabbing SDL3-devel if you want to build the test project.
 
 ## Using Mara

@@ -687,6 +687,7 @@ ll_to_o_path :: proc(ll_path: string) -> string {
         base := ll_path[:len(ll_path)-3]
         return strings.concatenate({base, ".o"})
     }
+
     return strings.concatenate({ll_path, ".o"})
 }
 
@@ -767,7 +768,12 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         }
         delete(tasks)
     }
+    objects: [dynamic]string   // (the x86 backend's: objects already, only linked)
     for ll_path in ll_paths {
+        if strings.has_suffix(ll_path, ".o") {
+            append(&objects, ll_path)
+            continue
+        }
         t := new(Compile_Task)
         t.ll_path = ll_path
         t.o_path = ll_to_o_path(ll_path)
@@ -804,17 +810,19 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         append(&tasks, t)
     }
 
-    pool: thread.Pool
-    num_workers := os_old.processor_core_count()
-    if num_workers < 1 { num_workers = 1 }
-    if num_workers > len(tasks) { num_workers = len(tasks) }
-    thread.pool_init(&pool, context.allocator, num_workers)
-    defer thread.pool_destroy(&pool)
-    thread.pool_start(&pool)
-    for t in tasks {
-        thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
+    if len(tasks) > 0 {
+        pool: thread.Pool
+        num_workers := os_old.processor_core_count()
+        if num_workers < 1 { num_workers = 1 }
+        if num_workers > len(tasks) { num_workers = len(tasks) }
+        thread.pool_init(&pool, context.allocator, num_workers)
+        defer thread.pool_destroy(&pool)
+        thread.pool_start(&pool)
+        for t in tasks {
+            thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
+        }
+        thread.pool_finish(&pool)
     }
-    thread.pool_finish(&pool)
 
     // Print captured stderr in deterministic per-task order so parallel
     // workers' diagnostics don't shred each other on the shared stderr.
@@ -848,6 +856,10 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     for t in tasks {
         strings.write_byte(&b, ' ')
         strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
+    }
+    for o in objects {
+        strings.write_byte(&b, ' ')
+        strings.write_byte(&b, '"'); strings.write_string(&b, o); strings.write_byte(&b, '"')
     }
     for o in runtime_os {
         strings.write_byte(&b, ' ')
@@ -1066,7 +1078,8 @@ CLI_Args :: struct {
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
-    release:      bool,    // -release — pass -O3 to clang for an optimized build
+    release:      bool,    // -release — pass -O3 to clang for an optimized build (LLVM's: the x86 backend doesn't optimize)
+    llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     profile:      bool,    // -profile — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     ok:           bool,
@@ -1096,7 +1109,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara lsp"
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
@@ -1251,6 +1264,7 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-web"     { args.web     = true; i += 1; continue }
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
+        if arg == "-llvm"    { args.llvm    = true; i += 1; continue }
         if arg == "-profile" { args.profile = true; i += 1; continue }
         if arg == "-show"    { args.show    = true; i += 1; continue }
         if arg == "-cursor"  { args.cursor  = true; i += 1; continue }
@@ -1462,7 +1476,11 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile)
+    // The x86 backend for a native Windows build; LLVM's for the web, for
+    // -release (it optimizes) and with -llvm (or MARA_LLVM set: the IR
+    // differential's builds).
+    x86 := ODIN_OS == .Windows && !args.web && !args.release && !args.llvm && os.get_env("MARA_LLVM", context.temp_allocator) == ""
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, x86 = x86)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)

@@ -416,7 +416,7 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "") -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", x86 := false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -637,6 +637,35 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         flush_current_module(&g)
     }
 
+    // The x86 backend: each module's IR — its strings, constants, functions,
+    // and in the main one the program's globals, the runtime's helpers and
+    // @main — translated (x86.odin) and written as an object, one after
+    // another. (What only a .ll needs — its imports' declares, the types it
+    // names — isn't made.)
+    if x86 {
+        build_dir := derive_build_dir(output_path)
+        if !ensure_dir(build_dir) {
+            fmt.printf("Error: could not create build dir '%s'\n", build_dir)
+            return nil, false
+        }
+        types := x86_program(g.struct_decls[:])
+        g.module_ll_paths = make([dynamic]string)
+        named: map[string]bool
+        for mt in g.module_tasks {
+            named[mt.module_name] = true
+            path := x86_write_module(&g, types, build_dir, mt.module_name, mt, fail_helpers_ir, main_builder_str) or_else ""
+            if path == "" { return nil, false }
+            append(&g.module_ll_paths, path)
+        }
+        for module_name in g.module_order {
+            if module_name in named { continue }
+            path := x86_write_module(&g, types, build_dir, module_name, nil, fail_helpers_ir, main_builder_str) or_else ""
+            if path == "" { return nil, false }
+            append(&g.module_ll_paths, path)
+        }
+        return g.module_ll_paths[:], true
+    }
+
     // Phase 1.6: Compute per-module imports now that both function bodies
     // and @main are emitted. The main TU's import set folds in @main's
     // references (arena init, args setup, dispatch into user `main`).
@@ -741,6 +770,40 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     return g.module_ll_paths[:], true
+}
+
+// One module's object (x86.odin), from the parts of its IR a .ll would be
+// made of: made in scratch, the object on the heap, both let go of once it's
+// written.
+@(private="file")
+x86_write_module :: proc(g: ^Codegen, types: ^X86_Program, build_dir, module_name: string, mt: ^Module_Task,
+                         fail_helpers_ir, main_builder_str: string) -> (string, bool) {
+    path := module_ll_path(build_dir, module_name, ".o")
+    scratch: virtual.Arena
+    _ = virtual.arena_init_growing(&scratch)
+    defer virtual.arena_destroy(&scratch)
+    context.allocator = virtual.arena_allocator(&scratch)
+    context.temp_allocator = context.allocator
+    main := module_name == g.checked.main_package
+    parts := make([dynamic]string)
+    if mt != nil { append(&parts, ..mt.string_decls[:]) }
+    if main {
+        append(&parts, ..g.string_decls[:])
+        append(&parts, "@__mara_program = global ptr null")
+        append(&parts, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(g.checked), " zeroinitializer"}))
+    }
+    append(&parts, module_const_ir(g, module_name, main))
+    if main { append(&parts, fail_helpers_ir) }
+    if buf, ok := g.module_outs[module_name]; ok { append(&parts, strings.to_string(buf)) }
+    if main { append(&parts, main_builder_str) }
+    out := make([dynamic]u8, runtime.heap_allocator())
+    defer delete(out)
+    x86_module(types, parts[:], &out)
+    if os.write_entire_file(path, out[:]) != nil {
+        fmt.printfln("Error: could not write '%s'", path)
+        return path, false
+    }
+    return path, true
 }
 
 // Build the LLVM IR contents for a single module's .ll file. The shared
@@ -1131,9 +1194,9 @@ derive_build_dir :: proc(output_path: string) -> string {
 // Module names may contain dots (e.g. "mara.core"); replace with `_` so the
 // filename is portable across filesystems.
 @(private="file")
-module_ll_path :: proc(build_dir, module_name: string) -> string {
+module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
     safe, _ := strings.replace_all(module_name, ".", "_")
-    return strings.concatenate({build_dir, "/", safe, ".ll"})
+    return strings.concatenate({build_dir, "/", safe, ext})
 }
 
 @(private="file")

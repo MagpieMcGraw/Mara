@@ -11,23 +11,39 @@
 #   test/irdiff.sh -r   also run every fixture both builds made, and compare
 #                       output and exit code (the runtime differential)
 #   test/irdiff.sh -j N N programs at a time (default: every core)
+#   test/irdiff.sh -x86 the x86 backend against LLVM's: every program built by
+#                       Mara.exe with each (LLVM's as -llvm does), run, and
+#                       their build output, program output and exit code
+#                       compared — no IR (the x86 backend writes objects)
 #
 # Build output (diagnostics, minus timings) must match either way. Both sides
 # are kept under $OUT for inspection: $OUT/old and $OUT/new. Without -r no
-# program is linked (MARA_NO_LINK): the IR is all that's compared.
+# program is linked (MARA_NO_LINK): the IR is all that's compared — LLVM's IR
+# (MARA_LLVM: the IR the x86 backend reads too).
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-${TMP:-/tmp}/mara_irdiff}
-NORMALIZE=0 RUN=0
+NORMALIZE=0 RUN=0 X86=0
 JOBS=$(nproc 2>/dev/null || echo 4)
 while [ $# -gt 0 ]; do
   case $1 in
     -n) NORMALIZE=1 ;;
     -r) RUN=1 ;;
+    -x86) X86=1 RUN=1 ;;
     -j) JOBS=$2; shift ;;
   esac
   shift
 done
 BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
+if [ $X86 = 1 ]; then
+  # LLVM's side: Mara.exe with MARA_LLVM set (a script outside $OUT, which
+  # is made anew).
+  mkdir -p "$OUT.sides"
+  printf '#!/usr/bin/env bash\nMARA_LLVM=1 exec "%s" "$@"\n' "$WORK" > "$OUT.sides/mara_llvm"
+  chmod +x "$OUT.sides/mara_llvm"
+  SIDES="old:$OUT.sides/mara_llvm new:$WORK"
+else
+  export MARA_LLVM=1
+fi
 # The sides, each `name:compiler` (another differential can name its own).
 if [ -z "$SIDES" ]; then
   SIDES="old:$BASE new:$WORK"
@@ -35,7 +51,7 @@ if [ -z "$SIDES" ]; then
 fi
 rm -rf "$OUT"
 for s in $SIDES; do mkdir -p "$OUT/${s%%:*}" "$OUT/run/${s%%:*}"; done
-export ROOT OUT NORMALIZE RUN SIDES
+export ROOT OUT NORMALIZE RUN SIDES X86
 [ $RUN = 1 ] || export MARA_NO_LINK=1
 
 # One program, every side: built, its IR kept (and normalized), then — a
@@ -50,7 +66,7 @@ one_program() {  # dir module run [build flags]
     ( cd "$dir" && { rm -rf "${mod}_build" "$mod.exe" 2>/dev/null; "$exe" build "$mod" $flags 2>&1; } ) \
       | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in' \
       | sort > "$OUT/$side/$mod.out"   # diagnostics order follows map iteration
-    if [ -d "$dir/${mod}_build" ]; then
+    if [ $X86 = 0 ] && [ -d "$dir/${mod}_build" ]; then
       mkdir -p "$OUT/$side/$mod"
       cp "$dir/${mod}_build"/*.ll "$OUT/$side/$mod/" 2>/dev/null
       if [ $NORMALIZE = 1 ]; then
