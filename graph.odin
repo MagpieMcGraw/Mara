@@ -108,7 +108,8 @@ Program_Graph :: struct {
     end:     Node_Id,
     last:    map[Node_Id]Node_Id,
     name:    [dynamic]Name_Id,  // (its text: graph_name)
-    names:   ^[dynamic]string,  // (the program's names, a node's by its Name_Id)
+    names:   ^[dynamic]string,  // (its tables' names, a node's by its Name_Id)
+    tables:  ^Graph_Tables,     // (its builder's: names, types and values, by id)
     type_:   [dynamic]Type_Id,  // has type; none when the node has none (its type: graph_type)
     types:   ^[dynamic]Type,    // (the program's types, a node's by its Type_Id)
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
@@ -184,9 +185,10 @@ graph_value :: proc(g: ^Program_Graph, id: Node_Id) -> (Const_Value, bool) {
     return g.values[v], true
 }
 
-// A node's value given: the program's id for it, made the first time the
-// program has it (Graph_Builder.value_ids) — a small integer's, kept at hand.
-graph_set_value :: proc(b: ^Graph_Builder, g: ^Program_Graph, id: Node_Id, c: Const_Value) {
+// A node's value given: its code's tables' id for it, made the first time
+// they have it (Graph_Tables.value_ids) — a small integer's, kept at hand.
+graph_set_value :: proc(g: ^Program_Graph, id: Node_Id, c: Const_Value) {
+    b := g.tables
     // (A small integer's float none, or itself: `1` is read as either.)
     small := !c.is_float && !c.is_text && c.int >= 0 && c.int < len(b.value_small[0])
     as := 0 if transmute(u64)c.float == 0 else 1
@@ -200,7 +202,7 @@ graph_set_value :: proc(b: ^Graph_Builder, g: ^Program_Graph, id: Node_Id, c: Co
     v, seen := b.value_ids[key]
     if !seen {
         v = Const_Id(len(b.values))
-        append(b.values, c)
+        append(&b.values, c)
         b.value_ids[key] = v
     }
     if small { b.value_small[as][c.int] = v }
@@ -243,8 +245,13 @@ graph_name :: proc(g: ^Program_Graph, id: Node_Id) -> string {
 // it was seen at before is found there, unhashed.)
 @(private="file")
 graph_intern :: proc(b: ^Graph_Builder, s: string) -> Name_Id {
+    return graph_intern_in(b.tables, s)
+}
+
+@(private="file")
+graph_intern_in :: proc(b: ^Graph_Tables, s: string) -> Name_Id {
     if len(s) == 0 { return 0 }
-    names := b.names
+    names := &b.names
     slot := &b.name_cache[(uintptr(raw_data(s)) >> 3 ~ uintptr(len(s))) & (len(b.name_cache) - 1)]
     if slot.data == raw_data(s) && slot.len == len(s) && names[slot.id] == s { return slot.id }
     id, found := b.name_ids[s]
@@ -397,15 +404,24 @@ Graph_Builder :: struct {
     // The body being built.
     body:     ^Graph_Body,
     // What the codes it builds are made in, its own: their columns, and the
-    // names, types and values they hold by id (each code points at these:
-    // Program_Graph.names, .types, .values) — one builder's never another's.
+    // names, types and values they hold by id — one builder's never
+    // another's.
     store:      Graph_Store,
-    names:      ^[dynamic]string,
-    name_ids:   map[string]Name_Id,   // (graph_intern)
-    name_cache: [1024]struct { data: [^]u8, len: int, id: Name_Id },
-    type_table: ^Type_Table,
-    values:      ^[dynamic]Const_Value,
-    value_ids:   map[Const_Key]Const_Id,   // (graph_set_value)
+    tables:     ^Graph_Tables,
+    type_table: ^Type_Table,   // (its tables' types)
+}
+
+// The names, types and values a builder's codes hold by id — each code
+// points at its builder's (Program_Graph.tables; and .names, .types, .values
+// for reading) — and what finds the id of one, made the first time a code
+// has it (graph_intern, type_id, graph_set_value).
+Graph_Tables :: struct {
+    names:       [dynamic]string,
+    name_ids:    map[string]Name_Id,
+    name_cache:  [1024]struct { data: [^]u8, len: int, id: Name_Id },
+    types:       Type_Table,
+    values:      [dynamic]Const_Value,
+    value_ids:   map[Const_Key]Const_Id,
     value_small: [2][256]Const_Id,
 }
 
@@ -562,13 +578,13 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     if err := virtual.arena_init_growing(b.store.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
     in_store := virtual.arena_allocator(b.store.arena)
     b.store.regions = new([Graph_Column]Graph_Region, in_store)
-    b.names = new([dynamic]string, in_store)
-    b.names.allocator = in_store
-    append(b.names, "")   // (Name_Id 0: none)
-    b.type_table = type_table_new()
-    b.values = new([dynamic]Const_Value, in_store)
-    b.values.allocator = in_store
-    append(b.values, Const_Value{})   // (Const_Id 0: none)
+    b.tables = new(Graph_Tables, in_store)
+    b.tables.names.allocator = in_store
+    append(&b.tables.names, "")   // (Name_Id 0: none)
+    append(&b.tables.types.types, nil)   // (Type_Id 0: none)
+    b.tables.values.allocator = in_store
+    append(&b.tables.values, Const_Value{})   // (Const_Id 0: none)
+    b.type_table = &b.tables.types
     append(&p.pc.stores, b.store)
     return b
 }
@@ -623,8 +639,10 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     for f in b.body_pool { graph_body_drop(f) }
     delete(b.body_pool)
     delete(b.locals)
-    delete(b.name_ids)
-    delete(b.value_ids)
+    // (What finds an id is done with — the codes read the tables' entries.)
+    delete(b.tables.name_ids)
+    delete(b.tables.value_ids)
+    delete(b.tables.types.slots)
     free(b)
 }
 
@@ -762,8 +780,9 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.written = make([dynamic]Written, at(r, .Written))
     g.parent = make([dynamic]Node_Id, at(r, .Parent))
     g.name = make([dynamic]Name_Id, at(r, .Name))
-    g.names = b.names
-    g.types = &b.type_table.types
+    g.tables = b.tables
+    g.names = &b.tables.names
+    g.types = &b.tables.types.types
     g.type_ = make([dynamic]Type_Id, at(r, .Type))
     g.origin = make([dynamic]Span, at(r, .Origin))
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
@@ -771,7 +790,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
     g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
     g.value = make([dynamic]Const_Id, at(r, .Value))
-    g.values = b.values
+    g.values = &b.tables.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
@@ -934,7 +953,7 @@ graph_check_built :: proc(b: ^Graph_Builder) {
 // in written order; its body's definitions' codes go after it).
 graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
     c.g.stmts[0] = stmt
-    c.g.name[0] = graph_intern(c.b, graph_scope_name(ts, name, written))
+    c.g.name[0] = graph_intern_in(c.g.tables, graph_scope_name(ts, name, written))
     graph_place(p, c)
 }
 
@@ -1726,7 +1745,7 @@ graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
 graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value), untyped := false) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
     if v, ok := value.?; ok {
-        graph_set_value(b, b.g, o.op, v)
+        graph_set_value(b.g, o.op, v)
         if untyped { graph_const_settles(b, o.op, t) }
     }
     return o
@@ -1757,7 +1776,7 @@ graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, na
 
 // A string constant's global carries its text in the constants table.
 graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)) -> Operand {
-    if c, ok := value.?; ok && c.is_text { graph_set_value(b, b.g, global.op, c) }
+    if c, ok := value.?; ok && c.is_text { graph_set_value(b.g, global.op, c) }
     return global
 }
 
@@ -2594,7 +2613,7 @@ Graph_Arm :: struct {
 graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: int) -> Graph_Block {
     if id := gm.tags[i]; id != NO_NODE {
         b.g.name[id] = graph_intern(b, ga.variant)
-        graph_set_value(b, b.g, id, Const_Value{int = i128(ga.tag)})
+        graph_set_value(b.g, id, Const_Value{int = i128(ga.tag)})
     }
     span := gm.span
     b.code.run = gm.arms[i]

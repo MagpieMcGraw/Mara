@@ -109,7 +109,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
                     fold_error(fo, g, id, c)
                     continue
                 }
-                graph_set_value(b, g, id, v.c)
+                graph_set_value(g, id, v.c)
             case .Global:
                 v := fold_decl(fo, c, .Own)
                 if v == nil {
@@ -117,7 +117,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
                     continue
                 }
                 if v.known && v.c.is_text {
-                    graph_set_value(b, g, id, v.c)
+                    graph_set_value(g, id, v.c)
                 } else {
                     pc.tables[c] = v
                 }

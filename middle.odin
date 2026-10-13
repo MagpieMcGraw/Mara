@@ -1,6 +1,8 @@
 package mara
 
+import "core:os"
 import "core:slice"
+import "core:strconv"
 
 // middle.odin — the middle end, a code at a time. Each code is lowered on
 // its own (lw_code), then folded and analysed while what it calls is
@@ -30,8 +32,15 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     p, codes := lower_begin(k)
     shared := lw_shared_sizes(k) if ODIN_DEBUG else nil
     mid.prog = p
-    w := lw_worker(k, p)
-    append(&mid.workers, w)
+    // The lowerings: one. (A debug build can deal codes out to several in
+    // turn, MARA_LOWER_WORKERS — what one builds next to another's.)
+    n := 1
+    when ODIN_DEBUG {
+        if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.atoi(s)) }
+    }
+    for _ in 0 ..< n { append(&mid.workers, lw_worker(k, p)) }
+    turn := 0
+    w := mid.workers[0]
     b := w.gb
     pc := &p.pc
     fold := graph_fold_begin(pc, checked)
@@ -60,6 +69,8 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
 
     // Constants, and the structs a constant's value may construct.
     for e, i in k.events {
+        w = mid.workers[turn % n]
+        turn += 1
         #partial switch e.kind {
         case .Const, .Program_Struct: lw_code(w, &codes, i)
         case .Body:                   if e.sc.ts.kind == .Struct { lw_code(w, &codes, i) }
@@ -69,16 +80,20 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // one's own.
     cg := c.cg
     for scc in cg.sccs {
-        for n in scc {
-            if i, checked := codes.bodies[cg.nodes[n]]; checked { lw_code(w, &codes, i) }
+        w = mid.workers[turn % n]
+        turn += 1
+        for node in scc {
+            if i, checked := codes.bodies[cg.nodes[node]]; checked { lw_code(w, &codes, i) }
         }
         escape_scc(cg, scc[:])
-        for n in scc { analyse(&mid, &fold, b, &analysed, &codes, pc.funs[cg.nodes[n]] or_else nil) }
+        for node in scc { analyse(&mid, &fold, b, &analysed, &codes, pc.funs[cg.nodes[node]] or_else nil) }
     }
     // What no call graph node is: the constants, a struct nothing constructs
     // or calls, the program's struct — in the order checked.
     for e, i in k.events {
         if e.kind == .Module_Stmt { continue }
+        w = mid.workers[turn % n]
+        turn += 1
         lw_code(w, &codes, i)
         #partial switch e.kind {
         case .Const:
@@ -89,12 +104,15 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
             if pt := k.table.funs["Program"] or_else nil; pt != nil { analyse(&mid, &fold, b, &analysed, &codes, pc.funs[pt] or_else nil) }
         }
     }
-    lower_place(w, &codes)
+    lower_place(mid.workers[0], &codes)
     graph_fold_end(&fold)
     when ODIN_DEBUG {
-        before, after, worker := shared, lw_shared_sizes(k), lw_shared_sizes(w)
-        if !slice.equal(before[:], after[:]) || !slice.equal(before[:], worker[:]) {
-            graph_fatal({}, "lowering added to what lowerings share: %v, then %v (its view: %v)", before[:], after[:], worker[:])
+        after := lw_shared_sizes(k)
+        for wk in mid.workers {
+            worker := lw_shared_sizes(wk)
+            if !slice.equal(shared[:], after[:]) || !slice.equal(shared[:], worker[:]) {
+                graph_fatal({}, "lowering added to what lowerings share: %v, then %v (its view: %v)", shared[:], after[:], worker[:])
+            }
         }
     }
     return mid
