@@ -162,7 +162,7 @@ flow_literal_ranges :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
         v, ok := graph_value(g, id)
         if !ok || v.is_text { continue }
         if msg := value_range_error(v.float if v.is_float else f64(v.int), v.int, graph_type(g, id)); msg != "" {
-            append(found, Flow_Finding{.Literal_Range, g.origin[id], msg})
+            append(found, Flow_Finding{.Literal_Range, graph_origin(g, id), msg})
         }
     }
 }
@@ -190,7 +190,7 @@ flow_unused :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
         // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
         // variable or a match arm's binding.
         if s := graph_stmt(g, Node_Id(id)).kind; s != .Decl && s != .Destructure { continue }
-        append(found, Flow_Finding{.Unused, g.origin[id], fmt.aprintf(TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))})
+        append(found, Flow_Finding{.Unused, graph_origin(g, Node_Id(id)), fmt.aprintf(TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))})
     }
 }
 
@@ -236,8 +236,8 @@ flow_defer_writes :: proc(g: ^Program_Graph, ret: Node_Id, block: []i32, found: 
                 }
                 ops := graph_operands(g, op)
                 if len(ops) == 0 || flow_storage_root(g, ops[0].op) != v { continue }
-                span := g.origin[op]
-                append(found, Flow_Finding{.Defer_Write, span, fmt.aprintf(TYPE_DEFER_CHANGES_RETURNED, graph_name(g, v), span_line(g.origin[ret]))})
+                span := graph_origin(g, op)
+                append(found, Flow_Finding{.Defer_Write, span, fmt.aprintf(TYPE_DEFER_CHANGES_RETURNED, graph_name(g, v), span_line(graph_origin(g, ret)))})
             }
         }
     }
@@ -506,7 +506,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     #partial switch g.op[op] {
     case .Var:
         if reporting && flow_is_unset(state, flow_var_bit(s, g.refers[op])) && flow_read_by(s, op) {
-            report(s, g.origin[op], TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, op))
+            report(s, graph_origin(g, op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, op))
         }
     case .Field:
         if !reporting { break }
@@ -519,9 +519,9 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
         }
         if g.op[u] == .Address || g.op[u] == .Field || g.op[u] == .Swizzle { break }
         if via != NO_NODE {
-            report(s, g.origin[op], TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
+            report(s, graph_origin(g, op), TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
         } else {
-            report(s, g.origin[op], TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
+            report(s, graph_origin(g, op), TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
         }
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
@@ -609,7 +609,7 @@ flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
             if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
             if g.written[v] != .Explicit { continue }
             if where_, stored := void_where(g, id, k); stored && void_is_pointer(graph_type(g, v)) {
-                append(found, Flow_Finding{.Void, g.origin[v], fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(graph_type(g, v)))})
+                append(found, Flow_Finding{.Void, graph_origin(g, v), fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(graph_type(g, v)))})
             }
         }
     }

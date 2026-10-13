@@ -140,7 +140,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
 // couldn't be computed is written (else at the use).
 @(private="file")
 fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
-    at := fo.at if fo.at != {} else g.origin[id]
+    at := fo.at if fo.at != {} else graph_origin(g, id)
     if fo.code not_in fo.errors { fo.errors[fo.code] = {} }
     append(&fo.errors[fo.code], Fold_Error{at, graph_name(graph_const_code(fo.pc, c), 0)})
     fo.failed, fo.at = false, {}
@@ -301,7 +301,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         // Code that runs: none of it is known before the program runs.
     }
     if out == nil {
-        if fo.at == {} { fo.at = g.origin[id] }
+        if fo.at == {} { fo.at = graph_origin(g, id) }
         return fold_fail(fo) != nil
     }
     fc.values[id] = out

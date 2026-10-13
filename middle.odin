@@ -247,7 +247,7 @@ middle_analyse :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, i: int) {
             callee := graph_called(g, id)
             if callee == nil || graph_fun_code(&b.prog.pc, callee) != nil { continue }
             if j, checked := codes.bodies[callee]; checked && !codes.done[j] {
-                graph_fatal(g.origin[id], "'%s' analysed before '%s', which it calls, is built", graph_name(g, 0), callee.name)
+                graph_fatal(graph_origin(g, id), "'%s' analysed before '%s', which it calls, is built", graph_name(g, 0), callee.name)
             }
         }
     }

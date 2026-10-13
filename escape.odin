@@ -632,7 +632,7 @@ esc_return :: proc(e: ^Esc, ri: int, op: Node_Id, val: Esc_Roots, o: Operand, st
     e.sum.ret_deep += val.deep
     if esc_deepest_local(e, val) <= ESC_CALLER || !e.report { return }
     if o.op != NO_NODE && esc_report_call_return(e, ri, op, o, state) { return }
-    esc_diag(e, e.g.origin[op], TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
+    esc_diag(e, graph_origin(e.g, op), TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
 }
 
 // --- values --------------------------------------------------------------------
@@ -926,14 +926,14 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
         name := graph_name(g, site.op)
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
-            esc_diag(e, g.origin[site.op], TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
+            esc_diag(e, graph_origin(g, site.op), TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
         } else {
-            esc_diag(e, g.origin[site.op], TYPE_ESCAPE_CALL_STORE, name, src, esc_param_name(site.callee, site.st.dst), what)
+            esc_diag(e, graph_origin(g, site.op), TYPE_ESCAPE_CALL_STORE, name, src, esc_param_name(site.callee, site.st.dst), what)
         }
         return
     }
     st := graph_stmt(g, site.op)
-    span := st.span if st.node != 0 else g.origin[site.op]
+    span := st.span if st.node != 0 else graph_origin(g, site.op)
     if into := graph_place_name(g, site.place); into != "" {
         esc_diag(e, span, TYPE_ESCAPE_STORE, what, into)
     } else {
@@ -966,7 +966,7 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
         n += 1
     }
     if n == 0 { return false }
-    esc_diag(e, g.origin[ret], TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
+    esc_diag(e, graph_origin(g, ret), TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
         graph_name(g, call), strings.to_string(sb), "argument" if n == 1 else "arguments")
     return true
 }

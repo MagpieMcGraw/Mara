@@ -132,7 +132,7 @@ Program_Graph :: struct {
     tables:  ^Graph_Tables,     // (its builder's: names, types and values, by id)
     type_:   [dynamic]Type_Id,  // has type; none when the node has none (its type: graph_type)
     types:   ^[dynamic]Type,    // (the program's types, a node's by its Type_Id)
-    origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
+    origins: map[Node_Id]Span,  // where a node is written, where that isn't its tree node's (graph_origin)
     refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
     callee:  map[Node_Id]^Type_Scope,   // a call or construct operation → the fun or struct it runs (none through a fun's value)
     defer_of: map[Node_Id]Node_Id,      // a run-defer operation → the defer block it runs
@@ -700,7 +700,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
     if f := b.failure; f.reason != "" { graph_fatal(f.span, "the checker built no graph of '%s': %s", f.name, f.reason) }
     checked := b.checked
     for _, c in b.consts {
-        if !c.placed { graph_fatal(c.g.origin[0], "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
+        if !c.placed { graph_fatal(graph_origin(c.g, 0), "the constant '%s' was built but never placed", graph_name(c.g, 0)) }
     }
     pc := b.pc
     pc.lock = nil
@@ -714,7 +714,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
             for s, id in c.syntax[:c.end + 1] {   // (each node found by its tree node)
                 if s == 0 { continue }
                 g, first := graph_ops(&pc, checked.annot, s)
-                if g != c || first > Node_Id(id) || c.syntax[first] != s { graph_fatal(c.origin[id], "'%s' isn't found by its tree node", graph_name(c, Node_Id(id))) }
+                if g != c || first > Node_Id(id) || c.syntax[first] != s { graph_fatal(graph_origin(c, Node_Id(id)), "'%s' isn't found by its tree node", graph_name(c, Node_Id(id))) }
             }
         }
     }
@@ -733,7 +733,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Name, Type, Origin, Refers, Decl_Tok, Syntax, Value,
+    Kind, Op, Written, Parent, Name, Type, Refers, Decl_Tok, Syntax, Value,
     Operand_First, Operands, Run_Ops, Run_First, Edges, Unreachable, Settled,
     // A builder's tables (Graph_Tables): each a region of its own, so what's
     // in one never moves — a code another builder built is read, on another
@@ -836,7 +836,6 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.names = &b.tables.names
     g.types = &b.tables.types.types
     g.type_ = make([dynamic]Type_Id, at(r, .Type))
-    g.origin = make([dynamic]Span, at(r, .Origin))
     g.refers = make([dynamic]Node_Id, at(r, .Refers))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
     g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
@@ -862,7 +861,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
         if cap(col) > n { shrink(col) }
     }
     trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n)
-    trim(&g.name, n); trim(&g.type_, n); trim(&g.origin, n); trim(&g.refers, n)
+    trim(&g.name, n); trim(&g.type_, n); trim(&g.refers, n)
     trim(&g.decl_tok, n); trim(&g.syntax, n); trim(&g.value, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
@@ -937,7 +936,7 @@ program_code_free :: proc(pc: ^Program_Code) {
 // code at a time: one begun inside another is an error.)
 @(private="file")
 graph_code_open :: proc(b: ^Graph_Builder) {
-    if f := b.body; f != nil { graph_fatal(b.g.origin[f.root], "a code begun while '%s' is being built", graph_name(b.g, f.root)) }
+    if f := b.body; f != nil { graph_fatal(graph_origin(b.g, f.root), "a code begun while '%s' is being built", graph_name(b.g, f.root)) }
     b.g = graph_code_new(b)
     b.nodes = 0
     b.outside_named = false
@@ -968,7 +967,7 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     g.operand_first[b.nodes] = i32(len(g.operands))
     append(&g.run_first, i32(len(g.run_ops)))
     for e in g.edges {
-        if e.to == NO_NODE { graph_fatal(g.origin[e.from], "a then from '%s' into a run that never had an operation", graph_name(g, e.from)) }
+        if e.to == NO_NODE { graph_fatal(graph_origin(g, e.from), "a then from '%s' into a run that never had an operation", graph_name(g, e.from)) }
     }
     when ODIN_DEBUG { graph_check_built(b) }
     graph_trim(g, b.nodes)
@@ -1008,7 +1007,7 @@ graph_check_built :: proc(b: ^Graph_Builder) {
     g := b.g
     for i in 0 ..< b.nodes {
         if !graph_is_settled(graph_type(g, Node_Id(i))) && g.kind[i] != .Const {
-            graph_fatal(g.origin[i], "'%s' typed %s, unsettled", graph_name(g, Node_Id(i)), type_name(graph_type(g, Node_Id(i))))
+            graph_fatal(graph_origin(g, Node_Id(i)), "'%s' typed %s, unsettled", graph_name(g, Node_Id(i)), type_name(graph_type(g, Node_Id(i))))
         }
     }
     for r in 0 ..< len(g.run_first) - 1 {
@@ -1029,7 +1028,7 @@ graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, na
 // was built: graph_code_found.)
 graph_place :: proc(b: ^Graph_Program, c: ^Built_Code) {
     g := c.g
-    if c.placed { graph_fatal(g.origin[0], "'%s' is put in place twice", graph_name(g, 0)) }
+    if c.placed { graph_fatal(graph_origin(g, 0), "'%s' is put in place twice", graph_name(g, 0)) }
     c.placed = true
     pc := &b.pc
     append(&pc.codes, g)
@@ -1094,10 +1093,10 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.parent[i] = parent
     g.name[i] = graph_intern(b, name)
     g.type_[i] = 0 if t == nil else type_id(b.type_table, graph_settled(t))
-    g.origin[i] = origin
     g.refers[i] = NO_NODE
     g.decl_tok[i] = 0
     g.syntax[i] = b.pin if b.pin != 0 else b.at
+    graph_set_origin(g, id, origin)
     if b.sub != 0 { g.sub[id] = b.sub }
     g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))
@@ -1115,7 +1114,6 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.parent, n)
     non_zero_resize(&g.name, n)
     non_zero_resize(&g.type_, n)
-    non_zero_resize(&g.origin, n)
     non_zero_resize(&g.refers, n)
     non_zero_resize(&g.decl_tok, n)
     non_zero_resize(&g.syntax, n)
@@ -1170,6 +1168,37 @@ Syntax_Id :: distinct u64
 // and each tree node's first node is a column beside its annotations
 // (Annotations.ops). Its statement is the tree's too (graph_stmt).
 
+// Where a node is written (what a diagnostic about it points at): its tree
+// node's span — a definition's own nodes (the fun or struct, its params,
+// what ends it), the definition's — or, where lowering says otherwise, its
+// own (Program_Graph.origins: a compound assignment's operator, a widening
+// at its use, a default's text where a call leaves it off).
+graph_origin :: proc(g: ^Program_Graph, id: Node_Id) -> Span {
+    if len(g.origins) > 0 {
+        if sp, own := g.origins[id]; own { return sp }
+    }
+    return graph_tree_span(g.syntax[id])
+}
+
+// A node's span, as its tree node says (graph_origin).
+graph_tree_span :: proc(s: Syntax_Id) -> Span {
+    t := &build_tree
+    _, n := annot_split(s)
+    #partial switch t.tag[n] {
+    case .Fun_Def, .Struct_Def: return tree_span(t, tree_stmt(t, n))   // (the definition's)
+    }
+    return tree_span(t, n)
+}
+
+// Where a node is written, kept only where its tree node doesn't say so.
+graph_set_origin :: proc(g: ^Program_Graph, id: Node_Id, sp: Span) {
+    if sp == graph_tree_span(g.syntax[id]) {
+        if len(g.origins) > 0 { delete_key(&g.origins, id) }
+        return
+    }
+    g.origins[id] = sp
+}
+
 // Where a tree node was lowered to: its code (Program_Code.codes[code - 1];
 // 0: nothing was) and the first of its nodes there.
 Op_At :: struct {
@@ -1186,12 +1215,12 @@ graph_index_ops :: proc(pc: ^Program_Code, a: ^Annotations) {
         code := i32(ci) + 1
         root, _ := annot_split(g.syntax[0])
         #reverse for s, id in g.syntax[:g.end + 1] {   // (the lowest id last: a node's first)
-            if s == 0 { graph_fatal(g.origin[id], "'%s' in '%s' was lowered from no tree node", graph_name(g, Node_Id(id)), graph_name(g, 0)) }
+            if s == 0 { graph_fatal(graph_origin(g, Node_Id(id)), "'%s' in '%s' was lowered from no tree node", graph_name(g, Node_Id(id)), graph_name(g, 0)) }
             i, n := annot_split(s)
-            if i != root { graph_fatal(g.origin[id], "'%s' in '%s' was lowered from another instance's tree node", graph_name(g, Node_Id(id)), graph_name(g, 0)) }
+            if i != root { graph_fatal(graph_origin(g, Node_Id(id)), "'%s' in '%s' was lowered from another instance's tree node", graph_name(g, Node_Id(id)), graph_name(g, 0)) }
             at := &a.ops[i][n - a.instances[i].lo]
             if at.code != 0 && at.code != code {
-                graph_fatal(g.origin[id], "a tree node lowered into '%s' and '%s'", graph_name(pc.codes[at.code - 1], 0), graph_name(g, 0))
+                graph_fatal(graph_origin(g, Node_Id(id)), "a tree node lowered into '%s' and '%s'", graph_name(pc.codes[at.code - 1], 0), graph_name(g, 0))
             }
             at^ = {code, Node_Id(id)}
         }
@@ -1465,7 +1494,7 @@ graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
 @(private="file")
 graph_scope_pop :: proc(b: ^Graph_Builder) {
     s := pop(&b.code.scopes)
-    if s.holds && s.held == 0 { graph_fatal(b.g.origin[s.block], "a scope said to hold a local on the arena holds none") }
+    if s.holds && s.held == 0 { graph_fatal(graph_origin(b.g, s.block), "a scope said to hold a local on the arena holds none") }
     delete(s.defers)
 }
 
@@ -1651,9 +1680,11 @@ graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     switch d.kind {
     case .Var:
         at := b.at
-        if d.syntax != 0 { b.at = d.syntax }   // (the name's, written: what's built into it is the value's)
+        if d.syntax == 0 { return graph_var(b, d.name, d.decl, d.type_, span) }
+        b.at = d.syntax   // (the name's, written where it is: what's built into it is the value's)
         defer b.at = at
-        return graph_var(b, d.name, d.decl, d.type_, span)
+        _, name := annot_split(d.syntax)
+        return graph_var(b, d.name, d.decl, d.type_, tree_span(&build_tree, name))
     case .At:    return d.at
     case .Field: return graph_op_value(b, .Field, .Explicit, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     case .Index: return graph_op_value(b, .Index, .Explicit, span, d.type_, "", graph_dest_place(b, d.parent^, span), graph_const_index(b, d.index, span))
@@ -1707,15 +1738,16 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     #partial switch g.op[id] {
     case .Var, .Global, .Const, .Field, .Swizzle, .Index, .Deref, .View, .Read, .Cast:
     case:
-        graph_fatal(g.origin[id], "a place walked again holds a %v", g.op[id])
+        graph_fatal(graph_origin(g, id), "a place walked again holds a %v", g.op[id])
     }
     src := graph_built_operands(b, id)
     ops := make([]Operand, len(src), context.temp_allocator)
     for o, k in src { ops[k] = graph_place_again(b, o, span) }
-    n := graph_op_value(b, g.op[id], g.written[id], g.origin[id], graph_type(g, id), graph_name(g, id), ..ops)
+    n := graph_op_value(b, g.op[id], g.written[id], graph_origin(g, id), graph_type(g, id), graph_name(g, id), ..ops)
     g.refers[n.op] = g.refers[id]
     g.value[n.op] = g.value[id]
     g.syntax[n.op] = g.syntax[id]   // (walked again: the same node's)
+    graph_set_origin(g, n.op, graph_origin(g, id))
     if g.op[id] == .Const && slice.contains(g.settled[:], id) { append(&g.settled, n.op) }   // (graph_const_settles)
     if c, named := g.constant[id]; named { g.constant[n.op] = c }
     return Operand{n.op, p.out}
@@ -1864,7 +1896,7 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
 // default, unchecked.
 @(private="file")
 graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
-    if b.body == nil { graph_fatal(b.g.origin[id], "a constant of open width outside any body") }
+    if b.body == nil { graph_fatal(graph_origin(b.g, id), "a constant of open width outside any body") }
     if is_infer(t) && infer_cell_of(t) == nil { return }
     append(&b.g.settled, id)
 }
@@ -2194,7 +2226,7 @@ graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     sync.mutex_lock(&b.prog.lock)
     defer sync.mutex_unlock(&b.prog.lock)
     if b.prog.failure.reason == "" {
-        b.prog.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else graph_name(b.g, f.root), reason, b.g.origin[f.root]}
+        b.prog.failure = {f.ts.name if f.ts != nil && f.ts.name != "" else graph_name(b.g, f.root), reason, graph_origin(b.g, f.root)}
     }
 }
 
@@ -2424,7 +2456,7 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     // (A local that could live on the arena: as lowering said when it
     // declared it, graph_build_decl.)
     if routes, decided := b.body.arena_types[d]; decided && routes != (t != nil && routes_to_arena(t)) {
-        graph_fatal(b.g.origin[d], "'%s' is typed otherwise than it was declared", graph_name(b.g, d))
+        graph_fatal(graph_origin(b.g, d), "'%s' is typed otherwise than it was declared", graph_name(b.g, d))
     }
     // Its variable's operations made before that was known (where a value
     // was built into it), typed as it is.
@@ -2517,14 +2549,15 @@ graph_build_indirect :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, fn_
 // index.
 graph_build_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, span: Span) {
     id := place.op
-    b.g.op[id], b.g.origin[id] = .View, span
+    b.g.op[id] = .View
+    graph_set_origin(b.g, id, span)
     graph_retype(b, id, t)
     b.g.name[id] = graph_intern(b, "#big_endian" if big else "")
     // (Its base's implied dereference and its offset's widening are the
     // view's, where it is.)
     for o, k in graph_built_operands(b, id) {
         if o.op == NO_NODE || b.g.written[o.op] != .Implied { continue }
-        if k == 0 && b.g.op[o.op] == .Deref || k == 1 && b.g.op[o.op] == .Cast { b.g.origin[o.op] = span }
+        if k == 0 && b.g.op[o.op] == .Deref || k == 1 && b.g.op[o.op] == .Cast { graph_set_origin(b.g, o.op, span) }
     }
 }
 
@@ -2536,7 +2569,7 @@ graph_unbuild :: proc(b: ^Graph_Builder, id: Node_Id) {
     g := b.g
     r := b.code.run
     if int(id) != b.nodes - 1 || g.kind[id] != .Op || r == nil || len(r.ops) == 0 || r.ops[len(r.ops) - 1] != id {
-        graph_fatal(g.origin[id], "a %v taken apart after more was built", g.op[id])
+        graph_fatal(graph_origin(g, id), "a %v taken apart after more was built", g.op[id])
     }
     if len(r.ops) == 1 {   // (the thens its run's first operation took wait for the next again)
         for &e, k in g.edges {
@@ -2565,7 +2598,7 @@ graph_build_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span)
         graph_unbuild(b, off.op)
         off = raw
     }
-    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
+    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { graph_set_origin(b.g, buf.op, span) }
     return buf, off
 }
 
@@ -2576,7 +2609,7 @@ graph_build_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span)
     ops := graph_built_operands(b, id)
     buf, lo, hi = ops[0], ops[1], ops[2]
     graph_unbuild(b, id)
-    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
+    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { graph_set_origin(b.g, buf.op, span) }
     return
 }
 
@@ -3407,7 +3440,7 @@ graph_check_refers :: proc(g: ^Program_Graph) {
     bad := 0
     for k, id in g.kind {
         if k == .Op && g.op[id] == .Var && g.refers[id] == NO_NODE {
-            o := g.origin[id]
+            o := graph_origin(g, Node_Id(id))
             emit_diagnostic(.Graph_Error, span_location(o), "'%s' names no declaration", graph_name(g, Node_Id(id)))
             bad += 1
         }
@@ -3438,7 +3471,7 @@ graph_check_runs :: proc(g: ^Program_Graph) {
     slice.fill(run_of, -1)
     bad := 0
     report :: proc(g: ^Program_Graph, bad: ^int, id: Node_Id, format: string, args: ..any) {
-        o := g.origin[id]
+        o := graph_origin(g, id)
         emit_diagnostic(.Graph_Error, span_location(o), format, ..args)
         bad^ += 1
     }
@@ -3604,7 +3637,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
         fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
             g.parent[id], graph_last(g, Node_Id(id)), graph_name(g, Node_Id(id)))
         if t := graph_type(g, Node_Id(id)); t != nil { fmt.sbprintf(&b, " t=%s", type_name(t)) }
-        fmt.sbprintf(&b, " @%s r%d s%d", span(g.origin[id]), g.refers[id], graph_stmt(g, Node_Id(id)).node)
+        fmt.sbprintf(&b, " @%s r%d s%d", span(graph_origin(g, Node_Id(id))), g.refers[id], graph_stmt(g, Node_Id(id)).node)
         if ops := graph_operands(g, Node_Id(id)); len(ops) > 0 {
             strings.write_string(&b, " (")
             for o, i in ops { fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out) }

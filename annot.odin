@@ -242,7 +242,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 case .Var:
                     if g.written[op] != .Explicit { continue }
                     d = g.refers[op]
-                    if d < 0 || g.origin[d].at == 0 { continue }
+                    if d < 0 || graph_origin(g, d).at == 0 { continue }
                     #partial switch g.kind[d] {
                     case .Local, .Param, .Result, .Field:
                     case: continue
@@ -257,7 +257,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 // annotated there.)
                 pinned := false
                 for sp in defaults {
-                    if o := g.origin[op]; o.tok >= sp.tok && o.end <= sp.end { pinned = true }
+                    if o := graph_origin(g, op); o.tok >= sp.tok && o.end <= sp.end { pinned = true }
                 }
                 if pinned { continue }
                 i, at := annot_split(g.syntax[op])
@@ -285,10 +285,10 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                         compared = true
                         vars += 1
                         r := annot_ref(a, i, x)
-                        within := r.decl != 0 && r.decl >= g.origin[d].tok && r.decl < g.origin[d].end
+                        within := r.decl != 0 && r.decl >= graph_origin(g, d).tok && r.decl < graph_origin(g, d).end
                         if r.decl == 0 || token_text(build_tokens[r.decl]) != graph_name(g, d) || !within {
                             report(&problems, t, x, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
-                                r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(g.origin[d]), span_col(g.origin[d]))
+                                r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(graph_origin(g, d)), span_col(graph_origin(g, d)))
                         }
                     }
                     // (A loop's variable, written by its loop: declared by a
@@ -296,7 +296,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     if !compared && (t.tag[n] == .For_Range || t.tag[n] == .For_Each) {
                         v := for_view(t, n)
                         for tok in ([]Token_Id{v.var, v.elem, v.index}) {
-                            if tok != 0 && token_text(build_tokens[tok]) == graph_name(g, d) && tok >= g.origin[d].tok && tok < g.origin[d].end {
+                            if tok != 0 && token_text(build_tokens[tok]) == graph_name(g, d) && tok >= graph_origin(g, d).tok && tok < graph_origin(g, d).end {
                                 compared = true
                                 loops += 1
                                 break
@@ -324,7 +324,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if !compared {
                     problems += 1
                     fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (its node: %v)\n", g.op[op], graph_name(g, op),
-                        filepath.base(span_file(g.origin[op])), span_line(g.origin[op]), span_col(g.origin[op]), t.tag[at])
+                        filepath.base(span_file(graph_origin(g, op))), span_line(graph_origin(g, op)), span_col(graph_origin(g, op)), t.tag[at])
                 }
             }
         }
@@ -409,7 +409,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if !ok {
                     what := "nothing"
                     if v := passed[j].op; v >= 0 {
-                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], graph_name(g, v), span_line(g.origin[v]), span_col(g.origin[v]))
+                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], graph_name(g, v), span_line(graph_origin(g, v)), span_col(graph_origin(g, v)))
                     }
                     report(&problems, t, n, i, "param %d is annotated as receiving %v %v; the graph passes %s",
                         j + 1, arg.kind, t.tag[arg.node], what)

@@ -343,7 +343,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
             name := scope_display_name(callee)
             into := graph_place_name(pg, Operand{op = x})
             msg := fmt.aprintf(TYPE_RESULT_READS_DEST, name, graph_place_name(pg, Operand{op = place}), into, name, into)
-            append(diags, Reach_Diag{pg.origin[op], msg})
+            append(diags, Reach_Diag{graph_origin(pg, op), msg})
             return
         }
     }

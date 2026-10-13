@@ -444,7 +444,7 @@ collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: ma
             consuming = true
             if !followable { continue }
             if p := hop_param_binding(checked, callee, i); p != nil {
-                append(out, Hop_Landing{ callee = callee, param = p, site = g.origin[op] })
+                append(out, Hop_Landing{ callee = callee, param = p, site = graph_origin(g, op) })
                 landed = true
             }
         }

@@ -198,7 +198,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         case .Param, .Local, .Result:
             if g.written[id] == .Explicit {
                 i := annot_var(checked.annot, f.ft, g.decl_tok[id], graph_type(g, id))
-                if i < 0 { graph_fatal(g.origin[id], "def-use: '%s' is none of %s's variables", graph_name(g, id), f.ft.name) }
+                if i < 0 { graph_fatal(graph_origin(g, id), "def-use: '%s' is none of %s's variables", graph_name(g, id), f.ft.name) }
                 f.bindings[id] = of_var[i]
                 decl_of[of_var[i]] = id
             } else if g.kind[id] == .Result {
@@ -224,7 +224,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
                 v, _, is_def := du_written(g, op)
                 if !is_def || v not_in tracked { break }
                 st := graph_stmt(g, op)
-                d := du_def(checked, f, &def_of, v, du_stmt(st), st.span if st.node != 0 else g.origin[op])
+                d := du_def(checked, f, &def_of, v, du_stmt(st), st.span if st.node != 0 else graph_origin(g, op))
                 d.stmt_kind = st.kind
                 if d.run < 0 { d.run = r }
                 if !du_is_step(g, op) {

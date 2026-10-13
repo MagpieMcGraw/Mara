@@ -105,7 +105,7 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
     what := graph_kind_word(pg.kind[at])
     if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
     note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
-    codegen_fatal(e.g, pg.origin[at], CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
+    codegen_fatal(e.g, graph_origin(pg, at), CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
 }
 
 // -profile: a fun worth timing — main, and one that does work a probe is
@@ -407,7 +407,7 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     if c, ok := e.st.carved[d]; ok { return e.value[c] }   // the carved memory
     if v, ok := e.st.bound[d]; ok { return e.value[v] }    // the payload
     if d in e.st.lazy {   // (a big temporary in main's body: on the arena, from here — storage_big_temps)
-        e.value[d] = emit_arena_bump(e.g, type_size(graph_type(pg, d)), graph_name(pg, d), span_location(pg.origin[d]))
+        e.value[d] = emit_arena_bump(e.g, type_size(graph_type(pg, d)), graph_name(pg, d), span_location(graph_origin(pg, d)))
         return e.value[d]
     }
     ir := llvm_type_from_checker(graph_type(pg, d))
@@ -489,7 +489,7 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Ty
 llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     g, pg := e.g, e.pg
     ops := graph_operands(pg, op)
-    span := pg.origin[op]
+    span := graph_origin(pg, op)
     switch pg.op[op] {
     case .Var:
         d := pg.refers[op]
@@ -2603,9 +2603,9 @@ llvm_temporary :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, t: Type, ir: 
         }
         if !marked && !e.main {
             msg := CODE_TEMPORARY_NO_ARENA_SCOPE if e.g.checked.table.has_scope_allocator else CODE_TEMPORARY_NO_ARENA
-            codegen_fatal(e.g, pg.origin[op], msg, type_name(t), type_size(t))
+            codegen_fatal(e.g, graph_origin(pg, op), msg, type_name(t), type_size(t))
         }
-        return emit_arena_bump(e.g, type_size(t), "temp", span_location(pg.origin[op]))
+        return emit_arena_bump(e.g, type_size(t), "temp", span_location(graph_origin(pg, op)))
     }
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, ir if ir != "" else llvm_type_from_checker(t))

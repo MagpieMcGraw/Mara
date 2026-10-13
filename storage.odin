@@ -744,7 +744,7 @@ storage_reads_its_dest :: proc(pg: ^Program_Graph, op, arg, dest: Node_Id, calle
     name := scope_display_name(callee)
     held := graph_place_name(pg, Operand{op = graph_operands(pg, arg)[0].op})
     into := graph_place_name(pg, Operand{op = dest})
-    storage_fatal(pg.origin[op], TYPE_RESULT_READS_DEST, name, held, into, name, into)
+    storage_fatal(graph_origin(pg, op), TYPE_RESULT_READS_DEST, name, held, into, name, into)
 }
 
 // Whether a call hands its callee storage: a param passed by address.
@@ -859,7 +859,7 @@ storage_big_temps :: proc(s: ^Storage, scope_allocator: bool) {
             s.lazy[id] = true
         case:
             msg := CODE_TEMPORARY_NO_ARENA_SCOPE if scope_allocator else CODE_TEMPORARY_NO_ARENA
-            storage_fatal(pg.origin[id], msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
+            storage_fatal(graph_origin(pg, id), msg, type_name(graph_type(pg, id)), type_size(graph_type(pg, id)))
         }
     }
 }
