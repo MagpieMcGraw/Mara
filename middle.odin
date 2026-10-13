@@ -149,23 +149,18 @@ Middle_Run :: struct {
 }
 
 // Each worker's thread runs `work`, its memory its own (its builder's
-// store); then each is joined.
+// store); then each is joined. One worker — the default — works on the
+// calling thread: no thread to start.
 middle_threads :: proc(run: ^Middle_Run, work: proc(run: ^Middle_Run, mw: ^Middle_Worker)) {
-    Job :: struct { run: ^Middle_Run, mw: ^Middle_Worker, work: proc(run: ^Middle_Run, mw: ^Middle_Worker), index: int }
-    jobs := make([]Job, len(run.mid.workers), context.temp_allocator)
+    jobs := make([]Middle_Job, len(run.mid.workers), context.temp_allocator)
+    for mw, i in run.mid.workers { jobs[i] = {run, mw, work, i} }
+    if len(jobs) == 1 {
+        middle_job(&jobs[0])
+        return
+    }
     threads := make([]^thread.Thread, len(run.mid.workers), context.temp_allocator)
-    for mw, i in run.mid.workers {
-        jobs[i] = {run, mw, work, i}
-        threads[i] = thread.create(proc(t: ^thread.Thread) {
-            job := (^Job)(t.data)
-            in_store := virtual.arena_allocator(job.mw.k.gb.store.arena)
-            context.allocator = in_store
-            context.temp_allocator = in_store
-            escape_thread_begin(&job.run.mid.prog.pc)
-            job.work(job.run, job.mw)
-            esc := escape_thread_end()
-            append(&job.run.mid.escape[job.index], ..esc[:])
-        })
+    for _, i in run.mid.workers {
+        threads[i] = thread.create(proc(t: ^thread.Thread) { middle_job((^Middle_Job)(t.data)) })
         threads[i].data = &jobs[i]
         thread.start(threads[i])
     }
@@ -224,6 +219,20 @@ middle_done :: proc(run: ^Middle_Run, s: int) {
         if run.waits[caller] == 0 { append(&run.ready, caller) }
     }
     sync.cond_broadcast(&run.changed)
+}
+
+Middle_Job :: struct { run: ^Middle_Run, mw: ^Middle_Worker, work: proc(run: ^Middle_Run, mw: ^Middle_Worker), index: int }
+
+// A worker's work, in its memory (its builder's store), with its own escape
+// state.
+middle_job :: proc(job: ^Middle_Job) {
+    in_store := virtual.arena_allocator(job.mw.k.gb.store.arena)
+    context.allocator = in_store
+    context.temp_allocator = in_store
+    escape_thread_begin(&job.run.mid.prog.pc)
+    job.work(job.run, job.mw)
+    esc := escape_thread_end()
+    append(&job.run.mid.escape[job.index], ..esc[:])
 }
 
 // A component of the call graph: its funs lowered, its escape analysis run,

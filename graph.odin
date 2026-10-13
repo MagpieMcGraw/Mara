@@ -422,6 +422,11 @@ Graph_Builder :: struct {
     at:      Syntax_Id,   // the tree node being lowered: each node made is its (Program_Graph.syntax)
     pin:     Syntax_Id,   // ... unless a default a call leaves off is: then the call's (lw_pin)
     sub:     Tree_Id,     // the target whose statement is being lowered, of several made of one (Program_Graph.sub)
+    // The last node's tree node, and its span (graph_tree_span): what the
+    // next node's origin is most likely to be — nodes come a tree node's
+    // several at a time.
+    span_of: Syntax_Id,
+    span_is: Span,
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run the code being built made, kept for the next once it is done
     run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
@@ -1107,8 +1112,14 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.type_[i] = 0 if t == nil else type_id(b.type_table, graph_settled(t))
     g.refers[i] = NO_NODE
     g.decl_tok[i] = 0
-    g.syntax[i] = b.pin if b.pin != 0 else b.at
-    graph_set_origin(g, id, origin)
+    s := b.pin if b.pin != 0 else b.at
+    g.syntax[i] = s
+    if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
+    if origin != b.span_is {
+        g.origins[id] = origin   // (where its tree node isn't: graph_set_origin)
+    } else if len(g.origins) > 0 {
+        delete_key(&g.origins, id)
+    }
     if b.sub != 0 { g.sub[id] = b.sub }
     g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))

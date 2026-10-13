@@ -422,12 +422,14 @@ lw_big_in :: proc(k: ^TC, n: Tree_Id, direct: bool) -> bool {
     if n == 0 { return false }
     t := k.t
     u := tc_unparen(k, n)
-    if (!direct || t.tag[u] == .If_Expr) && lw_placeless(k, u) {
-        if ty := tc_node_type(k, u); ty != nil && routes_to_arena(ty) { return true }
+    big :: proc(k: ^TC, n: Tree_Id) -> bool {
+        if !lw_placeless(k, n) { return false }
+        ty := tc_node_type(k, n)
+        return ty != nil && routes_to_arena(ty)
     }
-    kids := make([dynamic]Tree_Id, context.temp_allocator)
-    tree_children(t, u, &kids)
-    for c in kids { if lw_big_in(k, c, false) { return true } }
+    if (!direct || t.tag[u] == .If_Expr) && big(k, u) { return true }
+    // (Each one inside it: its subtree is one run of ids, [its lowest, it].)
+    for m in tree_lo(t, u) ..< u { if big(k, m) { return true } }
     return false
 }
 
