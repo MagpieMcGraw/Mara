@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,77 @@ lw_worker :: proc(k: ^TC, p: ^Graph_Program) -> ^TC {
     w.lower = {}
     w.field_default = {}
     return w
+}
+
+// What lowering a code again needs, kept past the middle end: the checker's
+// state, each fun's and struct's event (Checked_Program.again).
+Lower_Again :: struct {
+    k:      ^TC,
+    bodies: map[^Type_Scope]int,
+}
+
+// A lowering of codegen's: a view of the checker and a builder of its own,
+// in the again mode — what it lowers it drops once it's emitted
+// (lower_again_drop) — and a folder for its codes' constant uses.
+Relower :: struct {
+    w:    ^TC,
+    prog: ^Graph_Program,
+    fold: Folder,
+}
+
+// One for a codegen worker (nil: no code was lowered — no again).
+relower_begin :: proc(checked: ^Checked_Program) -> ^Relower {
+    a := &checked.again
+    if a.k == nil { return nil }
+    rl := new(Relower)
+    rl.prog = graph_program_new(checked, nil)
+    rl.w = new(TC)
+    rl.w^ = a.k^
+    rl.w.gb = graph_builder_new(rl.prog, kept = false)
+    rl.w.gb.again = true
+    rl.w.lowering = true
+    rl.w.lower = {}
+    rl.w.field_default = {}
+    rl.fold = graph_fold_begin(&checked.code, checked)
+    rl.fold.again = true
+    return rl
+}
+
+// A fun's or struct's code, lowered again — named and in its statement as
+// it was placed, its constants folded at their uses — to be dropped once
+// it's used (lower_again_drop with the mark).
+lower_again :: proc(rl: ^Relower, ts: ^Type_Scope) -> (g: ^Program_Graph, mark: Graph_Mark) {
+    w := rl.w
+    checked := w.checked
+    mark = graph_code_mark(w.gb)
+    i, has := checked.again.bodies[ts]
+    if !has { return }
+    e := w.events[i]
+    tc_instance_end(w, e.salt)
+    w.pkg, w.subst = e.pkg, e.subst
+    #partial switch e.kind {
+    case .Body:           g = lw_body(w, e.sc)
+    case .Program_Struct: g = lw_program_struct(w)
+    }
+    if g == nil { return }
+    if place, placed := checked.code.places[ts]; placed { graph_code_placed(g, place) }
+    graph_fold_code(&rl.fold, w.gb, g)
+    return
+}
+
+lower_again_drop :: proc(rl: ^Relower, mark: Graph_Mark) {
+    graph_code_drop(rl.w.gb, mark)
+}
+
+relower_end :: proc(rl: ^Relower) {
+    if rl == nil { return }
+    store := rl.w.gb.store
+    graph_builder_free(rl.w.gb, virtual.arena_allocator(store.arena))
+    graph_store_free(store)
+    delete(rl.fold.done)
+    delete(rl.fold.busy)
+    free(rl.w)
+    free(rl)
 }
 
 // How much each table lowerings share holds — the checker's, the

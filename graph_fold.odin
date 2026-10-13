@@ -57,6 +57,7 @@ Folder :: struct {
     at:     Span,                // what couldn't be computed, when it's an operation
     code:   ^Program_Graph,      // the code whose uses are being folded
     errors: map[^Program_Graph][dynamic]Fold_Error,   // each code's uses with no value
+    again:  bool,                // codes lowered again (codegen's): the tables and errors are the program's already
 }
 
 // What one piece of code computes: the values its operations output, the
@@ -126,7 +127,7 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
                 }
                 if v.known && v.c.is_text {
                     graph_set_value(g, id, v.c)
-                } else {
+                } else if !fo.again {
                     if pc.lock != nil { sync.mutex_lock(pc.lock) }
                     pc.tables[c] = v
                     if pc.lock != nil { sync.mutex_unlock(pc.lock) }
@@ -141,6 +142,10 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
 @(private="file")
 fold_error :: proc(fo: ^Folder, g: ^Program_Graph, id: Node_Id, c: Syntax_Id) {
     at := fo.at if fo.at != {} else g.origin[id]
+    if fo.again {
+        fo.failed, fo.at = false, {}
+        return
+    }
     if fo.code not_in fo.errors { fo.errors[fo.code] = {} }
     append(&fo.errors[fo.code], Fold_Error{at, graph_name(graph_const_code(fo.pc, c), 0)})
     fo.failed, fo.at = false, {}

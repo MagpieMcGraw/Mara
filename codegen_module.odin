@@ -98,6 +98,8 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     local: Codegen
     init_worker_codegen(&local, task)
+    local.relower = relower_begin(task.checked)
+    defer relower_end(local.relower)
 
     // Emit this module's functions. switch_to_module + flush handle the
     // g.out buffer swap so emit_target routes correctly.
@@ -381,6 +383,10 @@ module_build_worker :: proc(t: thread.Task) {
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
 generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "") -> ([]string, bool) {
+    // (Codes are lowered again as they're emitted, on several threads:
+    // inference's cells are only read.)
+    g_infer_frozen = true
+    defer g_infer_frozen = false
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -568,7 +574,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         codegen_fatal(&g, {}, "`main` was declared but never extracted as a function")
     }
     // Main's body, from the graph.
+    g.relower = relower_begin(checked)
     llvm_main(&g, main_cf)
+    relower_end(g.relower)
+    g.relower = nil
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
     // truncating the return code so emscripten's runtime sees a regular int.

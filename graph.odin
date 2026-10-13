@@ -405,6 +405,10 @@ Graph_Builder :: struct {
     main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
     // The body being built.
     body:     ^Graph_Body,
+    // Lowering a code again (codegen's, lower_again): nothing about it is
+    // kept — no scope, no code found, no failure — and it's dropped once
+    // used (graph_code_drop).
+    again:      bool,
     // What the codes it builds are made in, its own: their columns, and the
     // names, types and values they hold by id — one builder's never
     // another's.
@@ -579,11 +583,12 @@ graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     p.pc.consumes = make(map[^Type_Scope]int)
     p.pc.tables = make(map[Syntax_Id]^Fold)
     p.pc.summaries = make(map[^Type_Scope]^Fun_Summary)
+    p.pc.places = make(map[^Type_Scope]Code_Place)
     return p
 }
 
 // A builder for the program's codes, with storage and tables of its own.
-graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
+graph_builder_new :: proc(p: ^Graph_Program, kept := true) -> ^Graph_Builder {
     checked := p.checked
     b := new(Graph_Builder)
     b.prog = p
@@ -608,7 +613,7 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     b.tables.values = make([dynamic]Const_Value, graph_region_allocator(&r[.Values]))
     append(&b.tables.values, Const_Value{})   // (Const_Id 0: none)
     b.type_table = &b.tables.types
-    append(&p.pc.stores, b.store)
+    if kept { append(&p.pc.stores, b.store) }
     return b
 }
 
@@ -881,7 +886,15 @@ Program_Code :: struct {
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
     stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
     summaries:   map[^Type_Scope]^Fun_Summary,     // what each fun reaches through its params, worked out once its code is built (reach_scc)
+    places:      map[^Type_Scope]Code_Place,       // each fun's or struct's code's name and statement, where the program writes it (a code lowered again takes them)
     lock:        ^sync.Mutex,                      // while codes are built on several threads: funs, consts and tables are read and written under it
+}
+
+// What putting a fun's or struct's code in place gives it: its name (an
+// instance's, mangled) and its statement (graph_place_scope).
+Code_Place :: struct {
+    name: string,
+    stmt: Graph_Stmt,
 }
 
 // A fun's or struct's code, built (nil: none, or not yet).
@@ -911,16 +924,38 @@ graph_const_code :: proc(pc: ^Program_Code, value: Syntax_Id) -> ^Program_Graph 
 // A program's code let go of: its columns' regions, then its arena. (A
 // build's goes with its process; `mara serve` checks again, and again.)
 program_code_free :: proc(pc: ^Program_Code) {
-    for s in pc.stores {
-        if s.regions != nil {
-            for &r in s.regions {
-                if r.base != nil { virtual.release(r.base, r.reserved) }
-            }
-        }
-        virtual.arena_destroy(s.arena)
-    }
+    for s in pc.stores { graph_store_free(s) }
     delete(pc.stores)
     pc^ = {}
+}
+
+// A builder's store let go of: its columns' regions, then its arena.
+graph_store_free :: proc(s: Graph_Store) {
+    if s.regions != nil {
+        for &r in s.regions {
+            if r.base != nil { virtual.release(r.base, r.reserved) }
+        }
+    }
+    virtual.arena_destroy(s.arena)
+}
+
+// Where a builder's codes' columns end — what building one more, then
+// dropping it, goes back to (graph_code_drop). Its tables are kept: what
+// they hold, other codes may hold too.
+Graph_Mark :: [Graph_Column]uint
+
+graph_code_mark :: proc(b: ^Graph_Builder) -> (m: Graph_Mark) {
+    for c in Graph_Column { m[c] = b.store.regions[c].used }
+    return
+}
+
+// The codes built since the mark, dropped: their columns' room given back,
+// to build the next in.
+graph_code_drop :: proc(b: ^Graph_Builder, m: Graph_Mark) {
+    for c in Graph_Column.Kind ..= Graph_Column.Settled {
+        r := &b.store.regions[c]
+        r.used, r.last = m[c], m[c]
+    }
 }
 // --- one code at a time ---------------------------------------------------------
 
@@ -1018,9 +1053,17 @@ graph_check_built :: proc(b: ^Graph_Builder) {
 // and in its statement, then put in place (lw_place_decl walks the program
 // in written order; its body's definitions' codes go after it).
 graph_place_scope :: proc(p: ^Graph_Program, c: ^Built_Code, ts: ^Type_Scope, name: string, written: Written, stmt: Graph_Stmt) {
-    c.g.stmts[0] = stmt
-    c.g.name[0] = graph_intern_in(c.g.tables, graph_scope_name(ts, name, written))
+    place := Code_Place{graph_scope_name(ts, name, written), stmt}
+    p.pc.places[ts] = place
+    graph_code_placed(c.g, place)
     graph_place(p, c)
+}
+
+// A code given its name and statement (a code lowered again, the ones it
+// had).
+graph_code_placed :: proc(g: ^Program_Graph, place: Code_Place) {
+    g.stmts[0] = place.stmt
+    g.name[0] = graph_intern_in(g.tables, place.name)
 }
 
 // A code put in place: next in Program_Code.codes, the program's written
@@ -2113,9 +2156,11 @@ graph_widen_to :: proc(w: Graph_Widen) -> Type {
 graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written,
                          returned := Token_Id(0), holds := false) -> ^Graph_Body {
     graph_code_open(b)
-    sync.mutex_lock(&b.prog.lock)
-    b.prog.scope_of[id] = ts
-    sync.mutex_unlock(&b.prog.lock)
+    if !b.again {
+        sync.mutex_lock(&b.prog.lock)
+        b.prog.scope_of[id] = ts
+        sync.mutex_unlock(&b.prog.lock)
+    }
     f := graph_body_new(b)
     f.ts = ts
     b.body = f
@@ -2133,6 +2178,7 @@ graph_body_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span
 graph_body_fail :: proc(b: ^Graph_Builder, f: ^Graph_Body, reason: string) {
     if f.failed != "" { return }
     f.failed = reason
+    if b.again { return }
     sync.mutex_lock(&b.prog.lock)
     defer sync.mutex_unlock(&b.prog.lock)
     if b.prog.failure.reason == "" {
@@ -2148,7 +2194,7 @@ graph_body_end :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     b.body = nil
     // (Its end can find what it can't build: a scope's values on the arena.)
     c := graph_code_close(b, f)
-    if c != nil {
+    if c != nil && !b.again {
         sync.mutex_lock(&b.prog.lock)
         b.prog.bodies[f.ts] = new_clone(Built_Code{g = c, b = b, defs = f.defs}, b.prog.allocator)
         sync.mutex_unlock(&b.prog.lock)

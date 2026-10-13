@@ -30,6 +30,7 @@ Middle :: struct {
     prog:    ^Graph_Program,     // the codes lowered
     workers: [dynamic]^Middle_Worker,
     escape:  [dynamic][dynamic]Esc_Diag,   // each worker's escape diagnostics
+    bodies:  map[^Type_Scope]int,          // each fun's and struct's event (Lower_Again)
 }
 
 // One worker of the middle end: its lowering and what its analyses keep.
@@ -106,6 +107,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         }
     })
     pc.lock = nil
+    mid.bodies = codes.bodies
     lower_place(mid.workers[0].k, &codes)
     folders := make([dynamic]^Folder, context.temp_allocator)
     for mw in mid.workers { append(&folders, &mw.fold) }

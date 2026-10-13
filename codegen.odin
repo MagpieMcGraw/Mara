@@ -110,6 +110,7 @@ Codegen :: struct {
     // What each fun's code reaches through its params (llvm.odin,
     // reach_summary): worked out as calls ask, once — each worker its own.
     summaries: map[^Type_Scope]^Fun_Summary,
+    relower:   ^Relower,   // where each fun's code is lowered again as it's emitted (lower_again)
     // Every function's code comes from the program graph (llvm.odin).
 
     // Inside an assert/crash fail block (native builds): print-shaped

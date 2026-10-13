@@ -210,7 +210,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
+    // (Kept past the check: lowering a code again — codegen's — copies it.)
+    k := new_clone(TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert})
     k.annot = annot_new(t)
     checked.annot = k.annot
 
@@ -300,6 +301,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { mid.prog.constant_names[key] = kc.sid }
         checked.code = build_program_graph(mid.prog)
+        checked.again = {k = k, bodies = mid.bodies}
         if perf != nil { perf_timer_mark(perf, "analysis") }
     } else {
         if k.gb != nil { graph_builder_free(k.gb) }
@@ -976,6 +978,10 @@ Checked_Program :: struct {
 
     // What the checker found about each node, per instance (annot.odin).
     annot:          ^Annotations,
+
+    // What lowering a fun's or struct's code again needs (codegen's: it
+    // lowers each as it emits it).
+    again:          Lower_Again,
 }
 
 // ---------------------------------------------------------------------------
