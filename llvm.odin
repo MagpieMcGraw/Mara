@@ -121,9 +121,9 @@ llvm_probe :: proc(e: ^Llvm) {
     if g.profile == "" || !(e.main || llvm_works(&g.checked.code, e.pg, constructs = true)) { return }
     name := llvm_probe_name(cf)
     at := fmt.tprintf("%s:%d", filepath.base(span_file(cf.body_span)), span_line(cf.body_span))
-    e.probe = strings.concatenate({"@.prof.", mara_fn_name(g, cf.name)[1:]})
+    e.probe = strings.concatenate({"@.prof.", mara_fn_name(g, cf.name)[1:]}, codegen_keep(g))
     append(&g.string_decls, strings.concatenate({e.probe, " = internal global { ptr, ptr, ptr } { ptr ",
-        get_string_literal(g, name), ", ptr ", get_string_literal(g, at), ", ptr null }"}))
+        get_string_literal(g, name), ", ptr ", get_string_literal(g, at), ", ptr null }"}, codegen_keep(g)))
     emit(g, "  call void @__mara_prof_enter(ptr %s)", e.probe)
 }
 

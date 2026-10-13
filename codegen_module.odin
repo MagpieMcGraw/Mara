@@ -1,5 +1,6 @@
 package mara
 
+import "base:runtime"
 import "core:fmt"
 import "core:slice"
 import "core:strings"
@@ -31,8 +32,10 @@ switch_to_module :: proc(g: ^Codegen, home_package: string) {
         g.module_outs[g.current_module_home] = g.out
     }
     if _, exists := g.module_outs[home_package]; !exists {
+        // (A module's text grows by reallocating: the heap's, which gives
+        // back what it grew out of — an arena keeps every size it passed.)
         b: strings.Builder
-        strings.builder_init_len_cap(&b, 0, 4 * 1024 * 1024)
+        strings.builder_init_len_cap(&b, 0, 64 * 1024, runtime.heap_allocator())
         g.module_outs[home_package] = b
         append(&g.module_order, home_package)
     }
@@ -100,15 +103,26 @@ module_codegen_worker :: proc(t: thread.Task) {
     init_worker_codegen(&local, task)
 
     // Emit this module's functions. switch_to_module + flush handle the
-    // g.out buffer swap so emit_target routes correctly.
+    // g.out buffer swap so emit_target routes correctly. Each function's
+    // emission — its storage facts, its values, its lines as they're
+    // formatted — is scratch, let go of once it's written into the module's
+    // text; what outlives it is made in the module's arena (Codegen.keep).
     switch_to_module(&local, task.module_name)
+    scratch: virtual.Arena
+    _ = virtual.arena_init_growing(&scratch)
+    defer virtual.arena_destroy(&scratch)
     for fn_name in task.fn_names {
         cf, cf_ok := task.checked.functions[fn_name]
         if !cf_ok { continue }
         // Foreigns and intrinsics have no body: a call goes through its
         // `declare` and link name, or expands where it is.
         if _, src := cf.origin.(Origin_Source); !src { continue }
-        llvm_function(&local, cf)
+        {
+            context.allocator = virtual.arena_allocator(&scratch)
+            context.temp_allocator = context.allocator
+            llvm_function(&local, cf)
+        }
+        virtual.arena_free_all(&scratch)
     }
     flush_current_module(&local)
 
@@ -130,6 +144,23 @@ module_codegen_worker :: proc(t: thread.Task) {
 // and lives in the worker's arena.
 @(private="file")
 init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
+    // (What outlives a function's emission, made where its module's is —
+    // every table made here, so none takes the scratch it's first used in.)
+    keep := context.allocator
+    g.keep = keep
+    g.string_literals = make(map[string]string, keep)
+    g.string_names = make(map[string]bool, keep)
+    g.string_decls = make([dynamic]string, keep)
+    g.struct_decls = make([dynamic]string, keep)
+    g.registered_structs = make(map[string]bool, keep)
+    g.overflow_intrinsics = make(map[string]bool, keep)
+    g.bswap_intrinsics = make(map[int]bool, keep)
+    g.const_tables = make(map[string]Const_Table, keep)
+    g.summaries = make(map[^Type_Scope]^Fun_Summary, keep)
+    g.module_outs = make(map[string]strings.Builder, keep)
+    g.module_order = make([dynamic]string, keep)
+    g.alloca_buf = strings.builder_make(keep)
+    g.body_buf = strings.builder_make(keep)
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode

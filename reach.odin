@@ -1,5 +1,6 @@
 package mara
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:slice"
@@ -26,6 +27,9 @@ Fun_Summary :: struct {
 // with no code reaches through every param: a foreign one, or an intrinsic
 // (expanded in place). So does a fun being worked out — a call back into it.
 reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Scope) -> ^Fun_Summary {
+    // (A summary cached is made where its cache is: codegen's outlives each
+    // function's scratch.)
+    if a := (^runtime.Raw_Map)(cache).allocator; a.procedure != nil { context.allocator = a }
     if s := graph_fun_summary(code, f); s != nil { return s }   // (worked out for everyone: reach_scc)
     if s, known := cache^[f]; known && s.done { return s }
     n := len(f.params)

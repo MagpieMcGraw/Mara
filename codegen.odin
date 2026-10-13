@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:hash"
+import "core:mem"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -110,6 +111,11 @@ Codegen :: struct {
     // What each fun's code reaches through its params (llvm.odin,
     // reach_summary): worked out as calls ask, once — each worker its own.
     summaries: map[^Type_Scope]^Fun_Summary,
+    // What outlives a function's emission — the module's text, its string
+    // literals, constant tables, intrinsics, the temporaries' names — is
+    // made with this: a worker's module arena, the build's on the main
+    // thread. A function's own emission is scratch (module_codegen_worker).
+    keep: mem.Allocator,
     // Every function's code comes from the program graph (llvm.odin).
 
     // Inside an assert/crash fail block (native builds): print-shaped
@@ -125,6 +131,11 @@ Codegen :: struct {
 // `%t<N>` strings owned by the Codegen. The pool is built once at codegen
 // start (grow_tmp_pool); subsequent fresh_tmp calls just index in.
 // No per-call allocation, no format parsing.
+// What outlives a function's emission is made with (Codegen.keep).
+codegen_keep :: proc(g: ^Codegen) -> mem.Allocator {
+    return g.keep if g.keep.procedure != nil else context.allocator
+}
+
 fresh_tmp :: proc(g: ^Codegen) -> string {
     g.tmp_counter += 1
     if g.tmp_counter >= len(g.tmp_pool) {
@@ -145,6 +156,8 @@ fresh_tmp :: proc(g: ^Codegen) -> string {
 // `@mara_*` namespace; this gives temps the same guarantee against locals.)
 @(private="file")
 grow_tmp_pool :: proc(g: ^Codegen, min_size: int) {
+    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
+    context.temp_allocator = context.allocator
     new_cap := max(min_size, len(g.tmp_pool) * 2, 16 * 1024)
     new_pool := make([]string, new_cap)
     // Each name fits in 13 bytes ("%.t" + up to 10 digits). Slab in one
@@ -607,6 +620,8 @@ llvm_type_from_checker :: proc(t: Type) -> string {
 
 get_string_literal :: proc(g: ^Codegen, s: string) -> string {
     if name, ok := g.string_literals[s]; ok { return name }
+    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
+    context.temp_allocator = context.allocator
     // Named by content, not by order: a string's name doesn't depend on the
     // strings emitted before it, so one function's IR stays the same when
     // another changes. The per-worker prefix keeps the parallel codegens'
@@ -855,7 +870,7 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
     fail_label := fresh_label(g, "overflow.fail")
 
     intrinsic_name := fmt.tprintf("llvm.%s.with.overflow.%s", op, ir_type)
-    g.overflow_intrinsics[intrinsic_name] = true
+    if intrinsic_name not_in g.overflow_intrinsics { g.overflow_intrinsics[strings.clone(intrinsic_name, codegen_keep(g))] = true }
 
     pair := fresh_tmp(g)
     ret_type := strings.concatenate({"{ ", ir_type, ", i1 }"})
@@ -1007,6 +1022,8 @@ emit_arena_reset :: proc(g: ^Codegen) {
 
 // Generate an LLVM type declaration for a struct from checked type data.
 register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
+    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
+    context.temp_allocator = context.allocator
     if sd_is_module(sd) { return }  // module-struct — namespace only, no data layout
     key := sd.name
     if key in g.registered_structs { return }
@@ -1031,6 +1048,8 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
 
 
 register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
+    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
+    context.temp_allocator = context.allocator
     register_struct_decl_sd(g, &st.sd)
 }
 
@@ -1045,6 +1064,8 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
 // while shifting the payload start to where the variants' natural alignment
 // expects it (e.g. SDL3's u64 timestamp at byte 8 with a u32 tag).
 register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
+    context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
+    context.temp_allocator = context.allocator
     g.registered_structs[ukey] = true
     llvm_name := union_llvm_name(ukey)
 
