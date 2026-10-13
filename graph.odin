@@ -578,6 +578,7 @@ graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph
     p.pc.consts = make(map[Syntax_Id]^Program_Graph)
     p.pc.consumes = make(map[^Type_Scope]int)
     p.pc.tables = make(map[Syntax_Id]^Fold)
+    p.pc.summaries = make(map[^Type_Scope]^Fun_Summary)
     return p
 }
 
@@ -879,6 +880,7 @@ Program_Code :: struct {
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
     stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
+    summaries:   map[^Type_Scope]^Fun_Summary,     // what each fun reaches through its params, worked out once its code is built (reach_scc)
     lock:        ^sync.Mutex,                      // while codes are built on several threads: funs, consts and tables are read and written under it
 }
 
@@ -888,6 +890,14 @@ graph_fun_code :: proc(pc: ^Program_Code, ts: ^Type_Scope) -> ^Program_Graph {
     g := pc.funs[ts] or_else nil
     if pc.lock != nil { sync.mutex_unlock(pc.lock) }
     return g
+}
+
+// What a fun reaches, worked out (nil: not yet — reach_summary works it out).
+graph_fun_summary :: proc(pc: ^Program_Code, ts: ^Type_Scope) -> ^Fun_Summary {
+    if pc.lock != nil { sync.mutex_lock(pc.lock) }
+    s := pc.summaries[ts] or_else nil
+    if pc.lock != nil { sync.mutex_unlock(pc.lock) }
+    return s
 }
 
 // A constant's code, by its value's node, built (nil: none, or not yet).

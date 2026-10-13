@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:slice"
+import "core:sync"
 
 // What a call can reach, and where places are, from the program graph alone —
 // shared by the analysis that holds a program to the rule a result isn't
@@ -24,6 +25,7 @@ Fun_Summary :: struct {
 // with no code reaches through every param: a foreign one, or an intrinsic
 // (expanded in place). So does a fun being worked out — a call back into it.
 reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Scope) -> ^Fun_Summary {
+    if s := graph_fun_summary(code, f); s != nil { return s }   // (worked out for everyone: reach_scc)
     if s, known := cache^[f]; known && s.done { return s }
     n := len(f.cg_params)
     all := new(Fun_Summary)
@@ -41,6 +43,32 @@ reach_summary :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_Sco
     if !reach_summarize(code, cache, f, pg, s) { s^ = all^ }
     s.done = true
     return s
+}
+
+// A component of the call graph's funs' summaries, worked out together once
+// their codes are built — every call they make out of the component reaches
+// what its callee's summary says; one within it, through every param it's
+// handed, whichever is worked out first — and kept for everyone
+// (Program_Code.summaries): the middle end's reach check, codegen.
+reach_scc :: proc(code: ^Program_Code, cache: ^Reach_Summaries, members: []^Type_Scope) {
+    for f in members { cache^[f] = new(Fun_Summary) }   // (being worked out: a call to one reaches all)
+    out := make([]^Fun_Summary, len(members), context.temp_allocator)
+    for f, i in members {
+        n := len(f.cg_params)
+        s := new(Fun_Summary)
+        s.reaches, s.returned = make([]bool, n), make([]bool, n)
+        pg := graph_fun_code(code, f)
+        if _, src := f.origin.(Origin_Source); pg == nil || !src || !reach_summarize(code, cache, f, pg, s) {
+            for &r in s.reaches { r = true }
+            for &r in s.returned { r = false }
+        }
+        s.done = true
+        out[i] = s
+    }
+    if code.lock != nil { sync.mutex_lock(code.lock) }
+    for f, i in members { code.summaries[f] = out[i] }
+    if code.lock != nil { sync.mutex_unlock(code.lock) }
+    for f, i in members { cache^[f] = out[i] }
 }
 
 // A summary from a fun's code (false: its params aren't the code's). A param
@@ -95,7 +123,8 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
             }
             return true
         }
-        for v in vars[d] { if !written_only(pg, uses, v) { return false } }
+        written, _ := vars[d]   // (bound first: `for x in m[k]` faults on a missing key)
+        for v in written { if !written_only(pg, uses, v) { return false } }
         return true
     }
 
@@ -107,7 +136,8 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
             s.reaches[k] = len(vars[pn]) > 0
             continue
         }
-        for v in vars[pn] {
+        named, _ := vars[pn]   // (bound first: `for x in m[k]` faults on a missing key — a param never named)
+        for v in named {
             for u in uses[v] {
                 if pg.op[u.by] != .Read { s.reaches[k] = true; continue }
                 for r in uses[u.by] {

@@ -221,9 +221,12 @@ middle_done :: proc(run: ^Middle_Run, s: int) {
 // A component of the call graph: its funs lowered, its escape analysis run,
 // each fun analysed — a worker's, once its callees' are done.
 middle_scc :: proc(mw: ^Middle_Worker, codes: ^LW_Codes, cg: ^Call_Graph, scc: []int) {
+    members := make([dynamic]^Type_Scope, 0, len(scc), context.temp_allocator)
     for node in scc {
         if i, checked := codes.bodies[cg.nodes[node]]; checked { lw_code(mw.k, codes, i) }
+        if cg.nodes[node] != nil { append(&members, cg.nodes[node]) }   // (nil: a constant's value's calls, run at no fun's)
     }
+    reach_scc(&mw.k.gb.prog.pc, &mw.reach.cache, members[:])
     escape_scc(cg, scc)
     for node in scc {
         if i, checked := codes.bodies[cg.nodes[node]]; checked { middle_analyse(mw, codes, i) }
