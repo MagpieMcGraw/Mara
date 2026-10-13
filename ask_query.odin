@@ -189,7 +189,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
         return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at)
     }
     if q.target == "" && strings.count(q.at, ":") == 2 {
-        return ask_at_point(&build_tree, s.all_files, s.checked.annot, q.at)
+        return ask_at_point(&build_tree, s.all_files, s.checked.annot, &s.checked.code, q.at)
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)

@@ -340,10 +340,11 @@ references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {
     return out[:]
 }
 
-// Resolve `<file>:<line>:<col>` to the chain of nodes holding it. Returns
-// rendered text and whether anything was found.
+// Resolve `<file>:<line>:<col>` to the chain of nodes holding it, each with
+// its type and what it was lowered to. Returns rendered text and whether
+// anything was found.
 ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
-                     a: ^Annotations, spec: string) -> (string, bool) {
+                     a: ^Annotations, pc: ^Program_Code, spec: string) -> (string, bool) {
     p, msg, ok := hit_point(t, all_files, spec)
     if !ok { return msg, false }
     want, line, col, base, tokens, tok_i, at, hits, src_file := p.want, p.line, p.col, p.base, p.tokens, p.tok_i, p.at, p.hits, p.src
@@ -367,8 +368,38 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
                      span_text(src_file.source, span))
         if ty != "" { fmt.sbprintf(&sb, "   : %s", ty) }
         fmt.sbprint(&sb, "\n")
+        if ops := hit_ops(pc, a, n); ops != "" { fmt.sbprintf(&sb, "      → %s\n", ops) }
     }
     return strings.to_string(sb), true
+}
+
+// What a node was lowered to (Annotations.ops): its nodes in the lowered
+// program, in order — an operation's kind, else the node's (a local, a
+// scope), and its name; the same one again, counted. The same in each
+// instance once; else each instance's, apart.
+@(private="file")
+hit_ops :: proc(pc: ^Program_Code, a: ^Annotations, n: Tree_Id) -> string {
+    lists := make([dynamic]string, context.temp_allocator)
+    for inst, i in a.ops {
+        if n < a.instances[i].lo || n > a.instances[i].hi || inst[n - a.instances[i].lo].code == 0 { continue }
+        g, id := graph_ops(pc, a, annot_key(Instance_Id(i), n))
+        parts := make([dynamic]string, context.temp_allocator)
+        last, times := "", 0
+        for ; id != NO_NODE; id = graph_ops_next(g, id) {
+            what := fmt.tprint(g.op[id]) if g.kind[id] == .Op else fmt.tprint(g.kind[id])
+            if name := graph_name(g, id); name != "" { what = fmt.tprintf("%s %s", what, name) }
+            if what == last {
+                times += 1
+                parts[len(parts) - 1] = fmt.tprintf("%s ×%d", what, times)
+                continue
+            }
+            append(&parts, what)
+            last, times = what, 1
+        }
+        list := strings.join(parts[:], ", ", context.temp_allocator)
+        if !slice.contains(lists[:], list) { append(&lists, list) }
+    }
+    return strings.join(lists[:], " | ", context.temp_allocator)
 }
 
 // `mara ask what at <file>:<line>:<col>`: what is at the point, to read —
