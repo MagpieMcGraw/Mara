@@ -390,8 +390,7 @@ storage_carved :: proc(s: ^Storage) {
             ops := graph_operands(pg, w)
             c, dest := ops[1].op, ops[0].op
             if c == NO_NODE || pg.op[c] != .Carve || graph_name(pg, c) != "let" || pg.op[dest] != .Var { continue }
-            st := pg.stmt[w]
-            if d := pg.refers[dest]; pg.kind[d] == .Local && st >= 0 && pg.stmts[st].kind == .Decl { s.carved[d] = c }
+            if d := pg.refers[dest]; pg.kind[d] == .Local && graph_stmt(pg, w).kind == .Decl { s.carved[d] = c }
         }
     }
 }
@@ -934,8 +933,7 @@ storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: 
         fresh := false
         if pg.op[dest] == .Var {
             d := pg.refers[dest]
-            st := pg.stmt[u]
-            fresh = pg.written[d] == .Synthetic || (st >= 0 && pg.stmts[st].kind == .Decl)
+            fresh = pg.written[d] == .Synthetic || graph_stmt(pg, u).kind == .Decl
         }
         // (The result slot is no fresher than any place: the local every
         // return returns lives there, and `x = f(x)` passes it.)
@@ -960,7 +958,7 @@ storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
     dest := uops[0].op
     if uops[1] != o || pg.op[dest] != .Var || storage_direct(s, dest) { return NO_NODE }
     d := pg.refers[dest]
-    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && pg.stmt[d] != pg.stmt[u]) { return NO_NODE }
+    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node) { return NO_NODE }
     return dest
 }
 

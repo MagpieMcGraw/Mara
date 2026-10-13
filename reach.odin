@@ -323,7 +323,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
             x, has := puts[d]
             return x, has && x != NO_NODE
         }
-        if s := pg.stmt[w]; s >= 0 && pg.stmts[s].kind == .Decl { return NO_NODE, false }
+        if graph_stmt(pg, w).kind == .Decl { return NO_NODE, false }
         return dest, true
     }
     check :: proc(code: ^Program_Code, cache: ^Reach_Summaries, pg: ^Program_Graph, bound: map[Node_Id]Node_Id,

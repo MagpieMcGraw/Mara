@@ -23,6 +23,7 @@ Tree :: struct {
     a, b:  [dynamic]u32,
     extra: [dynamic]u32,        // lists (a count, then the items) and records
     files: [dynamic]Tree_Id,    // each file's root
+    parent: [dynamic]Tree_Id,   // what each node is a child of (0: a file's root) — tree_parents
 }
 
 build_tree: Tree
@@ -324,6 +325,68 @@ tree_children :: proc(t: ^Tree, n: Tree_Id, out: ^[dynamic]Tree_Id) {
             each(t, f, v, out)
         }
     }
+}
+
+// Each node's parent (Tree.parent), once the tree is whole: what climbing
+// from a node needs — its statement (tree_stmt).
+tree_parents :: proc(t: ^Tree) {
+    t.parent = make([dynamic]Tree_Id, len(t.tag))
+    kids := make([dynamic]Tree_Id, context.temp_allocator)
+    for n in 1 ..< len(t.tag) {
+        clear(&kids)
+        tree_children(t, Tree_Id(n), &kids)
+        for c in kids { t.parent[c] = Tree_Id(n) }
+    }
+}
+
+// The statement a node is part of — itself, if it's one: a block's, a
+// loop's header's, a definition (0: none).
+tree_stmt :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
+    n := n
+    for n != 0 {
+        #partial switch t.tag[n] {
+        case .Assign, .Compound, .Decl, .Using, .Expr_Stmt, .Return, .Break, .Continue, .Defer,
+             .If, .Elif, .Match, .For_Range, .For_Each, .For_C, .For_Cond, .Define, .Variant:
+            return n
+        }
+        n = t.parent[n]
+    }
+    return 0
+}
+
+// What a statement does to the variables it writes.
+tree_stmt_kind :: proc(t: ^Tree, s: Tree_Id) -> Stmt_Kind {
+    #partial switch t.tag[s] {
+    case .Using:    return tree_stmt_kind(t, Tree_Id(t.a[s]))   // (its declaration's)
+    case .Expr_Stmt:
+        if t.tag[t.a[s]] == .Import { return .Decl }
+    case .Decl:
+        // (Several names from one value: a destructure — a broadcast's, its
+        // copies': tc_broadcast.)
+        v := decl_view(t, s)
+        if len(v.targets) > 1 && len(v.values) == 1 { return .Destructure }
+        return .Decl
+    case .Assign:
+        targets := tree_list(t, t.a[s])
+        if len(targets) > 1 && len(targets) == len(tree_list(t, t.b[s])) { return .Other }   // (its assignments')
+        if len(targets) == 1 { return tree_assign_kind(t, targets[0]) }
+        return .Destructure
+    case .Compound:
+        if t.tag[t.a[s]] != .Ident { return .Write }
+        return .Assign
+    case .For_Range, .For_Each, .For_C, .For_Cond: return .Loop
+    case .If:    return .If
+    case .Match: return .Match
+    }
+    return .Other
+}
+
+// An assignment's statement kind, by its target: a place's a write; `_`'s
+// and this_program's no assignment.
+tree_assign_kind :: proc(t: ^Tree, target: Tree_Id) -> Stmt_Kind {
+    if t.tag[target] != .Ident { return .Write }
+    if name := token_text(build_tokens[t.main[target]]); name == "_" || name == "this_program" { return .Other }
+    return .Assign
 }
 
 // The lowest node of a subtree: its nodes are [it, n] (children are made

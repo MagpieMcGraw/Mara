@@ -75,7 +75,6 @@ TC_Event :: struct {
     sc:       ^TC_Scope,         // .Body
     kc:       ^TC_Const,         // .Const
     sid:      Syntax_Id,         // .Module_Stmt
-    declared: Graph_Declared,    // .Module_Stmt
     salt:     TC_Salt,
     pkg:      string,
     subst:    map[string]Type,
@@ -101,8 +100,8 @@ tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
     }
 }
 
-tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id, declared: Graph_Declared) {
-    tc_event(k, {kind = .Module_Stmt, sid = sid, declared = declared})
+tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id) {
+    tc_event(k, {kind = .Module_Stmt, sid = sid})
 }
 
 // A fun or a struct as registered: its type, its definition, the scope its
@@ -295,6 +294,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         if perf != nil { perf_timer_mark(perf, "lower") }
         checked.call_graph = build_call_graph(checked)
         c.cg = &checked.call_graph
+        tree_parents(t)   // (each code's statements are the tree's: graph_stmt climbs to them)
         mid = middle_program(k, c, checked, fns)
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
@@ -358,7 +358,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         if ts := k.scopes[i].ts; ts != nil && ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
     }
     for i in mine {
-        tc_module_stmt(k, tc_sid(k, k.scopes[i].def), {kind = .Other, set = true})
+        tc_module_stmt(k, tc_sid(k, k.scopes[i].def))
     }
     // (Its foreign funs, for the emitter.)
     for f, i in files {
@@ -417,14 +417,14 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
             tc_use(k, e, env, mod)
-            tc_module_stmt(k, tc_sid(k, s), {kind = .Decl, set = true})
+            tc_module_stmt(k, tc_sid(k, s))
             return
         }
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
             m := tc_use(k, value, env, mod, alias = t.main[s])
-            tc_module_stmt(k, tc_sid(k, s), {kind = .Other, set = true})
+            tc_module_stmt(k, tc_sid(k, s))
             return
         }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
@@ -487,7 +487,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         // (A constant: checked, and built, here in its module's order.)
         if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
             tc_check_const(k, kc)
-            tc_module_stmt(k, tc_sid(k, s), {kind = .Other, set = true})
+            tc_module_stmt(k, tc_sid(k, s))
         }
         return
     }
@@ -738,12 +738,11 @@ tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) 
     if t.tag[s] != .Define || t.a[s] != 0 { return }
     node := Tree_Id(t.b[s])
     if node == 0 || t.tag[node] != .Union_Def { return }
-    kind := tc_stmt_kind(k, s)
     generic := tc_union_is_generic(k, node)
     for vn in tree_list(t, t.b[node]) {
         if v := tc_variant(k, vn, 0); v.fields {
             name := strings.concatenate({tc_name(k, s), "_", v.name}, context.temp_allocator)
-            append(decls, Graph_Decl{id = tc_sid(k, vn), span = tree_span(t, vn), kind = kind, form = .Scope, name = name, generic = generic})
+            append(decls, Graph_Decl{id = tc_sid(k, vn), span = tree_span(t, vn), form = .Scope, name = name, generic = generic})
         }
     }
 }
@@ -751,7 +750,7 @@ tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) 
 // What a statement outside any body declares, as the builder builds it.
 tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     t := k.t
-    d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s), kind = tc_stmt_kind(k, s)}
+    d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s)}
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         // (A bare `use m` the checker settles.)
@@ -775,39 +774,6 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         d.form = .Code
     }
     return d
-}
-
-// What a statement does to the variables it writes, as the graph's statements
-// table has it.
-tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
-    #partial switch k.t.tag[s] {
-    case .Using:    return tc_stmt_kind(k, Tree_Id(k.t.a[s]))   // (its declaration's)
-    case .Expr_Stmt:
-        if k.t.tag[k.t.a[s]] == .Import { return .Decl }
-    case .Decl:
-        // (Several names from one value: a destructure — a broadcast's, its
-        // copies': tc_broadcast.)
-        v := decl_view(k.t, s)
-        if len(v.targets) > 1 && len(v.values) == 1 { return .Destructure }
-        return .Decl
-    case .Assign:
-        targets := tree_list(k.t, k.t.a[s])
-        if len(targets) > 1 && len(targets) == len(tree_list(k.t, k.t.b[s])) { return .Other }   // (its assignments')
-        if len(targets) == 1 {
-            if k.t.tag[targets[0]] != .Ident { return .Write }
-            name := tc_name(k, targets[0])
-            if name == "_" || name == "this_program" { return .Other }
-            return .Assign
-        }
-        return .Destructure
-    case .Compound:
-        if k.t.tag[k.t.a[s]] != .Ident { return .Write }
-        return .Assign
-    case .For_Range, .For_Each, .For_C, .For_Cond: return .Loop
-    case .If:    return .If
-    case .Match: return .Match
-    }
-    return .Other
 }
 
 // The modules the build parsed, each its files' roots in path order — the

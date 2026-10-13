@@ -189,8 +189,7 @@ flow_unused :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
         if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(graph_type(g, Node_Id(id))) { continue }
         // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
         // variable or a match arm's binding.
-        s := g.stmt[id]
-        if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
+        if s := graph_stmt(g, Node_Id(id)).kind; s != .Decl && s != .Destructure { continue }
         append(found, Flow_Finding{.Unused, g.origin[id], fmt.aprintf(TYPE_UNUSED_ERR, graph_name(g, Node_Id(id)))})
     }
 }

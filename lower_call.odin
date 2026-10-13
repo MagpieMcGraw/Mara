@@ -157,14 +157,10 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
 lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool) {
     t := k.t
     b := k.gb
-    span := tree_span(t, s)
-    graph_build_stmt_none(b)
     for tg in targets {
-        declares := is_decl && t.tag[tg] == .Ident
-        kind := Stmt_Kind.Decl if declares else lw_assign_kind(k, tg)
-        saved := graph_build_stmt(b, span, kind)
-        if declares { lw_decl_one(k, s, tg, value, 0, nil) } else { lw_assign_one(k, s, tg, value) }
-        graph_build_stmt_end(b, saved)
+        b.sub = tg   // (each target's statement its own: graph_stmt)
+        if is_decl && t.tag[tg] == .Ident { lw_decl_one(k, s, tg, value, 0, nil) } else { lw_assign_one(k, s, tg, value) }
+        b.sub = 0
     }
 }
 
@@ -177,9 +173,9 @@ lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     saved := k.lower.parallel
     k.lower.parallel = &held
     for tg, i in targets {
-        saved_stmt := graph_build_stmt(b, span, lw_assign_kind(k, tg))
+        b.sub = tg   // (each target's statement its own: graph_stmt)
         lw_assign_one(k, s, tg, values[i])
-        graph_build_stmt_end(b, saved_stmt)
+        b.sub = 0
     }
     k.lower.parallel = saved
     for h in held {
@@ -188,13 +184,6 @@ lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     }
 }
 
-// An assignment's statement kind, by its target: a place's a write; `_`'s
-// and this_program's no assignment.
-lw_assign_kind :: proc(k: ^TC, target: Tree_Id) -> Stmt_Kind {
-    if k.t.tag[target] != .Ident { return .Write }
-    if name := tc_name(k, target); name == "_" || name == "this_program" { return .Other }
-    return .Assign
-}
 
 LW_Held :: struct {
     d:    Dest,

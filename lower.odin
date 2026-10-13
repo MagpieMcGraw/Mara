@@ -43,7 +43,7 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
         tc_instance_end(k, e.salt)
         switch e.kind {
         case .Module_Stmt:
-            graph_module_stmt(p, e.sid, e.declared)
+            graph_module_stmt(p, e.sid)
         case .Body:
             codes.bodies[e.sc.ts] = i
             codes.scopes[tc_sid(k, e.sc.def)] = e.sc.ts
@@ -97,7 +97,7 @@ lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
     b := k.gb
     for ms in b.prog.module_list {
         if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
-        lw_place_decl(k, codes, ms.d, ms.declared)
+        lw_place_decl(k, codes, ms.d)
     }
     for e, i in k.events { if e.kind != .Module_Stmt { lw_code(k, codes, i) } }
 }
@@ -139,7 +139,7 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
 // (What runs nothing — a variable, which no function sees, an import, a
 // type, a dispatch group, a foreign fun, a constant nothing uses — is no
 // code.)
-lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_Declared = {}) {
+lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl) {
     b := k.gb
     if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
     if c, built := b.prog.consts[d.id]; built {
@@ -148,11 +148,10 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_D
     }
     #partial switch d.form {
     case .Scope:
-        stmt := Graph_Stmt{span = d.span, kind = declared.kind if declared.set else d.kind}
         // (One scope, the checker's for this statement — a generic fun's
         // instance's own copy of a nested fun, say, which shares its span.)
         if ts, checked := codes.scopes[d.id]; checked && !d.generic {
-            lw_place_scope(k, codes, ts, d.name, d.span, .Explicit, stmt)
+            lw_place_scope(k, codes, ts, d.name, d.span, .Explicit)
             return
         }
         list, ok := b.prog.by_span[d.span]
@@ -162,7 +161,7 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_D
         }
         for ts in list {
             if ts.is_module { continue }
-            lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit, stmt)
+            lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit)
         }
     case .Code:
         graph_fatal(d.span, "code outside a body reached the graph")
@@ -171,12 +170,12 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, declared: Graph_D
 
 // A fun's or struct's code (a clean check checked every one), lowered and
 // put in place; then its body's definitions'.
-lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, span: Span, written: Written, stmt: Graph_Stmt) {
+lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, span: Span, written: Written) {
     b := k.gb
     if i, checked := codes.bodies[ts]; checked { lw_code(k, codes, i) }
     c, built := b.prog.bodies[ts]
     if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
-    graph_place_scope(b.prog, c, ts, name, written, stmt)
+    graph_place_scope(b.prog, c, ts, name, written)
     for d in c.defs { lw_place_decl(k, codes, d) }
 }
 
@@ -479,8 +478,10 @@ lw_program_struct :: proc(k: ^TC) -> ^Program_Graph {
         span := tree_span(t, tmpl.def)
         if span != pt.body_span { continue }
         v := scope_view(t, tmpl.node)
-        f := graph_body_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
         b := k.gb
+        at := lw_at(k, tmpl.node)
+        defer b.at = at
+        f := graph_body_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
         for s in v.body {
             if t.tag[s] != .Decl {
                 graph_body_fail(b, f, "the program's struct declares no field")
@@ -488,9 +489,9 @@ lw_program_struct :: proc(k: ^TC) -> ^Program_Graph {
             }
             ss := tree_span(t, s)
             graph_build_body_stmt(b, ss)
-            saved := graph_build_stmt(b, ss, tc_stmt_kind(k, s))
+            lw_at(k, s)
             for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), t.main[target], ss) }
-            graph_build_stmt_end(b, saved)
+            b.at = tc_sid(k, tmpl.node)
         }
         return graph_body_end(b, f)
     }
@@ -510,7 +511,6 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
         span := tree_span(t, s)
         at := lw_at(k, s)
         graph_build_body_stmt(b, span)
-        saved := graph_build_stmt(b, span, tc_stmt_kind(k, s))
         if t.tag[s] == .Using && fields_of != nil {
             lw_decl(k, Tree_Id(t.a[s]), fields_of)
         } else if t.tag[s] == .Decl && fields_of != nil {
@@ -518,7 +518,6 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
         } else {
             lw_stmt(k, s)
         }
-        graph_build_stmt_end(b, saved)
         b.at = at
     }
 }
@@ -581,13 +580,6 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// A statement that is its own entry in the graph's statements (a loop's
-// init, its step).
-lw_stmt_entry :: proc(k: ^TC, s: Tree_Id) {
-    saved := graph_build_stmt(k.gb, tree_span(k.t, s), tc_stmt_kind(k, s))
-    lw_stmt(k, s)
-    graph_build_stmt_end(k.gb, saved)
-}
 
 // --- declarations ---------------------------------------------------------------
 
@@ -630,10 +622,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     if name == "_" {
         // (`_ := v`: nothing declared — v built for its own sake, as `_ = v`;
         // a big one in a temporary of its own, on the arena.)
-        if value == 0 {   // (`_ : T`: nothing at all)
-            graph_build_stmt_none(b)
-            return
-        }
+        if value == 0 { return }   // (`_ : T`: nothing at all)
         if _, held := lw_big_held(k, value, tc_node_type(k, value), .Explicit, span); held { return }
         lw_expr(k, value, .Value)
         return
@@ -785,10 +774,7 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         lw_expr(k, value, .Value)
         return
     }
-    if name == "this_program" {   // (its arena: set up by main's entry, nothing built here)
-        graph_build_stmt_none(k.gb)
-        return
-    }
+    if name == "this_program" { return }   // (its arena: set up by main's entry, nothing built here)
     existing := tc_node_type(k, target)
     if tc_is_void(k, value) {
         graph_build_void_assign(b, name, lw_local(k, target), distinct_base(existing), span, tree_span(t, value))
@@ -942,14 +928,14 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         graph_build_range(b, &fl, ct)
         lw_scope(k, v.body)
     case:
-        if v.init != 0 { lw_stmt_entry(k, v.init) }
+        if v.init != 0 { lw_stmt(k, v.init) }
         graph_build_for_runs(b, &fl)
         cond := lw_expr(k, v.cond, .Value)
         graph_build_for_cond(b, &fl, cond.v)
         lw_scope(k, v.body)
         if v.post != 0 {   // (its step, after its body: where it runs)
             graph_build_for_step(b, &fl)
-            lw_stmt_entry(k, v.post)
+            lw_stmt(k, v.post)
         }
     }
 }

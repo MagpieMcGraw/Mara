@@ -326,8 +326,7 @@ esc_scan :: proc(e: ^Esc) {
                 val := ops[1].op
                 if k < 0 || val == NO_NODE { break }
                 v := &e.vars[k]
-                s := g.stmt[op]
-                if g.op[val] == .Carve && graph_name(g, val) == "let" && s >= 0 && g.stmts[s].kind == .Decl {
+                if g.op[val] == .Carve && graph_name(g, val) == "let" && graph_stmt(g, op).kind == .Decl {
                     v.view = true   // `x := let(T, s)`: x IS the storage it views
                     v.init = op
                 }
@@ -933,7 +932,8 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
         }
         return
     }
-    span := g.stmts[g.stmt[site.op]].span if g.stmt[site.op] >= 0 else g.origin[site.op]
+    st := graph_stmt(g, site.op)
+    span := st.span if st.node != 0 else g.origin[site.op]
     if into := graph_place_name(g, site.place); into != "" {
         esc_diag(e, span, TYPE_ESCAPE_STORE, what, into)
     } else {

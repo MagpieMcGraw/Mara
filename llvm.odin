@@ -151,7 +151,7 @@ llvm_probe_name :: proc(cf: ^Type_Scope) -> string {
 // construct counts when the struct's code calls or loops.
 @(private="file")
 llvm_works :: proc(pc: ^Program_Code, pg: ^Program_Graph, constructs: bool) -> bool {
-    for s in pg.stmts { if s.kind == .Loop { return true } }
+    for id := Node_Id(0); id <= pg.end; id += 1 { if graph_stmt(pg, id).kind == .Loop { return true } }
     for id := Node_Id(1); id <= pg.end; id += 1 {
         #partial switch pg.kind[id] {
         case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
@@ -1057,8 +1057,7 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
 llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
     g, pg := e.g, e.pg
     t := graph_type(pg, place)
-    s := pg.stmt[op]
-    decl := s >= 0 && pg.stmts[s].kind == .Decl
+    decl := graph_stmt(pg, op).kind == .Decl
     if llvm_direct(e, place) { return false }
     // A constructor's field is left as Self's zero (its caller zeroed Self):
     // nothing written, but a pointer's null.
@@ -2120,8 +2119,7 @@ llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: string) {
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
         dest := graph_operands(pg, u)[0].op
         if pg.op[dest] == .Var {
-            s := pg.stmt[u]
-            if (s >= 0 && pg.stmts[s].kind == .Decl) || llvm_place(e, dest) == e.slot { out = llvm_place(e, dest) }
+            if graph_stmt(pg, u).kind == .Decl || llvm_place(e, dest) == e.slot { out = llvm_place(e, dest) }
         }
     }
     if out == "" {

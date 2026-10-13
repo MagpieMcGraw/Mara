@@ -49,7 +49,8 @@ Def :: struct {
     binding: ^Var_Binding,
     var:     Node_Id,
     kind:    Def_Kind,
-    stmt:    i32,                // in the graph's stmts; -1 for a param's entry
+    stmt:    i32,                // its statement's tree node (graph_stmt); -1 for a param's entry
+    stmt_kind: Stmt_Kind,        // ... and what the statement does
     span:    Span,
     writes:  [dynamic]Node_Id,   // the operations it takes its value from
     valued:  bool,               // some write carries a value (not a bare zero or construction)
@@ -222,8 +223,9 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Variant:
                 v, _, is_def := du_written(g, op)
                 if !is_def || v not_in tracked { break }
-                s := g.stmt[op]
-                d := du_def(checked, f, &def_of, v, s, g.stmts[s].span if s >= 0 else g.origin[op])
+                st := graph_stmt(g, op)
+                d := du_def(checked, f, &def_of, v, du_stmt(st), st.span if st.node != 0 else g.origin[op])
+                d.stmt_kind = st.kind
                 if d.run < 0 { d.run = r }
                 if !du_is_step(g, op) {
                     append(&d.writes, op)
@@ -262,7 +264,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         if !is_def { return }
         k, tracked := t.tracked[v]
         if !tracked { return }
-        d := t.def_of[[2]i32{i32(v), t.g.stmt[op]}]
+        d := t.def_of[[2]i32{i32(v), du_stmt(graph_stmt(t.g, op))}]
         if whole { bits_clear_mask(state, t.kill[k]) }
         bits_set(state, t.index_of[d])
     }
@@ -321,6 +323,12 @@ du_bind :: proc(checked: ^Checked_Program, f: ^Du_Fn, v: Var_Decl, kind: Binding
     append(&f.vars, b)
     append(&checked.du.vars, b)
     return b
+}
+
+// A definition's statement, as its key has it: its tree node (-1: none).
+@(private="file")
+du_stmt :: proc(st: Graph_Stmt) -> i32 {
+    return i32(st.node) if st.node != 0 else -1
 }
 
 // The definition of variable `v` at statement `stmt`, made the first time.
@@ -412,8 +420,7 @@ du_classify :: proc(g: ^Program_Graph, d: ^Def) {
         if g.op[op] == .Variant { d.kind = .Destructure; return }
         if _, w, _ := du_written(g, op); w { whole = true }
     }
-    kind := g.stmts[d.stmt].kind if d.stmt >= 0 else Stmt_Kind.Other
-    switch kind {
+    switch d.stmt_kind {
     case .Decl:        d.kind = .Decl
     case .Destructure: d.kind = .Destructure
     case .Loop:        d.kind = .Loop_Var
@@ -676,8 +683,8 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         if len(succ[x]) < 2 { continue }
         ops := graph_run(g, int(f.runs[x]))
         last := ops[len(ops) - 1]
-        if g.stmt[last] < 0 { continue }
-        st := g.stmts[g.stmt[last]]
+        st := graph_stmt(g, last)
+        if st.node == 0 { continue }
         kind: Guard_Kind
         #partial switch st.kind {
         case .If:    kind = .If
