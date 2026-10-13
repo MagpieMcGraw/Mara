@@ -244,6 +244,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
+    ir_types_forget()   // (a check of serve's, after another: its types are new)
     k.annot = annot_new(t)
     checked.annot = k.annot
     k.blocks = new(virtual.Arena)

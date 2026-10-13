@@ -267,8 +267,9 @@ Ir_Type_Table :: struct {
 @(private="file") ir_type_table: Ir_Type_Table
 
 // Each thread's memo of the types it has asked for — by structure, and by
-// what it was made from — so asking again takes no lock. (A process builds
-// once: what a type was made from, a checker type, is this build's.)
+// what it was made from — so asking again takes no lock. (What a type was
+// made from is a checker type: a check forgets those — `mara serve` checks
+// again in one process, and a new check's types may sit where an old's did.)
 @(private="file")
 Ir_Type_Memo :: struct {
     ready:   bool,
@@ -428,6 +429,11 @@ ir_type_recalled :: proc(key: rawptr) -> (Ir_Type, bool) {
 ir_type_remember :: proc(key: rawptr, t: Ir_Type) -> Ir_Type {
     ir_memo().of[key] = t
     return t
+}
+
+// What this thread made types from forgotten (a check's start).
+ir_types_forget :: proc() {
+    clear(&ir_memo().of)
 }
 
 // --- making instructions -----------------------------------------------------------
