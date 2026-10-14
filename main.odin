@@ -1148,6 +1148,7 @@ LSP_USAGE :: `Usage: mara lsp
   initializationOptions turn each off: {"hover": false, "definition":
   false, "references": false, "symbols": false, "completion": false, "renames": false, "diagnostics": false}.`
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
+       mara docs -reload
 
   Asks a window this compiler opened (mara view — anywhere, on any module)
   to look the words up in the docs: this directory's .mara files, the
@@ -1163,7 +1164,10 @@ DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
   definition — and the rest below. (The module is checked by its window,
   when one is open on it, else here. A name there that isn't the words',
   the file changed since it was saved, isn't shown.) With no words, the
-  name there is looked up.`
+  name there is looked up.
+
+  -reload — what the window's Docs panel shows, looked up again: the files
+  read again, its scroll kept (its reload button, F5).`
 EDITOR_USAGE :: `Usage: mara editor <program>
 
   Tells the windows this compiler opens (mara view) the editor to open a

@@ -50,6 +50,19 @@ Exact :: struct {
 	name: []utf8
 	path: []utf8
 	line: i64
+	loose: bool    // its line maybe moved since (a reload): the definition by its name nearest it
+}
+
+// A lookup as made — what a reload makes again: its words, where they came
+// from, what was at the cursor.
+Docs_Query :: struct {
+	made:  bool
+	dir:   [..1000]utf8
+	words: [..400]utf8
+	kind:  [..40]utf8
+	name:  [..200]utf8
+	path:  [..1000]utf8
+	line:  i64
 }
 
 Docs_File :: struct {
@@ -80,20 +93,34 @@ Docs :: struct {
 	words:  [..16]Field             // in query
 	exact:  Found                   // the cursor's definition, as the scan found it
 	has_exact:   bool               // ... when it did
+	exact_off:   i64                // ... a loose one's lines from where it was
 	exact_shown: bool               // the cursor's shown first, found by the scan or not
 }
 
 // The words looked up: the Docs panel shows what's found — what the name
 // at the cursor refers to first, when the editor said (ex) — its status
 // line how much.
-docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
+// (`into`: the lines to fill — a reload's, the ones shown; -1: the ones
+// shown, or while the panel's pinned, the other ones, waiting to be shown
+// when it's unpinned.)
+docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	d := &ui.search
-	l := docs_target(ui)
+	target := into
+	if target < 0 {
+		target = ui.docs_front
+		if ui.docs_pinned {
+			target = 1 - ui.docs_front
+			ui.docs_newer = true
+		}
+	}
+	l := &ui.docs[target]
+	docs_keep_query(&ui.docs_query[target], dir, asked, ex)
 	lines_clear(l)
 	docs_words(d, asked)
 	d.found.len = 0
 	d.count = 0
 	d.has_exact = false
+	d.exact_off = 1 << 40
 	d.exact_shown = false
 	shown_query := asked[0 : min_int(asked.len, 60)]
 	if d.words.len == 0 and ex.kind.len == 0 {
@@ -150,17 +177,49 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact) {
 	lines_status(l, status[:], STYLE_DIM)
 }
 
+// A lookup kept, to be made again (docs_reload).
+docs_keep_query :: fun(q: ^Docs_Query, dir: []utf8, words: []utf8, ex: Exact) {
+	q.made = true
+	q.dir.len, q.words.len, q.kind.len, q.name.len, q.path.len = 0, 0, 0, 0, 0
+	&q.dir + dir[0 : min_int(dir.len, q.dir.cap)]
+	&q.words + words[0 : min_int(words.len, q.words.cap)]
+	&q.kind + ex.kind[0 : min_int(ex.kind.len, q.kind.cap)]
+	&q.name + ex.name[0 : min_int(ex.name.len, q.name.cap)]
+	&q.path + ex.path[0 : min_int(ex.path.len, q.path.cap)]
+	q.line = ex.line
+}
+
+// The lookup the Docs panel shows, made again — the files read again, your
+// edits in them shown — where it is, scrolled as it was: the reload button,
+// F5. What was at the cursor is found by its name in its file, nearest the
+// line it was on (edits may have moved it).
+docs_reload :: fun(ui: ^Ui) {
+	i := ui.docs_front
+	l := &ui.docs[i]
+	q := &ui.docs_query[i]
+	if not q.made {
+		lines_status(l, "Nothing to look up again yet: select words in Sublime first.", STYLE_DIM)
+		ui.dirty = true
+		return
+	}
+	// (Copies: the search keeps the query again, over these.)
+	dir, words, kind, name, path : [..1000]utf8
+	&dir + q.dir[:]
+	&words + q.words[:]
+	&kind + q.kind[:]
+	&name + q.name[:]
+	&path + q.path[:]
+	scroll := l.scroll
+	docs_search(ui, dir, words, Exact{kind = kind, name = name, path = path, line = q.line, loose = true}, i)
+	l.scroll = scroll
+	// (Where it was found now: where the next reload looks.)
+	if ui.search.has_exact do q.line = ui.search.exact.line
+	ui.dirty = true
+}
+
 // The Docs panel's lines, the ones it shows.
 docs_shown :: fun(ui: ^Ui) -> ^Lines {
 	return &ui.docs[ui.docs_front]
-}
-
-// The lines a lookup fills: the ones shown — but while the panel's pinned,
-// the other ones, waiting to be shown when it's unpinned.
-docs_target :: fun(ui: ^Ui) -> ^Lines {
-	if not ui.docs_pinned do return &ui.docs[ui.docs_front]
-	ui.docs_newer = true
-	return &ui.docs[1 - ui.docs_front]
 }
 
 // The pin toggled: pinned, lookups wait; unpinned, the newest one made while
@@ -363,9 +422,13 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 				if fd.kind == DEF_FIELD do fd.owner = owner
 			}
 			if fd.kind >= 0 {
-				if exact_file and line == ex.line and text[fd.name.at : fd.name.at + fd.name.len] == ex.name {
+				off := abs_int(line - ex.line)
+				if exact_file and (line == ex.line or ex.loose and off < d.exact_off) and text[fd.name.at : fd.name.at + fd.name.len] == ex.name {
+					// (A loose one nearer than the one taken: that one only found.)
+					if d.has_exact and d.exact.file == f do docs_score(d, text, &d.exact)
 					d.exact = fd
 					d.has_exact = true
+					d.exact_off = off
 				elif exact_entry and not d.has_exact and is_entry(fd.kind) and entry_names(text, fd, ex.name)
 					d.exact = fd
 					d.has_exact = true

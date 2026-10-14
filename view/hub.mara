@@ -179,6 +179,14 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			drop_waiting(h, i)
 			continue
 		}
+		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-reload") {
+			// (`mara docs -reload`: what the Docs panel shows looked up again, as F5 does.)
+			docs_reload(ui)
+			answer_lines(&ui.docs[ui.docs_front], &h.waiting[i], ui.docs_query[ui.docs_front].made)
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
 		if h.waiting[i].whole and h.waiting[i].docs {
 			// (A query on the docs pipe: not this window's to answer.)
 			_ = file_write_text(h.waiting[i].id, "the docs pipe answers -docs lines only\n-- end of answer: failed --\n")
@@ -269,11 +277,17 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 		at_line, _ := parse_number(fields[5])
 		ex = Exact{kind = fields[2], name = fields[3], path = fields[4], line = i64(at_line)}
 	}
-	docs_search(ui, dir, words, ex)
+	docs_search(ui, dir, words, ex, -1)
 	ui.dirty = true
 	// (The lines it filled: the shown ones, or while pinned, the waiting ones.)
 	found := &ui.docs[ui.docs_front]
 	if ui.docs_pinned do found = &ui.docs[1 - ui.docs_front]
+	answer_lines(found, c, ui.search.count > 0 or ui.search.exact_shown)
+}
+
+// Lines sent as an answer: the status line, a blank one, each line; then the
+// end line — failed when nothing was `found`.
+answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 	out : [..64 * KB]utf8
 	&out + found.status[:]
 	&out + "\n\n"
@@ -286,7 +300,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 		&out + text[0 : min_int(text.len, out.cap - 1)]
 		&out + "\n"
 	}
-	if ui.search.count == 0 and not ui.search.exact_shown {
+	if not ok {
 		&out + ANSWER_FAILED
 	else
 		&out + ANSWER_DONE

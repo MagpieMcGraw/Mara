@@ -79,6 +79,7 @@ ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool)
 
 // `mara docs <words>`: a window this compiler opened, wherever, looks them up
 // in this directory's .mara files and the stdlib's; what it found printed.
+// `mara docs -reload`: what its Docs panel shows looked up again (its F5).
 // Exits 1 when it found nothing, or no window answers.
 docs_via_view :: proc(args: CLI_Args) {
     cwd, _ := os.get_working_directory(context.temp_allocator)
@@ -90,6 +91,7 @@ docs_via_view :: proc(args: CLI_Args) {
         if words == "" { words = name }
     }
     request := strings.concatenate({"-docs ", cwd, "\t", words, exact}, context.temp_allocator)
+    if words == "-reload" && exact == "" { request = "-reload" }
     answer, failed, how := view_request(docs_pipe_name(), request)
     switch how {
     case .No_Window:

@@ -68,6 +68,7 @@ Ui :: struct {
 	docs_front:  i64
 	docs_pinned: bool        // lookups don't replace what's shown (the title bar's pin)
 	docs_newer:  bool        // ... one was made: shown when it's unpinned
+	docs_query:  [2]Docs_Query   // what each of docs was looked up by: a reload's
 	asked:  Lines
 	at_cursor: Lines
 	search: Docs
@@ -358,6 +359,8 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			ui.menu_open = MENU_NONE
 			ui.dirty = true
 		}
+		// (F5: the Docs panel's lookup made again, whatever's in front.)
+		if e.scancode == Scancode.F5 do docs_reload(ui)
 		// (Keys go to the front panel.)
 		i := front_panel(ui)
 		if i >= 0 {
