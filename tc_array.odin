@@ -46,7 +46,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     span := tree_span(tr, s)
     base_n, idx_n := Tree_Id(tr.a[target]), Tree_Id(tr.b[target])
     tc_lower_dots(k, base_n, idx_n)
-    if tr.tag[base_n] == .Ident && tc_name(k, base_n) in k.consts {
+    if tr.tag[base_n] == .Ident && k.rs.refs[base_n].kind == .Const {
         name := tc_name(k, base_n)
         tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
         return

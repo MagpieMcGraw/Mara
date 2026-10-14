@@ -702,7 +702,7 @@ tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {
     }
     // (A constant's name: its value's.)
     if u := tc_unparen(k, n); k.t.tag[u] == .Ident {
-        if kc, ok := k.consts[tc_name(k, u)]; ok { tc_literal_overflow(k, kc.value, target, span) }
+        if kc := tc_const_named(k, u); kc != nil { tc_literal_overflow(k, kc.value, target, span) }
     }
 }
 

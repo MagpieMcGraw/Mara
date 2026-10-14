@@ -56,6 +56,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
         }
         k.table.enums[flat] = et
         tc_scope_bind(k, mod, name, et, {k.t.main[def], .Type})
+        for _, tok in et.variant_decls { tc_bound_set(k, tok, et) }   // (a variant named, `m.Red`: its enum's value)
         register_enum_variants(k.c, et, flat)
         return
     }

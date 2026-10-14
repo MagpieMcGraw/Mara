@@ -43,7 +43,24 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
             tc_set_ref(k, q, qref)
             // (`Shape.Rect(5)`: the union's variant built by its params.)
             if ut, is_union := qt.(^Type_Union); is_union && name in ut.tag_map { return tc_variant_call(k, n, ut, name, args, env) }
-            if qsd := as_scope_body(qt); qsd != nil {
+            if qsd := as_scope_body(qt); qsd != nil && tc_names_def(qref) {
+                // (Through a module or a type: its member, the resolver's.)
+                mref := k.rs.refs[n]
+                mt, has := tc_ref_type(k, mref, name)
+                if mref.kind == .Fun && k.rs.dispatches[mref.decl] {
+                    fns := qsd.dispatch_groups[name]
+                    qual_dispatch, resolved = fns[:], true
+                } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
+                    qual, resolved = fn, true
+                    k.annot.call_names[tc_sid(k, n)] = fn.name
+                } else if has && mref.kind == .Type {
+                    qual, resolved = tc_held_type(k, n, mt), true
+                    failed = qual == nil
+                } else if sd_is_module(qsd) {
+                    tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
+                    return Type_Error{}
+                }
+            } else if qsd := as_scope_body(qt); qsd != nil {
                 if fn, has := qsd.functions[name]; has && fn != nil {
                     // (Named by its type, a static call; by a value of it,
                     // an instance's when it takes Self.)
@@ -64,28 +81,16 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
                 }
             }
         }
-        // (A type the module has, bound nowhere the env sees.)
-        if !resolved {
-            flat := resolve_type_name(k, qname, "", env)
-            sd: ^Scope_Body
-            if ss, is_struct := k.table.structs[flat]; is_struct { sd = &ss.sd } else if sf, is_fun := k.table.funs[flat]; is_fun { sd = &sf.sd }
-            if sd != nil {
-                if fn, has := sd.functions[name]; has && fn != nil {
-                    qual, resolved = fn, true
-                    k.annot.call_names[tc_sid(k, n)] = fn.name
-                }
-            }
-        }
     }
-    if !resolved && addressed == 0 && tr.tag[tc_unparen(k, recv)] == .Field {
-        if qsd := tc_type_path_scope(k, recv, env); qsd != nil {
-            if t, holds := qsd.types[name]; holds {
-                qual, resolved = tc_held_type(k, n, t), true
-                failed = qual == nil
-            } else if fn, has := qsd.functions[name]; has && fn != nil {
-                qual, resolved = fn, true
-                k.annot.call_names[tc_sid(k, n)] = fn.name
-            }
+    if !resolved && addressed == 0 && tr.tag[tc_unparen(k, recv)] == .Field && tc_names_def(k.rs.refs[tc_unparen(k, recv)]) {
+        // (`Outer.Inner.f()`, `m.T.f()`: its member, the resolver's.)
+        mref := k.rs.refs[n]
+        if mt, has := tc_ref_type(k, mref, name); has && mref.kind == .Type {
+            qual, resolved = tc_held_type(k, n, mt), true
+            failed = qual == nil
+        } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
+            qual, resolved = fn, true
+            k.annot.call_names[tc_sid(k, n)] = fn.name
         }
     }
     if !resolved {
@@ -155,24 +160,4 @@ tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
     return nil
 }
 
-// The scope a type path names (`Outer.Inner`): its root a scope the env
-// binds, else a type the module has; each further name a type it holds.
-tc_type_path_scope :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> ^Scope_Body {
-    tr := k.t
-    q := tc_unparen(k, n)
-    #partial switch tr.tag[q] {
-    case .Ident:
-        name := tc_name(k, q)
-        if t, found := scope_lookup(env, name); found {
-            if sd := as_scope_body(t); sd != nil { return sd }
-        }
-        flat := resolve_type_name(k, name, "", env)
-        if ss, is_struct := k.table.structs[flat]; is_struct { return &ss.sd }
-        if sf, is_fun := k.table.funs[flat]; is_fun { return &sf.sd }
-    case .Field:
-        sd := tc_type_path_scope(k, Tree_Id(tr.a[q]), env)
-        if sd == nil { return nil }
-        if t, found := sd.types[tc_text(Token_Id(tr.b[q]))]; found { return as_scope_body(t) }
-    }
-    return nil
-}
+

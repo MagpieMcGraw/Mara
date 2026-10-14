@@ -41,8 +41,8 @@ tc_text_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
     m := tc_unparen(k, n)
     if k.t.tag[m] == .String { return true }
     if k.t.tag[m] != .Ident { return false }
-    kc, ok := k.consts[tc_name(k, m)]
-    return ok && k.t.tag[kc.value] == .String
+    kc := tc_const_named(k, m)
+    return kc != nil && k.t.tag[kc.value] == .String
 }
 
 // "p.x (i64), q (i64)": the named operands of `n` too wide for `target`.

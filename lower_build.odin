@@ -127,8 +127,7 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
         base, field := lw_field_parts(k, e)
         bt := tc_node_type(k, base)
         if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-            _, found := scope_lookup(sd_module_scope(sd), field)
-            return found   // (else an enum's variant it holds)
+            return tc_ref(k, e).kind != .Variant   // (else an enum's variant it holds)
         }
         if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
             if _, has := ut.tag_map[field]; has { return false }
@@ -152,13 +151,18 @@ lw_const_named :: proc(k: ^TC, e: Tree_Id) -> bool {
         return tc_ref(k, e).kind == .Const
     case .Field, .Dot_Ident:
         if t.tag[e] == .Dot_Ident && tc_sid(k, e) not_in k.annot.dot_bases { return false }
-        base, field := lw_field_parts(k, e)
-        if t.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg && make_flat_name(k.pkg, field) in k.consts { return true }
-        if sd := as_scope_body(tc_node_type(k, base)); sd != nil && sd_is_module(sd) {
-            if _, found := scope_lookup(sd_module_scope(sd), field); found { return make_flat_name(sd.name, field) in k.consts }
-        }
+        if tc_ref(k, e).kind != .Const { return false }
+        base, _ := lw_field_parts(k, e)
+        if lw_own_const(k, e, base) { return true }
+        sd := as_scope_body(tc_node_type(k, base))
+        return sd != nil && sd_is_module(sd)
     }
     return false
+}
+
+// `pkg.X` inside pkg: its own constant (pkg itself names nothing).
+lw_own_const :: proc(k: ^TC, n, base: Tree_Id) -> bool {
+    return k.t.tag[n] == .Field && k.t.tag[base] == .Ident && tc_ref(k, base).kind == .None && tc_ref(k, n).kind == .Const
 }
 
 // A field access's base and its field's name.

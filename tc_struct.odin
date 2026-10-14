@@ -31,9 +31,10 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     } else {
         field = tc_text(Token_Id(tr.b[n]))
     }
-    // (`pkg.X` inside pkg: its own constant — its value's type.)
-    if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
-        if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok {
+    // (`pkg.X` inside pkg: its own constant — its value's type. The
+    // resolver's: pkg itself names nothing.)
+    if tr.tag[n] == .Field && tr.tag[base] == .Ident && k.rs.refs[base].kind == .None {
+        if kc := tc_const_named(k, n); kc != nil {
             t := tc_check(k, kc.value, env)
             tc_set_ref(k, n, {k.t.main[kc.def], .Const})
             return t
@@ -152,7 +153,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
         case "len", "cap":
             // (A text constant's: its length, known.)
             if b := tc_unparen(k, base); k.t.tag[b] == .Ident {
-                if kc, ok := k.consts[tc_name(k, b)]; ok && k.t.tag[kc.value] == .String {
+                if kc := tc_const_named(k, b); kc != nil && k.t.tag[kc.value] == .String {
                     return slice_header_width_type, false, i128(len(tc_text(k.t.main[kc.value]))), true
                 }
             }
@@ -290,7 +291,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
         t = hint
     case tr.tag[ty] == .Ident:
-        found, ok := scope_lookup(env, name)
+        tyref := k.rs.refs[ty]
+        found, ok := tc_ref_type(k, tyref, name)
         if !ok {
             // (A union's variant: the union expected's, or the one union with it.)
             vut, ambiguous := tc_variant_union(k, name)
@@ -302,7 +304,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             // (Where a named union of it goes — `distinct U` — the union as
             // named: a variant is a struct, built as one into it.)
             if hu, is_union := distinct_base(k.hint).(^Type_Union); is_union && hu == vut { t = k.hint }
-        } else if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && ts.name != name && !strings.has_suffix(ts.name, strings.concatenate({"_", name}, context.temp_allocator)) {
+        } else if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && tc_is_variable(tyref) {
             // (A struct's variable, not its type: `new := var{…}`.)
             tc_error(k, span, TYPE_STRUCT_COPY_FORM, name, name, name)
             return Type_Error{}
@@ -347,7 +349,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         case variant != "":
             tc_set_ref(k, ty, {variant_decl(t, variant), .Variant})
         case tr.tag[ty] == .Ident:
-            tc_set_ref(k, ty, scope_find_ref(env, name))
+            tc_set_ref(k, ty, k.rs.refs[ty])
         case:
             vs, is_variant := t.(^Type_Scope)
             tc_set_ref(k, ty, {type_decl(t), .Variant if is_variant && vs.is_union_variant else .Type})
@@ -635,27 +637,20 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
 // (a type, a fun — the base of a further access).
 tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string) -> Type {
     span := tree_span(k.t, n)
-    msc := sd_module_scope(sd)
-    t, found := scope_lookup(msc, field)
+    ref := k.rs.refs[n]
+    t, found := tc_ref_type(k, ref, field)
     if !found {
-        for _, mt in sd.types {
-            if et, is_enum := mt.(^Type_Enum); is_enum {
-                if _, has := et.variants[field]; has {
-                    tc_set_ref(k, n, {variant_decl(et, field), .Variant})
-                    return et
-                }
-            } else if ut, is_union := mt.(^Type_Union); is_union {
-                if _, has := ut.tag_map[field]; has {
-                    tc_unsupported(k, n, "a union's variant as a value")
-                    return Type_Error{}
-                }
-            }
-        }
         tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
         return Type_Error{}
     }
-    tc_set_ref(k, n, scope_find_ref(msc, field))
-    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const { tc_set_ref(k, n, {k.t.main[kc.def], .Const}) }
+    if ref.kind == .Variant {
+        // (An enum's variant it holds: its value; a union's is no value.)
+        if _, is_enum := t.(^Type_Enum); !is_enum {
+            tc_unsupported(k, n, "a union's variant as a value")
+            return Type_Error{}
+        }
+    }
+    tc_set_ref(k, n, ref)
     return t
 }
 
@@ -677,7 +672,7 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
             inner = Tree_Id(tr.a[cur])
         case .Ident:
             name := tc_name(k, cur)
-            return name, tc_ref(k, cur).kind == .Const || name in k.consts
+            return name, k.rs.refs[cur].kind == .Const
         case:
             return "", false
         }
@@ -695,14 +690,14 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     ty := Tree_Id(tr.a[e])
     if ty == 0 || tr.tag[ty] != .Ident { return false }
     name := tc_name(k, ty)
-    vt, _, found := scope_find(env, name)
+    vt, found := tc_ref_type(k, k.rs.refs[ty], name)
     if !found { return false }
     sd := resolve_to_struct_type(k.c, vt)
     if sd == nil { return false }
     tc_set_type(k, e, vt)
     k.annot.overrides[tc_sid(k, e)] = true
     tc_set_type(k, ty, vt)   // (the variable it writes into, named)
-    tc_set_ref(k, ty, scope_find_ref(env, name))
+    tc_set_ref(k, ty, k.rs.refs[ty])
     // (Into storage that can't be written, as a field's write: tc_field_assign.)
     span := tree_span(tr, e)
     if pname, immutable := tc_write_root_param(k, ty, env); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }

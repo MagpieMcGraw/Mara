@@ -228,7 +228,8 @@ rs_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
     value := Tree_Id(t.b[def])
     m := make(map[string]Ref)
     #partial switch t.tag[value] {
-    case .Struct_Def:
+    case .Struct_Def, .Fun_Def:
+        // (A struct's own definitions; a fun's, its nested ones: `alpha.bump(7)`.)
         rs_each_def(r, scope_view(t, value).body, &m)
     case .Union_Def:
         for vr in tree_list(t, t.b[value]) { m[rs_text(t.main[vr])] = {t.main[vr], .Variant} }
@@ -709,10 +710,10 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
 }
 
 // Whether a ref names a definition a qualified name can reach into: a
-// module, a type.
+// module, a type, a fun (its nested definitions).
 @(private="file")
 rs_names_def :: proc(ref: Ref) -> bool {
-    return ref.kind == .Module || ref.kind == .Type
+    return ref.kind == .Module || ref.kind == .Type || ref.kind == .Fun
 }
 
 // `Self`: the innermost struct or fun — a signature's, the one it's in.

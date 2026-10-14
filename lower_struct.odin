@@ -20,9 +20,7 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
         field = tc_text(Token_Id(tr.b[n]))
     }
     // (`pkg.X` inside pkg: its own constant.)
-    if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
-        if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok { return lw_const_use(k, kc, n, tc_node_type(k, n), want, w) }
-    }
+    if lw_own_const(k, n, base) { return lw_const_use(k, lw_const_of(k, n, tc_ref(k, n).decl), n, tc_node_type(k, n), want, w) }
     bt := tc_node_type(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return lw_module_member(k, n, base, sd, field, bt, want, w)
@@ -65,12 +63,13 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: strin
     b := k.gb
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
-    if _, found := scope_lookup(sd_module_scope(sd), field); !found {
+    ref := tc_ref(k, n)
+    if ref.kind == .Variant {
         et, is_enum := distinct_base(t).(^Type_Enum)
         if !is_enum { lw_fail(k, n, "a module's member of no enum") }
         return lw_enum_value(k, et, et.variants[field], field, span, want, w)
     }
-    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const { return lw_const_use(k, kc, n, t, want, w) }
+    if ref.kind == .Const { return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w) }
     p := lw_member_place(k, n, field, lw_field_base(k, base, span, w), bt, t)
     if p == NO_VALUE { return {} }
     if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }

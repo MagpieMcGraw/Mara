@@ -164,12 +164,12 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Spa
     if t.tag[n] == .Ident {
         // (A constant, known: its value.)
         name := tc_name(k, n)
-        if _, is_const := k.const_owners[name]; is_const && !tc_const_visible(k, env, name) {
-            tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)
+        kc := tc_const_named(k, n)
+        if kc == nil && name in k.const_owners {
+            tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)   // (a module's constant, not in sight)
             return 0, false
         }
-        kc, is_const := k.consts[name]
-        if !is_const {
+        if kc == nil {
             tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
             return 0, false
         }

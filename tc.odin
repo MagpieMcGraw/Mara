@@ -197,6 +197,22 @@ tc_lookup_check :: proc(k: ^TC, n: Tree_Id, name: string, found: Type, ok: bool)
     }
 }
 
+// The constant a name refers to (nil: none).
+tc_const_named :: proc(k: ^TC, n: Tree_Id) -> ^TC_Const {
+    ref := k.rs.refs[n]
+    if ref.kind != .Const { return nil }
+    return k.const_at[ref.decl] or_else nil
+}
+
+// Whether a ref names a definition of a module's or a type's — what a
+// qualified name's members are the resolver's for.
+tc_names_def :: proc(ref: Ref) -> bool {
+    #partial switch ref.kind {
+    case .Module, .Type, .Fun: return true
+    }
+    return false
+}
+
 // A name bound in scope s, and its declaration's meaning.
 tc_scope_bind :: proc(k: ^TC, s: ^Type_Scope, name: string, t: Type, ref: Ref) {
     scope_bind(s, name, t, ref)
@@ -673,7 +689,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     value := Tree_Id(t.b[s])
     if value != 0 && !tc_is_definition(t.tag[value]) {
         // (A constant: checked, and built, here in its module's order.)
-        if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
+        if kc := k.const_at[t.main[s]] or_else nil; kc != nil && kc.def == s {
             tc_check_const(k, kc)
             tc_module_stmt(k, tc_sid(k, s))
         }
