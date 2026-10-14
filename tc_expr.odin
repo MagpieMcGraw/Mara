@@ -9,22 +9,22 @@ import "core:strings"
 // (lower.odin).
 
 // An expression checked: its type, annotated.
-tc_check :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_check :: proc(k: ^TC, n: Tree_Id) -> Type {
     if n == 0 { return Type_Error{} }
     assert(!k.lowering, "the checker's tc_check, called while lowering")
-    t := tc_expr_impl(k, n, env)
+    t := tc_expr_impl(k, n)
     tc_set_type(k, n, t)
     return t
 }
 
 // An expression checked, used at `t` (tc_settle).
-tc_check_at :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, t: Type) -> Type {
-    r := tc_check(k, n, env)
+tc_check_at :: proc(k: ^TC, n: Tree_Id, t: Type) -> Type {
+    r := tc_check(k, n)
     tc_settle(k, n, t)
     return r
 }
 
-tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_expr_impl :: proc(k: ^TC, n: Tree_Id) -> Type {
     t := k.t
     span := tree_span(t, n)
     #partial switch t.tag[n] {
@@ -41,49 +41,49 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     case .True, .False:
         return Type_Bool{}
     case .Paren:
-        return tc_check(k, Tree_Id(t.a[n]), env)
+        return tc_check(k, Tree_Id(t.a[n]))
     case .Big_Endian:
         // (A read of bytes, big-endian: as the read; where it is viewed, the flag.)
-        return tc_check(k, Tree_Id(t.a[n]), env)
+        return tc_check(k, Tree_Id(t.a[n]))
     case .Ident:
-        return tc_ident(k, n, env)
+        return tc_ident(k, n)
     case .Unary:
         // (`&x.f()`: f's receiver addressed — `f(&x)`.)
         if m := Tree_Id(k.t.a[n]); build_tokens[k.t.main[n]].kind == .Ampersand && k.t.tag[m] == .Method_Call {
-            return tc_call(k, m, env, addressed = n)
+            return tc_call(k, m, addressed = n)
         }
-        return tc_unary(k, n, env)
+        return tc_unary(k, n)
     case .Deref:
-        return tc_deref(k, n, env)
+        return tc_deref(k, n)
     case .Binary:
-        return tc_binary(k, n, env)
+        return tc_binary(k, n)
     case .In_Range:
-        return tc_in_range(k, n, env)
+        return tc_in_range(k, n)
     case .Call, .Method_Call:
-        return tc_call(k, n, env)
+        return tc_call(k, n)
     case .Assert:
-        return tc_assert(k, n, env)
+        return tc_assert(k, n)
     case .Take:
-        return tc_take(k, n, env)
+        return tc_take(k, n)
     case .Type_Name:
         // (A name written where a type's argument goes, standing for a value.)
-        return tc_ident(k, n, env)
+        return tc_ident(k, n)
     case .Hash_Name:
-        return tc_hash_name(k, n, env)
+        return tc_hash_name(k, n)
     case .Self:
-        return tc_self(k, n, env)
+        return tc_self(k, n)
     case .Size_Of:
-        return tc_size_of(k, n, env)
+        return tc_size_of(k, n)
     case .If_Expr:
-        return tc_if_expr(k, n, env)
+        return tc_if_expr(k, n)
     case .Try:
-        return tc_try(k, n, env)
+        return tc_try(k, n)
     case .Dot_Ident:
-        if tc_sid(k, n) in k.annot.dot_bases { return tc_field(k, n, env) }
+        if tc_sid(k, n) in k.annot.dot_bases { return tc_field(k, n) }
         name := tc_text(Token_Id(k.t.a[n]))
         hint := k.hint
         k.hint = nil
-        et, _, found := tc_variant_ident(k, name, hint, env, true, span)
+        et, _, found := tc_variant_ident(k, name, hint, true, span)
         if !found {
             tc_error(k, span, TYPE_VISIBLE_ENUM_UNION_VARIANT, name)
             return Type_Error{}
@@ -93,15 +93,15 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         tc_variant_built(k, n, et, name)
         return et
     case .Field:
-        return tc_field(k, n, env)
+        return tc_field(k, n)
     case .Literal, .Broadcast:   // (`all v`: `{all v}`)
-        return tc_literal(k, n, env)
+        return tc_literal(k, n)
     case .Index:
-        return tc_index(k, n, env)
+        return tc_index(k, n)
     case .Slice:
-        return tc_slice(k, n, env)
+        return tc_slice(k, n)
     case .Array:
-        return tc_array_literal(k, n, env)
+        return tc_array_literal(k, n)
     }
     tc_unsupported(k, n, "this expression")
     return Type_Error{}
@@ -176,14 +176,14 @@ tc_open_node :: proc(k: ^TC, n: Tree_Id) -> bool {
     return false
 }
 
-tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     name := tc_name(k, n)
     span := tree_span(k.t, n)
     hint := k.hint
     k.hint = nil
     // (A variant of the enum expected, first.)
     if hint != nil {
-        if et, _, found := tc_variant_ident(k, name, hint, env, false, span); found {
+        if et, _, found := tc_variant_ident(k, name, hint, false, span); found {
             if et == nil { return Type_Error{} }
             tc_set_ref(k, n, {variant_decl(et, name), .Variant})
             tc_variant_built(k, n, et, name)
@@ -209,7 +209,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             return Type_Error{}
         }
         kc.visiting = true
-        ct := tc_check(k, kc.value, env)
+        ct := tc_check(k, kc.value)
         kc.visiting = false
         return ct
     }
@@ -227,7 +227,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 
 // (`of`: the operand in place of its own — a method call's receiver, where
 // the `&` is written around the call.)
-tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type {
+tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     op := build_tokens[tr.main[n]].kind
@@ -238,7 +238,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
         return t
     }
     wrapping := op == .Wrap_Minus
-    ot := tc_check(k, operand, env)
+    ot := tc_check(k, operand)
     t: Type
     #partial switch op {
     case .Minus, .Wrap_Minus:
@@ -269,7 +269,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
     case .Ampersand:
         // (An address of an immutable param's storage, of a constant's: what
         // it would let be written can't be.)
-        if pname, immutable := tc_write_root_param(k, operand, env); immutable {
+        if pname, immutable := tc_write_root_param(k, operand); immutable {
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
@@ -291,9 +291,9 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
     return t
 }
 
-tc_deref :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_deref :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    ot := tc_check(k, Tree_Id(k.t.a[n]), env)
+    ot := tc_check(k, Tree_Id(k.t.a[n]))
     if p, ok := ot.(^Type_Ptr); ok { return p.elem }
     if !is_any(ot) { tc_error(k, span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(ot)) }
     return Type_Error{}
@@ -301,9 +301,9 @@ tc_deref :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 
 // A binary operation: each side at the type the operation works in; `and` /
 // `or` short-circuit.
-tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_binary :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
-    return tc_binary_op(k, n, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]), env)
+    return tc_binary_op(k, n, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]))
 }
 
 // `x in lo..hi`: `x >= lo and x < hi` — `not in`, its negation — x walked
@@ -313,13 +313,13 @@ TC_In_Range :: struct {
     span:          Span,
 }
 
-tc_in_range :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_in_range :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
     rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
-    if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, 0, .And, span, 0, 0, env, &rng) }
-    ot := tc_binary_op(k, 0, .And, span, 0, 0, env, &rng)
+    if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, 0, .And, span, 0, 0, &rng) }
+    ot := tc_binary_op(k, 0, .And, span, 0, 0, &rng)
     if _, is_bool := ot.(Type_Bool); !is_bool && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
     return Type_Bool{}
 }
@@ -341,12 +341,12 @@ is_byte_or_utf8 :: proc(t: Type) -> bool {
 // codepoint type yet — and orders as bytes do, unsigned). A number written
 // beside one is a byte's value, settled to it; otherwise the other side is
 // the same type.
-tc_byte_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, types: [2]Type, env: ^Type_Scope) {
+tc_byte_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, types: [2]Type) {
     u := types[0] if is_byte_or_utf8(types[0]) else types[1]
     for t, i in types {
         if is_any(t) { continue }
         if lit, is_int := t.(Type_Infer_Int); is_int && lit.cell == nil {
-            if v, known := tc_comptime_int(k, sides[i], env); known && (v < 0 || v > 255) {
+            if v, known := tc_comptime_int(k, sides[i]); known && (v < 0 || v > 255) {
                 tc_error(k, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, v, type_name(u), 255)
             }
             tc_settle(k, sides[i], u)
@@ -360,13 +360,13 @@ tc_byte_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, t
 // `left op right`, where `span` is: a Binary's, or a compound assignment's
 // (`x += v` is `x = x op v`, at the `+=`). `at`: its node, where an operator
 // through `overload` is annotated as the call it is.
-tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, right: Tree_Id, env: ^Type_Scope,
+tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, right: Tree_Id,
                      in_range: ^TC_In_Range = nil) -> Type {
     // (A side: its expression; an `in`'s, its comparison.)
-    side_of :: proc(k: ^TC, rng: ^TC_In_Range, i: int, side: Tree_Id, env: ^Type_Scope) -> Type {
-        if rng == nil { return tc_check(k, side, env) }
-        if i == 0 { return tc_binary_op(k, 0, .Greater_Equal, rng.span, rng.value, rng.lo, env) }
-        return tc_binary_op(k, 0, .Less, rng.span, rng.value, rng.hi, env)
+    side_of :: proc(k: ^TC, rng: ^TC_In_Range, i: int, side: Tree_Id) -> Type {
+        if rng == nil { return tc_check(k, side) }
+        if i == 0 { return tc_binary_op(k, 0, .Greater_Equal, rng.span, rng.value, rng.lo) }
+        return tc_binary_op(k, 0, .Less, rng.span, rng.value, rng.hi)
     }
     tr := k.t
     op := tok
@@ -391,7 +391,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     for i in order {
         k.hint = hint
         if i == shorthand { k.hint = types[1 - i] }
-        types[i] = side_of(k, in_range, i, sides[i], env)
+        types[i] = side_of(k, in_range, i, sides[i])
     }
     lt, rt := types[0], types[1]
     and_or := op == .And || op == .Or
@@ -402,7 +402,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     }
     // (An operand no number: an `overload`'s function, when one fits.)
     if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
-        if callee, found := tc_operator_overload(k, op, lt, rt, env, span); found {
+        if callee, found := tc_operator_overload(k, op, lt, rt, span); found {
             tc_set_callee(k, at, callee)
             tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
             tc_settle(k, left, callee.params[0].type_)
@@ -431,7 +431,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         // (Two of one type: numbers at one width, as arithmetic takes them;
         // anything else the same type — no conversion.)
         if is_byte_or_utf8(lt) || is_byte_or_utf8(rt) {
-            tc_byte_compare(k, span, op, sides, types, env)
+            tc_byte_compare(k, span, op, sides, types)
         } else if !is_any(lt) && !is_any(rt) {
             if !is_comparable(lt) || !is_comparable(rt) {
                 tc_error(k, span, TYPE_CANNOT_COMPARE_USING, type_name(lt), type_name(rt), op_str(op))
@@ -444,7 +444,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         t = Type_Bool{}
     case .Less, .Less_Equal, .Greater, .Greater_Equal:
         if is_utf8_type(lt) || is_utf8_type(rt) {
-            tc_byte_compare(k, span, op, sides, types, env)
+            tc_byte_compare(k, span, op, sides, types)
         } else {
             if !is_numeric(lt) { tc_error(k, span, TYPE_LEFT_OPERAND_COMPARISON_NUMERIC, type_name(lt)) }
             if !is_numeric(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_COMPARISON_NUMERIC, type_name(rt)) }
@@ -492,12 +492,12 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
 
 // --- calls --------------------------------------------------------------------
 
-tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_Id(0)) -> Type {
-    if k.t.tag[n] == .Method_Call { return tc_method_call(k, n, env, addressed) }
+tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
+    if k.t.tag[n] == .Method_Call { return tc_method_call(k, n, addressed) }
     saved := k.recv
     k.recv = {}
     defer k.recv = saved
-    return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]), env)
+    return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
 }
 
 // What a call's name refers to: a call's own; a method call's, its method
@@ -509,7 +509,7 @@ tc_callee_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
 
 // A call of `name` on `args` — or, resolved by its qualifier (a method, a
 // module's fun: `qual`; a module's dispatch: `qual_dispatch`), of that.
-tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
+tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
                      qual: ^Type_Scope = nil, qual_dispatch: []TC_Member = nil) -> Type {
     tr := k.t
     span := tree_span(tr, n)
@@ -517,22 +517,22 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // a method call's, checked before its receiver.)
     for a in args {
         if tr.tag[n] == .Method_Call { break }
-        if returns := tc_call_returns(k, a, env); len(returns) > 1 {
+        if returns := tc_call_returns(k, a); len(returns) > 1 {
             tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
     }
-    if len(qual_dispatch) > 0 { return tc_dispatch_call(k, n, name, qual_dispatch, args, env) }
+    if len(qual_dispatch) > 0 { return tc_dispatch_call(k, n, name, qual_dispatch, args) }
     if qual == nil {
-        if t, is_builtin := tc_builtin(k, n, name, args, env); is_builtin {
+        if t, is_builtin := tc_builtin(k, n, name, args); is_builtin {
             tc_set_ref(k, n, {kind = .Builtin})
             k.annot.forms[tc_sid(k, n)] = .Builtin
             return t
         }
         if groups := resolve_dispatches(k.rs, tr.main[n], name); len(groups) > 0 {
-            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args, env)
+            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
-            return tc_generic_call(k, n, name, tmpl, args, env)
+            return tc_generic_call(k, n, name, tmpl, args)
         }
     }
     ref := tc_callee_ref(k, n)
@@ -540,23 +540,23 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     if qual != nil { ft_raw, found = qual, true }
     if !found {
         // (A union's variant built by its params: `Rect(5)` where a Shape goes.)
-        if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args, env) }
+        if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args) }
         // (A fun two modules it uses have: ambiguous.)
         if qual == nil && ref.kind == .None && name in k.c.declared_funs {
             if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
                 tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
-                for a in args { tc_check(k, a, env) }
+                for a in args { tc_check(k, a) }
                 return Type_Error{}
             }
         }
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
-        for a in args { tc_check(k, a, env) }
+        for a in args { tc_check(k, a) }
         return Type_Error{}
     }
     if dt, is_distinct := ft_raw.(^Type_Distinct); is_distinct {
         tc_set_ref(k, n, {type_decl(dt), .Type})
         k.annot.forms[tc_sid(k, n)] = .Conversion
-        return tc_distinct_conversion(k, n, name, dt, args, env)
+        return tc_distinct_conversion(k, n, name, dt, args)
     }
     ft, is_scope := ft_raw.(^Type_Scope)
     // (A fun written in the program, or a foreign one; else a fun's value — a
@@ -596,9 +596,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     if len(args) >= count_required_params(ft) && len(args) <= len(ft.params) {
         // (A param's default: run at the call, checked in its fun's scope;
         // `#caller_name`, the call site's, written there.)
-        default_arg :: proc(k: ^TC, p: Struct_Type_Field, ft: ^Type_Scope, env: ^Type_Scope, at: Span) -> TC_Arg {
-            if k.t.tag[p.default_node] == .Hash_Name { return TC_Arg{p.default_node, env, at, nil} }
-            return TC_Arg{p.default_node, callee_def_scope(ft), {}, p.default_slot}
+        default_arg :: proc(k: ^TC, p: Struct_Type_Field, ft: ^Type_Scope, at: Span) -> TC_Arg {
+            if k.t.tag[p.default_node] == .Hash_Name { return TC_Arg{p.default_node, at, nil} }
+            return TC_Arg{p.default_node, {}, p.default_slot}
         }
         for a, i in args {
             // (`_`: its param's default — said so when it has none.)
@@ -606,13 +606,13 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
                 if ft.params[i].default_node == 0 {
                     tc_error(k, span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER, i + 1, name, ft.params[i].name)
                 } else {
-                    append(&items, default_arg(k, ft.params[i], ft, env, tree_span(tr, a)))
+                    append(&items, default_arg(k, ft.params[i], ft, tree_span(tr, a)))
                     continue
                 }
             }
-            append(&items, TC_Arg{a, env, {}, nil})
+            append(&items, TC_Arg{a, {}, nil})
         }
-        for i := len(args); i < len(ft.params); i += 1 { append(&items, default_arg(k, ft.params[i], ft, env, span)) }
+        for i := len(args); i < len(ft.params); i += 1 { append(&items, default_arg(k, ft.params[i], ft, span)) }
         // (What each param receives, kept.)
         received := make([]Arg, len(items), context.temp_allocator)
         for item, i in items {
@@ -626,16 +626,16 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         tc_set_args(k, n, received)
     }
     for item, i in items {
-        a, a_env := item.node, item.env
+        a := item.node
         pt := ft.params[i].type_
         k.hint = pt
         at: Type
         if item.at != {} {
-            at = tc_hash_name(k, a, a_env)
+            at = tc_hash_name(k, a)
         } else if slot, is_slot := item.slot.?; is_slot {
-            at = tc_tuple_default(k, a, slot, a_env, span)
+            at = tc_tuple_default(k, a, slot, span)
         } else {
-            at = k.recv.t if a == k.recv.node else tc_check(k, a, a_env)
+            at = k.recv.t if a == k.recv.node else tc_check(k, a)
         }
         // (Bytes read as an array param: `buf[off]`, `buf[lo:hi]` — its size
         // the param's.)
@@ -662,7 +662,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         tc_value_at(k, a, at, pt, span)
     }
     if is_struct {
-        if overrides != 0 { tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), &ft.sd, env) }
+        if overrides != 0 { tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), &ft.sd) }
         return ft
     }
     return fn_primary_return(ft)
@@ -716,17 +716,17 @@ tc_literal_value :: proc(k: ^TC, n: Tree_Id) -> (f64, i128, bool) {
 }
 
 // `assert(c)`: its condition a bool.
-tc_assert :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_assert :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    ct := tc_check(k, Tree_Id(k.t.a[n]), env)
+    ct := tc_check(k, Tree_Id(k.t.a[n]))
     if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
     return Type_Void{}
 }
 
 // `#self`: the address of what a constructor builds (Self, its place) —
 // only a constructor's frame has one.
-tc_self :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
-    f := enclosing_callable_scope(env)
+tc_self :: proc(k: ^TC, n: Tree_Id) -> Type {
+    f := k.body
     if f == nil || f.kind != .Struct {
         tc_error(k, tree_span(k.t, n), TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
         return Type_Error{}
@@ -761,15 +761,15 @@ tc_is_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
 }
 
 // A builtin: print, crash, a cast — its args checked as values.
-tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope) -> (Type, bool) {
+tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, bool) {
     span := tree_span(k.t, n)
     types := make([dynamic]Type, 0, len(args), context.temp_allocator)
-    each :: proc(k: ^TC, args: []Tree_Id, env: ^Type_Scope, types: ^[dynamic]Type) {
-        for a in args { append(types, tc_arg(k, a, env)) }
+    each :: proc(k: ^TC, args: []Tree_Id, types: ^[dynamic]Type) {
+        for a in args { append(types, tc_arg(k, a)) }
     }
     switch name {
     case "print":
-        each(k, args, env, &types)
+        each(k, args, &types)
         for a, i in args { tc_is_value(k, a, types[i], tree_span(k.t, a), printed = true) }
         tc_print_format(k, args, span)
         return Type_Error{}, true
@@ -777,7 +777,7 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type
         if len(args) > 1 {
             tc_error(k, span, TYPE_CRASH_EXPECTS_ARGUMENTS, len(args))
         } else {
-            each(k, args, env, &types)
+            each(k, args, &types)
         }
         return Type_Error{}, true
     case "int", "uint":
@@ -785,17 +785,17 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type
             tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
             return Type_Error{}, true
         }
-        each(k, args, env, &types)
+        each(k, args, &types)
         tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64 if name == "int" else TYPE_TYPE_UINT_RESERVED_USE_U64)
         return Type_Error{}, true
     }
     target, is_cast := cast_result_type(name)
-    if !is_cast { return tc_builtin_more(k, n, name, args, env) }
+    if !is_cast { return tc_builtin_more(k, n, name, args) }
     if len(args) != 1 {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
         return Type_Error{}, true
     }
-    each(k, args, env, &types)
+    each(k, args, &types)
     // (One that changes nothing is said to.)
     if cast_target_same_as_operand(types[0], target) {
         operand := tc_diag_name(k, args[0])
@@ -864,11 +864,11 @@ tc_print_format :: proc(k: ^TC, args: []Tree_Id, span: Span) {
 
 // What a call returns, every value (a constructor's: itself, and an err if it
 // can fail); nil for what is no call.
-tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
+tc_call_returns :: proc(k: ^TC, n: Tree_Id) -> []Type {
     m := tc_unparen(k, n)
     if !tc_is_call(k, m) { return nil }
     callee := tc_callee(k, m)
-    if callee == nil && env != nil {
+    if callee == nil {
         // (Not checked yet: the fun its name names.)
         if t, ok := tc_ref_type(k, tc_callee_ref(k, m), tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
     }
@@ -883,7 +883,6 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
 // `at`; a default one of a group's one value: its slot.
 TC_Arg :: struct {
     node: Tree_Id,
-    env:  ^Type_Scope,
     at:   Span,
     slot: Maybe(int),
 }
@@ -891,10 +890,10 @@ TC_Arg :: struct {
 // A param's default that is a slot of its group's one value (`x, y :=
 // f()`): f's result there; a value no call of several results, a
 // broadcast: the value's.
-tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, env: ^Type_Scope, span: Span) -> Type {
-    st := tc_check(k, src, env)
+tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, span: Span) -> Type {
+    st := tc_check(k, src)
     if _, is_err := st.(Type_Error); is_err { return Type_Error{} }
-    if returns := tc_call_returns(k, src, env); len(returns) > 1 {
+    if returns := tc_call_returns(k, src); len(returns) > 1 {
         if slot >= len(returns) {
             tc_error(k, span, TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE, slot, len(returns))
             return Type_Error{}
@@ -905,7 +904,7 @@ tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, env: ^Type_Scope, span
 }
 
 // `#caller_name`, `#caller_span`: text; `#web` and the targets: a bool.
-tc_hash_name :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_hash_name :: proc(k: ^TC, n: Tree_Id) -> Type {
     switch tc_text(Token_Id(k.t.a[n])) {
     case "caller_name", "caller_span":
         return new_clone(Type_Ptr{elem = Type_Byte{}})
@@ -930,13 +929,13 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope) {
     saved := k.hint
     k.hint = t
     defer k.hint = saved
-    tc_check_at(k, def, callee_def_scope(owner), t)
+    tc_check_at(k, def, t)
 }
 
 // The rest of the builtins: print_cstr / print_int / print_float (as print),
 // len and cap (of a place — a fixed array's, its size), slice_from_ptr,
 // cstring.
-tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope) -> (Type, bool) {
+tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, bool) {
     span := tree_span(k.t, n)
     switch name {
     case "print_cstr", "print_int", "print_float":
@@ -947,7 +946,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, msg, len(args))
             return Type_Error{}, true
         }
-        tc_arg(k, args[0], env)
+        tc_arg(k, args[0])
         return Type_Error{}, true
     case "len", "cap":
         t := slice_header_width_type
@@ -955,7 +954,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, TYPE_LEN_EXPECTS_ARGUMENT if name == "len" else TYPE_CAP_EXPECTS_ARGUMENT, len(args))
             return t, true
         }
-        at := tc_arg(k, args[0], env)
+        at := tc_arg(k, args[0])
         if !is_array_type(at) && !is_any(at) {
             tc_error(k, span, TYPE_LEN_REQUIRES_ARRAY_SLICE if name == "len" else TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(at))
         }
@@ -966,11 +965,11 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR, len(args))
             return t, true
         }
-        pt := tc_arg(k, args[0], env)
+        pt := tc_arg(k, args[0])
         if _, is_ptr := pt.(^Type_Ptr); !is_ptr && !is_any(pt) {
             tc_error(k, span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(pt))
         }
-        st := tc_arg(k, args[1], env)
+        st := tc_arg(k, args[1])
         tc_settle(k, args[1], slice_header_width_type)
         if !is_numeric(st) && !is_any(st) {
             tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(st))
@@ -978,7 +977,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH, type_name(slice_header_width_type), type_name(st))
         }
         if k.pkg != "os" && k.pkg != "mara.os" {
-            if _, known := tc_comptime_int(k, args[1], nil); !known {
+            if _, known := tc_comptime_int(k, args[1]); !known {
                 tc_error(k, span, TYPE_SLICE_PTR_OUTSIDE_OS_MODULE +
                     "(literal, '::' constant, or comptime arithmetic). Runtime-derived lengths " +
                     "are restricted because they're the classic source of OOB-access bugs at C boundaries.")
@@ -990,7 +989,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
             return Type_CString{}, true
         }
-        at := tc_arg(k, args[0], env)
+        at := tc_arg(k, args[0])
         elem: Type
         #partial switch v in distinct_base(at) {
         case ^Type_Partial_Array: elem = v.elem
@@ -1008,9 +1007,9 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
 }
 
 // `size_of(T)`: T's size, a constant (untyped: the width its use takes).
-tc_size_of :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_size_of :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    t := tc_type(k, Tree_Id(k.t.a[n]), env, span)
+    t := tc_type(k, Tree_Id(k.t.a[n]), span)
     if _, is_error := t.(Type_Error); is_error { tc_error(k, span, TYPE_SIZE_UNKNOWN_TYPE) }
     tc_ensure_layout(k, t)
     k.annot.size_of[tc_sid(k, n)] = t
@@ -1034,7 +1033,7 @@ tc_ensure_layout :: proc(k: ^TC, t: Type) {
 
 // `Id(x)`, Id a distinct type: x at its base type, seen as Id (a
 // conversion: its bits as they are).
-tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Distinct, args: []Tree_Id, env: ^Type_Scope) -> Type {
+tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Distinct, args: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
     if len(args) != 1 {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
@@ -1042,7 +1041,7 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
     }
     saved := k.hint
     k.hint = dt.base_type
-    at := tc_check(k, args[0], env)
+    at := tc_check(k, args[0])
     k.hint = saved
     if !is_any(at) && !is_infer(at) && types_incompatible(dt.base_type, at) {
         tc_error(k, span, TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE, name, type_name(at), type_name(dt.base_type))
@@ -1052,20 +1051,20 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
 
 // `f()?`: the call, its err returned when it is one — its value the call's
 // first, or none when it returns only its err.
-tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     inner := Tree_Id(k.t.a[n])
-    tc_check(k, inner, env)
+    tc_check(k, inner)
     if !tc_is_call(k, tc_unparen(k, inner)) {
         tc_error(k, span, TYPE_TRY_OPERAND_MUST_BE_CALL)
         return Type_Error{}
     }
-    rets := tc_call_returns(k, inner, env)
+    rets := tc_call_returns(k, inner)
     if len(rets) == 0 || !is_err_type(rets[len(rets) - 1]) {
         tc_error(k, span, TYPE_TRY_REQUIRES_ERR_RETURN)
         return Type_Error{}
     }
-    rts := enclosing_return_types(env)
+    rts := tc_results(k)
     if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
         tc_error(k, span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
         return Type_Error{}
@@ -1076,16 +1075,16 @@ tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 
 // `if c do a else b` as a value: its condition a bool, its type its
 // branches' (an untyped one takes the other's).
-tc_if_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     then_n, else_n := tree_pair(tr, n)
-    ct := tc_check(k, Tree_Id(tr.a[n]), env)
+    ct := tc_check(k, Tree_Id(tr.a[n]))
     if !is_any(ct) {
         if _, is_bool := ct.(Type_Bool); !is_bool { tc_error(k, span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(ct)) }
     }
     types: [2]Type
-    for branch, i in ([2]Tree_Id{then_n, else_n}) { types[i] = tc_check(k, branch, env) }
+    for branch, i in ([2]Tree_Id{then_n, else_n}) { types[i] = tc_check(k, branch) }
     t := types[0]
     switch {
     case is_untyped(types[0]) || is_infer(types[0]): t = types[1]
@@ -1127,7 +1126,7 @@ TC_Recv :: struct {
 }
 
 // An argument, checked — or the receiver, as checked.
-tc_arg :: proc(k: ^TC, a: Tree_Id, env: ^Type_Scope) -> Type {
+tc_arg :: proc(k: ^TC, a: Tree_Id) -> Type {
     if a != 0 && a == k.recv.node { return k.recv.t }
-    return tc_check(k, a, env)
+    return tc_check(k, a)
 }

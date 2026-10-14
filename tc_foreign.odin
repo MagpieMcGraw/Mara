@@ -5,7 +5,7 @@ import "core:strings"
 // `foreign "lib" [prefix p] { fun Name(params) -> T }`: each a fun of C's
 // calling convention, linked as prefix + name.
 
-tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
+tc_register_foreign :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
     t := k.t
     fv := foreign_view(t, s)
     k.c.in_foreign_sig = true
@@ -20,12 +20,12 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
         for g in v.params {
             pv := params_view(t, g)
             for pn in pv.names {
-                append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = tc_type(k, pv.type_, env, span)})
+                append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = tc_type(k, pv.type_, span)})
             }
         }
-        for r in v.returns { append(&ft.return_types, tc_type(k, r, env, span)) }
+        for r in v.returns { append(&ft.return_types, tc_type(k, r, span)) }
         ft.decl = v.name
-        tc_scope_bind(k, mod, name, ft, {ft.decl, .Fun})
+        tc_bound_set(k, ft.decl, ft)
         k.c.declared_funs[name] = true
         k.table.fun_homes[name] = k.pkg
     }
@@ -33,7 +33,7 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
 
 // A module's foreign funs, for the emitter: each by its flat name, linked as
 // prefix + name (one declaration per symbol in the program).
-tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, module: string) {
+tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
     t := k.t
     fv := foreign_view(t, s)
     library := tc_text(fv.library)

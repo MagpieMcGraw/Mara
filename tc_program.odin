@@ -110,15 +110,14 @@ tc_program_args :: proc(k: ^TC, value: Tree_Id) -> ([]Tree_Id, bool) {
 
 // `this_program = Program(...)`, checked: its arena's arguments — read at
 // main's entry, before any code runs.
-tc_program_assign :: proc(k: ^TC, value: Tree_Id, env: ^Type_Scope) {
+tc_program_assign :: proc(k: ^TC, value: Tree_Id) {
     t := k.t
     args, ok := tc_program_args(k, value)
     if !ok || len(args) == 0 { return }
     arena := tc_unparen(k, args[0])
     if t.tag[arena] != .Call { return }
     inner := tree_list(t, t.a[arena])
-    for a in inner { tc_check(k, a, env) }
-    if len(inner) > 0 && inner[0] == k.arena_size { k.arena_env = env }
+    for a in inner { tc_check(k, a) }
 }
 
 // The arena's type: a fun `*_<name>` with what an arena has (mark, alloc,
@@ -158,8 +157,7 @@ tc_validate_allocator :: proc(k: ^TC) {
         prog.fields[0].type_ = alloc
     }
     if k.arena_size == 0 { return }
-    env := k.arena_env if k.arena_env != nil else k.root
-    if n, is_const := tc_comptime_int(k, k.arena_size, env); is_const {
+    if n, is_const := tc_comptime_int(k, k.arena_size); is_const {
         k.table.scope_allocator_size = n
     } else {
         tc_error(k, tree_span(k.t, k.arena_size), TYPE_ARENA_SIZE_CONSTANT)

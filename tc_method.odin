@@ -10,7 +10,7 @@ import "core:strings"
 // (`addressed`: the `&` written around the call — `&x.f()`, x's address the
 // receiver, a value.)
 
-tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_Id(0)) -> Type {
+tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     tr := k.t
     if addressed != 0 {
         if n in k.addressed_calls { return Type_Error{} }   // (inside itself: said where it began)
@@ -25,7 +25,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
     defer k.recv = saved
     // (A call of several results, as one argument: its extras would be lost.)
     for a in mv.args {
-        if returns := tc_call_returns(k, a, env); len(returns) > 1 {
+        if returns := tc_call_returns(k, a); len(returns) > 1 {
             tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
     }
@@ -42,7 +42,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
         if found {
             tc_set_ref(k, q, qref)
             // (`Shape.Rect(5)`: the union's variant built by its params.)
-            if ut, is_union := qt.(^Type_Union); is_union && name in ut.tag_map { return tc_variant_call(k, n, ut, name, args, env) }
+            if ut, is_union := qt.(^Type_Union); is_union && name in ut.tag_map { return tc_variant_call(k, n, ut, name, args) }
             if qsd := as_scope_body(qt); qsd != nil && tc_names_def(qref) {
                 // (Through a module or a type: its member, the resolver's.)
                 mref := k.rs.refs[n]
@@ -89,7 +89,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
     }
     if !resolved {
         // (A value: a method of its struct's, else `f(x, args)`.)
-        qt := tc_unary(k, addressed, env, of = recv) if addressed != 0 else tc_check(k, recv, env)
+        qt := tc_unary(k, addressed, of = recv) if addressed != 0 else tc_check(k, recv)
         k.recv = {node = arg, t = qt}
         k.annot.receivers[tc_sid(k, n)] = true   // (checked as a value, before its method is found)
         tc_struct_of(k, qt)
@@ -104,7 +104,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
     }
     if failed { return Type_Error{} }
     callee_name := tc_call_name(k, n)
-    return tc_call_core(k, n, callee_name, args, env, qual, qual_dispatch)
+    return tc_call_core(k, n, callee_name, args, qual, qual_dispatch)
 }
 
 // An instance's method: x its first argument, when the method takes Self (a

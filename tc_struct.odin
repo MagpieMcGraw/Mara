@@ -20,7 +20,7 @@ tc_struct_of :: proc(k: ^TC, t: Type) -> ^Scope_Body {
 
 // `x.f`: a struct's field (through a pointer, what it points at); an
 // array's length or swizzle; a slice's or partial array's header field.
-tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     base := Tree_Id(tr.a[n])
@@ -35,12 +35,12 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     // resolver's: pkg itself names nothing.)
     if tr.tag[n] == .Field && tr.tag[base] == .Ident && k.rs.refs[base].kind == .None {
         if kc := tc_const_named(k, n); kc != nil {
-            t := tc_check(k, kc.value, env)
+            t := tc_check(k, kc.value)
             tc_set_ref(k, n, {k.t.main[kc.def], .Const})
             return t
         }
     }
-    bt := tc_check(k, base, env)
+    bt := tc_check(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return tc_module_member(k, n, sd, field)
     }
@@ -168,13 +168,13 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
 
 // `x.f = v`: the field the struct has, the value at its type.
 // (`op_tok`: a compound assignment's operator — the value is `target op value`.)
-tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0) {
     diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
     tr := k.t
     span := tree_span(tr, s)
     base := Tree_Id(tr.a[target])
     field := tc_text(Token_Id(tr.b[target]))
-    bt := tc_check(k, base, env)
+    bt := tc_check(k, base)
     tc_struct_of(k, bt)   // (its fields known: a nested struct's, checked first)
     sd := as_scope_body(bt)
     if sd == nil || len(sd.fields) == 0 {
@@ -184,7 +184,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         }
     }
     if sd == nil {
-        tc_header_assign(k, s, target, value, bt, field, env, op_tok)
+        tc_header_assign(k, s, target, value, bt, field, op_tok)
         return
     }
     ft := resolve_struct_field(sd, field)
@@ -193,13 +193,13 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         tc_set_type(k, target, ft)
         if i, ok := sd.field_map[field]; ok { tc_set_ref(k, target, {sd.fields[i].decl, .Field}) }
     }
-    vt := tc_store_at(k, value, env, op_tok, target, s)
+    vt := tc_store_at(k, value, op_tok, target, s)
     k.hint = nil
     if ft == nil {
         tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), field)
         return
     }
-    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+    if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
     }
     tc_no_literal_slice(k, ft, value, span)
@@ -214,9 +214,9 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
 
 // A value written into a place a target names: its type — a compound
 // assignment's, its operation's.
-tc_store_at :: proc(k: ^TC, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0, target: Tree_Id = 0, s: Tree_Id = 0) -> Type {
-    if op_tok != 0 { return tc_compound_value(k, s, op_tok, target, value, env) }
-    return tc_check(k, value, env)
+tc_store_at :: proc(k: ^TC, value: Tree_Id, op_tok: Token_Id = 0, target: Tree_Id = 0, s: Tree_Id = 0) -> Type {
+    if op_tok != 0 { return tc_compound_value(k, s, op_tok, target, value) }
+    return tc_check(k, value)
 }
 
 // "name (type)" when the expression has a name, else its type.
@@ -228,7 +228,7 @@ tc_source_desc :: proc(k: ^TC, n: Tree_Id, t: Type) -> string {
 
 // The param a write lands in, when its target is rooted at one passed by
 // address (through no pointer).
-tc_write_root_param :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (string, bool) {
+tc_write_root_param :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
     tr := k.t
     cur := n
     for {
@@ -255,7 +255,7 @@ tc_write_root_param :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (string, bo
 // `Foo{…}`, `Foo{0}`, `{…}` (typed by its use): its type, what it constructs
 // (its constructor's defaults, a variant's), each field given checked at its
 // field's type.
-tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     ty := Tree_Id(tr.a[n])
@@ -299,7 +299,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             vut, ambiguous := tc_variant_union(k, name)
             if ambiguous { return Type_Error{} }
             if vut == nil {
-                return tc_unknown_literal(k, n, name, entries, env)
+                return tc_unknown_literal(k, n, name, entries)
             }
             t, variant = vut, name
             // (Where a named union of it goes — `distinct U` — the union as
@@ -330,7 +330,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         t = qt
     case:
         // (A typed array's: `[3]f32{…}`, an empty `[..N]T{}`.)
-        t = tc_type(k, ty, env, span)
+        t = tc_type(k, ty, span)
         if is_partial_array(t) {
             if len(entries) > 0 {
                 tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
@@ -394,11 +394,11 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         if vst != nil { tc_variant_built(k, n, t, variant) }
     }
     if fd != nil {
-        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, env, fd)
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, fd)
     } else if fa != nil {
-        tc_array_entries(k, n, entries, fa, t, name, env)
+        tc_array_entries(k, n, entries, fa, t, name)
     } else if !zero && !empty {
-        tc_literal_fields(k, n, entries, sd, env)
+        tc_literal_fields(k, n, entries, sd)
     }
     return t
 }
@@ -428,7 +428,7 @@ TC_Field_Default :: struct {
 
 // `all v` into an array (`lit_t`): v checked against its element. (A struct
 // field's, `fd`: said as the field's.)
-tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, env: ^Type_Scope, fd: ^TC_Field_Default = nil) {
+tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, fd: ^TC_Field_Default = nil) {
     span := tree_span(k.t, n)
     elem: Type
     #partial switch v in distinct_base(lit_t) {
@@ -436,7 +436,7 @@ tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, 
     case ^Type_Partial_Array: elem = v.elem
     }
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 { k.hint = elem }
-    vt := tc_check(k, value, env)
+    vt := tc_check(k, value)
     if fd != nil {
         if !is_any(vt) && types_incompatible(elem, vt) {
             tc_error(k, fd.span, TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED, fd.name, type_name(vt), type_name(elem), type_name(lit_t))
@@ -464,11 +464,11 @@ tc_is_distinct :: proc(t: Type) -> bool {
 
 // An array literal's entries: each element against its slot, by position or
 // named by its swizzle letter (`{x = 1}`); `{all v}`, v once.
-tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed_Array, lit_t: Type, name: string, env: ^Type_Scope) {
+tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed_Array, lit_t: Type, name: string) {
     tr := k.t
     span := tree_span(tr, n)
     if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {
-        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), lit_t, name, env)
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), lit_t, name)
         return
     }
     if len(entries) == 0 || len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0" { return }
@@ -482,7 +482,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         }
         for e, i in entries {
             hint_for(k, e, fa.elem)
-            vt := tc_check(k, e, env)
+            vt := tc_check(k, e)
             if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
             tc_value_at(k, e, vt, fa.elem, span)
         }
@@ -502,7 +502,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
         }
         value := Tree_Id(tr.a[e])
         hint_for(k, value, fa.elem)
-        vt := tc_check(k, value, env)
+        vt := tc_check(k, value)
         if !coerce_deferred_pointee(k.c, vt, fa.elem, span) && types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
         tc_value_at(k, value, vt, fa.elem, span)
         set[idx] = true
@@ -510,7 +510,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
 }
 
 // A literal's entries against its struct's fields: named, or by position.
-tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body, env: ^Type_Scope) {
+tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body) {
     tr := k.t
     span := tree_span(tr, n)
     if len(entries) == 0 { return }
@@ -518,8 +518,8 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         // `Foo{f()}`, f's results Foo's fields: each field its result.
         probed: Type
         if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
-            probed = tc_check(k, entries[0], env)
-            returns := tc_call_returns(k, call, env)
+            probed = tc_check(k, entries[0])
+            returns := tc_call_returns(k, call)
             fits := len(returns) == len(sd.fields)
             for f, i in sd.fields {
                 if fits && types_incompatible(f.type_, returns[i]) { fits = false }
@@ -532,7 +532,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         }
         for e, i in entries {
             if i >= len(user) { break }
-            tc_literal_field(k, e, user[i], i, "", span, env, positional = true, probed = probed if i == 0 else nil)
+            tc_literal_field(k, e, user[i], i, "", span, positional = true, probed = probed if i == 0 else nil)
         }
         return
     }
@@ -543,16 +543,15 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
             tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), name)
             continue
         }
-        tc_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, name, span, env)
+        tc_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, name, span)
     }
 }
 
-tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span,
-                         env: ^Type_Scope, positional := false, probed: Type = nil) {
+tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, positional := false, probed: Type = nil) {
     // (An anonymous literal takes its shape from the field; a `.Variant`, its
     // enum or union — a distinct one's too.)
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) || k.t.tag[v] == .Dot_Ident { k.hint = f.type_ }
-    vt := probed if probed != nil else tc_check(k, value, env)   // (a spread that wasn't: checked as one)
+    vt := probed if probed != nil else tc_check(k, value)   // (a spread that wasn't: checked as one)
     if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) {
         if positional {
             tc_error(k, span, TYPE_FIELD_POSITION_EXPECTED, f.name, i, type_name(f.type_), type_name(vt))
@@ -572,10 +571,10 @@ tc_is_broadcast :: proc(k: ^TC, lit: Tree_Id) -> bool {
 
 // `s.len = n`, `a.xy = v`: a slice's or partial array's header field, an
 // array's swizzle (through a pointer, what it points at), then the value.
-tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: string, env: ^Type_Scope, op_tok: Token_Id) {
+tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: string, op_tok: Token_Id) {
     span := tree_span(k.t, s)
     diag := value if op_tok == 0 else 0
-    vt := tc_store_at(k, value, env, op_tok, target, s)
+    vt := tc_store_at(k, value, op_tok, target, s)
     k.hint = nil
     obj := bt
     if pt, is_ptr := obj.(^Type_Ptr); is_ptr {
@@ -592,7 +591,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
             if is_all_swizzle_chars(field) { tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size) }
             return
         }
-        if pname, immutable := tc_write_root_param(k, target, env); immutable {
+        if pname, immutable := tc_write_root_param(k, target); immutable {
             tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
         }
         if len(field) == 1 {
@@ -617,7 +616,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
         return
     }
     // (A param's header is its caller's: `^[]T` moves a cursor.)
-    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+    if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
     }
     ft: Type
@@ -685,7 +684,7 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
 // `v{ x = 1 }` as a statement, v a variable of a struct or a pointer to one:
 // each field given written into v's — or what it points at's — in place
 // (marked: Annotations.overrides).
-tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
+tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     tr := k.t
     if tr.tag[e] != .Literal { return false }
     ty := Tree_Id(tr.a[e])
@@ -701,17 +700,17 @@ tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
     tc_set_ref(k, ty, k.rs.refs[ty])
     // (Into storage that can't be written, as a field's write: tc_field_assign.)
     span := tree_span(tr, e)
-    if pname, immutable := tc_write_root_param(k, ty, env); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }
+    if pname, immutable := tc_write_root_param(k, ty); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }
     if cname, is_const := tc_write_root_const(k, ty); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
     if tc_in_program(k, ty) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
-    tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env)
+    tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd)
     return true
 }
 
 // A literal of a name no type or union owns: a variant's two unions have
 // (ambiguous: said so), else an unknown type — unless a variant's or a
 // local's (what takes it checks it) — its fields' values checked.
-tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id, env: ^Type_Scope) -> Type {
+tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
     owner, is_variant := k.table.variant_to_enum[name]
     if is_variant && owner == "" {
@@ -728,6 +727,6 @@ tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id,
     if !is_variant {
         if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     }
-    for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e, env) }
+    for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e) }
     return Type_Error{}
 }

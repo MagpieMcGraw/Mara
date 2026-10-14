@@ -18,8 +18,7 @@ tc_binding_kind_fits :: proc(t, param: Type) -> bool {
 // `f(args)` where f is a dispatch group: each argument checked, the one
 // member they fit chosen — each argument its param's type (a binding no use
 // has given a width yet: a param of its kind) — then the call.
-tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member, args: []Tree_Id,
-                         env: ^Type_Scope) -> Type {
+tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member, args: []Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     // (A `_`: the default the chosen function has there — checked once it
@@ -27,7 +26,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
     underscore := make([]bool, len(args), context.temp_allocator)
     for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
     arg_types := make([dynamic]Type, context.temp_allocator)
-    for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a, env)) }
+    for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a)) }
     matched := make([dynamic]string, context.temp_allocator)
     matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
     candidates: for m in members {
@@ -110,15 +109,12 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
     }
     tc_set_args(k, n, received[:])
     for a, i in args { if i < len(ft.params) && !underscore[i] { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
-    // (Its defaults — a `_`'s, then the params it leaves off: each in its
-    // function's defining scope; a call site's (`#caller_name`) where the
-    // call is.)
-    callee := callee_def_scope(ft)
-    if callee == nil { callee = env }
+    // (Its defaults — a `_`'s, then the params it leaves off; a call site's
+    // (`#caller_name`) where the call is.)
     for i in 0 ..< len(ft.params) {
         if i < len(args) && !underscore[i] { continue }
         def := ft.params[i].default_node
-        if tr.tag[def] == .Hash_Name { tc_hash_name(k, def, env) } else { tc_check_at(k, def, callee, ft.params[i].type_) }
+        if tr.tag[def] == .Hash_Name { tc_hash_name(k, def) } else { tc_check_at(k, def, ft.params[i].type_) }
     }
     return fn_primary_return(ft)
 }
@@ -126,7 +122,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
 // The function `l op r` calls, when an operand is no number: of the groups
 // `overload op` names, the member that fits best — its params the operands'
 // types exactly, then structurally, then a generic one's instance.
-tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Scope, span: Span) -> (^Type_Scope, bool) {
+tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -> (^Type_Scope, bool) {
     groups := resolve_overloads(k.rs, span.at, op)
     if len(groups) == 0 { return nil, false }
     best: ^Type_Scope
@@ -153,7 +149,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
             // found: its instance exists.)
             tmpl, is_template := tc_template(k, m.ref)
             if !is_template { continue }
-            if inst := tc_overload_instance(k, f, tmpl, lt, rt, env); inst != nil && best_score < 1 { best, best_score = inst, 1 }
+            if inst := tc_overload_instance(k, f, tmpl, lt, rt); inst != nil && best_score < 1 { best, best_score = inst, 1 }
         }
     }
     return best, best_score > 0
@@ -161,7 +157,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
 
 // A generic member's instance for two operands, when its params, bound from
 // them, take them.
-tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Type, env: ^Type_Scope) -> ^Type_Scope {
+tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Type) -> ^Type_Scope {
     tr := k.t
     v := scope_view(tr, tmpl.node)
     ptypes := make([dynamic]Tree_Id, context.temp_allocator)
@@ -181,8 +177,8 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     k.subst = subst
     was := tc_type_params_bind(k, tmpl.node, subst)
     span := tree_span(tr, tmpl.def)
-    p0 := tc_type(k, ptypes[0], tmpl.env, span)
-    p1 := tc_type(k, ptypes[1], tmpl.env, span)
+    p0 := tc_type(k, ptypes[0], span)
+    p1 := tc_type(k, ptypes[1], span)
     tc_type_params_restore(k, was)
     k.subst = saved
     if types_incompatible(p0, lt) || types_incompatible(p1, rt) { return nil }
@@ -190,7 +186,7 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     for p in params { append(&type_args, subst[p]) }
     mangled := mangle_generic_name(name, type_args[:])
     ft := k.instances[mangled] or_else nil
-    if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled, env) }
+    if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
     if len(ft.params) != 2 || types_incompatible(ft.params[0].type_, lt) || types_incompatible(ft.params[1].type_, rt) { return nil }
     return ft
 }

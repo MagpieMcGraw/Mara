@@ -120,7 +120,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     // (A value of no several results: a broadcast, nothing of it built here.)
     returns: []Type
     if !is_try {
-        returns = tc_call_returns(k, value, nil)
+        returns = tc_call_returns(k, value)
         if returns == nil {
             lw_broadcast(k, s, targets, value, is_decl)
             return
@@ -138,7 +138,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             mr.call = graph_try_after(b, tree_span(t, v), r.v)
             b.at = at
         }
-        rets := tc_call_returns(k, call, nil)
+        rets := tc_call_returns(k, call)
         returns = rets[:len(rets) - 1]
     } else {
         r: Built

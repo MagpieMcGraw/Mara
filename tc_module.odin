@@ -6,7 +6,7 @@ import "core:strings"
 // used — its own uses first) and binds the name that declares it (its alias,
 // else its path's last part). What it makes visible where is the resolver's.
 
-tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := Token_Id(0)) -> ^Type_Scope {
+tc_use :: proc(k: ^TC, imp: Tree_Id, mod: ^Type_Scope, alias := Token_Id(0)) -> ^Type_Scope {
     t := k.t
     span := tree_span(t, imp)
     path := tc_path(k, imp)
@@ -19,8 +19,7 @@ tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := Token_Id(0)
     // (Its name the alias, else its path's last part: the token that declares it.)
     parts := tree_token_list(t, t.a[imp])
     decl := alias if alias != 0 else parts[len(parts) - 1]
-    tc_scope_bind(k, env, tc_text(decl), m, {decl, .Module})
-    tc_scope_bind(k, k.root, path, m, {decl, .Module})
+    tc_bound_set(k, decl, m)
     return m
 }
 
@@ -49,6 +48,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.name, m.home_package = name, name
     m.kind = .Struct
     m.is_module = true
+    k.module_scopes[name] = m
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
     list := tc_check_module_files(k, files, m)
@@ -60,8 +60,6 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     // (A stdlib module is `std`'s member by its last name: `math.sin`.)
     if strings.has_prefix(name, "mara.") {
         tc_scope_bind(k, k.std, name[len("mara."):], m, {kind = .Module})
-    } else {
-        tc_scope_bind(k, k.root, name, m, {kind = .Module})
     }
     return m
 }
@@ -69,16 +67,16 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
 // A module's variables: its file's block's locals — typed (by what is
 // written, else by its value), no function sees them (one that reaches for
 // one is told so: report_unresolved).
-tc_module_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_module_decl :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     v := decl_view(t, s)
     span := tree_span(t, s)
     ann: Type
-    if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
+    if v.type_ != 0 { ann = tc_type(k, v.type_, span) }
     for tg, i in v.targets {
         vt: Type = Type_Error{}
-        if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i], env)) }
-        tc_scope_bind(k, env, tc_name(k, tg), ann if ann != nil else vt, {t.main[tg], .Global})
+        if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i])) }
+        tc_bound_set(k, t.main[tg], ann if ann != nil else vt)
         tc_set_ref(k, tg, {t.main[tg], .Global})
         tc_set_type(k, tg, ann if ann != nil else vt)
     }

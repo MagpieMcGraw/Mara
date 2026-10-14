@@ -63,19 +63,19 @@ tc_check_big_endian :: proc(k: ^TC, value: Tree_Id, span: Span) {
 
 // `bytes[i] = v`: v's raw bytes written at the element — as v's type, of a
 // width.
-tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, env: ^Type_Scope, op_tok: Token_Id) {
+tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, op_tok: Token_Id) {
     span := tree_span(k.t, s)
     if op_tok != 0 {
         tc_unsupported(k, s, "a compound assignment into bytes")
         return
     }
-    vt := tc_check(k, value, env)
+    vt := tc_check(k, value)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
         tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(it))
     }
-    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+    if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
     }
     // (An untyped number has no width to write: cast it — a binding no use
@@ -110,8 +110,8 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
         return nil
     }
     view := tc_pin_default(k, vt, span)   // (a binding of no width yet: its default, from here)
-    lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)
-    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
+    lo, lo_ok := tc_comptime_int(k, lo_n, names = false)
+    hi, hi_ok := tc_comptime_int(k, hi_n, names = false)
     if size := type_size(view); lo_ok && hi_ok && int(hi - lo) != size {
         msg := TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE if is_byte_fixed_array(tt) else TYPE_BYTE_SLICE_WRITE_BYTES_SLICE
         tc_error(k, span, msg, type_name(view), size, hi - lo)
@@ -139,8 +139,8 @@ tc_byte_read_run :: proc(k: ^TC, lo_n, hi_n, value: Tree_Id, vt, elem: Type, spa
         blo_n, bhi_n := tree_pair(k.t, v)
         if bhi_n != 0 {
             blo, blo_ok := i64(0), true
-            if blo_n != 0 { blo, blo_ok = tc_comptime_int(k, blo_n, nil, names = false) }
-            bhi, bhi_ok := tc_comptime_int(k, bhi_n, nil, names = false)
+            if blo_n != 0 { blo, blo_ok = tc_comptime_int(k, blo_n, names = false) }
+            bhi, bhi_ok := tc_comptime_int(k, bhi_n, names = false)
             if blo_ok && bhi_ok { nbytes, known = int(bhi - blo), true }
         }
     }
@@ -150,8 +150,8 @@ tc_byte_read_run :: proc(k: ^TC, lo_n, hi_n, value: Tree_Id, vt, elem: Type, spa
         return
     }
     lo, lo_ok := i64(0), true
-    if lo_n != 0 { lo, lo_ok = tc_comptime_int(k, lo_n, nil, names = false) }
-    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
+    if lo_n != 0 { lo, lo_ok = tc_comptime_int(k, lo_n, names = false) }
+    hi, hi_ok := tc_comptime_int(k, hi_n, names = false)
     if lo_ok && hi_ok && int(hi - lo) * size != nbytes {
         tc_error(k, span, TYPE_BYTE_READ_RUN_SIZE, hi - lo, type_name(elem), int(hi - lo) * size, nbytes)
     }
@@ -165,8 +165,8 @@ tc_span_read_size :: proc(k: ^TC, value: Tree_Id, ann: Type, exact: bool, span: 
     m, _ := tc_byte_node(k, value)
     if k.t.tag[m] != .Slice { return }
     lo_n, hi_n := tree_pair(k.t, m)
-    lo, lo_ok := tc_comptime_int(k, lo_n, nil, names = false)
-    hi, hi_ok := tc_comptime_int(k, hi_n, nil, names = false)
+    lo, lo_ok := tc_comptime_int(k, lo_n, names = false)
+    hi, hi_ok := tc_comptime_int(k, hi_n, names = false)
     if !lo_ok || !hi_ok { return }
     n := int(hi - lo)
     if exact {

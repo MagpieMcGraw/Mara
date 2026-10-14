@@ -1368,7 +1368,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
                 at = lw_hash_name_type(k, a)
             case .Default:
                 if arg.slot >= 0 {
-                    if returns := tc_call_returns(k, a, nil); len(returns) > 1 { at = returns[arg.slot] }
+                    if returns := tc_call_returns(k, a); len(returns) > 1 { at = returns[arg.slot] }
                 }
             }
             // (An array's value its param views: held in a temporary. A

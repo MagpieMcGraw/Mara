@@ -4,12 +4,12 @@ package mara
 
 // `a[i]`: its collection (through a pointer, what it points at), the index at
 // the header's width — the element.
-tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
     tc_lower_dots(k, base_n, idx_n)
-    bt := tc_check(k, base_n, env)
+    bt := tc_check(k, base_n)
     target := distinct_base(bt)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
@@ -17,7 +17,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check_at(k, idx_n, env, slice_header_width_type)
+    it := tc_check_at(k, idx_n, slice_header_width_type)
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -27,7 +27,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     #partial switch v in target {
     case ^Type_Fixed_Array:
         // (A known index past its end: said so now.)
-        if at, known := tc_comptime_int(k, idx_n, nil); known && (at < 0 || at >= i64(v.size)) {
+        if at, known := tc_comptime_int(k, idx_n); known && (at < 0 || at >= i64(v.size)) {
             tc_error(k, span, TYPE_INDEX_OUT_OF_BOUNDS_CONST, at, v.size, v.size - 1)
         }
         t = v.elem
@@ -40,7 +40,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 }
 
 // `a[i] = v`: the element, then the value into it.
-tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0) {
     diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
     tr := k.t
     span := tree_span(tr, s)
@@ -51,12 +51,12 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
         return
     }
-    ct := tc_check(k, base_n, env)
+    ct := tc_check(k, base_n)
     tt := distinct_base(ct)
     elem := index_elem_type(tt)
     tc_set_type(k, target, elem)
     if fa, ok := tt.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check_at(k, idx_n, env, slice_header_width_type)
+    it := tc_check_at(k, idx_n, slice_header_width_type)
     #partial switch v in tt {
     case ^Type_Fixed_Array:   k.hint = v.elem
     case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
@@ -64,17 +64,17 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     }
     if is_byte_buffer(ct) {
         // (Into bytes: the value's raw bytes, the element's place a view.)
-        tc_byte_write(k, s, target, value, it, env, op_tok)
+        tc_byte_write(k, s, target, value, it, op_tok)
         return
     }
-    vt := tc_store_at(k, value, env, op_tok, target, s)
+    vt := tc_store_at(k, value, op_tok, target, s)
     tc_settle(k, diag, elem)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
         tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(it))
     }
-    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+    if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
     }
     size := -1   // (a fixed array's, for its diagnostic)
@@ -122,15 +122,15 @@ tc_plain_name :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 // `[a, b, c]`: each element, the first's type the literal's element type.
 // (Empty: typed by where it goes.)
-tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
     if len(elems) == 0 { return Type_Error{} }
-    et := tc_check(k, elems[0], env)
+    et := tc_check(k, elems[0])
     for e, i in elems[1:] {
         // (A pointee's width not yet decided, either side: decided by the other.)
-        if t := tc_check(k, e, env); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
+        if t := tc_check(k, e); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }
@@ -140,14 +140,14 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 
 // `a[lo:hi]`: its collection, its bounds at the header's width — a slice of
 // its elements.
-tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_slice :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     base_n := Tree_Id(tr.a[n])
     lo_n, hi_n := tree_pair(tr, n)
     tc_lower_dots(k, base_n, lo_n)
     tc_lower_dots(k, base_n, hi_n)
-    tt := tc_check(k, base_n, env)
+    tt := tc_check(k, base_n)
     // (A named type — `str64`, a distinct array — sliced as its base is.)
     target := distinct_base(tt)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
@@ -172,7 +172,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if lo_n != 0 {
-        lt := tc_check_at(k, lo_n, env, slice_header_width_type)
+        lt := tc_check_at(k, lo_n, slice_header_width_type)
         if !is_numeric(lt) && !is_any(lt) {
             tc_error(k, span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -180,7 +180,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     }
     if hi_n != 0 {
-        ht := tc_check_at(k, hi_n, env, slice_header_width_type)
+        ht := tc_check_at(k, hi_n, slice_header_width_type)
         if !is_numeric(ht) && !is_any(ht) {
             tc_error(k, span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {
@@ -194,21 +194,21 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 // `a[lo:hi] = v`: the target's slice — its collection, its bounds — then
 // the value into its elements. Into bytes, a value no array is written as
 // its own type at lo (a view: tc_byte_span_checks).
-tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     tr := k.t
     span := tree_span(tr, s)
     base_n := Tree_Id(tr.a[target])
     lo_n, hi_n := tree_pair(tr, target)
     tc_lower_dots(k, base_n, lo_n)
     tc_lower_dots(k, base_n, hi_n)
-    tt := tc_check(k, base_n, env)
+    tt := tc_check(k, base_n)
     if elem := index_elem_type(tt); elem != nil {   // (the target names a run of elements)
         tc_set_type(k, target, new_clone(Type_Slice{elem = elem}))
     }
     lt, ht: Type = Type_Any{}, Type_Any{}
-    if lo_n != 0 { lt = tc_check_at(k, lo_n, env, slice_header_width_type) }
-    if hi_n != 0 { ht = tc_check_at(k, hi_n, env, slice_header_width_type) }
-    vt := tc_check(k, value, env)
+    if lo_n != 0 { lt = tc_check_at(k, lo_n, slice_header_width_type) }
+    if hi_n != 0 { ht = tc_check_at(k, hi_n, slice_header_width_type) }
+    vt := tc_check(k, value)
     if !is_numeric(lt) && !is_any(lt) {
         tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))
     } else if !coerces_to_slice_width(lt) {
@@ -219,7 +219,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     } else if hi_n != 0 && !coerces_to_slice_width(ht) {
         tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(ht))
     }
-    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+    if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
     }
     if is_byte_buffer(tt) {
@@ -240,8 +240,8 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     // else the copy would stop the program, its value run past.)
     if hi_n != 0 {
         lo, lo_known := i64(0), true
-        if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n, env) }
-        hi, hi_known := tc_comptime_int(k, hi_n, env)
+        if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n) }
+        hi, hi_known := tc_comptime_int(k, hi_n)
         if va, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && lo_known && hi_known && hi - lo > i64(va.size) {
             tc_error(k, span, TYPE_SLICE_ASSIGN_VALUE_SHORT, lo, hi, hi - lo, va.size)
         }

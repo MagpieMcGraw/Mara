@@ -187,7 +187,7 @@ lw_enclosing_fn_name :: proc(k: ^TC) -> string {
 // output.
 lw_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, w: Written) -> Built {
     b := k.gb
-    returns := tc_call_returns(k, src, nil)
+    returns := tc_call_returns(k, src)
     multi := len(returns) > 1
     if slot > 0 && multi {
         op, made := graph_build_tuple_get(b, tc_sid(k, src))

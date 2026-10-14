@@ -59,7 +59,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
         tc_scope_bind(k, owner, name, ts, {ts.decl, .Type})
     }
     // (Its mangled name the module's, where codegen and a qualified use find it.)
-    tc_scope_bind(k, module_scope(owner), mangled, ts, {ts.decl, .Type if is_struct else .Fun})
+    tc_bound_set(k, ts.decl, ts)
     if callable {
         k.c.declared_funs[mangled] = true
         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
@@ -68,7 +68,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
     k.scope_of[ts] = len(k.scopes)
     append(&k.scopes[owner_i].nested, len(k.scopes))
     if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
-    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, env = owner}))
+    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
 }
 
 // A body's definitions checked: its structs' bodies (their fields), then its

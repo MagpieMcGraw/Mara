@@ -13,8 +13,6 @@ TC_Const :: struct {
     mangled: string,        // a body's: named for its owner
     sid:   Syntax_Id,       // its value's, as the builder keys it (an instance's its own)
     local: bool,            // a body's (its type its value's)
-    env:   ^Type_Scope,     // where its value is checked
-    pub:   ^Type_Scope,     // where its name is bound
     pkg:   string,
     t:     Type,
     state: Resolution_State,
@@ -23,9 +21,9 @@ TC_Const :: struct {
 
 // A module's constant: under its flat name, and its bare one unless another
 // module has a constant of that name (then a bare use must qualify it).
-tc_register_const :: proc(k: ^TC, def, value: Tree_Id, env, mod: ^Type_Scope) {
+tc_register_const :: proc(k: ^TC, def, value: Tree_Id, mod: ^Type_Scope) {
     name := tc_name(k, def)
-    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, env = env, pub = mod, pkg = k.pkg})
+    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, pkg = k.pkg})
     kc.sid = tc_sid(k, value)
     k.const_at[k.t.main[def]] = kc
     k.consts[make_flat_name(k.pkg, name)] = kc
@@ -43,15 +41,19 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     kc.state = .In_Progress
     tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
+    // (A module's: checked outside any body, wherever its first use is.)
+    outer_body, outer_top := k.body, k.top
+    if !kc.local { k.body, k.top = nil, false }
+    defer k.body, k.top = outer_body, outer_top
     append(&k.annot.bodies, Annot_Body{nil, tc_instance(k, kc.value), tree_lo(k.t, kc.value), kc.value})
     t := k.t
     span := tree_span(t, kc.def)
     hint := k.hint
     defer k.hint = hint
     ann: Type = Type_Any{}
-    if kc.ann != 0 { ann = tc_type(k, kc.ann, kc.env, span) }
+    if kc.ann != 0 { ann = tc_type(k, kc.ann, span) }
     k.hint = ann if !is_any(ann) else nil
-    vt := tc_check(k, kc.value, kc.env)
+    vt := tc_check(k, kc.value)
     final := vt
     if !is_any(ann) && !kc.local {
         if types_incompatible(ann, vt) {
@@ -61,7 +63,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
         final = ann
     }
     kc.t = final
-    tc_scope_bind(k, kc.pub, kc.name, final, {k.t.main[kc.def], .Const})
+    tc_bound_set(k, k.t.main[kc.def], final)
 }
 
 // Whether a bare name (n) names no constant two modules in sight have — its
@@ -91,34 +93,13 @@ tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     (&k.scope_consts[owner])[name] = kc
 }
 
-// A body's constants, checked in its scope (where its own names are, before
-// its code), each bound there — and in its owner, for its methods.
-tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope, body: ^Type_Scope) {
-    if len(sc.consts) == 0 { return }
-    if body not_in k.scope_consts { k.scope_consts[body] = make(map[string]^TC_Const) }
+// A body's constants, checked before its code — each a member of its owner
+// too, for its methods.
+tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope) {
     for kc in sc.consts {
-        kc.env, kc.pub = body, body
         tc_check_const(k, kc)
-        tc_scope_bind(k, body, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
         tc_scope_bind(k, sc.ts, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
         tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const})
-        (&k.scope_consts[body])[kc.name] = kc
     }
 }
 
-// The body's constant a name found as a local, or in a scope, names: the
-// blocks out to its fun's body, or the scope it was found in.
-tc_local_const :: proc(k: ^TC, env: ^Type_Scope, loc: ^Type_Scope, name: string) -> ^TC_Const {
-    if loc == nil {
-        for s := env; s != nil; s = s.parent_scope {
-            if cs, ok := k.scope_consts[s]; ok {
-                if kc, has := cs[name]; has { return kc }
-            }
-            if s.kind != .Block { break }
-        }
-        return nil
-    }
-    if loc.is_module { return nil }
-    if cs, ok := k.scope_consts[loc]; ok { return cs[name] or_else nil }
-    return nil
-}

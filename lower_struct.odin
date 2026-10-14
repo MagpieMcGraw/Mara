@@ -247,7 +247,7 @@ lw_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
     if len(entries) == 0 { return }
     if tr.tag[entries[0]] != .Named_Entry {
         if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
-            returns := tc_call_returns(k, call, nil)
+            returns := tc_call_returns(k, call)
             fits := len(returns) == len(sd.fields)
             for f, i in sd.fields {
                 if fits && types_incompatible(f.type_, returns[i]) { fits = false }

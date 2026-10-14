@@ -9,7 +9,6 @@ package mara
 TC_Template :: struct {
     def, node: Tree_Id,
     lo:        Tree_Id,   // its body's lowest node (its nodes: [lo, node])
-    env:       ^Type_Scope,
     pkg:       string,
 }
 
@@ -201,7 +200,7 @@ tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) 
 
 // A call of a generic fun: each argument checked, the type params bound from
 // them, the instance made once per bindings, then the call.
-tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id, env: ^Type_Scope) -> Type {
+tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     if tr.tag[tmpl.node] != .Fun_Def {
@@ -209,7 +208,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         return Type_Error{}
     }
     arg_types := make([dynamic]Type, context.temp_allocator)
-    for a in args { append(&arg_types, tc_arg(k, a, env)) }
+    for a in args { append(&arg_types, tc_arg(k, a)) }
     params := tc_generic_params(k, tmpl.node)
     subst: map[string]Type
     for p in params { subst[p] = nil }
@@ -236,7 +235,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     for p in params { append(&type_args, subst[p]) }
     mangled := mangle_generic_name(name, type_args[:])
     ft := k.instances[mangled] or_else nil
-    if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled, env) }
+    if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
     if len(args) != len(ft.params) {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT, name, len(ft.params), len(args))
     }
@@ -252,7 +251,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
 
 // An instance of a generic fun: its signature at the bindings, its body the
 // template's own checked again with them bound — its scope the call's.
-tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string, env: ^Type_Scope) -> ^Type_Scope {
+tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string) -> ^Type_Scope {
     tr := k.t
     ft := new(Type_Scope)
     ft.kind = .Fun
@@ -273,7 +272,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
             tc_unsupported(k, g, "a generic's param with a default")
             continue
         }
-        pt := tc_type(k, pv.type_, tmpl.env, span)
+        pt := tc_type(k, pv.type_, span)
         for pn in pv.names { append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt}) }
     }
     for r in v.returns {
@@ -281,16 +280,15 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
             tc_unsupported(k, r, "a generic's named result")
             continue
         }
-        append(&ft.return_types, tc_type(k, r, tmpl.env, span))
+        append(&ft.return_types, tc_type(k, r, span))
     }
     ft.decl = tr.main[tmpl.def]
-    tc_scope_bind(k, k.root, mangled, ft, {ft.decl, .Fun})
-    if env != k.root { tc_scope_bind(k, env, mangled, ft, {ft.decl, .Fun}) }
+    tc_bound_set(k, ft.decl, ft)   // (its template's name, in it: it)
     k.instances[mangled] = ft
     append(&k.instance_order, mangled)
-    ft.parent_scope = env
+    ft.parent_scope = k.module_scopes[tmpl.pkg] or_else nil
     k.scope_of[ft] = len(k.scopes)
-    sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, env = env, subst = subst, synthetic = true})
+    sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true})
     append(&k.scopes, sc)
     tc_scope_body(k, sc)
     // (Its own funs, for codegen: extracted as a fun's are.)
@@ -369,7 +367,7 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
 
 // `Name(args)`, Name a generic struct: its instance — its params bound to
 // the arguments (a value's, a constant), made once.
-tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scope, span: Span) -> Type {
+tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
     if t.tag[tmpl.node] != .Struct_Def {
@@ -386,14 +384,14 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
             // (A type; a constructor's call, its struct's — its value the
             // declaration's to build: tc_shape_bindings.)
             if u := tc_unparen(k, a); tc_is_call(k, u) {
-                append(&targs, tc_type_named(k, tc_call_name(k, u), env, span, u))
+                append(&targs, tc_type_named(k, tc_call_name(k, u), span, u))
             } else {
-                append(&targs, tc_type(k, a, env, span))
+                append(&targs, tc_type(k, a, span))
             }
             continue
         }
         if !gp.value {
-            append(&targs, tc_type(k, a, env, span))
+            append(&targs, tc_type(k, a, span))
             continue
         }
         // (A value: a number, a constant, an operation of them.)
@@ -406,7 +404,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
             }
             at = kc.value
         }
-        v, known := tc_comptime_int(k, at, env)
+        v, known := tc_comptime_int(k, at)
         if !known {
             tc_unsupported(k, a, "a generic's size known at run time")
             return Type_Error{}
@@ -418,14 +416,14 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
         gp := gps[i]
         if gp.def == 0 { break }
         if gp.shape != "" && t.tag[gp.def] == .Ident {
-            append(&targs, tc_type_named(k, tc_name(k, gp.def), env, span, gp.def))   // (`~T = void`)
+            append(&targs, tc_type_named(k, tc_name(k, gp.def), span, gp.def))   // (`~T = void`)
             continue
         }
         if !gp.value {
             tc_unsupported(k, gp.def, "a generic type param's default")
             return Type_Error{}
         }
-        v, known := tc_comptime_int(k, gp.def, env)
+        v, known := tc_comptime_int(k, gp.def)
         if !known { break }
         append(&targs, Type_Const_Int{value = int(v)})
     }
@@ -458,13 +456,13 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     st.kind, st.node = .Struct, tmpl.node
     st.generic_base = tc_name(k, tmpl.def)
     append(&st.generic_args, ..targs)
-    st.parent_scope = tmpl.env
+    st.parent_scope = k.module_scopes[tmpl.pkg] or_else nil
     st.has_parens = build_tokens[tr.main[tmpl.node] + 1].kind == .Left_Paren
     st.is_packed = v.packed != 0
     k.table.mono_cache[mangled] = st
     k.table.funs[st.name] = st
     st.decl = tr.main[tmpl.def]
-    tc_scope_bind(k, k.root, mangled, st, {st.decl, .Type})
+    tc_bound_set(k, st.decl, st)
     for name, bound in subst { tc_scope_bind(k, st, name, bound, {tc_type_param_decl(k, tmpl.node, name), .Type}) }
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg = subst, tmpl.pkg
@@ -477,13 +475,13 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
         for pn, i in pv.names {
             if promoted[tc_text(pn)] { continue }
             def := pv.values[i] if i < len(pv.values) else 0
-            pt := tc_param_type(k, tc_text(pn), pv.type_, def, tmpl.env, span)
+            pt := tc_param_type(k, tc_text(pn), pv.type_, def, span)
             append(&st.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt, default_node = def})
         }
     }
     k.scope_of[st] = len(k.scopes)
     append(&k.struct_instances, len(k.scopes))
-    append(&k.scopes, new_clone(TC_Scope{ts = st, def = tmpl.def, node = tmpl.node, env = tmpl.env, subst = subst, synthetic = true}))
+    append(&k.scopes, new_clone(TC_Scope{ts = st, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true}))
     tc_struct_ensure(k, st)
     return st
 }

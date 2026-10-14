@@ -51,14 +51,6 @@ type_decl :: proc(t: Type) -> Token_Id {
     return 0
 }
 
-// The enclosing function's name (for #caller_name).
-enclosing_fn_name :: proc(env: ^Type_Scope) -> string {
-    if s := enclosing_callable_scope(env); s != nil {
-        return s.source_name if s.source_name != "" else s.name
-    }
-    return "main" // top-level code runs in main
-}
-
 // A callable scope: a fun, or a struct (its constructor's body). A module
 // is a .Struct too, but never callable.
 scope_is_callable :: proc(s: ^Type_Scope) -> bool {
@@ -70,30 +62,6 @@ module_scope :: proc(start: ^Type_Scope) -> ^Type_Scope {
     s := start
     for s != nil && s.parent_scope != nil { s = s.parent_scope }
     return s
-}
-
-// The struct whose body this block is directly in, or nil — whether a
-// declaration is a field's.
-parent_struct_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
-    if env == nil { return nil }
-    p := env.parent_scope
-    if p != nil && p.kind == .Struct && !p.is_module { return p }
-    return nil
-}
-
-// The results of the fun (or constructor) whose body this is. Empty: none.
-enclosing_return_types :: proc(env: ^Type_Scope) -> []Type {
-    if s := enclosing_callable_scope(env); s != nil { return s.return_types[:] }
-    return nil
-}
-
-// The fun or constructor whose body this is; nil at module level (a
-// constant's value has no enclosing function).
-enclosing_callable_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
-    for s := env; s != nil; s = s.parent_scope {
-        if scope_is_callable(s) { return s }
-    }
-    return nil
 }
 
 // "prefix_name", the module's dots underscores (LLVM symbol names); name

@@ -27,11 +27,10 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
     if is_struct { tc_early_self(k, v.body) }
-    body := tc_block(k, ts)
     // (A struct's params its constants may use; its and a fun's constants
     // checked before its code.)
-    if is_struct { for p in ts.params { tc_bind(k, body, p.name, p.type_, {p.decl, .Param}) } }
-    tc_check_local_consts(k, sc, body)
+    if is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
+    tc_check_local_consts(k, sc)
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
@@ -42,11 +41,11 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if !is_struct { tc_check_defs(k, sc) }
     // (Its params and named results — locals: its variables, an intrinsic's
     // too, though no code of its reads them.)
-    if !is_struct { for p in ts.params { tc_bind(k, body, p.name, p.type_, {p.decl, .Param}) } }
-    for name, i in ts.return_binding_names { tc_bind(k, body, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
+    if !is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
+    for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
-        for name, bt in sc.subst { tc_bind(k, body, name, bt, {tc_type_param_decl(k, sc.node, name), .Type}) }
-        tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
+        for name, bt in sc.subst { tc_bind(k, name, bt, {tc_type_param_decl(k, sc.node, name), .Type}) }
+        tc_scope(k, v.body, ts if is_struct else nil, top = true)
     }
     if is_struct {
         // (A field's width its uses left open: settled, as a local's is.)
@@ -60,12 +59,15 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
 
 // A block's statements: each checked whole before the next. `fields_of`: the
 // struct whose top block it is (its declarations are its fields).
-tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil, top := false) {
+tc_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := false) {
     t := k.t
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
+    outer_top := k.top
+    k.top = top
+    defer k.top = outer_top
     // (Its declarations, for the stack's size guard at its end.)
     saved := k.decls
-    decls := make([dynamic]TC_Decl_Note, virtual.arena_allocator(k.blocks))   // (scratch, with the block scopes)
+    decls := make([dynamic]TC_Decl_Note, virtual.arena_allocator(k.blocks))   // (scratch: the check's)
     k.decls = &decls
     defer {
         tc_storage_sizes(k, decls[:])
@@ -78,23 +80,23 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
             continue
         }
         if t.tag[s] == .Using && fields_of != nil {
-            tc_using(k, s, env, fields_of)
+            tc_using(k, s, fields_of)
         } else if t.tag[s] == .Decl && fields_of != nil {
-            tc_decl(k, s, env, fields_of)
+            tc_decl(k, s, fields_of)
         } else {
-            tc_stmt(k, s, env)
+            tc_stmt(k, s)
         }
     }
 }
 
-tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
-        if tc_override(k, e, env) { return }
-        rt := tc_check(k, e, env)
+        if tc_override(k, e) { return }
+        rt := tc_check(k, e)
         // A call's value, dropped: `_ = f()` says so.
         if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)
@@ -102,21 +104,21 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_name(k, e)) }
         }
     case .Decl:
-        tc_decl(k, s, env)
+        tc_decl(k, s)
     case .Assign:
-        tc_assign(k, s, env)
+        tc_assign(k, s)
     case .Return:
-        tc_return(k, s, env)
+        tc_return(k, s)
     case .If, .Elif:
-        tc_if(k, s, env)
+        tc_if(k, s)
     case .For_Range, .For_Each, .For_C, .For_Cond:
-        tc_for(k, s, env)
+        tc_for(k, s)
     case .Compound:
-        tc_compound(k, s, env)
+        tc_compound(k, s)
     case .Defer:
-        tc_scope(k, tree_list(t, t.a[s]), tc_block(k, env))
+        tc_scope(k, tree_list(t, t.a[s]))
     case .Match:
-        tc_match(k, s, env)
+        tc_match(k, s)
     case .Break, .Continue:
     case:
         tc_unsupported(k, s, "this statement")
@@ -127,14 +129,14 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 // `x := v`, `x : T = v`, `x : T`: its type the annotation's, else the
 // value's. In a struct's top block (`fields_of`), a field: typed as its
 // annotation, else as its value.
-tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil) {
+tc_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
     if len(v.targets) > 1 && len(v.values) == 1 {
         // (Several from one value: its results — bare names declared, places
         // stored.)
-        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, env, fields_of)
+        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, fields_of)
         return
     }
     for tg in v.targets {
@@ -150,33 +152,33 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     // (Several names, each its own declaration — a struct's fields made
     // first, together: annotated, typed as they are made.)
     if len(v.targets) > 1 && fields_of != nil && v.type_ != 0 {
-        ft := tc_type(k, v.type_, env, span)
+        ft := tc_type(k, v.type_, span)
         for tg, i in v.targets {
             if tc_name(k, tg) == "_" { continue }   // (no field)
             tc_add_field(fields_of, tc_name(k, tg), k.t.main[tg], ft, v.values[i] if i < len(v.values) else 0)
         }
     }
     for tg, i in v.targets {
-        tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, env, fields_of)
+        tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, fields_of)
     }
 }
 
 // One name's declaration.
-tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope) {
+tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
     name := tc_name(k, target)
     if name == "_" {
         // (`_ := v` names nothing — no variable, no field: v checked for its
         // own sake, as `_ = v` does.)
-        k.hint = tc_type(k, ann_node, env, span) if ann_node != 0 else nil
-        if value != 0 { tc_check(k, value, env) }
+        k.hint = tc_type(k, ann_node, span) if ann_node != 0 else nil
+        if value != 0 { tc_check(k, value) }
         return
     }
     ref := tc_decl_ref(k, target, fields_of)
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}
-    if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
+    if ann_node != 0 { ann = tc_type(k, ann_node, span) }
     if !tc_declarable(k, ref.decl, name, span, fields_of != nil) {
         tc_bound_set(k, ref.decl, Type_Error{})   // (its uses aren't reported again)
         return
@@ -190,23 +192,23 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
             tc_error(k, span, TYPE_SLICE_SIZED_DECLARATION, name, e)
         }
         tc_set_type(k, target, ann)
-        tc_bind(k, env, name, ann, ref)
+        tc_bind(k, name, ann, ref)
         return
     }
     if form == .Void {
-        tc_decl_void(k, s, target, value, name, ann, env, fields_of)
+        tc_decl_void(k, s, target, value, name, ann, fields_of)
         return
     }
     if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ref.decl, ann, value) }
     #partial switch form {
     case .Take:
-        tc_decl_take(k, s, target, value, name, ann, env, fields_of)
+        tc_decl_take(k, s, target, value, name, ann, fields_of)
         return
     case .Shape:
-        tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
+        tc_decl_shape(k, s, target, name, ann, bindings, fields_of)
         return
     case .Bare:
-        tc_decl_bare(k, target, name, ref, ann, env, span)
+        tc_decl_bare(k, target, name, ref, ann, span)
         return
     }
     k.hint = ann
@@ -218,18 +220,18 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         sc := k.scopes[k.scope_of[fields_of]]
         k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
     }
-    vt := tc_check(k, value, env)
+    vt := tc_check(k, value)
     k.field_default = saved_field
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
-        tc_bind(k, env, name, Type_Error{}, ref)
+        tc_bind(k, name, Type_Error{}, ref)
         return
     }
     tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span)
     tc_check_big_endian(k, value, span)
-    if returns := tc_call_returns(k, value, env); len(returns) > 1 {
+    if returns := tc_call_returns(k, value); len(returns) > 1 {
         // (One name for several results: `a, b := f()` takes them.)
         tc_error(k, span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE, 1, len(returns))
-        tc_bind(k, env, name, Type_Error{}, ref)
+        tc_bind(k, name, Type_Error{}, ref)
         return
     }
     final: Type
@@ -275,7 +277,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         }
         if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
-    tc_bind(k, env, name, final, ref)
+    tc_bind(k, name, final, ref)
     tc_set_type(k, target, final)   // (the name declared: its type)
     tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
@@ -345,12 +347,12 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
 
 // `x : T`: its zero, or its construction (a struct's, an array of them's
 // each) — what it constructs annotated, its constructor's defaults checked.
-tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, env: ^Type_Scope, span: Span) {
+tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, span: Span) {
     tc_set_type(k, target, ann)
-    defer tc_bind(k, env, name, ann, ref)
+    defer tc_bind(k, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
-    tc_bare_construction(k, name, ann, env, span)
+    tc_bare_construction(k, name, ann, span)
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
     st := tc_bare_struct(ann)
     // (Its construction, implied: its struct's — each element's, an array's —
@@ -367,10 +369,10 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
 // array of them: each must have a default, and the constructor can't fail
 // (nothing would take its err). An array's elements that can't be built so
 // are left zero: said so. (A body's own declarations: no nested block's.)
-tc_bare_construction :: proc(k: ^TC, name: string, t: Type, env: ^Type_Scope, span: Span) {
-    if env.kind == .Block && env.parent_scope != nil && env.parent_scope.kind == .Block { return }
+tc_bare_construction :: proc(k: ^TC, name: string, t: Type, span: Span) {
+    if !k.top { return }
     // (A generic struct's instance: its fields made with it, not checked so.)
-    if env.kind == .Block && env.parent_scope != nil && env.parent_scope.generic_base != "" { return }
+    if k.body != nil && k.body.generic_base != "" { return }
     elem, is_array := t, false
     for {
         #partial switch v in distinct_base(elem) {
@@ -457,34 +459,34 @@ is_slice_type :: proc(t: Type) -> bool {
 }
 
 // `x = v`: the value at the variable's type.
-tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_assign :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
     if len(targets) > 1 && len(values) == 1 {
-        tc_destructure(k, s, targets, values[0], false, 0, env)
+        tc_destructure(k, s, targets, values[0], false, 0)
         return
     }
     if len(targets) > 1 && len(targets) == len(values) {
-        for tg, i in targets { tc_assign_one(k, s, tg, values[i], env) }
+        for tg, i in targets { tc_assign_one(k, s, tg, values[i]) }
         return
     }
     if len(targets) != 1 || len(values) != 1 {
         tc_unsupported(k, s, "this assignment")
         return
     }
-    tc_assign_one(k, s, targets[0], values[0], env)
+    tc_assign_one(k, s, targets[0], values[0])
 }
 
 // One target's assignment (a broadcast's copies are each one).
-tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     #partial switch t.tag[target] {
-    case .Field: tc_field_assign(k, s, target, value, env)
-    case .Index: tc_index_assign(k, s, target, value, env)
-    case .Slice: tc_slice_assign(k, s, target, value, env)
-    case .Deref: tc_deref_assign(k, s, target, value, env)
+    case .Field: tc_field_assign(k, s, target, value)
+    case .Index: tc_index_assign(k, s, target, value)
+    case .Slice: tc_slice_assign(k, s, target, value)
+    case .Deref: tc_deref_assign(k, s, target, value)
     }
     #partial switch t.tag[target] {
     case .Field, .Index, .Slice, .Deref:
@@ -501,19 +503,19 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     if name == "_" {
         // A discard: the value checked for its own sake.
         k.hint = nil
-        tc_check(k, value, env)
+        tc_check(k, value)
         return
     }
     if name == "this_program" {
         if !tc_program_set_here(k, s) { tc_error(k, span, TYPE_PROGRAM_SET_OUTSIDE_MAIN) }
-        tc_program_assign(k, value, env)
+        tc_program_assign(k, value)
         return
     }
-    existing, ref, ok := tc_name_write(k, target, name, env, span)
+    existing, ref, ok := tc_name_write(k, target, name, span)
     if !ok { return }
     if tc_is_void(k, value) {
         // (`x = void` de-initializes: the void value written, unchecked.)
-        tc_check(k, value, env)
+        tc_check(k, value)
         return
     }
     if !tc_is_variable(ref) {
@@ -521,13 +523,13 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         return
     }
     k.hint = existing if !is_untyped(existing) else nil
-    tc_check_write(k, value, tc_check(k, value, env), existing, name, span)
+    tc_check_write(k, value, tc_check(k, value), existing, name, span)
 }
 
 // A write to a bare name, checked: the name is declared, no constant, and no
 // param the fun can't write. Its type and what it refers to; ok false when
 // it can't be written (reported).
-tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, ref: Ref, ok: bool) {
+tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (existing: Type, ref: Ref, ok: bool) {
     ref = k.rs.refs[target]
     found: bool
     existing, found = tc_ref_type(k, ref, name)
@@ -541,7 +543,7 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, s
     }
     if !found {
         tc_unresolved(k, k.rs.misses[target] or_else {}, span, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
-        tc_bind(k, env, name, Type_Error{}, {})
+        tc_bind(k, name, Type_Error{}, {})
         tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the resolver declared it as: its uses aren't reported again)
         return nil, {}, false
     }
@@ -559,11 +561,11 @@ tc_is_variable :: proc(ref: Ref) -> bool {
 }
 
 // `return a, b`: each value at its result's type (trailing errs implied `.Ok`).
-tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_return :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     values := tree_list(t, t.a[s])
-    rts := enclosing_return_types(env)
+    rts := tc_results(k)
     expected, supplied := len(rts), len(values)
     trailing_errs := 0
     for i := expected - 1; i >= 0 && is_err_type(rts[i]); i -= 1 { trailing_errs += 1 }
@@ -579,7 +581,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     for val, i in values {
         want := rts[i]
         k.hint = want
-        vt := tc_check(k, val, env)
+        vt := tc_check(k, val)
         if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
            !types_equal(want, vt) {
             if expected > 1 {
@@ -594,7 +596,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // `if c {…} elif d {…} else {…}`: the condition a bool, then each block (an
 // elif, the else block's one statement).
-tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_if :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     v := if_view(t, s)
@@ -603,10 +605,10 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_error(k, tree_span(t, v.cond), TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
         return
     }
-    ct := tc_check(k, v.cond, env)
+    ct := tc_check(k, v.cond)
     if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
-    tc_scope(k, v.then, tc_block(k, env))
-    if len(v.else_) > 0 { tc_scope(k, v.else_, tc_block(k, env)) }
+    tc_scope(k, v.then)
+    if len(v.else_) > 0 { tc_scope(k, v.else_) }
 }
 
 // --- loops ------------------------------------------------------------------
@@ -633,14 +635,13 @@ range_counter :: proc(lt, ht, written: Type) -> Type {
     return it
 }
 
-tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_for :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     v := for_view(t, s)
-    child := tc_block(k, env)
     #partial switch t.tag[s] {
     case .For_Each:
-        ct := tc_check(k, v.collection, child)
+        ct := tc_check(k, v.collection)
         // (A literal looped over is held at its own type, settled.)
         #partial switch k.t.tag[tc_unparen(k, v.collection)] {
         case .Array, .Literal: ct = solidify_type(ct)
@@ -655,36 +656,36 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                 tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
             }
         }
-        if v.type_ != 0 { elem = tc_type(k, v.type_, env, span) }
+        if v.type_ != 0 { elem = tc_type(k, v.type_, span) }
         // (A loop variable named `_` is none: nothing the body can name.)
-        if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, child, tc_text(v.elem), elem, {v.elem, .Local}) }
-        if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, child, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
-        tc_scope(k, v.body, child)
+        if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
+        if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+        tc_scope(k, v.body)
     case .For_Range:
-        lt := tc_check(k, v.lo, child)
-        ht := tc_check(k, v.hi, child)
-        it := range_counter(lt, ht, tc_type(k, v.type_, env, span) if v.type_ != 0 else nil)
+        lt := tc_check(k, v.lo)
+        ht := tc_check(k, v.hi)
+        it := range_counter(lt, ht, tc_type(k, v.type_, span) if v.type_ != 0 else nil)
         tc_settle(k, v.lo, it)
         tc_settle(k, v.hi, it)
         if !is_numeric(lt) && !is_infer(lt) && !is_any(lt) { tc_error(k, span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(lt)) }
         if !is_numeric(ht) && !is_infer(ht) && !is_any(ht) { tc_error(k, span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(ht)) }
         // (`..` counts up: known bounds that count down are an error.)
-        lc, lc_ok := tc_comptime_int(k, v.lo, child)
-        hc, hc_ok := tc_comptime_int(k, v.hi, child)
+        lc, lc_ok := tc_comptime_int(k, v.lo)
+        hc, hc_ok := tc_comptime_int(k, v.hi)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
-        if tc_text(v.var) != "_" { tc_bind(k, child, tc_text(v.var), it, {v.var, .Local}) }
-        tc_scope(k, v.body, child)
+        if tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
+        tc_scope(k, v.body)
     case:
-        if v.init != 0 { tc_stmt(k, v.init, child) }
-        ct := tc_check(k, v.cond, child)
+        if v.init != 0 { tc_stmt(k, v.init) }
+        ct := tc_check(k, v.cond)
         if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
-        if v.post != 0 { tc_stmt(k, v.post, child) }
-        tc_scope(k, v.body, child)
+        if v.post != 0 { tc_stmt(k, v.post) }
+        tc_scope(k, v.body)
     }
 }
 
 // `x op= v`: `x = x op v`, the operation at the `op=`.
-tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_compound :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     target := Tree_Id(t.a[s])
@@ -693,9 +694,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     #partial switch t.tag[target] {
     case .Field, .Index, .Deref:
         #partial switch t.tag[target] {
-        case .Field: tc_field_assign(k, s, target, value, env, op_tok)
-        case .Index: tc_index_assign(k, s, target, value, env, op_tok)
-        case .Deref: tc_deref_assign(k, s, target, value, env, op_tok)
+        case .Field: tc_field_assign(k, s, target, value, op_tok)
+        case .Index: tc_index_assign(k, s, target, value, op_tok)
+        case .Deref: tc_deref_assign(k, s, target, value, op_tok)
         }
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
         if tc_in_program(k, target) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
@@ -706,14 +707,14 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     name := tc_name(k, target)
-    existing, ref, ok := tc_name_write(k, target, name, env, span)
+    existing, ref, ok := tc_name_write(k, target, name, span)
     if !ok { return }
     if !tc_is_variable(ref) {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
     }
     k.hint = existing if !is_untyped(existing) else nil
-    vt := tc_compound_value(k, s, op_tok, target, value, env)
+    vt := tc_compound_value(k, s, op_tok, target, value)
     if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
        types_incompatible(existing, vt) {
         tc_assign_error(k, span, vt, name, existing, target, value)
@@ -722,9 +723,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // A compound assignment's operation: its target op its value — its type,
 // kept on its statement.
-tc_compound_value :: proc(k: ^TC, s: Tree_Id, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope) -> Type {
+tc_compound_value :: proc(k: ^TC, s: Tree_Id, op_tok: Token_Id, target, value: Tree_Id) -> Type {
     op, _ := compound_assign_op(build_tokens[op_tok].kind)
-    t := tc_binary_op(k, s, op, token_span(build_tokens[op_tok]), target, value, env)
+    t := tc_binary_op(k, s, op, token_span(build_tokens[op_tok]), target, value)
     tc_set_type(k, s, t)
     return t
 }
@@ -765,12 +766,12 @@ tc_array_assign :: proc(k: ^TC, span: Span, name: string, fa: ^Type_Fixed_Array,
 }
 
 // `p^ = v`: what p points at, at its type.
-tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0) {
     tr := k.t
     span := tree_span(tr, s)
     diag := value if op_tok == 0 else 0
-    pt := tc_check(k, Tree_Id(tr.a[target]), env)
-    vt := tc_store_at(k, value, env, op_tok, target, s)
+    pt := tc_check(k, Tree_Id(tr.a[target]))
+    vt := tc_store_at(k, value, op_tok, target, s)
     if p, is_ptr := pt.(^Type_Ptr); is_ptr {
         tc_set_type(k, target, p.elem)
         if types_incompatible(p.elem, vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem)) }
@@ -850,18 +851,18 @@ tc_is_pointer :: proc(t: Type) -> bool {
 
 // `x : T = void`: declared uninitialized (no construction, no stores) —
 // the value where it is written void. Unannotated, there is no type.
-tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, env: ^Type_Scope, fields_of: ^Type_Scope) {
+tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
     if is_any(ann) {
         if _, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); !shadowed {
             tc_error(k, span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, name, name)
-            tc_bind(k, env, name, Type_Error{}, ref)
+            tc_bind(k, name, Type_Error{}, ref)
         }
         return
     }
     if fields_of != nil { tc_add_field(fields_of, name, ref.decl, ann, 0) }
-    tc_bind(k, env, name, ann, ref)
+    tc_bind(k, name, ann, ref)
     tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
 }
@@ -893,13 +894,13 @@ tc_storage_sizes :: proc(k: ^TC, decls: []TC_Decl_Note) {
 // enum or an err; each arm's variant one it has (a union's payload bound
 // where an arm names it); every variant covered, unless an else says
 // otherwise.
-tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_match :: proc(k: ^TC, s: Tree_Id) {
     tr := k.t
     span := tree_span(tr, s)
     subj := Tree_Id(tr.a[s])
     arms := tree_list(tr, tr.b[s])
     if subj == 0 { return }
-    st := tc_check(k, subj, env)
+    st := tc_check(k, subj)
     // (A named union — `type U`, `distinct U` — matched as U is.)
     sb := distinct_base(st)
     ut, is_union := sb.(^Type_Union)
@@ -919,7 +920,6 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     for arm in arms {
         a := tc_match_arm(k, subj, arm, et, ut)
         name := a.variant
-        child := tc_block(k, env)
         #partial switch tr.tag[arm] {
         case .Arm_Dot:
             switch {
@@ -937,20 +937,20 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                     // (A rebound subject: its meaning back after the arm.)
                     was, had := tc_bound(k, a.bound_tok)
                     defer tc_bound_restore(k, a.bound_tok, was, had)
-                    tc_bind(k, child, a.bound, vs, {a.bound_tok, .Local})
-                    tc_scope(k, a.body, child)
+                    tc_bind(k, a.bound, vs, {a.bound_tok, .Local})
+                    tc_scope(k, a.body)
                     if name != "" { covered[name] = true }
                     continue
                 }
             }
         case .Arm_Value:
             if name == "" {
-                tc_check(k, a.value, env)
+                tc_check(k, a.value)
                 if tr.tag[a.value] == .Field { covered[tc_text(Token_Id(tr.b[a.value]))] = true }
             }
         }
         if name != "" { covered[name] = true }
-        tc_scope(k, a.body, child)
+        tc_scope(k, a.body)
     }
     // (Every variant covered, unless an else says otherwise.)
     if has_else || !(is_enum || is_union) { return }
@@ -1109,14 +1109,14 @@ tc_has_self :: proc(k: ^TC, n: Tree_Id) -> bool {
 // `using f: T`: a struct's field whose own fields are reached as its
 // struct's — T a struct with fields, or a fixed array (its swizzles); said
 // at the struct when it is neither.
-tc_using :: proc(k: ^TC, s: Tree_Id, env, fields_of: ^Type_Scope) {
+tc_using :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope) {
     t := k.t
     d := Tree_Id(t.a[s])
     if t.tag[d] != .Decl {
         tc_unsupported(k, s, "this `using`")
         return
     }
-    tc_decl(k, d, env, fields_of)
+    tc_decl(k, d, fields_of)
     at := tree_span(t, k.scopes[k.scope_of[fields_of]].def)
     for tg in decl_view(t, d).targets {
         i, has := fields_of.field_map[tc_name(k, tg)]
@@ -1163,7 +1163,7 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
 
 // A declaration by the shape shortcut: its struct's literal, each field the
 // shape's call.
-tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, env, fields_of: ^Type_Scope) {
+tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
     // (Its construction: its struct's, its literal built from the shape.)
@@ -1172,14 +1172,14 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
         tc_set_args(k, target, tc_default_args(st))
     }
     k.hint = ann
-    tc_shape_literal(k, s, ann, bindings, env)
-    tc_bind(k, env, name, ann, ref)
+    tc_shape_literal(k, s, ann, bindings)
+    tc_bind(k, name, ann, ref)
     tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
 }
 
 // `{inner = Box(5)}` of the shape shortcut, at its type.
-tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, env: ^Type_Scope) {
+tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding) {
     span := tree_span(k.t, s)
     ts, is_scope := t.(^Type_Scope)
     if !is_scope || ts.kind != .Struct {
@@ -1192,17 +1192,7 @@ tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, en
     for bd in bindings {
         idx, has := sd.field_map[bd.field]
         if !has { continue }
-        tc_literal_field(k, bd.call, sd.fields[idx], 0, bd.field, span, env)
+        tc_literal_field(k, bd.call, sd.fields[idx], 0, bd.field, span)
     }
 }
 
-// A block's scope — an if's, a loop's, a defer's, a match arm's, a body's —
-// inside parent: scratch, in the check's block arena (TC.blocks). (Its names
-// are the resolver's.)
-tc_block :: proc(k: ^TC, parent: ^Type_Scope) -> ^Type_Scope {
-    a := virtual.arena_allocator(k.blocks)
-    s := new(Type_Scope, a)
-    s.parent_scope = parent
-    s.kind = .Block
-    return s
-}

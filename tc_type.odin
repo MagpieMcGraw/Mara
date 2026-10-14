@@ -6,8 +6,8 @@ import "core:strings"
 // primitive, a name through the scope and the table, a pointer, an array.
 // Each type node keeps the type it resolved to, and a name what it names.
 
-tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
-    ty := tc_type_impl(k, n, env, span)
+tc_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
+    ty := tc_type_impl(k, n, span)
     if n == 0 { return ty }
     tc_set_type(k, n, ty)
     #partial switch k.t.tag[n] {
@@ -40,7 +40,7 @@ tc_type_ref :: proc(k: ^TC, n: Tree_Id, ty: Type) -> Ref {
     return {kind = .Builtin}
 }
 
-tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     if n == 0 { return Type_Any{} }
     t := k.t
     #partial switch t.tag[n] {
@@ -56,7 +56,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
-        return tc_type_named(k, tc_text(parts[0]), env, span, n)
+        return tc_type_named(k, tc_text(parts[0]), span, n)
     case .Type_Dollar:
         if bound, is_param := tc_ref_type(k, k.rs.refs[n], ""); is_param && bound != nil { return bound }
         tc_unsupported(k, n, "a type param outside its instance")
@@ -65,11 +65,11 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         // (A fun's type: its params' and results' types.)
         ft := new(Type_Scope)
         ft.kind = .Fun
-        for p in tree_list(t, t.a[n]) { append(&ft.params, Struct_Type_Field{type_ = tc_type(k, p, env, span)}) }
-        for r in tree_list(t, t.b[n]) { append(&ft.return_types, tc_type(k, r, env, span)) }
+        for p in tree_list(t, t.a[n]) { append(&ft.params, Struct_Type_Field{type_ = tc_type(k, p, span)}) }
+        for r in tree_list(t, t.b[n]) { append(&ft.return_types, tc_type(k, r, span)) }
         return ft
     case .Type_Generic:
-        return tc_generic_type(k, n, env, span)
+        return tc_generic_type(k, n, span)
     case .Type_Tilde:
         // (A shape is a struct param's: tc_struct_generics.)
         name := tc_text(Token_Id(t.a[n]))
@@ -79,28 +79,28 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         return tc_fun_type_of(k, n, span)
     case .Type_Pointer:
         pt := new(Type_Ptr)
-        pt.elem = tc_type(k, Tree_Id(t.a[n]), env, span)
+        pt.elem = tc_type(k, Tree_Id(t.a[n]), span)
         return pt
     case .Type_Paren:
-        return tc_type(k, Tree_Id(t.a[n]), env, span)
+        return tc_type(k, Tree_Id(t.a[n]), span)
     case .Type_Slice:
         // (`[:n]T`: n of T, a take's count — `slice([:n]T, s)`; the type []T.)
         sl := new(Type_Slice)
-        sl.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
+        sl.elem = tc_type(k, Tree_Id(t.b[n]), span)
         return sl
     case .Type_Partial:
         pa := new(Type_Partial_Array)
-        pa.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
-        size, ok := tc_type_size(k, Tree_Id(t.a[n]), pa.elem, env, span)
+        pa.elem = tc_type(k, Tree_Id(t.b[n]), span)
+        size, ok := tc_type_size(k, Tree_Id(t.a[n]), pa.elem, span)
         if !ok { return Type_Error{} }
         pa.size = size
         return pa
     case .Type_Array:
         r := tree_rec(t, t.a[n], 2)
         fa := new(Type_Fixed_Array)
-        fa.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
-        if r[1] != 0 { fa.index_type = tc_type(k, Tree_Id(r[1]), env, span) }
-        size, ok := tc_type_size(k, Tree_Id(r[0]), fa.elem, env, span)
+        fa.elem = tc_type(k, Tree_Id(t.b[n]), span)
+        if r[1] != 0 { fa.index_type = tc_type(k, Tree_Id(r[1]), span) }
+        size, ok := tc_type_size(k, Tree_Id(r[0]), fa.elem, span)
         if !ok { return Type_Error{} }
         fa.size = size
         return fa
@@ -159,7 +159,7 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
 
 // An array's size, known when the program is compiled: a number, a
 // constant, or an expression of them.
-tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Span) -> (int, bool) {
+tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
     if t.tag[n] == .Ident {
         // (A constant, known: its value.)
@@ -173,11 +173,11 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Spa
             tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
             return 0, false
         }
-        if v, ok := tc_comptime_int(k, kc.value, nil); ok { return int(v), true }
+        if v, ok := tc_comptime_int(k, kc.value); ok { return int(v), true }
         tc_error(k, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, name)
         return 0, false
     }
-    if v, ok := tc_comptime_int(k, n, env); ok { return int(v), true }
+    if v, ok := tc_comptime_int(k, n); ok { return int(v), true }
     if tc_has_float(k, n) {
         tc_error(k, span, TYPE_SIZE_EXPRESSION_INTEGER, "a float")
     } else {
@@ -204,7 +204,7 @@ tc_has_float :: proc(k: ^TC, n: Tree_Id) -> bool {
 // numbers and the operators over them; with `names`, a constant, a
 // size_of, an array's length or capacity too. None is known that is a
 // float, divides by zero, shifts past the width, or leaves i64.
-tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> (i64, bool) {
+tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
     t := k.t
     if n == 0 { return 0, false }
     v: i128
@@ -216,9 +216,9 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         if err != .None { return 0, false }
         v = i
     case .Paren:
-        return tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
+        return tc_comptime_int(k, Tree_Id(t.a[n]), names)
     case .Unary:
-        x, ok := tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
+        x, ok := tc_comptime_int(k, Tree_Id(t.a[n]), names)
         if !ok { return 0, false }
         #partial switch build_tokens[t.main[n]].kind {
         case .Minus: v = -i128(x)
@@ -226,8 +226,8 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         case:        return 0, false
         }
     case .Binary:
-        l, l_ok := tc_comptime_int(k, Tree_Id(t.a[n]), env, names)
-        r, r_ok := tc_comptime_int(k, Tree_Id(t.b[n]), env, names)
+        l, l_ok := tc_comptime_int(k, Tree_Id(t.a[n]), names)
+        r, r_ok := tc_comptime_int(k, Tree_Id(t.b[n]), names)
         if !l_ok || !r_ok { return 0, false }
         a, b := i128(l), i128(r)
         op := build_tokens[t.main[n]].kind
@@ -254,7 +254,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         // (An array's capacity is its type's; a fixed one's length too.)
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
-        if !names || env == nil || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        if !names || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
         bt, ok := tc_ref_type(k, k.rs.refs[base], tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {
@@ -267,7 +267,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         if !names || kc == nil || kc.visiting { return 0, false }
         kc.visiting = true
         defer kc.visiting = false
-        return tc_comptime_int(k, kc.value, env, names)
+        return tc_comptime_int(k, kc.value, names)
     case:
         return 0, false
     }
@@ -330,21 +330,21 @@ tc_fun_type_of :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
 // a count or a constructor's call means, written where a type goes: said so.
 // (Its arguments resolved first: a name, a type; a number or an operation,
 // a size.)
-tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+tc_generic_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     t := k.t
     if tmpl, is_template := tc_template(k, k.rs.refs[n]); is_template {
-        if t.tag[tmpl.node] == .Union_Def { return tc_union_instance(k, n, tmpl, env, span) }
-        return tc_struct_instance(k, n, tmpl, env, span)
+        if t.tag[tmpl.node] == .Union_Def { return tc_union_instance(k, n, tmpl, span) }
+        return tc_struct_instance(k, n, tmpl, span)
     }
     for a in tree_list(t, t.a[n]) {
-        if tc_is_type_tag(t.tag[a]) { tc_type(k, a, env, span) }
+        if tc_is_type_tag(t.tag[a]) { tc_type(k, a, span) }
     }
-    return tc_generic_base(k, n, env, span)
+    return tc_generic_base(k, n, span)
 }
 
 // `T(n)` where T is no generic: a distinct slice's capacity, a constructor's
 // call, or a count (`[]T(n)`: written `[:n]T`) — each an error, said so.
-tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+tc_generic_base :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
     one := len(tree_list(t, t.a[n])) == 1
@@ -376,7 +376,7 @@ tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
 // A type by its name (n: the node that names it): a primitive, else what
 // its ref says — a type param, what the instance binds it to; `Self`, the
 // struct or fun it's written in.
-tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span, n: Tree_Id) -> Type {
+tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
     if _, is_primitive := tc_primitive_named(name); is_primitive { return tc_primitive(k, name, span) }
     ref := k.rs.refs[n]
     if t, ok := tc_ref_type(k, ref, name); ok { return t }

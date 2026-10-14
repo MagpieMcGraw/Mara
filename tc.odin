@@ -28,7 +28,6 @@ TC :: struct {
     addressed_calls: map[Tree_Id]bool,
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
-    root:          ^Type_Scope,       // the main module's scope: the root env
     // The block scopes and the names bound in them: what name resolution
     // works in while the check runs — scratch, gone once it's done
     // (tc_blocks_end); the annotations keep what each name refers to.
@@ -71,13 +70,14 @@ TC :: struct {
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
-    arena_env:     ^Type_Scope,       // ... and where it is written
 
     // Names (design/name_resolution.md): what each refers to, the resolver's,
     // found before the check; and what each declaration means now — a
     // definition's type, a variable's in the body being checked, a template's
     // in the instance being checked — by the token that declares it.
     rs:            ^Resolver,
+    top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
+    module_scopes: map[string]^Type_Scope,   // each module's record, by its name: what its definitions are declared in
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
@@ -243,40 +243,26 @@ tc_event :: proc(k: ^TC, e: TC_Event) {
     append(&k.events, e)
 }
 
-// A module's statement settled: what it declares, for lowering.
-// A name bound in `env`; a variable of the body being checked — a param, a
-// named result, a local — kept as one of its variables (Annotations.vars).
-// (`_` names no variable.)
-tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
-    tc_scope_bind(k, env, name, t, ref)
+// The results of the fun (or constructor) whose body is being checked.
+// Empty: none, or no body (a module's constant).
+tc_results :: proc(k: ^TC) -> []Type {
+    if k.body == nil { return nil }
+    return k.body.return_types[:]
+}
+
+// A name declared: what it means (its binding); a variable of the body being
+// checked — a param, a named result, a local — kept as one of its variables
+// (Annotations.vars). (`_` names no variable.)
+tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
+    tc_bound_set(k, ref.decl, t)
     #partial switch ref.kind {
     case .Local, .Param, .Result:
         if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
     }
 }
 
-// The check done: its block scopes go, and the names bound in them — what
-// each name refers to is the annotations'. What's declared in a block is,
-// from here on, the enclosing fun's or struct's (the scope it's in, past
-// any blocks): nothing after the check resolves a name.
+// The check done: its scratch goes (TC.blocks: its blocks' declarations).
 tc_blocks_end :: proc(k: ^TC) {
-    past :: proc(s: ^Type_Scope) -> ^Type_Scope {
-        s := s
-        for s != nil && s.kind == .Block { s = s.parent_scope }
-        return s
-    }
-    out :: proc(ts: ^Type_Scope) { if ts != nil { ts.parent_scope = past(ts.parent_scope) } }
-    for &sc in k.scopes { out(sc.ts); sc.env = past(sc.env) }
-    for _, ts in k.instances { out(ts) }
-    for _, ts in k.table.structs { out(ts) }
-    for _, ts in k.table.funs { out(ts) }
-    for _, ts in k.table.mono_cache { out(ts) }
-    for _, ts in k.checked.functions { out(ts) }
-    for _, ut in k.table.unions { for _, vst in ut.variant_structs { out(vst) } }
-    for _, &tmpl in k.templates { tmpl.env = past(tmpl.env) }
-    for _, kc in k.consts { kc.env, kc.pub = past(kc.env), past(kc.pub) }
-    for _, list in k.scope_consts { for _, kc in list { kc.env, kc.pub = past(kc.env), past(kc.pub) } }
-    k.body, k.arena_env = past(k.body), past(k.arena_env)
     virtual.arena_destroy(k.blocks)
     free(k.blocks)
     k.blocks = nil
@@ -292,7 +278,6 @@ TC_Scope :: struct {
     ts:   ^Type_Scope,
     def:  Tree_Id,   // its Define
     node: Tree_Id,   // its Fun_Def or Struct_Def
-    env:  ^Type_Scope,
     nested: [dynamic]int,   // the funs and structs defined in its body
     consts: [dynamic]^TC_Const,   // the constants defined in its body
     subst:  map[string]Type,   // an instance's: its type params bound
@@ -396,6 +381,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     main_mod.home_package = main_package
     main_mod.kind = .Struct
     main_mod.is_module = true
+    k_module_scopes := make(map[string]^Type_Scope)
+    k_module_scopes[main_package] = main_mod
 
     c := new(Checker)
     c.table = table
@@ -405,7 +392,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
+    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
     ir_types_forget()   // (a check of serve's, after another: its types are new)
     k.rs = resolve_program(k)
     k.bound = make([]u32, len(build_tokens))
@@ -531,29 +518,21 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     list: [dynamic]int
     k.mine = &list
     defer k.mine = saved
-    envs := make([]^Type_Scope, len(files), context.temp_allocator)
-    for _, i in files {
-        fe := new(Type_Scope)
-        fe.kind = .Block
-        fe.home_package = mod.home_package
-        fe.parent_scope = mod
-        envs[i] = fe
+    for f, i in files {
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s, mod) }
     }
     for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s, envs[i], mod) }
-    }
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s, envs[i], mod) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s, mod) }
     }
     mine := list[:]
     // (Signatures first: a constant's value may call a fun — an error, but
     // one found at its call.)
     for i in mine { tc_signature(k, k.scopes[i]) }
     for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_resolve(k, s, envs[i]) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_resolve(k, s) }
     }
     for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_validate(k, s, envs[i]) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_validate(k, s) }
     }
     // A struct's fields are what its body declares: each struct's body is
     // checked first (or sooner, by what needs its fields), then each fun's.
@@ -567,7 +546,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     // (Its foreign funs, for the emitter.)
     for f, i in files {
         for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
-            if k.t.tag[s] == .Foreign { tc_extract_foreign(k, s, envs[i], k.pkg) }
+            if k.t.tag[s] == .Foreign { tc_extract_foreign(k, s, k.pkg) }
         }
     }
     return mine
@@ -590,7 +569,7 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
 // A module statement's names, the first pass: its
 // funs, structs, types and unions declared, its constants listed — before
 // any `use` in the module checks another.
-tc_register_types :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+tc_register_types :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
     t := k.t
     if t.tag[s] != .Define { return }
     value := Tree_Id(t.b[s])
@@ -598,36 +577,36 @@ tc_register_types :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope
     if t.a[s] == 0 {
         #partial switch t.tag[value] {
         case .Fun_Def, .Struct_Def:
-            tc_register_scope(k, s, value, env, mod)
+            tc_register_scope(k, s, value, mod)
             return
         case .Alias_Def, .Distinct_Def:
             tc_register_distinct(k, s, value, mod)
             return
         case .Union_Def, .Error_Def:
-            tc_register_union(k, s, value, env, mod)
+            tc_register_union(k, s, value, mod)
             return
         }
     }
-    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value, env, mod) }
+    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value, mod) }
 }
 
 // The rest of a module statement, the second pass: a `use`, a dispatch, an
 // overload.
-tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+tc_register :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
     t := k.t
     #partial switch t.tag[s] {
     case .Module:
         return
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
-            tc_use(k, e, env, mod)
+            tc_use(k, e, mod)
             tc_module_stmt(k, tc_sid(k, s))
             return
         }
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
-            m := tc_use(k, value, env, mod, alias = t.main[s])
+            m := tc_use(k, value, mod, alias = t.main[s])
             tc_module_stmt(k, tc_sid(k, s))
             return
         }
@@ -645,10 +624,10 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
             return
         }
     case .Decl:
-        tc_module_decl(k, s, env)
+        tc_module_decl(k, s)
         return
     case .Foreign:
-        tc_register_foreign(k, s, env, mod)
+        tc_register_foreign(k, s, mod)
         return
     case .Overload:
         return   // (the resolver's: resolve_overloads)
@@ -671,12 +650,12 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
-    tc_scope_bind(k, mod, name, dt, {k.t.main[def], .Type})
+    tc_bound_set(k, k.t.main[def], dt)
 }
 
 // What a module statement leaves for every name to be known: a distinct
 // type's base.
-tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_resolve :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     if t.tag[s] != .Define { return }
     value := Tree_Id(t.b[s])
@@ -690,7 +669,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     if t.a[s] != 0 { return }
     if value != 0 && t.tag[value] == .Union_Def {
-        tc_resolve_union(k, s, value, env)
+        tc_resolve_union(k, s, value)
         return
     }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
@@ -698,13 +677,13 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if base := Tree_Id(t.a[value]); t.tag[base] == .Type_Slice && t.a[base] != 0 {
             tc_error(k, tree_span(t, base), TYPE_SLICE_ALIAS_CAPACITY)
         }
-        dt.base_type = tc_type(k, Tree_Id(t.a[value]), env, tree_span(t, s))
+        dt.base_type = tc_type(k, Tree_Id(t.a[value]), tree_span(t, s))
     }
 }
 
 // What a module statement is checked for once its signatures are: a
 // dispatch's functions, an overload's dispatch.
-tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+tc_validate :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     #partial switch t.tag[s] {
@@ -729,7 +708,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // A fun or a struct: its name declared in its module, its type made (its
 // signature and body wait).
-tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     t := k.t
     name := tc_name(k, def)
     span := tree_span(t, def)
@@ -737,13 +716,13 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
-        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg}
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg}
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
         // is the compiler's program struct — extracted there: tc_extract.)
         append(k.mine, len(k.scopes))
-        append(&k.scopes, new_clone(TC_Scope{def = def, node = node, env = env}))
+        append(&k.scopes, new_clone(TC_Scope{def = def, node = node}))
         return
     }
     // (A struct's constructor may fail: one of no params has none.)
@@ -760,7 +739,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.parent_scope = node, env
+    ts.node, ts.parent_scope = node, mod
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
     ts.is_exposed = k.exposed[def]
@@ -768,13 +747,13 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     callable := !is_struct || len(v.params) > 0
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
     ts.decl = t.main[def]
-    tc_scope_bind(k, mod, name, ts, {ts.decl, .Type if is_struct else .Fun})
+    tc_bound_set(k, ts.decl, ts)
     k.table.fun_homes[name] = k.pkg
     if callable { k.c.declared_funs[name] = true }
     k.scope_of[ts] = len(k.scopes)
     append(k.mine, len(k.scopes))
     k.scope_at[node] = len(k.scopes)
-    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, env = env}))
+    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
 }
 
 // A fun's or a struct's params and a fun's results, resolved in the scope
@@ -793,7 +772,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
             // (`x, y := f()`, `a, b: i64 = 7`: one value, each its slot.)
             slot: Maybe(int)
             if len(pv.values) == 1 && len(pv.names) > 1 { def, slot = pv.values[0], i }
-            pt := tc_param_type(k, tc_text(name), pv.type_, def, sc.env, span, slot)
+            pt := tc_param_type(k, tc_text(name), pv.type_, def, span, slot)
             append(&ts.params, Struct_Type_Field{name = tc_text(name), decl = name, type_ = pt, default_node = def, default_slot = slot})
         }
     }
@@ -802,7 +781,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
         if t.tag[r] == .Param_Group {
             // (Named: locals its body binds.)
             pv := params_view(t, r)
-            rt := tc_type(k, pv.type_, sc.env, span)
+            rt := tc_type(k, pv.type_, span)
             for name in pv.names {
                 append(&ts.return_types, rt)
                 append(&ts.return_binding_names, tc_text(name))
@@ -810,7 +789,7 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
             }
             continue
         }
-        append(&ts.return_types, tc_type(k, r, sc.env, span))
+        append(&ts.return_types, tc_type(k, r, span))
     }
 }
 
@@ -1020,8 +999,8 @@ tc_pin_default :: proc(k: ^TC, t: Type, span: Span) -> Type {
 // A param's type: as written; else its default's — a whole number's width
 // the one the body uses it at (a cell, settled once the body is checked), a
 // fraction f64, anything else its checked type.
-tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scope, span: Span, slot: Maybe(int) = nil) -> Type {
-    if type_ != 0 { return tc_type(k, type_, env, span) }
+tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, span: Span, slot: Maybe(int) = nil) -> Type {
+    if type_ != 0 { return tc_type(k, type_, span) }
     if def == 0 { return Type_Error{} }
     // (A slot of a call's results: that result's type; else the value's.)
     if at, is_slot := slot.?; is_slot {
@@ -1030,7 +1009,7 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
                 if ft, is_scope := t.(^Type_Scope); is_scope && ft.kind == .Fun && at < len(ft.return_types) { return ft.return_types[at] }
             }
         }
-        return solidify_type(tc_check(k, def, env))
+        return solidify_type(tc_check(k, def))
     }
     if k.t.tag[def] == .Number {
         if strings.index_byte(tc_text(k.t.main[def]), '.') >= 0 { return Type_F64{} }
@@ -1038,7 +1017,7 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
         cell.name, cell.span = name, span
         return Type_Infer_Int{cell = cell}
     }
-    return solidify_type(tc_check(k, def, env))
+    return solidify_type(tc_check(k, def))
 }
 
 // A node's id as the builder keys it. In a generic's instance, its

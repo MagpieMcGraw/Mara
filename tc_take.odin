@@ -7,7 +7,7 @@ package mara
 
 // Its type; its count, an integer at the header's width; its storage, a
 // cursor or a byte's place.
-tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
+tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
     t := k.t
     span := tree_span(t, n)
     ty, storage := Tree_Id(t.a[n]), Tree_Id(t.b[n])
@@ -25,13 +25,13 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
         }
     case t.tag[ty] == .Type_Slice && t.a[ty] != 0:
         count = Tree_Id(t.a[ty])
-        taken = new_clone(Type_Slice{elem = tc_type(k, Tree_Id(t.b[ty]), env, span)})
+        taken = new_clone(Type_Slice{elem = tc_type(k, Tree_Id(t.b[ty]), span)})
     case:
-        taken = tc_type(k, ty, env, span)
+        taken = tc_type(k, ty, span)
         if _, is_err := taken.(Type_Error); is_err { tc_error(k, span, TYPE_TAKE_UNKNOWN_TYPE) }
     }
     if count != 0 {
-        ct := tc_check_at(k, count, env, slice_header_width_type)
+        ct := tc_check_at(k, count, slice_header_width_type)
         if !is_any(ct) && !is_numeric(ct) {
             tc_error(k, span, TYPE_TAKE_COUNT_INTEGER, type_name(ct))
         } else if !coerces_to_slice_width(ct) {
@@ -40,7 +40,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     }
     // (A cursor is ^[]byte: a []byte would be a header of the call's own,
     // its takes each from 0.)
-    st := tc_check(k, storage, env)
+    st := tc_check(k, storage)
     cursor, at_byte := false, false
     if pt, is_ptr := distinct_base(st).(^Type_Ptr); is_ptr {
         #partial switch elem in distinct_base(pt.elem) {
@@ -57,15 +57,15 @@ tc_take :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
 // `x := let(T, s)`, `x : T = slice([:n]T, s)`: the local bound to the
 // memory taken (a `let`'s, no space of its own on the arena); an
 // annotation, the take's type.
-tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, env, fields_of: ^Type_Scope) {
+tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
-    vt := tc_check(k, value, env)
+    vt := tc_check(k, value)
     if !is_any(ann) && types_incompatible(ann, vt) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(ann))
     }
     final := vt if is_any(ann) else ann
-    tc_bind(k, env, name, final, ref)
+    tc_bind(k, name, final, ref)
     tc_set_type(k, target, final)
     tc_note_decl(k, name, final, span, true)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
