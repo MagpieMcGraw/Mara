@@ -28,8 +28,6 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
         tc_scope_bind(k, mod, name, ft, {ft.decl, .Fun})
         k.c.declared_funs[name] = true
         k.table.fun_homes[name] = k.pkg
-        if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }
-        mod.functions[name] = ft
     }
 }
 

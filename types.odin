@@ -253,17 +253,10 @@ Scope_Body :: struct {
     // env-pointer cleanup.)
     functions:      map[string]^Type_Scope, // bare name -> callable fun/struct
     types:    map[string]Type,         // bare name -> nested type (struct/enum/union/distinct)
-    refs:     map[string]Ref,          // bare name -> what declares it (scope_bind)
 
     // The token that declares its name (a fun's, a struct's, a variant's);
     // 0 when no source does.
     decl:           Token_Id,
-
-    // Bare-`include`d modules' durable scopes, visible from this scope (a file
-    // scope holds that file's private includes; a module scope holds re-exports).
-    // Name resolution walks parent_scope and checks each scope's includes —
-    // non-transitive (we don't follow inc.includes).
-    includes:       [dynamic]^Scope_Body,
 
     // Generic monomorphization metadata
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise

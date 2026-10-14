@@ -3,97 +3,10 @@ package mara
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Scopes and name resolution
+// Scopes: what the checker keeps of a fun, a struct, a module — its record
+// (its members, by name: what a value of it reaches by type). What a name
+// refers to is the resolver's (resolve.odin, design/name_resolution.md).
 // ---------------------------------------------------------------------------
-//
-// The checker's current scope is a ^Type_Scope: a block's, a fun's, a
-// struct's, a file's or a module's, each chained to the one it is written in
-// (parent_scope). A scope holds the names it declares (types, functions) and
-// the modules it uses (includes). Resolution walks the chain.
-
-// Whether scope s defines `name` itself (its own types or functions): one
-// level, no walk.
-scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
-    if s == nil { return nil, false }
-    if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
-    if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, true } }
-    return nil, false
-}
-
-// A name a used module exports.
-include_lookup :: proc(inc: ^Scope_Body, name: string) -> (Type, bool) {
-    if inc == nil { return nil, false }
-    if t, ok := inc.types[name]; ok { return t, true }
-    return nil, false
-}
-
-// A local, from a block up through the blocks around it, stopping at the
-// first scope that is no block (the fun or struct they are in): a block sees
-// its own locals, its enclosing blocks' and its function's, never an outer
-// function's (no closures).
-scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
-    for s := start; s != nil && s.kind == .Block; s = s.parent_scope {
-        if s.types != nil {
-            if t, ok := s.types[name]; ok { return t, true }
-        }
-    }
-    return nil, false
-}
-
-// Whether a name binds a module (a file's `gl :: use mara.open_gl`): the one
-// kind of block-scoped name seen past a function boundary. A function sees
-// the outside world through its arguments, never an enclosing scope's locals
-// — a module's variables included, since a module is a scope like any other.
-names_module :: proc(t: Type) -> bool {
-    m, ok := t.(^Type_Scope)
-    return ok && m.is_module
-}
-
-// A name a module used along the chain exports (the first found), up to the
-// module — or, `below_module`, short of it.
-scope_includes_lookup :: proc(env: ^Type_Scope, name: string, below_module: bool) -> (Type, bool) {
-    for s := env; s != nil; s = s.parent_scope {
-        if below_module && s.is_module { break }
-        for inc in s.includes { if t, ok := include_lookup(inc, name); ok { return t, true } }
-        if s.is_module { break }
-    }
-    return nil, false
-}
-
-// A name past the locals: each enclosing scope's own definitions (a block's
-// only when they name a module), inner to outer, then what the modules used
-// along the way export. The scope it was found in (nil: a module's export).
-//
-// `below_module` stops short of the module's scope — the `:=` shadowing
-// policy, so a local `shader := gl.CreateShader(...)` doesn't conflate with
-// the module's own binding.
-scope_resolve :: proc(env: ^Type_Scope, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
-    for s := env; s != nil; s = s.parent_scope {
-        if below_module && s.is_module { break }
-        if s.types != nil {
-            t, ok := s.types[name]
-            if ok && (s.kind != .Block || names_module(t)) { return t, s, true }
-        }
-        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
-    }
-    if t, ok := scope_includes_lookup(env, name, below_module); ok { return t, nil, true }
-    return nil, nil, false
-}
-
-// THE name lookup: a local first, else scope_resolve. Returns the scope the
-// name was found in — nil for a local or a module's export — so a check can
-// ask whether it is a field of an enclosing struct.
-scope_find :: proc(env: ^Type_Scope, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
-    if t, ok := scope_local_lookup(env, name); ok {
-        return t, nil, true   // a local never lives in a struct's scope
-    }
-    return scope_resolve(env, name, below_module)
-}
-
-scope_lookup :: proc(env: ^Type_Scope, name: string) -> (Type, bool) {
-    t, _, ok := scope_find(env, name)
-    return t, ok
-}
 
 raw_type_key :: proc(t: Type) -> rawptr {
     #partial switch v in t {
@@ -110,9 +23,10 @@ raw_type_key :: proc(t: Type) -> rawptr {
 
 // Bind a name in scope s: its type, and what declares it.
 scope_bind :: proc(s: ^Type_Scope, name: string, t: Type, ref: Ref) {
-    if s == nil { return }
-    s.types[name] = t   // (a block's maps grow in its arena: tc_block)
-    s.refs[name] = ref
+    // (A struct's or a fun's member, what a value of it or a qualified name
+    // reaches by type; a module's names and a block's are the resolver's.)
+    if s == nil || s.is_module || s.kind == .Block { return }
+    s.types[name] = t
 }
 
 // What declares an enum's or a union's variant, by its name (0: none).
@@ -238,46 +152,5 @@ register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, enum_key: string = "
             c.table.variant_to_enum[vname] = key
         }
     }
-}
-
-// A used module's exports, made reachable from the scope that uses it:
-// `use path` and `name :: use path` alike (the alias also names it). Without
-// this, `name :: use path` would force `name.X` for every member, and a
-// stdlib swap (SDL3 → SDL2) would ripple through every caller. A sealed use
-// (`name :: sealed use path`) exports nothing bare — only `name.X` — to
-// keep colliding bindings (SDL2 vs SDL3) apart.
-flatten_module_exports :: proc(c: ^Checker, env: ^Type_Scope, mod_sd: ^Scope_Body, is_sealed := false) {
-    assert(sd_is_module(mod_sd), "module-struct must have scope")
-    if is_sealed { return }
-    if env != nil { append(&env.includes, mod_sd) }
-    for name, t in mod_sd.types {
-        if name == "void" { continue }  // don't re-export the void null-pointer literal
-        if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
-            c.declared_funs[name] = true
-        }
-    }
-}
-
-// is_enum_visible reports whether the enum identified by `flat_name`
-// (e.g. "mara_sdl_Init_Flags") is reachable from `env` via the include chain
-// or its parents. Used by the variant-ambiguity check so that a globally
-// ambiguous variant (same name in two enums) only errors when both owners
-// are actually in scope here.
-is_enum_visible :: proc(env: ^Type_Scope, flat_name: string) -> bool {
-    scope_has_enum :: proc(s: ^Scope_Body, flat: string) -> bool {
-        if s == nil { return false }
-        for _, t in s.types {
-            if et, ok := t.(^Type_Enum); ok && et.name == flat { return true }
-        }
-        return false
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        if scope_has_enum(s, flat_name) { return true }
-        for inc in s.includes {
-            if scope_has_enum(inc, flat_name) { return true }
-        }
-        if s.is_module { break }
-    }
-    return false
 }
 

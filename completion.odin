@@ -8,10 +8,10 @@ import "core:strings"
 // after whatever of the name is typed already — so it parses, and the check
 // of that text says what the placeholder is. A field's name, after `x.`:
 // x's type's members — a struct's fields and methods, a module's names, a
-// union's or an enum's variants, a slice's len and cap. Else a name: the
-// variables its fun declares before it, its params, then the names its fun's
-// enclosing scopes define — its struct's, its file's, its module's — and
-// what the modules used there export, and the keywords.
+// union's or an enum's variants, a slice's len and cap. Else a name: what the
+// resolver had in sight at the placeholder (resolve_completing) — the
+// variables declared before it, the params, what the scopes out to the
+// module define and use — and the keywords.
 // ---------------------------------------------------------------------------
 
 COMPLETE_HERE :: "mara_complete_here"
@@ -51,33 +51,35 @@ completions_at :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a:
 
     // `x.|`: x's type's members.
     if t.tag[inner] == .Field && Token_Id(t.b[inner]) == at {
-        completion_members(&c, completion_type_of(a, Tree_Id(t.a[inner])))
+        completion_members(&c, checked, completion_type_of(a, Tree_Id(t.a[inner])))
         return c.out[:]
     }
 
-    // A name: its fun's variables before it, its params; then what its
-    // scopes, out to its module's, define and use.
-    scope := completion_scope(a, inner)
-    if scope != nil {
-        // (Bound first: ranging over a missing key straight from the map faults.)
-        vars, _ := a.vars[scope]
-        for v in vars {
-            if v.tok != 0 && v.tok < at { completion_add(&c, token_text(build_tokens[v.tok]), .Variable, type_name(v.type_)) }
-        }
-        for p in scope.params { completion_add(&c, p.name, .Variable, type_name(p.type_)) }
-    }
-    s := scope
-    if s == nil { s = completion_module_scope(checked, module) }
-    // (A block's names are its locals, said already — but its uses, a file's,
-    // count: names resolve through every scope's, as scope_includes_lookup.)
-    for ; s != nil; s = s.parent_scope {
-        if s.kind != .Block { completion_scope_names(&c, s) }
-        for inc in s.includes {
-            if inc != nil { completion_scope_names(&c, sd_type_scope(inc), exports_only = true) }
-        }
+    // A name: what's in sight where it's written.
+    if checked != nil && checked.rs != nil {
+        for seen in checked.rs.in_sight { completion_named(&c, checked, seen.name, seen.ref) }
     }
     for kw in COMPLETION_KEYWORDS { completion_add(&c, kw, .Keyword, "") }
     return c.out[:]
+}
+
+// A name in sight, by what it refers to: its kind, its type (a fun's
+// signature).
+completion_named :: proc(c: ^Completions, checked: ^Checked_Program, name: string, ref: Ref) {
+    t, _ := checked_binding(checked, ref, name)
+    kind := Completion_Kind.Type
+    #partial switch ref.kind {
+    case .Local, .Param, .Result, .Field, .Global, .Const: kind = .Variable
+    case .Fun:     kind = .Function
+    case .Module:  kind = .Module
+    case .Variant: kind = .Variant
+    }
+    fs, is_scope := t.(^Type_Scope)
+    if is_scope && fs.is_module { kind = .Module }
+    if is_scope && kind == .Function && fs.kind != .Fun { kind = .Type }   // (a struct's constructor: the struct)
+    detail := ""
+    if t != nil { detail = completion_signature(fs) if is_scope && kind == .Function else type_name(t) }
+    completion_add(c, name, kind, detail)
 }
 
 Completions :: struct {
@@ -93,7 +95,7 @@ completion_add :: proc(c: ^Completions, label: string, kind: Completion_Kind, de
 }
 
 // A type's members, through pointers and distinct types to what has some.
-completion_members :: proc(c: ^Completions, typ: Type) {
+completion_members :: proc(c: ^Completions, checked: ^Checked_Program, typ: Type) {
     t := typ
     for {
         #partial switch v in t {
@@ -104,8 +106,15 @@ completion_members :: proc(c: ^Completions, typ: Type) {
     }
     #partial switch v in t {
     case ^Type_Scope:
+        if v.is_module {
+            // (A module's names: its definitions, the resolver's.)
+            if checked != nil && checked.rs != nil {
+                for name, ref in resolve_module_defs(checked.rs, v.name) { completion_named(c, checked, name, ref) }
+            }
+            break
+        }
         for f in v.fields { completion_add(c, f.name, .Field, type_name(f.type_)) }
-        completion_scope_names(c, v, methods = !v.is_module)
+        completion_scope_names(c, v, methods = true)
     case ^Type_Union:
         for name in v.variants { completion_add(c, name, .Variant, "") }
     case ^Type_Enum:
@@ -121,11 +130,11 @@ completion_members :: proc(c: ^Completions, typ: Type) {
     }
 }
 
-// The funs and types a scope defines (`methods`: as a struct's, called on
-// a value of it) — a module's exports alone when `exports_only`.
-completion_scope_names :: proc(c: ^Completions, s: ^Type_Scope, methods := false, exports_only := false) {
+// The funs and types a struct defines (`methods`: as its, called on a value
+// of it).
+completion_scope_names :: proc(c: ^Completions, s: ^Type_Scope, methods := false) {
     if s == nil { return }
-    if !exports_only {
+    {
         for name, fn in s.functions {
             // (A fun's own name only: not the flat one a nested fun's filed under too.)
             if fn == nil || fn.source_name != "" && name != fn.source_name { continue }
@@ -179,30 +188,3 @@ completion_type_of :: proc(a: ^Annotations, n: Tree_Id) -> Type {
     return nil
 }
 
-// The fun or struct a node is written in: the innermost body checked that
-// holds it.
-completion_scope :: proc(a: ^Annotations, n: Tree_Id) -> ^Type_Scope {
-    best: ^Type_Scope
-    best_width := max(int)
-    for b in a.bodies {
-        if b.scope == nil || n < b.lo || n > b.hi { continue }
-        if w := int(b.hi - b.lo); w < best_width {
-            best, best_width = b.scope, w
-        }
-    }
-    return best
-}
-
-// A module's own scope, for a name written outside any fun: one of its
-// funs' — its scopes out to the module's.
-completion_module_scope :: proc(checked: ^Checked_Program, module: string) -> ^Type_Scope {
-    if checked == nil { return nil }
-    flat, _ := strings.replace_all(module, ".", "_", context.temp_allocator)
-    for _, fn in checked.functions {
-        if fn == nil || fn.home_package != flat { continue }
-        for s := fn.parent_scope; s != nil; s = s.parent_scope {
-            if s.is_module { return s }
-        }
-    }
-    return nil
-}

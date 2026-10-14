@@ -3,25 +3,19 @@ package mara
 import "core:strings"
 
 // Modules in the checker: `use m` checks m (once, where it is first
-// used — its own uses first), then makes its names visible in the file
-// that uses it (`include m`: in its module too); `name :: use m` names it.
+// used — its own uses first) and binds the name that declares it (its alias,
+// else its path's last part). What it makes visible where is the resolver's.
 
 tc_use :: proc(k: ^TC, imp: Tree_Id, env, mod: ^Type_Scope, alias := Token_Id(0)) -> ^Type_Scope {
     t := k.t
     span := tree_span(t, imp)
     path := tc_path(k, imp)
-    reexport := build_tokens[t.main[imp]].kind == .Include
-    sealed := t.b[imp] != 0
     if path not_in k.modules {
         tc_error(k, span, TYPE_MODULE_FOUND, path)
         return nil
     }
     m := tc_check_module(k, path, span)
     if m == nil { return nil }
-    flatten_module_exports(k.c, env, &m.sd, is_sealed = sealed)
-    if reexport && mod != env {
-        flatten_module_exports(k.c, mod, &m.sd, is_sealed = sealed)
-    }
     // (Its name the alias, else its path's last part: the token that declares it.)
     parts := tree_token_list(t, t.a[imp])
     decl := alias if alias != 0 else parts[len(parts) - 1]
@@ -55,13 +49,6 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.name, m.home_package = name, name
     m.kind = .Struct
     m.is_module = true
-    // (The build's own names — the program, std, void — every module sees.)
-    for builtin in ([]string{"this_program", "Program", "std", "void"}) {
-        if bt, ok := scope_defines(k.root, builtin); ok { tc_scope_bind(k, m, builtin, bt, {kind = .Builtin}) }
-    }
-    if _, has_void := scope_defines(m, "void"); !has_void {
-        tc_scope_bind(k, m, "void", new_clone(Type_Ptr{elem = Type_Any{}}), {kind = .Builtin})
-    }
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
     list := tc_check_module_files(k, files, m)

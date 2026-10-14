@@ -626,7 +626,7 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
     b.main = checked.functions["main"] or_else nil
     for name, i in ([]string{"this_program", "context"}) {
-        if root := checked.table.root_env; root != nil { b.globals[i], _ = scope_defines(root, name) }
+        b.globals[i] = checked.table.builtins[name] or_else nil
     }
     b.store.arena = new(virtual.Arena)
     if err := virtual.arena_init_growing(b.store.arena); err != nil { graph_fatal({}, "no memory for the program's code") }

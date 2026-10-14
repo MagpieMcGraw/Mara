@@ -379,7 +379,9 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
     if os.change_directory(dir) != nil { return "null" }
     args := s.args
     args.pkg_name = filepath.base(dir)
+    resolve_completing = true   // (the resolver records what's in sight at the placeholder)
     serve_check(&s.check, args, serve_stamp(s.args.compiler_dir), &files)
+    resolve_completing = false
     lsp_keep(s, &s.dir, dir)
     s.checked = false   // (not the editor's text: the next request checks again)
     session := &s.check.session

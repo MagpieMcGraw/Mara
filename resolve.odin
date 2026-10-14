@@ -44,6 +44,8 @@ Resolver :: struct {
     token_misses: map[Token_Id]Rs_Miss, // ... by its token
     clashes: map[Token_Id]Rs_Clash,     // what a declaration runs into, by the token it declares
     miss:    Rs_Miss,                   // (the last lookup's)
+    in_sight: [dynamic]Rs_Seen,         // resolve_completing: the names in sight at the placeholder
+    captured: bool,
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
 }
 
@@ -87,6 +89,15 @@ Rs_Module :: struct {
 Rs_Overload :: struct {
     op:   Token_Kind,
     name: Token_Id,
+}
+
+// mara lsp's completion: the text checked has a placeholder name typed in where
+// it's asked (COMPLETE_HERE); the names in sight there are recorded (in_sight).
+resolve_completing: bool
+
+Rs_Seen :: struct {
+    name: string,
+    ref:  Ref,
 }
 
 // Why a name resolved to nothing — for the checker to say, once nothing it
@@ -204,6 +215,49 @@ rs_owner_name :: proc(r: ^Resolver, scope: i32) -> string {
         }
     }
     return ""
+}
+
+// The names in sight here: each name's innermost in sight, then what the
+// scopes out to the module use.
+@(private="file")
+rs_capture :: proc(r: ^Resolver) {
+    r.captured = true
+    fence := r.scopes[len(r.scopes) - 1].fence
+    seen := make(map[string]bool, context.temp_allocator)
+    for name, slot in r.slots {
+        for i := r.top[slot]; i >= 0; i = r.names[i].hides {
+            e := &r.names[i]
+            if e.variable && e.scope < fence { continue }
+            append(&r.in_sight, Rs_Seen{name, e.ref})
+            seen[name] = true
+            break
+        }
+    }
+    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
+        for m in r.scopes[i].uses {
+            for name, ref in m.defs {
+                if name in seen { continue }
+                seen[name] = true
+                append(&r.in_sight, Rs_Seen{name, ref})
+            }
+        }
+    }
+}
+
+// Whether a module's definitions are in sight where `at` is: its own, or one
+// its file or its module uses.
+resolve_sees_module :: proc(r: ^Resolver, at: Token_Id, module: string) -> bool {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return false }
+    if sight.module.name == module { return true }
+    for u in sight.uses { if u.name == module { return true } }
+    return false
+}
+
+// A module's definitions, by name (nil: no such module).
+resolve_module_defs :: proc(r: ^Resolver, module: string) -> map[string]Ref {
+    if m, ok := r.modules[module]; ok { return m.defs }
+    return nil
 }
 
 // The last lookup's miss, kept for the node it was a name of.
@@ -824,6 +878,7 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
 rs_node :: proc(r: ^Resolver, n: Tree_Id) {
     if n == 0 { return }
     t := r.t
+    if resolve_completing && !r.captured && t.main[n] != 0 && strings.contains(rs_text(t.main[n]), COMPLETE_HERE) { rs_capture(r) }
     #partial switch t.tag[n] {
     case .Ident:
         if ref, ok := rs_lookup(r, rs_text(t.main[n])); ok { r.refs[n] = ref } else { rs_keep_miss(r, n) }

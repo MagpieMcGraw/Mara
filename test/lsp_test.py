@@ -13,7 +13,7 @@ import threading
 import queue
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MARA = os.path.join(ROOT, "Mara.exe" if os.name == "nt" else "mara")
+MARA = os.environ.get("MARA_EXE") or os.path.join(ROOT, "mara_dev.exe" if os.name == "nt" else "mara_dev")   # (the debug build)
 POUNCE = os.path.join(ROOT, "Pounce")
 CAMERA = os.path.join(POUNCE, "camera.mara")
 

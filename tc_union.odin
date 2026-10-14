@@ -71,9 +71,6 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
     // enum's variant is — declared where the union is, by its `union`; unless
     // the name's taken.)
-    if _, taken := scope_lookup(mod, ut.tag_enum.source_name); !taken {
-        scope_bind(mod, ut.tag_enum.source_name, ut.tag_enum, {k.t.main[node], .Type})
-    }
     tc_bound_set(k, k.t.main[node], ut.tag_enum)
 }
 
@@ -222,7 +219,7 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
         if _, is_err := hb.(Type_Err); is_err {
             owners := make([dynamic]string, context.temp_allocator)
             for ename, edef in k.table.enums {
-                if edef.is_error_kind && name in edef.variants && is_enum_visible(env, ename) { append(&owners, ename) }
+                if edef.is_error_kind && name in edef.variants && resolve_sees_module(k.rs, span.at, edef.home_package) { append(&owners, ename) }
             }
             tc_error_ok(k, name, &owners)
             if len(owners) > 1 {
@@ -238,7 +235,7 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot
     if !dot { return nil, 0, false }
     owners := make([dynamic]string, context.temp_allocator)
     for ename, edef in k.table.enums {
-        if name in edef.variants && is_enum_visible(env, ename) { append(&owners, ename) }
+        if name in edef.variants && resolve_sees_module(k.rs, span.at, edef.home_package) { append(&owners, ename) }
     }
     tc_error_ok(k, name, &owners)
     if len(owners) > 1 {

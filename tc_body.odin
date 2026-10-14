@@ -1197,14 +1197,12 @@ tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, en
 }
 
 // A block's scope — an if's, a loop's, a defer's, a match arm's, a body's —
-// inside parent: scratch, in the check's block arena (TC.blocks), and the
-// names bound in it too (its maps grow where they're made).
+// inside parent: scratch, in the check's block arena (TC.blocks). (Its names
+// are the resolver's.)
 tc_block :: proc(k: ^TC, parent: ^Type_Scope) -> ^Type_Scope {
     a := virtual.arena_allocator(k.blocks)
     s := new(Type_Scope, a)
     s.parent_scope = parent
     s.kind = .Block
-    s.types = make(map[string]Type, a)
-    s.refs = make(map[string]Ref, a)
     return s
 }

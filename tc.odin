@@ -101,6 +101,17 @@ tc_bound_set :: proc(k: ^TC, tok: Token_Id, t: Type) {
     tc_bound_put(k, tok, t)
 }
 
+// What a declaration meant once the check was done (a builtin's: by name).
+checked_binding :: proc(c: ^Checked_Program, ref: Ref, name: string) -> (Type, bool) {
+    if ref.kind == .Builtin {
+        t, ok := c.table.builtins[name]
+        return t, ok
+    }
+    if ref.decl == 0 || int(ref.decl) >= len(c.bound) { return nil, false }
+    at := c.bound[ref.decl]
+    return c.binds[at], at != 0
+}
+
 // What a declaration means now, if it's bound.
 tc_bound :: proc(k: ^TC, tok: Token_Id) -> (Type, bool) {
     at := k.bound[tok]
@@ -122,7 +133,10 @@ tc_bound_restore :: proc(k: ^TC, tok: Token_Id, was: Type, had: bool) {
 // A struct's or a fun's definitions are registered when it's checked, or
 // when one is named: here, when the name is one of them.
 tc_ref_type :: proc(k: ^TC, ref: Ref, name: string) -> (Type, bool) {
-    if ref.kind == .Builtin { return scope_defines(k.root, name) }
+    if ref.kind == .Builtin {
+        t, ok := k.table.builtins[name]
+        return t, ok
+    }
     if ref.decl == 0 { return nil, false }
     if t, ok := tc_bound(k, ref.decl); ok { return t, true }
     if ref.kind != .Type && ref.kind != .Fun && ref.kind != .Const { return nil, false }
@@ -382,7 +396,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     main_mod.home_package = main_package
     main_mod.kind = .Struct
     main_mod.is_module = true
-    table.root_env = main_mod
 
     c := new(Checker)
     c.table = table
@@ -413,7 +426,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.name = "std"
     std_fun.home_package = "std"
     std_fun.kind = .Struct
-    tc_scope_bind(k, main_mod, "std", std_fun, {kind = .Builtin})
+    table.builtins["std"] = std_fun
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
@@ -445,12 +458,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.field_map["args"] = len(prog_type.fields)
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
         table.funs["Program"] = prog_type
-        tc_scope_bind(k, main_mod, "this_program", prog_type, {kind = .Builtin})
-        tc_scope_bind(k, main_mod, "Program", prog_type, {kind = .Builtin})
+        table.builtins["this_program"] = prog_type
+        table.builtins["Program"] = prog_type
     }
     void_type := new(Type_Ptr)
     void_type.elem = Type_Any{}
-    tc_scope_bind(k, main_mod, "void", void_type, {kind = .Builtin})
+    table.builtins["void"] = void_type
 
     k.pkg = main_package
     main := tc_check_module_files(k, files, main_mod)
@@ -503,6 +516,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     annot_check(k.annot, t, &checked.code, c.errors)
     resolve_check(k)
+    checked.rs, checked.bound, checked.binds = k.rs, k.bound, k.binds[:]
     checked.errors = c.errors
     return checked
 }
@@ -756,11 +770,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     ts.decl = t.main[def]
     tc_scope_bind(k, mod, name, ts, {ts.decl, .Type if is_struct else .Fun})
     k.table.fun_homes[name] = k.pkg
-    if callable {
-        k.c.declared_funs[name] = true
-        if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }
-        mod.functions[name] = ts
-    }
+    if callable { k.c.declared_funs[name] = true }
     k.scope_of[ts] = len(k.scopes)
     append(k.mine, len(k.scopes))
     k.scope_at[node] = len(k.scopes)
@@ -1087,6 +1097,13 @@ Checked_Program :: struct {
     // Shared symbol table (type definitions, constants, generics, etc.)
     table:          ^SymbolTable,
 
+    // Its names (design/name_resolution.md): the resolver's, and what each
+    // declaration meant once the check was done (checked_binding) — mara
+    // lsp's completion's.
+    rs:             ^Resolver,
+    bound:          []u32,
+    binds:          []Type,
+
     errors:         int,
 
     // Functions — source, foreign, and intrinsic all live here, distinguished
@@ -1168,8 +1185,8 @@ SymbolTable :: struct {
     // be declared (errors at codegen if arena calls would be emitted).
     context_expected_at_runtime: bool,
 
-    // Root type environment (top-level scope)
-    root_env: ^Type_Scope,
+    // What no source declares, by name: this_program, Program, std, void.
+    builtins: map[string]Type,
 }
 
 // ---------------------------------------------------------------------------
