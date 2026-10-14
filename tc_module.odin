@@ -6,7 +6,7 @@ import "core:strings"
 // used — its own uses first) and binds the name that declares it (its alias,
 // else its path's last part). What it makes visible where is the resolver's.
 
-tc_use :: proc(k: ^TC, imp: Tree_Id, mod: ^Type_Scope, alias := Token_Id(0)) -> ^Type_Scope {
+tc_use :: proc(k: ^TC, imp: Tree_Id, alias := Token_Id(0)) -> ^Type_Scope {
     t := k.t
     span := tree_span(t, imp)
     path := tc_path(k, imp)
@@ -51,7 +51,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     k.module_scopes[name] = m
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
-    list := tc_check_module_files(k, files, m)
+    list := tc_check_module_files(k, files)
     k.pkg, k.hint = saved_pkg, saved_hint
     delete_key(&k.in_progress, name)
     tc_extract(k, list, name, is_main = false)

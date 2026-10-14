@@ -193,9 +193,8 @@ Resolution_State :: enum {
 //   `struct` / `class`  → .Struct
 //   `fun`               → .Fun
 // Only codegen cares about the distinction — the type checker treats both
-// kinds of scope the same (same field resolution, same name lookup, same
-// Self binding, etc.).
-Scope_Kind :: enum { Struct, Fun, Block }   // Block = an if/for/defer body — locals only (in .types), no members/params/returns
+// kinds of scope the same (same field resolution, same Self binding, etc.).
+Scope_Kind :: enum { Struct, Fun }
 
 // The body of a Type_Scope — embedded via `using sd: Scope_Body`.
 // Holds the fields, nested defs, methods, and other content shared

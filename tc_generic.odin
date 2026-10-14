@@ -124,36 +124,6 @@ tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> [dynamic]string {
     return names
 }
 
-// The token that declares a template's type param: its `$T: type`, else the
-// first `$T` its params, results or fields write, else the param it
-// promotes (`item: $T`, `n: i64` in `[n]T`). 0 when none is found.
-tc_type_param_decl :: proc(k: ^TC, node: Tree_Id, name: string) -> Token_Id {
-    t := k.t
-    v := scope_view(t, node)
-    for g in v.generics { if tc_name(k, g) == name { return t.main[g] } }
-    walk :: proc(k: ^TC, n: Tree_Id, name: string) -> Token_Id {
-        if n == 0 { return 0 }
-        t := k.t
-        #partial switch t.tag[n] {
-        case .Type_Dollar, .Type_Tilde:
-            if tok := Token_Id(t.a[n]); tc_text(tok) == name { return tok }
-        case .Type_Pointer, .Type_Paren:
-            return walk(k, Tree_Id(t.a[n]), name)
-        case .Type_Slice, .Type_Partial, .Type_Array:
-            return walk(k, Tree_Id(t.b[n]), name)
-        case .Type_Generic, .Type_Fun:
-            for a in tree_list(t, t.a[n]) { if tok := walk(k, a, name); tok != 0 { return tok } }
-            if t.tag[n] == .Type_Fun { for a in tree_list(t, t.b[n]) { if tok := walk(k, a, name); tok != 0 { return tok } } }
-        }
-        return 0
-    }
-    for g in v.params { if tok := walk(k, params_view(t, g).type_, name); tok != 0 { return tok } }
-    for r in v.returns { if tok := walk(k, params_view(t, r).type_ if t.tag[r] == .Param_Group else r, name); tok != 0 { return tok } }
-    for s in v.body { if t.tag[s] == .Decl { if tok := walk(k, decl_view(t, s).type_, name); tok != 0 { return tok } } }
-    for g in v.params { for pn in params_view(t, g).names { if tc_text(pn) == name { return pn } } }
-    return 0
-}
-
 // What a param's type as written binds, given the type of the argument
 // passed to it: `^[]$T` given ^[]i64 binds T to i64.
 tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) {
@@ -463,7 +433,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     k.table.funs[st.name] = st
     st.decl = tr.main[tmpl.def]
     tc_bound_set(k, st.decl, st)
-    for name, bound in subst { tc_scope_bind(k, st, name, bound, {tc_type_param_decl(k, tmpl.node, name), .Type}) }
+    for name, bound in subst { scope_bind(st, name, bound) }   // (its type params, its members)
+    tc_type_params_bind(k, tmpl.node, subst)
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg = subst, tmpl.pkg
     defer k.subst, k.pkg = saved_subst, saved_pkg

@@ -146,6 +146,29 @@ What reading the refs took, beyond the lookups themselves:
   `.Builtin`); the scopes' own binds (`scope_bind`), a union's tag enum's by name included;
   type params bound into an instance's scope by name (`tc_type_param_decl`).
 
+## Stage 3, as found
+
+- **No environment is threaded**: the `env` parameter went from the 104 procs that took one
+  (a script dropped it from each signature and each call's argument there), and with it the
+  block and file scopes, `TC_Scope`'s, `TC_Template`'s, `TC_Const`'s and `TC_Arg`'s `env`.
+  What it carried besides names is the checker's own state: the fun or struct whose body is
+  being checked (`k.body`: `return`'s results, `#self`; none while a module's constant is) and
+  whether its own block is (`k.top`: a bare declaration's construction).
+- **The builtins** — `this_program`, `Program`, `std`, `void` — are a table
+  (`SymbolTable.builtins`), not names in the root scope copied into every module's.
+- **What stays of a scope** is its record: a struct's or a fun's members by name (what a value
+  of it reaches by type — `v.method()`, its nested types, its constants, an instance's type
+  params), its fields, its signature; `parent_scope` is what it's declared in — its owner, or
+  its module's record (`k.module_scopes`; an instance's, its template's module). A module's
+  record holds no names.
+- **Gone**: `includes`, a scope's `refs`, the lookup chain (`scope_lookup` and the rest),
+  `flatten_module_exports`, `is_enum_visible` (a variant's enums in sight: those of the modules
+  the resolver says a file sees), `tc_type_param_decl` (an instance binds the resolver's list
+  of its type params).
+- **Completion** (mara lsp) asks the resolver: it records the names in sight where the
+  placeholder is (`resolve_completing`), and a module's definitions; the checked program keeps
+  the bindings for their types. Hittest never asked the scopes.
+
 ## Checklist
 
 - [x] 1. The resolver, checked against the checker (2026-10-13)
@@ -162,5 +185,6 @@ What reading the refs took, beyond the lookups themselves:
         (4522524); dispatch groups and overloads (f4f7f7d); the rest (2026-10-14)
   - [x] d. The name errors: the resolver knows why a name failed and what a declaration runs
         into; the checker says it where it did (2026-10-14)
-- [ ] 3. The environments go
+- [x] 3. The environments go (2026-10-14: 590ed69 no names in module or block scopes;
+      ec1d148 no block scopes, no env; then the leftovers)
 - [ ] 4. Faster

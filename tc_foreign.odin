@@ -5,7 +5,7 @@ import "core:strings"
 // `foreign "lib" [prefix p] { fun Name(params) -> T }`: each a fun of C's
 // calling convention, linked as prefix + name.
 
-tc_register_foreign :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
+tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     fv := foreign_view(t, s)
     k.c.in_foreign_sig = true

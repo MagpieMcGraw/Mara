@@ -44,7 +44,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if !is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
-        for name, bt in sc.subst { tc_bind(k, name, bt, {tc_type_param_decl(k, sc.node, name), .Type}) }
+        tc_type_params_bind(k, sc.node, sc.subst)   // (an instance's: its type params, checked whenever its body is)
         tc_scope(k, v.body, ts if is_struct else nil, top = true)
     }
     if is_struct {

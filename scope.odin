@@ -21,11 +21,11 @@ raw_type_key :: proc(t: Type) -> rawptr {
     return nil
 }
 
-// Bind a name in scope s: its type, and what declares it.
-scope_bind :: proc(s: ^Type_Scope, name: string, t: Type, ref: Ref) {
-    // (A struct's or a fun's member, what a value of it or a qualified name
-    // reaches by type; a module's names and a block's are the resolver's.)
-    if s == nil || s.is_module || s.kind == .Block { return }
+// A member of scope s, by name: its type.
+scope_bind :: proc(s: ^Type_Scope, name: string, t: Type) {
+    // (A struct's or a fun's member, what a value of it reaches by type; a
+    // module's names are the resolver's.)
+    if s == nil || s.is_module { return }
     s.types[name] = t
 }
 

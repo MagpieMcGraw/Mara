@@ -217,7 +217,7 @@ tc_names_def :: proc(ref: Ref) -> bool {
 
 // A name bound in scope s, and its declaration's meaning.
 tc_scope_bind :: proc(k: ^TC, s: ^Type_Scope, name: string, t: Type, ref: Ref) {
-    scope_bind(s, name, t, ref)
+    scope_bind(s, name, t)
     tc_bound_set(k, ref.decl, t)
 }
 
@@ -453,7 +453,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     table.builtins["void"] = void_type
 
     k.pkg = main_package
-    main := tc_check_module_files(k, files, main_mod)
+    main := tc_check_module_files(k, files)
 
     // (Generic structs' instances: their methods, their inits — before the
     // main module's.)
@@ -511,7 +511,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 // A module's files: each its own scope (its imports its own), chained to the
 // module's, where its definitions are declared; their names registered, then
 // their bodies checked.
-tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []int {
+tc_check_module_files :: proc(k: ^TC, files: []Tree_Id) -> []int {
     // (The scopes this module registers: a `use` in it checks another, whose
     // own are its.)
     saved := k.mine
@@ -519,10 +519,10 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     k.mine = &list
     defer k.mine = saved
     for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s, mod) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s) }
     }
     for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s, mod) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s) }
     }
     mine := list[:]
     // (Signatures first: a constant's value may call a fun — an error, but
@@ -569,7 +569,7 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
 // A module statement's names, the first pass: its
 // funs, structs, types and unions declared, its constants listed — before
 // any `use` in the module checks another.
-tc_register_types :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
+tc_register_types :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     if t.tag[s] != .Define { return }
     value := Tree_Id(t.b[s])
@@ -577,36 +577,36 @@ tc_register_types :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
     if t.a[s] == 0 {
         #partial switch t.tag[value] {
         case .Fun_Def, .Struct_Def:
-            tc_register_scope(k, s, value, mod)
+            tc_register_scope(k, s, value)
             return
         case .Alias_Def, .Distinct_Def:
-            tc_register_distinct(k, s, value, mod)
+            tc_register_distinct(k, s, value)
             return
         case .Union_Def, .Error_Def:
-            tc_register_union(k, s, value, mod)
+            tc_register_union(k, s, value)
             return
         }
     }
-    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value, mod) }
+    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value) }
 }
 
 // The rest of a module statement, the second pass: a `use`, a dispatch, an
 // overload.
-tc_register :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
+tc_register :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     #partial switch t.tag[s] {
     case .Module:
         return
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
-            tc_use(k, e, mod)
+            tc_use(k, e)
             tc_module_stmt(k, tc_sid(k, s))
             return
         }
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
-            m := tc_use(k, value, mod, alias = t.main[s])
+            m := tc_use(k, value, alias = t.main[s])
             tc_module_stmt(k, tc_sid(k, s))
             return
         }
@@ -627,7 +627,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
         tc_module_decl(k, s)
         return
     case .Foreign:
-        tc_register_foreign(k, s, mod)
+        tc_register_foreign(k, s)
         return
     case .Overload:
         return   // (the resolver's: resolve_overloads)
@@ -637,7 +637,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, mod: ^Type_Scope) {
 
 // `T :: type U`, `T :: distinct U`: its name (its base once every name is
 // known: tc_resolve).
-tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
+tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id) {
     name := tc_name(k, def)
     span := tree_span(k.t, def)
     alias := k.t.tag[node] == .Alias_Def
@@ -708,7 +708,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
 
 // A fun or a struct: its name declared in its module, its type made (its
 // signature and body wait).
-tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
+tc_register_scope :: proc(k: ^TC, def, node: Tree_Id) {
     t := k.t
     name := tc_name(k, def)
     span := tree_span(t, def)
@@ -739,7 +739,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.parent_scope = node, mod
+    ts.node, ts.parent_scope = node, k.module_scopes[k.pkg] or_else nil
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
     ts.is_exposed = k.exposed[def]

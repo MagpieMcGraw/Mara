@@ -10,7 +10,7 @@ import "core:strings"
 // set (each variant's value its set's id and its place in it).
 
 // Its name declared, its type made (a union's fields wait: tc_resolve_union).
-tc_register_union :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
+tc_register_union :: proc(k: ^TC, def, node: Tree_Id) {
     t := k.t
     name := tc_name(k, def)
     // (A generic union: a template, made as each instance — tc_union_instance.)

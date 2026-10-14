@@ -21,7 +21,7 @@ TC_Const :: struct {
 
 // A module's constant: under its flat name, and its bare one unless another
 // module has a constant of that name (then a bare use must qualify it).
-tc_register_const :: proc(k: ^TC, def, value: Tree_Id, mod: ^Type_Scope) {
+tc_register_const :: proc(k: ^TC, def, value: Tree_Id) {
     name := tc_name(k, def)
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, pkg = k.pkg})
     kc.sid = tc_sid(k, value)
