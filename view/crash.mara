@@ -145,7 +145,7 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	&command + ":"
 	&command + int_text(line)
 	&command + "\""
-	pr, e := process_start(command[:])
+	pr, e := process_start(command)   // (the buffer itself: a 0 follows its text)
 	if bool(e) {
 		lines_status(&ui.crash, "The editor didn't start: mara editor names it.", STYLE_BAD)
 		return
