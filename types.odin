@@ -1562,34 +1562,6 @@ routes_to_arena :: proc(t: Type) -> bool {
     return type_size(t) >= ARENA_THRESHOLD
 }
 
-// Check if a variable name is a function parameter (walks env chain).
-// Is `name` a parameter of the function/ctor whose body we're in? Derived from
-// the durable scope (the enclosing callable's params) rather than a per-env flag
-// — no closures, so the nearest callable IS the one that owns the params.
-is_param :: proc(env: ^Type_Scope, name: string) -> bool {
-    ft := enclosing_callable_scope(env)
-    if ft == nil { return false }
-    for p in ft.params { if p.name == name { return true } }
-    return false
-}
-
-// True if `name` is a parameter of a reference-type (aggregate or slice)
-// without `^`. These params are passed as pointers under the hood for
-// performance, but the missing `^` is the read-only contract — writes through
-// this name are rejected. `^T` params remain mutable; scalar params are
-// unaffected (writes only touch the local copy and aren't caller-visible).
-//
-// Slices participate in the same rule: `s: []T` is read-only (no element
-// writes, no header reassign, no `&s`); `s: ^[]T` is mutable. Without this,
-// slice param writes would silently propagate to the caller (slices are
-// reference types at the ABI), making slices the odd one out.
-is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
-    if !is_param(env, name) { return false }
-    t, ok := scope_lookup(env, name)
-    if !ok { return false }
-    return is_immutable_param_type(t)
-}
-
 // Whether a param of type t can't be written: one passed by address.
 is_immutable_param_type :: proc(t: Type) -> bool {
     base := distinct_base(t)

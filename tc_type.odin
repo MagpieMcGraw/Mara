@@ -308,12 +308,6 @@ tc_dotted :: proc(parts: []Token_Id) -> string {
     return strings.to_string(sb)
 }
 
-// A scope's own types and funs, registered (once): a struct's, named in a
-// type before its body is checked.
-tc_scope_defs :: proc(k: ^TC, sd: ^Scope_Body) {
-    if i, ok := k.scope_of[sd_type_scope(sd)]; ok { tc_register_defs(k, k.scopes[i]) }
-}
-
 // `fn name`: the type of the fun a name names (a local holding one, too);
 // `fn q.name`, a module's fun or a variable's struct's.
 tc_fun_type_of :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
@@ -387,11 +381,9 @@ tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span, n: Tre
     ref := k.rs.refs[n]
     if t, ok := tc_ref_type(k, ref, name); ok { return t }
     // (Two modules' type, said so.)
-    if ref.kind == .None && name != "Self" {
-        if _, _, owners := resolve_with_ambiguity(env, name); len(owners) > 1 {
-            tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))
-            return Type_Error{}
-        }
+    if owners := (k.rs.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {
+        tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))
+        return Type_Error{}
     }
     tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
     return Type_Error{}

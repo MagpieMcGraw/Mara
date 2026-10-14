@@ -40,6 +40,10 @@ Resolver :: struct {
     generic:     Tree_Id,               // the definition whose signature is being resolved: its type params'
     module:  ^Rs_Module,                // the module being resolved
     sights:  map[u16]Rs_Sight,          // by file: the modules in sight there (resolve_dispatches)
+    misses:  map[Tree_Id]Rs_Miss,       // why a name resolved to nothing, by its node ...
+    token_misses: map[Token_Id]Rs_Miss, // ... by its token
+    clashes: map[Token_Id]Rs_Clash,     // what a declaration runs into, by the token it declares
+    miss:    Rs_Miss,                   // (the last lookup's)
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
 }
 
@@ -83,6 +87,22 @@ Rs_Module :: struct {
 Rs_Overload :: struct {
     op:   Token_Kind,
     name: Token_Id,
+}
+
+// Why a name resolved to nothing — for the checker to say, once nothing it
+// knows by type means it either: whose local it is, past a fun's boundary;
+// the modules that each have it, at the nearest scope that uses any.
+Rs_Miss :: struct {
+    hidden: string,
+    owners: []string,
+}
+
+// What a declaration (`x := …`) runs into: a name its scope has already (a
+// param's, said apart); an enclosing one it hides (before: what declares
+// it; shadows: said so — not in a struct); a constant in sight.
+Rs_Clash :: struct {
+    taken, param, shadows, constant: bool,
+    before: Token_Id,
 }
 
 // What a file sees of the groups calls and operators choose among: its
@@ -134,11 +154,15 @@ rs_declare :: proc(r: ^Resolver, name: string, ref: Ref) { rs_push(r, name, ref,
 // else what the nearest scope that uses one brings in (two: ambiguous).
 @(private="file")
 rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
+    r.miss = {}
     fence := r.scopes[len(r.scopes) - 1].fence
     if slot, ok := r.slots[name]; ok {
         for i := r.top[slot]; i >= 0; i = r.names[i].hides {
             e := &r.names[i]
-            if e.variable && e.scope < fence { continue }
+            if e.variable && e.scope < fence {
+                if r.miss.hidden == "" { r.miss.hidden = rs_owner_name(r, e.scope) }
+                continue
+            }
             return e.ref, true
         }
     }
@@ -152,9 +176,69 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
             }
         }
         if n == 1 { return found, true }
-        if n > 1 { return {}, false }
+        if n > 1 {
+            // (Ambiguous: each module with one of them, the first for each.)
+            owners := make([dynamic]string)
+            seen := make([dynamic]Ref, context.temp_allocator)
+            for m in r.scopes[i].uses {
+                ref, ok := m.defs[name]
+                if !ok || slice.contains(seen[:], ref) { continue }
+                append(&seen, ref)
+                if !slice.contains(owners[:], m.name) { append(&owners, m.name) }
+            }
+            r.miss.owners = owners[:]
+            return {}, false
+        }
     }
     return {}, false
+}
+
+// Whose a scope's variables are: the fun's or the struct's it's in, else its
+// module's.
+@(private="file")
+rs_owner_name :: proc(r: ^Resolver, scope: i32) -> string {
+    for i := scope; i >= 0; i -= 1 {
+        #partial switch r.scopes[i].kind {
+        case .Fun, .Struct: return rs_text(r.scopes[i].self.decl)
+        case .File, .Module: return r.module.name if r.module != nil else ""
+        }
+    }
+    return ""
+}
+
+// The last lookup's miss, kept for the node it was a name of.
+@(private="file")
+rs_keep_miss :: proc(r: ^Resolver, n: Tree_Id) {
+    if r.miss.hidden != "" || len(r.miss.owners) > 0 { r.misses[n] = r.miss }
+}
+
+// What declaring `name` here runs into (rs_stmt's `x := …`).
+@(private="file")
+rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
+    if name == "_" { return }
+    cur := i32(len(r.scopes) - 1)
+    if k := r.scopes[cur].kind; k == .Module || k == .File { return }
+    if slot, ok := r.slots[name]; ok {
+        in_struct := false
+        for sc in r.scopes { if sc.kind == .Struct { in_struct = true } }
+        fence := r.scopes[cur].fence
+        for i := r.top[slot]; i >= 0; i = r.names[i].hides {
+            e := &r.names[i]
+            if r.scopes[e.scope].kind == .Module || r.scopes[e.scope].kind == .File && !e.variable && e.ref.kind != .Module { break }
+            // (Its scope's own: a variable, a param, a constant — a fun's or
+            // a struct's own funs and types are around its body, not in it.)
+            if e.scope == cur && (r.scopes[cur].kind == .Block || e.variable || e.ref.kind == .Const) {
+                c.taken, c.param = true, e.ref.kind == .Param
+                return
+            }
+            if e.variable && e.scope < fence { continue }   // (past a fun's boundary: out of sight)
+            c.before, c.shadows = e.ref.decl, !in_struct
+            break
+        }
+    }
+    if ref, ok := rs_lookup(r, name); ok && ref.kind == .Const { c.constant = true }
+    r.miss = {}
+    return
 }
 
 // --- definitions ----------------------------------------------------------------------
@@ -409,6 +493,45 @@ resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string) -> []Token_
     return out[:]
 }
 
+// The modules in sight where `at` is that each have a fun `name`, when its
+// own module has none — two or more: a bare call of it is ambiguous. (Every
+// module its file or its module uses, not only the nearest's: the checker's
+// rule for funs.)
+resolve_fun_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return nil }
+    if ref, own := sight.module.defs[name]; own && rs_plain_fun(r, ref) { return nil }
+    out := make([dynamic]string, context.temp_allocator)
+    for u in sight.uses {
+        if u == sight.module { continue }
+        if ref, has := u.defs[name]; has && rs_plain_fun(r, ref) && !slice.contains(out[:], u.name) { append(&out, u.name) }
+    }
+    if len(out) < 2 { return nil }
+    return out[:]
+}
+
+// The modules in sight where `at` is that have a constant `name` — its own,
+// then each it uses (two or more: a bare use is ambiguous).
+resolve_const_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return nil }
+    out := make([dynamic]string, context.temp_allocator)
+    if ref, has := sight.module.defs[name]; has && ref.kind == .Const { append(&out, sight.module.name) }
+    for u in sight.uses {
+        if u == sight.module { continue }
+        if ref, has := u.defs[name]; has && ref.kind == .Const { append(&out, u.name) }
+    }
+    return out[:]
+}
+
+// A fun no generic and no dispatch group: one a call names directly.
+@(private="file")
+rs_plain_fun :: proc(r: ^Resolver, ref: Ref) -> bool {
+    if ref.kind != .Fun || r.dispatches[ref.decl] { return false }
+    def, ok := r.defs[ref.decl]
+    return !ok || len(r.type_params_of[Tree_Id(r.t.b[def])]) == 0
+}
+
 // The groups an operation `op` overloads, by name, in sight where `at` is:
 // its module's `overload`s, then each module its file or its module uses'.
 resolve_overloads :: proc(r: ^Resolver, at: Token_Id, op: Token_Kind) -> []Token_Id {
@@ -477,6 +600,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
             if t.tag[tg] != .Ident { rs_node(r, tg); continue }
             ref := Ref{t.main[tg], kind}
             r.refs[tg] = ref
+            if c := rs_clash(r, rs_text(t.main[tg])); c.taken || c.before != 0 || c.constant { r.clashes[t.main[tg]] = c }
             rs_declare(r, rs_text(t.main[tg]), ref)
         }
     case .Using:
@@ -593,7 +717,11 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
 // A name written as a token: what it refers to, by the token.
 @(private="file")
 rs_token :: proc(r: ^Resolver, tok: Token_Id) {
-    if ref, ok := rs_lookup(r, rs_text(tok)); ok { r.token_refs[tok] = ref }
+    if ref, ok := rs_lookup(r, rs_text(tok)); ok {
+        r.token_refs[tok] = ref
+    } else if r.miss.hidden != "" || len(r.miss.owners) > 0 {
+        r.token_misses[tok] = r.miss
+    }
 }
 
 // A fun's or a struct's scope: its type params, then its params' types and
@@ -698,7 +826,7 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
     t := r.t
     #partial switch t.tag[n] {
     case .Ident:
-        if ref, ok := rs_lookup(r, rs_text(t.main[n])); ok { r.refs[n] = ref }
+        if ref, ok := rs_lookup(r, rs_text(t.main[n])); ok { r.refs[n] = ref } else { rs_keep_miss(r, n) }
         return
     case .Call:
         // (A builtin's name is the builtin's: print, len, a cast, …)
@@ -707,6 +835,8 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
             r.refs[n] = {kind = .Builtin}
         } else if ref, ok := rs_lookup(r, name); ok {
             r.refs[n] = ref
+        } else {
+            rs_keep_miss(r, n)
         }
     case .Method_Call:
         // (Through a module or a type, written: what it has by that name.)
@@ -761,7 +891,7 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
         case:
             ref, ok = rs_parts(r, parts)
         }
-        if ok { r.refs[n] = ref }
+        if ok { r.refs[n] = ref } else { rs_keep_miss(r, n) }
         return
     case .Type_Keyword:
         r.refs[n] = {kind = .Builtin}
@@ -933,10 +1063,6 @@ resolve_check :: proc(k: ^TC) {
         for key in m { append(&keys, key) }
         slice.sort_by(keys[:], proc(a, b: Key) -> bool { return int(a.tag) * 64 + int(a.checker) * 8 + int(a.resolver) < int(b.tag) * 64 + int(b.checker) * 8 + int(b.resolver) })
         for key in keys { fmt.printfln("resolve: %s %v: checker %v, resolver %v: %d", what, key.tag, key.checker, key.resolver, m[key]) }
-    }
-    if k.lookups.on {
-        for line in k.lookups.shown { fmt.println(line) }
-        fmt.printfln("resolve: lookups: %d agree, %d differ, %d no ref", k.lookups.agree, k.lookups.differ, k.lookups.absent)
     }
     report("differ", y.differ)
     report("only-checker", y.missed)

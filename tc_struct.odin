@@ -240,8 +240,9 @@ tc_write_root_param :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (string, bo
             if _, is_ptr := distinct_base(tc_node_type(k, base)).(^Type_Ptr); is_ptr { return "", false }
             cur = base
         case .Ident:
-            name := tc_name(k, cur)
-            if is_immutable_param(env, name) { return name, true }
+            if ref := k.rs.refs[cur]; ref.kind == .Param {
+                if pt, ok := tc_bound(k, ref.decl); ok && is_immutable_param_type(pt) { return tc_name(k, cur), true }
+            }
             return "", false
         case:
             return "", false
@@ -725,7 +726,7 @@ tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id,
         return Type_Error{}
     }
     if !is_variant {
-        if _, _, bound := scope_find(env, name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+        if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e, env) }
     return Type_Error{}

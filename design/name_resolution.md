@@ -72,8 +72,9 @@ member, a literal's field names. The checker finds those in the type's declarati
    `scope_find_ref`, `resolve_with_ambiguity`, `resolve_type_name`, `fn_ambiguous_owners` —
    become the name's ref and a table from a declaring token to what the checker found for it
    (a fun's or a struct's scope, a type, a constant, a variable's type in the instance being
-   checked). The resolver reports the name errors. Gate: `irdiff.sh` identical, the expected
-   diagnostics (`run.sh`), `annotcheck.sh`, `ask.sh`.
+   checked). The resolver knows the name errors; the checker says them where it did (after
+   what it knows by type: a variant by the type expected). Gate: `irdiff.sh` identical, the
+   expected diagnostics (`run.sh`), `annotcheck.sh`, `ask.sh`.
 3. **The environments go.** Block, file and module scopes; `parent_scope`, `includes`, the
    name maps; `TC_Scope`'s `env`. What stays of `Type_Scope` is the declaration's record, read
    by its token; what it copied of the tree is read from the tree. Completion and hittest ask
@@ -114,10 +115,41 @@ dispatch's member, 87 what a variable holds; 22,754 only the checker resolves (a
 1,511 only the resolver (names the checker never reads: an uninstantiated generic's body, a
 default's value).
 
+## Stage 2, as found
+
+What reading the refs took, beyond the lookups themselves:
+
+- **Bindings** are by declaring token, dense (`k.bound`: a per-token index into `k.binds`). An
+  instance binds its template's type params (the resolver lists each generic's:
+  `type_params_of`) and gives its template's tokens back at its end; a dispatch's trial of a
+  generic member binds them and gives them back. A union's variant is bound to its struct
+  (`Shape.Rect`), an enum's variant to its enum (`m.Red`), a union's tag enum to its
+  `union`'s token.
+- **Registered when named**: a struct's or a fun's own definitions are registered when it's
+  checked, or when one of them is named — by the owner the resolver records for each
+  (`owners`), its own owner first.
+- **Templates** are by declaring token (a union's too): two modules' generics of one name no
+  longer share an entry (the first one's, before).
+- **A fun's own definitions are its members** (`alpha.bump(7)`), as the checker had them.
+- **Dispatch groups of one name join** across the modules in sight — a program's `add` and
+  core's: what a call by that name chooses among is the module's own groups, then each module
+  its file or its module uses (`resolve_dispatches`); an operator's, the groups its module's
+  and those modules' `overload`s name (`resolve_overloads`). A group's members are what their
+  tokens refer to where the group is written, not where it's called.
+- **Errors** stay in the order they were said: the resolver records why a name failed (whose
+  local it is, past a fun's boundary; which modules have it — `misses`) and what a
+  declaration runs into (`clashes`); the checker says it once nothing it knows by type
+  applies. Changed: a constant two modules in sight have lists those modules (its own first),
+  not every module with one; a variable shadows a constant in sight, not any constant
+  anywhere.
+- **Left for stage 3**: the builtins, found by name in the root scope (`tc_ref_type`'s
+  `.Builtin`); the scopes' own binds (`scope_bind`), a union's tag enum's by name included;
+  type params bound into an instance's scope by name (`tc_type_param_decl`).
+
 ## Checklist
 
 - [x] 1. The resolver, checked against the checker (2026-10-13)
-- [ ] 2. The checker reads the refs
+- [x] 2. The checker reads the refs (2026-10-14)
   - [x] a. The resolver runs before the check, kept for it (`k.rs`; names written as tokens —
         a dispatch's members, an overload's — by token: `token_refs`) (2026-10-14)
   - [x] b. What each declaration means, beside the scopes: `k.bound` by declaring token, an
@@ -125,7 +157,10 @@ default's value).
         `MARA_RESOLVE=check` compares it at each lookup (78,936 agree, none differ). Its cost
         on test_1M: the resolver ~140 ms (a name's slot hashed once a push and a lookup), the
         bindings ~10 ms (dense by token: a map's inserts missed the cache, ~170 ms)
-  - [ ] c. The lookups read the ref and the binding
-  - [ ] d. The resolver reports the name errors
+  - [x] c. The lookups read the ref and the binding, family by family, each gated: names,
+        calls, writes, qualifiers (a517c6d); types (35b6b34); members and constants
+        (4522524); dispatch groups and overloads (f4f7f7d); the rest (2026-10-14)
+  - [x] d. The name errors: the resolver knows why a name failed and what a declaration runs
+        into; the checker says it where it did (2026-10-14)
 - [ ] 3. The environments go
 - [ ] 4. Faster

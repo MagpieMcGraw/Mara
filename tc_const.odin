@@ -1,6 +1,5 @@
 package mara
 
-import "core:slice"
 import "core:strings"
 
 // Constants in the checker: `X :: v`, `X : T : v`. Each is its value,
@@ -65,59 +64,13 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     tc_scope_bind(k, kc.pub, kc.name, final, {k.t.main[kc.def], .Const})
 }
 
-// The constant a bare name names from `env`: its own module's, or one it
-// uses'. Two such is ambiguous (reported: its uses must qualify it).
-tc_const_ref :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> (^TC_Const, bool) {
-    own := ""
-    for s := env; s != nil; s = s.parent_scope {
-        if s.home_package != "" { own = s.home_package; break }
-        if s.is_module { break }
-    }
-    if own == "" { own = k.pkg }
-    // (Each module once — its own, then each one used as the walk meets it:
-    // a handful, compared where they are; past sixteen, kept apart.)
-    seen_at: [16]string
-    seen_at[0] = own
-    n_seen := 1
-    more: [dynamic]string
-    defer delete(more)
-    found: ^TC_Const
-    count := 0
-    if kc, ok := k.consts[tc_flat_name(k, own, name)]; ok { found, count = kc, 1 }
-    for s := env; s != nil; s = s.parent_scope {
-        for inc in s.includes {
-            if inc == nil || slice.contains(seen_at[:n_seen], inc.name) || slice.contains(more[:], inc.name) { continue }
-            if n_seen < len(seen_at) { seen_at[n_seen] = inc.name; n_seen += 1 } else { append(&more, inc.name) }
-            if kc, ok := k.consts[tc_flat_name(k, inc.name, name)]; ok { found, count = kc, count + 1 }
-        }
-        if s.is_module { break }
-    }
-    if count < 2 { return found, true }
-    owners := make([dynamic]string, context.temp_allocator)
-    suffix := strings.concatenate({"_", name})
-    for key in k.consts {
-        if key == name || !strings.has_suffix(key, suffix) { continue }
-        pkg := key[:len(key) - len(suffix)]
-        if strings.has_prefix(pkg, "mara_") { pkg = strings.concatenate({"mara.", pkg[len("mara_"):]}) }
-        append(&owners, pkg)
-    }
-    first := owners[0] if len(owners) > 0 else name
-    tc_error(k, span, TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", "), first, name)
-    return nil, false
-}
-
-// Whether a module's constant is visible from env by its bare name: its own
-// module's, or one a module it uses defines.
-tc_const_visible :: proc(k: ^TC, env: ^Type_Scope, name: string) -> bool {
-    if env == nil { return true }
-    if owner, mapped := k.const_owners[name]; mapped && owner != "" && owner == k.pkg { return true }
-    for s := env; s != nil; s = s.parent_scope {
-        if s.is_module && make_flat_name(k.pkg, name) in k.consts { return true }
-        for inc in s.includes {
-            if inc != nil && make_flat_name(inc.name, name) in k.consts { return true }
-        }
-        if s.is_module { break }
-    }
+// Whether a bare name (n) names no constant two modules in sight have — its
+// own and one it uses, or two it uses: those are ambiguous (reported: its
+// uses must qualify it).
+tc_const_unambiguous :: proc(k: ^TC, n: Tree_Id, name: string, span: Span) -> bool {
+    owners := resolve_const_owners(k.rs, k.t.main[n], name)
+    if len(owners) < 2 { return true }
+    tc_error(k, span, TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
     return false
 }
 

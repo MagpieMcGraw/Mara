@@ -50,9 +50,6 @@ echo "--- by kind, summed over the programs"
 grep -h '^resolve: \(differ\|only-checker\|only-resolver\|dispatch\|holds\) ' "$OUT"/*.txt   | awk -F': ' '{ sum[$2 ": " $3] += $4 } END { for (k in sum) print sum[k] "	" k }' | sort -t$'	' -k2
 grep -h '^resolve: [0-9]* agree' "$OUT"/*.txt | awk '{ a += $2; d += $4; c += $6; r += $10; p += $14; h += $18 } END { printf "RESOLVE: %d agree, %d differ, %d only the checker'"'"'s, %d only the resolver'"'"'s, %d a dispatch'"'"'s member, %d what a variable holds", a, d, c, r, p, h }'
 echo " ($checked of $n programs checked; the rest have errors)"
-# (Each lookup the checker made: its scope's answer against the name's ref and binding.)
-grep -h '^resolve: lookup ' "$OUT"/*.txt | sort -u | head -40
-grep -h '^resolve: lookups: ' "$OUT"/*.txt | awk '{ a += $3; d += $5; n += $7 } END { printf "LOOKUPS: %d agree, %d differ, %d no ref\n", a, d, n }'
 # (A program neither checked nor with errors: the resolver crashed on it.)
 crashed=$(for f in "$OUT"/*.txt; do grep -q '^resolve: [0-9]* agree\|^Found [0-9]' "$f" || basename "$f" .txt; done)
 if [ -n "$crashed" ]; then echo "RESOLVE: no result for: $crashed"; grep -h '\.odin([0-9]*:[0-9]*)' "$OUT"/*.txt | sort -u | head; exit 1; fi

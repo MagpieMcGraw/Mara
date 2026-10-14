@@ -198,7 +198,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     if ref.kind == .None || kc != nil && !kc.local {
         // (A module's constant two modules have — its own and one it uses,
         // or two it uses — is ambiguous: said so.)
-        if _, unambiguous := tc_const_ref(k, env, name, span); !unambiguous { return Type_Error{} }
+        if !tc_const_unambiguous(k, n, name, span) { return Type_Error{} }
     }
     if ok || kc != nil { tc_set_ref(k, n, ref) }
     if !ok && kc != nil {
@@ -215,11 +215,10 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     }
     if !ok {
         // (A type named as a value: said so.)
-        flat := resolve_type_name(k, name, "", env)
-        if flat in k.table.funs || flat in k.table.enums || flat in k.table.unions {
+        if _, is_template := tc_template(k, ref); ref.kind == .Type && !is_template {
             tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name)
         } else {
-            report_unresolved(k.c, span, env, name, TYPE_UNDEFINED_IDENTIFIER)
+            tc_unresolved(k, k.rs.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)
         }
         return Type_Error{}
     }
@@ -544,7 +543,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args, env) }
         // (A fun two modules it uses have: ambiguous.)
         if qual == nil && ref.kind == .None && name in k.c.declared_funs {
-            if owners := fn_ambiguous_owners(env, name); owners != nil {
+            if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
                 tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
                 for a in args { tc_check(k, a, env) }
                 return Type_Error{}
@@ -569,7 +568,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     }
     // (A fun two modules it uses have: ambiguous.)
     if qual == nil && name in k.c.declared_funs && ft.name != "" {
-        if owners := fn_ambiguous_owners(env, name); owners != nil {
+        if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
             tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
             return Type_Error{}
         }
@@ -871,7 +870,7 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
     callee := tc_callee(k, m)
     if callee == nil && env != nil {
         // (Not checked yet: the fun its name names.)
-        if t, ok := scope_lookup(env, tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
+        if t, ok := tc_ref_type(k, tc_callee_ref(k, m), tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }

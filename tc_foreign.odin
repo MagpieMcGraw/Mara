@@ -43,7 +43,7 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, module: string)
     k.checked.foreign_libs[library] = true
     for ff in fv.funs {
         name := tc_text(foreign_fun_view(t, ff).name)
-        found, _ := scope_lookup(env, name)
+        found, _ := tc_bound(k, foreign_fun_view(t, ff).name)
         ft, is_scope := found.(^Type_Scope)
         if !is_scope { continue }
         span := tree_span(t, ff)

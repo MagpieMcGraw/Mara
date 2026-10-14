@@ -177,7 +177,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
-    if !tc_declarable(k, env, name, span, fields_of != nil) {
+    if !tc_declarable(k, ref.decl, name, span, fields_of != nil) {
         tc_bound_set(k, ref.decl, Type_Error{})   // (its uses aren't reported again)
         return
     }
@@ -254,7 +254,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         }
         tc_value_at(k, value, vt, ann, span)
         final = ann
-    } else if existing, shadowed := tc_declared_before(env, name, fields_of != nil); shadowed {
+    } else if existing, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); shadowed {
         // (Reported as a shadow: checked as the write it reads as.)
         tc_check_write(k, value, vt, existing, name, span)
         return
@@ -310,37 +310,37 @@ tc_decl_ref :: proc(k: ^TC, target: Tree_Id, fields_of: ^Type_Scope) -> Ref {
     return {k.t.main[target], .Field if fields_of != nil else .Local}
 }
 
-// Whether a name can be declared here: not in this scope already, and no
-// constant's. (Shadowing an enclosing local is reported, and declares.) A
-// param's name is taken too: params and what the body declares are one name
-// space, so a field or a local named as a param would be ambiguous.
-tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span, field: bool) -> bool {
-    _, here := scope_defines(env, name)
-    if here {
-        if ref := scope_find_ref(env, name); ref.kind == .Param && k.body != nil {
+// Whether a name can be declared here (tok: the token that declares it):
+// not in this scope already, and no constant's — the resolver's. (Shadowing
+// an enclosing local is reported, and declares.) A param's name is taken
+// too: params and what the body declares are one name space, so a field or
+// a local named as a param would be ambiguous.
+tc_declarable :: proc(k: ^TC, tok: Token_Id, name: string, span: Span, field: bool) -> bool {
+    c := k.rs.clashes[tok] or_else {}
+    if c.taken {
+        if c.param && k.body != nil {
             tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "field" if field else "variable")
         } else {
             tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
         }
         return false
     }
-    if (env == nil || !env.is_module) && parent_struct_scope(env) == nil {
-        // Past a function's boundary a block's locals are out of sight.
-        crossed := false
-        for sc := env.parent_scope; sc != nil && !sc.is_module; sc = sc.parent_scope {
-            if sc.kind != .Block { crossed = true }
-            st, found := scope_defines(sc, name)
-            if found && !(crossed && sc.kind == .Block && !names_module(st)) {
-                tc_error(k, span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, name)
-                break
-            }
-        }
-    }
-    if name in k.consts {
+    if c.shadows { tc_error(k, span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, name) }
+    if c.constant {
         tc_error(k, span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, name)
         return false
     }
     return true
+}
+
+// A name the resolver found nothing for, said so: an enclosing scope's local,
+// that is the rule it broke; else msg.
+tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: string) {
+    if miss.hidden != "" {
+        tc_error(k, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, miss.hidden)
+        return
+    }
+    tc_error(k, span, msg, name)
 }
 
 // `x : T`: its zero, or its construction (a struct's, an array of them's
@@ -430,15 +430,14 @@ tc_add_field :: proc(ts: ^Type_Scope, name: string, decl: Token_Id, t: Type, val
     build_field_map(&ts.sd)
 }
 
-// A name already declared where a declaration would declare it: below the
-// module (in a struct's top block, in it).
-tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (Type, bool) {
-    if in_struct {
-        t, ok := env.types[name]
-        return t, ok
-    }
-    t, _, ok := scope_find(env, name, below_module = true)
-    return t, ok
+// A name already declared where a declaration (tok) would declare it, below
+// the module — the resolver's: what it means. (A field's: in its struct's
+// top block only, where it's taken — refused, so never here.)
+tc_declared_before :: proc(k: ^TC, tok: Token_Id, in_struct: bool) -> (Type, bool) {
+    if in_struct { return nil, false }
+    c := k.rs.clashes[tok] or_else {}
+    if c.before == 0 { return nil, false }
+    return tc_bound(k, c.before)
 }
 
 // A value written to a variable of type `existing`: checked against it.
@@ -541,7 +540,7 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, s
         return nil, {}, false
     }
     if !found {
-        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
+        tc_unresolved(k, k.rs.misses[target] or_else {}, span, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         tc_bind(k, env, name, Type_Error{}, {})
         tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the resolver declared it as: its uses aren't reported again)
         return nil, {}, false
@@ -855,7 +854,7 @@ tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
     if is_any(ann) {
-        if _, shadowed := tc_declared_before(env, name, fields_of != nil); !shadowed {
+        if _, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); !shadowed {
             tc_error(k, span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, name, name)
             tc_bind(k, env, name, Type_Error{}, ref)
         }

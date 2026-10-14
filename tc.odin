@@ -81,7 +81,6 @@ TC :: struct {
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
-    lookups:       TC_Lookups,          // MARA_RESOLVE=check: the binding against the scope, at each lookup
 }
 
 // A binding's before: what the token meant, if anything.
@@ -89,12 +88,6 @@ TC_Bound :: struct {
     tok: Token_Id,
     was: Type,
     had: bool,
-}
-
-TC_Lookups :: struct {
-    on:                    bool,
-    agree, differ, absent: int,
-    shown:                 [dynamic]string,   // (the first few that differ: printed with the counts, a program with no errors')
 }
 
 // A declaration's meaning, from here on. (In an instance, what it meant is
@@ -171,29 +164,6 @@ tc_type_params_bind :: proc(k: ^TC, node: Tree_Id, subst: map[string]Type) -> []
 
 tc_type_params_restore :: proc(k: ^TC, was: []TC_Bound) {
     for b in was { tc_bound_restore(k, b.tok, b.was, b.had) }
-}
-
-// MARA_RESOLVE=check: what a lookup found, against what the name's ref and its
-// binding say.
-tc_lookup_check :: proc(k: ^TC, n: Tree_Id, name: string, found: Type, ok: bool) {
-    if !k.lookups.on || n == 0 { return }
-    ref := k.rs.refs[n]
-    t: Type
-    bok: bool
-    if ref.kind == .None {
-        if !ok { k.lookups.agree += 1; return }   // (neither found it)
-        k.lookups.absent += 1
-    } else {
-        t, bok = tc_ref_type(k, ref, name)
-        same := ok == bok && (!ok || raw_type_key(found) == raw_type_key(t) && (raw_type_key(t) != nil || types_equal(found, t)))
-        if same { k.lookups.agree += 1; return }
-        k.lookups.differ += 1
-    }
-    if len(k.lookups.shown) < 30 {
-        sp := tree_span(k.t, n)
-        append(&k.lookups.shown, fmt.aprintf("resolve: lookup %s:%d `%s` (%v): scope %v %v, binding %v %v", span_file(sp), span_line(sp), name, ref.kind,
-            ok, type_name(found) if ok else "-", bok, type_name(t) if bok else "-"))
-    }
 }
 
 // A dispatch group's member: its name, what it refers to (resolved where
@@ -427,7 +397,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.rs = resolve_program(k)
     k.bound = make([]u32, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
-    k.lookups.on = os.get_env("MARA_RESOLVE", context.temp_allocator) == "check"
     k.annot = annot_new(t)
     checked.annot = k.annot
     k.blocks = new(virtual.Arena)
@@ -843,10 +812,10 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
         sc := k.scopes[i]
         ft := sc.ts
         if ft == nil {
-            // A template, extracted as the type its module's scope binds its
-            // name to (mara.core's `Program`: the compiler's), when one does.
+            // A template, extracted as the builtin type of its name (mara.core's
+            // `Program`: the compiler's), when there's one.
             name := tc_name(k, sc.def)
-            found, _ := scope_lookup(sc.env, name)
+            found, _ := tc_ref_type(k, {kind = .Builtin}, name)
             if ft = found.(^Type_Scope) or_else nil; ft == nil { continue }
             key := make_flat_name(module, name)
             k.annot.decls[tc_sid(k, sc.node)] = ft
@@ -1047,7 +1016,7 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
     // (A slot of a call's results: that result's type; else the value's.)
     if at, is_slot := slot.?; is_slot {
         if call := tc_unparen(k, def); tc_is_call(k, call) {
-            if t, ok := scope_lookup(env, tc_call_name(k, call)); ok {
+            if t, ok := tc_ref_type(k, tc_callee_ref(k, call), tc_call_name(k, call)); ok {
                 if ft, is_scope := t.(^Type_Scope); is_scope && ft.kind == .Fun && at < len(ft.return_types) { return ft.return_types[at] }
             }
         }

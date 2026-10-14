@@ -1,6 +1,5 @@
 package mara
 
-import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -50,33 +49,6 @@ names_module :: proc(t: Type) -> bool {
     return ok && m.is_module
 }
 
-// When `name` is a local of a scope past the function boundary — the one
-// thing scope_resolve won't show — the scope that owns it (the module or
-// function the block belongs to); nil otherwise.
-outer_local_owner :: proc(env: ^Type_Scope, name: string) -> ^Type_Scope {
-    s := env
-    for s != nil && s.kind == .Block { s = s.parent_scope }
-    for ; s != nil; s = s.parent_scope {
-        if s.kind != .Block || s.types == nil { continue }
-        if t, ok := s.types[name]; !ok || names_module(t) { continue }
-        owner := s
-        for owner != nil && owner.kind == .Block { owner = owner.parent_scope }
-        return owner
-    }
-    return nil
-}
-
-// A name that didn't resolve. When it is an enclosing scope's local, that is
-// the rule it broke, so say so instead of `msg`.
-report_unresolved :: proc(c: ^Checker, span: Span, env: ^Type_Scope, name: string, msg: string) {
-    if owner := outer_local_owner(env, name); owner != nil {
-        where_ := owner.source_name if owner.source_name != "" else owner.name
-        check_error(c, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, where_)
-        return
-    }
-    check_error(c, span, msg, name)
-}
-
 // A name a module used along the chain exports (the first found), up to the
 // module — or, `below_module`, short of it.
 scope_includes_lookup :: proc(env: ^Type_Scope, name: string, below_module: bool) -> (Type, bool) {
@@ -123,59 +95,6 @@ scope_lookup :: proc(env: ^Type_Scope, name: string) -> (Type, bool) {
     return t, ok
 }
 
-// A type's name, resolved with ambiguity detection:
-//   - typ, ok=true:                it resolves unambiguously
-//   - ok=false, ambiguous_owners:  two or more used modules export it at the
-//                                  same level (the caller reports it)
-//   - ok=false, nil ambiguous:     not found anywhere
-// An own definition in any enclosing scope wins over what modules export —
-// never ambiguous, since it was written here. Ambiguity only arises among
-// modules used: `use mara.sdl3` and `use mara.sdl2`, both with `PollEvent`.
-resolve_with_ambiguity :: proc(env: ^Type_Scope, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
-    // (`Self`: the struct or fun it is written in.)
-    if name == "Self" {
-        if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
-        return nil, false, nil
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        if t, found := scope_defines(s, name); found {
-            typ, ok = t, true
-            break
-        }
-    }
-    if !ok {
-        // No own definition: the distinct modules exporting it at the nearest
-        // level that has it.
-        owner_list: [dynamic]string
-        distinct_typs: map[rawptr]bool
-        distinct_owners: map[string]bool
-        first_typ: Type
-        for s := env; s != nil; s = s.parent_scope {
-            found_any := false
-            for inc in s.includes {
-                if t, found := include_lookup(inc, name); found {
-                    found_any = true
-                    if first_typ == nil { first_typ = t }
-                    key := raw_type_key(t)
-                    if key not_in distinct_typs {
-                        distinct_typs[key] = true
-                        owner := inc.name if inc != nil else "<anonymous-include>"
-                        if owner not_in distinct_owners {
-                            distinct_owners[owner] = true
-                            append(&owner_list, owner)
-                        }
-                    }
-                }
-            }
-            if found_any { break }  // stop at nearest level with includes
-            if s.is_module { break }
-        }
-        if len(distinct_typs) == 1 { typ, ok = first_typ, true }
-        else if len(distinct_typs) > 1 { ambiguous_owners = owner_list }
-    }
-    return
-}
-
 raw_type_key :: proc(t: Type) -> rawptr {
     #partial switch v in t {
     case ^Type_Scope:    return rawptr(v)
@@ -194,31 +113,6 @@ scope_bind :: proc(s: ^Type_Scope, name: string, t: Type, ref: Ref) {
     if s == nil { return }
     s.types[name] = t   // (a block's maps grow in its arena: tc_block)
     s.refs[name] = ref
-}
-
-// What a name refers to from env, found as scope_find finds it: its
-// binding's declaration, or the fun's it names.
-scope_find_ref :: proc(env: ^Type_Scope, name: string, below_module := false) -> Ref {
-    for s := env; s != nil && s.kind == .Block; s = s.parent_scope {
-        if s.types != nil { if _, ok := s.types[name]; ok { return s.refs[name] } }
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        if below_module && s.is_module { break }
-        if s.types != nil {
-            t, ok := s.types[name]
-            if ok && (s.kind != .Block || names_module(t)) { return s.refs[name] }
-        }
-        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return Ref{f.decl, .Fun} } }
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        if below_module && s.is_module { break }
-        for inc in s.includes {
-            if inc == nil { continue }
-            if _, ok := inc.types[name]; ok { return inc.refs[name] }
-        }
-        if s.is_module { break }
-    }
-    return {}
 }
 
 // What declares an enum's or a union's variant, by its name (0: none).
@@ -306,49 +200,6 @@ tc_flat_name :: proc(k: ^TC, prefix, name: string) -> string {
     return s
 }
 
-// A type name as written, resolved to its flat key in the table: through
-// `qualifier`, a module alias ("" when it is none — the caller handles union
-// inner types etc.); else the module that defines or exports it, from env;
-// else module pkg's.
-resolve_type_name :: proc(k: ^TC, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
-    pkg := k.pkg
-    if qualifier != "" {
-        // Try module-qualified resolution: look up qualifier in env
-        if env != nil {
-            qual_type, found := scope_lookup(env, qualifier)
-            if found {
-                if mod_sd := as_scope_body(qual_type); sd_is_module(mod_sd) {
-                    return tc_flat_name(k, mod_sd.name, bare_name)
-                }
-            }
-        }
-        return ""
-    }
-    // Walk the chain (own types + includes) to find which module owns this
-    // bare name. This matches the actual visibility for the call site, which
-    // is important when two modules export the same name (e.g. `Event` in
-    // both mara_sdl and mara_sdl2).
-    if env != nil {
-        for s := env; s != nil; s = s.parent_scope {
-            if s.is_module {
-                if _, found := scope_defines(s, bare_name); found {
-                    return tc_flat_name(k, pkg, bare_name)
-                }
-            }
-            for inc in s.includes {
-                if inc == nil { continue }
-                if _, found := include_lookup(inc, bare_name); found {
-                    return tc_flat_name(k, inc.name, bare_name)
-                }
-            }
-            if s.is_module { break }
-        }
-    }
-    // Local fallback for purely-local names (callers without env, or names
-    // declared in the module itself).
-    return tc_flat_name(k, pkg, bare_name)
-}
-
 // Resolve a type to its underlying Scope_Body, handling pointers (auto-deref).
 // Returns nil if the type is not a struct.
 resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
@@ -363,33 +214,6 @@ resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
     if st, ok := c.table.structs[tn]; ok { return &st.sd }
     if st, ok := c.table.funs[tn]; ok { return &st.sd }
     return nil
-}
-
-// The used modules that export function `name`, when two or more do and the
-// module itself doesn't define it: a call of it is ambiguous. (nil: it isn't.)
-fn_ambiguous_owners :: proc(env: ^Type_Scope, name: string) -> [dynamic]string {
-    // (The module's own definition is unambiguous.)
-    for s := env; s != nil; s = s.parent_scope {
-        if !s.is_module { continue }
-        if t, found := scope_defines(s, name); found {
-            if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun { return nil }
-        }
-        break
-    }
-    owners: [dynamic]string
-    for s := env; s != nil; s = s.parent_scope {
-        for inc in s.includes {
-            if inc == nil { continue }
-            if t, found := include_lookup(inc, name); found {
-                if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun && !slice.contains(owners[:], inc.name) {
-                    append(&owners, inc.name)
-                }
-            }
-        }
-        if s.is_module { break }
-    }
-    if len(owners) < 2 { return nil }
-    return owners
 }
 
 // Populate a fun's field_map from its fields array for O(1) field lookup.
