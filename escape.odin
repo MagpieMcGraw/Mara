@@ -162,7 +162,8 @@ Esc :: struct {
     slots:  int,
     runs:   [dynamic]i32,        // its code's runs, then its defer blocks'
     main:   int,                 // how many of `runs` are its code's own
-    memo:   []Esc_Roots,         // each operation's roots, by id
+    memo:   []Esc_Roots,         // each operation's roots, by id (a leaf's: esc_at)
+    state:  []Esc_Roots,         // the state the operation being run sees
 
     // The fixpoint.
     flow:        Run_Flow(Esc_Roots),
@@ -370,7 +371,7 @@ esc_scan :: proc(e: ^Esc) {
         for op in graph_run(g, int(r)) {
             ops := graph_operands(g, op)
             for o in ops {
-                if o.op == NO_NODE { continue }
+                if o.op == NO_NODE || graph_is_leaf(o.op) { continue }
                 if from := e.run_of[o.op]; from != i32(ri) + 1 { e.used_across[o.op] = true }
             }
             #partial switch g.op[op] {
@@ -448,9 +449,8 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     if watched { esc_join(&old, e.memo[op]) }
     r := &e.memo[op]
     esc_clear(r)
+    e.state = state
     #partial switch g.op[op] {
-    case .Var:
-        esc_var_roots(e, r, op, state)
     case .Global:
         r.global = true
     case .Field, .Swizzle:
@@ -525,11 +525,11 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     if watched && !esc_equal(old, r^) { e.flow.changed = true }
 }
 
-// A variable's storage. A view names the storage it views; `Self` in a
-// struct's code is its fields; anything else is global.
+// A variable's storage, a leaf's. A view names the storage it views; `Self`
+// in a struct's code is its fields; anything else is global.
 @(private="file")
 esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
-    d := e.g.refers[op]
+    d := graph_refers(e.g, op)
     if k := esc_var(e, d); k >= 0 {
         v := e.vars[k]
         if v.view {
@@ -556,13 +556,20 @@ esc_var :: proc(e: ^Esc, d: Node_Id) -> int {
 // The variable a place operand names directly, or -1.
 @(private="file")
 esc_var_named :: proc(e: ^Esc, o: Operand) -> int {
-    if o.op == NO_NODE || e.g.op[o.op] != .Var { return -1 }
-    return esc_var(e, e.g.refers[o.op])
+    if !graph_is_leaf(o.op) { return -1 }
+    return esc_var(e, graph_refers(e.g, o.op))
 }
 
+// An operand's roots: an operation's, as it ran; a leaf's, its variable's
+// as the operation that uses it runs.
 @(private="file")
 esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
     if o.op == NO_NODE { return {} }
+    if graph_is_leaf(o.op) {
+        r: Esc_Roots
+        esc_var_roots(e, &r, o.op, e.state)
+        return r
+    }
     return e.memo[o.op]
 }
 
@@ -599,7 +606,7 @@ esc_write_op :: proc(e: ^Esc, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
         esc_copy(&state[e.vars[k].slot], at)
         return
     }
-    if e.g.op[dest.op] == .Slice {
+    if graph_op_of(e.g, dest.op) == .Slice {
         // `dst[lo:hi] = src`: src's elements copied into the ones the slice views.
         elems := esc_elems(e, val, index_elem_type(graph_type(e.g, dest.op)), state)
         esc_store(e, Esc_Site{op = op, place = dest}, esc_at(e, dest), elems, state)
@@ -737,7 +744,7 @@ esc_value_type :: proc(e: ^Esc, o: Operand) -> Type {
 // computing it.
 @(private="file")
 esc_value_storage :: proc(e: ^Esc, r: ^Esc_Roots, o: Operand) {
-    if e.g.op[o.op] == .Read {
+    if graph_op_of(e.g, o.op) == .Read {
         esc_join(r, esc_at(e, graph_operands(e.g, o.op)[0]))
     } else {
         r.temp = max(r.temp, esc_depth(e, o.op))
@@ -1028,15 +1035,13 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
 @(private="file")
 esc_built_by :: proc(e: ^Esc, ri: int, ret: Node_Id, read: Node_Id) -> Node_Id {
     g := e.g
-    place := graph_operands(g, read)[0].op
-    if g.op[place] != .Var || g.refers[place] == NO_NODE || g.written[g.refers[place]] != .Synthetic { return NO_NODE }
-    temp := g.refers[place]
+    temp := graph_leaf_decl(g, graph_operands(g, read)[0].op)
+    if temp < 0 || g.written[temp] != .Synthetic { return NO_NODE }
     ops := graph_run(g, int(e.runs[ri]))
     for i := len(ops) - 1; i >= 0; i -= 1 {
         op := ops[i]
         if g.op[op] != .Construct { continue }
-        dest := graph_operands(g, op)[0].op
-        if g.op[dest] == .Var && g.refers[dest] == temp { return op }
+        if graph_leaf_decl(g, graph_operands(g, op)[0].op) == temp { return op }
     }
     return NO_NODE
 }

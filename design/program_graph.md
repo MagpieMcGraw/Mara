@@ -151,7 +151,7 @@ Every node is a numbered id, and each kind of connection is stored by its shape:
 
 `total` is id 3 and its subtree is ids 3 to 8, so "is `it` inside `total`?" is 3 ≤ 7 ≤ 8: two integer comparisons.
 
-**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`, and the `sum` in `return sum` has `refers_to = 5`. The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
+**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`. A use of a variable is no node but a **leaf** — the operand that names it: the `sum` in `return sum` is a leaf whose declaration is 5, kept with the tree node it's written as (a leaf table beside the nodes, one entry a use; its id past every node's). The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
 
 **Many-to-many (calls): one edge table.** Each connection is a record:
 
@@ -180,7 +180,7 @@ Why not an array stored on each node: it would need two arrays per node (one per
 Operations are at Mara's level: one for each thing the language does, whether the text writes it or the language does it for you. Each kind has one fixed LLVM template, so code generation is transcription and never looks at an operation's surroundings. That gives the test for the set: if an operation's LLVM can't be written from the operation and its types alone, the missing context must be an operation too. So implicit work is in the graph — defers at every exit, zero-init, construction, arena resets — built once and seen by every analysis, instead of each consumer deriving it again.
 
 - An operation takes other operations' outputs as inputs and has zero or one output; a call has one per return value.
-- Variables are slots. Operations reach one through a **place**: `var`, then `field`, `index` or `deref` steps; `read` and `write` go through a place. LLVM turns slots into registers, so the graph is never in SSA form.
+- Variables are slots. Operations reach one through a **place**: a variable's leaf, then `field`, `index` or `deref` steps; `read` and `write` go through a place. A variable named is the commonest operand there is, so it costs no operation: the operand names the declaration directly (a leaf, which an analysis sees as an operation of kind `var`, in no run). LLVM turns slots into registers, so the graph is never in SSA form.
 - Structs, arrays and unions are built in place: `construct`, `fill`, and calls that return them write straight into a destination place. That is return-value optimization by construction.
 - Control flow is runs joined by `then`, and four operations end a run. A value that depends on a branch (`a and b`, an `if` expression) goes through a synthetic slot, so there is no merge operation. An operand dominates its use: it comes earlier in the same run, or in a run every path to the use passes through.
 - Checks that only stop the program — bounds, overflow, division by zero — are part of their operation's template, not operations.
@@ -192,7 +192,7 @@ About thirty kinds in all.
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
-| `var` | `x` | the variable's slot; no instruction |
+| `var` | `x`: a leaf, no operation — the operand that names the variable | the variable's slot; no instruction |
 | `global` | `COLORS` (a constant table: it refers to the constant's declaration), `"hi"` and `#caller_name` (text: the constants table holds it) | `@mara_const.<name>`, `@.str.<hash>` |
 | `field` | `p.x` | `getelementptr` to the field |
 | `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
@@ -300,7 +300,7 @@ First target: parameter narrowing from `design/mara_ask.md` §10. `camera_turn_w
 
 ## Open questions
 
-1. **Access paths as nodes?** Decided: declarations only. At the finest zoom an access path is already a chain of place operations (`var cart`, `index i`, `field price`; see Operations), so per-copy questions follow those chains.
+1. **Access paths as nodes?** Decided: declarations only. At the finest zoom an access path is already a chain of places (`cart`'s leaf, `index i`, `field price`; see Operations), so per-copy questions follow those chains.
 2. **Generics.** Decided: one node per instance, since the instances are what runs and what code generation needs; the template is syntax only, and every instance points at it as its origin.
 3. **Partial results while code is broken.** Today one type error anywhere aborts the build. A live graph needs a broken function confined to itself, with the rest of the program still producing its graph.
 4. **Position-independent compilation.** Two tiers: show the matching slice of a whole-program compile (needs every LLVM instruction tagged with its origin), and compile a fragment on its own (its above-set becomes parameters and external declarations).

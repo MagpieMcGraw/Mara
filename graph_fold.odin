@@ -212,8 +212,14 @@ fold_new :: proc(t: Type) -> ^Fold {
 fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     g := fc.g
     ops := graph_operands(g, id)
-    arg :: proc(fc: ^Fold_Code, ops: []Operand, k: int) -> ^Fold {
+    // (A leaf's: its variable's — failing where it's written.)
+    arg :: proc(fo: ^Folder, fc: ^Fold_Code, ops: []Operand, k: int) -> ^Fold {
         if k >= len(ops) || ops[k].op == NO_NODE || ops[k].out != 0 { return nil }
+        if graph_is_leaf(ops[k].op) {
+            v := fold_var(fo, fc, ops[k].op)
+            if v == nil && fo.at == {} { fo.at = graph_origin(fc.g, ops[k].op) }
+            return v
+        }
         return fc.values[ops[k].op] or_else nil
     }
     out: ^Fold
@@ -227,16 +233,15 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
         } else if named := g.constant[id]; named != 0 {
             if named in fo.pc.consts { out = fold_decl(fo, named, .Own) }
         }
-    case .Var:
-        out = fold_var(fo, fc, id)
+    case .Var:   // (a leaf: arg)
     case .Field, .Swizzle:
-        out = fold_member(fo, arg(fc, ops, 0), graph_name(g, id), g.op[id] == .Swizzle)
+        out = fold_member(fo, arg(fo, fc, ops, 0), graph_name(g, id), g.op[id] == .Swizzle)
     case .Index:
-        if base, at := arg(fc, ops, 0), arg(fc, ops, 1); base != nil && at != nil && fold_scalar(at) {
+        if base, at := arg(fo, fc, ops, 0), arg(fo, fc, ops, 1); base != nil && at != nil && fold_scalar(at) {
             out = fold_element(fo, base, at.c.int)
         }
     case .Variant:
-        if u := arg(fc, ops, 0); u != nil {
+        if u := arg(fo, fc, ops, 0); u != nil {
             if u.variant != graph_type(g, id) {
                 u.variant, u.parts = graph_type(g, id), nil
             }
@@ -245,25 +250,25 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     case .Slice:
         // Text seen as a slice: a view of it.
         if len(ops) == 1 {
-            if x := arg(fc, ops, 0); x != nil && x.known && x.c.is_text {
+            if x := arg(fo, fc, ops, 0); x != nil && x.known && x.c.is_text {
                 out = fold_new(graph_type(g, id))
                 out.c, out.known = x.c, true
             }
         }
     case .Read:
-        out = arg(fc, ops, 0)
+        out = arg(fo, fc, ops, 0)
     case .Write:
-        dst, src := arg(fc, ops, 0), arg(fc, ops, 1)
+        dst, src := arg(fo, fc, ops, 0), arg(fo, fc, ops, 1)
         if dst == nil || src == nil { return fold_fail(fo) != nil }
         fold_store(dst, src)
         return true
     case .Zero:
-        dst := arg(fc, ops, 0)
+        dst := arg(fo, fc, ops, 0)
         if dst == nil { return fold_fail(fo) != nil }
         fold_zero(dst)
         return true
     case .Fill:
-        dst, src := arg(fc, ops, 0), arg(fc, ops, 1)
+        dst, src := arg(fo, fc, ops, 0), arg(fo, fc, ops, 1)
         if dst == nil || src == nil { return fold_fail(fo) != nil }
         n := fold_count(dst.t)
         if n < 0 { return fold_fail(fo) != nil }
@@ -272,24 +277,24 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     case .Construct:
         return fold_construct(fo, fc, id, ops)
     case .Arith:
-        l, r := arg(fc, ops, 0), arg(fc, ops, 1)
+        l, r := arg(fo, fc, ops, 0), arg(fo, fc, ops, 1)
         if l != nil && r != nil && fold_scalar(l) && fold_scalar(r) {
             if c, ok := fold_arith(graph_name(g, id), l.c, r.c, fold_single(fc, graph_type(g, id))); ok {
                 out = fold_value(graph_type(g, id), c)
             }
         }
     case .Compare:
-        l, r := arg(fc, ops, 0), arg(fc, ops, 1)
+        l, r := arg(fo, fc, ops, 0), arg(fo, fc, ops, 1)
         if l != nil && r != nil && fold_scalar(l) && fold_scalar(r) {
             if c, ok := fold_compare(graph_name(g, id), l.c, r.c); ok { out = fold_value(graph_type(g, id), c) }
         }
     case .Unary:
-        if x := arg(fc, ops, 0); x != nil && fold_scalar(x) {
+        if x := arg(fo, fc, ops, 0); x != nil && fold_scalar(x) {
             if c, ok := fold_unary(graph_name(g, id), x.c); ok { out = fold_value(graph_type(g, id), c) }
         }
     case .Cast:
         // (Text seen as a slice, a partial array: the same text.)
-        if x := arg(fc, ops, 0); x != nil && x.known && x.c.is_text {
+        if x := arg(fo, fc, ops, 0); x != nil && x.known && x.c.is_text {
             out = fold_value(graph_type(g, id), x.c)
         } else if x != nil && fold_scalar(x) {
             if c, ok := fold_cast(x.c, graph_type(g, id)); ok { out = fold_value(graph_type(g, id), c) }
@@ -330,12 +335,12 @@ fold_value :: proc(t: Type, c: Const_Value) -> ^Fold {
     return v
 }
 
-// A variable in the code: the constant being built, or — in a struct's
-// code — one of the fields of the struct being constructed.
+// A variable in the code, a leaf: the constant being built, or — in a
+// struct's code — one of the fields of the struct being constructed.
 @(private="file")
 fold_var :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fc.g
-    d := g.refers[id]
+    d := graph_refers(g, id)
     if d == fc.self { return fc.root }
     if d != NO_NODE && g.kind[d] == .Field && g.parent[d] == fc.self {
         return fold_member(fo, fc.root, graph_name(g, d), false)
@@ -432,7 +437,7 @@ fold_store :: proc(dst, src: ^Fold) {
 fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand) -> bool {
     g := fc.g
     dst: ^Fold
-    if len(ops) > 0 && ops[0].op != NO_NODE { dst = fc.values[ops[0].op] or_else nil }
+    if len(ops) > 0 && graph_is_leaf(ops[0].op) { dst = fold_var(fo, fc, ops[0].op) } else if len(ops) > 0 && ops[0].op != NO_NODE { dst = fc.values[ops[0].op] or_else nil }
     if dst == nil || len(ops) != 1 { return fold_fail(fo) != nil }
     fold_zero(dst)
     ts := graph_called(g, id)

@@ -88,11 +88,13 @@ reach_scc :: proc(code: ^Program_Code, rp: ^Reach_Pass, members: []^Type_Scope) 
 // compared, returned, kept in the result being built, or passed where it
 // isn't reached through or returned.
 // A code's operations' uses, each node's a run of `all` from first[node]:
-// what it's an operand of, and where (reach_summarize).
+// what it's an operand of, and where (reach_summarize); a leaf's one,
+// leaf[its index].
 Reach_Use :: struct { by: Node_Id, at: int }
-Reach_Uses :: struct { first: []i32, all: []Reach_Use }
+Reach_Uses :: struct { first: []i32, all: []Reach_Use, leaf: []Reach_Use }
 
 reach_uses :: proc(u: Reach_Uses, x: Node_Id) -> []Reach_Use {
+    if graph_is_leaf(x) { return u.leaf[x - LEAF:][:1] }
     return u.all[u.first[x]:u.first[x + 1]]
 }
 
@@ -120,7 +122,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
 
     // Each node's uses — what it's an operand of, and where — in one array, a
     // node's a run of it (counted, then laid out); each declaration's
-    // variable operations.
+    // leaves, and each leaf's use.
     first := make([]i32, int(pg.end) + 2, context.temp_allocator)
     for id := Node_Id(1); id <= pg.end; id += 1 {
         #partial switch pg.kind[id] {
@@ -130,7 +132,8 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
         }
     }
     for i in 1 ..< len(first) { first[i] += first[i - 1] }
-    uses := Reach_Uses{first = first, all = make([]Reach_Use, first[len(first) - 1], context.temp_allocator)}
+    uses := Reach_Uses{first = first, all = make([]Reach_Use, first[len(first) - 1], context.temp_allocator),
+                       leaf = make([]Reach_Use, len(pg.leaves), context.temp_allocator)}
     next := make([]i32, len(first), context.temp_allocator)
     copy(next, first)
     vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
@@ -142,13 +145,13 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
                 if o.op > 0 && o.op <= pg.end {
                     uses.all[next[o.op]] = {id, i}
                     next[o.op] += 1
-                }
-            }
-            if pg.op[id] == .Var {
-                d := pg.refers[id]
-                if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
-                    if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
-                    append(&vars[d], id)
+                } else if graph_is_leaf(o.op) {
+                    uses.leaf[o.op - LEAF] = {id, i}
+                    d := graph_refers(pg, o.op)
+                    if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
+                        if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
+                        append(&vars[d], o.op)
+                    }
                 }
             }
         }
@@ -158,9 +161,9 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
     // read only to be returned — a value kept there is returned, not read.
     in_result :: proc(pg: ^Program_Graph, uses: Reach_Uses, vars: map[Node_Id][dynamic]Node_Id, place: Node_Id) -> bool {
         at := place
-        for pg.op[at] == .Field || pg.op[at] == .Index { at = graph_operands(pg, at)[0].op }
-        if pg.op[at] != .Var { return false }
-        d := pg.refers[at]
+        for graph_op_of(pg, at) == .Field || graph_op_of(pg, at) == .Index { at = graph_operands(pg, at)[0].op }
+        if !graph_is_leaf(at) { return false }
+        d := graph_refers(pg, at)
         if d <= 0 || d > pg.end || (pg.kind[d] != .Local && pg.kind[d] != .Result) { return false }
         written_only :: proc(pg: ^Program_Graph, uses: Reach_Uses, x: Node_Id) -> bool {
             for u in reach_uses(uses, x) {
@@ -233,16 +236,18 @@ Place_Step :: struct {
 place_path :: proc(pg: ^Program_Graph, bound: map[Node_Id]Node_Id, p: Node_Id) -> (root: Node_Id, steps: [dynamic]Place_Step, ok: bool) {
     steps = make([dynamic]Place_Step, context.temp_allocator)
     for id := p; id != NO_NODE; {
-        ops := graph_operands(pg, id)
-        s := Place_Step{op = pg.op[id]}
-        #partial switch pg.op[id] {
-        case .Var:
-            if v, bound := bound[pg.refers[id]]; bound {   // (a match arm's binding: its scrutinee's payload)
+        if graph_is_leaf(id) {
+            d := graph_refers(pg, id)
+            if v, bound := bound[d]; bound {   // (a match arm's binding: its scrutinee's payload)
                 id = v
                 continue
             }
             for i in 0 ..< len(steps) / 2 { steps[i], steps[len(steps) - 1 - i] = steps[len(steps) - 1 - i], steps[i] }
-            return pg.refers[id], steps, true
+            return d, steps, true
+        }
+        ops := graph_operands(pg, id)
+        s := Place_Step{op = pg.op[id]}
+        #partial switch pg.op[id] {
         case .Field, .Variant:
             s.name = graph_name(pg, id)
         case .Index:
@@ -350,9 +355,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
         ops := graph_operands(pg, id)
         v := ops[1].op
         if v == NO_NODE || pg.op[v] != .Read { continue }
-        t := graph_operands(pg, v)[0].op
-        if pg.op[t] != .Var { continue }
-        d := pg.refers[t]
+        d := graph_leaf_decl(pg, graph_operands(pg, v)[0].op)
         if d <= 0 || d > pg.end || pg.kind[d] != .Local || pg.written[d] != .Synthetic { continue }
         puts[d] = NO_NODE if d in puts else ops[0].op   // (two: no one place)
     }
@@ -360,8 +363,8 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
     // temporary's put; nowhere to check when it's fresh storage — a
     // declaration's local, a temporary with no one put.)
     lands :: proc(pg: ^Program_Graph, puts: map[Node_Id]Node_Id, w, dest: Node_Id) -> (Node_Id, bool) {
-        if pg.op[dest] != .Var { return dest, true }
-        d := pg.refers[dest]
+        if !graph_is_leaf(dest) { return dest, true }
+        d := graph_refers(pg, dest)
         if d <= 0 || d > pg.end { return dest, true }
         if pg.kind[d] == .Local && pg.written[d] == .Synthetic {
             x, has := puts[d]

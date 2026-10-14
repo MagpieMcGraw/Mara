@@ -170,20 +170,20 @@ flow_literal_ranges :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
 // --- must-use-err ---------------------------------------------------------
 // An err-typed local that is declared but never read — not checked, not
 // propagated with `?` (which leaves no binding), not discarded with `_` — is an
-// error. On the graph a declaration is read where a var operation names it,
+// error. On the graph a declaration is read where a leaf names it,
 // except where a whole write lands (`e = f()` writes e, it reads nothing);
 // refers-to has resolved shadowing, and a read in a nested block or a defer's
 // block is a read like any other.
 @(private="file")
 flow_unused :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
-    dest := make([]bool, len(g.kind), context.temp_allocator)   // where a whole write lands
+    dest := make([]bool, len(g.leaves), context.temp_allocator)   // the leaves a whole write lands on
     read := make([]bool, len(g.kind), context.temp_allocator)
     for k, id in g.kind {
         if k != .Op { continue }
-        if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
+        if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d - LEAF] = true }
     }
-    for k, id in g.kind {
-        if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
+    for l, i in g.leaves {
+        if !dest[i] { read[l.decl] = true }
     }
     for k, id in g.kind {
         if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(graph_type(g, Node_Id(id))) { continue }
@@ -260,9 +260,9 @@ flow_returned_local :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
 @(private="file")
 flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
     for id := p; id != NO_NODE; {
-        #partial switch g.op[id] {
+        #partial switch graph_op_of(g, id) {
         case .Var:
-            return g.refers[id]
+            return graph_refers(g, id)
         case .Field, .Index, .View, .Swizzle, .Variant, .Slice:
             id = graph_operands(g, id)[0].op
         case:
@@ -364,11 +364,11 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
             // (A pointer every write of which is `&x`.)
             d := graph_whole_write_dest(g, op)
             if g.op[op] != .Write || d == NO_NODE { continue }
-            v := g.refers[d]
+            v := graph_refers(g, d)
             val := graph_operands(g, op)[1].op
             target := NO_NODE
-            if val != NO_NODE && g.op[val] == .Address {
-                if p := graph_operands(g, val)[0].op; g.op[p] == .Var { target = g.refers[p] }
+            if val != NO_NODE && graph_op_of(g, val) == .Address {
+                if p := graph_operands(g, val)[0].op; graph_is_leaf(p) { target = graph_refers(g, p) }
             }
             if target == NO_NODE || (v in s.alias && s.alias[v] != target) {
                 not_alias[v] = true
@@ -411,13 +411,13 @@ flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
         }
         ops := graph_operands(g, id)
         d := ops[0].op if len(ops) > 0 else NO_NODE
-        if d == NO_NODE || g.kind[d] != .Op || g.op[d] != .Var { continue }   // (only a whole variable is made unset)
-        v := g.refers[d]
+        if !graph_is_leaf(d) { continue }   // (only a whole variable is made unset)
+        v := graph_refers(g, d)
         if v <= 0 || v > g.end { continue }   // (its own only: flow_own)
         #partial switch g.op[id] {
         case .Write:
             val := ops[1].op
-            if val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void" { return true }
+            if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" { return true }
         case .Zero:
             if g.written[id] != .Synthetic { continue }
             #partial switch _ in distinct_base(graph_type(g, v)) {
@@ -503,17 +503,17 @@ flow_set_var :: proc(s: ^Init, state: []u64, v: Node_Id, unset, fields_unset: bo
 @(private="file")
 flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, via: Node_Id, ok: bool) {
     g := s.g
-    if g.op[f] != .Field { return }
+    if graph_op_of(g, f) != .Field { return }
     base := graph_operands(g, f)[0].op
-    if base == NO_NODE || g.kind[base] != .Op { return }
-    #partial switch g.op[base] {
+    if base == NO_NODE || graph_kind_of(g, base) != .Op { return }
+    #partial switch graph_op_of(g, base) {
     case .Var:
-        return g.refers[base], graph_name(g, f), NO_NODE, true
+        return graph_refers(g, base), graph_name(g, f), NO_NODE, true
     case .Deref:
         p := graph_operands(g, base)[0].op
-        if p == NO_NODE || g.op[p] != .Var { return }
-        if target, is_alias := s.alias[g.refers[p]]; is_alias {
-            return target, graph_name(g, f), g.refers[p], true
+        if !graph_is_leaf(p) { return }
+        if target, is_alias := s.alias[graph_refers(g, p)]; is_alias {
+            return target, graph_name(g, f), graph_refers(g, p), true
         }
     }
     return
@@ -527,18 +527,15 @@ flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
     return NO_NODE
 }
 
-// Whether a place's output is read: not written to as a whole, not only
-// addressed, not only a step toward a field.
+// Whether operation u reads its k-th operand, a place: not written to as a
+// whole, not only addressed, not only a step toward a field.
 @(private="file")
-flow_read_by :: proc(s: ^Init, op: Node_Id) -> bool {
-    g := s.g
-    u := flow_user(s, op)
-    if u == NO_NODE { return false }
+flow_reads :: proc(g: ^Program_Graph, u: Node_Id, k: int) -> bool {
     #partial switch g.op[u] {
     case .Address, .Arena_Alloc, .Field, .Swizzle, .Variant:
         return false
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
-        return graph_operands(g, u)[0].op != op
+        return k != 0
     }
     return true
 }
@@ -550,11 +547,13 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     report :: proc(s: ^Init, span: Span, msg: string, args: ..any) {
         append(s.found, Flow_Finding{.Init, span, fmt.aprintf(msg, ..args)})
     }
-    #partial switch g.op[op] {
-    case .Var:
-        if reporting && flow_is_unset(state, flow_var_bit(s, g.refers[op])) && flow_read_by(s, op) {
-            report(s, graph_origin(g, op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, op))
+    if reporting {   // (its variables read, as they are when it runs)
+        for o, k in graph_operands(g, op) {
+            if !graph_is_leaf(o.op) || !flow_is_unset(state, flow_var_bit(s, graph_refers(g, o.op))) || !flow_reads(g, op, k) { continue }
+            report(s, graph_origin(g, o.op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
         }
+    }
+    #partial switch g.op[op] {
     case .Field:
         if !reporting { break }
         v, field, via, ok := flow_field_place(s, op)
@@ -573,14 +572,14 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
         d := ops[0].op if len(ops) > 0 else NO_NODE
-        if d == NO_NODE || g.kind[d] != .Op { break }
-        if g.op[d] == .Var {
-            v := g.refers[d]
+        if d == NO_NODE || graph_kind_of(g, d) != .Op { break }
+        if graph_is_leaf(d) {
+            v := graph_refers(g, d)
             unset, fields_unset := false, false
             #partial switch g.op[op] {
             case .Write:
                 val := ops[1].op
-                unset = val != NO_NODE && g.op[val] == .Const && graph_name(g, val) == "void"
+                unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void"
                 fields_unset = unset
             case .Zero:
                 // A bare `p : ^T` or `s : []T` (a bare scalar is zero).
@@ -609,20 +608,20 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
     g := s.g
     for a in du_call_args(g, op) {
         x := a.op
-        if x == NO_NODE || g.kind[x] != .Op { continue }
-        #partial switch g.op[x] {
+        if x == NO_NODE || graph_kind_of(g, x) != .Op { continue }
+        #partial switch graph_op_of(g, x) {
         case .Address:
             p := graph_operands(g, x)[0].op
-            if p == NO_NODE || g.kind[p] != .Op { continue }
-            if g.op[p] == .Var {
-                flow_set_var(s, state, g.refers[p], false, false)
+            if p == NO_NODE || graph_kind_of(g, p) != .Op { continue }
+            if graph_is_leaf(p) {
+                flow_set_var(s, state, graph_refers(g, p), false, false)
             } else if v, field, _, ok := flow_field_place(s, p); ok {
                 flow_set(state, flow_field_bit(s, v, field), false)
             }
         case .Read:
             p := graph_operands(g, x)[0].op
-            if p == NO_NODE || g.op[p] != .Var { continue }
-            if target, is_alias := s.alias[g.refers[p]]; is_alias {
+            if !graph_is_leaf(p) { continue }
+            if target, is_alias := s.alias[graph_refers(g, p)]; is_alias {
                 flow_set_var(s, state, target, false, false)
             }
         }
@@ -652,7 +651,7 @@ flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
         if g.kind[id] != .Op { continue }
         for o, k in graph_operands(g, id) {
             v := o.op
-            if v == NO_NODE || g.op[v] != .Const || graph_name(g, v) != "void" { continue }
+            if v == NO_NODE || graph_op_of(g, v) != .Const || graph_name(g, v) != "void" { continue }
             if g.written[v] != .Explicit { continue }
             if where_, stored := void_where(g, id, k); stored && void_is_pointer(graph_type(g, v)) {
                 append(found, Flow_Finding{.Void, graph_origin(g, v), fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(graph_type(g, v)))})
@@ -687,14 +686,14 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
     case .Write:
         if k != 1 { return "", false }
         dest := ops[0].op
-        #partial switch g.op[dest] {
+        #partial switch graph_op_of(g, dest) {
         case .Field:        return fmt.tprintf("field '%s'", graph_name(g, dest)), true
         case .Index, .View: return "an array element", true
         case .Deref:        return "a dereferenced pointer", true
         case .Var:
             // A struct body's field, and the slot an if-expression's
             // branches go into, are no variables.
-            d := g.refers[dest]
+            d := graph_refers(g, dest)
             if d == NO_NODE { return "", false }
             if g.kind[d] == .Field { return fmt.tprintf("field '%s'", graph_name(g, d)), true }
             if g.kind[d] == .Local && g.written[d] == .Synthetic && graph_name(g, d) == "if" {

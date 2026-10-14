@@ -28,6 +28,7 @@ Llvm :: struct {
     own:   int,                 // how many of the runs are its own code's (the rest, defer blocks')
     label: map[i32]Ir_Label,    // a run → its block's label
     value: []Val,               // by id: an operation's result, a variable's storage
+    leaf_value: []Val,          // by leaf: its variable's storage where it's used (llvm_leaf_made)
     held:  []bool,              // by id: a variable held as its one value
     ret:   Ir_Type,             // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
@@ -79,6 +80,7 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := Ir_Head{}) {
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
     size := int(pg.end) + 1
     e.value = make([]Val, size)
+    e.leaf_value = make([]Val, len(pg.leaves))
     e.held = make([]bool, size)
 
     // Allocas hoisted: every alloca into the entry's in the order code first
@@ -102,7 +104,7 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
     pg := e.pg
     at := e.stop
     what := graph_kind_word(pg.kind[at])
-    if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
+    if pg.kind[at] == .Op { what = graph_op_word(graph_op_of(pg, at)) }
     note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
     codegen_fatal(e.g, graph_origin(pg, at), CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
 }
@@ -421,8 +423,8 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> Val {
         e.value[d] = llvm_place(e, at)
         return e.value[d]
     }
-    if c, ok := e.st.carved[d]; ok { return e.value[c] }   // the carved memory
-    if v, ok := e.st.bound[d]; ok { return e.value[v] }    // the payload
+    if c, ok := e.st.carved[d]; ok { return llvm_val(e, c) }   // the carved memory
+    if v, ok := e.st.bound[d]; ok { return llvm_val(e, v) }    // the payload
     ir := llvm_type_from_checker(graph_type(pg, d))
     explicit := pg.written[d] == .Explicit
     key := fmt.tprintf("%s %d", graph_name(pg, d), u32(ir))
@@ -500,34 +502,54 @@ llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: Val, pt: Type,
 
 // --- operations ------------------------------------------------------------------
 
+// A leaf, where the operation that uses it is made: its variable's storage
+// (once: a leaf has one use).
+@(private="file")
+llvm_leaf_made :: proc(e: ^Llvm, leaf: Node_Id) -> bool {
+    g, pg := e.g, e.pg
+    v := &e.leaf_value[leaf - LEAF]
+    if v.kind != .None { return true }
+    d := graph_refers(pg, leaf)
+    if e.ctor && d == 0 {   // Self: the value under construction
+        v^ = e.slot
+        return true
+    }
+    if storage_this_program(e.pg, d) {
+        // The program's own storage, which main hands over: at each use,
+        // where @__mara_program points.
+        at := fresh_tmp(g)
+        ir_load(g, at, IR_PTR, ir_global("__mara_program"))
+        v^ = at
+        return true
+    }
+    if d <= 0 || d > pg.end { return false }   // not this fun's
+    if pg.kind[d] == .Const { return false }   // a constant has no storage: a use reads its value
+    if d in e.hdr { return true }   // a view held as values: no storage
+    switch {
+    case pg.kind[d] == .Param || pg.kind[d] == .Field: v^ = e.value[d]
+    case d in e.st.arena:                                 v^ = e.value[d]   // its arena alloc gives it storage
+    case !e.held[d]:                          v^ = llvm_storage(e, d)
+    }
+    return true
+}
+
+// An operand's value: an operation's result, a leaf's storage.
+@(private="file")
+llvm_val :: #force_inline proc(e: ^Llvm, id: Node_Id) -> Val {
+    return e.leaf_value[id - LEAF] if id >= LEAF else e.value[id]
+}
+
 @(private="file")
 llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     g, pg := e.g, e.pg
     ops := graph_operands(pg, op)
+    for o in ops {   // (its leaves first, as they're named)
+        if o.op >= LEAF && !llvm_leaf_made(e, o.op) { return false }
+    }
     span := graph_origin(pg, op)
     switch pg.op[op] {
-    case .Var:
-        d := pg.refers[op]
-        if e.ctor && d == 0 {   // Self: the value under construction
-            e.value[op] = e.slot
-            return true
-        }
-        if storage_this_program(e.pg, d) {
-            // The program's own storage, which main hands over: at each use,
-            // where @__mara_program points.
-            at := fresh_tmp(g)
-            ir_load(g, at, IR_PTR, ir_global("__mara_program"))
-            e.value[op] = at
-            return true
-        }
-        if d <= 0 || d > pg.end { return false }   // not this fun's
-        if pg.kind[d] == .Const { return false }   // a constant has no storage: a use reads its value
-        if d in e.hdr { return true }   // a view held as values: no storage
-        switch {
-        case pg.kind[d] == .Param || pg.kind[d] == .Field: e.value[op] = e.value[d]
-        case d in e.st.arena:                                 e.value[op] = e.value[d]   // its arena alloc gives it storage
-        case !e.held[d]:                          e.value[op] = llvm_storage(e, d)
-        }
+    case .Var:   // (a leaf, no operation: llvm_leaf_made)
+        return false
     case .Const:
         // `void`, the uninitialized value: a pointer's null, a number's zero
         // (a write of it decides what's stored: llvm_write_void); an
@@ -553,7 +575,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // An aggregate is read as where it is; a register value is loaded.
         place := ops[0].op
         t := graph_type(pg, op)
-        big := pg.op[place] == .View && graph_name(pg, place) == "#big_endian"
+        big := graph_op_of(pg, place) == .View && graph_name(pg, place) == "#big_endian"
         switch {
         case llvm_direct(e, place):
             e.value[op] = llvm_direct_value(e, place)
@@ -563,17 +585,17 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if u := e.st.user[op]; big && (u < 0 || pg.op[u] != .Write || graph_operands(pg, u)[1].op != op) {
                 return false
             }
-            e.value[op] = e.value[place]
+            e.value[op] = llvm_val(e, place)
         case llvm_union_tag(e, place) != nil:   // a union's tag, read as a match reads it
-            e.value[op] = load_union_tag(g, llvm_union_tag(e, place), e.value[place])
-        case llvm_scalar(t) && pg.op[place] == .View:
+            e.value[op] = load_union_tag(g, llvm_union_tag(e, place), llvm_val(e, place))
+        case llvm_scalar(t) && graph_op_of(pg, place) == .View:
             // From bytes at any address: align 1; big-endian, swapped.
             tmp := fresh_tmp(g)
-            ir_load(g, tmp, llvm_type_from_checker(t), e.value[place], 1)
+            ir_load(g, tmp, llvm_type_from_checker(t), llvm_val(e, place), 1)
             e.value[op] = emit_bswap_value(g, tmp, t) if big else tmp
         case llvm_scalar(t):
             tmp := fresh_tmp(g)
-            emit_load_into(g, tmp, llvm_type_from_checker(t), e.value[place])
+            emit_load_into(g, tmp, llvm_type_from_checker(t), llvm_val(e, place))
             e.value[op] = tmp
         case:
             return false
@@ -581,16 +603,16 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Write:
         if pair, is := e.st.swaps[op]; is { return llvm_emit_swap(e, pair[0], pair[1]) }   // (a swap's first put: the swap)
         place := ops[0].op
-        if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
-        if pg.op[place] == .Swizzle && len(graph_name(pg, place)) > 1 {
+        if graph_op_of(pg, place) == .Slice { return llvm_copy_into(e, ops, span) }
+        if graph_op_of(pg, place) == .Swizzle && len(graph_name(pg, place)) > 1 {
             // Into several components: each its element of the value.
             t := graph_type(pg, place)
             val := llvm_operand(e, ops[1], t) or_return
             sw := graph_operands(pg, place)[0].op
-            llvm_swizzle_copy(e, graph_name(pg, place), graph_type(pg, sw), e.value[place], t, val, gather = false)
+            llvm_swizzle_copy(e, graph_name(pg, place), graph_type(pg, sw), llvm_val(e, place), t, val, gather = false)
             return true
         }
-        if v := ops[1].op; v != NO_NODE && pg.op[v] == .Const && graph_name(pg, v) == "void" { return llvm_write_void(e, op, place) }
+        if v := ops[1].op; v != NO_NODE && graph_op_of(pg, v) == .Const && graph_name(pg, v) == "void" { return llvm_write_void(e, op, place) }
         if llvm_union_tag(e, place) != nil { return false }   // a union's tag is its variant's: a construct writes it
         t := graph_type(pg, place)
         // Another type's value into bytes is a write through a view of them (later).
@@ -603,22 +625,22 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // Into a fixed utf8 array, text: the array zeroed, then its bytes.
         if fa := llvm_array(t); fa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
             if text, is_text := llvm_text(e, ops[1].op); is_text && llvm_type_from_checker(fa.elem) == IR_I8 {
-                emit_text_into_array(g, e.value[place], text, type_size(t))
+                emit_text_into_array(g, llvm_val(e, place), text, type_size(t))
                 return true
             }
         }
         val, ok := llvm_operand(e, ops[1], t)
         if !ok { e.note = "the value's type"; return false }
-        if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
-        if pg.op[place] == .Var && e.st.carved[pg.refers[place]] == ops[1].op && ops[1].op != NO_NODE {
+        if graph_is_leaf(place) && graph_refers(pg, place) in e.hdr { return true }   // held at its slice
+        if graph_is_leaf(place) && e.st.carved[graph_refers(pg, place)] == ops[1].op && ops[1].op != NO_NODE {
             return true   // a `let` declaration: the name is the carved memory
         }
-        if pg.op[place] == .View && graph_name(pg, place) != "" { return false }   // a big-endian write (none yet)
+        if graph_op_of(pg, place) == .View && graph_name(pg, place) != "" { return false }   // a big-endian write (none yet)
         if llvm_aggregate(t) {
             // An aggregate is copied into the place, unless a call built it
             // there; from a big-endian view, its integers are swapped in the copy.
             if llvm_direct(e, place) { return false }
-            if val == e.consumed && e.value[place] == e.slot {
+            if val == e.consumed && llvm_val(e, place) == e.slot {
                 // The consumed param into the result: nothing to copy when the
                 // caller passed its storage as the slot (`x = f(x, …)`).
                 same := fresh_tmp(g)
@@ -634,35 +656,35 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // From bytes (a view), copied as they are (llvm_view).
             from := NO_NODE
             if r := ops[1].op; pg.op[r] == .Read { from = graph_operands(pg, r)[0].op }
-            if val != e.value[place] {
-                if from != NO_NODE && pg.op[from] == .View {
-                    emit_memcpy(g, e.value[place], val, type_size(t))
+            if val != llvm_val(e, place) {
+                if from != NO_NODE && graph_op_of(pg, from) == .View {
+                    emit_memcpy(g, llvm_val(e, place), val, type_size(t))
                 } else {
-                    llvm_copy(e, e.value[place], val, t)
+                    llvm_copy(e, llvm_val(e, place), val, t)
                 }
             }
-            if from != NO_NODE && pg.op[from] == .View && graph_name(pg, from) == "#big_endian" {
-                emit_bswap_in_place(g, e.value[place], llvm_type_from_checker(t), t)
+            if from != NO_NODE && graph_op_of(pg, from) == .View && graph_name(pg, from) == "#big_endian" {
+                emit_bswap_in_place(g, llvm_val(e, place), llvm_type_from_checker(t), t)
             }
             return true
         }
         if !llvm_scalar(t) { return false }
         if llvm_direct(e, place) {
-            d := pg.refers[place]
+            d := graph_refers(pg, place)
             if !e.held[d] { return false }   // a param is read-only
             e.value[d] = val
             return true
         }
         // A slice's len stays within 0 ..= its cap.
-        if pg.op[place] == .Field && graph_name(pg, place) == "len" {
+        if graph_op_of(pg, place) == .Field && graph_name(pg, place) == "len" {
             hdr := graph_operands(pg, place)[0].op
-            if llvm_header_elem(graph_type(pg, hdr)) != nil { emit_slice_len_check(g, e.value[hdr], val, span) }
+            if llvm_header_elem(graph_type(pg, hdr)) != nil { emit_slice_len_check(g, llvm_val(e, hdr), val, span) }
         }
-        if pg.op[place] == .View {   // into bytes at any address
-            ir_store(g, llvm_type_from_checker(t), val, e.value[place], 1)
+        if graph_op_of(pg, place) == .View {   // into bytes at any address
+            ir_store(g, llvm_type_from_checker(t), val, llvm_val(e, place), 1)
             return true
         }
-        emit_store(g, llvm_type_from_checker(t), val, e.value[place])
+        emit_store(g, llvm_type_from_checker(t), val, llvm_val(e, place))
     case .Deref:
         // What a pointer points at: the pointer's value is the place.
         place := ops[0].op
@@ -670,7 +692,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op] = llvm_direct_value(e, place)
         } else {
             tmp := fresh_tmp(g)
-            emit_load_into(g, tmp, IR_PTR, e.value[place])
+            emit_load_into(g, tmp, IR_PTR, llvm_val(e, place))
             e.value[op] = tmp
         }
     case .Field:
@@ -680,7 +702,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // (a niche union's is its pointer's nullness); its padding, just
             // past the tag.
             if llvm_direct(e, base) { return false }
-            at := e.value[base]
+            at := llvm_val(e, base)
             switch graph_name(pg, op) {
             case "tag": e.value[op] = at
             case "pad":
@@ -703,7 +725,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             }
             if llvm_direct(e, base) { return false }
             tmp := fresh_tmp(g)
-            emit_slice_gep(g, tmp, e.value[base], i)
+            emit_slice_gep(g, tmp, llvm_val(e, base), i)
             e.value[op] = tmp
             return true
         }
@@ -712,7 +734,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         i := struct_field_index(sd, graph_name(pg, op))
         if i < 0 { return false }                                // through a `using` field (later)
         tmp := fresh_tmp(g)
-        emit_field_gep_into(g, tmp, llvm_type_from_checker(graph_type(pg, base)), e.value[base], i)
+        emit_field_gep_into(g, tmp, llvm_type_from_checker(graph_type(pg, base)), llvm_val(e, base), i)
         e.value[op] = tmp
     case .Address:
         place := ops[0].op
@@ -721,7 +743,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if pt, is_ptr := distinct_base(graph_type(pg, op)).(^Type_Ptr); is_ptr && !llvm_same_type(pt.elem, graph_type(pg, place)) {
             return false
         }
-        e.value[op] = e.value[place]
+        e.value[op] = llvm_val(e, place)
     case .Construct:
         return llvm_construct(e, op, ops)
     case .Zero:
@@ -731,11 +753,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if len(ops) != 1 || llvm_direct(e, place) { return false }
         if llvm_zeroed(e, place) && pg.written[op] == .Synthetic { return true }
         switch {
-        case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), e.value[place])
-        case llvm_partial(t) != nil: emit_partial_array_zero(g, e.value[place], llvm_partial(t))
+        case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), llvm_val(e, place))
+        case llvm_partial(t) != nil: emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t))
         case llvm_aggregate(t):
-            emit_memset_zero(g, e.value[place], type_size(t))
-            stamp_zero_partial_arrays(g, e.value[place], t)
+            emit_memset_zero(g, llvm_val(e, place), type_size(t))
+            stamp_zero_partial_arrays(g, llvm_val(e, place), t)
         case:                   return false
         }
     case .Index:
@@ -765,7 +787,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             emit_bounds_check(g, i, ir_int(fa.size), name if name != "" else "array", span)
         }
         tmp := fresh_tmp(g)
-        emit_array_gep_var(g, tmp, llvm_type_from_checker(at), e.value[base], i, IR_I64)
+        emit_array_gep_var(g, tmp, llvm_type_from_checker(at), llvm_val(e, base), i, IR_I64)
         e.value[op] = tmp
     case .Swizzle:
         // One component of a small array is its element. Several, written,
@@ -779,7 +801,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         for c in transmute([]u8)name {
             if k := swizzle_char_to_index(c); k < 0 || k >= fa.size { return false }
         }
-        from := e.value[base]
+        from := llvm_val(e, base)
         if len(name) == 1 {
             tmp := fresh_tmp(g)
             emit_array_gep_const(g, tmp, llvm_type_from_checker(at), from, swizzle_char_to_index(name[0]))
@@ -813,17 +835,17 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // counts the terminating zero).
             if text, is_text := llvm_text(e, x); is_text {
                 n := len(text)
-                e.value[op] = emit_build_temp_slice(g, e.value[x], ir_int(n), ir_int(n + 1))
+                e.value[op] = emit_build_temp_slice(g, llvm_val(e, x), ir_int(n), ir_int(n + 1))
                 return true
             }
-            e.value[op] = e.value[x]
+            e.value[op] = llvm_val(e, x)
             return true
         }
         from = llvm_type_of(e, ops[0])   // (a call's result: its own type)
         // A distinct conversion of an aggregate (`V3(raw)`): the same bytes,
         // where they are.
         if llvm_aggregate(from) && llvm_same_type(distinct_base(from), distinct_base(to)) {
-            e.value[op] = e.value[x]
+            e.value[op] = llvm_val(e, x)
             return true
         }
         if !llvm_scalar(from) || !llvm_scalar(to) { return false }
@@ -937,7 +959,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         msg: Val
         if len(ops) == 1 {
             if _, is_text := llvm_text(e, ops[0].op); !is_text { return false }
-            msg = e.value[ops[0].op]
+            msg = llvm_val(e, ops[0].op)
         }
         emit_crash(g, span, msg)
     case .Variant:
@@ -945,7 +967,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // the union from its start, so it is the union's own address.
         u := ops[0].op
         if llvm_union(graph_type(pg, u)) == nil || llvm_struct(graph_type(pg, op)) == nil || llvm_direct(e, u) { return false }
-        e.value[op] = e.value[u]
+        e.value[op] = llvm_val(e, u)
     case .Switch:
         return llvm_switch(e, op, ops, span)
     case .Run_Defer:
@@ -957,7 +979,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Arena_Alloc:
         // A big local: its storage, bumped from the arena (reset when its
         // scope is left).
-        d := pg.refers[ops[0].op]
+        d := graph_refers(pg, ops[0].op)
         if d <= 0 || d > pg.end || pg.kind[d] != .Local { return false }
         e.value[d] = emit_arena_bump(g, type_size(graph_type(pg, op)), graph_name(pg, d), span_location(span))
     }
@@ -969,8 +991,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
 @(private="file")
 llvm_place :: proc(e: ^Llvm, place: Node_Id) -> Val {
     pg := e.pg
-    if pg.op[place] != .Var { return e.value[place] }
-    d := pg.refers[place]
+    if !graph_is_leaf(place) { return llvm_val(e, place) }
+    d := graph_refers(pg, place)
     switch {
     case e.ctor && d == 0:                          return e.slot
     case pg.kind[d] == .Param || pg.kind[d] == .Field:   return e.value[d]
@@ -1029,7 +1051,7 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     place := ops[0].op
     at := graph_type(pg, place)
     if llvm_direct(e, place) { return false }
-    to := e.value[place]
+    to := llvm_val(e, place)
     elem: Type
     n: int
     pa := llvm_partial(at)
@@ -1075,15 +1097,15 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
     switch {
     case llvm_scalar(t):
         ir := llvm_type_from_checker(t)
-        if ir == IR_PTR { emit_store(g, ir, IR_NULL, e.value[place]) }
-        else if decl { emit_store(g, ir, llvm_zero(t), e.value[place]) }
+        if ir == IR_PTR { emit_store(g, ir, IR_NULL, llvm_val(e, place)) }
+        else if decl { emit_store(g, ir, llvm_zero(t), llvm_val(e, place)) }
     case llvm_partial(t) != nil:
-        if decl { emit_partial_array_zero(g, e.value[place], llvm_partial(t), zero = false) }
+        if decl { emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t), zero = false) }
     case llvm_struct(t) != nil:
         // A declared local struct is zero (a constructor's field is left as
         // it is, in Self zeroed already).
-        local := pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local
-        if decl && local { emit_memset_zero(g, e.value[place], type_size(t)) }
+        local := graph_is_leaf(place) && pg.kind[graph_refers(pg, place)] == .Local
+        if decl && local { emit_memset_zero(g, llvm_val(e, place), type_size(t)) }
     case llvm_aggregate(t):
     case:
         return false
@@ -1096,8 +1118,8 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
 @(private="file")
 llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
     pg := e.pg
-    if pg.op[place] != .Var { return e.held[place] }   // a held view's len or cap
-    d := pg.refers[place]
+    if !graph_is_leaf(place) { return e.held[place] }   // a held view's len or cap
+    d := graph_refers(pg, place)
     if pg.kind[d] == .Param { return llvm_scalar(graph_type(pg, d)) }
     if d <= 0 || d > pg.end { return false }   // this_program's: in memory
     return e.held[d]
@@ -1105,8 +1127,8 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
 
 @(private="file")
 llvm_direct_value :: proc(e: ^Llvm, place: Node_Id) -> Val {
-    if e.pg.op[place] != .Var { return e.value[place] }
-    return e.value[e.pg.refers[place]]
+    if !graph_is_leaf(place) { return llvm_val(e, place) }
+    return llvm_val(e, graph_refers(e.pg, place))
 }
 
 // An operand's IR value, which must already be of the type its use takes.
@@ -1117,7 +1139,7 @@ llvm_operand :: proc(e: ^Llvm, o: Operand, want: Type) -> (Val, bool) {
     if o.out != 0 { return {}, false }
     have := graph_type(e.pg, o.op)
     if !llvm_same_type(have, want) { return {}, false }
-    return e.value[o.op], true
+    return llvm_val(e, o.op), true
 }
 
 // A call's k-th result, from the temporary it wrote it into: a register value
@@ -1340,7 +1362,7 @@ llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type) -> Val {
 @(private="file")
 llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
     pg := e.pg
-    return e.ctor && pg.op[place] == .Var && pg.refers[place] != NO_NODE && pg.kind[pg.refers[place]] == .Field
+    return e.ctor && graph_is_leaf(place) && pg.kind[graph_refers(pg, place)] == .Field
 }
 
 // A construction's arguments, past its place: each at its constructor's
@@ -1390,7 +1412,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // are the writes that follow.)
         if llvm_direct(e, dest) { return false }
         args := llvm_ctor_args(e, op, ops) or_return   // (before the union is zeroed)
-        at := e.value[dest]
+        at := llvm_val(e, dest)
         if some := ut.niche_some; some != "" {
             // A niche union is its Some variant's pointer: None is null, Some
             // the pointer its literal writes next (none written: null).
@@ -1410,14 +1432,14 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if fa := llvm_array(graph_type(pg, dest)); fa != nil && llvm_same_type(fa.elem, t) {
         if llvm_direct(e, dest) { return false }
         args := llvm_ctor_args(e, op, ops) or_return
-        gen_construct_elements(g, e.value[dest], fa.elem, fa.size, args)
+        gen_construct_elements(g, llvm_val(e, dest), fa.elem, fa.size, args)
         return true
     }
     if pa := llvm_partial(graph_type(pg, dest)); pa != nil && llvm_same_type(pa.elem, t) {
         if llvm_direct(e, dest) { return false }
         if llvm_zeroed(e, dest) { return true }   // a constructor's field: at its entry
         args := llvm_ctor_args(e, op, ops) or_return
-        elements := partial_elements(g, e.value[dest], pa)
+        elements := partial_elements(g, llvm_val(e, dest), pa)
         gen_construct_elements(g, elements, pa.elem, pa.size, args)
         return true
     }
@@ -1428,7 +1450,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // A union's variant as a struct of its own: zeroed, its tag in field
         // 0, its partial arrays' headers, then its constructor.
         args := llvm_ctor_args(e, op, ops) or_return   // (before it is zeroed)
-        at := e.value[dest]
+        at := llvm_val(e, dest)
         emit_memset_zero(g, at, type_size(t))
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
@@ -1439,14 +1461,14 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if _, has_init := g.checked.functions[callee.name]; !has_init && len(ops) == 1 {
         // Nothing to run — no defaults, no partial arrays (a generic instance
         // whose fields a shape shortcut fills): its zero.
-        if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, e.value[dest], type_size(t)) }
+        if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, llvm_val(e, dest), type_size(t)) }
         return true
     }
     if _, src := callee.origin.(Origin_Source); !src { return false }
     ctor := llvm_ctor_args(e, op, ops) or_return
     args := make([dynamic]Ir_Arg, 0, len(ops), context.temp_allocator)
     append(&args, ..ctor)
-    at := e.value[dest]
+    at := llvm_val(e, dest)
     append(&args, Ir_Arg{ty = IR_PTR, v = at})
     // A fallible constructor's declared results (its err) after Self: each
     // into a temporary, where its uses find it (Self is the place).
@@ -1478,7 +1500,7 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
     if llvm_direct(e, base) { return false }
     i := llvm_operand(e, ops[1], slice_header_width_type) or_return
     h, held := llvm_held_header(e, base)
-    hdr := e.value[base]
+    hdr := llvm_val(e, base)
     data := h.data
     if !held {
         data = emit_header_field(g, hdr, SLICE.ptr)
@@ -1501,7 +1523,7 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
 @(private="file")
 llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
     pg := e.pg
-    if pg.op[op] != .Slice || graph_name(pg, op) != "" { return false }
+    if graph_op_of(pg, op) != .Slice || graph_name(pg, op) != "" { return false }
     ops := graph_operands(pg, op)
     if len(ops) == 0 || ops[0].op == NO_NODE || llvm_array(graph_type(pg, ops[0].op)) == nil { return false }
     for o in ops[1:] { if o.op != NO_NODE { return false } }
@@ -1519,7 +1541,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if len(ops) != 2 || ops[0].op == NO_NODE { return false }
         if _, is_ptr := distinct_base(graph_type(pg, ops[0].op)).(^Type_Ptr); !is_ptr { return false }
         n := llvm_operand(e, ops[1], slice_header_width_type) or_return
-        e.value[op] = emit_build_temp_slice(g, e.value[ops[0].op], n, n)
+        e.value[op] = emit_build_temp_slice(g, llvm_val(e, ops[0].op), n, n)
         return true
     }
     if graph_name(pg, op) != "" { return false }
@@ -1528,16 +1550,16 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     // A whole fixed array viewed only to be copied from: the array itself, no
     // header (llvm_copy_into reads it as the array).
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op &&
-       pg.op[graph_operands(pg, u)[0].op] == .Slice && llvm_whole_array(e, op) {
-        e.value[op] = e.value[ops[0].op]
+       graph_op_of(pg, graph_operands(pg, u)[0].op) == .Slice && llvm_whole_array(e, op) {
+        e.value[op] = llvm_val(e, ops[0].op)
         return true
     }
     // A whole fixed array — not a constant's table — viewed into a slice's
     // place (a field, an element, what a pointer points at): its header built
     // there (the write then has nothing to copy).
-    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op && llvm_whole_array(e, op) && pg.op[ops[0].op] != .Global {
+    if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op && llvm_whole_array(e, op) && graph_op_of(pg, ops[0].op) != .Global {
         dest := graph_operands(pg, u)[0].op
-        #partial switch pg.op[dest] {
+        #partial switch graph_op_of(pg, dest) {
         case .Field, .Index, .Deref:
         case:
             dest = NO_NODE
@@ -1545,7 +1567,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if dest != NO_NODE && llvm_slice(graph_type(pg, dest)) != nil && !llvm_direct(e, dest) && llvm_ahead(e, dest) {
             at := llvm_place(e, dest)
             n := ir_int(llvm_array(graph_type(pg, ops[0].op)).size)
-            emit_slice_header_at(g, at, e.value[ops[0].op], n, n)
+            emit_slice_header_at(g, at, llvm_val(e, ops[0].op), n, n)
             e.value[op] = at
             return true
         }
@@ -1556,7 +1578,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if len(ops) > 1 && ops[1].op != NO_NODE { lo = llvm_operand(e, ops[1], slice_header_width_type) or_return }
     if len(ops) > 2 && ops[2].op != NO_NODE { hi = llvm_operand(e, ops[2], slice_header_width_type) or_return }
     bt := graph_type(pg, base)
-    at := e.value[base]
+    at := llvm_val(e, base)
     data: Val
     if text, is_text := llvm_text(e, base); is_text {
         // Text in its global (a constant's, a literal's): its bytes' address,
@@ -1594,8 +1616,8 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     // Written to a held view: its values, no header in memory.
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
-        if d := graph_operands(pg, u)[0].op; pg.op[d] == .Var && pg.refers[d] in e.hdr {
-            e.hdr[pg.refers[d]] = {data, n, n}
+        if d := graph_leaf_decl(pg, graph_operands(pg, u)[0].op); d != NO_NODE && d in e.hdr {
+            e.hdr[d] = {data, n, n}
             return true
         }
     }
@@ -1669,7 +1691,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         g, pg := e.g, e.pg
         t := graph_type(pg, at)
         if llvm_whole_array(e, at) { t = graph_type(pg, graph_operands(pg, at)[0].op) }   // the array it views
-        addr := e.value[at]
+        addr := llvm_val(e, at)
         if fa := llvm_array(t); fa != nil { return {addr, ir_int(fa.size), fa.size, fa.elem}, true }
         s.elem = llvm_header_elem(t)
         if s.elem == nil { return }
@@ -1690,7 +1712,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         if value_has_partial_array(g, dst.elem) { return false }
         size := type_size(dst.elem)
         elem_name := type_name(dst.elem)
-        nbytes := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
+        nbytes := from.bound if from.bound.kind != .None else emit_header_field(g, llvm_val(e, src), SLICE.len)
         count := fresh_tmp(g)
         ok, bad := fresh_label(g, "byte.read.ok"), fresh_label(g, "byte.read.err")
         cmp := fresh_tmp(g)
@@ -1731,7 +1753,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         // tc_byte_span_checks): count × size, from lo — within the bytes' cap,
         // and the span's size when hi is written.
         size := type_size(from.elem)
-        count := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
+        count := from.bound if from.bound.kind != .None else emit_header_field(g, llvm_val(e, src), SLICE.len)
         nbytes := fresh_tmp(g)
         ir_bin(g, nbytes, .Mul, w, count, ir_int(int(size)))
         if hi.kind != .None {
@@ -1760,13 +1782,13 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     if hi.kind == .None {
         n := ir_int(from.fixed)
         if from.fixed == 0 {
-            n = emit_header_field(g, e.value[src], SLICE.len)
+            n = emit_header_field(g, llvm_val(e, src), SLICE.len)
         }
         hi = fresh_tmp(g)
         ir_bin(g, hi, .Add, w, lo, n)
     }
     name := ""
-    #partial switch pg.op[base] {
+    #partial switch graph_op_of(pg, base) {
     case .Var, .Field: name = graph_name(pg, base)
     case .Deref:       name = graph_name(pg, graph_operands(pg, base)[0].op)
     }
@@ -1782,7 +1804,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     // (A run written, lo:hi: src holds hi - lo elements, else the copy would
     // read past its end. A longer src gives its first hi - lo.)
     if run_given {
-        have := from.bound if from.bound.kind != .None else emit_header_field(g, e.value[src], SLICE.len)
+        have := from.bound if from.bound.kind != .None else emit_header_field(g, llvm_val(e, src), SLICE.len)
         if !can_elide_source_check(lo, hi, have) {
             want := fresh_tmp(g)
             ir_bin(g, want, .Sub, w, hi, lo)
@@ -1843,7 +1865,7 @@ llvm_text :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
 llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: string) -> bool {
     g := e.g
     if llvm_type_from_checker(pa.elem) != IR_I8 || len(text) > pa.size { return false }
-    at := e.value[place]
+    at := llvm_val(e, place)
     elements := partial_elements(g, at, pa)
     if len(text) > 0 {
         src := get_string_literal(g, text)
@@ -1860,7 +1882,7 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     g, pg := e.g, e.pg
     if !llvm_same_type(llvm_slice(graph_type(pg, src)).elem, pa.elem) { return false }
     w := SLICE_LEN_IR
-    at, hdr := e.value[place], e.value[src]
+    at, hdr := llvm_val(e, place), llvm_val(e, src)
     data := emit_header_field(g, hdr, SLICE.ptr)
     n0 := emit_header_field(g, hdr, SLICE.len)
     cmp := fresh_tmp(g); ir_icmp(g, cmp, .Slt, w, n0, ir_int(int(pa.size)))
@@ -1881,7 +1903,7 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id, held := false) -> (data, bound: Val,
     g, pg := e.g, e.pg
     if llvm_direct(e, base) { return }
     bt := graph_type(pg, base)
-    at := e.value[base]
+    at := llvm_val(e, base)
     if fa := llvm_array(bt); fa != nil && is_byte_elem(fa.elem) {
         return at, ir_int(fa.size), true
     }
@@ -1943,7 +1965,7 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         bytes = fresh_tmp(g)
         ir_bin(g, bytes, .Sub, w, hi, lo)
     }
-    gen_partial_array_byte_fill_at_core(g, e.value[dest], pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span)
+    gen_partial_array_byte_fill_at_core(g, llvm_val(e, dest), pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span)
     return true
 }
 
@@ -1984,7 +2006,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     emit_label(g, dst_ok)
     src := fresh_tmp(g)
     ir_gep(g, src, IR_I8, data, {w, lo, {}})
-    at := e.value[dest]
+    at := llvm_val(e, dest)
     emit_memset_zero(g, at, size)
     emit_memcpy_runtime(g, at, src, n)
     if sd != nil { fixup_partial_array_fields(g, at, sd) }
@@ -2004,9 +2026,9 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     storage := ops[0].op
     if storage == NO_NODE || llvm_direct(e, storage) { return false }
     let := graph_name(pg, op) == "let"
-    if pg.op[storage] == .View {
+    if graph_op_of(pg, storage) == .View {
         if let {
-            e.value[op] = e.value[storage]
+            e.value[op] = llvm_val(e, storage)
             return true
         }
         // `slice([:n]T, &bytes[i])`: n of them at the view's offset, checked
@@ -2024,7 +2046,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     }
     if llvm_header_elem(graph_type(pg, storage)) == nil { return false }
     // A `let` is only a declaration's (it names the memory); anything else later.
-    if u := e.st.user[op]; let && (u < 0 || pg.op[u] != .Write || pg.refers[graph_operands(pg, u)[0].op] not_in e.st.carved) {
+    if u := e.st.user[op]; let && (u < 0 || pg.op[u] != .Write || graph_refers(pg, graph_operands(pg, u)[0].op) not_in e.st.carved) {
         return false
     }
     t := graph_type(pg, op)
@@ -2038,7 +2060,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     }
     w := SLICE_LEN_IR
     size, align := type_size(elem), type_align(elem)
-    hdr := e.value[storage]
+    hdr := llvm_val(e, storage)
     data := emit_header_field(g, hdr, SLICE.ptr)
     cursor := emit_header_field(g, hdr, SLICE.len)
     advance := ir_int(size)
@@ -2092,7 +2114,7 @@ llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: Val) {
     out: Val
     if u := e.st.user[op]; u >= 0 && pg.op[u] == .Write {
         dest := graph_operands(pg, u)[0].op
-        if pg.op[dest] == .Var {
+        if graph_is_leaf(dest) {
             if graph_stmt(pg, u).kind == .Decl || llvm_place(e, dest) == e.slot { out = llvm_place(e, dest) }
         }
     }
@@ -2116,7 +2138,7 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     args := make([dynamic]Print_Arg, 0, len(ops), context.temp_allocator)
     for o in ops {
         if o.op == NO_NODE || o.out != 0 { return false }
-        t, v := graph_type(pg, o.op), e.value[o.op]
+        t, v := graph_type(pg, o.op), llvm_val(e, o.op)
         if v.kind == .None { return false }   // a held view (later)
         text, is_text := llvm_text(e, o.op)
         switch {
@@ -2164,12 +2186,12 @@ llvm_assert :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     reported: []Assert_Side
     ir: Ir_Type
     unsigned := false
-    if texts, has := pg.assert_sides[op]; has && pg.op[ops[0].op] == .Compare {
+    if texts, has := pg.assert_sides[op]; has && graph_op_of(pg, ops[0].op) == .Compare {
         compared := graph_operands(pg, ops[0].op)
         t := graph_type(pg, compared[0].op)
         if assert_reports(llvm_type_from_checker(t)) {
             ir, unsigned = llvm_type_from_checker(t), llvm_unsigned(t)
-            for &s, i in sides { s = {texts[i], e.value[compared[i].op], t} }
+            for &s, i in sides { s = {texts[i], llvm_val(e, compared[i].op), t} }
             reported = sides[:]
         }
     }
@@ -2193,7 +2215,7 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     subject := ops[0].op
     if ut := llvm_union(graph_type(pg, subject)); ut != nil {
         if llvm_direct(e, subject) { return false }
-        tag, ir := load_union_tag(g, ut, e.value[subject]), union_tag_ir_type(ut)
+        tag, ir := load_union_tag(g, ut, llvm_val(e, subject)), union_tag_ir_type(ut)
         default := fresh_label(g, "match.fail") if fail else target(e, op, len(cases))
         arms := make([]Ir_Arg, len(cases))
         for c, i in cases {
@@ -2239,11 +2261,11 @@ llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
     after := false
     for o in graph_run(pg, int(e.run)) {
         if o == op { after = true; continue }
-        if !after || pg.op[o] != .Write { continue }
+        if !after || graph_op_of(pg, o) != .Write { continue }
         p := graph_operands(pg, o)[0].op
-        if pg.op[p] != .Field { continue }
+        if graph_op_of(pg, p) != .Field { continue }
         v := graph_operands(pg, p)[0].op
-        if pg.op[v] == .Variant && storage_where(e.st, v).root == root { return true }
+        if graph_op_of(pg, v) == .Variant && storage_where(e.st, v).root == root { return true }
     }
     return false
 }
@@ -2276,7 +2298,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
         e.run = r
         ops := graph_run(pg, int(r))
         for o, k in ops {
-            if pg.op[o] == .Return {
+            if graph_op_of(pg, o) == .Return {
                 // The block's end: back where it ran — straight on from the
                 // last of its code.
                 if i == len(body) - 1 && k == len(ops) - 1 { continue }
@@ -2301,8 +2323,8 @@ Llvm_Header :: struct {
 
 @(private="file")
 llvm_held_header :: proc(e: ^Llvm, place: Node_Id) -> (Llvm_Header, bool) {
-    if e.pg.op[place] != .Var { return {}, false }
-    return e.hdr[e.pg.refers[place]]
+    if !graph_is_leaf(place) { return {}, false }
+    return e.hdr[graph_refers(e.pg, place)]
 }
 
 @(private="file")
@@ -2417,14 +2439,14 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         pt := p.type_
         v: Val
         if _, is_text := llvm_text(e, ops[i].op); is_text && llvm_is_cstring(pt) {
-            v = e.value[ops[i].op]   // text for a cstring: its bytes, already terminated
+            v = llvm_val(e, ops[i].op)   // text for a cstring: its bytes, already terminated
         } else {
             ok: bool
             v, ok = llvm_operand(e, ops[i], pt)
             // A C pointer is a pointer: what it points at is the callee's to
             // know (`const void *data` is `^byte`, handed any pointer).
             if at := llvm_type_of(e, ops[i]); !ok && ops[i].out == 0 && llvm_scalar(at) && llvm_type_from_checker(at) == IR_PTR && llvm_type_from_checker(pt) == IR_PTR {
-                v, ok = e.value[ops[i].op], true
+                v, ok = llvm_val(e, ops[i].op), true
             }
             if !ok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
         }
@@ -2488,11 +2510,11 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
 llvm_cstring :: proc(e: ^Llvm, op, x: Node_Id, span: Span) -> bool {
     g, pg := e.g, e.pg
     if _, is_text := llvm_text(e, x); is_text {
-        e.value[op] = e.value[x]
+        e.value[op] = llvm_val(e, x)
         return true
     }
-    if llvm_header_elem(graph_type(pg, x)) == nil || e.value[x].kind == .None { return false }
-    hdr := e.value[x]
+    if llvm_header_elem(graph_type(pg, x)) == nil || llvm_val(e, x).kind == .None { return false }
+    hdr := llvm_val(e, x)
     n := emit_header_field(g, hdr, SLICE.len)
     c := emit_header_field(g, hdr, SLICE.cap)
     data := emit_header_field(g, hdr, SLICE.ptr)
@@ -2589,22 +2611,19 @@ llvm_temporary :: proc(e: ^Llvm, o: Operand, t: Type, as_local := false) -> Val 
 @(private="file")
 llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
     pg := e.pg
-    if e.value[p].kind != .None || pg.op[p] == .Var { return true }
+    if graph_is_leaf(p) || llvm_val(e, p).kind != .None { return true }
     ops := graph_operands(pg, p)
-    #partial switch pg.op[p] {
+    #partial switch graph_op_of(pg, p) {
     case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)
         if !llvm_ahead(e, ops[0].op) { return false }
     case .Index:
-        if ops[1].op == NO_NODE || pg.op[ops[1].op] != .Const || !llvm_ahead(e, ops[0].op) { return false }
+        if ops[1].op == NO_NODE || graph_op_of(pg, ops[1].op) != .Const || !llvm_ahead(e, ops[0].op) { return false }
         if !llvm_op(e, ops[1].op) { return false }
         e.ahead[ops[1].op] = true
     case:
         return false
     }
-    if pg.op[ops[0].op] == .Var && e.value[ops[0].op].kind == .None {
-        if !llvm_op(e, ops[0].op) { return false }
-        e.ahead[ops[0].op] = true
-    }
+    if graph_is_leaf(ops[0].op) && !llvm_leaf_made(e, ops[0].op) { return false }
     if !llvm_op(e, p) { return false }
     e.ahead[p] = true
     return true
@@ -2635,7 +2654,7 @@ llvm_aggregate :: proc(t: Type) -> bool {
 @(private="file")
 llvm_union_tag :: proc(e: ^Llvm, p: Node_Id) -> ^Type_Union {
     pg := e.pg
-    if pg.op[p] != .Field || graph_name(pg, p) != "tag" { return nil }
+    if graph_op_of(pg, p) != .Field || graph_name(pg, p) != "tag" { return nil }
     return llvm_union(graph_type(pg, graph_operands(pg, p)[0].op))
 }
 

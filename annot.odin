@@ -186,7 +186,7 @@ annot_var :: proc(a: ^Annotations, owner: ^Type_Scope, tok: Token_Id, t: Type) -
 //
 //   - Complete: each name the checker typed in an instance — an identifier, a
 //     variant, a member, a call's name, a type's — says what it names.
-//   - Agreeing with the graph: each variable operation written in the source
+//   - Agreeing with the graph: each variable's leaf written in the source
 //     refers to the declaration its name's annotation names (the same name,
 //     declared inside that declaration's statement); each call's Calls edge
 //     runs the callee its annotation names — each checked at the tree node it
@@ -241,17 +241,18 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
         }
         on := make([dynamic]Tree_Id, context.temp_allocator)
         for g in pc.codes {
-            for id in 0 ..= int(g.end) {
-                op := Node_Id(id)
-                if g.kind[op] != .Op { continue }
+            // (Its operations, then its leaves.)
+            for id in 0 ..< int(g.end) + 1 + len(g.leaves) {
+                op := Node_Id(id) if id <= int(g.end) else LEAF + Node_Id(id - int(g.end) - 1)
+                if graph_kind_of(g, op) != .Op { continue }
                 // (What the graph says: a variable's declaration, written — not
                 // the compiler's own; a call's callee.)
                 d := NO_NODE
                 want: ^Type_Scope
-                #partial switch g.op[op] {
+                #partial switch graph_op_of(g, op) {
                 case .Var:
-                    if g.written[op] != .Explicit { continue }
-                    d = g.refers[op]
+                    if graph_written(g, op) != .Explicit { continue }
+                    d = graph_refers(g, op)
                     if d < 0 || graph_origin(g, d).at == 0 { continue }
                     #partial switch g.kind[d] {
                     case .Local, .Param, .Result, .Field:
@@ -270,7 +271,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     if o := graph_origin(g, op); o.tok >= sp.tok && o.end <= sp.end { pinned = true }
                 }
                 if pinned { continue }
-                i, at := annot_split(g.syntax[op])
+                i, at := annot_split(graph_syntax(g, op))
                 // (Where it's checked: its node — a name, the name an override
                 // writes into; or what its statement writes: a declaration's
                 // names, an assignment's targets, the statement.)
@@ -363,7 +364,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             writes := make(map[Node_Id][dynamic]Node_Id, context.temp_allocator)
             for id in 0 ..< len(g.kind) {
                 if dst := graph_whole_write_dest(g, Node_Id(id)); dst != NO_NODE {
-                    if d := g.refers[dst]; d >= 0 && g.written[d] != .Explicit {
+                    if d := graph_refers(g, dst); d >= 0 && g.written[d] != .Explicit {
                         if d not_in writes { writes[d] = make([dynamic]Node_Id, context.temp_allocator) }
                         append(&writes[d], Node_Id(id))
                     }
@@ -383,12 +384,15 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 x := pop_front(&todo)
                 if x < 0 || x in seen { continue }
                 seen[x] = true
-                if xi, xn := annot_split(g.syntax[x]); g.written[x] == .Explicit && xi == i && xn >= lo && xn <= n { return true }
-                for o in graph_operands(g, x) { append(&todo, o.op) }
-                if g.kind[x] == .Op && g.op[x] == .Var && g.refers[x] >= 0 {
-                    ws, _ := writes[g.refers[x]]   // (none: a variable the compiler doesn't hold a value in)
-                    for w in ws { append(&todo, w) }
+                if xi, xn := annot_split(graph_syntax(g, x)); graph_written(g, x) == .Explicit && xi == i && xn >= lo && xn <= n { return true }
+                if graph_is_leaf(x) {
+                    if d := graph_refers(g, x); d >= 0 {
+                        ws, _ := writes[d]   // (none: a variable the compiler doesn't hold a value in)
+                        for w in ws { append(&todo, w) }
+                    }
+                    continue
                 }
+                for o in graph_operands(g, x) { append(&todo, o.op) }
             }
             return false
         }
@@ -413,7 +417,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 ok := false
                 #partial switch arg.kind {
                 case .Call_Site: continue
-                case .Default:   ok = passed[j].op >= 0 && g.syntax[passed[j].op] == g.syntax[op]   // (built as the call is)
+                case .Default:   ok = passed[j].op >= 0 && graph_syntax(g, passed[j].op) == g.syntax[op]   // (built as the call is)
                 case:            ok = from(g, writes, i, tree_lo(t, arg.node), arg.node, passed[j].op)
                 }
                 if !ok {

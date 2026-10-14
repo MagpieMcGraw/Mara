@@ -133,7 +133,7 @@ Program_Graph :: struct {
     type_:   [dynamic]Type_Id,  // has type; none when the node has none (its type: graph_type)
     types:   ^[dynamic]Type,    // (the program's types, a node's by its Type_Id)
     origins: map[Node_Id]Span,  // where a node is written, where that isn't its tree node's (graph_origin)
-    refers:  [dynamic]Node_Id,  // a var or variant operation → the declaration it names
+    refers:  [dynamic]Node_Id,  // a variant operation → the declaration it binds (a leaf's: Graph_Leaf.decl)
     // What a call or construction runs is its tree node's annotated callee
     // (graph_called) — but where lowering says otherwise: a call through a
     // fun's value, none; one written in a default a call leaves off, its own.
@@ -149,6 +149,9 @@ Program_Graph :: struct {
     // A node's operands are operands[operand_first[id] : operand_first[id+1]].
     operands:      [dynamic]Operand,
     operand_first: [dynamic]i32,
+    // A variable where it's used: no node, a leaf — an operand's, its id
+    // LEAF past leaves[0]'s (graph_var).
+    leaves: [dynamic]Graph_Leaf,
 
     // Run r is run_ops[run_first[r] : run_first[r+1]], in the order it runs;
     // run_starts is each run by its first operation (where a Then edge lands).
@@ -239,16 +242,17 @@ graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
 }
 
 graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
+    if id >= LEAF { return nil }   // (a variable: none)
     return g.operands[g.operand_first[id]:g.operand_first[id + 1]]
 }
 
 // Where a whole write lands — `e = f()` writes e, reading nothing — its
-// destination's var operation; NO_NODE for any other operation.
+// destination's leaf; NO_NODE for any other operation.
 graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
     #partial switch g.op[op] {
     case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Arena_Alloc:
         ops := graph_operands(g, op)
-        if len(ops) > 0 && ops[0].op != NO_NODE && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var { return ops[0].op }
+        if len(ops) > 0 && graph_is_leaf(ops[0].op) { return ops[0].op }
     }
     return NO_NODE
 }
@@ -258,8 +262,15 @@ graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
 // one once, by its index.
 Name_Id :: distinct u32
 
-// The text of a node's name.
+// The text of a node's name; a leaf's, its declaration's (a struct's code's
+// own, `Self`).
 graph_name :: proc(g: ^Program_Graph, id: Node_Id) -> string {
+    if id >= LEAF {
+        d := g.leaves[id - LEAF].decl
+        if d < 0 { return graph_outside_name(int(-3 - d)) }
+        if d == 0 && g.kind[0] == .Struct { return "Self" }
+        return g.names[g.name[d]]
+    }
     return g.names[g.name[id]]
 }
 
@@ -286,9 +297,68 @@ graph_intern_in :: proc(b: ^Graph_Tables, s: string) -> Name_Id {
     return id
 }
 
-// A node's type.
+// A node's type; a leaf's, its own as it was made, else its declaration's.
 graph_type :: proc(g: ^Program_Graph, id: Node_Id) -> Type {
+    if id >= LEAF {
+        l := g.leaves[id - LEAF]
+        if l.type_ != 0 || l.decl < 0 { return g.types[l.type_] }
+        return g.types[g.type_[l.decl]]
+    }
     return g.types[g.type_[id]]
+}
+
+// A variable named where it's used — `x` in `x + 1`, `x = v`, `x.f` — is
+// no operation, but a leaf: the operand that names it, its id LEAF and
+// past. Its declaration; its type, as it was made (0: its declaration's,
+// as that is); the tree node it's written as.
+Graph_Leaf :: struct {
+    decl:   Node_Id,
+    type_:  Type_Id,
+    syntax: Syntax_Id,
+}
+
+LEAF :: Node_Id(1 << 30)
+
+// Whether an operand is a variable, used: a leaf (graph_var).
+graph_is_leaf :: #force_inline proc(id: Node_Id) -> bool {
+    return id >= LEAF
+}
+
+// The declaration of the variable a leaf is (NO_NODE: no leaf).
+graph_leaf_decl :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE
+}
+
+// What an operand is, an operation or a leaf: a leaf an operation of kind
+// var, which refers to its declaration.
+graph_kind_of :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Kind {
+    return .Op if id >= LEAF else g.kind[id]
+}
+graph_op_of :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Op_Kind {
+    return .Var if id >= LEAF else g.op[id]
+}
+graph_refers :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    return g.leaves[id - LEAF].decl if id >= LEAF else g.refers[id]
+}
+
+// How a node is written; a leaf as its declaration is — but the compiler's
+// own globals, as their names are written (graph_place_outside's: past the
+// code's own, no parent).
+graph_written :: proc(g: ^Program_Graph, id: Node_Id) -> Written {
+    if id < LEAF { return g.written[id] }
+    d := g.leaves[id - LEAF].decl
+    if d < 0 || g.kind[d] == .Field && g.parent[d] == NO_NODE { return .Explicit }
+    return g.written[d]
+}
+
+// The tree node a node or a leaf was lowered from.
+graph_syntax :: proc(g: ^Program_Graph, id: Node_Id) -> Syntax_Id {
+    return g.leaves[id - LEAF].syntax if id >= LEAF else g.syntax[id]
+}
+
+// The leaves' ids.
+graph_leaf_ids :: proc(g: ^Program_Graph) -> (lo, hi: Node_Id) {
+    return LEAF, LEAF + Node_Id(len(g.leaves))
 }
 
 // The last id of a node's subtree.
@@ -432,8 +502,6 @@ Graph_Builder :: struct {
     run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
     body_pool:  [dynamic]^Graph_Body,   // (bodies done, kept for the next: graph_body_new)
     nodes:      int,             // how many nodes the code being built has; the columns run ahead
-    untyped:    [dynamic]Node_Id,   // its variables' operations of no type yet (graph_build_typed) ...
-    untyped_seen: int,              // ... the nodes looked at for them so far
     code:       Code,
     // Refers-to: each declaration made in the code being built — a fun's, a
     // struct's, a constant's; its defers' are its own — by the token that
@@ -545,6 +613,8 @@ graph_global :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
 
 @(private="file")
 OUTSIDE :: [2]Node_Id{-3, -4}
+@(private="file")
+graph_outside_name :: proc(k: int) -> string { return "this_program" if k == 0 else "context" }
 
 // Whether a declaration is one of the compiler's globals, as the code being
 // built names them.
@@ -691,7 +761,6 @@ graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
     for f in b.body_pool { graph_body_drop(f, made_in) }
     delete(b.body_pool)
     delete(b.locals)
-    delete(b.untyped)
     // (What finds an id is done with — the codes read the tables' entries.)
     delete(b.tables.name_ids)
     delete(b.tables.value_ids)
@@ -753,7 +822,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
 
 Graph_Column :: enum u8 {
     Kind, Op, Written, Parent, Name, Type, Refers, Decl_Tok, Syntax, Value,
-    Operand_First, Operands, Run_Ops, Run_First, Edges, Unreachable, Settled,
+    Operand_First, Operands, Leaves, Run_Ops, Run_First, Edges, Unreachable, Settled,
     // A builder's tables (Graph_Tables): each a region of its own, so what's
     // in one never moves — a code another builder built is read, on another
     // thread, while its builder adds to them.
@@ -863,6 +932,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.values = &b.tables.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
+    g.leaves = make([dynamic]Graph_Leaf, at(r, .Leaves))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
     g.run_first = make([dynamic]i32, at(r, .Run_First))
     g.edges = make([dynamic]Edge, at(r, .Edges))
@@ -885,6 +955,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
     trim(&g.decl_tok, n); trim(&g.syntax, n); trim(&g.value, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
+    trim(&g.leaves, len(g.leaves) if n > 0 else 0)
     trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
     trim(&g.run_first, len(g.run_first) if n > 0 else 0)
     trim(&g.edges, len(g.edges) if n > 0 else 0)
@@ -959,8 +1030,6 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     if f := b.body; f != nil { graph_fatal(graph_origin(b.g, f.root), "a code begun while '%s' is being built", graph_name(b.g, f.root)) }
     b.g = graph_code_new(b)
     b.nodes = 0
-    clear(&b.untyped)
-    b.untyped_seen = 0
     b.outside_named = false
 }
 
@@ -1005,20 +1074,18 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
 @(private="file")
 graph_place_outside :: proc(b: ^Graph_Builder) {
     g := b.g
-    names := [2]string{"this_program", "context"}
     made := [2]Node_Id{NO_NODE, NO_NODE}
-    n := b.nodes
-    for i in 0 ..< n {
+    for &l in g.leaves {
         k: int
-        switch g.refers[i] {
+        switch l.decl {
         case OUTSIDE[0]: k = 0
         case OUTSIDE[1]: k = 1
         case:            continue
         }
         if made[k] == NO_NODE {
-            made[k] = graph_node(b, .Field, .Synthetic, NO_NODE, names[k], b.globals[k], {})
+            made[k] = graph_node(b, .Field, .Synthetic, NO_NODE, graph_outside_name(k), b.globals[k], {})
         }
-        g.refers[i] = made[k]
+        l.decl = made[k]
     }
 }
 
@@ -1182,7 +1249,7 @@ graph_origin :: proc(g: ^Program_Graph, id: Node_Id) -> Span {
     if len(g.origins) > 0 {
         if sp, own := g.origins[id]; own { return sp }
     }
-    return graph_tree_span(g.syntax[id])
+    return graph_tree_span(graph_syntax(g, id))
 }
 
 // A node's span, as its tree node says (graph_origin).
@@ -1657,15 +1724,19 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
 // A variable's place: `decl`, its declaration (graph_local, graph_global).
 graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
     if decl == NO_NODE { graph_fatal(span, "the variable '%s' has no declaration", name) }
-    // (As written as its declaration — a temporary's synthetic; the
-    // compiler's own globals, synthetic, written by name.)
-    outside := graph_is_outside(b, decl)
-    w := b.g.written[decl] if !outside else .Explicit
-    op := graph_op(b, .Var, w, span, t)
-    b.g.refers[op] = decl
-    // (Named as its declaration is, mostly: its name's id, unhashed.)
-    b.g.name[op] = b.g.name[decl] if !outside && graph_name(b.g, decl) == name else graph_intern(b, name)
-    return Operand{op, 0}
+    g := b.g
+    when ODIN_DEBUG {   // (named as its declaration is: a leaf's name is its declaration's)
+        if !graph_is_outside(b, decl) {
+            own := "Self" if decl == 0 && g.kind[0] == .Struct else graph_name(g, decl)
+            if own != name { graph_fatal(span, "the variable '%s' named '%s' where it's used", own, name) }
+        }
+    }
+    s := b.pin if b.pin != 0 else b.at
+    id := LEAF + Node_Id(len(g.leaves))
+    append(&g.leaves, Graph_Leaf{decl = decl, type_ = 0 if t == nil else type_id(b.type_table, graph_settled(t)), syntax = s})
+    if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
+    if span != b.span_is { g.origins[id] = span }   // (where its tree node isn't: graph_set_origin)
+    return Operand{id, 0}
 }
 
 // Where a value is stored, as a recipe: the place's operations are emitted
@@ -1677,7 +1748,7 @@ Dest :: struct {
     at:     Operand,   // .At: the place, already computed
     decl:   Node_Id,   // .Var: its declaration, when known here
     name:   string,    // .Var: the variable; .Field: the field; .Variant: the variant
-    syntax: Syntax_Id, // .Var: the name it's written as, its Var's node (0: none — a temporary's)
+    syntax: Syntax_Id, // .Var: the name it's written as, its leaf's tree node (0: none — a temporary's)
     index:  int,       // .Index
     type_:  Type,
     parent: ^Dest,     // .Field, .Index, .Variant: the value they are part of
@@ -1708,7 +1779,7 @@ graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
 }
 
 graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Operand {
-    return graph_op_value(b, .Read, b.g.written[place.op], span, t, "", place)
+    return graph_op_value(b, .Read, graph_written(b.g, place.op), span, t, "", place)
 }
 
 // A synthetic local of the current block, for a value that outlives a run.
@@ -1730,6 +1801,12 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     if p.op == NO_NODE { return p }
     g := b.g
     id := p.op
+    if id >= LEAF {   // (a use of its own)
+        n := LEAF + Node_Id(len(g.leaves))
+        append(&g.leaves, g.leaves[id - LEAF])
+        if sp, own := g.origins[id]; own { g.origins[n] = sp }
+        return Operand{n, p.out}
+    }
     #partial switch g.op[id] {
     case .Var, .Global, .Const, .Field, .Swizzle, .Index, .Deref, .View, .Read, .Cast:
     case:
@@ -1845,8 +1922,8 @@ graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand) -> Operan
 // fallible construction's, its construct (the value is the built place, read).
 @(private="file")
 graph_outputs_op :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Node_Id {
-    if v.op != NO_NODE && b.g.op[v.op] == .Call { return v.op }
-    if v.op != NO_NODE && b.g.op[v.op] == .Read && b.code.constructed != NO_NODE { return b.code.constructed }
+    if v.op != NO_NODE && graph_op_of(b.g, v.op) == .Call { return v.op }
+    if v.op != NO_NODE && graph_op_of(b.g, v.op) == .Read && b.code.constructed != NO_NODE { return b.code.constructed }
     graph_fatal(span, "a call's outputs, built as no call")
 }
 
@@ -1989,11 +2066,9 @@ graph_table_names :: proc(b: ^Graph_Program, pc: ^Program_Code) {
 // place reached through an explicit dereference, has no name.
 graph_place_name :: proc(g: ^Program_Graph, p: Operand) -> string {
     if p.op == NO_NODE { return "" }
+    if graph_is_leaf(p.op) { return "" if graph_written(g, p.op) == .Synthetic else graph_name(g, p.op) }
     ops := graph_operands(g, p.op)
     #partial switch g.op[p.op] {
-    case .Var:
-        if g.written[p.op] == .Synthetic { return "" }
-        return graph_name(g, p.op)
     case .Field, .Swizzle:
         base := graph_place_name(g, ops[0])
         if base == "" { return graph_name(g, p.op) }
@@ -2038,23 +2113,21 @@ graph_code_owner :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
 @(private="file")
 graph_find_consumes :: proc(g: ^Program_Graph) {
     returned: map[Node_Id]Node_Id   // a fun → the local its returns return (NO_NODE: not one)
-    mention:  map[Node_Id]Node_Id   // a param → its one variable operation (NO_NODE: several)
+    mention:  map[Node_Id]Node_Id   // a param → its one leaf (NO_NODE: several)
     defer { delete(returned); delete(mention) }
+    for l, i in g.leaves {
+        if p := l.decl; p >= 0 && g.kind[p] == .Param { mention[p] = NO_NODE if p in mention else LEAF + Node_Id(i) }
+    }
     for i in 0 ..< len(g.kind) {
         id := Node_Id(i)
         if g.kind[id] != .Op { continue }
         #partial switch g.op[id] {
-        case .Var:
-            if p := g.refers[id]; p != NO_NODE && g.kind[p] == .Param {
-                mention[p] = NO_NODE if p in mention else id
-            }
         case .Return:
             if g.written[id] != .Explicit { continue }
             fun := graph_code_owner(g, id)
             local := NO_NODE
             if ops := graph_operands(g, id); len(ops) == 1 && ops[0].op != NO_NODE && g.op[ops[0].op] == .Read {
-                place := graph_operands(g, ops[0].op)[0].op
-                if g.op[place] == .Var && g.refers[place] != NO_NODE && g.kind[g.refers[place]] == .Local { local = g.refers[place] }
+                if d := graph_leaf_decl(g, graph_operands(g, ops[0].op)[0].op); d >= 0 && g.kind[d] == .Local { local = d }
             }
             if fun in returned && returned[fun] != local { local = NO_NODE }
             returned[fun] = local
@@ -2079,7 +2152,7 @@ graph_find_consumes :: proc(g: ^Program_Graph) {
             if read == NO_NODE || g.op[read] != .Read { continue }
             w := graph_user(g, read, fun_end)
             if w == NO_NODE || g.op[w] != .Write || graph_stmt(g, w).kind != .Decl { continue }
-            if ops := graph_operands(g, w); ops[1].op != read || g.op[ops[0].op] != .Var || g.refers[ops[0].op] != local { continue }
+            if ops := graph_operands(g, w); ops[1].op != read || graph_leaf_decl(g, ops[0].op) != local { continue }
             for cp, k in ft.params {
                 if cp.name == graph_name(g, p) && types_equal(distinct_base(cp.type_), ret) { g.consumes[fun] = k }
             }
@@ -2094,10 +2167,11 @@ graph_consumed :: proc(pc: ^Program_Code, ft: ^Type_Scope) -> Maybe(int) {
     return nil
 }
 
-// The first operation after op, up to `last`, that takes op's output.
+// The first operation after op (a leaf: any), up to `last`, that takes
+// op's output.
 @(private="file")
 graph_user :: proc(g: ^Program_Graph, op, last: Node_Id) -> Node_Id {
-    for id := op + 1; id <= last; id += 1 {
+    for id := op + 1 if op < LEAF else 0; id <= last; id += 1 {
         if g.kind[id] != .Op { continue }
         for o in graph_operands(g, id) { if o.op == op { return id } }
     }
@@ -2447,25 +2521,8 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     if routes, decided := b.body.arena_types[d]; decided && routes != (t != nil && routes_to_arena(t)) {
         graph_fatal(graph_origin(b.g, d), "'%s' is typed otherwise than it was declared", graph_name(b.g, d))
     }
-    // Its variable's operations made before that was known (where a value
-    // was built into it), typed as it is. (The code's untyped ones, kept as
-    // they're made: each node looked at once, not once a declaration.)
-    g := b.g
-    for i in b.untyped_seen ..< b.nodes {
-        if g.kind[i] == .Op && g.op[i] == .Var && g.type_[i] == 0 { append(&b.untyped, Node_Id(i)) }
-    }
-    b.untyped_seen = b.nodes
-    settled := type_id(b.type_table, graph_settled(t))
-    kept := 0
-    for id in b.untyped {
-        if g.type_[id] != 0 { continue }   // (typed since)
-        if id > d && g.refers[id] == d { g.type_[id] = settled }
-        if g.type_[id] == 0 {
-            b.untyped[kept] = id
-            kept += 1
-        }
-    }
-    resize(&b.untyped, kept)
+    // (Its uses made before that was known — where a value was built into
+    // it — typed as it is: a leaf of no type is its declaration's.)
 }
 
 // `x : T = void` and `x = void`: the value left
@@ -2548,8 +2605,8 @@ graph_build_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, 
     // (Its base's implied dereference and its offset's widening are the
     // view's, where it is.)
     for o, k in graph_built_operands(b, id) {
-        if o.op == NO_NODE || b.g.written[o.op] != .Implied { continue }
-        if k == 0 && b.g.op[o.op] == .Deref || k == 1 && b.g.op[o.op] == .Cast { graph_set_origin(b.g, o.op, span) }
+        if o.op == NO_NODE || graph_written(b.g, o.op) != .Implied { continue }
+        if k == 0 && graph_op_of(b.g, o.op) == .Deref || k == 1 && graph_op_of(b.g, o.op) == .Cast { graph_set_origin(b.g, o.op, span) }
     }
 }
 
@@ -2587,12 +2644,12 @@ graph_build_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span)
     ops := graph_built_operands(b, id)
     buf, off := ops[0], ops[1]
     graph_unbuild(b, id)
-    if off.op != NO_NODE && b.g.op[off.op] == .Cast && b.g.written[off.op] == .Implied {
+    if off.op != NO_NODE && graph_op_of(b.g, off.op) == .Cast && graph_written(b.g, off.op) == .Implied {
         raw := b.g.operands[b.g.operand_first[off.op]]
         graph_unbuild(b, off.op)
         off = raw
     }
-    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { graph_set_origin(b.g, buf.op, span) }
+    if buf.op != NO_NODE && graph_op_of(b.g, buf.op) == .Deref && graph_written(b.g, buf.op) == .Implied { graph_set_origin(b.g, buf.op, span) }
     return buf, off
 }
 
@@ -2603,7 +2660,7 @@ graph_build_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span)
     ops := graph_built_operands(b, id)
     buf, lo, hi = ops[0], ops[1], ops[2]
     graph_unbuild(b, id)
-    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { graph_set_origin(b.g, buf.op, span) }
+    if buf.op != NO_NODE && graph_op_of(b.g, buf.op) == .Deref && graph_written(b.g, buf.op) == .Implied { graph_set_origin(b.g, buf.op, span) }
     return
 }
 
@@ -2636,7 +2693,7 @@ graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: S
 graph_build_carve :: proc(b: ^Graph_Builder, span: Span, keyword: string, taken: Type, storage: Operand, t: Type, addressed, is_self: bool, count: Operand, w: Written) -> Operand {
     from := storage
     if addressed {
-        if from.op != NO_NODE && b.g.op[from.op] == .Index && is_byte_buffer(graph_type(b.g, graph_built_operands(b, from.op)[0].op)) {
+        if from.op != NO_NODE && graph_op_of(b.g, from.op) == .Index && is_byte_buffer(graph_type(b.g, graph_built_operands(b, from.op)[0].op)) {
             graph_build_view(b, from, taken, false, span)
         }
     } else {
@@ -3259,6 +3316,7 @@ graph_build_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Sp
 // A node's operands while the graph is being built: they end where the next
 // node's begin — or, the newest, now.
 graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
+    if id >= LEAF { return nil }   // (a variable: none)
     end := int(b.g.operand_first[id + 1]) if int(id) + 1 < b.nodes else len(b.g.operands)
     return b.g.operands[b.g.operand_first[id]:end]
 }
@@ -3428,14 +3486,15 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     }
 }
 
-// Refers-to is complete: every var operation names a declaration.
+// Refers-to is complete: every variable's leaf names a declaration of the
+// code's (the compiler's own globals' placed in it).
 @(private="file")
 graph_check_refers :: proc(g: ^Program_Graph) {
     bad := 0
-    for k, id in g.kind {
-        if k == .Op && g.op[id] == .Var && g.refers[id] == NO_NODE {
-            o := graph_origin(g, Node_Id(id))
-            emit_diagnostic(.Graph_Error, span_location(o), "'%s' names no declaration", graph_name(g, Node_Id(id)))
+    for l, i in g.leaves {
+        if l.decl < 0 || int(l.decl) >= len(g.kind) || g.kind[l.decl] == .Op {
+            o := graph_origin(g, LEAF + Node_Id(i))
+            emit_diagnostic(.Graph_Error, span_location(o), "'%s' names no declaration", graph_name(g, LEAF + Node_Id(i)))
             bad += 1
         }
     }
@@ -3502,6 +3561,7 @@ graph_check_runs :: proc(g: ^Program_Graph) {
         if g.kind[id] != .Op { continue }
         for o in graph_operands(g, Node_Id(id)) {
             if o.op == NO_NODE { continue }
+            if o.op >= LEAF { continue }   // (a variable: no operation)
             if g.kind[o.op] != .Op { report(g, &bad, Node_Id(id), "operand %d is no operation", o.op); continue }
             r, def := run_of[id], run_of[o.op]
             ok := def == r && pos[o.op] < pos[id]
@@ -3629,7 +3689,9 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
         fmt.sbprintf(&b, " @%s r%d s%d", span(graph_origin(g, Node_Id(id))), g.refers[id], graph_stmt(g, Node_Id(id)).node)
         if ops := graph_operands(g, Node_Id(id)); len(ops) > 0 {
             strings.write_string(&b, " (")
-            for o, i in ops { fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out) }
+            for o, i in ops {
+                if o.op >= LEAF { fmt.sbprintf(&b, "%sv%d", ", " if i > 0 else "", o.op - LEAF) } else { fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out) }
+            }
             strings.write_string(&b, ")")
         }
         if c, ok := graph_value(g, Node_Id(id)); ok { fmt.sbprintf(&b, " const=%v", c) }
@@ -3640,6 +3702,11 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
         if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))
+    }
+    // (Each leaf: its variable, its type, where it's written.)
+    for l, k in g.leaves {
+        id := LEAF + Node_Id(k)
+        fmt.printfln("v %d -> %d %v t=%s @%s", k, l.decl, graph_written(g, id), type_name(graph_type(g, id)), span(graph_origin(g, id)))
     }
     // (Each operation's: its thens, or what it calls, or the defer it runs.)
     for id in 0 ..< len(g.kind) {

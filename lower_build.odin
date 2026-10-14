@@ -23,8 +23,8 @@ Built :: struct {
 built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
     if b == nil || r.v.op == NO_NODE { return false }
     op := r.v.op
-    if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
-    return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(graph_type(b.g, op))
+    if !r.place && graph_op_of(b.g, op) == .Read { op = graph_built_operands(b, op)[0].op }
+    return op != NO_NODE && graph_op_of(b.g, op) == .Global && is_partial_array(graph_type(b.g, op))
 }
 
 // The type of the temporary a value is built in before it goes to `d`: the

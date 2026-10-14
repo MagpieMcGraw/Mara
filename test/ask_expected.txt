@@ -629,7 +629,7 @@ refers to: type VAO_State  gfx_vao.mara:37
   Assign                   [526,533)  game.vao = VAO_State()
       → Write
   Call                     [530,533)  VAO_State()   : VAO_State
-      → Local temp, Const ×2, Arith <<, Const ×2, Arith <<, Const ×2, Arith <<, Var temp, Construct VAO_State, Var temp, Read
+      → Local temp, Const ×2, Arith <<, Const ×2, Arith <<, Const ×2, Arith <<, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object
   declared  camera.mara:11
@@ -679,7 +679,7 @@ refers to: param a  askat.mara:11
   Return                   [64,66)  return a
       → Return
   Ident                    [65,66)  a   : i32, f32
-      → Var a, Read
+      → Read
 === test/askat.mara | at askat.mara:18:19
 askat.mara:18:19  token '.'
 

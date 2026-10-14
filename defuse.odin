@@ -90,7 +90,7 @@ Du_Fn :: struct {
     vars:     [dynamic]^Var_Binding,
     bindings: map[Node_Id]^Var_Binding,   // a variable's declaration in its code → the variable
     defs:     [dynamic]^Def,        // its variables' and synthetic locals' definitions
-    reaching: map[Node_Id][]^Def,   // a use (a var operation) → the definitions that may reach it
+    reaching: map[Node_Id][]^Def,   // a use (a leaf) → the definitions that may reach it
     runs:     [dynamic]i32,         // its code's runs, then its defer blocks'
     main:     int,                  // how many of `runs` are its code's own
     returns:  [dynamic]Node_Id,     // its explicit returns
@@ -100,7 +100,7 @@ Du_Fn :: struct {
     guarded:  bool,                 // guards computed
 }
 
-// A use of a variable: a var operation, in a fun's code.
+// A use of a variable: a leaf, in a fun's code.
 Du_Use :: struct {
     fn: ^Du_Fn,
     op: Node_Id,
@@ -276,7 +276,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     for d, i in f.defs { if d.kind == .Param { bits_set(state, i) } }
     run_flow_solve(&fl, state, &t, apply)
 
-    // The uses, against the fixpoint: every var operation naming a tracked
+    // The uses, against the fixpoint: every leaf naming a tracked
     // declaration, less a whole write's own destination.
     dest: map[Node_Id]bool
     defer delete(dest)
@@ -294,20 +294,23 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
 }
 
-// A var operation is a use of the variable it names, unless it is where a
-// whole write lands: what reaches it is that variable's definitions in the
-// state just before it (a run lists operations in the order they run).
+// An operation's leaves are uses of the variables they name, but where a
+// whole write lands: what reaches one is that variable's definitions in the
+// state just before the operation (a run lists operations in the order they
+// run).
 @(private="file")
 du_uses_in :: proc(g: ^Program_Graph, f: ^Du_Fn, op: Node_Id, state: []u64,
                    tracked: map[Node_Id]int, kill: [][]u64, dest: map[Node_Id]bool) {
-    if g.op[op] != .Var || op in dest { return }
-    k, ok := tracked[g.refers[op]]
-    if !ok { return }
-    reach: [dynamic]^Def
-    for d, i in f.defs {
-        if bits_has(kill[k], i) && bits_has(state, i) { append(&reach, d) }
+    for o in graph_operands(g, op) {
+        if !graph_is_leaf(o.op) || o.op in dest { continue }
+        k, ok := tracked[graph_refers(g, o.op)]
+        if !ok { continue }
+        reach: [dynamic]^Def
+        for d, i in f.defs {
+            if bits_has(kill[k], i) && bits_has(state, i) { append(&reach, d) }
+        }
+        if len(reach) > 0 { f.reaching[o.op] = reach[:] } else { delete(reach) }
     }
-    if len(reach) > 0 { f.reaching[op] = reach[:] } else { delete(reach) }
 }
 
 // --- variables and definitions ---------------------------------------------
@@ -362,14 +365,13 @@ du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, 
         p := ops[0].op
         whole = true
         for {
-            #partial switch g.op[p] {
+            #partial switch graph_op_of(g, p) {
             case .Var:
-                if g.refers[p] == NO_NODE { return }
-                return g.refers[p], whole, true
+                return graph_refers(g, p), whole, true
             case .Field, .Index, .View, .Deref, .Swizzle, .Variant, .Slice:
                 whole = false
                 p = graph_operands(g, p)[0].op
-                if p == NO_NODE || g.kind[p] != .Op { return }
+                if p == NO_NODE || graph_kind_of(g, p) != .Op { return }
             case:
                 return
             }
@@ -380,8 +382,8 @@ du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, 
 
 @(private="file")
 du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
-    if op == NO_NODE || g.kind[op] != .Op { return false }
-    #partial switch g.op[op] {
+    if op == NO_NODE || graph_kind_of(g, op) != .Op { return false }
+    #partial switch graph_op_of(g, op) {
     case .Var, .Field, .Index, .View, .Deref, .Swizzle, .Variant, .Slice, .Global: return true
     }
     return false
@@ -393,7 +395,7 @@ du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
 du_is_step :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
     if g.op[op] != .Write || g.written[op] != .Synthetic { return false }
     val := graph_operands(g, op)[1].op
-    return val != NO_NODE && g.op[val] == .Arith && g.written[val] == .Synthetic
+    return val != NO_NODE && graph_op_of(g, val) == .Arith && g.written[val] == .Synthetic
 }
 
 // Whether a write gives its variable a value: a bare declaration's zero or
@@ -403,7 +405,7 @@ du_write_valued :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
     #partial switch g.op[op] {
     case .Write, .Fill:
         val := graph_operands(g, op)[1].op
-        return val != NO_NODE && !(g.op[val] == .Const && g.written[val] == .Synthetic)
+        return val != NO_NODE && !(graph_op_of(g, val) == .Const && graph_written(g, val) == .Synthetic)
     case .Construct, .Zero:
         return g.written[op] != .Synthetic
     }
@@ -476,11 +478,13 @@ du_walk_write :: proc(w: ^Du_Walk, op: Node_Id) {
 @(private="file")
 du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
     if o.op == NO_NODE { return }
+    if graph_is_leaf(o.op) {
+        du_walk_use(w, o.op)
+        return
+    }
     g := w.f.g
     ops := graph_operands(g, o.op)
     #partial switch g.op[o.op] {
-    case .Var:
-        du_walk_use(w, o.op)
     case .Read, .Address, .Field, .Deref, .Swizzle, .Variant:
         du_walk_value(w, ops[0])
     case .Index, .View:
@@ -512,12 +516,12 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
     for a in args { du_walk_value(w, a) }
 }
 
-// A var operation: a variable's use, or a synthetic local seen through to
-// the values written into it.
+// A leaf: a variable's use, or a synthetic local seen through to the
+// values written into it.
 @(private="file")
 du_walk_use :: proc(w: ^Du_Walk, op: Node_Id) {
     f := w.f
-    if f.g.refers[op] in f.bindings {
+    if graph_refers(f.g, op) in f.bindings {
         append(w.out, Du_Use{f, op})
         return
     }
@@ -573,15 +577,12 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
 // assigned to storage that already holds a value — is that
 // construction; any other value is itself.
 du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
-    if g.op[v] != .Read { return v }
-    place := graph_operands(g, v)[0].op
-    if place == NO_NODE || g.op[place] != .Var { return v }
-    t := g.refers[place]
+    if graph_op_of(g, v) != .Read { return v }
+    t := graph_leaf_decl(g, graph_operands(g, v)[0].op)
     if t == NO_NODE || g.kind[t] != .Local || g.written[t] != .Synthetic { return v }
     for id := t + 1; id < v; id += 1 {
         if g.kind[id] != .Op || g.op[id] != .Construct { continue }
-        dest := graph_operands(g, id)[0].op
-        if dest != NO_NODE && g.op[dest] == .Var && g.refers[dest] == t { return id }
+        if graph_leaf_decl(g, graph_operands(g, id)[0].op) == t { return id }
     }
     return v
 }
