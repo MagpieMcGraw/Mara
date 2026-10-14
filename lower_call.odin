@@ -119,7 +119,6 @@ lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
 // target's type, then each target written from its own.
 lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     b := k.gb
-    span := tree_span(k.t, s)
     held := make([dynamic]LW_Held, context.temp_allocator)
     saved := k.lower.parallel
     k.lower.parallel = &held
@@ -130,7 +129,7 @@ lw_parallel_assign :: proc(k: ^TC, s: Tree_Id, targets, values: []Tree_Id) {
     }
     k.lower.parallel = saved
     for h in held {
-        v := graph_read(b, graph_var(b, "parallel", h.slot, h.t, h.span), h.t, h.span)
+        v := graph_read(b, graph_var(b, h.slot, h.t, h.span), h.t, h.span)
         graph_build_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
     }
 }
@@ -151,7 +150,7 @@ lw_parallel_hold :: proc(k: ^TC, d: Dest, span: Span) -> Dest {
     t := graph_dest_type(b, d)
     slot := graph_slot(b, "parallel", t, span)
     append(k.lower.parallel, LW_Held{d, slot, t, span})
-    return graph_dest_var("parallel", slot, t)
+    return graph_dest_var(slot, t)
 }
 
 // A take (tc_take): the count at the header's width, then the storage it
@@ -202,9 +201,9 @@ lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     decl := lw_field_decl(k, fields_of, name, target, value, span)
     field := decl != NO_NODE
     if !field { decl = graph_build_decl(b, name, t.main[target], span, tc_node_type(k, target), bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann, tc_sid(k, target)))
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(decl, nil if is_untyped(ann) else ann, tc_sid(k, target)))
     final := tc_node_type(k, target)
     if field { final = graph_type(b.g, decl) }
     graph_build_typed(b, decl, final)
-    lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(name, decl, final, tc_sid(k, target)), span, settle = true)
+    lw_store(k, value, tc_node_type(k, value), r, graph_dest_var(decl, final, tc_sid(k, target)), span, settle = true)
 }

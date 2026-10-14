@@ -22,7 +22,7 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     st := tc_node_type(k, subj)
     if !lw_pure_place(k, subj) {
         slot = graph_slot(b, "subject", nil, span)
-        st = lw_store_into(k, subj, graph_dest_var("subject", slot, nil), span)
+        st = lw_store_into(k, subj, graph_dest_var(slot, nil), span)
         graph_build_typed(b, slot, st)
     } else {
         subject = lw_expr(k, subj, .Place).v
@@ -126,7 +126,7 @@ lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     graph_build_typed(b, decl, ann)
     if fields_of != nil {
         val := graph_build_void(b, ann, b.body.field_inits[tc_sid(k, target)])
-        graph_build_write_at(b, graph_var(b, name, decl, ann, span), val, span)
+        graph_build_write_at(b, graph_var(b, decl, ann, span), val, span)
         return
     }
     graph_build_void_decl(b, decl, ann, span, span)
@@ -209,9 +209,9 @@ lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     // (Its construction is the name's, as the checker annotates it.)
     at := lw_at(k, target)
     defer b.at = at
-    r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(name, decl, ann, tc_sid(k, target)))
+    r := lw_shape_literal(k, s, ann, bindings, .Into, graph_dest_var(decl, ann, tc_sid(k, target)))
     graph_build_typed(b, decl, ann)
-    lw_store(k, 0, ann, r, graph_dest_var(name, decl, ann, tc_sid(k, target)), span, settle = true)
+    lw_store(k, 0, ann, r, graph_dest_var(decl, ann, tc_sid(k, target)), span, settle = true)
 }
 
 // `{inner = Box(5)}` of the shape shortcut (tc_shape_literal).

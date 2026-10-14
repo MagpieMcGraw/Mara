@@ -1558,7 +1558,7 @@ graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Typ
 // A collection's place each time the loop needs it.
 @(private="file")
 graph_coll_place :: proc(b: ^Graph_Builder, fl: ^Graph_For, span: Span) -> Operand {
-    if slot := fl.coll_slot; slot != NO_NODE { return graph_var(b, graph_name(b.g, slot), slot, graph_type(b.g, slot), span) }
+    if slot := fl.coll_slot; slot != NO_NODE { return graph_var(b, slot, graph_type(b.g, slot), span) }
     return graph_base_of(b, fl.walk(fl.walk_data, span), fl.coll_t, span, fl.coll_self)
 }
 
@@ -1774,16 +1774,11 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
     return Operand{graph_op(b, kind, w, span, t, name, ..operands), 0}
 }
 
-// A variable's place: `decl`, its declaration (graph_local, graph_global).
-graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
-    if decl == NO_NODE { graph_fatal(span, "the variable '%s' has no declaration", name) }
+// A variable's place, a leaf: `decl`, its declaration (graph_local,
+// graph_global) — named as it is.
+graph_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Span) -> Operand {
+    if decl == NO_NODE { graph_fatal(span, "a variable with no declaration") }
     g := b.g
-    when ODIN_DEBUG {   // (named as its declaration is: a leaf's name is its declaration's)
-        if !graph_is_outside(b, decl) {
-            own := "Self" if decl == 0 && g.kind[0] == .Struct else graph_name(g, decl)
-            if own != name { graph_fatal(span, "the variable '%s' named '%s' where it's used", own, name) }
-        }
-    }
     s := b.pin if b.pin != 0 else b.at
     id := graph_leaf_new(b, {decl = decl, type_ = 0 if t == nil else type_id(b.type_table, graph_settled(t)), syntax = s})
     if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
@@ -1799,7 +1794,7 @@ Dest :: struct {
     kind:   Dest_Kind,
     at:     Operand,   // .At: the place, already computed
     decl:   Node_Id,   // .Var: its declaration, when known here
-    name:   string,    // .Var: the variable; .Field: the field; .Variant: the variant
+    name:   string,    // .Field: the field; .Variant: the variant
     syntax: Syntax_Id, // .Var: the name it's written as, its leaf's tree node (0: none — a temporary's)
     index:  int,       // .Index
     type_:  Type,
@@ -1808,8 +1803,8 @@ Dest :: struct {
 
 Dest_Kind :: enum u8 { Var, At, Field, Index, Variant }
 
-graph_dest_var :: proc(name: string, decl: Node_Id, t: Type, syntax := Syntax_Id(0)) -> Dest {
-    return Dest{kind = .Var, name = name, decl = decl, type_ = t, syntax = syntax}
+graph_dest_var :: proc(decl: Node_Id, t: Type, syntax := Syntax_Id(0)) -> Dest {
+    return Dest{kind = .Var, decl = decl, type_ = t, syntax = syntax}
 }
 
 // Emit a destination's place in the current run.
@@ -1817,11 +1812,11 @@ graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     switch d.kind {
     case .Var:
         at := b.at
-        if d.syntax == 0 { return graph_var(b, d.name, d.decl, d.type_, span) }
+        if d.syntax == 0 { return graph_var(b, d.decl, d.type_, span) }
         b.at = d.syntax   // (the name's, written where it is: what's built into it is the value's)
         defer b.at = at
         _, name := annot_split(d.syntax)
-        return graph_var(b, d.name, d.decl, d.type_, tree_span(&build_tree, name))
+        return graph_var(b, d.decl, d.type_, tree_span(&build_tree, name))
     case .At:    return d.at
     case .Field: return graph_op_value(b, .Field, .Explicit, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     case .Index: return graph_op_value(b, .Index, .Explicit, span, d.type_, "", graph_dest_place(b, d.parent^, span), graph_const_index(b, d.index, span))
@@ -1926,8 +1921,8 @@ graph_spread_results :: proc(b: ^Graph_Builder, span: Span, sd: ^Scope_Body, par
         val := Operand{c.op, i32(i)}
         if view_kind(f.type_, rt) == .Slice {
             slot := graph_slot(b, "temp", rt, span)
-            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, rt, span), val)
-            val = graph_op_value(b, .Slice, .Implied, span, f.type_, "", graph_var(b, "temp", slot, rt, span))
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, slot, rt, span), val)
+            val = graph_op_value(b, .Slice, .Implied, span, f.type_, "", graph_var(b, slot, rt, span))
         }
         field := graph_dest_place(b, Dest{kind = .Field, name = f.name, type_ = f.type_, parent = parent}, span)
         graph_op(b, .Write, .Explicit, span, nil, "", field, val)
@@ -2567,7 +2562,7 @@ graph_build_decl :: proc(b: ^Graph_Builder, name: string, tok: Token_Id, span: S
     routes := t != nil && routes_to_arena(t)
     b.body.arena_types[d] = routes   // (checked against the type it is given: graph_code_close)
     if !routes || b.body.returned != 0 && tok == b.body.returned { return d }
-    graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, name, d, t, span))
+    graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, d, t, span))
     if n := len(b.code.scopes); n > 0 && b.code.scopes[n - 1].block == b.code.block {
         s := &b.code.scopes[n - 1]
         if !s.holds { graph_fatal(span, "'%s' lives on the arena in a scope said to hold no local there", name) }
@@ -2591,11 +2586,11 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
 // uninitialized — `void` where it is written, `at`.
 graph_build_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span, at: Span) {
     val := graph_void(b, t, at)
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, graph_name(b.g, decl), decl, t, span), val)
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, decl, t, span), val)
 }
 
 graph_build_void_assign :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span, at: Span) {
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), graph_void(b, t, at))
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, decl, t, span), graph_void(b, t, at))
 }
 
 // An assert of its condition's value, its text as written; a comparison's
@@ -2624,7 +2619,7 @@ graph_build_and :: proc(b: ^Graph_Builder, is_and: bool, w: Written, span: Span)
 }
 
 graph_build_and_left :: proc(b: ^Graph_Builder, sa: ^Graph_And, l: Operand) {
-    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), l)
+    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.slot, Type_Bool{}, sa.span), l)
     sa.rhs, sa.join = graph_run_new(b), graph_run_new(b)
     if sa.and {
         graph_branch(b, l, sa.rhs, sa.join, sa.w, sa.span)
@@ -2635,22 +2630,22 @@ graph_build_and_left :: proc(b: ^Graph_Builder, sa: ^Graph_And, l: Operand) {
 }
 
 graph_build_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Operand {
-    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), r)
+    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.slot, Type_Bool{}, sa.span), r)
     graph_jump(b, sa.join, .Synthetic, sa.span)
     b.code.run = sa.join
-    return graph_read(b, graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
+    return graph_read(b, graph_var(b, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
 }
 
 // A bare declaration's value: its type's construction, or zero.
 graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, args: []Operand, span: Span) {
-    graph_construct_bare(b, graph_var(b, graph_name(b.g, d), d, t, span), t, args, span)
+    graph_construct_bare(b, graph_var(b, d, t, span), t, args, span)
 }
 
 // A call through a function value: the arguments, then the
 // value, read, then the call.
 graph_build_indirect :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
     ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
-    append(&ops, graph_read(b, graph_var(b, name, decl, fn_value, span), fn_value, span))
+    append(&ops, graph_read(b, graph_var(b, decl, fn_value, span), fn_value, span))
     append(&ops, ..args)
     return graph_op_value(b, .Call, w, span, t, name, ..ops[:])
 }
@@ -2744,8 +2739,8 @@ graph_build_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: b
 // temporary, read.
 graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
     slot := graph_slot(b, "temp", t, span)
-    graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, "temp", slot, t, span), graph_read(b, view, t, span))
-    return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+    graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, slot, t, span), graph_read(b, view, t, span))
+    return graph_read(b, graph_var(b, slot, t, span), t, span)
 }
 
 // A take: the count, then the storage — `&x`, x's place; else a place, of
@@ -2805,7 +2800,7 @@ graph_build_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure,
     dest := mr.place
     if !target {
         if mr.decls[i] != NO_NODE && !mr.writes { graph_build_typed(b, mr.decls[i], t) }
-        dest = graph_var(b, name, mr.decls[i], t, mr.span)
+        dest = graph_var(b, mr.decls[i], t, mr.span)
     }
     graph_op(b, .Write, .Explicit, mr.span, nil, "", dest, val)
 }
@@ -2867,7 +2862,7 @@ graph_build_match_switch :: proc(b: ^Graph_Builder, gm: ^Graph_Match, span: Span
 
 @(private="file")
 graph_build_subject :: proc(b: ^Graph_Builder, span: Span, gm: ^Graph_Match, first := false) -> Operand {
-    if gm.slot != NO_NODE { return graph_var(b, "subject", gm.slot, graph_type(b.g, gm.slot), span) }
+    if gm.slot != NO_NODE { return graph_var(b, gm.slot, graph_type(b.g, gm.slot), span) }
     p := gm.subject if first else graph_place_again(b, gm.subject, span)
     return graph_base_of(b, p, gm.t, span, gm.is_self)
 }
@@ -3075,9 +3070,9 @@ graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
     graph_retype(b, fl.counter, ct)
     if !fl.end_literal {
         fl.end_slot = graph_slot(b, "end", ct, fl.span)
-        graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "end", fl.end_slot, ct, fl.span), fl.hi)
+        graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.end_slot, ct, fl.span), fl.hi)
     }
-    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, fl.span), fl.lo)
+    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.counter, ct, fl.span), fl.lo)
     graph_build_for_runs(b, fl)
 }
 
@@ -3091,7 +3086,7 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
         if view := graph_loop_view_of(t); view != nil {
             fl.coll_slot = graph_slot(b, "items", view, fl.span)
             val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_base_of(b, place, t, fl.span, is_self))
-            graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
+            graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.coll_slot, view, fl.span), val)
         } else if fl.walk == nil {
             graph_fatal(fl.span, "a loop's collection walked by no one")
         }
@@ -3107,7 +3102,7 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
     } else {
         fl.counter = graph_slot(b, "index", index_t, fl.span)
     }
-    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, graph_name(b.g, fl.counter), fl.counter, index_t, fl.span),
+    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, fl.counter, index_t, fl.span),
              graph_const(b, .Synthetic, fl.span, index_t, "0", Const_Value{}))
     graph_build_for_runs(b, fl)
 }
@@ -3125,15 +3120,15 @@ graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Node_Id,
     span := fl.span
     p := place
     if !is_place {
-        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held, t, span), place)
-        p = graph_var(b, "temp", held, t, span)
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, held, t, span), place)
+        p = graph_var(b, held, t, span)
     }
     if pt, ok := distinct_base(t).(^Type_Ptr); ok && !is_self {
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)   // (through a pointer, what it points at)
     }
     val := graph_op_value(b, .Slice, .Implied, span, view, "", p)
     graph_build_typed(b, fl.coll_slot, view)
-    graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, "items", fl.coll_slot, view, span), val)
+    graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.coll_slot, view, span), val)
 }
 
 // The loop's runs, into the check: a counter against its bound; else the
@@ -3146,11 +3141,11 @@ graph_build_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     span := fl.span
     if fl.counter != NO_NODE {
         ct := graph_type(b.g, fl.counter)
-        cur := graph_read(b, graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, span), ct, span)
+        cur := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
         bound: Operand
         if fl.is_range {
             if fl.end_slot != NO_NODE {
-                bound = graph_read(b, graph_var(b, "end", fl.end_slot, graph_type(b.g, fl.end_slot), span), graph_type(b.g, fl.end_slot), span)
+                bound = graph_read(b, graph_var(b, fl.end_slot, graph_type(b.g, fl.end_slot), span), graph_type(b.g, fl.end_slot), span)
             } else {
                 bound = graph_place_again(b, fl.high, span)   // (a literal)
             }
@@ -3184,11 +3179,11 @@ graph_build_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     graph_scope_open(b, fl.body_block, span, fl.body_arena)
     if fl.elem != NO_NODE {
         ct := graph_type(b.g, fl.counter)
-        at := graph_read(b, graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, span), ct, span)
+        at := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
         at = graph_widen(b, at, slice_header_width_type, span)
         et := fl.elem_t
         slot := graph_op_value(b, .Index, .Synthetic, span, et, "", graph_coll_place(b, fl, span), at)
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.elem_name, fl.elem, et, span),
+        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.elem, et, span),
                  graph_read(b, slot, et, span))
     }
 }
@@ -3215,9 +3210,9 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     if fl.has_post {
         if fl.counter != NO_NODE {
             ct := graph_type(b.g, fl.counter)
-            cur := graph_read(b, graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, span), ct, span)
+            cur := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
             next := graph_op_value(b, .Arith, .Synthetic, span, ct, "+%", cur, graph_const(b, .Synthetic, span, ct, "1", Const_Value{int = 1}))
-            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, graph_name(b.g, fl.counter), fl.counter, ct, span), next)
+            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.counter, ct, span), next)
         }
         graph_jump(b, fl.check, .Synthetic, span)
     }
@@ -3346,13 +3341,13 @@ graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, s
 // An aggregate built where no destination was given: a synthetic local,
 // made before it, typed once it is.
 graph_build_temp :: proc(b: ^Graph_Builder, span: Span, t: Type = nil) -> Dest {
-    return graph_dest_var("temp", graph_slot(b, "temp", t, span), t)
+    return graph_dest_var(graph_slot(b, "temp", t, span), t)
 }
 
 graph_build_temp_end :: proc(b: ^Graph_Builder, d: Dest, t: Type, span: Span) -> Operand {
     graph_retype(b, d.decl, t)
     graph_build_typed(b, d.decl, t)
-    return graph_var(b, "temp", d.decl, t, span)
+    return graph_var(b, d.decl, t, span)
 }
 
 // A construction's operation into d: its place, the
@@ -3371,7 +3366,7 @@ graph_build_construct :: proc(b: ^Graph_Builder, callee: ^Type_Scope, t: Type, d
 
 // A bare declaration of a value no constructor builds: zero.
 graph_build_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Span) {
-    graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, graph_name(b.g, decl), decl, t, span))
+    graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, decl, t, span))
 }
 
 // A body's types, now that its widths are known.

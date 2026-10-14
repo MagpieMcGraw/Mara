@@ -156,7 +156,7 @@ lw_self :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
     f := t.(^Type_Ptr).elem
-    self := graph_var(b, "Self", b.self, f, span)
+    self := graph_var(b, b.self, f, span)
     if want == .Place { return {v = self, place = true, ok = true} }
     return {v = graph_op_value(b, .Address, w, span, t, "", self), ok = true}
 }
@@ -300,7 +300,7 @@ lw_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     } else if want == .Into {
         at = dest
     } else {
-        at = graph_dest_var("temp", graph_slot(b, "temp", ts, span), ts)
+        at = graph_dest_var(graph_slot(b, "temp", ts, span), ts)
     }
     gl := graph_build_construct(b, ts, ts, at, ops, w, span)
     if overrides != 0 { lw_literal_fields(k, overrides, tree_list(k.t, k.t.b[overrides]), &ts.sd, gl) }
@@ -323,7 +323,7 @@ lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     ty := Tree_Id(tr.a[e])
     vt := tc_node_type(k, ty)
     sd := resolve_to_struct_type(k.c, vt)
-    d := graph_dest_var(tc_name(k, ty), lw_local(k, ty), vt, tc_sid(k, ty))
+    d := graph_dest_var(lw_local(k, ty), vt, tc_sid(k, ty))
     if pt, is_ptr := distinct_base(vt).(^Type_Ptr); is_ptr {
         span := tree_span(tr, ty)
         d = Dest{kind = .At, at = graph_op_value(k.gb, .Deref, .Implied, span, pt.elem, "", graph_dest_place(k.gb, d, span)), type_ = pt.elem}

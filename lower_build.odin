@@ -198,8 +198,8 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
             if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
             if held == NO_NODE { lw_fail(k, e, "a slice of an array value") }
             used = true
-            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", held, t, span), r.v)
-            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, "temp", held, t, span))
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, held, t, span), r.v)
+            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, held, t, span))
         }
         // (Bytes taken as an array: a view, copied into a temporary.)
         _, to_array := distinct_base(to).(^Type_Fixed_Array)
