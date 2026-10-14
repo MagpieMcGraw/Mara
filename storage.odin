@@ -104,7 +104,7 @@ storage_users :: proc(s: ^Storage) {
                 s.out_user[o] = -2 if seen && ou != op else op
             }
             // A match arm's binding is the payload's place.
-            if pg.op[op] == .Variant && pg.refers[op] != NO_NODE { s.bound[pg.refers[op]] = op }
+            if pg.op[op] == .Variant && graph_refers(pg, op) != NO_NODE { s.bound[graph_refers(pg, op)] = op }
             if pg.op[op] == .Arena_Alloc { s.arena[graph_refers(pg, graph_operands(pg, op)[0].op)] = true }
         }
     }

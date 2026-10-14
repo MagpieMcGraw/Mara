@@ -133,7 +133,7 @@ Program_Graph :: struct {
     type_:   [dynamic]Type_Id,  // has type; none when the node has none (its type: graph_type)
     types:   ^[dynamic]Type,    // (the program's types, a node's by its Type_Id)
     origins: map[Node_Id]Span,  // where a node is written, where that isn't its tree node's (graph_origin)
-    refers:  [dynamic]Node_Id,  // a variant operation → the declaration it binds (a leaf's: Graph_Leaf.decl)
+    binds:   map[Node_Id]Node_Id,   // a variant operation that binds a match arm's payload → the binding (graph_refers)
     // What a call or construction runs is its tree node's annotated callee
     // (graph_called) — but where lowering says otherwise: a call through a
     // fun's value, none; one written in a default a call leaves off, its own.
@@ -171,11 +171,9 @@ Program_Graph :: struct {
     unreachable: [dynamic]Span,
     settled:     [dynamic]Node_Id,   // literals whose type is their use's (a `:=` width adopted, an operand's): for the range check
 
-    // A constant operation's value, where code needs one: a literal, an enum
-    // variant, a named scalar constant, a fixed array's length — a string
-    // constant's global, its text. `void` and a constant not evaluated here
-    // have none. (Read with graph_value.)
-    value:  [dynamic]Const_Id,
+    // A string constant's global: its text (a constant's value is its
+    // leaf's, Graph_Const). (Read with graph_value.)
+    texts:  map[Node_Id]Const_Id,
     values: ^[dynamic]Const_Value,   // (the program's values, a node's by its Const_Id)
 
     // An assert on a comparison: each side's source text, which its failure
@@ -207,7 +205,7 @@ Const_Id :: distinct u32
 
 // A constant's value (a leaf's), a global's text, if it has one.
 graph_value :: proc(g: ^Program_Graph, id: Node_Id) -> (Const_Value, bool) {
-    v := g.consts[id - CONST].value if id >= CONST && id < LEAF else g.value[id]
+    v := g.consts[id - CONST].value if id >= CONST && id < LEAF else g.texts[id] or_else 0
     if v == 0 { return {}, false }
     return g.values[v], true
 }
@@ -220,7 +218,10 @@ graph_set_value :: proc(g: ^Program_Graph, id: Node_Id, c: Const_Value) {
     small := !c.is_float && !c.is_text && c.int >= 0 && c.int < len(b.value_small[0])
     as := 0 if transmute(u64)c.float == 0 else 1
     if c.float != 0 && c.float != f64(c.int) { small = false }
-    at := &g.consts[id - CONST].value if id >= CONST && id < LEAF else &g.value[id]
+    if id < CONST {
+        if id not_in g.texts { g.texts[id] = 0 }
+    }
+    at := &g.consts[id - CONST].value if id >= CONST && id < LEAF else &g.texts[id]
     if small && b.value_small[as][c.int] != 0 {
         at^ = b.value_small[as][c.int]
         return
@@ -363,7 +364,7 @@ graph_op_of :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Op_Kind {
     return .Var if id >= LEAF else .Const if id >= CONST else g.op[id]
 }
 graph_refers :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
-    return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE if id >= CONST else g.refers[id]
+    return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE if id >= CONST else g.binds[id] or_else NO_NODE
 }
 
 // How a node is written; a leaf as its declaration is — but the compiler's
@@ -850,7 +851,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
 // it ends. Nothing is copied.
 
 Graph_Column :: enum u8 {
-    Kind, Op, Written, Parent, Name, Type, Refers, Decl_Tok, Syntax, Value,
+    Kind, Op, Written, Parent, Name, Type, Decl_Tok, Syntax,
     Operand_First, Operands, Leaves, Consts, Run_Ops, Run_First, Edges, Unreachable, Settled,
     // A builder's tables (Graph_Tables): each a region of its own, so what's
     // in one never moves — a code another builder built is read, on another
@@ -953,11 +954,9 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.names = &b.tables.names
     g.types = &b.tables.types.types
     g.type_ = make([dynamic]Type_Id, at(r, .Type))
-    g.refers = make([dynamic]Node_Id, at(r, .Refers))
     g.decl_tok = make([dynamic]Token_Id, at(r, .Decl_Tok))
     g.syntax = make([dynamic]Syntax_Id, at(r, .Syntax))
     g.annotated = &b.checked.annot.callees
-    g.value = make([dynamic]Const_Id, at(r, .Value))
     g.values = &b.tables.values
     g.operand_first = make([dynamic]i32, at(r, .Operand_First))
     g.operands = make([dynamic]Operand, at(r, .Operands))
@@ -981,8 +980,8 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
         if cap(col) > n { shrink(col) }
     }
     trim(&g.kind, n); trim(&g.op, n); trim(&g.written, n); trim(&g.parent, n)
-    trim(&g.name, n); trim(&g.type_, n); trim(&g.refers, n)
-    trim(&g.decl_tok, n); trim(&g.syntax, n); trim(&g.value, n)
+    trim(&g.name, n); trim(&g.type_, n)
+    trim(&g.decl_tok, n); trim(&g.syntax, n)
     trim(&g.operand_first, n + 1 if n > 0 else 0)
     trim(&g.operands, len(g.operands) if n > 0 else 0)
     trim(&g.leaves, len(g.leaves) if n > 0 else 0)
@@ -1217,14 +1216,12 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.parent[i] = parent
     g.name[i] = graph_intern(b, name)
     g.type_[i] = 0 if t == nil else type_id(b.type_table, graph_settled(t))
-    g.refers[i] = NO_NODE
     g.decl_tok[i] = 0
     s := b.pin if b.pin != 0 else b.at
     g.syntax[i] = s
     if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
     if origin != b.span_is { g.origins[id] = origin }   // (where its tree node isn't: graph_set_origin)
     if b.sub != 0 { g.sub[id] = b.sub }
-    g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))
     b.nodes += 1
     return id
@@ -1263,10 +1260,8 @@ graph_resize :: proc(g: ^Program_Graph, n: int) {
     non_zero_resize(&g.parent, n)
     non_zero_resize(&g.name, n)
     non_zero_resize(&g.type_, n)
-    non_zero_resize(&g.refers, n)
     non_zero_resize(&g.decl_tok, n)
     non_zero_resize(&g.syntax, n)
-    non_zero_resize(&g.value, n)
     non_zero_resize(&g.operand_first, n)
 }
 
@@ -1879,8 +1874,8 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     ops := make([]Operand, len(src), context.temp_allocator)
     for o, k in src { ops[k] = graph_place_again(b, o, span) }
     n := graph_op_value(b, g.op[id], g.written[id], graph_origin(g, id), graph_type(g, id), graph_name(g, id), ..ops)
-    g.refers[n.op] = g.refers[id]
-    g.value[n.op] = g.value[id]
+    if r, binds := g.binds[id]; binds { g.binds[n.op] = r }
+    if v, has := g.texts[id]; has { g.texts[n.op] = v }
     g.syntax[n.op] = g.syntax[id]   // (walked again: the same node's)
     graph_set_origin(g, n.op, graph_origin(g, id))
     if g.op[id] == .Const && slice.contains(g.settled[:], id) { append(&g.settled, n.op) }   // (graph_const_settles)
@@ -2697,7 +2692,7 @@ graph_unbuild :: proc(b: ^Graph_Builder, id: Node_Id) {
     }
     pop(&r.ops)
     resize(&g.operands, int(g.operand_first[id]))
-    g.value[id] = 0
+    delete_key(&g.texts, id)
     delete_key(&g.origins, id)   // (its id the next node's: graph_node)
     delete_key(&g.sub, id)
     b.nodes -= 1
@@ -2910,7 +2905,7 @@ graph_build_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, ga: Graph_Arm, i: i
         bound := graph_node(b, .Local, .Explicit, k.n, ga.bound, ga.payload, span)
         // The binding is the payload's place, not a copy.
         payload := graph_op(b, .Variant, .Explicit, span, ga.payload, ga.bound, graph_build_subject(b, span, gm))
-        b.g.refers[payload] = bound
+        b.g.binds[payload] = bound
         graph_declare(b, bound, ga.bound_tok)   // after the subject's place: it may reuse the name
     }
     return k
@@ -3753,7 +3748,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
         fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
             g.parent[id], graph_last(g, Node_Id(id)), graph_name(g, Node_Id(id)))
         if t := graph_type(g, Node_Id(id)); t != nil { fmt.sbprintf(&b, " t=%s", type_name(t)) }
-        fmt.sbprintf(&b, " @%s r%d s%d", span(graph_origin(g, Node_Id(id))), g.refers[id], graph_stmt(g, Node_Id(id)).node)
+        fmt.sbprintf(&b, " @%s r%d s%d", span(graph_origin(g, Node_Id(id))), graph_refers(g, Node_Id(id)), graph_stmt(g, Node_Id(id)).node)
         if ops := graph_operands(g, Node_Id(id)); len(ops) > 0 {
             strings.write_string(&b, " (")
             for o, i in ops {

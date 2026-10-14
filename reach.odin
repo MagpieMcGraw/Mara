@@ -326,7 +326,7 @@ places_contain :: proc(pg: ^Program_Graph, bound: map[Node_Id]Node_Id, a, b: Nod
 graph_bound :: proc(pg: ^Program_Graph) -> map[Node_Id]Node_Id {
     bound := make(map[Node_Id]Node_Id, allocator = context.temp_allocator)
     for id := Node_Id(1); id <= pg.end; id += 1 {
-        if pg.kind[id] == .Op && pg.op[id] == .Variant && pg.refers[id] != NO_NODE { bound[pg.refers[id]] = id }
+        if pg.kind[id] == .Op && pg.op[id] == .Variant && graph_refers(pg, id) != NO_NODE { bound[graph_refers(pg, id)] = id }
     }
     return bound
 }

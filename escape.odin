@@ -386,7 +386,7 @@ esc_scan :: proc(e: ^Esc) {
                 }
             case .Variant:
                 // A match arm's binding is the payload's place, not a copy.
-                if k := esc_var(e, g.refers[op]); k >= 0 { e.vars[k].view = true }
+                if k := esc_var(e, graph_refers(g, op)); k >= 0 { e.vars[k].view = true }
             }
         }
     }
@@ -457,7 +457,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_join(r, esc_at(e, ops[0]))
     case .Variant:
         esc_join(r, esc_at(e, ops[0]))
-        if k := esc_var(e, g.refers[op]); k >= 0 { esc_copy(&state[e.vars[k].slot], r^) }
+        if k := esc_var(e, graph_refers(g, op)); k >= 0 { esc_copy(&state[e.vars[k].slot], r^) }
     case .Index, .View:
         esc_mem(e, r, ops[0], state)
     case .Slice:

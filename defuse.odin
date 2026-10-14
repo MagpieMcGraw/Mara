@@ -357,8 +357,8 @@ du_def :: proc(checked: ^Checked_Program, f: ^Du_Fn, def_of: ^map[[2]i32]^Def, v
 du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, ok: bool) {
     #partial switch g.op[op] {
     case .Variant:
-        if g.refers[op] == NO_NODE { return }
-        return g.refers[op], true, true
+        if graph_refers(g, op) == NO_NODE { return }
+        return graph_refers(g, op), true, true
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
         if len(ops) == 0 || !du_is_place(g, ops[0].op) { return }
