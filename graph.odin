@@ -1120,11 +1120,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     s := b.pin if b.pin != 0 else b.at
     g.syntax[i] = s
     if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
-    if origin != b.span_is {
-        g.origins[id] = origin   // (where its tree node isn't: graph_set_origin)
-    } else if len(g.origins) > 0 {
-        delete_key(&g.origins, id)
-    }
+    if origin != b.span_is { g.origins[id] = origin }   // (where its tree node isn't: graph_set_origin)
     if b.sub != 0 { g.sub[id] = b.sub }
     g.value[i] = 0
     g.operand_first[i] = i32(len(g.operands))
@@ -2578,6 +2574,8 @@ graph_unbuild :: proc(b: ^Graph_Builder, id: Node_Id) {
     pop(&r.ops)
     resize(&g.operands, int(g.operand_first[id]))
     g.value[id] = 0
+    delete_key(&g.origins, id)   // (its id the next node's: graph_node)
+    delete_key(&g.sub, id)
     b.nodes -= 1
 }
 
