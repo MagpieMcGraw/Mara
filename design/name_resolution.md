@@ -79,8 +79,11 @@ member, a literal's field names. The checker finds those in the type's declarati
    name maps; `TC_Scope`'s `env`. What stays of `Type_Scope` is the declaration's record, read
    by its token; what it copied of the tree is read from the tree. Completion and hittest ask
    the resolver what is in sight at a point (it walks the fun to it). Gate: as stage 2.
-4. **Faster.** Each module's bodies resolved in parallel (the definitions in sight are read
-   only); a generic's body once, not per instance.
+4. **Generics, and faster.** A generic's body is resolved once (the resolver's, from stage 1);
+   what the checker kept of its own — type params found by name, `subst` by name, instance
+   bindings that outlived their instance — goes: a template's type params are the tokens that
+   declare them. Each module's bodies resolved in parallel waits: the checker stays
+   sequential for now (the user, 2026-10-14).
 
 ## Stage 1, as found
 
@@ -169,6 +172,22 @@ What reading the refs took, beyond the lookups themselves:
   placeholder is (`resolve_completing`), and a module's definitions; the checked program keeps
   the bindings for their types. Hittest never asked the scopes.
 
+## Stage 4, as found
+
+- **Type params are tokens**: a fun template's are the resolver's list
+  (`type_params_of`: those it declares, then each `$T` its params and results introduce — a
+  `$T` declares one unless its signature has one by that name already, an outer `T` no
+  matter); a struct's (`tc_struct_generics`) and a union's are their declaring tokens; a
+  struct's `$T` in a field's type is declared too.
+- **Bindings by token** (`TC_Bindings`): inference binds the declaration a param's type names
+  (`tc_type_param_named`); an instance is given its bindings (`tc_instance_begin`), binds them
+  — and its template's name to itself — and gives them back at its end: a struct's and a
+  union's too, which bound theirs before, for good. `k.subst` and the events' copy are gone.
+- **By refs, not by text**: whether a struct's param is used in its fields' types
+  (`tc_type_uses`), which field a shape's argument goes to (the shape shortcut), what a shape
+  constraint `~T` is — resolved where it's written, not by flat name in its template's
+  module.
+
 ## Checklist
 
 - [x] 1. The resolver, checked against the checker (2026-10-13)
@@ -187,4 +206,4 @@ What reading the refs took, beyond the lookups themselves:
         into; the checker says it where it did (2026-10-14)
 - [x] 3. The environments go (2026-10-14: 590ed69 no names in module or block scopes;
       ec1d148 no block scopes, no env; then the leftovers)
-- [ ] 4. Faster
+- [x] 4. Generics by declaration (2026-10-14); parallel resolution not now (sequential)

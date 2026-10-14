@@ -60,7 +60,6 @@ TC :: struct {
     const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
-    subst:         map[string]Type,   // the type params bound, in an instance being checked
     recv:          TC_Recv,           // the call being checked's receiver, checked
     body:          ^Type_Scope,       // the fun or struct whose body is being checked: what its bindings are variables of
     vars:          [dynamic]Var_Decl, // ... the variables it has bound so far (Annotations.vars once it is done)
@@ -163,17 +162,21 @@ tc_owner_registered :: proc(k: ^TC, decl: Token_Id) -> bool {
     return true
 }
 
-// A generic's type params bound to what subst binds them to: an instance's
-// (tc_instance_begin), or a trial's — given back after (tc_type_params_restore).
-tc_type_params_bind :: proc(k: ^TC, node: Tree_Id, subst: map[string]Type) -> []TC_Bound {
-    toks := k.rs.type_params_of[node]
-    was := make([]TC_Bound, len(toks), context.temp_allocator)
-    for tok, i in toks {
+// A generic's type params, each by the token that declares it: what an
+// instance (or a dispatch's trial of one) binds it to.
+TC_Bindings :: map[Token_Id]Type
+
+// A generic's type params bound: an instance's (tc_instance_begin), or a
+// trial's — given back after (tc_type_params_restore).
+tc_type_params_bind :: proc(k: ^TC, subst: TC_Bindings) -> []TC_Bound {
+    was := make([dynamic]TC_Bound, 0, len(subst), context.temp_allocator)
+    for tok, bound in subst {
+        if bound == nil { continue }
         t, had := tc_bound(k, tok)
-        was[i] = {tok, t, had}
-        if bound, ok := subst[tc_text(tok)]; ok && bound != nil { tc_bound_set(k, tok, bound) }
+        append(&was, TC_Bound{tok, t, had})
+        tc_bound_set(k, tok, bound)
     }
-    return was
+    return was[:]
 }
 
 tc_type_params_restore :: proc(k: ^TC, was: []TC_Bound) {
@@ -232,14 +235,13 @@ TC_Event :: struct {
     sid:      Syntax_Id,         // .Module_Stmt
     salt:     TC_Salt,
     pkg:      string,
-    subst:    map[string]Type,
 }
 
 TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt, Program_Struct }
 
 tc_event :: proc(k: ^TC, e: TC_Event) {
     e := e
-    e.salt, e.pkg, e.subst = {salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg, k.subst
+    e.salt, e.pkg = {salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg
     append(&k.events, e)
 }
 
@@ -280,7 +282,7 @@ TC_Scope :: struct {
     node: Tree_Id,   // its Fun_Def or Struct_Def
     nested: [dynamic]int,   // the funs and structs defined in its body
     consts: [dynamic]^TC_Const,   // the constants defined in its body
-    subst:  map[string]Type,   // an instance's: its type params bound
+    subst:  TC_Bindings,       // an instance's: its type params bound
     synthetic: bool,           // an instance: the compiler's, written nowhere
     registered: bool,       // (they are)
 }
@@ -315,13 +317,13 @@ tc_instance :: proc(k: ^TC, n: Tree_Id) -> Instance_Id {
 // A generic's instance made: numbered, and its template's nodes checked as
 // its own (tc_sid, tc_instance) until tc_instance_end puts back the one
 // being checked before.
-tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope) -> (saved: TC_Salt) {
+tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope, subst: TC_Bindings) -> (saved: TC_Salt) {
     saved = {k.salt, k.salt_lo, k.salt_hi, len(k.bound_log), k.t.first[tmpl.def], k.t.end[tmpl.def]}
     k.instance_count += 1
     id := annot_instance(k.annot, tmpl.lo, tmpl.node, ts)
     assert(u64(id) == k.instance_count)
     k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
-    tc_type_params_bind(k, tmpl.node, k.subst)   // (its type params: what it binds them to)
+    tc_type_params_bind(k, subst)   // (its type params: what it binds them to)
     return
 }
 

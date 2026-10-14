@@ -46,10 +46,10 @@ Middle_Worker :: struct {
 // Every code lowered and analysed, then put in place in written order.
 middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> Middle {
     mid := Middle{on = true}
-    saved_salt, saved_pkg, saved_subst := TC_Salt{salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg, k.subst
+    saved_salt, saved_pkg := TC_Salt{salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg
     defer {
         tc_salt_set(k, saved_salt)
-        k.pkg, k.subst = saved_pkg, saved_subst
+        k.pkg = saved_pkg
     }
     p, codes := lower_begin(k)
     shared := lw_shared_sizes(k) if ODIN_DEBUG else nil

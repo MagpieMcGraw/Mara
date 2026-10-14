@@ -6,7 +6,7 @@ The program shouldn't re-describe what the text already describes one-to-one.
 
 Code generation still decides what the program means in places (void by statement kind, checks and their messages, representations chosen from an op's user, type mismatches as refusals, print, text without a header): move each into lowering or storage. The list: design/codegen_concerns.md.
 
-Name resolution, stage 4: faster — each module's bodies resolved in parallel, a generic's body once (stages 1–3 done: the resolver's refs, no environments): design/name_resolution.md.
+Name resolution in parallel — each module's bodies at once — when the checker goes parallel (it stays sequential for now; the rest is done: design/name_resolution.md).
 
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 

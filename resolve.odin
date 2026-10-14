@@ -794,9 +794,12 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     // (`$T` written in a param's type, a result's: a type param.)
     for g in v.params { rs_dollars(r, params_view(t, g).type_) }
     for x in v.returns { rs_dollars(r, params_view(t, x).type_ if t.tag[x] == .Param_Group else x) }
+    if is_struct { for s in v.body { if t.tag[s] == .Decl { rs_dollars(r, decl_view(t, s).type_) } } }   // (its fields' `$T`s)
     for g in v.params {
         pv := params_view(t, g)
         rs_node(r, pv.type_)
+        // (`~Shape`: the shape, in sight where it's written.)
+        if pv.type_ != 0 && t.tag[pv.type_] == .Type_Tilde { rs_token(r, Token_Id(t.a[pv.type_])) }
         for x in pv.values { rs_node(r, x) }
     }
     for g in v.params {
@@ -843,6 +846,16 @@ rs_parts :: proc(r: ^Resolver, parts: []Token_Id) -> (ref: Ref, ok: bool) {
     return
 }
 
+// Whether the current scope declares a name already (a signature's `$T`,
+// written again: the first's).
+@(private="file")
+rs_declared_here :: proc(r: ^Resolver, name: string) -> bool {
+    slot, ok := r.slots[name]
+    if !ok { return false }
+    i := r.top[slot]
+    return i >= 0 && r.names[i].scope == i32(len(r.scopes) - 1)
+}
+
 // A type param, in sight in its scope.
 @(private="file")
 rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
@@ -862,7 +875,7 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
     #partial switch t.tag[n] {
     case .Type_Dollar:
         tok := Token_Id(t.a[n])
-        if _, seen := rs_lookup(r, rs_text(tok)); !seen { rs_type_param(r, tok) }
+        if !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
     case .Type_Pointer, .Type_Paren:
         rs_dollars(r, Tree_Id(t.a[n]))
     case .Type_Slice, .Type_Partial, .Type_Array:

@@ -44,7 +44,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if !is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
-        tc_type_params_bind(k, sc.node, sc.subst)   // (an instance's: its type params, checked whenever its body is)
+        tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
         tc_scope(k, v.body, ts if is_struct else nil, top = true)
     }
     if is_struct {
@@ -1148,13 +1148,13 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
     gps, _ := tc_struct_generics(k, tmpl.node)
     out := make([dynamic]TC_Binding, context.temp_allocator)
     for a, i in tree_list(t, t.a[ann]) {
-        if i >= len(gps) || gps[i].shape == "" { continue }
+        if i >= len(gps) || gps[i].shape == 0 { continue }
         call := tc_unparen(k, a)
         if !tc_is_call(k, call) { continue }
         for s in scope_view(t, tmpl.node).body {
             if t.tag[s] != .Decl { continue }
             v := decl_view(t, s)
-            if v.type_ == 0 || t.tag[v.type_] != .Type_Name || tc_name(k, v.type_) != gps[i].name { continue }
+            if v.type_ == 0 || t.tag[v.type_] != .Type_Name || k.rs.refs[v.type_].decl != gps[i].decl { continue }
             for tg in v.targets { append(&out, TC_Binding{tc_name(k, tg), call}) }
         }
     }

@@ -80,15 +80,15 @@ TC_Union_Header :: struct {
     tag_type: string,
     min_size: int,
     pad:      Tree_Id,
-    params:   [dynamic]string,
+    params:   [dynamic]Token_Id,   // a generic's: the tokens that declare them
 }
 
 tc_union_header :: proc(k: ^TC, node: Tree_Id) -> (h: TC_Union_Header) {
     t := k.t
-    h.params = make([dynamic]string, context.temp_allocator)
+    h.params = make([dynamic]Token_Id, context.temp_allocator)
     for opt in tree_list(t, t.a[node]) {
         #partial switch t.tag[opt] {
-        case .Generic_Param: append(&h.params, tc_name(k, opt))
+        case .Generic_Param: append(&h.params, t.main[opt])
         case .Union_Tag:     h.tag_type = tc_text(Token_Id(t.a[opt]))
         case .Union_Pad:     h.pad = Tree_Id(t.a[opt])
         case .Union_Size:
@@ -120,7 +120,7 @@ tc_union_variants :: proc(k: ^TC, node: Tree_Id) -> [dynamic]TC_Variant {
 // name), its tag an enum of its own (`Name_Tag`), each variant a struct
 // (tc_variant_struct). (`subst`: an instance's params, bound.)
 tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header, variants: []TC_Variant,
-                      subst: map[string]Type = nil) -> ^Type_Union {
+                      subst: TC_Bindings = nil) -> ^Type_Union {
     ut := new(Type_Union)
     ut.name, ut.source_name, ut.home_package, ut.span = make_flat_name(pkg, name), name, pkg, span
     ut.tag_type, ut.min_size = h.tag_type, h.min_size
@@ -166,7 +166,7 @@ tc_variant :: proc(k: ^TC, vn: Tree_Id, tag: int) -> TC_Variant {
 // struct's: registered as one — its params, its declarations its fields
 // (both once every name is known: tc_union_resolve) — run as its constructor
 // when it is built. (`subst`: a generic union's instance's bindings.)
-tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, subst: map[string]Type = nil) -> ^Type_Scope {
+tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, subst: TC_Bindings = nil) -> ^Type_Scope {
     vst := new(Type_Scope)
     vst.source_name = strings.concatenate({union_name, "_", v.name})
     vst.name = make_flat_name(pkg, vst.source_name)
@@ -338,18 +338,18 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> 
     }
     mangled := mangle_generic_name(name, targs[:])
     if ut, made := k.table.mono_union_cache[mangled]; made { return ut }
-    subst := make(map[string]Type)
+    subst := make(TC_Bindings)
     for p, i in h.params { subst[p] = targs[i] }
-    saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg = subst, tmpl.pkg
-    defer k.subst, k.pkg = saved_subst, saved_pkg
-    ut := tc_make_union(k, tmpl.pkg, mangled, tree_span(t, tmpl.def), h, tc_union_variants(k, tmpl.node)[:], subst)
-    k.table.mono_union_cache[mangled] = ut
-    tc_bound_set(k, ut.span.at, ut)
+    saved_pkg := k.pkg
+    k.pkg = tmpl.pkg
+    defer k.pkg = saved_pkg
     // (Its variants' bodies are its template's, checked again with its params
     // bound: their nodes its own — tc_sid.)
-    saved_inst := tc_instance_begin(k, tmpl, nil)
+    saved_inst := tc_instance_begin(k, tmpl, nil, subst)
     defer tc_instance_end(k, saved_inst)
+    ut := tc_make_union(k, tmpl.pkg, mangled, tree_span(t, tmpl.def), h, tc_union_variants(k, tmpl.node)[:], subst)
+    k.table.mono_union_cache[mangled] = ut
+    tc_bound_set(k, ut.span.at, ut)   // (its template's name, in it: it)
     tc_union_resolve(k, ut, h.pad, span)
     return ut
 }

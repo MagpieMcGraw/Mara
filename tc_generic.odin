@@ -2,9 +2,10 @@ package mara
 
 // Generics in the checker. A definition is a template when its signature
 // names a type it is given (`$T`), a struct's param is a shape (`~T`), or a
-// struct's param is used in its fields' types (`[n]T`): the tree keeps
-// them as written, and the checker reads them off it. A template is
-// checked only as its instances.
+// struct's param is used in its fields' types (`[n]T`). A template is
+// checked only as its instances; its names are resolved once (the
+// resolver's), its type params known by the tokens that declare them
+// (TC_Bindings: what an instance binds each to).
 
 TC_Template :: struct {
     def, node: Tree_Id,
@@ -36,7 +37,7 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
             pv := params_view(t, g)
             if pv.type_ == 0 || (t.tag[pv.type_] != .Type_Name && t.tag[pv.type_] != .Type_Keyword) { continue }
             for name in pv.names {
-                if tc_type_refs(k, ft, tc_text(name)) { return true }
+                if tc_type_uses(k, ft, name) { return true }
             }
         }
     }
@@ -60,83 +61,67 @@ tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
     return false
 }
 
-// Whether a type as written uses a name: as a type, or as an array's size.
-tc_type_refs :: proc(k: ^TC, n: Tree_Id, name: string) -> bool {
+// Whether a type as written uses a declaration (decl: the token that
+// declares it) — names it as a type, or as an array's size: what the
+// resolver says those names refer to.
+tc_type_uses :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
     if n == 0 { return false }
     t := k.t
     #partial switch t.tag[n] {
     case .Type_Name:
-        parts := tree_token_list(t, t.a[n])
-        return len(parts) == 1 && tc_text(parts[0]) == name
+        return len(tree_token_list(t, t.a[n])) == 1 && k.rs.refs[n].decl == decl
     case .Ident:
-        return tc_name(k, n) == name
+        return k.rs.refs[n].decl == decl
     case .Type_Pointer, .Type_Paren, .Type_Slice:
         inner := Tree_Id(t.a[n]) if t.tag[n] != .Type_Slice else Tree_Id(t.b[n])
-        return tc_type_refs(k, inner, name)
+        return tc_type_uses(k, inner, decl)
     case .Type_Partial:
-        return tc_size_is(k, Tree_Id(t.a[n]), name) || tc_type_refs(k, Tree_Id(t.b[n]), name)
+        return tc_size_names(k, Tree_Id(t.a[n]), decl) || tc_type_uses(k, Tree_Id(t.b[n]), decl)
     case .Type_Array:
-        return tc_size_is(k, Tree_Id(tree_rec(t, t.a[n], 2)[0]), name) || tc_type_refs(k, Tree_Id(t.b[n]), name)
+        return tc_size_names(k, Tree_Id(tree_rec(t, t.a[n], 2)[0]), decl) || tc_type_uses(k, Tree_Id(t.b[n]), decl)
     case .Type_Generic:
-        for a in tree_list(t, t.a[n]) { if tc_type_refs(k, a, name) { return true } }
+        for a in tree_list(t, t.a[n]) { if tc_type_uses(k, a, decl) { return true } }
     case .Type_Fun:
-        for a in tree_list(t, t.a[n]) { if tc_type_refs(k, a, name) { return true } }
-        for a in tree_list(t, t.b[n]) { if tc_type_refs(k, a, name) { return true } }
+        for a in tree_list(t, t.a[n]) { if tc_type_uses(k, a, decl) { return true } }
+        for a in tree_list(t, t.b[n]) { if tc_type_uses(k, a, decl) { return true } }
     }
     return false
 }
 
-// Whether an array's size is written as the bare name.
-tc_size_is :: proc(k: ^TC, n: Tree_Id, name: string) -> bool {
-    return n != 0 && k.t.tag[n] == .Ident && tc_name(k, n) == name
+// Whether an array's size is written as a bare name of the declaration.
+tc_size_names :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
+    return n != 0 && k.t.tag[n] == .Ident && k.rs.refs[n].decl == decl
 }
 
-// A template's type params, in order: those it declares, then each
-// `$T` its params and results introduce, first use first.
-tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> [dynamic]string {
+// A fun template's type params, in order — those it declares, then each
+// `$T` its params and results introduce, first use first: the resolver's,
+// by the tokens that declare them.
+tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> []Token_Id {
+    return k.rs.type_params_of[node][:] if node in k.rs.type_params_of else nil
+}
+
+// The type param a type as written names (`$T`, `T`): the token that
+// declares it (0: none).
+tc_type_param_named :: proc(k: ^TC, n: Tree_Id) -> Token_Id {
     t := k.t
-    v := scope_view(t, node)
-    names: [dynamic]string
-    add :: proc(names: ^[dynamic]string, name: string) {
-        for n in names^ { if n == name { return } }
-        append(names, name)
+    #partial switch t.tag[n] {
+    case .Type_Dollar:
+        if ref := k.rs.refs[n]; ref.kind != .None { return ref.decl }
+        return Token_Id(t.a[n])
+    case .Type_Name:
+        if len(tree_token_list(t, t.a[n])) == 1 { return k.rs.refs[n].decl }
     }
-    for g in v.generics { add(&names, tc_name(k, g)) }
-    walk :: proc(k: ^TC, n: Tree_Id, names: ^[dynamic]string) {
-        if n == 0 { return }
-        t := k.t
-        #partial switch t.tag[n] {
-        case .Type_Dollar:
-            add(names, tc_text(Token_Id(t.a[n])))
-        case .Type_Pointer, .Type_Paren:
-            walk(k, Tree_Id(t.a[n]), names)
-        case .Type_Slice, .Type_Partial, .Type_Array:
-            walk(k, Tree_Id(t.b[n]), names)
-        case .Type_Generic:
-            for a in tree_list(t, t.a[n]) { walk(k, a, names) }
-        case .Type_Fun:
-            for a in tree_list(t, t.a[n]) { walk(k, a, names) }
-            for a in tree_list(t, t.b[n]) { walk(k, a, names) }
-        }
-    }
-    for g in v.params { walk(k, params_view(t, g).type_, &names) }
-    for r in v.returns { walk(k, params_view(t, r).type_ if t.tag[r] == .Param_Group else r, &names) }
-    return names
+    return 0
 }
 
 // What a param's type as written binds, given the type of the argument
 // passed to it: `^[]$T` given ^[]i64 binds T to i64.
-tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) {
+tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     if n == 0 { return }
     t := k.t
     actual := unwrap_alias(actual_raw)
-    name: string
+    decl := tc_type_param_named(k, n)
     #partial switch t.tag[n] {
-    case .Type_Dollar:
-        name = tc_text(Token_Id(t.a[n]))
-    case .Type_Name:
-        parts := tree_token_list(t, t.a[n])
-        if len(parts) == 1 { name = tc_text(parts[0]) }
     case .Type_Paren:
         tc_infer(k, subst, Tree_Id(t.a[n]), actual)
     case .Type_Pointer:
@@ -163,8 +148,8 @@ tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) 
     }
     // (An untyped argument binds its settled type, as a declaration would; a
     // binding no use has given a width yet, its default — from here on.)
-    if name != "" && name in subst^ && subst[name] == nil {
-        subst[name] = tc_pin_default(k, actual, k.infer_at if k.infer_at != {} else tree_span(t, n))
+    if decl != 0 && decl in subst^ && subst[decl] == nil {
+        subst[decl] = tc_pin_default(k, actual, k.infer_at if k.infer_at != {} else tree_span(t, n))
     }
 }
 
@@ -180,7 +165,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     arg_types := make([dynamic]Type, context.temp_allocator)
     for a in args { append(&arg_types, tc_arg(k, a)) }
     params := tc_generic_params(k, tmpl.node)
-    subst: map[string]Type
+    subst: TC_Bindings
     for p in params { subst[p] = nil }
     v := scope_view(tr, tmpl.node)
     i := 0
@@ -197,7 +182,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     }
     for p in params {
         if subst[p] == nil {
-            tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, p, name)
+            tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
             return Type_Error{}
         }
     }
@@ -221,18 +206,18 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
 
 // An instance of a generic fun: its signature at the bindings, its body the
 // template's own checked again with them bound — its scope the call's.
-tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string) -> ^Type_Scope {
+tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangled: string) -> ^Type_Scope {
     tr := k.t
     ft := new(Type_Scope)
     ft.kind = .Fun
     ft.home_package = tmpl.pkg
     ft.node = tmpl.node
     ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one)
-    saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg = subst, tmpl.pkg
-    defer k.subst, k.pkg = saved_subst, saved_pkg
+    saved_pkg := k.pkg
+    k.pkg = tmpl.pkg
+    defer k.pkg = saved_pkg
     // (Its body's nodes its own: tc_sid.)
-    saved_inst := tc_instance_begin(k, tmpl, ft)
+    saved_inst := tc_instance_begin(k, tmpl, ft, subst)
     defer tc_instance_end(k, saved_inst)
     span := tree_span(tr, tmpl.def)
     v := scope_view(tr, tmpl.node)
@@ -272,42 +257,41 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
 // the param's name; then any other `$T` its params or fields name. The rest
 // are its constructor's.
 TC_Generic_Param :: struct {
-    name:  string,
+    decl:  Token_Id,  // the token that declares it (its name)
     value: bool,      // a value (`n: i64`, `$N: int`), not a type
-    shape: string,    // `~T`: T, what its type must have
+    shape: Token_Id,  // `~T`: T, what its type must have (its name, written)
     def:   Tree_Id,   // its default
 }
 
-tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_Param, promoted: map[string]bool) {
+tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_Param, promoted: map[Token_Id]bool) {
     t := k.t
     v := scope_view(t, node)
-    has :: proc(gps: []TC_Generic_Param, name: string) -> bool {
-        for g in gps { if g.name == name { return true } }
+    has :: proc(gps: []TC_Generic_Param, decl: Token_Id) -> bool {
+        for g in gps { if g.decl == decl { return true } }
         return false
     }
     for g in v.generics {
-        append(&gps, TC_Generic_Param{name = tc_name(k, g), value = tc_text(Token_Id(t.a[g])) != "type"})
+        append(&gps, TC_Generic_Param{decl = t.main[g], value = tc_text(Token_Id(t.a[g])) != "type"})
     }
-    dropped := make(map[string]bool, context.temp_allocator)   // (a `$T` a param named)
+    dropped := make(map[Token_Id]bool, context.temp_allocator)   // (a `$T` a param named)
     for g in v.params {
         pv := params_view(t, g)
         if pv.type_ == 0 { continue }
         for name, i in pv.names {
-            pn := tc_text(name)
             def := pv.values[i] if i < len(pv.values) else 0
             #partial switch t.tag[pv.type_] {
             case .Type_Tilde:
-                append(&gps, TC_Generic_Param{name = pn, shape = tc_text(Token_Id(t.a[pv.type_])), def = def})
-                promoted[pn] = true
+                append(&gps, TC_Generic_Param{decl = name, shape = Token_Id(t.a[pv.type_]), def = def})
+                promoted[name] = true
             case .Type_Dollar:
-                append(&gps, TC_Generic_Param{name = pn})
-                dropped[tc_text(Token_Id(t.a[pv.type_]))] = true
-                promoted[pn] = true
+                append(&gps, TC_Generic_Param{decl = name})
+                dropped[tc_type_param_named(k, pv.type_)] = true
+                promoted[name] = true
             case .Type_Name, .Type_Keyword:
                 for s in v.body {
-                    if t.tag[s] == .Decl && tc_type_refs(k, decl_view(t, s).type_, pn) {
-                        append(&gps, TC_Generic_Param{name = pn, value = true, def = def})
-                        promoted[pn] = true
+                    if t.tag[s] == .Decl && tc_type_uses(k, decl_view(t, s).type_, name) {
+                        append(&gps, TC_Generic_Param{decl = name, value = true, def = def})
+                        promoted[name] = true
                         break
                     }
                 }
@@ -315,13 +299,13 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
         }
     }
     // (A `$T` written anywhere else in its params or fields.)
-    dollars :: proc(k: ^TC, n: Tree_Id, gps: ^[dynamic]TC_Generic_Param, dropped: map[string]bool) {
+    dollars :: proc(k: ^TC, n: Tree_Id, gps: ^[dynamic]TC_Generic_Param, dropped: map[Token_Id]bool) {
         if n == 0 { return }
         t := k.t
         #partial switch t.tag[n] {
         case .Type_Dollar:
-            name := tc_text(Token_Id(t.a[n]))
-            if !dropped[name] && !has(gps[:], name) { append(gps, TC_Generic_Param{name = name}) }
+            decl := tc_type_param_named(k, n)
+            if !dropped[decl] && !has(gps[:], decl) { append(gps, TC_Generic_Param{decl = decl}) }
         case .Type_Pointer, .Type_Paren:
             dollars(k, Tree_Id(t.a[n]), gps, dropped)
         case .Type_Slice, .Type_Partial, .Type_Array:
@@ -350,7 +334,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
     for a, i in args {
         if i >= len(gps) { break }
         gp := gps[i]
-        if gp.shape != "" {
+        if gp.shape != 0 {
             // (A type; a constructor's call, its struct's — its value the
             // declaration's to build: tc_shape_bindings.)
             if u := tc_unparen(k, a); tc_is_call(k, u) {
@@ -385,7 +369,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
     for i := len(targs); i < len(gps); i += 1 {
         gp := gps[i]
         if gp.def == 0 { break }
-        if gp.shape != "" && t.tag[gp.def] == .Ident {
+        if gp.shape != 0 && t.tag[gp.def] == .Ident {
             append(&targs, tc_type_named(k, tc_name(k, gp.def), span, gp.def))   // (`~T = void`)
             continue
         }
@@ -405,10 +389,12 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
     if st, made := k.table.mono_cache[mangled]; made { return st }
     // (A shape's argument has what its constraint has: checked once.)
     for gp, i in gps {
-        if gp.shape != "" { check_shape_constraint(k.c, gp.name, gp.shape, targs[i], tmpl.pkg, span) }
+        if gp.shape == 0 { continue }
+        shape, _ := tc_ref_type(k, k.rs.token_refs[gp.shape] or_else {}, tc_text(gp.shape))
+        check_shape_constraint(k.c, tc_text(gp.decl), tc_text(gp.shape), shape.(^Type_Scope) or_else nil, targs[i], span)
     }
-    subst := make(map[string]Type)
-    for gp, i in gps { subst[gp.name] = targs[i] }
+    subst := make(TC_Bindings)
+    for gp, i in gps { subst[gp.decl] = targs[i] }
     return tc_instantiate_struct(k, tmpl, subst, targs[:], promoted, mangled)
 }
 
@@ -416,8 +402,8 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
 // params bound in it; then its body — its fields, its methods — checked as
 // its own (its nodes salted: tc_sid). Its init and methods are extracted with
 // the main module's.
-tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, targs: []Type,
-                              promoted: map[string]bool, mangled: string) -> ^Type_Scope {
+tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, targs: []Type,
+                              promoted: map[Token_Id]bool, mangled: string) -> ^Type_Scope {
     tr := k.t
     v := scope_view(tr, tmpl.node)
     span := tree_span(tr, tmpl.def)
@@ -432,19 +418,18 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     k.table.mono_cache[mangled] = st
     k.table.funs[st.name] = st
     st.decl = tr.main[tmpl.def]
-    tc_bound_set(k, st.decl, st)
-    for name, bound in subst { scope_bind(st, name, bound) }   // (its type params, its members)
-    tc_type_params_bind(k, tmpl.node, subst)
-    saved_subst, saved_pkg := k.subst, k.pkg
-    k.subst, k.pkg = subst, tmpl.pkg
-    defer k.subst, k.pkg = saved_subst, saved_pkg
-    saved_inst := tc_instance_begin(k, tmpl, st)
+    for tok, bound in subst { scope_bind(st, tc_text(tok), bound) }   // (its type params, its members)
+    saved_pkg := k.pkg
+    k.pkg = tmpl.pkg
+    defer k.pkg = saved_pkg
+    saved_inst := tc_instance_begin(k, tmpl, st, subst)
     defer tc_instance_end(k, saved_inst)
+    tc_bound_set(k, st.decl, st)   // (its template's name, in it: it)
     // (Its constructor's params: those no generic's.)
     for g in v.params {
         pv := params_view(tr, g)
         for pn, i in pv.names {
-            if promoted[tc_text(pn)] { continue }
+            if promoted[pn] { continue }
             def := pv.values[i] if i < len(pv.values) else 0
             pt := tc_param_type(k, tc_text(pn), pv.type_, def, span)
             append(&st.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt, default_node = def})

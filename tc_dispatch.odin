@@ -167,20 +167,17 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     }
     if len(ptypes) != 2 { return nil }
     params := tc_generic_params(k, tmpl.node)
-    subst: map[string]Type
+    subst: TC_Bindings
     for p in params { subst[p] = nil }
     tc_infer(k, &subst, ptypes[0], lt)
     tc_infer(k, &subst, ptypes[1], rt)
     for p in params { if subst[p] == nil { return nil } }
     // (Its params at the bindings take the operands, before it is made.)
-    saved := k.subst
-    k.subst = subst
-    was := tc_type_params_bind(k, tmpl.node, subst)
+    was := tc_type_params_bind(k, subst)
     span := tree_span(tr, tmpl.def)
     p0 := tc_type(k, ptypes[0], span)
     p1 := tc_type(k, ptypes[1], span)
     tc_type_params_restore(k, was)
-    k.subst = saved
     if types_incompatible(p0, lt) || types_incompatible(p1, rt) { return nil }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }

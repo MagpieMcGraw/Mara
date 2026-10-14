@@ -122,7 +122,7 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     codes.done[i] = true
     e := k.events[i]
     tc_salt_set(k, e.salt)
-    k.pkg, k.subst = e.pkg, e.subst
+    k.pkg = e.pkg
     #partial switch e.kind {
     case .Const:          codes.code[i] = lw_const(k, e.kc)
     case .Body:           codes.code[i] = lw_body(k, e.sc)

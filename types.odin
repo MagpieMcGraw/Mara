@@ -1429,7 +1429,7 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //     reserves the budget explicitly, most commonly via a `size: [N]byte`
 //     filler field).
 // Each shortcoming surfaces as its own diagnostic at `span`.
-check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, arg: Type, home_package: string, span: Span) {
+check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span) {
     // `void` is the universal subtype for shape constraints — used as the
     // default type-arg when the user writes `p : Program` (no arena).
     // Trivially satisfies any `~T` requirement (no API to miss, zero size
@@ -1437,20 +1437,9 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
     // gated separately (see field access and call sites).
     if _, is_void := arg.(Type_Void); is_void { return }
 
-    // Resolve the constraint type by name. The bare identifier in `~T` is
-    // looked up against the home package of the template that declared the
-    // constraint — the only module its `~T` could name. We try the flat key first; if that
-    // misses, fall back to a bare-name search across both tables to cover
-    // intrinsic-style types registered without a package prefix.
-    flat := make_flat_name(home_package, constraint_name)
-    ct: ^Type_Scope
-    if ts, ok := c.table.structs[flat]; ok { ct = ts }
-    else if ts, ok := c.table.funs[flat]; ok { ct = ts }
-    else if ts, ok := c.table.structs[constraint_name]; ok { ct = ts }
-    else if ts, ok := c.table.funs[constraint_name]; ok { ct = ts }
+    // (The constraint: what `~T`'s name refers to where it's written — the
+    // resolver's. None: a typo, or a module not used there.)
     if ct == nil {
-        // Couldn't find the constraint — the parser stashed a bare name, so
-        // a typo or unimported module slips through to here. Bail loud.
         check_error(c, span,
             TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD,
             constraint_name, param_name)
