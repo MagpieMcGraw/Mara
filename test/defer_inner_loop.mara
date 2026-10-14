@@ -1,0 +1,19 @@
+module defer_inner_loop
+
+//@ expect-output: body
+//@ expect-output: defer 0 2 3 -> 5
+
+// A loop inside a defer's block breaks and continues as any loop does.
+
+main :: fun() {
+	defer {
+		sum := 0
+		for i in 0..10 {
+			if i == 1 do continue
+			if i == 4 do break
+			sum += i
+		}
+		print("defer 0 2 3 ->", sum)
+	}
+	print("body")
+}

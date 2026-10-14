@@ -1,0 +1,17 @@
+module defer_return_neg
+
+//@ expect-fail: `return` can't be used in a defer's block
+
+// A defer's block runs after the function's return: it can't return itself.
+
+step :: fun(x: i64) -> i64 {
+	defer {
+		if x > 1 do return 5
+		print(x)
+	}
+	return x
+}
+
+main :: fun() {
+	print(step(3))
+}

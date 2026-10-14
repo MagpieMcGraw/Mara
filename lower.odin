@@ -304,8 +304,6 @@ lw_scan_returns :: proc(k: ^TC, stmts: []Tree_Id, r: ^LW_Returns) {
             lw_scan_returns(k, v.else_, r)
         case .For_Range, .For_Each, .For_C, .For_Cond:
             lw_scan_returns(k, for_view(t, s).body, r)
-        case .Defer:
-            lw_scan_returns(k, tree_list(t, t.a[s]), r)
         case .Match:
             for arm in tree_list(t, t.b[s]) { lw_scan_returns(k, lw_arm_body(k, arm), r) }
         }

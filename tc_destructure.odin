@@ -28,7 +28,9 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             tc_error(k, span, TYPE_TRY_REQUIRES_ERR_RETURN)
             return
         }
-        if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
+        if k.in_defer {
+            tc_error(k, span, TYPE_TRY_IN_DEFER)   // (its names still bound: no errors after it)
+        } else if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
             tc_error(k, span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
             return
         }

@@ -1,0 +1,28 @@
+module defer_try_neg
+
+//@ expect-fail: `?` can't be used in a defer's block
+
+// A defer's block runs as the function ends: a `?` in it can't fail the
+// function (it used to leave the block alone, the err dropped).
+
+Probe_Err :: error {
+	Bad
+}
+
+fail :: fun(bad: bool) -> i64, err {
+	if bad do return 0, Bad
+	return 7
+}
+
+step :: fun() -> i64, err {
+	defer {
+		y := fail(true)?
+		print(y)
+	}
+	return 1
+}
+
+main :: fun() {
+	n, e := step()
+	print(n, bool(e))
+}

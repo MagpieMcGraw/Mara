@@ -1059,8 +1059,9 @@ tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_error(k, span, TYPE_TRY_REQUIRES_ERR_RETURN)
         return Type_Error{}
     }
-    rts := tc_results(k)
-    if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
+    if rts := tc_results(k); k.in_defer {
+        tc_error(k, span, TYPE_TRY_IN_DEFER)   // (its value still typed: no errors after it)
+    } else if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
         tc_error(k, span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
         return Type_Error{}
     }

@@ -1,0 +1,27 @@
+module defer_try_destructure_neg
+
+//@ expect-fail: `?` can't be used in a defer's block
+
+// `a, b := f()?` in a defer's block: the same as any `?` there.
+
+Probe_Err :: error {
+	Bad
+}
+
+pair :: fun(bad: bool) -> i64, i64, err {
+	if bad do return 0, 0, Bad
+	return 1, 2
+}
+
+step :: fun() -> err {
+	defer {
+		a, b := pair(true)?
+		print(a, b)
+	}
+	return .Ok
+}
+
+main :: fun() {
+	e := step()
+	print(bool(e))
+}

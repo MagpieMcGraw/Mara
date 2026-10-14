@@ -1,0 +1,8 @@
+module break_outside_loop_neg
+
+//@ expect-fail: `continue` outside any loop
+
+main :: fun() {
+	print("before")
+	continue
+}

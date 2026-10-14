@@ -18,11 +18,11 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if is_struct { ts.sig_state = .In_Progress }
     hint := k.hint
     defer k.hint = hint
-    outer, outer_vars, outer_defer := k.body, k.vars, k.in_defer
-    k.body, k.vars, k.in_defer = ts, {}, false
+    outer, outer_vars, outer_defer, outer_loops := k.body, k.vars, k.in_defer, k.loops
+    k.body, k.vars, k.in_defer, k.loops = ts, {}, false, 0
     defer {
         if len(k.vars) > 0 { k.annot.vars[ts] = k.vars }
-        k.body, k.vars, k.in_defer = outer, outer_vars, outer_defer
+        k.body, k.vars, k.in_defer, k.loops = outer, outer_vars, outer_defer, outer_loops
     }
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
@@ -116,14 +116,20 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Compound:
         tc_compound(k, s)
     case .Defer:
+        // (Its block leaves only by its end: no `?`, `return`, or loop exit
+        // to a loop around it.)
         if tree_defer_on_failure(t, s) { tc_defer_on_failure(k, s) }
-        in_defer := k.in_defer
-        k.in_defer = true
+        in_defer, loops := k.in_defer, k.loops
+        k.in_defer, k.loops = true, 0
         tc_scope(k, tree_list(t, t.a[s]))
-        k.in_defer = in_defer
+        k.in_defer, k.loops = in_defer, loops
     case .Match:
         tc_match(k, s)
     case .Break, .Continue:
+        if k.loops == 0 {
+            word := "break" if t.tag[s] == .Break else "continue"
+            tc_error(k, span, TYPE_LOOP_EXIT_IN_DEFER if k.in_defer else TYPE_LOOP_EXIT_OUTSIDE_LOOP, word)
+        }
     case:
         tc_unsupported(k, s, "this statement")
     }
@@ -583,6 +589,10 @@ tc_is_variable :: proc(ref: Ref) -> bool {
 tc_return :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
+    if k.in_defer {
+        tc_error(k, span, TYPE_RETURN_IN_DEFER)
+        return
+    }
     values := tree_list(t, t.a[s])
     rts := tc_results(k)
     expected, supplied := len(rts), len(values)
@@ -658,6 +668,8 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     v := for_view(t, s)
+    k.loops += 1
+    defer k.loops -= 1
     #partial switch t.tag[s] {
     case .For_Each:
         ct := tc_check(k, v.collection)

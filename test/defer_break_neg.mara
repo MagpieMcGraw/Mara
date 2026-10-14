@@ -1,0 +1,15 @@
+module defer_break_neg
+
+//@ expect-fail: `break` in a defer's block can only leave a loop inside the block
+
+// A defer's block can't break the loop around it.
+
+main :: fun() {
+	for i in 0..3 {
+		defer {
+			if i == 1 do break
+			print("defer", i)
+		}
+		print("body", i)
+	}
+}
