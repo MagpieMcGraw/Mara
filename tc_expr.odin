@@ -491,11 +491,37 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
 // --- calls --------------------------------------------------------------------
 
 tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
-    if k.t.tag[n] == .Method_Call { return tc_method_call(k, n, addressed) }
-    saved := k.recv
-    k.recv = {}
-    defer k.recv = saved
-    return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
+    several := tc_takes_several(k, n)
+    t: Type
+    if k.t.tag[n] == .Method_Call {
+        t = tc_method_call(k, n, addressed)
+    } else {
+        saved := k.recv
+        k.recv = {}
+        defer k.recv = saved
+        t = tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
+    }
+    if !several { tc_one_value(k, n, len(tc_call_returns(k, n))) }
+    return t
+}
+
+// Whether n is where several results go — a destructure's value, `?`'s
+// call, a statement's call (its own check says what's dropped) — as its
+// checker said just before checking it (k.several_ok); asked once, at n's
+// check's start.
+tc_takes_several :: proc(k: ^TC, n: Tree_Id) -> bool {
+    ok := k.several_ok == n
+    k.several_ok = 0
+    return ok
+}
+
+// A call's (or a `?`'s) values, `count`, where one value goes: more than one
+// is an error — the others would be lost.
+tc_one_value :: proc(k: ^TC, n: Tree_Id, count: int) {
+    if count <= 1 { return }
+    example := fmt.tprintf("%s(…)", tc_call_name(k, n))
+    if k.t.tag[n] == .Try { example = fmt.tprintf("%s(…)?", tc_call_name(k, tc_unparen(k, Tree_Id(k.t.a[n])))) }
+    tc_error(k, tree_span(k.t, n), TYPE_MULTI_RETURN_AS_ONE, count, example)
 }
 
 // What a call's name refers to: a call's own; a method call's, its method
@@ -511,14 +537,6 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
                      qual: ^Type_Scope = nil, qual_dispatch: []TC_Member = nil) -> Type {
     tr := k.t
     span := tree_span(tr, n)
-    // (A call of several results, as one argument: its extras would be lost —
-    // a method call's, checked before its receiver.)
-    for a in args {
-        if tr.tag[n] == .Method_Call { break }
-        if returns := tc_call_returns(k, a); len(returns) > 1 {
-            tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
-        }
-    }
     if len(qual_dispatch) > 0 { return tc_dispatch_call(k, n, name, qual_dispatch, args) }
     if qual == nil {
         if t, is_builtin := tc_builtin(k, n, name, args); is_builtin {
@@ -892,7 +910,9 @@ TC_Arg :: struct {
 // f()`): f's result there; a value no call of several results, a
 // broadcast: the value's.
 tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, span: Span) -> Type {
+    k.several_ok = tc_unparen(k, src)   // (each slot its result)
     st := tc_check(k, src)
+    k.several_ok = 0
     if _, is_err := st.(Type_Error); is_err { return Type_Error{} }
     if returns := tc_call_returns(k, src); len(returns) > 1 {
         if slot >= len(returns) {
@@ -1053,9 +1073,12 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
 // `f()?`: the call, its err returned when it is one — its value the call's
 // first, or none when it returns only its err.
 tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
+    several := tc_takes_several(k, n)
     span := tree_span(k.t, n)
     inner := Tree_Id(k.t.a[n])
+    k.several_ok = tc_unparen(k, inner)   // (its err is `?`'s; the rest, its)
     tc_check(k, inner)
+    k.several_ok = 0
     if !tc_is_call(k, tc_unparen(k, inner)) {
         tc_error(k, span, TYPE_TRY_OPERAND_MUST_BE_CALL)
         return Type_Error{}
@@ -1072,6 +1095,7 @@ tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
         return Type_Error{}
     }
     if len(rets) == 1 { return Type_Void{} }
+    if !several { tc_one_value(k, n, len(rets) - 1) }
     return rets[0]
 }
 

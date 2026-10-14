@@ -42,7 +42,7 @@ start_client :: fun(word: []utf8) -> Process, err {
 	&command + this_program.args[0]
 	&command + "\" client "
 	&command + word
-	return process_start(command)
+	return process_start(command)?   // (its err passed on)
 }
 
 // Its word back, on one connection.

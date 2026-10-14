@@ -23,12 +23,6 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     saved := k.recv
     k.recv = {}
     defer k.recv = saved
-    // (A call of several results, as one argument: its extras would be lost.)
-    for a in mv.args {
-        if returns := tc_call_returns(k, a); len(returns) > 1 {
-            tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
-        }
-    }
     recv := mv.receiver
     arg := addressed if addressed != 0 else recv   // (the receiver, as an argument)
     args := mv.args

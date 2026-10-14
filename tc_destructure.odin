@@ -21,7 +21,9 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     if is_try {
         // (The call checked as a call: `?` its branch, the rest its values.)
         call := tc_unparen(k, Tree_Id(t.a[v]))
+        k.several_ok = call
         tc_check(k, call)
+        k.several_ok = 0
         rets := tc_call_returns(k, call)
         rts := tc_results(k)
         if len(rets) == 0 || !is_err_type(rets[len(rets) - 1]) {
@@ -39,7 +41,9 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     } else {
         // (One value no call of several results: a broadcast, its value
         // checked in each target's copy.)
+        k.several_ok = v
         vt := tc_check(k, value)
+        k.several_ok = 0
         returns = tc_call_returns(k, value)
         if returns == nil {
             if is_any(vt) {

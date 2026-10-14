@@ -1,0 +1,15 @@
+module several_results_assign_neg
+//@ expect-fail: a call returning 2 values can't be used as a single value
+
+// `x = f()` with f's two results: the second was dropped. (`_ = f()` drops
+// them all, on purpose: several_results_ok.)
+
+use mara.core
+
+two :: fun() -> i64, bool { return 1, true }
+
+main :: fun() {
+	x := 0
+	x = two()
+	print(x)
+}

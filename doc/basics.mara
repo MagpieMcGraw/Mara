@@ -121,6 +121,9 @@ first :: fun(xs: []$T) -> T {   // generic: T is the items' type
 // that returns nothing ends at its last line, or earlier at a bare
 // `return`. `if bad do return` is the usual early way out. main may return
 // an i64: the program's exit code.
+//
+// A call of several results goes only where several go: `a, b := f()`, not
+// `return f()` or `f() == 1`. To hand on a call's failure, `return f()?`.
 keyword_return :: fun() {
 	sign :: fun(n: i64) -> i64 {
 		if n < 0 do return -1

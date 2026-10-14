@@ -1,0 +1,15 @@
+module several_results_compare_neg
+//@ expect-fail: a call returning 2 values can't be used as a single value
+
+// A call of several results where one value goes — a comparison, an `if`'s
+// condition — used its first result and dropped the rest.
+
+use mara.core
+
+two :: fun() -> i64, bool { return 1, true }
+
+main :: fun() {
+	x := 0
+	if two() == 1 do x = 1
+	print(x)
+}

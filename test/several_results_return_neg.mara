@@ -1,0 +1,23 @@
+module several_results_return_neg
+//@ expect-fail: its err would be lost — `return inner(…)?` passes the err on
+
+// `return inner()` in a fun of inner's results returned inner's first and an
+// Ok: inner's failure was lost (7 Ok, not 0 E.Bad).
+
+use mara.core
+
+E :: error { Bad }
+
+inner :: fun(fail: bool) -> i64, err {
+	if fail do return 7, Bad
+	return 5
+}
+
+outer :: fun(fail: bool) -> i64, err {
+	return inner(fail)
+}
+
+main :: fun() {
+	b, e := outer(true)
+	print(b, e)
+}

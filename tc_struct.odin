@@ -516,13 +516,16 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         // `Foo{f()}`, f's results Foo's fields: each field its result.
         probed: Type
         if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
+            k.several_ok = call
             probed = tc_check(k, entries[0])
+            k.several_ok = 0
             returns := tc_call_returns(k, call)
             fits := len(returns) == len(sd.fields)
             for f, i in sd.fields {
                 if fits && types_incompatible(f.type_, returns[i]) { fits = false }
             }
             if fits { return }
+            tc_one_value(k, call, len(returns))   // (no spread: its values into one field)
         }
         user := sd.fields[first_user_field(sd):]
         if len(entries) > len(user) {

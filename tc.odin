@@ -26,6 +26,7 @@ TC :: struct {
     // itself — `f(&x)` with no f: its argument, the `&` around the call,
     // checked for the error — stops there.
     addressed_calls: map[Tree_Id]bool,
+    several_ok:    Tree_Id,           // the call (or `?`) about to be checked where several results go — tc_call
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
     // The block scopes and the names bound in them: what name resolution

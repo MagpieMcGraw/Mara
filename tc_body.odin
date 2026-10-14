@@ -96,7 +96,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
         if tc_override(k, e) { return }
+        k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
         rt := tc_check(k, e)
+        k.several_ok = 0
         // A call's value, dropped: `_ = f()` says so.
         if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)
@@ -245,7 +247,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         sc := k.scopes[k.scope_of[fields_of]]
         k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
     }
+    // (One name for a call's several results: said below. A `?`'s, by it.)
+    if tc_is_call(k, tc_unparen(k, value)) { k.several_ok = tc_unparen(k, value) }
     vt := tc_check(k, value)
+    k.several_ok = 0
     k.field_default = saved_field
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
         tc_bind(k, name, Type_Error{}, ref)
@@ -500,7 +505,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id) {
         tc_unsupported(k, s, "this assignment")
         return
     }
+    // (`_ = f()`: all its results dropped, on purpose.)
+    if t.tag[targets[0]] == .Ident && tc_name(k, targets[0]) == "_" { k.several_ok = tc_unparen(k, values[0]) }
     tc_assign_one(k, s, targets[0], values[0])
+    k.several_ok = 0
 }
 
 // One target's assignment (a broadcast's copies are each one).
@@ -600,6 +608,23 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
     values := tree_list(t, t.a[s])
     rts := tc_results(k)
     expected, supplied := len(rts), len(values)
+    // (`return f()`, f's several results: not returned whole — each would go
+    // where one goes, an err replaced by Ok. `?` passes f's err on.)
+    if supplied == 1 {
+        if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
+            call := tc_unparen(k, values[0])
+            k.several_ok = call
+            tc_check(k, values[0])
+            k.several_ok = 0
+            name := tc_call_name(k, call)
+            if is_err_type(returns[len(returns) - 1]) {
+                tc_error(k, span, TYPE_RETURN_SEVERAL_ERR, len(returns), name, name)
+            } else {
+                tc_error(k, span, TYPE_RETURN_SEVERAL, len(returns), name)
+            }
+            return
+        }
+    }
     trailing_errs := 0
     for i := expected - 1; i >= 0 && is_err_type(rts[i]); i -= 1 { trailing_errs += 1 }
     least := expected - trailing_errs

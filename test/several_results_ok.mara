@@ -1,0 +1,42 @@
+module several_results_ok
+
+//@ expect-output: 1 true
+//@ expect-output: 5 Ok
+//@ expect-output: 0 E.Bad
+//@ expect-output: pair 1 true
+//@ expect-output: sum 33
+//@ expect-output: done
+
+// Where a call's several results go: taken apart (`a, b := f()`), dropped
+// whole (`_ = f()`), `?` taking the err (one value left), a literal's fields
+// (`Pair{f()}`), a param group's default (`x, y := f()`).
+
+use mara.core
+
+E :: error { Bad }
+Pair :: struct { a: i64, b: bool }
+
+two :: fun() -> i64, bool { return 1, true }
+inner :: fun(fail: bool) -> i64, err {
+	if fail do return 7, Bad
+	return 5
+}
+outer :: fun(fail: bool) -> i64, err {
+	return inner(fail)?
+}
+get_pair :: fun() -> i64, i64 { return 11, 22 }
+sum :: fun(x, y := get_pair()) -> i64 { return x + y }
+
+main :: fun() {
+	a, b := two()
+	print(a, b)
+	_ = two()
+	n, e := outer(false)
+	print(n, e)
+	m, e2 := outer(true)
+	print(m, e2)
+	p := Pair{two()}
+	print("pair", p.a, p.b)
+	print("sum", sum())
+	print("done")
+}

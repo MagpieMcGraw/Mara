@@ -1,0 +1,17 @@
+module several_results_try_neg
+//@ expect-fail: a call returning 2 values can't be used as a single value — destructure it first (e.g. `a, b := three(…)?`)
+
+// `?` takes the err; two values are left, and one name took the first.
+
+use mara.core
+
+three :: fun() -> i64, bool, err { return 1, true }
+
+run :: fun() -> err {
+	x := three()?
+	print(x)
+}
+
+main :: fun() {
+	_ = run()
+}
