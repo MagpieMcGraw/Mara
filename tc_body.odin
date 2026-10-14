@@ -183,6 +183,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         tc_bound_set(k, ref.decl, Type_Error{})   // (its uses aren't reported again)
         return
     }
+    if fields_of == nil && ann_node != 0 && ck_decl_fits(k, ann, value) {   // (the lean core's: ck.odin)
+        ck_decl(k, s, target, value, name, ann, ref)
+        return
+    }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
     if cap_n != 0 {
         // (`s : [:n]T`: a slice views storage that exists — it would be
