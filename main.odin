@@ -50,16 +50,20 @@ code_search_dirs :: proc(compiler_dir: string) -> []string {
     code_base, _ := filepath.join({compiler_dir, "code"})
     append(&dirs, code_base)
 
-    dh, err := os.open(code_base)
-    if err != nil { return dirs[:] }
-    defer os.close(dh)
-    entries, _ := os.read_dir(dh, -1, context.allocator)
-    for entry in entries {
-        if entry.type != .Directory { continue }
+    for entry in list_dir(code_base) {
+        if !entry.dir { continue }
         sub, _ := filepath.join({code_base, entry.name})
         append(&dirs, sub)
     }
     return dirs[:]
+}
+
+// One entry of a folder, as list_dir has it (list_dir_windows.odin).
+Dir_Item :: struct {
+    name:    string,
+    dir:     bool,
+    size:    i64,
+    written: i64,   // when last written, in Unix nanoseconds
 }
 
 // ---------------------------------------------------------------------------
@@ -201,12 +205,8 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
     result: map[string][dynamic]^Source_File
 
     scan_dir :: proc(dir: string, out: ^map[string][dynamic]^Source_File) {
-        dh, err := os.open(dir)
-        if err != nil { return }
-        defer os.close(dh)
-        entries, _ := os.read_dir(dh, -1, context.allocator)
-        for entry in entries {
-            if entry.type == .Directory { continue }
+        for entry in list_dir(dir) {
+            if entry.dir { continue }
             if !strings.has_suffix(entry.name, ".mara") { continue }
             path, _ := filepath.join({dir, entry.name})
             data, rerr := os.read_entire_file_from_path(path, context.allocator)

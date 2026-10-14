@@ -6,7 +6,6 @@ import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import "core:time"
 
 // ---------------------------------------------------------------------------
 // `mara serve [module]`: ask's queries, one a line from stdin, each answered
@@ -143,13 +142,9 @@ serve_stamp :: proc(compiler_dir: string) -> string {
 }
 
 serve_stamp_dir :: proc(b: ^strings.Builder, dir: string) {
-    dh, err := os.open(dir)
-    if err != nil { return }
-    defer os.close(dh)
-    entries, _ := os.read_dir(dh, -1, context.allocator)
-    for e in entries {
-        if e.type == .Directory || !strings.has_suffix(e.name, ".mara") { continue }
-        fmt.sbprintf(b, "%s/%s %d %d\n", dir, e.name, e.size, time.time_to_unix_nano(e.modification_time))
+    for e in list_dir(dir) {
+        if e.dir || !strings.has_suffix(e.name, ".mara") { continue }
+        fmt.sbprintf(b, "%s/%s %d %d\n", dir, e.name, e.size, e.written)
     }
 }
 
