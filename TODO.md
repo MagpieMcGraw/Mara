@@ -4,10 +4,6 @@
 
 The program shouldn't re-describe what the text already describes one-to-one.
 
-Code generation still decides what the program means in places (void by statement kind, checks and their messages, representations chosen from an op's user, type mismatches as refusals, print, text without a header): move each into lowering or storage. The list: design/codegen_concerns.md.
-
-Name resolution in parallel — each module's bodies at once — when the checker goes parallel (it stays sequential for now; the rest is done: design/name_resolution.md).
-
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
@@ -42,17 +38,11 @@ Figure out syntax for writing to bytes. Should number literals be writable? How 
 
 Validate top level statements investigation. Do we actually need it?
 
-Type checking of unions and distinct is fucked up for some reason.
-
 🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
 
 🚩 (the genuine {}/() merge)
 
 🚩 Why do we track which module is the main module?
-
-Fix FFI functions for mara ask. Probably some array on type scope was skipped?
-
-
 
 # Analyzer — mara ask
 
@@ -61,5 +51,3 @@ Handle constants
 Flow analysis doesn't account for arrays and their indexing.
 
 Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
-
-Make flow analysis show up as text highlights in sublime
