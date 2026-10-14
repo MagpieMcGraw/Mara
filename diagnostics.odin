@@ -236,7 +236,7 @@ PARSE_UNKNOWN_INTRINSIC           :: "unknown compiler intrinsic '#%s'"
 PARSE_UNEXPECTED_TOKEN            :: "unexpected token %v \"%s\""
 PARSE_BANG_NOT                    :: "`!` is no operator in Mara: negate with `not`"
 PARSE_TYPE_AS_VALUE               :: "the type '%s' is no value"
-PARSE_STRAY_ELSE                  :: "stray `else` — braces go around the entire if/else block, with `else` inside. Try `if cond {{ body else body }}` instead of `if cond {{ body }} else {{ body }}`."
+PARSE_STRAY_ELSE                  :: "stray `else` — braces go around the entire if/else block, with `else` inside. Try `if cond {{ body else body }}` instead of `if cond {{ body }} else {{ body }}` — or, after `if cond do s`, `else do s`."
 PARSE_AMBIGUOUS_AMPERSAND         :: "ambiguous '&' — spaced like the start of a new statement (`&name`) but it parses as binary AND continuing the previous expression. Start the address-of/append on its own line, or space it as `a & b` if AND was meant."
 
 // ============================================================

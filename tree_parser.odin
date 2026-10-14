@@ -357,7 +357,7 @@ tp_return :: proc(p: ^Tree_Parser) -> Tree_Id {
     kw := tp_advance(p)
     values := tp_items()
     k := tp_kind(p)
-    if k != .Newline && k != .Right_Brace && k != .Semicolon && k != .EOF {
+    if k != .Newline && k != .Right_Brace && k != .Semicolon && k != .EOF && k != .Else && k != .Elif {
         append(&values, tp_expr(p))
         for tp_kind(p) == .Comma {
             tp_advance(p)
@@ -408,8 +408,8 @@ tp_condition :: proc(p: ^Tree_Parser) -> Tree_Id {
     return c
 }
 
-// `if c {…}` (its else and elif chain inside the braces), `if c do s`; `#if`
-// with its `#`.
+// `if c {…}` (its else and elif chain inside the braces), `if c do s` (its
+// `elif c do s`, `else do s` after it: tp_do_chain); `#if` with its `#`.
 tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
     start := int(hash) if hash != 0 else p.pos
     kw := tp_advance(p)
@@ -419,7 +419,8 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
         tp_advance(p)
         body := tp_items()
         append(&body, tp_stmt(p))
-        return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, tp_list(p, body), 0, u32(hash)))
+        then := tp_list(p, body)
+        return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p), u32(hash)))
     }
     tp_expect(p, .Left_Brace)
     tp_skip_newlines(p)
@@ -436,6 +437,53 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
     }
     tp_expect(p, .Right_Brace)
     return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, else_, u32(hash)))
+}
+
+// What follows `if c do s` (or `elif c do s`), on its line or the next:
+// `elif c do s` — its own chain after it — or `else do s`; 0 for neither. An
+// `elif`, an `else`, without `do` is a braced chain's around it, left there.
+tp_do_chain :: proc(p: ^Tree_Parser) -> u32 {
+    m := tp_mark(p)
+    tp_skip_newlines(p)
+    #partial switch tp_kind(p) {
+    case .Elif:
+        if tp_elif_has_do(p) {
+            start := p.pos
+            kw := tp_advance(p)
+            cond := tp_condition(p)
+            tp_expect(p, .Do)
+            body := tp_items()
+            append(&body, tp_stmt(p))
+            then := tp_list(p, body)
+            chain := tp_items()
+            append(&chain, tp_node(p, .Elif, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p), 0)))
+            return tp_list(p, chain)
+        }
+    case .Else:
+        if tp_peek(p) == .Do {
+            tp_advance(p)
+            tp_advance(p)
+            body := tp_items()
+            append(&body, tp_stmt(p))
+            return tp_list(p, body)
+        }
+    }
+    tp_reset(p, m)
+    return 0
+}
+
+// Whether the `elif` here has `do` after its condition, on its line.
+tp_elif_has_do :: proc(p: ^Tree_Parser) -> bool {
+    depth := 0
+    for pos := p.pos + 1; pos < len(p.tokens); pos += 1 {
+        #partial switch p.tokens[pos].kind {
+        case .Left_Paren, .Left_Bracket:   depth += 1
+        case .Right_Paren, .Right_Bracket: depth -= 1
+        case .Do:                          if depth == 0 { return true }
+        case .Newline, .Left_Brace, .EOF:  if depth == 0 { return false }
+        }
+    }
+    return false
 }
 
 tp_elif :: proc(p: ^Tree_Parser) -> Tree_Id {

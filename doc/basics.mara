@@ -140,8 +140,9 @@ keyword_return :: fun() {
 //
 // The braces go around the whole chain, not around each part: `if a {`,
 // then `elif b` and `else` on their own lines, one `}` at the end. A
-// condition is a bool: `n != 0`, not `n`. With one statement and no
-// elif or else, `do` takes the braces' place: `if n < 0 do return`.
+// condition is a bool: `n != 0`, not `n`. With one statement each, `do`
+// takes the braces' place: `if n < 0 do return`, then `elif b do s` and
+// `else do s`, on that line or the next ones.
 //
 // `if` also picks a value: `x := if a do 1 else 2`, both of one type.
 keyword_if :: fun() {
@@ -155,18 +156,23 @@ keyword_if :: fun() {
 	}                                      // steam
 
 	if temperature > 50 do print("hot")    // hot
+	elif temperature > 20 do print("warm")
+	else do print("cold")
 
 	state := if temperature > 100 do "gas" else "liquid"
 	print(state)                           // gas
 }
 
-// `do`: one statement as a body, without braces — after `if` or `for`.
+// `do`: one statement as a body, without braces — after `if`, `elif`, `else` or `for`.
 //
 // `if done do return`, `for i in 0 .. 3 do print(i)`: the same as braces
-// around that one statement. For more than one, or an else, use braces.
+// around that one statement. An `if … do` chain goes on with `elif c do s`
+// and `else do s`, each on its own line or the same one. For more than one
+// statement, use braces.
 keyword_do :: fun() {
 	n := 3
 	if n > 2 do print("big")               // big
+	else do print("small")
 	for i in 0 .. n do print(i)            // 0, 1, 2
 }
 

@@ -1,0 +1,54 @@
+module if_do_chain
+
+//@ expect-output: A B C F
+//@ expect-output: -1 1
+//@ expect-output: 1 0 2
+//@ expect-output: 1 3 4 0
+//@ expect-output: many
+
+// `if c do s`, then `elif c do s` and `else do s` — on its line or the next:
+// a chain of one statement each, without braces. An `elif` or `else` with no
+// `do` is a braced chain's around it (nested). It used to be a stray `else`;
+// `return` stops at an `else` after it.
+
+use mara.core
+grade :: fun(n: i64) -> utf8 {
+	if n >= 90 do return 'A'
+	elif n >= 80 do return 'B'
+	elif (n >= 70) and (n < 80) do return 'C'
+	else do return 'F'
+}
+sign :: fun(n: i64) -> i64 {
+	if n < 0 do return -1 else do return 1
+}
+nested :: fun(a, b: bool) -> i64 {
+	x := 0
+	if a {
+		if b do x = 1
+	else
+		x = 2
+	}
+	return x
+}
+nested2 :: fun(a, b: bool) -> i64 {
+	x := 0
+	if a {
+		if b do x = 1
+		else do x = 3
+	elif b
+		x = 4
+	}
+	return x
+}
+main :: fun() {
+	print(grade(95), grade(85), grade(75), grade(10))
+	print(sign(-5), sign(5))
+	print(nested(true, true), nested(true, false), nested(false, true))
+	print(nested2(true, true), nested2(true, false), nested2(false, true), nested2(false, false))
+	n := 3
+	if n == 1 do print("one")
+	elif n == 2 do print("two")
+	else do print("many")
+	if n > 0 do print("positive")
+	print("done")
+}
