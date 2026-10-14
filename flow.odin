@@ -176,6 +176,12 @@ flow_literal_ranges :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
 // block is a read like any other.
 @(private="file")
 flow_unused :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
+    // (A code of no err local, most: nothing to find.)
+    any_err := false
+    for k, id in g.kind {
+        if k == .Local && g.written[id] == .Explicit && is_err_type(graph_type(g, Node_Id(id))) { any_err = true; break }
+    }
+    if !any_err { return }
     dest := make([]bool, len(g.leaves), context.temp_allocator)   // the leaves a whole write lands on
     read := make([]bool, len(g.kind), context.temp_allocator)
     for k, id in g.kind {
@@ -646,6 +652,9 @@ flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
     // A void as written, where the operation that takes it stores it — its
     // type its use's. (A parameter's default: the checker's,
     // tc_void_defaults; flow_report reports a span once.)
+    any_void := false   // (a code of none, most: nothing to find)
+    for c in g.consts { if g.names[c.name] == "void" { any_void = true; break } }
+    if !any_void { return }
     for i in 0 ..< len(g.kind) {
         id := Node_Id(i)
         if g.kind[id] != .Op { continue }

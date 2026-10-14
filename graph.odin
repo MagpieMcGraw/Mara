@@ -497,7 +497,9 @@ graph_index_runs :: proc(g: ^Program_Graph) {
     for r in 0 ..< len(g.run_first) - 1 {
         if ops := graph_run(g, r); len(ops) > 0 { append(&heads, Run_Head{ops[0], i32(r)}) }
     }
-    slice.sort_by(heads[:], proc(a, b: Run_Head) -> bool { return a.op < b.op })
+    for i in 1 ..< len(heads) {   // (by insertion: a code has few, mostly in order)
+        for j := i; j > 0 && heads[j - 1].op > heads[j].op; j -= 1 { heads[j - 1], heads[j] = heads[j], heads[j - 1] }
+    }
     g.run_heads = heads[:]
 }
 
@@ -2334,7 +2336,12 @@ graph_user :: proc(g: ^Program_Graph, op, last: Node_Id) -> Node_Id {
 // Sort the edge table by `from` and index it (a counting sort: one pass).
 @(private="file")
 graph_index_edges :: proc(g: ^Program_Graph) {
-    slice.stable_sort_by(g.edges[:], proc(a, b: Edge) -> bool { return a.from < b.from })
+    // (By insertion, which keeps a node's in order: a code has few, mostly
+    // in order already.)
+    e := g.edges[:]
+    for i in 1 ..< len(e) {
+        for j := i; j > 0 && e[j - 1].from > e[j].from; j -= 1 { e[j - 1], e[j] = e[j], e[j - 1] }
+    }
 }
 
 // --- scopes -------------------------------------------------------------------
