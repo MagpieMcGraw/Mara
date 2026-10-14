@@ -1184,6 +1184,13 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
     // Where the window's inside is on the screen.
     fun GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> bool
+    // The window's state, WindowFlags' bits: Minimized, InputFocus, ...
+    fun GetWindowFlags(window: Window) -> u64
+    // A minimized (or maximized) window back to its size and place.
+    fun RestoreWindow(window: Window) -> bool
+    fun MaximizeWindow(window: Window) -> bool
+    // The window in front of the others, given the keyboard.
+    fun RaiseWindow(window: Window) -> bool
     fun CreateSystemCursor(id: i32) -> Cursor
     // The mouse cursor's look, over the windows of this program.
     fun SetCursor(cursor: Cursor) -> bool

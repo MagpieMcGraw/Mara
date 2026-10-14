@@ -499,3 +499,59 @@ def _cursor_send(number, key, cwd, words, at, what_at):
         sublime.status_message("Mara Docs: " + first)
     if what_at and _settings().get("what_at_cursor", True):
         _run_mara([mara, "ask", "-cursor", "what", "at", what_at], cwd)
+
+
+# ---- the window: `mara view` on the file's module ----------------------------
+
+_MODULE_RE = re.compile(r"module\s+([A-Za-z0-9_.]+)")
+
+
+def _module_of(view):
+    # The module the file declares: its first line that isn't blank or a comment.
+    text = view.substr(sublime.Region(0, min(view.size(), 8000)))
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("//"):
+            continue
+        m = _MODULE_RE.match(s)
+        return m.group(1) if m else None
+    return None
+
+
+def _allow_foreground():
+    # Windows lets only the program in front put a window in front: this lets
+    # the window `mara view` opens, or brings forward, come in front of Sublime.
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)   # ASFW_ANY
+    except Exception:
+        pass   # (it opens behind, then: nothing worse)
+
+
+class MaraViewCommand(sublime_plugin.TextCommand):
+    # The window (`mara view`) on the module this file is in — opened, or
+    # brought to the front when one's open on it already. In the right-click
+    # menu and the command palette, for .mara files.
+    def run(self, edit):
+        fname = self.view.file_name()
+        if not fname:
+            sublime.status_message("mara view: save the file first — the window opens on its folder's module")
+            return
+        mara = _settings().get("mara_path", "mara")
+        module = _module_of(self.view)
+        cwd = os.path.dirname(fname)
+        _allow_foreground()
+
+        def go():
+            rc, out = _run_mara([mara, "view"] + ([module] if module else []), cwd)
+            if rc != 0:
+                lines = out.strip().splitlines()
+                sublime.status_message("mara view: " + (lines[0] if lines else "failed (exit %d)" % rc))
+
+        threading.Thread(target=go, daemon=True).start()
+
+    def is_visible(self):
+        fname = self.view.file_name()
+        return bool(fname and fname.endswith(".mara")) or self.view.match_selector(0, "source.mara")

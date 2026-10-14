@@ -15,6 +15,8 @@ use mara.sdl
 //   -show <query>    the same, shown in the Ask panel (an editor's queries)
 //   -cursor <query>  the same, shown at the Ask panel's top: what's at the
 //                    editor's cursor (`mara ask -cursor what at <point>`)
+//   -raise           the window brought to the front: `mara view` with it
+//                    open already
 // Docs aren't the module's: every window the compiler opens listens for
 // them on one name, the docs pipe name it's given too — the first window
 // opened answers there, the others try again every few seconds, so one
@@ -159,6 +161,13 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-editor ") {
 			line := line_of(&h.waiting[i])
 			editor_set(ui, line[8 : line.len])
+			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
+		if h.waiting[i].whole and not h.waiting[i].docs and starts_with(h.waiting[i].line[:], "-raise") {
+			window_raise(ui)
 			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)

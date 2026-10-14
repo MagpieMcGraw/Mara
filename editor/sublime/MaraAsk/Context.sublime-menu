@@ -1,0 +1,4 @@
+[
+    // The window on this file's module (shown for .mara files only).
+    { "caption": "Open mara view", "command": "mara_view" }
+]

@@ -470,6 +470,22 @@ fit_window :: fun(ui: ^Ui, p: ^Profile) {
 	}
 }
 
+// The window in front of the others (`mara view` again, with this one
+// open), shown again first if it's minimized.
+window_raise :: fun(ui: ^Ui) {
+	flags := GetWindowFlags(ui.window)
+	if (flags & 64) != 0 do _ = RestoreWindow(ui.window)   // (Minimized)
+	// (Windows lets only the program in front put a window in front — asked
+	// from Sublime, the window behind it only flashed in the taskbar — so
+	// forced: SDL takes the front window's input as its own for the moment.
+	// That un-maximizes a window: maximized again.)
+	_ = SetHint(cstring("SDL_FORCE_RAISEWINDOW"), cstring("1"))
+	_ = RaiseWindow(ui.window)
+	_ = SetHint(cstring("SDL_FORCE_RAISEWINDOW"), cstring("0"))
+	if (flags & 128) != 0 do _ = MaximizeWindow(ui.window)   // (Maximized)
+	ui.dirty = true
+}
+
 // The window as big as layout.txt had it, no bigger than its display.
 restore_window :: fun(ui: ^Ui) {
 	if ui.saved_width < 1.0 or ui.saved_height < 1.0 do return

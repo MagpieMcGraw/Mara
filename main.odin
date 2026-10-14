@@ -989,13 +989,15 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
 // view/view(.exe) beside the compiler, run in the current directory as
 // `view <this compiler> <module> <pipe name>`: it starts that compiler's
 // `serve` for what it shows, so the two always agree, and answers `mara
-// ask` on the pipe name (view.odin).
+// ask` on the pipe name (view.odin). One open on the module here already:
+// that one brought to the front ("-raise"), not another opened.
 run_view :: proc(args: CLI_Args) {
     all_files := discover_all_files(args.compiler_dir, ".")
     if args.pkg_name not_in all_files {
         fmt.print(module_missing(all_files, args.pkg_name))
         os.exit(1)
     }
+    if _, _, how := view_request(view_pipe_name(args.pkg_name), "-raise"); how == .Answered { return }
     view_dir, _ := filepath.join({args.compiler_dir, "view"})
     view_exe, _ := filepath.join({view_dir, "view" + NATIVE_EXE_EXT})
     // (MARA_VIEW names another: a window being written, or a test's stand-in.)
@@ -1173,7 +1175,8 @@ VIEW_USAGE :: `Usage: mara view [module]
 
   Opens the window on the module (by default the current directory's) and
   returns: the window runs on its own — closing the terminal leaves it open —
-  and starts a 'mara serve' of its own for what it shows. The window is
+  and starts a 'mara serve' of its own for what it shows. One open on the
+  module here already comes to the front instead ('-raise'). The window is
   view/view(.exe) beside the compiler, run in the current directory as
   'view <this compiler> <module> <pipe name> <docs pipe name>'. It listens
   on the pipe name
