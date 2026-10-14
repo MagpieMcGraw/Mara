@@ -254,7 +254,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     if graph_written(g, op) != .Explicit { continue }
                     d = graph_refers(g, op)
                     if d < 0 || graph_origin(g, d).at == 0 { continue }
-                    #partial switch g.kind[d] {
+                    #partial switch graph_kind_of(g, d) {
                     case .Local, .Param, .Result, .Field:
                     case: continue
                     }
@@ -299,7 +299,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                         within := r.decl != 0 && r.decl >= graph_origin(g, d).tok && r.decl < graph_origin(g, d).end
                         if r.decl == 0 || token_text(build_tokens[r.decl]) != graph_name(g, d) || !within {
                             report(&problems, t, x, i, "refers to %v %v; the graph's declaration is %v '%s' at %d:%d",
-                                r.kind, r.decl, g.kind[d], graph_name(g, d), span_line(graph_origin(g, d)), span_col(graph_origin(g, d)))
+                                r.kind, r.decl, graph_kind_of(g, d), graph_name(g, d), span_line(graph_origin(g, d)), span_col(graph_origin(g, d)))
                         }
                     }
                     // (A loop's variable, written by its loop: declared by a
@@ -364,7 +364,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             writes := make(map[Node_Id][dynamic]Node_Id, context.temp_allocator)
             for id in 0 ..< len(g.kind) {
                 if dst := graph_whole_write_dest(g, Node_Id(id)); dst != NO_NODE {
-                    if d := graph_refers(g, dst); d >= 0 && g.written[d] != .Explicit {
+                    if d := graph_refers(g, dst); d >= 0 && graph_written(g, d) != .Explicit {
                         if d not_in writes { writes[d] = make([dynamic]Node_Id, context.temp_allocator) }
                         append(&writes[d], Node_Id(id))
                     }
@@ -423,7 +423,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 if !ok {
                     what := "nothing"
                     if v := passed[j].op; v >= 0 {
-                        what = fmt.tprintf("%v '%s' from %d:%d", g.op[v], graph_name(g, v), span_line(graph_origin(g, v)), span_col(graph_origin(g, v)))
+                        what = fmt.tprintf("%v '%s' from %d:%d", graph_op_of(g, v), graph_name(g, v), span_line(graph_origin(g, v)), span_col(graph_origin(g, v)))
                     }
                     report(&problems, t, n, i, "param %d is annotated as receiving %v %v; the graph passes %s",
                         j + 1, arg.kind, t.tag[arg.node], what)

@@ -288,7 +288,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     // summary is read before the next.)
     virtual.arena_free_all(&g_esc.walk)
     context.allocator = virtual.arena_allocator(&g_esc.walk)
-    e := Esc{cg = cg, g = g, ft = ft, ctor = g.kind[0] == .Struct, report = report}
+    e := Esc{cg = cg, g = g, ft = ft, ctor = graph_kind_of(g, 0) == .Struct, report = report}
     e.main = graph_code_runs(g, 0, &e.runs)
     if len(e.runs) == 0 { return {}, false }
     if len(ft.params) > ESC_MAX_PARAMS {
@@ -371,7 +371,7 @@ esc_scan :: proc(e: ^Esc) {
         for op in graph_run(g, int(r)) {
             ops := graph_operands(g, op)
             for o in ops {
-                if o.op == NO_NODE || graph_is_leaf(o.op) { continue }
+                if o.op == NO_NODE || o.op >= CONST { continue }
                 if from := e.run_of[o.op]; from != i32(ri) + 1 { e.used_across[o.op] = true }
             }
             #partial switch g.op[op] {
@@ -380,7 +380,7 @@ esc_scan :: proc(e: ^Esc) {
                 val := ops[1].op
                 if k < 0 || val == NO_NODE { break }
                 v := &e.vars[k]
-                if g.op[val] == .Carve && graph_name(g, val) == "let" && graph_stmt(g, op).kind == .Decl {
+                if graph_op_of(g, val) == .Carve && graph_name(g, val) == "let" && graph_stmt(g, op).kind == .Decl {
                     v.view = true   // `x := let(T, s)`: x IS the storage it views
                     v.init = op
                 }
@@ -540,7 +540,7 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
         return
     }
     if e.ctor && d == 0 {
-        for v, k in e.vars { if e.g.kind[v.node] == .Field { esc_vars_push(&r.vars, i32(k)) } }
+        for v, k in e.vars { if graph_kind_of(e.g, v.node) == .Field { esc_vars_push(&r.vars, i32(k)) } }
         return
     }
     r.global = true   // a constant, a function, the program's globals
@@ -564,7 +564,7 @@ esc_var_named :: proc(e: ^Esc, o: Operand) -> int {
 // as the operation that uses it runs.
 @(private="file")
 esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
-    if o.op == NO_NODE { return {} }
+    if o.op == NO_NODE || graph_is_const(o.op) { return {} }
     if graph_is_leaf(o.op) {
         r: Esc_Roots
         esc_var_roots(e, &r, o.op, e.state)
@@ -907,7 +907,7 @@ esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
 esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
     d := ESC_BODY
     for p := e.g.parent[id]; p != 0 && p != NO_NODE; p = e.g.parent[p] {
-        if e.g.kind[p] == .Block { d += 1 }
+        if graph_kind_of(e.g, p) == .Block { d += 1 }
     }
     return d
 }
@@ -1007,13 +1007,13 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
 esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state: []Esc_Roots) -> bool {
     g := e.g
     call := o.op
-    if g.op[call] == .Read { call = esc_built_by(e, ri, ret, call) }
-    if call == NO_NODE || (g.op[call] != .Call && g.op[call] != .Construct) { return false }
+    if graph_op_of(g, call) == .Read { call = esc_built_by(e, ri, ret, call) }
+    if call == NO_NODE || (graph_op_of(g, call) != .Call && graph_op_of(g, call) != .Construct) { return false }
     callee := graph_called(e.g, call)
     sum := esc_summary_of(e, callee)
     if sum == nil { return false }
     args := graph_operands(g, call)
-    if g.op[call] == .Construct { args = args[1:] }
+    if graph_op_of(g, call) == .Construct { args = args[1:] }
     sb := strings.builder_make(context.temp_allocator)
     n := 0
     for i in 0 ..< min(len(args), ESC_MAX_PARAMS) {
@@ -1036,7 +1036,7 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
 esc_built_by :: proc(e: ^Esc, ri: int, ret: Node_Id, read: Node_Id) -> Node_Id {
     g := e.g
     temp := graph_leaf_decl(g, graph_operands(g, read)[0].op)
-    if temp < 0 || g.written[temp] != .Synthetic { return NO_NODE }
+    if temp < 0 || graph_written(g, temp) != .Synthetic { return NO_NODE }
     ops := graph_run(g, int(e.runs[ri]))
     for i := len(ops) - 1; i >= 0; i -= 1 {
         op := ops[i]
@@ -1063,14 +1063,14 @@ esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
         if worst < 0 { worst = int(k); continue }
         w := e.vars[worst]
         // The deepest; between equals, one the source names.
-        if v.depth > w.depth || (v.depth == w.depth && g.written[w.node] == .Synthetic && g.written[v.node] != .Synthetic) {
+        if v.depth > w.depth || (v.depth == w.depth && graph_written(g, w.node) == .Synthetic && graph_written(g, v.node) != .Synthetic) {
             worst = int(k)
         }
     }
     if worst >= 0 && e.vars[worst].depth >= r.temp {
         v := e.vars[worst]
         switch {
-        case g.written[v.node] == .Synthetic: return "a temporary"
+        case graph_written(g, v.node) == .Synthetic: return "a temporary"
         case v.param >= 0:                    return fmt.tprintf("the local copy of parameter `%s`", v.name)
         case v.depth > ESC_BODY:              return fmt.tprintf("block-local `%s`", v.name)
         case:                                 return fmt.tprintf("local `%s`", v.name)

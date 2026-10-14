@@ -618,7 +618,6 @@ gfx_mesh_generation.mara:69:11  token '0'
   Index                    [461,465)  verts[0]   : Vertex
       → Index
   Number                   [463,464)  0   : i64
-      → Const
 === Pounce | at Pounce.mara:112:13
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
@@ -629,7 +628,7 @@ refers to: type VAO_State  gfx_vao.mara:37
   Assign                   [526,533)  game.vao = VAO_State()
       → Write
   Call                     [530,533)  VAO_State()   : VAO_State
-      → Local temp, Const ×2, Arith <<, Const ×2, Arith <<, Const ×2, Arith <<, Construct VAO_State, Read
+      → Local temp, Arith << ×3, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object
   declared  camera.mara:11
@@ -658,7 +657,6 @@ askat.mara:15:14  token '3'
   Call                     [85,91)  add(3, 4)   : i32
       → Call add
   Number                   [87,88)  3   : i32
-      → Const
 === test/askat.mara | at askat.mara:15:20
 askat.mara:15:20  token '+'
 

@@ -1044,7 +1044,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
         return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w)
     case name == "void":
         if want == .Place { return {} }
-        return {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
+        return {v = graph_const(b, w, span, t, "void", nil), ok = true}
     }
     if ts, is_scope := t.(^Type_Scope); is_scope && !ts.is_module {
         if lw_names_fun(k, n, t) {

@@ -151,7 +151,7 @@ Every node is a numbered id, and each kind of connection is stored by its shape:
 
 `total` is id 3 and its subtree is ids 3 to 8, so "is `it` inside `total`?" is 3 ≤ 7 ≤ 8: two integer comparisons.
 
-**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`. A use of a variable is no node but a **leaf** — the operand that names it: the `sum` in `return sum` is a leaf whose declaration is 5, kept with the tree node it's written as (a leaf table beside the nodes, one entry a use; its id past every node's). The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
+**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`. A use of a variable is no node but a **leaf** — the operand that names it: the `sum` in `return sum` is a leaf whose declaration is 5, kept with the tree node it's written as (a leaf table beside the nodes, one entry a use; its id past every node's). A constant used is a leaf too, in a table of its own: its value, type and name. The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
 
 **Many-to-many (calls): one edge table.** Each connection is a record:
 
@@ -220,7 +220,7 @@ About thirty kinds in all.
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
-| `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)`, a named constant (one computed from floats, at the precision of the type it's used at) | an immediate |
+| `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)`, a named constant (one computed from floats, at the precision of the type it's used at): a leaf, no operation — the operand that is the value | an immediate |
 | `arith` | `+ - * / %`, wrapping `+% -% *%`, shifts, bit operations | `add`, `fadd` and so on, with overflow (not when wrapping) and division-by-zero traps |
 | `compare` | `== != < <= > >=` | `icmp`, `fcmp` |
 | `unary` | `-x`, `not x` | `sub 0`, `xor` |

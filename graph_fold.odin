@@ -103,14 +103,14 @@ graph_fold_code :: proc(fo: ^Folder, b: ^Graph_Builder, g: ^Program_Graph) {
     pc := fo.pc
     fo.code = g
     {
-        if g.kind[0] == .Const || len(g.constant) == 0 { return }   // (a constant's own code: computed where it's used)
+        if graph_kind_of(g, 0) == .Const || len(g.constant) == 0 { return }   // (a constant's own code: computed where it's used)
         uses := make([dynamic]Node_Id, 0, len(g.constant), context.temp_allocator)   // (in order)
         for id in g.constant { append(&uses, id) }
         slice.sort(uses[:])
         for id in uses {
             c := g.constant[id]
             if c == 0 || c not_in pc.consts { continue }
-            #partial switch g.op[id] {
+            #partial switch graph_op_of(g, id) {
             case .Const:
                 v := fold_decl(fo, c, fold_width_of(graph_type(g, id)))
                 if v == nil || !fold_scalar(v) || llvm_type_from_checker(graph_type(g, id)) == IR_PTR {
@@ -215,8 +215,8 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     // (A leaf's: its variable's — failing where it's written.)
     arg :: proc(fo: ^Folder, fc: ^Fold_Code, ops: []Operand, k: int) -> ^Fold {
         if k >= len(ops) || ops[k].op == NO_NODE || ops[k].out != 0 { return nil }
-        if graph_is_leaf(ops[k].op) {
-            v := fold_var(fo, fc, ops[k].op)
+        if graph_is_leaf(ops[k].op) || graph_is_const(ops[k].op) {
+            v := fold_var(fo, fc, ops[k].op) if graph_is_leaf(ops[k].op) else fold_const(fo, fc, ops[k].op)
             if v == nil && fo.at == {} { fo.at = graph_origin(fc.g, ops[k].op) }
             return v
         }
@@ -224,8 +224,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     }
     out: ^Fold
     switch g.op[id] {
-    case .Const:
-        out = fold_const(fo, fc, id)
+    case .Const:   // (a leaf: arg)
     case .Global:
         if c, ok := graph_value(g, id); ok && c.is_text {
             out = fold_new(graph_type(g, id))
@@ -313,7 +312,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     return true
 }
 
-// A constant operation's value: a literal's, a named constant's (at the
+// A constant's value, a leaf's: a literal's, a named constant's (at the
 // width the code computes at), or `void` — a pointer's null.
 @(private="file")
 fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
@@ -342,7 +341,7 @@ fold_var :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fc.g
     d := graph_refers(g, id)
     if d == fc.self { return fc.root }
-    if d != NO_NODE && g.kind[d] == .Field && g.parent[d] == fc.self {
+    if d != NO_NODE && graph_kind_of(g, d) == .Field && g.parent[d] == fc.self {
         return fold_member(fo, fc.root, graph_name(g, d), false)
     }
     return nil

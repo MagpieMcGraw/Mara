@@ -1170,9 +1170,9 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     defer delete(result_defs)
     for d in checked.du.defs {
         g := d.fn.g if d.fn != nil else nil   // (its fun's code)
-        if g == nil || len(d.writes) == 0 || g.op[d.writes[0]] != .Write { continue }
+        if g == nil || len(d.writes) == 0 || graph_op_of(g, d.writes[0]) != .Write { continue }
         val := graph_operands(g, d.writes[0])[1].op
-        if val != NO_NODE && g.op[val] == .Call && graph_called(g, val) == F { result_defs[d] = true }
+        if val != NO_NODE && graph_op_of(g, val) == .Call && graph_called(g, val) == F { result_defs[d] = true }
     }
     inline := len(sites) - len(result_defs)
     if inline < 0 { inline = 0 }

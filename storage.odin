@@ -97,7 +97,7 @@ storage_users :: proc(s: ^Storage) {
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
             for o in graph_operands(pg, op) {
-                if o.op == NO_NODE || graph_is_leaf(o.op) { continue }
+                if o.op == NO_NODE || o.op >= CONST { continue }
                 u := &s.user[o.op]
                 u^ = op if u^ == -1 else -2
                 ou, seen := s.out_user[o]
@@ -121,9 +121,9 @@ storage_named_results :: proc(s: ^Storage, sret: Type, rets: []Type) {
     if s.ctor { return }
     i := 0   // which result
     for d := Node_Id(1); d <= pg.end; d += 1 {
-        if pg.kind[d] != .Result || pg.parent[d] != 0 { continue }
+        if graph_kind_of(pg, d) != .Result || pg.parent[d] != 0 { continue }
         defer i += 1
-        if pg.written[d] != .Explicit { continue }
+        if graph_written(pg, d) != .Explicit { continue }
         t := graph_type(pg, d)
         switch {
         case rets != nil:
@@ -175,7 +175,7 @@ storage_holds_header :: proc(s: ^Storage, v: Node_Id) -> bool {
             ops := graph_operands(pg, op)
             if graph_leaf_decl(pg, ops[0].op) != v { continue }
             x := ops[1].op
-            return x != NO_NODE && pg.op[x] == .Slice && s.user[x] == op
+            return x != NO_NODE && graph_op_of(pg, x) == .Slice && s.user[x] == op
         }
     }
     return false
@@ -201,7 +201,7 @@ storage_once_before :: proc(s: ^Storage, v: Node_Id, header: bool) -> bool {
                     write_run, write_at = ri, at
                 case (pg.op[op] == .Read || pg.op[op] == .Deref) && !header:   // (a pointer's deref reads it)
                     append(&reads, Read{ri, at})
-                case header && pg.op[op] == .Field && llvm_header_field(graph_name(pg, op)) >= 0 && u >= 0 && pg.op[u] == .Read,
+                case header && pg.op[op] == .Field && llvm_header_field(graph_name(pg, op)) >= 0 && u >= 0 && graph_op_of(pg, u) == .Read,
                      header && pg.op[op] == .Index && k == 0:
                     append(&reads, Read{ri, at})
                 case:
@@ -270,7 +270,7 @@ storage_direct :: proc(s: ^Storage, place: Node_Id) -> bool {
     pg := s.pg
     if !graph_is_leaf(place) { return false }   // (a held view's len or cap is one only as it's emitted)
     d := graph_refers(pg, place)
-    if pg.kind[d] == .Param { return llvm_scalar(graph_type(pg, d)) }
+    if graph_kind_of(pg, d) == .Param { return llvm_scalar(graph_type(pg, d)) }
     if d <= 0 || d > pg.end { return false }   // this_program's: in memory
     return s.held[d]
 }
@@ -292,7 +292,7 @@ storage_in_place_updates :: proc(s: ^Storage) {
             if callee == nil { continue }
             k, consumes := graph_consumed(s.pc, callee).?
             u := s.user[op]
-            if !consumes || u < 0 || pg.op[u] != .Write { continue }
+            if !consumes || u < 0 || graph_op_of(pg, u) != .Write { continue }
             uops := graph_operands(pg, u)
             dest := uops[0].op
             if uops[1].op != op || storage_direct(s, dest) || !storage_updates_in_place(s, op, k, dest) { continue }
@@ -311,12 +311,12 @@ storage_alias_place :: proc(s: ^Storage, a, d: Node_Id) {
     if a == NO_NODE || d == NO_NODE || a == d || graph_is_leaf(a) || graph_is_leaf(d) || d > a { return }
     s.alias[a] = d
     ao, do_ := graph_operands(pg, a), graph_operands(pg, d)
-    #partial switch pg.op[a] {
+    #partial switch graph_op_of(pg, a) {
     case .Field, .Deref, .Read:
         storage_alias_place(s, ao[0].op, do_[0].op)
     case .Index:
         storage_alias_place(s, ao[0].op, do_[0].op)
-        if ai, di := ao[1].op, do_[1].op; ai != NO_NODE && di != NO_NODE && pg.op[ai] == .Read && pg.op[di] == .Read {
+        if ai, di := ao[1].op, do_[1].op; ai != NO_NODE && di != NO_NODE && graph_op_of(pg, ai) == .Read && graph_op_of(pg, di) == .Read {
             storage_alias_place(s, ai, di)   // the index's read
         }
     }
@@ -347,14 +347,14 @@ storage_same :: proc(s: ^Storage, a, b: Node_Id) -> bool {
     if a == NO_NODE || b == NO_NODE || graph_op_of(pg, a) != graph_op_of(pg, b) { return false }
     if graph_is_leaf(a) { return graph_refers(pg, a) == graph_refers(pg, b) }
     ao, bo := graph_operands(pg, a), graph_operands(pg, b)
-    #partial switch pg.op[a] {
+    #partial switch graph_op_of(pg, a) {
     case .Field:
         return graph_name(pg, a) == graph_name(pg, b) && storage_same(s, ao[0].op, bo[0].op)
     case .Index:
         if !storage_same(s, ao[0].op, bo[0].op) { return false }
         ai, bi := ao[1].op, bo[1].op
-        if ai == NO_NODE || bi == NO_NODE || pg.op[ai] != pg.op[bi] { return false }
-        #partial switch pg.op[ai] {
+        if ai == NO_NODE || bi == NO_NODE || graph_op_of(pg, ai) != graph_op_of(pg, bi) { return false }
+        #partial switch graph_op_of(pg, ai) {
         case .Const:
             av, aok := graph_value(pg, ai)
             bv, bok := graph_value(pg, bi)
@@ -393,11 +393,11 @@ storage_carved :: proc(s: ^Storage) {
     pg := s.pg
     for r in s.runs {
         for w in graph_run(pg, int(r)) {
-            if pg.op[w] != .Write { continue }
+            if graph_op_of(pg, w) != .Write { continue }
             ops := graph_operands(pg, w)
             c, dest := ops[1].op, ops[0].op
-            if c == NO_NODE || pg.op[c] != .Carve || graph_name(pg, c) != "let" || !graph_is_leaf(dest) { continue }
-            if d := graph_refers(pg, dest); pg.kind[d] == .Local && graph_stmt(pg, w).kind == .Decl { s.carved[d] = c }
+            if c == NO_NODE || graph_op_of(pg, c) != .Carve || graph_name(pg, c) != "let" || !graph_is_leaf(dest) { continue }
+            if d := graph_refers(pg, dest); graph_kind_of(pg, d) == .Local && graph_stmt(pg, w).kind == .Decl { s.carved[d] = c }
         }
     }
 }
@@ -432,10 +432,10 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
             ops := graph_operands(pg, op)
             v := NO_NODE
             if len(ops) == n && ops[k].op != NO_NODE && graph_op_of(pg, ops[k].op) == .Read {
-                if d := graph_leaf_decl(pg, graph_operands(pg, ops[k].op)[0].op); d >= 0 && pg.kind[d] == .Local { v = d }
+                if d := graph_leaf_decl(pg, graph_operands(pg, ops[k].op)[0].op); d >= 0 && graph_kind_of(pg, d) == .Local { v = d }
             }
             if v in s.carved { v, every = NO_NODE, false }   // the carved memory: copied out
-            if v != NO_NODE && pg.written[v] == .Synthetic {
+            if v != NO_NODE && graph_written(pg, v) == .Synthetic {
                 // (Not an `if` expression's, written by its arms: its own.)
                 if storage_reads(s, v) == 1 && storage_written_only_in(s, v, r) { s.result[v] = k }
                 v = NO_NODE   // a temporary is no named local
@@ -456,7 +456,7 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
 // built there.
 @(private="file")
 storage_in_result :: proc(s: ^Storage, d: Node_Id) -> bool {
-    if s.ctor && (d == 0 || (s.pg.kind[d] == .Field && s.pg.parent[d] == 0)) { return true }
+    if s.ctor && (d == 0 || (graph_kind_of(s.pg, d) == .Field && s.pg.parent[d] == 0)) { return true }
     if d <= 0 || d > s.pg.end { return false }
     if s.one_slot && d in s.result { return true }
     at, built := s.in_place[d]
@@ -478,7 +478,7 @@ storage_is_slot :: proc(s: ^Storage, p: Node_Id) -> bool {
         case .Var:
             d := graph_refers(pg, at)
             if s.ctor && d == 0 { return true }
-            if d <= 0 || d > pg.end || pg.kind[d] == .Param || pg.kind[d] == .Field { return false }
+            if d <= 0 || d > pg.end || graph_kind_of(pg, d) == .Param || graph_kind_of(pg, d) == .Field { return false }
             if s.one_slot && d in s.result { return true }
             if d in s.arena { return false }
             if x, built := s.in_place[d]; built { at = x; continue }
@@ -516,16 +516,16 @@ storage_in_place :: proc(s: ^Storage) {
     for r in s.runs {
         ops := graph_run(pg, int(r))
         for w, at in ops {
-            if pg.op[w] != .Write { continue }
+            if graph_op_of(pg, w) != .Write { continue }
             wops := graph_operands(pg, w)
             x, v := wops[0].op, wops[1].op
-            if v == NO_NODE || wops[1].out != 0 || pg.op[v] != .Read || !llvm_aggregate(graph_type(pg, v)) { continue }
+            if v == NO_NODE || wops[1].out != 0 || graph_op_of(pg, v) != .Read || !llvm_aggregate(graph_type(pg, v)) { continue }
             tv := graph_operands(pg, v)[0].op
             if !graph_is_leaf(tv) || storage_direct(s, x) { continue }
             if graph_op_of(pg, x) == .Swizzle { continue }   // components, not one array's storage
             if graph_op_of(pg, x) == .Slice { continue }     // a run of elements the value's are copied into, no storage of one type
             t := graph_refers(pg, tv)
-            if t <= 0 || t > pg.end || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
+            if t <= 0 || t > pg.end || graph_kind_of(pg, t) != .Local || graph_written(pg, t) != .Synthetic { continue }
             if t in s.result || storage_reads(s, t) != 1 { continue }
             if storage_builds_alone(s, ops[:at], t, x) { s.in_place[t] = x }
         }
@@ -615,9 +615,9 @@ storage_ahead_able :: proc(s: ^Storage, p: Node_Id) -> bool {
     pg := s.pg
     if graph_is_leaf(p) { return true }
     ops := graph_operands(pg, p)
-    #partial switch pg.op[p] {
+    #partial switch graph_op_of(pg, p) {
     case .Field, .Variant, .Deref: return storage_ahead_able(s, ops[0].op)
-    case .Index: return ops[1].op != NO_NODE && pg.op[ops[1].op] == .Const && storage_ahead_able(s, ops[0].op)
+    case .Index: return graph_is_const(ops[1].op) && storage_ahead_able(s, ops[0].op)
     }
     return false
 }
@@ -693,11 +693,11 @@ storage_overlaps :: proc(s: ^Storage, read, dest: Node_Id) -> bool {
     r, d := storage_where(s, read), storage_where(s, dest)
     if r.root == NO_NODE || d.root == NO_NODE || r.explicit { return true }
     if places_disjoint(pg, s.bound, read, dest) { return false }
-    if !d.via_ptr && storage_in_result(s, d.root) && pg.kind[r.root] == .Param { return false }
+    if !d.via_ptr && storage_in_result(s, d.root) && graph_kind_of(pg, r.root) == .Param { return false }
     if !r.via_ptr && !d.via_ptr && r.root == d.root { return true }
     if !is_plain_data(graph_type(pg, read)) { return true }
     if !r.via_ptr && !d.via_ptr { return false }   // two variables' own storage
-    read_own := !r.via_ptr && !storage_in_result(s, r.root) && pg.kind[r.root] != .Param
+    read_own := !r.via_ptr && !storage_in_result(s, r.root) && graph_kind_of(pg, r.root) != .Param
     dest_own := !d.via_ptr && !storage_in_result(s, d.root)
     if r.region == nil || d.region == nil { return true }
     return (!read_own && type_can_contain(d.region, r.region)) || (!dest_own && type_can_contain(r.region, d.region))
@@ -784,7 +784,7 @@ storage_swaps :: proc(s: ^Storage) {
     holds := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
     puts := make([dynamic]Put, context.temp_allocator)
     is_held :: proc(pg: ^Program_Graph, d: Node_Id) -> bool {
-        return d > 0 && d <= pg.end && pg.kind[d] == .Local && pg.written[d] == .Synthetic && graph_name(pg, d) == "parallel"
+        return d > 0 && d <= pg.end && graph_kind_of(pg, d) == .Local && graph_written(pg, d) == .Synthetic && graph_name(pg, d) == "parallel"
     }
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
@@ -797,7 +797,7 @@ storage_swaps :: proc(s: ^Storage) {
                 append(&holds[d], op)
                 continue
             }
-            if v != NO_NODE && pg.op[v] == .Read {
+            if v != NO_NODE && graph_op_of(pg, v) == .Read {
                 if src := graph_operands(pg, v)[0].op; graph_is_leaf(src) && is_held(pg, graph_refers(pg, src)) {
                     append(&puts, Put{op, dest, graph_refers(pg, src), v, src})
                 }
@@ -811,7 +811,7 @@ storage_swaps :: proc(s: ^Storage) {
         if !has || len(ws) != 1 || storage_reads(s, d) != 1 { return }
         w = ws[0]
         read = graph_operands(pg, w)[1].op
-        if read == NO_NODE || pg.op[read] != .Read { return }
+        if read == NO_NODE || graph_op_of(pg, read) != .Read { return }
         return w, read, graph_operands(pg, read)[0].op, true
     }
     for i := 0; i + 1 < len(puts); i += 1 {
@@ -936,7 +936,7 @@ storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: 
     u := s.user[op]
     if u < 0 { return .Temporary }
     uops := graph_operands(pg, u)
-    #partial switch pg.op[u] {
+    #partial switch graph_op_of(pg, u) {
     case .Return:
         if sret != nil { return .Result_Slot }
     case .Write:
@@ -946,7 +946,7 @@ storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: 
         fresh := false
         if graph_is_leaf(dest) {
             d := graph_refers(pg, dest)
-            fresh = pg.written[d] == .Synthetic || graph_stmt(pg, u).kind == .Decl
+            fresh = graph_written(pg, d) == .Synthetic || graph_stmt(pg, u).kind == .Decl
         }
         // (The result slot is no fresher than any place: the local every
         // return returns lives there, and `x = f(x)` passes it.)
@@ -966,12 +966,12 @@ storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: 
 storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
     pg := s.pg
     u, ok := s.out_user[o]
-    if !ok || u < 0 || pg.op[u] != .Write { return NO_NODE }
+    if !ok || u < 0 || graph_op_of(pg, u) != .Write { return NO_NODE }
     uops := graph_operands(pg, u)
     dest := uops[0].op
     if uops[1] != o || !graph_is_leaf(dest) || storage_direct(s, dest) { return NO_NODE }
     d := graph_refers(pg, dest)
-    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node) { return NO_NODE }
+    if graph_kind_of(pg, d) != .Local || (graph_written(pg, d) != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node) { return NO_NODE }
     return dest
 }
 
@@ -984,11 +984,11 @@ storage_had :: proc(s: ^Storage, p, at: Node_Id) -> bool {
     if graph_is_leaf(p) { return true }
     if s.pos[p] >= 0 && s.pos[at] >= 0 && s.pos[p] < s.pos[at] { return true }
     ops := graph_operands(pg, p)
-    #partial switch pg.op[p] {
+    #partial switch graph_op_of(pg, p) {
     case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)
         return storage_had(s, ops[0].op, at)
     case .Index:
-        return ops[1].op != NO_NODE && pg.op[ops[1].op] == .Const && storage_had(s, ops[0].op, at)
+        return graph_is_const(ops[1].op) && storage_had(s, ops[0].op, at)
     }
     return false
 }

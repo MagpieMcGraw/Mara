@@ -164,15 +164,15 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
         for graph_op_of(pg, at) == .Field || graph_op_of(pg, at) == .Index { at = graph_operands(pg, at)[0].op }
         if !graph_is_leaf(at) { return false }
         d := graph_refers(pg, at)
-        if d <= 0 || d > pg.end || (pg.kind[d] != .Local && pg.kind[d] != .Result) { return false }
+        if d <= 0 || d > pg.end || (graph_kind_of(pg, d) != .Local && graph_kind_of(pg, d) != .Result) { return false }
         written_only :: proc(pg: ^Program_Graph, uses: Reach_Uses, x: Node_Id) -> bool {
             for u in reach_uses(uses, x) {
                 if u.at != 0 { return false }
-                #partial switch pg.op[u.by] {
+                #partial switch graph_op_of(pg, u.by) {
                 case .Write, .Construct, .Zero, .Fill, .Arena_Alloc:
                 case .Field, .Index: if !written_only(pg, uses, u.by) { return false }
                 case .Read:
-                    for r in reach_uses(uses, u.by) { if pg.op[r.by] != .Return { return false } }
+                    for r in reach_uses(uses, u.by) { if graph_op_of(pg, r.by) != .Return { return false } }
                 case: return false
                 }
             }
@@ -194,10 +194,10 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
         named, _ := vars[pn]   // (bound first: `for x in m[k]` faults on a missing key — a param never named)
         for v in named {
             for u in reach_uses(uses, v) {
-                if pg.op[u.by] != .Read { s.reaches[k] = true; continue }
+                if graph_op_of(pg, u.by) != .Read { s.reaches[k] = true; continue }
                 for r in reach_uses(uses, u.by) {
                     ok := false
-                    #partial switch pg.op[r.by] {
+                    #partial switch graph_op_of(pg, r.by) {
                     case .Compare:
                         ok = true
                     case .Return:
@@ -206,7 +206,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
                         if r.at == 1 && in_result(pg, uses, vars, graph_operands(pg, r.by)[0].op) { ok, s.returned[k] = true, true }
                     case .Call, .Construct:
                         c := graph_called(pg, r.by)
-                        j := r.at - (1 if pg.op[r.by] == .Construct else 0)
+                        j := r.at - (1 if graph_op_of(pg, r.by) == .Construct else 0)
                         if c != nil && j >= 0 {
                             cs := reach_summary(code, cache, c)
                             ok = j < len(cs.reaches) && !cs.reaches[j] && !cs.returned[j]
@@ -252,7 +252,7 @@ place_path :: proc(pg: ^Program_Graph, bound: map[Node_Id]Node_Id, p: Node_Id) -
             s.name = graph_name(pg, id)
         case .Index:
             at := ops[1].op
-            for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
+            for at != NO_NODE && graph_op_of(pg, at) == .Cast { at = graph_operands(pg, at)[0].op }
             if c, has := graph_value(pg, at); has && !c.is_float && !c.is_text { s.index, s.known = c.int, true }
             _, s.cross = distinct_base(graph_type(pg, ops[0].op)).(^Type_Slice)
         case .Deref:
@@ -354,9 +354,9 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
         if pg.kind[id] != .Op || pg.op[id] != .Write { continue }
         ops := graph_operands(pg, id)
         v := ops[1].op
-        if v == NO_NODE || pg.op[v] != .Read { continue }
+        if v == NO_NODE || graph_op_of(pg, v) != .Read { continue }
         d := graph_leaf_decl(pg, graph_operands(pg, v)[0].op)
-        if d <= 0 || d > pg.end || pg.kind[d] != .Local || pg.written[d] != .Synthetic { continue }
+        if d <= 0 || d > pg.end || graph_kind_of(pg, d) != .Local || graph_written(pg, d) != .Synthetic { continue }
         puts[d] = NO_NODE if d in puts else ops[0].op   // (two: no one place)
     }
     // (Where a value written to place `dest` by operation `w` ends up: a
@@ -366,7 +366,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
         if !graph_is_leaf(dest) { return dest, true }
         d := graph_refers(pg, dest)
         if d <= 0 || d > pg.end { return dest, true }
-        if pg.kind[d] == .Local && pg.written[d] == .Synthetic {
+        if graph_kind_of(pg, d) == .Local && graph_written(pg, d) == .Synthetic {
             x, has := puts[d]
             return x, has && x != NO_NODE
         }
@@ -383,8 +383,8 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
         for a, k in args {
             if !s.reaches[k] { continue }
             at := a.op
-            for at != NO_NODE && pg.op[at] == .Cast { at = graph_operands(pg, at)[0].op }
-            if at == NO_NODE || pg.op[at] != .Address { continue }
+            for at != NO_NODE && graph_op_of(pg, at) == .Cast { at = graph_operands(pg, at)[0].op }
+            if at == NO_NODE || graph_op_of(pg, at) != .Address { continue }
             place := graph_operands(pg, at)[0].op
             if !places_contain(pg, bound, place, x) { continue }
             name := scope_display_name(callee)
@@ -404,7 +404,7 @@ reach_code :: proc(rp: ^Reach_Pass, code: ^Program_Code, pg: ^Program_Graph) {
         case .Write:
             // (A result built where it's written: an aggregate's. A
             // number comes back as a value — nothing built over anything.)
-            if v := ops[1]; v.op != NO_NODE && pg.op[v.op] == .Call {
+            if v := ops[1]; v.op != NO_NODE && graph_op_of(pg, v.op) == .Call {
                 callee := graph_called(pg, v.op)
                 if callee == nil || int(v.out) >= fn_result_count(callee) || !graph_aggregate(fn_result(callee, int(v.out))) { continue }
                 if x, ok := lands(pg, puts, id, ops[0].op); ok { check(code, &rp.cache, pg, bound, v.op, x, 0, &rp.diags) }

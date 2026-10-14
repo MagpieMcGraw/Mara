@@ -395,7 +395,7 @@ du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
 du_is_step :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
     if g.op[op] != .Write || g.written[op] != .Synthetic { return false }
     val := graph_operands(g, op)[1].op
-    return val != NO_NODE && graph_op_of(g, val) == .Arith && g.written[val] == .Synthetic
+    return val != NO_NODE && graph_op_of(g, val) == .Arith && graph_written(g, val) == .Synthetic
 }
 
 // Whether a write gives its variable a value: a bare declaration's zero or
@@ -484,13 +484,13 @@ du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
     }
     g := w.f.g
     ops := graph_operands(g, o.op)
-    #partial switch g.op[o.op] {
+    #partial switch graph_op_of(g, o.op) {
     case .Read, .Address, .Field, .Deref, .Swizzle, .Variant:
         du_walk_value(w, ops[0])
     case .Index, .View:
         du_walk_value(w, ops[0])
         // A loop's element read is the collection's data; its position is not.
-        if g.written[o.op] != .Synthetic { du_walk_value(w, ops[1]) }
+        if graph_written(g, o.op) != .Synthetic { du_walk_value(w, ops[1]) }
         if len(ops) > 2 { du_walk_value(w, ops[2]) }   // (a span written into bytes: its hi)
     case .Call, .Construct:
         du_walk_call(w, o.op)
@@ -554,17 +554,17 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
     g := d.fn.g
     if len(d.writes) == 0 { return "", false }
     op := d.writes[0]
-    if g.op[op] == .Write {
+    if graph_op_of(g, op) == .Write {
         op = graph_operands(g, op)[1].op
         if op == NO_NODE { return "", false }
         op = du_built_in_temp(g, op)
-        if g.op[op] != .Call && g.op[op] != .Construct { return "", false }
+        if graph_op_of(g, op) != .Call && graph_op_of(g, op) != .Construct { return "", false }
     }
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Call:
     case .Construct:
         // Braces, or a bare declaration's implicit construction: no call written.
-        if strings.has_suffix(graph_name(g, op), "{}") || g.written[op] == .Synthetic { return "", false }
+        if strings.has_suffix(graph_name(g, op), "{}") || graph_written(g, op) == .Synthetic { return "", false }
         if graph_called(g, op) == nil { return "", false }   // a union variant: no function runs
     case:
         return "", false
@@ -579,7 +579,7 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
 du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
     if graph_op_of(g, v) != .Read { return v }
     t := graph_leaf_decl(g, graph_operands(g, v)[0].op)
-    if t == NO_NODE || g.kind[t] != .Local || g.written[t] != .Synthetic { return v }
+    if t == NO_NODE || graph_kind_of(g, t) != .Local || graph_written(g, t) != .Synthetic { return v }
     for id := t + 1; id < v; id += 1 {
         if g.kind[id] != .Op || g.op[id] != .Construct { continue }
         if graph_leaf_decl(g, graph_operands(g, id)[0].op) == t { return id }
@@ -643,14 +643,14 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     for i in 0 ..< n {
         ops := graph_run(g, int(f.runs[i]))
         last := ops[len(ops) - 1]
-        if g.op[last] == .Return { append(&succ[i], exit); continue }
+        if graph_op_of(g, last) == .Return { append(&succ[i], exit); continue }
         for e in graph_out(g, last) {
             j, ok := at[g.run_starts[e.to]]
             if !ok { continue }
-            if g.op[last] == .Branch && g.written[last] == .Implied {
+            if graph_op_of(g, last) == .Branch && graph_written(g, last) == .Implied {
                 // A `?`: only the path that goes on.
                 t := graph_run(g, int(f.runs[j]))
-                if tl := t[len(t) - 1]; g.op[tl] == .Return && g.written[tl] == .Implied { continue }
+                if tl := t[len(t) - 1]; graph_op_of(g, tl) == .Return && graph_written(g, tl) == .Implied { continue }
             }
             if !slice.contains(succ[i][:], j) { append(&succ[i], j) }
         }
