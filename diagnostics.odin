@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // ============================================================
@@ -27,6 +28,7 @@ Diagnostic :: struct {
     kind:     Diagnostic_Kind,
     location: string, // "file:line:col", or "" for codegen with no source span
     message:  string, // already-formatted message body (printf applied)
+    at:       Token_Id, // where, as a token: what diagnostics_sort orders by (0: nowhere)
 }
 
 @(private="file")
@@ -64,15 +66,36 @@ emit_diagnostic :: proc(kind: Diagnostic_Kind, location: string, msg: string, ar
     append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body})
 }
 
-// Queue a diagnostic unless the same one is queued at the same place already;
+// Queue a diagnostic at a place unless the same one is queued there already;
 // whether it was queued.
-emit_diagnostic_once :: proc(kind: Diagnostic_Kind, location: string, msg: string, args: ..any) -> bool {
+emit_diagnostic_once :: proc(kind: Diagnostic_Kind, span: Span, msg: string, args: ..any) -> bool {
     body := fmt.aprintf(msg, ..args)
+    location := span_location(span)
     for d in g_diagnostics {
         if d.kind == kind && d.location == location && d.message == body { return false }
     }
-    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body})
+    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body, at = span.at})
     return true
+}
+
+// A diagnostic at a place.
+emit_diagnostic_at :: proc(kind: Diagnostic_Kind, span: Span, msg: string, args: ..any) {
+    body := fmt.aprintf(msg, ..args)
+    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(span_location(span)), message = body, at = span.at})
+}
+
+// How many diagnostics are queued: where a phase's begin (diagnostics_sort).
+diagnostics_count :: proc() -> int {
+    return len(g_diagnostics)
+}
+
+// The diagnostics queued since `from` in source order: by the token each is
+// at — a file's in order, the files as they were read — those at the same
+// place as they were queued. (A check's: the order it meets them in is its
+// own business.)
+diagnostics_sort :: proc(from: int) {
+    if from >= len(g_diagnostics) { return }
+    slice.stable_sort_by(g_diagnostics[from:], proc(a, b: Diagnostic) -> bool { return a.at < b.at })
 }
 
 // Print every queued diagnostic and clear the queue. Safe to call

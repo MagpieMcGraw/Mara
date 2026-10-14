@@ -394,6 +394,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
+    // (What the check finds, reported in source order: diagnostics_sort.)
+    diagnosed := diagnostics_count()
     ir_types_forget()   // (a check of serve's, after another: its types are new)
     k.rs = resolve_program(k)
     k.bound = make([]u32, len(build_tokens))
@@ -474,6 +476,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_allocator(k)
     tc_validate_main(k, main)
     tc_blocks_end(k)
+    diagnostics_sort(diagnosed)
 
     // (lower false: the annotations are all that's wanted — mara lsp's.)
     fns := flow_functions(checked)   // (in name order, once)
@@ -1191,12 +1194,12 @@ Checker :: struct {
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     // Once per place: two checks can reach one node (a declaration's
     // literal is checked as a value and as what the declaration holds).
-    if emit_diagnostic_once(.Type_Error, span_location(span), msg, ..args) {
+    if emit_diagnostic_once(.Type_Error, span, msg, ..args) {
         c.errors += 1
     }
 }
 
 check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
-    emit_diagnostic(.Warning, span_location(span), msg, ..args)
+    emit_diagnostic_at(.Warning, span, msg, ..args)
 }
 
