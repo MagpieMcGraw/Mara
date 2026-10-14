@@ -28,6 +28,7 @@ tc_register_const :: proc(k: ^TC, def, value: Tree_Id, env, mod: ^Type_Scope) {
     name := tc_name(k, def)
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, env = env, pub = mod, pkg = k.pkg})
     kc.sid = tc_sid(k, value)
+    k.const_at[k.t.main[def]] = kc
     k.consts[make_flat_name(k.pkg, name)] = kc
     if owner, mapped := k.const_owners[name]; mapped {
         if owner != k.pkg { k.const_owners[name] = "" }
@@ -127,6 +128,7 @@ tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     mangled := strings.concatenate({sc.ts.name, "_", name})
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, mangled = mangled, pkg = k.pkg, local = true})
     kc.sid = tc_sid(k, value)
+    k.const_at[k.t.main[def]] = kc
     k.consts[mangled] = kc
     k.consts[name] = kc
     append(&sc.consts, kc)

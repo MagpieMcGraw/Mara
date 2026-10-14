@@ -1591,6 +1591,11 @@ is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
     if !is_param(env, name) { return false }
     t, ok := scope_lookup(env, name)
     if !ok { return false }
+    return is_immutable_param_type(t)
+}
+
+// Whether a param of type t can't be written: one passed by address.
+is_immutable_param_type :: proc(t: Type) -> bool {
     base := distinct_base(t)
     if _, is_ptr := base.(^Type_Ptr); is_ptr { return false }
     // Passed by address (an immutable pointer to the caller's storage), so a

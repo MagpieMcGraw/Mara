@@ -177,7 +177,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
-    if !tc_declarable(k, env, name, span, fields_of != nil) { return }
+    if !tc_declarable(k, env, name, span, fields_of != nil) {
+        tc_bound_set(k, ref.decl, Type_Error{})   // (its uses aren't reported again)
+        return
+    }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
     if cap_n != 0 {
         // (`s : [:n]T`: a slice views storage that exists — it would be
@@ -507,14 +510,14 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_program_assign(k, value, env)
         return
     }
-    existing, loc, ok := tc_name_write(k, target, name, env, span)
+    existing, ref, ok := tc_name_write(k, target, name, env, span)
     if !ok { return }
     if tc_is_void(k, value) {
         // (`x = void` de-initializes: the void value written, unchecked.)
         tc_check(k, value, env)
         return
     }
-    if loc != nil && loc.kind == .Struct {
+    if !tc_is_variable(ref) {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
     }
@@ -523,27 +526,37 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
 }
 
 // A write to a bare name, checked: the name is declared, no constant, and no
-// param the fun can't write. Its type and where it is declared; ok false when
+// param the fun can't write. Its type and what it refers to; ok false when
 // it can't be written (reported).
-tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, loc: ^Type_Scope, ok: bool) {
+tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, ref: Ref, ok: bool) {
+    ref = k.rs.refs[target]
     found: bool
-    existing, loc, found = scope_find(env, name)
-    tc_lookup_check(k, target, name, existing, found)
+    existing, found = tc_ref_type(k, ref, name)
     if found {
-        tc_set_ref(k, target, scope_find_ref(env, name))
+        tc_set_ref(k, target, ref)
         tc_set_type(k, target, existing)   // (the name written: its type)
     }
-    if !found && name not_in k.consts {
+    if ref.kind == .Const {
+        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
+        return nil, {}, false
+    }
+    if !found {
         report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         tc_bind(k, env, name, Type_Error{}, {})
-        return nil, nil, false
+        tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the resolver declared it as: its uses aren't reported again)
+        return nil, {}, false
     }
-    if (loc == nil || loc.kind == .Struct) && name in k.consts {
-        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
-        return nil, nil, false
+    if ref.kind == .Param && is_immutable_param_type(existing) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    return existing, ref, true
+}
+
+// Whether a name refers to a variable: a body's, a param, a named result, a
+// struct's field (in its body), a module's.
+tc_is_variable :: proc(ref: Ref) -> bool {
+    #partial switch ref.kind {
+    case .Local, .Param, .Result, .Field, .Global: return true
     }
-    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
-    return existing, loc, true
+    return false
 }
 
 // `return a, b`: each value at its result's type (trailing errs implied `.Ok`).
@@ -694,9 +707,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     name := tc_name(k, target)
-    existing, loc, ok := tc_name_write(k, target, name, env, span)
+    existing, ref, ok := tc_name_write(k, target, name, env, span)
     if !ok { return }
-    if loc != nil && loc.kind == .Struct {
+    if !tc_is_variable(ref) {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
     }

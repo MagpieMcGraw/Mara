@@ -57,6 +57,7 @@ TC :: struct {
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
     const_owners:  map[string]string,        // each bare name's module ("": more than one)
     scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
+    const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked

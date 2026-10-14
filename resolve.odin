@@ -463,6 +463,13 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         if rs_stmt_import(t, s) == 0 { rs_node(r, Tree_Id(t.a[s])) }
     case .Overload:
         rs_token(r, Token_Id(t.b[s]))   // (the dispatch's or the fun's name)
+    case .Assign:
+        // (A name written that's in sight nowhere — the checker says so — is,
+        // from here on, a variable: its uses aren't reported again.)
+        rs_node(r, s)
+        for tg in tree_list(t, t.a[s]) {
+            if t.tag[tg] == .Ident && r.refs[tg].kind == .None { rs_declare(r, rs_text(t.main[tg]), {t.main[tg], rs_var_kind(r)}) }
+        }
     case .Break, .Continue, .Module:
     case:
         rs_node(r, s)
@@ -602,6 +609,9 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
                 if ref, found := m[rs_text(mv.name)]; found { r.refs[n] = ref }
             }
         }
+        // (Else, by a value's type, the checker's: its method, or a fun in
+        // sight called on it — `x.f(a)`, `f(x, a)`: the fun's, by the name.)
+        if r.refs[n].kind == .None { rs_token(r, mv.name) }
         for a in mv.args { rs_node(r, a) }
         rs_node(r, mv.overrides)
         return

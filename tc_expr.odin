@@ -190,21 +190,17 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             return et
         }
     }
-    // (A constant: the one a scope around it declares — it shadows a
-    // module's — else its own module's, or one it uses' — two is ambiguous.)
-    t, loc_scope, ok := scope_find(env, name)
-    tc_lookup_check(k, n, name, t, ok)
-    kc := tc_local_const(k, env, loc_scope, name) if ok else nil
-    if kc == nil {
-        unambiguous: bool
-        kc, unambiguous = tc_const_ref(k, env, name, span)
-        if !unambiguous { return Type_Error{} }
+    // (What it refers to — the resolver's — and what that means now: a
+    // constant not checked yet is checked here, by its use.)
+    ref := k.rs.refs[n]
+    t, ok := tc_ref_type(k, ref, name)
+    kc := k.const_at[ref.decl] if ref.kind == .Const else nil
+    if ref.kind == .None || kc != nil && !kc.local {
+        // (A module's constant two modules have — its own and one it uses,
+        // or two it uses — is ambiguous: said so.)
+        if _, unambiguous := tc_const_ref(k, env, name, span); !unambiguous { return Type_Error{} }
     }
-    if kc != nil {
-        tc_set_ref(k, n, {k.t.main[kc.def], .Const})
-    } else if ok {
-        tc_set_ref(k, n, scope_find_ref(env, name))
-    }
+    if ok || kc != nil { tc_set_ref(k, n, ref) }
     if !ok && kc != nil {
         // (Not bound here yet: its value's type — unless it is the value
         // being checked.)
@@ -505,6 +501,13 @@ tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_Id(0)) -
     return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]), env)
 }
 
+// What a call's name refers to: a call's own; a method call's, its method
+// not found on the receiver — `x.f(a)`, the fun `f(x, a)` — its name's.
+tc_callee_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
+    if k.t.tag[n] == .Method_Call { return k.rs.token_refs[method_view(k.t, n).name] or_else {} }
+    return k.rs.refs[n]
+}
+
 // A call of `name` on `args` — or, resolved by its qualifier (a method, a
 // module's fun: `qual`; a module's dispatch: `qual_dispatch`), of that.
 tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
@@ -537,12 +540,20 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             return tc_generic_call(k, n, name, tmpl, args, env)
         }
     }
-    ft_raw, found := scope_lookup(env, name)
-    if qual == nil && tr.tag[n] == .Call { tc_lookup_check(k, n, name, ft_raw, found) }
+    ref := tc_callee_ref(k, n)
+    ft_raw, found := tc_ref_type(k, ref, name)
     if qual != nil { ft_raw, found = qual, true }
     if !found {
         // (A union's variant built by its params: `Rect(5)` where a Shape goes.)
         if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args, env) }
+        // (A fun two modules it uses have: ambiguous.)
+        if qual == nil && ref.kind == .None && name in k.c.declared_funs {
+            if owners := fn_ambiguous_owners(env, name); owners != nil {
+                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
+                for a in args { tc_check(k, a, env) }
+                return Type_Error{}
+            }
+        }
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
         for a in args { tc_check(k, a, env) }
         return Type_Error{}
@@ -555,7 +566,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     ft, is_scope := ft_raw.(^Type_Scope)
     // (A fun written in the program, or a foreign one; else a fun's value — a
     // name no declared fun has, holding one — called through it.)
-    indirect := is_scope && qual == nil && ft.kind == .Fun && name not_in k.c.declared_funs && (ft.name == "" || ft.name not_in k.c.declared_funs)
+    indirect := is_scope && qual == nil && ft.kind == .Fun && tc_is_variable(ref) && (ft.name == "" || ft.name not_in k.c.declared_funs)
     if !is_scope {
         tc_error(k, span, TYPE_FUNCTION, name)
         return Type_Error{}
@@ -576,7 +587,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     overrides := Tree_Id(tr.b[n]) if tr.tag[n] == .Call else method_view(tr, n).overrides
     if overrides != 0 && !is_struct { tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, name) }
     tc_set_callee(k, n, ft)
-    tc_set_ref(k, n, scope_find_ref(env, name) if indirect else Ref{ft.decl, .Type if is_struct else .Fun})
+    tc_set_ref(k, n, ref if indirect else Ref{ft.decl, .Type if is_struct else .Fun})
     k.annot.forms[tc_sid(k, n)] = .Value if indirect else .Fun
     if is_struct { tc_struct_ensure(k, ft) }
     if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
