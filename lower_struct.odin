@@ -23,7 +23,7 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     if lw_own_const(k, n, base) { return lw_const_use(k, lw_const_of(k, n, tc_ref(k, n).decl), n, tc_node_type(k, n), want, w) }
     bt := tc_node_type(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        return lw_module_member(k, n, base, sd, field, bt, want, w)
+        return lw_module_member(k, n, base, field, bt, want, w)
     }
     // (What reads no value of its base — a union's variant, an enum's, a
     // fun — builds none of it.)
@@ -59,7 +59,7 @@ lw_field_base :: proc(k: ^TC, base: Tree_Id, span: Span, w: Written) -> Built {
 // `m.X`, m a module (tc_module_member): an enum's variant it holds, its
 // value; its constant, a value of its own; else its member (the base
 // built).
-lw_module_member :: proc(k: ^TC, n, base: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, want: Build_Want, w: Written) -> Built {
+lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want: Build_Want, w: Written) -> Built {
     b := k.gb
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
@@ -204,7 +204,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     if fd != nil {
         lw_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, d)
     } else if fa != nil {
-        lw_array_entries(k, n, entries, fa, t, gl, d, broadcast)
+        lw_array_entries(k, n, entries, t, gl, d, broadcast)
     } else if !zero && !empty {
         lw_literal_fields(k, n, entries, sd, gl)
     }
@@ -219,7 +219,7 @@ lw_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, d: Dest) {
 
 // An array literal's entries (tc_array_entries): each element into its slot,
 // by position or by its swizzle letter; `{all v}`, v then the fill.
-lw_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed_Array, lit_t: Type, gl: ^Graph_Literal, d: Dest, fill: bool) {
+lw_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, lit_t: Type, gl: ^Graph_Literal, d: Dest, fill: bool) {
     tr := k.t
     span := tree_span(tr, n)
     elem_t := graph_elem_type(lit_t) if gl != nil else nil

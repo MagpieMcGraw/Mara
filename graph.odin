@@ -1805,7 +1805,7 @@ graph_spread_results :: proc(b: ^Graph_Builder, span: Span, sd: ^Scope_Body, par
 
 // A union's variant `name` as a struct: its tag first, then its fields; nil
 // when t is no union with that variant.
-graph_variant_struct :: proc(b: ^Graph_Builder, t: Type, name: string) -> ^Type_Scope {
+graph_variant_struct :: proc(t: Type, name: string) -> ^Type_Scope {
     ut, is_union := distinct_base(t).(^Type_Union)
     if !is_union || name == "" { return nil }
     return ut.variant_structs[name]
@@ -3152,7 +3152,7 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
     gl.d, gl.parent = d, d
     gl.sd = as_scope_body(distinct_base(t))
     // A union's variant: its fields are the variant struct's, past the tag.
-    if st := graph_variant_struct(b, t, name); st != nil {
+    if st := graph_variant_struct(t, name); st != nil {
         gl.sd = as_scope_body(st)
         gl.parent = Dest{kind = .Variant, name = name, type_ = st, parent = &gl.d}
         gl.skip = first_user_field(gl.sd)
@@ -3221,7 +3221,7 @@ graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, s
     append(&ops, graph_dest_place(b, d, span))
     append(&ops, ..args)
     op := graph_op_made(b, .Construct, .Explicit, span, t, name, ops[:])
-    st := graph_variant_struct(b, t, name)
+    st := graph_variant_struct(t, name)
     graph_set_callee(b.g, op, st if st != nil && st.node != 0 else nil)   // (its body: its constructor)
     return st
 }
@@ -3445,12 +3445,6 @@ graph_check_refers :: proc(g: ^Program_Graph) {
         flush_diagnostics()
         os.exit(1)
     }
-}
-
-// The fun or struct an operation runs in: its nearest callable ancestor.
-graph_caller :: proc(g: ^Program_Graph, id: Node_Id) -> ^Type_Scope {
-    if n := graph_code_owner(g, id); n != NO_NODE { return graph_type(g, n).(^Type_Scope) }
-    return nil
 }
 
 // The runs are well formed: every operation is in exactly one run; a run

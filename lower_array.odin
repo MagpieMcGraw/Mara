@@ -5,7 +5,7 @@ package mara
 // another type.
 
 // `a[i]` (tc_index): the element's place — read, or itself.
-lw_index :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
+lw_index :: proc(k: ^TC, n: Tree_Id, want: Build_Want) -> Built {
     tr := k.t
     b := k.gb
     span := tree_span(tr, n)
@@ -208,10 +208,7 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         }
     } else {
         lo, hi := NO_VALUE, NO_VALUE
-        if lo_n != 0 {
-            lo = lw_bound(k, lo_n, .Explicit, sl_span, raw = bytes)
-            if bytes { lo = graph_build_widen(b, lo, sl_span, {to = slice_header_width_type}) }
-        }
+        if lo_n != 0 { lo = lw_bound(k, lo_n, .Explicit, sl_span) }
         if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
         base := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, sl_span, is_self)
         place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", base, lo, hi)

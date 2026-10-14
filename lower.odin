@@ -520,7 +520,7 @@ lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
             for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
             graph_build_fields(b, names, toks, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
         }
-        lw_destructure(k, s, v.targets, v.values[0], true, fields_of)
+        lw_destructure(k, s, v.targets, v.values[0], true)
         return
     }
     if len(v.targets) > 1 && fields_of != nil {
@@ -982,7 +982,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
     case .Self:
         return lw_self(k, n, want, w)
     case .Index:
-        return lw_index(k, n, want, w)
+        return lw_index(k, n, want)
     case .Slice:
         return lw_slice(k, n, want, w, dest)
     case .Array:
@@ -1112,7 +1112,6 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
     operand := of if of != 0 else Tree_Id(tr.a[n])
     if op == .Minus && tr.tag[operand] == .Number { return lw_number(k, operand, span, true, want, w) }
     if want == .Place { lw_fail(k, n, "a unary's place") }
-    wrapping := op == .Wrap_Minus
     either := op == .Minus
     ask: Build_Want = .Place if op == .Ampersand else .Either if either else .Value
     r := lw_expr(k, operand, ask, w, temp_span = span)
@@ -1145,8 +1144,7 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
     }
     v := r.v
     if either { v = lw_value(k, r, operand, ot) }
-    word := "-%" if wrapping else graph_token_text(.Minus if op == .Minus else op)
-    return {v = graph_op_value(b, .Unary, w, span, t, word, v), ok = true}
+    return {v = graph_op_value(b, .Unary, w, span, t, graph_token_text(op), v), ok = true}
 }
 
 // `left op right` (tc_binary_op): each side at the type the operation works
@@ -1157,11 +1155,10 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     tr := k.t
     b := k.gb
     op := tok
-    wrapping := false
-    #partial switch tok {
-    case .Wrap_Plus:  op, wrapping = .Plus, true
-    case .Wrap_Minus: op, wrapping = .Minus, true
-    case .Wrap_Star:  op, wrapping = .Star, true
+    #partial switch tok {   // (wrapping: the operation's, its word the token's)
+    case .Wrap_Plus:  op = .Plus
+    case .Wrap_Minus: op = .Minus
+    case .Wrap_Star:  op = .Star
     }
     if want == .Place { lw_fail(k, at, "a binary's place") }
     sides: [2]Operand
@@ -1208,9 +1205,7 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     }
     if and_or { return {v = graph_build_and_end(b, &sa, sides[1]), ok = true} }
     kind: Op_Kind = .Compare if is_comparison_op(op) else .Arith
-    word := graph_token_text(op)
-    if wrapping { word = strings.concatenate({word, "%"}) }
-    return {v = graph_op_value(b, kind, w, span, t, word, sides[0], sides[1]), ok = true}
+    return {v = graph_op_value(b, kind, w, span, t, graph_token_text(tok), sides[0], sides[1]), ok = true}
 }
 
 // `assert(c)` (tc_assert). With `-no assert`, behind `if false`: the
@@ -1232,21 +1227,12 @@ lw_assert :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     r := lw_expr(k, cond, .Value, w)
     lo, hi := int(t.first[cond]), int(t.end[cond])
     sides: Maybe([2]string)
-    if bin := tc_unparen(k, cond); t.tag[bin] == .Binary && is_comparison_op(build_tokens[t.main[bin]].kind) {
-        op := build_tokens[t.main[bin]].kind
-        at, depth := -1, 0
-        for i in lo ..< hi {
-            #partial switch build_tokens[i].kind {
-            case .Left_Paren, .Left_Bracket, .Left_Brace:    depth += 1
-            case .Right_Paren, .Right_Bracket, .Right_Brace: depth -= 1
-            case op: if depth == 0 { at = i }
-            }
-        }
-        if at > lo && at < hi - 1 {
-            sides = [2]string{
-                "" if tc_is_literal(k, Tree_Id(t.a[bin])) else token_range_text(lo, at),
-                "" if tc_is_literal(k, Tree_Id(t.b[bin])) else token_range_text(at + 1, hi),
-            }
+    // (A comparison, written bare: each side's text, either side of its operator.)
+    if t.tag[cond] == .Binary && is_comparison_op(build_tokens[t.main[cond]].kind) {
+        at := int(t.main[cond])
+        sides = [2]string{
+            "" if tc_is_literal(k, Tree_Id(t.a[cond])) else token_range_text(lo, at),
+            "" if tc_is_literal(k, Tree_Id(t.b[cond])) else token_range_text(at + 1, hi),
         }
     }
     graph_assert(k.gb, span, token_range_text(lo, hi), r.v, w, sides)

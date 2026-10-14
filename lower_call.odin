@@ -104,7 +104,7 @@ lw_hash_name_type :: proc(k: ^TC, n: Tree_Id) -> Type {
 // `a, b := f()`, `x, err = f()`, `v, w := f()?` (tc_destructure): the names
 // it declares made first, then the call, then each output written. One value
 // of no several results: a broadcast.
-lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, fields_of: ^Type_Scope = nil) {
+lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool) {
     t := k.t
     b := k.gb
     span := tree_span(t, s)
