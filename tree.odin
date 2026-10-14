@@ -264,36 +264,46 @@ tree_free :: proc(t: ^Tree) {
 
 tree_add :: proc(t: ^Tree, tag: Tree_Tag, main: Token_Id, a: u32 = 0, b: u32 = 0) -> Tree_Id {
     id := Tree_Id(len(t.tag))
-    append(&t.tag, tag)
-    append(&t.main, main)
-    append(&t.first, main)
-    append(&t.end, main + 1 if main != 0 else 0)
-    append(&t.a, a)
-    append(&t.b, b)
+    push(&t.tag, tag)
+    push(&t.main, main)
+    push(&t.first, main)
+    push(&t.end, main + 1 if main != 0 else 0)
+    push(&t.a, a)
+    push(&t.b, b)
     return id
+}
+
+// An element added at a column's end, as `append` adds one but inline —
+// a column that grows by one a node: the tree's, the tokens. (It doubles,
+// as append does.)
+push :: #force_inline proc(col: ^[dynamic]$T, v: T) {
+    raw := (^runtime.Raw_Dynamic_Array)(col)
+    if raw.len == raw.cap { reserve(col, max(64, 2 * raw.cap)) }
+    ([^]T)(raw.data)[raw.len] = v
+    raw.len += 1
 }
 
 // A list in the side array: its count, then its items; 0 for none.
 tree_list_add :: proc(t: ^Tree, items: []Tree_Id) -> u32 {
     if len(items) == 0 { return 0 }
     at := u32(len(t.extra))
-    append(&t.extra, u32(len(items)))
-    for it in items { append(&t.extra, u32(it)) }
+    push(&t.extra, u32(len(items)))
+    append(&t.extra, ..transmute([]u32)items)
     return at
 }
 
 tree_tokens_add :: proc(t: ^Tree, items: []Token_Id) -> u32 {
     if len(items) == 0 { return 0 }
     at := u32(len(t.extra))
-    append(&t.extra, u32(len(items)))
-    for it in items { append(&t.extra, u32(it)) }
+    push(&t.extra, u32(len(items)))
+    append(&t.extra, ..transmute([]u32)items)
     return at
 }
 
 // A record in the side array: its fields, in its shape's order.
 tree_rec_add :: proc(t: ^Tree, fields: ..u32) -> u32 {
     at := u32(len(t.extra))
-    for f in fields { append(&t.extra, f) }
+    append(&t.extra, ..fields)
     return at
 }
 

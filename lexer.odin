@@ -195,57 +195,103 @@ lex_escape :: proc(l: ^Lexer, esc_line, esc_col: int) -> u8 {
 // Keyword lookup — maps identifier text to Token_Kind.
 // "array" is NOT a keyword — handled contextually in parser after `::`.
 keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
-    switch text {
-    case "true":     return .True, true
-    case "false":    return .False, true
-    case "if":       return .If, true
-    case "else":     return .Else, true
-    case "elif":     return .Elif, true
-    case "fun":      return .Fun, true
-    case "method":   return .Fun, true
-    case "fn":       return .Fn, true
-    case "struct":   return .Struct, true
-    case "class":    return .Struct, true
-    case "union":    return .Union, true
-    case "error":    return .Error, true
-    case "use":      return .Use, true
-    case "include":  return .Include, true
-    case "sealed":   return .Sealed, true
-    case "module":   return .Module, true
-
-    case "return":   return .Return, true
-    case "for":      return .For, true
-    case "in":       return .In, true
-    case "break":    return .Break, true
-    case "continue": return .Continue, true
-    case "and":      return .And, true
-    case "or":       return .Or, true
-    case "not":      return .Not, true
-    case "match":    return .Match, true
-    case "foreign":  return .Foreign, true
-    case "defer":    return .Defer, true
-    case "using":    return .Using, true
-    case "distinct": return .Distinct, true
-    case "dispatch": return .Dispatch, true
-    case "overload": return .Overload, true
-    case "do":       return .Do, true
-    case "var":      return .Var, true
-    case "intrinsic": return .Intrinsic, true
-    case "int":      return .Int, true
-    case "f64":      return .F64, true
-    case "bool":     return .Bool_Type, true
-    // "string" is no longer a keyword — it's a regular identifier
-    case "i8":       return .I8, true
-    case "i16":      return .I16, true
-    case "i32":      return .I32, true
-    case "i64":      return .I64, true
-    case "u8":       return .U8, true
-    case "u16":      return .U16, true
-    case "u32":      return .U32, true
-    case "u64":      return .U64, true
-    case "f32":      return .F32, true
-    case "utf8":     return .Utf8, true
-    case "byte":     return .Byte, true
+    // (By the first letter, then the few keywords that start with it: one
+    // string compared or two, not each keyword in turn.)
+    if len(text) < 2 || len(text) > 9 { return .EOF, false }
+    switch text[0] {
+    case 'a':
+        switch text {
+        case "and": return .And, true
+        }
+    case 'b':
+        switch text {
+        case "break": return .Break, true
+        case "bool": return .Bool_Type, true
+        case "byte": return .Byte, true
+        }
+    case 'c':
+        switch text {
+        case "class": return .Struct, true
+        case "continue": return .Continue, true
+        }
+    case 'd':
+        switch text {
+        case "defer": return .Defer, true
+        case "distinct": return .Distinct, true
+        case "dispatch": return .Dispatch, true
+        case "do": return .Do, true
+        }
+    case 'e':
+        switch text {
+        case "else": return .Else, true
+        case "elif": return .Elif, true
+        case "error": return .Error, true
+        }
+    case 'f':
+        switch text {
+        case "false": return .False, true
+        case "fun": return .Fun, true
+        case "fn": return .Fn, true
+        case "for": return .For, true
+        case "foreign": return .Foreign, true
+        case "f64": return .F64, true
+        case "f32": return .F32, true
+        }
+    case 'i':
+        switch text {
+        case "if": return .If, true
+        case "include": return .Include, true
+        case "in": return .In, true
+        case "intrinsic": return .Intrinsic, true
+        case "int": return .Int, true
+        case "i8": return .I8, true
+        case "i16": return .I16, true
+        case "i32": return .I32, true
+        case "i64": return .I64, true
+        }
+    case 'm':
+        switch text {
+        case "method": return .Fun, true
+        case "module": return .Module, true
+        case "match": return .Match, true
+        }
+    case 'n':
+        switch text {
+        case "not": return .Not, true
+        }
+    case 'o':
+        switch text {
+        case "or": return .Or, true
+        case "overload": return .Overload, true
+        }
+    case 'r':
+        switch text {
+        case "return": return .Return, true
+        }
+    case 's':
+        switch text {
+        case "struct": return .Struct, true
+        case "sealed": return .Sealed, true
+        }
+    case 't':
+        switch text {
+        case "true": return .True, true
+        }
+    case 'u':
+        switch text {
+        case "union": return .Union, true
+        case "use": return .Use, true
+        case "using": return .Using, true
+        case "u8": return .U8, true
+        case "u16": return .U16, true
+        case "u32": return .U32, true
+        case "u64": return .U64, true
+        case "utf8": return .Utf8, true
+        }
+    case 'v':
+        switch text {
+        case "var": return .Var, true
+        }
     }
     return .EOF, false
 }
@@ -580,8 +626,8 @@ lex_file :: proc(f: ^Source_File) {
     file := u16(len(build_files))
     append(&build_files, f)
     if len(f.source) > int(max(u32)) { fmt.eprintfln("mara: %s is too big", f.path); os.exit(1) }
-    append(&f.lines, 0)
-    for c, i in transmute([]u8)f.source { if c == '\n' { append(&f.lines, u32(i + 1)) } }
+    push(&f.lines, 0)
+    for c, i in transmute([]u8)f.source { if c == '\n' { push(&f.lines, u32(i + 1)) } }
     l := lexer_init(f.source, f.path)
     f.first_token = Token_Id(len(build_tokens))
     for {
@@ -589,7 +635,7 @@ lex_file :: proc(f: ^Source_File) {
         tok.id = Token_Id(len(build_tokens))   // stamp before append: its id is the current length
         tok.file = file
         if tok.kind == .String || tok.kind == .Char { build_literals[tok.id] = l.value }
-        append(&build_tokens, tok)
+        push(&build_tokens, tok)
         if tok.kind == .EOF { break }
     }
     f.end_token = Token_Id(len(build_tokens))

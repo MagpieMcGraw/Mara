@@ -152,12 +152,14 @@ tp_tokens :: proc(p: ^Tree_Parser, items: [dynamic]Token_Id) -> u32 {
     return tree_tokens_add(p.t, items[:])
 }
 
+// (Room for a few first: on the scratch arena, a list grown from nothing is
+// copied at each size it passes.)
 tp_items :: proc() -> [dynamic]Tree_Id {
-    return make([dynamic]Tree_Id, context.temp_allocator)
+    return make([dynamic]Tree_Id, 0, 16, context.temp_allocator)
 }
 
 tp_token_items :: proc() -> [dynamic]Token_Id {
-    return make([dynamic]Token_Id, context.temp_allocator)
+    return make([dynamic]Token_Id, 0, 8, context.temp_allocator)
 }
 
 // Where the tree is, to drop what a production that backtracks appended.
