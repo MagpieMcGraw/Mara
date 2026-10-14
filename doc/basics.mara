@@ -123,7 +123,8 @@ first :: fun(xs: []$T) -> T {   // generic: T is the items' type
 // an i64: the program's exit code.
 //
 // A call of several results goes only where several go: `a, b := f()`, not
-// `return f()` or `f() == 1`. To hand on a call's failure, `return f()?`.
+// `f() == 1`. `return f()` hands on all of f's results — its err too — when
+// they fit the function's; `return f()?` passes on only a failure.
 keyword_return :: fun() {
 	sign :: fun(n: i64) -> i64 {
 		if n < 0 do return -1

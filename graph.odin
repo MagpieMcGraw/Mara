@@ -2651,6 +2651,18 @@ graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     leave(b, all[:], span, failing = false)
 }
 
+// `return f()`: each of the call's `count` outputs — its value, `v`, first —
+// returned (graph_build_return).
+graph_build_return_outputs :: proc(b: ^Graph_Builder, v: Operand, count: int, span: Span) {
+    outs := make([dynamic]Operand, 0, count, context.temp_allocator)
+    append(&outs, v)
+    if count > 1 {
+        op := graph_outputs_op(b, v, span)
+        for i in 1 ..< count { append(&outs, Operand{op, i32(i)}) }
+    }
+    graph_build_return(b, outs[:], span)
+}
+
 // A struct's field declaration: its fields,
 // typed as the struct's; each name's assignment (`lowered`, the checker's
 // lowering of it; `inits`, the values as written) stores into its own and
@@ -2897,16 +2909,17 @@ Graph_Destructure :: struct {
     place:  Operand,   // the target of the output being written
 }
 
-graph_build_destructure :: proc(b: ^Graph_Builder, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool) -> Graph_Destructure {
+graph_build_destructure :: proc(b: ^Graph_Builder, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool, types: []Type) -> Graph_Destructure {
     mr := Graph_Destructure{on = true, names = names, stores = stores, span = span, writes = !is_decl}
-    // (Each name's declaration: made here, or — written, or a struct's
-    // field declared already (graph_build_fields) — the variable's.)
+    // (Each name's declaration: made here — a big one's space on the arena,
+    // taken before the call writes it (graph_build_decl) — or, written, or a
+    // struct's field declared already (graph_build_fields), the variable's.)
     mr.decls = make([]Node_Id, len(names), context.temp_allocator)
     for name, i in names {
         mr.decls[i] = NO_NODE
         if name == "" || name == "_" || stores[i] { continue }
         d := graph_local(b, toks[i])
-        if is_decl && (d == NO_NODE || b.g.kind[d] != .Field) { d = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, toks[i]) }
+        if is_decl && (d == NO_NODE || b.g.kind[d] != .Field) { d = graph_build_decl(b, name, toks[i], span, types[i]) }
         mr.decls[i] = d
     }
     return mr

@@ -339,7 +339,11 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
     for s in tc_live(k, stmts) {
         if t.tag[s] != .Decl { continue }
         v := decl_view(t, s)
-        if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
+        if len(v.targets) > 1 && len(v.values) == 1 {
+            // (A destructure's: a big result's local, on the arena.)
+            if lw_destructure_arena(k, v.targets, v.values[0], returned) { return true }
+            continue
+        }
         for tg, i in v.targets {
             // (Of no type a big one is — its own, its annotation's — it has
             // no local on the arena: most, decided without the rest.)
@@ -348,6 +352,22 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
             lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
             if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }
         }
+    }
+    return false
+}
+
+// Whether `a, b := f()` (or `f()?`) declares a local on the arena: a name
+// for a big result — but the local every return returns (its caller's slot).
+lw_destructure_arena :: proc(k: ^TC, targets: []Tree_Id, value: Tree_Id, returned: Token_Id) -> bool {
+    v := tc_unparen(k, value)
+    returns := tc_call_returns(k, v)
+    if k.t.tag[v] == .Try {
+        rets := tc_call_returns(k, tc_unparen(k, Tree_Id(k.t.a[v])))
+        if len(rets) > 0 { returns = rets[:len(rets) - 1] }
+    }
+    for tg, i in targets {
+        if i >= len(returns) || k.t.tag[tg] != .Ident || tc_name(k, tg) == "_" || k.t.main[tg] == returned { continue }
+        if routes_to_arena(returns[i]) { return true }
     }
     return false
 }
@@ -735,6 +755,14 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
     span := tree_span(t, s)
     values := tree_list(t, t.a[s])
     rts := k.lower.ts.return_types[:] if k.lower.ts != nil else nil
+    // (`return f()`, f's several results (tc_return): each of its outputs.)
+    if len(values) == 1 {
+        if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
+            r := lw_expr(k, values[0], .Value)
+            graph_build_return_outputs(b, r.v, len(returns), span)
+            return
+        }
+    }
     vals := make([dynamic]Operand, 0, len(values), context.temp_allocator)
     for val, i in values {
         want := rts[i]

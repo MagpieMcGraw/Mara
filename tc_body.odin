@@ -608,26 +608,35 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
     values := tree_list(t, t.a[s])
     rts := tc_results(k)
     expected, supplied := len(rts), len(values)
-    // (`return f()`, f's several results: not returned whole — each would go
-    // where one goes, an err replaced by Ok. `?` passes f's err on.)
-    if supplied == 1 {
-        if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
-            call := tc_unparen(k, values[0])
-            k.several_ok = call
-            tc_check(k, values[0])
-            k.several_ok = 0
-            name := tc_call_name(k, call)
-            if is_err_type(returns[len(returns) - 1]) {
-                tc_error(k, span, TYPE_RETURN_SEVERAL_ERR, len(returns), name, name)
-            } else {
-                tc_error(k, span, TYPE_RETURN_SEVERAL, len(returns), name)
-            }
-            return
-        }
-    }
     trailing_errs := 0
     for i := expected - 1; i >= 0 && is_err_type(rts[i]); i -= 1 { trailing_errs += 1 }
     least := expected - trailing_errs
+    // (`return f()`, f's several results: each returned, in turn — as many
+    // as `return a, b` could give, the errs left out Ok — each at its
+    // result's type. lw_return. The call checked first, as the first result
+    // would be: a method's results are known once it's found.)
+    lone: Type   // (a lone call's type, checked here: the loop below takes it)
+    if supplied == 1 && expected > 0 {
+        if call := tc_unparen(k, values[0]); tc_is_call(k, call) {
+            k.hint = rts[0]
+            k.several_ok = call
+            lone = tc_check(k, values[0])
+            k.several_ok = 0
+            if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
+                if len(returns) > expected || len(returns) < least {
+                    tc_error(k, span, TYPE_RETURN_SEVERAL_COUNT, len(returns), expected, tc_call_name(k, call))
+                    return
+                }
+                for rt, i in returns {
+                    want := rts[i]
+                    if !is_any(rt) && !is_any(want) && !coerce_deferred(k.c, rt, want, span) && !types_equal(want, rt) {
+                        tc_error(k, span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED, i + 1, type_name(rt), type_name(want))
+                    }
+                }
+                return
+            }
+        }
+    }
     switch {
     case expected == 0 && supplied > 0, expected == 1 && supplied > 1:
         tc_error(k, span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
@@ -639,7 +648,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
     for val, i in values {
         want := rts[i]
         k.hint = want
-        vt := tc_check(k, val)
+        vt := lone if i == 0 && lone != nil else tc_check(k, val)
         if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
            !types_equal(want, vt) {
             if expected > 1 {

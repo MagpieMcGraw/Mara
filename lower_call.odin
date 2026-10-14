@@ -77,8 +77,15 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             return
         }
     }
+    if is_try {
+        rets := tc_call_returns(k, tc_unparen(k, Tree_Id(t.a[v])))
+        returns = rets[:len(rets) - 1]
+    }
+    // (Each name at its result's type, as the destructure writes it.)
+    types := make([]Type, len(targets), context.temp_allocator)
+    for _, i in targets { if i < len(returns) { types[i] = distinct_base(solidify_type(returns[i])) } }
     mr: Graph_Destructure
-    if is_try || of_call { mr = graph_build_destructure(b, span, names, toks, stores, is_decl) }
+    if is_try || of_call { mr = graph_build_destructure(b, span, names, toks, stores, is_decl, types) }
     if is_try {
         call := tc_unparen(k, Tree_Id(t.a[v]))
         r := lw_expr(k, call, .Value)
@@ -89,8 +96,6 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             mr.call = graph_try_after(b, tree_span(t, v), r.v)
             b.at = at
         }
-        rets := tc_call_returns(k, call)
-        returns = rets[:len(rets) - 1]
     } else {
         r: Built
         if of_call { r = lw_expr(k, value, .Value) }

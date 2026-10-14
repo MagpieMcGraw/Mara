@@ -1,0 +1,126 @@
+module return_forward
+
+//@ expect-output: P { x: 5, y: 1.5 } Ok
+//@ expect-output: P { x: 0, y: 0 } E.Bad
+//@ expect-output: inner 7 E.Bad
+//@ expect-output: hello 5 true
+//@ expect-output: [1, 2, 3] 9
+//@ expect-output: big 9 18
+//@ expect-output: implied 4 true Ok
+//@ expect-output: log [2, 1, 1] E.Bad Ok
+//@ expect-output: Mode.run true
+//@ expect-output: method 10 11
+//@ expect-output: down 0 true
+//@ expect-output: wo true
+//@ expect-output: sized 4 Ok E.Bad
+
+// `return f()`: all of f's results handed on, when they fit the fun's — as
+// many as `return a, b` could give (the errs left off Ok), each its type.
+// It used to return f's first result and an Ok: a failure lost (inner 7 Ok).
+// Structs, text, arrays, a big one on the arena; `defer?` runs on a failed
+// one; through from_text, a method, recursion, a view of the caller's
+// buffer, a fallible constructor.
+
+use mara.core
+include mara.memory
+
+E :: error { Bad }
+Mode :: union { build  run }
+P :: struct { x: i64  y: f32 }
+Big :: struct { cells: [300]i64 }
+
+pair :: fun(n: i64) -> P, err {
+	if n < 0 do return P{}, Bad
+	return P{x = n, y = 1.5}
+}
+fwd_pair :: fun(n: i64) -> P, err { return pair(n) }
+
+inner :: fun() -> i64, err { return 7, Bad }
+outer :: fun() -> i64, err { return inner() }
+
+name :: fun(ok: bool) -> str64, bool {
+	s : str64
+	&s + "hello"
+	return s, ok
+}
+fwd_name :: fun(ok: bool) -> str64, bool { return name(ok) }
+
+arr :: fun() -> [3]i64, i64 { return [1, 2, 3], 9 }
+fwd_arr :: fun() -> [3]i64, i64 { return arr() }
+
+big :: fun(k: i64) -> Big, i64 {
+	b : Big
+	b.cells[299] = k
+	return b, k * 2
+}
+fwd_big :: fun(k: i64) -> Big, i64 { return big(k) }
+
+two :: fun() -> i64, bool { return 4, true }
+implied :: fun() -> i64, bool, err { return two() }
+
+step :: fun(fail: bool) -> i64, err {
+	if fail do return 0, Bad
+	return 3
+}
+cleanup :: fun(fail: bool, log: ^[..8]i64) -> i64, err {
+	defer &log^ + 1
+	defer? &log^ + 2
+	return step(fail)
+}
+
+mode_of :: fun(s: []utf8) -> Mode, bool { return Mode.from_text(s) }
+
+Counter :: struct {
+	n := 0
+	split :: fun(c: Self) -> i64, i64 { return c.n, c.n + 1 }
+}
+via_method :: fun(c: Counter) -> i64, i64 { return c.split() }
+
+count_down :: fun(n: i64) -> i64, bool {
+	if n == 0 do return 0, true
+	return count_down(n - 1)
+}
+
+first_two :: fun(buf: ^[..16]utf8) -> []utf8, bool { return buf[0:2], true }
+fwd_two :: fun(buf: ^[..16]utf8) -> []utf8, bool { return first_two(buf) }
+
+Sized :: struct(n: i64) -> err {
+	if n < 0 do return Bad
+	size := n
+}
+fwd_sized :: fun(n: i64) -> Sized, err { return Sized(n) }
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+	p, e := fwd_pair(5)
+	print(p, e)
+	p2, e2 := fwd_pair(-1)
+	print(p2, e2)
+	i, ie := outer()
+	print("inner", i, ie)
+	s, ok := fwd_name(true)
+	print(s, s.len, ok)
+	a, n := fwd_arr()
+	print(a, n)
+	b, k := fwd_big(9)
+	print("big", b.cells[299], k)
+	x, y, e3 := implied()
+	print("implied", x, y, e3)
+	log : [..8]i64
+	_, e4 := cleanup(true, &log)
+	_, e5 := cleanup(false, &log)
+	print("log", log, e4, e5)
+	m, mok := mode_of("run")
+	print(m, mok)
+	u, v := via_method(Counter{n = 10})
+	print("method", u, v)
+	z, zok := count_down(3)
+	print("down", z, zok)
+	buf : [..16]utf8
+	&buf + "word"
+	w, wok := fwd_two(&buf)
+	print(w, wok)
+	sz, se := fwd_sized(4)
+	_, se2 := fwd_sized(-4)
+	print("sized", sz.size, se, se2)
+}

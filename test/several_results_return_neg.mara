@@ -1,23 +1,18 @@
 module several_results_return_neg
-//@ expect-fail: its err would be lost — `return inner(…)?` passes the err on
+//@ expect-fail: a call returning 3 values can't be returned whole from a fun returning 2
 
-// `return inner()` in a fun of inner's results returned inner's first and an
-// Ok: inner's failure was lost (7 Ok, not 0 E.Bad).
+// `return f()` hands on f's results when they fit the fun's (return_forward);
+// three into two don't.
 
 use mara.core
 
-E :: error { Bad }
+three :: fun() -> i64, bool, i64 { return 1, true, 2 }
 
-inner :: fun(fail: bool) -> i64, err {
-	if fail do return 7, Bad
-	return 5
-}
-
-outer :: fun(fail: bool) -> i64, err {
-	return inner(fail)
+two :: fun() -> i64, bool {
+	return three()
 }
 
 main :: fun() {
-	b, e := outer(true)
-	print(b, e)
+	a, b := two()
+	print(a, b)
 }

@@ -1,0 +1,46 @@
+module big_destructure
+
+//@ expect-output: 0 0
+//@ expect-output: 2 4
+//@ expect-output: 11 Ok
+//@ expect-output: E.Bad
+
+// `b, k := f()` with b 1 KB or more: b lives on the arena, its space taken
+// before the call writes it — freed each round of a loop. It used to stop
+// the codegen ("its local 'b'"): a destructure's locals never went there.
+
+use mara.core
+include mara.memory
+
+E :: error { Bad }
+Big :: struct { cells: [300]i64 }
+
+big :: fun(k: i64) -> Big, i64 {
+	b : Big
+	b.cells[299] = k
+	return b, k * 2
+}
+big_err :: fun(k: i64) -> Big, err {
+	if k < 0 do return Big{}, Bad
+	b : Big
+	b.cells[0] = k
+	return b
+}
+sum :: fun(k: i64) -> i64, err {
+	b, e := big_err(k)
+	if bool(e) do return 0, e
+	c := big_err(k + 1)?
+	return b.cells[0] + c.cells[0]
+}
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+	for round in 0 .. 3 {
+		b, k := big(round)
+		print(b.cells[299], k)
+	}
+	s, e := sum(5)
+	print(s, e)
+	_, e2 := sum(-1)
+	print(e2)
+}
