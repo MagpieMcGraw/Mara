@@ -528,6 +528,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
 tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, loc: ^Type_Scope, ok: bool) {
     found: bool
     existing, loc, found = scope_find(env, name)
+    tc_lookup_check(k, target, name, existing, found)
     if found {
         tc_set_ref(k, target, scope_find_ref(env, name))
         tc_set_type(k, target, existing)   // (the name written: its type)
@@ -920,7 +921,15 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         case .Arm_Variant:
             if is_union && name not_in ut.tag_map { tc_error(k, span, TYPE_VARIANT_UNION, name, type_name(ut)) }
             if is_union {
-                if vs := ut.variant_structs[name]; vs != nil && a.bound != "" { tc_bind(k, child, a.bound, vs, {a.bound_tok, .Local}) }
+                if vs := ut.variant_structs[name]; vs != nil && a.bound != "" {
+                    // (A rebound subject: its meaning back after the arm.)
+                    was, had := tc_bound(k, a.bound_tok)
+                    defer tc_bound_restore(k, a.bound_tok, was, had)
+                    tc_bind(k, child, a.bound, vs, {a.bound_tok, .Local})
+                    tc_scope(k, a.body, child)
+                    if name != "" { covered[name] = true }
+                    continue
+                }
             }
         case .Arm_Value:
             if name == "" {

@@ -25,7 +25,7 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, env, mod: ^Type_Scope) {
         }
         for r in v.returns { append(&ft.return_types, tc_type(k, r, env, span)) }
         ft.decl = v.name
-        scope_bind(mod, name, ft, {ft.decl, .Fun})
+        tc_scope_bind(k, mod, name, ft, {ft.decl, .Fun})
         k.c.declared_funs[name] = true
         k.table.fun_homes[name] = k.pkg
         if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }

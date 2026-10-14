@@ -60,7 +60,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
-        return tc_type_named(k, tc_text(parts[0]), env, span)
+        return tc_type_named(k, tc_text(parts[0]), env, span, n)
     case .Type_Dollar:
         name := tc_text(Token_Id(t.a[n]))
         if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
@@ -420,7 +420,7 @@ tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
 
 // A type by its name: a primitive, a type param bound, `Self`, what the
 // scope names, else the module's.
-tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> Type {
+tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span, n: Tree_Id = 0) -> Type {
     if _, is_primitive := tc_primitive_named(name); is_primitive { return tc_primitive(k, name, span) }
     // (A type param, in an instance; `Self`: the struct or fun the type is
     // written in.)
@@ -430,6 +430,7 @@ tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> Typ
     } else {
         // (Its own, else the one a module it uses has — two such: ambiguous.)
         found, ok, owners := resolve_with_ambiguity(env, name)
+        tc_lookup_check(k, n, name, found, ok)
         if ok { return found }
         if len(owners) > 1 {
             tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))

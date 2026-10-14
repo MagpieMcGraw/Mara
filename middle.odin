@@ -46,9 +46,9 @@ Middle_Worker :: struct {
 // Every code lowered and analysed, then put in place in written order.
 middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> Middle {
     mid := Middle{on = true}
-    saved_salt, saved_pkg, saved_subst := TC_Salt{k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
+    saved_salt, saved_pkg, saved_subst := TC_Salt{salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg, k.subst
     defer {
-        tc_instance_end(k, saved_salt)
+        tc_salt_set(k, saved_salt)
         k.pkg, k.subst = saved_pkg, saved_subst
     }
     p, codes := lower_begin(k)

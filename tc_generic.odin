@@ -284,8 +284,8 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
         append(&ft.return_types, tc_type(k, r, tmpl.env, span))
     }
     ft.decl = tr.main[tmpl.def]
-    scope_bind(k.root, mangled, ft, {ft.decl, .Fun})
-    if env != k.root { scope_bind(env, mangled, ft, {ft.decl, .Fun}) }
+    tc_scope_bind(k, k.root, mangled, ft, {ft.decl, .Fun})
+    if env != k.root { tc_scope_bind(k, env, mangled, ft, {ft.decl, .Fun}) }
     k.instances[mangled] = ft
     append(&k.instance_order, mangled)
     ft.parent_scope = env
@@ -464,8 +464,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     k.table.mono_cache[mangled] = st
     k.table.funs[st.name] = st
     st.decl = tr.main[tmpl.def]
-    scope_bind(k.root, mangled, st, {st.decl, .Type})
-    for name, bound in subst { scope_bind(st, name, bound, {tc_type_param_decl(k, tmpl.node, name), .Type}) }
+    tc_scope_bind(k, k.root, mangled, st, {st.decl, .Type})
+    for name, bound in subst { tc_scope_bind(k, st, name, bound, {tc_type_param_decl(k, tmpl.node, name), .Type}) }
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg = subst, tmpl.pkg
     defer k.subst, k.pkg = saved_subst, saved_pkg

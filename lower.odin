@@ -41,7 +41,7 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
     n := len(k.events)
     codes := LW_Codes{done = make([]bool, n), code = make([]^Program_Graph, n), folded = make([]bool, n), analysed = make([]bool, n)}
     for e, i in k.events {
-        tc_instance_end(k, e.salt)
+        tc_salt_set(k, e.salt)
         switch e.kind {
         case .Module_Stmt:
             graph_module_stmt(p, e.sid)
@@ -121,7 +121,7 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     if codes.done[i] { return }
     codes.done[i] = true
     e := k.events[i]
-    tc_instance_end(k, e.salt)
+    tc_salt_set(k, e.salt)
     k.pkg, k.subst = e.pkg, e.subst
     #partial switch e.kind {
     case .Const:          codes.code[i] = lw_const(k, e.kc)

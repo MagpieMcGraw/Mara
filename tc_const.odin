@@ -61,7 +61,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
         final = ann
     }
     kc.t = final
-    scope_bind(kc.pub, kc.name, final, {k.t.main[kc.def], .Const})
+    tc_scope_bind(k, kc.pub, kc.name, final, {k.t.main[kc.def], .Const})
 }
 
 // The constant a bare name names from `env`: its own module's, or one it
@@ -144,9 +144,9 @@ tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope, body: ^Type_Scope) {
     for kc in sc.consts {
         kc.env, kc.pub = body, body
         tc_check_const(k, kc)
-        scope_bind(body, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
-        scope_bind(sc.ts, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
-        scope_bind(sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const})
+        tc_scope_bind(k, body, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
+        tc_scope_bind(k, sc.ts, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
+        tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const})
         (&k.scope_consts[body])[kc.name] = kc
     }
 }

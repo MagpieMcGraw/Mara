@@ -56,10 +56,10 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
     callable := !is_struct || len(v.params) > 0
     if is_struct {
         if callable { k.table.funs[mangled] = ts } else { k.table.structs[mangled] = ts }
-        scope_bind(owner, name, ts, {ts.decl, .Type})
+        tc_scope_bind(k, owner, name, ts, {ts.decl, .Type})
     }
     // (Its mangled name the module's, where codegen and a qualified use find it.)
-    scope_bind(module_scope(owner), mangled, ts, {ts.decl, .Type if is_struct else .Fun})
+    tc_scope_bind(k, module_scope(owner), mangled, ts, {ts.decl, .Type if is_struct else .Fun})
     if callable {
         k.c.declared_funs[mangled] = true
         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }

@@ -55,7 +55,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
             for v in variants { et.variants[v.name], et.variant_decls[v.name] = v.tag, v.span.at }
         }
         k.table.enums[flat] = et
-        scope_bind(mod, name, et, {k.t.main[def], .Type})
+        tc_scope_bind(k, mod, name, et, {k.t.main[def], .Type})
         register_enum_variants(k.c, et, flat)
         return
     }
@@ -64,12 +64,14 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
         return
     }
     ut := tc_make_union(k, k.pkg, name, span, h, variants[:], env)
+    ut.tag_enum.span.at = t.main[node]   // (its tag's enum: declared by its `union`)
     register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name)
-    scope_bind(mod, name, ut, {k.t.main[def], .Type})
+    tc_scope_bind(k, mod, name, ut, {k.t.main[def], .Type})
     // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
-    // enum's variant is — declared where the union is; unless the name's taken.)
+    // enum's variant is — declared where the union is, by its `union`; unless
+    // the name's taken.)
     if _, taken := scope_lookup(mod, ut.tag_enum.source_name); !taken {
-        scope_bind(mod, ut.tag_enum.source_name, ut.tag_enum, {k.t.main[def], .Type})
+        tc_scope_bind(k, mod, ut.tag_enum.source_name, ut.tag_enum, {k.t.main[node], .Type})
     }
 }
 
@@ -342,7 +344,7 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Scop
     defer k.subst, k.pkg = saved_subst, saved_pkg
     ut := tc_make_union(k, tmpl.pkg, mangled, tree_span(t, tmpl.def), h, tc_union_variants(k, tmpl.node)[:], tmpl.env, subst)
     k.table.mono_union_cache[mangled] = ut
-    scope_bind(k.root, mangled, ut, {ut.span.at, .Type})
+    tc_scope_bind(k, k.root, mangled, ut, {ut.span.at, .Type})
     // (Its variants' bodies are its template's, checked again with its params
     // bound: their nodes its own — tc_sid.)
     saved_inst := tc_instance_begin(k, tmpl, nil)

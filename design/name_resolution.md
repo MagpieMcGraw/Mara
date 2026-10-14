@@ -118,5 +118,14 @@ default's value).
 
 - [x] 1. The resolver, checked against the checker (2026-10-13)
 - [ ] 2. The checker reads the refs
+  - [x] a. The resolver runs before the check, kept for it (`k.rs`; names written as tokens —
+        a dispatch's members, an overload's — by token: `token_refs`) (2026-10-14)
+  - [x] b. What each declaration means, beside the scopes: `k.bound` by declaring token, an
+        instance's own given back at its end, a union arm's rebound subject after the arm;
+        `MARA_RESOLVE=check` compares it at each lookup (78,936 agree, none differ). Its cost
+        on test_1M: the resolver ~140 ms (a name's slot hashed once a push and a lookup), the
+        bindings ~10 ms (dense by token: a map's inserts missed the cache, ~170 ms)
+  - [ ] c. The lookups read the ref and the binding
+  - [ ] d. The resolver reports the name errors
 - [ ] 3. The environments go
 - [ ] 4. Faster

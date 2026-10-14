@@ -193,6 +193,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
     // (A constant: the one a scope around it declares — it shadows a
     // module's — else its own module's, or one it uses' — two is ambiguous.)
     t, loc_scope, ok := scope_find(env, name)
+    tc_lookup_check(k, n, name, t, ok)
     kc := tc_local_const(k, env, loc_scope, name) if ok else nil
     if kc == nil {
         unambiguous: bool
@@ -537,6 +538,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         }
     }
     ft_raw, found := scope_lookup(env, name)
+    if qual == nil && tr.tag[n] == .Call { tc_lookup_check(k, n, name, ft_raw, found) }
     if qual != nil { ft_raw, found = qual, true }
     if !found {
         // (A union's variant built by its params: `Rect(5)` where a Shape goes.)

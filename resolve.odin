@@ -23,8 +23,10 @@ Resolver :: struct {
     k:       ^TC,             // (the check's tree, its modules, its target: `#if`)
     t:       ^Tree,
     refs:    []Ref,           // by node: what its name refers to (kind None: not found)
+    token_refs: map[Token_Id]Ref,   // ... a name written as a token: a dispatch's member, an overload's fun
     names:   [dynamic]Rs_Name,
-    top:     map[string]i32,  // a name → its innermost entry in names
+    slots:   map[string]i32,  // a name → its slot in top (one hash a push and a lookup; none a pop)
+    top:     [dynamic]i32,    // by slot: the name's innermost entry in names (-1: none)
     scopes:  [dynamic]Rs_Scope,
     modules: map[string]^Rs_Module,
     named:   map[Token_Id]^Rs_Module,   // a module's name, by the token that declares it (its use's)
@@ -40,7 +42,7 @@ Resolver :: struct {
 // sight).
 @(private="file")
 Rs_Name :: struct {
-    name:     string,
+    slot:     i32,
     ref:      Ref,
     hides:    i32,
     scope:    i32,
@@ -54,6 +56,7 @@ Rs_Scope_Kind :: enum u8 { Module, File, Fun, Struct, Block }
 Rs_Scope :: struct {
     kind: Rs_Scope_Kind,
     mark: i32,                  // len(names) when it was entered
+    fence: i32,                 // the innermost fun or struct, it or around it: the variables below it are out of sight
     uses: [dynamic]^Rs_Module,  // what it uses: their definitions in sight, behind its own
     self: Ref,                  // a fun's or a struct's: itself (`Self`)
     signature: bool,            // a fun's or a struct's, its params and results being resolved
@@ -72,7 +75,8 @@ Rs_Module :: struct {
 
 @(private="file")
 rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind) {
-    append(&r.scopes, Rs_Scope{kind = kind, mark = i32(len(r.names))})
+    fence := i32(len(r.scopes)) if kind == .Fun || kind == .Struct else r.scopes[len(r.scopes) - 1].fence if len(r.scopes) > 0 else -1
+    append(&r.scopes, Rs_Scope{kind = kind, mark = i32(len(r.names)), fence = fence})
 }
 
 @(private="file")
@@ -80,16 +84,21 @@ rs_leave :: proc(r: ^Resolver) {
     s := pop(&r.scopes)
     for i32(len(r.names)) > s.mark {
         e := pop(&r.names)
-        if e.hides >= 0 { r.top[e.name] = e.hides } else { delete_key(&r.top, e.name) }
+        r.top[e.slot] = e.hides
     }
 }
 
 @(private="file")
 rs_push :: proc(r: ^Resolver, name: string, ref: Ref, variable: bool) {
     if name == "" || name == "_" { return }
-    hides := r.top[name] or_else -1
-    append(&r.names, Rs_Name{name = name, ref = ref, hides = hides, scope = i32(len(r.scopes) - 1), variable = variable})
-    r.top[name] = i32(len(r.names) - 1)
+    slot, ok := r.slots[name]
+    if !ok {
+        slot = i32(len(r.top))
+        append(&r.top, -1)
+        r.slots[name] = slot
+    }
+    append(&r.names, Rs_Name{slot = slot, ref = ref, hides = r.top[slot], scope = i32(len(r.scopes) - 1), variable = variable})
+    r.top[slot] = i32(len(r.names) - 1)
 }
 
 // A definition, seen throughout the current scope.
@@ -104,14 +113,13 @@ rs_declare :: proc(r: ^Resolver, name: string, ref: Ref) { rs_push(r, name, ref,
 // else what the nearest scope that uses one brings in (two: ambiguous).
 @(private="file")
 rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
-    fence := i32(-1)   // (the innermost fun or struct: the variables below it are out of sight)
-    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        if k := r.scopes[i].kind; k == .Fun || k == .Struct { fence = i32(i); break }
-    }
-    for i := r.top[name] or_else -1; i >= 0; i = r.names[i].hides {
-        e := &r.names[i]
-        if e.variable && e.scope < fence { continue }
-        return e.ref, true
+    fence := r.scopes[len(r.scopes) - 1].fence
+    if slot, ok := r.slots[name]; ok {
+        for i := r.top[slot]; i >= 0; i = r.names[i].hides {
+            e := &r.names[i]
+            if e.variable && e.scope < fence { continue }
+            return e.ref, true
+        }
     }
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
         found: Ref
@@ -169,10 +177,11 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
             def(r, into, rs_text(t.main[s]), {t.main[s], kind})
             r.defs[t.main[s]] = s
             if t.tag[value] == .Dispatch_Def { r.dispatches[t.main[s]] = true }
-            // (A union's tag enum — a union with data's: `<Name>_Tag`, its
-            // declaration the union's.)
+            // (A union's tag enum — a union with data's: `<Name>_Tag`,
+            // declared by its `union`.)
             if t.tag[value] == .Union_Def && rs_union_has_data(t, value) {
-                def(r, into, strings.concatenate({rs_text(t.main[s]), "_Tag"}, context.temp_allocator), {t.main[s], .Type})
+                def(r, into, strings.concatenate({rs_text(t.main[s]), "_Tag"}, context.temp_allocator), {t.main[value], .Type})
+                r.defs[t.main[value]] = s
             }
         case .Foreign:
             for ff in foreign_view(t, s).funs {
@@ -452,7 +461,9 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         }
     case .Expr_Stmt:
         if rs_stmt_import(t, s) == 0 { rs_node(r, Tree_Id(t.a[s])) }
-    case .Overload, .Break, .Continue, .Module:
+    case .Overload:
+        rs_token(r, Token_Id(t.b[s]))   // (the dispatch's or the fun's name)
+    case .Break, .Continue, .Module:
     case:
         rs_node(r, s)
     }
@@ -481,10 +492,19 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
             if body := Tree_Id(t.b[vr]); body != 0 { rs_scope_def(r, vr, body) }
         }
         rs_leave(r)
-    case .Import, .Error_Def, .Dispatch_Def:
+    case .Dispatch_Def:
+        // (Its members: names, written as tokens.)
+        for tok in tree_token_list(t, t.a[value]) { rs_token(r, tok) }
+    case .Import, .Error_Def:
     case:
         rs_node(r, value)
     }
+}
+
+// A name written as a token: what it refers to, by the token.
+@(private="file")
+rs_token :: proc(r: ^Resolver, tok: Token_Id) {
+    if ref, ok := rs_lookup(r, rs_text(tok)); ok { r.token_refs[tok] = ref }
 }
 
 // A fun's or a struct's scope: its type params, then its params' types and
@@ -707,6 +727,19 @@ rs_children :: proc(r: ^Resolver, n: Tree_Id) {
     }
 }
 
+// The program's names resolved, before it's checked: the resolver, kept for
+// the checker to read (its refs; what's in sight is gone).
+resolve_program :: proc(k: ^TC) -> ^Resolver {
+    r := new(Resolver)
+    r.k, r.t = k, k.t
+    r.refs = make([]Ref, len(k.t.tag))
+    rs_program(r)
+    delete(r.names)
+    delete(r.slots)
+    delete(r.top)
+    return r
+}
+
 // --- the check (stage 1) -----------------------------------------------------------
 
 // MARA_RESOLVE=check: each name the resolver resolved, against the ref the
@@ -716,8 +749,7 @@ rs_children :: proc(r: ^Resolver, n: Tree_Id) {
 resolve_check :: proc(k: ^TC) {
     if os.get_env("MARA_RESOLVE", context.temp_allocator) != "check" || k.c.errors > 0 { return }
     t := k.t
-    r := Resolver{k = k, t = t, refs = make([]Ref, len(t.tag))}
-    rs_program(&r)
+    r := k.rs
     a := k.annot
     Key :: struct { tag: Tree_Tag, checker, resolver: Ref_Kind }
     Tally :: struct {
@@ -769,12 +801,12 @@ resolve_check :: proc(k: ^TC) {
         if i == 0 { continue }
         for n := inst.lo; n <= inst.hi; n += 1 {
             covered[n] = true
-            compare(&r, n, annot_ref(a, Instance_Id(i), n), r.refs[n], &y)
+            compare(r, n, annot_ref(a, Instance_Id(i), n), r.refs[n], &y)
         }
     }
     for n in 1 ..< len(t.tag) {
         if covered[n] { continue }
-        compare(&r, Tree_Id(n), annot_ref(a, 0, Tree_Id(n)), r.refs[n], &y)
+        compare(r, Tree_Id(n), annot_ref(a, 0, Tree_Id(n)), r.refs[n], &y)
     }
     total :: proc(m: map[Key]int) -> int { s := 0; for _, c in m { s += c }; return s }
     fmt.printfln("resolve: %d agree, %d differ, %d only the checker's, %d only the resolver's, %d a dispatch's member, %d what a variable holds",
@@ -784,6 +816,10 @@ resolve_check :: proc(k: ^TC) {
         for key in m { append(&keys, key) }
         slice.sort_by(keys[:], proc(a, b: Key) -> bool { return int(a.tag) * 64 + int(a.checker) * 8 + int(a.resolver) < int(b.tag) * 64 + int(b.checker) * 8 + int(b.resolver) })
         for key in keys { fmt.printfln("resolve: %s %v: checker %v, resolver %v: %d", what, key.tag, key.checker, key.resolver, m[key]) }
+    }
+    if k.lookups.on {
+        for line in k.lookups.shown { fmt.println(line) }
+        fmt.printfln("resolve: lookups: %d agree, %d differ, %d no ref", k.lookups.agree, k.lookups.differ, k.lookups.absent)
     }
     report("differ", y.differ)
     report("only-checker", y.missed)

@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:mem/virtual"
+import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -70,6 +71,93 @@ TC :: struct {
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
+
+    // Names (design/name_resolution.md): what each refers to, the resolver's,
+    // found before the check; and what each declaration means now — a
+    // definition's type, a variable's in the body being checked, a template's
+    // in the instance being checked — by the token that declares it.
+    rs:            ^Resolver,
+    bound:         []u32,               // by token: its binding's place in binds (0: none)
+    binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
+    bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
+    lookups:       TC_Lookups,          // MARA_RESOLVE=check: the binding against the scope, at each lookup
+}
+
+// A binding's before: what the token meant, if anything.
+TC_Bound :: struct {
+    tok: Token_Id,
+    was: Type,
+    had: bool,
+}
+
+TC_Lookups :: struct {
+    on:                    bool,
+    agree, differ, absent: int,
+    shown:                 [dynamic]string,   // (the first few that differ: printed with the counts, a program with no errors')
+}
+
+// A declaration's meaning, from here on. (In an instance, what it meant is
+// kept: the instance gives its template's tokens back when it's done.)
+tc_bound_set :: proc(k: ^TC, tok: Token_Id, t: Type) {
+    if tok == 0 { return }
+    if k.salt != 0 {
+        was, had := tc_bound(k, tok)
+        append(&k.bound_log, TC_Bound{tok, was, had})
+    }
+    tc_bound_put(k, tok, t)
+}
+
+// What a declaration means now, if it's bound.
+tc_bound :: proc(k: ^TC, tok: Token_Id) -> (Type, bool) {
+    at := k.bound[tok]
+    return k.binds[at], at != 0
+}
+
+tc_bound_put :: proc(k: ^TC, tok: Token_Id, t: Type) {
+    if at := k.bound[tok]; at != 0 { k.binds[at] = t; return }
+    k.bound[tok] = u32(len(k.binds))
+    append(&k.binds, t)
+}
+
+// A binding given back: what the token meant before (or nothing).
+tc_bound_restore :: proc(k: ^TC, tok: Token_Id, was: Type, had: bool) {
+    if had { tc_bound_put(k, tok, was) } else { k.bound[tok] = 0 }
+}
+
+// What a name means: its declaration's binding (a builtin's, by its name).
+tc_ref_type :: proc(k: ^TC, ref: Ref, name: string) -> (Type, bool) {
+    if ref.kind == .Builtin { return scope_defines(k.root, name) }
+    if ref.decl == 0 { return nil, false }
+    return tc_bound(k, ref.decl)
+}
+
+// MARA_RESOLVE=check: what a lookup found, against what the name's ref and its
+// binding say.
+tc_lookup_check :: proc(k: ^TC, n: Tree_Id, name: string, found: Type, ok: bool) {
+    if !k.lookups.on || n == 0 { return }
+    ref := k.rs.refs[n]
+    t: Type
+    bok: bool
+    if ref.kind == .None {
+        if !ok { k.lookups.agree += 1; return }   // (neither found it)
+        k.lookups.absent += 1
+    } else {
+        t, bok = tc_ref_type(k, ref, name)
+        same := ok == bok && (!ok || raw_type_key(found) == raw_type_key(t) && (raw_type_key(t) != nil || types_equal(found, t)))
+        if same { k.lookups.agree += 1; return }
+        k.lookups.differ += 1
+    }
+    if len(k.lookups.shown) < 30 {
+        sp := tree_span(k.t, n)
+        append(&k.lookups.shown, fmt.aprintf("resolve: lookup %s:%d `%s` (%v): scope %v %v, binding %v %v", span_file(sp), span_line(sp), name, ref.kind,
+            ok, type_name(found) if ok else "-", bok, type_name(t) if bok else "-"))
+    }
+}
+
+// A name bound in scope s, and its declaration's meaning.
+tc_scope_bind :: proc(k: ^TC, s: ^Type_Scope, name: string, t: Type, ref: Ref) {
+    scope_bind(s, name, t, ref)
+    tc_bound_set(k, ref.decl, t)
 }
 
 // What the checker checked, in the order it did — a body, a constant, a
@@ -90,7 +178,7 @@ TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt, Program_Struct }
 
 tc_event :: proc(k: ^TC, e: TC_Event) {
     e := e
-    e.salt, e.pkg, e.subst = {k.salt, k.salt_lo, k.salt_hi}, k.pkg, k.subst
+    e.salt, e.pkg, e.subst = {salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg, k.subst
     append(&k.events, e)
 }
 
@@ -99,7 +187,7 @@ tc_event :: proc(k: ^TC, e: TC_Event) {
 // named result, a local — kept as one of its variables (Annotations.vars).
 // (`_` names no variable.)
 tc_bind :: proc(k: ^TC, env: ^Type_Scope, name: string, t: Type, ref: Ref) {
-    scope_bind(env, name, t, ref)
+    tc_scope_bind(k, env, name, t, ref)
     #partial switch ref.kind {
     case .Local, .Param, .Result:
         if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
@@ -183,7 +271,7 @@ tc_instance :: proc(k: ^TC, n: Tree_Id) -> Instance_Id {
 // its own (tc_sid, tc_instance) until tc_instance_end puts back the one
 // being checked before.
 tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope) -> (saved: TC_Salt) {
-    saved = {k.salt, k.salt_lo, k.salt_hi}
+    saved = {k.salt, k.salt_lo, k.salt_hi, len(k.bound_log), k.t.first[tmpl.def], k.t.end[tmpl.def]}
     k.instance_count += 1
     id := annot_instance(k.annot, tmpl.lo, tmpl.node, ts)
     assert(u64(id) == k.instance_count)
@@ -191,13 +279,27 @@ tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope) -> (saved:
     return
 }
 
+// The instance a node is read in, set (lowering's: as each event was checked).
+tc_salt_set :: proc(k: ^TC, salt: TC_Salt) {
+    k.salt, k.salt_lo, k.salt_hi = salt.salt, salt.lo, salt.hi
+}
+
 tc_instance_end :: proc(k: ^TC, saved: TC_Salt) {
     k.salt, k.salt_lo, k.salt_hi = saved.salt, saved.lo, saved.hi
+    // (What its template's tokens meant before it, back; the rest — what it
+    // checked of the program's on the way — stays.)
+    for i := len(k.bound_log) - 1; i >= saved.log; i -= 1 {
+        b := k.bound_log[i]
+        if b.tok < saved.first || b.tok >= saved.end { continue }
+        tc_bound_restore(k, b.tok, b.was, b.had)
+    }
 }
 
 TC_Salt :: struct {
     salt:   u64,
     lo, hi: Tree_Id,
+    log:    int,                  // the bindings so far, at its start
+    first, end: Token_Id,         // its template's tokens: what it binds its own way
 }
 
 tc_text :: proc(tok: Token_Id) -> string {
@@ -245,6 +347,10 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared, no_assert = no_assert}
     ir_types_forget()   // (a check of serve's, after another: its types are new)
+    k.rs = resolve_program(k)
+    k.bound = make([]u32, len(build_tokens))
+    append(&k.binds, nil)   // (place 0: none)
+    k.lookups.on = os.get_env("MARA_RESOLVE", context.temp_allocator) == "check"
     k.annot = annot_new(t)
     checked.annot = k.annot
     k.blocks = new(virtual.Arena)
@@ -261,7 +367,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.name = "std"
     std_fun.home_package = "std"
     std_fun.kind = .Struct
-    scope_bind(main_mod, "std", std_fun, {kind = .Builtin})
+    tc_scope_bind(k, main_mod, "std", std_fun, {kind = .Builtin})
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
@@ -293,12 +399,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.field_map["args"] = len(prog_type.fields)
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
         table.funs["Program"] = prog_type
-        scope_bind(main_mod, "this_program", prog_type, {kind = .Builtin})
-        scope_bind(main_mod, "Program", prog_type, {kind = .Builtin})
+        tc_scope_bind(k, main_mod, "this_program", prog_type, {kind = .Builtin})
+        tc_scope_bind(k, main_mod, "Program", prog_type, {kind = .Builtin})
     }
     void_type := new(Type_Ptr)
     void_type.elem = Type_Any{}
-    scope_bind(main_mod, "void", void_type, {kind = .Builtin})
+    tc_scope_bind(k, main_mod, "void", void_type, {kind = .Builtin})
 
     k.pkg = main_package
     main := tc_check_module_files(k, files, main_mod)
@@ -512,7 +618,7 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
     dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
-    scope_bind(mod, name, dt, {k.t.main[def], .Type})
+    tc_scope_bind(k, mod, name, dt, {k.t.main[def], .Type})
 }
 
 // What a module statement leaves for every name to be known: a distinct
@@ -610,7 +716,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     callable := !is_struct || len(v.params) > 0
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
     ts.decl = t.main[def]
-    scope_bind(mod, name, ts, {ts.decl, .Type if is_struct else .Fun})
+    tc_scope_bind(k, mod, name, ts, {ts.decl, .Type if is_struct else .Fun})
     k.table.fun_homes[name] = k.pkg
     if callable {
         k.c.declared_funs[name] = true

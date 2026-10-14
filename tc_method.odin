@@ -37,7 +37,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
     resolved, failed := false, false
     if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
-        if qt, found := scope_lookup(env, qname); found {
+        qt, found := scope_lookup(env, qname)
+        tc_lookup_check(k, q, qname, qt, found)
+        if found {
             tc_set_ref(k, q, scope_find_ref(env, qname))
             // (`Shape.Rect(5)`: the union's variant built by its params.)
             if ut, is_union := qt.(^Type_Union); is_union && name in ut.tag_map { return tc_variant_call(k, n, ut, name, args, env) }
