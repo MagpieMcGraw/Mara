@@ -18,7 +18,7 @@ tc_binding_kind_fits :: proc(t, param: Type) -> bool {
 // `f(args)` where f is a dispatch group: each argument checked, the one
 // member they fit chosen — each argument its param's type (a binding no use
 // has given a width yet: a param of its kind) — then the call.
-tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]string, args: []Tree_Id,
+tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member, args: []Tree_Id,
                          env: ^Type_Scope) -> Type {
     tr := k.t
     span := tree_span(tr, n)
@@ -30,8 +30,9 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a, env)) }
     matched := make([dynamic]string, context.temp_allocator)
     matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
-    candidates: for f in members {
-        found, ok := scope_lookup(env, f)
+    candidates: for m in members {
+        f := m.name
+        found, ok := tc_ref_type(k, m.ref, f)
         if !ok { continue }
         ft, is_scope := found.(^Type_Scope)
         if !is_scope || len(ft.params) < len(arg_types) { continue }
@@ -126,15 +127,14 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
 // `overload op` names, the member that fits best — its params the operands'
 // types exactly, then structurally, then a generic one's instance.
 tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Scope, span: Span) -> (^Type_Scope, bool) {
-    groups, has := find_operator_overload(k.c, env, op)
-    if !has { return nil, false }
+    groups := resolve_overloads(k.rs, span.at, op)
+    if len(groups) == 0 { return nil, false }
     best: ^Type_Scope
     best_score := 0   // (1 a generic's instance, 2 structural, 3 exact)
     for group in groups {
-        members, is_dispatch := find_dispatch(k.c, env, group)
-        if !is_dispatch { continue }
-        for f in members {
-            if found, ok := scope_lookup(env, f); ok {
+        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, span.at, tc_text(group))) {
+            f := m.name
+            if found, ok := tc_ref_type(k, m.ref, f); ok {
                 ft, is_scope := found.(^Type_Scope)
                 if !is_scope || len(ft.params) != 2 { continue }
                 if types_incompatible(ft.params[0].type_, lt) || types_incompatible(ft.params[1].type_, rt) { continue }
@@ -151,7 +151,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
             }
             // (A generic member is instantiated whether or not a better fit is
             // found: its instance exists.)
-            tmpl, is_template := k.templates_by_name[f]
+            tmpl, is_template := tc_template(k, m.ref)
             if !is_template { continue }
             if inst := tc_overload_instance(k, f, tmpl, lt, rt, env); inst != nil && best_score < 1 { best, best_score = inst, 1 }
         }
@@ -198,16 +198,12 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
 
 // The function `-x` calls, when x is no number: of the groups `overload -`
 // names, the one-param member that fits best.
-tc_unary_overload :: proc(k: ^TC, t: Type, env: ^Type_Scope) -> ^Type_Scope {
-    groups, has := find_operator_overload(k.c, env, .Minus)
-    if !has { return nil }
+tc_unary_overload :: proc(k: ^TC, t: Type, at: Token_Id) -> ^Type_Scope {
     best: ^Type_Scope
     best_score := 0
-    for group in groups {
-        members, is_dispatch := find_dispatch(k.c, env, group)
-        if !is_dispatch { continue }
-        for f in members {
-            found, ok := scope_lookup(env, f)
+    for group in resolve_overloads(k.rs, at, .Minus) {
+        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group))) {
+            found, ok := tc_ref_type(k, m.ref, m.name)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)
             if !is_scope || len(ft.params) != 1 || types_incompatible(ft.params[0].type_, t) { continue }

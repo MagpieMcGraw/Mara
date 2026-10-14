@@ -63,13 +63,8 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
         tc_scope_bind(k, m, "void", new_clone(Type_Ptr{elem = Type_Any{}}), {kind = .Builtin})
     }
     saved_pkg, saved_hint := k.pkg, k.hint
-    saved_dispatch, saved_overloads := k.c.dispatch_groups, k.c.operator_overloads
     k.pkg = name
-    k.c.dispatch_groups, k.c.operator_overloads = {}, {}
     list := tc_check_module_files(k, files, m)
-    // (Its dispatches and overloads stay its own: a `use` of it reaches them.)
-    m.dispatch_groups, m.operator_overloads = k.c.dispatch_groups, k.c.operator_overloads
-    k.c.dispatch_groups, k.c.operator_overloads = saved_dispatch, saved_overloads
     k.pkg, k.hint = saved_pkg, saved_hint
     delete_key(&k.in_progress, name)
     tc_extract(k, list, name, is_main = false)

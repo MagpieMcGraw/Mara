@@ -432,8 +432,6 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Scope, mod_sd: ^Scope_Bod
             c.declared_funs[name] = true
         }
     }
-    // Dispatches and operator overloads stay on the used module (see
-    // Scope_Body.dispatch_groups): a lookup walks the includes at its call.
 }
 
 // is_enum_visible reports whether the enum identified by `flat_name`
@@ -459,44 +457,3 @@ is_enum_visible :: proc(env: ^Type_Scope, flat_name: string) -> bool {
     return false
 }
 
-// find_dispatch collects all functions associated with a dispatch group `name`,
-// visible at `env`: the current module's own dispatches (c.dispatch_groups),
-// then those of the modules used along the chain. Multiple modules may
-// contribute candidates to the same dispatch name; all matches are merged so a
-// stdlib dispatch (e.g. `sqrt :: dispatch { sqrt_f32, sqrt_f64 }`) can be
-// extended by user code that uses the stdlib module. Non-transitive: a used
-// module's own uses are not followed.
-find_dispatch :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> ([dynamic]string, bool) {
-    result: [dynamic]string
-    if fns, ok := c.dispatch_groups[name]; ok {
-        for f in fns { append(&result, f) }
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        for inc in s.includes {
-            if inc != nil {
-                if fns, ok := inc.dispatch_groups[name]; ok {
-                    for f in fns { append(&result, f) }
-                }
-            }
-        }
-    }
-    return result, len(result) > 0
-}
-
-// find_operator_overload mirrors find_dispatch for `overload OP name` decls.
-find_operator_overload :: proc(c: ^Checker, env: ^Type_Scope, op: Token_Kind) -> ([dynamic]string, bool) {
-    result: [dynamic]string
-    if names, ok := c.operator_overloads[op]; ok {
-        for n in names { append(&result, n) }
-    }
-    for s := env; s != nil; s = s.parent_scope {
-        for inc in s.includes {
-            if inc != nil {
-                if names, ok := inc.operator_overloads[op]; ok {
-                    for n in names { append(&result, n) }
-                }
-            }
-        }
-    }
-    return result, len(result) > 0
-}

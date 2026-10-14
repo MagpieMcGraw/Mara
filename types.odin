@@ -265,10 +265,6 @@ Scope_Body :: struct {
     // non-transitive (we don't follow inc.includes).
     includes:       [dynamic]^Scope_Body,
 
-    // Module dispatch groups (stored on module-struct for propagation on `using include`)
-    dispatch_groups:    map[string][dynamic]string,
-    operator_overloads: map[Token_Kind][dynamic]string,
-
     // Generic monomorphization metadata
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise
     generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance — for reverse inference

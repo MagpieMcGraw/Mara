@@ -251,7 +251,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, of := Tree_Id(0)) -> Type
             }
         } else if !is_numeric(ot) {
             // (`overload -`: a function of the one operand, when one fits.)
-            if callee := tc_unary_overload(k, ot, env); callee != nil {
+            if callee := tc_unary_overload(k, ot, tr.main[n]); callee != nil {
                 tc_set_callee(k, n, callee)
                 tc_set_args(k, n, {{operand, .Written, -1}})
                 tc_settle(k, operand, callee.params[0].type_)
@@ -511,7 +511,7 @@ tc_callee_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
 // A call of `name` on `args` — or, resolved by its qualifier (a method, a
 // module's fun: `qual`; a module's dispatch: `qual_dispatch`), of that.
 tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
-                     qual: ^Type_Scope = nil, qual_dispatch: []string = nil) -> Type {
+                     qual: ^Type_Scope = nil, qual_dispatch: []TC_Member = nil) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     // (A call of several results, as one argument: its extras would be lost —
@@ -522,19 +522,15 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
     }
-    if len(qual_dispatch) > 0 {
-        members := make([dynamic]string, context.temp_allocator)
-        append(&members, ..qual_dispatch)
-        return tc_dispatch_call(k, n, name, members, args, env)
-    }
+    if len(qual_dispatch) > 0 { return tc_dispatch_call(k, n, name, qual_dispatch, args, env) }
     if qual == nil {
         if t, is_builtin := tc_builtin(k, n, name, args, env); is_builtin {
             tc_set_ref(k, n, {kind = .Builtin})
             k.annot.forms[tc_sid(k, n)] = .Builtin
             return t
         }
-        if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
-            return tc_dispatch_call(k, n, name, members, args, env)
+        if groups := resolve_dispatches(k.rs, tr.main[n], name); len(groups) > 0 {
+            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args, env)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
             return tc_generic_call(k, n, name, tmpl, args, env)

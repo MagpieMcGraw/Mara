@@ -39,6 +39,8 @@ Resolver :: struct {
     type_params_of: map[Tree_Id][dynamic]Token_Id,   // ... each generic's, by its node (an instance binds them)
     generic:     Tree_Id,               // the definition whose signature is being resolved: its type params'
     module:  ^Rs_Module,                // the module being resolved
+    sights:  map[u16]Rs_Sight,          // by file: the modules in sight there (resolve_dispatches)
+    dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
 }
 
 // A name in sight: what it refers to, the entry of the same name it hides,
@@ -73,6 +75,21 @@ Rs_Module :: struct {
     files:    []Tree_Id,
     defs:     map[string]Ref,
     variants: map[string]Ref,   // its enums' variants: what `m.X` reaches past its definitions
+    dispatches: map[string][dynamic]Token_Id,   // its dispatch groups, by name (one name's join)
+    overloads: [dynamic]Rs_Overload,            // its `overload op name`s, in order
+}
+
+@(private="file")
+Rs_Overload :: struct {
+    op:   Token_Kind,
+    name: Token_Id,
+}
+
+// What a file sees of the groups calls and operators choose among: its
+// module's, then each module it or its module uses.
+Rs_Sight :: struct {
+    module: ^Rs_Module,
+    uses:   []^Rs_Module,
 }
 
 // --- the stack ----------------------------------------------------------------------
@@ -274,6 +291,23 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Rs_Module {
     r.modules[name] = m
     for f in m.files { rs_each_def(r, tree_list(r.t, r.t.a[f]), &m.defs) }
     t := r.t
+    // (Its dispatch groups and its operators' overloads: what a call, an
+    // operation, in sight of it chooses among.)
+    for f in m.files {
+        for s in rs_live(r, tree_list(t, t.a[f])) {
+            #partial switch t.tag[s] {
+            case .Define:
+                if value := Tree_Id(t.b[s]); value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
+                    name := rs_text(t.main[s])
+                    if name not_in m.dispatches { m.dispatches[name] = {} }
+                    append(&m.dispatches[name], t.main[s])
+                    r.dispatch_names[name] = true
+                }
+            case .Overload:
+                append(&m.overloads, Rs_Overload{build_tokens[t.a[s]].kind, Token_Id(t.b[s])})
+            }
+        }
+    }
     for _, ref in m.defs {
         def, ok := r.defs[ref.decl]
         if !ok || ref.kind != .Type { continue }
@@ -344,10 +378,49 @@ rs_program :: proc(r: ^Resolver) {
                 rs_define(r, rs_text(tok), {tok, .Module})
             }
             for s in stmts { rs_stmt(r, s) }
+            // (What it sees of the groups: its module's, then what it uses,
+            // then what its module includes — each once.)
+            if t.first[f] != 0 {
+                uses := make([dynamic]^Rs_Module)
+                for i := len(r.scopes) - 1; i >= 0; i -= 1 {
+                    for u in r.scopes[i].uses { if !slice.contains(uses[:], u) { append(&uses, u) } }
+                }
+                r.sights[build_tokens[t.first[f]].file] = {m, uses[:]}
+            }
             rs_leave(r)
         }
         rs_leave(r)
     }
+}
+
+// The dispatch groups named `name` in sight where `at` is: its module's,
+// then each module its file or its module uses' — groups of one name join
+// (core's `add` and a program's own). In the order a call tries them.
+resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string) -> []Token_Id {
+    if name not_in r.dispatch_names { return nil }
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return nil }
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    if groups, has := sight.module.dispatches[name]; has { append(&out, ..groups[:]) }
+    for u in sight.uses {
+        if u == sight.module { continue }
+        if groups, has := u.dispatches[name]; has { append(&out, ..groups[:]) }
+    }
+    return out[:]
+}
+
+// The groups an operation `op` overloads, by name, in sight where `at` is:
+// its module's `overload`s, then each module its file or its module uses'.
+resolve_overloads :: proc(r: ^Resolver, at: Token_Id, op: Token_Kind) -> []Token_Id {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return nil }
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    for o in sight.module.overloads { if o.op == op { append(&out, o.name) } }
+    for u in sight.uses {
+        if u == sight.module { continue }
+        for o in u.overloads { if o.op == op { append(&out, o.name) } }
+    }
+    return out[:]
 }
 
 // A statement's use (`use m`, `name :: use m`), if it is one.

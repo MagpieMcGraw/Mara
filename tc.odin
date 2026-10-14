@@ -55,7 +55,6 @@ TC :: struct {
     instance_count: u64,
     infer_at:      Span,              // the argument a generic's type param is bound from (tc_generic_call)
     templates:     map[Token_Id]TC_Template, // the generic definitions (a union's too), by the token that declares them
-    templates_by_name: map[string]TC_Template,   // ... a fun's or a struct's by name: a dispatch's members (names, not yet tokens)
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
     const_owners:  map[string]string,        // each bare name's module ("": more than one)
     scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
@@ -197,6 +196,25 @@ tc_lookup_check :: proc(k: ^TC, n: Tree_Id, name: string, found: Type, ok: bool)
     }
 }
 
+// A dispatch group's member: its name, what it refers to (resolved where
+// the group is written).
+TC_Member :: struct {
+    name: string,
+    ref:  Ref,
+}
+
+// The members of dispatch groups (by the tokens that declare them), in order.
+tc_dispatch_members :: proc(k: ^TC, groups: []Token_Id) -> []TC_Member {
+    t := k.t
+    out := make([dynamic]TC_Member, context.temp_allocator)
+    for g in groups {
+        def := k.rs.defs[g] or_else 0
+        if def == 0 { continue }
+        for tok in tree_token_list(t, t.a[t.b[def]]) { append(&out, TC_Member{tc_text(tok), k.rs.token_refs[tok] or_else {}}) }
+    }
+    return out[:]
+}
+
 // The constant a name refers to (nil: none).
 tc_const_named :: proc(k: ^TC, n: Tree_Id) -> ^TC_Const {
     ref := k.rs.refs[n]
@@ -272,7 +290,6 @@ tc_blocks_end :: proc(k: ^TC) {
     for _, ts in k.checked.functions { out(ts) }
     for _, ut in k.table.unions { for _, vst in ut.variant_structs { out(vst) } }
     for _, &tmpl in k.templates { tmpl.env = past(tmpl.env) }
-    for _, &tmpl in k.templates_by_name { tmpl.env = past(tmpl.env) }
     for _, kc in k.consts { kc.env, kc.pub = past(kc.env), past(kc.pub) }
     for _, list in k.scope_consts { for _, kc in list { kc.env, kc.pub = past(kc.env), past(kc.pub) } }
     k.body, k.arena_env = past(k.body), past(k.arena_env)
@@ -632,11 +649,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
             return
         }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
-            // (Its functions are checked to exist once every name is known.)
-            name := tc_name(k, s)
-            if name not_in k.c.dispatch_groups { k.c.dispatch_groups[name] = {} }
-            for f in tree_token_list(t, t.a[value]) { append(&k.c.dispatch_groups[name], tc_text(f)) }
-            return
+            return   // (the resolver's: its members are checked to exist once every name is known)
         }
         #partial switch t.tag[value] {
         case .Fun_Def, .Struct_Def, .Alias_Def, .Distinct_Def, .Union_Def, .Error_Def:
@@ -655,10 +668,7 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
         tc_register_foreign(k, s, env, mod)
         return
     case .Overload:
-        op := build_tokens[t.a[s]].kind
-        if op not_in k.c.operator_overloads { k.c.operator_overloads[op] = {} }
-        append(&k.c.operator_overloads[op], tc_text(Token_Id(t.b[s])))
-        return
+        return   // (the resolver's: resolve_overloads)
     }
     tc_unsupported(k, s, "this module statement")
 }
@@ -719,19 +729,18 @@ tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         value := Tree_Id(t.b[s])
         if value == 0 || t.tag[value] != .Dispatch_Def { return }
         name := tc_name(k, s)
-        for tok in tree_token_list(t, t.a[value]) {
-            f := tc_text(tok)
-            if found, ok := scope_lookup(env, f); ok {
+        for m in tc_dispatch_members(k, {t.main[s]}) {
+            if found, ok := tc_ref_type(k, m.ref, m.name); ok {
                 if tf, is_scope := found.(^Type_Scope); !is_scope || len(tf.params) == 0 {
-                    tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION, name, f)
+                    tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION, name, m.name)
                 }
-            } else if f not_in k.templates_by_name {
-                tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION_DEFINED, name, f)
+            } else if _, is_template := tc_template(k, m.ref); !is_template {
+                tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION_DEFINED, name, m.name)
             }
         }
     case .Overload:
         name := tc_text(Token_Id(t.b[s]))
-        if _, ok := find_dispatch(k.c, env, name); !ok { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
+        if len(resolve_dispatches(k.rs, Token_Id(t.b[s]), name)) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
     }
 }
 
@@ -746,7 +755,6 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg}
-        if name not_in k.templates_by_name { k.templates_by_name[name] = k.templates[t.main[def]] }
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
@@ -1216,9 +1224,6 @@ Checker :: struct {
     // True while resolving a `foreign` declaration's signature — the only
     // context where `cstring` may be named as a type.
     in_foreign_sig: bool,
-    // Dispatch and operator overloading (per-package, saved/restored on module boundaries)
-    dispatch_groups:    map[string][dynamic]string,
-    operator_overloads: map[Token_Kind][dynamic]string,
 }
 
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {

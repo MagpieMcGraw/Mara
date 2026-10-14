@@ -33,7 +33,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
     arg := addressed if addressed != 0 else recv   // (the receiver, as an argument)
     args := mv.args
     qual: ^Type_Scope
-    qual_dispatch: []string
+    qual_dispatch: []TC_Member
     resolved, failed := false, false
     if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
@@ -48,8 +48,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
                 mref := k.rs.refs[n]
                 mt, has := tc_ref_type(k, mref, name)
                 if mref.kind == .Fun && k.rs.dispatches[mref.decl] {
-                    fns := qsd.dispatch_groups[name]
-                    qual_dispatch, resolved = fns[:], true
+                    qual_dispatch, resolved = tc_dispatch_members(k, {mref.decl}), true
                 } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
@@ -73,11 +72,6 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, addressed := Tree_I
                 } else if t, holds := qsd.types[name]; holds {
                     qual, resolved = tc_held_type(k, n, t), true
                     failed = qual == nil
-                } else if fns, dispatches := qsd.dispatch_groups[name]; dispatches {
-                    qual_dispatch, resolved = fns[:], true
-                } else if sd_is_module(qsd) {
-                    tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
-                    return Type_Error{}
                 }
             }
         }
