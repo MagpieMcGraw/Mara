@@ -1,0 +1,49 @@
+module using_fields
+
+//@ expect-output: 4 4 10
+//@ expect-output: 6 7 13
+//@ expect-output: 1 1 5 3
+//@ expect-output: 2 2 3 4 [2, 3]
+
+// `using f: T`: T's fields reached as the struct's own — read, written, and
+// through a pointer; through two using fields; a using fixed array's
+// swizzles. They used to be "not supported yet" read, and a codegen error
+// written.
+
+use mara.core
+
+Place :: struct { x: f32  y: f32 }
+Player :: struct {
+	using pos: Place
+	hp := 10
+}
+Deep :: struct {
+	using p: Player
+	name := 3
+}
+Body :: struct {
+	using at: [3]f32
+}
+
+move :: fun(pl: ^Player, dx: f32) {
+	pl.x += dx
+	pl.y = 7
+}
+
+sum :: fun(pl: Player) -> f32 { return pl.x + pl.y }
+
+main :: fun() {
+	pl : Player
+	pl.x = 4
+	print(pl.x, pl.pos.x, pl.hp)
+	move(&pl, 2)
+	print(pl.x, pl.y, sum(pl))
+	d : Deep
+	d.x = 1
+	d.hp = 5
+	print(d.x, d.p.pos.x, d.hp, d.name)
+	b : Body
+	b.x = 2
+	b.yz = [3, 4]
+	print(b.x, b.at[0], b.at[1], b.z, b.xy)
+}

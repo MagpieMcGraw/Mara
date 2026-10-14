@@ -1,0 +1,17 @@
+module text_literal_len
+
+//@ expect-output: 5 5 6 3 8
+//@ expect-output: 2
+
+// A text literal's len and cap are its length in bytes, known when it's
+// built (as a text constant's are). `"hello".len` used to stop the lowering:
+// "a field of a value".
+
+use mara.core
+
+TAB :: "tab\there"
+
+main :: fun() {
+	print("hello".len, "hello".cap, ("héllo").len, "a\nb".len, TAB.len)
+	print("hello"[1:3].len)
+}

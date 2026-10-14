@@ -135,8 +135,7 @@ Tree_Tag :: enum u8 {
                     // a: the type; b: the storage
     Self,           // `#self`: main: `#`
     Hash_Name,      // `#caller_name`, `#web`, …: main: `#`; a: the name
-    Import,         // `use a.b`, `include a.b`, `sealed use a.b`: main: the keyword;
-                    // a: tokens — the path; b: `sealed`
+    Import,         // `use a.b`, `include a.b`: main: the keyword; a: tokens — the path
 }
 
 // What one of a node's fields holds.
@@ -235,7 +234,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Take           = {a = .Node, b = .Node},
     .Self           = {},
     .Hash_Name      = {a = .Token},
-    .Import         = {a = .Tokens, b = .Token},
+    .Import         = {a = .Tokens},
 }
 
 // --- building -------------------------------------------------------------

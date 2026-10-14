@@ -69,7 +69,7 @@ tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
     if ts, is_type := t.(^Type_Scope); is_type && !member { return {ts.decl, .Type} }   // (a struct it has: a type, no member)
     if member {
         if sd := tc_struct_of(k, bt); sd != nil {
-            if i, ok := sd.field_map[field]; ok { return {sd.fields[i].decl, .Field} }
+            if decl := struct_field_decl(sd, field); decl != 0 { return {decl, .Field} }
         }
     }
     return {kind = .Builtin}
@@ -111,15 +111,8 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             tc_unsupported(k, n, "a module's member")
             return Type_Error{}, false, 0, false
         }
-        // (Its own field, else one a `using` field's struct has.)
-        if field not_in sd.field_map {
-            for f in sd.fields {
-                if f.is_using {
-                    tc_unsupported(k, n, "a field of a `using` field's struct")
-                    return Type_Error{}, false, 0, false
-                }
-            }
-        }
+        // (Its own field, else one a `using` field's struct has, or its
+        // array's swizzle.)
         if ft := resolve_struct_field(sd, field); ft != nil { return ft, true, 0, false }
         // (Its function: a value of its own, tc_field's to build.)
         if fun, has := sd.functions[field]; has { return fun, false, 0, false }
@@ -153,11 +146,13 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
         switch field {
         case "ptr":        return type_ptr(v.elem), true, 0, false
         case "len", "cap":
-            // (A text constant's: its length, known.)
-            if b := tc_unparen(k, base); k.t.tag[b] == .Ident {
-                if kc := tc_const_named(k, b); kc != nil && k.t.tag[kc.value] == .String {
-                    return slice_header_width_type, false, i128(len(tc_text(k.t.main[kc.value]))), true
-                }
+            // (A text literal's, a text constant's: its length, known.)
+            text := tc_unparen(k, base)
+            if k.t.tag[text] == .Ident {
+                if kc := tc_const_named(k, text); kc != nil { text = kc.value }
+            }
+            if k.t.tag[text] == .String {
+                return slice_header_width_type, false, i128(len(tc_text(k.t.main[text]))), true
             }
             return slice_header_width_type, true, 0, false
         }
@@ -193,7 +188,8 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     if ft != nil {
         k.hint = ft
         tc_set_type(k, target, ft)
-        if i, ok := sd.field_map[field]; ok { tc_set_ref(k, target, {sd.fields[i].decl, .Field}) }
+        // (A field, its own or a using field's struct's; else a using array's swizzle.)
+        if decl := struct_field_decl(sd, field); decl != 0 { tc_set_ref(k, target, {decl, .Field}) } else { tc_set_ref(k, target, {kind = .Builtin}) }
     }
     vt := tc_store_at(k, value, op_tok, target, s)
     k.hint = nil

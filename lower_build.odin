@@ -313,8 +313,8 @@ lw_pure_place :: proc(k: ^TC, n: Tree_Id) -> bool {
     return false
 }
 
-// A member's place: its base's (through a pointer, what it points at), then
-// the field — or an array's swizzle.
+// A member's place: its base's (through a pointer, what it points at; through
+// `using` fields, theirs), then the field — or an array's swizzle.
 lw_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Built, bt: Type, t: Type, self := false) -> Operand {
     b := k.gb
     if !base.ok || !base.place { lw_fail(k, n, "a field of a value") }
@@ -323,7 +323,17 @@ lw_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Built, bt: Type
     if pt, is_ptr := distinct_base(bt).(^Type_Ptr); is_ptr && !self {
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
     }
-    _, is_array := distinct_base(graph_pointee(bt)).(^Type_Fixed_Array)
+    // (Through `using` fields: each one's place, then the field in the last.)
+    obj := distinct_base(graph_pointee(bt))
+    if sd := as_scope_body(obj); sd != nil {
+        if path, through := struct_using_path(sd, field); through {
+            for f in path {
+                p = graph_op_value(b, .Field, .Implied, span, f.type_, f.name, p)
+                obj = distinct_base(f.type_)
+            }
+        }
+    }
+    _, is_array := obj.(^Type_Fixed_Array)
     return graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, span, t, field, p)
 }
 

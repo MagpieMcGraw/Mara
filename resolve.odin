@@ -498,7 +498,7 @@ rs_program :: proc(r: ^Resolver) {
         for f in m.files {
             for s in rs_live(r, tree_list(t, t.a[f])) {
                 imp := rs_stmt_import(t, s)
-                if imp == 0 || build_tokens[t.main[imp]].kind != .Include || t.b[imp] != 0 { continue }
+                if imp == 0 || build_tokens[t.main[imp]].kind != .Include { continue }
                 if used, _ := rs_import(r, imp); used != nil { append(&r.scopes[len(r.scopes) - 1].uses, used) }
             }
         }
@@ -510,7 +510,7 @@ rs_program :: proc(r: ^Resolver) {
                 if imp == 0 { continue }
                 used, tok := rs_import(r, imp)
                 if used == nil { continue }
-                if t.b[imp] == 0 { append(&r.scopes[len(r.scopes) - 1].uses, used) }   // (sealed: only its name)
+                append(&r.scopes[len(r.scopes) - 1].uses, used)
                 if t.tag[s] == .Define { tok = t.main[s] }
                 r.named[tok] = used
                 rs_define(r, rs_text(tok), {tok, .Module})

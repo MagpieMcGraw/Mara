@@ -28,7 +28,6 @@ Token_Kind :: enum u8 {
     Error,    // error { Not_Found ... } — flat tag set, member of the global open `err` type
     Use,      // use <path> — private import (names visible in this file only)
     Include,  // include <path> — re-export (names visible here AND to consumers)
-    Sealed,
     Module,
     Return,
     For,
@@ -272,7 +271,6 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case 's':
         switch text {
         case "struct": return .Struct, true
-        case "sealed": return .Sealed, true
         }
     case 't':
         switch text {

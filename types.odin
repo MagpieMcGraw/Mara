@@ -2146,18 +2146,61 @@ resolve_struct_field :: proc(st: ^Scope_Body, field_name: string) -> Type {
             return inner
         }
     }
-    // Search using-marked fields (embedded structs)
-    for f in st.fields {
-        if f.is_using {
-            if inner_sd := as_scope_body(f.type_); inner_sd != nil && len(inner_sd.fields) > 0 {
-                result := resolve_struct_field(inner_sd, field_name)
-                if result != nil {
-                    return result
-                }
-            }
+    // Through its `using` fields: a struct's field, a fixed array's swizzle.
+    if path, through := struct_using_path(st, field_name); through {
+        last := distinct_base(path[len(path) - 1].type_)
+        if fa, is_array := last.(^Type_Fixed_Array); is_array {
+            if len(field_name) == 1 { return fa.elem }
+            return type_fixed_array(len(field_name), fa.elem)
         }
+        return resolve_struct_field(as_scope_body(last), field_name)
     }
     return nil
+}
+
+// The `using` fields a struct reaches a field through, outermost first —
+// `p.x`, with `using pos: Place`, is `p.pos.x` — when it has no field of
+// that name itself: the last one's type is the struct with the field, or the
+// fixed array with that swizzle. through false: no using field has it.
+struct_using_path :: proc(st: ^Scope_Body, field_name: string) -> (path: []Struct_Type_Field, through: bool) {
+    if field_name in st.field_map { return nil, false }
+    for f in st.fields {
+        if !f.is_using { continue }
+        if fa, is_array := distinct_base(f.type_).(^Type_Fixed_Array); is_array {
+            if is_swizzle_field(field_name, fa.size) { return one_field(f), true }
+            continue
+        }
+        inner := as_scope_body(distinct_base(f.type_))
+        if inner == nil || len(inner.fields) == 0 { continue }
+        if field_name in inner.field_map { return one_field(f), true }
+        if rest, found := struct_using_path(inner, field_name); found {
+            whole := make([]Struct_Type_Field, len(rest) + 1, context.temp_allocator)
+            whole[0] = f
+            copy(whole[1:], rest)
+            return whole, true
+        }
+    }
+    return nil, false
+}
+
+// A path of one field, kept for the caller (temp).
+@(private="file")
+one_field :: proc(f: Struct_Type_Field) -> []Struct_Type_Field {
+    path := make([]Struct_Type_Field, 1, context.temp_allocator)
+    path[0] = f
+    return path
+}
+
+// The token declaring a struct's field — its own, or one a `using` field's
+// struct has; 0 for none (a swizzle through a using array).
+struct_field_decl :: proc(st: ^Scope_Body, field_name: string) -> Token_Id {
+    if i, ok := st.field_map[field_name]; ok { return st.fields[i].decl }
+    if path, through := struct_using_path(st, field_name); through {
+        if inner := as_scope_body(distinct_base(path[len(path) - 1].type_)); inner != nil {
+            if i, ok := inner.field_map[field_name]; ok { return inner.fields[i].decl }
+        }
+    }
+    return 0
 }
 
 // ---------------------------------------------------------------------------

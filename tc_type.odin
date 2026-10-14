@@ -375,7 +375,7 @@ tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
     if t, ok := tc_ref_type(k, ref, name); ok { return t }
     // (Two modules' type, said so.)
     if owners := (k.rs.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {
-        tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))
+        tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator), name)
         return Type_Error{}
     }
     tc_error(k, span, TYPE_UNKNOWN_TYPE, name)

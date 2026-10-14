@@ -1,0 +1,16 @@
+module param_address_neg
+//@ expect-fail: cannot take the address of parameter 'n'
+
+// A param held as its argument has no storage to point at: `&n` used to stop
+// the codegen ("its address ''").
+
+bump :: fun(n: ^i64) { n^ += 1 }
+
+f :: fun(n: i64) -> i64 {
+	bump(&n)
+	return n
+}
+
+main :: fun() {
+	print(f(1))
+}

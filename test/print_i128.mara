@@ -1,0 +1,40 @@
+module print_i128
+//@ build-flags: -llvm
+
+//@ expect-output: 0 -5 1000000000 1000000000000000001
+//@ expect-output: 170141183460469231731687303715884105727
+//@ expect-output: -170141183460469231731687303715884105728
+//@ expect-output: 340282366920938463463374607431768211455
+//@ expect-output: -5 and 340282366920938463463374607431768211455
+//@ expect-output: V { a: -1000000000, b: 18446744073709551615 }
+//@ expect-output: [7, -7]
+
+// print of an i128 or u128: printf has no spec for them, so print cuts the
+// magnitude into nine-digit chunks (codegen_print.odin gen_print_i128). It
+// used to stop the codegen: "no print rule". (-llvm: the x86 backend has no
+// 128-bit values yet.)
+
+use mara.core
+
+V :: struct { a: i128  b: u128 }
+
+main :: fun() {
+	zero : i128 = 0
+	small : i128 = -5
+	chunk : i128 = 1000000000
+	big : i128 = 1000000000000000001
+	one : i128 = 1
+	max := (one << 126) - 1 + (one << 126)
+	min := 0 - max - 1
+	um : u128 = 0
+	umax := um -% 1
+	print(zero, small, chunk, big)
+	print(max)
+	print(min)
+	print(umax)
+	print("% and %", small, umax)
+	v := V{a = -1000000000, b = 18446744073709551615}
+	print(v)
+	xs : [2]i128 = [7, -7]
+	print(xs)
+}

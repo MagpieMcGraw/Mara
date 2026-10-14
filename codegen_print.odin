@@ -520,9 +520,91 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         ext := fresh_tmp(g)
         ir_cast(g, ext, is_unsigned ? Ir_Inst.Zext : .Sext, nt, val, IR_I32)
         emit_printf(g, is_unsigned ? "%u" : "%d", {IR_I32, ext, {}})
+    case IR_I128:
+        gen_print_i128(g, val, is_unsigned)
     case:
         codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
     }
+}
+
+// A 128-bit integer printed. printf has no spec for one (and dividing one
+// would call a runtime library), so its magnitude is cut into base-10^9
+// chunks — long division of its four 32-bit limbs, 64-bit arithmetic only —
+// and printed from its highest nonzero chunk, the others padded to nine
+// digits. A negative one: "-", then its magnitude.
+gen_print_i128 :: proc(g: ^Codegen, val: Val, is_unsigned: bool) {
+    CHUNK :: 1_000_000_000
+    mag := val
+    if !is_unsigned {
+        neg := fresh_tmp(g)
+        ir_icmp(g, neg, .Slt, IR_I128, val, ir_int(0))
+        minus, rest := fresh_label(g, "print128.minus"), fresh_label(g, "print128.rest")
+        emit_cond_br(g, neg, minus, rest)
+        emit_label(g, minus)
+        emit_printf(g, "-")
+        emit_br(g, rest)
+        emit_label(g, rest)
+        negated := fresh_tmp(g)
+        ir_bin(g, negated, .Sub, IR_I128, ir_int(0), val)
+        mag = fresh_tmp(g)
+        ir_select(g, mag, neg, IR_I128, negated, val)
+    }
+    // Its limbs, most significant first.
+    lo, high, hi := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+    ir_cast(g, lo, .Trunc, IR_I128, mag, IR_I64)
+    ir_bin(g, high, .Lshr, IR_I128, mag, ir_int(64))
+    ir_cast(g, hi, .Trunc, IR_I128, high, IR_I64)
+    limbs: [4]Val
+    for half, i in ([2]Val{hi, lo}) {
+        limbs[2 * i] = fresh_tmp(g)
+        ir_bin(g, limbs[2 * i], .Lshr, IR_I64, half, ir_int(32))
+        limbs[2 * i + 1] = fresh_tmp(g)
+        ir_bin(g, limbs[2 * i + 1], .And, IR_I64, half, ir_int(0xFFFF_FFFF))
+    }
+    // Divided by 10^9 four times: each time's remainder a chunk, least
+    // significant first; what's left (under 341) the last.
+    chunks: [5]Val
+    for c in 0 ..< 4 {
+        r := ir_int(0)
+        for i in 0 ..< 4 {
+            cur := limbs[i]
+            if i > 0 {
+                up, joined := fresh_tmp(g), fresh_tmp(g)
+                ir_bin(g, up, .Shl, IR_I64, r, ir_int(32))
+                ir_bin(g, joined, .Or, IR_I64, up, limbs[i])
+                cur = joined
+            }
+            q, rem := fresh_tmp(g), fresh_tmp(g)
+            ir_bin(g, q, .Udiv, IR_I64, cur, ir_int(CHUNK))
+            ir_bin(g, rem, .Urem, IR_I64, cur, ir_int(CHUNK))
+            limbs[i], r = q, rem
+        }
+        chunks[c] = r
+    }
+    chunks[4] = limbs[3]
+    // From the highest nonzero chunk.
+    done := fresh_label(g, "print128.done")
+    for top := 4; top > 0; top -= 1 {
+        here, below := fresh_label(g, "print128.top"), fresh_label(g, "print128.below")
+        nonzero := fresh_tmp(g)
+        ir_icmp(g, nonzero, .Ne, IR_I64, chunks[top], ir_int(0))
+        emit_cond_br(g, nonzero, here, below)
+        emit_label(g, here)
+        format := strings.builder_make(context.temp_allocator)
+        strings.write_string(&format, "%llu")
+        args := make([dynamic]Ir_Arg, 0, top + 1, context.temp_allocator)
+        append(&args, Ir_Arg{IR_I64, chunks[top], {}})
+        for c := top - 1; c >= 0; c -= 1 {
+            strings.write_string(&format, "%09llu")
+            append(&args, Ir_Arg{IR_I64, chunks[c], {}})
+        }
+        emit_printf(g, strings.to_string(format), ..args[:])
+        emit_br(g, done)
+        emit_label(g, below)
+    }
+    emit_printf(g, "%llu", {IR_I64, chunks[0], {}})
+    emit_br(g, done)
+    emit_label(g, done)
 }
 
 // Print whatever lives at `addr` given its Mara type — the recursive core of

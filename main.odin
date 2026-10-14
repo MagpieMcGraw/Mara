@@ -78,7 +78,7 @@ Source_File :: struct {
     path:    string,           // for diagnostics + lexer span info
     module:  string,           // declared module name
     source:  string,           // file bytes (kept alive through lex)
-    imports: [dynamic]string,  // paths from `use`/`include`/`sealed use`
+    imports: [dynamic]string,  // paths from `use`/`include`
     first_token, end_token: Token_Id,   // its range of build_tokens (lex_file)
     lines:   [dynamic]u32,     // where each of its lines starts (lex_file)
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
@@ -112,13 +112,13 @@ extract_package_name :: proc(source: string) -> string {
     return rest[name_start:j]
 }
 
-// Scan the top of `source` for `use` / `include` / `sealed use` statements
+// Scan the top of `source` for `use` / `include` statements
 // and pull out the imported paths. Mara's convention puts imports in the
 // preamble (after `module X`, before any top-level declarations); the
 // scanner stops at the first non-import top-level line. Lines we recognize:
 //
 //   use foo.bar              include foo.bar
-//   sealed use foo.bar       name :: use foo.bar
+//   name :: use foo.bar
 //   name :: include foo.bar  name := use foo.bar      (legacy)
 //
 // Anything beyond the preamble is invisible here — the closure won't follow
@@ -158,8 +158,6 @@ extract_imports :: proc(source: string) -> [dynamic]string {
             path = path_word_at(line[len("use "):])
         } else if strings.has_prefix(line, "include ") {
             path = path_word_at(line[len("include "):])
-        } else if strings.has_prefix(line, "sealed use ") {
-            path = path_word_at(line[len("sealed use "):])
         } else {
             // Aliased forms: `<name> :: use <path>` / `:: include` / `:= use` / `:= include`.
             for marker in ([]string{" :: use ", " :: include ", " := use ", " := include "}) {

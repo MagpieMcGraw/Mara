@@ -1,12 +1,14 @@
 module esc_param_reassign_neg
 //@ expect-fail: cannot return local reference
 
-// A pointer PARAM re-pointed at a local is no longer caller-rooted.
+// A pointer from a PARAM, re-pointed at a local, is no longer caller-rooted.
+// (A param itself can't be re-pointed: param_pointer_write_neg.)
 
 leak :: fun(p: ^i64) -> ^i64 {
 	x : i64 = 3
-	p = &x
-	return p
+	q := p
+	q = &x
+	return q
 }
 
 main :: fun() {

@@ -572,7 +572,11 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (exi
         tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the resolver declared it as: its uses aren't reported again)
         return nil, {}, false
     }
-    if ref.kind == .Param && is_immutable_param_type(existing) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    // (No param can be written: one passed by address is the caller's value,
+    // any other is held as its argument.)
+    if ref.kind == .Param {
+        if is_immutable_param_type(existing) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) } else { tc_error(k, span, TYPE_CANNOT_ASSIGN_PARAMETER, name, name) }
+    }
     return existing, ref, true
 }
 

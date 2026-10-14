@@ -1,0 +1,15 @@
+module param_pointer_write_neg
+//@ expect-fail: cannot assign to parameter 'p'
+
+// A pointer param itself can't be written either (what it points at can).
+
+pick :: fun(p: ^i64, q: ^i64) -> i64 {
+	p = q
+	return p^
+}
+
+main :: fun() {
+	a := 1
+	b := 2
+	print(pick(&a, &b))
+}

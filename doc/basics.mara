@@ -43,13 +43,13 @@ keyword_module :: fun() {
 	// built from its folder with `mara build basics`, into basics.exe.
 }
 
-// `use`, `include`, `sealed`: bring another module's names into a file — an import.
+// `use`, `include`: bring another module's names into a file — an import.
 //
 // `use mara.string` makes mara.string's names visible in this file:
 // `trimmed(s)`. `include m` makes them visible in every file of this
 // module. `s :: use mara.string` does that and names the module as well:
-// `s.trimmed(…)` says whose trimmed it is. (`sealed` is meant to bring in
-// the name alone; it doesn't work yet.)
+// `s.trimmed(…)` says whose trimmed it is — and picks between two modules'
+// things of one name.
 //
 // Uses go at the top, after the `module` line. Nearly every file uses
 // mara.core: text buffers, `&list + x`, comparing texts.
@@ -69,9 +69,9 @@ keyword_use :: fun() {
 // out. After `->` come the types of what it returns, separated by commas.
 // No `->`: it returns nothing. `main :: fun()` is where a program starts.
 //
-// A param is the caller's value: the body reads it, and can't change it. To
-// change a caller's variable, take a pointer — `n: ^i64` — and the caller
-// passes `&x`.
+// A param is the caller's value: the body reads it, and can't change it —
+// copy it into a variable to work on (`left := n`). To change a caller's
+// variable, take a pointer — `n: ^i64` — and the caller passes `&x`.
 //
 // `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
@@ -411,15 +411,17 @@ plus :: dispatch{ v2_plus }
 v2_plus :: fun(a, b: V2) -> V2 { return V2{x = a.x + b.x, y = a.y + b.y} }
 V2 :: struct { x: f64  y: f64 }
 
-// `using`: a field whose own fields are meant to be reached as the struct's — not working yet.
+// `using`: a field whose own fields are reached as the struct's — embedding one struct in another.
 //
-// With `using pos: Place` in Player, `player.x` is meant to be
-// `player.pos.x`. The compiler takes the declaration, but reaching a field
-// through it says "not supported yet": go through the field's name.
+// With `using pos: Place` in Player, `player.x` is `player.pos.x`: read,
+// written, through a pointer, and through using fields inside using fields.
+// The struct's own field of a name comes first. A using fixed array gives
+// its swizzles: with `using v: [3]f32`, `p.x`, `p.yz`. A literal still names
+// the field itself: `Player{pos = Place{x = 1}}`.
 keyword_using :: fun() {
 	pl : Player
-	pl.pos.x = 4
-	print(pl.pos.x, pl.hp)                 // 4 10
+	pl.x = 4
+	print(pl.x, pl.pos.x, pl.hp)           // 4 4 10
 }
 
 Player :: struct {

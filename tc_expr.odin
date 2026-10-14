@@ -268,6 +268,9 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         // it would let be written can't be.)
         if pname, immutable := tc_write_root_param(k, operand); immutable {
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
+        } else if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.rs.refs[p].kind == .Param {
+            // (A param held as its argument has no storage to point at.)
+            tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_PARAMETER, tc_name(k, p), tc_name(k, p))
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
         if tc_in_program(k, operand) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "take the address of", " (a pointer could write it)") }

@@ -1906,14 +1906,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
                 result = tp_node(p, .Hash_Name, hash, start, u32(name))
             }
         }
-    case .Use, .Include, .Sealed:
-        sealed: Token_Id
-        if tp_kind(p) == .Sealed { sealed = tp_advance(p) }
-        if tp_kind(p) != .Use && tp_kind(p) != .Include {
-            tp_error(p, tp_here(p), PARSE_SEALED_NEEDS_USE_INCLUDE, tp_text(p))
-            bad := tp_advance(p)
-            return tp_node(p, .Import, bad, start, 0, u32(sealed))
-        }
+    case .Use, .Include:
         kw := tp_advance(p)
         parts := tp_token_items()
         append(&parts, tp_expect(p, .Identifier))
@@ -1921,7 +1914,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
             tp_advance(p)
             append(&parts, tp_expect(p, .Identifier))
         }
-        result = tp_node(p, .Import, kw, start, tp_tokens(p, parts), u32(sealed))
+        result = tp_node(p, .Import, kw, start, tp_tokens(p, parts))
     case:
         tok := tp_tok(p)
         tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN, tok.kind, token_text(tok))

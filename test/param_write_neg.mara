@@ -1,0 +1,14 @@
+module param_write_neg
+//@ expect-fail: cannot assign to parameter 'n': a param can't be changed
+
+// A param held as its argument (a number, a pointer) can't be written: it
+// used to pass the checker and stop the codegen ("its write ''").
+
+count_down :: fun(n: i64) -> i64 {
+	for n > 0 { n -= 1 }
+	return n
+}
+
+main :: fun() {
+	print(count_down(3))
+}
