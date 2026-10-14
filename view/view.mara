@@ -79,6 +79,7 @@ Ui :: struct {
 	crash_text:  [..2 * MB]byte
 	crash_stamp: i64             // the file's time when it was read
 	crash_hover: i64 = -1        // the call under the mouse as last drawn
+	docs_hover:  i64 = -1        // the Docs title under the mouse as last drawn
 	editor:      [..1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
 
 	// The theme's colors (theme_set).
@@ -307,6 +308,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			// (Drawn again only when what's under it changes: all motion shows.)
 			if profile_hover(ui, p) != ui.hover_row do ui.dirty = true
 			if crash_hover(ui) != ui.crash_hover do ui.dirty = true
+			if docs_hover(ui) != ui.docs_hover do ui.dirty = true
 			if ui.menu_open != MENU_NONE {
 				// (Over another menu's button: that menu, as menu bars do.)
 				b := menu_button_at(ui, ui.mouse_x, ui.mouse_y)

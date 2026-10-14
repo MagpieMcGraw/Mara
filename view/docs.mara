@@ -770,6 +770,62 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 	lines_add(l, "", STYLE_TEXT)
 }
 
+// Line k of the Docs panel's, a definition's title — `<name>   …
+// <file>:<line>`, after its last three spaces — as its file and line, and
+// whether it is one (an "At the cursor" builtin's title has no place).
+docs_place :: fun(l: ^Lines, k: i64) -> []utf8, i64, bool {
+	none := l.text[0 : 0]
+	if k < 0 or k >= l.lines.len do return none, 0, false
+	if l.lines[k].style != STYLE_TITLE do return none, 0, false
+	text := line_text(l, k)
+	gap : i64 = -1   // where the place starts: after the last "   "
+	for i in 0 .. text.len - 2 {
+		if text[i] == ' ' and text[i + 1] == ' ' and text[i + 2] == ' ' do gap = i + 3
+	}
+	if gap < 0 do return none, 0, false
+	colon := text.len - 1
+	for colon > gap {
+		if text[colon] == ':' do break
+		colon -= 1
+	}
+	if colon <= gap do return none, 0, false
+	line, ok := parse_number(text[colon + 1 : text.len])
+	if not ok do return none, 0, false
+	return text[gap : colon], i64(line), true
+}
+
+// The definition title under the mouse in the Docs panel: its line (any of
+// its rows); -1 when it's over none (or over a panel in front of Docs).
+docs_hover :: fun(ui: ^Ui) -> i64 {
+	i := panel_at(ui, ui.mouse_x, ui.mouse_y)
+	if i < 0 do return -1
+	if ui.panels[i].kind != DOCS_PANEL do return -1
+	l := docs_shown(ui)
+	k := lines_line_at(ui, l, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
+	if k < 0 do return -1
+	_, _, place := docs_place(l, k)
+	if not place do return -1
+	return k
+}
+
+// The Docs panel: what was found, the title under the mouse lit.
+draw_docs :: fun(ui: ^Ui, r: Rect) {
+	ui.docs_hover = docs_hover(ui)
+	l := docs_shown(ui)
+	l.lit = ui.docs_hover
+	draw_lines(ui, l, r, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up. A title clicked opens its file there.")
+}
+
+// A press in the Docs panel's content r: a definition's title, its file
+// opened in the editor at its line.
+docs_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
+	l := docs_shown(ui)
+	k := lines_line_at(ui, l, r, x, y)
+	file, line, place := docs_place(l, k)
+	if not place do return
+	editor_open(ui, l, file, line)
+}
+
 // A line of code added: `indent` columns of its indentation left out, two
 // spaces in.
 lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {

@@ -114,8 +114,7 @@ draw_crash :: fun(ui: ^Ui, r: Rect) {
 }
 
 // A press in the Crash panel's content r: a call, opened in the editor at
-// its line — `"<editor>" "<file>:<line>"`, waited for (it hands the file to
-// the editor and ends).
+// its line.
 crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	k := lines_line_at(ui, &ui.crash, r, x, y)
 	if k < 0 do return
@@ -123,7 +122,18 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	if not call do return
 	editor_load(ui)
 	crash_status(ui)
-	if ui.editor.len == 0 do return
+	editor_open(ui, &ui.crash, file, line)
+}
+
+// A file opened in the editor at a line — `"<editor>" "<file>:<line>"`,
+// waited for (it hands the file to the editor and ends). No editor named
+// yet, or one that didn't start: said on l's status line.
+editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
+	editor_load(ui)
+	if ui.editor.len == 0 {
+		lines_status(l, "Files open in the editor once it's named: Sublime's Mara Ask plugin names its own (mara editor).", STYLE_DIM)
+		return
+	}
 	command : [..3000]utf8
 	&command + "\""
 	&command + ui.editor[:]
@@ -134,7 +144,7 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	&command + "\""
 	pr, e := process_start(command)   // (the buffer itself: a 0 follows its text)
 	if bool(e) {
-		lines_status(&ui.crash, "The editor didn't start: mara editor names it.", STYLE_BAD)
+		lines_status(l, "The editor didn't start: mara editor names it.", STYLE_BAD)
 		return
 	}
 	_, _ = process_wait(&pr)

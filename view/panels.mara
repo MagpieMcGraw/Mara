@@ -279,6 +279,7 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 	}
 	if pn.kind == PROFILE_PANEL do profile_click(ui, p, content_rect(ui, pn), x, y)
 	if pn.kind == CRASH_PANEL do crash_click(ui, content_rect(ui, pn), x, y)
+	if pn.kind == DOCS_PANEL do docs_click(ui, content_rect(ui, pn), x, y)
 }
 
 // Menu m's item chosen: a panel shown or hidden, the layout reset, the
@@ -384,7 +385,7 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	if pn.kind == PROFILE_PANEL {
 		draw_profile(ui, p, c)
 	elif pn.kind == DOCS_PANEL
-		draw_lines(ui, docs_shown(ui), c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
+		draw_docs(ui, c)
 	elif pn.kind == ASK_PANEL
 		draw_ask(ui, c)
 	elif pn.kind == CRASH_PANEL
@@ -538,8 +539,8 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [13][]utf8
-	does : [13][]utf8
+	keys : [14][]utf8
+	does : [14][]utf8
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[1] = "Wheel"
@@ -566,6 +567,8 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	does[11] = "keep what's shown; lookups wait until it's unpinned"
 	keys[12] = "Click a call in Crash"
 	does[12] = "open its file at its line in the editor"
+	keys[13] = "Click a title in Docs"
+	does[13] = "open the file it's defined in, at its line, in the editor"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))
