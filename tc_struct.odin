@@ -134,7 +134,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
         if field == "len" || field == "cap" { return Type_Numeric{kind = .Signed, bits = 64}, false, i128(v.size), true }
         if is_swizzle_field(field, v.size) {
             if len(field) == 1 { return v.elem, true, 0, false }
-            return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}), true, 0, false
+            return type_fixed_array(len(field), v.elem), true, 0, false
         }
         if is_all_swizzle_chars(field) {
             tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size)
@@ -144,14 +144,14 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
         return Type_Error{}, false, 0, false
     case ^Type_Slice:
         switch field {
-        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, 0, false
+        case "ptr":        return type_ptr(v.elem), true, 0, false
         case "len", "cap": return slice_header_width_type, true, 0, false
         }
         tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
         return Type_Error{}, false, 0, false
     case ^Type_Partial_Array:
         switch field {
-        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, 0, false
+        case "ptr":        return type_ptr(v.elem), true, 0, false
         case "len", "cap":
             // (A text constant's: its length, known.)
             if b := tc_unparen(k, base); k.t.tag[b] == .Ident {
@@ -605,7 +605,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
             tc_value_at(k, diag, vt, v.elem, span)
             return
         }
-        tc_set_type(k, target, new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}))
+        tc_set_type(k, target, type_fixed_array(len(field), v.elem))
         tc_set_ref(k, target, {kind = .Builtin})
         tc_settle(k, diag, tc_node_type(k, target))
         if va, is_array := vt.(^Type_Fixed_Array); is_array {
@@ -624,7 +624,7 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     ft: Type
     switch field {
     case "len", "cap": ft = slice_header_width_type
-    case "ptr":        ft = new_clone(Type_Ptr{elem = elem})
+    case "ptr":        ft = type_ptr(elem)
     case:
         tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
         return

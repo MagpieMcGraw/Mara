@@ -32,10 +32,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id) -> Type {
         return tc_number(k, n)
     case .String:
         text := token_text(build_tokens[t.main[n]])
-        pa := new(Type_Partial_Array)
-        pa.size = string_literal_cap(len(text))
-        pa.elem = Type_Utf8{}
-        return pa
+        return type_partial_array(string_literal_cap(len(text)), Type_Utf8{})
     case .Char:
         return Type_Utf8{}
     case .True, .False:
@@ -125,7 +122,7 @@ tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
     // is an array the slice views: of its elements, as many as it has.)
     if tr.tag[n] == .Array {
         if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
-            t = new_clone(Type_Fixed_Array{size = len(tree_list(tr, tr.a[n])), elem = sl.elem})
+            t = type_fixed_array(len(tree_list(tr, tr.a[n])), sl.elem)
         }
     }
     tc_set_type(k, n, t)
@@ -281,9 +278,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         case .If_Expr, .Array, .Literal: tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION)
         }
         if tr.tag[tc_unparen(k, operand)] == .Slice { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_SLICE_TEMP) }
-        pt := new(Type_Ptr)
-        pt.elem = ot
-        t = pt
+        t = type_ptr(ot)
     case:
         tc_unsupported(k, n, "this unary operator")
         return Type_Error{}
@@ -731,7 +726,7 @@ tc_self :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_error(k, tree_span(k.t, n), TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
         return Type_Error{}
     }
-    return new_clone(Type_Ptr{elem = f})
+    return type_ptr(f)
 }
 
 // Whether an expression is `#self`: what is reached through it is Self's
@@ -907,7 +902,7 @@ tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, span: Span) -> Type {
 tc_hash_name :: proc(k: ^TC, n: Tree_Id) -> Type {
     switch tc_text(Token_Id(k.t.a[n])) {
     case "caller_name", "caller_span":
-        return new_clone(Type_Ptr{elem = Type_Byte{}})
+        return type_ptr(Type_Byte{})
     case "web", "native", "windows", "linux", "mac":
         return Type_Bool{}
     }
@@ -960,7 +955,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (T
         }
         return t, true
     case "slice_from_ptr":
-        t := new_clone(Type_Slice{elem = Type_Byte{}})
+        t := type_slice(Type_Byte{})
         if len(args) != 2 {
             tc_error(k, span, TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR, len(args))
             return t, true

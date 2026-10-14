@@ -78,32 +78,25 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     case .Type_Of:
         return tc_fun_type_of(k, n, span)
     case .Type_Pointer:
-        pt := new(Type_Ptr)
-        pt.elem = tc_type(k, Tree_Id(t.a[n]), span)
-        return pt
+        return type_ptr(tc_type(k, Tree_Id(t.a[n]), span))
     case .Type_Paren:
         return tc_type(k, Tree_Id(t.a[n]), span)
     case .Type_Slice:
         // (`[:n]T`: n of T, a take's count — `slice([:n]T, s)`; the type []T.)
-        sl := new(Type_Slice)
-        sl.elem = tc_type(k, Tree_Id(t.b[n]), span)
-        return sl
+        return type_slice(tc_type(k, Tree_Id(t.b[n]), span))
     case .Type_Partial:
-        pa := new(Type_Partial_Array)
-        pa.elem = tc_type(k, Tree_Id(t.b[n]), span)
-        size, ok := tc_type_size(k, Tree_Id(t.a[n]), pa.elem, span)
+        elem := tc_type(k, Tree_Id(t.b[n]), span)
+        size, ok := tc_type_size(k, Tree_Id(t.a[n]), elem, span)
         if !ok { return Type_Error{} }
-        pa.size = size
-        return pa
+        return type_partial_array(size, elem)
     case .Type_Array:
         r := tree_rec(t, t.a[n], 2)
-        fa := new(Type_Fixed_Array)
-        fa.elem = tc_type(k, Tree_Id(t.b[n]), span)
-        if r[1] != 0 { fa.index_type = tc_type(k, Tree_Id(r[1]), span) }
-        size, ok := tc_type_size(k, Tree_Id(r[0]), fa.elem, span)
+        elem := tc_type(k, Tree_Id(t.b[n]), span)
+        index_type: Type
+        if r[1] != 0 { index_type = tc_type(k, Tree_Id(r[1]), span) }
+        size, ok := tc_type_size(k, Tree_Id(r[0]), elem, span)
         if !ok { return Type_Error{} }
-        fa.size = size
-        return fa
+        return type_fixed_array(size, elem, index_type)
     }
     tc_unsupported(k, n, "this type")
     return Type_Error{}

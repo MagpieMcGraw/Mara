@@ -397,6 +397,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     // (What the check finds, reported in source order: diagnostics_sort.)
     diagnosed := diagnostics_count()
     ir_types_forget()   // (a check of serve's, after another: its types are new)
+    types_forget_shapes()
     k.rs = resolve_program(k)
     k.bound = make([]u32, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
@@ -431,11 +432,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     // The program's struct (the compiler-managed global): its args (an
     // arena when `this_program = Program(...)`).
     {
-        arg_slice := new(Type_Slice)
-        arg_slice.elem = Type_Utf8{}
-        args_type := new(Type_Partial_Array)
-        args_type.size = 64
-        args_type.elem = arg_slice
+        args_type := type_partial_array(64, type_slice(Type_Utf8{}))
         prog_type := new(Type_Scope)
         prog_type.name = "Program"
         prog_type.home_package = main_package
@@ -451,8 +448,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         table.builtins["this_program"] = prog_type
         table.builtins["Program"] = prog_type
     }
-    void_type := new(Type_Ptr)
-    void_type.elem = Type_Any{}
+    void_type := type_ptr(Type_Any{})
     table.builtins["void"] = void_type
 
     k.pkg = main_package

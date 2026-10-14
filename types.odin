@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:runtime"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,36 @@ Type_Table :: struct {
     types: [dynamic]Type,                         // by id; [0]: none
     slots: [dynamic]Type_Slot,                    // (type_id: open-addressed, hashed, probed)
     last:  struct { raw: [2]u64, id: Type_Id },   // (the type asked for last)
+    prim:  [TYPE_PRIM_SLOTS]Type_Id,              // (a primitive's, by type_prim_slot: no hashing)
+}
+
+// A primitive type's place in Type_Table.prim — a variant that holds
+// nothing, an open width of no binding's, a number by its kind and width —
+// else -1. (The commonest types by far: their ids found by index.)
+@(private="file")
+TYPE_PRIM_SLOTS :: 22 + 3 * 6
+@(private="file")
+type_prim_slot :: #force_inline proc(raw: [2]u64) -> int {
+    tag := int(raw[1] & 0xFF)
+    switch tag {
+    case 1, 4, 5, 6, 7, 18, 19, 20, 21:   // Type_F64, _Bool, _CString, _Utf8, _Byte, _Any, _Void, _Error, _Err
+        return tag
+    case 2, 3:                            // Type_Infer_Int, _Infer_Float: no cell's
+        return tag if raw[0] == 0 else -1
+    case 8:                               // Type_Numeric: its kind, its bits
+        width := -1
+        switch raw[0] >> 32 {
+        case 0:   width = 0
+        case 8:   width = 1
+        case 16:  width = 2
+        case 32:  width = 3
+        case 64:  width = 4
+        case 128: width = 5
+        }
+        if width < 0 || raw[0] & 0xFF > 2 { return -1 }
+        return 22 + int(raw[0] & 0xFF) * 6 + width
+    }
+    return -1
 }
 
 type_table_new :: proc() -> ^Type_Table {
@@ -94,13 +125,70 @@ TYPE_VALUE_MASK := [22]u64{
     0, 0, 0, 0,             // Type_Any, Type_Void, Type_Error, Type_Err
 }
 
+// A composite type made once while the program is checked: the same shape,
+// the same one — what type_id and types_equal see as one type. (Its element
+// as type_id tells types apart. Once lowering runs — on several threads,
+// maybe — each is made anew, as before.)
+@(private="file")
+Type_Shape :: struct {
+    variant:     u8,       // which: Type's variant number (type_id's)
+    size:        int,
+    elem, index: [2]u64,   // their bits, as type_id keys them
+}
+
+@(private="file")
+g_type_shapes: map[Type_Shape]rawptr
+
+// The shapes made forgotten: a check of serve's, after another.
+types_forget_shapes :: proc() {
+    g_type_shapes = make(map[Type_Shape]rawptr, allocator = runtime.heap_allocator())
+}
+
+@(private="file")
+type_bits :: proc(t: Type) -> [2]u64 {
+    t := t
+    raw := (^[2]u64)(&t)^
+    tag := raw[1] & 0xFF
+    return {raw[0] & TYPE_VALUE_MASK[tag], tag}
+}
+
+@(private="file")
+type_shape :: proc($T: typeid, variant: u8, size: int, elem, index: Type, made: T) -> ^T {
+    if g_infer_frozen { return new_clone(made) }
+    key := Type_Shape{variant = variant, size = size, elem = type_bits(elem), index = type_bits(index)}
+    if p, ok := g_type_shapes[key]; ok { return (^T)(p) }
+    if g_type_shapes == nil { types_forget_shapes() }
+    t := new_clone(made, runtime.heap_allocator())   // (outlives the check that made it: the next one's map may name it)
+    g_type_shapes[key] = t
+    return t
+}
+
+type_ptr :: proc(elem: Type) -> ^Type_Ptr {
+    return type_shape(Type_Ptr, 9, 0, elem, nil, Type_Ptr{elem = elem})
+}
+
+type_slice :: proc(elem: Type) -> ^Type_Slice {
+    return type_shape(Type_Slice, 12, 0, elem, nil, Type_Slice{elem = elem})
+}
+
+type_fixed_array :: proc(size: int, elem: Type, index_type: Type = nil) -> ^Type_Fixed_Array {
+    return type_shape(Type_Fixed_Array, 11, size, elem, index_type, Type_Fixed_Array{size = size, elem = elem, index_type = index_type})
+}
+
+type_partial_array :: proc(size: int, elem: Type) -> ^Type_Partial_Array {
+    return type_shape(Type_Partial_Array, 13, size, elem, nil, Type_Partial_Array{size = size, elem = elem})
+}
+
 // A type's id, made the first time the program has it.
 type_id :: proc(tt: ^Type_Table, t: Type) -> Type_Id {
     // (The type asked for last, again: its id, its bits alike.)
     t := t
     raw := (^[2]u64)(&t)^
+    p := type_prim_slot(raw)
+    if p >= 0 && tt.prim[p] != 0 { return tt.prim[p] }
     if raw == tt.last.raw && tt.last.id != 0 { return tt.last.id }
     defer tt.last.raw = raw
+    defer if p >= 0 { tt.prim[p] = tt.last.id }
     tag := raw[1] & 0xFF
     key := [2]u64{tag, raw[0] & TYPE_VALUE_MASK[tag]}
     if key[0] == 0 {

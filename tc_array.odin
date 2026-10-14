@@ -135,7 +135,7 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     for e in elems { tc_settle(k, e, et) }   // (each written to its slot, at its type)
-    return new_clone(Type_Fixed_Array{size = len(elems), elem = et})
+    return type_fixed_array(len(elems), et)
 }
 
 // `a[lo:hi]`: its collection, its bounds at the header's width — a slice of
@@ -188,7 +188,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     if elem == nil { return Type_Error{} }
-    return new_clone(Type_Slice{elem = elem})
+    return type_slice(elem)
 }
 
 // `a[lo:hi] = v`: the target's slice — its collection, its bounds — then
@@ -203,7 +203,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     tc_lower_dots(k, base_n, hi_n)
     tt := tc_check(k, base_n)
     if elem := index_elem_type(tt); elem != nil {   // (the target names a run of elements)
-        tc_set_type(k, target, new_clone(Type_Slice{elem = elem}))
+        tc_set_type(k, target, type_slice(elem))
     }
     lt, ht: Type = Type_Any{}, Type_Any{}
     if lo_n != 0 { lt = tc_check_at(k, lo_n, slice_header_width_type) }
@@ -234,7 +234,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     } else if v := tc_unparen(k, value); tr.tag[v] == .Array {
         // (An array literal at the elements' type — `f[2:4] = [0.5, 0.25]`
         // into f32s: an array of f32s, tc_settle.)
-        if elem := index_elem_type(tt); elem != nil { tc_settle(k, v, new_clone(Type_Slice{elem = elem})) }
+        if elem := index_elem_type(tt); elem != nil { tc_settle(k, v, type_slice(elem)) }
     }
     // (A run lo:hi, both known, from an array shorter than it: said now —
     // else the copy would stop the program, its value run past.)

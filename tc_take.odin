@@ -25,7 +25,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     case t.tag[ty] == .Type_Slice && t.a[ty] != 0:
         count = Tree_Id(t.a[ty])
-        taken = new_clone(Type_Slice{elem = tc_type(k, Tree_Id(t.b[ty]), span)})
+        taken = type_slice(tc_type(k, Tree_Id(t.b[ty]), span))
     case:
         taken = tc_type(k, ty, span)
         if _, is_err := taken.(Type_Error); is_err { tc_error(k, span, TYPE_TAKE_UNKNOWN_TYPE) }
