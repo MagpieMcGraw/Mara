@@ -89,11 +89,12 @@ reach_scc :: proc(code: ^Program_Code, rp: ^Reach_Pass, members: []^Type_Scope) 
 // isn't reached through or returned.
 // A code's operations' uses, each node's a run of `all` from first[node]:
 // what it's an operand of, and where (reach_summarize); a leaf's one,
-// leaf[its index].
+// leaf[its index]; a read's one, read[its index].
 Reach_Use :: struct { by: Node_Id, at: int }
-Reach_Uses :: struct { first: []i32, all: []Reach_Use, leaf: []Reach_Use }
+Reach_Uses :: struct { first: []i32, all: []Reach_Use, leaf: []Reach_Use, read: []Reach_Use }
 
 reach_uses :: proc(u: Reach_Uses, x: Node_Id) -> []Reach_Use {
+    if graph_is_read(x) { return u.read[x - READ:][:1] }
     if graph_is_leaf(x) { return u.leaf[x - LEAF:][:1] }
     return u.all[u.first[x]:u.first[x + 1]]
 }
@@ -133,7 +134,8 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
     }
     for i in 1 ..< len(first) { first[i] += first[i - 1] }
     uses := Reach_Uses{first = first, all = make([]Reach_Use, first[len(first) - 1], context.temp_allocator),
-                       leaf = make([]Reach_Use, len(pg.leaves), context.temp_allocator)}
+                       leaf = make([]Reach_Use, len(pg.leaves), context.temp_allocator),
+                       read = make([]Reach_Use, len(pg.reads), context.temp_allocator)}
     next := make([]i32, len(first), context.temp_allocator)
     copy(next, first)
     vars := make(map[Node_Id][dynamic]Node_Id, allocator = context.temp_allocator)
@@ -142,15 +144,20 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
         case .Fun, .Struct: id = graph_last(pg, id); continue
         case .Op:
             for o, i in graph_operands(pg, id) {
-                if o.op > 0 && o.op <= pg.end {
-                    uses.all[next[o.op]] = {id, i}
-                    next[o.op] += 1
-                } else if graph_is_leaf(o.op) {
-                    uses.leaf[o.op - LEAF] = {id, i}
-                    d := graph_refers(pg, o.op)
+                by, at, x := id, i, o.op
+                if graph_is_read(x) {   // (a read's use, and its leaf's: the read)
+                    uses.read[x - READ] = {id, i}
+                    by, at, x = x, 0, pg.reads[x - READ].op
+                }
+                if x > 0 && x <= pg.end {
+                    uses.all[next[x]] = {by, at}
+                    next[x] += 1
+                } else if graph_is_leaf(x) {
+                    uses.leaf[x - LEAF] = {by, at}
+                    d := graph_refers(pg, x)
                     if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
                         if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
-                        append(&vars[d], o.op)
+                        append(&vars[d], x)
                     }
                 }
             }

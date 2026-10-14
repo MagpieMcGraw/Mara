@@ -75,7 +75,7 @@ run_flow_solve :: proc(f: ^Run_Flow($S), entry: []S, data: $D, step: proc(data: 
             f.copy(state, f.in_state[ri])
             ops := graph_run(g, int(f.runs[ri]))
             for op in ops {
-                if g.op[op] == .Run_Defer {
+                if graph_op_of(g, op) == .Run_Defer {
                     for in_ in graph_out(g, g.defer_of[op]) {
                         if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
                     }

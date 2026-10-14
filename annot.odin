@@ -334,7 +334,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 }
                 if !compared {
                     problems += 1
-                    fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (its node: %v)\n", g.op[op], graph_name(g, op),
+                    fmt.printf("annot: %v '%s' at %s:%d:%d is found at no node (its node: %v)\n", graph_op_of(g, op), graph_name(g, op),
                         filepath.base(span_file(graph_origin(g, op))), span_line(graph_origin(g, op)), span_col(graph_origin(g, op)), t.tag[at])
                 }
             }
@@ -407,7 +407,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 continue
             }
             passed := graph_operands(g, op)
-            if g.op[op] == .Construct { passed = passed[1:] }   // (its destination first)
+            if graph_op_of(g, op) == .Construct { passed = passed[1:] }   // (its destination first)
             if len(given) != len(passed) {
                 report(&problems, t, n, i, "is annotated with %d arguments; the graph passes %d", len(given), len(passed))
                 continue
@@ -443,7 +443,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             fmt.println()
         }
         for g in pc.codes {
-            if g.kind[0] != .Fun && g.kind[0] != .Struct { continue }
+            if graph_kind_of(g, 0) != .Fun && graph_kind_of(g, 0) != .Struct { continue }
             ts := graph_type(g, 0).(^Type_Scope)
             vars_of, _ := a.vars[ts]
             have := make([]bool, len(vars_of), context.temp_allocator)

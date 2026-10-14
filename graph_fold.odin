@@ -215,9 +215,11 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
     // (A leaf's: its variable's — failing where it's written.)
     arg :: proc(fo: ^Folder, fc: ^Fold_Code, ops: []Operand, k: int) -> ^Fold {
         if k >= len(ops) || ops[k].op == NO_NODE || ops[k].out != 0 { return nil }
-        if graph_is_leaf(ops[k].op) || graph_is_const(ops[k].op) {
-            v := fold_var(fo, fc, ops[k].op) if graph_is_leaf(ops[k].op) else fold_const(fo, fc, ops[k].op)
-            if v == nil && fo.at == {} { fo.at = graph_origin(fc.g, ops[k].op) }
+        x := ops[k].op
+        if graph_is_read(x) { x = fc.g.reads[x - READ].op }   // (a read's: its leaf's)
+        if graph_is_leaf(x) || graph_is_const(x) {
+            v := fold_var(fo, fc, x) if graph_is_leaf(x) else fold_const(fo, fc, x)
+            if v == nil && fo.at == {} { fo.at = graph_origin(fc.g, x) }
             return v
         }
         return fc.values[ops[k].op] or_else nil

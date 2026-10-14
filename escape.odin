@@ -297,7 +297,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     // (Nothing in it can hold a reference: nothing can escape — its summary
     // is empty, and there is nothing to report.)
     if !esc_any_refs(g, ft) { return {}, true }
-    size := int(g.end) + 1
+    size := graph_ix_count(g)
     e.memo = make([]Esc_Roots, size)
     e.var_of = make([]i32, size)
     e.run_of = make([]i32, size)
@@ -365,16 +365,16 @@ esc_vars :: proc(e: ^Esc) {
 esc_scan :: proc(e: ^Esc) {
     g := e.g
     for r, ri in e.runs {
-        for op in graph_run(g, int(r)) { e.run_of[op] = i32(ri) + 1 }
+        for op in graph_run(g, int(r)) { e.run_of[graph_ix(e.g, op)] = i32(ri) + 1 }
     }
     for r, ri in e.runs {
         for op in graph_run(g, int(r)) {
             ops := graph_operands(g, op)
             for o in ops {
-                if o.op == NO_NODE || o.op >= CONST { continue }
-                if from := e.run_of[o.op]; from != i32(ri) + 1 { e.used_across[o.op] = true }
+                if o.op == NO_NODE || o.op >= CONST && o.op < READ { continue }
+                if from := e.run_of[graph_ix(e.g, o.op)]; from != i32(ri) + 1 { e.used_across[graph_ix(e.g, o.op)] = true }
             }
-            #partial switch g.op[op] {
+            #partial switch graph_op_of(g, op) {
             case .Write:
                 k := esc_var_named(e, ops[0])
                 val := ops[1].op
@@ -444,13 +444,13 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     g := e.g
     ops := graph_operands(g, op)
     // A value another run uses: when it grows, a change.
-    watched := !e.final && e.used_across[op]
+    watched := !e.final && e.used_across[graph_ix(e.g, op)]
     old: Esc_Roots
-    if watched { esc_join(&old, e.memo[op]) }
-    r := &e.memo[op]
+    if watched { esc_join(&old, e.memo[graph_ix(e.g, op)]) }
+    r := &e.memo[graph_ix(e.g, op)]
     esc_clear(r)
     e.state = state
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Global:
         r.global = true
     case .Field, .Swizzle:
@@ -570,7 +570,7 @@ esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
         esc_var_roots(e, &r, o.op, e.state)
         return r
     }
-    return e.memo[o.op]
+    return e.memo[graph_ix(e.g, o.op)]
 }
 
 // The memory holding a place's elements: through a pointer, what it points
@@ -1040,7 +1040,7 @@ esc_built_by :: proc(e: ^Esc, ri: int, ret: Node_Id, read: Node_Id) -> Node_Id {
     ops := graph_run(g, int(e.runs[ri]))
     for i := len(ops) - 1; i >= 0; i -= 1 {
         op := ops[i]
-        if g.op[op] != .Construct { continue }
+        if graph_op_of(g, op) != .Construct { continue }
         if graph_leaf_decl(g, graph_operands(g, op)[0].op) == temp { return op }
     }
     return NO_NODE

@@ -92,20 +92,20 @@ storage_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
 @(private="file")
 storage_users :: proc(s: ^Storage) {
     pg := s.pg
-    s.user = make([]Node_Id, int(pg.end) + 1)
+    s.user = make([]Node_Id, graph_ix_count(pg))
     for &u in s.user { u = -1 }
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
             for o in graph_operands(pg, op) {
-                if o.op == NO_NODE || o.op >= CONST { continue }
-                u := &s.user[o.op]
+                if o.op == NO_NODE || o.op >= CONST && o.op < READ { continue }
+                u := &s.user[graph_ix(s.pg, o.op)]
                 u^ = op if u^ == -1 else -2
                 ou, seen := s.out_user[o]
                 s.out_user[o] = -2 if seen && ou != op else op
             }
             // A match arm's binding is the payload's place.
-            if pg.op[op] == .Variant && graph_refers(pg, op) != NO_NODE { s.bound[graph_refers(pg, op)] = op }
-            if pg.op[op] == .Arena_Alloc { s.arena[graph_refers(pg, graph_operands(pg, op)[0].op)] = true }
+            if graph_op_of(pg, op) == .Variant && graph_refers(pg, op) != NO_NODE { s.bound[graph_refers(pg, op)] = op }
+            if graph_op_of(pg, op) == .Arena_Alloc { s.arena[graph_refers(pg, graph_operands(pg, op)[0].op)] = true }
         }
     }
 }
@@ -171,11 +171,11 @@ storage_holds_header :: proc(s: ^Storage, v: Node_Id) -> bool {
     pg := s.pg
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Write { continue }
+            if graph_op_of(pg, op) != .Write { continue }
             ops := graph_operands(pg, op)
             if graph_leaf_decl(pg, ops[0].op) != v { continue }
             x := ops[1].op
-            return x != NO_NODE && graph_op_of(pg, x) == .Slice && s.user[x] == op
+            return x != NO_NODE && graph_op_of(pg, x) == .Slice && s.user[graph_ix(s.pg, x)] == op
         }
     }
     return false
@@ -194,15 +194,15 @@ storage_once_before :: proc(s: ^Storage, v: Node_Id, header: bool) -> bool {
             ops := graph_operands(pg, op)
             for o, k in ops {
                 if graph_leaf_decl(pg, o.op) != v { continue }
-                u := s.user[op]
+                u := s.user[graph_ix(s.pg, op)]
                 switch {
-                case pg.op[op] == .Write && k == 0:
+                case graph_op_of(pg, op) == .Write && k == 0:
                     if write_run >= 0 { return false }
                     write_run, write_at = ri, at
-                case (pg.op[op] == .Read || pg.op[op] == .Deref) && !header:   // (a pointer's deref reads it)
+                case (graph_op_of(pg, op) == .Read || graph_op_of(pg, op) == .Deref) && !header:   // (a pointer's deref reads it)
                     append(&reads, Read{ri, at})
-                case header && pg.op[op] == .Field && llvm_header_field(graph_name(pg, op)) >= 0 && u >= 0 && graph_op_of(pg, u) == .Read,
-                     header && pg.op[op] == .Index && k == 0:
+                case header && graph_op_of(pg, op) == .Field && llvm_header_field(graph_name(pg, op)) >= 0 && u >= 0 && graph_op_of(pg, u) == .Read,
+                     header && graph_op_of(pg, op) == .Index && k == 0:
                     append(&reads, Read{ri, at})
                 case:
                     return false   // addressed, or a place of something larger
@@ -256,7 +256,7 @@ storage_reads :: proc(s: ^Storage, v: Node_Id) -> int {
     n := 0
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Read { continue }
+            if graph_op_of(pg, op) != .Read { continue }
             if graph_leaf_decl(pg, graph_operands(pg, op)[0].op) == v { n += 1 }
         }
     }
@@ -287,11 +287,11 @@ storage_in_place_updates :: proc(s: ^Storage) {
     pg := s.pg
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Call { continue }
+            if graph_op_of(pg, op) != .Call { continue }
             callee := graph_called(pg, op)
             if callee == nil { continue }
             k, consumes := graph_consumed(s.pc, callee).?
-            u := s.user[op]
+            u := s.user[graph_ix(s.pg, op)]
             if !consumes || u < 0 || graph_op_of(pg, u) != .Write { continue }
             uops := graph_operands(pg, u)
             dest := uops[0].op
@@ -428,7 +428,7 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
     every := true
     for r in s.runs[:s.own] {   // (a defer block's return goes back where it ran)
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Return || pg.written[op] == .Implied { continue }
+            if graph_op_of(pg, op) != .Return || graph_written(pg, op) == .Implied { continue }
             ops := graph_operands(pg, op)
             v := NO_NODE
             if len(ops) == n && ops[k].op != NO_NODE && graph_op_of(pg, ops[k].op) == .Read {
@@ -495,7 +495,7 @@ storage_written_only_in :: proc(s: ^Storage, v: Node_Id, r: i32) -> bool {
     for q in s.runs {
         if q == r { continue }
         for op in graph_run(pg, int(q)) {
-            #partial switch pg.op[op] {
+            #partial switch graph_op_of(pg, op) {
             case .Zero, .Construct, .Fill, .Write, .Byte_Read:
                 if storage_where(s, graph_operands(pg, op)[0].op).root == v { return false }
             }
@@ -549,7 +549,7 @@ storage_builds_alone :: proc(s: ^Storage, before: []Node_Id, t, x: Node_Id) -> b
     first := -1
     for op, i in before {
         here += names(pg, op, t)
-        #partial switch pg.op[op] {
+        #partial switch graph_op_of(pg, op) {
         case .Zero, .Construct, .Fill, .Write:
             if first < 0 && storage_where(s, graph_operands(pg, op)[0].op).root == t { first = i }
         }
@@ -569,12 +569,12 @@ storage_builds_alone :: proc(s: ^Storage, before: []Node_Id, t, x: Node_Id) -> b
     clean := true   // (nothing but t's own writes and pure operations so far)
     for op in before[first:] {
         ops := graph_operands(pg, op)
-        #partial switch pg.op[op] {
+        #partial switch graph_op_of(pg, op) {
         case .Read, .Address:
             if storage_where(s, ops[0].op).root == t { continue }
-            if pg.op[op] == .Read && storage_direct(s, ops[0].op) { continue }   // a value, in no memory
+            if graph_op_of(pg, op) == .Read && storage_direct(s, ops[0].op) { continue }   // a value, in no memory
             if storage_overlaps(s, ops[0].op, x) {
-                if pg.op[op] == .Read && clean && llvm_scalar(graph_type(pg, op)) && storage_ahead_able(s, ops[0].op) {
+                if graph_op_of(pg, op) == .Read && clean && llvm_scalar(graph_type(pg, op)) && storage_ahead_able(s, ops[0].op) {
                     append(&hoists, op)
                     continue
                 }
@@ -788,7 +788,7 @@ storage_swaps :: proc(s: ^Storage) {
     }
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Write { continue }
+            if graph_op_of(pg, op) != .Write { continue }
             ops := graph_operands(pg, op)
             dest, v := ops[0].op, ops[1].op
             if graph_is_leaf(dest) && is_held(pg, graph_refers(pg, dest)) {
@@ -879,18 +879,18 @@ storage_held :: proc(s: ^Storage, o: Operand, t: Type) {
 storage_calls :: proc(s: ^Storage, sret: Type) {
     pg := s.pg
     s.placed = true
-    s.pos = make([]i32, int(pg.end) + 1)
+    s.pos = make([]i32, graph_ix_count(pg))
     for &p in s.pos { p = -1 }
     n := i32(0)
     for r in s.runs[:s.own] {
         for op in graph_run(pg, int(r)) {
-            s.pos[op] = n
+            s.pos[graph_ix(s.pg, op)] = n
             n += 1
         }
     }
     for r in s.runs {
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Call { continue }
+            if graph_op_of(pg, op) != .Call { continue }
             callee := graph_called(pg, op)
             args := len(graph_operands(pg, op))
             placed := true
@@ -933,7 +933,7 @@ storage_calls :: proc(s: ^Storage, sret: Type) {
 @(private="file")
 storage_call_place :: proc(s: ^Storage, op: Node_Id, callee: ^Type_Scope, sret: Type) -> Call_Place {
     pg := s.pg
-    u := s.user[op]
+    u := s.user[graph_ix(s.pg, op)]
     if u < 0 { return .Temporary }
     uops := graph_operands(pg, u)
     #partial switch graph_op_of(pg, u) {
@@ -982,7 +982,7 @@ storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
 storage_had :: proc(s: ^Storage, p, at: Node_Id) -> bool {
     pg := s.pg
     if graph_is_leaf(p) { return true }
-    if s.pos[p] >= 0 && s.pos[at] >= 0 && s.pos[p] < s.pos[at] { return true }
+    if s.pos[graph_ix(s.pg, p)] >= 0 && s.pos[graph_ix(s.pg, at)] >= 0 && s.pos[graph_ix(s.pg, p)] < s.pos[graph_ix(s.pg, at)] { return true }
     ops := graph_operands(pg, p)
     #partial switch graph_op_of(pg, p) {
     case .Field, .Variant, .Deref:   // (a union's variant: the union's own address; a pointer's target: its value)

@@ -219,7 +219,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
     for r, ri in f.runs {
         for op in graph_run(g, int(r)) {
-            #partial switch g.op[op] {
+            #partial switch graph_op_of(g, op) {
             case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Variant:
                 v, _, is_def := du_written(g, op)
                 if !is_def || v not_in tracked { break }
@@ -232,12 +232,12 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
                     if du_write_valued(g, op) { d.valued = true }
                 }
             case .Return:
-                if ri < f.main && g.written[op] == .Explicit {
+                if ri < f.main && graph_written(g, op) == .Explicit {
                     append(&f.returns, op)
                     f.ret_run[op] = r
                 }
             }
-            #partial switch g.op[op] {
+            #partial switch graph_op_of(g, op) {
             case .Call, .Construct, .Print, .Crash: append(&f.calls, op)
             }
         }
@@ -355,7 +355,7 @@ du_def :: proc(checked: ^Checked_Program, f: ^Du_Fn, def_of: ^map[[2]i32]^Def, v
 // payload's place it names.
 @(private="file")
 du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, ok: bool) {
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Variant:
         if graph_refers(g, op) == NO_NODE { return }
         return graph_refers(g, op), true, true
@@ -393,7 +393,7 @@ du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
 // from itself, and gives it no value of its own.
 @(private="file")
 du_is_step :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
-    if g.op[op] != .Write || g.written[op] != .Synthetic { return false }
+    if graph_op_of(g, op) != .Write || graph_written(g, op) != .Synthetic { return false }
     val := graph_operands(g, op)[1].op
     return val != NO_NODE && graph_op_of(g, val) == .Arith && graph_written(g, val) == .Synthetic
 }
@@ -402,12 +402,12 @@ du_is_step :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
 // construction does not, nor an index's synthetic start.
 @(private="file")
 du_write_valued :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Write, .Fill:
         val := graph_operands(g, op)[1].op
         return val != NO_NODE && !(graph_op_of(g, val) == .Const && graph_written(g, val) == .Synthetic)
     case .Construct, .Zero:
-        return g.written[op] != .Synthetic
+        return graph_written(g, op) != .Synthetic
     }
     return true   // a byte read, a match binding
 }
@@ -419,7 +419,7 @@ du_classify :: proc(g: ^Program_Graph, d: ^Def) {
     if d.binding == nil || d.stmt < 0 { return }
     whole := false
     for op in d.writes {
-        if g.op[op] == .Variant { d.kind = .Destructure; return }
+        if graph_op_of(g, op) == .Variant { d.kind = .Destructure; return }
         if _, w, _ := du_written(g, op); w { whole = true }
     }
     switch d.stmt_kind {
@@ -467,7 +467,7 @@ du_def_uses :: proc(checked: ^Checked_Program, d: ^Def, filtered: bool, out: ^[d
 du_walk_write :: proc(w: ^Du_Walk, op: Node_Id) {
     g := w.f.g
     ops := graph_operands(g, op)
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Write, .Fill:  du_walk_value(w, ops[1])
     case .Byte_Read:     for o in ops[1:] { du_walk_value(w, o) }
     case .Construct:     du_walk_call(w, op)
@@ -538,9 +538,9 @@ du_walk_use :: proc(w: ^Du_Walk, op: Node_Id) {
 // construction builds, less the function value a call goes through.
 du_call_args :: proc(g: ^Program_Graph, op: Node_Id) -> []Operand {
     args := graph_operands(g, op)
-    if g.op[op] == .Construct {
+    if graph_op_of(g, op) == .Construct {
         if len(args) > 0 && du_is_place(g, args[0].op) { args = args[1:] }
-    } else if g.op[op] == .Call && graph_called(g, op) == nil && len(args) > 0 {
+    } else if graph_op_of(g, op) == .Call && graph_called(g, op) == nil && len(args) > 0 {
         args = args[1:]
     }
     return args
@@ -615,7 +615,7 @@ du_code_calls :: proc(g: ^Program_Graph) -> []Node_Id {
     calls := make([dynamic]Node_Id, context.temp_allocator)
     for r in runs {
         for op in graph_run(g, int(r)) {
-            #partial switch g.op[op] {
+            #partial switch graph_op_of(g, op) {
             case .Call, .Construct: append(&calls, op)
             }
         }

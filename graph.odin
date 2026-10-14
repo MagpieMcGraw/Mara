@@ -154,6 +154,10 @@ Program_Graph :: struct {
     // past consts[0]'s (graph_const).
     leaves: [dynamic]Graph_Leaf,
     consts: [dynamic]Graph_Const,
+    // A variable's value read where it's used, as its leaf is (graph_read):
+    // no node, an operation of its run, its id READ past reads[0]'s — the
+    // leaf it reads.
+    reads:  [dynamic]Operand,
 
     // Run r is run_ops[run_first[r] : run_first[r+1]], in the order it runs;
     // run_starts is each run by its first operation (where a Then edge lands).
@@ -242,10 +246,12 @@ graph_set_value :: proc(g: ^Program_Graph, id: Node_Id, c: Const_Value) {
 Const_Key :: struct { int: i128, float: u64, is_float, is_text: bool, text: string }
 
 graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
+    if id >= CONST { return nil }   // (a leaf, a read: none)
     return g.edges[g.out_first[id]:g.out_first[id + 1]]
 }
 
 graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
+    if id >= READ { return g.reads[id - READ:][:1] }   // (a read: its leaf)
     if id >= CONST { return nil }   // (a leaf: none)
     return g.operands[g.operand_first[id]:g.operand_first[id + 1]]
 }
@@ -253,7 +259,7 @@ graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
 // Where a whole write lands — `e = f()` writes e, reading nothing — its
 // destination's leaf; NO_NODE for any other operation.
 graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Arena_Alloc:
         ops := graph_operands(g, op)
         if len(ops) > 0 && graph_is_leaf(ops[0].op) { return ops[0].op }
@@ -269,6 +275,7 @@ Name_Id :: distinct u32
 // The text of a node's name; a leaf's, its declaration's (a struct's code's
 // own, `Self`).
 graph_name :: proc(g: ^Program_Graph, id: Node_Id) -> string {
+    if id >= READ { return "" }
     if id >= CONST && id < LEAF { return g.names[g.consts[id - CONST].name] }
     if id >= LEAF {
         d := g.leaves[id - LEAF].decl
@@ -304,6 +311,8 @@ graph_intern_in :: proc(b: ^Graph_Tables, s: string) -> Name_Id {
 
 // A node's type; a leaf's, its own as it was made, else its declaration's.
 graph_type :: proc(g: ^Program_Graph, id: Node_Id) -> Type {
+    id := id
+    if id >= READ { id = g.reads[id - READ].op }   // (a read's: its leaf's)
     if id >= CONST && id < LEAF { return g.types[g.consts[id - CONST].type_] }
     if id >= LEAF {
         l := g.leaves[id - LEAF]
@@ -345,25 +354,47 @@ graph_is_const :: #force_inline proc(id: Node_Id) -> bool {
     return id >= CONST && id < LEAF
 }
 
+// A variable's value read where it's used — `x` in `x + 1` — is no node
+// either: a read, an operation of its run with no columns, its id READ and
+// past (above the leaves'): the leaf it reads (Program_Graph.reads), its
+// type, its tree node and how it's written that leaf's.
+READ :: Node_Id(3 << 29)
+
 // Whether an operand is a variable, used: a leaf (graph_var).
 graph_is_leaf :: #force_inline proc(id: Node_Id) -> bool {
-    return id >= LEAF
+    return id >= LEAF && id < READ
+}
+
+// An operation's index among a code's operations and reads, one space: a
+// node's its id, a read's past every node's (graph_ix_count) — for what an
+// analysis keeps by operation.
+graph_ix :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> int {
+    return len(g.kind) + int(id - READ) if id >= READ else int(id)
+}
+graph_ix_count :: proc(g: ^Program_Graph) -> int {
+    return len(g.kind) + len(g.reads)
+}
+
+// Whether an operation is a variable's read (graph_read).
+graph_is_read :: #force_inline proc(id: Node_Id) -> bool {
+    return id >= READ
 }
 
 // The declaration of the variable a leaf is (NO_NODE: no leaf).
 graph_leaf_decl :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
-    return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE
+    return g.leaves[id - LEAF].decl if id >= LEAF && id < READ else NO_NODE
 }
 
 // What an operand is, an operation or a leaf: a leaf an operation of kind
-// var, which refers to its declaration.
+// var, which refers to its declaration; a read, one of kind read.
 graph_kind_of :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Kind {
     return .Op if id >= CONST else g.kind[id]
 }
 graph_op_of :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Op_Kind {
-    return .Var if id >= LEAF else .Const if id >= CONST else g.op[id]
+    return .Read if id >= READ else .Var if id >= LEAF else .Const if id >= CONST else g.op[id]
 }
 graph_refers :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    if id >= READ { return NO_NODE }
     return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE if id >= CONST else g.binds[id] or_else NO_NODE
 }
 
@@ -371,6 +402,8 @@ graph_refers :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
 // own globals, as their names are written (graph_place_outside's: past the
 // code's own, no parent).
 graph_written :: proc(g: ^Program_Graph, id: Node_Id) -> Written {
+    id := id
+    if id >= READ { id = g.reads[id - READ].op }   // (a read's: its leaf's)
     if id >= CONST && id < LEAF { return g.consts[id - CONST].written }
     if id < LEAF { return g.written[id] }
     d := g.leaves[id - LEAF].decl
@@ -380,6 +413,8 @@ graph_written :: proc(g: ^Program_Graph, id: Node_Id) -> Written {
 
 // The tree node a node or a leaf was lowered from.
 graph_syntax :: proc(g: ^Program_Graph, id: Node_Id) -> Syntax_Id {
+    id := id
+    if id >= READ { id = g.reads[id - READ].op }   // (a read's: its leaf's)
     if id >= CONST && id < LEAF { return g.consts[id - CONST].syntax }
     return g.leaves[id - LEAF].syntax if id >= LEAF else g.syntax[id]
 }
@@ -399,7 +434,7 @@ graph_last :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
 // its tree node — unless lowering says otherwise (Program_Graph.callee);
 // nil through a function value.
 graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
-    if g.kind[op] != .Op || (g.op[op] != .Call && g.op[op] != .Construct) { return nil }
+    if graph_kind_of(g, op) != .Op || (graph_op_of(g, op) != .Call && graph_op_of(g, op) != .Construct) { return nil }
     if len(g.callee) > 0 {
         if callee, own := g.callee[op]; own { return callee }
     }
@@ -420,7 +455,7 @@ graph_set_callee :: proc(g: ^Program_Graph, op: Node_Id, callee: ^Type_Scope) {
 graph_signature :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
     if callee := graph_called(g, op); callee != nil { return callee }
     ops := graph_operands(g, op)
-    if g.op[op] != .Call || len(ops) == 0 || ops[0].op == NO_NODE { return nil }
+    if graph_op_of(g, op) != .Call || len(ops) == 0 || ops[0].op == NO_NODE { return nil }
     ft, is_fn := distinct_base(graph_type(g, ops[0].op)).(^Type_Scope)
     return ft if is_fn && ft.kind == .Fun else nil
 }
@@ -491,7 +526,7 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
     if len(g.defer_of) == 0 { return }   // (no run defers: no defer blocks)
     for i := 0; i < len(out); i += 1 {
         for op in graph_run(g, int(out[i])) {
-            if g.op[op] != .Run_Defer { continue }
+            if graph_op_of(g, op) != .Run_Defer { continue }
             reach(g, starts, g.defer_of[op], out, seen, &todo)
         }
     }
@@ -532,6 +567,7 @@ Graph_Builder :: struct {
     nodes:      int,             // how many nodes the code being built has; the columns run ahead
     leaves:     int,             // ... and leaves (graph_leaf_new)
     consts:     int,             // ... and constants (graph_const_new)
+    reads:      int,             // ... and reads (graph_read)
     code:       Code,
     // Refers-to: each declaration made in the code being built — a fun's, a
     // struct's, a constant's; its defers' are its own — by the token that
@@ -852,7 +888,7 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
 
 Graph_Column :: enum u8 {
     Kind, Op, Written, Parent, Name, Type, Decl_Tok, Syntax,
-    Operand_First, Operands, Leaves, Consts, Run_Ops, Run_First, Edges, Unreachable, Settled,
+    Operand_First, Operands, Leaves, Consts, Reads, Run_Ops, Run_First, Edges, Unreachable, Settled,
     // A builder's tables (Graph_Tables): each a region of its own, so what's
     // in one never moves — a code another builder built is read, on another
     // thread, while its builder adds to them.
@@ -962,6 +998,7 @@ graph_code_new :: proc(b: ^Graph_Builder) -> ^Program_Graph {
     g.operands = make([dynamic]Operand, at(r, .Operands))
     g.leaves = make([dynamic]Graph_Leaf, at(r, .Leaves))
     g.consts = make([dynamic]Graph_Const, at(r, .Consts))
+    g.reads = make([dynamic]Operand, at(r, .Reads))
     g.run_ops = make([dynamic]Node_Id, at(r, .Run_Ops))
     g.run_first = make([dynamic]i32, at(r, .Run_First))
     g.edges = make([dynamic]Edge, at(r, .Edges))
@@ -986,6 +1023,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
     trim(&g.operands, len(g.operands) if n > 0 else 0)
     trim(&g.leaves, len(g.leaves) if n > 0 else 0)
     trim(&g.consts, len(g.consts) if n > 0 else 0)
+    trim(&g.reads, len(g.reads) if n > 0 else 0)
     trim(&g.run_ops, len(g.run_ops) if n > 0 else 0)
     trim(&g.run_first, len(g.run_first) if n > 0 else 0)
     trim(&g.edges, len(g.edges) if n > 0 else 0)
@@ -1062,6 +1100,7 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     b.nodes = 0
     b.leaves = 0
     b.consts = 0
+    b.reads = 0
     b.outside_named = false
 }
 
@@ -1088,6 +1127,7 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     if b.outside_named { graph_place_outside(b) }
     resize(&g.leaves, b.leaves)
     resize(&g.consts, b.consts)
+    resize(&g.reads, b.reads)
     if b.nodes >= len(g.kind) { graph_resize(g, b.nodes + 1) }
     g.operand_first[b.nodes] = i32(len(g.operands))
     append(&g.run_first, i32(len(g.run_ops)))
@@ -1134,7 +1174,12 @@ graph_check_built :: proc(b: ^Graph_Builder) {
         }
     }
     for r in 0 ..< len(g.run_first) - 1 {
-        if !slice.is_sorted(g.run_ops[g.run_first[r]:g.run_first[r + 1]]) { graph_fatal({}, "a run whose operations are out of order") }
+        last := Node_Id(-1)   // (its operations, but its reads: no node)
+        for op in g.run_ops[g.run_first[r]:g.run_first[r + 1]] {
+            if graph_is_read(op) { continue }
+            if op < last { graph_fatal({}, "a run whose operations are out of order") }
+            last = op
+        }
     }
 }
 
@@ -1715,7 +1760,7 @@ graph_emit :: proc(b: ^Graph_Builder, id: Node_Id) {
     if len(r.ops) == 0 {
         for w in r.waiting {
             b.g.edges[w].to = id
-            b.g.edges[w].written = b.g.written[id]
+            b.g.edges[w].written = graph_written(b.g, id)
         }
         clear(&r.waiting)
     }
@@ -1826,7 +1871,25 @@ graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
 }
 
 graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Operand {
-    return graph_op_value(b, .Read, graph_written(b.g, place.op), span, t, "", place)
+    // (A leaf's read as the leaf is — its type, its tree node, where it's
+    // written: a read, no node.)
+    g := b.g
+    if graph_is_leaf(place.op) && t != nil {
+        l := g.leaves[place.op - LEAF]
+        s := b.pin if b.pin != 0 else b.at
+        if l.type_ != 0 && l.syntax == s && l.type_ == type_id(b.type_table, graph_settled(t)) && (len(g.origins) == 0 || place.op not_in g.origins) {
+            if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
+            if span == b.span_is {
+                k := b.reads
+                if k >= len(g.reads) { non_zero_resize(&g.reads, max(2 * len(g.reads), 64)) }
+                g.reads[k] = place
+                b.reads = k + 1
+                graph_emit(b, READ + Node_Id(k))
+                return Operand{READ + Node_Id(k), 0}
+            }
+        }
+    }
+    return graph_op_value(b, .Read, graph_written(g, place.op), span, t, "", place)
 }
 
 // A synthetic local of the current block, for a value that outlives a run.
@@ -1848,6 +1911,10 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     if p.op == NO_NODE { return p }
     g := b.g
     id := p.op
+    if id >= READ {   // (a read of its own, of its leaf again)
+        r := g.reads[id - READ]
+        return graph_read(b, graph_place_again(b, r, span), graph_type(g, r.op), graph_origin(g, r.op))
+    }
     if id >= LEAF {   // (a use of its own)
         n := graph_leaf_new(b, g.leaves[id - LEAF])
         if sp, own := g.origins[id]; own { g.origins[n] = sp }
@@ -2224,10 +2291,13 @@ graph_consumed :: proc(pc: ^Program_Code, ft: ^Type_Scope) -> Maybe(int) {
     return nil
 }
 
-// The first operation after op (a leaf: any), up to `last`, that takes
-// op's output.
+// The first operation after op (a leaf, a read: any), up to `last`, that
+// takes op's output — a leaf's, its read's, if it's read.
 @(private="file")
 graph_user :: proc(g: ^Program_Graph, op, last: Node_Id) -> Node_Id {
+    if graph_is_leaf(op) {
+        for r, j in g.reads { if r.op == op { return READ + Node_Id(j) } }
+    }
     for id := op + 1 if op < LEAF else 0; id <= last; id += 1 {
         if g.kind[id] != .Op { continue }
         for o in graph_operands(g, id) { if o.op == op { return id } }
@@ -3345,6 +3415,7 @@ graph_build_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Sp
 // A node's operands while the graph is being built: they end where the next
 // node's begin — or, the newest, now.
 graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
+    if id >= READ { return b.g.reads[id - READ:][:1] }   // (a read: its leaf)
     if id >= CONST { return nil }   // (a leaf: none)
     end := int(b.g.operand_first[id + 1]) if int(id) + 1 < b.nodes else len(b.g.operands)
     return b.g.operands[b.g.operand_first[id]:end]
@@ -3540,8 +3611,8 @@ graph_check_refers :: proc(g: ^Program_Graph) {
 @(private="file")
 graph_check_runs :: proc(g: ^Program_Graph) {
     n_runs := len(g.run_first) - 1
-    run_of := make([]i32, len(g.kind))
-    pos := make([]i32, len(g.kind))
+    run_of := make([]i32, graph_ix_count(g))
+    pos := make([]i32, graph_ix_count(g))
     defer delete(run_of)
     defer delete(pos)
     slice.fill(run_of, -1)
@@ -3554,11 +3625,11 @@ graph_check_runs :: proc(g: ^Program_Graph) {
     for r in 0 ..< n_runs {
         ops := graph_run(g, r)
         for id, i in ops {
-            if run_of[id] != -1 { report(g, &bad, id, "operation %d is in two runs", id) }
-            run_of[id] = i32(r)
-            pos[id] = i32(i)
+            if run_of[graph_ix(g, id)] != -1 { report(g, &bad, id, "operation %d is in two runs", id) }
+            run_of[graph_ix(g, id)] = i32(r)
+            pos[graph_ix(g, id)] = i32(i)
             last := i == len(ops) - 1
-            if graph_is_terminator(g.op[id]) != last {
+            if graph_is_terminator(graph_op_of(g, id)) != last {
                 report(g, &bad, id, "run %d %s", r, "ends without a terminator" if last else "has a terminator before its end")
             }
         }
@@ -3578,11 +3649,11 @@ graph_check_runs :: proc(g: ^Program_Graph) {
         delete(succ); delete(pred); delete(is_entry)
     }
     for e in g.edges {
-        r := run_of[e.to]
-        if r == -1 || pos[e.to] != 0 { report(g, &bad, e.to, "a then edge lands inside a run"); continue }
+        r := run_of[graph_ix(g, e.to)]
+        if r == -1 || pos[graph_ix(g, e.to)] != 0 { report(g, &bad, e.to, "a then edge lands inside a run"); continue }
         if graph_kind_of(g, e.from) != .Op { is_entry[r] = true; continue }
-        append(&succ[run_of[e.from]], r)
-        append(&pred[r], run_of[e.from])
+        append(&succ[run_of[graph_ix(g, e.from)]], r)
+        append(&pred[r], run_of[graph_ix(g, e.from)])
     }
     idom := graph_dominators(n_runs, succ, pred, is_entry)
     defer delete(idom)
@@ -3720,6 +3791,7 @@ graph_dump_full :: proc(pc: ^Program_Code, g: ^Program_Graph) {
             strings.write_string(&b, " (")
             for o, i in ops {
                 switch {
+                case o.op >= READ:  fmt.sbprintf(&b, "%sr%d", ", " if i > 0 else "", o.op - READ)
                 case o.op >= LEAF:  fmt.sbprintf(&b, "%sv%d", ", " if i > 0 else "", o.op - LEAF)
                 case o.op >= CONST: fmt.sbprintf(&b, "%sc%d", ", " if i > 0 else "", o.op - CONST)
                 case:               fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out)

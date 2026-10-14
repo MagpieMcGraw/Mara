@@ -229,7 +229,7 @@ flow_defer_writes :: proc(g: ^Program_Graph, ret: Node_Id, block: []i32, found: 
         if v == NO_NODE { continue }
         for r in block {
             for op in graph_run(g, int(r)) {
-                #partial switch g.op[op] {
+                #partial switch graph_op_of(g, op) {
                 case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Carve, .Address:
                 case:
                     continue
@@ -363,7 +363,7 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
             }
             // (A pointer every write of which is `&x`.)
             d := graph_whole_write_dest(g, op)
-            if g.op[op] != .Write || d == NO_NODE { continue }
+            if graph_op_of(g, op) != .Write || d == NO_NODE { continue }
             v := graph_refers(g, d)
             val := graph_operands(g, op)[1].op
             target := NO_NODE
@@ -553,7 +553,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             report(s, graph_origin(g, o.op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
         }
     }
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Field:
         if !reporting { break }
         v, field, via, ok := flow_field_place(s, op)
@@ -576,7 +576,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
         if graph_is_leaf(d) {
             v := graph_refers(g, d)
             unset, fields_unset := false, false
-            #partial switch g.op[op] {
+            #partial switch graph_op_of(g, op) {
             case .Write:
                 val := ops[1].op
                 unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void"
@@ -584,18 +584,18 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             case .Zero:
                 // A bare `p : ^T` or `s : []T` (a bare scalar is zero).
                 #partial switch _ in distinct_base(graph_type(g, v)) {
-                case ^Type_Ptr, ^Type_Slice: unset = g.written[op] == .Synthetic
+                case ^Type_Ptr, ^Type_Slice: unset = graph_written(g, op) == .Synthetic
                 }
             case .Construct:
                 // Built bare or from braces, a struct has only what it is given
                 // (the braces' writes follow); a constructor call may set anything.
-                fields_unset = g.written[op] == .Synthetic || strings.has_suffix(graph_name(g, op), "{}")
+                fields_unset = graph_written(g, op) == .Synthetic || strings.has_suffix(graph_name(g, op), "{}")
             }
             flow_set_var(s, state, v, unset, fields_unset)
         } else if v, field, _, ok := flow_field_place(s, d); ok {
             flow_set(state, flow_field_bit(s, v, field), false)
         }
-        if g.op[op] == .Construct { flow_init_out_params(s, op, state) }
+        if graph_op_of(g, op) == .Construct { flow_init_out_params(s, op, state) }
     case .Call:
         flow_init_out_params(s, op, state)
     }
@@ -682,7 +682,7 @@ void_error :: proc(c: ^Checker, seen: ^map[Span]bool, sp: Span, dest: Type, wher
 @(private="file")
 void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
     ops := graph_operands(g, op)
-    #partial switch g.op[op] {
+    #partial switch graph_op_of(g, op) {
     case .Write:
         if k != 1 { return "", false }
         dest := ops[0].op
@@ -705,7 +705,7 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
         if sig == nil || sig.calling_conv == .C { return "", false }
         // (A construction's first operand is where it builds; a call
         // through a function value's, the value.)
-        n := k + 1 if g.op[op] == .Call && graph_called(g, op) != nil else k
+        n := k + 1 if graph_op_of(g, op) == .Call && graph_called(g, op) != nil else k
         return fmt.tprintf("argument %d of '%s'", n, graph_name(g, op)), true
     case .Return:
         return "a return value", true

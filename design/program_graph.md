@@ -206,7 +206,7 @@ About thirty kinds in all.
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
-| `read` | a place used as a value | `load`, or the address itself for a struct |
+| `read` | a place used as a value; a variable's value (`x` in `x + 1`) a read with no node — an operation of its run, kept as the leaf it reads (its id READ and past) | `load`, or the address itself for a struct |
 | `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void`: a pointer's null, a declared scalar's or local struct's zero, a declared partial array's header, else nothing (a constructor's field stays Self's zero) |
 | `address` | `&x` | the place itself; no instruction |
 | `zero` | synthetic, from `x : T`; `Foo{0}`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
