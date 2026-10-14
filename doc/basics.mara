@@ -533,6 +533,28 @@ builtin_utf8 :: fun() {
 	print(code)                            // 105, the code of 'i'
 }
 
+// `from_text`: an enum's variant from its name as text — `Mode.from_text(s)`, for command words and settings.
+//
+// `mode, ok := Mode.from_text(s)` gives the variant whose name s spells
+// exactly, and true; when none does, the enum's zero and false. Letter case
+// counts: name the variants the way the text writes them. Then `match`
+// takes the enum, and the checker sees that every variant is handled — a
+// typo in the text is an ok of false, not an arm silently skipped.
+builtin_from_text :: fun() {
+	cmd, ok := Command.from_text("run")
+	print(cmd, ok)                         // Command.run true
+	_, known := Command.from_text("Run")
+	print(known)                           // false
+	match cmd {
+	build
+		print("building")
+	run
+		print("running")                   // running
+	}
+}
+
+Command :: union { build  run }
+
 // `size_of`: how many bytes a type takes, worked out when the program is built.
 builtin_size_of :: fun() {
 	print(size_of(i64), size_of([4]f32))   // 8 16
@@ -637,6 +659,7 @@ main :: fun() {
 	builtin_i64()
 	builtin_f64()
 	builtin_utf8()
+	builtin_from_text()
 	builtin_size_of()
 	builtin_slice()
 	builtin_cstring()

@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -2423,6 +2424,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if callee.kind != .Fun { return false }
         if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
+        if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn(g, callee.name)
     }
@@ -2482,6 +2484,63 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     tmp := fresh_tmp(g)
     ir_call(g, tmp, ret, name, ..args[:])
     e.value[op] = tmp
+    return true
+}
+
+// `E.from_text(s)` (Origin_From_Text), where it's called: its two results —
+// E's zero and false — then, per variant, its name's length compared with
+// the text's, then each byte; the first that matches all writes its value
+// and true. A text constant's variant is known here.
+@(private="file")
+llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
+    g := e.g
+    if len(ops) != 1 { e.note = "from_text's text"; return false }
+    at := make([]Val, 2)
+    for i in 0 ..< 2 { at[i] = llvm_temporary(e, {op, i32(i)}, fn_result(callee, i), as_local = true) }
+    e.outs[op], e.out_run[op] = at, e.run
+    e.value[op] = at[0]
+    tag := llvm_type_from_checker(fn_result(callee, 0))
+    flag := llvm_type_from_checker(Type_Bool{})
+    // (Its variants by value, then name: the same code each build.)
+    Variant :: struct { name: string, value: int }
+    variants := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
+    for name, value in et.variants { append(&variants, Variant{name, value}) }
+    slice.sort_by(variants[:], proc(a, b: Variant) -> bool { return a.value < b.value || a.value == b.value && a.name < b.name })
+    if text, is_text := llvm_text(e, ops[0].op); is_text {
+        value, found := 0, false
+        for v in variants { if v.name == text { value, found = v.value, true; break } }
+        ir_store(g, tag, ir_int(value), at[0])
+        ir_store(g, flag, IR_TRUE if found else IR_FALSE, at[1])
+        return true
+    }
+    header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    data := emit_header_field(g, header, SLICE.ptr)
+    n := emit_header_field(g, header, SLICE.len)
+    ir_store(g, tag, ir_int(0), at[0])
+    ir_store(g, flag, IR_FALSE, at[1])
+    done := fresh_label(g, "from_text.done")
+    for v in variants {
+        miss := fresh_label(g, "from_text.miss")
+        same := fresh_tmp(g)
+        ir_icmp(g, same, .Eq, SLICE_LEN_IR, n, ir_int(len(v.name)))
+        for i in 0 ..= len(v.name) {
+            hit := fresh_label(g, "from_text.hit")
+            emit_cond_br(g, same, hit, miss)
+            emit_label(g, hit)
+            if i == len(v.name) { break }
+            byte_at, ch := fresh_tmp(g), fresh_tmp(g)
+            ir_gep(g, byte_at, IR_I8, data, {IR_I64, ir_int(i), {}})
+            ir_load(g, ch, IR_I8, byte_at)
+            same = fresh_tmp(g)
+            ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(v.name[i])))
+        }
+        ir_store(g, tag, ir_int(v.value), at[0])
+        ir_store(g, flag, IR_TRUE, at[1])
+        emit_br(g, done)
+        emit_label(g, miss)
+    }
+    emit_br(g, done)
+    emit_label(g, done)
     return true
 }
 

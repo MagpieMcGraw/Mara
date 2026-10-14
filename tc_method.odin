@@ -43,7 +43,14 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
             tc_set_ref(k, q, qref)
             // (`Shape.Rect(5)`: the union's variant built by its params.)
             if ut, is_union := qt.(^Type_Union); is_union && name in ut.tag_map { return tc_variant_call(k, n, ut, name, args) }
-            if qsd := as_scope_body(qt); qsd != nil && tc_names_def(qref) {
+            // (`Mode.from_text(s)`: the enum's variant a text names.)
+            if name == "from_text" && qref.kind == .Type {
+                if ft := tc_from_text_fun(qt); ft != nil {
+                    qual, resolved = ft, true
+                    k.annot.call_names[tc_sid(k, n)] = ft.name
+                }
+            }
+            if qsd := as_scope_body(qt); !resolved && qsd != nil && tc_names_def(qref) {
                 // (Through a module or a type: its member, the resolver's.)
                 mref := k.rs.refs[n]
                 mt, has := tc_ref_type(k, mref, name)
@@ -77,9 +84,21 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         }
     }
     if !resolved && addressed == 0 && tr.tag[tc_unparen(k, recv)] == .Field && tc_names_def(k.rs.refs[tc_unparen(k, recv)]) {
-        // (`Outer.Inner.f()`, `m.T.f()`: its member, the resolver's.)
+        // (`Outer.Inner.f()`, `m.T.f()`: its member, the resolver's. `m.E.from_text(s)`:
+        // the enum's variant a text names.)
         mref := k.rs.refs[n]
-        if mt, has := tc_ref_type(k, mref, name); has && mref.kind == .Type {
+        q := tc_unparen(k, recv)
+        if name == "from_text" && k.rs.refs[q].kind == .Type {
+            if qt, is_type := tc_ref_type(k, k.rs.refs[q], tc_text(Token_Id(tr.b[q]))); is_type {
+                if ft := tc_from_text_fun(qt); ft != nil {
+                    qual, resolved = ft, true
+                    k.annot.call_names[tc_sid(k, n)] = ft.name
+                }
+            }
+        }
+        if resolved {
+            // (from_text's, above)
+        } else if mt, has := tc_ref_type(k, mref, name); has && mref.kind == .Type {
             qual, resolved = tc_held_type(k, n, mt), true
             failed = qual == nil
         } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
@@ -154,4 +173,43 @@ tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
     return nil
 }
 
+// `E.from_text(s)`, E an enum (no error set): its fun — made at each call, its
+// body generated where it's called (Origin_From_Text) — taking a text,
+// giving the variant whose name it spells exactly and true, else E's zero and
+// false. nil: E is no such enum. (Named as written, `Mode.from_text`: no
+// symbol has the name.)
+tc_from_text_fun :: proc(qt: Type) -> ^Type_Scope {
+    et, is_enum := distinct_base(qt).(^Type_Enum)
+    if !is_enum || et.is_error_kind { return nil }
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.home_package = et.home_package
+    ft.name = strings.concatenate({type_name(qt), ".from_text"})
+    ft.source_name = "from_text"
+    append(&ft.params, Struct_Type_Field{name = "text", type_ = type_slice(Type_Utf8{})})
+    append(&ft.return_types, qt, Type_Bool{})
+    ft.origin = Origin_From_Text{enum_ = et}
+    ft.body_span = et.span
+    return ft
+}
 
+// `E.from_text(…)`'s fun, when n is one — E an enum its receiver names,
+// `Mode` or `m.Mode` — else nil. (Asked before the call is checked.)
+tc_from_text_call :: proc(k: ^TC, n: Tree_Id) -> ^Type_Scope {
+    tr := k.t
+    if tr.tag[n] != .Method_Call { return nil }
+    mv := method_view(tr, n)
+    if tc_text(mv.name) != "from_text" { return nil }
+    q := tc_unparen(k, mv.receiver)
+    ref := k.rs.refs[q]
+    if ref.kind != .Type { return nil }
+    name: string
+    #partial switch tr.tag[q] {
+    case .Ident: name = tc_name(k, q)
+    case .Field: name = tc_text(Token_Id(tr.b[q]))
+    case:        return nil
+    }
+    qt, ok := tc_ref_type(k, ref, name)
+    if !ok { return nil }
+    return tc_from_text_fun(qt)
+}

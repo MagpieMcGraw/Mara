@@ -1,0 +1,72 @@
+module enum_from_text
+
+//@ expect-output: build Mode.build true
+//@ expect-output: Mode.run true
+//@ expect-output: Mode.check true
+//@ expect-output: Mode.build false
+//@ expect-output: Mode.build false
+//@ expect-output: Mode.build false
+//@ expect-output: GL.LESS true
+//@ expect-output: GL(0) false
+//@ expect-output: D.run true
+//@ expect-output: Shape_Tag.Dot true
+//@ expect-output: slice: Mode.run true
+//@ expect-output: running
+
+// `E.from_text(s)`: the variant of an enum whose name a text spells exactly,
+// and true; else the enum's zero and false. Text from a slice, a buffer, a
+// constant; an enum with values of its own; a distinct enum's; a union's tag
+// enum's. (llvm_from_text: no function — compared where it's called.)
+
+use mara.core
+
+Mode :: union { build  run  check }
+GL :: union(tag u32) {
+	NEVER = 512
+	LESS = 513
+}
+D :: distinct Mode
+Shape :: union {
+	Rect { w: i64 }
+	Dot
+}
+
+show :: fun(s: []utf8) {
+	mode, ok := Mode.from_text(s)
+	print(s, mode, ok)
+}
+
+main :: fun() {
+	show("build")
+	m2, ok2 := Mode.from_text("run")
+	print(m2, ok2)
+	name : str64
+	&name + "che"
+	&name + "ck"
+	m3, ok3 := Mode.from_text(name)
+	print(m3, ok3)
+	for bad in ["bogus", "ru", "runx"] {
+		m, ok := Mode.from_text(bad)
+		print(m, ok)
+	}
+	g, gok := GL.from_text("LESS")
+	print(g, gok)
+	g2, gok2 := GL.from_text("less")
+	print(g2, gok2)
+	d, dok := D.from_text("run")
+	print(d, dok)
+	t, tok := Shape_Tag.from_text("Dot")
+	print(t, tok)
+	word : str64
+	&word + "run"
+	m, ok := Mode.from_text(word[0:3])
+	print("slice:", m, ok)
+	match m {
+	build
+		print("building")
+	run
+		print("running")
+	check
+		print("checking")
+	}
+}

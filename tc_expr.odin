@@ -571,7 +571,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             return Type_Error{}
         }
     }
-    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C {
+    // (No source, and called: a foreign fun, an enum's from_text.)
+    _, from_text := ft.origin.(Origin_From_Text)
+    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }
@@ -867,8 +869,9 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id) -> []Type {
     if !tc_is_call(k, m) { return nil }
     callee := tc_callee(k, m)
     if callee == nil {
-        // (Not checked yet: the fun its name names.)
+        // (Not checked yet: the fun its name names — or an enum's from_text.)
         if t, ok := tc_ref_type(k, tc_callee_ref(k, m), tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
+        if callee == nil { callee = tc_from_text_call(k, m) }
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }
