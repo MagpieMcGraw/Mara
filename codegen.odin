@@ -290,12 +290,13 @@ emit_printf :: proc(g: ^Codegen, format: string, args: ..Ir_Arg) {
 }
 
 // A function made — its head, its code's parts in order — into the module's
-// x86 object, or as LLVM IR into its text: its entry labeled (`entry`), a
-// blank line after it (`gap`). Its labels' ids start over for the next.
-codegen_function :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir, entry := true, gap := true) {
+// x86 object (with what its debug info says of it), or as LLVM IR into its
+// text: its entry labeled (`entry`), a blank line after it (`gap`). Its
+// labels' ids start over for the next.
+codegen_function :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir, entry := true, gap := true, dbg: ^Dbg_Fun = nil) {
     defer g.label_ids = 0
     if g.x86 != nil {
-        x86_function(g.x86, head, code)
+        x86_function(g.x86, head, code, dbg)
         return
     }
     codegen_note(g, head, code)

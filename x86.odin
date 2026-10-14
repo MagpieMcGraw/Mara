@@ -37,11 +37,13 @@ X86_Type :: struct {
     offsets: []int,
 }
 
-// The object's sections, in its section table's order.
+// The object's sections, in its section table's order: the debug info's
+// last, left out when empty (codeview.odin).
 @(private="file")
-X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve }
+X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Debug_S, Debug_T, Raddbg }
 
-@(private="file") X86_SEC_NAME := [X86_Sec]string{.Text = ".text", .Data = ".data", .Bss = ".bss", .Rdata = ".rdata", .Pdata = ".pdata", .Xdata = ".xdata", .Drectve = ".drectve"}
+@(private="file") X86_SEC_NAME := [X86_Sec]string{.Text = ".text", .Data = ".data", .Bss = ".bss", .Rdata = ".rdata", .Pdata = ".pdata", .Xdata = ".xdata", .Drectve = ".drectve",
+                                                    .Debug_S = ".debug$S", .Debug_T = ".debug$T", .Raddbg = ".raddbg"}
 @(private="file") X86_SEC_FLAGS := [X86_Sec]u32{
     .Text    = 0x60500020,   // code, 16-aligned, execute, read
     .Data    = 0xC0500040,   // initialized data, 16-aligned, read, write
@@ -50,6 +52,9 @@ X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve }
     .Pdata   = 0x40300040,   // ... 4-aligned
     .Xdata   = 0x40300040,
     .Drectve = 0x00100A00,   // linker directives, removed from the image
+    .Debug_S = 0x42100040,   // ... 1-aligned, read, discarded from the image (the PDB's)
+    .Debug_T = 0x42100040,
+    .Raddbg  = 0xC0100040,   // ... read, write: raddbg's type views
 }
 
 // IMAGE_REL_AMD64_*: an address, an address from the image's start, an
@@ -93,6 +98,7 @@ X86_Module :: struct {
     syms:    [dynamic]X86_Sym,
     sym_of:  map[string]u32,
     exports: [dynamic]string,        // dllexport functions
+    cv:      ^Cv_Module,             // its debug info (codeview.odin); nil, none
 }
 
 // A value: a local — a temporary (an instruction's result) by its number, a
@@ -143,6 +149,7 @@ X86_Fn :: struct {
     labels: [dynamic]int,         // where each label is, by id (-1: not yet)
     own:    [dynamic]int,         // the backend's own labels', by -id
     fixups: [dynamic]X86_Fixup,
+    lines:  [dynamic]Cv_Line,     // where each source line's code starts (Ir .Line), for the debug info
     out:    int,     // the outgoing arguments' area, at the frame's bottom
     top:    int,     // the slots' bytes so far, above it
 }
@@ -199,10 +206,12 @@ x86_program :: proc() -> ^X86_Program {
 }
 
 // A module's object, begun: its functions (x86_function) and globals
-// (x86_global) go in as they're made; x86_finish writes it.
-x86_begin :: proc(p: ^X86_Program) -> ^X86_Module {
+// (x86_global) go in as they're made; x86_finish writes it. With the
+// program, its debug info too.
+x86_begin :: proc(p: ^X86_Program, debug: ^Checked_Program = nil, name := "") -> ^X86_Module {
     m := new(X86_Module)
     m.p, m.keep = p, context.allocator
+    if debug != nil { m.cv = cv_begin(debug, name) }
     m.sym_of = make(map[string]u32)
     m.exports = make([dynamic]string)
     for s in X86_Sec {
@@ -220,7 +229,24 @@ x86_finish :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
         append(&m.sec[.Drectve], " /EXPORT:")
         append(&m.sec[.Drectve], name)
     }
+    if m.cv != nil {
+        cv_finish(m.cv)
+        append(&m.sec[.Debug_S], ..m.cv.sym[:])
+        append(&m.sec[.Debug_T], ..m.cv.types[:])
+        for r in m.cv.relocs { append(&m.relocs[.Debug_S], X86_Reloc{r.at, r.sym, r.kind}) }
+    }
     x86_coff(m, out)
+}
+
+// raddbg's type views (codeview.odin), into the object's .raddbg: each one
+// zero-ended, after a zero (the byte raddbg once marked itself attached in).
+x86_raddbg :: proc(m: ^X86_Module, views: []string) {
+    b := &m.sec[.Raddbg]
+    append(b, 0)
+    for v in views {
+        append(b, v)
+        append(b, 0)
+    }
 }
 
 // A global's symbol name: a private one (`@.str…`) the module's own.
@@ -580,8 +606,8 @@ x86_call_sym :: proc(f: ^X86_Fn, name: string) {
 // --- a function --------------------------------------------------------------------
 
 // A function into the module's object: its head, its code's parts in order
-// (codegen_function).
-x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir) {
+// (codegen_function); for its debug info, what the emitter says of it.
+x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun = nil) {
     x86_line, x86_ins = head.name, nil
     sym := x86_sym(head.name)
     f := X86_Fn{m = m}
@@ -678,6 +704,38 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir) {
         x86_u32(p, u32(at))
     }
     if head.export { append(&m.exports, strings.clone(sym, m.keep)) }
+    if m.cv != nil { x86_debug(&f, sym, dbg, start, base, end, frame) }
+}
+
+// A function's debug info: its variables where its frame has them — a
+// local's memory, or a slot holding its value or its address — and its
+// lines, from its definition's at its start.
+@(private="file")
+x86_debug :: proc(f: ^X86_Fn, sym: string, dbg: ^Dbg_Fun, start, base, end, frame: int) {
+    m := f.m
+    vars := make([dynamic]Cv_Var, context.temp_allocator)
+    lines := make([dynamic]Cv_Line, context.temp_allocator)
+    name := sym
+    if dbg != nil {
+        name = dbg.name
+        for v in dbg.vars {
+            s := x86_find(f, x86_val(v.at, nil))
+            if s == nil { continue }
+            append(&vars, Cv_Var{v.name, v.type_, f.out + s.off, v.addr && !s.memory})
+        }
+        if dbg.line > 0 { append(&lines, Cv_Line{0, u32(dbg.line), u16(dbg.file)}) }
+    }
+    for l in f.lines {
+        l := l
+        l.at += u32(base - start)
+        if n := len(lines); n > 0 {
+            last := &lines[n - 1]
+            if last.at == l.at { last^ = l; continue }   // (a line with no code of its own)
+            if last.line == l.line && last.file == l.file { continue }
+        }
+        append(&lines, l)
+    }
+    cv_function(m.cv, name, x86_symbol(m, sym), end - start, base - start, base - start + f.own[1], frame, vars[:], lines[:])
 }
 
 // The outgoing arguments' area: the most any call passes, 8 bytes each, and
@@ -799,6 +857,9 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
     switch ins.op {
     case .Label:
         x86_place(f, ins.l.id)
+
+    case .Line:
+        append(&f.lines, Cv_Line{u32(len(f.code)), u32(ins.a.n), u16(ins.b.n)})
 
     case .Alloca:
         t := x86_layout(p, ins.ty)
@@ -1369,14 +1430,18 @@ x86_data :: proc(m: ^X86_Module, sec: X86_Sec, t: ^X86_Type, c: Ir_Const) {
 // bytes and relocations, its symbols and their names.
 @(private="file")
 x86_coff :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
-    // Each symbol's index: a section's own takes two (its aux record).
+    // Its sections: the debug info's left out when empty.
+    secs := len(X86_Sec)
+    for secs > int(X86_Sec.Drectve) + 1 && len(m.sec[X86_Sec(secs - 1)]) == 0 { secs -= 1 }
+    // Each symbol's index: a section's own takes two (its aux record); one
+    // left out, none.
     index := make([]u32, len(m.syms))
     n := u32(0)
     for s, i in m.syms {
         index[i] = n
+        if s.section && s.sec > secs { continue }
         n += 2 if s.section else 1
     }
-    secs := len(X86_Sec)
     // The layout: the headers, then each section's bytes and relocations.
     pos := 20 + 40 * secs
     raw, rel: [X86_Sec]int
@@ -1445,6 +1510,7 @@ x86_coff :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
         }
     }
     for s in m.syms {
+        if s.section && s.sec > secs { continue }
         name8(b, &strtab, s.name)
         x86_u32(b, s.value)
         x86_u16(b, u16(s.sec))

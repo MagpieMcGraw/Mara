@@ -144,7 +144,8 @@ types_forget_shapes :: proc() {
     g_type_shapes = make(map[Type_Shape]rawptr, allocator = runtime.heap_allocator())
 }
 
-@(private="file")
+// A type's bits as type_id tells types apart: what its variant holds, the
+// variant. (One key per type, for a map of what's made of each.)
 type_bits :: proc(t: Type) -> [2]u64 {
     t := t
     raw := (^[2]u64)(&t)^
@@ -625,6 +626,24 @@ scope_display_name :: proc(sd: ^Scope_Body) -> string {
         return fmt.tprintf("%s.%s", ut.source_name, sd.source_name[len(ut.source_name) + 1:])
     }
     return sd.source_name if sd.source_name != "" else sd.name
+}
+
+// A fun's name as the profile and the debug info show it: as written, after
+// the structs and funs it's in (`Player.update`). A generic's instance has
+// its types after it, as its flat name has them (`total_of[i64]`).
+scope_path_name :: proc(cf: ^Type_Scope) -> string {
+    if cf.source_name == "" && cf.decl != 0 {
+        written := tc_text(cf.decl)
+        at := strings.index(cf.name, strings.concatenate({written, "__"}))
+        if at < 0 { return written }
+        args, _ := strings.replace_all(cf.name[at + len(written) + 2:], "__", ", ")
+        return strings.concatenate({written, "[", args, "]"})
+    }
+    name := scope_display_name(cf)
+    for p := cf.parent_scope; p != nil && !p.is_module; p = p.parent_scope {
+        if outer := scope_display_name(p); outer != "" { name = strings.concatenate({outer, ".", name}) }
+    }
+    return name
 }
 
 // Index of a struct's first user field — past a union variant's `__tag` (and

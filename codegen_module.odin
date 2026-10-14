@@ -88,6 +88,7 @@ Module_Task :: struct {
 
     // The x86 backend: whether it's the one, and the module's object.
     use_x86:             bool,
+    debug:               bool,    // (x86) with debug info
     x86:                 ^X86_Module,
 }
 
@@ -110,7 +111,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     local: Codegen
     init_worker_codegen(&local, task)
-    if task.use_x86 { local.x86 = x86_begin(x86_program()) }
+    if task.use_x86 { local.x86 = x86_begin(x86_program(), task.checked if task.debug else nil, task.module_name) }
 
     // Emit this module's functions. switch_to_module + flush handle the
     // g.out buffer swap so emit_target routes correctly. Each function's
@@ -322,7 +323,7 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", x86 := false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", x86 := false, debug := false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -450,7 +451,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         task.fn_names    = fns_by_module[module_name][:]
         task.web         = web
         task.shared_mode = shared
-        task.use_x86 = x86
+        task.use_x86, task.debug = x86, debug
         append(&tasks, task)
     }
 
@@ -490,7 +491,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     x86_main: ^X86_Module
     if x86 {
         for t in tasks { if t.module_name == checked.main_package { x86_main = t.x86 } }
-        if x86_main == nil { x86_main = x86_begin(x86_types) }
+        if x86_main == nil { x86_main = x86_begin(x86_types, checked if debug else nil, checked.main_package) }
         g.x86 = x86_main
     }
 
@@ -572,6 +573,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
             return nil, false
         }
         g.module_ll_paths = make([dynamic]string)
+        if debug { x86_raddbg(x86_main, debug_views(x86_main, g.module_tasks)) }
         named: map[string]bool
         for mt in g.module_tasks {
             named[mt.module_name] = true
@@ -687,6 +689,26 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     return g.module_ll_paths[:], true
+}
+
+// raddbg's type views every module's types want (codeview.odin), each once,
+// in order: what the main module's object holds for the program.
+@(private="file")
+debug_views :: proc(main: ^X86_Module, tasks: []^Module_Task) -> []string {
+    all: map[string]bool
+    defer delete(all)
+    for v in main.cv.views { all[v] = true }
+    for t in tasks {
+        if t.x86 != nil && t.x86.cv != nil { for v in t.x86.cv.views { all[v] = true } }
+    }
+    out := make([]string, len(all))
+    i := 0
+    for v in all {
+        out[i] = v
+        i += 1
+    }
+    slice.sort(out)
+    return out
 }
 
 // One module's object (x86.odin): its functions in it already; its globals

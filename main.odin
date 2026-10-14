@@ -744,7 +744,7 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     return o_path, true
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -883,6 +883,10 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // vectorisation and aggressive inlining.
     if release {
         strings.write_string(&b, " -O3")
+    }
+    // The objects' debug info, merged by lld into a PDB beside the program.
+    if debug {
+        strings.write_string(&b, " -g")
     }
     // Shared mode: build a DLL/SO instead of an executable. clang's `-shared`
     // works across platforms — lld produces a .dll on Windows and a .so on
@@ -1485,7 +1489,9 @@ main :: proc() {
     // -release (it optimizes) and with -llvm (or MARA_LLVM set: the IR
     // differential's builds).
     x86 := ODIN_OS == .Windows && !args.web && !args.release && !args.llvm && os.get_env("MARA_LLVM", context.temp_allocator) == ""
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, x86 = x86)
+    // Its debug info (codeview.odin): the x86 backend's, linked into a PDB.
+    debug := x86
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, x86 = x86, debug = debug)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)
@@ -1512,7 +1518,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile) { os.exit(1) }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug) { os.exit(1) }
     }
 
     perf_timer_end(&perf)

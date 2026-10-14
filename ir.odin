@@ -38,6 +38,7 @@ Ir_Op :: enum u8 {
     Cond_Br,       // br i1 a, label %l, label %l2
     Switch,        // switch ty a, label %l [ args: ty v, label %l … ]
     Unreachable,
+    Line,          // (no IR) the source line the code after it is: a, the line; b, its file (build_files') — the x86 backend's debug info
 }
 
 Ir :: struct {
@@ -570,6 +571,7 @@ ir_print_arg :: proc(b: ^strings.Builder, x: Ir_Arg) {
 
 // An instruction as LLVM IR, a line of it.
 ir_print :: proc(b: ^strings.Builder, ins: Ir) {
+    if ins.op == .Line { return }
     w :: strings.write_string
     v :: ir_print_val
     ty, to := ir_type_text(ins.ty), ir_type_text(ins.to)
@@ -640,6 +642,7 @@ ir_print :: proc(b: ^strings.Builder, ins: Ir) {
         w(b, "  ]")
     case .Unreachable:
         w(b, "unreachable")
+    case .Line:
     }
     w(b, "\n")
 }

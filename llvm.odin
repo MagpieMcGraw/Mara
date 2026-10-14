@@ -58,6 +58,12 @@ Llvm :: struct {
     stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
+    // An x86 build's debug info (codeview.odin): what's told of the fun, and
+    // the line its code was last marked at — its file, where it starts and
+    // ends in its source (llvm_line).
+    dbg:     Dbg_Fun,
+    line_file: int,
+    line_lo, line_hi: u32,
 }
 
 // Emit a fun with a body from the graph.
@@ -77,7 +83,7 @@ llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope, head: Ir_Head) {
 llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := Ir_Head{}) {
     pg := g.checked.code.funs[cf] or_else nil
     if pg == nil || (graph_kind_of(pg, 0) != .Fun && graph_kind_of(pg, 0) != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
-    e := Llvm{g = g, pg = pg, ft = cf, ctor = graph_kind_of(pg, 0) == .Struct, main = main}
+    e := Llvm{g = g, pg = pg, ft = cf, ctor = graph_kind_of(pg, 0) == .Struct, main = main, line_file = -1}
     e.own = graph_code_runs(pg, 0, &e.runs)
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
     size := int(pg.end) + 1
@@ -96,8 +102,12 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool, head := Ir_Head{}) {
     if !llvm_emit(&e) { llvm_unlowered(&e) }
     g.hoist_allocas = false
     if main { e.head = head }
+    if llvm_debug(&e) {
+        e.dbg.name = scope_path_name(cf)
+        if cf.decl != 0 { e.dbg.file, e.dbg.line = int(build_tokens[cf.decl].file), token_line(build_tokens[cf.decl]) }
+    }
     code := [?][]Ir{g.code[:], e.fields[:], g.allocas[:], g.body[:]}
-    codegen_function(g, e.head, code[:], gap = !main)   // (@main's end: its caller's)
+    codegen_function(g, e.head, code[:], gap = !main, dbg = &e.dbg)   // (@main's end: its caller's)
     g.code = {}
 }
 
@@ -113,6 +123,38 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
     codegen_fatal(e.g, graph_origin(pg, at), CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
 }
 
+// Whether the build wants debug info: an x86 build's (codeview.odin).
+@(private="file")
+llvm_debug :: proc(e: ^Llvm) -> bool {
+    return e.g.x86 != nil && e.g.x86.cv != nil
+}
+
+// The source line an operation is on, marked where its code begins when it
+// isn't the line the code before it is (Ir .Line): the debug info's line
+// table.
+@(private="file")
+llvm_line :: proc(e: ^Llvm, op: Node_Id) {
+    at := graph_origin(e.pg, op).at
+    if at == 0 { return }
+    tok := build_tokens[at]
+    if int(tok.file) == e.line_file && tok.offset >= e.line_lo && tok.offset < e.line_hi { return }
+    line := token_line(tok)
+    starts := build_files[tok.file].lines[:]
+    e.line_file, e.line_lo = int(tok.file), starts[line - 1]
+    e.line_hi = starts[line] if line < len(starts) else max(u32)
+    ir_emit(e.g, {op = .Line, a = ir_int(line), b = ir_int(int(tok.file))})
+}
+
+// A variable for the debug info, with its storage: its memory, or (addr)
+// what holds its address, or what holds its value.
+@(private="file")
+llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool) {
+    if !llvm_debug(e) || (at.kind != .Local && at.kind != .Temp) { return }
+    name := graph_name(e.pg, d)
+    for v in e.dbg.vars { if v.name == name && v.at == at { return } }   // (one met again)
+    append(&e.dbg.vars, Dbg_Var{name, graph_type(e.pg, d), at, addr})
+}
+
 // -profile: a fun worth timing — main, and one that does work a probe is
 // worth (llvm_works) — tells the profiler (runtime/mara_prof.c) when it's
 // entered, here, first thing, and when it's left, before each return
@@ -124,7 +166,7 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
 llvm_probe :: proc(e: ^Llvm) {
     g, cf := e.g, e.ft
     if g.profile == "" || !(e.main || llvm_works(&g.checked.code, e.pg, constructs = true)) { return }
-    name := llvm_probe_name(cf)
+    name := scope_path_name(cf)
     at := fmt.tprintf("%s:%d", filepath.base(span_file(cf.body_span)), span_line(cf.body_span))
     e.probe = strings.concatenate({".prof.", mara_fn_name(g, cf.name)}, codegen_keep(g))
     parts := make([]Ir_Const, 3, codegen_keep(g))
@@ -132,25 +174,6 @@ llvm_probe :: proc(e: ^Llvm) {
     slots := [3]Ir_Type{IR_PTR, IR_PTR, IR_PTR}
     append(&g.globals, Ir_Global{name = e.probe, linkage = .Internal, ty = ir_struct_type(slots[:]), init = {kind = .Struct, parts = parts}})
     ir_call(g, {}, IR_VOID, ir_global("__mara_prof_enter"), {IR_PTR, ir_global(e.probe), {}})
-}
-
-// A fun's name in the profile: as written, after the structs and funs it's in
-// (`Player.update`). A generic's instance has its types after it, as its
-// flat name has them (`total_of[i64]`).
-@(private="file")
-llvm_probe_name :: proc(cf: ^Type_Scope) -> string {
-    if cf.source_name == "" && cf.decl != 0 {
-        written := tc_text(cf.decl)
-        at := strings.index(cf.name, strings.concatenate({written, "__"}))
-        if at < 0 { return written }
-        args, _ := strings.replace_all(cf.name[at + len(written) + 2:], "__", ", ")
-        return strings.concatenate({written, "[", args, "]"})
-    }
-    name := scope_display_name(cf)
-    for p := cf.parent_scope; p != nil && !p.is_module; p = p.parent_scope {
-        if outer := scope_display_name(p); outer != "" { name = strings.concatenate({outer, ".", name}) }
-    }
-    return name
 }
 
 // Whether a code does work worth a probe: it loops, or calls something — a
@@ -197,7 +220,12 @@ llvm_temps :: proc(e: ^Llvm) {
     if len(e.st.temps) > 0 && !e.main { emit_arena_mark(e.g) }
     for tp in e.st.temps {
         at := emit_arena_bump(e.g, type_size(tp.t), graph_name(pg, tp.at.op) if graph_kind_of(pg, tp.at.op) == .Local else "temp", span_location(graph_origin(pg, tp.at.op)))
-        if graph_kind_of(pg, tp.at.op) == .Local { e.value[tp.at.op] = at } else { e.temps[tp.at] = at }
+        if graph_kind_of(pg, tp.at.op) == .Local {
+            e.value[tp.at.op] = at
+            if graph_written(pg, tp.at.op) == .Explicit { llvm_debug_var(e, tp.at.op, at, addr = true) }
+        } else {
+            e.temps[tp.at] = at
+        }
     }
 }
 
@@ -292,6 +320,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
             if d, is := e.st.alias[op]; is { llvm_set(e, op, llvm_val(e, d)); continue }
             e.stop = op
+            if llvm_debug(e) { llvm_line(e, op) }
             if !llvm_hoist_reads(e, op) { return false }
             if !llvm_op(e, op) { return false }
         }
@@ -374,6 +403,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
         case .Param:
             _ = llvm_param_type(graph_type(pg, id)) or_return
             e.value[id] = ir_local(fmt.tprintf("%s.arg", graph_name(pg, id)))
+            llvm_debug_var(e, id, e.value[id], addr = llvm_aggregate(graph_type(pg, id)))
         case .Result:
             if pg.written[id] == .Explicit && !llvm_named_result(e, id) { return false }
         case .Local:
@@ -393,6 +423,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             append(&e.fields, Ir{op = .Gep, dest = at, ty = llvm_type_from_checker(e.sret), a = e.slot,
                                  args = ir_indices({IR_I32, ir_int(0), {}}, {IR_I32, ir_int(i), {}})})
             e.value[id] = at
+            llvm_debug_var(e, id, at, addr = true)
             // A partial array: its header stamped over its elements, and those
             // constructed, right after its address (its zero is not all zeros).
             if pa := llvm_partial(t); pa != nil {
@@ -425,10 +456,19 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> Val {
     if slot := e.value[d]; slot.kind != .None { return slot }
     if at, ok := e.st.in_place[d]; ok {
         e.value[d] = llvm_place(e, at)
+        if graph_written(pg, d) == .Explicit { llvm_debug_var(e, d, e.value[d], addr = true) }
         return e.value[d]
     }
-    if c, ok := e.st.carved[d]; ok { return llvm_val(e, c) }   // the carved memory
-    if v, ok := e.st.bound[d]; ok { return llvm_val(e, v) }    // the payload
+    if c, ok := e.st.carved[d]; ok {   // the carved memory
+        v := llvm_val(e, c)
+        llvm_debug_var(e, d, v, addr = true)
+        return v
+    }
+    if b, ok := e.st.bound[d]; ok {    // the payload
+        v := llvm_val(e, b)
+        llvm_debug_var(e, d, v, addr = true)
+        return v
+    }
     ir := llvm_type_from_checker(graph_type(pg, d))
     explicit := graph_written(pg, d) == .Explicit
     key := fmt.tprintf("%s %d", graph_name(pg, d), u32(ir))
@@ -440,7 +480,10 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> Val {
     for n := 2; e.used[name]; n += 1 { name = fmt.tprintf("%s.%d", graph_name(pg, d), n) }
     e.used[name] = true
     local := ir_local(name)
-    if explicit { e.shared[key] = local }
+    if explicit {
+        e.shared[key] = local
+        llvm_debug_var(e, d, local, addr = true)
+    }
     e.value[d] = local
     ty, align := llvm_alloca_type(graph_type(pg, d))
     emit_alloca(e.g, local, ty, align)
@@ -614,6 +657,7 @@ llvm_read :: proc(e: ^Llvm, op, place: Node_Id) -> (Val, bool) {
 @(private="file")
 llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     g, pg := e.g, e.pg
+    if llvm_debug(e) { llvm_line(e, op) }
     ops := graph_operands(pg, op)
     for o in ops {   // (its leaves and constants first, as they're named)
         if graph_is_leaf(o.op) && !llvm_leaf_made(e, o.op) { return false }
@@ -1047,6 +1091,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
         switch {
         case llvm_struct(t) != nil || llvm_array(t) != nil:
             e.value[d] = ir_local(fmt.tprintf("sret.%d", i))
+            llvm_debug_var(e, d, e.value[d], addr = true)
         case llvm_scalar(t):
             // (At the entry, before the code's own allocas.)
             name := graph_name(pg, d)
@@ -1056,6 +1101,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
             local := ir_local(name)
             append(&e.fields, Ir{op = .Alloca, dest = local, ty = ir}, Ir{op = .Store, ty = ir, a = llvm_zero(t), b = local})
             e.value[d] = local
+            llvm_debug_var(e, d, local, addr = true)
         case:
             e.note = "a named result's type"
             return false
@@ -1068,6 +1114,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     st := llvm_struct(t)
     if e.sret == nil || st == nil || e.ctor { e.note = "a named result"; return false }
     e.value[d] = e.slot
+    llvm_debug_var(e, d, e.slot, addr = true)
     llvm_into_fields(e, true)
     fixup_partial_array_fields(g, e.slot, st)
     llvm_into_fields(e, false)
