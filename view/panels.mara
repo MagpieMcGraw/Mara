@@ -7,7 +7,7 @@ use mara.math
 use mara.sdl
 
 // The window's panels: boxes it shows, each a view of something — the
-// profile, the docs, the asked query, the keys — floating over the window's
+// profile, the docs, the asked query, the last crash, the keys — floating over the window's
 // ground. A panel is dragged by its title bar and resized by its edges and
 // corners; the one clicked comes to the front, its title bar's x hides it.
 // The menu bar's Panels menu shows or hides each and resets their layout;
@@ -20,7 +20,8 @@ PROFILE_PANEL :: 0
 DOCS_PANEL    :: 1
 ASK_PANEL     :: 2
 KEYS_PANEL    :: 3
-PANEL_KINDS   :: 4
+CRASH_PANEL   :: 4
+PANEL_KINDS   :: 5
 
 // The menu bar's menus; MENU_NONE: none open.
 MENU_NONE   :: -1
@@ -64,6 +65,7 @@ panel_title :: fun(kind: i64) -> []utf8 {
 	if kind == PROFILE_PANEL do return "Profile"
 	if kind == DOCS_PANEL do return "Docs"
 	if kind == ASK_PANEL do return "Ask"
+	if kind == CRASH_PANEL do return "Crash"
 	return "Keys"
 }
 
@@ -72,6 +74,7 @@ panel_name :: fun(kind: i64) -> []utf8 {
 	if kind == PROFILE_PANEL do return "profile"
 	if kind == DOCS_PANEL do return "docs"
 	if kind == ASK_PANEL do return "ask"
+	if kind == CRASH_PANEL do return "crash"
 	return "keys"
 }
 
@@ -167,7 +170,8 @@ bring_to_front :: fun(ui: ^Ui, i: i64) -> i64 {
 }
 
 // The panels as they first are: the profile at the left, the docs and the
-// asked query stacked at its right; the keys, hidden, over the docs.
+// asked query stacked at its right; the keys, hidden, over the docs; the
+// last crash, hidden until there's one, over the profile's lower half.
 default_layout :: fun(ui: ^Ui) {
 	top := bar_height(ui)
 	ui.panels.len = 0
@@ -188,6 +192,9 @@ default_layout :: fun(ui: ^Ui) {
 	ask := Panel{kind = ASK_PANEL, shown = true}
 	ask.box = Rect{x = right_x, y = top + MARGIN + upper_h + MARGIN, w = right_w, h = room_h - upper_h - MARGIN}
 	&ui.panels + ask
+	crash := Panel{kind = CRASH_PANEL, shown = false}
+	crash.box = Rect{x = MARGIN, y = top + MARGIN + upper_h + MARGIN, w = left_w, h = room_h - upper_h - MARGIN}
+	&ui.panels + crash
 	clamp_panels(ui)
 }
 
@@ -271,6 +278,7 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 		return
 	}
 	if pn.kind == PROFILE_PANEL do profile_click(ui, p, content_rect(ui, pn), x, y)
+	if pn.kind == CRASH_PANEL do crash_click(ui, content_rect(ui, pn), x, y)
 }
 
 // Menu m's item chosen: a panel shown or hidden, the layout reset, the
@@ -379,6 +387,8 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 		draw_lines(ui, docs_shown(ui), c, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up.")
 	elif pn.kind == ASK_PANEL
 		draw_ask(ui, c)
+	elif pn.kind == CRASH_PANEL
+		draw_crash(ui, c)
 	else
 		draw_keys(ui, c)
 	}
@@ -528,8 +538,8 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [12][]utf8
-	does : [12][]utf8
+	keys : [13][]utf8
+	does : [13][]utf8
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[1] = "Wheel"
@@ -554,6 +564,8 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	does[10] = "dark or light"
 	keys[11] = "pin in the Docs title bar"
 	does[11] = "keep what's shown; lookups wait until it's unpinned"
+	keys[12] = "Click a call in Crash"
+	does[12] = "open its file at its line in the editor"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))

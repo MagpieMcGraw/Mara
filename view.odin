@@ -21,6 +21,8 @@ import "core:time"
 // its Docs panel and answered with what it found (`mara docs`). Four more
 // fields, "\t<kind>\t<name>\t<path>\t<line>", are what the name at the
 // editor's point refers to (`mara docs at`): shown first, the rest below.
+// There too, "-editor <program>": the editor a window opens a file in, at
+// a line (`mara editor`).
 // ---------------------------------------------------------------------------
 
 // How long `mara ask` waits for a window's next byte before it checks here
@@ -98,6 +100,23 @@ docs_via_view :: proc(args: CLI_Args) {
         os.exit(1)
     case .Answered:
         fmt.print(answer)
+        if failed { os.exit(1) }
+    }
+}
+
+// `mara editor <program>`: the window answering docs keeps the editor —
+// every window's after it — that opens a crash's calls. Exits 1 when no
+// window answers.
+editor_via_view :: proc(args: CLI_Args) {
+    _, failed, how := view_request(docs_pipe_name(), strings.concatenate({"-editor ", args.editor}, context.temp_allocator))
+    switch how {
+    case .No_Window:
+        fmt.eprintln("mara editor: no window is open — 'mara view' opens one")
+        os.exit(1)
+    case .Broken:
+        fmt.eprintln("mara editor: the window didn't answer")
+        os.exit(1)
+    case .Answered:
         if failed { os.exit(1) }
     }
 }

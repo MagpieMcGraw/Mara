@@ -5,7 +5,8 @@ module view
 // run the program), every probed fun's times sorted by whichever column is
 // clicked, read again whenever the program writes it; the docs, looked up
 // for the words an editor sends (`mara docs`, docs.mara); the last query an
-// editor asked (`mara ask -show`) and its answer; the keys. Panels are
+// editor asked (`mara ask -show`) and its answer; the program's last crash,
+// its calls opened in the editor (crash.mara); the keys. Panels are
 // moved, resized, shown and hidden; the layout and the theme, dark or
 // light, are kept. It answers `mara ask` here from a `mara serve` of its
 // own (hub.mara).
@@ -32,6 +33,7 @@ Ui :: struct {
 	text:     Text
 	font:     [..1000]utf8   // the font's path
 	layout_path: [..1000]utf8
+	editor_path: [..1000]utf8   // editor.txt's: the editor the windows were told of
 	density:  f32            // pixels a window unit (a high-density display has more)
 	frame_ns: u64            // the display's time between frames: as often as it's drawn
 	width:    f32            // the window's size, pixels
@@ -71,6 +73,13 @@ Ui :: struct {
 	search: Docs
 	compiler_dir: [..1000]utf8   // the compiler's directory, its separator at the end
 	sep:    utf8                 // the compiler's path's separator: '\' or '/'
+
+	// The Crash panel's: the newest report of crash.txt, the file as read.
+	crash:       Lines
+	crash_text:  [..2 * MB]byte
+	crash_stamp: i64             // the file's time when it was read
+	crash_hover: i64 = -1        // the call under the mouse as last drawn
+	editor:      [..1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
 
 	// The theme's colors (theme_set).
 	light:      bool
@@ -138,6 +147,8 @@ main :: fun() -> i64 {
 	&ui.font + "Inter.ttf"
 	&ui.layout_path + dir
 	&ui.layout_path + "layout.txt"
+	&ui.editor_path + dir
+	&ui.editor_path + "editor.txt"
 
 	// (The compiler's directory: its stdlib and doc pages, for the docs. Its
 	// separator, the paths made from it.)
@@ -184,6 +195,8 @@ main :: fun() -> i64 {
 	}
 	profile_read(&p, PROFILE)
 	measure_columns(&ui, &p)
+	editor_load(&ui)
+	_ = crash_read(&ui)
 	if layout_load(&ui) {
 		restore_window(&ui)
 	else
@@ -203,8 +216,9 @@ main :: fun() -> i64 {
 
 // Events until the window closes: drawn again when what it shows changed —
 // no oftener than the display shows frames: a mouse moving says so a
-// thousand times a second — the profile read again when the file changed,
-// and the hub's pipes looked at. (Waiting, not spinning: for an event, a
+// thousand times a second — the profile and the crash report read again
+// when their files changed (a new crash brought to the front), and the hub's
+// pipes looked at. (Waiting, not spinning: for an event, a
 // quarter second at most to look at the file, less to look at the pipes —
 // hub_wait — or, with something to draw, until it's time to.)
 run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
@@ -240,6 +254,10 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 			if file_mtime(PROFILE) != p.stamp {
 				profile_read(p, PROFILE)
 				measure_columns(ui, p)
+				ui.dirty = true
+			}
+			if file_mtime(CRASH) != ui.crash_stamp {
+				if crash_read(ui) do crash_show(ui)
 				ui.dirty = true
 			}
 		}
@@ -288,6 +306,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			}
 			// (Drawn again only when what's under it changes: all motion shows.)
 			if profile_hover(ui, p) != ui.hover_row do ui.dirty = true
+			if crash_hover(ui) != ui.crash_hover do ui.dirty = true
 			if ui.menu_open != MENU_NONE {
 				// (Over another menu's button: that menu, as menu bars do.)
 				b := menu_button_at(ui, ui.mouse_x, ui.mouse_y)
@@ -368,10 +387,11 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	}
 }
 
-// The lines a panel kind shows — the Docs panel's, the Ask panel's — and
-// whether it shows lines (false: the others).
+// The lines a panel kind shows — the Docs panel's, the Ask panel's, the
+// Crash panel's — and whether it shows lines (false: the others).
 panel_lines :: fun(ui: ^Ui, kind: i64) -> ^Lines, bool {
 	if kind == ASK_PANEL do return &ui.asked, true
+	if kind == CRASH_PANEL do return &ui.crash, true
 	return docs_shown(ui), kind == DOCS_PANEL
 }
 

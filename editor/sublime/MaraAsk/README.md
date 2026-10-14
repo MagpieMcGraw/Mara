@@ -50,6 +50,10 @@ appears in an output panel with every `file:line` clickable.
   too. In an unsaved file the places may be stale: Docs shows the text matches
   alone, Ask waits for the save. The status bar says how many were found.
 
+  The windows are also told where this Sublime is (`mara editor`, once one is
+  open): a call in a window's **Crash** panel — the program's last crash, the
+  calls that were running — opens here at its line, clicked.
+
 ## Commands & keys
 
 | Command | Default key | What |

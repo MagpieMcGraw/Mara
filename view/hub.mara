@@ -22,7 +22,10 @@ use mara.sdl
 //   -docs <directory><tab><words>[<tab><kind><tab><name><tab><path><tab><line>]
 // what the Docs panel finds for the words, in that directory's .mara files
 // and the stdlib's, shown there — the four more fields what the name at
-// the editor's cursor refers to: shown first. Never waiting: looked at between frames
+// the editor's cursor refers to: shown first. There too:
+//   -editor <program>  the editor a call in the Crash panel opens in, kept
+//                      for every window (`mara editor`; crash.mara)
+// Never waiting: looked at between frames
 // (hub_poll). Queries go to serve one at a time, in the order their lines
 // came; docs are answered at once. Serve, ended — a compiler bug stops it —
 // is started again for the next query.
@@ -149,6 +152,14 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 	for i < h.waiting.len {
 		if not h.waiting[i].whole and not client_read(&h.waiting[i]) {
 			// (Gone before its line ended.)
+			file_close(h.waiting[i].id)
+			drop_waiting(h, i)
+			continue
+		}
+		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-editor ") {
+			line := line_of(&h.waiting[i])
+			editor_set(ui, line[8 : line.len])
+			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue

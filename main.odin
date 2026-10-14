@@ -1111,6 +1111,10 @@ CLI_Args :: struct {
     docs_words:   []string,
     docs_at:      string,     // `at <file>:<line>:<col>`: the point the words are at
 
+    // `mara editor <program>` — the windows told the editor that opens a
+    // file at a line, `<program> <file>:<line>` (editor_via_view).
+    editor:       string,
+
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
     serve:        bool,
@@ -1122,7 +1126,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara lsp"
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
@@ -1150,6 +1154,14 @@ DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
   when one is open on it, else here. A name there that isn't the words',
   the file changed since it was saved, isn't shown.) With no words, the
   name there is looked up.`
+EDITOR_USAGE :: `Usage: mara editor <program>
+
+  Tells the windows this compiler opens (mara view) the editor to open a
+  file in: '<program> <file>:<line>' opens the file at the line, as
+  Sublime Text's subl does. A window's Crash panel opens the calls it
+  shows so, clicked. The window that answers docs keeps it beside its
+  program, for every window after. Sublime's Mara Ask plugin tells them
+  its subl. Fails when no window is open.`
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1340,6 +1352,17 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
+    // `mara editor <program>` — the windows told the editor (EDITOR_USAGE).
+    if subcmd == "editor" {
+        if len(positional) != 3 || is_help_flag(positional[2]) {
+            fmt.println(EDITOR_USAGE)
+            os.exit(0 if len(positional) >= 3 else 1)
+        }
+        args.editor = positional[2]
+        args.ok = true
+        return args
+    }
+
     // `mara docs <words>` — the window open here looks them up (DOCS_USAGE).
     if subcmd == "docs" {
         if len(positional) < 3 || is_help_flag(positional[2]) {
@@ -1404,6 +1427,10 @@ main :: proc() {
     }
     if args.docs {
         docs_via_view(args)
+        return
+    }
+    if args.editor != "" {
+        editor_via_view(args)
         return
     }
     if args.lsp {

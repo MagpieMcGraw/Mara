@@ -468,12 +468,31 @@ def _callee_at(view, caret):
     return name, start + j
 
 
+# The windows told how to open a file at a line — this Sublime's own subl,
+# beside it (`mara editor`): a call their Crash panel shows opens here,
+# clicked. Once one has it (it keeps it for every window); until then, tried
+# again at each rest.
+_editor_told = [False]
+
+
+def _tell_editor(mara, cwd):
+    if _editor_told[0]:
+        return
+    subl = os.path.join(os.path.dirname(sublime.executable_path()), "subl.exe" if os.name == "nt" else "subl")
+    if not os.path.exists(subl):
+        _editor_told[0] = True   # (nothing to tell)
+        return
+    rc, _ = _run_mara([mara, "editor", subl], cwd)
+    _editor_told[0] = rc == 0
+
+
 # The rest's two lookups, unless a newer rest came, or this one was sent already.
 def _cursor_send(number, key, cwd, words, at, what_at):
     if number != _cursor_pending[0] or _cursor_sent[0] == key:
         return
     _cursor_sent[0] = key
     mara = _settings().get("mara_path", "mara")
+    _tell_editor(mara, cwd)
     if _settings().get("docs_at_cursor", True):
         rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
         first = out.strip().splitlines()[0] if out.strip() else "no answer"
