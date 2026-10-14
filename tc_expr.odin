@@ -388,11 +388,13 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     types: [2]Type
     sides := [2]Tree_Id{left, right}
     // (`x == .B`, `.B != x`: the shorthand's enum or union the other side's —
-    // a union's tag's, a value's — that side checked first.)
+    // a union's tag's, a value's — that side checked first. So too a name
+    // naming nothing, a variant's by itself: `x == B`.)
     shorthand := -1
     if in_range == nil && (op == .Equal_Equal || op == .Not_Equal) {
         for side, i in sides {
             if s := tc_unparen(k, side); tr.tag[s] == .Dot_Ident && tc_sid(k, s) not_in k.annot.dot_bases { shorthand = i }
+            if s := tc_unparen(k, side); tr.tag[s] == .Ident && k.rs.refs[s].kind == .None { shorthand = i }
         }
     }
     order := [2]int{1, 0} if shorthand == 0 else [2]int{0, 1}
@@ -502,8 +504,6 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
 
 tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     several := tc_takes_several(k, n)
-    whole := k.whole_value == n
-    if whole { k.whole_value = 0 }
     t: Type
     if k.t.tag[n] == .Method_Call {
         t = tc_method_call(k, n, addressed)
@@ -514,10 +514,12 @@ tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         t = tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
     }
     if !several { tc_one_value(k, n, len(tc_call_returns(k, n))) }
-    // (`E.from_text(s)` writes only when the text names a variant: it goes
-    // where something is written, nowhere else.)
-    if callee := tc_callee(k, n); callee != nil && !whole {
-        if _, from_text := callee.origin.(Origin_From_Text); from_text { tc_error(k, tree_span(k.t, n), TYPE_FROM_TEXT_NOT_ASSIGNED, callee.name, callee.name) }
+    // (`E.from_text(s)` gives E's variant written `= 0` when s names none: E
+    // must have one.)
+    if callee := tc_callee(k, n); callee != nil {
+        if ft, from_text := callee.origin.(Origin_From_Text); from_text && ft.enum_.zero_name == "" {
+            tc_error(k, tree_span(k.t, n), TYPE_FROM_TEXT_NEEDS_ZERO, callee.name, type_name(fn_result(callee, 0)))
+        }
     }
     return t
 }
@@ -910,9 +912,6 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id) -> []Type {
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }
-    // (from_text's one value: its second result, whether it found one, is the
-    // write's own — lw_from_text_write.)
-    if _, from_text := callee.origin.(Origin_From_Text); from_text { return callee.return_types[:1] }
     if callee.kind == .Fun { return callee.return_types[:] }
     return nil
 }

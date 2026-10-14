@@ -43,7 +43,7 @@ fails :: fun(bad: bool) -> err {
 }
 
 main :: fun() {
-	Mode :: union {build, ask, serve, view, help}
+	Mode :: union {build, ask, serve, view, help, none = 0}
 	mode := help
 	print(mode)
 	mode = ask

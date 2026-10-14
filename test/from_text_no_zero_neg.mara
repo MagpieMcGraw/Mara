@@ -1,0 +1,15 @@
+module from_text_no_zero_neg
+//@ expect-fail: Mode.from_text needs a variant of Mode written `= 0`
+
+// When the text names no variant, from_text gives the enum's variant written
+// `= 0`: an enum with none — its first variant 0 by counting, a real choice —
+// would take every typo for that choice.
+
+use mara.core
+
+Mode :: union { build  run }
+
+main :: fun() {
+	m := Mode.from_text("run")
+	print(m)
+}

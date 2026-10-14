@@ -2487,37 +2487,31 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     return true
 }
 
-// `E.from_text(s)` (Origin_From_Text), where it's called: its two results —
-// E's zero and false — then, per variant, its name's length compared with
-// the text's, then each byte; the first that matches all writes its value
-// and true. A text constant's variant is known here.
+// `E.from_text(s)` (Origin_From_Text), where it's called: per variant, its
+// name's length compared with the text's, then each byte — the first that
+// matches all, its value; none, 0 (E's variant written `= 0`: tc_call). A
+// text constant's variant is known here.
 @(private="file")
 llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
     g := e.g
     if len(ops) != 1 { e.note = "from_text's text"; return false }
-    at := make([]Val, 2)
-    for i in 0 ..< 2 { at[i] = llvm_temporary(e, {op, i32(i)}, fn_result(callee, i), as_local = true) }
-    e.outs[op], e.out_run[op] = at, e.run
-    e.value[op] = at[0]
     tag := llvm_type_from_checker(fn_result(callee, 0))
-    flag := llvm_type_from_checker(Type_Bool{})
     // (Its variants by value, then name: the same code each build.)
     Variant :: struct { name: string, value: int }
     variants := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
     for name, value in et.variants { append(&variants, Variant{name, value}) }
     slice.sort_by(variants[:], proc(a, b: Variant) -> bool { return a.value < b.value || a.value == b.value && a.name < b.name })
     if text, is_text := llvm_text(e, ops[0].op); is_text {
-        value, found := 0, false
-        for v in variants { if v.name == text { value, found = v.value, true; break } }
-        ir_store(g, tag, ir_int(value), at[0])
-        ir_store(g, flag, IR_TRUE if found else IR_FALSE, at[1])
+        value := 0
+        for v in variants { if v.name == text { value = v.value; break } }
+        e.value[op] = ir_int(value)
         return true
     }
     header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
     data := emit_header_field(g, header, SLICE.ptr)
     n := emit_header_field(g, header, SLICE.len)
-    ir_store(g, tag, ir_int(0), at[0])
-    ir_store(g, flag, IR_FALSE, at[1])
+    at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
+    ir_store(g, tag, ir_int(0), at)
     done := fresh_label(g, "from_text.done")
     for v in variants {
         miss := fresh_label(g, "from_text.miss")
@@ -2534,13 +2528,15 @@ llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
             same = fresh_tmp(g)
             ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(v.name[i])))
         }
-        ir_store(g, tag, ir_int(v.value), at[0])
-        ir_store(g, flag, IR_TRUE, at[1])
+        ir_store(g, tag, ir_int(v.value), at)
         emit_br(g, done)
         emit_label(g, miss)
     }
     emit_br(g, done)
     emit_label(g, done)
+    v := fresh_tmp(g)
+    ir_load(g, v, tag, at)
+    e.value[op] = v
     return true
 }
 

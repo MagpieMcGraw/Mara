@@ -313,7 +313,7 @@ TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER :: "#big_endian requires a byte-buffer source,
 TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING :: "variable '%s' has no concrete type (type checking bypassed)"
 TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE :: "multi-return assign: left side has %d names but right side returns %d values"
 TYPE_CANNOT_ASSIGN_MULTI_RETURN :: "cannot assign %s to %s in multi-return"
-TYPE_FROM_TEXT_NOT_ASSIGNED :: "%s writes only where it's assigned, and only when the text names a variant — `x = %s(text)` leaves x as it was otherwise"
+TYPE_FROM_TEXT_NEEDS_ZERO :: "%s needs a variant of %s written `= 0` — what it gives when the text names none (e.g. `none = 0`)"
 TYPE_RETURN_SEVERAL_COUNT :: "a call returning %d values can't be returned whole from a fun returning %d — take them apart first (`a, b := %s(…)`) and return the ones it returns"
 TYPE_MULTI_RETURN_AS_ONE :: "a call returning %d values can't be used as a single value — destructure it first (e.g. `a, b := %s`)"
 TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES :: "broadcast literal '{{all ...}}' for field '%s' requires an array type, got %s"

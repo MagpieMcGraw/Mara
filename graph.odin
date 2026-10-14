@@ -2607,14 +2607,6 @@ graph_build_else :: proc(b: ^Graph_Builder, fi: ^Graph_If, span: Span, holds: bo
     }
 }
 
-// `x = E.from_text(s)` (lw_from_text_write): what's built from here — x's
-// write — runs only when the call found a variant, its second output; then
-// graph_build_else, graph_build_if_end.
-graph_build_if_found :: proc(b: ^Graph_Builder, call: Operand, span: Span) -> Graph_If {
-    found := Operand{graph_outputs_op(b, call, span), 1}
-    return graph_build_if(b, found, span, false, false)
-}
-
 graph_build_if_end :: proc(b: ^Graph_Builder, fi: ^Graph_If) {
     if fi.has_else {
         graph_build_block_close(b, fi.block)

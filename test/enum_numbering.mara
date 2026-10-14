@@ -1,0 +1,31 @@
+module enum_numbering
+
+//@ expect-output: 1 2 0
+//@ expect-output: 0 1 2
+//@ expect-output: 5 6 7
+//@ expect-output: 0 10 11
+//@ expect-output: 0 2 1
+//@ expect-output: 2 3 0 1
+
+// A variant not given a value takes the one after the variant before it —
+// skipping any value another variant is given: `{ build, ask, none = 0 }`
+// is build 1, ask 2, none 0. (It was build 0 beside none 0: two variants of
+// one value, build printed for none.)
+
+use mara.core
+
+A :: union { build, ask, none = 0 }
+B :: union { none = 0, build, ask }
+C :: union { a = 5, b, c }
+D :: union { a, b = 10, c }
+E :: union { a, b, c = 1 }
+F :: union { x = 2, y, z = 0, w }
+
+main :: fun() {
+	print(i64(A.build), i64(A.ask), i64(A.none))
+	print(i64(B.none), i64(B.build), i64(B.ask))
+	print(i64(C.a), i64(C.b), i64(C.c))
+	print(i64(D.a), i64(D.b), i64(D.c))
+	print(i64(E.a), i64(E.b), i64(E.c))
+	print(i64(F.x), i64(F.y), i64(F.z), i64(F.w))
+}

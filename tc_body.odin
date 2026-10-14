@@ -249,9 +249,8 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     // (One name for a call's several results: said below. A `?`'s, by it.)
     if tc_is_call(k, tc_unparen(k, value)) { k.several_ok = tc_unparen(k, value) }
-    if fields_of == nil { k.whole_value = tc_unparen(k, value) }   // (`x := E.from_text(s)`: x void till it names one)
     vt := tc_check(k, value)
-    k.several_ok, k.whole_value = 0, 0
+    k.several_ok = 0
     k.field_default = saved_field
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
         tc_bind(k, name, Type_Error{}, ref)
@@ -508,9 +507,8 @@ tc_assign :: proc(k: ^TC, s: Tree_Id) {
     }
     // (`_ = f()`: all its results dropped, on purpose.)
     if t.tag[targets[0]] == .Ident && tc_name(k, targets[0]) == "_" { k.several_ok = tc_unparen(k, values[0]) }
-    k.whole_value = tc_unparen(k, values[0])   // (`x = E.from_text(s)`: x written only when it names a variant)
     tc_assign_one(k, s, targets[0], values[0])
-    k.several_ok, k.whole_value = 0, 0
+    k.several_ok = 0
 }
 
 // One target's assignment (a broadcast's copies are each one).

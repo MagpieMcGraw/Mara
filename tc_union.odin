@@ -64,6 +64,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
             }
         } else {
             for v in variants { et.variants[v.name], et.variant_decls[v.name] = v.tag, v.span.at }
+            et.zero_name = tc_zero_name(variants[:])
         }
         k.table.enums[flat] = et
         tc_bound_set(k, k.t.main[def], et)
@@ -115,14 +116,27 @@ tc_union_header :: proc(k: ^TC, node: Tree_Id) -> (h: TC_Union_Header) {
 tc_union_variants :: proc(k: ^TC, node: Tree_Id) -> [dynamic]TC_Variant {
     t := k.t
     variants := make([dynamic]TC_Variant, context.temp_allocator)
+    // (The values written, `none = 0`: a variant not written takes none of
+    // them — the one after the last, else the next free.)
+    written := make(map[int]bool, context.temp_allocator)
+    for vn in tree_list(t, t.b[node]) {
+        if v := Tree_Id(t.a[vn]); v != 0 {
+            if _, i, lit := tc_literal_value(k, v); lit { written[int(i)] = true }
+        }
+    }
     next := 0
     for vn in tree_list(t, t.b[node]) {
-        tag := next
+        tag, explicit := next, false
         if v := Tree_Id(t.a[vn]); v != 0 {
-            if _, i, lit := tc_literal_value(k, v); lit { tag = int(i) }
+            if _, i, lit := tc_literal_value(k, v); lit { tag, explicit = int(i), true }
+        }
+        if !explicit {
+            for written[tag] { tag += 1 }
         }
         next = tag + 1
-        append(&variants, tc_variant(k, vn, tag))
+        variant := tc_variant(k, vn, tag)
+        variant.explicit = explicit
+        append(&variants, variant)
     }
     return variants
 }
@@ -140,6 +154,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     tag_et.name = make_flat_name(pkg, tag_et.source_name)
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
+    tag_et.zero_name = tc_zero_name(variants)
     k.table.enums[tag_et.name] = tag_et
     ut.tag_enum = tag_et
     for v in variants {
@@ -157,10 +172,17 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
 TC_Variant :: struct {
     name:   string,
     tag:    int,
+    explicit: bool,    // its tag written, `= 0`
     node:   Tree_Id,
     body:   Tree_Id,   // its Struct_Def (0: none)
     fields: bool,      // (its body declares something, or it has params: it is built)
     span:   Span,
+}
+
+// The variant written `= 0`, the first; "" for none.
+tc_zero_name :: proc(variants: []TC_Variant) -> string {
+    for v in variants { if v.explicit && v.tag == 0 { return v.name } }
+    return ""
 }
 
 // A union's variant as written, its tag given.
