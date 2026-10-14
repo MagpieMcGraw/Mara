@@ -369,6 +369,27 @@ make_token :: proc(l: ^Lexer, kind: Token_Kind) -> Token {
     return Token{kind = kind, offset = u32(l.start), len = u32(l.pos - l.start)}
 }
 
+// Where the block comment starting at src[at] (`/*`) ends: just past its
+// `*/`, its nested ones' too; the text's end, and ok false, when it doesn't.
+block_comment_end :: proc(src: string, at: int) -> (end: int, ok: bool) {
+    depth := 0
+    p := at
+    for p + 1 < len(src) {
+        switch {
+        case src[p] == '/' && src[p + 1] == '*':
+            depth += 1
+            p += 2
+        case src[p] == '*' && src[p + 1] == '/':
+            depth -= 1
+            p += 2
+            if depth == 0 { return p, true }
+        case:
+            p += 1
+        }
+    }
+    return len(src), false
+}
+
 next_token :: proc(l: ^Lexer) -> Token {
     // Skip spaces and tabs (but NOT newlines — they're statement separators)
     src := l.source
@@ -386,6 +407,22 @@ next_token :: proc(l: ^Lexer) -> Token {
     if ch == '/' && peek(l, 1) == '/' {
         for p < len(src) && src[p] != '\n' { p += 1 }
         lex_skip_to(l, p)
+        return next_token(l)
+    }
+
+    // A block comment, `/* … */` (nesting): skipped — one over a line break
+    // a line break itself, as the end of a `//` comment's line is.
+    if ch == '/' && peek(l, 1) == '*' {
+        l.start = l.pos
+        line, col := l.line, l.col
+        end, ok := block_comment_end(src, l.pos)
+        breaks := strings.index_byte(src[l.pos:end], '\n') >= 0
+        lexer_advance(l, end - l.pos)
+        if !ok {
+            emit_diagnostic(.Parse_Error, format_location(l.file, line, col), LEX_UNTERMINATED_COMMENT)
+            l.errors += 1
+        }
+        if breaks { return make_token(l, .Newline) }
         return next_token(l)
     }
 

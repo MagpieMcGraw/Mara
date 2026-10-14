@@ -558,16 +558,50 @@ lsp_split_location :: proc(location: string) -> (file: string, line, col: int, o
 }
 
 // The doc comment above a declaration's name: the `//` lines right above its
-// line, their words.
+// line, or a `/* … */` block ending on the line above (`doc_block_words`) —
+// their words.
 doc_comment_above :: proc(tok: Token) -> string {
     f := build_files[tok.file]
     lines := make([dynamic]string)
-    for n := token_line(tok) - 1; n >= 1; n -= 1 {
+    n := token_line(tok) - 1
+    if n >= 1 {
+        if _, above := line_at(f.source, n); strings.has_suffix(strings.trim_space(above), "*/") {
+            return doc_block_words(f.source, n)
+        }
+    }
+    for ; n >= 1; n -= 1 {
         _, text := line_at(f.source, n)
         text = strings.trim_space(text)
         if !strings.has_prefix(text, "//") { break }
         inject_at(&lines, 0, strings.trim_space(text[2:]))
     }
+    return strings.join(lines[:], "\n")
+}
+
+// A `/* … */` doc comment's words, the block ending on line `last`: from the
+// line its `/*` starts (that line's own `/*` its first) — each line less the
+// `/*` line's indentation, the `/*` and `*/` left out, blank first and last
+// lines dropped. "" when no block starting a line ends there.
+doc_block_words :: proc(source: string, last: int) -> string {
+    first := last
+    for ; first >= 1; first -= 1 {
+        _, text := line_at(source, first)
+        if strings.has_prefix(strings.trim_left_space(text), "/*") { break }
+    }
+    if first < 1 { return "" }
+    _, opening := line_at(source, first)
+    indent := opening[:len(opening) - len(strings.trim_left_space(opening))]
+    lines := make([dynamic]string, context.temp_allocator)
+    for n in first ..= last {
+        _, text := line_at(source, n)
+        text = strings.trim_right_space(text)
+        if n == first { text = strings.trim_left_space(text)[2:] } else { text = strings.trim_prefix(text, indent) }
+        if n == last { text = strings.trim_right_space(strings.trim_suffix(text, "*/")) }
+        append(&lines, text)
+    }
+    for len(lines) > 0 && strings.trim_space(lines[0]) == "" { ordered_remove(&lines, 0) }
+    for len(lines) > 0 && strings.trim_space(lines[len(lines) - 1]) == "" { pop(&lines) }
+    if len(lines) > 0 { lines[0] = strings.trim_space(lines[0]) }
     return strings.join(lines[:], "\n")
 }
 

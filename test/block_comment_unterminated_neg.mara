@@ -1,0 +1,12 @@
+module block_comment_unterminated_neg
+//@ expect-fail: a `/*` comment that never ends
+
+// Block comments nest: the inner `*/` closes the inner `/*`, and the outer
+// one never ends.
+
+use mara.core
+
+main :: fun() {
+	/* never /* closed */
+	print("x")
+}

@@ -507,10 +507,15 @@ _MODULE_RE = re.compile(r"module\s+([A-Za-z0-9_.]+)")
 
 
 def _module_of(view):
-    # The module the file declares: its first line that isn't blank or a comment.
+    # The module the file declares: its first line that isn't blank or a
+    # comment (`//`, or a `/* … */` block, which nests).
     text = view.substr(sublime.Region(0, min(view.size(), 8000)))
+    depth = 0
     for line in text.splitlines():
         s = line.strip()
+        if depth > 0 or s.startswith("/*"):
+            depth += s.count("/*") - s.count("*/")
+            continue
         if not s or s.startswith("//"):
             continue
         m = _MODULE_RE.match(s)

@@ -1,0 +1,32 @@
+/*
+`/* … */` comments: above a file's `module` line (discovery,
+extract_package_name, skips it), mid-line, nested, over lines (a line break,
+as a `//` comment's line end is: two statements either side), around code.
+*/
+module block_comments
+
+//@ expect-output: 3 10 20 7
+//@ expect-output: a /* not a comment */ b
+
+/* uses */ use mara.core
+
+/*
+The larger of two numbers.
+	(Indented notes stay indented.)
+*/
+larger :: fun(a: i64, b: i64) -> i64 {
+	if a > b do return a
+	return b
+}
+
+main :: fun() {
+	x := 1 /* a note */ + 2
+	/* outer /* inner */ still outer */
+	y := 10 /* spans
+	two lines */ z := 20
+	/*
+	print("never")
+	*/
+	print(x, y, z, larger(3, 7))   // 3 10 20 7
+	print("a /* not a comment */ b")
+}

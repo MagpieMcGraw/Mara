@@ -14,7 +14,8 @@ use mara.string
 // with its doc comment and its signature (a struct's body). Crude: it reads
 // lines, not the program. A definition is a line `name :: ...`, a foreign
 // block's `fun name(...)`, a struct's `name: type` (a field), or a file's
-// `module name`; its doc comment, the `//` lines right above it.
+// `module name`; its doc comment, the `//` lines right above it, or a
+// `/* … */` block (doc_words: the lines it shows).
 //
 // A keyword's or a builtin's entry (doc/basics.mara) is a fun named
 // keyword_<word> or builtin_<word>: found as <word>, and as each word in
@@ -27,6 +28,7 @@ DOCS_SHOWN     :: 40   // the most definitions shown
 DOCS_BODY      :: 40   // the most lines of a struct's body shown
 DOCS_SIGNATURE :: 12   // ... of a fun's signature
 DOCS_EXAMPLE   :: 60   // ... of an entry's example
+DOC_LINES      :: 200  // the most lines of a doc comment shown
 
 // What a definition is.
 DEF_MODULE :: 0   // a file's module: its doc comment, its `module` line
@@ -324,14 +326,20 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 	owner_indent : i64 = 0     // its line's indentation
 	field_indent : i64 = -1    // its fields' (its first line's); -1: not seen yet
 	in_example := false        // in an entry's example: nothing found there
+	block : i64 = 0            // inside a `/* … */` this deep: its lines the comment's
 	for at < text.len {
 		end := line_end(text, at)
 		line += 1
 		indent, from := indentation(text, at, end)
 		rest := trimmed(text[from : end])
+		if block > 0 {
+			block += comment_depth(rest)
+			at = end + 1
+			continue
+		}
 		// (An example ends at a comment line at the top level.)
 		if in_example {
-			if indent > 0 or not starts_with(rest, "//") {
+			if indent > 0 or not (starts_with(rest, "//") or starts_with(rest, "/*")) {
 				at = end + 1
 				continue
 			}
@@ -341,6 +349,9 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 			doc = -1
 		elif starts_with(rest, "//")
 			if doc < 0 do doc = at
+		elif starts_with(rest, "/*")
+			if doc < 0 do doc = at
+			block = comment_depth(rest)
 		else
 			// (The struct's end: a `}` no further in than its line.)
 			if owner.at >= 0 and rest[0] == '}' and indent <= owner_indent do owner.at = -1
@@ -441,8 +452,11 @@ is_entry :: fun(kind: i64) -> bool {
 entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 	if same_folded(text[fd.name.at : fd.name.at + fd.name.len], word) do return true
 	if fd.doc < 0 do return false
-	first := trimmed(text[fd.doc : line_end(text, fd.doc)])
-	at := 2   // (past the //)
+	words : [..DOC_LINES]Field
+	doc_words(text, fd.doc, fd.at, &words)
+	if words.len == 0 do return false
+	first := text[words[0].at : words[0].at + words[0].len]
+	at : i64 = 0
 	for at < first.len {
 		if first[at] == ' ' or first[at] == ',' {
 			at += 1
@@ -461,10 +475,101 @@ entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 	return false
 }
 
-// An entry's doc comment's first line: what it's for. Empty for none.
+// An entry's doc comment's first paragraph — to its first empty line: what
+// it's for. Empty for none.
 entry_summary :: fun(text: []utf8, fd: Found) -> []utf8 {
 	if fd.doc < 0 do return text[0 : 0]
-	return text[fd.doc : line_end(text, fd.doc)]
+	words : [..DOC_LINES]Field
+	doc_words(text, fd.doc, fd.at, &words)
+	if words.len == 0 do return text[0 : 0]
+	last := words[0]
+	for w in words {
+		if w.len == 0 do break
+		last = w
+	}
+	return text[words[0].at : last.at + last.len]
+}
+
+// How much deeper a line leaves `/* … */` comments: its `/*`s less its `*/`s.
+comment_depth :: fun(s: []utf8) -> i64 {
+	depth : i64 = 0
+	k : i64 = 0
+	for k + 1 < s.len {
+		if s[k] == '/' and s[k + 1] == '*' {
+			depth += 1
+			k += 2
+		elif s[k] == '*' and s[k + 1] == '/'
+			depth -= 1
+			k += 2
+		else
+			k += 1
+		}
+	}
+	return depth
+}
+
+// Where text[at : end] ends less its spaces and carriage return at the end.
+trim_end :: fun(text: []utf8, at: i64, end: i64) -> i64 {
+	e := end
+	for e > at {
+		if text[e - 1] != ' ' and text[e - 1] != '\t' and text[e - 1] != '\r' do break
+		e -= 1
+	}
+	return e
+}
+
+// A doc comment's lines — text[from : to], `//` lines or a `/* … */` block
+// — as the panel shows them, into out as places in text: a `//` line's
+// words after its `//` and one space; a block's lines less its `/*` line's
+// indentation, its `/*` and `*/` left out (a first or last line with
+// nothing else on it, none). Empty lines at the end left out.
+doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[..DOC_LINES]Field) {
+	out.len = 0
+	at := from
+	block := false
+	block_indent : i64 = 0   // its `/*` line's indentation, in characters
+	for at < to and out.len < out.cap {
+		end := line_end(text, at)
+		_, start := indentation(text, at, end)
+		e := trim_end(text, at, end)
+		c := start
+		keep := true
+		if not block and starts_with(text[start : e], "//") {
+			c = start + 2
+			if c < e and text[c] == ' ' do c += 1
+		elif not block and starts_with(text[start : e], "/*")
+			block = true
+			block_indent = start - at
+			c = start + 2
+			for c < e and text[c] == ' ' {
+				c += 1
+			}
+			if ends_with(text[c : e], "*/") {
+				e = trim_end(text, c, e - 2)
+				block = false
+			}
+			keep = c < e   // (`/*` alone: no line)
+		elif block
+			c = at
+			for c < at + block_indent and c < e and (text[c] == ' ' or text[c] == '\t') {
+				c += 1
+			}
+			if ends_with(text[c : e], "*/") {
+				e = trim_end(text, c, e - 2)
+				block = false
+				keep = c < e   // (`*/` alone: no line)
+			}
+		}
+		if keep {
+			if c > e do c = e
+			&out^ + Field{at = c, len = e - c}
+		}
+		at = end + 1
+	}
+	for out.len > 0 {
+		if out[out.len - 1].len > 0 do break
+		out.len -= 1
+	}
 }
 
 // Whether two words are the same, case not minded.
@@ -610,6 +715,28 @@ line_start :: fun(text: []utf8, n: i64) -> i64 {
 comment_above :: fun(text: []utf8, at: i64) -> i64 {
 	doc : i64 = -1
 	k := at
+	// (A `/* … */` block ending on the line above: from its `/*` line.)
+	if k > 0 {
+		above := k - 1
+		for above > 0 {
+			if text[above - 1] == '\n' do break
+			above -= 1
+		}
+		_, from := indentation(text, above, k - 1)
+		if ends_with(trimmed(text[from : k - 1]), "*/") {
+			for above >= 0 {
+				_, start := indentation(text, above, line_end(text, above))
+				if starts_with(trimmed(text[start : line_end(text, above)]), "/*") do return above
+				if above == 0 do break
+				above -= 1
+				for above > 0 {
+					if text[above - 1] == '\n' do break
+					above -= 1
+				}
+			}
+			return -1
+		}
+	}
 	for k > 0 {
 		prev_end := k - 1   // (the '\n' ending the line above)
 		prev := prev_end
@@ -647,21 +774,15 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 // title; a blank line after.
 docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	text := docs_text(d, fd.file)
-	// The doc comment: each line's words, after its //.
+	// The doc comment: its lines' words (doc_words).
 	if fd.doc >= 0 {
-		at := fd.doc
-		for at < fd.at {
-			end := line_end(text, at)
-			_, from := indentation(text, at, end)
-			// (One space after the // left out: the rest is the comment's own.)
-			c := min_int(from + 2, end)
-			if c < end and text[c] == ' ' do c += 1
-			comment := text[c : end]
+		words : [..DOC_LINES]Field
+		doc_words(text, fd.doc, fd.at, &words)
+		for w in words {
 			doc_line : [..1200]utf8
 			&doc_line + "  "
-			&doc_line + comment[0 : min_int(comment.len, 1000)]
+			&doc_line + text[w.at : w.at + min_int(w.len, 1000)]
 			lines_add(l, doc_line[:], STYLE_TEXT)
-			at = end + 1
 		}
 	}
 	if is_entry(fd.kind) {

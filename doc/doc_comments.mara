@@ -1,9 +1,13 @@
 // How to document code so search and the docs window can find it: a doc comment.
 //
 // The `//` lines directly above a definition, with no blank line between,
-// are its doc comment. So is a comment at the end of the definition's own
-// line. For a file, it's the comment directly above its `module` line, like
-// this one.
+// are its doc comment — or a `/* … */` block there, easier to write and
+// rewrap: each of its lines shown less the `/*` line's indentation. So is a
+// comment at the end of the definition's own line. For a file, it's the
+// comment directly above its `module` line, like this one.
+//
+// `/* … */` comments nest — `/*` inside one needs its own `*/` — so a block
+// of code that has one can itself be put in one.
 //
 // The first line says what the thing is for, in plain words: it's what
 // search matches and what the docs window shows first. Write it with the
@@ -18,8 +22,10 @@ larger :: fun(a: i64, b: i64) -> i64 {
 	return b
 }
 
-// How many times c appears in text.
-// (Counts bytes, so c must be a single-byte character.)
+/*
+How many times c appears in text.
+(Counts bytes, so c must be a single-byte character.)
+*/
 count_char :: fun(text: []utf8, c: utf8) -> i64 {
 	n := 0
 	for t in text {

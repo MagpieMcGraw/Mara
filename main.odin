@@ -92,8 +92,13 @@ extract_package_name :: proc(source: string) -> string {
     for i < len(source) && (source[i] == ' ' || source[i] == '\t' || source[i] == '\r' || source[i] == '\n') {
         i += 1
     }
-    for i + 1 < len(source) && source[i] == '/' && source[i+1] == '/' {
-        for i < len(source) && source[i] != '\n' { i += 1 }
+    // (Its comments before it: `//` lines, `/* … */` blocks.)
+    for i + 1 < len(source) && source[i] == '/' && (source[i+1] == '/' || source[i+1] == '*') {
+        if source[i+1] == '*' {
+            i, _ = block_comment_end(source, i)
+        } else {
+            for i < len(source) && source[i] != '\n' { i += 1 }
+        }
         for i < len(source) && (source[i] == ' ' || source[i] == '\t' || source[i] == '\r' || source[i] == '\n') {
             i += 1
         }
@@ -140,6 +145,11 @@ extract_imports :: proc(source: string) -> [dynamic]string {
         // Line comment — skip rest of line
         if i + 1 < len(source) && source[i] == '/' && source[i+1] == '/' {
             for i < len(source) && source[i] != '\n' { i += 1 }
+            continue
+        }
+        // Block comment — skip past its `*/`
+        if i + 1 < len(source) && source[i] == '/' && source[i+1] == '*' {
+            i, _ = block_comment_end(source, i)
             continue
         }
         // Capture the full trimmed line (without newline)
