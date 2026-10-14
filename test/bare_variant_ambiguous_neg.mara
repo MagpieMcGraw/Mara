@@ -1,0 +1,15 @@
+module bare_variant_ambiguous_neg
+//@ expect-fail: 'help' is ambiguous (defined in: Mode, Top). Use qualified access, e.g. Mode.help
+
+// A variant's name by itself, two enums in sight having it: which one isn't
+// guessed.
+
+use mara.core
+
+Top :: union { help  quit }
+
+main :: fun() {
+	Mode :: union { build  help }
+	m := help
+	print(m)
+}

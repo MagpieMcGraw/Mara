@@ -210,6 +210,16 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         kc.visiting = false
         return ct
     }
+    if !ok && ref.kind == .None {
+        // (A variant's name by itself, naming nothing else: the one enum in
+        // sight with that variant — `mode := help`.)
+        if et, _, found := tc_variant_ident(k, name, nil, true, span, bare = true); found {
+            if et == nil { return Type_Error{} }   // (two enums have it: said so)
+            tc_set_ref(k, n, {variant_decl(et, name), .Variant})
+            tc_variant_built(k, n, et, name)
+            return et
+        }
+    }
     if !ok {
         // (A type named as a value: said so.)
         if _, is_template := tc_template(k, ref); ref.kind == .Type && !is_template {

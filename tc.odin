@@ -639,12 +639,12 @@ tc_register :: proc(k: ^TC, s: Tree_Id) {
 }
 
 // `T :: type U`, `T :: distinct U`: its name (its base once every name is
-// known: tc_resolve).
-tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id) {
+// known: tc_resolve). (`owner`: the body defining it — named for it.)
+tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
     name := tc_name(k, def)
     span := tree_span(k.t, def)
     alias := k.t.tag[node] == .Alias_Def
-    flat := make_flat_name(k.pkg, name)
+    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
     if flat in k.table.distinct_types {
         tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)
         return
@@ -676,6 +676,12 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id) {
         return
     }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
+    tc_resolve_distinct(k, s, value)
+}
+
+// `T :: distinct U`'s (or `type U`'s) base, once every name is known.
+tc_resolve_distinct :: proc(k: ^TC, s, value: Tree_Id) {
+    t := k.t
     if dt, ok := tc_bound(k, t.main[s]); ok && dt.(^Type_Distinct).base_type == nil {
         dt := dt.(^Type_Distinct)
         if base := Tree_Id(t.a[value]); t.tag[base] == .Type_Slice && t.a[base] != 0 {

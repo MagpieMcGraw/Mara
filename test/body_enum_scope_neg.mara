@@ -1,0 +1,21 @@
+module body_enum_scope_neg
+//@ expect-fail: undefined identifier 'y'
+
+// An enum defined in a fun's body is seen there only: another fun can't name
+// its variants.
+
+use mara.core
+
+a :: fun() {
+	Mode :: union { x  y }
+	print(x)
+}
+
+b :: fun() {
+	print(y)
+}
+
+main :: fun() {
+	a()
+	b()
+}

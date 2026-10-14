@@ -1,0 +1,67 @@
+module body_types
+
+//@ expect-output: Mode.help
+//@ expect-output: asking
+//@ expect-output: Mode.serve true
+//@ expect-output: Color.green
+//@ expect-output: Mode.slow 2.5 hi
+//@ expect-output: E.Broke Ok
+//@ expect-output: 3
+
+// Types defined in a fun's body — an enum, an error set, a distinct type, an
+// alias — seen in that body (and the funs inside it), named for it: two funs
+// each have a Mode. A variant's name by itself is a value, `mode := help`,
+// when one enum in sight has it; a local of that name comes first. They
+// used to be "a definition in a body is not supported yet", and a bare
+// variant "undefined identifier" unless a type was expected.
+
+use mara.core
+
+Color :: union { red  green }
+
+other :: fun() -> i64 {
+	Mode :: union { fast  slow }
+	m := slow
+	E :: error { Broke }
+	Meters :: distinct f64
+	Name :: type [..16]utf8
+	d := Meters(2.5)
+	n : Name
+	&n + "hi"
+	print(m, d, n)
+	inner :: fun() -> i64 {
+		k := fast
+		if k == fast do return 1
+		return 2
+	}
+	return inner()
+}
+
+fails :: fun(bad: bool) -> err {
+	E :: error { Broke }
+	if bad do return Broke
+}
+
+main :: fun() {
+	Mode :: union {build, ask, serve, view, help}
+	mode := help
+	print(mode)
+	mode = ask
+	if mode == ask do print("asking")
+	match mode {
+	build
+		print("b")
+	ask
+		print("a")
+	else
+		print("other")
+	}
+	m2, ok := Mode.from_text("serve")
+	print(m2, ok)
+	c := green
+	print(c)
+	print(other())
+	print(fails(true), fails(false))
+	help := 3
+	print(help)
+}

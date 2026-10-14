@@ -8,9 +8,9 @@
 // it covers, each in backticks, then a colon: `if`, `elif` and `else` share
 // one.
 //
-// What an example needs that can't be defined inside a fun (a union, a
-// dispatch, a generic fun) comes right after its entry, and is part of the
-// example up to the next comment line at the top level.
+// What an example needs that can't be defined inside a fun (a union with
+// fields, a dispatch, a generic fun) comes right after its entry, and is part
+// of the example up to the next comment line at the top level.
 //
 // Longer pages on some of these: program.mara (a program's shape),
 // arrays.mara, text.mara, errors.mara, unions.mara, arenas.mara,
@@ -279,13 +279,20 @@ keyword_struct :: fun() {
 // Each variant is laid out like a struct, and the value has a tag saying
 // which one it holds; `match` picks code by it. A union whose variants hold
 // nothing is an enum. See unions.mara.
+//
+// A variant is named through its type, `Light.Red`; with a dot where its
+// type is known, `.Red`; or by itself, `Red`, when one enum in sight has
+// it (a variable of that name comes first). An enum can be defined in a
+// fun's body, and is seen there only.
 keyword_union :: fun() {
+	Light :: union { Red  Yellow  Green }
 	l : Light = .Yellow
 	print(l)                               // Light.Yellow
-	print(l == .Green)                     // false
+	print(l == Green)                      // false
+	go := Green
+	print(go)                              // Light.Green
 }
 
-Light :: union { Red  Yellow  Green }
 
 // `error`, `err`: a set of ways a function can fail, and the type a failing function returns.
 //
@@ -295,6 +302,7 @@ Light :: union { Red  Yellow  Green }
 // must look at the err — `if bool(e)` — or pass it on with `?`. See
 // errors.mara.
 keyword_error :: fun() {
+	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {
 		if c < '0' or c > '9' do return 0, Not_A_Digit
 		return i64(c) - i64('0')
@@ -305,7 +313,6 @@ keyword_error :: fun() {
 	if bool(e2) do print("failed:", e2)    // failed: Parse_Error.Not_A_Digit
 }
 
-Parse_Error :: error { Empty, Not_A_Digit }
 
 // `distinct`, `type`: a new name for a type — `distinct` a type of its own, `type` the same type.
 //
@@ -314,6 +321,8 @@ Parse_Error :: error { Empty, Not_A_Digit }
 // type [..16]utf8` is the same type by another name, and goes anywhere its
 // base does (core's str64 is one).
 keyword_distinct :: fun() {
+	Meters :: distinct f64
+	Label :: type [..16]utf8
 	m := Meters(3)
 	print(m)                               // 3
 	l : Label
@@ -321,8 +330,6 @@ keyword_distinct :: fun() {
 	print(l)                               // hi
 }
 
-Meters :: distinct f64
-Label :: type [..16]utf8
 
 // `true`, `false`, `bool`: the two truth values, and their type.
 //

@@ -1,0 +1,16 @@
+module body_union_fields_neg
+//@ expect-fail: a union with fields, in a body, is not supported yet
+
+// An enum can be defined in a body (body_types); a union whose variants hold
+// fields not yet: its variants' constructors would be built there.
+
+use mara.core
+
+main :: fun() {
+	Shape :: union {
+		Rect { w: i64 }
+		Dot
+	}
+	s : Shape = .Dot
+	print(s)
+}

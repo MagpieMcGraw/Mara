@@ -243,7 +243,7 @@ PARSE_AMBIGUOUS_AMPERSAND         :: "ambiguous '&' — spaced like the start of
 // Type-checker errors and warnings
 // ============================================================
 
-TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS :: "'.%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s"
+TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS :: "'%s%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s"
 TYPE_AMBIGUOUS_VARIANT_LITERAL :: "ambiguous variant '%s' (defined in: %s) — qualify it as %s.%s{{...}} or annotate the binding's type"
 TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS :: "Move '%s' below all of the declarations in this class. Trust me."
 TYPE_WON_GET_AUTO_CONSTRUCTED_DECLARED :: "'%s' won't get auto-constructed when declared inside of an array. Promise me that you will write valid data to '%s' before you try to read from it."

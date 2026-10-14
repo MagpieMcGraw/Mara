@@ -2,10 +2,11 @@ package mara
 
 import "core:fmt"
 
-// Definitions in a body: a struct's methods and types, a fun's own funs and
-// structs. Each is named for its owner (`Arena_mark`), declared in its
-// owner's scope (a method sees its struct's names; no body sees another's
-// locals), and checked as its own body.
+// Definitions in a body: a struct's methods and types, a fun's own funs,
+// structs, enums, error sets, distinct types and aliases. Each is named for
+// its owner (`Arena_mark`), declared in its owner's scope (a method sees its
+// struct's names; no body sees another's locals), and a fun or struct
+// checked as its own body.
 
 // A body's definitions, registered (once): each fun's and struct's type made
 // and its signature resolved.
@@ -15,6 +16,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     owner := sc.ts
     owner_i := k.scope_of[owner]
+    distincts := make([dynamic]Tree_Id, context.temp_allocator)
     for s in tc_live(k, scope_view(t, sc.node).body) {
         if t.tag[s] != .Define { continue }
         value := Tree_Id(t.b[s])
@@ -22,12 +24,25 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             tc_register_nested(k, s, value, owner, owner_i)
             continue
         }
+        if t.a[s] == 0 && value != 0 {
+            #partial switch t.tag[value] {
+            case .Union_Def, .Error_Def:
+                tc_register_union(k, s, value, owner)
+                continue
+            case .Alias_Def, .Distinct_Def:
+                tc_register_distinct(k, s, value, owner)
+                append(&distincts, s)
+                continue
+            }
+        }
         if value != 0 && !tc_is_definition(t.tag[value]) {
             tc_register_local_const(k, s, value, sc)
             continue
         }
         tc_unsupported(k, s, "a definition in a body")
     }
+    // (A distinct type's base, once every name here is declared.)
+    for s in distincts { tc_resolve_distinct(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }
 }
 

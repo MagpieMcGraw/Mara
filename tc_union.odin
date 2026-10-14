@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:slice"
 import "core:strings"
 
@@ -10,11 +11,17 @@ import "core:strings"
 // set (each variant's value its set's id and its place in it).
 
 // Its name declared, its type made (a union's fields wait: tc_resolve_union).
-tc_register_union :: proc(k: ^TC, def, node: Tree_Id) {
+// (`owner`: the body defining it — named for it, as a nested struct is, and
+// seen only there.)
+tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
     t := k.t
     name := tc_name(k, def)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
+        if owner != nil {
+            tc_unsupported(k, def, "a generic definition in a body")
+            return
+        }
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg}
         return
     }
@@ -33,7 +40,11 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id) {
     }
     has_data := false
     for v in variants { if v.fields { has_data = true } }
-    flat := make_flat_name(k.pkg, name)
+    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
+    if has_data && owner != nil {
+        tc_unsupported(k, def, "a union with fields, in a body,")
+        return
+    }
     if !has_data {
         if flat in k.table.enums {
             tc_error(k, span, TYPE_ENUM_ALREADY_DEFINED, name)
@@ -41,7 +52,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id) {
         }
         et := new(Type_Enum)
         et.name, et.source_name, et.home_package, et.span = flat, name, k.pkg, span
-        et.tag_type, et.is_error_kind = h.tag_type, is_error
+        et.tag_type, et.is_error_kind, et.owner = h.tag_type, is_error, owner
         if is_error {
             // (Its set's id, its variants' values its id and their place.)
             k.table.error_set_counter += 1
@@ -57,7 +68,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id) {
         k.table.enums[flat] = et
         tc_bound_set(k, k.t.main[def], et)
         for _, tok in et.variant_decls { tc_bound_set(k, tok, et) }   // (a variant named, `m.Red`: its enum's value)
-        register_enum_variants(k.c, et, flat)
+        if owner == nil { register_enum_variants(k.c, et, flat) }   // (a body's: found in it alone, tc_sees_enum)
         return
     }
     if flat in k.table.unions {
@@ -206,7 +217,7 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id) {
 // A variant named by itself (`.Red`, or `Red` where an enum is expected):
 // the variant of the enum expected, or — `.Red` — the one enum visible that
 // has it.
-tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span) -> (Type, int, bool) {
+tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span, bare := false) -> (Type, int, bool) {
     if hint != nil {
         // (A named enum or union — `type E`, `distinct U` — looked in as its
         // base is; the variant is of the named one, so a distinct one takes it.)
@@ -220,11 +231,11 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
         if _, is_err := hb.(Type_Err); is_err {
             owners := make([dynamic]string, context.temp_allocator)
             for ename, edef in k.table.enums {
-                if edef.is_error_kind && name in edef.variants && resolve_sees_module(k.rs, span.at, edef.home_package) { append(&owners, ename) }
+                if edef.is_error_kind && name in edef.variants && tc_sees_enum(k, edef, span) { append(&owners, ename) }
             }
             tc_error_ok(k, name, &owners)
             if len(owners) > 1 {
-                tc_variant_ambiguous(k, name, owners[:], span)
+                tc_variant_ambiguous(k, name, owners[:], span, bare)
                 return nil, 0, true
             }
             if len(owners) == 1 {
@@ -236,11 +247,11 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
     if !dot { return nil, 0, false }
     owners := make([dynamic]string, context.temp_allocator)
     for ename, edef in k.table.enums {
-        if name in edef.variants && resolve_sees_module(k.rs, span.at, edef.home_package) { append(&owners, ename) }
+        if name in edef.variants && tc_sees_enum(k, edef, span) { append(&owners, ename) }
     }
     tc_error_ok(k, name, &owners)
     if len(owners) > 1 {
-        tc_variant_ambiguous(k, name, owners[:], span)
+        tc_variant_ambiguous(k, name, owners[:], span, bare)
         return nil, 0, true
     }
     if len(owners) == 1 {
@@ -248,6 +259,17 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
         return et, et.variants[name], true
     }
     return nil, 0, false
+}
+
+// Whether an enum is in sight where its variant is named by itself: its
+// module's, or a used one's; a body's, only in that body (or one inside it).
+tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
+    if !resolve_sees_module(k.rs, span.at, et.home_package) { return false }
+    if et.owner == nil { return true }
+    for b := k.body; b != nil; b = b.parent_scope {
+        if b == et.owner { return true }
+    }
+    return false
 }
 
 // Ok is 0 in every error set, the one no-error value: `.Ok` that only error
@@ -267,11 +289,11 @@ tc_error_ok :: proc(k: ^TC, name: string, owners: ^[dynamic]string) {
 
 // `.name` that more than one enum visible has: an error naming them as the
 // source does.
-tc_variant_ambiguous :: proc(k: ^TC, name: string, owners: []string, span: Span) {
+tc_variant_ambiguous :: proc(k: ^TC, name: string, owners: []string, span: Span, bare := false) {
     names := make([dynamic]string, context.temp_allocator)
     for o in owners { append(&names, type_name(k.table.enums[o])) }
     slice.sort(names[:])
-    tc_error(k, span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS, name, strings.join(names[:], ", ", context.temp_allocator), names[0], name)
+    tc_error(k, span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS, "" if bare else ".", name, strings.join(names[:], ", ", context.temp_allocator), names[0], name)
 }
 
 // A variant built at n — its literal, its name as a value: its constructor

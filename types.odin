@@ -539,6 +539,7 @@ Type_Enum :: struct {
     is_error_kind: bool,    // true for `Name :: error { ... }` — flat tag set in the global `err` type
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
+    owner:         ^Type_Scope,   // the fun or struct whose body defines it; nil: its module's
 }
 
 Type_Union :: struct {
