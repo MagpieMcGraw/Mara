@@ -884,9 +884,13 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     if release {
         strings.write_string(&b, " -O3")
     }
-    // The objects' debug info, merged by lld into a PDB beside the program.
+    // The objects' debug info, merged by lld into a PDB beside the program —
+    // or none, and an earlier build's PDB taken away: a debugger, or a
+    // crash's report, would take it for this program's.
     if debug {
         strings.write_string(&b, " -g")
+    } else {
+        os.remove(strings.concatenate({exe_name[:len(exe_name) - len(filepath.ext(exe_name))], ".pdb"}, context.temp_allocator))
     }
     // Shared mode: build a DLL/SO instead of an executable. clang's `-shared`
     // works across platforms — lld produces a .dll on Windows and a .so on

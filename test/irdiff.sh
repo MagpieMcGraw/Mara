@@ -64,8 +64,10 @@ one_program() {  # dir module run [build flags]
     side=${s%%:*}; exe=${s#*:}
     # Windows can hold a fresh exe a moment (a virus scan): retry its removal.
     for t in 1 2 3 4 5; do rm -f "$dir/$mod.exe" 2>/dev/null; [ -e "$dir/$mod.exe" ] || break; sleep 1; done
+    # (Not compared: timings; lld's `>>>` lines under an error, which name the
+    # source line in a build with debug info — the x86 backend's.)
     ( cd "$dir" && { rm -rf "${mod}_build" "$mod.exe" 2>/dev/null; "$exe" build "$mod" $flags 2>&1; } ) \
-      | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in' \
+      | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in|^>>> ' \
       | sort > "$OUT/$side/$mod.out"   # diagnostics order follows map iteration
     if [ $X86 = 0 ] && [ -d "$dir/${mod}_build" ]; then
       mkdir -p "$OUT/$side/$mod"
@@ -80,6 +82,9 @@ one_program() {  # dir module run [build flags]
       cp "$dir/$mod.exe" "$OUT/run/$side/$mod.exe"
       ( cd "$dir" && timeout 10 "$OUT/run/$side/$mod.exe" > "$OUT/run/$side/$mod.run" 2>&1
         echo "exit $?" >> "$OUT/run/$side/$mod.run" )
+      # (A crash's report of the calls running — a build with debug info's,
+      # the x86 backend's — isn't compared.)
+      if [ $X86 = 1 ]; then sed -i -E '/^  (at |\.\.\. )/d' "$OUT/run/$side/$mod.run"; fi
     fi
   done
 }

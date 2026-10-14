@@ -158,8 +158,244 @@ static void mara_crash_trim(const char* path, const char* tmp_path) {
 #endif
 }
 
+// --- the calls that were running ------------------------------------------------
+//
+// A report ends with the calls that were running when it was made, innermost
+// first, each where it was in the source:
+//
+//     at area (dbg.mara:38)
+//     at main (dbg.mara:56)
+//
+// The stack is walked by the unwind info every function has (.pdata), from
+// the crash's own registers — or, for an assert's report, from here — and
+// each address is named by the program's debug info (its PDB, beside it)
+// through dbghelp, loaded only now. That's done on a thread of its own: a
+// stack overflow's report has little stack left. An assert's report leaves
+// out the runtime's own frames (__mara_*) it starts in; every report leaves
+// out the C runtime's below main. A call that calls itself again and again
+// is one line, and a deep stack shows its first calls and its last. A
+// program with no debug info (a -release build) reports no calls. (A file
+// in the program's directory is named from there; another, in full.)
+
+#ifdef _WIN32
+#include <dbghelp.h>
+
+#define MARA_FRAMES_CAP  200000   // (a stack overflow's: 1 MB of small frames, and room)
+#define MARA_FRAMES_HEAD 40
+#define MARA_FRAMES_TAIL 12
+
+typedef BOOL  (WINAPI *Mara_SymInitialize)(HANDLE, PCSTR, BOOL);
+typedef DWORD (WINAPI *Mara_SymSetOptions)(DWORD);
+typedef BOOL  (WINAPI *Mara_SymFromAddr)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
+typedef BOOL  (WINAPI *Mara_SymGetLineFromAddr64)(HANDLE, DWORD64, PDWORD, PIMAGEHLP_LINE64);
+
+// A frame: its address, and how many times in a row the stack has it.
+typedef struct { DWORD64 at; int times; } Mara_Frame;
+
+// A run of frames: `period` of them from `at`, `times` over (calls that call
+// each other again and again).
+typedef struct { int at, period, times; } Mara_Run;
+
+#define MARA_CYCLE_CAP 4   // (the longest cycle of calls a run folds)
+
+// What the debug info says of an address: its function, its source line.
+typedef struct {
+    char  name[256];
+    char  file[MARA_PATH_CAP];
+    DWORD line;
+} Mara_Place;
+
+static CONTEXT mara_stack_from;
+static int     mara_stack_skip;     // an assert's: the runtime's frames it starts in, left out
+static int     mara_stack_done = 0;
+static Mara_SymFromAddr          mara_sym_from_addr;
+static Mara_SymGetLineFromAddr64 mara_sym_line;
+static char    mara_dir[MARA_PATH_CAP];
+static size_t  mara_dir_len;
+
+// The stack's frames from a context: each one unwound by its function's
+// unwind info; a leaf's (none), returned from the top of its stack. A
+// stack too broken to walk ends where it breaks.
+static int mara_walk(CONTEXT ctx, Mara_Frame* frames) {
+    int n = 0;
+    __try {
+        for (int k = 0; k < MARA_FRAMES_CAP; k++) {
+            if (n > 0 && frames[n - 1].at == ctx.Rip) {
+                frames[n - 1].times += 1;
+            } else {
+                frames[n].at = ctx.Rip;
+                frames[n].times = 1;
+                n += 1;
+            }
+            DWORD64 base = 0;
+            PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
+            if (fn) {
+                PVOID data;
+                DWORD64 frame;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, fn, &ctx, &data, &frame, NULL);
+            } else {
+                ctx.Rip = *(DWORD64*)ctx.Rsp;
+                ctx.Rsp += 8;
+            }
+            if (ctx.Rip == 0) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return n;
+}
+
+// A frame's place: of its address, the crash's; of a return address, the
+// call's, just before it.
+static void mara_place(Mara_Frame* frames, int i, Mara_Place* p) {
+    DWORD64 at = frames[i].at - (i > 0 ? 1 : 0);
+    p->name[0] = 0;
+    p->file[0] = 0;
+    p->line = 0;
+    union { SYMBOL_INFO info; char room[sizeof(SYMBOL_INFO) + 256]; } sym;
+    memset(&sym, 0, sizeof sym);
+    sym.info.SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym.info.MaxNameLen = 255;
+    DWORD64 off = 0;
+    if (mara_sym_from_addr(GetCurrentProcess(), at, &off, &sym.info)) snprintf(p->name, sizeof p->name, "%s", sym.info.Name);
+    IMAGEHLP_LINE64 line;
+    memset(&line, 0, sizeof line);
+    line.SizeOfStruct = sizeof line;
+    DWORD col = 0;
+    if (mara_sym_line(GetCurrentProcess(), at, &col, &line) && line.FileName) {
+        snprintf(p->file, sizeof p->file, "%s", line.FileName);
+        p->line = line.LineNumber;
+    }
+}
+
+static int mara_is_mara(Mara_Place* p) {
+    size_t n = strlen(p->file);
+    return n > 5 && _stricmp(p->file + n - 5, ".mara") == 0;
+}
+
+static void mara_print_frame(Mara_Frame* frames, int i) {
+    Mara_Place p;
+    mara_place(frames, i, &p);
+    const char* file = p.file;
+    if (mara_dir_len && _strnicmp(file, mara_dir, mara_dir_len) == 0) file += mara_dir_len;
+    if (p.line) {
+        __mara_tee_printf("  at %s (%s:%lu)\n", p.name[0] ? p.name : "?", file, (unsigned long)p.line);
+    } else if (p.name[0]) {
+        __mara_tee_printf("  at %s\n", p.name);
+    } else {
+        // No debug info: its module, and where in it.
+        HMODULE mod = NULL;
+        char path[MARA_PATH_CAP] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)frames[i].at, &mod)) {
+            GetModuleFileNameA(mod, path, sizeof path);
+        }
+        const char* base = path;
+        for (const char* c = path; *c; c++) if (*c == '\\' || *c == '/') base = c + 1;
+        __mara_tee_printf("  at %s+0x%llX\n", base, (unsigned long long)(frames[i].at - (DWORD64)mod));
+    }
+    if (frames[i].times > 1) __mara_tee_printf("  ... the same call %d more times\n", frames[i].times - 1);
+}
+
+// Whether the `period` frames from a and from b are the same calls.
+static int mara_same(Mara_Frame* frames, int a, int b, int period) {
+    for (int k = 0; k < period; k++) {
+        if (frames[a + k].at != frames[b + k].at || frames[a + k].times != frames[b + k].times) return 0;
+    }
+    return 1;
+}
+
+static void mara_print_run(Mara_Frame* frames, Mara_Run r) {
+    for (int k = 0; k < r.period; k++) mara_print_frame(frames, r.at + k);
+    if (r.times > 1) __mara_tee_printf("  ... the %d calls above, %d more times\n", r.period, r.times - 1);
+}
+
+static DWORD WINAPI mara_stack_thread(LPVOID unused) {
+    (void)unused;
+    HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+    if (!dbghelp) return 0;
+    Mara_SymInitialize init = (Mara_SymInitialize)(void*)GetProcAddress(dbghelp, "SymInitialize");
+    Mara_SymSetOptions options = (Mara_SymSetOptions)(void*)GetProcAddress(dbghelp, "SymSetOptions");
+    mara_sym_from_addr = (Mara_SymFromAddr)(void*)GetProcAddress(dbghelp, "SymFromAddr");
+    mara_sym_line = (Mara_SymGetLineFromAddr64)(void*)GetProcAddress(dbghelp, "SymGetLineFromAddr64");
+    if (!init || !options || !mara_sym_from_addr || !mara_sym_line) return 0;
+    options(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS);
+    mara_dir_len = __mara_exe_dir(mara_dir, sizeof mara_dir);
+    if (!init(GetCurrentProcess(), mara_dir_len ? mara_dir : NULL, TRUE)) return 0;
+    Mara_Frame* frames = (Mara_Frame*)VirtualAlloc(NULL, sizeof(Mara_Frame) * MARA_FRAMES_CAP, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!frames) return 0;
+    int n = mara_walk(mara_stack_from, frames);
+
+    // From the first frame not the runtime's own (an assert's) to main.
+    Mara_Place p;
+    int first = 0;
+    for (; mara_stack_skip && first < n; first++) {
+        mara_place(frames, first, &p);
+        const char* name = p.name;
+        while (*name == '_') name++;   // (dbghelp names a C function with one _ fewer)
+        if (p.name[0] && strncmp(name, "mara_", 5) != 0) break;
+    }
+    int last = n - 1, mara = 0;
+    for (int i = n - 1; i >= first && i >= n - 32; i--) {
+        mara_place(frames, i, &p);
+        if (strcmp(p.name, "main") == 0 && mara_is_mara(&p)) { last = i; mara = 1; break; }
+    }
+    for (int i = first; i <= last && i < first + MARA_FRAMES_HEAD && !mara; i++) {
+        mara_place(frames, i, &p);
+        mara = mara_is_mara(&p);
+    }
+    if (!mara) return 0;   // (no debug info)
+
+    // The frames as runs: a cycle of a few calls that repeats (calls that
+    // call each other), once.
+    Mara_Run* runs = (Mara_Run*)VirtualAlloc(NULL, sizeof(Mara_Run) * (size_t)(last - first + 1), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!runs) return 0;
+    int nruns = 0;
+    for (int i = first; i <= last; ) {
+        Mara_Run r = {i, 1, 1};
+        for (int period = 2; period <= MARA_CYCLE_CAP; period++) {
+            int times = 1;
+            while (i + (times + 1) * period - 1 <= last && mara_same(frames, i, i + times * period, period)) times += 1;
+            if (times >= 3 && times * period > r.times * r.period) r = (Mara_Run){i, period, times};
+        }
+        runs[nruns++] = r;
+        i += r.period * r.times;
+    }
+    if (nruns <= MARA_FRAMES_HEAD + MARA_FRAMES_TAIL + 1) {
+        for (int k = 0; k < nruns; k++) mara_print_run(frames, runs[k]);
+    } else {
+        long long calls = 0;
+        for (int k = MARA_FRAMES_HEAD; k < nruns - MARA_FRAMES_TAIL; k++) {
+            for (int j = 0; j < runs[k].period; j++) calls += (long long)frames[runs[k].at + j].times * runs[k].times;
+        }
+        for (int k = 0; k < MARA_FRAMES_HEAD; k++) mara_print_run(frames, runs[k]);
+        __mara_tee_printf("  ... %lld more calls\n", calls);
+        for (int k = nruns - MARA_FRAMES_TAIL; k < nruns; k++) mara_print_run(frames, runs[k]);
+    }
+    return 0;
+}
+
+// The calls running at `from`, into the report, once.
+static void mara_stack(CONTEXT* from, int skip) {
+    if (mara_stack_done) return;
+    mara_stack_done = 1;
+    mara_stack_from = *from;
+    mara_stack_skip = skip;
+    fflush(stdout);
+    HANDLE t = CreateThread(NULL, 1 << 20, mara_stack_thread, NULL, 0, NULL);
+    if (t) {
+        WaitForSingleObject(t, 10000);
+        CloseHandle(t);
+    }
+}
+#endif
+
 void __mara_crash_end(void) {
     if (!mara_entry_active) return;
+#ifdef _WIN32
+    {
+        CONTEXT here;
+        RtlCaptureContext(&here);
+        mara_stack(&here, 1);
+    }
+#endif
     mara_entry_active = 0;
     if (mara_entry_len == 0) return;
     // Blank-line entry separator (message lines already end with '\n').
@@ -222,6 +458,7 @@ static LONG WINAPI mara_crash_filter(EXCEPTION_POINTERS* info) {
     } else {
         __mara_tee_printf("Crashed: %s\n", what);
     }
+    mara_stack(info->ContextRecord, 0);
     __mara_crash_end();
     fflush(stdout);
     exit((int)code);
