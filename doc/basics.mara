@@ -467,7 +467,8 @@ keyword_foreign :: fun() {
 
 // ---- built-ins ------------------------------------------------------------------
 
-// `print`, `print_int`, `print_float`, `print_cstr`: write values to the console, then a new line.
+// `print`, `print_int`, `print_float`, `print_cstr`
+//  write values to the console, then a new line.
 //
 // `print(a, b, c)` writes each value — numbers, text, bools, structs, enums
 // — with spaces between. When the first is text with `%` in it, each `%` is
