@@ -122,18 +122,26 @@ editor_via_view :: proc(args: CLI_Args) {
 }
 
 // What the name at `mara docs at <point>` refers to, as the docs request's
-// last fields — "\t<kind>\t<name>\t<path>\t<line>", a builtin's path empty —
-// and its name. "" when nothing there refers to anything, or the point's
-// token isn't the words' (the file changed since it was saved: the point is
-// on something else now).
+// last fields — "\t<kind>\t<name>\t<path>\t<line>", a builtin's path empty,
+// a keyword's kind "keyword" — and its name. "" when nothing there refers to
+// anything, or the point's token isn't the words' (the file changed since it
+// was saved: the point is on something else now).
 docs_exact :: proc(args: CLI_Args, cwd, words: string) -> (exact, name: string) {
     // (`mara ask at`'s first lines: "<file>:<l>:<c>  token '<t>'", then
     // "refers to: <kind> <name>  <file>:<line>".)
     lines := strings.split_lines(docs_point_answer(args), context.temp_allocator)
-    if len(lines) < 2 || !strings.has_prefix(lines[1], "refers to: ") { return }
+    if len(lines) < 2 { return }
     token := ""
     if at := strings.index(lines[0], "token '"); at >= 0 { token = strings.trim_suffix(lines[0][at + 7:], "'") }
     if words != "" && !docs_same_word(token, words) { return }
+    // (A keyword refers to nothing: it's itself, shown by its entry in
+    // doc/basics.mara.)
+    if !strings.has_prefix(lines[1], "refers to: ") {
+        if _, is_keyword := keyword_lookup(token); is_keyword || token == "defer?" {
+            return fmt.tprintf("\tkeyword\t%s\t\t0", token), token
+        }
+        return
+    }
     s := lines[1][len("refers to: "):]
     space := strings.index_byte(s, ' ')
     if space < 0 { return }

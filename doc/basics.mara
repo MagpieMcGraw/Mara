@@ -1,0 +1,645 @@
+// Mara's basics: what each keyword and built-in does, with an example of each.
+//
+// Each keyword or built-in has an entry here: a fun named keyword_<word> or
+// builtin_<word>. Its doc comment explains the word; its body is the
+// example, and runs — main calls every entry, so what's written here works.
+// Rest the cursor on a word in the editor — `fun`, `for`, `print` — and the
+// docs window shows its entry. An entry's first line starts with the words
+// it covers, each in backticks, then a colon: `if`, `elif` and `else` share
+// one.
+//
+// What an example needs that can't be defined inside a fun (a union, a
+// dispatch, a generic fun) comes right after its entry, and is part of the
+// example up to the next comment line at the top level.
+//
+// Longer pages on some of these: program.mara (a program's shape),
+// arrays.mara, text.mara, errors.mara, unions.mara, arenas.mara,
+// printing.mara.
+module basics
+
+use mara.core
+
+// ---- a program's parts ------------------------------------------------------
+
+// `module`: the name of the program or library a file belongs to — its first line.
+//
+// Every .mara file starts `module <name>`. `mara build <name>` builds all
+// the .mara files in the folder that start with that line, as one program,
+// into <name>.exe; with no name, the folder's. A module's files all see each
+// other's names, with no `use` between them.
+//
+// Library modules have dotted names, like mara.os, and live in the
+// compiler's code/ folder. The comment right above the `module` line is the
+// file's doc comment.
+keyword_module :: fun() {
+	// This file is:
+	//
+	//     module basics
+	//
+	//     use mara.core
+	//
+	//     main :: fun() { … }
+	//
+	// built from its folder with `mara build basics`, into basics.exe.
+}
+
+// `use`, `include`, `sealed`: bring another module's names into a file — an import.
+//
+// `use mara.string` makes mara.string's names visible in this file:
+// `trimmed(s)`. `include m` makes them visible in every file of this
+// module. `s :: use mara.string` does that and names the module as well:
+// `s.trimmed(…)` says whose trimmed it is. (`sealed` is meant to bring in
+// the name alone; it doesn't work yet.)
+//
+// Uses go at the top, after the `module` line. Nearly every file uses
+// mara.core: text buffers, `&list + x`, comparing texts.
+keyword_use :: fun() {
+	// At the top of a file:
+	//
+	//     use mara.core
+	//     use mara.string           // trimmed(line)
+	//     include mara.memory       // KB, MB, Arena_Debug: in every file of the module
+	//     os :: use mara.os         // os.read_entire_file(…)
+}
+
+// `fun`, `method`: a function — code with a name, called with values, giving values back.
+//
+// `name :: fun(params) -> results { body }`. A param is `name: type`;
+// `a, b: i64` shares one type; `n := 5` gives a default the call can leave
+// out. After `->` come the types of what it returns, separated by commas.
+// No `->`: it returns nothing. `main :: fun()` is where a program starts.
+//
+// A param is the caller's value: the body reads it, and can't change it. To
+// change a caller's variable, take a pointer — `n: ^i64` — and the caller
+// passes `&x`.
+//
+// `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
+// its first param that way, and `&x.f()` passes `&x`. A fun defined inside
+// another is seen only there. A `$T` in a param's type makes the fun
+// generic: T is whatever type the call passes. `method` is another spelling
+// of `fun`.
+keyword_fun :: fun() {
+	sum :: fun(a, b: i64) -> i64 {
+		return a + b
+	}
+	print(sum(2, 3))                       // 5
+
+	// Two results, taken apart by the caller.
+	div_mod :: fun(a, b: i64) -> i64, i64 {
+		return a / b, a % b
+	}
+	q, r := div_mod(17, 5)
+	print(q, r)                            // 3 2
+
+	// A default, used when the call leaves it out.
+	greet :: fun(name: []utf8, times := 1) {
+		for i in 0 .. times do print("hi", name)
+	}
+	greet("Ada")                           // hi Ada
+	greet("Bob", 2)                        // hi Bob, twice
+
+	// A pointer param changes the caller's variable.
+	bump :: fun(n: ^i64) {
+		n^ += 1
+	}
+	count := 1
+	bump(&count)
+	print(count)                           // 2
+	print(count.sum(10))                   // 12: sum(count, 10)
+
+	print(first("xyz"), first([7, 8]))     // x 7
+}
+
+first :: fun(xs: []$T) -> T {   // generic: T is the items' type
+	return xs[0]
+}
+
+// `return`: leave a function now, giving back what it returns.
+//
+// `return x` gives back x; `return a, b` two values. A function that
+// returns something must return on every path, or it doesn't build. One
+// that returns nothing ends at its last line, or earlier at a bare
+// `return`. `if bad do return` is the usual early way out. main may return
+// an i64: the program's exit code.
+keyword_return :: fun() {
+	sign :: fun(n: i64) -> i64 {
+		if n < 0 do return -1
+		if n == 0 do return 0
+		return 1
+	}
+	print(sign(-5), sign(0), sign(9))      // -1 0 1
+}
+
+// ---- choosing and repeating -------------------------------------------------
+
+// `if`, `elif`, `else`: run code only when a condition is true.
+//
+// The braces go around the whole chain, not around each part: `if a {`,
+// then `elif b` and `else` on their own lines, one `}` at the end. A
+// condition is a bool: `n != 0`, not `n`. With one statement and no
+// elif or else, `do` takes the braces' place: `if n < 0 do return`.
+//
+// `if` also picks a value: `x := if a do 1 else 2`, both of one type.
+keyword_if :: fun() {
+	temperature := 101
+	if temperature > 100 {
+		print("steam")
+	elif temperature >= 0
+		print("water")
+	else
+		print("ice")
+	}                                      // steam
+
+	if temperature > 50 do print("hot")    // hot
+
+	state := if temperature > 100 do "gas" else "liquid"
+	print(state)                           // gas
+}
+
+// `do`: one statement as a body, without braces — after `if` or `for`.
+//
+// `if done do return`, `for i in 0 .. 3 do print(i)`: the same as braces
+// around that one statement. For more than one, or an else, use braces.
+keyword_do :: fun() {
+	n := 3
+	if n > 2 do print("big")               // big
+	for i in 0 .. n do print(i)            // 0, 1, 2
+}
+
+// `for`, `in`: a loop — code repeated over a range of numbers, over the items of an array, or while a condition holds.
+//
+// `for i in 0 .. 10` counts 0 to 9: a range has its start, not its end. It
+// counts up only; one that ends before it starts runs no times. `for x in
+// xs` takes each item of an array, list, slice or text; `for x, i in xs`
+// its position too. `for cond { … }` repeats while cond is true — `for
+// true { … }` until a break or return.
+//
+// `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10.
+keyword_for :: fun() {
+	for i in 0 .. 3 {
+		print("round", i)                  // round 0, round 1, round 2
+	}
+
+	primes : [4]i64 = [2, 3, 5, 7]
+	for p, i in primes {
+		print(i, p)                        // 0 2, 1 3, 2 5, 3 7
+	}
+
+	n := 1
+	for n < 100 {
+		n *= 3
+	}
+	print(n)                               // 243
+
+	if n in 200 .. 300 do print("in range")   // in range
+}
+
+// `break`, `continue`: leave a loop now, or skip to its next round.
+//
+// Both act on the innermost loop they're in.
+keyword_break :: fun() {
+	for i in 0 .. 10 {
+		if i % 2 == 1 do continue          // odd ones skipped
+		if i > 6 do break                  // stops at 8
+		print(i)                           // 0, 2, 4, 6
+	}
+
+	tries := 0
+	for true {
+		tries += 1
+		if tries == 3 do break
+	}
+	print(tries)                           // 3
+}
+
+// `match`: a switch — run the arm for what a value holds, a union's variant or an enum's value.
+//
+// Each arm names a variant, its code below it, up to the next arm. In
+// `Circle c`, c is the variant's fields. Every variant needs an arm, or an
+// `else` arm takes the rest — a variant left out doesn't build. See
+// unions.mara.
+keyword_match :: fun() {
+	shape_area :: fun(s: Shape) -> f64 {
+		match s {
+		Circle c
+			return 3.14 * c.r * c.r
+		Square sq
+			return sq.side * sq.side
+		else
+			return 0
+		}
+	}
+	print(shape_area(Square{side = 3}))    // 9
+	print(shape_area(.Dot))                // 0
+}
+
+Shape :: union {
+	Circle { r: f64 }
+	Square { side: f64 }
+	Dot
+}
+
+// ---- types --------------------------------------------------------------------
+
+// `struct`, `class`: a type made of named fields, like a record.
+//
+// Each field is `name: type`, with a default (`= 1`, or `name := 1` for its
+// type too) or else zero. A value: `p : Point` (every field its default),
+// `Point{x = 2}` (the fields given written over the defaults), `Point{2, 3}`
+// (in order). `p.x` reads or writes a field.
+//
+// Params, `Grid :: struct(w: i64) { … }`, are what it's built from:
+// `Grid(4)`. Its body runs to build it, so a field can be worked out from
+// them. A fun in the body is a method: `g.cells()`, Self being the struct.
+// `class` is another spelling of `struct`.
+keyword_struct :: fun() {
+	Point :: struct {
+		x: f32
+		y: f32 = 1
+	}
+	p := Point{x = 2}
+	print(p)                               // Point { x: 2, y: 1 }
+	p.y = 5
+	print(p.x + p.y)                       // 7
+
+	Grid :: struct(w: i64) {
+		width := w
+		cells :: fun(g: Self) -> i64 { return g.width * g.width }
+	}
+	g := Grid(4)
+	print(g.width, g.cells())              // 4 16
+}
+
+// `union`: a type whose value is one of several variants, each with its own fields — an enum when they hold nothing.
+//
+// Each variant is laid out like a struct, and the value has a tag saying
+// which one it holds; `match` picks code by it. A union whose variants hold
+// nothing is an enum. See unions.mara.
+keyword_union :: fun() {
+	l : Light = .Yellow
+	print(l)                               // Light.Yellow
+	print(l == .Green)                     // false
+}
+
+Light :: union { Red  Yellow  Green }
+
+// `error`, `err`: a set of ways a function can fail, and the type a failing function returns.
+//
+// `Parse_Error :: error { Empty, Not_A_Digit }` names the ways. A function
+// that can fail returns an `err` last: `-> i64, err`. `return 0, Empty`
+// fails; reaching its end or `return n` succeeds (the err is Ok). The caller
+// must look at the err — `if bool(e)` — or pass it on with `?`. See
+// errors.mara.
+keyword_error :: fun() {
+	digit :: fun(c: utf8) -> i64, err {
+		if c < '0' or c > '9' do return 0, Not_A_Digit
+		return i64(c) - i64('0')
+	}
+	n, e := digit('7')
+	print(n, e)                            // 7 Ok
+	_, e2 := digit('x')
+	if bool(e2) do print("failed:", e2)    // failed: Parse_Error.Not_A_Digit
+}
+
+Parse_Error :: error { Empty, Not_A_Digit }
+
+// `distinct`, `type`: a new name for a type — `distinct` a type of its own, `type` the same type.
+//
+// `Meters :: distinct f64` has f64's shape, but isn't f64: a plain f64
+// doesn't go where Meters does, so the two can't be mixed up. `Label ::
+// type [..16]utf8` is the same type by another name, and goes anywhere its
+// base does (core's str64 is one).
+keyword_distinct :: fun() {
+	m := Meters(3)
+	print(m)                               // 3
+	l : Label
+	&l + "hi"
+	print(l)                               // hi
+}
+
+Meters :: distinct f64
+Label :: type [..16]utf8
+
+// `true`, `false`, `bool`: the two truth values, and their type.
+//
+// Comparisons give a bool (`a < b`), and `if`, `for` and `and`/`or`/`not`
+// take one. A number isn't a bool: `bool(n)` is true when n isn't 0.
+keyword_true :: fun() {
+	ready := true
+	done : bool = false
+	print(ready, done, 3 > 2)              // true false true
+	print(bool(0), bool(7))                // false true
+}
+
+// `and`, `or`, `not`: combine bools.
+//
+// `a and b` is true when both are; `a or b` when either is; `not a` when a
+// isn't. The right side runs only when it's needed: in `i < n and xs[i] > 0`,
+// xs[i] isn't read once i reaches n.
+keyword_and :: fun() {
+	xs : [3]i64 = [4, 0, 9]
+	i := 3
+	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
+	print(not (i == 3) or xs[0] == 4)      // true
+}
+
+// ---- when a block ends ----------------------------------------------------------
+
+// `defer`, `defer?`: run a statement when the block ends — `defer?` only when the function fails.
+//
+// `defer close(f)` runs when the block it's in ends, however it ends: at
+// its `}`, a return, a break. In a loop's body, that's every round. Several
+// run last first. `defer?` runs only on a failing way out — a `?` that
+// fails, a return of a failed err — for taking back what a failure would
+// leave half done. See errors.mara.
+keyword_defer :: fun() {
+	steps :: fun() {
+		defer print("third")
+		defer print("second")
+		print("first")
+	}
+	steps()                                // first, second, third
+}
+
+// ---- functions as values, and operators -----------------------------------------
+
+// `fn`: the type of a function value, for passing a function — a callback — around.
+//
+// A function can be passed and kept like any value; its type is written
+// `fn` and a function's name: `cb: fn tick` takes tick, or a variable
+// holding it. Another function of the same shape doesn't fit: the type is
+// that function's.
+keyword_fn :: fun() {
+	run_twice :: fun(f: fn tick, n: i64) -> i64 {
+		return f(f(n))
+	}
+	print(run_twice(tick, 5))              // 7
+	step := tick
+	print(step(1))                         // 2
+}
+
+tick :: fun(n: i64) -> i64 { return n + 1 }
+
+// `dispatch`: one name for several functions — overloading: the call picks the one whose params fit.
+//
+// `area :: dispatch{ coin_area, tile_area }`: `area(c)` calls coin_area for
+// a Coin, tile_area for a Tile. The args must fit one exactly. With
+// `overload`, an operator calls a dispatch.
+keyword_dispatch :: fun() {
+	print(area(Coin{r = 1}))               // 3.14
+	print(area(Tile{side = 2}))            // 4
+}
+
+area :: dispatch{ coin_area, tile_area }
+coin_area :: fun(c: Coin) -> f64 { return 3.14 * c.r * c.r }
+tile_area :: fun(t: Tile) -> f64 { return t.side * t.side }
+Coin :: struct { r: f64 }
+Tile :: struct { side: f64 }
+
+// `overload`: an operator — `+`, `-`, `*`, `==` — on your own types, through a dispatch.
+//
+// `overload + plus` makes `a + b` call `plus(a, b)` when a function in the
+// dispatch plus takes them. Core does this for text: `&name + "x"` is its
+// add, `a == b` its equal.
+keyword_overload :: fun() {
+	v := V2{1, 2} + V2{10, 20}
+	print(v)                               // V2 { x: 11, y: 22 }
+}
+
+overload + plus
+plus :: dispatch{ v2_plus }
+v2_plus :: fun(a, b: V2) -> V2 { return V2{x = a.x + b.x, y = a.y + b.y} }
+V2 :: struct { x: f64  y: f64 }
+
+// `using`: a field whose own fields are meant to be reached as the struct's — not working yet.
+//
+// With `using pos: Place` in Player, `player.x` is meant to be
+// `player.pos.x`. The compiler takes the declaration, but reaching a field
+// through it says "not supported yet": go through the field's name.
+keyword_using :: fun() {
+	pl : Player
+	pl.pos.x = 4
+	print(pl.pos.x, pl.hp)                 // 4 10
+}
+
+Player :: struct {
+	using pos: Place
+	hp := 10
+}
+Place :: struct { x: f32  y: f32 }
+
+// `foreign`: functions from a C library, declared so Mara can call them.
+//
+// A `foreign static_lib "<library>" { … }` block lists C's functions with
+// Mara types; calls to them go straight to the library. `prefix SDL_` after
+// the library's name lets the functions go without it: `Init` for SDL_Init.
+// The standard library's os.mara and the SDL and OpenGL bindings in code/
+// are made of these. Text goes to C as a cstring.
+keyword_foreign :: fun() {
+	// From code/os.mara:
+	//
+	//     foreign static_lib "kernel32" {
+	//         fun Sleep(ms: u32)
+	//         fun GetLastError() -> u32
+	//     }
+}
+
+// ---- built-ins ------------------------------------------------------------------
+
+// `print`, `print_int`, `print_float`, `print_cstr`: write values to the console, then a new line.
+//
+// `print(a, b, c)` writes each value — numbers, text, bools, structs, enums
+// — with spaces between. When the first is text with `%` in it, each `%` is
+// the next value instead (`%%` writes one %). See printing.mara.
+// print_int, print_float and print_cstr write one value of their kind.
+builtin_print :: fun() {
+	print("hello", 42, 2.5, true)          // hello 42 2.5 true
+	print("% is % years old", "Ada", 36)   // Ada is 36 years old
+}
+
+// `assert`, `crash`: stop the program when something that must hold doesn't.
+//
+// `assert(n > 10)` stops the program when n > 10 is false, saying where,
+// what was expected and what the values were: "Expected n > 10, but n was
+// 5". `crash("why")` stops it right there, with that message. Indexing past
+// an array's end and numbers overflowing stop it the same way. Either way
+// crash.txt, beside the program, lists the calls that were running.
+builtin_assert :: fun() {
+	n := 50
+	assert(n > 10)
+	if n > 100 do crash("n is far too big")
+}
+
+// `len`, `cap`: how many items an array, list, slice or text has, and how many fit.
+//
+// `xs.len` is how many items there are; `xs.cap` how many fit — for a list
+// (`[..8]i64`) that's 8, however many it has. A fixed array's are both its
+// size. `len(xs)` and `cap(xs)` say the same of a fixed array or a slice.
+builtin_len :: fun() {
+	list : [..8]i64
+	&list + 3
+	&list + 4
+	print(list.len, list.cap)              // 2 8
+	word := "hello"
+	print(word.len)                        // 5
+	primes : [4]i64 = [2, 3, 5, 7]
+	print(len(primes), cap(primes))        // 4 4
+}
+
+// `i64`, `i32`, `i16`, `i8`, `u64`, `u32`, `u16`, `u8`, `isize`, `usize`, `int`, `uint`: whole numbers (integers), and turning a value into one.
+//
+// iN holds signed numbers of N bits, uN unsigned. `n := 0` is an i64 unless
+// its uses give it another width. Numbers of different widths don't mix:
+// `i64(x)` turns x into an i64 (a float's fraction dropped). `+ - *` stop
+// the program on overflow; `+% -% *%` wrap around instead. `int` and
+// `uint` aren't types: write i64 or u64.
+builtin_i64 :: fun() {
+	small : u8 = 200
+	big := i64(small) * 10
+	print(big)                             // 2000
+	print(small +% 100)                    // 44: wrapped past 255
+	print(i64(2.9))                        // 2
+}
+
+// `f64`, `f32`: numbers with a fraction (floats), and turning a value into one.
+//
+// `x := 2.5` is an f64 unless its uses give it f32. `f64(n)` turns an int
+// into an f64. They don't mix with ints: convert one first.
+builtin_f64 :: fun() {
+	half := 0.5
+	n := 3
+	print(f64(n) * half)                   // 1.5
+	small : f32 = 0.25
+	print(small * 2)                       // 0.5
+}
+
+// `utf8`, `byte`: one character of text, and one byte of memory.
+//
+// Text is utf8s: "hi" is a []utf8, 'h' a utf8. They compare and order as
+// their codes do, but aren't numbers: `i64(c)` and `utf8(n)` convert. A
+// byte is 8 bits of anything — file contents, pixels. Any value written into
+// a byte buffer goes in as its bytes, and a value read from one comes out of
+// them.
+builtin_utf8 :: fun() {
+	c := 'A'
+	print(c, i64(c))                       // A 65
+	print(utf8(i64(c) + 1))                // B
+
+	buf : [4]byte
+	buf[0:2] = "hi"                        // a value goes in as its bytes
+	code : u8 = buf[1]                     // bytes read as a value
+	print(code)                            // 105, the code of 'i'
+}
+
+// `size_of`: how many bytes a type takes, worked out when the program is built.
+builtin_size_of :: fun() {
+	print(size_of(i64), size_of([4]f32))   // 8 16
+}
+
+// `slice`, `let`: values carved out of a byte buffer — memory a caller handed you.
+//
+// `slice([:n]T, mem)` takes room for n Ts from mem, a `^[]byte`, after its
+// len, and moves the len past them: the next take comes after. `let(T,
+// &mem[k])` names a T living in the bytes at k. For a count known only when
+// the program runs, slice a fixed array instead: `room : [100]i64`, then
+// `xs := room[0:n]`.
+builtin_slice :: fun() {
+	storage : [..64]byte
+	mem : []byte = storage
+	xs := slice([:3]i64, &mem)
+	xs[2] = 7
+	print(xs.len, xs[2], mem.len)          // 3 7 24
+
+	n := let(i64, &storage[32])
+	n = 9                                  // into storage's bytes
+	back : i64 = storage[32]
+	print(back)                            // 9
+}
+
+// `cstring`, `slice_from_ptr`: text for C, and a C pointer as a slice.
+//
+// `cstring(buf)` passes a text buffer to C as a pointer to its characters;
+// a 0 must follow the text in the buffer, or the program stops. Pass the
+// buffer itself, not `buf[:]`. `slice_from_ptr(p, n)` views n bytes at a
+// pointer C gave back (n a constant, outside mara.os).
+builtin_cstring :: fun() {
+	// path : [..260]utf8
+	// &path + "notes.txt"
+	// handle := CreateFileA(cstring(path), …)
+}
+
+// `this_program`, `Program`: the running program's setup — its arena, its command line.
+//
+// main sets it first: `this_program = Program(Arena_Debug(16 * MB))` gives
+// the program an arena, where values of 1 KB or more live (see
+// arenas.mara). `this_program.args` is the command line. Only main sets
+// it; other funs read it. See program.mara, command_line_args.mara.
+builtin_this_program :: fun() {
+	print(this_program.args.len > 0)       // true: args[0] is the program's path
+}
+
+// `Self`: the type whose body you're in, inside a struct or union.
+builtin_Self :: fun() {
+	Counter :: struct {
+		n := 0
+		bumped :: fun(c: Self) -> Self { return Counter{n = c.n + 1} }
+	}
+	c : Counter
+	print(c.bumped().bumped().n)           // 2
+}
+
+// `void`: no value — `= void` leaves a variable unset, to be written before it's read.
+//
+// `buf : [4096]byte = void` skips filling the buffer with zeros, for when
+// every item is written before it's read.
+builtin_void :: fun() {
+	squares : [8]i64 = void
+	for i in 0 .. 8 do squares[i] = i * i
+	print(squares[7])                      // 49
+}
+
+// `all`: every item of an array set to one value.
+//
+// `cams : [..6]Camera = all Camera(1280, 720)` builds each of the six.
+builtin_all :: fun() {
+	ones : [4]i64 = all 1
+	print(ones)                            // [1, 1, 1, 1]
+}
+
+// Every entry's example, run.
+main :: fun() {
+	keyword_module()
+	keyword_use()
+	keyword_fun()
+	keyword_return()
+	keyword_if()
+	keyword_do()
+	keyword_for()
+	keyword_break()
+	keyword_match()
+	keyword_struct()
+	keyword_union()
+	keyword_error()
+	keyword_distinct()
+	keyword_true()
+	keyword_and()
+	keyword_defer()
+	keyword_fn()
+	keyword_dispatch()
+	keyword_overload()
+	keyword_using()
+	keyword_foreign()
+	builtin_print()
+	builtin_assert()
+	builtin_len()
+	builtin_i64()
+	builtin_f64()
+	builtin_utf8()
+	builtin_size_of()
+	builtin_slice()
+	builtin_cstring()
+	builtin_this_program()
+	builtin_Self()
+	builtin_void()
+	builtin_all()
+}
