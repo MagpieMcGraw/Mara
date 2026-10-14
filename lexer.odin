@@ -617,6 +617,12 @@ next_token :: proc(l: ^Lexer) -> Token {
 // dynamic-array return crossing the boundary).
 // Lex a file onto the build's tokens: its range is first_token to end_token,
 // ending with its EOF.
+// Room for n more tokens.
+lex_reserve :: proc(n: int) {
+    if cap(build_tokens) == 0 { build_tokens = make([dynamic]Token, 0, max(n, 1 << 16), runtime.heap_allocator()) }
+    reserve(&build_tokens, len(build_tokens) + n)
+}
+
 lex_file :: proc(f: ^Source_File) {
     // (The tokens grow on the heap, which gives back what they outgrow — a
     // build's arena keeps every size they pass.)

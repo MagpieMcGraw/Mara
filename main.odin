@@ -284,6 +284,11 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
 // ---------------------------------------------------------------------------
 
 lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
+    // (Room for the tokens first — about one for each two bytes of dense
+    // code — so they aren't copied as they grow: lex_file.)
+    bytes := 0
+    for _, module_files in files { for f in module_files { bytes += len(f.source) } }
+    lex_reserve(bytes / 2)
     for _, module_files in files {
         for f in module_files {
             lex_file(f)
@@ -304,6 +309,7 @@ parse_target_files :: proc() -> (errors: map[string]int) {
     scratch: virtual.Arena
     _ = virtual.arena_init_growing(&scratch)
     defer virtual.arena_destroy(&scratch)
+    tree_reserve(&build_tree, len(build_tokens))
     for f in build_files {
         context.temp_allocator = virtual.arena_allocator(&scratch)
         _, n := tree_parse_file(f)

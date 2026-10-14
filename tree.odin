@@ -255,6 +255,17 @@ tree_init :: proc(t: ^Tree) {
     append(&t.extra, 0)
 }
 
+// Room in the columns for what the tokens will make — a node for about
+// two in three tokens, a side-array word for about four in five — so they
+// aren't copied as they grow (a long build's would be, a few times over).
+tree_reserve :: proc(t: ^Tree, tokens: int) {
+    tree_init(t)
+    nodes, extra := tokens * 3 / 4, tokens * 7 / 8
+    reserve(&t.tag, nodes); reserve(&t.main, nodes); reserve(&t.first, nodes)
+    reserve(&t.end, nodes); reserve(&t.a, nodes); reserve(&t.b, nodes)
+    reserve(&t.extra, extra)
+}
+
 // The tree's columns let go of (a check of serve's, before the next).
 tree_free :: proc(t: ^Tree) {
     delete(t.tag); delete(t.main); delete(t.first); delete(t.end)
