@@ -188,6 +188,26 @@ What reading the refs took, beyond the lookups themselves:
   constraint `~T` is — resolved where it's written, not by flat name in its template's
   module.
 
+## The last by-name tables
+
+- **`declared_funs`** (bare names of funs) is gone. Whether a name is a fun's global is what it
+  refers to (lowering: `lw_names_fun` reads the ref). A call through a variable holding a
+  declared fun calls that fun directly: `fn f` is nominal, so the variable holds f and only f.
+  The old test (the held fun's flat name among bare names) said so only for nested funs, and a
+  module's fun held in a variable was called through the pointer — four fixtures' IR changed
+  (`fun_names_as_values`, `test_fn_type`, `array_params`, `in_place_update`), their output
+  didn't.
+- **Constants** are filed once, by their symbols (a module's flat name, a body's owner-named):
+  no bare entry, no `const_owners`; a table's name is its constant's symbol. An array's size
+  that names nothing in sight is an undefined name (it was the "must be a compile-time
+  constant" message unless some module had a constant of that name).
+- **A registered type found by its flat name** in the checker — a distinct type's, a union's
+  being resolved, a union's tag enum, `Program` — is its binding or its record now; `fun_homes`
+  (written, never read) is gone.
+- **Kept**: `variant_to_enum` — a bare variant with no type expected (`Rect(5)`) is the one
+  union in the program that has it: a rule by type, not by what's in sight. Flat names stay
+  the codegen symbols.
+
 ## Checklist
 
 - [x] 1. The resolver, checked against the checker (2026-10-13)

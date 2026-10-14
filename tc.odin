@@ -54,8 +54,7 @@ TC :: struct {
     instance_count: u64,
     infer_at:      Span,              // the argument a generic's type param is bound from (tc_generic_call)
     templates:     map[Token_Id]TC_Template, // the generic definitions (a union's too), by the token that declares them
-    consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
-    const_owners:  map[string]string,        // each bare name's module ("": more than one)
+    consts:        map[string]^TC_Const,     // the constants, by their symbols (a module's flat name, a body's owner-named)
     scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
     const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
@@ -675,7 +674,8 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id) {
         return
     }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
-    if dt, ok := k.table.distinct_types[make_flat_name(k.pkg, tc_name(k, s))]; ok && dt.base_type == nil {
+    if dt, ok := tc_bound(k, t.main[s]); ok && dt.(^Type_Distinct).base_type == nil {
+        dt := dt.(^Type_Distinct)
         if base := Tree_Id(t.a[value]); t.tag[base] == .Type_Slice && t.a[base] != 0 {
             tc_error(k, tree_span(t, base), TYPE_SLICE_ALIAS_CAPACITY)
         }
@@ -719,7 +719,6 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id) {
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg}
-        if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
         // is the compiler's program struct — extracted there: tc_extract.)
@@ -750,8 +749,6 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id) {
     if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
     ts.decl = t.main[def]
     tc_bound_set(k, ts.decl, ts)
-    k.table.fun_homes[name] = k.pkg
-    if callable { k.c.declared_funs[name] = true }
     k.scope_of[ts] = len(k.scopes)
     append(k.mine, len(k.scopes))
     k.scope_at[node] = len(k.scopes)
@@ -1149,7 +1146,6 @@ SymbolTable :: struct {
     // Monomorphization cache
     mono_cache:       map[string]^Type_Scope,        // unified: both data and callable monomorphizations
     mono_union_cache: map[string]^Type_Union,        // monomorphized union templates (Maybe(int) -> ^Type_Union)
-    fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
     // Config
     has_scope_allocator: bool,
@@ -1183,7 +1179,6 @@ Checker :: struct {
 
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
-    declared_funs:   map[string]bool,  // bare names of fun declarations (direct calls vs variables)
     // The materialized call graph (set post-check, after build_call_graph) — its
     // bottom-up summaries back the escape pass and the `ask` slicer. Points at
     // checked.call_graph.

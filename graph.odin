@@ -1974,15 +1974,12 @@ graph_token_text :: proc(op: Token_Kind) -> string {
     return "?"
 }
 
-// Each table's name: its constant's longest in the checker's table (a
-// module's is there under its flat name and its bare one), the first of
-// those alike.
+// Each table's name: its constant's symbol (the checker's: a module's flat
+// name, a body's owner-named).
 @(private="file")
 graph_table_names :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     for key, v in b.constant_names {
-        if v not_in pc.tables { continue }
-        if name, named := pc.table_names[v]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
-        pc.table_names[v] = key
+        if v in pc.tables { pc.table_names[v] = key }
     }
 }
 

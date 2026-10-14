@@ -86,7 +86,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     case ^Type_Union:
         switch field {
         case "tag":
-            if tag_et, found := k.table.enums[strings.concatenate({v.name, "_Tag"})]; found { return tag_et, true, 0, false }
+            if v.tag_enum != nil { return v.tag_enum, true, 0, false }
             tc_error(k, span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, type_name(v))
             return Type_Error{}, false, 0, false
         case "pad":

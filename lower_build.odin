@@ -118,7 +118,7 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
         case tc_name(k, e) == "void":             return false
         }
         if ts, is_scope := ty.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global)
-            if lw_names_fun(k, tc_name(k, e), ty) || ref.kind == .Fun && ts.kind == .Fun { return false }
+            if lw_names_fun(k, e, ty) { return false }
         }
         return true
     case .Field, .Dot_Ident:

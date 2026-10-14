@@ -26,8 +26,6 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
         for r in v.returns { append(&ft.return_types, tc_type(k, r, span)) }
         ft.decl = v.name
         tc_bound_set(k, ft.decl, ft)
-        k.c.declared_funs[name] = true
-        k.table.fun_homes[name] = k.pkg
     }
 }
 

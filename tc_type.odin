@@ -165,8 +165,8 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) 
         // (A constant, known: its value.)
         name := tc_name(k, n)
         kc := tc_const_named(k, n)
-        if kc == nil && name in k.const_owners {
-            tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)   // (a module's constant, not in sight)
+        if kc == nil && k.rs.refs[n].kind == .None {
+            tc_unresolved(k, k.rs.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)   // (nothing in sight by that name)
             return 0, false
         }
         if kc == nil {

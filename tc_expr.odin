@@ -542,7 +542,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         // (A union's variant built by its params: `Rect(5)` where a Shape goes.)
         if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args) }
         // (A fun two modules it uses have: ambiguous.)
-        if qual == nil && ref.kind == .None && name in k.c.declared_funs {
+        if qual == nil && ref.kind == .None {
             if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
                 tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
                 for a in args { tc_check(k, a) }
@@ -561,13 +561,13 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     ft, is_scope := ft_raw.(^Type_Scope)
     // (A fun written in the program, or a foreign one; else a fun's value — a
     // name no declared fun has, holding one — called through it.)
-    indirect := is_scope && qual == nil && ft.kind == .Fun && tc_is_variable(ref) && (ft.name == "" || ft.name not_in k.c.declared_funs)
+    indirect := is_scope && qual == nil && ft.kind == .Fun && tc_is_variable(ref) && ft.decl == 0
     if !is_scope {
         tc_error(k, span, TYPE_FUNCTION, name)
         return Type_Error{}
     }
     // (A fun two modules it uses have: ambiguous.)
-    if qual == nil && name in k.c.declared_funs && ft.name != "" {
+    if qual == nil && ft.name != "" {
         if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
             tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
             return Type_Error{}

@@ -153,7 +153,7 @@ tc_validate_allocator :: proc(k: ^TC) {
     }
     k.table.scope_allocator_type = alloc
     // (The program's struct holds it: its field, a placeholder until now.)
-    if prog, ok := k.table.funs["Program"]; ok && len(prog.fields) > 0 && prog.fields[0].name == "scope_allocator" {
+    if prog, ok := k.table.builtins["Program"].(^Type_Scope); ok && len(prog.fields) > 0 && prog.fields[0].name == "scope_allocator" {
         prog.fields[0].type_ = alloc
     }
     if k.arena_size == 0 { return }

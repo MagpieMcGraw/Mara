@@ -197,7 +197,8 @@ tc_union_resolve :: proc(k: ^TC, ut: ^Type_Union, pad: Tree_Id, span: Span) {
 // A module's union, resolved (tc_union_resolve).
 tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id) {
     t := k.t
-    ut, ok := k.table.unions[make_flat_name(k.pkg, tc_name(k, def))]
+    bound, _ := tc_bound(k, t.main[def])
+    ut, ok := bound.(^Type_Union)
     if !ok || t.tag[node] != .Union_Def { return }
     tc_union_resolve(k, ut, tc_union_header(k, node).pad, tree_span(t, def))
 }

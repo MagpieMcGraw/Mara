@@ -19,20 +19,14 @@ TC_Const :: struct {
     visiting: bool,         // its value being checked or folded: a use in it is a cycle
 }
 
-// A module's constant: under its flat name, and its bare one unless another
-// module has a constant of that name (then a bare use must qualify it).
+// A module's constant: by the token that declares it, and by its flat name
+// (its symbol: what the builder names its table).
 tc_register_const :: proc(k: ^TC, def, value: Tree_Id) {
     name := tc_name(k, def)
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, pkg = k.pkg})
     kc.sid = tc_sid(k, value)
     k.const_at[k.t.main[def]] = kc
     k.consts[make_flat_name(k.pkg, name)] = kc
-    if owner, mapped := k.const_owners[name]; mapped {
-        if owner != k.pkg { k.const_owners[name] = "" }
-    } else {
-        k.const_owners[name] = k.pkg
-        k.consts[name] = kc
-    }
 }
 
 // A constant checked (once).
@@ -76,8 +70,8 @@ tc_const_unambiguous :: proc(k: ^TC, n: Tree_Id, name: string, span: Span) -> bo
     return false
 }
 
-// A body's constant: named for its owner (`main_K`) and by itself, the
-// names the builder's tables take; bound in its owner's body once checked.
+// A body's constant: named for its owner (`main_K`), the name the builder's
+// table takes; bound in its owner's body once checked.
 tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     name := tc_name(k, def)
     mangled := strings.concatenate({sc.ts.name, "_", name})
@@ -85,7 +79,6 @@ tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     kc.sid = tc_sid(k, value)
     k.const_at[k.t.main[def]] = kc
     k.consts[mangled] = kc
-    k.consts[name] = kc
     append(&sc.consts, kc)
     // (A use in its owner's methods finds it through its owner: its scope's.)
     owner := sc.ts
