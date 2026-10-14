@@ -502,6 +502,7 @@ Graph_Builder :: struct {
     run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
     body_pool:  [dynamic]^Graph_Body,   // (bodies done, kept for the next: graph_body_new)
     nodes:      int,             // how many nodes the code being built has; the columns run ahead
+    leaves:     int,             // ... and leaves (graph_leaf_new)
     code:       Code,
     // Refers-to: each declaration made in the code being built — a fun's, a
     // struct's, a constant's; its defers' are its own — by the token that
@@ -1030,6 +1031,7 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     if f := b.body; f != nil { graph_fatal(graph_origin(b.g, f.root), "a code begun while '%s' is being built", graph_name(b.g, f.root)) }
     b.g = graph_code_new(b)
     b.nodes = 0
+    b.leaves = 0
     b.outside_named = false
 }
 
@@ -1054,6 +1056,7 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     g.end = g.last[0] or_else 0   // (the root's subtree: graph_last)
     delete_key(&g.last, 0)
     if b.outside_named { graph_place_outside(b) }
+    resize(&g.leaves, b.leaves)
     if b.nodes >= len(g.kind) { graph_resize(g, b.nodes + 1) }
     g.operand_first[b.nodes] = i32(len(g.operands))
     append(&g.run_first, i32(len(g.run_ops)))
@@ -1075,7 +1078,7 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
 graph_place_outside :: proc(b: ^Graph_Builder) {
     g := b.g
     made := [2]Node_Id{NO_NODE, NO_NODE}
-    for &l in g.leaves {
+    for &l in g.leaves[:b.leaves] {
         k: int
         switch l.decl {
         case OUTSIDE[0]: k = 0
@@ -1193,6 +1196,18 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.operand_first[i] = i32(len(g.operands))
     b.nodes += 1
     return id
+}
+
+// A new leaf. Its column grows in chunks and is written by index, as the
+// nodes' do (graph_node).
+@(private="file")
+graph_leaf_new :: proc(b: ^Graph_Builder, l: Graph_Leaf) -> Node_Id {
+    g := b.g
+    k := b.leaves
+    if k >= len(g.leaves) { non_zero_resize(&g.leaves, max(2 * len(g.leaves), 64)) }
+    g.leaves[k] = l
+    b.leaves = k + 1
+    return LEAF + Node_Id(k)
 }
 
 // Every per-node column to `n` entries (each written as its node is made:
@@ -1732,8 +1747,7 @@ graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span:
         }
     }
     s := b.pin if b.pin != 0 else b.at
-    id := LEAF + Node_Id(len(g.leaves))
-    append(&g.leaves, Graph_Leaf{decl = decl, type_ = 0 if t == nil else type_id(b.type_table, graph_settled(t)), syntax = s})
+    id := graph_leaf_new(b, {decl = decl, type_ = 0 if t == nil else type_id(b.type_table, graph_settled(t)), syntax = s})
     if s != b.span_of { b.span_of, b.span_is = s, graph_tree_span(s) }
     if span != b.span_is { g.origins[id] = span }   // (where its tree node isn't: graph_set_origin)
     return Operand{id, 0}
@@ -1802,8 +1816,7 @@ graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand 
     g := b.g
     id := p.op
     if id >= LEAF {   // (a use of its own)
-        n := LEAF + Node_Id(len(g.leaves))
-        append(&g.leaves, g.leaves[id - LEAF])
+        n := graph_leaf_new(b, g.leaves[id - LEAF])
         if sp, own := g.origins[id]; own { g.origins[n] = sp }
         return Operand{n, p.out}
     }
