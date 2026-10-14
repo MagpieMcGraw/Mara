@@ -357,15 +357,25 @@ lexer_advance :: proc(l: ^Lexer, n: int = 1) {
     }
 }
 
+// To `pos` past a run of no newline — spaces, a name, digits, a comment's
+// text: the column moved on by its length (lexer_advance's, a character at
+// a time).
+@(private="file")
+lex_skip_to :: #force_inline proc(l: ^Lexer, pos: int) {
+    l.col += pos - l.pos
+    l.pos = pos
+}
+
 make_token :: proc(l: ^Lexer, kind: Token_Kind) -> Token {
     return Token{kind = kind, offset = u32(l.start), len = u32(l.pos - l.start)}
 }
 
 next_token :: proc(l: ^Lexer) -> Token {
     // Skip spaces and tabs (but NOT newlines — they're statement separators)
-    for l.pos < len(l.source) && (l.source[l.pos] == ' ' || l.source[l.pos] == '\t') {
-        lexer_advance(l)
-    }
+    src := l.source
+    p := l.pos
+    for p < len(src) && (src[p] == ' ' || src[p] == '\t') { p += 1 }
+    lex_skip_to(l, p)
 
     // Check for end of input
     if l.pos >= len(l.source) {
@@ -375,9 +385,8 @@ next_token :: proc(l: ^Lexer) -> Token {
     ch := l.source[l.pos]
 
     if ch == '/' && peek(l, 1) == '/' {
-        for l.pos < len(l.source) && l.source[l.pos] != '\n' {
-            lexer_advance(l)
-        }
+        for p < len(src) && src[p] != '\n' { p += 1 }
+        lex_skip_to(l, p)
         return next_token(l)
     }
 
@@ -486,9 +495,9 @@ next_token :: proc(l: ^Lexer) -> Token {
         if ch == '0' && (peek(l, 1) == 'x' || peek(l, 1) == 'X') {
             lexer_advance(l) // '0'
             lexer_advance(l) // 'x'
-            for l.pos < len(l.source) && (is_hex_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
-                lexer_advance(l)
-            }
+            p = l.pos
+            for p < len(src) && (is_hex_digit(src[p]) || src[p] == '_') { p += 1 }
+            lex_skip_to(l, p)
             return make_token(l, .Number)
         }
         // Binary form `0b...` / `0B...` consumes 0/1 digits plus `_` separators
@@ -497,21 +506,19 @@ next_token :: proc(l: ^Lexer) -> Token {
         if ch == '0' && (peek(l, 1) == 'b' || peek(l, 1) == 'B') {
             lexer_advance(l) // '0'
             lexer_advance(l) // 'b'
-            for l.pos < len(l.source) && (l.source[l.pos] == '0' || l.source[l.pos] == '1' || l.source[l.pos] == '_') {
-                lexer_advance(l)
-            }
+            p = l.pos
+            for p < len(src) && (src[p] == '0' || src[p] == '1' || src[p] == '_') { p += 1 }
+            lex_skip_to(l, p)
             return make_token(l, .Number)
         }
-        for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
-            lexer_advance(l)
-        }
+        for p < len(src) && (is_digit(src[p]) || src[p] == '_') { p += 1 }
+        lex_skip_to(l, p)
         // A '.' followed by a digit makes this a float literal. The '.' stays in
         // the token text, which is how the parser distinguishes int from float.
         if peek(l) == '.' && is_digit(peek(l, 1)) {
-            lexer_advance(l)
-            for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
-                lexer_advance(l)
-            }
+            p = l.pos + 1
+            for p < len(src) && (is_digit(src[p]) || src[p] == '_') { p += 1 }
+            lex_skip_to(l, p)
         }
         return make_token(l, .Number)
     }
@@ -519,9 +526,8 @@ next_token :: proc(l: ^Lexer) -> Token {
     // Identifiers: start with a letter or underscore
     if is_alpha(ch) {
         start := l.pos
-        for l.pos < len(l.source) && is_alnum(l.source[l.pos]) {
-            lexer_advance(l)
-        }
+        for p < len(src) && is_alnum(src[p]) { p += 1 }
+        lex_skip_to(l, p)
         text := l.source[start:l.pos]
 
         // Check for keywords
@@ -532,83 +538,67 @@ next_token :: proc(l: ^Lexer) -> Token {
         return make_token(l, .Identifier)
     }
 
-    // Three-character tokens (check before two-character)
-    start := l.pos
-
-    if l.pos + 2 < len(l.source) {
-        three := l.source[start:start+3]
-        switch three {
-        case "<<=": lexer_advance(l, 3); return make_token(l, .Shift_Left_Equal)
-        case ">>=": lexer_advance(l, 3); return make_token(l, .Shift_Right_Equal)
-        }
+    // Operators: by the first character, then the one or two after it —
+    // the longest that's an operator.
+    c1, c2 := peek(l, 1), peek(l, 2)
+    op :: #force_inline proc(l: ^Lexer, n: int, kind: Token_Kind) -> Token {
+        lex_skip_to(l, l.pos + n)   // (no newline in an operator)
+        return make_token(l, kind)
     }
-
-    // Two-character tokens (check before single-character)
-    if l.pos + 1 < len(l.source) {
-        two := l.source[start:start+2]
-        switch two {
-        case "==": lexer_advance(l, 2); return make_token(l, .Equal_Equal)
-        case "!=": lexer_advance(l, 2); return make_token(l, .Not_Equal)
-        case "<=": lexer_advance(l, 2); return make_token(l, .Less_Equal)
-        case ">=": lexer_advance(l, 2); return make_token(l, .Greater_Equal)
-        case "<<": lexer_advance(l, 2); return make_token(l, .Shift_Left)
-        case ">>": lexer_advance(l, 2); return make_token(l, .Shift_Right)
-        case "+=": lexer_advance(l, 2); return make_token(l, .Plus_Equal)
-        case "-=": lexer_advance(l, 2); return make_token(l, .Minus_Equal)
-        case "*=": lexer_advance(l, 2); return make_token(l, .Mul_Equal)
-        case "+%": lexer_advance(l, 2); return make_token(l, .Wrap_Plus)
-        case "-%": lexer_advance(l, 2); return make_token(l, .Wrap_Minus)
-        case "*%": lexer_advance(l, 2); return make_token(l, .Wrap_Star)
-        case "/=": lexer_advance(l, 2); return make_token(l, .Div_Equal)
-        case "%=": lexer_advance(l, 2); return make_token(l, .Mod_Equal)
-        case "&=": lexer_advance(l, 2); return make_token(l, .And_Equal)
-        case "|=": lexer_advance(l, 2); return make_token(l, .Or_Equal)
-        case "~=": lexer_advance(l, 2); return make_token(l, .Xor_Equal)
-        case "->": lexer_advance(l, 2); return make_token(l, .Arrow)
-        case "::": lexer_advance(l, 2); return make_token(l, .Double_Colon)
-        }
-    }
-
-    // Single-character tokens
-    lexer_advance(l)
     switch ch {
-    case '=': return make_token(l, .Equals)
-    case '<': return make_token(l, .Less)
-    case '>': return make_token(l, .Greater)
-    case '+': return make_token(l, .Plus)
-    case '-': return make_token(l, .Minus)
-    case '*': return make_token(l, .Star)
-    case '/': return make_token(l, .Slash)
-    case '%': return make_token(l, .Modulo)
-    case '(': return make_token(l, .Left_Paren)
-    case ')': return make_token(l, .Right_Paren)
-    case '{': return make_token(l, .Left_Brace)
-    case '}': return make_token(l, .Right_Brace)
-    case '[': return make_token(l, .Left_Bracket)
-    case ']': return make_token(l, .Right_Bracket)
-    case ',': return make_token(l, .Comma)
-    case '.':
-        // .. is the (exclusive) range operator. The legacy `..<` form was
-        // dropped — `..` is the only spelling. Use `n+1` on the upper bound
-        // when you want to include the endpoint.
-        if l.pos < len(l.source) && l.source[l.pos] == '.' {
-            lexer_advance(l) // consume second '.'
-            return make_token(l, .Dot_Dot)
+    case '=': return op(l, 2, .Equal_Equal) if c1 == '=' else op(l, 1, .Equals)
+    case '!': return op(l, 2, .Not_Equal) if c1 == '=' else op(l, 1, .Bang)
+    case '<':
+        if c1 == '<' { return op(l, 3, .Shift_Left_Equal) if c2 == '=' else op(l, 2, .Shift_Left) }
+        return op(l, 2, .Less_Equal) if c1 == '=' else op(l, 1, .Less)
+    case '>':
+        if c1 == '>' { return op(l, 3, .Shift_Right_Equal) if c2 == '=' else op(l, 2, .Shift_Right) }
+        return op(l, 2, .Greater_Equal) if c1 == '=' else op(l, 1, .Greater)
+    case '+':
+        switch c1 {
+        case '=': return op(l, 2, .Plus_Equal)
+        case '%': return op(l, 2, .Wrap_Plus)
         }
-        return make_token(l, .Dot)
-    case ':': return make_token(l, .Colon)
-    case ';': return make_token(l, .Semicolon)
-    case '!': return make_token(l, .Bang)
-    case '?': return make_token(l, .Question)
-    case '&': return make_token(l, .Ampersand)
-    case '|': return make_token(l, .Pipe)
-    case '~': return make_token(l, .Tilde)
-    case '^': return make_token(l, .Caret)
-    case '#': return make_token(l, .Hash)
-    case '$': return make_token(l, .Dollar)
-    case '@': return make_token(l, .At)
+        return op(l, 1, .Plus)
+    case '-':
+        switch c1 {
+        case '=': return op(l, 2, .Minus_Equal)
+        case '%': return op(l, 2, .Wrap_Minus)
+        case '>': return op(l, 2, .Arrow)
+        }
+        return op(l, 1, .Minus)
+    case '*':
+        switch c1 {
+        case '=': return op(l, 2, .Mul_Equal)
+        case '%': return op(l, 2, .Wrap_Star)
+        }
+        return op(l, 1, .Star)
+    case '/': return op(l, 2, .Div_Equal) if c1 == '=' else op(l, 1, .Slash)
+    case '%': return op(l, 2, .Mod_Equal) if c1 == '=' else op(l, 1, .Modulo)
+    case '&': return op(l, 2, .And_Equal) if c1 == '=' else op(l, 1, .Ampersand)
+    case '|': return op(l, 2, .Or_Equal) if c1 == '=' else op(l, 1, .Pipe)
+    case '~': return op(l, 2, .Xor_Equal) if c1 == '=' else op(l, 1, .Tilde)
+    case ':': return op(l, 2, .Double_Colon) if c1 == ':' else op(l, 1, .Colon)
+    // .. is the (exclusive) range operator. The legacy `..<` form was
+    // dropped — `..` is the only spelling. Use `n+1` on the upper bound
+    // when you want to include the endpoint.
+    case '.': return op(l, 2, .Dot_Dot) if c1 == '.' else op(l, 1, .Dot)
+    case '(': return op(l, 1, .Left_Paren)
+    case ')': return op(l, 1, .Right_Paren)
+    case '{': return op(l, 1, .Left_Brace)
+    case '}': return op(l, 1, .Right_Brace)
+    case '[': return op(l, 1, .Left_Bracket)
+    case ']': return op(l, 1, .Right_Bracket)
+    case ',': return op(l, 1, .Comma)
+    case ';': return op(l, 1, .Semicolon)
+    case '?': return op(l, 1, .Question)
+    case '^': return op(l, 1, .Caret)
+    case '#': return op(l, 1, .Hash)
+    case '$': return op(l, 1, .Dollar)
+    case '@': return op(l, 1, .At)
     }
 
+    lexer_advance(l)
     return make_token(l, .Invalid)
 }
 
