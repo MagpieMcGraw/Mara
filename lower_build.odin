@@ -44,30 +44,6 @@ build_temp_type :: proc(d: Dest) -> Type {
     return nil
 }
 
-// The type of a written field that is no struct's: a header's len, cap or
-// ptr; an array's swizzle.
-build_target_field_type :: proc(obj_type: Type, field: string) -> Type {
-    t := obj_type
-    if pt, ok := t.(^Type_Ptr); ok { t = pt.elem }
-    t = distinct_base(t)
-    elem: Type
-    #partial switch v in t {
-    case ^Type_Slice:         elem = v.elem
-    case ^Type_Partial_Array: elem = v.elem
-    case ^Type_Fixed_Array:
-        if !is_swizzle_field(field, v.size) { return nil }
-        if len(field) == 1 { return v.elem }
-        return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem})
-    case:
-        return nil
-    }
-    switch field {
-    case "len", "cap": return slice_header_width_type
-    case "ptr":        return new_clone(Type_Ptr{elem = elem})
-    }
-    return nil
-}
-
 // An index at the header's width: an enum's value is its tag, taken as a
 // number; a narrower number widens.
 build_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) -> Operand {
@@ -132,7 +108,7 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
         if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
             if _, has := ut.tag_map[field]; has { return false }
         }
-        ft, is_member, _, known_ok := tc_field_type(k, e, base, bt, field, tree_span(t, e))
+        ft, is_member, _, known_ok := lw_field_is(k, e)
         if known_ok { return false }
         if fun, is_fun := ft.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun { return false }
         return is_member

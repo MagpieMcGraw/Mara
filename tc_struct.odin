@@ -53,8 +53,9 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
             return bt
         }
     }
-    t, is_member, _, _ := tc_field_type(k, n, base, bt, field, span)
+    t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
     tc_set_ref(k, n, tc_member_ref(k, bt, t, field, is_member))
+    if known_ok { k.annot.known[tc_sid(k, n)] = {known, t} }
     return t
 }
 
@@ -65,6 +66,7 @@ tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
     if _, is_error := t.(Type_Error); is_error || t == nil { return {} }
     if et, is_enum := distinct_base(t).(^Type_Enum); is_enum && !member { return {variant_decl(et, field), .Variant} }
     if fun, is_fun := t.(^Type_Scope); is_fun && !member && fun.kind == .Fun { return {fun.decl, .Fun} }
+    if ts, is_type := t.(^Type_Scope); is_type && !member { return {ts.decl, .Type} }   // (a struct it has: a type, no member)
     if member {
         if sd := tc_struct_of(k, bt); sd != nil {
             if i, ok := sd.field_map[field]; ok { return {sd.fields[i].decl, .Field} }
@@ -627,6 +629,8 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
         tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
         return
     }
+    tc_set_type(k, target, ft)
+    tc_set_ref(k, target, {kind = .Builtin})
     if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !is_infer(vt) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }

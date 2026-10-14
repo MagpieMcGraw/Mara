@@ -30,7 +30,7 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
         if _, has := ut.tag_map[field]; has { return lw_union_variant(k, ut, field, span, want, w, dest, temp, temp_span) }
     }
-    t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
+    t, is_member, known, known_ok := lw_field_is(k, n)
     if known_ok {
         if want == .Place { return {} }
         return {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
@@ -45,6 +45,16 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     if p == NO_VALUE { return {} }
     if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
     return {v = p, place = true, ok = true}
+}
+
+// What `x.f` is, as the checker found it (tc_field): its type; the value it
+// knows (an enum's variant, an array's length, a text constant's); else
+// whether it's a member — a field, a header's, a swizzle — read through
+// its base, or no member (a fun of its struct's, a type it has).
+lw_field_is :: proc(k: ^TC, n: Tree_Id) -> (t: Type, member: bool, known: i128, known_ok: bool) {
+    if kv, has := k.annot.known[tc_sid(k, n)]; has { return kv.t, false, kv.value, true }
+    r := tc_ref(k, n).kind
+    return tc_node_type(k, n), r == .Field || r == .Builtin, 0, false
 }
 
 // A field's base, as a field reads it: its place (its value held, a
@@ -341,8 +351,8 @@ lw_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         }
     }
     if sd == nil {
-        // (A header's field, an array's swizzle.)
-        ft := build_target_field_type(bt, field)
+        // (A header's field, an array's swizzle: as the checker typed it.)
+        ft := tc_node_type(k, target)
         if ft == nil { lw_fail(k, target, "a write to an unknown field") }
         at := lw_at(k, target)   // (the field's place: the target's)
         place := lw_member_place(k, target, field, br, bt, ft)

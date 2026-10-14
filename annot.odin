@@ -101,11 +101,18 @@ Annotations :: struct {
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
+    known:      map[Syntax_Id]Known_Value,   // a field whose value the checker knows: an enum's variant, an array's length, a text constant's
 
     // Each fun's and struct's variables, in the order its body binds them.
     vars: map[^Type_Scope][dynamic]Var_Decl,
     // Each body and constant value checked, in the order checked.
     bodies: [dynamic]Annot_Body,
+}
+
+// A value known when the program is checked, and its type as checked.
+Known_Value :: struct {
+    value: i128,
+    t:     Type,
 }
 
 // A node in an instance, as one key: the builder's Syntax_Id (tc_sid).
