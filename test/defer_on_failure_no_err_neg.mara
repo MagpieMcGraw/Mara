@@ -1,0 +1,15 @@
+module defer_on_failure_no_err_neg
+
+//@ expect-fail: `defer?` can only be used inside a function whose trailing return slot is an error type
+
+// `defer?` runs when its function fails: one that returns no err never does.
+
+count :: fun(log: ^i64) -> i64 {
+	defer? log^ = 1
+	return 2
+}
+
+main :: fun() {
+	log := 0
+	print(count(&log))
+}

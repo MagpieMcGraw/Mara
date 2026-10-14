@@ -389,6 +389,8 @@ TYPE_MATCH_REQUIRES_UNION :: "match requires a union value, got `%s` — match i
 TYPE_TRY_OPERAND_MUST_BE_CALL :: "`?` propagation can only be applied to a call expression"
 TYPE_TRY_REQUIRES_ERR_RETURN :: "`?` requires the called function's trailing return slot to be an error type"
 TYPE_TRY_OUTSIDE_ERR_FUNCTION :: "`?` can only be used inside a function whose trailing return slot is an error type"
+TYPE_DEFER_ERR_OUTSIDE_ERR_FUNCTION :: "`defer?` can only be used inside a function whose trailing return slot is an error type — it runs when the function fails"
+TYPE_DEFER_ERR_IN_DEFER :: "`defer?` inside a defer's block would never run — the block doesn't fail; use `defer`"
 TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED :: "circular include: module '%s' is already being checked"
 TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY :: "foreign symbol '%s' is already declared in library '%s' (first declaration at %s); each external symbol may be bound by at most one foreign block"
 TYPE_PROGRAM_GLOBAL_REQUIRES_ALLOCATOR_TYPE :: "this_program needs an allocator type (e.g. `this_program = Program(Arena_Basic(<args>))`)"

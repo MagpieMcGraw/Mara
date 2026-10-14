@@ -496,7 +496,7 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         lw_compound(k, s)
     case .Defer:
         body := tree_list(t, t.a[s])
-        gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned))
+        gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned), tree_defer_on_failure(t, s))
         lw_scope(k, body)
         graph_build_defer_end(k.gb, gd)
     case .Match:

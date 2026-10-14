@@ -1,0 +1,27 @@
+module defer_on_failure_changes_returned_neg
+
+//@ expect-fail: a defer can't change 'n'
+
+// A `defer?` is a defer: changing a local the return returns is an error, as
+// for any defer — here on the run where the err failed.
+
+Probe_Err :: error {
+	Bad
+}
+
+fail :: fun(bad: bool) -> i64, err {
+	if bad do return 0, Bad
+	return 7
+}
+
+step :: fun(bad: bool) -> i64, err {
+	n := 1
+	defer? n = 5
+	_, e := fail(bad)
+	return n, e
+}
+
+main :: fun() {
+	n, e := step(true)
+	print(n, bool(e))
+}

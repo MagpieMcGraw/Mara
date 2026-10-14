@@ -46,7 +46,8 @@ Tree_Tag :: enum u8 {
     Return,         // a: list — the values
     Break,
     Continue,
-    Defer,          // a: list — the body
+    Defer,          // `defer`, `defer?`: main: the keyword (tree_defer_on_failure);
+                    // a: list — the body
     If,             // `if c {…}`, `if c do s`, `#if`: a: the condition; b: rec {then:
                     // list, else: list, `#` token}; an `elif` chain is an Elif in the else list
     Elif,           // as If
@@ -360,6 +361,12 @@ tree_children :: proc(t: ^Tree, n: Tree_Id, out: ^[dynamic]Tree_Id) {
             each(t, f, v, out)
         }
     }
+}
+
+// Whether a defer is a `defer?`: run only when its function returns a
+// failure.
+tree_defer_on_failure :: proc(t: ^Tree, n: Tree_Id) -> bool {
+    return build_tokens[t.main[n]].kind == .Defer_Err
 }
 
 // Each node's parent (Tree.parent), once the tree is whole: what climbing

@@ -1,0 +1,20 @@
+module defer_on_failure_space_neg
+
+//@ expect-fail: Parse error
+
+// `defer?` is one word: `defer ?` is no statement.
+
+Probe_Err :: error {
+	Bad
+}
+
+step :: fun(log: ^i64) -> err {
+	defer ? log^ = 1
+	return Bad
+}
+
+main :: fun() {
+	log := 0
+	e := step(&log)
+	print(log, bool(e))
+}

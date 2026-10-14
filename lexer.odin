@@ -41,6 +41,7 @@ Token_Kind :: enum u8 {
     Match,
     Foreign,
     Defer,
+    Defer_Err,  // defer? — a defer only a failure runs
     Using,
     Distinct,
     Dispatch,
@@ -532,6 +533,12 @@ next_token :: proc(l: ^Lexer) -> Token {
 
         // Check for keywords
         if kind, ok := keyword_lookup(text); ok {
+            // (`defer?`: one token, written together — `defer ?` is no
+            // statement.)
+            if kind == .Defer && p < len(src) && src[p] == '?' {
+                lex_skip_to(l, p + 1)
+                kind = .Defer_Err
+            }
             return make_token(l, kind)
         }
 

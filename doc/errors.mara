@@ -10,6 +10,11 @@
 // In a function that returns an err itself, `d := digit(c)?` takes the
 // value, and on a failure returns that err from the function right there.
 //
+// `defer?` is a defer that runs only when the function fails: for taking
+// back what a failure would leave half done. It runs at a `?` that fails and
+// at a return of a failed err, not at a return that succeeds or at the end of
+// its block. (A plain `defer` runs whichever way the function ends.)
+//
 // Your own errors are an `error` set, like Parse_Error below. The standard
 // library's file functions fail with File_Error (see read_file.mara).
 module errors
@@ -37,6 +42,15 @@ parse :: fun(s: []utf8) -> i64, err {
 	return n
 }
 
+// Adds both numbers to total, or neither.
+add_both :: fun(a, b: []utf8, total: ^i64) -> err {
+	x := parse(a)?
+	total^ += x
+	defer? total^ -= x    // taken back if a later step fails
+	y := parse(b)?
+	total^ += y
+}
+
 main :: fun() {
 	n, e := parse("123")
 	print(n, e)                                   // 123 Ok
@@ -47,4 +61,10 @@ main :: fun() {
 
 	_, e3 := parse("")
 	print(e3 == .Empty)                           // true
+
+	total := 0
+	e4 := add_both("4", "5", &total)
+	print(total, e4)                              // 9 Ok
+	e5 := add_both("6", "x", &total)
+	print(total, e5)                              // 9 Parse_Error.Not_A_Digit
 }

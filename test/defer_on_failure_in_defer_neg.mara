@@ -1,0 +1,23 @@
+module defer_on_failure_in_defer_neg
+
+//@ expect-fail: `defer?` inside a defer's block would never run
+
+// A defer's block ends no function: a `defer?` in it would never run.
+
+Probe_Err :: error {
+	Bad
+}
+
+step :: fun(log: ^i64) -> err {
+	defer {
+		defer? log^ = 1
+		log^ = 2
+	}
+	return Bad
+}
+
+main :: fun() {
+	log := 0
+	e := step(&log)
+	print(log, bool(e))
+}

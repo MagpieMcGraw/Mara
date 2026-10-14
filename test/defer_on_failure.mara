@@ -1,0 +1,145 @@
+module defer_on_failure
+
+//@ expect-output: order fail 321 true
+//@ expect-output: order ok 31 false
+//@ expect-output: const fail 9 true
+//@ expect-output: implied ok 0 false
+//@ expect-output: explicit ok 0 false
+//@ expect-output: runtime fail 9 true
+//@ expect-output: runtime ok 0 false
+//@ expect-output: fell off 0 false
+//@ expect-output: loop 1119 true
+//@ expect-output: break 11 false
+//@ expect-output: inner block 0 true
+//@ expect-output: nested 21 true
+
+// `defer?` runs only when the function returns a failure: at a `?` that
+// fails, at `return …, Bad`, at `return …, e` when e failed. A return that
+// succeeds, falling off the end, and leaving its block (its end, `break`,
+// `continue`) don't run it. Plain defers and `defer?`s unwind together, the
+// last registered first. (Each case logs the digits its defers add.)
+
+Probe_Err :: error {
+	Bad
+}
+
+fail :: fun(bad: bool) -> i64, err {
+	if bad do return 0, Bad
+	return 7
+}
+
+add :: fun(log: ^i64, d: i64) {
+	log^ = log^ * 10 + d
+}
+
+order :: fun(log: ^i64, bad: bool) -> i64, err {
+	defer add(log, 1)
+	defer? add(log, 2)
+	defer add(log, 3)
+	x := fail(bad)?
+	return x
+}
+
+const_fail :: fun(log: ^i64) -> i64, err {
+	defer? add(log, 9)
+	return 0, Bad
+}
+
+implied_ok :: fun(log: ^i64) -> i64, err {
+	defer? add(log, 9)
+	return 1
+}
+
+explicit_ok :: fun(log: ^i64) -> i64, err {
+	defer? add(log, 9)
+	return 1, .Ok
+}
+
+runtime_err :: fun(log: ^i64, bad: bool) -> i64, err {
+	defer? add(log, 9)
+	n, e := fail(bad)
+	return n, e
+}
+
+fell_off :: fun(log: ^i64) -> err {
+	defer? add(log, 9)
+	_ = fail(false)?
+}
+
+// Each pass's `defer?` is its own: a `continue` leaves it unrun, the failure
+// in the third pass runs that pass's.
+looped :: fun(log: ^i64) -> err {
+	for i in 0..4 {
+		defer? add(log, 9)
+		add(log, 1)
+		if i < 2 do continue
+		fail(true)?
+	}
+	return .Ok
+}
+
+broke :: fun(log: ^i64) -> err {
+	for i in 0..4 {
+		defer? add(log, 9)
+		add(log, 1)
+		if i == 1 do break
+	}
+	return .Ok
+}
+
+// A `defer?` whose block has ended doesn't run at a failure after it.
+inner_block :: fun(log: ^i64) -> err {
+	if true {
+		defer? add(log, 9)
+	}
+	fail(true)?
+	return .Ok
+}
+
+nested :: fun(log: ^i64) -> err {
+	defer? add(log, 1)
+	if true {
+		defer? add(log, 2)
+		fail(true)?
+	}
+	return .Ok
+}
+
+main :: fun() {
+	log := 0
+	_, e := order(&log, true)
+	print("order fail", log, bool(e))
+	log = 0
+	_, e = order(&log, false)
+	print("order ok", log, bool(e))
+	log = 0
+	_, e = const_fail(&log)
+	print("const fail", log, bool(e))
+	log = 0
+	_, e = implied_ok(&log)
+	print("implied ok", log, bool(e))
+	log = 0
+	_, e = explicit_ok(&log)
+	print("explicit ok", log, bool(e))
+	log = 0
+	_, e = runtime_err(&log, true)
+	print("runtime fail", log, bool(e))
+	log = 0
+	_, e = runtime_err(&log, false)
+	print("runtime ok", log, bool(e))
+	log = 0
+	e = fell_off(&log)
+	print("fell off", log, bool(e))
+	log = 0
+	e = looped(&log)
+	print("loop", log, bool(e))
+	log = 0
+	e = broke(&log)
+	print("break", log, bool(e))
+	log = 0
+	e = inner_block(&log)
+	print("inner block", log, bool(e))
+	log = 0
+	e = nested(&log)
+	print("nested", log, bool(e))
+}

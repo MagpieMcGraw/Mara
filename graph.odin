@@ -749,13 +749,21 @@ Run :: struct {
 @(private="file")
 Code_Scope :: struct {
     block:  Node_Id,
-    defers: [dynamic]Node_Id,   // defer blocks registered so far, in order
+    defers: [dynamic]Scope_Defer,   // defer blocks registered so far, in order
     // A local of its own lives on the arena (lowering says so, when it opens
     // the scope: graph_build_decl checks), so it marks the arena where it
     // begins and resets it at each exit (`arena`; not main's body).
     holds:  bool,
     arena:  bool,
     held:   int,                // (how many of its locals do)
+}
+
+// A defer registered with its scope: its block, and whether only a return
+// that fails runs it (`defer?`).
+@(private="file")
+Scope_Defer :: struct {
+    block:      Node_Id,
+    on_failure: bool,
 }
 
 @(private="file")
@@ -1680,7 +1688,7 @@ graph_len :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Ope
 graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     if len(b.code.loops) == 0 { graph_fatal(span, "a loop exit outside any loop") }
     l := b.code.loops[len(b.code.loops) - 1]
-    graph_exit_scopes(b, l.scope, span)
+    graph_exit_scopes(b, l.scope, span, failing = false)
     graph_jump(b, l.done if is_break else l.cont, .Explicit, span)
 }
 
@@ -1699,7 +1707,7 @@ graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, span: Span, holds: b
 // Leave a scope at its end: its defers and reset, if the end is reached.
 @(private="file")
 graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
-    if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span) }
+    if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span, failing = false) }
     graph_scope_pop(b)
 }
 
@@ -1713,17 +1721,29 @@ graph_scope_pop :: proc(b: ^Graph_Builder) {
 }
 
 // What leaving scopes[from:] runs, innermost first: each scope's defers, the
-// last registered first, then its arena reset.
+// last registered first — a `defer?`'s only when the code returns a failure
+// (`failing`) — then its arena reset.
 @(private="file")
-graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
+graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span, failing: bool) {
     for i := len(b.code.scopes) - 1; i >= from; i -= 1 {
         s := &b.code.scopes[i]
         for j := len(s.defers) - 1; j >= 0; j -= 1 {
+            if s.defers[j].on_failure && !failing { continue }
             op := graph_op(b, .Run_Defer, .Synthetic, span)
-            b.g.defer_of[op] = s.defers[j]
+            b.g.defer_of[op] = s.defers[j].block
         }
         if s.arena { graph_op(b, .Arena_Reset, .Synthetic, span) }
     }
+}
+
+// Whether a scope open has a `defer?`: a return leaving it runs it or not by
+// the err it returns.
+@(private="file")
+graph_defers_on_failure :: proc(b: ^Graph_Builder) -> bool {
+    for s in b.code.scopes {
+        for d in s.defers { if d.on_failure { return true } }
+    }
+    return false
 }
 
 // --- code and runs --------------------------------------------------------
@@ -1748,7 +1768,7 @@ graph_code_finish :: proc(b: ^Graph_Builder, span: Span) {
         // allows it for those alone).
         vals := make([dynamic]Operand, 0, 2, context.temp_allocator)
         graph_implied_oks(b, &vals, graph_result_types(b), span)
-        graph_exit_scopes(b, 0, span)
+        graph_exit_scopes(b, 0, span, failing = false)
         graph_op(b, .Return, .Synthetic, span, nil, "", ..vals[:])
         graph_run_close(b)
     }
@@ -2072,7 +2092,7 @@ graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand) -> Operan
     vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
     for i in 0 ..< len(rts) - 1 { append(&vals, graph_const(b, .Implied, span, rts[i], "zero", Const_Value{})) }
     append(&vals, err)
-    graph_exit_scopes(b, 0, span)
+    graph_exit_scopes(b, 0, span, failing = true)
     graph_op(b, .Return, .Implied, span, nil, "", ..vals[:])
     graph_run_close(b)
     b.code.run = ok
@@ -2596,15 +2616,39 @@ graph_build_if_end :: proc(b: ^Graph_Builder, fi: ^Graph_If) {
 }
 
 // A return, its values built: an implied `Ok` for each
-// trailing err left out, the scopes left, the return.
+// trailing err left out, the scopes left, the return. A `defer?` it leaves
+// runs when it fails: as its err's value says when that's a constant (`Ok`,
+// `Not_A_Digit`), else by a branch on the err — a run where it failed and one
+// where it didn't, each leaving the scopes and returning.
 graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     rts := graph_result_types(b)
     all := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
     append(&all, ..vals)
     graph_implied_oks(b, &all, rts, span)
-    graph_exit_scopes(b, 0, span)
-    graph_op(b, .Return, .Explicit, span, nil, "", ..all[:])
-    graph_run_close(b)
+    leave :: proc(b: ^Graph_Builder, all: []Operand, span: Span, failing: bool) {
+        graph_exit_scopes(b, 0, span, failing = failing)
+        graph_op(b, .Return, .Explicit, span, nil, "", ..all)
+        graph_run_close(b)
+    }
+    has_err := len(rts) > 0 && len(all) == len(rts) && is_err_type(rts[len(rts) - 1])
+    if !has_err || !graph_defers_on_failure(b) {
+        leave(b, all[:], span, failing = false)
+        return
+    }
+    err := all[len(all) - 1]
+    if graph_is_const(err.op) {
+        if v, known := graph_value(b.g, err.op); known {
+            leave(b, all[:], span, failing = v.int != 0)
+            return
+        }
+    }
+    fail, ok := graph_run_new(b), graph_run_new(b)
+    failed := graph_op_value(b, .Cast, .Implied, span, Type_Bool{}, "bool", err)   // an error: nonzero
+    graph_branch(b, failed, fail, ok, .Implied, span)
+    b.code.run = fail
+    leave(b, all[:], span, failing = true)
+    b.code.run = ok
+    leave(b, all[:], span, failing = false)
 }
 
 // A struct's field declaration: its fields,
@@ -2994,15 +3038,17 @@ graph_build_match_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match) {
 
 // A defer's block: its code of its own — a run entered from
 // the block, ending in a return — built as its statements are checked, then
-// registered with the scope it is in (Run_Defer runs it at every exit).
+// registered with the scope it is in (Run_Defer runs it at every exit; a
+// `defer?`'s, at a return that fails).
 Graph_Defer :: struct {
-    d:     Node_Id,
-    saved: Code,
-    span:  Span,
+    d:          Node_Id,
+    saved:      Code,
+    span:       Span,
+    on_failure: bool,   // `defer?`: run only by a return that fails
 }
 
-graph_build_defer :: proc(b: ^Graph_Builder, span: Span, holds: bool) -> Graph_Defer {
-    gd := Graph_Defer{d = graph_node(b, .Block, .Explicit, b.code.block, "defer", nil, span), span = span}
+graph_build_defer :: proc(b: ^Graph_Builder, span: Span, holds: bool, on_failure: bool) -> Graph_Defer {
+    gd := Graph_Defer{d = graph_node(b, .Block, .Explicit, b.code.block, "defer", nil, span), span = span, on_failure = on_failure}
     gd.saved = graph_code_begin(b, gd.d)
     graph_scope_open(b, gd.d, span, holds)
     return gd
@@ -3011,7 +3057,7 @@ graph_build_defer :: proc(b: ^Graph_Builder, span: Span, holds: bool) -> Graph_D
 graph_build_defer_end :: proc(b: ^Graph_Builder, gd: Graph_Defer) {
     graph_code_finish(b, gd.span)
     graph_code_end(b, gd.saved)
-    append(&b.code.scopes[len(b.code.scopes) - 1].defers, gd.d)
+    append(&b.code.scopes[len(b.code.scopes) - 1].defers, Scope_Defer{gd.d, gd.on_failure})
     graph_close(b, gd.d)
 }
 

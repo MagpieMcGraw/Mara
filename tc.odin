@@ -75,6 +75,7 @@ TC :: struct {
     // in the instance being checked — by the token that declares it.
     rs:            ^Resolver,
     top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
+    in_defer:      bool,                // a defer's block being checked (its body's)
     module_scopes: map[string]^Type_Scope,   // each module's record, by its name: what its definitions are declared in
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)

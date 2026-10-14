@@ -18,11 +18,11 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if is_struct { ts.sig_state = .In_Progress }
     hint := k.hint
     defer k.hint = hint
-    outer, outer_vars := k.body, k.vars
-    k.body, k.vars = ts, {}
+    outer, outer_vars, outer_defer := k.body, k.vars, k.in_defer
+    k.body, k.vars, k.in_defer = ts, {}, false
     defer {
         if len(k.vars) > 0 { k.annot.vars[ts] = k.vars }
-        k.body, k.vars = outer, outer_vars
+        k.body, k.vars, k.in_defer = outer, outer_vars, outer_defer
     }
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
@@ -116,7 +116,11 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Compound:
         tc_compound(k, s)
     case .Defer:
+        if tree_defer_on_failure(t, s) { tc_defer_on_failure(k, s) }
+        in_defer := k.in_defer
+        k.in_defer = true
         tc_scope(k, tree_list(t, t.a[s]))
+        k.in_defer = in_defer
     case .Match:
         tc_match(k, s)
     case .Break, .Continue:
@@ -125,6 +129,17 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
+
+// `defer?`: only where a failure ends the code — a function that returns an
+// err, as `?` needs — and not in a defer's block, which ends no function.
+tc_defer_on_failure :: proc(k: ^TC, s: Tree_Id) {
+    span := tree_span(k.t, s)
+    if rts := tc_results(k); len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
+        tc_error(k, span, TYPE_DEFER_ERR_OUTSIDE_ERR_FUNCTION)
+    } else if k.in_defer {
+        tc_error(k, span, TYPE_DEFER_ERR_IN_DEFER)
+    }
+}
 
 // `x := v`, `x : T = v`, `x : T`: its type the annotation's, else the
 // value's. In a struct's top block (`fields_of`), a field: typed as its
