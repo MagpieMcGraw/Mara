@@ -27,16 +27,6 @@ built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
     return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(graph_type(b.g, op))
 }
 
-// Whether a function's param would view an argument that is an array's
-// value (its place, or a temporary) — a slice over it.
-build_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
-    for is_value, i in array_values {
-        if !is_value || i >= len(ft.params) { continue }
-        if _, to_slice := distinct_base(ft.params[i].type_).(^Type_Slice); to_slice { return true }
-    }
-    return false
-}
-
 // The type of the temporary a value is built in before it goes to `d`: the
 // destination's, once settled; nil leaves it the value's own.
 build_temp_type :: proc(d: Dest) -> Type {
@@ -230,6 +220,12 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
         }
     }
     return graph_build_widen(b, lw_value(k, r, e, t), span, w)
+}
+
+// Whether value `n`, written to a partial array of type `t`, fills a prefix
+// of it — text, a slice's elements: what's past it, zero first.
+lw_fills_prefix :: proc(k: ^TC, n: Tree_Id, t: Type) -> bool {
+    return is_partial_array(t) && (k.t.tag[tc_unparen(k, n)] == .String || is_slice_type(tc_node_type(k, n)))
 }
 
 // Whether a branch may fill only a prefix of a partial array: what is no

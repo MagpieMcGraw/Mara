@@ -199,31 +199,6 @@ lw_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, w: Written) -> Built {
     return r
 }
 
-// A generic's call (tc_generic_call): each argument as it is, then the call
-// of the instance its arguments made.
-lw_generic_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w: Written) -> Built {
-    tr := k.t
-    b := k.gb
-    span := tree_span(tr, n)
-    if want == .Place { lw_fail(k, n, "a call's place") }
-    ft := tc_callee(k, n)
-    vals := make([dynamic]Operand, context.temp_allocator)
-    array_values := make([dynamic]bool, context.temp_allocator)
-    for a, i in args {
-        r := lw_arg(k, a, .Either, w)
-        t := lw_arg_type(k, a)
-        _, is_array := distinct_base(t).(^Type_Fixed_Array)
-        if u := tc_unparen(k, a); tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) { lw_fail(k, a, "bytes as a generic's argument") }
-        at := lw_at(k, a)   // (its read and its widening: the argument's)
-        append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
-        b.at = at
-        append(&array_values, is_array && !r.place)
-    }
-    ret := fn_primary_return(ft)
-    if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a generic's param") }
-    return {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
-}
-
 // A declaration by the shape shortcut (tc_decl_shape): its local (a struct's
 // field), then its literal built into it.
 lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {

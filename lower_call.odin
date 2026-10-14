@@ -1,8 +1,8 @@
 package mara
 
 // Lowering the rest of the calls and of the writes: a method's call, a
-// dispatch's, a call's several results destructured, a broadcast, a
-// parallel assignment, a take.
+// call's several results destructured, a broadcast, a parallel assignment,
+// a take.
 
 // `x.f(args)` (tc_method_call): its receiver built first when it is a value
 // the method was found through (Annotations.receivers) and the call's first
@@ -42,55 +42,6 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
         }
     }
     return lw_call_core(k, n, tc_call_name(k, n), args, want, w, dest, temp, temp_span)
-}
-
-// A dispatch's call (tc_dispatch_call): each argument as it is — a `_`, the
-// default the chosen function has there — then the call.
-lw_dispatch_call :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w: Written) -> Built {
-    tr := k.t
-    b := k.gb
-    span := tree_span(tr, n)
-    if want == .Place { lw_fail(k, n, "a call's place") }
-    ft := tc_callee(k, n)
-    ret := fn_primary_return(ft)
-    default_at :: proc(k: ^TC, def: Tree_Id, w: Written, at: Span) -> (Type, Built) {
-        if k.t.tag[def] == .Hash_Name { return lw_hash_name_type(k, def), lw_hash_name(k, def, .Either, w, at) }
-        return tc_node_type(k, def), lw_expr(k, def, .Either, .Implied)
-    }
-    vals := make([dynamic]Operand, context.temp_allocator)
-    array_values := make([dynamic]bool, context.temp_allocator)
-    for a, i in args {
-        if tr.tag[a] == .Ident && tc_name(k, a) == "_" {
-            def := ft.params[i].default_node
-            pin := lw_pin(k)   // (lowered here: the call's)
-            t, r := default_at(k, def, w, tree_span(tr, a))
-            append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
-            k.gb.pin = pin
-            append(&array_values, false)
-            continue
-        }
-        r := lw_arg(k, a, .Either, w)
-        t := lw_arg_type(k, a)
-        _, is_array := distinct_base(t).(^Type_Fixed_Array)
-        u := tc_unparen(k, a)
-        if tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) ||
-           tr.tag[u] == .Slice && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
-            lw_fail(k, a, "bytes as a dispatch's argument")
-        }
-        at := lw_at(k, a)   // (its read and its widening: the argument's)
-        append(&vals, graph_build_as(b, r.v, r.place, t, tree_span(tr, a), span, {sig = ft, param = i}))
-        b.at = at
-        append(&array_values, is_array && !r.place)
-    }
-    for i := len(args); i < len(ft.params); i += 1 {
-        def := ft.params[i].default_node
-        pin := lw_pin(k)
-        t, r := default_at(k, def, w, span)
-        append(&vals, lw_value_as(k, def, t, r, ft.params[i].type_, span, {sig = ft, param = i}))
-        k.gb.pin = pin
-    }
-    if build_views_value(ft, array_values[:]) { lw_fail(k, n, "an array's value viewed by a dispatch's param") }
-    return {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
 }
 
 // A compiler name's type (tc_hash_name's): text's, else a bool.

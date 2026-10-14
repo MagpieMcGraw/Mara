@@ -582,7 +582,7 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     // (A text constant's name fills it as its text does: `s := GREETING`.)
     named_text := t.tag[tc_unparen(k, value)] != .String && lw_const_named(k, value) && is_partial_array(vt)
-    fills := is_partial_array(final) && (t.tag[value] == .String || named_text || is_slice_type(vt))
+    fills := lw_fills_prefix(k, value, final) || named_text && is_partial_array(final)
     m, _ := tc_byte_node(k, value)
     reads := is_partial_array(final) && tc_byte_flow(k, final, value, vt) == .Read && (t.tag[m] == .Index || t.tag[m] == .Slice)
     zero := prefixed && (fills || reads)
@@ -882,7 +882,7 @@ lw_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id) -> Type {
     held := NO_NODE
     if view != nil && !lw_either_place(k, e) {
         held = graph_slot(b, "temp", t, fl.span)
-        if is_partial_array(t) && (tag == .String || is_slice_type(t)) { graph_build_zero_var(b, held, t, fl.span) }
+        if lw_fills_prefix(k, e, t) { graph_build_zero_var(b, held, t, fl.span) }
     }
     r := lw_expr(k, e, .Either)
     if view != nil {
@@ -1095,7 +1095,7 @@ lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     b := k.gb
     t := tc_node_type(k, n)
     slot := graph_slot(b, "temp", nil, span)
-    if is_partial_array(t) && (k.t.tag[n] == .String || is_slice_type(t)) { graph_build_zero_var(b, slot, t, span) }
+    if lw_fills_prefix(k, n, t) { graph_build_zero_var(b, slot, t, span) }
     d := graph_dest_var("temp", slot, nil)
     r := lw_expr(k, n, .Into, dest = d, temp_span = span)
     lw_store(k, n, t, r, d, span)
@@ -1255,7 +1255,7 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     for branch, i in ([2]Tree_Id{then_n, else_n}) {
         if i == 1 { graph_build_if_expr_else(b, &gi) }
         // (Zero first where it fills a prefix of a partial array.)
-        if lw_may_fill_prefix(k, branch) && is_partial_array(t) && (tr.tag[tc_unparen(k, branch)] == .String || is_slice_type(tc_node_type(k, branch))) {
+        if lw_may_fill_prefix(k, branch) && lw_fills_prefix(k, branch, t) {
             graph_build_zero_var(b, slot, t, span)
         }
         r := lw_expr(k, branch, .Into, dest = graph_dest_var("if", slot, nil))
@@ -1319,11 +1319,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         if want == .Place { lw_fail(k, n, "a conversion's place") }
         r := lw_expr(k, args[0], .Value, w)
         return {v = graph_op_value(b, .Cast, w, span, tc_node_type(k, n), name, r.v), ok = true}
-    case .Dispatch:
-        return lw_dispatch_call(k, n, args, want, w)
-    case .Generic:
-        return lw_generic_call(k, n, args, want, w)
-    case .Fun, .Value:
+    case .Fun, .Value, .Dispatch, .Generic:   // (a dispatch's member, a generic's instance: a fun called)
     }
     if want == .Place { lw_fail(k, n, "a call's place") }
     ft := tc_callee(k, n)
