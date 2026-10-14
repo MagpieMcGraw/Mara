@@ -165,6 +165,10 @@ Program_Graph :: struct {
     run_ops:    [dynamic]Node_Id,
     run_first:  [dynamic]i32,
     run_heads:  []Run_Head,
+    // The runs its entry reaches, then its defer blocks' (graph_code_runs),
+    // worked out once it's built; how many are its own code's.
+    code_runs:  []i32,
+    code_own:   int,
 
     // The Then edges, sorted by `from` (a node's in the order they were
     // made): a node's, graph_out's.
@@ -527,6 +531,11 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
 // each defer block a run defer in them runs. Returns how many are its own
 // code's; each list keeps a run's successors after it.
 graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
+    if scope == 0 && g.code_runs != nil {   // (the code's own: worked out when it was built, graph_code_close)
+        prior := len(out)
+        append(out, ..g.code_runs)
+        return prior + g.code_own
+    }
     // (Which runs are listed, by run: a code has few, so here unless many.)
     few: [256]bool
     n := len(g.run_first) - 1
@@ -1167,6 +1176,11 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     graph_find_consumes(g)
     graph_index_edges(g)
     graph_index_runs(g)
+    {
+        runs := make([dynamic]i32, 0, len(g.run_first))
+        g.code_own = graph_code_runs(g, 0, &runs)
+        g.code_runs = runs[:]
+    }
     return g
 }
 
