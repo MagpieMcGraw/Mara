@@ -2286,10 +2286,6 @@ Graph_Body :: struct {
     // when declared (graph_build_decl); the local every return returns.
     arena_types: map[Node_Id]bool,
     returned:   Token_Id,
-    // A struct's: each field declaration's lowered assignment, and its field.
-    fields:     map[Syntax_Id]Node_Id,
-    field_inits: map[Syntax_Id]Span,   // (where its initializer is written)
-    field_outs: map[Syntax_Id][]Node_Id,   // fields from one call's outputs: their destructure's declarations
     const_decl: Graph_Decl,              // a constant's: its statement
     failed:     string,
 }
@@ -2378,20 +2374,15 @@ graph_body_new :: proc(b: ^Graph_Builder) -> ^Graph_Body {
 @(private="file")
 graph_body_free :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     delete(f.defs)
-    for _, ids in f.field_outs { delete(ids) }
-    kept := Graph_Body{arena_types = f.arena_types, fields = f.fields, field_inits = f.field_inits,
-                       field_outs = f.field_outs}
+    kept := Graph_Body{arena_types = f.arena_types}
     graph_map_reuse(&kept.arena_types)
-    graph_map_reuse(&kept.fields)
-    graph_map_reuse(&kept.field_inits)
-    graph_map_reuse(&kept.field_outs)
     f^ = kept
     append(&b.body_pool, f)
 }
 
 @(private="file")
 graph_body_drop :: proc(f: ^Graph_Body, made_in := context.allocator) {
-    delete(f.arena_types); delete(f.fields); delete(f.field_inits); delete(f.field_outs)
+    delete(f.arena_types)
     free(f, made_in)
 }
 
@@ -2515,30 +2506,13 @@ graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 // typed as the struct's; each name's assignment (`lowered`, the checker's
 // lowering of it; `inits`, the values as written) stores into its own and
 // is this statement's.
-// A struct's field declaration: each name a field; `lowered`, the checker's
-// statements that write them — one per name (`inits`, where each one's
-// initializer is written), or one destructure writing them all from one call
-// (`a, b := f()`: each output to its field).
-graph_build_fields :: proc(b: ^Graph_Builder, names: []string, toks: []Token_Id, span: Span, lowered: []Syntax_Id, inits: []Span, destructure: bool) {
-    f := b.body
-    ids := make([]Node_Id, len(names))
+// A struct's field declaration: each name a field, found by its token as a
+// local is (graph_local). (`_` names nothing: no field — its output, its
+// value, dropped.)
+graph_build_fields :: proc(b: ^Graph_Builder, names: []string, toks: []Token_Id, span: Span) {
     for name, i in names {
-        // (`_` names nothing: no field — its output, its value, dropped.)
-        ids[i] = NO_NODE
-        if name == "_" { continue }
-        d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, span, toks[i])
-        ids[i] = d
-        if i < len(lowered) {
-            key := lowered[i]
-            f.fields[key] = d
-            if i < len(inits) { f.field_inits[key] = inits[i] }
-        }
+        if name != "_" { graph_decl(b, {kind = .Field, owner = b.body.ts}, b.code.block, name, nil, span, toks[i]) }
     }
-    if len(names) > 1 && len(lowered) == 1 && destructure {
-        f.field_outs[lowered[0]] = ids
-        return
-    }
-    delete(ids)
 }
 
 // A field of the program's struct (the compiler's: nothing constructs it).
@@ -2774,19 +2748,17 @@ Graph_Destructure :: struct {
     place:  Operand,   // the target of the output being written
 }
 
-graph_build_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool) -> Graph_Destructure {
+graph_build_destructure :: proc(b: ^Graph_Builder, span: Span, names: []string, toks: []Token_Id, stores: []bool, is_decl: bool) -> Graph_Destructure {
     mr := Graph_Destructure{on = true, names = names, stores = stores, span = span, writes = !is_decl}
-    // (A struct's fields from one call: declared as its fields.)
-    if ids, of_fields := b.body.field_outs[id]; of_fields {
-        mr.decls = ids
-        return mr
-    }
-    // (Each name's declaration: made here, or — written — the variable's.)
+    // (Each name's declaration: made here, or — written, or a struct's
+    // field declared already (graph_build_fields) — the variable's.)
     mr.decls = make([]Node_Id, len(names), context.temp_allocator)
     for name, i in names {
         mr.decls[i] = NO_NODE
         if name == "" || name == "_" || stores[i] { continue }
-        mr.decls[i] = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, toks[i]) if is_decl else graph_local(b, toks[i])
+        d := graph_local(b, toks[i])
+        if is_decl && (d == NO_NODE || b.g.kind[d] != .Field) { d = graph_decl(b, {kind = .Local}, b.code.block, name, nil, span, toks[i]) }
+        mr.decls[i] = d
     }
     return mr
 }

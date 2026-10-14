@@ -288,14 +288,13 @@ lw_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
 
 // A struct's field's node, made with its declaration (else none: a local's
 // is made by its caller).
-lw_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, value: Tree_Id, span: Span) -> Node_Id {
+lw_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target: Tree_Id, span: Span) -> Node_Id {
     b := k.gb
     if fields_of == nil { return NO_NODE }
-    key := tc_sid(k, target)
-    if d, made := b.body.fields[key]; made { return d }   // (made with the others declared with it)
-    inits := []Span{tree_span(k.t, value)} if value != 0 else nil
-    graph_build_fields(b, {name}, {k.t.main[target]}, span, {key}, inits, false)
-    return b.body.fields[key]
+    tok := k.t.main[target]
+    if d := graph_local(b, tok); d != NO_NODE { return d }   // (made with the others declared with it)
+    graph_build_fields(b, {name}, {tok}, span)
+    return graph_local(b, tok)
 }
 
 // An expression that names a place without running anything: walking it

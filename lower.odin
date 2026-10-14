@@ -518,19 +518,16 @@ lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
             names := make([]string, len(v.targets), context.temp_allocator)
             toks := make([]Token_Id, len(v.targets), context.temp_allocator)
             for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
-            graph_build_fields(b, names, toks, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
+            graph_build_fields(b, names, toks, span)
         }
         lw_destructure(k, s, v.targets, v.values[0], true)
         return
     }
     if len(v.targets) > 1 && fields_of != nil {
         names := make([]string, len(v.targets), context.temp_allocator)
-        ids := make([]Syntax_Id, len(v.targets), context.temp_allocator)
         toks := make([]Token_Id, len(v.targets), context.temp_allocator)
-        inits := make([]Span, len(v.values), context.temp_allocator)
-        for tg, i in v.targets { names[i], ids[i], toks[i] = tc_name(k, tg), tc_sid(k, tg), t.main[tg] }
-        for val, i in v.values { inits[i] = tree_span(t, val) }
-        graph_build_fields(b, names, toks, span, ids, inits, false)
+        for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
+        graph_build_fields(b, names, toks, span)
     }
     for tg, i in v.targets {
         lw_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, fields_of)
@@ -566,10 +563,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
         return
     case .Bare:
-        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, 0, span))
+        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, span))
         return
     }
-    decl := lw_field_decl(k, fields_of, name, target, value, span)
+    decl := lw_field_decl(k, fields_of, name, target, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, tc_node_type(k, target)) }
     vt := tc_node_type(k, value)
     final := tc_node_type(k, target)
