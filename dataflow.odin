@@ -54,7 +54,7 @@ run_flow_enter :: proc(f: ^Run_Flow($S), ri: int, state: []S) {
 // The run a `then` edge (or a defer block's entry) lands in, by its place in
 // runs; ok false for one outside them.
 run_flow_at :: proc(f: ^Run_Flow($S), to: Node_Id) -> (int, bool) {
-    return f.run_at[f.g.run_starts[to]]
+    return f.run_at[graph_run_starting(f.g, to)]
 }
 
 // The fixpoint, from `entry` (the first run's state): passes over the runs

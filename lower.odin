@@ -343,6 +343,9 @@ lw_scope_arena :: proc(k: ^TC, stmts: []Tree_Id, returned: Token_Id) -> bool {
         v := decl_view(t, s)
         if len(v.targets) > 1 && len(v.values) == 1 { continue }   // (a destructure's locals: none)
         for tg, i in v.targets {
+            // (Of no type a big one is — its own, its annotation's — it has
+            // no local on the arena: most, decided without the rest.)
+            if !routes_to_arena(tc_node_type(k, tg)) && (v.type_ == 0 || !routes_to_arena(tc_node_type(k, v.type_))) { continue }
             if tc_name(k, tg) == "_" { continue }   // (no local)
             lt, takes := lw_decl_type(k, tg, v.values[i] if i < len(v.values) else 0, v.type_)
             if takes && lt != nil && routes_to_arena(lt) && k.t.main[tg] != returned { return true }

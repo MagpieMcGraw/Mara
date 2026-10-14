@@ -240,7 +240,7 @@ storage_dominates :: proc(s: ^Storage, a, b: int) -> bool {
         if i == b { return false }
         ops := graph_run(pg, int(s.runs[i]))
         for edge in graph_out(pg, ops[len(ops) - 1]) {
-            j, ok := at[pg.run_starts[edge.to]]
+            j, ok := at[graph_run_starting(pg, edge.to)]
             if !ok || seen[j] || j == a { continue }
             seen[j] = true
             append(&todo, j)

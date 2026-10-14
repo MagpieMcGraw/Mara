@@ -160,15 +160,15 @@ Program_Graph :: struct {
     reads:  [dynamic]Operand,
 
     // Run r is run_ops[run_first[r] : run_first[r+1]], in the order it runs;
-    // run_starts is each run by its first operation (where a Then edge lands).
+    // run_heads, each run by its first operation (where a Then edge lands),
+    // sorted by it (graph_run_starting).
     run_ops:    [dynamic]Node_Id,
     run_first:  [dynamic]i32,
-    run_starts: map[Node_Id]i32,
+    run_heads:  []Run_Head,
 
-    // The Then edges, sorted by `from`: a node's are
-    // edges[out_first[id] : out_first[id+1]].
+    // The Then edges, sorted by `from` (a node's in the order they were
+    // made): a node's, graph_out's.
     edges:     [dynamic]Edge,
-    out_first: [dynamic]i32,
 
     // Statements right after a return, break or continue: the first of each
     // stretch.
@@ -247,7 +247,33 @@ Const_Key :: struct { int: i128, float: u64, is_float, is_text: bool, text: stri
 
 graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
     if id >= CONST { return nil }   // (a leaf, a read: none)
-    return g.edges[g.out_first[id]:g.out_first[id + 1]]
+    edges := g.edges[:]
+    lo, hi := 0, len(edges)
+    for lo < hi {
+        mid := (lo + hi) / 2
+        if edges[mid].from < id { lo = mid + 1 } else { hi = mid }
+    }
+    end := lo
+    for end < len(edges) && edges[end].from == id { end += 1 }
+    return edges[lo:end]
+}
+
+// A run's first operation, and the run (graph_run_starting).
+Run_Head :: struct {
+    op:  Node_Id,
+    run: i32,
+}
+
+// The run whose first operation `op` is — where a Then edge to it lands —
+// by its place among the code's runs (0: none).
+graph_run_starting :: proc(g: ^Program_Graph, op: Node_Id) -> i32 {
+    heads := g.run_heads
+    lo, hi := 0, len(heads)
+    for lo < hi {
+        mid := (lo + hi) / 2
+        if heads[mid].op < op { lo = mid + 1 } else { hi = mid }
+    }
+    return heads[lo].run if lo < len(heads) && heads[lo].op == op else 0
 }
 
 graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
@@ -464,24 +490,25 @@ graph_run :: proc(g: ^Program_Graph, r: int) -> []Node_Id {
     return g.run_ops[g.run_first[r]:g.run_first[r + 1]]
 }
 
-// Each run by its first operation (g.run_starts), once the runs are final.
+// Each run by its first operation (g.run_heads), once the runs are final.
 @(private="file")
 graph_index_runs :: proc(g: ^Program_Graph) {
-    g.run_starts = make(map[Node_Id]i32, len(g.run_first))
+    heads := make([dynamic]Run_Head, 0, len(g.run_first))
     for r in 0 ..< len(g.run_first) - 1 {
-        if ops := graph_run(g, r); len(ops) > 0 { g.run_starts[ops[0]] = i32(r) }
+        if ops := graph_run(g, r); len(ops) > 0 { append(&heads, Run_Head{ops[0], i32(r)}) }
     }
+    slice.sort_by(heads[:], proc(a, b: Run_Head) -> bool { return a.op < b.op })
+    g.run_heads = heads[:]
 }
 
 // Whether a fun or struct's code can reach its end without a return: the
 // synthetic return that ends its body, in a run its entry reaches.
 graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
-    starts := g.run_starts
     seen: map[i32]bool
     defer delete(seen)
     todo: [dynamic]i32
     defer delete(todo)
-    for e in graph_out(g, scope) { append(&todo, starts[e.to]) }
+    for e in graph_out(g, scope) { append(&todo, graph_run_starting(g, e.to)) }
     for len(todo) > 0 {
         r := pop(&todo)
         if r in seen { continue }
@@ -489,7 +516,7 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
         ops := graph_run(g, int(r))
         last := ops[len(ops) - 1]
         if graph_op_of(g, last) == .Return && graph_written(g, last) == .Synthetic { return true }
-        for e in graph_out(g, last) { append(&todo, starts[e.to]) }
+        for e in graph_out(g, last) { append(&todo, graph_run_starting(g, e.to)) }
     }
     return false
 }
@@ -498,7 +525,6 @@ graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
 // each defer block a run defer in them runs. Returns how many are its own
 // code's; each list keeps a run's successors after it.
 graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
-    starts := g.run_starts
     // (Which runs are listed, by run: a code has few, so here unless many.)
     few: [256]bool
     n := len(g.run_first) - 1
@@ -506,8 +532,8 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
     defer if n > len(few) { delete(seen) }
     todo := make([dynamic]i32, 0, 16)
     defer delete(todo)
-    reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: []bool, todo: ^[dynamic]i32) {
-        for e in graph_out(g, scope) { append(todo, starts[e.to]) }
+    reach :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32, seen: []bool, todo: ^[dynamic]i32) {
+        for e in graph_out(g, scope) { append(todo, graph_run_starting(g, e.to)) }
         for len(todo) > 0 {
             r := pop(todo)
             if seen[r] { continue }
@@ -517,17 +543,17 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
             // Depth-first in edge order keeps a run's successors after it.
             next := graph_out(g, ops[len(ops) - 1])
             for i := len(next) - 1; i >= 0; i -= 1 {
-                append(todo, starts[next[i].to])
+                append(todo, graph_run_starting(g, next[i].to))
             }
         }
     }
-    reach(g, starts, scope, out, seen, &todo)
+    reach(g, scope, out, seen, &todo)
     own = len(out)
     if len(g.defer_of) == 0 { return }   // (no run defers: no defer blocks)
     for i := 0; i < len(out); i += 1 {
         for op in graph_run(g, int(out[i])) {
             if graph_op_of(g, op) != .Run_Defer { continue }
-            reach(g, starts, g.defer_of[op], out, seen, &todo)
+            reach(g, g.defer_of[op], out, seen, &todo)
         }
     }
     return
@@ -2308,19 +2334,7 @@ graph_user :: proc(g: ^Program_Graph, op, last: Node_Id) -> Node_Id {
 // Sort the edge table by `from` and index it (a counting sort: one pass).
 @(private="file")
 graph_index_edges :: proc(g: ^Program_Graph) {
-    n := len(g.kind)
-    resize(&g.out_first, n + 1)
-    slice.zero(g.out_first[:])
-    for e in g.edges { g.out_first[e.from + 1] += 1 }
-    for i in 1 ..= n { g.out_first[i] += g.out_first[i - 1] }
-    sorted := make([dynamic]Edge, len(g.edges))
-    next := slice.clone(g.out_first[:n], context.temp_allocator)
-    for e in g.edges {
-        sorted[next[e.from]] = e
-        next[e.from] += 1
-    }
-    delete(g.edges)
-    g.edges = sorted
+    slice.stable_sort_by(g.edges[:], proc(a, b: Edge) -> bool { return a.from < b.from })
 }
 
 // --- scopes -------------------------------------------------------------------

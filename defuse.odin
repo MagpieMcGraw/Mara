@@ -645,7 +645,7 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         last := ops[len(ops) - 1]
         if graph_op_of(g, last) == .Return { append(&succ[i], exit); continue }
         for e in graph_out(g, last) {
-            j, ok := at[g.run_starts[e.to]]
+            j, ok := at[graph_run_starting(g, e.to)]
             if !ok { continue }
             if graph_op_of(g, last) == .Branch && graph_written(g, last) == .Implied {
                 // A `?`: only the path that goes on.

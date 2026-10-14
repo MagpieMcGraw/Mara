@@ -260,7 +260,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     // Entry first, then the runs as they were built; each gets its label, by
     // its place in the fun (not the program's: one fun's IR doesn't change
     // when another's runs do).
-    entry := pg.run_starts[llvm_first_then(pg, 0)]
+    entry := graph_run_starting(pg, llvm_first_then(pg, 0))
     for r, i in e.runs {
         if r == entry { e.runs[0], e.runs[i] = e.runs[i], e.runs[0] }
     }
@@ -1204,7 +1204,7 @@ llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
 llvm_target :: proc(e: ^Llvm, op: Node_Id, k: int) -> i32 {
     n := 0
     for edge in graph_out(e.pg, op) {
-        if n == k { return e.pg.run_starts[edge.to] }
+        if n == k { return graph_run_starting(e.pg, edge.to) }
         n += 1
     }
     return -1
@@ -2317,7 +2317,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     for r in body {
         for o in graph_run(pg, int(r)) {
             for edge in graph_out(pg, o) {
-                if pg.run_starts[edge.to] == body[0] { return false }   // its entry a loop's head: later
+                if graph_run_starting(pg, edge.to) == body[0] { return false }   // its entry a loop's head: later
             }
         }
     }
