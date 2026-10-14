@@ -100,12 +100,18 @@ ck_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
         rt := ck_expr(k, Tree_Id(tr.b[n]))
         op := build_tokens[tr.main[n]].kind
         span := tree_span(tr, n)
+        // (Each side then at the type the operation takes it at: a
+        // comparison's, the other side's; an arithmetic one's, its own.)
         #partial switch op {
         case .Plus, .Minus, .Star, .Slash, .Modulo:
             t = coerce_infer_to_hint(k.c, promote_numeric(k.c, lt, rt, span), hint, span)
+            tc_settle(k, Tree_Id(tr.a[n]), t)
+            tc_settle(k, Tree_Id(tr.b[n]), t)
         case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
             promote_numeric(k.c, lt, rt, span)
             t = Type_Bool{}
+            tc_settle(k, Tree_Id(tr.a[n]), rt)
+            tc_settle(k, Tree_Id(tr.b[n]), lt)
         case .And, .Or:
             t = Type_Bool{}
         }
