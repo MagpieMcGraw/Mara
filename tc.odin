@@ -45,6 +45,7 @@ TC :: struct {
     hint:          Type,              // the type the expression being checked is expected at
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
+    scope_at:      map[Tree_Id]int,       // ... by its node (no instance's): whose definitions a name may need registered
     mine:          ^[dynamic]int,     // the ones the module being checked registered
     checked_modules: map[string]^Type_Scope,
     in_progress:   map[string]bool,
@@ -53,7 +54,8 @@ TC :: struct {
     salt_lo, salt_hi: Tree_Id,        // its template's body's nodes
     instance_count: u64,
     infer_at:      Span,              // the argument a generic's type param is bound from (tc_generic_call)
-    templates:     map[string]TC_Template,   // the generic definitions, by name
+    templates:     map[Token_Id]TC_Template, // the generic definitions (a union's too), by the token that declares them
+    templates_by_name: map[string]TC_Template,   // ... a fun's or a struct's by name: a dispatch's members (names, not yet tokens)
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
     const_owners:  map[string]string,        // each bare name's module ("": more than one)
     scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
@@ -68,7 +70,6 @@ TC :: struct {
     field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
-    union_templates: map[string]TC_Template,   // each generic union, by name
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_env:     ^Type_Scope,       // ... and where it is written
@@ -126,10 +127,51 @@ tc_bound_restore :: proc(k: ^TC, tok: Token_Id, was: Type, had: bool) {
 }
 
 // What a name means: its declaration's binding (a builtin's, by its name).
+// A struct's or a fun's definitions are registered when it's checked, or
+// when one is named: here, when the name is one of them.
 tc_ref_type :: proc(k: ^TC, ref: Ref, name: string) -> (Type, bool) {
     if ref.kind == .Builtin { return scope_defines(k.root, name) }
     if ref.decl == 0 { return nil, false }
+    if t, ok := tc_bound(k, ref.decl); ok { return t, true }
+    if ref.kind != .Type && ref.kind != .Fun && ref.kind != .Const { return nil, false }
+    if !tc_owner_registered(k, ref.decl) { return nil, false }
     return tc_bound(k, ref.decl)
+}
+
+// A definition's owner — the fun or struct whose body has it — registered,
+// its own owner first. (False: it has none, or none registered: a module's.)
+tc_owner_registered :: proc(k: ^TC, decl: Token_Id) -> bool {
+    owner := k.rs.owners[decl] or_else 0
+    if owner == 0 { return false }
+    def := k.rs.defs[owner] or_else 0
+    if def == 0 { return false }
+    node := Tree_Id(k.t.b[def])
+    i, ok := k.scope_at[node]
+    if !ok {
+        // (A nested one: its own owner registers it.)
+        if !tc_owner_registered(k, owner) { return false }
+        i, ok = k.scope_at[node]
+        if !ok { return false }
+    }
+    tc_register_defs(k, k.scopes[i])
+    return true
+}
+
+// A generic's type params bound to what subst binds them to: an instance's
+// (tc_instance_begin), or a trial's — given back after (tc_type_params_restore).
+tc_type_params_bind :: proc(k: ^TC, node: Tree_Id, subst: map[string]Type) -> []TC_Bound {
+    toks := k.rs.type_params_of[node]
+    was := make([]TC_Bound, len(toks), context.temp_allocator)
+    for tok, i in toks {
+        t, had := tc_bound(k, tok)
+        was[i] = {tok, t, had}
+        if bound, ok := subst[tc_text(tok)]; ok && bound != nil { tc_bound_set(k, tok, bound) }
+    }
+    return was
+}
+
+tc_type_params_restore :: proc(k: ^TC, was: []TC_Bound) {
+    for b in was { tc_bound_restore(k, b.tok, b.was, b.had) }
 }
 
 // MARA_RESOLVE=check: what a lookup found, against what the name's ref and its
@@ -214,7 +256,7 @@ tc_blocks_end :: proc(k: ^TC) {
     for _, ts in k.checked.functions { out(ts) }
     for _, ut in k.table.unions { for _, vst in ut.variant_structs { out(vst) } }
     for _, &tmpl in k.templates { tmpl.env = past(tmpl.env) }
-    for _, &tmpl in k.union_templates { tmpl.env = past(tmpl.env) }
+    for _, &tmpl in k.templates_by_name { tmpl.env = past(tmpl.env) }
     for _, kc in k.consts { kc.env, kc.pub = past(kc.env), past(kc.pub) }
     for _, list in k.scope_consts { for _, kc in list { kc.env, kc.pub = past(kc.env), past(kc.pub) } }
     k.body, k.arena_env = past(k.body), past(k.arena_env)
@@ -277,6 +319,7 @@ tc_instance_begin :: proc(k: ^TC, tmpl: TC_Template, ts: ^Type_Scope) -> (saved:
     id := annot_instance(k.annot, tmpl.lo, tmpl.node, ts)
     assert(u64(id) == k.instance_count)
     k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
+    tc_type_params_bind(k, tmpl.node, k.subst)   // (its type params: what it binds them to)
     return
 }
 
@@ -666,7 +709,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                 if tf, is_scope := found.(^Type_Scope); !is_scope || len(tf.params) == 0 {
                     tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION, name, f)
                 }
-            } else if f not_in k.templates {
+            } else if f not_in k.templates_by_name {
                 tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION_DEFINED, name, f)
             }
         }
@@ -686,7 +729,8 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
-        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg} }
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg}
+        if name not_in k.templates_by_name { k.templates_by_name[name] = k.templates[t.main[def]] }
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
@@ -726,6 +770,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     }
     k.scope_of[ts] = len(k.scopes)
     append(k.mine, len(k.scopes))
+    k.scope_at[node] = len(k.scopes)
     append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, env = env}))
 }
 

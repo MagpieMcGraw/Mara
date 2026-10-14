@@ -386,7 +386,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
             // (A type; a constructor's call, its struct's — its value the
             // declaration's to build: tc_shape_bindings.)
             if u := tc_unparen(k, a); tc_is_call(k, u) {
-                append(&targs, tc_type_named(k, tc_call_name(k, u), env, span))
+                append(&targs, tc_type_named(k, tc_call_name(k, u), env, span, u))
             } else {
                 append(&targs, tc_type(k, a, env, span))
             }
@@ -399,7 +399,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
         // (A value: a number, a constant, an operation of them.)
         at := a
         if t.tag[a] == .Type_Name {
-            kc := k.consts[tc_name(k, a)] or_else nil
+            kc := k.const_at[k.rs.refs[a].decl] if k.rs.refs[a].kind == .Const else nil
             if kc == nil {
                 tc_unsupported(k, a, "a generic's size known at run time")
                 return Type_Error{}
@@ -418,7 +418,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
         gp := gps[i]
         if gp.def == 0 { break }
         if gp.shape != "" && t.tag[gp.def] == .Ident {
-            append(&targs, tc_type_named(k, tc_name(k, gp.def), env, span))   // (`~T = void`)
+            append(&targs, tc_type_named(k, tc_name(k, gp.def), env, span, gp.def))   // (`~T = void`)
             continue
         }
         if !gp.value {

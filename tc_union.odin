@@ -15,7 +15,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, env, mod: ^Type_Scope) {
     name := tc_name(k, def)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
-        if name not_in k.union_templates { k.union_templates[name] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg} }
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), env = env, pkg = k.pkg}
         return
     }
     span := tree_span(t, def)
@@ -135,8 +135,10 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     for v in variants {
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
-        ut.variant_structs[v.name] = tc_variant_struct(k, pkg, name, v, env, subst)
-        ut.variant_structs[v.name].variant_of = ut
+        vst := tc_variant_struct(k, pkg, name, v, env, subst)
+        vst.variant_of = ut
+        ut.variant_structs[v.name] = vst
+        tc_bound_set(k, vst.decl, vst)   // (a variant named, `Shape.Rect`: its struct)
     }
     k.table.unions[ut.name] = ut
     return ut

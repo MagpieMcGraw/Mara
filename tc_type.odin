@@ -30,11 +30,7 @@ tc_type_ref :: proc(k: ^TC, n: Tree_Id, ty: Type) -> Ref {
         if len(parts) == 1 {
             name := tc_text(parts[0])
             if _, is_primitive := tc_primitive_named(name); is_primitive { return {kind = .Builtin} }
-            if bound, is_param := k.subst[name]; is_param && bound != nil && k.salt != 0 {
-                if scope := k.annot.instances[k.salt].scope; scope != nil {
-                    return {tc_type_param_decl(k, scope.node, name), .Type}
-                }
-            }
+            if ref := k.rs.refs[n]; ref.kind == .Type && k.rs.type_params[ref.decl] && k.salt != 0 { return ref }
         }
     }
     if decl := type_decl(ty); decl != 0 {
@@ -56,14 +52,13 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         // mara lsp checks on past it.)
         if len(parts) == 0 { return Type_Error{} }
         if len(parts) > 1 {
-            if qt := tc_qualified_type(k, parts, env); qt != nil { return qt }
+            if qt := tc_qualified_type(k, n, parts); qt != nil { return qt }
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
         return tc_type_named(k, tc_text(parts[0]), env, span, n)
     case .Type_Dollar:
-        name := tc_text(Token_Id(t.a[n]))
-        if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
+        if bound, is_param := tc_ref_type(k, k.rs.refs[n], ""); is_param && bound != nil { return bound }
         tc_unsupported(k, n, "a type param outside its instance")
         return Type_Error{}
     case .Type_Fun:
@@ -81,7 +76,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         tc_error(k, span, TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER, name, name)
         return Type_Error{}
     case .Type_Of:
-        return tc_fun_type_of(k, tree_token_list(t, t.a[n]), env, span)
+        return tc_fun_type_of(k, n, span)
     case .Type_Pointer:
         pt := new(Type_Ptr)
         pt.elem = tc_type(k, Tree_Id(t.a[n]), env, span)
@@ -260,7 +255,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
         if !names || env == nil || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
-        bt, ok := scope_lookup(env, tc_name(k, base))
+        bt, ok := tc_ref_type(k, k.rs.refs[base], tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {
         case ^Type_Partial_Array: if field == "cap" && a.size > 0 { return i64(a.size), true }
@@ -268,8 +263,8 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
         }
         return 0, false
     case .Ident:
-        kc, ok := k.consts[tc_name(k, n)]
-        if !names || !ok || kc.visiting { return 0, false }
+        kc := k.const_at[k.rs.refs[n].decl] if k.rs.refs[n].kind == .Const else nil
+        if !names || kc == nil || kc.visiting { return 0, false }
         kc.visiting = true
         defer kc.visiting = false
         return tc_comptime_int(k, kc.value, env, names)
@@ -282,50 +277,23 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, names := true) -> 
 
 // `q.T`: a module's type (q its alias), a union's variant's struct, a type a
 // struct holds (`Outer.Inner.Innermost`) or a method of it (as a fun's
-// type), a variable's struct's method; nil when it names none.
-tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
-    alias := tc_text(parts[0])
-    rest := tc_dotted(parts[1:])
-    if flat := resolve_type_name(k, rest, alias, env); flat != "" {
-        if st, ok := k.table.structs[flat]; ok { return st }
-        if st, ok := k.table.funs[flat]; ok { return st }
-        if ut, ok := k.table.unions[flat]; ok { return ut }
-        if et, ok := k.table.enums[flat]; ok { return et }
-        if dt, ok := k.table.distinct_types[flat]; ok { return dt }
-    }
-    alias_flat := resolve_type_name(k, alias, "", env)
-    if ut, ok := k.table.unions[alias_flat]; ok {
-        if st := ut.variant_structs[rest]; st != nil { return st }
-    }
-    parent: ^Scope_Body
-    if st, ok := k.table.structs[alias_flat]; ok {
-        parent = &st.sd
-    } else if st, ok := k.table.funs[alias_flat]; ok {
-        parent = &st.sd
-    } else if at, ok := scope_lookup(env, alias); ok {
-        parent = as_scope_body(at)   // (a parent a fun's body defines)
-    }
-    if parent != nil {
-        // (Through each type it holds, as far as they go — registered as
-        // they are named, before their holders' bodies are checked.)
-        tc_scope_defs(k, parent)
-        i := 1
-        for ; i < len(parts) - 1; i += 1 {
-            seg, has := parent.types[tc_text(parts[i])]
-            if !has { break }
-            next := as_scope_body(seg)
-            if next == nil { break }
-            parent = next
-            tc_scope_defs(k, parent)
-        }
-        last := tc_dotted(parts[i:])
-        if inner, has := parent.types[last]; has { return inner }
-        if fn, has := parent.functions[last]; has && fn != nil { return fn }
-    }
-    if vt, ok := scope_lookup(env, alias); ok {
-        if sd := as_scope_body(vt); sd != nil {
-            if fn, has := sd.functions[rest]; has && fn != nil { return fn }
-        }
+// type) — what its ref says — else a variable's struct's method (by the
+// variable's type); nil when it names none. (n: its node — a type's name, a
+// literal's `Outer.Inner{…}`.)
+tc_qualified_type :: proc(k: ^TC, n: Tree_Id, parts: []Token_Id) -> Type {
+    if t, ok := tc_ref_type(k, k.rs.refs[n], tc_dotted(parts)); ok { return t }
+    return tc_held_method(k, parts)
+}
+
+// `v.method`, named as a type: the method of v's struct (nil: none).
+tc_held_method :: proc(k: ^TC, parts: []Token_Id) -> ^Type_Scope {
+    if len(parts) != 2 { return nil }
+    ref := k.rs.token_refs[parts[0]] or_else {}
+    if !tc_is_variable(ref) { return nil }
+    vt, ok := tc_ref_type(k, ref, tc_text(parts[0]))
+    if !ok { return nil }
+    if sd := as_scope_body(vt); sd != nil {
+        if fn, has := sd.functions[tc_text(parts[1])]; has && fn != nil { return fn }
     }
     return nil
 }
@@ -348,27 +316,18 @@ tc_scope_defs :: proc(k: ^TC, sd: ^Scope_Body) {
 
 // `fn name`: the type of the fun a name names (a local holding one, too);
 // `fn q.name`, a module's fun or a variable's struct's.
-tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) -> Type {
+tc_fun_type_of :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
+    parts := tree_token_list(k.t, k.t.a[n])
     name := tc_dotted(parts)
-    if len(parts) == 1 {
-        if vt, ok := scope_lookup(env, name); ok {
-            if ft, is_scope := vt.(^Type_Scope); is_scope && ft.kind == .Fun { return ft }
+    vt, ok := tc_ref_type(k, k.rs.refs[n], name)
+    if ok {
+        if ft, is_scope := vt.(^Type_Scope); is_scope && ft.kind == .Fun { return ft }
+        if len(parts) == 1 {
             tc_error(k, span, TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME, name, name, type_name(vt))
             return Type_Error{}
         }
-        if ft, ok := k.table.funs[resolve_type_name(k, name, "", env)]; ok && ft.kind == .Fun { return ft }
-        tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
-        return Type_Error{}
     }
-    alias, bare := tc_text(parts[0]), tc_dotted(parts[1:])
-    if flat := resolve_type_name(k, bare, alias, env); flat != "" {
-        if ft, ok := k.table.funs[flat]; ok && ft.kind == .Fun { return ft }
-    }
-    if vt, ok := scope_lookup(env, alias); ok {
-        if sd := as_scope_body(vt); sd != nil {
-            if fn, has := sd.functions[bare]; has && fn != nil && fn.kind == .Fun { return fn }
-        }
-    }
+    if fn := tc_held_method(k, parts); fn != nil && fn.kind == .Fun { return fn }
     tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
     return Type_Error{}
 }
@@ -379,8 +338,10 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
 // a size.)
 tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
     t := k.t
-    if tmpl, is_template := k.templates[tc_name(k, n)]; is_template { return tc_struct_instance(k, n, tmpl, env, span) }
-    if tmpl, is_union := k.union_templates[tc_name(k, n)]; is_union { return tc_union_instance(k, n, tmpl, env, span) }
+    if tmpl, is_template := tc_template(k, k.rs.refs[n]); is_template {
+        if t.tag[tmpl.node] == .Union_Def { return tc_union_instance(k, n, tmpl, env, span) }
+        return tc_struct_instance(k, n, tmpl, env, span)
+    }
     for a in tree_list(t, t.a[n]) {
         if tc_is_type_tag(t.tag[a]) { tc_type(k, a, env, span) }
     }
@@ -393,14 +354,14 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
     t := k.t
     name := tc_name(k, n)
     one := len(tree_list(t, t.a[n])) == 1
+    found, ok := tc_ref_type(k, k.rs.refs[n], name)
     if one {
-        flat := resolve_type_name(k, name, "", env)
-        if dt, ok := k.table.distinct_types[flat]; ok && is_slice_type(dt.base_type) {
+        if dt, is_distinct := found.(^Type_Distinct); ok && is_distinct && is_slice_type(dt.base_type) {
             tc_error(k, tree_span(t, n), TYPE_SLICE_ALIAS_CAPACITY)
             return Type_Error{}
         }
     }
-    if found, ok := scope_lookup(env, name); ok {
+    if ok {
         if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && len(ts.params) > 0 {
             tc_error(k, span, TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC, name, name, name, name)
             return Type_Error{}
@@ -418,31 +379,26 @@ tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
     return tag >= .Type_Name && tag <= .Type_Paren
 }
 
-// A type by its name: a primitive, a type param bound, `Self`, what the
-// scope names, else the module's.
-tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span, n: Tree_Id = 0) -> Type {
+// A type by its name (n: the node that names it): a primitive, else what
+// its ref says — a type param, what the instance binds it to; `Self`, the
+// struct or fun it's written in.
+tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span, n: Tree_Id) -> Type {
     if _, is_primitive := tc_primitive_named(name); is_primitive { return tc_primitive(k, name, span) }
-    // (A type param, in an instance; `Self`: the struct or fun the type is
-    // written in.)
-    if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
-    if name == "Self" {
-        if s := enclosing_callable_scope(env); s != nil { return s }
-    } else {
-        // (Its own, else the one a module it uses has — two such: ambiguous.)
-        found, ok, owners := resolve_with_ambiguity(env, name)
-        tc_lookup_check(k, n, name, found, ok)
-        if ok { return found }
-        if len(owners) > 1 {
+    ref := k.rs.refs[n]
+    if t, ok := tc_ref_type(k, ref, name); ok { return t }
+    // (Two modules' type, said so.)
+    if ref.kind == .None && name != "Self" {
+        if _, _, owners := resolve_with_ambiguity(env, name); len(owners) > 1 {
             tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))
             return Type_Error{}
         }
     }
-    flat := make_flat_name(k.pkg, name)
-    if st, ok := k.table.structs[flat]; ok { return st }
-    if st, ok := k.table.funs[flat]; ok { return st }
-    if ut, ok := k.table.unions[flat]; ok { return ut }
-    if et, ok := k.table.enums[flat]; ok { return et }
-    if dt, ok := k.table.distinct_types[flat]; ok { return dt }
     tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
     return Type_Error{}
+}
+
+// The generic a name refers to, if it's one.
+tc_template :: proc(k: ^TC, ref: Ref) -> (TC_Template, bool) {
+    if ref.kind != .Type && ref.kind != .Fun { return {}, false }
+    return k.templates[ref.decl]
 }

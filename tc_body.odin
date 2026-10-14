@@ -1144,7 +1144,7 @@ TC_Binding :: struct {
 tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
     t := k.t
     if ann == 0 || t.tag[ann] != .Type_Generic { return nil }
-    tmpl, is_template := k.templates[tc_name(k, ann)]
+    tmpl, is_template := tc_template(k, k.rs.refs[ann])
     if !is_template || t.tag[tmpl.node] != .Struct_Def { return nil }
     gps, _ := tc_struct_generics(k, tmpl.node)
     out := make([dynamic]TC_Binding, context.temp_allocator)

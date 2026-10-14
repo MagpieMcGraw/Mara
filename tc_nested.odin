@@ -67,6 +67,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
     }
     k.scope_of[ts] = len(k.scopes)
     append(&k.scopes[owner_i].nested, len(k.scopes))
+    if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
     append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, env = owner}))
 }
 

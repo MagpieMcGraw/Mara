@@ -536,7 +536,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
             return tc_dispatch_call(k, n, name, members, args, env)
         }
-        if tmpl, is_template := k.templates[name]; is_template {
+        if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
             return tc_generic_call(k, n, name, tmpl, args, env)
         }
     }

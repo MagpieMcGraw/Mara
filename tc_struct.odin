@@ -318,7 +318,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> Type {
             return Type_Error{}
         }
         dotted := tc_dotted(parts[:])
-        qt := tc_qualified_type(k, parts[:], env)
+        qt := tc_qualified_type(k, ty, parts[:])
         if qt == nil { tc_error(k, span, TYPE_UNKNOWN_TYPE, dotted) }
         if as_scope_body(qt) == nil {
             tc_error(k, span, TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT, dotted, dotted)

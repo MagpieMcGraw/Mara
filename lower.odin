@@ -80,7 +80,7 @@ lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
     append(&s, len(k.addressed_calls), len(k.modules), len(k.events), len(k.const_by_decl), len(k.scopes), len(k.scope_of),
         len(k.checked_modules), len(k.in_progress), len(k.templates), len(k.consts), len(k.const_owners), len(k.scope_consts),
         len(k.instances), len(k.instance_order), len(k.vars), len(k.struct_instances), len(k.variant_scopes),
-        len(k.union_templates), len(k.exposed))
+        len(k.templates_by_name), len(k.exposed))
     a := k.annot
     append(&s, len(a.instances), len(a.types), len(a.refs), len(a.callees), len(a.args), len(a.forms), len(a.overrides),
         len(a.receivers), len(a.call_names), len(a.size_of), len(a.dot_bases), len(a.vars), len(a.bodies),

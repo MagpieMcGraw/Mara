@@ -151,7 +151,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, env: ^Type_Sc
             }
             // (A generic member is instantiated whether or not a better fit is
             // found: its instance exists.)
-            tmpl, is_template := k.templates[f]
+            tmpl, is_template := k.templates_by_name[f]
             if !is_template { continue }
             if inst := tc_overload_instance(k, f, tmpl, lt, rt, env); inst != nil && best_score < 1 { best, best_score = inst, 1 }
         }
@@ -179,9 +179,11 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     // (Its params at the bindings take the operands, before it is made.)
     saved := k.subst
     k.subst = subst
+    was := tc_type_params_bind(k, tmpl.node, subst)
     span := tree_span(tr, tmpl.def)
     p0 := tc_type(k, ptypes[0], tmpl.env, span)
     p1 := tc_type(k, ptypes[1], tmpl.env, span)
+    tc_type_params_restore(k, was)
     k.subst = saved
     if types_incompatible(p0, lt) || types_incompatible(p1, rt) { return nil }
     type_args := make([dynamic]Type, context.temp_allocator)

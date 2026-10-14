@@ -31,9 +31,13 @@ Resolver :: struct {
     modules: map[string]^Rs_Module,
     named:   map[Token_Id]^Rs_Module,   // a module's name, by the token that declares it (its use's)
     defs:    map[Token_Id]Tree_Id,      // a definition, by the token that declares it: its Define
+    owners:  map[Token_Id]Token_Id,     // ... a body's: the fun or struct whose body it's in, by its token
+    owner:   Token_Id,                  // the fun or struct whose body is being resolved
     members: map[Token_Id]map[string]Ref,   // ... what a qualified name reaches in it (rs_members)
     dispatches: map[Token_Id]bool,      // the definitions that are dispatches (their member's the checker's)
     type_params: map[Token_Id]bool,     // the declarations that are type params (what they're bound to is the checker's)
+    type_params_of: map[Tree_Id][dynamic]Token_Id,   // ... each generic's, by its node (an instance binds them)
+    generic:     Tree_Id,               // the definition whose signature is being resolved: its type params'
     module:  ^Rs_Module,                // the module being resolved
 }
 
@@ -176,6 +180,7 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
             }
             def(r, into, rs_text(t.main[s]), {t.main[s], kind})
             r.defs[t.main[s]] = s
+            if into == nil && r.owner != 0 { r.owners[t.main[s]] = r.owner }
             if t.tag[value] == .Dispatch_Def { r.dispatches[t.main[s]] = true }
             // (A union's tag enum — a union with data's: `<Name>_Tag`,
             // declared by its `union`.)
@@ -487,6 +492,8 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
     case .Union_Def:
         // (Its type params, in sight in its variants.)
         rs_enter(r, .Block)
+        outer := r.generic
+        r.generic = value
         for o in tree_list(t, t.a[value]) {
             if t.tag[o] == .Generic_Param {
                 rs_type_param(r, t.main[o])   // (its kind and default: tokens)
@@ -494,6 +501,7 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
                 rs_node(r, o)
             }
         }
+        r.generic = outer
         for vr in tree_list(t, t.b[value]) {
             rs_node(r, Tree_Id(t.a[vr]))
             if body := Tree_Id(t.b[vr]); body != 0 { rs_scope_def(r, vr, body) }
@@ -524,6 +532,8 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     rs_enter(r, .Struct if is_struct else .Fun)
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
+    outer := r.generic
+    r.generic = node
     for g in v.generics { rs_type_param(r, t.main[g]) }   // (their kinds and defaults: tokens)
     // (`$T` written in a param's type, a result's: a type param.)
     for g in v.params { rs_dollars(r, params_view(t, g).type_) }
@@ -553,14 +563,38 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
         }
     }
     r.scopes[len(r.scopes) - 1].signature = false
+    r.generic = outer
+    outer_owner := r.owner
+    r.owner = t.main[def]
     if v.intrinsic == 0 { rs_body(r, v.body) }
+    r.owner = outer_owner
     rs_leave(r)
+}
+
+// A qualified name's parts (`a.b.c`): the first in sight, each next one a
+// member. (The first's ref, by its token, too: what a variable's type has
+// is the checker's — `fn v.method`.)
+@(private="file")
+rs_parts :: proc(r: ^Resolver, parts: []Token_Id) -> (ref: Ref, ok: bool) {
+    ref, ok = rs_lookup(r, rs_text(parts[0]))
+    if ok { r.token_refs[parts[0]] = ref }
+    for part in parts[1:] {
+        if !ok { break }
+        m, has := rs_members(r, ref)
+        if !has { return {}, false }
+        ref, ok = m[rs_text(part)]
+    }
+    return
 }
 
 // A type param, in sight in its scope.
 @(private="file")
 rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
     r.type_params[tok] = true
+    if r.generic != 0 {
+        if r.generic not_in r.type_params_of { r.type_params_of[r.generic] = {} }
+        append(&r.type_params_of[r.generic], tok)
+    }
     rs_define(r, rs_text(tok), {tok, .Type})
 }
 
@@ -651,23 +685,22 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
         case len(parts) == 1:
             if _, primitive := tc_primitive_named(name); primitive { ref, ok = {kind = .Builtin}, true } else { ref, ok = rs_lookup(r, name) }
         case:
-            ref, ok = rs_lookup(r, name)
-            for part in parts[1:] {
-                if !ok { break }
-                m, has := rs_members(r, ref)
-                if !has { ok = false; break }
-                ref, ok = m[rs_text(part)]
-            }
+            ref, ok = rs_parts(r, parts)
         }
         if ok { r.refs[n] = ref }
         return
     case .Type_Keyword:
         r.refs[n] = {kind = .Builtin}
         return
+    case .Type_Dollar:
+        // (`$T` again: the first's — what declared it.)
+        if ref, ok := rs_lookup(r, rs_text(Token_Id(t.a[n]))); ok { r.refs[n] = ref }
+        return
     case .Type_Generic, .Type_Of:
         if t.tag[n] == .Type_Of {
             parts := tree_token_list(t, t.a[n])
-            if len(parts) == 1 { if ref, ok := rs_lookup(r, rs_text(parts[0])); ok { r.refs[n] = ref } }
+            ref, ok := rs_parts(r, parts)
+            if ok { r.refs[n] = ref }
             return
         }
         if ref, ok := rs_lookup(r, rs_text(t.main[n])); ok { r.refs[n] = ref }
