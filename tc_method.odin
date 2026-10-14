@@ -168,10 +168,11 @@ tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
 }
 
 // `E.from_text(s)`, E an enum (no error set): its fun — made at each call, its
-// body generated where it's called (Origin_From_Text) — taking a text,
-// giving the variant whose name it spells exactly and true, else E's zero and
-// false. nil: E is no such enum. (Named as written, `Mode.from_text`: no
-// symbol has the name.)
+// body generated where it's called (Origin_From_Text) — taking a text, giving
+// the variant whose name it spells exactly. Its one value, as written; what it
+// is written into, written only when there is one (lw_from_text_write): its
+// second result, whether there is, is that write's. nil: E is no such enum.
+// (Named as written, `Mode.from_text`: no symbol has the name.)
 tc_from_text_fun :: proc(qt: Type) -> ^Type_Scope {
     et, is_enum := distinct_base(qt).(^Type_Enum)
     if !is_enum || et.is_error_kind { return nil }

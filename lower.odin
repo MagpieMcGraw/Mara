@@ -572,6 +572,15 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_node_type(k, ann_node) }
+    // (`x := E.from_text(s)`: x void, then written only when s names a variant.)
+    if lw_is_from_text(k, value) && fields_of == nil {
+        t := tc_node_type(k, target)
+        decl := graph_build_decl(b, name, k.t.main[target], span, t)
+        graph_build_typed(b, decl, t)
+        graph_build_void_decl(b, decl, t, span, span)
+        lw_from_text_write(k, value, span, decl = decl, t = t)
+        return
+    }
     form, _, bindings := tc_decl_form(k, value, ann_node, ann)
     #partial switch form {
     case .Void:
@@ -682,6 +691,10 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     t := k.t
     b := k.gb
     span := tree_span(t, s)
+    if lw_is_from_text(k, value) && !(t.tag[target] == .Ident && tc_name(k, target) == "_") {
+        lw_from_text_write(k, value, span, target = target)
+        return
+    }
     #partial switch t.tag[target] {
     case .Field:
         lw_field_assign(k, s, target, value)
@@ -713,6 +726,29 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     r := lw_expr(k, value, .Into, dest = graph_dest_var(lw_local(k, target), vt, tc_sid(k, target)), temp = true, temp_span = span)
     lw_byte_view_address(k, existing, value)
     lw_store(k, value, tc_node_type(k, value), r, lw_parallel_hold(k, graph_dest_var(lw_local(k, target), distinct_base(existing), tc_sid(k, target)), span), span)
+}
+
+// Whether a value is `E.from_text(s)` (tc_from_text_fun).
+lw_is_from_text :: proc(k: ^TC, value: Tree_Id) -> bool {
+    v := tc_unparen(k, value)
+    if !tc_is_call(k, v) { return false }
+    callee := tc_callee(k, v)
+    if callee == nil { return false }
+    _, from_text := callee.origin.(Origin_From_Text)
+    return from_text
+}
+
+// `x = E.from_text(s)`, `x := …`: the call, then x — the target's place, or
+// the declared local — written its value only when it found a variant (its
+// second output); else left as it was.
+lw_from_text_write :: proc(k: ^TC, value: Tree_Id, span: Span, target := Tree_Id(0), decl := NO_NODE, t: Type = nil) {
+    b := k.gb
+    r := lw_expr(k, value, .Value)
+    fi := graph_build_if_found(b, r.v, span)
+    place := graph_var(b, decl, t, span) if decl != NO_NODE else lw_expr(k, target, .Place).v
+    graph_build_write_at(b, place, r.v, span)
+    graph_build_else(b, &fi, span, false)
+    graph_build_if_end(b, &fi)
 }
 
 // `x op= v` (tc_compound): `x = x op v`, at the `op=`.

@@ -1,26 +1,26 @@
 module enum_from_text
 
-//@ expect-output: build Mode.build true
-//@ expect-output: Mode.run true
-//@ expect-output: Mode.check true
-//@ expect-output: Mode.build false
-//@ expect-output: Mode.build false
-//@ expect-output: Mode.build false
-//@ expect-output: GL.LESS true
-//@ expect-output: GL(0) false
-//@ expect-output: D.run true
-//@ expect-output: Shape_Tag.Dot true
-//@ expect-output: slice: Mode.run true
+//@ expect-output: build Mode.build
+//@ expect-output: bogus Mode.help
+//@ expect-output: Mode.run
+//@ expect-output: Mode.check
+//@ expect-output: Mode.help Mode.help Mode.help
+//@ expect-output: GL.LESS GL.NEVER
+//@ expect-output: D.run
+//@ expect-output: Shape_Tag.Dot
+//@ expect-output: slice: Mode.run
+//@ expect-output: field Mode.check element [Mode.help, Mode.run]
 //@ expect-output: running
 
-// `E.from_text(s)`: the variant of an enum whose name a text spells exactly,
-// and true; else the enum's zero and false. Text from a slice, a buffer, a
+// `x = E.from_text(s)`: x written the variant of E whose name s spells
+// exactly; when none does, x left as it was. Text from a slice, a buffer, a
 // constant; an enum with values of its own; a distinct enum's; a union's tag
-// enum's. (llvm_from_text: no function — compared where it's called.)
+// enum's; into a field, an element. (llvm_from_text: no function — compared
+// where it's called; lw_from_text_write: the write only when one matched.)
 
 use mara.core
 
-Mode :: union { build  run  check }
+Mode :: union { build  run  check  help }
 GL :: union(tag u32) {
 	NEVER = 512
 	LESS = 513
@@ -30,43 +30,56 @@ Shape :: union {
 	Rect { w: i64 }
 	Dot
 }
+Holder :: struct { m: Mode }
 
 show :: fun(s: []utf8) {
-	mode, ok := Mode.from_text(s)
-	print(s, mode, ok)
+	mode := help
+	mode = Mode.from_text(s)
+	print(s, mode)
 }
 
 main :: fun() {
 	show("build")
-	m2, ok2 := Mode.from_text("run")
-	print(m2, ok2)
+	show("bogus")
+	m := help
+	m = Mode.from_text("run")
+	print(m)
 	name : str64
 	&name + "che"
 	&name + "ck"
-	m3, ok3 := Mode.from_text(name)
-	print(m3, ok3)
-	for bad in ["bogus", "ru", "runx"] {
-		m, ok := Mode.from_text(bad)
-		print(m, ok)
-	}
-	g, gok := GL.from_text("LESS")
-	print(g, gok)
-	g2, gok2 := GL.from_text("less")
-	print(g2, gok2)
-	d, dok := D.from_text("run")
-	print(d, dok)
-	t, tok := Shape_Tag.from_text("Dot")
-	print(t, tok)
+	m = Mode.from_text(name)
+	print(m)
+	m1, m2, m3 := help, help, help
+	m1 = Mode.from_text("ru")
+	m2 = Mode.from_text("runx")
+	m3 = Mode.from_text("")
+	print(m1, m2, m3)
+	g := GL.NEVER
+	g = GL.from_text("LESS")
+	g2 := GL.NEVER
+	g2 = GL.from_text("less")
+	print(g, g2)
+	d : D = .build
+	d = D.from_text("run")
+	print(d)
+	t := Shape_Tag.Rect
+	t = Shape_Tag.from_text("Dot")
+	print(t)
 	word : str64
 	&word + "run"
-	m, ok := Mode.from_text(word[0:3])
-	print("slice:", m, ok)
+	m = Mode.from_text(word[0:3])
+	print("slice:", m)
+	h := Holder{m = .build}
+	h.m = Mode.from_text("check")
+	ms : [2]Mode = [help, help]
+	ms[1] = Mode.from_text("run")
+	print("field", h.m, "element", ms)
 	match m {
 	build
 		print("building")
 	run
 		print("running")
-	check
-		print("checking")
+	else
+		print("other")
 	}
 }

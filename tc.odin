@@ -27,6 +27,7 @@ TC :: struct {
     // checked for the error — stops there.
     addressed_calls: map[Tree_Id]bool,
     several_ok:    Tree_Id,           // the call (or `?`) about to be checked where several results go — tc_call
+    whole_value:   Tree_Id,           // the value about to be checked as a single assignment's or a local's declaration's — where E.from_text(s) goes
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     pkg:           string,            // the module being checked
     // The block scopes and the names bound in them: what name resolution

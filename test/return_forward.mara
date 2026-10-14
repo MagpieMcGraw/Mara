@@ -8,7 +8,6 @@ module return_forward
 //@ expect-output: big 9 18
 //@ expect-output: implied 4 true Ok
 //@ expect-output: log [2, 1, 1] E.Bad Ok
-//@ expect-output: Mode.run true
 //@ expect-output: method 10 11
 //@ expect-output: down 0 true
 //@ expect-output: wo true
@@ -18,7 +17,7 @@ module return_forward
 // many as `return a, b` could give (the errs left off Ok), each its type.
 // It used to return f's first result and an Ok: a failure lost (inner 7 Ok).
 // Structs, text, arrays, a big one on the arena; `defer?` runs on a failed
-// one; through from_text, a method, recursion, a view of the caller's
+// one; through a method, recursion, a view of the caller's
 // buffer, a fallible constructor.
 
 use mara.core
@@ -68,8 +67,6 @@ cleanup :: fun(fail: bool, log: ^[..8]i64) -> i64, err {
 	return step(fail)
 }
 
-mode_of :: fun(s: []utf8) -> Mode, bool { return Mode.from_text(s) }
-
 Counter :: struct {
 	n := 0
 	split :: fun(c: Self) -> i64, i64 { return c.n, c.n + 1 }
@@ -110,8 +107,6 @@ main :: fun() {
 	_, e4 := cleanup(true, &log)
 	_, e5 := cleanup(false, &log)
 	print("log", log, e4, e5)
-	m, mok := mode_of("run")
-	print(m, mok)
 	u, v := via_method(Counter{n = 10})
 	print("method", u, v)
 	z, zok := count_down(3)

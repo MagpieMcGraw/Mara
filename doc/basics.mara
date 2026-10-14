@@ -544,18 +544,21 @@ builtin_utf8 :: fun() {
 	print(code)                            // 105, the code of 'i'
 }
 
-// `from_text`: an enum's variant from its name as text — `Mode.from_text(s)`, for command words and settings.
+// `from_text`: an enum's variant from its name as text — `mode = Mode.from_text(s)`, for command words and settings.
 //
-// `mode, ok := Mode.from_text(s)` gives the variant whose name s spells
-// exactly, and true; when none does, the enum's zero and false. Letter case
-// counts: name the variants the way the text writes them. Then `match`
-// takes the enum, and the checker sees that every variant is handled — a
-// typo in the text is an ok of false, not an arm silently skipped.
+// `mode = Mode.from_text(s)` writes mode the variant whose name s spells
+// exactly; when none does, mode stays as it was. So give it a default
+// first: `mode := help`. Letter case counts: name the variants the way the
+// text writes them. It goes only where it's written into — an assignment,
+// a declaration — and a variable declared `= void` or by it may be left
+// unwritten: reading one is an error. Then `match` takes the enum, and the
+// checker sees that every variant is handled.
 builtin_from_text :: fun() {
-	cmd, ok := Command.from_text("run")
-	print(cmd, ok)                         // Command.run true
-	_, known := Command.from_text("Run")
-	print(known)                           // false
+	cmd := build
+	cmd = Command.from_text("run")
+	print(cmd)                             // Command.run
+	cmd = Command.from_text("Run")
+	print(cmd)                             // Command.run: no variant Run
 	match cmd {
 	build
 		print("building")

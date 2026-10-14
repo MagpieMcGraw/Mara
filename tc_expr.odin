@@ -502,6 +502,8 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
 
 tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     several := tc_takes_several(k, n)
+    whole := k.whole_value == n
+    if whole { k.whole_value = 0 }
     t: Type
     if k.t.tag[n] == .Method_Call {
         t = tc_method_call(k, n, addressed)
@@ -512,6 +514,11 @@ tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         t = tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
     }
     if !several { tc_one_value(k, n, len(tc_call_returns(k, n))) }
+    // (`E.from_text(s)` writes only when the text names a variant: it goes
+    // where something is written, nowhere else.)
+    if callee := tc_callee(k, n); callee != nil && !whole {
+        if _, from_text := callee.origin.(Origin_From_Text); from_text { tc_error(k, tree_span(k.t, n), TYPE_FROM_TEXT_NOT_ASSIGNED, callee.name, callee.name) }
+    }
     return t
 }
 
@@ -903,6 +910,9 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id) -> []Type {
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }
+    // (from_text's one value: its second result, whether it found one, is the
+    // write's own — lw_from_text_write.)
+    if _, from_text := callee.origin.(Origin_From_Text); from_text { return callee.return_types[:1] }
     if callee.kind == .Fun { return callee.return_types[:] }
     return nil
 }
