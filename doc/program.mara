@@ -5,8 +5,8 @@
 // <name>.exe. A program is one module, in one file or several.
 //
 // `use m` makes m's names visible in this file. `include m` makes them
-// visible in every file of this module. `short :: use m` names the module
-// instead, and its names are reached through it: `short.thing`.
+// visible in every file of this module. `short :: use m` does what `use m`
+// does and names the module too: `short.thing` says whose thing it is.
 module program
 
 use mara.core
