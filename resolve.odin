@@ -948,6 +948,9 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
         return
     case .Type_Name:
         parts := tree_token_list(t, t.a[n])
+        // (None: a type missing where one was due — the parser said so; only
+        // mara lsp goes on past it. It refers to nothing.)
+        if len(parts) == 0 { return }
         name := rs_text(parts[0])
         ref: Ref
         ok: bool

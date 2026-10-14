@@ -1,0 +1,19 @@
+module unknown_qualified_type_neg
+//@ expect-fail: unknown type 'nothere.Window'
+
+// A type named through a name that names nothing (`nothere.Window`, a module
+// misspelled — or, mid-edit in mara lsp, one whose `use` line is broken):
+// tc_qualified_type gave back a Type holding a nil ^Type_Scope, which isn't
+// nil, and tc_type_ref read its declaration — the compiler died silently
+// (since 35b6b34; found by test/lsp_fuzz.py).
+
+use mara.core
+
+Game :: struct {
+	window: nothere.Window
+}
+
+main :: fun() {
+	g : Game
+	print("x")
+}

@@ -275,7 +275,10 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
 // literal's `Outer.Inner{…}`.)
 tc_qualified_type :: proc(k: ^TC, n: Tree_Id, parts: []Token_Id) -> Type {
     if t, ok := tc_ref_type(k, k.rs.refs[n], tc_dotted(parts)); ok { return t }
-    return tc_held_method(k, parts)
+    // (No method either: no type — not a Type holding a nil ^Type_Scope, which
+    // isn't nil, and whose declaration the caller then reads.)
+    if fn := tc_held_method(k, parts); fn != nil { return fn }
+    return nil
 }
 
 // `v.method`, named as a type: the method of v's struct (nil: none).
