@@ -88,6 +88,7 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     keys := make([dynamic]Syntax_Id, 0, len(a.callees), context.temp_allocator)
     for key in a.callees { append(&keys, key) }
     slice.sort(keys[:])   // (a node order that doesn't hang on the map's)
+    edges := make(map[u64]bool, len(keys), context.temp_allocator)   // (each from-to once)
     for key in keys {
         // (A call through a fun's value runs whatever it holds: no edge, the one
         // honest seam.)
@@ -96,7 +97,10 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         callers, implied := cg_runs_in(&rc, key)
         for caller in callers {
             from, to := cg_node(&g, caller), cg_node(&g, callee)
-            if !slice.contains(g.out_edges[from][:], to) { append(&g.out_edges[from], to) }
+            if edge := u64(from) << 32 | u64(to); edge not_in edges {
+                edges[edge] = true
+                append(&g.out_edges[from], to)
+            }
             if callee.calling_conv == .C { effectful[caller] = true }
             // Call order: the first line calling it. A default argument is
             // written in the callee, so it gives no line in the caller.
@@ -150,30 +154,42 @@ cg_prints :: proc(t: ^Tree, n: Tree_Id) -> bool {
 @(private="file")
 Cg_Runs :: struct {
     a:          ^Annotations,
-    owner:      map[Instance_Id][]i32,            // an instance's nodes → each one's innermost body (in a.bodies); -1: none
+    bodies:     map[Instance_Id][]Cg_Body,        // an instance's bodies, by where they begin (cg_owner)
     in_default: map[Tree_Id]Tree_Id,              // a default argument's nodes → the innermost default each is in
     defaults:   map[Tree_Id][dynamic]Syntax_Id,   // a default's node → the calls that take it
     callers:    map[Tree_Id][]^Type_Scope,        // ... the functions it runs in, once found
+    one:        [1]^Type_Scope,                   // (cg_runs_in's answer of one: read before it's asked again)
+}
+
+// A body of an instance's: its nodes, its place in a.bodies, and the body
+// around it (its place among the instance's; -1: none).
+@(private="file")
+Cg_Body :: struct {
+    lo, hi: Tree_Id,
+    i, up:  i32,
 }
 
 @(private="file")
 cg_runs_make :: proc(a: ^Annotations, t: ^Tree) -> Cg_Runs {
     rc := Cg_Runs{a = a}
-    // (The widest first: a nested body's nodes are its own.)
-    Sized :: struct { size: Tree_Id, i: int }
-    sized := make([]Sized, len(a.bodies), context.temp_allocator)
-    for b, i in a.bodies { sized[i] = {b.hi - b.lo, i} }
-    slice.sort_by(sized, proc(x, y: Sized) -> bool { return x.size > y.size })
-    for s in sized {
-        b := a.bodies[s.i]
-        inst := a.instances[b.inst]
-        owner, made := rc.owner[b.inst]
-        if !made {
-            owner = make([]i32, int(inst.hi - inst.lo) + 1)
-            slice.fill(owner, -1)
-            rc.owner[b.inst] = owner
+    // (Each instance's bodies, by where they begin — the wider first of two
+    // that begin together: one inside another is after it — each with the
+    // one around it.)
+    lists := make(map[Instance_Id][dynamic]Cg_Body, allocator = context.temp_allocator)
+    for b, i in a.bodies {
+        if b.inst not_in lists { lists[b.inst] = make([dynamic]Cg_Body, context.temp_allocator) }
+        append(&lists[b.inst], Cg_Body{b.lo, b.hi, i32(i), -1})
+    }
+    open := make([dynamic]i32, context.temp_allocator)
+    for inst, &list in lists {
+        slice.sort_by(list[:], proc(x, y: Cg_Body) -> bool { return x.lo < y.lo || x.lo == y.lo && (x.hi > y.hi || x.hi == y.hi && x.i < y.i) })
+        clear(&open)
+        for &b, k in list {
+            for len(open) > 0 && list[open[len(open) - 1]].hi < b.lo { pop(&open) }
+            if len(open) > 0 { b.up = open[len(open) - 1] }
+            append(&open, i32(k))
         }
-        for n in b.lo ..= b.hi { owner[n - inst.lo] = i32(s.i) }
+        rc.bodies[inst] = slice.clone(list[:])
     }
     for key, args in a.args {
         for arg in args {
@@ -193,10 +209,26 @@ cg_runs_make :: proc(a: ^Annotations, t: ^Tree) -> Cg_Runs {
 
 @(private="file")
 cg_runs_free :: proc(rc: ^Cg_Runs) {
-    for _, owner in rc.owner { delete(owner) }
+    for _, list in rc.bodies { delete(list) }
     for _, list in rc.defaults { delete(list) }
     for _, c in rc.callers { delete(c) }
-    delete(rc.owner); delete(rc.in_default); delete(rc.defaults); delete(rc.callers)
+    delete(rc.bodies); delete(rc.in_default); delete(rc.defaults); delete(rc.callers)
+}
+
+// The innermost body around a node of an instance's (in a.bodies; -1:
+// none): the last to begin at or before it, else the nearest around that
+// one that ends at or after it.
+@(private="file")
+cg_owner :: proc(rc: ^Cg_Runs, inst: Instance_Id, n: Tree_Id) -> int {
+    list := rc.bodies[inst] or_else nil
+    lo, hi := 0, len(list)
+    for lo < hi {
+        mid := (lo + hi) / 2
+        if list[mid].lo <= n { lo = mid + 1 } else { hi = mid }
+    }
+    j := i32(lo - 1)
+    for j >= 0 && list[j].hi < n { j = list[j].up }
+    return int(list[j].i) if j >= 0 else -1
 }
 
 // The functions a node runs in: in a default argument, each function whose
@@ -218,14 +250,12 @@ cg_runs_in :: proc(rc: ^Cg_Runs, key: Syntax_Id) -> (callers: []^Type_Scope, imp
         rc.callers[def] = out[:]
         return out[:], true
     }
-    owner, _ := rc.owner[inst]
-    lo := rc.a.instances[inst].lo
-    if n < lo || int(n - lo) >= len(owner) || owner[n - lo] < 0 { return nil, false }
-    b := rc.a.bodies[owner[n - lo]]
+    owner := cg_owner(rc, inst, n)
+    if owner < 0 { return nil, false }
+    b := rc.a.bodies[owner]
     if b.scope == nil { return nil, false }
-    out := make([]^Type_Scope, 1, context.temp_allocator)
-    out[0] = b.scope
-    return out, false
+    rc.one[0] = b.scope
+    return rc.one[:], false
 }
 
 
