@@ -345,11 +345,28 @@ tree_children :: proc(t: ^Tree, n: Tree_Id, out: ^[dynamic]Tree_Id) {
 // from a node needs — its statement (tree_stmt).
 tree_parents :: proc(t: ^Tree) {
     t.parent = make([dynamic]Tree_Id, len(t.tag))
-    kids := make([dynamic]Tree_Id, context.temp_allocator)
-    for n in 1 ..< len(t.tag) {
-        clear(&kids)
-        tree_children(t, Tree_Id(n), &kids)
-        for c in kids { t.parent[c] = Tree_Id(n) }
+    parent, extra := t.parent[:], t.extra[:]
+    // (Each field's children: written straight in, no list of them made.)
+    adopt :: #force_inline proc(parent, extra: []u32, n: u32, f: Tree_Field, v: u32) {
+        #partial switch f {
+        case .Node: if v != 0 { parent[v] = n }
+        case .List: if v != 0 { for c in extra[v + 1:][:extra[v]] { parent[c] = n } }
+        }
+    }
+    for n in 1 ..< u32(len(t.tag)) {
+        shape := &tree_shapes[t.tag[n]]
+        if shape.a == .None { continue }   // (a leaf: b's none either)
+        for f, k in ([2]Tree_Field{shape.a, shape.b}) {
+            v := t.a[n] if k == 0 else t.b[n]
+            if f != .Rec {
+                adopt(transmute([]u32)parent, extra, n, f, v)
+                continue
+            }
+            for rf, i in shape.rec {
+                if rf == .None { break }
+                adopt(transmute([]u32)parent, extra, n, rf, extra[v + u32(i)])
+            }
+        }
     }
 }
 

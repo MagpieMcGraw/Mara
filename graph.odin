@@ -432,6 +432,8 @@ Graph_Builder :: struct {
     run_pool:   [dynamic]^Run,   // (those kept: graph_run_new)
     body_pool:  [dynamic]^Graph_Body,   // (bodies done, kept for the next: graph_body_new)
     nodes:      int,             // how many nodes the code being built has; the columns run ahead
+    untyped:    [dynamic]Node_Id,   // its variables' operations of no type yet (graph_build_typed) ...
+    untyped_seen: int,              // ... the nodes looked at for them so far
     code:       Code,
     // Refers-to: each declaration made in the code being built — a fun's, a
     // struct's, a constant's; its defers' are its own — by the token that
@@ -689,6 +691,7 @@ graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
     for f in b.body_pool { graph_body_drop(f, made_in) }
     delete(b.body_pool)
     delete(b.locals)
+    delete(b.untyped)
     // (What finds an id is done with — the codes read the tables' entries.)
     delete(b.tables.name_ids)
     delete(b.tables.value_ids)
@@ -721,8 +724,8 @@ build_program_graph :: proc(b: ^Graph_Program) -> Program_Code {
     pc := b.pc
     pc.lock = nil
     graph_table_names(b, &pc)
-    graph_index_ops(&pc, checked.annot)
     when ODIN_DEBUG {
+        graph_index_ops(&pc, checked.annot)   // (else made when first asked: graph_ops)
         graph_check_coverage(b, &pc)
         for c in pc.codes {
             graph_check_runs(c)
@@ -956,6 +959,8 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     if f := b.body; f != nil { graph_fatal(graph_origin(b.g, f.root), "a code begun while '%s' is being built", graph_name(b.g, f.root)) }
     b.g = graph_code_new(b)
     b.nodes = 0
+    clear(&b.untyped)
+    b.untyped_seen = 0
     b.outside_named = false
 }
 
@@ -1234,6 +1239,7 @@ graph_index_ops :: proc(pc: ^Program_Code, a: ^Annotations) {
 // A tree node's first node in the lowered program, and its code (nil,
 // NO_NODE: none); graph_ops_next gives the rest, in order.
 graph_ops :: proc(pc: ^Program_Code, a: ^Annotations, s: Syntax_Id) -> (^Program_Graph, Node_Id) {
+    if a.ops == nil { graph_index_ops(pc, a) }   // (what asks it — mara ask, mara lsp — once)
     i, n := annot_split(s)
     if int(i) >= len(a.ops) || n < a.instances[i].lo || n > a.instances[i].hi { return nil, NO_NODE }
     at := a.ops[i][n - a.instances[i].lo]
@@ -2446,15 +2452,24 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
         graph_fatal(graph_origin(b.g, d), "'%s' is typed otherwise than it was declared", graph_name(b.g, d))
     }
     // Its variable's operations made before that was known (where a value
-    // was built into it), typed as it is.
+    // was built into it), typed as it is. (The code's untyped ones, kept as
+    // they're made: each node looked at once, not once a declaration.)
     g := b.g
+    for i in b.untyped_seen ..< b.nodes {
+        if g.kind[i] == .Op && g.op[i] == .Var && g.type_[i] == 0 { append(&b.untyped, Node_Id(i)) }
+    }
+    b.untyped_seen = b.nodes
     settled := type_id(b.type_table, graph_settled(t))
-    for i in int(d) + 1 ..< b.nodes {
-        id := Node_Id(i)
-        if g.kind[id] == .Op && g.op[id] == .Var && g.refers[id] == d && g.type_[id] == 0 {
-            g.type_[id] = settled
+    kept := 0
+    for id in b.untyped {
+        if g.type_[id] != 0 { continue }   // (typed since)
+        if id > d && g.refers[id] == d { g.type_[id] = settled }
+        if g.type_[id] == 0 {
+            b.untyped[kept] = id
+            kept += 1
         }
     }
+    resize(&b.untyped, kept)
 }
 
 // `x : T = void` and `x = void`: the value left
