@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # IR differential. Builds every fixture with a main, the multifile fixtures,
 # Pounce and design/all with a baseline compiler and with the working one
-# (Mara.exe), then compares the two. The baseline is Mara_base_tmp.exe at the
-# repo root: copy Mara.exe there at the commit you compare against.
+# (mara_dev.exe, the debug build; MARA_EXE=… names another), then compares the
+# two. The baseline is Mara_base_tmp.exe at the repo root: copy mara_dev.exe
+# there at the commit you compare against.
 #
 #   test/irdiff.sh      IR must be byte-identical
 #   test/irdiff.sh -n   IR must match modulo naming (see irnorm.pl): locals,
@@ -12,7 +13,7 @@
 #                       output and exit code (the runtime differential)
 #   test/irdiff.sh -j N N programs at a time (default: every core)
 #   test/irdiff.sh -x86 the x86 backend against LLVM's: every program built by
-#                       Mara.exe with each (LLVM's as -llvm does), run, and
+#                       the working compiler with each (LLVM's as -llvm does), run, and
 #                       their build output, program output and exit code
 #                       compared — no IR (the x86 backend writes objects)
 #
@@ -33,9 +34,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
+BASE=$ROOT/Mara_base_tmp.exe WORK=${MARA_EXE:-$ROOT/mara_dev.exe}
 if [ $X86 = 1 ]; then
-  # LLVM's side: Mara.exe with MARA_LLVM set (a script outside $OUT, which
+  # LLVM's side: the working compiler with MARA_LLVM set (a script outside $OUT, which
   # is made anew).
   mkdir -p "$OUT.sides"
   printf '#!/usr/bin/env bash\nMARA_LLVM=1 exec "%s" "$@"\n' "$WORK" > "$OUT.sides/mara_llvm"
@@ -47,7 +48,7 @@ fi
 # The sides, each `name:compiler` (another differential can name its own).
 if [ -z "$SIDES" ]; then
   SIDES="old:$BASE new:$WORK"
-  [ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
+  [ -f "$BASE" ] || { echo "no baseline: copy mara_dev.exe to Mara_base_tmp.exe first"; exit 2; }
 fi
 rm -rf "$OUT"
 for s in $SIDES; do mkdir -p "$OUT/${s%%:*}" "$OUT/run/${s%%:*}"; done

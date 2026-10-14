@@ -24,7 +24,7 @@
 #  until `mara` grows a check-only mode.)
 
 cd "$(dirname "$0")" || exit 2
-MARA=../Mara.exe
+MARA=${MARA_EXE:-$PWD/../mara_dev.exe}   # (the debug build; MARA_EXE=… names another)
 
 
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg widenneg"
@@ -100,7 +100,7 @@ check_dir() {  # d
     exp=fail
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
   fi
-  out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" $flags 2>&1)
+  out=$(cd "$d" && "$MARA" build "$d" $flags 2>&1)
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
   if [ "$exp" = pass ]; then
     if [ "$comp" = yes ]; then verdict "$key" pass; else verdict "$key" bad "REGRESSION (multi-file subdir, want pass): $d"; fi
@@ -116,7 +116,7 @@ check_dir() {  # d
 # to exit 0 — run from doc/, where they find the files they read.
 check_doc() {  # f
   local f=$1 name="${1%.mara}" key="doc.${1%.mara}" out rc
-  out=$(cd "$ROOT/doc" && "$ROOT/Mara.exe" build "$name" 2>&1)
+  out=$(cd "$ROOT/doc" && "$MARA" build "$name" 2>&1)
   if ! echo "$out" | grep -q "Compiled module"; then
     verdict "$key" bad "DOC DOESN'T BUILD: doc/$f"
     return

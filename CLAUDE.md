@@ -5,8 +5,12 @@ The goal is a production ready compiler for under 50k lines.
 
 ## Building and running
 
-The compiler:
-odin build . -debug
+The compiler (Mara.exe, optimized — the one on the path):
+odin build . -o:speed
+
+The dev build beside it (mara_dev.exe, debug — what the test scripts run;
+MARA_EXE=... names another):
+odin build . -debug -out:mara_dev.exe
 
 Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`

@@ -16,7 +16,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-WORK=$ROOT/Mara.exe
+WORK=${MARA_EXE:-$ROOT/mara_dev.exe}   # (the debug build; MARA_EXE=… names another)
 rm -rf "$OUT"; mkdir -p "$OUT"
 export ROOT OUT WORK
 

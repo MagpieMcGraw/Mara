@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Graph differential. Builds every fixture with a main, the multifile
 # fixtures, Pounce and design/all with the baseline compiler
-# (Mara_base_tmp.exe at the repo root) and the working one (Mara.exe), each
+# (Mara_base_tmp.exe at the repo root) and the working one (mara_dev.exe, the
+# debug build; MARA_EXE=… names another), each
 # dumping its program graph whole (MARA_GRAPH=full: every column of every
 # node, the edges, runs, statements and tables), and requires the dumps to be
 # identical. The check for a change to how the graph is built that must not
@@ -21,8 +22,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
-[ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
+BASE=$ROOT/Mara_base_tmp.exe WORK=${MARA_EXE:-$ROOT/mara_dev.exe}
+[ -f "$BASE" ] || { echo "no baseline: copy mara_dev.exe to Mara_base_tmp.exe first"; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT/old" "$OUT/new"
 export ROOT OUT BASE WORK
 
