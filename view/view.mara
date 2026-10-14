@@ -379,7 +379,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 				if e.scancode == Scancode.PageDown do l.scroll += page
 				if e.scancode == Scancode.PageUp do l.scroll -= page
 				if e.scancode == Scancode.Home do l.scroll = 0
-				if e.scancode == Scancode.End do l.scroll = l.lines.len
+				if e.scancode == Scancode.End do l.scroll = l.rows.len
 				ui.dirty = true
 			}
 		}

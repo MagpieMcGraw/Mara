@@ -93,23 +93,13 @@ crash_call :: fun(ui: ^Ui, k: i64) -> []utf8, i64, bool {
 	return text[paren + 1 : colon], i64(line), true
 }
 
-// The report's line at (x, y) in the panel's content r; -1 for none.
-crash_line_at :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) -> i64 {
-	if not inside(r, x, y) or y < r.y + PAD do return -1
-	k := i64(floor_f32((y - r.y - PAD) / ui.text.line))
-	if k >= lines_visible(ui, &ui.crash, r) do return -1
-	at := ui.crash.scroll + k
-	if at >= ui.crash.lines.len do return -1
-	return at
-}
-
-// The call under the mouse: its line; -1 when it's over none (or over
-// another panel in front of the Crash panel).
+// The call under the mouse: its line (any of its rows, wrapped); -1 when
+// it's over none (or over another panel in front of the Crash panel).
 crash_hover :: fun(ui: ^Ui) -> i64 {
 	i := panel_at(ui, ui.mouse_x, ui.mouse_y)
 	if i < 0 do return -1
 	if ui.panels[i].kind != CRASH_PANEL do return -1
-	k := crash_line_at(ui, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
+	k := lines_line_at(ui, &ui.crash, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
 	if k < 0 do return -1
 	_, _, call := crash_call(ui, k)
 	if not call do return -1
@@ -119,10 +109,7 @@ crash_hover :: fun(ui: ^Ui) -> i64 {
 // The Crash panel: the report, the call under the mouse lit.
 draw_crash :: fun(ui: ^Ui, r: Rect) {
 	ui.crash_hover = crash_hover(ui)
-	if ui.crash_hover >= 0 {
-		y := r.y + PAD + f32(ui.crash_hover - ui.crash.scroll) * ui.text.line
-		fill(ui.renderer, r.x, y, r.w, ui.text.line, ui.hover)
-	}
+	ui.crash.lit = ui.crash_hover
 	draw_lines(ui, &ui.crash, r, "No crash yet. When the program crashes, its report shows here, and a call clicked opens in the editor.")
 }
 
@@ -130,7 +117,7 @@ draw_crash :: fun(ui: ^Ui, r: Rect) {
 // its line — `"<editor>" "<file>:<line>"`, waited for (it hands the file to
 // the editor and ends).
 crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
-	k := crash_line_at(ui, r, x, y)
+	k := lines_line_at(ui, &ui.crash, r, x, y)
 	if k < 0 do return
 	file, line, call := crash_call(ui, k)
 	if not call do return

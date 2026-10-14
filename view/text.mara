@@ -74,9 +74,14 @@ text_width :: fun(t: ^Text, s: []utf8) -> f32 {
 	for at < s.len {
 		c, n := char_at(s, at)
 		at += n
-		w += t.glyphs[glyph_of(t, c)].advance
+		w += char_width(t, c)
 	}
 	return w
+}
+
+// How far a character moves the pen, in pixels.
+char_width :: fun(t: ^Text, c: u32) -> f32 {
+	return t.glyphs[glyph_of(t, c)].advance
 }
 
 // The text drawn at x, its line's top at y, in a color: each glyph at the

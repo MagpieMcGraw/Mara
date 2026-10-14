@@ -404,7 +404,7 @@ draw_ask :: fun(ui: ^Ui, r: Rect) {
 		draw_lines(ui, &ui.asked, r, asked_hint)
 		return
 	}
-	n := min_int(ui.at_cursor.lines.len, CURSOR_LINES)
+	n := min_int(lines_rows(ui, &ui.at_cursor, r), CURSOR_LINES)
 	h := min_f32(2.0 * PAD + f32(n) * ui.text.line, r.h)
 	draw_lines(ui, &ui.at_cursor, Rect{x = r.x, y = r.y, w = r.w, h = h}, "")
 	fill(ui.renderer, r.x, r.y + h, r.w, 1.0, ui.border)
@@ -570,11 +570,13 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))
 	}
+	// (What each does wraps in its column.)
+	does_x := r.x + 2.0 * PAD + widest
+	does_w := max_f32(r.x + r.w - PAD - does_x, 40.0)
 	y := r.y + PAD
 	for k, i in keys {
 		_ = text_draw(&ui.text, ui.renderer, k, r.x + PAD, y, ui.ink)
-		_ = text_draw(&ui.text, ui.renderer, does[i], r.x + 2.0 * PAD + widest, y, ui.dim)
-		y += ui.text.line + ROW_PAD
+		y = draw_wrapped(ui, does[i], STYLE_DIM, does_x, y, does_w) + ROW_PAD
 	}
 }
 

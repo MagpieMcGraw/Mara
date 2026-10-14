@@ -3,9 +3,14 @@ module view
 use mara.core
 use mara.math
 use mara.sdl
+use mara.string
 
 // Text shown a line at a time, each line in a style, scrolled: the Docs
-// panel's and the Ask panel's. A status line at the bottom, when it has one.
+// panel's, the Ask panel's, the Crash panel's. A status line at the bottom,
+// when it has one. Lines wider than the panel wrap: at a space, or within a
+// word wider than the panel, the rows after a line's first as far in as its
+// own indent — each line's rows worked out again only when the panel's
+// width changes.
 
 STYLE_TEXT  :: 0   // as text is: the ink
 STYLE_DIM   :: 1   // quieter
@@ -23,13 +28,27 @@ Line :: struct {
 	style: i64
 }
 
+// A row drawn: a line, or as much of one as the width holds — its text
+// Lines.text[at : at + len], drawn `indent` in.
+Line_Row :: struct {
+	line:   i64   // the line it's part of
+	at:     i64
+	len:    i64
+	indent: f32   // the line's own indent, for its rows after the first
+}
+
 Lines :: struct {
 	text:   [..2 * MB]utf8
 	lines:  [..50000]Line
 	status: [..400]utf8   // the status line; none when empty
 	status_style: i64
-	scroll: i64           // the first line shown
+	scroll: i64           // the first row shown
 	cut:    bool          // more came than it holds: the rest left out
+	lit:    i64 = -1      // a line lit, all its rows (the call under the mouse); -1: none
+	// The lines wrapped (lines_wrap): to rows_w wide, rows_lines of them.
+	rows:   [..100000]Line_Row
+	rows_w: f32
+	rows_lines: i64
 }
 
 // Emptied: no lines, no status line, at the top.
@@ -40,6 +59,8 @@ lines_clear :: fun(l: ^Lines) {
 	l.status_style = STYLE_DIM
 	l.scroll = 0
 	l.cut = false
+	l.rows.len = 0
+	l.rows_lines = 0
 }
 
 // A line added in a style: its tabs as spaces, a carriage return left out.
@@ -74,50 +95,185 @@ lines_status :: fun(l: ^Lines, s: []utf8, style: i64) {
 	l.status_style = style
 }
 
-// How many lines fit in r, room kept for the status line.
+// How wide the text drawn in r is: what rows wrap to.
+lines_width :: fun(r: Rect) -> f32 {
+	return max_f32(r.w - 2.0 * PAD, 40.0)
+}
+
+// The lines wrapped to rows w wide: all of them again when the width
+// changed — the scroll kept at the line it showed first — else the lines
+// added since. (No room for more rows: the lines after them left out.)
+lines_wrap :: fun(ui: ^Ui, l: ^Lines, w: f32) {
+	top : i64 = -1
+	if w != l.rows_w {
+		if l.scroll >= 0 and l.scroll < l.rows.len do top = l.rows[l.scroll].line
+		l.rows_w = w
+		l.rows.len = 0
+		l.rows_lines = 0
+	}
+	for l.rows_lines < l.lines.len {
+		ln := l.lines[l.rows_lines]
+		if not wrap(&ui.text, l.text[ln.at : ln.at + ln.len], w, l.rows_lines, ln.at, &l.rows) {
+			l.rows_lines = l.lines.len
+			l.cut = true
+		else
+			l.rows_lines += 1
+		}
+	}
+	if top >= 0 {
+		l.scroll = 0
+		for l.scroll < l.rows.len {
+			if l.rows[l.scroll].line >= top do break
+			l.scroll += 1
+		}
+	}
+}
+
+// How many rows the lines take, wrapped to r's width.
+lines_rows :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
+	lines_wrap(ui, l, lines_width(r))
+	return l.rows.len
+}
+
+// Text s wrapped to rows w wide, added to rows: each one line's part of s —
+// from base + its start in s — the rows after the first as far in as s's
+// own indent (half the width at most). Whether there was room for them all.
+wrap :: fun(t: ^Text, s: []utf8, w: f32, line: i64, base: i64, rows: ^[]Line_Row) -> bool {
+	lead : i64 = 0
+	for lead < s.len {
+		if s[lead] != ' ' do break
+		lead += 1
+	}
+	indent := min_f32(f32(lead) * char_width(t, u32(' ')), w / 2.0)
+	at : i64 = 0
+	x : f32 = 0
+	more := true
+	for more {
+		if rows.len == rows.cap do return false
+		end := row_end(t, s, at, w - x)
+		rows.len += 1
+		rows[rows.len - 1] = Line_Row{line = line, at = base + at, len = end - at, indent = x}
+		// (The spaces it broke at shown by neither row.)
+		at = end
+		for at < s.len {
+			if s[at] != ' ' do break
+			at += 1
+		}
+		more = at < s.len
+		x = indent
+	}
+	return true
+}
+
+// Where the row from `at` ends, w wide: at the last space after a word
+// before what doesn't fit, else within the word — a character in at least.
+// s's end when the rest fits.
+row_end :: fun(t: ^Text, s: []utf8, at: i64, w: f32) -> i64 {
+	x : f32 = 0
+	space : i64 = -1
+	word := false
+	k := at
+	for k < s.len {
+		c, n := char_at(s, k)
+		if c == u32(' ') and word do space = k
+		x += char_width(t, c)
+		if x > w {
+			if space > at do return space
+			if k > at do return k
+			return k + n
+		}
+		if c != u32(' ') do word = true
+		k += n
+	}
+	return s.len
+}
+
+// The status line's height, wrapped to r's width; 0 for none.
+status_height :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> f32 {
+	if l.status.len == 0 do return 0
+	rows : [..STATUS_ROWS]Line_Row
+	_ = wrap(&ui.text, l.status[:], lines_width(r), 0, 0, &rows)
+	return f32(rows.len) * ui.text.line + 2.0 * ROW_PAD
+}
+
+STATUS_ROWS :: 12   // the most rows a status line or a hint wraps to
+
+// How many rows fit in r, room kept for the status line.
 lines_visible :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
-	h := r.h - 2.0 * PAD
-	if l.status.len > 0 do h -= row_height(ui)
+	h := r.h - 2.0 * PAD - status_height(ui, l, r)
 	return max_int(i64(h / ui.text.line), 1)
 }
 
-// The lines drawn in r: from the scroll, as many as fit, a scroll bar when
-// they don't all; the status line at its bottom. With none, `empty`, dim.
+// The lines drawn in r: from the scroll, as many rows as fit, a scroll bar
+// when they don't all; the status line at its bottom. With none, `empty`,
+// dim.
 draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	rd := ui.renderer
+	w := lines_width(r)
+	lines_wrap(ui, l, w)
 	shown := lines_visible(ui, l, r)
-	l.scroll = max_int(0, min_int(l.scroll, l.lines.len - shown))
-	if l.lines.len == 0 do _ = text_draw(&ui.text, rd, empty, r.x + PAD, r.y + PAD, ui.dim)
+	l.scroll = max_int(0, min_int(l.scroll, l.rows.len - shown))
+	if l.lines.len == 0 do _ = draw_wrapped(ui, empty, STYLE_DIM, r.x + PAD, r.y + PAD, w)
 	y := r.y + PAD
 	for k in 0 .. shown {
 		at := l.scroll + k
-		if at >= l.lines.len do break
-		draw_line(ui, line_text(l, at), l.lines[at].style, r.x + PAD, y)
+		if at >= l.rows.len do break
+		row := l.rows[at]
+		ln := l.lines[row.line]
+		if row.line == l.lit do fill(rd, r.x, y, r.w, ui.text.line, ui.hover)
+		draw_line(ui, l.text[row.at : row.at + row.len], ln.style, row.at == ln.at, r.x + PAD + row.indent, y)
 		y += ui.text.line
 	}
-	if l.lines.len > shown {
+	if l.rows.len > shown {
 		track := f32(shown) * ui.text.line
-		thumb := max_f32(track * f32(shown) / f32(l.lines.len), 20.0)
-		thumb_y := r.y + PAD + (track - thumb) * f32(l.scroll) / f32(l.lines.len - shown)
+		thumb := max_f32(track * f32(shown) / f32(l.rows.len), 20.0)
+		thumb_y := r.y + PAD + (track - thumb) * f32(l.scroll) / f32(l.rows.len - shown)
 		fill(rd, r.x + r.w - 8.0, thumb_y, 5.0, thumb, ui.dim)
 	}
 	if l.status.len > 0 {
-		row_h := row_height(ui)
-		fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
-		_ = text_draw(&ui.text, rd, l.status[:], r.x + PAD, r.y + r.h - row_h + ROW_PAD, style_color(ui, l.status_style))
+		h := status_height(ui, l, r)
+		fill(rd, r.x, r.y + r.h - h, r.w, h, ui.header)
+		_ = draw_wrapped(ui, l.status[:], l.status_style, r.x + PAD, r.y + r.h - h + ROW_PAD, w)
 	}
 }
 
-// A line drawn at (x, y) in its style.
-draw_line :: fun(ui: ^Ui, s: []utf8, style: i64, x: f32, y: f32) {
-	if style == STYLE_TITLE {
-		first : i64 = 0
-		for first < s.len {
-			if s[first] == ' ' do break
-			first += 1
+// The line under (x, y) in the lines drawn in r, as last drawn; -1 for none.
+lines_line_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> i64 {
+	if not inside(r, x, y) or y < r.y + PAD do return -1
+	k := i64(floor_f32((y - r.y - PAD) / ui.text.line))
+	if k >= lines_visible(ui, l, r) do return -1
+	at := l.scroll + k
+	if at >= l.rows.len do return -1
+	return l.rows[at].line
+}
+
+// Text drawn wrapped to w, from (x, y), in a style; the y below it.
+draw_wrapped :: fun(ui: ^Ui, s: []utf8, style: i64, x: f32, y: f32, w: f32) -> f32 {
+	rows : [..STATUS_ROWS]Line_Row
+	_ = wrap(&ui.text, s, w, 0, 0, &rows)
+	at_y := y
+	for row in rows {
+		draw_line(ui, s[row.at : row.at + row.len], style, row.at == 0, x + row.indent, at_y)
+		at_y += ui.text.line
+	}
+	return at_y
+}
+
+// A row drawn at (x, y) in its line's style — `first`: the line's first row.
+draw_line :: fun(ui: ^Ui, s: []utf8, style: i64, first: bool, x: f32, y: f32) {
+	if style == STYLE_TITLE and first {
+		word : i64 = 0
+		for word < s.len {
+			if s[word] == ' ' do break
+			word += 1
 		}
-		pen := text_draw(&ui.text, ui.renderer, s[0 : first], x, y, ui.accent)
-		_ = text_draw(&ui.text, ui.renderer, s[first : s.len], pen, y, ui.dim)
+		pen := text_draw(&ui.text, ui.renderer, s[0 : word], x, y, ui.accent)
+		_ = text_draw(&ui.text, ui.renderer, s[word : s.len], pen, y, ui.dim)
+		return
+	}
+	// (A heading's rows after its first: dim, as the rest of its first.)
+	if style == STYLE_TITLE {
+		_ = text_draw(&ui.text, ui.renderer, s, x, y, ui.dim)
 		return
 	}
 	_ = text_draw(&ui.text, ui.renderer, s, x, y, style_color(ui, style))
