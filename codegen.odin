@@ -90,7 +90,7 @@ Codegen :: struct {
     // set to a module-specific tag by parallel codegen workers so each TU's
     // strings live in its own namespace.
     string_name_prefix: string,
-    // The module's globals: its string literals (and -profile's slots, which
+    // The module's globals: its string literals (and -profile time's slots, which
     // name them: llvm_probe).
     globals: [dynamic]Ir_Global,
     // Struct support (no shadow map — reads directly from checked.table.funs)
@@ -115,7 +115,7 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
-    // -profile: the build, as the profile's header names it ("" when not
+    // -profile time: the build, as the profile's header names it ("" when not
     // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
     // when they're entered and left (llvm.odin, llvm_probe).
     profile: string,

@@ -1,6 +1,6 @@
-// How to find what's slow: build with -profile, run, read profile.txt.
+// How to find what's slow: build with -profile time, run, read profile.txt.
 //
-// `mara build profiling -profile -release` makes a program that times its
+// `mara build profiling -profile time -release` makes a program that times its
 // funs. When it exits (main's end, an assert, a crash) it writes profile.txt
 // next to the exe: one line per fun, the most time first. Profile the
 // -release build: a debug build's times say little about the optimized one.

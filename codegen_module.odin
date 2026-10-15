@@ -867,7 +867,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_crash_install()\n")
     }
     if g.profile != "" {
-        // The profiler, runtime/mara_prof.c: linked into a -profile build.
+        // The profiler, runtime/mara_prof.c: linked into a -profile time build.
         strings.write_string(&b, "declare void @__mara_prof_start(ptr)\n")
         strings.write_string(&b, "declare void @__mara_prof_enter(ptr)\n")
         strings.write_string(&b, "declare void @__mara_prof_exit(ptr)\n")

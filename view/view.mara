@@ -1,7 +1,7 @@
 module view
 
 // The Mara window: `mara view` opens it on a module. It shows panels
-// (panels.mara): the module's profile.txt (build with `mara build -profile`,
+// (panels.mara): the module's profile.txt (build with `mara build -profile time`,
 // run the program), every probed fun's times sorted by whichever column is
 // clicked, read again whenever the program writes it; the docs, looked up
 // for the words an editor sends (`mara docs`, docs.mara); the last query an

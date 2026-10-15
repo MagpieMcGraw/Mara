@@ -2,11 +2,11 @@ module profile
 
 use mara.core
 
-//@ build-flags: -profile
+//@ build-flags: -profile time
 //@ expect-output: total 706
 //@ expect-output: profile:
 
-// `-profile` times the program's funs: profile.txt, next to the exe, when it
+// `-profile time` times the program's funs: profile.txt, next to the exe, when it
 // exits. A fun that calls nothing and doesn't loop isn't timed (`square`);
 // the rest are (main, a loop, a recursion, a method, a constructor that
 // calls).

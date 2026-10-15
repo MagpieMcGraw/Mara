@@ -421,7 +421,7 @@ void __mara_crash_end(void) {
 // assert reports itself — "Crashed: <what>" on stdout and in crash.txt — and
 // the process exits with the OS's code for it (0xC00000FD for a stack
 // overflow; 128 + the signal on Linux) through exit(), so atexit work still
-// runs: a -profile build's profile, naming the calls that were running. A
+// runs: a -profile time build's profile, naming the calls that were running. A
 // crash inside the report is left to the OS.
 
 #ifdef _WIN32

@@ -1,4 +1,4 @@
-// Mara profiler — linked into `mara build -profile` builds.
+// Mara profiler — linked into `mara build -profile time` builds.
 //
 // Each fun the compiler probes (llvm.odin: one that calls something or loops,
 // and main) calls __mara_prof_enter first thing and __mara_prof_exit before

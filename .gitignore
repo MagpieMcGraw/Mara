@@ -44,7 +44,8 @@ test_*/
 # subdirs. The bundles together are ~80MB; keep them local.
 Pounce/data/*.bin
 
-# Profile written by a -profile build at exit (runtime/mara_prof.c)
+# Profiles written at exit: profile.txt by a -profile time build (runtime/mara_prof.c),
+# memory.txt by a -profile memory build (runtime/mara_mem.c)
 profile.txt
 memory.txt
 # mara view: where its panels were, per machine

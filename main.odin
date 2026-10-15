@@ -721,7 +721,7 @@ compile_task_proc :: proc(t: thread.Task) {
 
 // A runtime file (runtime/<name>.c) a native build links: mara_crash, in
 // every one, so asserts and crash() can tee their message into crash.txt;
-// mara_prof, in a -profile build; mara_mem, in a -profile memory build.
+// mara_prof, in a -profile time build; mara_mem, in a -profile memory build.
 // Compiled once to a sibling .o and reused;
 // recompiled when the .c is newer (compiler update). runtime/ holds
 // compiler-internal C support (compiler-rt), as opposed to code/ which is the
@@ -1155,7 +1155,7 @@ CLI_Args :: struct {
     release:      bool,    // -release — pass -O3 to clang for an optimized build (LLVM's: the x86 backend doesn't optimize)
     llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
-    profile:      bool,    // -profile — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
+    profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
 
@@ -1192,7 +1192,11 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile [memory]] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
+PROFILE_USAGE :: `-profile needs what to measure:
+    -profile time     how long each fun takes: profile.txt, next to the program, when it ends
+    -profile memory   how full each partial array and arena gets: memory.txt`
+
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
@@ -1375,13 +1379,17 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-release" { args.release = true; i += 1; continue }
         if arg == "-llvm"    { args.llvm    = true; i += 1; continue }
         if arg == "-profile" {
-            // (`-profile memory`: the memory profiler instead of the time one.)
-            if i + 1 < len(os.args) && os.args[i + 1] == "memory" {
-                args.profile_memory = true
-                i += 2
-                continue
+            // Which profiler: `-profile time`, `-profile memory`.
+            what := os.args[i + 1] if i + 1 < len(os.args) else ""
+            switch what {
+            case "time":   args.profile = true
+            case "memory": args.profile_memory = true
+            case:
+                fmt.println(PROFILE_USAGE)
+                os.exit(1)
             }
-            args.profile = true; i += 1; continue
+            i += 2
+            continue
         }
         if arg == "-show"    { args.show    = true; i += 1; continue }
         if arg == "-cursor"  { args.cursor  = true; i += 1; continue }
@@ -1630,7 +1638,7 @@ main :: proc() {
 
     // A profile is written when the program exits: a program, run natively.
     if args.profile && (args.web || pkg_shared) {
-        fmt.printf("-profile times a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")
+        fmt.printf("-profile time times a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")
         os.exit(1)
     }
     if args.profile_memory && (args.web || pkg_shared) {

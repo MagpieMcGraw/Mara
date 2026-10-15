@@ -6,7 +6,7 @@ use mara.math
 use mara.memory
 use mara.string
 
-// A profile.txt (`mara build -profile`, written when the program ends):
+// A profile.txt (`mara build -profile time`, written when the program ends):
 // header lines, the line naming the columns, then a row per fun — the
 // numbers, the fun's name, its file:line (runtime/mara_prof.c says so).
 // The columns are the ones the file names, of the titles this window knows
@@ -81,7 +81,7 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	_, e := read_entire_file(path, &p.text)
 	if e == .Open_Failed {
 		p.missing = true
-		&p.problem + "No profile.txt here yet: build the program with `mara build -profile` and run it."
+		&p.problem + "No profile.txt here yet: build the program with `mara build -profile time` and run it."
 		return
 	}
 	if e {

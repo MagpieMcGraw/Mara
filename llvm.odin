@@ -42,7 +42,7 @@ Llvm :: struct {
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: [dynamic]Ir,        // a constructor's field addresses, first in its entry
     head:  Ir_Head,             // its `define` line
-    probe: string,              // -profile: its slot's symbol, when it's timed (llvm_probe)
+    probe: string,              // -profile time: its slot's symbol, when it's timed (llvm_probe)
     st:    ^Storage,            // where each value lives (storage.odin): read here, decided there
 
     // Its named allocas: one for the named locals of one name and type (their
@@ -156,7 +156,7 @@ llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool) {
     append(&e.dbg.vars, Dbg_Var{name, graph_type(e.pg, d), at, addr})
 }
 
-// -profile: a fun worth timing — main, and one that does work a probe is
+// -profile time: a fun worth timing — main, and one that does work a probe is
 // worth (llvm_works) — tells the profiler (runtime/mara_prof.c) when it's
 // entered, here, first thing, and when it's left, before each return
 // (llvm_ret). Both name its slot: its name and where it's written, for its
