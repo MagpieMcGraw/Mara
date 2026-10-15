@@ -46,10 +46,11 @@ example_module :: fun() {
 // `use`, `include`: bring another module's names into a file — an import.
 //
 // `use mara.string` makes mara.string's names visible in this file:
-// `trimmed(s)`. `include m` makes them visible in every file of this
-// module. `s :: use mara.string` does that and names the module as well:
-// `s.trimmed(…)` says whose trimmed it is — and picks between two modules'
-// things of one name.
+// `trimmed(s)` — this file's only: what a file uses is its own, what it
+// defines anyone's. `s :: use mara.string` does that and names the module as
+// well: `s.trimmed(…)` says whose trimmed it is — and picks between two
+// modules' things of one name. `include m` is, for now, another spelling of
+// `use m`.
 //
 // Uses go at the top, after the `module` line. Nearly every file uses
 // mara.core: text buffers, `&list + x`, comparing texts.
@@ -58,7 +59,7 @@ example_use :: fun() {
 	//
 	//     use mara.core
 	//     use mara.string           // trimmed(line)
-	//     include mara.memory       // KB, MB, Arena_Debug: in every file of the module
+	//     use mara.memory           // KB, MB, Arena_Debug
 	//     os :: use mara.os         // os.read_entire_file(…)
 }
 

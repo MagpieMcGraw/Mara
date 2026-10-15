@@ -16,7 +16,7 @@ module directories
 use mara.core
 use mara.os
 use mara.string
-include mara.memory
+use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))

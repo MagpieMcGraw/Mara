@@ -3,6 +3,7 @@ module view
 use mara.core
 use mara.os
 use mara.math
+use mara.memory
 use mara.string
 
 // A profile.txt (`mara build -profile`, written when the program ends):

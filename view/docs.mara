@@ -3,6 +3,7 @@ module view
 use mara.core
 use mara.os
 use mara.math
+use mara.memory
 use mara.string
 
 // The Docs panel's search: words — what's selected in the editor, sent by

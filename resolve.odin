@@ -494,14 +494,9 @@ rs_program :: proc(r: ^Resolver) {
         for b in ([]string{"this_program", "Program", "std", "void"}) { rs_define(r, b, {kind = .Builtin}) }
         r.module = m
         for name, ref in m.defs { rs_define(r, name, ref) }
-        // (`include m`: m's definitions in sight in every file of the module.)
-        for f in m.files {
-            for s in rs_live(r, tree_list(t, t.a[f])) {
-                imp := rs_stmt_import(t, s)
-                if imp == 0 || build_tokens[t.main[imp]].kind != .Include { continue }
-                if used, _ := rs_import(r, imp); used != nil { append(&r.scopes[len(r.scopes) - 1].uses, used) }
-            }
-        }
+        // (A file's imports are its own — `use m`, and `include m`, another
+        // spelling of it for now: a scope's definitions are in sight to whoever
+        // names into it, its imports to it alone.)
         for f in m.files {
             rs_enter(r, .File)
             stmts := rs_live(r, tree_list(t, t.a[f]))
@@ -516,8 +511,8 @@ rs_program :: proc(r: ^Resolver) {
                 rs_define(r, rs_text(tok), {tok, .Module})
             }
             for s in stmts { rs_stmt(r, s) }
-            // (What it sees of the groups: its module's, then what it uses,
-            // then what its module includes — each once.)
+            // (What it sees of the groups: its module's, then what it uses —
+            // each once.)
             if t.first[f] != 0 {
                 uses := make([dynamic]^Rs_Module)
                 for i := len(r.scopes) - 1; i >= 0; i -= 1 {

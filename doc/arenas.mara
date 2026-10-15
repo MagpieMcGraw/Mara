@@ -18,7 +18,7 @@
 module arenas
 
 use mara.core
-include mara.memory
+use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Debug(16 * MB))

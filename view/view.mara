@@ -20,7 +20,7 @@ use mara.core
 use mara.os
 use mara.math
 use mara.sdl
-include mara.memory
+use mara.memory
 
 PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%

@@ -488,7 +488,7 @@ TYPE_AMBIGUOUS_DISPATCH_MATCHES_MULTIPLE_OVERLOADS :: "ambiguous dispatch '%s' â
 TYPE_UNDEFINED_FUNCTION :: "undefined function '%s'"
 TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE :: "cannot construct %s from %s; underlying type is %s"
 TYPE_FUNCTION :: "'%s' is not a function"
-TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "function '%s' is ambiguous (defined in: %s). Use a qualified call (e.g. `%s.%s(...)`) or seal one of the includes."
+TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "function '%s' is ambiguous (defined in: %s). Use a qualified call (e.g. `%s.%s(...)`), or use only one of the modules here."
 TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID :: "'%s' field-override block is only valid on struct construction"
 TYPE_ARRAY_ELEMENT_TYPE_EXPECTED :: "array element %d has type %s, expected %s"
 TYPE_INDEX_NUMBER :: "index must be a number, got %s"

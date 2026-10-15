@@ -4,6 +4,7 @@ use mara.core
 use mara.string
 use mara.os
 use mara.math
+use mara.memory
 use mara.sdl
 
 // The window's side of `mara ask` and `mara docs` (the compiler's

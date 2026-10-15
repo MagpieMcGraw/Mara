@@ -8,7 +8,7 @@ module read_file
 
 use mara.core
 use mara.os
-include mara.memory
+use mara.memory
 
 // Step by step: open, size, read, close — each can fail, and `?` passes the
 // failure on to whoever called (see errors.mara).

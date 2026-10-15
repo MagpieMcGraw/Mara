@@ -14,7 +14,7 @@ module executable_path
 
 use mara.core
 use mara.os
-include mara.memory
+use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))

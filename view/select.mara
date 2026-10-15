@@ -2,6 +2,7 @@ module view
 
 use mara.core
 use mara.math
+use mara.memory
 use mara.sdl
 use mara.string
 

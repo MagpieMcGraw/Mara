@@ -2,6 +2,7 @@ module view
 
 use mara.core
 use mara.math
+use mara.memory
 use mara.string
 
 // Mara code as the panels show it (STYLE_MARA lines): each token in its
