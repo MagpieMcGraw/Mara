@@ -2091,7 +2091,9 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
 }
 
 // A take from storage's cursor: storage's pointer and len (the cursor), the
-// cursor aligned for what's taken, that address, the cursor moved past it —
+// cursor moved on until its address is aligned for what's taken (the
+// address's, not the len's: storage may start anywhere), that address, the
+// cursor moved past it —
 // checked against storage's cap — and stored as its len. `let(T, s)` is that
 // memory; `slice([:n]T, s)` a header over n of them (len = cap = n), built
 // where it goes when that's fresh, as a call's result is. Positional (a view
@@ -2145,10 +2147,19 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         ir_bin(g, advance, .Mul, w, count, ir_int(int(size)))
     }
     if align > 1 {
+        // (The address aligned, not the len alone: storage's bytes may start
+        // anywhere — a view from an odd offset. The cursor, then, what it
+        // is from them.)
+        base := fresh_tmp(g)
+        ir_cast(g, base, .Ptrtoint, IR_PTR, data, w)
+        addr := fresh_tmp(g)
+        ir_bin(g, addr, .Add, w, base, cursor)
         bumped := fresh_tmp(g)
-        ir_bin(g, bumped, .Add, w, cursor, ir_int(int(align - 1)))
+        ir_bin(g, bumped, .Add, w, addr, ir_int(int(align - 1)))
+        aligned := fresh_tmp(g)
+        ir_bin(g, aligned, .And, w, bumped, ir_int(int(-align)))
         cursor = fresh_tmp(g)
-        ir_bin(g, cursor, .And, w, bumped, ir_int(int(-align)))
+        ir_bin(g, cursor, .Sub, w, aligned, base)
     }
     at := fresh_tmp(g)
     ir_gep(g, at, IR_I8, data, {w, cursor, {}})
