@@ -136,7 +136,7 @@ lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
     asked := json_at(params, "range")
     l0 := json_int(json_at(json_at(asked, "start"), "line"))
     l1 := json_int(json_at(json_at(asked, "end"), "line"))
-    lsp_check(s, filepath.dir(path))   // (the names kept up to date with what's changed)
+    lsp_check(s, path)   // (the names kept up to date with what's changed)
     here, have := lsp_editor_text(s, path)
     if !have { return "[]" }
     on_lines :: proc(text: string, at, l0, l1: int) -> bool {

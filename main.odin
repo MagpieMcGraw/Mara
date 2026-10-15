@@ -985,17 +985,16 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
 }
 
 // The module a command means when it isn't named (`mara build` and the
-// rest): the one the current directory's .mara files declare — of several,
-// the one named as the directory. With none, the directory's name: looked
-// for, and missed, as before. Several, none named as the directory: "" and
-// what to say — `command` names it there (build, serve, view).
-module_here :: proc(command: string) -> (name: string, problem: string) {
-    cwd, _ := os.get_working_directory(context.allocator)
-    folder := filepath.base(cwd)
+// rest): the one directory `dir`'s .mara files declare — of several, the one
+// named as the directory. With none, the directory's name: looked for, and
+// missed, as before. Several, none named as the directory: "" and what to
+// say — `command` names it there (build, serve, view).
+module_here :: proc(command: string, dir: string) -> (name: string, problem: string) {
+    folder := filepath.base(dir)
     names: [dynamic]string
-    for entry in list_dir(cwd) {
+    for entry in list_dir(dir) {
         if entry.dir || !strings.has_suffix(entry.name, ".mara") { continue }
-        path, _ := filepath.join({cwd, entry.name})
+        path, _ := filepath.join({dir, entry.name})
         m := file_module(path)
         if m == "" { continue }
         seen := false
@@ -1191,9 +1190,10 @@ USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profi
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
-  stdout. Each file asked about is checked with its module — the directory
-  it's in, the module named as the directory — the editor's open files as
-  they are in the editor, saved or not. It answers hover (what's at the
+  stdout. Each file asked about is checked with its module — its
+  directory's, as mara build takes one there; where that can't tell, the one
+  it declares — the editor's open files as they are in the editor, saved or
+  not. It answers hover (what's at the
   point, its declaration's doc comment), definition, references and
   document symbols, completion and renames, and publishes each check's errors and warnings.
   initializationOptions turn each off: {"hover": false, "definition":
@@ -1413,7 +1413,8 @@ parse_args :: proc() -> CLI_Args {
         args.ask_query = q
         args.ask_words = rest
         args.ask = true
-        args.pkg_name = module_or_folder()
+        cwd, _ := os.get_working_directory(context.allocator)
+        args.pkg_name = module_or_folder(cwd)
         args.ok = true
         return args
     }
@@ -1465,7 +1466,8 @@ parse_args :: proc() -> CLI_Args {
             rest = rest[2:]
         }
         args.docs_words = rest
-        args.pkg_name = module_or_folder()
+        cwd, _ := os.get_working_directory(context.allocator)
+        args.pkg_name = module_or_folder(cwd)
         args.ok = true
         return args
     }
@@ -1485,7 +1487,8 @@ parse_args :: proc() -> CLI_Args {
         args.pkg_name = positional[2]
     } else {
         // (None named: the one here — module_here.)
-        name, problem := module_here(subcmd)
+        cwd, _ := os.get_working_directory(context.allocator)
+        name, problem := module_here(subcmd, cwd)
         if problem != "" {
             fmt.println(problem)
             return args
@@ -1496,14 +1499,13 @@ parse_args :: proc() -> CLI_Args {
     return args
 }
 
-// The module here for a command that can't be told one (ask, docs): as
-// module_here finds it — when it can't tell, the folder's name, as these
-// always took.
-module_or_folder :: proc() -> string {
-    name, problem := module_here("")
+// The module in directory `dir` for what can't be told one (ask, docs, the
+// language server): as module_here finds it — when it can't tell, the
+// folder's name, as these always took.
+module_or_folder :: proc(dir: string) -> string {
+    name, problem := module_here("", dir)
     if problem == "" { return name }
-    cwd, _ := os.get_working_directory(context.allocator)
-    return filepath.base(cwd)
+    return filepath.base(dir)
 }
 
 main :: proc() {

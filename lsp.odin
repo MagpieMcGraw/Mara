@@ -12,10 +12,10 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 // `mara lsp`: the Language Server Protocol, for editors — Sublime's LSP
 // package, VS Code, any client — on stdin and stdout. A file asked about is
-// checked with its module as serve checks one (serve.odin): the directory
-// it's in, the module named as the directory is, the editor's open files as
-// they are in the editor — saved or not — laid over the files on disk
-// (serve_overlay). It answers
+// checked with its module as serve checks one (serve.odin): its directory's,
+// as `mara build` takes one there — where that can't tell, the one it
+// declares (lsp_module) — the editor's open files as they are in the editor,
+// saved or not, laid over the files on disk (serve_overlay). It answers
 //   hover             what's at the point (`ask what at`), and the doc
 //                     comment of what the name there refers to
 //   definition        where the name at the point is declared
@@ -46,10 +46,11 @@ Lsp :: struct {
     check:    Serve_Check,
     checked:  bool,                // a check made
     dir:      string,              // its module's directory
+    module:   string,              // ... and the module
     stamp:    string,              // the files on disk it read (serve_stamp)
     checked_edits: int,            // the overlays' edits it read
     dirty:    bool,                // an edit since: a check to publish once the editor's quiet
-    edit_dir: string,              // ... the edited file's directory
+    edit_path: string,             // ... the file edited
     published: map[string]bool,    // the uris last published to, errors or none
     shutdown: bool,
 }
@@ -73,7 +74,7 @@ lsp :: proc(args: CLI_Args) {
         // (After edits, a check once nothing more waits: its errors published.)
         if s.dirty && bufio.reader_buffered(&s.reader) == 0 && !stdin_waiting() {
             s.dirty = false
-            lsp_check(&s, s.edit_dir)
+            lsp_check(&s, s.edit_path)
         }
         free_all(context.temp_allocator)
     }
@@ -234,7 +235,7 @@ lsp_drop_overlay :: proc(s: ^Lsp, uri: string) {
 // the editor's quiet, its errors published.
 lsp_edited :: proc(s: ^Lsp, uri: string) {
     s.dirty = true
-    lsp_keep(s, &s.edit_dir, filepath.dir(uri_path(uri)))
+    lsp_keep(s, &s.edit_path, uri_path(uri))
 }
 
 // A string that lasts (on the heap), the one before let go.
@@ -246,25 +247,30 @@ lsp_keep :: proc(s: ^Lsp, at: ^string, value: string) {
 
 // --- the check --------------------------------------------------------------
 
-// The module of the files in `dir` checked — unless the check made is of it
-// and nothing's changed since, on disk or in the editor — its errors
-// published when it's made. False when there's no program to answer from:
-// the directory's no module, or it didn't parse.
-lsp_check :: proc(s: ^Lsp, dir: string) -> bool {
-    if dir == "" || os.change_directory(dir) != nil { return false }
+// The module of the file at `path` checked (lsp_module) — unless the check
+// made is of it and nothing's changed since, on disk or in the editor — its
+// errors published when it's made. False when there's no program to answer
+// from: no module there, or it didn't parse.
+lsp_check :: proc(s: ^Lsp, path: string) -> bool {
+    if path == "" { return false }
+    dir := filepath.dir(path)
+    module := lsp_module(s, path)
+    if os.change_directory(dir) != nil { return false }
     stamp := serve_stamp(s.args.compiler_dir)
-    if s.checked && path_key(dir) == path_key(s.dir) && stamp == s.stamp && s.edits == s.checked_edits {
+    if s.checked && path_key(dir) == path_key(s.dir) && module == s.module && stamp == s.stamp && s.edits == s.checked_edits {
         return s.check.session.checked != nil
     }
     args := s.args
-    args.pkg_name = filepath.base(dir)
+    args.pkg_name = module
     serve_check(&s.check, args, stamp, &s.overlays)
     lsp_keep(s, &s.dir, dir)
+    lsp_keep(s, &s.module, module)
     lsp_keep(s, &s.stamp, stamp)
     s.checked = true
     s.checked_edits = s.edits
     lsp_keep_names(s)
-    if path_key(dir) == path_key(s.edit_dir) { s.dirty = false }
+    // (The edited file's module this one: its check made.)
+    if s.edit_path != "" && path_key(dir) == path_key(filepath.dir(s.edit_path)) && module == lsp_module(s, s.edit_path) { s.dirty = false }
     if s.diagnostics { lsp_publish(s) }
     return s.check.session.checked != nil
 }
@@ -376,13 +382,15 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
     for k, v in s.overlays { files[k] = v }
     files[key] = strings.concatenate({src[:start + col], COMPLETE_HERE, src[start + col:]})
     dir := filepath.dir(path)
+    module := lsp_module(s, path)
     if os.change_directory(dir) != nil { return "null" }
     args := s.args
-    args.pkg_name = filepath.base(dir)
+    args.pkg_name = module
     resolve_completing = true   // (the resolver records what's in sight at the placeholder)
     serve_check(&s.check, args, serve_stamp(s.args.compiler_dir), &files)
     resolve_completing = false
     lsp_keep(s, &s.dir, dir)
+    lsp_keep(s, &s.module, module)
     s.checked = false   // (not the editor's text: the next request checks again)
     session := &s.check.session
     file := lsp_file(s, path)
@@ -413,7 +421,7 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
 lsp_symbols :: proc(s: ^Lsp, params: json.Value) -> string {
     if !s.symbols { return "null" }
     path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
-    if !lsp_check(s, filepath.dir(path)) { return "[]" }
+    if !lsp_check(s, path) { return "[]" }
     file := lsp_file(s, path)
     if file == nil { return "[]" }
     t := &build_tree
@@ -445,7 +453,7 @@ lsp_point :: proc(s: ^Lsp, params: json.Value) -> (spec: string, ok: bool) {
     path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
     position := json_at(params, "position")
     line := json_int(json_at(position, "line")) + 1
-    if !lsp_check(s, filepath.dir(path)) { return }
+    if !lsp_check(s, path) { return }
     src, have := lsp_source(s, path)
     if !have { return }
     _, text := line_at(src, line)
@@ -538,6 +546,21 @@ lsp_file :: proc(s: ^Lsp, path: string) -> ^Source_File {
 }
 
 // A file's text: as the check read it, else as the editor has it, else on disk.
+// The module the file at `path` is checked with: its directory's, as `mara
+// build` takes one there (module_here) — a folder's program, the modules it
+// uses beside it, checked whole. Where that can't tell — several, none named
+// as the directory — the one the file declares, as the editor has it; else
+// the directory's name.
+lsp_module :: proc(s: ^Lsp, path: string) -> string {
+    dir := filepath.dir(path)
+    name, problem := module_here("", dir)
+    if problem == "" { return name }
+    if text, have := lsp_editor_text(s, path); have {
+        if own := extract_package_name(text); own != "" { return own }
+    }
+    return filepath.base(dir)
+}
+
 lsp_source :: proc(s: ^Lsp, path: string) -> (string, bool) {
     if f := lsp_file(s, path); f != nil { return f.source, true }
     if text, open := s.overlays[path_key(path)]; open { return text, true }
