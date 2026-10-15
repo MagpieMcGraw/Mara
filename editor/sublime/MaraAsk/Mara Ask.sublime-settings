@@ -45,5 +45,10 @@
 
     // ... in a call's parentheses, off a name, the fun being called is looked
     // up (signature help).
-    "signature_help": true
+    "signature_help": true,
+
+    // When a .mara file is saved, a `mara view` window's Docs panel looks up
+    // again what it shows (mara docs -reload; its reload button, F5), so the
+    // edits show — pinned or not.
+    "docs_reload_on_save": true
 }

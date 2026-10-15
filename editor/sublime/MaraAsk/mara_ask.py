@@ -389,6 +389,15 @@ def _docs_cwd(view):
 
 
 class MaraCursor(sublime_plugin.EventListener):
+    def on_post_save_async(self, view):
+        # A .mara file saved: what a window's Docs panel shows looked up again
+        # (mara docs -reload: the files read again, its scroll kept), so edits
+        # made after clicking through from it show. No window: nothing happens.
+        fname = view.file_name()
+        if not fname or not fname.endswith(".mara") or not _settings().get("docs_reload_on_save", True):
+            return
+        _run_mara([_settings().get("mara_path", "mara"), "docs", "-reload"], os.path.dirname(fname))
+
     def on_selection_modified_async(self, view):
         sel = view.sel()
         if len(sel) != 1:

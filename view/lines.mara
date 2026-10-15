@@ -21,11 +21,14 @@ STYLE_QUERY :: 5   // what was asked: the accent
 
 TAB_SPACES :: 4    // a tab, shown
 
-// A line: its text in Lines.text, and its style.
+// A line: its text in Lines.text, and its style; a place it opens, clicked
+// (`<file>:<line>`, kept after its text there; none: link_len 0).
 Line :: struct {
 	at:    i64
 	len:   i64
 	style: i64
+	link_at:  i64
+	link_len: i64
 }
 
 // A row drawn: a line, or as much of one as the width holds — its text
@@ -86,6 +89,21 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 line_text :: fun(l: ^Lines, k: i64) -> []utf8 {
 	ln := l.lines[k]
 	return l.text[ln.at : ln.at + ln.len]
+}
+
+// The place line k opens, clicked — `<file>:<line>`; empty for none.
+line_link :: fun(l: ^Lines, k: i64) -> []utf8 {
+	ln := l.lines[k]
+	return l.text[ln.link_at : ln.link_at + ln.link_len]
+}
+
+// The line added last given a place it opens, clicked (line_link).
+lines_link :: fun(l: ^Lines, link: []utf8) {
+	if l.lines.len == 0 or l.text.len + link.len > l.text.cap do return
+	ln := &l.lines[l.lines.len - 1]
+	ln.link_at = l.text.len
+	ln.link_len = link.len
+	&l.text + link
 }
 
 // The status line: its text, in a style (as much as it holds).
