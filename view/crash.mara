@@ -13,16 +13,32 @@ use mara.sdl
 // its line in the editor the windows were told of (`mara editor`: Sublime's
 // Mara Ask plugin tells them its subl), kept in editor.txt beside the
 // window's program. A crash newer than the window's last comes to the front.
+// So does the window's own last crash, when it opens after one: its report,
+// in the crash.txt beside the window's program, said to be its own, its calls
+// opening its sources (own_crash_look).
 
 CRASH :: "crash.txt"   // in the directory the window runs in: its program's
 
-// The newest report read from crash.txt into ui.crash — each one in the file
-// ends in a blank line, the newest last; whether there's one.
+// The program's newest report read from crash.txt into ui.crash; whether
+// there's one.
 crash_read :: fun(ui: ^Ui) -> bool {
 	ui.crash_stamp = file_mtime(CRASH)
+	return crash_load(ui, CRASH, false)
+}
+
+// The newest report of a crash file read into ui.crash — each one in the file
+// ends in a blank line, the newest last — the window's own (`own`) under a
+// line saying so, its calls' files in its directory (ui.crash_dir); whether
+// there's one.
+crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 	lines_clear(&ui.crash)
+	ui.crash_dir.len = 0
 	crash_status(ui)
-	if bool(read_entire_file(CRASH, &ui.crash_text)) do return false
+	if bool(read_entire_file(path, &ui.crash_text)) do return false
+	if own {
+		lines_add(&ui.crash, "mara view itself crashed the last time it ran. Its report, from view/crash.txt:", STYLE_TITLE)
+		&ui.crash_dir + path_dir(path)
+	}
 	text : []utf8 = ui.crash_text[:]
 	end := text.len
 	for end > 0 {
@@ -51,6 +67,22 @@ crash_read :: fun(ui: ^Ui) -> bool {
 		at = stop + 1
 	}
 	return ui.crash.lines.len > 0
+}
+
+// The window's own last crash, when there's one since it last looked: its
+// report shown in the Crash panel, in front. Each is shown once — layout.txt
+// keeps the time of the crash.txt beside the window's program as it last
+// looked; its first look only notes it.
+own_crash_look :: fun(ui: ^Ui) {
+	stamp := file_mtime(ui.own_crash_path)
+	if stamp == 0 do return
+	now := int_text(stamp)
+	if ui.own_crash_seen.len > 0 and ui.own_crash_seen[:] != now[:] {
+		if crash_load(ui, ui.own_crash_path, true) do crash_show(ui)
+	}
+	ui.own_crash_seen.len = 0
+	&ui.own_crash_seen + now[:]
+	layout_save(ui)
 }
 
 // The panel shown, in front: a new crash.
@@ -122,7 +154,12 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	if not call do return
 	editor_load(ui)
 	crash_status(ui)
-	editor_open(ui, &ui.crash, file, line)
+	// (The window's own calls: its sources, beside it — a path not already whole.)
+	full : [..2000]utf8
+	whole := file.len > 1 and (file[1] == ':' or file[0] == '/' or file[0] == '\\')
+	if ui.crash_dir.len > 0 and not whole do &full + ui.crash_dir[:]
+	&full + file[0 : min_int(file.len, 1000)]
+	editor_open(ui, &ui.crash, full[:], line)
 }
 
 // A file opened in the editor at a line — `"<editor>" "<file>:<line>"`,

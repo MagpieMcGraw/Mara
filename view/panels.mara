@@ -627,6 +627,7 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 //   mara view layout
 //   window <width> <height>
 //   theme <dark, light or sublime>
+//   own_crash <time>   (the window's own crash.txt's, when it last looked)
 //   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
@@ -644,6 +645,11 @@ layout_save :: fun(ui: ^Ui) {
 		&text + "dark"
 	}
 	&text + "\n"
+	if ui.own_crash_seen.len > 0 {
+		&text + "own_crash "
+		&text + ui.own_crash_seen[:]
+		&text + "\n"
+	}
 	for pn in ui.panels {
 		&text + "panel "
 		&text + panel_name(pn.kind)
@@ -705,6 +711,11 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		if head == "window" and words.len == 3 {
 			ui.saved_width, _ = parse_number(word_text(line, words[1]))
 			ui.saved_height, _ = parse_number(word_text(line, words[2]))
+		}
+		if head == "own_crash" and words.len == 2 {
+			ui.own_crash_seen.len = 0
+			seen := word_text(line, words[1])
+			&ui.own_crash_seen + seen[0 : min_int(seen.len, ui.own_crash_seen.cap)]
 		}
 		if head == "theme" and words.len == 2 {
 			name := word_text(line, words[1])
