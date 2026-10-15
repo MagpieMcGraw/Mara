@@ -1373,8 +1373,9 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
 
 // --- no analyzable module in the cwd ---------------------------------------
 
-// `mara ask` runs against the module in the current directory (its folder name
-// is the default root). When that folder names no discovered module, the generic
+// `mara ask` runs against the module in the current directory (module_or_folder:
+// the one its files declare; of several, the folder's name). When that names no
+// discovered module, the generic
 // build error ("no files found for module X") buries the real problem and never
 // mentions the user's query. This renders ask-shaped guidance instead: name the
 // miss, show the modules that ARE analyzable (local first, then stdlib — exactly

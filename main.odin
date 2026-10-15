@@ -984,6 +984,53 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
     return true
 }
 
+// The module a command means when it isn't named (`mara build` and the
+// rest): the one the current directory's .mara files declare — of several,
+// the one named as the directory. With none, the directory's name: looked
+// for, and missed, as before. Several, none named as the directory: "" and
+// what to say — `command` names it there (build, serve, view).
+module_here :: proc(command: string) -> (name: string, problem: string) {
+    cwd, _ := os.get_working_directory(context.allocator)
+    folder := filepath.base(cwd)
+    names: [dynamic]string
+    for entry in list_dir(cwd) {
+        if entry.dir || !strings.has_suffix(entry.name, ".mara") { continue }
+        path, _ := filepath.join({cwd, entry.name})
+        m := file_module(path)
+        if m == "" { continue }
+        seen := false
+        for n in names { if n == m { seen = true } }
+        if !seen { append(&names, m) }
+    }
+    if len(names) == 0 { return folder, "" }
+    if len(names) == 1 { return names[0], "" }
+    for n in names { if n == folder { return n, "" } }
+    b := strings.builder_make()
+    fmt.sbprintf(&b, "mara %s: which module? The .mara files here declare several, none named as the folder (%s):\n", command, folder)
+    for n in names { fmt.sbprintf(&b, "  %s\n", n) }
+    fmt.sbprintf(&b, "Name it: mara %s <module>", command)
+    return "", strings.to_string(b)
+}
+
+// The module a .mara file declares (extract_package_name): read from its
+// start, its first 4 KB — all of it when its leading comments run past
+// them, or its name ends where they do.
+file_module :: proc(path: string) -> string {
+    f, err := os.open(path)
+    if err != nil { return "" }
+    buf: [4096]u8
+    n, _ := os.read(f, buf[:])
+    os.close(f)
+    head := string(buf[:n])
+    name := extract_package_name(head)
+    if n < len(buf) || (name != "" && !strings.has_suffix(head, name)) {
+        return strings.clone(name)
+    }
+    data, rerr := os.read_entire_file_from_path(path, context.temp_allocator)
+    if rerr != nil { return "" }
+    return strings.clone(extract_package_name(string(data)))
+}
+
 // No files declare the module: which modules there are.
 module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string) -> string {
     b := strings.builder_make()
@@ -1366,8 +1413,7 @@ parse_args :: proc() -> CLI_Args {
         args.ask_query = q
         args.ask_words = rest
         args.ask = true
-        cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)
+        args.pkg_name = module_or_folder()
         args.ok = true
         return args
     }
@@ -1419,8 +1465,7 @@ parse_args :: proc() -> CLI_Args {
             rest = rest[2:]
         }
         args.docs_words = rest
-        cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)
+        args.pkg_name = module_or_folder()
         args.ok = true
         return args
     }
@@ -1439,12 +1484,26 @@ parse_args :: proc() -> CLI_Args {
     if len(positional) >= 3 {
         args.pkg_name = positional[2]
     } else {
-        // Infer pkg name from cwd.
-        cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)
+        // (None named: the one here — module_here.)
+        name, problem := module_here(subcmd)
+        if problem != "" {
+            fmt.println(problem)
+            return args
+        }
+        args.pkg_name = name
     }
     args.ok = true
     return args
+}
+
+// The module here for a command that can't be told one (ask, docs): as
+// module_here finds it — when it can't tell, the folder's name, as these
+// always took.
+module_or_folder :: proc() -> string {
+    name, problem := module_here("")
+    if problem == "" { return name }
+    cwd, _ := os.get_working_directory(context.allocator)
+    return filepath.base(cwd)
 }
 
 main :: proc() {
@@ -1506,8 +1565,9 @@ main :: proc() {
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise. `ask` defaults
-    // its root to the cwd's folder name, so a miss there is usually "you ran this
-    // outside a module dir", not "module not found" — give it query-shaped help.
+    // its root to the module here (module_or_folder), so a miss there is usually
+    // "you ran this outside a module dir", not "module not found" — give it
+    // query-shaped help.
     if args.pkg_name not_in all_files {
         if args.ask {
             q := args.ask_query
