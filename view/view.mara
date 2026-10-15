@@ -127,7 +127,7 @@ main :: fun() -> i64 {
 	// starter wrote, maybe just its name.)
 	room : [..1000]byte
 	exe, ee := executable_path(&room)
-	if bool(ee) {
+	if ee {
 		print("mara view: where its own file is, the system didn't say")
 		return 1
 	}
@@ -181,7 +181,7 @@ main :: fun() -> i64 {
 	}
 	measure(&ui)
 	e := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
-	if bool(e) {
+	if e {
 		print("mara view: its font didn't load:", e)
 		return 1
 	}
@@ -276,7 +276,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	WindowDisplayScaleChanged
 		measure(ui)
 		le := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
-		if bool(le) do print("mara view: its font didn't load:", le)
+		if le do print("mara view: its font didn't load:", le)
 		measure_columns(ui, p)
 		window_changed(ui)
 	MouseMotion

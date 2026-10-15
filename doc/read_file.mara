@@ -34,7 +34,7 @@ main :: fun() {
 	// All at once. This program reads its own source.
 	storage : [..1 * MB]byte
 	data, err := read_entire_file("read_file.mara", &storage)
-	if bool(err) {
+	if err {
 		print("couldn't read it:", err)
 		return
 	}
@@ -48,7 +48,7 @@ main :: fun() {
 
 	small : [..64]byte
 	err2 := read_first_bytes("read_file.mara", &small)
-	if bool(err2) do print("couldn't read it:", err2)
+	if err2 do print("couldn't read it:", err2)
 	print("read the first % bytes", small.len)
 
 	// A file that isn't there fails with File_Error.Open_Failed.

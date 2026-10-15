@@ -763,6 +763,14 @@ is_err_type :: proc(t: Type) -> bool {
     return false
 }
 
+// What a condition takes — an if's, a for's, an assert's, an if's as a
+// value's, `and` / `or`'s sides, `not`'s: a bool, or an error, true when it
+// failed (not Ok), as bool(e) is (lw_truth).
+is_condition_type :: proc(t: Type) -> bool {
+    if _, ok := t.(Type_Bool); ok { return true }
+    return is_any(t) || is_err_type(t)
+}
+
 // Through a pointer there is no array→slice decay: the pointee must already
 // have the target's memory layout. A fixed array `[N]T` is N inline elements
 // with NO {ptr,len,cap} header, so `^[N]T` cannot stand in for `^[]T` or

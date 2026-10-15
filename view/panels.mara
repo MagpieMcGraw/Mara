@@ -666,7 +666,7 @@ layout_save :: fun(ui: ^Ui) {
 		&text + "\n"
 	}
 	id, oe := file_open_write(ui.layout_path)
-	if bool(oe) do return
+	if oe do return
 	_ = file_write_text(id, text[:])
 	file_close(id)
 }
@@ -678,7 +678,7 @@ layout_save :: fun(ui: ^Ui) {
 layout_load :: fun(ui: ^Ui) -> bool {
 	buf : [..4000]byte
 	data, re := read_entire_file(ui.layout_path, &buf)
-	if bool(re) do return false
+	if re do return false
 	text : []utf8 = data
 	ui.panels.len = 0
 	first := true

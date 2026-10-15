@@ -27,7 +27,7 @@ child :: fun() {
 	chunk : [..64]byte
 	for true {
 		e := file_read(standard_input(), &chunk)
-		if bool(e) or chunk.len == 0 do break   // 0 bytes: the end
+		if e or chunk.len == 0 do break   // 0 bytes: the end
 		&got + chunk[:]
 	}
 	text : []utf8 = got[:]
@@ -45,7 +45,7 @@ main :: fun() -> i64 {
 	&command + this_program.args[0]
 	&command + "\" child"
 	p, e := process_start(command)
-	if bool(e) {
+	if e {
 		print("couldn't start it:", e)
 		return 1
 	}
@@ -54,12 +54,12 @@ main :: fun() -> i64 {
 	// input to end), and its output is still open.
 	early : [..64]byte
 	open, pe := pipe_read(p.output, &early)
-	if bool(pe) do print("couldn't read from it:", pe)
+	if pe do print("couldn't read from it:", pe)
 	print("so far:", early.len, "bytes; still open:", open)
 
 	// Write to its input, then close it: the child reads to its end.
 	we := file_write_text(p.input, "hello")
-	if bool(we) do print("couldn't write to it:", we)
+	if we do print("couldn't write to it:", we)
 	process_close_input(&p)
 
 	// Read what it writes, until its output ends: it has exited.
@@ -67,14 +67,14 @@ main :: fun() -> i64 {
 	chunk : [..64]byte
 	for true {
 		re := file_read(p.output, &chunk)
-		if bool(re) or chunk.len == 0 do break
+		if re or chunk.len == 0 do break
 		&out + chunk[:]
 	}
 	text : []utf8 = out[:]
 	print("it said:", text)
 
 	code, xe := process_wait(&p)
-	if bool(xe) do print("couldn't wait for it:", xe)
+	if xe do print("couldn't wait for it:", xe)
 	print("it exited with", code)
 	return 0
 }

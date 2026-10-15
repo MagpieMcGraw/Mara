@@ -21,7 +21,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 
 	err := save("write_file_demo.txt", "one line\nanother line\n")
-	if bool(err) {
+	if err {
 		print("couldn't write it:", err)
 		return
 	}
@@ -32,5 +32,5 @@ main :: fun() {
 	print("wrote % bytes", back.len)
 
 	err2 := file_delete("write_file_demo.txt")
-	if bool(err2) do print("couldn't delete it:", err2)
+	if err2 do print("couldn't delete it:", err2)
 }

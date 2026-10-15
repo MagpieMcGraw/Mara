@@ -128,16 +128,16 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 	start := storage.len
 	none := storage[start : start]
 	id, oe := file_open_read(path)
-	if bool(oe) do return none, oe
+	if oe do return none, oe
 	defer file_close(id)
 	size, se := file_size(id)
-	if bool(se) do return none, se
+	if se do return none, se
 	if size > storage.cap - start do return none, Too_Large
 	got : i64 = 0
 	for got < size {
 		rest := storage[start + got : start + size]
 		re := file_read(id, &rest)
-		if bool(re) do return none, re
+		if re do return none, re
 		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
 		got += rest.len
 	}
@@ -1033,7 +1033,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// in pieces: slower than sendfile(2), but it needs no more bindings, and
 	// suits occasional hot-reload-style copies.
 	copy_file :: fun(src: []utf8, dst: []utf8) -> err {
-		if bool(copy_file_pieces(src, dst)) do return Copy_Failed
+		if copy_file_pieces(src, dst) do return Copy_Failed
 	}
 
 	// copy_file's copy, failing as whichever step did.
@@ -1055,7 +1055,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// against a previous value see a "change" and react safely.
 	file_mtime :: fun(path: []utf8) -> i64 {
 		id, e := file_open_read(path)
-		if bool(e) do return 0
+		if e do return 0
 		defer file_close(id)
 		st : Stat
 		if fstat(id, &st) < 0 do return 0

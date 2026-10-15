@@ -791,6 +791,13 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
     graph_build_return(b, vals[:], span)
 }
 
+// A condition's value, its node n's (is_condition_type): a bool's own; an
+// error's, whether it failed — not Ok, as bool(e) has it.
+lw_truth :: proc(k: ^TC, n: Tree_Id, v: Operand) -> Operand {
+    if !is_err_type(tc_node_type(k, n)) { return v }
+    return graph_op_value(k.gb, .Cast, .Implied, tree_span(k.t, n), Type_Bool{}, "bool", v)
+}
+
 // `if c {…} else {…}` (tc_if).
 lw_if :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
@@ -798,7 +805,7 @@ lw_if :: proc(k: ^TC, s: Tree_Id) {
     span := tree_span(t, s)
     v := if_view(t, s)
     cond := lw_expr(k, v.cond, .Value)
-    fi := graph_build_if(b, cond.v, span, len(v.else_) > 0, lw_scope_arena(k, v.then, b.body.returned))
+    fi := graph_build_if(b, lw_truth(k, v.cond, cond.v), span, len(v.else_) > 0, lw_scope_arena(k, v.then, b.body.returned))
     lw_scope(k, v.then)
     graph_build_else(b, &fi, span, lw_scope_arena(k, v.else_, b.body.returned))
     if len(v.else_) > 0 { lw_scope(k, v.else_) }
@@ -862,7 +869,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         if v.init != 0 { lw_stmt(k, v.init) }
         graph_build_for_runs(b, &fl)
         cond := lw_expr(k, v.cond, .Value)
-        graph_build_for_cond(b, &fl, cond.v)
+        graph_build_for_cond(b, &fl, lw_truth(k, v.cond, cond.v))
         lw_scope(k, v.body)
         if v.post != 0 {   // (its step, after its body: where it runs)
             graph_build_for_step(b, &fl)
@@ -1164,6 +1171,7 @@ lw_unary :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, of := Tree_Id
     }
     v := r.v
     if either { v = lw_value(k, r, operand, ot) }
+    if op == .Not { v = lw_truth(k, operand, v) }
     return {v = graph_op_value(b, .Unary, w, span, t, graph_token_text(op), v), ok = true}
 }
 
@@ -1202,8 +1210,8 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             case:                 r = lw_binary_op(k, 0, .Less, in_range.span, in_range.value, in_range.hi, .Value, w, Type_Bool{})
             }
             types[i] = tc_node_type(k, side)
-            sides[i] = r.v
-            if i == 0 { graph_build_and_left(b, &sa, r.v) }
+            sides[i] = r.v if in_range != nil else lw_truth(k, side, r.v)
+            if i == 0 { graph_build_and_left(b, &sa, sides[i]) }
             continue
         }
         r := lw_expr(k, side, .Either, w)
@@ -1255,7 +1263,7 @@ lw_assert :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
             "" if tc_is_literal(k, Tree_Id(t.b[cond])) else token_range_text(at + 1, hi),
         }
     }
-    graph_assert(k.gb, span, token_range_text(lo, hi), r.v, w, sides)
+    graph_assert(k.gb, span, token_range_text(lo, hi), lw_truth(k, cond, r.v), w, sides)
     return {v = NO_VALUE, ok = true}
 }
 
@@ -1269,7 +1277,7 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     then_n, else_n := tree_pair(tr, n)
     slot := graph_slot(b, "if", nil, span)
     cond := lw_expr(k, cond_n, .Value, w)
-    gi := graph_build_if_expr(b, cond.v, w, span)
+    gi := graph_build_if_expr(b, lw_truth(k, cond_n, cond.v), w, span)
     types: [2]Type
     t := tc_node_type(k, n)
     for branch, i in ([2]Tree_Id{then_n, else_n}) {

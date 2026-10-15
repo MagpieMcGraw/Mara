@@ -293,7 +293,7 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	// (The directories in code/, as the compiler looks in them.)
 	room : [..64 * KB]byte
 	entries, de := dir_read(code, &room)
-	if not bool(de) {
+	if not de {
 		for entry in entries {
 			if not entry.dir do continue
 			sub : [..1000]utf8
@@ -328,7 +328,7 @@ stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 	room : [..300 * KB]byte
 	entries, e := dir_read(dir, &room)
-	if bool(e) do return
+	if e do return
 	for entry in entries {
 		name : []utf8 = entry.name[:]
 		if entry.dir or name.len < 6 do continue
@@ -350,7 +350,7 @@ docs_add_file :: fun(d: ^Docs, path: []utf8) -> bool {
 	if d.files.len == d.files.cap or path.len > 1000 do return false
 	at := d.source.len
 	text, e := read_entire_file(path, &d.source)
-	if bool(e) do return false
+	if e do return false
 	file := Docs_File{at = at, len = text.len}
 	&file.path + path
 	&d.files + file

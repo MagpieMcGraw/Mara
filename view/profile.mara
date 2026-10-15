@@ -84,7 +84,7 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 		&p.problem + "No profile.txt here yet: build the program with `mara build -profile` and run it."
 		return
 	}
-	if bool(e) {
+	if e {
 		&p.problem + "profile.txt couldn't be read (or is over 8 MB)."
 		return
 	}

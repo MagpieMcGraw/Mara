@@ -593,8 +593,9 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// `if c {…} elif d {…} else {…}`: the condition a bool, then each block (an
-// elif, the else block's one statement).
+// `if c {…} elif d {…} else {…}`: the condition a bool or an error
+// (is_condition_type), then each block (an elif, the else block's one
+// statement).
 tc_if :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
@@ -605,7 +606,7 @@ tc_if :: proc(k: ^TC, s: Tree_Id) {
         return
     }
     ct := tc_check(k, v.cond)
-    if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
+    if !is_condition_type(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
     tc_scope(k, v.then)
     if len(v.else_) > 0 { tc_scope(k, v.else_) }
 }
@@ -679,7 +680,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     case:
         if v.init != 0 { tc_stmt(k, v.init) }
         ct := tc_check(k, v.cond)
-        if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
+        if !is_condition_type(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }

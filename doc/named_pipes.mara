@@ -23,16 +23,16 @@ NAME :: "mara-doc-named-pipes"
 // The program that connects: asks, and prints what comes back.
 ask :: fun() {
 	id, e := pipe_connect(NAME)
-	if bool(e) {
+	if e {
 		print("couldn't connect:", e)
 		return
 	}
 	defer file_close(id)
 	we := file_write_text(id, "what's six times seven?")
-	if bool(we) do print("couldn't ask:", we)
+	if we do print("couldn't ask:", we)
 	answer : [..64]byte
 	re := file_read(id, &answer)
-	if bool(re) do print("couldn't read the answer:", re)
+	if re do print("couldn't read the answer:", re)
 	text : []utf8 = answer[:]
 	print("the answer:", text)
 }
@@ -43,7 +43,7 @@ main :: fun() -> i64 {
 		return 0
 	}
 	l, e := pipe_listen(NAME)
-	if bool(e) {
+	if e {
 		print("couldn't listen:", e)
 		return 1
 	}
@@ -54,7 +54,7 @@ main :: fun() -> i64 {
 	&command + this_program.args[0]
 	&command + "\" ask"
 	p, pe := process_start(command)
-	if bool(pe) {
+	if pe {
 		print("couldn't start it:", pe)
 		return 1
 	}
@@ -63,7 +63,7 @@ main :: fun() -> i64 {
 	c := NO_FILE
 	for c == NO_FILE {
 		got, ae := pipe_accept(&l)
-		if bool(ae) {
+		if ae {
 			print("couldn't accept:", ae)
 			return 1
 		}
@@ -71,11 +71,11 @@ main :: fun() -> i64 {
 	}
 	question : [..64]byte
 	qe := file_read(c, &question)
-	if bool(qe) do print("couldn't read the question:", qe)
+	if qe do print("couldn't read the question:", qe)
 	text : []utf8 = question[:]
 	print("asked:", text)
 	we := file_write_text(c, "42")
-	if bool(we) do print("couldn't answer:", we)
+	if we do print("couldn't answer:", we)
 	file_close(c)
 
 	// What the other program printed, to its end.
@@ -83,12 +83,12 @@ main :: fun() -> i64 {
 	chunk : [..64]byte
 	for true {
 		oe := file_read(p.output, &chunk)
-		if bool(oe) or chunk.len == 0 do break
+		if oe or chunk.len == 0 do break
 		&out + chunk[:]
 	}
 	said : []utf8 = out[:]
 	print("it printed:", said)
 	_, xe := process_wait(&p)
-	if bool(xe) do print("couldn't wait for it:", xe)
+	if xe do print("couldn't wait for it:", xe)
 	return 0
 }

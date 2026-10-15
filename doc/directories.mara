@@ -26,7 +26,7 @@ main :: fun() {
 
 	// This program's own directory, doc/: the .mara files in it.
 	entries, e := dir_read(".", &storage)
-	if bool(e) {
+	if e {
 		print("couldn't read it:", e)
 		return
 	}
@@ -41,7 +41,7 @@ main :: fun() {
 	// The stdlib's directory, beside doc/: what's a directory in it. Its
 	// list goes after the first, in the same storage.
 	stdlib, se := dir_read("../code", &storage)
-	if not bool(se) {
+	if not se {
 		for entry in stdlib {
 			if entry.dir do print("a directory in code/:", entry.name[:])
 		}

@@ -82,7 +82,7 @@ hub_start :: fun(ui: ^Ui, h: ^Hub) {
 	&h.command + "\" serve "
 	&h.command + args[2]
 	l, e := pipe_listen(args[3])
-	if bool(e) {
+	if e {
 		if e == .Name_Taken {
 			lines_status(&ui.asked, "Another window open on this module answers mara ask.", STYLE_DIM)
 		else
@@ -118,7 +118,7 @@ hub_stop :: fun(h: ^Hub) {
 docs_listen :: fun(h: ^Hub) {
 	h.docs_tried = GetTicks()
 	l, e := pipe_listen(h.docs_name)
-	if bool(e) do return
+	if e do return
 	h.docs_listener = l
 	h.docs_listening = true
 }
@@ -128,7 +128,7 @@ docs_listen :: fun(h: ^Hub) {
 take_connections :: fun(h: ^Hub, l: ^Pipe_Listener, docs: bool) {
 	for h.waiting.len < h.waiting.cap {
 		c, e := pipe_accept(l)
-		if bool(e) or c == NO_FILE do break
+		if e or c == NO_FILE do break
 		// (Its place filled where it is: a Client is too big to build aside.)
 		h.waiting.len += 1
 		fresh := &h.waiting[h.waiting.len - 1]
@@ -225,7 +225,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 client_read :: fun(c: ^Client) -> bool {
 	chunk : [..512]byte
 	open, e := pipe_read(c.id, &chunk)
-	if bool(e) or not open do return false
+	if e or not open do return false
 	text : []utf8 = chunk[:]
 	for ch in text {
 		if c.line.len == c.line.cap do return false   // (no query is that long)
@@ -305,7 +305,7 @@ answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 	for k in 0 .. found.lines.len {
 		text := line_text(found, k)
 		if out.len + text.len + 1 > out.cap {
-			if bool(file_write_text(c.id, out[:])) do return
+			if file_write_text(c.id, out[:]) do return
 			out.len = 0
 		}
 		&out + text[0 : min_int(text.len, out.cap - 1)]
@@ -347,13 +347,13 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	&sent + query
 	&sent + "\n"
 	if serve_up(h) {
-		if not bool(file_write_text(h.serve.input, sent[:])) {
+		if not file_write_text(h.serve.input, sent[:]) {
 			h.asking = true
 			return
 		}
 		serve_down(h)
 		if serve_up(h) {
-			if not bool(file_write_text(h.serve.input, sent[:])) {
+			if not file_write_text(h.serve.input, sent[:]) {
 				h.asking = true
 				return
 			}
@@ -371,7 +371,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	chunk : [..16 * KB]byte
 	open, e := pipe_read(h.serve.output, &chunk)
-	if bool(e) or not open {
+	if e or not open {
 		// (Serve ended answering it — maybe for it. Cut off, with no end
 		// line: `mara ask` checks for itself. The next query starts serve.)
 		serve_down(h)
@@ -385,7 +385,7 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	if not h.gone {
 		piece : []byte = chunk[:]
 		_, we := file_write(h.asked.id, &piece)
-		if bool(we) do h.gone = true
+		if we do h.gone = true
 	}
 	text : []utf8 = chunk[:]
 	for ch in text {
@@ -439,7 +439,7 @@ cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 serve_up :: fun(h: ^Hub) -> bool {
 	if h.serving do return true
 	p, e := process_start(h.command)
-	if bool(e) do return false
+	if e do return false
 	h.serve = p
 	h.serving = true
 	return true
@@ -450,5 +450,5 @@ serve_down :: fun(h: ^Hub) {
 	if not h.serving do return
 	_, we := process_wait(&h.serve)
 	h.serving = false
-	if bool(we) do return   // (its handles closed all the same)
+	if we do return   // (its handles closed all the same)
 }

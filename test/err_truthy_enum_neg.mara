@@ -1,0 +1,13 @@
+module err_truthy_enum_neg
+
+//@ expect-fail: if condition must be bool (or an error), got Color
+
+// Only an error is a condition besides a bool: a plain enum isn't true or
+// false (compare it: `c == .Red`).
+
+Color :: union { Red  Green }
+
+main :: fun() {
+	c := Color.Green
+	if c do print("green")
+}

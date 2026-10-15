@@ -1,0 +1,86 @@
+module err_truthy
+
+use mara.core
+use mara.os
+
+// An error in a condition is true when it failed (not Ok), as bool(e) is:
+// if / elif, `not`, `and` / `or` (either side), a for's condition, an if as
+// a value, assert — the open `err` and an `error { }` of its own alike.
+
+//@ expect-output: if: failed File_Error.Too_Large
+//@ expect-output: if ok: fine
+//@ expect-output: not: true false
+//@ expect-output: elif: second failed
+//@ expect-output: or: true and: false mixed: true
+//@ expect-output: if value: failed fine
+//@ expect-output: for: 3 tries
+//@ expect-output: own kind: Parse.Bad_Digit true
+//@ expect-output: forwarded: File_Error.Too_Large
+//@ expect-output: asserted
+
+Parse :: error {
+	Bad_Digit
+	Empty
+}
+
+fails :: fun() -> err { return Too_Large }
+works :: fun() -> err { }
+
+digit :: fun(c: utf8) -> i64, Parse {
+	if c < '0' or c > '9' do return 0, Bad_Digit
+	return i64(c) - i64('0')
+}
+
+// Fails on its first two tries.
+flaky :: fun(tries: ^i64) -> err {
+	tries^ += 1
+	if tries^ < 3 do return Read_Failed
+}
+
+// `if e do return e`: the failure passed on.
+forward :: fun() -> err {
+	e := fails()
+	if e do return e
+	print("not reached")
+}
+
+main :: fun() {
+	tries := 0
+	e := fails()
+	if e do print("if: failed", e)
+	ok := works()
+	if ok {
+		print("if ok: failed")
+	else
+		print("if ok: fine")
+	}
+	print("not:", not ok, not e)
+
+	if ok {
+		print("elif: first failed")
+	elif e
+		print("elif: second failed")
+	}
+
+	print("or:", ok or e, "and:", ok and e, "mixed:", e and tries == 0)
+
+	a := if e do "failed" else "fine"
+	b := if ok do "failed" else "fine"
+	print("if value:", a, b)
+
+	r := flaky(&tries)
+	for r {
+		r = flaky(&tries)
+	}
+	print("for: % tries", tries)
+
+	_, pe := digit('x')
+	print("own kind:", pe, bool(pe) == true)
+	if not pe do print("not reached")
+
+	print("forwarded:", forward())
+
+	assert(not ok)
+	assert(e)
+	print("asserted")
+}

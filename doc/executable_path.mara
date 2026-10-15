@@ -23,7 +23,7 @@ main :: fun() {
 	storage : [..64 * KB]byte
 
 	path, e := executable_path(&storage)
-	if bool(e) {
+	if e {
 		print("couldn't tell:", e)
 		return
 	}
@@ -38,5 +38,5 @@ main :: fun() {
 	&beside + dir
 	&beside + "executable_path.mara"
 	_, re := read_entire_file(beside, &storage)
-	print("its source beside it reads:", not bool(re))
+	print("its source beside it reads:", not re)
 }

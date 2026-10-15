@@ -156,7 +156,7 @@ theme_sublime :: fun(ui: ^Ui) {
 	ui.colors_stamp = file_mtime(ui.colors_path)
 	buf : [..8000]byte
 	data, re := read_entire_file(ui.colors_path, &buf)
-	if bool(re) do return
+	if re do return
 	text : []utf8 = data
 	// (The six above, by PALETTE_ order; each token kind's.)
 	named : [PALETTE]Color
@@ -292,7 +292,7 @@ brightness :: fun(c: Color) -> f32 {
 // it's Sublime's, made of them now.
 colors_set :: fun(ui: ^Ui, colors: []utf8) {
 	id, oe := file_open_write(ui.colors_path)
-	if not bool(oe) {
+	if not oe {
 		_ = file_write_text(id, colors)
 		_ = file_write_text(id, "\n")
 		file_close(id)

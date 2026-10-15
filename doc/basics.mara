@@ -141,7 +141,8 @@ example_return :: fun() {
 //
 // The braces go around the whole chain, not around each part: `if a {`,
 // then `elif b` and `else` on their own lines, one `}` at the end. A
-// condition is a bool: `n != 0`, not `n`. With one statement each, `do`
+// condition is a bool — `n != 0`, not `n` — or an err, true when it failed
+// (`if e do return e`). With one statement each, `do`
 // takes the braces' place: `if n < 0 do return`, then `elif b do s` and
 // `else do s`, on that line or the next ones.
 //
@@ -318,8 +319,8 @@ example_union :: fun() {
 // `Parse_Error :: error { Empty, Not_A_Digit }` names the ways. A function
 // that can fail returns an `err` last: `-> i64, err`. `return 0, Empty`
 // fails; reaching its end or `return n` succeeds (the err is Ok). The caller
-// must look at the err — `if bool(e)` — or pass it on with `?`. See
-// errors.mara.
+// must look at the err — `if e`, true when it failed — or pass it on with
+// `?`. See errors.mara.
 example_error :: fun() {
 	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {
@@ -329,7 +330,7 @@ example_error :: fun() {
 	n, e := digit('7')
 	print(n, e)                            // 7 Ok
 	_, e2 := digit('x')
-	if bool(e2) do print("failed:", e2)    // failed: Parse_Error.Not_A_Digit
+	if e2 do print("failed:", e2)          // failed: Parse_Error.Not_A_Digit
 }
 
 
@@ -353,7 +354,8 @@ example_distinct :: fun() {
 // `true`, `false`, `bool`: the two truth values, and their type.
 //
 // Comparisons give a bool (`a < b`), and `if`, `for` and `and`/`or`/`not`
-// take one. A number isn't a bool: `bool(n)` is true when n isn't 0.
+// take one (or an err: true when it failed). A number isn't a bool:
+// `bool(n)` is true when n isn't 0.
 example_true :: fun() {
 	ready := true
 	done : bool = false

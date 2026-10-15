@@ -21,7 +21,7 @@ main :: fun() {
 	storage : [..64 * KB]byte
 
 	dir, e := current_dir(&storage)
-	if bool(e) {
+	if e {
 		print("couldn't tell:", e)
 		return
 	}

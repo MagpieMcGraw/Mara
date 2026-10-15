@@ -4,8 +4,9 @@
 // `return n` succeeds, and so does reaching the end of a function that
 // only returns an err. The caller takes both, `n, e := parse(s)`, and has
 // to look at e: an err nobody checks is a compile error (`_` in its place
-// ignores it on purpose). `bool(e)` is true when it failed, and
-// `e == .Not_A_Digit` asks how.
+// ignores it on purpose). An err is true when it failed, false when it's Ok:
+// `if e`, `if not e`, `e or e2`, wherever a condition goes (`bool(e)` says
+// the same as a value). `e == .Not_A_Digit` asks how it failed.
 //
 // In a function that returns an err itself, `d := digit(c)?` takes the
 // value, and on a failure returns that err from the function right there.
@@ -56,7 +57,7 @@ main :: fun() {
 	print(n, e)                                   // 123 Ok
 
 	_, e2 := parse("12x")
-	if bool(e2) do print("failed:", e2)           // failed: Parse_Error.Not_A_Digit
+	if e2 do print("failed:", e2)                 // failed: Parse_Error.Not_A_Digit
 	if e2 == .Not_A_Digit do print("not a digit")
 
 	_, e3 := parse("")
