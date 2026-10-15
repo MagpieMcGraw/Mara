@@ -1149,7 +1149,7 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun Delay(ms: u32)
     fun Quit()
     // name: a driver's, or void — SDL picks one.
-    fun CreateRenderer(window: Window, name: ^byte) -> Renderer
+    fun CreateRenderer(window: Window, name: cstring) -> Renderer
     fun DestroyRenderer(renderer: Renderer)
     fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool
     fun RenderClear(renderer: Renderer) -> bool

@@ -37,6 +37,12 @@ tc_written :: proc(k: ^TC, n: Tree_Id) -> string {
 }
 
 // Whether `n` is a string literal, or a constant naming one.
+// Whether an argument is `void` as written: a null, for a C function.
+tc_void_arg :: proc(k: ^TC, n: Tree_Id) -> bool {
+    m := tc_unparen(k, n)
+    return k.t.tag[m] == .Ident && tc_name(k, m) == "void"
+}
+
 tc_text_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
     m := tc_unparen(k, n)
     if k.t.tag[m] == .String { return true }

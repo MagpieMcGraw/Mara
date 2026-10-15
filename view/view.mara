@@ -170,8 +170,7 @@ main :: fun() -> i64 {
 	// (SDL's OpenGL renderer: Direct3D 11's, its default on Windows, showed a
 	// frame late now and then — a dragged panel moved on after its release,
 	// again when the mouse came over it. OpenGL's, as Pounce draws, didn't.)
-	driver := "opengl"
-	ui.renderer = CreateRenderer(ui.window, &driver[0])
+	ui.renderer = CreateRenderer(ui.window, "opengl")
 	// (Vsync, and frames no oftener than the display shows them (run): sent
 	// faster, they'd queue to be shown, behind the mouse — a click's, a
 	// dragged panel's.)
@@ -487,9 +486,9 @@ window_raise :: fun(ui: ^Ui) {
 	// from Sublime, the window behind it only flashed in the taskbar — so
 	// forced: SDL takes the front window's input as its own for the moment.
 	// That un-maximizes a window: maximized again.)
-	_ = SetHint(cstring("SDL_FORCE_RAISEWINDOW"), cstring("1"))
+	_ = SetHint("SDL_FORCE_RAISEWINDOW", "1")
 	_ = RaiseWindow(ui.window)
-	_ = SetHint(cstring("SDL_FORCE_RAISEWINDOW"), cstring("0"))
+	_ = SetHint("SDL_FORCE_RAISEWINDOW", "0")
 	if (flags & 128) != 0 do _ = MaximizeWindow(ui.window)   // (Maximized)
 	ui.dirty = true
 }
