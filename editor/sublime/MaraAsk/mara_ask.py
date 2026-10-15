@@ -435,7 +435,7 @@ class MaraCursor(sublime_plugin.EventListener):
         # (Ask's places are the file on disk: an unsaved one's may be stale.)
         what_at = at if not view.is_dirty() else None
         delay = _settings().get("delay_ms", 300)
-        sublime.set_timeout_async(lambda: _cursor_send(number, key, cwd, words, at, what_at), delay)
+        sublime.set_timeout_async(lambda: _cursor_send(number, key, cwd, words, at, what_at, view), delay)
 
 
 # A point as `mara docs at` and `mara ask what at` take it: "<file>:<line>:
@@ -495,13 +495,94 @@ def _tell_editor(mara, cwd):
     _editor_told[0] = rc == 0
 
 
+# The windows told this Sublime's colors (`mara colors`), for their Theme
+# menu's Sublime theme: its color scheme's, as Sublime resolves them for a
+# .mara file — overrides, light/dark switching and all — for each scope
+# Mara's syntax gives: code's tokens colored as here. Told again when they
+# change; until a window has them, at each rest.
+_COLOR_SCOPES = [
+    ("plain", "source.mara"),
+    ("keyword", "source.mara keyword.control.mara"),
+    ("import", "source.mara keyword.control.import.mara"),
+    ("keyword_other", "source.mara keyword.other.using.mara"),
+    ("logic", "source.mara keyword.logic.mara"),
+    ("operator", "source.mara keyword.operator.mara"),
+    ("storage", "source.mara storage.type.mara"),
+    ("basic_type", "source.mara storage.type.mara"),
+    ("constant", "source.mara constant.language.mara"),
+    ("number", "source.mara constant.numeric.mara"),
+    ("string", "source.mara string.quoted.double.mara"),
+    ("char", "source.mara string.quoted.single.mara"),
+    ("escape", "source.mara string.quoted.double.mara constant.character.escape.mara"),
+    ("comment", "source.mara comment.line.double-slash.mara"),
+    ("block_comment", "source.mara comment.block.mara"),
+    ("fun_name", "source.mara meta.function.mara entity.name.function.mara"),
+    ("type_name", "source.mara meta.type.mara entity.name.type.mara"),
+    ("builtin", "source.mara keyword.function.mara"),
+    ("call", "source.mara support.function.mara"),
+    ("field", "source.mara support.constant.mara"),
+    ("module", "source.mara support.module.mara"),
+    ("punct", "source.mara punctuation.separator.mara"),
+    ("accessor", "source.mara punctuation.accessor.mara"),
+]
+_colors_told = [None]
+
+
+def _hex(color, under):
+    # "#rrggbb" for a style's color: one with alpha ("#rrggbbaa") laid over
+    # the color under it.
+    c = color.lstrip("#").lower()
+    if len(c) == 8:
+        u = under.lstrip("#")[:6]
+        a = int(c[6:8], 16) / 255.0
+        return "#" + "".join("%02x" % round(int(c[i:i + 2], 16) * a + int(u[i:i + 2], 16) * (1 - a))
+                             for i in (0, 2, 4))
+    return "#" + c[:6]
+
+
+def _palette(view):
+    # The colors as `mara colors` takes them, "<name>=#rrggbb" each; None
+    # when the scheme gives no background or text color.
+    style = view.style()
+    bg, fg = style.get("background"), style.get("foreground")
+    if not bg or not fg:
+        return None
+    bg = _hex(bg, "#000000")
+    words = []
+    for name in ("background", "foreground", "selection", "line_highlight", "accent"):
+        if style.get(name):
+            words.append("%s=%s" % (name, _hex(style[name], bg)))
+    # (A failure's color: the scheme's red, its own — as a region it's
+    # often laid thin over the text.)
+    bad = view.style_for_scope("region.redish").get("foreground")
+    if bad:
+        words.append("bad=#" + bad.lstrip("#")[:6].lower())
+    for name, scope in _COLOR_SCOPES:
+        c = view.style_for_scope(scope).get("foreground")
+        if c:
+            words.append("%s=%s" % (name, _hex(c, bg)))
+    return words
+
+
+def _tell_colors(mara, cwd, view):
+    if not _settings().get("tell_colors", True):
+        return
+    words = _palette(view)
+    if not words or words == _colors_told[0]:
+        return
+    rc, _ = _run_mara([mara, "colors"] + words, cwd)
+    if rc == 0:
+        _colors_told[0] = words
+
+
 # The rest's two lookups, unless a newer rest came, or this one was sent already.
-def _cursor_send(number, key, cwd, words, at, what_at):
+def _cursor_send(number, key, cwd, words, at, what_at, view):
     if number != _cursor_pending[0] or _cursor_sent[0] == key:
         return
     _cursor_sent[0] = key
     mara = _settings().get("mara_path", "mara")
     _tell_editor(mara, cwd)
+    _tell_colors(mara, cwd, view)
     if _settings().get("docs_at_cursor", True):
         rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
         first = out.strip().splitlines()[0] if out.strip() else "no answer"

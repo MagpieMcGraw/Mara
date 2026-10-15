@@ -52,7 +52,9 @@ appears in an output panel with every `file:line` clickable.
 
   The windows are also told where this Sublime is (`mara editor`, once one is
   open): a call in a window's **Crash** panel — the program's last crash, the
-  calls that were running — opens here at its line, clicked.
+  calls that were running — opens here at its line, clicked. And its colors
+  (`mara colors`, again when they change): the window's **Theme → Sublime**
+  colors its panels with your color scheme, and code as Sublime does.
 
 ## Commands & keys
 
@@ -86,6 +88,8 @@ LSP's has no `"id"`, and Sublime only merges menu items by id — another
   panel (default `true`).
 - `signature_help` — in a call's parentheses, off a name, look up the fun being
   called (default `true`).
+- `tell_colors` — tell the windows your color scheme's colors, for their Sublime
+  theme (default `true`).
 
 ## The language server (`mara lsp`)
 

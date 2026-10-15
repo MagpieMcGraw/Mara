@@ -5,98 +5,287 @@ use mara.math
 use mara.string
 
 // Mara code as the panels show it (STYLE_MARA lines): each token in its
-// color — keywords, types, text and numbers, comments, the rest as code.
-// A line's tokens are found from its start, what's open there — a block
-// comment, a string — carried from the line above it (Line.state).
+// color. Tokens are told apart as Sublime's Mara syntax tells them
+// (Mara.sublime-syntax — the rule matching first in the line wins, the
+// first listed among those starting at once), so the Sublime theme colors
+// them as Sublime does: a kind to each scope it gives (token_name: what
+// Sublime's Mara Ask plugin calls its color). A line's tokens are found from
+// its start, what's open there — a block comment, a string — carried from
+// the line above it (Line.state).
 
-TOKEN_PLAIN   :: 0   // names, punctuation, spaces
-TOKEN_KEYWORD :: 1
-TOKEN_TYPE    :: 2   // a built-in type's name, or one starting with a capital
-TOKEN_STRING  :: 3   // text and character literals
-TOKEN_NUMBER  :: 4   // numbers, and true, false, void
-TOKEN_COMMENT :: 5
+TOKEN_PLAIN      :: 0    // names, spaces, & ^ ! …: source.mara
+TOKEN_KEYWORD    :: 1    // if, for, return …: keyword.control
+TOKEN_IMPORT     :: 2    // module, include, use: keyword.control.import
+TOKEN_OTHER      :: 3    // using, overload, #packed …: keyword.other
+TOKEN_LOGIC      :: 4    // and, or, not, in: keyword.logic
+TOKEN_OPERATOR   :: 5    // + - * / % : = < > ? ~ | !=: keyword.operator
+TOKEN_STORAGE    :: 6    // fun, union, error, distinct …: storage.type
+TOKEN_BASIC_TYPE :: 7    // i64, bool, utf8 …: storage.type too
+TOKEN_CONSTANT   :: 8    // true, false, void: constant.language
+TOKEN_NUMBER     :: 9    // constant.numeric
+TOKEN_STRING     :: 10   // "text": string.quoted.double
+TOKEN_CHAR       :: 11   // 'c': string.quoted.single
+TOKEN_ESCAPE     :: 12   // \n in either: constant.character.escape
+TOKEN_COMMENT    :: 13   // comment.line.double-slash
+TOKEN_BLOCK      :: 14   // /* … */: comment.block
+TOKEN_FUN_NAME   :: 15   // name :: fun: entity.name.function
+TOKEN_TYPE_NAME  :: 16   // Name :: fun, name :: anything else: entity.name.type
+TOKEN_BUILTIN    :: 17   // print( assert( crash( take( size_of(: keyword.function
+TOKEN_CALL       :: 18   // name(: support.function
+TOKEN_FIELD      :: 19   // .len, .cap: support.constant
+TOKEN_MODULE     :: 20   // mara.math: support.module
+TOKEN_PUNCT      :: 21   // ( ) { } [ ] , ;: punctuation.separator
+TOKEN_ACCESSOR   :: 22   // .: punctuation.accessor
+TOKEN_BAD        :: 23   // uint, c8, an escape that isn't one: invalid.illegal
+TOKEN_CAPITAL    :: 24   // a name starting with a capital: no scope (the dark and light themes' type)
+TOKEN_BARE       :: 25   // struct, class, type: no scope (the dark and light themes' keyword)
+TOKENS           :: 26
 
-STATE_STRING :: -1   // a line's state: inside a string (a block comment: its depth)
+STATE_STRING :: -1   // a line's state: inside a string — "…"
+STATE_CHAR   :: -2   // … or '…' (a block comment: its depth)
+
+// The name Sublime's Mara Ask plugin gives a token kind's color (`mara
+// colors`, colors.txt): "" for a kind with no scope of its own.
+token_name :: fun(kind: i64) -> []utf8 {
+	if kind == TOKEN_PLAIN do return "plain"
+	if kind == TOKEN_KEYWORD do return "keyword"
+	if kind == TOKEN_IMPORT do return "import"
+	if kind == TOKEN_OTHER do return "keyword_other"
+	if kind == TOKEN_LOGIC do return "logic"
+	if kind == TOKEN_OPERATOR do return "operator"
+	if kind == TOKEN_STORAGE do return "storage"
+	if kind == TOKEN_BASIC_TYPE do return "basic_type"
+	if kind == TOKEN_CONSTANT do return "constant"
+	if kind == TOKEN_NUMBER do return "number"
+	if kind == TOKEN_STRING do return "string"
+	if kind == TOKEN_CHAR do return "char"
+	if kind == TOKEN_ESCAPE do return "escape"
+	if kind == TOKEN_COMMENT do return "comment"
+	if kind == TOKEN_BLOCK do return "block_comment"
+	if kind == TOKEN_FUN_NAME do return "fun_name"
+	if kind == TOKEN_TYPE_NAME do return "type_name"
+	if kind == TOKEN_BUILTIN do return "builtin"
+	if kind == TOKEN_CALL do return "call"
+	if kind == TOKEN_FIELD do return "field"
+	if kind == TOKEN_MODULE do return "module"
+	if kind == TOKEN_PUNCT do return "punct"
+	if kind == TOKEN_ACCESSOR do return "accessor"
+	if kind == TOKEN_BAD do return "illegal"
+	return ""
+}
 
 // The token at s[at], what's open there `state` (0, a block comment's
-// depth, STATE_STRING): where it ends, its kind, and what's open after it.
+// depth, STATE_STRING, STATE_CHAR): where it ends, its kind, and what's open
+// after it.
 code_token :: fun(s: []utf8, at: i64, state: i64) -> i64, i64, i64 {
+	if state == STATE_STRING do return quoted(s, at, '"', TOKEN_STRING, STATE_STRING)
+	if state == STATE_CHAR do return quoted(s, at, '\'', TOKEN_CHAR, STATE_CHAR)
+	if state > 0 do return block_comment(s, at, state)
 	k := at
-	if state == STATE_STRING {
-		for k < s.len {
-			if s[k] == '\\' {
-				k += 2
-				continue
-			}
-			if s[k] == '"' do return k + 1, TOKEN_STRING, 0
-			k += 1
-		}
-		return s.len, TOKEN_STRING, STATE_STRING
-	}
-	if state > 0 {
-		// (Block comments nest.)
-		depth := state
-		for k < s.len {
-			if k + 1 < s.len and s[k] == '/' and s[k + 1] == '*' {
-				depth += 1
-				k += 2
-				continue
-			}
-			if k + 1 < s.len and s[k] == '*' and s[k + 1] == '/' {
-				depth -= 1
-				k += 2
-				if depth == 0 do return k, TOKEN_COMMENT, 0
-				continue
-			}
-			k += 1
-		}
-		return s.len, TOKEN_COMMENT, depth
-	}
 	ch := s[k]
 	if ch == '/' and k + 1 < s.len {
 		if s[k + 1] == '/' do return s.len, TOKEN_COMMENT, 0
-		if s[k + 1] == '*' do return code_token(s, k + 2, 1)
+		if s[k + 1] == '*' do return block_comment(s, k + 2, 1)
 	}
-	if ch == '"' do return code_token(s, k + 1, STATE_STRING)
-	if ch == '\'' {
-		k += 1
-		for k < s.len {
-			if s[k] == '\\' {
-				k += 2
-				continue
-			}
-			if s[k] == '\'' do return k + 1, TOKEN_STRING, 0
-			k += 1
+	if ch == '"' or ch == '\'' {
+		// (The quote, and the text after it up to an escape.)
+		kind := TOKEN_STRING
+		open := STATE_STRING
+		if ch == '\'' {
+			kind = TOKEN_CHAR
+			open = STATE_CHAR
 		}
-		return s.len, TOKEN_STRING, 0
-	}
-	if ch >= '0' and ch <= '9' {
-		// (0x1F, 1_000, 2.5: a dot in it only before a digit — `0 .. n`'s isn't.)
-		k += 1
-		for k < s.len {
-			if s[k] == '.' and k + 1 < s.len and s[k + 1] >= '0' and s[k + 1] <= '9' {
-				k += 1
-				continue
-			}
-			if not is_word_char(s[k]) do break
-			k += 1
-		}
-		return k, TOKEN_NUMBER, 0
+		if k + 1 >= s.len do return k + 1, kind, open
+		if s[k + 1] == '\\' do return k + 1, kind, open
+		return quoted(s, k + 1, ch, kind, open)
 	}
 	if is_word_char(ch) {
-		for k < s.len and is_word_char(s[k]) {
-			k += 1
+		if ch >= '0' and ch <= '9' do return number_end(s, k), TOKEN_NUMBER, 0
+		end := k
+		for end < s.len and is_word_char(s[end]) {
+			end += 1
 		}
-		return k, word_kind(s[at : k]), 0
+		return end, word_kind(s, k, end), 0
 	}
-	if ch == ' ' {
-		for k < s.len and s[k] == ' ' {
-			k += 1
+	if ch == '#' and k + 1 < s.len and is_word_char(s[k + 1]) {
+		end := k + 1
+		for end < s.len and is_word_char(s[end]) {
+			end += 1
 		}
-		return k, TOKEN_PLAIN, 0
+		return end, TOKEN_OTHER, 0
+	}
+	if ch == '!' and k + 1 < s.len and s[k + 1] == '=' do return k + 2, TOKEN_OPERATOR, 0
+	if ch == '%' or ch == '+' or ch == '-' or ch == '*' or ch == '/' or ch == ':' or ch == '=' or ch == '<' or ch == '>' or ch == '?' or ch == '~' or ch == '|' do return k + 1, TOKEN_OPERATOR, 0
+	if ch == '(' or ch == ')' or ch == '{' or ch == '}' or ch == '[' or ch == ']' or ch == ',' or ch == ';' do return k + 1, TOKEN_PUNCT, 0
+	if ch == '.' do return k + 1, TOKEN_ACCESSOR, 0
+	if ch == ' ' {
+		end := k
+		for end < s.len and s[end] == ' ' {
+			end += 1
+		}
+		return end, TOKEN_PLAIN, 0
 	}
 	_, n := char_at(s, k)
 	return k + n, TOKEN_PLAIN, 0
+}
+
+// In a string or a character, from s[at]: an escape — `\n`, `\x41`, … (one
+// that isn't, illegal) — or its text up to the next escape, or its end
+// quote (then nothing's open), or the line's end (still open).
+quoted :: fun(s: []utf8, at: i64, quote: utf8, kind: i64, open: i64) -> i64, i64, i64 {
+	if s[at] == '\\' {
+		n := escape_len(s, at)
+		if n == 0 do return min_int(at + 2, s.len), TOKEN_BAD, open
+		return at + n, TOKEN_ESCAPE, open
+	}
+	k := at
+	for k < s.len {
+		if s[k] == '\\' do return k, kind, open
+		if s[k] == quote do return k + 1, kind, 0
+		k += 1
+	}
+	return s.len, kind, open
+}
+
+// How long the escape at s[at] is — the syntax's: \\ \a \b \e \f \n \r \t
+// \u \v \' \" \0; \x and two hex digits, \u four, \U eight; three octal
+// digits — 0 for one it isn't.
+escape_len :: fun(s: []utf8, at: i64) -> i64 {
+	if at + 1 >= s.len do return 0
+	c := s[at + 1]
+	if c == 'x' and hex_run(s, at + 2, 2) do return 4
+	if c == 'u' and hex_run(s, at + 2, 4) do return 6
+	if c == 'U' and hex_run(s, at + 2, 8) do return 10
+	if at + 3 < s.len and is_octal(c) and is_octal(s[at + 2]) and is_octal(s[at + 3]) do return 4
+	if c == '\\' or c == 'a' or c == 'b' or c == 'e' or c == 'f' or c == 'n' or c == 'r' or c == 'u' or c == 't' or c == 'v' or c == '\'' or c == '"' or c == '0' do return 2
+	return 0
+}
+
+// Whether n hex digits start at s[at].
+hex_run :: fun(s: []utf8, at: i64, n: i64) -> bool {
+	if at + n > s.len do return false
+	for k in at .. at + n {
+		c := s[k]
+		if not ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) do return false
+	}
+	return true
+}
+
+// Whether c is an octal digit.
+is_octal :: fun(c: utf8) -> bool {
+	return c >= '0' and c <= '7'
+}
+
+// In a block comment `depth` deep, from s[at]: where it ends — after its
+// last `*/`, or the line's end — and how deep it is then (they nest).
+block_comment :: fun(s: []utf8, at: i64, depth: i64) -> i64, i64, i64 {
+	open := depth
+	k := at
+	for k < s.len {
+		if k + 1 < s.len and s[k] == '/' and s[k + 1] == '*' {
+			open += 1
+			k += 2
+			continue
+		}
+		if k + 1 < s.len and s[k] == '*' and s[k + 1] == '/' {
+			open -= 1
+			k += 2
+			if open == 0 do return k, TOKEN_BLOCK, 0
+			continue
+		}
+		k += 1
+	}
+	return s.len, TOKEN_BLOCK, open
+}
+
+// Where the number at s[at] ends: 12, 1_000, 2.5, 1e9, 1e+9, 0x1F — the rest
+// of a word it starts (a dot in it only before a digit: `0 .. n`'s isn't).
+number_end :: fun(s: []utf8, at: i64) -> i64 {
+	k := at + 1
+	for k < s.len {
+		if s[k] == '.' and k + 1 < s.len and s[k + 1] >= '0' and s[k + 1] <= '9' {
+			k += 1
+			continue
+		}
+		if (s[k] == '+' or s[k] == '-') and (s[k - 1] == 'e' or s[k - 1] == 'E') and s[at] != '0' and k + 1 < s.len and s[k + 1] >= '0' and s[k + 1] <= '9' {
+			k += 1
+			continue
+		}
+		if not is_word_char(s[k]) do break
+		k += 1
+	}
+	return k
+}
+
+// The word s[at : end]'s kind, as the syntax's rules give it: by what's
+// before it — `.len`, `mara.math`, `match all` — its own, among the
+// syntax's keywords and types, and what's after it: a declaration's name
+// (`name :: fun`, `Name :: …`), a call (`name(`); else a capitalized name,
+// or a plain one.
+word_kind :: fun(s: []utf8, at: i64, end: i64) -> i64 {
+	w := s[at : end]
+	dot := at > 0 and s[at - 1] == '.'
+	if w == "mara" and end + 1 < s.len and s[end] == '.' and is_word_char(s[end + 1]) do return TOKEN_MODULE
+	if dot and word_before(s, at - 1) == "mara" do return TOKEN_MODULE
+	if dot and (w == "len" or w == "cap") do return TOKEN_FIELD
+	if w == "all" and word_before(s, at) == "match" do return TOKEN_KEYWORD
+	if w == "index" and word_before(s, at) == "each" do return TOKEN_KEYWORD
+	kind := keyword_kind(w)
+	if kind != TOKEN_PLAIN do return kind
+	// (After it, past spaces: `::`, and then fun or not; `(`.)
+	next := skip_spaces(s, end)
+	if next < s.len and s[next] == ':' {
+		second := skip_spaces(s, next + 1)
+		if second < s.len and s[second] == ':' {
+			then := skip_spaces(s, second + 1)
+			is_fun := starts_with(s[then : s.len], "fun")
+			if not is_fun or (w[0] >= 'A' and w[0] <= 'Z') do return TOKEN_TYPE_NAME
+			if (w[0] >= 'a' and w[0] <= 'z') or w[0] == '_' do return TOKEN_FUN_NAME
+		}
+	}
+	call := next < s.len and s[next] == '('
+	if call and (w == "print" or w == "assert" or w == "crash" or w == "take" or w == "size_of") do return TOKEN_BUILTIN
+	if w == "struct" or w == "class" do return TOKEN_BARE
+	if call do return TOKEN_CALL
+	if w == "type" do return TOKEN_BARE
+	if w[0] >= 'A' and w[0] <= 'Z' do return TOKEN_CAPITAL
+	return TOKEN_PLAIN
+}
+
+// A word's kind among the syntax's keywords and types; plain for none.
+keyword_kind :: fun(w: []utf8) -> i64 {
+	if w.len < 2 or w.len > 9 do return TOKEN_PLAIN
+	if w == "fun" or w == "method" or w == "fn" or w == "union" or w == "dispatch" or w == "error" or w == "distinct" or w == "var" or w == "intrinsic" do return TOKEN_STORAGE
+	if w == "int" or w == "float" or w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "f32" or w == "f64" or w == "isize" or w == "usize" or w == "bool" or w == "string" or w == "cstr" or w == "ptr" or w == "byte" or w == "utf8" or w == "err" do return TOKEN_BASIC_TYPE
+	if w == "uint" or w == "c8" do return TOKEN_BAD
+	if w == "if" or w == "elif" or w == "else" or w == "for" or w == "match" or w == "each" or w == "other" or w == "return" or w == "do" or w == "where" or w == "defer" or w == "break" or w == "continue" or w == "foreign" do return TOKEN_KEYWORD
+	if w == "module" or w == "include" or w == "use" do return TOKEN_IMPORT
+	if w == "using" or w == "overload" do return TOKEN_OTHER
+	if w == "and" or w == "or" or w == "not" or w == "in" do return TOKEN_LOGIC
+	if w == "void" or w == "true" or w == "false" do return TOKEN_CONSTANT
+	return TOKEN_PLAIN
+}
+
+// Where the spaces (and tabs) from s[at] end.
+skip_spaces :: fun(s: []utf8, at: i64) -> i64 {
+	k := at
+	for k < s.len and (s[k] == ' ' or s[k] == '\t') {
+		k += 1
+	}
+	return k
+}
+
+// The word ending just before s[at], spaces between left out; "" for none.
+word_before :: fun(s: []utf8, at: i64) -> []utf8 {
+	end := at
+	for end > 0 and (s[end - 1] == ' ' or s[end - 1] == '\t') {
+		end -= 1
+	}
+	start := end
+	for start > 0 and is_word_char(s[start - 1]) {
+		start -= 1
+	}
+	return s[start : end]
 }
 
 // What's open after line s, given what was open at its start.
@@ -111,33 +300,9 @@ code_state_after :: fun(s: []utf8, state: i64) -> i64 {
 	return open
 }
 
-// A word's kind: a keyword (lexer.odin's, and `type`), a type — built in, or
-// a name starting with a capital — a constant, else a name.
-word_kind :: fun(w: []utf8) -> i64 {
-	if w == "true" or w == "false" or w == "void" do return TOKEN_NUMBER
-	if w == "bool" or w == "byte" or w == "int" or w == "utf8" or w == "err" do return TOKEN_TYPE
-	if w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "i128" do return TOKEN_TYPE
-	if w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "u128" do return TOKEN_TYPE
-	if w == "f16" or w == "f32" or w == "f64" do return TOKEN_TYPE
-	if w[0] >= 'A' and w[0] <= 'Z' do return TOKEN_TYPE
-	if is_keyword(w) do return TOKEN_KEYWORD
-	return TOKEN_PLAIN
-}
-
-// Whether a word is one of Mara's keywords.
-is_keyword :: fun(w: []utf8) -> bool {
-	if w.len < 2 or w.len > 9 do return false
-	return w == "and" or w == "break" or w == "class" or w == "continue" or w == "defer" or w == "distinct" or w == "dispatch" or w == "do" or w == "else" or w == "elif" or w == "error" or w == "fun" or w == "fn" or w == "for" or w == "foreign" or w == "if" or w == "include" or w == "in" or w == "intrinsic" or w == "method" or w == "module" or w == "match" or w == "not" or w == "or" or w == "overload" or w == "return" or w == "struct" or w == "union" or w == "use" or w == "using" or w == "var" or w == "type"
-}
-
-// A token kind's color.
+// A token kind's color: the theme's (theme_set).
 token_color :: fun(ui: ^Ui, kind: i64) -> Color {
-	if kind == TOKEN_KEYWORD do return ui.code_keyword
-	if kind == TOKEN_TYPE do return ui.code_type
-	if kind == TOKEN_STRING do return ui.code_string
-	if kind == TOKEN_NUMBER do return ui.code_number
-	if kind == TOKEN_COMMENT do return ui.dim
-	return ui.code
+	return ui.tokens[kind]
 }
 
 // A row of a line of Mara code drawn at (x, y), each token in its color —

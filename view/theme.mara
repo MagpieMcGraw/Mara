@@ -1,0 +1,256 @@
+module view
+
+use mara.core
+use mara.os
+use mara.math
+
+// The window's themes — the Theme menu's: Dark, Light, and Sublime's: the
+// colors of Sublime's color scheme, as Sublime's Mara Ask plugin tells them
+// (`mara colors`) — code's tokens colored as Sublime colors them, the rest
+// made from its background and its text's color. The window answering docs
+// keeps them beside its program, colors.txt, for every window: each looks
+// at it now and then, and takes them again when they change.
+//   colors.txt:   <name>=#rrggbb ...   — background, foreground, selection,
+//                 line_highlight, accent, bad; a token kind's (token_name)
+
+THEME_DARK    :: 0
+THEME_LIGHT   :: 1
+THEME_SUBLIME :: 2
+
+COLORS :: "colors.txt"
+
+// The colors of a theme.
+theme_set :: fun(ui: ^Ui, theme: i64) {
+	ui.theme = theme
+	if theme == THEME_SUBLIME {
+		theme_sublime(ui)
+	else
+		theme_builtin(ui, theme == THEME_LIGHT)
+	}
+	ui.dirty = true
+}
+
+// A theme's name, as layout.txt keeps it and the Theme menu shows it.
+theme_name :: fun(theme: i64) -> []utf8 {
+	if theme == THEME_LIGHT do return "Light"
+	if theme == THEME_SUBLIME do return "Sublime"
+	return "Dark"
+}
+
+// The dark theme — light text on dark — or the light one.
+theme_builtin :: fun(ui: ^Ui, light: bool) {
+	if light {
+		ui.ground     = Color{r = 214, g = 216, b = 221}
+		ui.background = Color{r = 250, g = 250, b = 251}
+		ui.border     = Color{r = 188, g = 191, b = 198}
+		ui.stripe     = Color{r = 242, g = 243, b = 246}
+		ui.hover      = Color{r = 218, g = 228, b = 242}
+		ui.header     = Color{r = 232, g = 234, b = 238}
+		ui.ink        = Color{r = 30, g = 32, b = 36}
+		ui.dim        = Color{r = 98, g = 102, b = 110}
+		ui.accent     = Color{r = 176, g = 98, b = 0}
+		ui.bad        = Color{r = 192, g = 40, b = 30}
+		ui.code       = Color{r = 24, g = 82, b = 160}
+		ui.selected   = Color{r = 184, g = 210, b = 245}
+		theme_tokens(ui, Color{r = 150, g = 40, b = 160}, Color{r = 0, g = 122, b = 122}, Color{r = 62, g = 122, b = 20}, Color{r = 190, g = 84, b = 0})
+		return
+	}
+	ui.ground     = Color{r = 22, g = 23, b = 25}
+	ui.background = Color{r = 30, g = 31, b = 34}
+	ui.border     = Color{r = 58, g = 60, b = 66}
+	ui.stripe     = Color{r = 36, g = 37, b = 41}
+	ui.hover      = Color{r = 52, g = 55, b = 62}
+	ui.header     = Color{r = 44, g = 46, b = 51}
+	ui.ink        = Color{r = 222, g = 222, b = 222}
+	ui.dim        = Color{r = 150, g = 152, b = 158}
+	ui.accent     = Color{r = 236, g = 180, b = 80}
+	ui.bad        = Color{r = 240, g = 120, b = 110}
+	ui.code       = Color{r = 150, g = 192, b = 240}
+	ui.selected   = Color{r = 44, g = 78, b = 118}
+	theme_tokens(ui, Color{r = 204, g = 150, b = 236}, Color{r = 110, g = 204, b = 192}, Color{r = 166, g = 208, b = 124}, Color{r = 240, g = 160, b = 104})
+}
+
+// The dark and light themes' tokens: keywords in one color, types in
+// another (a capitalized name's too), text and numbers in theirs, comments
+// dim, the rest as code.
+theme_tokens :: fun(ui: ^Ui, keyword: Color, type_color: Color, text: Color, number: Color) {
+	for k in 0 .. TOKENS {
+		ui.tokens[k] = ui.code
+	}
+	ui.tokens[TOKEN_KEYWORD] = keyword
+	ui.tokens[TOKEN_IMPORT] = keyword
+	ui.tokens[TOKEN_OTHER] = keyword
+	ui.tokens[TOKEN_LOGIC] = keyword
+	ui.tokens[TOKEN_STORAGE] = keyword
+	ui.tokens[TOKEN_BARE] = keyword
+	ui.tokens[TOKEN_BASIC_TYPE] = type_color
+	ui.tokens[TOKEN_TYPE_NAME] = type_color
+	ui.tokens[TOKEN_CAPITAL] = type_color
+	ui.tokens[TOKEN_CONSTANT] = number
+	ui.tokens[TOKEN_NUMBER] = number
+	ui.tokens[TOKEN_STRING] = text
+	ui.tokens[TOKEN_CHAR] = text
+	ui.tokens[TOKEN_ESCAPE] = text
+	ui.tokens[TOKEN_COMMENT] = ui.dim
+	ui.tokens[TOKEN_BLOCK] = ui.dim
+	ui.tokens[TOKEN_BAD] = ui.bad
+}
+
+// Sublime's colors as colors.txt has them — the light theme's until it has
+// them, and for any it doesn't name: the panels on Sublime's background, its
+// text's color; their bars, borders, a row lit, what's dim, mixed from the
+// two; selected text, a name found, a failure in its own colors; code's
+// tokens in its scopes' (those without a scope of their own as its text).
+theme_sublime :: fun(ui: ^Ui) {
+	theme_builtin(ui, true)
+	ui.colors_stamp = file_mtime(ui.colors_path)
+	buf : [..8000]byte
+	if bool(read_entire_file(ui.colors_path, &buf)) do return
+	text : []utf8 = buf[:]
+	// (The six above, by PALETTE_ order; each token kind's.)
+	named : [PALETTE]Color
+	has : [PALETTE]bool
+	tokens : [TOKENS]Color
+	token_has : [TOKENS]bool
+	at : i64 = 0
+	for at < text.len {
+		for at < text.len and (text[at] == ' ' or text[at] == '\t' or text[at] == '\n' or text[at] == '\r') {
+			at += 1
+		}
+		end := at
+		for end < text.len and text[end] != ' ' and text[end] != '\t' and text[end] != '\n' and text[end] != '\r' {
+			end += 1
+		}
+		word := text[at : end]
+		at = end
+		eq := -1
+		for k in 0 .. word.len {
+			if word[k] == '=' and eq < 0 do eq = k
+		}
+		if eq < 0 do continue
+		color, ok := hex_color(word[eq + 1 : word.len])
+		if not ok do continue
+		name := word[0 : eq]
+		for k in 0 .. PALETTE {
+			if name == palette_name(k) {
+				named[k] = color
+				has[k] = true
+			}
+		}
+		for k in 0 .. TOKENS {
+			if name == token_name(k) {
+				tokens[k] = color
+				token_has[k] = true
+			}
+		}
+	}
+	if not has[PALETTE_BACKGROUND] or not has[PALETTE_FOREGROUND] do return
+	bg := named[PALETTE_BACKGROUND]
+	fg := named[PALETTE_FOREGROUND]
+	ui.background = bg
+	ui.ink = fg
+	ui.dim = mix(fg, bg, 0.42)
+	ui.header = mix(bg, fg, 0.07)
+	ui.stripe = mix(bg, fg, 0.03)
+	ui.border = mix(bg, fg, 0.22)
+	ui.hover = mix(bg, fg, 0.10)
+	// (The window behind the panels: darker than them — on a light
+	// background, toward the text's color.)
+	ui.ground = mix(bg, Color{}, 0.3)
+	if brightness(bg) > 0.5 do ui.ground = mix(bg, fg, 0.16)
+	if has[PALETTE_LINE_HIGHLIGHT] do ui.hover = named[PALETTE_LINE_HIGHLIGHT]
+	ui.selected = mix(bg, fg, 0.2)
+	if has[PALETTE_SELECTION] do ui.selected = named[PALETTE_SELECTION]
+	if has[PALETTE_BAD] do ui.bad = named[PALETTE_BAD]
+	ui.accent = fg
+	if token_has[TOKEN_KEYWORD] do ui.accent = tokens[TOKEN_KEYWORD]
+	if has[PALETTE_ACCENT] do ui.accent = named[PALETTE_ACCENT]
+	plain := fg
+	if token_has[TOKEN_PLAIN] do plain = tokens[TOKEN_PLAIN]
+	// (Code that isn't Mara's — a crash's calls — as Sublime colors a call.)
+	ui.code = plain
+	if token_has[TOKEN_CALL] do ui.code = tokens[TOKEN_CALL]
+	for k in 0 .. TOKENS {
+		ui.tokens[k] = plain
+		if token_has[k] do ui.tokens[k] = tokens[k]
+	}
+	if not token_has[TOKEN_BAD] do ui.tokens[TOKEN_BAD] = ui.bad
+	if not token_has[TOKEN_BLOCK] and token_has[TOKEN_COMMENT] do ui.tokens[TOKEN_BLOCK] = tokens[TOKEN_COMMENT]
+}
+
+// The colors colors.txt names besides the tokens'.
+PALETTE_BACKGROUND     :: 0
+PALETTE_FOREGROUND     :: 1
+PALETTE_SELECTION      :: 2
+PALETTE_LINE_HIGHLIGHT :: 3
+PALETTE_ACCENT         :: 4
+PALETTE_BAD            :: 5   // Sublime's region.redish
+PALETTE                :: 6
+
+// One of those colors' name in colors.txt.
+palette_name :: fun(k: i64) -> []utf8 {
+	if k == PALETTE_BACKGROUND do return "background"
+	if k == PALETTE_FOREGROUND do return "foreground"
+	if k == PALETTE_SELECTION do return "selection"
+	if k == PALETTE_LINE_HIGHLIGHT do return "line_highlight"
+	if k == PALETTE_ACCENT do return "accent"
+	return "bad"
+}
+
+// A color written `#rrggbb`, and whether it is one.
+hex_color :: fun(s: []utf8) -> Color, bool {
+	if s.len != 7 or s[0] != '#' do return Color{}, false
+	r, r_ok := hex_byte(s[1], s[2])
+	g, g_ok := hex_byte(s[3], s[4])
+	b, b_ok := hex_byte(s[5], s[6])
+	return Color{r = r, g = g, b = b}, r_ok and g_ok and b_ok
+}
+
+// Two hex digits' byte, and whether they are.
+hex_byte :: fun(high: utf8, low: utf8) -> u8, bool {
+	h := hex_digit(high)
+	l := hex_digit(low)
+	if h < 0 or l < 0 do return u8(0), false
+	return u8(h * 16 + l), true
+}
+
+// A hex digit's value; -1 for none.
+hex_digit :: fun(c: utf8) -> i64 {
+	if c >= '0' and c <= '9' do return i64(c) - i64('0')
+	if c >= 'a' and c <= 'f' do return i64(c) - i64('a') + 10
+	if c >= 'A' and c <= 'F' do return i64(c) - i64('A') + 10
+	return -1
+}
+
+// Color a moved toward b: t of the way.
+mix :: fun(a: Color, b: Color, t: f32) -> Color {
+	return Color{r = mix_channel(a.r, b.r, t), g = mix_channel(a.g, b.g, t), b = mix_channel(a.b, b.b, t)}
+}
+
+mix_channel :: fun(a: u8, b: u8, t: f32) -> u8 {
+	return u8(floor_f32(f32(a) + (f32(b) - f32(a)) * t + 0.5))
+}
+
+// How bright a color looks, 0 to 1.
+brightness :: fun(c: Color) -> f32 {
+	return (0.299 * f32(c.r) + 0.587 * f32(c.g) + 0.114 * f32(c.b)) / 255.0
+}
+
+// Sublime's colors as a "-colors <name>=#rrggbb ..." line has them (`mara
+// colors`): kept in colors.txt for every window — this one's theme, if
+// it's Sublime's, made of them now.
+colors_set :: fun(ui: ^Ui, colors: []utf8) {
+	id, oe := file_open_write(ui.colors_path)
+	if not bool(oe) {
+		_ = file_write_text(id, colors)
+		_ = file_write_text(id, "\n")
+		file_close(id)
+	}
+	if ui.theme == THEME_SUBLIME do theme_set(ui, THEME_SUBLIME)
+}
+
+// Sublime's theme made again when colors.txt changed (another window was
+// told new colors).
+colors_look :: fun(ui: ^Ui) {
+	if ui.theme == THEME_SUBLIME and file_mtime(ui.colors_path) != ui.colors_stamp do theme_set(ui, THEME_SUBLIME)
+}

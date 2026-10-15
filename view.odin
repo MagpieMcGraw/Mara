@@ -22,7 +22,8 @@ import "core:time"
 // fields, "\t<kind>\t<name>\t<path>\t<line>", are what the name at the
 // editor's point refers to (`mara docs at`): shown first, the rest below.
 // There too, "-editor <program>": the editor a window opens a file in, at
-// a line (`mara editor`).
+// a line (`mara editor`); "-colors <name>=#rrggbb ...", an editor's colors,
+// the windows' Sublime theme's (`mara colors`).
 // ---------------------------------------------------------------------------
 
 // How long `mara ask` waits for a window's next byte before it checks here
@@ -117,6 +118,23 @@ editor_via_view :: proc(args: CLI_Args) {
         os.exit(1)
     case .Broken:
         fmt.eprintln("mara editor: the window didn't answer")
+        os.exit(1)
+    case .Answered:
+        if failed { os.exit(1) }
+    }
+}
+
+// `mara colors <name>=#rrggbb ...`: the window answering docs keeps
+// Sublime's colors — every window's after it — for the Sublime theme. Exits 1
+// when no window answers.
+colors_via_view :: proc(args: CLI_Args) {
+    _, failed, how := view_request(docs_pipe_name(), strings.concatenate({"-colors ", args.colors}, context.temp_allocator))
+    switch how {
+    case .No_Window:
+        fmt.eprintln("mara colors: no window is open — 'mara view' opens one")
+        os.exit(1)
+    case .Broken:
+        fmt.eprintln("mara colors: the window didn't answer")
         os.exit(1)
     case .Answered:
         if failed { os.exit(1) }

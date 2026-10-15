@@ -50,5 +50,11 @@
     // When a .mara file is saved, a `mara view` window's Docs panel looks up
     // again what it shows (mara docs -reload; its reload button, F5), so the
     // edits show — pinned or not.
-    "docs_reload_on_save": true
+    "docs_reload_on_save": true,
+
+    // At a rest, the windows are told this Sublime's colors — its color
+    // scheme's, for each scope Mara's syntax gives (mara colors) — when they
+    // changed: the window's Theme menu's Sublime theme colors its panels and
+    // code as Sublime does.
+    "tell_colors": true
 }

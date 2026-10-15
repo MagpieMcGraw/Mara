@@ -299,7 +299,7 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32, clicks: i64) {
 // theme.
 menu_choose :: fun(ui: ^Ui, m: i64, item: i64) {
 	if m == MENU_THEME {
-		theme_set(ui, item == 1)
+		theme_set(ui, item)
 		layout_save(ui)
 		return
 	}
@@ -476,25 +476,22 @@ menu_button_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
 }
 
 // How many items menu m has: the Panels menu, each panel kind and Reset
-// layout; the Theme menu, Dark and Light.
+// layout; the Theme menu, Dark, Light and Sublime.
 menu_items :: fun(m: i64) -> i64 {
 	if m == MENU_PANELS do return PANEL_KINDS + 1
-	return 2
+	return 3
 }
 
 // Item k of menu m, as the menu shows it.
 menu_item_text :: fun(m: i64, k: i64) -> []utf8 {
-	if m == MENU_THEME {
-		if k == 0 do return "Dark"
-		return "Light"
-	}
+	if m == MENU_THEME do return theme_name(k)
 	if k == PANEL_KINDS do return "Reset layout"
 	return panel_title(k)
 }
 
 // Whether item k of menu m is ticked: a panel shown, the theme chosen.
 menu_item_ticked :: fun(ui: ^Ui, m: i64, k: i64) -> bool {
-	if m == MENU_THEME do return (k == 1) == ui.light
+	if m == MENU_THEME do return k == ui.theme
 	if k == PANEL_KINDS do return false
 	i := find_panel(ui, k)
 	if i < 0 do return false
@@ -629,7 +626,7 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 // The layout written to layout.txt:
 //   mara view layout
 //   window <width> <height>
-//   theme <dark or light>
+//   theme <dark, light or sublime>
 //   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
@@ -639,8 +636,10 @@ layout_save :: fun(ui: ^Ui) {
 	&text + " "
 	&text + int_text(i64(ui.height))
 	&text + "\ntheme "
-	if ui.light {
+	if ui.theme == THEME_LIGHT {
 		&text + "light"
+	elif ui.theme == THEME_SUBLIME
+		&text + "sublime"
 	else
 		&text + "dark"
 	}
@@ -708,7 +707,10 @@ layout_load :: fun(ui: ^Ui) -> bool {
 			ui.saved_height, _ = parse_number(word_text(line, words[2]))
 		}
 		if head == "theme" and words.len == 2 {
-			theme_set(ui, word_text(line, words[1]) == "light")
+			name := word_text(line, words[1])
+			for theme in 0 .. 3 {
+				if same_folded(name, theme_name(theme)) do theme_set(ui, theme)
+			}
 		}
 		if head == "panel" and words.len == 7 {
 			name := word_text(line, words[1])

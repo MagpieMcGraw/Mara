@@ -1125,6 +1125,10 @@ CLI_Args :: struct {
     // file at a line, `<program> <file>:<line>` (editor_via_view).
     editor:       string,
 
+    // `mara colors <name>=#rrggbb ...` — the windows told Sublime's colors,
+    // their Sublime theme's (colors_via_view).
+    colors:       string,
+
     // `mara serve [module]` — ask's queries, one per stdin line, against the
     // module as it is on disk: checked again when a file changes (serve.odin).
     serve:        bool,
@@ -1136,7 +1140,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
@@ -1176,6 +1180,18 @@ EDITOR_USAGE :: `Usage: mara editor <program>
   shows so, clicked. The window that answers docs keeps it beside its
   program, for every window after. Sublime's Mara Ask plugin tells them
   its subl. Fails when no window is open.`
+COLORS_USAGE :: `Usage: mara colors <name>=#rrggbb ...
+
+  Tells the windows this compiler opens (mara view) an editor's colors, for
+  their Theme menu's Sublime theme: background, foreground, selection,
+  line_highlight, accent, bad (a failure's), and Mara code's tokens' —
+  plain, keyword, import, keyword_other, logic, operator, storage,
+  basic_type, constant, number, string, char, escape, comment,
+  block_comment, fun_name, type_name, builtin, call, field, module, punct,
+  accessor, illegal (view/code.mara's kinds, as Sublime's Mara syntax
+  scopes them). The window that answers docs keeps them beside its
+  program, for every window. Sublime's Mara Ask plugin tells them its color
+  scheme's. Fails when no window is open.`
 SERVE_USAGE :: `Usage: mara serve [module]
 
   Checks the module (by default the current directory's), then answers each
@@ -1378,6 +1394,17 @@ parse_args :: proc() -> CLI_Args {
         return args
     }
 
+    // `mara colors <name>=#rrggbb ...` — the windows told Sublime's colors (COLORS_USAGE).
+    if subcmd == "colors" {
+        if len(positional) < 3 || is_help_flag(positional[2]) {
+            fmt.println(COLORS_USAGE)
+            os.exit(0 if len(positional) >= 3 else 1)
+        }
+        args.colors = strings.join(positional[2:], " ")
+        args.ok = true
+        return args
+    }
+
     // `mara docs <words>` — the window open here looks them up (DOCS_USAGE).
     if subcmd == "docs" {
         if len(positional) < 3 || is_help_flag(positional[2]) {
@@ -1446,6 +1473,10 @@ main :: proc() {
     }
     if args.editor != "" {
         editor_via_view(args)
+        return
+    }
+    if args.colors != "" {
+        colors_via_view(args)
         return
     }
     if args.lsp {

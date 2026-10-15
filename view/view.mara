@@ -92,8 +92,10 @@ Ui :: struct {
 	clip:       [..2 * MB]utf8
 	editor:      [..1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
 
-	// The theme's colors (theme_set).
-	light:      bool
+	// The theme's colors (theme.mara: theme_set).
+	theme:      i64     // THEME_DARK, _LIGHT, _SUBLIME
+	colors_path:  [..1000]utf8   // colors.txt's: Sublime's colors, as the windows were told them
+	colors_stamp: i64            // its time when they were read
 	ground:     Color   // the window behind the panels
 	background: Color   // a panel's
 	border:     Color
@@ -104,53 +106,9 @@ Ui :: struct {
 	dim:        Color
 	accent:     Color   // the column sorted by; a ticked box; a name found
 	bad:        Color
-	code:       Color   // code, as the Docs panel shows it: its names
-	code_keyword: Color   // ... its keywords (code.mara's tokens)
-	code_type:    Color
-	code_string:  Color
-	code_number:  Color
+	code:       Color   // code, as the Docs panel shows it (not Mara's: a crash's calls)
+	tokens:     [TOKENS]Color   // Mara code's, each token kind's (code.mara)
 	selected:   Color   // text selected, behind it
-}
-
-// The colors: dark — light text on dark — or light.
-theme_set :: fun(ui: ^Ui, light: bool) {
-	ui.light = light
-	if light {
-		ui.ground     = Color{r = 214, g = 216, b = 221}
-		ui.background = Color{r = 250, g = 250, b = 251}
-		ui.border     = Color{r = 188, g = 191, b = 198}
-		ui.stripe     = Color{r = 242, g = 243, b = 246}
-		ui.hover      = Color{r = 218, g = 228, b = 242}
-		ui.header     = Color{r = 232, g = 234, b = 238}
-		ui.ink        = Color{r = 30, g = 32, b = 36}
-		ui.dim        = Color{r = 98, g = 102, b = 110}
-		ui.accent     = Color{r = 176, g = 98, b = 0}
-		ui.bad        = Color{r = 192, g = 40, b = 30}
-		ui.code       = Color{r = 24, g = 82, b = 160}
-		ui.code_keyword = Color{r = 150, g = 40, b = 160}
-		ui.code_type    = Color{r = 0, g = 122, b = 122}
-		ui.code_string  = Color{r = 62, g = 122, b = 20}
-		ui.code_number  = Color{r = 190, g = 84, b = 0}
-		ui.selected   = Color{r = 184, g = 210, b = 245}
-	else
-		ui.ground     = Color{r = 22, g = 23, b = 25}
-		ui.background = Color{r = 30, g = 31, b = 34}
-		ui.border     = Color{r = 58, g = 60, b = 66}
-		ui.stripe     = Color{r = 36, g = 37, b = 41}
-		ui.hover      = Color{r = 52, g = 55, b = 62}
-		ui.header     = Color{r = 44, g = 46, b = 51}
-		ui.ink        = Color{r = 222, g = 222, b = 222}
-		ui.dim        = Color{r = 150, g = 152, b = 158}
-		ui.accent     = Color{r = 236, g = 180, b = 80}
-		ui.bad        = Color{r = 240, g = 120, b = 110}
-		ui.code       = Color{r = 150, g = 192, b = 240}
-		ui.code_keyword = Color{r = 204, g = 150, b = 236}
-		ui.code_type    = Color{r = 110, g = 204, b = 192}
-		ui.code_string  = Color{r = 166, g = 208, b = 124}
-		ui.code_number  = Color{r = 240, g = 160, b = 104}
-		ui.selected   = Color{r = 44, g = 78, b = 118}
-	}
-	ui.dirty = true
 }
 
 main :: fun() -> i64 {
@@ -158,7 +116,7 @@ main :: fun() -> i64 {
 	ui : Ui
 	p : Profile
 	hub : Hub
-	theme_set(&ui, false)
+	theme_set(&ui, THEME_DARK)
 
 	// (Its font and its layout beside it: the directory of its own file —
 	// executable_path's, however it was started; args[0] is what its
@@ -175,6 +133,8 @@ main :: fun() -> i64 {
 	&ui.layout_path + "layout.txt"
 	&ui.editor_path + dir
 	&ui.editor_path + "editor.txt"
+	&ui.colors_path + dir
+	&ui.colors_path + COLORS
 
 	// (The compiler's directory: its stdlib and doc pages, for the docs. Its
 	// separator, the paths made from it.)
@@ -286,6 +246,7 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 				if crash_read(ui) do crash_show(ui)
 				ui.dirty = true
 			}
+			colors_look(ui)
 		}
 	}
 }
