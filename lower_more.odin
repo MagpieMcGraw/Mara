@@ -169,6 +169,7 @@ lw_hash_name :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, span: Spa
     case "windows": flag = k.c.target_os == .Windows
     case "linux":   flag = k.c.target_os == .Linux
     case "mac":     flag = k.c.target_os == .Mac
+    case "profile_memory": flag = k.c.profile_memory
     case:
         lw_unsupported(k, n, "this compiler name")
     }

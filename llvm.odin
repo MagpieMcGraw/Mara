@@ -432,7 +432,9 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             // its type's constructor not run.
             if value_has_partial_array(e.g, t) {
                 llvm_into_fields(e, true)
+                was := mem_field(e.g, llvm_struct(e.sret), &llvm_struct(e.sret).fields[i])
                 stamp_zero_partial_arrays(e.g, at, t)
+                mem_restore(e.g, was)
                 llvm_into_fields(e, false)
             }
         case .Block, .Const, .Op:
@@ -674,6 +676,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Write:
         if pair, is := e.st.swaps[op]; is { return llvm_emit_swap(e, pair[0], pair[1]) }   // (a swap's first put: the swap)
         place := ops[0].op
+        was := llvm_mem_place(e, place)
+        defer mem_restore(g, was)
         if graph_op_of(pg, place) == .Slice { return llvm_copy_into(e, ops, span) }
         if graph_op_of(pg, place) == .Swizzle && len(graph_name(pg, place)) > 1 {
             // Into several components: each its element of the value.
@@ -756,6 +760,10 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         emit_store(g, llvm_type_from_checker(t), val, llvm_val(e, place))
+        if g.profile_memory && graph_op_of(pg, place) == .Field && graph_name(pg, place) == "len" {
+            hdr := graph_operands(pg, place)[0].op
+            if llvm_partial(graph_type(pg, hdr)) != nil || graph_op_of(pg, hdr) == .Deref { mem_probe_len(g, llvm_val(e, hdr)) }
+        }
     case .Deref:
         // What a pointer points at: the pointer's value is the place.
         place := ops[0].op
@@ -823,9 +831,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         t := graph_type(pg, place)
         if len(ops) != 1 || llvm_direct(e, place) { return false }
         if llvm_zeroed(e, place) && graph_written(pg, op) == .Synthetic { return true }
+        was := llvm_mem_place(e, place)
+        defer mem_restore(g, was)
         switch {
         case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), llvm_val(e, place))
-        case llvm_partial(t) != nil: emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t))
+        case llvm_partial(t) != nil:
+            emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t))
+            mem_probe_new(g, llvm_val(e, place), llvm_partial(t))
         case llvm_aggregate(t):
             emit_memset_zero(g, llvm_val(e, place), type_size(t))
             stamp_zero_partial_arrays(g, llvm_val(e, place), t)
@@ -1150,6 +1162,7 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     }
     if pa != nil {
         emit_header_set(g, to, SLICE.len, ir_int(pa.size))
+        mem_probe_len(g, to)
     }
     return true
 }
@@ -1948,6 +1961,7 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
         emit_memcpy(g, elements, src, len(text) + 1 if pa.size > len(text) else len(text))
     }
     emit_header_set(g, at, SLICE.len, ir_int(len(text)))
+    mem_probe_len(g, at)
     return true
 }
 
@@ -1967,6 +1981,7 @@ llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, sr
     nbytes := fresh_tmp(g); ir_bin(g, nbytes, .Mul, w, n, ir_int(int(type_size(pa.elem))))
     emit_memcpy_runtime(g, elements, data, nbytes)
     emit_header_set(g, at, SLICE.len, n)
+    mem_probe_len(g, at)
     return true
 }
 
@@ -2185,6 +2200,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
               fail_i64(asked), fail_i64(cursor), fail_i64(cap_val))
     emit_label(g, ok)
     emit_header_set(g, hdr, SLICE.len, moved)
+    mem_probe_len(g, hdr)
     if let {
         e.value[op] = at
         return true
@@ -2842,6 +2858,33 @@ llvm_header_field :: proc(name: string) -> int {
     case "ptr": return SLICE.ptr
     }
     return -1
+}
+
+// -profile memory: the site context for what's laid down or copied in at a
+// place (codegen_mem.odin) — a local's declaration, a constructor's own
+// field, a struct's field (`x.f`); an element's, its array's. Through a
+// pointer, none: what's there counts where it already does.
+llvm_mem_place :: proc(e: ^Llvm, place: Node_Id) -> Mem_Context {
+    g, pg := e.g, e.pg
+    if !g.profile_memory { return Mem_Context{g.mem_name, g.mem_where} }
+    p := place
+    for !graph_is_leaf(p) && graph_op_of(pg, p) == .Index { p = graph_operands(pg, p)[0].op }
+    if graph_is_leaf(p) {
+        d := graph_refers(pg, p)
+        #partial switch graph_kind_of(pg, d) {
+        case .Local:
+            return mem_local(g, scope_path_name(e.ft), graph_name(pg, d), pg.decl_tok[d])
+        case .Field:
+            if sd := llvm_struct(e.sret); sd != nil {
+                if i := struct_field_index(sd, graph_name(pg, d)); i >= 0 { return mem_field(g, sd, &sd.fields[i]) }
+            }
+        }
+    } else if graph_op_of(pg, p) == .Field {
+        if sd := llvm_struct(graph_type(pg, graph_operands(pg, p)[0].op)); sd != nil {
+            if i := struct_field_index(sd, graph_name(pg, p)); i >= 0 { return mem_field(g, sd, &sd.fields[i]) }
+        }
+    }
+    return mem_none(g)
 }
 
 llvm_struct :: proc(t: Type) -> ^Scope_Body {

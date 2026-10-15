@@ -22,6 +22,9 @@
 // A fun that calls nothing and doesn't loop (`wrap` below) isn't timed: it's
 // over too quickly for the timing to be worth its cost. Its time is its
 // caller's self time.
+//
+// For how full your partial arrays and arenas get, `-profile memory`: see
+// memory_profiling.mara.
 module profiling
 
 use mara.core

@@ -1,0 +1,49 @@
+module memory_profile
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ build-flags: -profile memory
+//@ expect-output: 1225 3 Ok
+//@ expect-output: carved: 2 true
+
+// A -profile memory build runs as a plain one does: its locals, a struct's
+// fields copied into a partial array, a file read through a ^[]byte param,
+// a take, an arena — each probe told, none of them changing what it does.
+// (Its memory.txt is mara_mem.c's to write; doc/memory_profiling.mara says
+// what's in it.)
+
+Item :: struct {
+	name: [..64]utf8
+	count: i64
+}
+
+squares :: fun(n: i64) -> i64 {
+	found : [..1000]i64
+	for k in 0 .. n {
+		&found + k * k
+	}
+	return found.len
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	total := 0
+	for n in 1 .. 50 {
+		total += squares(n)
+	}
+	items : [..100]Item
+	for k in 0 .. 3 {
+		it : Item
+		it.name = "an item"
+		it.count = k
+		&items + it
+	}
+	storage : [..4096]byte
+	_, e := read_entire_file("memory_profile.mara", &storage)
+	print(total, items.len, e)
+	pair := slice([:2]i64, &storage)
+	pair[0] = 1
+	print("carved:", pair.len, storage.len > 16)
+}

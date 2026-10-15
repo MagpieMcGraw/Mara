@@ -36,7 +36,9 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
     fv := foreign_view(t, s)
     library := tc_text(fv.library)
     prefix := tc_text(fv.prefix) if fv.prefix != 0 else ""
-    k.checked.foreign_libs[library] = true
+    // ("mara_runtime": the compiler's own runtime, runtime/*.c — its objects
+    // linked by the build itself, no library to look for.)
+    if library != "mara_runtime" { k.checked.foreign_libs[library] = true }
     for ff in fv.funs {
         name := tc_text(foreign_fun_view(t, ff).name)
         found, _ := tc_bound(k, foreign_fun_view(t, ff).name)

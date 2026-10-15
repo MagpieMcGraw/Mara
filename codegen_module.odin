@@ -180,6 +180,8 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.web                = task.web
     g.shared             = task.shared_mode
     g.profile            = task.main_g.profile
+    g.profile_memory     = task.main_g.profile_memory
+    g.mem_sites          = make(map[string]string, keep)
 
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
@@ -323,12 +325,15 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", x86 := false, debug := false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", profile_memory: string = "", x86 := false, debug := false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
     g.profile = profile
+    g.profile_memory = profile_memory != ""
+    g.mem_build = profile_memory
+    g.mem_sites = make(map[string]string)
 
 
     // g.out is now a swap target driven by switch_to_module; each per-module
@@ -516,6 +521,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     emit_main_prologue(&g, checked)
     if g.profile != "" { ir_call(&g, {}, IR_VOID, ir_global("__mara_prof_start"), {IR_PTR, get_string_literal(&g, g.profile), {}}) }
+    if g.profile_memory { ir_call(&g, {}, IR_VOID, ir_global("__mara_mem_start"), {IR_PTR, get_string_literal(&g, g.mem_build), {}}) }
 
     main_cf, main_ok := checked.functions["main"]
     if !main_ok {
@@ -865,6 +871,14 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_prof_start(ptr)\n")
         strings.write_string(&b, "declare void @__mara_prof_enter(ptr)\n")
         strings.write_string(&b, "declare void @__mara_prof_exit(ptr)\n")
+    }
+    if g.profile_memory {
+        // The memory profiler, runtime/mara_mem.c: linked into a -profile
+        // memory build.
+        strings.write_string(&b, "declare void @__mara_mem_start(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_mem_new(ptr, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_mem_into(ptr, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_mem_len(ptr)\n")
     }
     if g.web {
         strings.write_string(&b, "declare i32 @strlen(ptr)\n")

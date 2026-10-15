@@ -1947,7 +1947,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
                 inner := tp_primary(p, allow_dot)
                 if tag := p.t.tag[inner]; tag != .Index && tag != .Slice { tp_error(p, hash, PARSE_BIG_ENDIAN_NEEDS_BYTE_READ) }
                 result = tp_node(p, .Big_Endian, hash, start, u32(inner))
-            case "caller_name", "caller_span", "web", "native", "windows", "linux", "mac":
+            case "caller_name", "caller_span", "web", "native", "windows", "linux", "mac", "profile_memory":
                 result = tp_node(p, .Hash_Name, hash, start, u32(name))
             case:
                 tp_error(p, hash, PARSE_UNKNOWN_INTRINSIC, token_text(build_tokens[name]))

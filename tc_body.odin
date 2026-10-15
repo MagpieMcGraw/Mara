@@ -831,6 +831,7 @@ tc_comptime_bool :: proc(k: ^TC, n: Tree_Id) -> (bool, bool) {
         case "windows": return k.c.target_os == .Windows, true
         case "linux":   return k.c.target_os == .Linux, true
         case "mac":     return k.c.target_os == .Mac, true
+        case "profile_memory": return k.c.profile_memory, true
         }
     case .Unary:
         if build_tokens[t.main[m]].kind == .Not {

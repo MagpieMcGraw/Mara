@@ -44,12 +44,21 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
     base := distinct_base(t)
     if pa, is_pa := base.(^Type_Partial_Array); is_pa {
         emit_partial_array_zero(g, ptr, pa, zero = false)
-        if pa.size > 0 && value_has_partial_array(g, pa.elem) { emit_each_element(g, partial_elements(g, ptr, pa), pa.elem, pa.size, stamp) }
+        mem_probe_new(g, ptr, pa)
+        if pa.size > 0 && value_has_partial_array(g, pa.elem) {
+            was := mem_elements(g)
+            emit_each_element(g, partial_elements(g, ptr, pa), pa.elem, pa.size, stamp)
+            mem_restore(g, was)
+        }
         return
     }
     // An array whose elements hold partial arrays: each element.
     if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
-        if fa.size > 0 && value_has_partial_array(g, fa.elem) { emit_each_element(g, ptr, fa.elem, fa.size, stamp) }
+        if fa.size > 0 && value_has_partial_array(g, fa.elem) {
+            was := mem_elements(g)
+            emit_each_element(g, ptr, fa.elem, fa.size, stamp)
+            mem_restore(g, was)
+        }
         return
     }
     sd := as_struct_body(base)
@@ -61,7 +70,9 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
         case ^Type_Partial_Array, ^Type_Scope, ^Type_Fixed_Array:
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, ptr, i)
+            was := mem_field(g, sd, &f)
             stamp_zero_partial_arrays(g, gep, f.type_)
+            mem_restore(g, was)
         }
     }
 }
@@ -75,7 +86,9 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
             if !value_has_partial_array(g, f.type_) { continue }
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, ptr, i)
+            was := mem_field(g, sd, &f)
             reanchor_partial_arrays(g, f.type_, gep)
+            mem_restore(g, was)
         }
         return
     }
@@ -84,10 +97,15 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
         elem_ir := llvm_type_from_checker(v.elem)
         elements_ptr := partial_elements(g, ptr, v)
         emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
+        mem_probe_into(g, ptr, v)
         if value_has_partial_array(g, v.elem) {
+            was := mem_elements(g)
             reanchor_slots(g, v.elem, ir_array_type(v.size, elem_ir), elements_ptr, ir_int(v.size))
+            mem_restore(g, was)
         }
     case ^Type_Fixed_Array:
+        was := mem_elements(g)
+        defer mem_restore(g, was)
         arr_ir := ir_array_type(v.size, llvm_type_from_checker(v.elem))
         if v.size <= 4 {
             for i in 0..<v.size {
@@ -577,6 +595,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
     new_len := fresh_tmp(g)
     ir_bin(g, new_len, .Add, w, cur_len, count)
     emit_header_set(g, slot_ptr, SLICE.len, new_len)
+    mem_probe_len(g, slot_ptr)
 }
 
 // Counter-driven loop that calls emit_bswap_in_place on each of `count`
@@ -675,6 +694,9 @@ fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: Val, sd: ^Scope_Body) 
             addr := fresh_tmp(g)
             emit_field_gep_into(g, addr, st_llvm, base_ptr, i)
             emit_partial_array_zero(g, addr, v, zero = false)
+            was := mem_field(g, sd, &f)
+            mem_probe_new(g, addr, v)
+            mem_restore(g, was)
             gen_construct_partial_array_elements(g, addr, v)
         case ^Type_Fixed_Array:
             if type_needs_construction(g, v.elem) {

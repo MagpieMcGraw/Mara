@@ -46,6 +46,7 @@ Pounce/data/*.bin
 
 # Profile written by a -profile build at exit (runtime/mara_prof.c)
 profile.txt
+memory.txt
 # mara view: where its panels were, per machine
 view/layout.txt
 view/editor.txt

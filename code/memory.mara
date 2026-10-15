@@ -2,6 +2,15 @@ module mara.memory
 
 use mara.os
 
+#if #profile_memory {
+	// The memory profiler (runtime/mara_mem.c, linked into a `mara build
+	// -profile memory` build): an arena's use, told after its cursor moves
+	// on — base's len what's in use, its cap the arena's size.
+	foreign static_lib "mara_runtime" {
+		fun __mara_mem_arena(kind: cstring, base: ^[]byte)
+	}
+}
+
 // 1024 bytes.
 KB :: 1 << 10
 // 1024 KB, in bytes: `16 * MB`.
@@ -57,6 +66,9 @@ Arena_Basic :: class(cap: i64) {
 		// clobber it before reset reads it back. (The old offset-field version
 		// set the cursor back to `off` here — a latent corruption bug.)
 		a.base.len = off + 16
+		#if #profile_memory {
+			__mara_mem_arena("Arena_Basic", &a.base)
+		}
 	}
 
 	// Hands out size bytes (16-byte aligned). When the arena is full, prints a
@@ -77,6 +89,9 @@ Arena_Basic :: class(cap: i64) {
 
 		result := a.base[off : end]
 		a.base.len = end
+		#if #profile_memory {
+			__mara_mem_arena("Arena_Basic", &a.base)
+		}
 		return result
 	}
 
@@ -129,6 +144,9 @@ Arena_Debug :: class(cap: i64) {
 
 		a.current_mark = off
 		a.base.len = off + 16
+		#if #profile_memory {
+			__mara_mem_arena("Arena_Debug", &a.base)
+		}
 	}
 
 	// What Arena_Debug records in front of each allocation.
@@ -169,6 +187,9 @@ Arena_Debug :: class(cap: i64) {
 		result := a.base[data_off : data_off+size]
 		a.last_alloc = off
 		a.base.len = end
+		#if #profile_memory {
+			__mara_mem_arena("Arena_Debug", &a.base)
+		}
 		return result
 	}
 

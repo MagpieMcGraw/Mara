@@ -376,7 +376,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 // --- the program --------------------------------------------------------------
 
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
-                         shared: bool = false, web: bool = false, target_os: Target_OS = .Windows,
+                         shared: bool = false, web: bool = false, target_os: Target_OS = .Windows, profile_memory := false,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
                          lower := true) -> ^Checked_Program {
     table := new(SymbolTable)
@@ -395,6 +395,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.target_os = target_os
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
+    c.profile_memory = profile_memory
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
     // (What the check finds, reported in source order: diagnostics_sort.)
@@ -1186,6 +1187,7 @@ Checker :: struct {
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
 
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
+    profile_memory:  bool,                // -profile memory, drives #profile_memory (mara.memory's arenas report their use)
     analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
     // The materialized call graph (set post-check, after build_call_graph) — its
     // bottom-up summaries back the escape pass and the `ask` slicer. Points at

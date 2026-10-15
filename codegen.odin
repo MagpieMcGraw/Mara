@@ -119,6 +119,15 @@ Codegen :: struct {
     // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
     // when they're entered and left (llvm.odin, llvm_probe).
     profile: string,
+    // -profile memory: how full each partial array gets, told to the memory
+    // profiler (runtime/mara_mem.c; codegen_mem.odin). mem_name, mem_where:
+    // the site partial arrays laid down or copied in now are of — where
+    // their N is written ("" when not known); mem_sites: each site's global,
+    // by its name, place and cap.
+    profile_memory: bool,
+    mem_build: string,   // ... the build, as the memory profile's header names it
+    mem_name, mem_where: string,
+    mem_sites: map[string]string,
     // What each fun's code reaches through its params (llvm.odin,
     // reach_summary): worked out as calls ask, once — each worker its own.
     summaries: map[^Type_Scope]^Fun_Summary,

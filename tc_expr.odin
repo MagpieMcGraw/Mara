@@ -949,12 +949,13 @@ tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, span: Span) -> Type {
     return st
 }
 
-// `#caller_name`, `#caller_span`: text; `#web` and the targets: a bool.
+// `#caller_name`, `#caller_span`: text; `#web`, the targets and
+// `#profile_memory` (a `-profile memory` build): a bool.
 tc_hash_name :: proc(k: ^TC, n: Tree_Id) -> Type {
     switch tc_text(Token_Id(k.t.a[n])) {
     case "caller_name", "caller_span":
         return type_ptr(Type_Byte{})
-    case "web", "native", "windows", "linux", "mac":
+    case "web", "native", "windows", "linux", "mac", "profile_memory":
         return Type_Bool{}
     }
     tc_unsupported(k, n, "this compiler name")

@@ -1,0 +1,65 @@
+// How to size your memory: build with -profile memory, run, read memory.txt.
+//
+// A partial array, `[..N]T`, always holds room for N; an arena, its whole
+// size. `mara build memory_profiling -profile memory` makes a program that
+// watches how full each one gets. When it exits (main's end, an assert, a
+// crash) it writes memory.txt next to the exe: one line per place an N is
+// written — a local's declaration, a struct's field — the most room it
+// could give back first, then one line per arena.
+//
+// The columns:
+//   unused B    what each instance would save with N its peak: where to look
+//   reserved B  the room each instance holds: N times an element's bytes
+//   peak        the most any instance ever held (its len at its fullest)
+//   median      the middle of the instances' peaks: a typical one
+//   cap         N
+//   elem B      an element's bytes
+//   instances   how many there were: a fun's local, once per call; a
+//               struct's field, once per struct made (or copied in)
+//   name        `fun.local` or `Struct.field`; an array's elements, `name[]`
+//   where       the file and line it's written at
+// And for each arena: its size, the most of it in use at once, and that as a
+// percent.
+//
+// Set N above the peak, not at it: the run you profiled may not be the
+// fullest one. Every len the program writes is looked at, so a -profile
+// memory build runs slower; build without it to time things (see
+// profiling.mara).
+module memory_profiling
+
+use mara.core
+use mara.memory
+
+// Each one names an item: its name fills part of its 64.
+Item :: struct {
+	name: [..64]utf8
+	count: i64
+}
+
+// A local, once per call: it holds n.
+squares :: fun(n: i64) -> i64 {
+	found : [..1000]i64
+	for k in 0 .. n {
+		&found + k * k
+	}
+	return found.len
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+
+	total := 0
+	for n in 1 .. 50 {
+		total += squares(n)    // squares.found: peak 49 of 1000
+	}
+
+	items : [..100]Item
+	for k in 0 .. 3 {
+		it : Item
+		it.name = "an item"    // Item.name: peak 7 of 64
+		it.count = k
+		&items + it
+	}
+
+	print(total, items.len)    // main.items: peak 3 of 100
+}

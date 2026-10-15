@@ -721,7 +721,8 @@ compile_task_proc :: proc(t: thread.Task) {
 
 // A runtime file (runtime/<name>.c) a native build links: mara_crash, in
 // every one, so asserts and crash() can tee their message into crash.txt;
-// mara_prof, in a -profile build. Compiled once to a sibling .o and reused;
+// mara_prof, in a -profile build; mara_mem, in a -profile memory build.
+// Compiled once to a sibling .o and reused;
 // recompiled when the .c is newer (compiler update). runtime/ holds
 // compiler-internal C support (compiler-rt), as opposed to code/ which is the
 // user-facing stdlib.
@@ -752,15 +753,18 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     return o_path, true
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
     clang_path := clang_resolve_path(compiler_dir)
 
-    runtimes := []string{"mara_crash", "mara_prof"}
+    runtimes := make([dynamic]string, context.temp_allocator)
+    append(&runtimes, "mara_crash")
+    if profile { append(&runtimes, "mara_prof") }
+    if profile_memory { append(&runtimes, "mara_mem") }
     runtime_os := make([dynamic]string, context.temp_allocator)
-    for name in runtimes[:2 if profile else 1] {
+    for name in runtimes {
         o := ensure_runtime(clang_path, compiler_dir, name) or_return
         append(&runtime_os, o)
     }
@@ -1128,6 +1132,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                web           = args.web,
                                shared        = shared,
                                target_os     = target_os,
+                               profile_memory = args.profile_memory,
                                analysis_only = analysis,
                                no_assert     = args.no_assert,
                                perf          = perf,
@@ -1151,6 +1156,7 @@ CLI_Args :: struct {
     llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     profile:      bool,    // -profile — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
+    profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
 
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
@@ -1186,7 +1192,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile [memory]] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
 LSP_USAGE :: `Usage: mara lsp
 
   A language server for editors: the Language Server Protocol on stdin and
@@ -1368,7 +1374,15 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
         if arg == "-llvm"    { args.llvm    = true; i += 1; continue }
-        if arg == "-profile" { args.profile = true; i += 1; continue }
+        if arg == "-profile" {
+            // (`-profile memory`: the memory profiler instead of the time one.)
+            if i + 1 < len(os.args) && os.args[i + 1] == "memory" {
+                args.profile_memory = true
+                i += 2
+                continue
+            }
+            args.profile = true; i += 1; continue
+        }
         if arg == "-show"    { args.show    = true; i += 1; continue }
         if arg == "-cursor"  { args.cursor  = true; i += 1; continue }
         if arg == "-no" {
@@ -1619,8 +1633,14 @@ main :: proc() {
         fmt.printf("-profile times a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")
         os.exit(1)
     }
-    profile := ""
-    if args.profile { profile = "release build" if args.release else "debug build" }
+    if args.profile_memory && (args.web || pkg_shared) {
+        fmt.printf("-profile memory measures a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")
+        os.exit(1)
+    }
+    build := "release build" if args.release else "debug build"
+    profile, profile_memory := "", ""
+    if args.profile { profile = build }
+    if args.profile_memory { profile_memory = build }
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
@@ -1630,7 +1650,7 @@ main :: proc() {
     x86 := ODIN_OS == .Windows && !args.web && !args.release && !args.llvm && os.get_env("MARA_LLVM", context.temp_allocator) == ""
     // Its debug info (codeview.odin): the x86 backend's, linked into a PDB.
     debug := x86
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, x86 = x86, debug = debug)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, profile_memory = profile_memory, x86 = x86, debug = debug)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)
@@ -1657,7 +1677,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug) { os.exit(1) }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug, args.profile_memory) { os.exit(1) }
     }
 
     perf_timer_end(&perf)
