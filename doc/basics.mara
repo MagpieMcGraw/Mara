@@ -474,8 +474,8 @@ It takes any number of arguments, including none, and they can be any printable 
 When the first argument is a text literal with a % in it, each % is replaced by the next value, in order. The number of % must equal the number of values after it, or it won't compile. %% prints a single %.
 */
 example_print :: fun() {
-	print("hello", 42, 2.5, true)          // hello 42 2.5 true
-	print("% is % years old", "Ada", 36)   // Ada is 36 years old
+	print("hello", 42, 2.5, true)
+	print("% is % years old", "Ada", 36)
 }
 
 // `assert`, `crash`: stop the program when something that must hold doesn't.
