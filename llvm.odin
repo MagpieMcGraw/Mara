@@ -425,20 +425,14 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
                                  args = ir_indices({IR_I32, ir_int(0), {}}, {IR_I32, ir_int(i), {}})})
             e.value[id] = at
             llvm_debug_var(e, id, at, addr = true)
-            // A partial array: its header stamped over its elements, and those
-            // constructed, right after its address (its zero is not all zeros).
-            if pa := llvm_partial(t); pa != nil {
+            // Its zero made a valid one right after its address — each partial
+            // array in it stamped, through struct fields and array elements
+            // (a partial array's zero is not all zeros) — before its
+            // declaration runs: a bare one stays so (its zero op is this),
+            // its type's constructor not run.
+            if value_has_partial_array(e.g, t) {
                 llvm_into_fields(e, true)
-                emit_partial_array_zero(e.g, at, pa, zero = false)
-                gen_construct_partial_array_elements(e.g, at, pa)
-                llvm_into_fields(e, false)
-            }
-            // An array of them: each one so.
-            inner := t
-            for a := llvm_array(inner); a != nil; a = llvm_array(inner) { inner = a.elem }
-            if fa := llvm_array(t); fa != nil && llvm_partial(inner) != nil {
-                llvm_into_fields(e, true)
-                gen_construct_elements(e.g, at, fa.elem, fa.size)
+                stamp_zero_partial_arrays(e.g, at, t)
                 llvm_into_fields(e, false)
             }
         case .Block, .Const, .Op:

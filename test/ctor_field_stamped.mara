@@ -1,0 +1,39 @@
+module ctor_field_stamped
+
+use mara.core
+use mara.string
+
+//@ expect-output: true 1 8 ab cd ef
+
+// A constructor's bare fields are their zero — a valid one: every partial
+// array in them stamped, through struct fields and array elements, before
+// the body runs (the window's Ui, built by Ui(), held a bare `text: Text`
+// whose partial arrays had cap 0: its first append failed).
+
+Inner :: struct {
+	chars: [..8]u32
+	name: [..8]utf8
+	n: i64 = 5
+}
+
+Middle :: struct {
+	inner: Inner
+	list: [..3]Inner
+	pair: [2]Inner
+}
+
+Outer :: struct {
+	running: bool = true
+	middle: Middle
+	text: Inner
+}
+
+main :: fun() {
+	o := Outer()
+	&o.text.chars + u32(7)
+	&o.middle.inner.name + "ab"
+	o.middle.list.len += 1
+	&o.middle.list[0].name + "cd"
+	&o.middle.pair[1].name + "ef"
+	print(o.running, o.text.chars.len, o.text.chars.cap, o.middle.inner.name, o.middle.list[0].name, o.middle.pair[1].name)
+}
