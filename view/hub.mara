@@ -60,6 +60,7 @@ Hub :: struct {
 	shown:     bool           // ... a query the Ask panel shows
 	cursor:    bool           // ... what's at the editor's cursor, shown at its top
 	cursor_started: bool      // ... its first line come: the last one's replaced
+	cursor_errors:  bool      // ... the module's errors in it: it doesn't check
 	gone:      bool           // ... its connection failed: the answer read on to its end
 	current:   [..4000]utf8   // serve's answer's line coming
 
@@ -328,6 +329,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	h.shown = starts_with(line, "-show ")
 	h.cursor = starts_with(line, "-cursor ")
 	h.cursor_started = false
+	h.cursor_errors = false
 	query := line
 	if h.shown do query = line[6 : line.len]
 	if h.cursor do query = line[8 : line.len]
@@ -404,8 +406,10 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 					lines_status(&ui.asked, "Answered.", STYLE_DIM)
 				}
 			}
-			// (Nothing at the cursor — a blank, a comment: nothing shown.)
-			if h.cursor and (line == ANSWER_FAILED or not h.cursor_started) do lines_clear(&ui.at_cursor)
+			// (Nothing at the cursor — a blank, a comment: nothing shown. The
+			// module not checking: why, kept, under its title.)
+			failed := line == ANSWER_FAILED and not h.cursor_errors
+			if h.cursor and (failed or not h.cursor_started) do lines_clear(&ui.at_cursor)
 			ui.dirty = true
 			h.current.len = 0
 			return
@@ -418,12 +422,28 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 			if not h.cursor_started {
 				lines_clear(&ui.at_cursor)
 				h.cursor_started = true
+				h.cursor_errors = is_diagnostic(h.current[:])
+				if h.cursor_errors do lines_add(&ui.at_cursor, CURSOR_NOT_CHECKED, STYLE_BAD)
 			}
-			lines_add(&ui.at_cursor, h.current[:], cursor_style(ui.at_cursor.lines.len, h.current[:]))
+			style := cursor_style(ui.at_cursor.lines.len, h.current[:])
+			if h.cursor_errors do style = STYLE_TEXT
+			lines_add(&ui.at_cursor, h.current[:], style)
 			ui.dirty = true
 		}
 		h.current.len = 0
 	}
+}
+
+// Over the module's errors, at the Ask panel's top, when what's at the
+// cursor can't be told: the module doesn't check (the editor may not show
+// them: its diagnostics off).
+CURSOR_NOT_CHECKED :: "The module doesn't check, so what's at the cursor can't be shown:"
+
+// Whether a line is the compiler's error — `[file:line:col] Type error: …`,
+// `Found 2 type error(s). Aborting.` — not an answer's.
+is_diagnostic :: fun(line: []utf8) -> bool {
+	if starts_with(line, "Found ") and contains(line, " error(s)") do return true
+	return starts_with(line, "[") and contains(line, "] ") and contains(line, " error: ")
 }
 
 // How a line of `mara ask what at`'s answer is shown, the n-th: the first
