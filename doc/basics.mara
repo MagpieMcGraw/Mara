@@ -469,9 +469,9 @@ keyword_foreign :: fun() {
 
 /*
 `print`, `print_int`, `print_float`, `print_cstr`
- Writes text and values to the console.
- Inserts a newline at the end.
- Uses % for formatting.
+It takes any number of arguments, including none, and they can be any printable value: numbers, text, characters, bools, structs, enums and unions, arrays and slices, errs.
+
+When the first argument is a text literal with a % in it, each % is replaced by the next value, in order. The number of % must equal the number of values after it, or it won't compile. %% prints a single %.
 */
 builtin_print :: fun() {
 	print("hello", 42, 2.5, true)          // hello 42 2.5 true
