@@ -32,7 +32,7 @@ Holder :: struct {
 }
 
 tag :: fun(count: ^i64, label: []utf8) -> Big {
-	return Big{ count = count, label_len = label.len }
+	return Big(){ count = count, label_len = label.len }
 }
 
 main :: fun() {

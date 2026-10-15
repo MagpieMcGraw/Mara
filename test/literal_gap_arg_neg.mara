@@ -1,0 +1,18 @@
+module literal_gap_arg_neg
+
+//@ expect-fail: the literal leaves field 'y' of 'Point' unset
+
+// A literal runs no constructor: a field it doesn't give is unset. Where
+// nothing can write it after — passed straight to a call — that's an error
+// at the literal.
+
+Point :: struct {
+	x: f32
+	y: f32 = 1
+}
+
+show :: fun(p: Point) { print(p.x, p.y) }
+
+main :: fun() {
+	show(Point{x = 3})
+}

@@ -16,7 +16,7 @@ Big :: struct {
 
 int_ret :: fun() -> i64 { print("ran int_ret"); return 1 }
 float_ret :: fun() -> f32 { print("ran float_ret"); return 2.0 }
-big_ret :: fun() -> Big { print("ran big_ret"); return Big{} }
+big_ret :: fun() -> Big { print("ran big_ret"); return Big() }
 
 main :: fun() {
 	x := 5

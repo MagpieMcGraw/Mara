@@ -279,12 +279,12 @@ cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Ve
     icount := i64(e.meta[1])
     size := i64(e.data_size)
     vbytes := vcount * size_of(Vertex)
-    if size != vbytes + icount * size_of(u32) do return Mesh_Data{}, Bad_Header
+    if size != vbytes + icount * size_of(u32) do return Mesh_Data{0}, Bad_Header
 
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
     buf := scratch[0 : size]
     file_read(c.file, &buf)?
-    if buf.len != size do return Mesh_Data{}, Bad_Header
+    if buf.len != size do return Mesh_Data{0}, Bad_Header
 
     verts[0 : vcount] = buf[0 : vbytes]
     inds[0 : icount] = buf[vbytes : size]

@@ -25,7 +25,7 @@ main :: fun() {
 	print("nested", corner(5))
 	vs : [2]V3 = {all {all 3}}
 	print("distinct", vs[1][2])
-	gr := Grid{}
+	gr := Grid()
 	print("field", gr.cells[1][1])
 	cube : [2][2][2]i64 = {all {all {all 7}}}
 	print("cube", cube[1][1][1])

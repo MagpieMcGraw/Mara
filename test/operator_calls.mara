@@ -32,7 +32,7 @@ flip :: fun(a: V2) -> V2 {
 }
 
 main :: fun() {
-	s := sum(V2{x = 1}, V2{y = 2})
+	s := sum(V2{x = 1, y = 0}, V2{x = 0, y = 2})
 	f := flip(s)
 	print(f.x, f.y)
 }

@@ -44,6 +44,6 @@ main :: fun() {
 	r : Shape = Rect{4, 5}
 	print("plain=% %", shape_val(c), shape_val(r))
 	d : Packet = Data{4, 5}
-	p : Packet = Ping{}
+	p : Packet = .Ping
 	print("padded=% %", packet_val(d), packet_val(p))
 }

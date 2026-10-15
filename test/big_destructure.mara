@@ -21,7 +21,7 @@ big :: fun(k: i64) -> Big, i64 {
 	return b, k * 2
 }
 big_err :: fun(k: i64) -> Big, err {
-	if k < 0 do return Big{}, Bad
+	if k < 0 do return Big{0}, Bad
 	b : Big
 	b.cells[0] = k
 	return b

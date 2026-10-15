@@ -3,10 +3,10 @@ module literal_ctor_defaults
 //@ expect-output: 5 9 5 7 2
 //@ expect-output: 0 0
 
-// A literal builds its struct as a call without arguments does — `P{}` is
-// `P(){}` — so its constructor runs on its params' defaults (a literal used
-// to call it with none: whatever the argument registers held). A bare array's
-// elements aren't built: they're their zero.
+// A construction without arguments — `P()` — runs its constructor on its
+// params' defaults (a literal used to call it with none: whatever the
+// argument registers held; a literal runs none now, its fields its entries).
+// A bare array's elements aren't built: they're their zero.
 
 Bad :: error {
 	Neg
@@ -33,10 +33,10 @@ Holder :: struct {
 }
 
 main :: fun() {
-	p := P{}
+	p := P()
 	p2 : P = {v = 9}
 	pb := P()
-	h := Holder{}
+	h := Holder()
 	print(p.v, p2.v, pb.v, h.p.v, h.q.v)
 	qs : [2]Q
 	ts : [2]T

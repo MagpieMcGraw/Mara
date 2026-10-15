@@ -371,25 +371,12 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     } else if fa == nil && fd == nil && !empty {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
-        if !zero {
-            if count_required_params(ts) > 0 {
-                qualified := fmt.tprintf("%s.%s", ts.home_package, ts.source_name) if ts.home_package != "" else ts.source_name
-                tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ts.params), fn_params_desc(ts), 0)
-            } else if len(ts.return_types) > 0 {
-                tc_error(k, span, TYPE_LITERAL_CAN_FAIL, ts.source_name, ts.source_name)
-            }
-        }
     }
-    // (Its construction: a struct's — `{0}` is its zero.)
-    if is_scope && ts.kind == .Struct && !ts.is_module && !zero {
+    // (A literal runs no constructor — its fields are its entries — but a
+    // variant's, as a struct of its own: its construction writes its tag.)
+    if is_scope && ts.kind == .Struct && !ts.is_module && !zero && ts.is_union_variant {
         tc_set_callee(k, n, ts)
-        tc_set_args(k, n, tc_default_args(ts))
-    }
-    if fa == nil && fd == nil && !empty {
-        // (What its construction runs: its constructor's defaults. A
-        // variant's are its body's, checked with it.)
-        if vst == nil && !zero { tc_ctor_args(k, ts, span) }
-        if vst != nil { tc_variant_built(k, n, t, variant) }
+        tc_set_args(k, n, []Arg{})   // (none: its body doesn't run)
     }
     if fd != nil {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, fd)

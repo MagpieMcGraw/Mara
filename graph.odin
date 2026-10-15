@@ -1091,6 +1091,7 @@ Program_Code :: struct {
     fold_errors: [dynamic]Fold_Error,              // the uses of constants with no value
     consumes:    map[^Type_Scope]int,              // a fun that consumes a param into its result → which
     unreachable: [dynamic]Span,                    // statements right after a return, break or continue
+    literal_gaps: [dynamic]Literal_Gap,            // literals' fields left unset where nothing writes them after
     stores:      [dynamic]Graph_Store,             // where the codes are, each builder's (they last as long as the program)
     summaries:   map[^Type_Scope]^Fun_Summary,     // what each fun reaches through its params, worked out once its code is built (reach_scc)
     lock:        ^sync.Mutex,                      // while codes are built on several threads: funs, consts and tables are read and written under it
@@ -3341,23 +3342,29 @@ Graph_Literal :: struct {
     skip:      int,
 }
 
-// A literal's construction at d: a struct's constructor run on `args` (its
-// params' defaults, the checker's); a union's variant zeroed and tagged; an
-// array zeroed.
-graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_init: bool, t: Type, d: Dest, args: []Operand = nil) -> ^Graph_Literal {
+// A literal's start at d: its zero — a struct's every field unset until the
+// literal's entries write theirs (`{}`; `{0}` zero, all of it), no
+// constructor run; a variant zeroed and tagged, no body run; an array zeroed.
+// A call's construction (`construct`: `Rect(5)`) runs the constructor on
+// `args` (its params' defaults, the checker's).
+graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_init: bool, t: Type, d: Dest, args: []Operand = nil, construct := false) -> ^Graph_Literal {
     ts, is_scope := distinct_base(t).(^Type_Scope)   // (a named struct's: its base's constructor)
     if is_scope && ts.kind == .Struct && !ts.is_module && zero_init {
         graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span))
-    } else if is_scope && ts.kind == .Struct && !ts.is_module {
-        if len(args) != len(ts.params) { graph_fatal(span, "'%s' built without its arguments", ts.name) }
+    } else if is_scope && ts.kind == .Struct && !ts.is_module && (construct || ts.is_union_variant) {
+        // (A variant as a struct of its own: its construction writes its tag
+        // — a literal's, `{}`, runs no body.)
+        if construct && len(args) != len(ts.params) { graph_fatal(span, "'%s' built without its arguments", ts.name) }
         ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
         append(&ops, graph_dest_place(b, d, span))
-        append(&ops, ..args)
+        if construct { append(&ops, ..args) }
         op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops[:])
-        b.g.name[op] = graph_intern(b, strings.concatenate({graph_name(b.g, op), "{}"}))   // as written: braces, no call
+        if !construct { b.g.name[op] = graph_intern(b, strings.concatenate({graph_name(b.g, op), "{}"})) }   // as written: braces, no call
+    } else if is_scope && ts.kind == .Struct && !ts.is_module {
+        graph_op(b, .Zero, .Explicit, span, t, "{}", graph_dest_place(b, d, span))
     } else if graph_aggregate(t) {
         if _, is_union := distinct_base(t).(^Type_Union); is_union {
-            graph_build_variant(b, t, name, d, span, args)
+            graph_build_variant(b, t, name, d, span, args, construct)
         } else {
             graph_op(b, .Zero, .Explicit, span, t, name, graph_dest_place(b, d, span))
         }
@@ -3430,16 +3437,34 @@ graph_build_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, firs
     return Dest{kind = .Index, index = i, type_ = ga.elem_t, parent = &ga.d}
 }
 
-// A variant built at d: the union zeroed, its tag written, then — its
-// struct's body the constructor, run on `args` — its fields' defaults.
-graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span, args: []Operand = nil) -> ^Type_Scope {
+// A variant built at d: the union zeroed, its tag written — a call's
+// (`construct`), then its struct's body, the constructor, run on `args`: its
+// fields' defaults; a literal's, no body: its fields are its entries.
+graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span, args: []Operand = nil, construct := false) -> ^Type_Scope {
     ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
     append(&ops, graph_dest_place(b, d, span))
-    append(&ops, ..args)
+    if construct { append(&ops, ..args) }
     op := graph_op_made(b, .Construct, .Explicit, span, t, name, ops[:])
     st := graph_variant_struct(t, name)
-    graph_set_callee(b.g, op, st if st != nil && st.node != 0 else nil)   // (its body: its constructor)
+    body := st if construct && st != nil && st.node != 0 else nil
+    graph_set_callee(b.g, op, body)   // (its body: its constructor; a literal's, none)
     return st
+}
+
+// A literal's field it gives no value, where nothing can give it one after:
+// reported with flow's findings (TYPE_LITERAL_LEAVES_UNSET).
+Literal_Gap :: struct {
+    span:    Span,
+    field:   string,
+    owner:   string,   // its struct's (or variant's) name, as written
+    variant: bool,
+}
+
+graph_note_literal_gap :: proc(b: ^Graph_Builder, gap: Literal_Gap) {
+    pc := &b.prog.pc
+    if pc.lock != nil { sync.mutex_lock(pc.lock) }
+    append(&pc.literal_gaps, gap)
+    if pc.lock != nil { sync.mutex_unlock(pc.lock) }
 }
 
 // An aggregate built where no destination was given: a synthetic local,

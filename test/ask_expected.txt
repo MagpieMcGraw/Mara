@@ -186,7 +186,7 @@ above (calls)   (0 functions)
 Camera — struct  camera.mara:10   (module camera)
 
 below (calls)   (12 functions)
-  fun    append_one             gfx_draw_state.mara:168   (param camera : Camera)
+  fun    append_one             gfx_draw_state.mara:172   (param camera : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
   fun    camera_move            camera.mara:48   (param camera : ^Camera)
@@ -195,7 +195,7 @@ below (calls)   (12 functions)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
   fun    draw_marker            Pounce.mara:234   (param camera : Camera)
-  fun    draw_state_append      gfx_draw_state.mara:132   (param camera : Camera)
+  fun    draw_state_append      gfx_draw_state.mara:136   (param camera : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
 === Pounce | Camera flow above 2
@@ -705,7 +705,6 @@ sum — fun  operator_calls.mara:26   (module operator_calls)
 
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_add
-    operator_calls.V2  (struct)
 
 below (calls)   (1 direct caller, full closure (depth ∞))
   operator_calls.main
@@ -714,7 +713,6 @@ sum — fun  operator_calls.mara:26   (module operator_calls)
 
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_add
-    operator_calls.V2  (struct)
 === test/operator_calls.mara | v2_add call below
 v2_add — fun  operator_calls.mara:15   (module operator_calls)
 
@@ -726,7 +724,6 @@ flip — fun  operator_calls.mara:30   (module operator_calls)
 
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_neg
-    operator_calls.V2  (struct)
 === test/sibling_locals.mara | redeclared call above
 redeclared — fun  sibling_locals.mara:68   (module sibling_locals)
 
@@ -735,8 +732,8 @@ above (calls)   (0 direct callees, full closure (depth ∞))
 === Pounce | cache_put_header call above
 cache_put_header — fun  cache.mara:105   (module cache)
 
-above (calls)   (1 direct callee, full closure (depth ∞))
-  cache.Cache_Header  (struct)
+above (calls)   (0 direct callees, full closure (depth ∞))
+  (calls nothing directly; indirect calls via fn-typed params aren't tracked)
 === Pounce | no_such_name_anywhere
 mara ask: no type or function named 'no_such_name_anywhere' in Pounce
   (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)

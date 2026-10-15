@@ -33,7 +33,7 @@ process :: fun(events: ^Event_State) {
     events.quit = false
     events.keyboard.pressed = {}
     events.mouse.pressed = {}
-    events.dropfile = {}
+    events.dropfile = {0}
 
     events.mouse.xrel = 0
     events.mouse.yrel = 0

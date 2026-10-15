@@ -1,0 +1,34 @@
+module literal_runs_no_ctor
+
+use mara.core
+
+//@ expect-output: given 1 2
+//@ expect-output: built 7 5
+
+// A literal runs no constructor: its fields are its entries. So it needs no
+// params (Q's x), can't fail (T's err), and runs no body. `Q(7)` and `T()`
+// construct: their bodies run on their params.
+
+Q :: struct(x: i32) {
+	v: i32
+	v = x
+}
+
+Bad :: error {
+	Neg
+}
+
+T :: struct(x: i32 = 0) -> err {
+	v: i32 = 5
+	if x < 0 do return Neg
+}
+
+main :: fun() {
+	q := Q{v = 1}
+	t := T{v = 2}
+	print("given", q.v, t.v)
+	b := Q(7)
+	c, e := T()
+	_ = e
+	print("built", b.v, c.v)
+}

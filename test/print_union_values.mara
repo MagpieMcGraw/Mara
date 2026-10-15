@@ -35,19 +35,19 @@ Holder :: struct {
 }
 
 main :: fun() {
-	a : Shape = Rect{w = 4}
+	a : Shape = Rect{w = 4, h = 3}
 	print(a)
 	b : Shape = Dot{}
 	print(b)
 	c : Coded = Square{s = 6}
 	print("coded=%", c)
-	d : Padded = A{}
+	d : Padded = .A
 	print(d)
 	h := Holder()
 	h.s = Rect{w = 1, h = 1}
 	print(h)
 	arr : [2]Shape
-	arr[1] = Rect{}
+	arr[1] = .Rect
 	print(arr)
 	m : Maybe(i64) = Some{value = 42}
 	print(m)

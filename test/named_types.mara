@@ -143,8 +143,8 @@ main :: fun() {
 	}
 	print("field union:", in_field, holder.c, holder.u.tag)
 
-	pa := PA{x = 2}
-	pd := PD{x = 3}
+	pa : PA = P(){x = 2}
+	pd : PD = PD(P(){x = 3})
 	print("structs:", pa.x, pd.x, pa.get(), pd.get(), pa.y, pd.y)
 	// (An alias prints as its base; a distinct type under its own name.)
 	print("printed:", pa, pd, holder)

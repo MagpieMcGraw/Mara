@@ -11,6 +11,6 @@ N :: struct {
 }
 
 main :: fun() {
-	n := N{}
+	n := N()
 	print(n.k == .Big)
 }

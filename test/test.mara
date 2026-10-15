@@ -109,7 +109,7 @@ Point :: struct {
 }
 
 test_struct_init :: fun() {
-	a := Point{x = 0, y = 0}
+	a := Point(){x = 0, y = 0}
 	print(a.x)
 	print(a.y)
 	print(a.z)
@@ -121,7 +121,7 @@ test_struct_init :: fun() {
 	print(c.z)
 	d : Point = Point() { z = 100 }
 	print(d.z)
-	e : Point = { x = 5 }
+	e : Point = Point(){ x = 5 }
 	print(e.x)
 	print(e.z)
 	f := Point()
@@ -1549,7 +1549,7 @@ test_underscore_default :: fun() {
 	a : Point3 = Point3{10, 20, 30}
 	print(a.x)                 // 10
 	print(a.z)                 // 30
-	b : Point3 = Point3{y = 7}   // x, z take field defaults (100, 300)
+	b : Point3 = Point3(){y = 7}   // x, z take field defaults (100, 300)
 	print(b.x)                 // 100
 	print(b.y)                 // 7
 	print(b.z)                 // 300

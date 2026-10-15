@@ -29,7 +29,7 @@ P :: struct { x: i64  y: f32 }
 Big :: struct { cells: [300]i64 }
 
 pair :: fun(n: i64) -> P, err {
-	if n < 0 do return P{}, Bad
+	if n < 0 do return P{0}, Bad
 	return P{x = n, y = 1.5}
 }
 fwd_pair :: fun(n: i64) -> P, err { return pair(n) }

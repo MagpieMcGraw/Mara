@@ -93,7 +93,7 @@ Megastruct :: struct {
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
-	game^ = Megastruct{}
+	game^ = Megastruct()
 
 	init_err := sdl.Init(Video)
 
@@ -232,8 +232,8 @@ game_update :: fun(game: ^Megastruct, dt: f64) {
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
 // and `color` comes through flat — a clean orientation marker.
 draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3]f32, camera: Camera) {
-	obj := Object{pos = pos, scale = Vec3{40, 40, 40}, exists = true, accel = Vec3{0, 0, 0}, tracking_offset = Vec3{0, 0, 0}, speed = 0, turn_speed = 0, highlighted = false}
-	vis := Visual{color = color, texture_index = 0, resolve = false}
+	obj := Object(){pos = pos, scale = Vec3{40, 40, 40}, exists = true, accel = Vec3{0, 0, 0}, tracking_offset = Vec3{0, 0, 0}, speed = 0, turn_speed = 0, highlighted = false}
+	vis := Visual(){color = color, texture_index = 0, resolve = false}
 	append_one(state, obj, vis, camera)
 }
 

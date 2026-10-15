@@ -91,7 +91,9 @@ load_glyphs_and_metrics :: fun(
 		w, h := msdf_cell(&outline, &cells)
 		px, py, ok := pack_rect(&sky, i64(w), i64(h))
 		if not ok do return Atlas_Full
-		glyphs[i] = Glyph{x = i32(px), y = i32(py)}
+		glyphs[i] = Glyph{0}
+		glyphs[i].x = i32(px)
+		glyphs[i].y = i32(py)
 
 		// hmtx holds full {advance, lsb} records only for the first
 		// num_of_long_hor_metrics glyphs; everything past that shares the
@@ -173,7 +175,8 @@ load_coverage_chars :: fun(
 		glyph_index := char_glyph(&ttf, chars[i])
 		parse_glyph(&ttf, glyph_index, &outline)?
 		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
-		glyphs[i] = Glyph{advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale}
+		glyphs[i] = Glyph{0}
+		glyphs[i].advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
 		if outline.contour_end_pts.len == 0 do continue   // (a space: nothing drawn)
 
 		// (Its box in pixels, whole ones, a pixel of room around it.)
@@ -586,7 +589,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 						qx = u*u*s.ax + 2.0*u*t*s.cx + t*t*s.bx
 						qy = u*u*s.ay + 2.0*u*t*s.cy + t*t*s.by
 					}
-					&raw + Raster_Edge{x0 = fx, y0 = fy, x1 = qx, y1 = qy, color = 7,
+					&raw + Raster_Edge{hidden = false, x0 = fx, y0 = fy, x1 = qx, y1 = qy, color = 7,
 						open_start = (p == 1), open_end = (p == pieces), corner = (p == 1 and s.corner)}
 					fx = qx
 					fy = qy
@@ -1015,7 +1018,7 @@ Glyph_Point :: struct {
 // components are fetched by index. (depth: how deep in components of
 // components.)
 parse_glyph :: fun(t: ^TTF, glyph_index: u16, outline: ^Outline, depth: i64 = 0) -> err {
-	outline.header = TTF.Glyph_Header{}
+	outline.header = TTF.Glyph_Header{0}
 	outline.contour_end_pts.len = 0
 	outline.points.len = 0
 	if i64(glyph_index) >= i64(t.maxp.num_glyphs) do return Bad_Glyph

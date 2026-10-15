@@ -511,13 +511,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		inherit := SECURITY_ATTRIBUTES{length = u32(size_of(SECURITY_ATTRIBUTES)), inherit_handle = 1}
 		child_in := NO_FILE
 		to_child := NO_FILE
-		if not bool(CreatePipe(&child_in, &to_child, &inherit, 0)) do return Process{}, Start_Failed
+		if not bool(CreatePipe(&child_in, &to_child, &inherit, 0)) do return Process{0}, Start_Failed
 		from_child := NO_FILE
 		child_out := NO_FILE
 		if not bool(CreatePipe(&from_child, &child_out, &inherit, 0)) {
 			file_close(child_in)
 			file_close(to_child)
-			return Process{}, Start_Failed
+			return Process{0}, Start_Failed
 		}
 		_ = SetHandleInformation(to_child, HANDLE_FLAG_INHERIT, 0)
 		_ = SetHandleInformation(from_child, HANDLE_FLAG_INHERIT, 0)
@@ -531,7 +531,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if not bool(started) {
 			file_close(to_child)
 			file_close(from_child)
-			return Process{}, Start_Failed
+			return Process{0}, Start_Failed
 		}
 		file_close(info.thread)
 		return Process{id = info.process, input = to_child, output = from_child}
@@ -1213,7 +1213,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		whole : []utf8 = slice_from_ptr(command.ptr, command.cap)
 		end := command.len
 		if end == command.cap do end -= 1
-		if end < 0 or whole[end] != 0 do return Process{}, Start_Failed
+		if end < 0 or whole[end] != 0 do return Process{0}, Start_Failed
 		ignore_broken_pipes()
 		// (The words sh runs with, each ending in a 0; then the end of them.)
 		sh := "/bin/sh"
@@ -1227,7 +1227,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (Close-on-exec, all four ends: a program started later inherits
 		// none, so this one's input ends when ours closes. The child gets its
 		// two as its input and output — dup2's copies, without the flag.)
-		if pipe2(&to_child[0], O_CLOEXEC) != 0 do return Process{}, Start_Failed
+		if pipe2(&to_child[0], O_CLOEXEC) != 0 do return Process{0}, Start_Failed
 		made := pipe2(&from_child[0], O_CLOEXEC) == 0
 		// (A child's end numbered 0 to 2 — this program's own input or output
 		// closed — would stay itself in the child, flag and all, and close as
@@ -1239,7 +1239,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 				_ = close(File_Id(from_child[0]))
 				_ = close(File_Id(from_child[1]))
 			}
-			return Process{}, Start_Failed
+			return Process{0}, Start_Failed
 		}
 		pid := fork()
 		if pid == 0 {
@@ -1257,7 +1257,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if pid < 0 {
 			_ = close(File_Id(to_child[1]))
 			_ = close(File_Id(from_child[0]))
-			return Process{}, Start_Failed
+			return Process{0}, Start_Failed
 		}
 		return Process{id = pid, input = File_Id(to_child[1]), output = File_Id(from_child[0])}
 	}

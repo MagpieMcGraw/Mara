@@ -1,0 +1,16 @@
+module literal_gap_variant_neg
+
+//@ expect-fail: the literal leaves field 'h' of 'Rect' unset
+
+// A variant's literal runs no body either: every field of its variant is
+// given, or it's an error (`.Rect` constructs one, its defaults run).
+
+Shape :: union {
+	Rect { w: i64 = 2  h: i64 = 3 }
+	Dot
+}
+
+main :: fun() {
+	s : Shape = Rect{w = 4}
+	print(s)
+}

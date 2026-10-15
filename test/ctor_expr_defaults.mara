@@ -20,6 +20,6 @@ main :: fun() {
 	a : [4]Cell = all Cell()
 	r := Row()
 	c := Cell()
-	d := Cell{}
+	d := Cell()
 	print(a[3].area, r.cells[1].area, c.area, d.area)
 }

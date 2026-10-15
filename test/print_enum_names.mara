@@ -22,7 +22,7 @@ Shape :: union {
 
 main :: fun() {
 	print(Color.Green)
-	s : Shape = Rect{}
+	s : Shape = .Rect
 	print(s.tag)
 	print(s)
 }

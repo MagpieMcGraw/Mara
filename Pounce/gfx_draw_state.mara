@@ -76,6 +76,10 @@ draw_state_init :: fun(
 
 	state^ = DrawState{
 		shader = shader_id,
+		texture = 0,
+		batch_count = 0,
+		texture = 0,
+		batch_count = 0,
 		vao_state = vao_state,
 		command_buffer = command_buffer,
 		instance_capacity = max_instances,

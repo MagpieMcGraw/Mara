@@ -1,7 +1,7 @@
 module hoisted_reads
 
 // A value built in place over what it reads: a number read from the old
-// value — `p = P{x = p.y, y = p.x}`, `g.big = Big{n = g.big.n + 5}` — is read
+// value — `p = P{x = p.y, y = p.x}`, `g.big = Big(){n = g.big.n + 5}` — is read
 // before the first write, as a temporary would have read it; so it needs
 // none (one as big as Big had been an error). A call between — which may
 // change what's read — keeps the temporary: `bump` writes g.p.y first.
@@ -30,7 +30,7 @@ bump :: fun(v: ^i64) -> i64 {
 	return 1
 }
 grow :: fun(game: ^G) {
-	game.big = Big{n = game.big.n + 5}
+	game.big = Big(){n = game.big.n + 5}
 }
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
@@ -39,7 +39,7 @@ main :: fun() {
 	print("fields swapped:", p.x, p.y, "(want 2 1)")
 	g := G()
 	g.big.n = 10
-	g.big = Big{n = g.big.n + 5}
+	g.big = Big(){n = g.big.n + 5}
 	print("big self-read:", g.big.n, "(want 15)")
 	grow(&g)
 	print("through a pointer:", g.big.n, "(want 20)")

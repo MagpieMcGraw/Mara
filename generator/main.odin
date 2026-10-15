@@ -389,7 +389,7 @@ emit_main :: proc(cfg: ^Config, files: []File_Info, all_specs: []Fn_Spec) {
     w(&b, "\tthis_program = Program(Arena_Basic(64 * MB))\n")
     // Every generated fn returns a value, and Mara rejects a silently
     // discarded return — main only calls for the side of compiling them.
-    // Struct params take a `StructName{}` literal in place.
+    // Struct params take a `StructName()` construction in place.
     sample_count := min(len(all_specs), 1000)
     for _ in 0..<sample_count {
         spec := all_specs[rand.int_max(len(all_specs))]

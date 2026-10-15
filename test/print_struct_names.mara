@@ -29,7 +29,7 @@ Padded :: union(tag u8, pad [7]u8) {
 }
 
 main :: fun() {
-	p := P{}
+	p := P()
 	print(p)
 	o := Outer()
 	print(o)
@@ -38,10 +38,10 @@ main :: fun() {
 	print(l)
 	b : Box(i64) = {v = 0}
 	print(b)
-	r := Shape.Rect{}
+	r := Shape.Rect
 	print(r)
 	d := Shape.Dot{}
 	print(d)
-	a := Padded.A{}
+	a := Padded.A
 	print(a)
 }

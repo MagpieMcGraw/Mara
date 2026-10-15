@@ -285,7 +285,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	ex := Exact{0}
 	if n >= 6 {
 		at_line, _ := parse_number(fields[5])
-		ex = Exact{kind = fields[2], name = fields[3], path = fields[4], line = i64(at_line)}
+		ex = Exact{kind = fields[2], name = fields[3], path = fields[4], line = i64(at_line), loose = false}
 	}
 	docs_search(ui, dir, words, ex, -1)
 	ui.dirty = true

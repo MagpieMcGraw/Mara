@@ -13,7 +13,7 @@ Pt :: struct {
 }
 
 two :: fun() -> (i32, Pt) {
-	return 9, Pt{x = 5}
+	return 9, Pt(){x = 5}
 }
 
 main :: fun() {

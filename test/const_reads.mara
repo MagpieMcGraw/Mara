@@ -56,7 +56,7 @@ main :: fun() {
 	o := [2]f64{f64(k) / 4, 1}
 	print("literal=% % % / % % / % % / % % / % %", v.x, v.y, v.z, w[0], w[1], u[0], u[1], b[0], b[1], o[0], o[1])
 
-	p := Pose{}
+	p := Pose()
 	print("default=% % % %", p.dir[0], p.dir[1], p.dir[2], p.dir[3])
 
 	print("values=% % % %", mk(5)[2], mk(f32(i))[i], [3]i64{7, 8, 9}[i], (if c do [3]f32{} else RED).x)

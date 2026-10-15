@@ -25,7 +25,7 @@ Packet :: union(tag u32, pad u32) {
 }
 
 main :: fun() {
-	a: Shape = Circle{}            // default r = 7
+	a: Shape = .Circle             // default r = 7
 	b: Shape = Rect{w = 3, h = 4}
 
 	match a {

@@ -19,7 +19,7 @@ pair_push :: fun(dst: ^[]Pair, item: Pair) {
 main :: fun() {
 	// struct literal directly as a call argument (positional + named)
 	assert(sum_pair(Pair{3, 4}) == 7)
-	assert(sum_pair(Pair{b = 10}) == 10)
+	assert(sum_pair(Pair(){b = 10}) == 10)
 
 	// struct literal as overloaded-operator operand (the slice add-item shape)
 	pairs : [..4]Pair

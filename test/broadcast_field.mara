@@ -43,7 +43,7 @@ Grid :: struct {
 }
 
 main :: fun() {
-	g := Grid{}
+	g := Grid()
 	assert(g.flags[0] == 9)
 	assert(g.flags[3] == 9)
 	assert(g.counts.len == 5)

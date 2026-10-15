@@ -255,12 +255,13 @@ Shape :: union {
 //
 // Each field is `name: type`, with a default (`= 1`, or `name := 1` for its
 // type too) or without one: unset until it's written. A value: `p :=
-// Point()` (its body run: every field its default), `Point{x = 2}` (the
-// fields given written over the defaults), `Point{2, 3}` (in order), `Point{0}`
-// (every field zero). `p : Point` declares one without running its body —
-// every field unset, to be written before it's read (reading one first, or
-// the whole, is an error); its memory is zero all the same. `p.x` reads or
-// writes a field.
+// Point()` (its body run: every field its default), `Point(){x = 2}` (then
+// the fields given written over theirs), a literal `Point{x = 2, y = 3}` or
+// `Point{2, 3}` (in order) — a literal runs no body: it gives every field, or
+// those it leaves are unset — `Point{0}` (every field zero). `p : Point`
+// declares one without running its body — every field unset, to be written
+// before it's read (reading one first, or the whole, is an error); its memory
+// is zero all the same. `p.x` reads or writes a field.
 //
 // Params, `Grid :: struct(w: i64) { … }`, are what it's built from:
 // `Grid(4)`. Its body runs to build it, so a field can be worked out from
@@ -273,7 +274,7 @@ example_struct :: fun() {
 		x: f32
 		y: f32 = 1
 	}
-	p := Point{x = 2}
+	p := Point(){x = 2}
 	print(p)                               // Point { x: 2, y: 1 }
 	p.y = 5
 	print(p.x + p.y)                       // 7
@@ -297,7 +298,10 @@ example_struct :: fun() {
 // it, or the other side of an `==` says which (a variable of that name comes
 // first). A variant given no value takes the one after the variant before
 // it, skipping values others are given: `{ a, b, none = 0 }` is 1, 2, 0. An
-// enum can be defined in a fun's body, and is seen there only.
+// enum can be defined in a fun's body, and is seen there only. A variant
+// with fields is built by its name as a value, `.Rect` (its body run: its
+// fields' defaults), its call when it has params, `Rect(5)`, or a literal,
+// `Rect{w = 4, h = 3}`, which runs no body: it gives every field.
 example_union :: fun() {
 	Light :: union { Red  Yellow  Green }
 	l : Light = .Yellow

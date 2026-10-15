@@ -1470,6 +1470,8 @@ llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []Ir_Arg
 llvm_variant_ctor :: proc(e: ^Llvm, op: Node_Id, at: Val, args: []Ir_Arg) -> bool {
     callee := graph_called(e.pg, op)
     if callee == nil || callee.node == 0 { return len(args) == 0 }
+    // (A literal, `Rect{…}`: no body — its fields are its entries.)
+    if name := graph_name(e.pg, op); len(name) >= 2 && name[len(name) - 2:] == "{}" { return len(args) == 0 }
     if _, built := e.g.checked.functions[callee.name]; !built { e.note = "a variant's constructor"; return false }
     all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
     append(&all, ..args)

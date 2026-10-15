@@ -1167,11 +1167,8 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
 tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {
     span := tree_span(k.t, s)
     ref := tc_decl_ref(k, target, fields_of)
-    // (Its construction: its struct's, its literal built from the shape.)
-    if st, is_scope := ann.(^Type_Scope); is_scope && st.kind == .Struct && !st.is_module {
-        tc_set_callee(k, target, st)
-        tc_set_args(k, target, tc_default_args(st))
-    }
+    // (Its literal built from the shape: no constructor run, as a bare
+    // declaration runs none.)
     k.hint = ann
     tc_shape_literal(k, s, ann, bindings)
     tc_bind(k, name, ann, ref)

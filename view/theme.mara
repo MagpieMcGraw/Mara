@@ -206,7 +206,7 @@ theme_sublime :: fun(ui: ^Ui) {
 	ui.hover = mix(bg, fg, 0.10)
 	// (The window behind the panels: darker than them — on a light
 	// background, toward the text's color.)
-	ui.ground = mix(bg, Color{}, 0.3)
+	ui.ground = mix(bg, Color{0}, 0.3)
 	if brightness(bg) > 0.5 do ui.ground = mix(bg, fg, 0.16)
 	if has[PALETTE_LINE_HIGHLIGHT] do ui.hover = named[PALETTE_LINE_HIGHLIGHT]
 	ui.selected = mix(bg, fg, 0.2)
@@ -249,7 +249,7 @@ palette_name :: fun(k: i64) -> []utf8 {
 
 // A color written `#rrggbb`, and whether it is one.
 hex_color :: fun(s: []utf8) -> Color, bool {
-	if s.len != 7 or s[0] != '#' do return Color{}, false
+	if s.len != 7 or s[0] != '#' do return Color{0}, false
 	r, r_ok := hex_byte(s[1], s[2])
 	g, g_ok := hex_byte(s[3], s[4])
 	b, b_ok := hex_byte(s[5], s[6])

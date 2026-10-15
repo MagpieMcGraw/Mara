@@ -35,7 +35,7 @@ lines_selected :: fun(l: ^Lines) -> bool {
 // first's start; below them, the last's end.
 lines_spot_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> Spot {
 	lines_wrap(ui, l, lines_width(r))
-	if l.rows.len == 0 do return Spot{}
+	if l.rows.len == 0 do return Spot{0}
 	shown := lines_visible(ui, l, r)
 	top := r.y + PAD
 	k := i64(floor_f32((y - top) / ui.text.line))
@@ -110,8 +110,8 @@ lines_select_line :: fun(l: ^Lines, k: i64) {
 
 // All the lines selected.
 lines_select_all :: fun(l: ^Lines) {
-	l.anchor = Spot{}
-	l.caret = Spot{}
+	l.anchor = Spot{0}
+	l.caret = Spot{0}
 	if l.lines.len > 0 do l.caret = Spot{line = l.lines.len - 1, off = l.lines[l.lines.len - 1].len}
 }
 

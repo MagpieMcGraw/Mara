@@ -247,7 +247,7 @@ Fn_Spec :: struct {
 // Render a literal valid for the parameter's type.
 literal_for_param :: proc(p: Param_Spec) -> string {
     if p.struct_name != "" {
-        return strings.concatenate({p.struct_name, "{}"})
+        return strings.concatenate({p.struct_name, "()"})   // (its constructor: a literal runs none)
     }
     return literal_for(p.kind)
 }

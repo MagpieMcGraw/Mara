@@ -102,8 +102,9 @@ lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Sp
     return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
 }
 
-// A union's variant as a value: constructed where it goes — else in a
-// temporary — its constructor running its fields' defaults (on its params').
+// A union's variant as a value, `.Rect`: constructed where it goes — else in
+// a temporary — its constructor running its fields' defaults (on its
+// params'); a literal, `Rect{…}`, runs none.
 lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Build_Want, w: Written,
                          dest: Dest, temp: bool, temp_span: Span) -> Built {
     b := k.gb
@@ -112,11 +113,11 @@ lw_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want
     if want == .Into {
         d := dest
         if temp { d = graph_build_temp(b, temp_span, build_temp_type(d)) }
-        graph_build_variant(b, ut, name, d, span, args)
+        graph_build_variant(b, ut, name, d, span, args, construct = true)
         return lw_built(k, want, temp, temp, d, ut, temp_span, false)
     }
     d := graph_build_temp(b, span, ut)
-    graph_build_variant(b, ut, name, d, span, args)
+    graph_build_variant(b, ut, name, d, span, args, construct = true)
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
 }
 
@@ -144,7 +145,7 @@ lw_variant_call :: proc(k: ^TC, n: Tree_Id, ut: ^Type_Union, vst: ^Type_Scope, a
     case want != .Into:  d = graph_build_temp(b, span, ut)
     case temp && !made: d = graph_build_temp(b, temp_span, build_temp_type(d))
     }
-    gl := graph_build_literal(b, span, name, false, ut, d, args)
+    gl := graph_build_literal(b, span, name, false, ut, d, args, construct = true)
     if overrides != 0 { lw_literal_fields(k, overrides, tree_list(k.t, k.t.b[overrides]), &vst.sd, gl) }
     if want == .Into { return lw_built(k, want, temp, temp, d, ut, temp_span, false) }
     return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
@@ -203,12 +204,9 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
     } else if empty {
         gl = graph_build_literal(b, span, name, zero, t, d)
-    } else if vst != nil {
-        gl = graph_build_literal(b, span, name, zero, t, d, lw_variant_args(k, t, name, span))
     } else {
-        args: []Operand
-        if !zero { args = lw_ctor_args(k, ts, span) }
-        gl = graph_build_literal(b, span, name, zero, t, d, args)
+        // (A literal runs no constructor: its zero, then its entries.)
+        gl = graph_build_literal(b, span, name, zero, t, d)
     }
     if gl == nil && !broadcast { lw_fail(k, n, "a literal the graph builds no way") }
     if fd != nil {
@@ -217,8 +215,42 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         lw_array_entries(k, n, entries, t, gl, d, broadcast)
     } else if !zero && !empty {
         lw_literal_fields(k, n, entries, sd, gl)
+        lw_literal_gaps(k, n, entries, sd, d, vst, name)
     }
     return lw_built(k, want, in_temp, into_temp, d, t, at, placed)
+}
+
+// A literal's fields it gives no value — unset, as it runs no constructor.
+// Into a fun's own variable of a struct, they may be written after (flow.odin
+// finds a read before); anywhere else — an argument, an element, a field, a
+// constant, a union's variant — nothing can: each is said (Literal_Gap). A
+// partial array's zero, an empty one, is a value.
+lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body, d: Dest, vst: ^Type_Scope, variant: string) {
+    b := k.gb
+    tr := k.t
+    if sd == nil { return }
+    // (A fun's own variable: declared with it, or assigned it — its place computed.)
+    decl := d.decl if d.kind == .Var else NO_NODE
+    if d.kind == .At && graph_is_leaf(d.at.op) { decl = graph_refers(b.g, d.at.op) }
+    if vst == nil && decl > 0 && int(decl) < len(b.g.kind) && graph_kind_of(b.g, 0) == .Fun && graph_kind_of(b.g, decl) == .Local && b.g.written[decl] == .Explicit { return }
+    user := sd.fields[first_user_field(sd):]
+    given := make(map[string]bool, allocator = context.temp_allocator)
+    if len(entries) > 0 {
+        if tr.tag[entries[0]] == .Named_Entry {
+            for e in entries { given[tc_name(k, e)] = true }
+        } else if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
+            return   // (a spread: every field the call's)
+        } else {
+            for _, i in entries { if i < len(user) { given[user[i].name] = true } }
+        }
+    }
+    owner := sd.source_name if sd.source_name != "" else sd.name
+    if vst != nil && variant != "" { owner = variant }
+    for f in user {
+        if given[f.name] { continue }
+        if _, pa := distinct_base(f.type_).(^Type_Partial_Array); pa { continue }
+        graph_note_literal_gap(b, Literal_Gap{tree_span(tr, n), f.name, owner, vst != nil})
+    }
 }
 
 // `all v` into an array (tc_broadcast_fill): v, then the fill.

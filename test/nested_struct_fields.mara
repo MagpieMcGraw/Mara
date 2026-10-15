@@ -17,21 +17,21 @@ Pose  :: struct { k := 7, j: i64, dir := QUAT_IDENTITY }
 Outer :: struct { p: Pose, q := 5, a: [2]i64, s: str64 }
 
 mkp :: fun(n: i64) -> Pose {
-	return Pose{j = n}
+	return Pose(){j = n}
 }
 
 main :: fun() {
-	v := Outer{p = {}}
+	v := Outer(){p = Pose()}
 	print("empty=% % %", v.p.k, v.q, v.p.dir[3])
 
-	w := Outer{{}, 3}
+	w := Outer(){p = Pose(), q = 3}
 	print("positional=% %", w.p.k, w.q)
 
-	c := Outer{p = mkp(4), s = "hi"}
+	c := Outer(){p = mkp(4), s = "hi"}
 	print("call=% % %", c.p.k, c.p.j, c.s)
 
-	x := Pose{j = 9}
-	d := Outer{p = x}
+	x := Pose(){j = 9}
+	d := Outer(){p = x}
 	x.j = 1
 	print("copy=% %", d.p.j, x.j)
 }

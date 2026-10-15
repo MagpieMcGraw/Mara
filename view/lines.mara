@@ -79,8 +79,8 @@ lines_clear :: fun(l: ^Lines) {
 	l.cut = false
 	l.rows.len = 0
 	l.rows_lines = 0
-	l.anchor = Spot{}
-	l.caret = Spot{}
+	l.anchor = Spot{0}
+	l.caret = Spot{0}
 }
 
 // A line added in a style: its tabs as spaces, a carriage return left out.
@@ -105,7 +105,7 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 			&l.text + ch
 		}
 	}
-	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state}
+	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state, link_at = 0, link_len = 0}
 }
 
 // Line k's text.

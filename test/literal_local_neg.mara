@@ -1,0 +1,16 @@
+module literal_local_neg
+
+//@ expect-fail: field 'y' of 'q' is used before being assigned a value
+
+// A literal into a variable may leave fields for later — read before they're
+// written, an error (its defaults don't run: `Point(){x = 2}` runs them).
+
+Point :: struct {
+	x: f32
+	y: f32 = 1
+}
+
+main :: fun() {
+	q := Point{x = 2}
+	print(q.y)
+}
