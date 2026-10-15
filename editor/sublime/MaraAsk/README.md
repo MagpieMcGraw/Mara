@@ -63,7 +63,7 @@ appears in an output panel with every `file:line` clickable.
 | `mara_ask` | `Ctrl+K Ctrl+A` | ask about the subject under the cursor (natural kind) |
 | `mara_ask_pick` | `Ctrl+K Ctrl+D` | choose a matrix cell (types/call/flow × above/below) |
 | `mara_ask_clear_highlights` | `Ctrl+K Ctrl+C` | clear the in-code flow highlight |
-| `mara_view` | right-click → Open mara view | the window (`mara view`) on the file's module — brought to the front when one's open on it already |
+| `mara_view` | right-click → Open mara view | the window (`mara view`) on the file's module — brought to the front when one's open on it already — with what was right-clicked looked up there (its Docs, and Ask's what's-at-the-cursor), as a rest on it would |
 
 All cells are also in the command palette (`Mara Ask: …`; the window: `Mara:
 open mara view`). Rebind in `Default (Windows).sublime-keymap`.

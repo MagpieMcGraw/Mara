@@ -15,6 +15,7 @@
 
 import os
 import re
+import time
 import threading
 import subprocess
 
@@ -440,6 +441,29 @@ class MaraCursor(sublime_plugin.EventListener):
 
 # A point as `mara docs at` and `mara ask what at` take it: "<file>:<line>:
 # <col>", from 1; None in a view with no file (the output pane).
+# What a right-click is on, to look up: the highlight it's in (one line of
+# it), else the name under it — from the command palette, no click: at the
+# cursor. The words and their point (a highlight's: its cursor end, as a rest
+# takes it); (None, None) for nothing there.
+def _words_clicked(view, event):
+    if event is not None and "x" in event:
+        point = view.window_to_text((event["x"], event["y"]))
+    elif len(view.sel()):
+        point = view.sel()[0].b
+    else:
+        return None, None
+    for s in view.sel():
+        if not s.empty() and s.contains(point):
+            text = view.substr(s).strip()
+            if text and "\n" not in text and len(text) <= 200:
+                return text, (s.b - 1 if s.b > s.a else s.b)
+    word = view.word(point)
+    name = view.substr(word)
+    if _NAME_RE.match(name):
+        return name, word.begin()
+    return None, None
+
+
 def _docs_at(view, point):
     fname = view.file_name()
     if not fname:
@@ -584,11 +608,28 @@ def _cursor_send(number, key, cwd, words, at, what_at, view):
     _tell_editor(mara, cwd)
     _tell_colors(mara, cwd, view)
     if _settings().get("docs_at_cursor", True):
-        rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
-        first = out.strip().splitlines()[0] if out.strip() else "no answer"
-        sublime.status_message("Mara Docs: " + first)
+        _docs_send(mara, cwd, words, at)
     if what_at and _settings().get("what_at_cursor", True):
         _run_mara([mara, "ask", "-cursor", "what", "at", what_at], cwd)
+
+
+# The words looked up in a window's Docs panel (mara docs), what it found on
+# the status bar. `wait`: a window just opened may not listen yet — asked
+# again, a little apart, until one answers (DOCS_WAIT seconds at most).
+# Whether one did.
+DOCS_WAIT = 8.0
+
+
+def _docs_send(mara, cwd, words, at, wait=False):
+    give_up = time.time() + (DOCS_WAIT if wait else 0)
+    while True:
+        rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
+        if "no window is open" not in out or time.time() >= give_up:
+            break
+        time.sleep(0.15)
+    first = out.strip().splitlines()[0] if out.strip() else "no answer"
+    sublime.status_message("Mara Docs: " + first)
+    return "no window is open" not in out
 
 
 # ---- the window: `mara view` on the file's module ----------------------------
@@ -627,16 +668,26 @@ def _allow_foreground():
 
 class MaraViewCommand(sublime_plugin.TextCommand):
     # The window (`mara view`) on the module this file is in — opened, or
-    # brought to the front when one's open on it already. In the right-click
-    # menu and the command palette, for .mara files.
-    def run(self, edit):
-        fname = self.view.file_name()
+    # brought to the front when one's open on it already — and what was
+    # right-clicked looked up there, as a rest on it would: its Docs, and
+    # what's there at the top of its Ask panel. In the right-click menu and
+    # the command palette (there: what's at the cursor), for .mara files.
+    def want_event(self):
+        return True
+
+    def run(self, edit, event=None):
+        view = self.view
+        fname = view.file_name()
         if not fname:
             sublime.status_message("mara view: save the file first — the window opens on its folder's module")
             return
         mara = _settings().get("mara_path", "mara")
-        module = _module_of(self.view)
+        module = _module_of(view)
         cwd = os.path.dirname(fname)
+        words, point = _words_clicked(view, event)
+        at = _docs_at(view, point) if words else None
+        # (Ask's places are the file on disk: an unsaved one's may be stale.)
+        what_at = at if words and not view.is_dirty() else None
         _allow_foreground()
 
         def go():
@@ -644,6 +695,14 @@ class MaraViewCommand(sublime_plugin.TextCommand):
             if rc != 0:
                 lines = out.strip().splitlines()
                 sublime.status_message("mara view: " + (lines[0] if lines else "failed (exit %d)" % rc))
+                return
+            if not words or not _docs_send(mara, cwd, words, at, wait=True):
+                return
+            # (Once it's up: what the windows are told at a rest.)
+            _tell_editor(mara, cwd)
+            _tell_colors(mara, cwd, view)
+            if what_at and _settings().get("what_at_cursor", True):
+                _run_mara([mara, "ask", "-cursor", "what", "at", what_at], cwd)
 
         threading.Thread(target=go, daemon=True).start()
 
