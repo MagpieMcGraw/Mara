@@ -1,0 +1,35 @@
+module current_dir_test
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ expect-output: whole: true
+//@ expect-output: same file: true
+//@ expect-output: small room: File_Error.Too_Large
+//@ expect-output: a 0 after: true
+
+// current_dir: the directory the program runs in, its path whole — a file
+// read by its name alone is the one read by that path and its name; a room
+// too small says so; a 0 follows the path in its room.
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	dir : [..1000]utf8
+	e := current_dir(&dir)
+	if bool(e) {
+		print("couldn't tell:", e)
+		return
+	}
+	print("whole:", dir.len > 1 and (dir[1] == ':' or dir[0] == '/'))
+	data : [..64 * KB]byte
+	alone := not bool(read_entire_file("current_dir_test.mara", &data))
+	whole : [..1100]utf8
+	&whole + dir
+	&whole + "/"
+	&whole + "current_dir_test.mara"
+	print("same file:", alone and not bool(read_entire_file(whole, &data)))
+	small : [..3]utf8
+	print("small room:", current_dir(&small))
+	print("a 0 after:", dir[dir.len] == utf8(0))
+}

@@ -388,6 +388,28 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		size_low:           u32
 	}
 
+	// The directory the program runs in — where a path not whole starts:
+	// its path, whole (no separator at its end but a drive's root, `C:\`),
+	// into `dir`, as much as it holds: Too_Large when the path's longer;
+	// Read_Failed when the system won't say. A 0 follows it in dir's room
+	// (cstring takes it as it is). (executable_path: the program's own file,
+	// wherever it runs.)
+	current_dir :: fun(dir: ^[]utf8) -> err {
+		dir.len = dir.cap
+		if dir.cap == 0 do return Too_Large
+		n := i64(GetCurrentDirectoryA(u32(dir.cap), &dir[0]))
+		if n == 0 {
+			dir.len = 0
+			return Read_Failed
+		}
+		// (Too long, it says how much room it wants, its 0 counted.)
+		if n >= dir.cap {
+			dir.len = 0
+			return Too_Large
+		}
+		dir.len = n
+	}
+
 	// The running program's own file: its path, whole — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
@@ -801,6 +823,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// A loaded library's file — void: the program's own — its path into name.
 		fun GetModuleFileNameA(library: ^byte, name: ^utf8, size: u32) -> u32
 
+		// The directory the program runs in, into buf: its length; the room it
+		// wants (its 0 counted) when buf is too small; 0 failing.
+		fun GetCurrentDirectoryA(size: u32, buf: ^utf8) -> u32
+
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
 		fun FreeLibrary(mod: ^byte) -> i32
@@ -998,6 +1024,29 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		st : Stat
 		if fstat(id, &st) < 0 do return 0
 		return st.mtime
+	}
+
+	// The directory the program runs in — where a path not whole starts:
+	// its path, whole (no separator at its end but the root, `/`), into
+	// `dir`, as much as it holds: Too_Large when the path's longer;
+	// Read_Failed when the system won't say. A 0 follows it in dir's room
+	// (cstring takes it as it is). (executable_path: the program's own file,
+	// wherever it runs.)
+	current_dir :: fun(dir: ^[]utf8) -> err {
+		dir.len = dir.cap
+		if dir.cap == 0 do return Too_Large
+		if getcwd(&dir[0], usize(dir.cap)) == void {
+			dir.len = 0
+			// (Too long for the room, or the system won't say: told apart by
+			// a room that would surely hold it.)
+			if dir.cap < 4096 do return Too_Large
+			return Read_Failed
+		}
+		n : i64 = 0
+		for n < dir.cap and dir[n] != utf8(0) {
+			n += 1
+		}
+		dir.len = n
 	}
 
 	// The running program's own file: its path, whole — however it was
@@ -1475,6 +1524,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 		// Where a link points: its path, not 0-ended, into buf; its length, -1 failing.
 		fun readlink(path: cstring, buf: ^utf8, size: usize) -> i64
+
+		// The directory the program runs in, 0-ended, into buf: buf; void failing
+		// (too long for buf among the ways).
+		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte

@@ -1,0 +1,37 @@
+// How a program finds the directory it runs in — where a path that isn't
+// whole starts from: current_dir. `mara build` in a folder builds the
+// module there; a tool given a file's name opens it from there.
+//
+// It's not where the program's file is: started from another directory, a
+// program runs there — executable_path says where its own file is (see
+// executable_path.mara).
+//
+// It fills a buffer you declare, as executable_path does: Too_Large when the
+// path doesn't fit. The path is whole, with no separator at its end (but a
+// drive's root, `C:\`, or `/`): add one before a file's name. A 0 follows the
+// path in the buffer, so it opens as it is.
+module current_dir
+
+use mara.core
+use mara.os
+use mara.memory
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+
+	dir : [..1000]utf8
+	e := current_dir(&dir)
+	if bool(e) {
+		print("couldn't tell:", e)
+		return
+	}
+
+	// A file here, two ways: its name alone, and the directory and its name.
+	data : [..64 * KB]byte
+	alone := not bool(read_entire_file("current_dir.mara", &data))
+	whole : [..1100]utf8
+	&whole + dir
+	&whole + "/"
+	&whole + "current_dir.mara"
+	print("read by its name and by its whole path, the same:", alone == not bool(read_entire_file(whole, &data)))
+}
