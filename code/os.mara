@@ -77,6 +77,16 @@ trim_separators :: fun(path: []utf8) -> []utf8 {
 	return path[0 : n]
 }
 
+// A path for C: copied, a 0 after it — so the functions here take any slice
+// of a path, a view into storage too (its room ends where the path does: no
+// 0 can follow). Empty when it's too long for the copy: the call then fails
+// as for a path that isn't there.
+c_path :: fun(path: []utf8) -> [..512]utf8 {
+	c : [..512]utf8
+	if path.len < c.cap do &c + path
+	return c
+}
+
 // Whether two paths name the same place: '/' and '\' alike, separators at
 // their ends not minded, and on Windows letters' case not minded (as its
 // file system doesn't). Text only: neither path is looked up.
@@ -110,22 +120,29 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 	}
 }
 
-// Reads a whole file into data: all of it, or Too_Large when it's bigger
-// than data's capacity — never a file cut off. data.len becomes its size.
+// Reads a whole file into storage — after what's there, its len moved past
+// it — and gives it back, a view of storage: all of it, or Too_Large when it
+// doesn't fit in storage's room (storage untouched) — never a file cut off.
 // (As many reads as that takes: one read may stop short.)
-read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
-	id := file_open_read(path)?
+read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
+	start := storage.len
+	none := storage[start : start]
+	id, oe := file_open_read(path)
+	if bool(oe) do return none, oe
 	defer file_close(id)
-	size := file_size(id)?
-	if size > data.cap do return Too_Large
+	size, se := file_size(id)
+	if bool(se) do return none, se
+	if size > storage.cap - start do return none, Too_Large
 	got : i64 = 0
 	for got < size {
-		rest := data[got : size]
-		file_read(id, &rest)?
+		rest := storage[start + got : start + size]
+		re := file_read(id, &rest)
+		if bool(re) do return none, re
 		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
 		got += rest.len
 	}
-	data.len = got
+	storage.len = start + got
+	return storage[start : start + got]
 }
 
 // DANGER BELOW
@@ -278,20 +295,19 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// Open a file for reading. Returns (id, .Ok) on success; on failure
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
-	// The path goes to Windows as it is, not copied (cstring): a 0 must
-	// follow it in its storage — so pass a literal, or the buffer it was
-	// appended to, not a `[:]` of the buffer (that slice's room ends where
-	// the path does). So for every path this module takes but dir_read's,
-	// which copies its own.
+	// The path is copied for Windows (c_path): any slice of one will do. So
+	// for every path this module takes.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
-		id := CreateFileA(cstring(path), GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		c := c_path(path)
+		id := CreateFileA(cstring(c), GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
 	file_open_write :: fun(path: []utf8) -> File_Id, err {
-		id := CreateFileA(cstring(path), GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		c := c_path(path)
+		id := CreateFileA(cstring(c), GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
@@ -348,7 +364,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// Deletes the file at path.
 	file_delete :: fun(path: []utf8) -> err {
-		if not bool(DeleteFileA(cstring(path))) do return Delete_Failed
+		c := c_path(path)
+		if not bool(DeleteFileA(cstring(c))) do return Delete_Failed
 	}
 
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Used by hot-reload
@@ -356,7 +373,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// can LoadLibraryA — the original on disk stays unlocked so the build can
 	// overwrite it for the next reload.
 	copy_file :: fun(src: []utf8, dst: []utf8) -> err {
-		if not bool(CopyFileA(cstring(src), cstring(dst), 0)) do return Copy_Failed
+		from := c_path(src)
+		to := c_path(dst)
+		if not bool(CopyFileA(cstring(from), cstring(to), 0)) do return Copy_Failed
 	}
 
 	// Last-write time of a file, as Windows' 100-nanosecond FILETIME packed
@@ -366,7 +385,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// without a directory watcher.
 	file_mtime :: fun(path: []utf8) -> i64 {
 		data : WIN32_FILE_ATTRIBUTE_DATA
-		if not bool(GetFileAttributesExA(cstring(path), 0, &data)) do return 0
+		c := c_path(path)
+		if not bool(GetFileAttributesExA(cstring(c), 0, &data)) do return 0
 		lo : i64 = i64(data.last_write_low)
 		hi : i64 = i64(data.last_write_high) << 32
 		return lo | hi
@@ -388,85 +408,98 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		size_low:           u32
 	}
 
-	// The directory the program runs in — where a path not whole starts:
+	// The directory the program runs in — where a path not whole starts —
 	// its path, whole (no separator at its end but a drive's root, `C:\`),
-	// into `dir`, as much as it holds: Too_Large when the path's longer;
-	// Read_Failed when the system won't say. A 0 follows it in dir's room
-	// (cstring takes it as it is). (executable_path: the program's own file,
-	// wherever it runs.)
-	current_dir :: fun(dir: ^[]utf8) -> err {
-		dir.len = dir.cap
-		if dir.cap == 0 do return Too_Large
-		n := i64(GetCurrentDirectoryA(u32(dir.cap), &dir[0]))
-		if n == 0 {
-			dir.len = 0
-			return Read_Failed
-		}
+	// into storage after what's there, its len moved past it, and given back,
+	// a view of storage: Too_Large when it doesn't fit in storage's room;
+	// Read_Failed when the system won't say. (executable_path: the program's
+	// own file, wherever it runs.)
+	current_dir :: fun(storage: ^[]byte) -> []utf8, err {
+		start := storage.len
+		none : []utf8 = storage[start : start]
+		room := storage.cap - start
+		if room <= 0 do return none, Too_Large
+		want := room
+		if want > 1 << 30 do want = 1 << 30
+		n := i64(GetCurrentDirectoryA(u32(want), &storage[start]))
+		if n == 0 do return none, Read_Failed
 		// (Too long, it says how much room it wants, its 0 counted.)
-		if n >= dir.cap {
-			dir.len = 0
-			return Too_Large
-		}
-		dir.len = n
+		if n >= want do return none, Too_Large
+		storage.len = start + n
+		dir : []utf8 = storage[start : start + n]
+		return dir
 	}
 
 	// The running program's own file: its path, whole — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
 	// that come with it, beside it (path_dir: their directory, for their
-	// paths). Into `path`, as much as it holds: Too_Large
-	// when the path's longer; Read_Failed when the system won't say. A 0
-	// follows it in path's room (cstring takes it as it is).
+	// paths). Into storage after what's there, its len moved past it, and
+	// given back, a view of storage: Too_Large when it doesn't fit in
+	// storage's room; Read_Failed when the system won't say.
 	// (GetModuleFileNameA: in the system's code page, as the other files'
 	// functions here take paths — the path opens with file_open_read.)
-	executable_path :: fun(path: ^[]utf8) -> err {
-		path.len = path.cap
-		if path.cap == 0 do return Too_Large
-		n := i64(GetModuleFileNameA(void, &path[0], u32(path.cap)))
-		if n == 0 {
-			path.len = 0
-			return Read_Failed
-		}
+	executable_path :: fun(storage: ^[]byte) -> []utf8, err {
+		start := storage.len
+		none : []utf8 = storage[start : start]
+		room := storage.cap - start
+		if room <= 0 do return none, Too_Large
+		want := room
+		if want > 1 << 30 do want = 1 << 30
+		n := i64(GetModuleFileNameA(void, &storage[start], u32(want)))
+		if n == 0 do return none, Read_Failed
 		// (As long as the room, it was cut off: no room for its 0.)
-		if n >= path.cap {
-			path.len = 0
-			return Too_Large
-		}
-		path.len = n
+		if n >= want do return none, Too_Large
+		storage.len = start + n
+		path : []utf8 = storage[start : start + n]
+		return path
 	}
 
 	// The files and directories in a directory, to look through what's there:
-	// each one's name and whether it's a directory, into `entries` — not "."
-	// or "..", in no order to count on. Fails with Open_Failed when there's no
-	// directory there, Too_Large when it has more than `entries` holds. The
-	// path is copied: any slice of one will do (cstring's 0 needn't follow it).
-	dir_read :: fun(path: []utf8, entries: ^[]Dir_Entry) -> err {
-		entries.len = 0
-		if path.len > 500 do return Open_Failed   // (its pattern on the stack, under 1 KB)
+	// each one's name and whether it's a directory — not "." or "..", in no
+	// order to count on — into storage after what's there, side by side, its
+	// len moved past them, and given back, a view of them. Fails with
+	// Open_Failed when there's no directory there, Too_Large when they don't
+	// fit in storage's room (storage untouched). The path is copied: any
+	// slice of one will do (cstring's 0 needn't follow it). (Counted first,
+	// then each written: listed twice.)
+	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+		start := storage.len
+		none := slice([:0]Dir_Entry, storage)
+		storage.len = start
+		if path.len > 500 do return none, Open_Failed   // (its pattern on the stack, under 1 KB)
 		pattern : [..512]utf8
 		&pattern + path
 		&pattern + "\\*"
 		found : WIN32_FIND_DATAA
 		search := FindFirstFileA(cstring(pattern), &found)
-		if search == INVALID_HANDLE_VALUE do return Open_Failed
-		full := false
+		if search == INVALID_HANDLE_VALUE do return none, Open_Failed
+		count : i64 = 0
 		for true {
 			name := read_cstring(260, &found.name[0])
+			if name != "." and name != ".." do count += 1
+			if not bool(FindNextFileA(search, &found)) do break
+		}
+		_ = FindClose(search)
+		// (Room for them, past what aligning them may skip.)
+		if storage.cap - start < count * size_of(Dir_Entry) + 8 do return none, Too_Large
+		entries := slice([:count]Dir_Entry, storage)
+		search = FindFirstFileA(cstring(pattern), &found)
+		if search == INVALID_HANDLE_VALUE do return entries[0 : 0], Open_Failed
+		k : i64 = 0
+		for k < count {
+			name := read_cstring(260, &found.name[0])
 			if name != "." and name != ".." {
-				if entries.len == entries.cap {
-					full = true
-					break
-				}
 				entry : Dir_Entry
 				&entry.name + name
 				entry.dir = (found.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
-				entries.len += 1
-				entries[entries.len - 1] = entry
+				entries[k] = entry
+				k += 1
 			}
 			if not bool(FindNextFileA(search, &found)) do break
 		}
 		_ = FindClose(search)
-		if full do return Too_Large
+		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
 	FILE_ATTRIBUTE_DIRECTORY :: 0x10
@@ -821,11 +854,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun FindClose(search: File_Id) -> i32
 
 		// A loaded library's file — void: the program's own — its path into name.
-		fun GetModuleFileNameA(library: ^byte, name: ^utf8, size: u32) -> u32
+		fun GetModuleFileNameA(library: ^byte, name: ^byte, size: u32) -> u32
 
 		// The directory the program runs in, into buf: its length; the room it
 		// wants (its 0 counted) when buf is too small; 0 failing.
-		fun GetCurrentDirectoryA(size: u32, buf: ^utf8) -> u32
+		fun GetCurrentDirectoryA(size: u32, buf: ^byte) -> u32
 
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
@@ -933,14 +966,16 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// the path does). So for every path this module takes but dir_read's,
 	// which copies its own.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
-		id := open(cstring(path), O_RDONLY | O_CLOEXEC, 0)
+		c := c_path(path)
+		id := open(cstring(c), O_RDONLY | O_CLOEXEC, 0)
 		if id == NO_FILE do return NO_FILE, Open_Failed
 		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
 	file_open_write :: fun(path: []utf8) -> File_Id, err {
-		id := open(cstring(path), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DEFAULT_MODE)
+		c := c_path(path)
+		id := open(cstring(c), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DEFAULT_MODE)
 		if id == NO_FILE do return NO_FILE, Open_Failed
 		return id
 	}
@@ -990,7 +1025,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// Deletes the file at path.
 	file_delete :: fun(path: []utf8) -> err {
-		if unlink(cstring(path)) != 0 do return Delete_Failed
+		c := c_path(path)
+		if unlink(cstring(c)) != 0 do return Delete_Failed
 	}
 
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Reads and writes it
@@ -1026,88 +1062,102 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return st.mtime
 	}
 
-	// The directory the program runs in — where a path not whole starts:
+	// The directory the program runs in — where a path not whole starts —
 	// its path, whole (no separator at its end but the root, `/`), into
-	// `dir`, as much as it holds: Too_Large when the path's longer;
-	// Read_Failed when the system won't say. A 0 follows it in dir's room
-	// (cstring takes it as it is). (executable_path: the program's own file,
-	// wherever it runs.)
-	current_dir :: fun(dir: ^[]utf8) -> err {
-		dir.len = dir.cap
-		if dir.cap == 0 do return Too_Large
-		if getcwd(&dir[0], usize(dir.cap)) == void {
-			dir.len = 0
+	// storage after what's there, its len moved past it, and given back, a
+	// view of storage: Too_Large when it doesn't fit in storage's room;
+	// Read_Failed when the system won't say. (executable_path: the
+	// program's own file, wherever it runs.)
+	current_dir :: fun(storage: ^[]byte) -> []utf8, err {
+		start := storage.len
+		none : []utf8 = storage[start : start]
+		room := storage.cap - start
+		if room <= 0 do return none, Too_Large
+		if getcwd(&storage[start], usize(room)) == void {
 			// (Too long for the room, or the system won't say: told apart by
 			// a room that would surely hold it.)
-			if dir.cap < 4096 do return Too_Large
-			return Read_Failed
+			if room < 4096 do return none, Too_Large
+			return none, Read_Failed
 		}
 		n : i64 = 0
-		for n < dir.cap and dir[n] != utf8(0) {
+		for n < room and storage[start + n] != 0 {
 			n += 1
 		}
-		dir.len = n
+		storage.len = start + n
+		dir : []utf8 = storage[start : start + n]
+		return dir
 	}
 
 	// The running program's own file: its path, whole — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
 	// that come with it, beside it (path_dir: their directory, for their
-	// paths). Into `path`, as much as it holds: Too_Large
-	// when the path's longer; Read_Failed when the system won't say. A 0
-	// follows it in path's room (cstring takes it as it is).
+	// paths). Into storage after what's there, its len moved past it, and
+	// given back, a view of storage: Too_Large when it doesn't fit in
+	// storage's room; Read_Failed when the system won't say.
 	// (/proc/self/exe: a link to the program's file, its path whole.)
-	executable_path :: fun(path: ^[]utf8) -> err {
-		path.len = path.cap
-		if path.cap == 0 do return Too_Large
+	executable_path :: fun(storage: ^[]byte) -> []utf8, err {
+		start := storage.len
+		none : []utf8 = storage[start : start]
+		room := storage.cap - start
+		if room <= 0 do return none, Too_Large
 		link := "/proc/self/exe"
-		n := readlink(cstring(link), &path[0], usize(path.cap))
-		if n < 0 {
-			path.len = 0
-			return Read_Failed
-		}
-		// (As long as the room, it may be cut off — and there's no room for its 0.)
-		if n >= path.cap {
-			path.len = 0
-			return Too_Large
-		}
-		path[n] = utf8(0)
-		path.len = n
+		n := readlink(cstring(link), &storage[start], usize(room))
+		if n < 0 do return none, Read_Failed
+		// (As long as the room, it may be cut off.)
+		if n >= room do return none, Too_Large
+		storage.len = start + n
+		path : []utf8 = storage[start : start + n]
+		return path
 	}
 
 	// The files and directories in a directory, to look through what's there:
-	// each one's name and whether it's a directory, into `entries` — not "."
-	// or "..", in no order to count on. Fails with Open_Failed when there's no
-	// directory there, Too_Large when it has more than `entries` holds. The
-	// path is copied: any slice of one will do (cstring's 0 needn't follow it).
-	dir_read :: fun(path: []utf8, entries: ^[]Dir_Entry) -> err {
-		entries.len = 0
+	// each one's name and whether it's a directory — not "." or "..", in no
+	// order to count on — into storage after what's there, side by side, its
+	// len moved past them, and given back, a view of them. Fails with
+	// Open_Failed when there's no directory there, Too_Large when they don't
+	// fit in storage's room (storage untouched). The path is copied: any
+	// slice of one will do (cstring's 0 needn't follow it). (Counted first,
+	// then each written: listed twice.)
+	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+		start := storage.len
+		none := slice([:0]Dir_Entry, storage)
+		storage.len = start
 		// (A copy of the path, a 0 after it: any slice of a path will do, as
 		// on Windows, where its search pattern is built.)
-		if path.len > 500 do return Open_Failed   // (the copy on the stack, under 1 KB)
+		if path.len > 500 do return none, Open_Failed   // (the copy on the stack, under 1 KB)
 		opened : [..512]utf8
 		&opened + path
 		dir := opendir(cstring(opened))
-		if dir == void do return Open_Failed
-		full := false
+		if dir == void do return none, Open_Failed
+		count : i64 = 0
 		for true {
 			d := readdir(dir)
 			if d == void do break
 			name := read_cstring(256, &d.name[0])
+			if name != "." and name != ".." do count += 1
+		}
+		_ = closedir(dir)
+		// (Room for them, past what aligning them may skip.)
+		if storage.cap - start < count * size_of(Dir_Entry) + 8 do return none, Too_Large
+		entries := slice([:count]Dir_Entry, storage)
+		dir = opendir(cstring(opened))
+		if dir == void do return entries[0 : 0], Open_Failed
+		k : i64 = 0
+		for k < count {
+			d := readdir(dir)
+			if d == void do break
+			name := read_cstring(256, &d.name[0])
 			if name == "." or name == ".." do continue
-			if entries.len == entries.cap {
-				full = true
-				break
-			}
 			entry : Dir_Entry
 			&entry.name + name
 			entry.dir = d.kind == DT_DIR
 			if d.kind == DT_UNKNOWN do entry.dir = dir_entry_is_dir(path, name)
-			entries.len += 1
-			entries[entries.len - 1] = entry
+			entries[k] = entry
+			k += 1
 		}
 		_ = closedir(dir)
-		if full do return Too_Large
+		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
 	// Whether a directory's entry is a directory, asked of the entry itself:
@@ -1523,11 +1573,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun closedir(dir: ^byte) -> i32
 
 		// Where a link points: its path, not 0-ended, into buf; its length, -1 failing.
-		fun readlink(path: cstring, buf: ^utf8, size: usize) -> i64
+		fun readlink(path: cstring, buf: ^byte, size: usize) -> i64
 
 		// The directory the program runs in, 0-ended, into buf: buf; void failing
 		// (too long for buf among the ways).
-		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
+		fun getcwd(buf: ^byte, size: usize) -> ^byte
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte

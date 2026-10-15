@@ -3,16 +3,19 @@ module read_entire_file
 use mara.core
 use mara.os
 
-// read_entire_file: all of a file or Too_Large, never one cut off — the
-// room exactly its size, a byte short, an empty file into a room that held
-// something (its len becomes 0), a file that isn't there. (Its reads go on
-// until the file's all in: one read may stop short. To see that run, make
-// file_read's per-call cap tiny for a moment — it isn't, here.)
+// read_entire_file: all of a file or Too_Large, never one cut off — into
+// storage after what's there, its len moved past it, and given back, a view
+// of storage. The room exactly its size, a byte short (storage untouched),
+// two files one after the other in one storage, an empty file, a file that
+// isn't there. (Its reads go on until the file's all in: one read may stop
+// short. To see that run, make file_read's per-call cap tiny for a moment —
+// it isn't, here.)
 
-//@ expect-output: exact: Ok 100 true
-//@ expect-output: short: File_Error.Too_Large
-//@ expect-output: empty: Ok 0
-//@ expect-output: missing: File_Error.Open_Failed
+//@ expect-output: exact: Ok 100 true 100
+//@ expect-output: short: File_Error.Too_Large 0 0
+//@ expect-output: two: 100 100 200 true
+//@ expect-output: empty: Ok 0 200
+//@ expect-output: missing: File_Error.Open_Failed 0 200
 
 PATH :: "read_entire_file_demo.txt"
 EMPTY :: "read_entire_file_empty.txt"
@@ -35,18 +38,26 @@ main :: fun() {
 	}
 
 	room : [..100]byte
-	e := read_entire_file(PATH, &room)
-	got : []utf8 = room[:]
-	print("exact:", e, room.len, got == text)
+	data, e := read_entire_file(PATH, &room)
+	got : []utf8 = data
+	print("exact:", e, data.len, got == text, room.len)
 
 	short : [..99]byte
-	print("short:", read_entire_file(PATH, &short))
+	cut, se := read_entire_file(PATH, &short)
+	print("short:", se, cut.len, short.len)
 
-	// (The room still holds the 100 bytes: its len goes to 0.)
-	print("empty:", read_entire_file(EMPTY, &room), room.len)
+	// One storage for both: the second file goes after the first.
+	storage : [..500]byte
+	first, _ := read_entire_file(PATH, &storage)
+	second, _ := read_entire_file(PATH, &storage)
+	a : []utf8 = first
+	b : []utf8 = second
+	print("two:", first.len, second.len, storage.len, a == b)
 
-	print("missing:", read_entire_file("no_such_file.txt", &room))
-
+	empty, ee := read_entire_file(EMPTY, &storage)
+	print("empty:", ee, empty.len, storage.len)
+	none, me := read_entire_file("no_such_file.txt", &storage)
+	print("missing:", me, none.len, storage.len)
 	_ = file_delete(PATH)
 	_ = file_delete(EMPTY)
 }

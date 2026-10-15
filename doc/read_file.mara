@@ -1,9 +1,16 @@
 // How to read a file: all at once with read_entire_file, or step by step.
 //
-// Both read into a buffer you declare, `[..N]byte`, which holds up to N
-// bytes; its len becomes the number read. A buffer of 1 KB or more lives in
-// the program's arena, so set one first (see arenas.mara). The bytes can be
-// seen as text: `text : []utf8 = data[:]`.
+// read_entire_file reads into storage you declare, `[..N]byte`, which holds
+// up to N bytes: after what's in it already, its len moved past the file.
+// It gives the file back, a view of storage — so several reads into one
+// storage sit one after another, each its own view. A file too big for
+// what's left of it fails with File_Error.Too_Large, storage as it was. Set
+// its len to 0 to fill it from the start again (the views from before then
+// see the new bytes). dir_read, executable_path and current_dir go the same
+// way: one storage can take them all, in turn.
+//
+// Storage of 1 KB or more lives in the program's arena, so set one first
+// (see arenas.mara). The bytes can be seen as text: `text : []utf8 = data`.
 module read_file
 
 use mara.core
@@ -11,28 +18,33 @@ use mara.os
 use mara.memory
 
 // Step by step: open, size, read, close — each can fail, and `?` passes the
-// failure on to whoever called (see errors.mara).
+// failure on to whoever called (see errors.mara). file_read fills data from
+// its start, as much as it holds: its len becomes the number read.
 read_first_bytes :: fun(path: []utf8, data: ^[]byte) -> err {
 	id := file_open_read(path)?
 	defer file_close(id)   // runs when the function ends, whichever way
 	size := file_size(id)?
 	print("the file has % bytes", size)
-	file_read(id, data)?   // reads as much as data holds
+	file_read(id, data)?
 }
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 
 	// All at once. This program reads its own source.
-	data : [..1 * MB]byte
-	err := read_entire_file("read_file.mara", &data)
+	storage : [..1 * MB]byte
+	data, err := read_entire_file("read_file.mara", &storage)
 	if bool(err) {
 		print("couldn't read it:", err)
 		return
 	}
-	text : []utf8 = data[:]
+	text : []utf8 = data
 	print("read % bytes; it starts with:", text.len)
 	print(text[0:20])
+
+	// Again, into the same storage: after the first.
+	again, _ := read_entire_file("read_file.mara", &storage)
+	print("storage holds both:", storage.len == data.len + again.len)
 
 	small : [..64]byte
 	err2 := read_first_bytes("read_file.mara", &small)
@@ -40,6 +52,6 @@ main :: fun() {
 	print("read the first % bytes", small.len)
 
 	// A file that isn't there fails with File_Error.Open_Failed.
-	missing := read_entire_file("no_such_file.txt", &data)
+	_, missing := read_entire_file("no_such_file.txt", &storage)
 	print(missing)
 }

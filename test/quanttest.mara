@@ -20,7 +20,7 @@ main :: fun() {
 	// always has room for the cstring terminator.
 	path := "quanttest.mara"
 	data : [..4096]byte
-	err := read_entire_file(path, &data)
+	_, err := read_entire_file(path, &data)
 	assert(not bool(err))
 	assert(data.len > 0)
 	print("footgun dead, bytes:")

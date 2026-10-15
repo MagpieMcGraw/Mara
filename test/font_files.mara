@@ -49,7 +49,7 @@ show_chars :: fun(name: []utf8) -> err {
 	path : [..64]utf8
 	&path + "fonts/"
 	&path + name
-	read_entire_file(path, &file)?   // (the buffer, not a slice of it: cstring finds the 0 after the name)
+	read_entire_file(path, &file)?
 	check_ttf(&file)?
 	ttf := TTF(&file)
 	print("%: A % B % C % a % b % U+1F600 % Z %", name,

@@ -26,10 +26,10 @@ main :: fun() {
 		return
 	}
 
-	// Read it back to see it arrived.
-	data : [..1 * KB]byte
-	_ = read_entire_file("write_file_demo.txt", &data)
-	print("wrote % bytes", data.len)
+	// Read it back to see it arrived (see read_file.mara).
+	storage : [..1 * KB]byte
+	back, _ := read_entire_file("write_file_demo.txt", &storage)
+	print("wrote % bytes", back.len)
 
 	err2 := file_delete("write_file_demo.txt")
 	if bool(err2) do print("couldn't delete it:", err2)

@@ -677,8 +677,9 @@ layout_save :: fun(ui: ^Ui) {
 // there's none — or it isn't one: the default layout then.
 layout_load :: fun(ui: ^Ui) -> bool {
 	buf : [..4000]byte
-	if bool(read_entire_file(ui.layout_path, &buf)) do return false
-	text : []utf8 = buf[:]
+	data, re := read_entire_file(ui.layout_path, &buf)
+	if bool(re) do return false
+	text : []utf8 = data
 	ui.panels.len = 0
 	first := true
 	at : i64 = 0

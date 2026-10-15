@@ -34,7 +34,9 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 	lines_clear(&ui.crash)
 	ui.crash_dir.len = 0
 	crash_status(ui)
-	if bool(read_entire_file(path, &ui.crash_text)) do return false
+	ui.crash_text.len = 0
+	_, re := read_entire_file(path, &ui.crash_text)
+	if bool(re) do return false
 	if own {
 		lines_add(&ui.crash, "mara view itself crashed the last time it ran. Its report, from view/crash.txt:", STYLE_TITLE)
 		&ui.crash_dir + path_dir(path)
@@ -192,8 +194,9 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 editor_load :: fun(ui: ^Ui) {
 	buf : [..1000]byte
 	ui.editor.len = 0
-	if bool(read_entire_file(ui.editor_path, &buf)) do return
-	text : []utf8 = buf[:]
+	data, re := read_entire_file(ui.editor_path, &buf)
+	if bool(re) do return
+	text : []utf8 = data
 	n := text.len
 	for n > 0 {
 		if text[n - 1] != '\n' and text[n - 1] != '\r' do break

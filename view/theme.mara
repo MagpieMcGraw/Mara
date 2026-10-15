@@ -155,8 +155,9 @@ theme_sublime :: fun(ui: ^Ui) {
 	theme_builtin(ui, true)
 	ui.colors_stamp = file_mtime(ui.colors_path)
 	buf : [..8000]byte
-	if bool(read_entire_file(ui.colors_path, &buf)) do return
-	text : []utf8 = buf[:]
+	data, re := read_entire_file(ui.colors_path, &buf)
+	if bool(re) do return
+	text : []utf8 = data
 	// (The six above, by PALETTE_ order; each token kind's.)
 	named : [PALETTE]Color
 	has : [PALETTE]bool

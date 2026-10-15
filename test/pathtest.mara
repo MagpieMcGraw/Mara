@@ -6,32 +6,35 @@ include mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
-	// cstring() is a zero-copy checked conversion (no arena needed for it) —
-	// utf8 appends keep a 0 after the content, so the terminator check at
-	// [len] passes inside file_open_read. The arena backs the 4 KB read buffer.
+	// mara.os copies a path for C, a 0 after it (c_path): any slice of a
+	// path opens. The arena backs the 4 KB read buffer.
 	path : [..64]utf8
 	&path + "pathtest"
 	&path + ".mara"
 	data : [..4096]byte
-	err := read_entire_file(path, &data)
+	text, err := read_entire_file(path, &data)
 	assert(not bool(err))
-	assert(data.len > 0)
+	assert(text.len > 0)
 	print("appended path ok, bytes:")
-	print(data.len)
+	print(text.len)
 
-	// Full slice of a zero-padded fixed array: len == cap, so the check
-	// falls to [cap-1] — the zeroed tail makes it valid; C stops at the
-	// first 0 after the content. (A tight sub-slice like path[:] has
-	// content at [cap-1] and correctly crashes.)
-	fixed : [64]utf8 = "pathtest.mara"
-	err2 := read_entire_file(fixed[:], &data)
+	// A tight slice: its room ends where the path does, no 0 after it.
+	data.len = 0
+	_, err2 := read_entire_file(path[:], &data)
 	assert(not bool(err2))
-	print("fixed full-slice ok")
+	print("tight slice ok")
 
-	// Literal path — coerces to []utf8 for free (header cap = N+1 carries
-	// the rodata terminator slot).
-	err3 := read_entire_file("pathtest.mara", &data)
+	// A path in the middle of other text.
+	quoted := "(pathtest.mara)"
+	data.len = 0
+	_, err3 := read_entire_file(quoted[1 : quoted.len - 1], &data)
 	assert(not bool(err3))
+	print("slice of text ok")
+
+	// A literal path.
+	data.len = 0
+	_, err4 := read_entire_file("pathtest.mara", &data)
+	assert(not bool(err4))
 	print("literal path ok")
 
 	mt := file_mtime("pathtest.mara")

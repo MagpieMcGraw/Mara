@@ -77,7 +77,8 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	p.problem.len = 0
 	p.missing = false
 	p.stamp = file_mtime(path)
-	e := read_entire_file(path, &p.text)
+	p.text.len = 0
+	_, e := read_entire_file(path, &p.text)
 	if e == .Open_Failed {
 		p.missing = true
 		&p.problem + "No profile.txt here yet: build the program with `mara build -profile` and run it."

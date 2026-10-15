@@ -1,16 +1,18 @@
 // How to see what's in a directory — its files and the directories in it —
 // with dir_read.
 //
-// dir_read fills a list you declare, `[..N]Dir_Entry`, with an entry for
-// each: its name (not its path: join the directory's and the name to open
-// it) and whether it's a directory. "." and ".." aren't listed, and the
-// order is the system's: sort them if it matters. It fails with
-// File_Error.Open_Failed when there's no directory at the path, and with
-// File_Error.Too_Large when there are more than the list holds — the list
-// then has the ones that fit.
+// dir_read lists them into storage you declare, `[..N]byte`, after what's
+// in it already, and gives them back, a view of storage: a `[]Dir_Entry`,
+// an entry for each — its name (not its path: join the directory's and the
+// name to open it) and whether it's a directory. "." and ".." aren't
+// listed, and the order is the system's: sort them if it matters. It fails
+// with File_Error.Open_Failed when there's no directory at the path, and
+// with File_Error.Too_Large when they don't all fit in what's left of
+// storage — storage then as it was. One storage takes several lists, one
+// after another, and files read too (see read_file.mara).
 //
-// An entry is about 260 bytes, so a list of them lives in the program's
-// arena: set one first (see arenas.mara).
+// An entry is about 270 bytes (its name up to 260), so storage for a few
+// hundred lives in the program's arena: set one first (see arenas.mara).
 module directories
 
 use mara.core
@@ -20,10 +22,10 @@ use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
+	storage : [..1 * MB]byte
 
 	// This program's own directory, doc/: the .mara files in it.
-	entries : [..500]Dir_Entry
-	e := dir_read(".", &entries)
+	entries, e := dir_read(".", &storage)
 	if bool(e) {
 		print("couldn't read it:", e)
 		return
@@ -36,14 +38,16 @@ main :: fun() {
 	}
 	print("doc/ has % pages, this one among them", pages)
 
-	// The stdlib's directory, beside doc/: what's a directory in it.
-	stdlib : [..500]Dir_Entry
-	if not bool(dir_read("../code", &stdlib)) {
+	// The stdlib's directory, beside doc/: what's a directory in it. Its
+	// list goes after the first, in the same storage.
+	stdlib, se := dir_read("../code", &storage)
+	if not bool(se) {
 		for entry in stdlib {
 			if entry.dir do print("a directory in code/:", entry.name[:])
 		}
 	}
 
 	// A directory that isn't there.
-	print(dir_read("no_such_directory", &entries))   // File_Error.Open_Failed
+	_, missing := dir_read("no_such_directory", &storage)
+	print(missing)   // File_Error.Open_Failed
 }

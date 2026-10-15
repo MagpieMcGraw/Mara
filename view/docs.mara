@@ -85,7 +85,7 @@ Found :: struct {
 
 // The search's room: the files read, what's found.
 Docs :: struct {
-	source: [..8 * MB]utf8          // the files' text, one after another
+	source: [..8 * MB]byte          // the files' text, one after another
 	files:  [..600]Docs_File
 	found:  [..DOCS_SHOWN]Found     // the best, best first
 	count:  i64                     // how many matched in all
@@ -291,8 +291,9 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	&code + "code"
 	docs_read_dir(d, code, ui.sep)
 	// (The directories in code/, as the compiler looks in them.)
-	entries : [..200]Dir_Entry
-	if not bool(dir_read(code, &entries)) {
+	room : [..64 * KB]byte
+	entries, de := dir_read(code, &room)
+	if not bool(de) {
 		for entry in entries {
 			if not entry.dir do continue
 			sub : [..1000]utf8
@@ -321,12 +322,13 @@ stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 }
 
 // The .mara files in a directory read into d.source, as many as fit — a
-// directory that isn't there, or a file that can't be read, left out. A
-// file's path: its name alone in ".", else the directory's, sep, its name.
+// directory that isn't there (or of more than a thousand or so), or a file
+// that can't be read, left out. A file's path: its name alone in ".", else
+// the directory's, sep, its name.
 docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
-	entries : [..1000]Dir_Entry
-	e := dir_read(dir, &entries)
-	if bool(e) and e != .Too_Large do return
+	room : [..300 * KB]byte
+	entries, e := dir_read(dir, &room)
+	if bool(e) do return
 	for entry in entries {
 		name : []utf8 = entry.name[:]
 		if entry.dir or name.len < 6 do continue
@@ -346,13 +348,11 @@ docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 // read, or there's no room for it.
 docs_add_file :: fun(d: ^Docs, path: []utf8) -> bool {
 	if d.files.len == d.files.cap or path.len > 1000 do return false
-	buf : [..1 * MB]byte
-	if bool(read_entire_file(path, &buf)) do return false
-	text : []utf8 = buf[:]
-	if d.source.len + text.len > d.source.cap do return false
-	file := Docs_File{at = d.source.len, len = text.len}
+	at := d.source.len
+	text, e := read_entire_file(path, &d.source)
+	if bool(e) do return false
+	file := Docs_File{at = at, len = text.len}
 	&file.path + path
-	&d.source + text
 	&d.files + file
 	return true
 }

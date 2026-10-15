@@ -2,23 +2,26 @@ module dir_read
 
 use mara.core
 use mara.os
-include mara.memory
+use mara.memory
 
-// dir_read: a directory's names, each a file or a directory. The stdlib's
-// directory, beside test/ — its os.mara a file, its SDL a directory, no "."
-// or ".." among them; too many for a one-entry list (Too_Large); and a
-// directory that isn't there (Open_Failed).
+// dir_read: a directory's names, each a file or a directory, into storage
+// after what's there. The stdlib's directory, beside test/ — its os.mara a
+// file, its SDL a directory, no "." or ".." among them; a storage too small
+// for them (Too_Large, storage untouched); a directory that isn't there
+// (Open_Failed); two listings in one storage, side by side.
 
 //@ expect-output: os.mara: file
 //@ expect-output: SDL: directory
 //@ expect-output: dots: 0
-//@ expect-output: one entry: File_Error.Too_Large
-//@ expect-output: missing: File_Error.Open_Failed
+//@ expect-output: moved past them: true
+//@ expect-output: small room: File_Error.Too_Large 0 0
+//@ expect-output: missing: File_Error.Open_Failed 0
+//@ expect-output: twice: true true
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(4 * MB))
-	entries : [..500]Dir_Entry
-	e := dir_read("../code", &entries)
+	storage : [..200 * KB]byte
+	entries, e := dir_read("../code", &storage)
 	if bool(e) {
 		print("../code:", e)
 		return 1
@@ -34,9 +37,16 @@ main :: fun() -> i64 {
 		}
 	}
 	print("dots:", dots)
+	print("moved past them:", storage.len >= entries.len * size_of(Dir_Entry))
 
-	one : [..1]Dir_Entry
-	print("one entry:", dir_read("../code", &one))
-	print("missing:", dir_read("../no_such_directory", &entries))
+	small : [..300]byte
+	none, se := dir_read("../code", &small)
+	print("small room:", se, none.len, small.len)
+	gone, me := dir_read("../no_such_directory", &storage)
+	print("missing:", me, gone.len)
+
+	before := storage.len
+	again, _ := dir_read("../code", &storage)
+	print("twice:", again.len == entries.len, storage.len > before)
 	return 0
 }

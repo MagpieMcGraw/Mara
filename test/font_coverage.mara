@@ -36,7 +36,7 @@ main :: fun() -> i64 {
 	print("drawn", drawn, "of", glyphs.len)
 
 	ttf_file : [..2 * MB]byte = void
-	re := read_entire_file(FONT, &ttf_file)
+	_, re := read_entire_file(FONT, &ttf_file)
 	if bool(re) {
 		print("read failed:", re)
 		return 1
