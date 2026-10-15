@@ -55,11 +55,10 @@ theme_builtin :: fun(ui: ^Ui, light: bool) {
 		c : Code_Colors
 		c.names    = ui.code
 		c.keyword  = Color{r = 150, g = 40, b = 160}
-		c.storage  = Color{r = 180, g = 40, b = 110}
+		c.storage  = ui.ink
 		c.operator = Color{r = 96, g = 102, b = 112}
 		c.punct    = Color{r = 128, g = 132, b = 140}
 		c.types    = Color{r = 0, g = 122, b = 122}
-		c.declared = ui.ink
 		c.number   = Color{r = 190, g = 84, b = 0}
 		c.text     = Color{r = 62, g = 122, b = 20}
 		c.escape   = Color{r = 0, g = 135, b = 105}
@@ -85,11 +84,10 @@ theme_builtin :: fun(ui: ^Ui, light: bool) {
 	c : Code_Colors
 	c.names    = ui.code
 	c.keyword  = Color{r = 204, g = 150, b = 236}
-	c.storage  = Color{r = 236, g = 130, b = 170}
+	c.storage  = ui.ink
 	c.operator = Color{r = 160, g = 166, b = 176}
 	c.punct    = Color{r = 128, g = 133, b = 143}
 	c.types    = Color{r = 110, g = 204, b = 192}
-	c.declared = ui.ink
 	c.number   = Color{r = 240, g = 160, b = 104}
 	c.text     = Color{r = 166, g = 208, b = 124}
 	c.escape   = Color{r = 110, g = 220, b = 170}
@@ -107,13 +105,12 @@ Code_Colors :: struct {
 	storage:  Color   // what declares — fun, union, struct, distinct, type; using, #packed
 	operator: Color
 	punct:    Color   // ( ) { } [ ] , ; and the dot
-	types:    Color   // i64, bool; a capitalized name
-	declared: Color   // the name a declaration declares — `name :: fun`, `Name :: struct`
+	types:    Color   // i64, bool; a capitalized name; a type's declared name (`Name :: struct`)
 	number:   Color   // and true, false, void
 	text:     Color   // strings and characters
 	escape:   Color   // \n in them
 	builtin:  Color   // print(, assert( …
-	call:     Color   // name(
+	call:     Color   // name(; a fun's declared name (`name :: fun`)
 	field:    Color   // .len, .cap
 	modules:  Color   // mara.math
 }
@@ -133,8 +130,8 @@ theme_tokens :: fun(ui: ^Ui, c: Code_Colors) {
 	ui.tokens[TOKEN_ACCESSOR] = c.punct
 	ui.tokens[TOKEN_BASIC_TYPE] = c.types
 	ui.tokens[TOKEN_CAPITAL] = c.types
-	ui.tokens[TOKEN_FUN_NAME] = c.declared
-	ui.tokens[TOKEN_TYPE_NAME] = c.declared
+	ui.tokens[TOKEN_FUN_NAME] = c.call
+	ui.tokens[TOKEN_TYPE_NAME] = c.types
 	ui.tokens[TOKEN_CONSTANT] = c.number
 	ui.tokens[TOKEN_NUMBER] = c.number
 	ui.tokens[TOKEN_STRING] = c.text
