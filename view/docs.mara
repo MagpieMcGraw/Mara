@@ -1054,7 +1054,7 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 			break
 		}
 		for blanks > 0 {
-			lines_add(l, "", STYLE_CODE)
+			lines_add(l, "", STYLE_MARA)
 			blanks -= 1
 			shown += 1
 		}
@@ -1137,7 +1137,7 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 	shown : [..1200]utf8
 	&shown + "  "
 	&shown + code[k : min_int(end, k + 1000)]
-	lines_add(l, shown[:], STYLE_CODE)
+	lines_add(l, shown[:], STYLE_MARA)
 }
 
 // The line's indentation in columns (a tab, TAB_SPACES), and where its text

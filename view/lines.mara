@@ -10,7 +10,8 @@ use mara.string
 // when it has one. Lines wider than the panel wrap: at a space, or within a
 // word wider than the panel, the rows after a line's first as far in as its
 // own indent — each line's rows worked out again only when the panel's
-// width changes.
+// width changes. Mara code's lines (STYLE_MARA) colored by their tokens
+// (code.mara). Text selected with the mouse, copied (select.mara).
 
 STYLE_TEXT  :: 0   // as text is: the ink
 STYLE_DIM   :: 1   // quieter
@@ -18,17 +19,27 @@ STYLE_TITLE :: 2   // a heading: its first word in the accent, the rest dim
 STYLE_CODE  :: 3   // code
 STYLE_BAD   :: 4   // a failure
 STYLE_QUERY :: 5   // what was asked: the accent
+STYLE_MARA  :: 6   // Mara code: each token in its color
 
 TAB_SPACES :: 4    // a tab, shown
 
 // A line: its text in Lines.text, and its style; a place it opens, clicked
-// (`<file>:<line>`, kept after its text there; none: link_len 0).
+// (`<file>:<line>`, kept after its text there; none: link_len 0). Mara
+// code's: what's open at its start (code_token's state), from the line
+// above it.
 Line :: struct {
 	at:    i64
 	len:   i64
 	style: i64
 	link_at:  i64
 	link_len: i64
+	state: i64
+}
+
+// A place in the lines' text: `off` bytes into line `line`.
+Spot :: struct {
+	line: i64
+	off:  i64
 }
 
 // A row drawn: a line, or as much of one as the width holds — its text
@@ -48,6 +59,10 @@ Lines :: struct {
 	scroll: i64           // the first row shown
 	cut:    bool          // more came than it holds: the rest left out
 	lit:    i64 = -1      // a line lit, all its rows (the call under the mouse); -1: none
+	// What's selected: from where the mouse pressed to where it is (or was
+	// let go) — none when they're the same place.
+	anchor: Spot
+	caret:  Spot
 	// The lines wrapped (lines_wrap): to rows_w wide, rows_lines of them.
 	rows:   [..100000]Line_Row
 	rows_w: f32
@@ -64,6 +79,8 @@ lines_clear :: fun(l: ^Lines) {
 	l.cut = false
 	l.rows.len = 0
 	l.rows_lines = 0
+	l.anchor = Spot{}
+	l.caret = Spot{}
 }
 
 // A line added in a style: its tabs as spaces, a carriage return left out.
@@ -71,6 +88,12 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 	if l.lines.len == l.lines.cap or l.text.len + s.len * TAB_SPACES > l.text.cap {
 		l.cut = true
 		return
+	}
+	// (Mara code's line after another: what's open where that one ends.)
+	state : i64 = 0
+	if style == STYLE_MARA and l.lines.len > 0 {
+		above := l.lines[l.lines.len - 1]
+		if above.style == STYLE_MARA do state = code_state_after(l.text[above.at : above.at + above.len], above.state)
 	}
 	at := l.text.len
 	for ch in s {
@@ -82,7 +105,7 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 			&l.text + ch
 		}
 	}
-	&l.lines + Line{at = at, len = l.text.len - at, style = style}
+	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state}
 }
 
 // Line k's text.
@@ -222,9 +245,9 @@ lines_visible :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
 	return max_int(i64(h / ui.text.line), 1)
 }
 
-// The lines drawn in r: from the scroll, as many rows as fit, a scroll bar
-// when they don't all; the status line at its bottom. With none, `empty`,
-// dim.
+// The lines drawn in r: from the scroll, as many rows as fit — what's
+// selected behind them — a scroll bar when they don't all; the status line
+// at its bottom. With none, `empty`, dim.
 draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	rd := ui.renderer
 	w := lines_width(r)
@@ -232,14 +255,22 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	shown := lines_visible(ui, l, r)
 	l.scroll = max_int(0, min_int(l.scroll, l.rows.len - shown))
 	if l.lines.len == 0 do _ = draw_wrapped(ui, empty, STYLE_DIM, r.x + PAD, r.y + PAD, w)
+	from, to := lines_selection(l)
+	selected := spot_before(from, to)
 	y := r.y + PAD
 	for k in 0 .. shown {
 		at := l.scroll + k
 		if at >= l.rows.len do break
 		row := l.rows[at]
 		ln := l.lines[row.line]
+		x := r.x + PAD + row.indent
 		if row.line == l.lit do fill(rd, r.x, y, r.w, ui.text.line, ui.hover)
-		draw_line(ui, l.text[row.at : row.at + row.len], ln.style, row.at == ln.at, r.x + PAD + row.indent, y)
+		if selected do draw_selected(ui, l, row, from, to, x, y)
+		if ln.style == STYLE_MARA {
+			draw_code_row(ui, l, row, x, y)
+		else
+			draw_line(ui, l.text[row.at : row.at + row.len], ln.style, row.at == ln.at, x, y)
+		}
 		y += ui.text.line
 	}
 	if l.rows.len > shown {
@@ -300,7 +331,7 @@ draw_line :: fun(ui: ^Ui, s: []utf8, style: i64, first: bool, x: f32, y: f32) {
 // A style's color.
 style_color :: fun(ui: ^Ui, style: i64) -> Color {
 	if style == STYLE_DIM do return ui.dim
-	if style == STYLE_CODE do return ui.code
+	if style == STYLE_CODE or style == STYLE_MARA do return ui.code
 	if style == STYLE_BAD do return ui.bad
 	if style == STYLE_QUERY or style == STYLE_TITLE do return ui.accent
 	return ui.ink

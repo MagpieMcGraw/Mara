@@ -42,7 +42,7 @@ Ui :: struct {
 	saved_height: f64
 	mouse_x:  f32            // the mouse, pixels; -1 when it's outside
 	mouse_y:  f32
-	cursors:  [10]Cursor     // the system's, by SYSTEM_CURSOR_...
+	cursors:  [12]Cursor     // the system's, by SYSTEM_CURSOR_...
 	cursor:   i32            // the one shown
 	running:  bool = true
 	dirty:    bool = true    // drawn again when it is
@@ -81,6 +81,15 @@ Ui :: struct {
 	crash_stamp: i64             // the file's time when it was read
 	crash_hover: i64 = -1        // the call under the mouse as last drawn
 	docs_hover:  i64 = -1        // the Docs title under the mouse as last drawn
+	// What the mouse selects in (select.mara): the lines, how many clicks
+	// began it — 2: a word, 3: a line, the one they selected — what Ctrl+C
+	// copied, a 0 after it.
+	sel:        ^Lines
+	sel_clicks: i64
+	sel_from:   Spot
+	sel_to:     Spot
+	sel_scrolled: u32        // when it last scrolled the lines (GetTicks)
+	clip:       [..2 * MB]utf8
 	editor:      [..1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
 
 	// The theme's colors (theme_set).
@@ -95,7 +104,12 @@ Ui :: struct {
 	dim:        Color
 	accent:     Color   // the column sorted by; a ticked box; a name found
 	bad:        Color
-	code:       Color   // code, as the Docs panel shows it
+	code:       Color   // code, as the Docs panel shows it: its names
+	code_keyword: Color   // ... its keywords (code.mara's tokens)
+	code_type:    Color
+	code_string:  Color
+	code_number:  Color
+	selected:   Color   // text selected, behind it
 }
 
 // The colors: dark — light text on dark — or light.
@@ -113,6 +127,11 @@ theme_set :: fun(ui: ^Ui, light: bool) {
 		ui.accent     = Color{r = 176, g = 98, b = 0}
 		ui.bad        = Color{r = 192, g = 40, b = 30}
 		ui.code       = Color{r = 24, g = 82, b = 160}
+		ui.code_keyword = Color{r = 150, g = 40, b = 160}
+		ui.code_type    = Color{r = 0, g = 122, b = 122}
+		ui.code_string  = Color{r = 62, g = 122, b = 20}
+		ui.code_number  = Color{r = 190, g = 84, b = 0}
+		ui.selected   = Color{r = 184, g = 210, b = 245}
 	else
 		ui.ground     = Color{r = 22, g = 23, b = 25}
 		ui.background = Color{r = 30, g = 31, b = 34}
@@ -125,6 +144,11 @@ theme_set :: fun(ui: ^Ui, light: bool) {
 		ui.accent     = Color{r = 236, g = 180, b = 80}
 		ui.bad        = Color{r = 240, g = 120, b = 110}
 		ui.code       = Color{r = 150, g = 192, b = 240}
+		ui.code_keyword = Color{r = 204, g = 150, b = 236}
+		ui.code_type    = Color{r = 110, g = 204, b = 192}
+		ui.code_string  = Color{r = 166, g = 208, b = 124}
+		ui.code_number  = Color{r = 240, g = 160, b = 104}
+		ui.selected   = Color{r = 44, g = 78, b = 118}
 	}
 	ui.dirty = true
 }
@@ -186,7 +210,7 @@ main :: fun() -> i64 {
 	// faster, they'd queue to be shown, behind the mouse — a click's, a
 	// dragged panel's.)
 	_ = SetRenderVSync(ui.renderer, 1)
-	for id in 0 .. 10 {
+	for id in 0 .. 12 {
 		ui.cursors[id] = CreateSystemCursor(i32(id))
 	}
 	measure(&ui)
@@ -327,7 +351,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	MouseButtonDown
 		if e.button == 1 {
 			x, y, _ := cursor_now(ui)
-			press(ui, p, x, y)
+			press(ui, p, x, y, i64(e.clicks))
 		}
 	MouseButtonUp
 		if e.button == 1 {
@@ -361,6 +385,11 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		}
 		// (F5: the Docs panel's lookup made again, whatever's in front.)
 		if e.scancode == Scancode.F5 do docs_reload(ui)
+		// (Ctrl+C: what's selected copied, whichever panel it's in.)
+		if (GetModState() & KMOD_CTRL) != 0 {
+			if e.scancode == Scancode.C do select_copy(ui)
+			if e.scancode == Scancode.A do select_all(ui)
+		}
 		// (Keys go to the front panel.)
 		i := front_panel(ui)
 		if i >= 0 {
@@ -400,9 +429,15 @@ panel_lines :: fun(ui: ^Ui, kind: i64) -> ^Lines, bool {
 	return docs_shown(ui), kind == DOCS_PANEL
 }
 
-// The drag, if any, over: the layout saved.
+// The drag, if any, over: the layout saved — a selection's, its end
+// (select_end).
 end_drag :: fun(ui: ^Ui) {
 	if ui.drag == DRAG_NONE do return
+	if ui.drag == DRAG_SELECT {
+		ui.drag = DRAG_NONE
+		select_end(ui)
+		return
+	}
 	ui.drag = DRAG_NONE
 	layout_save(ui)
 }

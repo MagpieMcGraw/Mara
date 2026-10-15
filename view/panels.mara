@@ -39,6 +39,7 @@ MARGIN :: 6.0     // the default layout's room around a panel
 DRAG_NONE   :: 0
 DRAG_MOVE   :: 1
 DRAG_RESIZE :: 2
+DRAG_SELECT :: 3   // selecting its text (select.mara)
 
 // The edges a resize moves (bits).
 EDGE_LEFT   :: 1
@@ -233,11 +234,13 @@ edges_at :: fun(b: Rect, x: f32, y: f32) -> i64 {
 	return edges
 }
 
-// A press of the mouse at (x, y): with a menu open, its item — on another
-// menu's button, that menu; on a menu's button, its menu; on a panel, it
-// brought to the front and then — near its edges, a resize; on its title
-// bar, a move (its x: hidden); in its content, the panel's own click.
-press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
+// A press of the mouse at (x, y), the `clicks`-th of a quick run: with a
+// menu open, its item — on another menu's button, that menu; on a menu's
+// button, its menu; on a panel, it brought to the front and then — near its
+// edges, a resize; on its title bar, a move (its x: hidden); in its
+// content, the panel's own click — in lines, a selection begun (its click
+// when it's let go without selecting).
+press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32, clicks: i64) {
 	ui.dirty = true
 	if ui.menu_open != MENU_NONE {
 		m := ui.menu_open
@@ -289,8 +292,7 @@ press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32) {
 		return
 	}
 	if pn.kind == PROFILE_PANEL do profile_click(ui, p, content_rect(ui, pn), x, y)
-	if pn.kind == CRASH_PANEL do crash_click(ui, content_rect(ui, pn), x, y)
-	if pn.kind == DOCS_PANEL do docs_click(ui, content_rect(ui, pn), x, y)
+	select_press(ui, pn, x, y, clicks)
 }
 
 // Menu m's item chosen: a panel shown or hidden, the layout reset, the
@@ -311,10 +313,15 @@ menu_choose :: fun(ui: ^Ui, m: i64, item: i64) {
 	layout_save(ui)
 }
 
-// The mouse moved to (x, y) while a panel is dragged: its box follows.
+// The mouse moved to (x, y) while a panel is dragged: its box follows —
+// or, selecting, the selection.
 drag_to :: fun(ui: ^Ui, x: f32, y: f32) {
 	i := find_panel(ui, ui.drag_kind)
 	if i < 0 do return
+	if ui.drag == DRAG_SELECT {
+		select_to(ui, x, y)
+		return
+	}
 	dx := x - ui.drag_x
 	dy := y - ui.drag_y
 	b := ui.drag_box
@@ -341,12 +348,21 @@ drag_to :: fun(ui: ^Ui, x: f32, y: f32) {
 }
 
 // The cursor's look for the mouse at (x, y): resize arrows near a panel's
-// edges, else the arrow.
+// edges; over lines, a text cursor — a hand over a place they open; else
+// the arrow.
 cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
 	if ui.menu_open != MENU_NONE do return SYSTEM_CURSOR_DEFAULT
 	i := panel_grab_at(ui, x, y)
 	if i < 0 do return SYSTEM_CURSOR_DEFAULT
-	edges := edges_at(ui.panels[i].box, x, y)
+	pn := ui.panels[i]
+	edges := edges_at(pn.box, x, y)
+	if edges == 0 and y >= pn.box.y + bar_height(ui) {
+		_, _, lines := panel_lines_at(ui, pn, x, y)
+		if lines {
+			if docs_hover(ui) >= 0 or crash_hover(ui) >= 0 do return SYSTEM_CURSOR_POINTER
+			return SYSTEM_CURSOR_TEXT
+		}
+	}
 	if edges == EDGE_LEFT | EDGE_TOP or edges == EDGE_RIGHT | EDGE_BOTTOM do return SYSTEM_CURSOR_NWSE_RESIZE
 	if edges == EDGE_RIGHT | EDGE_TOP or edges == EDGE_LEFT | EDGE_BOTTOM do return SYSTEM_CURSOR_NESW_RESIZE
 	if edges == EDGE_LEFT or edges == EDGE_RIGHT do return SYSTEM_CURSOR_EW_RESIZE
@@ -414,16 +430,24 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 // then the query asked, its answer, below.
 draw_ask :: fun(ui: ^Ui, r: Rect) {
 	asked_hint := "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers."
-	if ui.at_cursor.lines.len == 0 {
+	upper, lower := ask_parts(ui, r)
+	if upper.h == 0 {
 		draw_lines(ui, &ui.asked, r, asked_hint)
 		return
 	}
+	draw_lines(ui, &ui.at_cursor, upper, "")
+	fill(ui.renderer, r.x, upper.y + upper.h, r.w, 1.0, ui.border)
+	if lower.h >= 2.0 * PAD + ui.text.line do draw_lines(ui, &ui.asked, lower, asked_hint)
+}
+
+// The Ask panel's parts in its content r: what's at the cursor's lines (0
+// high when there are none), and what was asked's below them, a line
+// between.
+ask_parts :: fun(ui: ^Ui, r: Rect) -> Rect, Rect {
+	if ui.at_cursor.lines.len == 0 do return Rect{x = r.x, y = r.y, w = r.w, h = 0}, r
 	n := min_int(lines_rows(ui, &ui.at_cursor, r), CURSOR_LINES)
 	h := min_f32(2.0 * PAD + f32(n) * ui.text.line, r.h)
-	draw_lines(ui, &ui.at_cursor, Rect{x = r.x, y = r.y, w = r.w, h = h}, "")
-	fill(ui.renderer, r.x, r.y + h, r.w, 1.0, ui.border)
-	rest := Rect{x = r.x, y = r.y + h + 1.0, w = r.w, h = r.h - h - 1.0}
-	if rest.h >= 2.0 * PAD + ui.text.line do draw_lines(ui, &ui.asked, rest, asked_hint)
+	return Rect{x = r.x, y = r.y, w = r.w, h = h}, Rect{x = r.x, y = r.y + h + 1.0, w = r.w, h = r.h - h - 1.0}
 }
 
 CURSOR_LINES :: 12   // the most lines of what's at the cursor shown
@@ -552,8 +576,8 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [15][]utf8
-	does : [15][]utf8
+	keys : [17][]utf8
+	does : [17][]utf8
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[1] = "Wheel"
@@ -584,6 +608,10 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	does[13] = "open the file it's defined in, at its line, in the editor"
 	keys[14] = "F5, or reload in the Docs title bar"
 	does[14] = "look what Docs shows up again: your edits shown, the scroll kept"
+	keys[15] = "Drag over text; double, triple click"
+	does[15] = "select it; a word; a line (Docs, Ask, Crash)"
+	keys[16] = "Ctrl+C, Ctrl+A"
+	does[16] = "copy what's selected, code's indent as tabs; select all of the front panel"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))

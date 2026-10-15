@@ -1,0 +1,162 @@
+module view
+
+use mara.core
+use mara.math
+use mara.string
+
+// Mara code as the panels show it (STYLE_MARA lines): each token in its
+// color — keywords, types, text and numbers, comments, the rest as code.
+// A line's tokens are found from its start, what's open there — a block
+// comment, a string — carried from the line above it (Line.state).
+
+TOKEN_PLAIN   :: 0   // names, punctuation, spaces
+TOKEN_KEYWORD :: 1
+TOKEN_TYPE    :: 2   // a built-in type's name, or one starting with a capital
+TOKEN_STRING  :: 3   // text and character literals
+TOKEN_NUMBER  :: 4   // numbers, and true, false, void
+TOKEN_COMMENT :: 5
+
+STATE_STRING :: -1   // a line's state: inside a string (a block comment: its depth)
+
+// The token at s[at], what's open there `state` (0, a block comment's
+// depth, STATE_STRING): where it ends, its kind, and what's open after it.
+code_token :: fun(s: []utf8, at: i64, state: i64) -> i64, i64, i64 {
+	k := at
+	if state == STATE_STRING {
+		for k < s.len {
+			if s[k] == '\\' {
+				k += 2
+				continue
+			}
+			if s[k] == '"' do return k + 1, TOKEN_STRING, 0
+			k += 1
+		}
+		return s.len, TOKEN_STRING, STATE_STRING
+	}
+	if state > 0 {
+		// (Block comments nest.)
+		depth := state
+		for k < s.len {
+			if k + 1 < s.len and s[k] == '/' and s[k + 1] == '*' {
+				depth += 1
+				k += 2
+				continue
+			}
+			if k + 1 < s.len and s[k] == '*' and s[k + 1] == '/' {
+				depth -= 1
+				k += 2
+				if depth == 0 do return k, TOKEN_COMMENT, 0
+				continue
+			}
+			k += 1
+		}
+		return s.len, TOKEN_COMMENT, depth
+	}
+	ch := s[k]
+	if ch == '/' and k + 1 < s.len {
+		if s[k + 1] == '/' do return s.len, TOKEN_COMMENT, 0
+		if s[k + 1] == '*' do return code_token(s, k + 2, 1)
+	}
+	if ch == '"' do return code_token(s, k + 1, STATE_STRING)
+	if ch == '\'' {
+		k += 1
+		for k < s.len {
+			if s[k] == '\\' {
+				k += 2
+				continue
+			}
+			if s[k] == '\'' do return k + 1, TOKEN_STRING, 0
+			k += 1
+		}
+		return s.len, TOKEN_STRING, 0
+	}
+	if ch >= '0' and ch <= '9' {
+		// (0x1F, 1_000, 2.5: a dot in it only before a digit — `0 .. n`'s isn't.)
+		k += 1
+		for k < s.len {
+			if s[k] == '.' and k + 1 < s.len and s[k + 1] >= '0' and s[k + 1] <= '9' {
+				k += 1
+				continue
+			}
+			if not is_word_char(s[k]) do break
+			k += 1
+		}
+		return k, TOKEN_NUMBER, 0
+	}
+	if is_word_char(ch) {
+		for k < s.len and is_word_char(s[k]) {
+			k += 1
+		}
+		return k, word_kind(s[at : k]), 0
+	}
+	if ch == ' ' {
+		for k < s.len and s[k] == ' ' {
+			k += 1
+		}
+		return k, TOKEN_PLAIN, 0
+	}
+	_, n := char_at(s, k)
+	return k + n, TOKEN_PLAIN, 0
+}
+
+// What's open after line s, given what was open at its start.
+code_state_after :: fun(s: []utf8, state: i64) -> i64 {
+	open := state
+	at : i64 = 0
+	for at < s.len {
+		end, _, next := code_token(s, at, open)
+		at = end
+		open = next
+	}
+	return open
+}
+
+// A word's kind: a keyword (lexer.odin's, and `type`), a type — built in, or
+// a name starting with a capital — a constant, else a name.
+word_kind :: fun(w: []utf8) -> i64 {
+	if w == "true" or w == "false" or w == "void" do return TOKEN_NUMBER
+	if w == "bool" or w == "byte" or w == "int" or w == "utf8" or w == "err" do return TOKEN_TYPE
+	if w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "i128" do return TOKEN_TYPE
+	if w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "u128" do return TOKEN_TYPE
+	if w == "f16" or w == "f32" or w == "f64" do return TOKEN_TYPE
+	if w[0] >= 'A' and w[0] <= 'Z' do return TOKEN_TYPE
+	if is_keyword(w) do return TOKEN_KEYWORD
+	return TOKEN_PLAIN
+}
+
+// Whether a word is one of Mara's keywords.
+is_keyword :: fun(w: []utf8) -> bool {
+	if w.len < 2 or w.len > 9 do return false
+	return w == "and" or w == "break" or w == "class" or w == "continue" or w == "defer" or w == "distinct" or w == "dispatch" or w == "do" or w == "else" or w == "elif" or w == "error" or w == "fun" or w == "fn" or w == "for" or w == "foreign" or w == "if" or w == "include" or w == "in" or w == "intrinsic" or w == "method" or w == "module" or w == "match" or w == "not" or w == "or" or w == "overload" or w == "return" or w == "struct" or w == "union" or w == "use" or w == "using" or w == "var" or w == "type"
+}
+
+// A token kind's color.
+token_color :: fun(ui: ^Ui, kind: i64) -> Color {
+	if kind == TOKEN_KEYWORD do return ui.code_keyword
+	if kind == TOKEN_TYPE do return ui.code_type
+	if kind == TOKEN_STRING do return ui.code_string
+	if kind == TOKEN_NUMBER do return ui.code_number
+	if kind == TOKEN_COMMENT do return ui.dim
+	return ui.code
+}
+
+// A row of a line of Mara code drawn at (x, y), each token in its color —
+// the line's tokens found from its start, for what's open where the row
+// begins.
+draw_code_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
+	ln := l.lines[row.line]
+	s := l.text[ln.at : ln.at + ln.len]
+	from := row.at - ln.at
+	to := from + row.len
+	pen := x
+	at : i64 = 0
+	state := ln.state
+	for at < to {
+		end, kind, next := code_token(s, at, state)
+		state = next
+		a := max_int(at, from)
+		b := min_int(end, to)
+		if a < b do pen = text_draw(&ui.text, ui.renderer, s[a : b], pen, y, token_color(ui, kind))
+		at = end
+	}
+}

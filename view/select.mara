@@ -1,0 +1,305 @@
+module view
+
+use mara.core
+use mara.math
+use mara.sdl
+use mara.string
+
+// Text selected in the panels that show lines (the Docs panel's, the Ask
+// panel's, the Crash panel's): dragged over with the mouse — a double click
+// a word, a triple click a line — Ctrl+A all of the front panel's; Ctrl+C
+// copies it. A press let go where it was is a click, as before: a Docs
+// title, a Crash call, opened in the editor. One selection at a time.
+
+SELECT_SCROLL_MS :: u32(40)   // a selection dragged past its lines: a row scrolled this often
+
+// Whether place a is before place b.
+spot_before :: fun(a: Spot, b: Spot) -> bool {
+	return a.line < b.line or (a.line == b.line and a.off < b.off)
+}
+
+// What's selected, its first place and the place after it (the same for
+// none).
+lines_selection :: fun(l: ^Lines) -> Spot, Spot {
+	if spot_before(l.caret, l.anchor) do return l.caret, l.anchor
+	return l.anchor, l.caret
+}
+
+// Whether anything's selected.
+lines_selected :: fun(l: ^Lines) -> bool {
+	return l.anchor.line != l.caret.line or l.anchor.off != l.caret.off
+}
+
+// The place in the lines drawn in r nearest (x, y), as last drawn: the row
+// at y, the character boundary nearest x in it — above the rows shown, the
+// first's start; below them, the last's end.
+lines_spot_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> Spot {
+	lines_wrap(ui, l, lines_width(r))
+	if l.rows.len == 0 do return Spot{}
+	shown := lines_visible(ui, l, r)
+	top := r.y + PAD
+	k := i64(floor_f32((y - top) / ui.text.line))
+	k = max_int(0, min_int(k, shown - 1))
+	below := y >= top + f32(shown) * ui.text.line or l.scroll + k >= l.rows.len
+	row := l.rows[max_int(0, min_int(l.scroll + k, l.rows.len - 1))]
+	ln := l.lines[row.line]
+	if y < top do return Spot{line = row.line, off = row.at - ln.at}
+	if below do return Spot{line = row.line, off = row.at - ln.at + row.len}
+	end := row.at + row.len
+	text := l.text[0 : end]
+	pen := r.x + PAD + row.indent
+	at := row.at
+	for at < end {
+		c, n := char_at(text, at)
+		w := char_width(&ui.text, c)
+		if x < pen + w / 2.0 do break
+		pen += w
+		at += n
+	}
+	return Spot{line = row.line, off = at - ln.at}
+}
+
+// The part of a row drawn at (x, y) that's selected — from..to — its
+// ground filled; a space's width more where the selection goes on past the
+// row's end, to the next row or line.
+draw_selected :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, from: Spot, to: Spot, x: f32, y: f32) {
+	if row.line < from.line or row.line > to.line do return
+	ln := l.lines[row.line]
+	start := row.at - ln.at
+	end := start + row.len
+	lo : i64 = 0
+	if row.line == from.line do lo = from.off
+	hi := ln.len + 1
+	if row.line == to.line do hi = to.off
+	a := max_int(lo, start)
+	b := min_int(hi, end)
+	if a > b do return
+	s := l.text[row.at : row.at + row.len]
+	x0 := x + text_width(&ui.text, s[0 : a - start])
+	x1 := x + text_width(&ui.text, s[0 : b - start])
+	if hi > end do x1 += char_width(&ui.text, u32(' '))
+	if x1 > x0 do fill(ui.renderer, x0, y, x1 - x0, ui.text.line, ui.selected)
+}
+
+// The word at a place selected — the name it's in or beside, else the
+// character there.
+lines_select_word :: fun(l: ^Lines, at: Spot) {
+	s := line_text(l, at.line)
+	a := at.off
+	b := at.off
+	if (b < s.len and is_word_char(s[b])) or (b > 0 and is_word_char(s[b - 1])) {
+		for a > 0 and is_word_char(s[a - 1]) {
+			a -= 1
+		}
+		for b < s.len and is_word_char(s[b]) {
+			b += 1
+		}
+	elif b < s.len
+		_, n := char_at(s, b)
+		b += n
+	}
+	l.anchor = Spot{line = at.line, off = a}
+	l.caret = Spot{line = at.line, off = b}
+}
+
+// Line k selected, all of it.
+lines_select_line :: fun(l: ^Lines, k: i64) {
+	l.anchor = Spot{line = k, off = 0}
+	l.caret = Spot{line = k, off = l.lines[k].len}
+}
+
+// All the lines selected.
+lines_select_all :: fun(l: ^Lines) {
+	l.anchor = Spot{}
+	l.caret = Spot{}
+	if l.lines.len > 0 do l.caret = Spot{line = l.lines.len - 1, off = l.lines[l.lines.len - 1].len}
+}
+
+// How many spaces line s starts with.
+lead_spaces :: fun(s: []utf8) -> i64 {
+	n : i64 = 0
+	for n < s.len and s[n] == ' ' {
+		n += 1
+	}
+	return n
+}
+
+// What's selected, as text, into `out`: its lines joined by newlines. The
+// indent the lines it takes from their start share is left out — the
+// panel's margin, an example's own: pasted, code goes where it's put — code's
+// and the rest's each its own, Mara code's indentation tabs again (a tab
+// was TAB_SPACES spaces), as it was written. (As much as `out` holds.)
+lines_copy_text :: fun(l: ^Lines, out: ^[..2 * MB]utf8) {
+	out.len = 0
+	from, to := lines_selection(l)
+	if not spot_before(from, to) do return
+	big : i64 = 1000000
+	code_lead := big
+	text_lead := big
+	for k in from.line .. to.line + 1 {
+		if k == from.line and from.off > 0 do continue
+		s := line_text(l, k)
+		n := lead_spaces(s)
+		if n == s.len do continue   // (blank)
+		if l.lines[k].style == STYLE_MARA {
+			code_lead = min_int(code_lead, n)
+		else
+			text_lead = min_int(text_lead, n)
+		}
+	}
+	if code_lead == big do code_lead = 0
+	if text_lead == big do text_lead = 0
+	for k in from.line .. to.line + 1 {
+		s := line_text(l, k)
+		lo : i64 = 0
+		if k == from.line do lo = from.off
+		hi := s.len
+		if k == to.line do hi = to.off
+		if out.len + 1 + s.len > out.cap do return
+		if k > from.line do &out^ + '\n'
+		code := l.lines[k].style == STYLE_MARA
+		if lo == 0 {
+			// (Its share of the indent left out.)
+			lead := text_lead
+			if code do lead = code_lead
+			lo = min_int(min_int(lead, lead_spaces(s)), hi)
+			if code {
+				n := lead_spaces(s[lo : hi])
+				for _ in 0 .. n / TAB_SPACES {
+					&out^ + '\t'
+				}
+				for _ in 0 .. n % TAB_SPACES {
+					&out^ + ' '
+				}
+				lo += n
+			}
+		}
+		&out^ + s[lo : hi]
+	}
+}
+
+// The lines panel pn shows at (x, y), and the part of its content they're
+// drawn in — the Ask panel's, what's at the cursor or what was asked; false
+// for a panel that doesn't show lines.
+panel_lines_at :: fun(ui: ^Ui, pn: Panel, x: f32, y: f32) -> ^Lines, Rect, bool {
+	c := content_rect(ui, pn)
+	if pn.kind == ASK_PANEL {
+		upper, lower := ask_parts(ui, c)
+		if upper.h > 0 and y < upper.y + upper.h do return &ui.at_cursor, upper, true
+		return &ui.asked, lower, true
+	}
+	l, has := panel_lines(ui, pn.kind)
+	return l, c, has
+}
+
+// Where the lines being selected in are drawn: their panel's part.
+select_rect :: fun(ui: ^Ui) -> Rect {
+	i := find_panel(ui, ui.drag_kind)
+	c := content_rect(ui, ui.panels[i])
+	if ui.drag_kind != ASK_PANEL do return c
+	upper, lower := ask_parts(ui, c)
+	if ui.sel == &ui.at_cursor do return upper
+	return lower
+}
+
+// Nothing selected anywhere.
+unselect_all :: fun(ui: ^Ui) {
+	for k in 0 .. 2 {
+		ui.docs[k].anchor = ui.docs[k].caret
+	}
+	ui.asked.anchor = ui.asked.caret
+	ui.at_cursor.anchor = ui.at_cursor.caret
+	ui.crash.anchor = ui.crash.caret
+}
+
+// A press in panel pn's lines, at (x, y), the `clicks`-th of a quick
+// run: what was selected let go, and a selection begun — a word's for the
+// second, a line's for the third; the mouse drags it on (select_to).
+select_press :: fun(ui: ^Ui, pn: Panel, x: f32, y: f32, clicks: i64) {
+	l, r, has := panel_lines_at(ui, pn, x, y)
+	if not has do return
+	unselect_all(ui)
+	if l.lines.len == 0 do return
+	at := lines_spot_at(ui, l, r, x, y)
+	l.anchor = at
+	l.caret = at
+	if clicks == 2 do lines_select_word(l, at)
+	if clicks >= 3 do lines_select_line(l, at.line)
+	ui.sel_from, ui.sel_to = lines_selection(l)
+	ui.sel = l
+	ui.sel_clicks = clicks
+	ui.drag = DRAG_SELECT
+	ui.dirty = true
+}
+
+// The mouse at (x, y) while selecting: the selection's end follows it —
+// above or below the rows shown, they scroll a row (SELECT_SCROLL_MS
+// apart at most: a mouse says it moved a thousand times a second).
+select_to :: fun(ui: ^Ui, x: f32, y: f32) {
+	l := ui.sel
+	r := select_rect(ui)
+	shown := lines_visible(ui, l, r)
+	top := r.y + PAD
+	outside := y < top or y >= top + f32(shown) * ui.text.line
+	if outside and GetTicks() - ui.sel_scrolled >= SELECT_SCROLL_MS {
+		ui.sel_scrolled = GetTicks()
+		if y < top {
+			l.scroll -= 1
+		else
+			l.scroll += 1
+		}
+		l.scroll = max_int(0, min_int(l.scroll, l.rows.len - shown))
+	}
+	at := lines_spot_at(ui, l, r, x, y)
+	ui.dirty = true
+	if ui.sel_clicks < 2 {
+		l.caret = at
+		return
+	}
+	// (A word's or a line's selection grown from it, never cut into: from its
+	// far end, the way it's dragged.)
+	l.anchor = ui.sel_from
+	l.caret = ui.sel_to
+	if spot_before(at, ui.sel_from) {
+		l.anchor = ui.sel_to
+		l.caret = at
+	elif spot_before(ui.sel_to, at)
+		l.caret = at
+	}
+}
+
+// The mouse let go while selecting: a press that selected nothing a click —
+// its panel's own, at the press.
+select_end :: fun(ui: ^Ui) {
+	if ui.sel_clicks != 1 or lines_selected(ui.sel) do return
+	i := find_panel(ui, ui.drag_kind)
+	if i < 0 do return
+	c := content_rect(ui, ui.panels[i])
+	if ui.drag_kind == DOCS_PANEL do docs_click(ui, c, ui.drag_x, ui.drag_y)
+	if ui.drag_kind == CRASH_PANEL do crash_click(ui, c, ui.drag_x, ui.drag_y)
+}
+
+// Ctrl+C: what's selected copied, for pasting anywhere.
+select_copy :: fun(ui: ^Ui) {
+	if ui.sel == void do return
+	if not lines_selected(ui.sel) do return
+	lines_copy_text(ui.sel, &ui.clip)
+	// (A 0 after the text, for C: then not counted.)
+	if ui.clip.len == ui.clip.cap do ui.clip.len -= 1
+	&ui.clip + utf8(0)
+	ui.clip.len -= 1
+	_ = SetClipboardText(cstring(ui.clip))
+}
+
+// Ctrl+A: all the front panel's lines selected — the Ask panel's, what was
+// asked.
+select_all :: fun(ui: ^Ui) {
+	i := front_panel(ui)
+	if i < 0 do return
+	l, has := panel_lines(ui, ui.panels[i].kind)
+	if not has do return
+	unselect_all(ui)
+	lines_select_all(l)
+	ui.sel = l
+	ui.dirty = true
+}

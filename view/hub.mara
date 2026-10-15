@@ -417,11 +417,11 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 
 // How a line of `mara ask what at`'s answer is shown, the n-th: the first
 // (what the name is) a title; where it's declared, what it's in, dim; the
-// code — a signature, the expressions around it — as code.
+// code — a signature, the expressions around it — as Mara code.
 cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 	if n == 0 do return STYLE_TITLE
 	if starts_with(line, "  declared") or starts_with(line, "  in ") or starts_with(line, "  built into") do return STYLE_DIM
-	return STYLE_CODE
+	return STYLE_MARA
 }
 
 // Serve running: started unless it is. False when it can't be.

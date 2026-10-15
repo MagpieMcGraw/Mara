@@ -1032,14 +1032,17 @@ BLENDMODE_NONE  :: u32(0)
 BLENDMODE_BLEND :: u32(1)         // drawn over what's there by its alpha
 SCALEMODE_NEAREST :: i32(0)       // a texel to a pixel, never blended
 KMOD_SHIFT :: u16(0x0003)         // either shift key (GetModState)
+KMOD_CTRL  :: u16(0x00C0)         // either control key
 
 // The system's cursors (CreateSystemCursor), the ones for resizing too.
 SYSTEM_CURSOR_DEFAULT     :: i32(0)   // an arrow
+SYSTEM_CURSOR_TEXT        :: i32(1)   // an I-beam, over text
 SYSTEM_CURSOR_NWSE_RESIZE :: i32(5)   // pointing up-left and down-right
 SYSTEM_CURSOR_NESW_RESIZE :: i32(6)   // up-right and down-left
 SYSTEM_CURSOR_EW_RESIZE   :: i32(7)   // left and right
 SYSTEM_CURSOR_NS_RESIZE   :: i32(8)   // up and down
 SYSTEM_CURSOR_MOVE        :: i32(9)   // all four ways
+SYSTEM_CURSOR_POINTER     :: i32(11)  // a hand, over a link
 
 // ---------------------------------------------------------------------------
 // SDL functions
@@ -1180,6 +1183,8 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun GetCurrentDisplayMode(display: u32) -> ^Display_Mode
     // The modifier keys held now: KMOD_SHIFT, ...
     fun GetModState() -> u16
+    // Text put on the system's clipboard, for pasting anywhere.
+    fun SetClipboardText(text: cstring) -> bool
     // Where the cursor is on the screen (and the buttons held).
     fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
     // Where the window's inside is on the screen.
