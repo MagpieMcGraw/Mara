@@ -1,0 +1,15 @@
+module fixed_array_arg_neg
+
+//@ expect-fail: `storage` is a fixed array, with no len to move: declare it a partial array, `[..100]byte`
+
+// A fixed array's address where a buffer with a len goes (a `^[]byte`
+// param): the error says to declare it a partial array, the same room.
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	storage : [100]byte
+	_, e := read_entire_file("fixed_array_arg_neg.mara", &storage)
+	print(e)
+}

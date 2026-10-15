@@ -38,19 +38,25 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(ct))
         }
     }
-    // (A cursor is ^[]byte: a []byte would be a header of the call's own,
-    // its takes each from 0.)
+    // (A cursor is ^[]byte — or a partial array's address, its header the
+    // same: a []byte would be a header of the call's own, its takes each
+    // from 0.)
     st := tc_check(k, storage)
     cursor, at_byte := false, false
     if pt, is_ptr := distinct_base(st).(^Type_Ptr); is_ptr {
         #partial switch elem in distinct_base(pt.elem) {
         case ^Type_Slice:
             _, cursor = elem.elem.(Type_Byte)
+        case ^Type_Partial_Array:
+            _, cursor = elem.elem.(Type_Byte)
         case Type_Byte:
             at_byte = true
         }
     }
-    if !cursor && !at_byte && !is_any(st) { tc_error(k, span, TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM, type_name(st)) }
+    if !cursor && !at_byte && !is_any(st) {
+        bytes := Type(new_clone(Type_Ptr{elem = new_clone(Type_Slice{elem = Type_Byte{}})}))
+        tc_error(k, span, TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM, type_name(st), tc_partial_hint(k, storage, st, bytes))
+    }
     return taken
 }
 

@@ -1,0 +1,13 @@
+module fixed_array_take_neg
+
+//@ expect-fail: `room` is a fixed array, with no len to move: declare it a partial array, `[..256]byte`
+
+// slice()/let() carve from storage after its len: a fixed array has none.
+
+use mara.core
+
+main :: fun() {
+	room : [256]byte
+	nums := slice([:4]i64, &room)
+	print(nums.len)
+}

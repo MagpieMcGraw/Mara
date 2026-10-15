@@ -1,0 +1,19 @@
+module take_partial_cursor
+
+//@ expect-output: 7 9 5 32
+
+// slice()/let() take a partial array's address as their storage, as they
+// take a ^[]byte: each carves after its len, aligned, and moves it on.
+
+use mara.core
+
+main :: fun() {
+	storage : [..100]byte
+	storage.len = 3
+	got := slice([:2]i64, &storage)
+	got[0] = 7
+	got[1] = 9
+	n := let(i64, &storage)
+	n = 5
+	print(got[0], got[1], n, storage.len)
+}

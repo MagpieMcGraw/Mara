@@ -463,6 +463,11 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         t = Type_Bool{}
     case .Plus:
         if !is_numeric(lt) || !is_numeric(rt) {
+            // (`&buf + x` on a fixed array: no overload is missing — it can't grow.)
+            if hint := tc_partial_hint(k, left, lt); hint != "" {
+                tc_error(k, span, TYPE_APPEND_TO_FIXED_ARRAY, type_name(lt), type_name(rt), hint)
+                return Type_Error{}
+            }
             tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT, type_name(lt), type_name(rt))
             return Type_Error{}
         }
@@ -688,7 +693,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) {
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
-            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at), tc_partial_hint(k, a, at, pt))
         }
         // (A runtime string into a `cstring` param: `cstring(s)`, written —
         // the copy and the terminator seen. A literal, or a constant one,
