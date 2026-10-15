@@ -52,7 +52,22 @@ theme_builtin :: fun(ui: ^Ui, light: bool) {
 		ui.bad        = Color{r = 192, g = 40, b = 30}
 		ui.code       = Color{r = 24, g = 82, b = 160}
 		ui.selected   = Color{r = 184, g = 210, b = 245}
-		theme_tokens(ui, Color{r = 150, g = 40, b = 160}, Color{r = 0, g = 122, b = 122}, Color{r = 62, g = 122, b = 20}, Color{r = 190, g = 84, b = 0})
+		c : Code_Colors
+		c.names    = ui.code
+		c.keyword  = Color{r = 150, g = 40, b = 160}
+		c.storage  = Color{r = 180, g = 40, b = 110}
+		c.operator = Color{r = 96, g = 102, b = 112}
+		c.punct    = Color{r = 128, g = 132, b = 140}
+		c.types    = Color{r = 0, g = 122, b = 122}
+		c.declared = ui.ink
+		c.number   = Color{r = 190, g = 84, b = 0}
+		c.text     = Color{r = 62, g = 122, b = 20}
+		c.escape   = Color{r = 0, g = 135, b = 105}
+		c.builtin  = Color{r = 120, g = 70, b = 200}
+		c.call     = Color{r = 0, g = 110, b = 175}
+		c.field    = Color{r = 160, g = 95, b = 20}
+		c.modules  = Color{r = 90, g = 80, b = 170}
+		theme_tokens(ui, c)
 		return
 	}
 	ui.ground     = Color{r = 22, g = 23, b = 25}
@@ -67,30 +82,68 @@ theme_builtin :: fun(ui: ^Ui, light: bool) {
 	ui.bad        = Color{r = 240, g = 120, b = 110}
 	ui.code       = Color{r = 150, g = 192, b = 240}
 	ui.selected   = Color{r = 44, g = 78, b = 118}
-	theme_tokens(ui, Color{r = 204, g = 150, b = 236}, Color{r = 110, g = 204, b = 192}, Color{r = 166, g = 208, b = 124}, Color{r = 240, g = 160, b = 104})
+	c : Code_Colors
+	c.names    = ui.code
+	c.keyword  = Color{r = 204, g = 150, b = 236}
+	c.storage  = Color{r = 236, g = 130, b = 170}
+	c.operator = Color{r = 160, g = 166, b = 176}
+	c.punct    = Color{r = 128, g = 133, b = 143}
+	c.types    = Color{r = 110, g = 204, b = 192}
+	c.declared = ui.ink
+	c.number   = Color{r = 240, g = 160, b = 104}
+	c.text     = Color{r = 166, g = 208, b = 124}
+	c.escape   = Color{r = 110, g = 220, b = 170}
+	c.builtin  = Color{r = 180, g = 160, b = 255}
+	c.call     = Color{r = 100, g = 200, b = 240}
+	c.field    = Color{r = 230, g = 190, b = 110}
+	c.modules  = Color{r = 170, g = 170, b = 240}
+	theme_tokens(ui, c)
 }
 
-// The dark and light themes' tokens: keywords in one color, types in
-// another (a capitalized name's too), text and numbers in theirs, comments
-// dim, the rest as code.
-theme_tokens :: fun(ui: ^Ui, keyword: Color, type_color: Color, text: Color, number: Color) {
-	for k in 0 .. TOKENS {
-		ui.tokens[k] = ui.code
-	}
-	ui.tokens[TOKEN_KEYWORD] = keyword
-	ui.tokens[TOKEN_IMPORT] = keyword
-	ui.tokens[TOKEN_OTHER] = keyword
-	ui.tokens[TOKEN_LOGIC] = keyword
-	ui.tokens[TOKEN_STORAGE] = keyword
-	ui.tokens[TOKEN_BARE] = keyword
-	ui.tokens[TOKEN_BASIC_TYPE] = type_color
-	ui.tokens[TOKEN_TYPE_NAME] = type_color
-	ui.tokens[TOKEN_CAPITAL] = type_color
-	ui.tokens[TOKEN_CONSTANT] = number
-	ui.tokens[TOKEN_NUMBER] = number
-	ui.tokens[TOKEN_STRING] = text
-	ui.tokens[TOKEN_CHAR] = text
-	ui.tokens[TOKEN_ESCAPE] = text
+// The dark and light themes' colors for code, by what a token is.
+Code_Colors :: struct {
+	names:    Color   // names, as used
+	keyword:  Color   // control — if, for, return; and, or, not, in; module, use
+	storage:  Color   // what declares — fun, union, struct, distinct, type; using, #packed
+	operator: Color
+	punct:    Color   // ( ) { } [ ] , ; and the dot
+	types:    Color   // i64, bool; a capitalized name
+	declared: Color   // the name a declaration declares — `name :: fun`, `Name :: struct`
+	number:   Color   // and true, false, void
+	text:     Color   // strings and characters
+	escape:   Color   // \n in them
+	builtin:  Color   // print(, assert( …
+	call:     Color   // name(
+	field:    Color   // .len, .cap
+	modules:  Color   // mara.math
+}
+
+// The dark and light themes' tokens: each kind in its color among c's —
+// comments dim, what isn't Mara (uint, \q) as a failure.
+theme_tokens :: fun(ui: ^Ui, c: Code_Colors) {
+	ui.tokens[TOKEN_PLAIN] = c.names
+	ui.tokens[TOKEN_KEYWORD] = c.keyword
+	ui.tokens[TOKEN_IMPORT] = c.keyword
+	ui.tokens[TOKEN_LOGIC] = c.keyword
+	ui.tokens[TOKEN_OTHER] = c.storage
+	ui.tokens[TOKEN_STORAGE] = c.storage
+	ui.tokens[TOKEN_BARE] = c.storage
+	ui.tokens[TOKEN_OPERATOR] = c.operator
+	ui.tokens[TOKEN_PUNCT] = c.punct
+	ui.tokens[TOKEN_ACCESSOR] = c.punct
+	ui.tokens[TOKEN_BASIC_TYPE] = c.types
+	ui.tokens[TOKEN_CAPITAL] = c.types
+	ui.tokens[TOKEN_FUN_NAME] = c.declared
+	ui.tokens[TOKEN_TYPE_NAME] = c.declared
+	ui.tokens[TOKEN_CONSTANT] = c.number
+	ui.tokens[TOKEN_NUMBER] = c.number
+	ui.tokens[TOKEN_STRING] = c.text
+	ui.tokens[TOKEN_CHAR] = c.text
+	ui.tokens[TOKEN_ESCAPE] = c.escape
+	ui.tokens[TOKEN_BUILTIN] = c.builtin
+	ui.tokens[TOKEN_CALL] = c.call
+	ui.tokens[TOKEN_FIELD] = c.field
+	ui.tokens[TOKEN_MODULE] = c.modules
 	ui.tokens[TOKEN_COMMENT] = ui.dim
 	ui.tokens[TOKEN_BLOCK] = ui.dim
 	ui.tokens[TOKEN_BAD] = ui.bad
