@@ -1,15 +1,15 @@
 // Mara's basics: what each keyword and built-in does, with an example of each.
 //
-// Each keyword or built-in has an entry here: a fun named keyword_<word> or
-// builtin_<word>. Its doc comment explains the word; its body is the
-// example, and runs — main calls every entry, so what's written here works.
-// Rest the cursor on a word in the editor — `fun`, `for`, `print` — and the
-// docs window shows its entry. An entry's first line starts with the words
-// it covers, each in backticks, then a colon: `if`, `elif` and `else` share
-// one.
+// Each keyword or built-in has an example here: a fun named example_<word>.
+// Its doc comment explains the word; the fun is the example, and runs —
+// main calls every one, so what's written here works. Rest the cursor on a
+// word in the editor — `fun`, `for`, `print` — and the docs window shows its
+// example. Its first line starts with the words it covers, each in
+// backticks: they're what it's found by (`if`, `elif` and `else` share
+// one), so the fun's own name is free.
 //
 // What an example needs that can't be defined inside a fun (a union with
-// fields, a dispatch, a generic fun) comes right after its entry, and is part
+// fields, a dispatch, a generic fun) comes right after its example, and is part
 // of the example up to the next comment line at the top level.
 //
 // Longer pages on some of these: program.mara (a program's shape),
@@ -31,7 +31,7 @@ use mara.core
 // Library modules have dotted names, like mara.os, and live in the
 // compiler's code/ folder. The comment right above the `module` line is the
 // file's doc comment.
-keyword_module :: fun() {
+example_module :: fun() {
 	// This file is:
 	//
 	//     module basics
@@ -53,7 +53,7 @@ keyword_module :: fun() {
 //
 // Uses go at the top, after the `module` line. Nearly every file uses
 // mara.core: text buffers, `&list + x`, comparing texts.
-keyword_use :: fun() {
+example_use :: fun() {
 	// At the top of a file:
 	//
 	//     use mara.core
@@ -78,7 +78,7 @@ keyword_use :: fun() {
 // another is seen only there. A `$T` in a param's type makes the fun
 // generic: T is whatever type the call passes. `method` is another spelling
 // of `fun`.
-keyword_fun :: fun() {
+example_fun :: fun() {
 	sum :: fun(a, b: i64) -> i64 {
 		return a + b
 	}
@@ -125,7 +125,7 @@ first :: fun(xs: []$T) -> T {   // generic: T is the items' type
 // A call of several results goes only where several go: `a, b := f()`, not
 // `f() == 1`. `return f()` hands on all of f's results — its err too — when
 // they fit the function's; `return f()?` passes on only a failure.
-keyword_return :: fun() {
+example_return :: fun() {
 	sign :: fun(n: i64) -> i64 {
 		if n < 0 do return -1
 		if n == 0 do return 0
@@ -145,7 +145,7 @@ keyword_return :: fun() {
 // `else do s`, on that line or the next ones.
 //
 // `if` also picks a value: `x := if a do 1 else 2`, both of one type.
-keyword_if :: fun() {
+example_if :: fun() {
 	temperature := 101
 	if temperature > 100 {
 		print("steam")
@@ -169,7 +169,7 @@ keyword_if :: fun() {
 // around that one statement. An `if … do` chain goes on with `elif c do s`
 // and `else do s`, each on its own line or the same one. For more than one
 // statement, use braces.
-keyword_do :: fun() {
+example_do :: fun() {
 	n := 3
 	if n > 2 do print("big")               // big
 	else do print("small")
@@ -185,7 +185,7 @@ keyword_do :: fun() {
 // true { … }` until a break or return.
 //
 // `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10.
-keyword_for :: fun() {
+example_for :: fun() {
 	for i in 0 .. 3 {
 		print("round", i)                  // round 0, round 1, round 2
 	}
@@ -207,7 +207,7 @@ keyword_for :: fun() {
 // `break`, `continue`: leave a loop now, or skip to its next round.
 //
 // Both act on the innermost loop they're in.
-keyword_break :: fun() {
+example_break :: fun() {
 	for i in 0 .. 10 {
 		if i % 2 == 1 do continue          // odd ones skipped
 		if i > 6 do break                  // stops at 8
@@ -228,7 +228,7 @@ keyword_break :: fun() {
 // `Circle c`, c is the variant's fields. Every variant needs an arm, or an
 // `else` arm takes the rest — a variant left out doesn't build. See
 // unions.mara.
-keyword_match :: fun() {
+example_match :: fun() {
 	shape_area :: fun(s: Shape) -> f64 {
 		match s {
 		Circle c
@@ -262,7 +262,7 @@ Shape :: union {
 // `Grid(4)`. Its body runs to build it, so a field can be worked out from
 // them. A fun in the body is a method: `g.cells()`, Self being the struct.
 // `class` is another spelling of `struct`.
-keyword_struct :: fun() {
+example_struct :: fun() {
 	Point :: struct {
 		x: f32
 		y: f32 = 1
@@ -292,7 +292,7 @@ keyword_struct :: fun() {
 // first). A variant given no value takes the one after the variant before
 // it, skipping values others are given: `{ a, b, none = 0 }` is 1, 2, 0. An
 // enum can be defined in a fun's body, and is seen there only.
-keyword_union :: fun() {
+example_union :: fun() {
 	Light :: union { Red  Yellow  Green }
 	l : Light = .Yellow
 	print(l)                               // Light.Yellow
@@ -309,7 +309,7 @@ keyword_union :: fun() {
 // fails; reaching its end or `return n` succeeds (the err is Ok). The caller
 // must look at the err — `if bool(e)` — or pass it on with `?`. See
 // errors.mara.
-keyword_error :: fun() {
+example_error :: fun() {
 	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {
 		if c < '0' or c > '9' do return 0, Not_A_Digit
@@ -328,7 +328,7 @@ keyword_error :: fun() {
 // doesn't go where Meters does, so the two can't be mixed up. `Label ::
 // type [..16]utf8` is the same type by another name, and goes anywhere its
 // base does (core's str64 is one).
-keyword_distinct :: fun() {
+example_distinct :: fun() {
 	Meters :: distinct f64
 	Label :: type [..16]utf8
 	m := Meters(3)
@@ -343,7 +343,7 @@ keyword_distinct :: fun() {
 //
 // Comparisons give a bool (`a < b`), and `if`, `for` and `and`/`or`/`not`
 // take one. A number isn't a bool: `bool(n)` is true when n isn't 0.
-keyword_true :: fun() {
+example_true :: fun() {
 	ready := true
 	done : bool = false
 	print(ready, done, 3 > 2)              // true false true
@@ -355,7 +355,7 @@ keyword_true :: fun() {
 // `a and b` is true when both are; `a or b` when either is; `not a` when a
 // isn't. The right side runs only when it's needed: in `i < n and xs[i] > 0`,
 // xs[i] isn't read once i reaches n.
-keyword_and :: fun() {
+example_and :: fun() {
 	xs : [3]i64 = [4, 0, 9]
 	i := 3
 	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
@@ -371,7 +371,7 @@ keyword_and :: fun() {
 // run last first. `defer?` runs only on a failing way out — a `?` that
 // fails, a return of a failed err — for taking back what a failure would
 // leave half done. See errors.mara.
-keyword_defer :: fun() {
+example_defer :: fun() {
 	steps :: fun() {
 		defer print("third")
 		defer print("second")
@@ -388,7 +388,7 @@ keyword_defer :: fun() {
 // `fn` and a function's name: `cb: fn tick` takes tick, or a variable
 // holding it. Another function of the same shape doesn't fit: the type is
 // that function's.
-keyword_fn :: fun() {
+example_fn :: fun() {
 	run_twice :: fun(f: fn tick, n: i64) -> i64 {
 		return f(f(n))
 	}
@@ -404,7 +404,7 @@ tick :: fun(n: i64) -> i64 { return n + 1 }
 // `area :: dispatch{ coin_area, tile_area }`: `area(c)` calls coin_area for
 // a Coin, tile_area for a Tile. The args must fit one exactly. With
 // `overload`, an operator calls a dispatch.
-keyword_dispatch :: fun() {
+example_dispatch :: fun() {
 	print(area(Coin{r = 1}))               // 3.14
 	print(area(Tile{side = 2}))            // 4
 }
@@ -420,7 +420,7 @@ Tile :: struct { side: f64 }
 // `overload + plus` makes `a + b` call `plus(a, b)` when a function in the
 // dispatch plus takes them. Core does this for text: `&name + "x"` is its
 // add, `a == b` its equal.
-keyword_overload :: fun() {
+example_overload :: fun() {
 	v := V2{1, 2} + V2{10, 20}
 	print(v)                               // V2 { x: 11, y: 22 }
 }
@@ -437,7 +437,7 @@ V2 :: struct { x: f64  y: f64 }
 // The struct's own field of a name comes first. A using fixed array gives
 // its swizzles: with `using v: [3]f32`, `p.x`, `p.yz`. A literal still names
 // the field itself: `Player{pos = Place{x = 1}}`.
-keyword_using :: fun() {
+example_using :: fun() {
 	pl : Player
 	pl.x = 4
 	print(pl.x, pl.pos.x, pl.hp)           // 4 4 10
@@ -456,7 +456,7 @@ Place :: struct { x: f32  y: f32 }
 // the library's name lets the functions go without it: `Init` for SDL_Init.
 // The standard library's os.mara and the SDL and OpenGL bindings in code/
 // are made of these. Text goes to C as a cstring.
-keyword_foreign :: fun() {
+example_foreign :: fun() {
 	// From code/os.mara:
 	//
 	//     foreign static_lib "kernel32" {
@@ -473,7 +473,7 @@ It takes any number of arguments, including none, and they can be any printable 
 
 When the first argument is a text literal with a % in it, each % is replaced by the next value, in order. The number of % must equal the number of values after it, or it won't compile. %% prints a single %.
 */
-builtin_print :: fun() {
+example_print :: fun() {
 	print("hello", 42, 2.5, true)          // hello 42 2.5 true
 	print("% is % years old", "Ada", 36)   // Ada is 36 years old
 }
@@ -485,7 +485,7 @@ builtin_print :: fun() {
 // 5". `crash("why")` stops it right there, with that message. Indexing past
 // an array's end and numbers overflowing stop it the same way. Either way
 // crash.txt, beside the program, lists the calls that were running.
-builtin_assert :: fun() {
+example_assert :: fun() {
 	n := 50
 	assert(n > 10)
 	if n > 100 do crash("n is far too big")
@@ -496,7 +496,7 @@ builtin_assert :: fun() {
 // `xs.len` is how many items there are; `xs.cap` how many fit — for a list
 // (`[..8]i64`) that's 8, however many it has. A fixed array's are both its
 // size. `len(xs)` and `cap(xs)` say the same of a fixed array or a slice.
-builtin_len :: fun() {
+example_len :: fun() {
 	list : [..8]i64
 	&list + 3
 	&list + 4
@@ -514,7 +514,7 @@ builtin_len :: fun() {
 // `i64(x)` turns x into an i64 (a float's fraction dropped). `+ - *` stop
 // the program on overflow; `+% -% *%` wrap around instead. `int` and
 // `uint` aren't types: write i64 or u64.
-builtin_i64 :: fun() {
+example_i64 :: fun() {
 	small : u8 = 200
 	big := i64(small) * 10
 	print(big)                             // 2000
@@ -526,7 +526,7 @@ builtin_i64 :: fun() {
 //
 // `x := 2.5` is an f64 unless its uses give it f32. `f64(n)` turns an int
 // into an f64. They don't mix with ints: convert one first.
-builtin_f64 :: fun() {
+example_f64 :: fun() {
 	half := 0.5
 	n := 3
 	print(f64(n) * half)                   // 1.5
@@ -541,7 +541,7 @@ builtin_f64 :: fun() {
 // byte is 8 bits of anything — file contents, pixels. Any value written into
 // a byte buffer goes in as its bytes, and a value read from one comes out of
 // them.
-builtin_utf8 :: fun() {
+example_utf8 :: fun() {
 	c := 'A'
 	print(c, i64(c))                       // A 65
 	print(utf8(i64(c) + 1))                // B
@@ -559,7 +559,7 @@ builtin_utf8 :: fun() {
 // so a typo is never taken for a real choice. Letter case counts: name the
 // variants the way the text writes them. Then `match` takes the enum, and the
 // checker sees that every variant is handled.
-builtin_from_text :: fun() {
+example_from_text :: fun() {
 	cmd := Command.from_text("run")
 	print(cmd)                             // Command.run
 	print(Command.from_text("Run"))        // Command.none: no variant Run
@@ -576,7 +576,7 @@ builtin_from_text :: fun() {
 Command :: union { build  run  none = 0 }
 
 // `size_of`: how many bytes a type takes, worked out when the program is built.
-builtin_size_of :: fun() {
+example_size_of :: fun() {
 	print(size_of(i64), size_of([4]f32))   // 8 16
 }
 
@@ -587,7 +587,7 @@ builtin_size_of :: fun() {
 // &mem[k])` names a T living in the bytes at k. For a count known only when
 // the program runs, slice a fixed array instead: `room : [100]i64`, then
 // `xs := room[0:n]`.
-builtin_slice :: fun() {
+example_slice :: fun() {
 	storage : [..64]byte
 	mem : []byte = storage
 	xs := slice([:3]i64, &mem)
@@ -606,7 +606,7 @@ builtin_slice :: fun() {
 // a 0 must follow the text in the buffer, or the program stops. Pass the
 // buffer itself, not `buf[:]`. `slice_from_ptr(p, n)` views n bytes at a
 // pointer C gave back (n a constant, outside mara.os).
-builtin_cstring :: fun() {
+example_cstring :: fun() {
 	// path : [..260]utf8
 	// &path + "notes.txt"
 	// handle := CreateFileA(cstring(path), …)
@@ -618,12 +618,12 @@ builtin_cstring :: fun() {
 // the program an arena, where values of 1 KB or more live (see
 // arenas.mara). `this_program.args` is the command line. Only main sets
 // it; other funs read it. See program.mara, command_line_args.mara.
-builtin_this_program :: fun() {
+example_this_program :: fun() {
 	print(this_program.args.len > 0)       // true: args[0] is the program's path
 }
 
 // `Self`: the type whose body you're in, inside a struct or union.
-builtin_Self :: fun() {
+example_Self :: fun() {
 	Counter :: struct {
 		n := 0
 		bumped :: fun(c: Self) -> Self { return Counter{n = c.n + 1} }
@@ -636,7 +636,7 @@ builtin_Self :: fun() {
 //
 // `buf : [4096]byte = void` skips filling the buffer with zeros, for when
 // every item is written before it's read.
-builtin_void :: fun() {
+example_void :: fun() {
 	squares : [8]i64 = void
 	for i in 0 .. 8 do squares[i] = i * i
 	print(squares[7])                      // 49
@@ -645,46 +645,46 @@ builtin_void :: fun() {
 // `all`: every item of an array set to one value.
 //
 // `cams : [..6]Camera = all Camera(1280, 720)` builds each of the six.
-builtin_all :: fun() {
+example_all :: fun() {
 	ones : [4]i64 = all 1
 	print(ones)                            // [1, 1, 1, 1]
 }
 
 // Every entry's example, run.
 main :: fun() {
-	keyword_module()
-	keyword_use()
-	keyword_fun()
-	keyword_return()
-	keyword_if()
-	keyword_do()
-	keyword_for()
-	keyword_break()
-	keyword_match()
-	keyword_struct()
-	keyword_union()
-	keyword_error()
-	keyword_distinct()
-	keyword_true()
-	keyword_and()
-	keyword_defer()
-	keyword_fn()
-	keyword_dispatch()
-	keyword_overload()
-	keyword_using()
-	keyword_foreign()
-	builtin_print()
-	builtin_assert()
-	builtin_len()
-	builtin_i64()
-	builtin_f64()
-	builtin_utf8()
-	builtin_from_text()
-	builtin_size_of()
-	builtin_slice()
-	builtin_cstring()
-	builtin_this_program()
-	builtin_Self()
-	builtin_void()
-	builtin_all()
+	example_module()
+	example_use()
+	example_fun()
+	example_return()
+	example_if()
+	example_do()
+	example_for()
+	example_break()
+	example_match()
+	example_struct()
+	example_union()
+	example_error()
+	example_distinct()
+	example_true()
+	example_and()
+	example_defer()
+	example_fn()
+	example_dispatch()
+	example_overload()
+	example_using()
+	example_foreign()
+	example_print()
+	example_assert()
+	example_len()
+	example_i64()
+	example_f64()
+	example_utf8()
+	example_from_text()
+	example_size_of()
+	example_slice()
+	example_cstring()
+	example_this_program()
+	example_Self()
+	example_void()
+	example_all()
 }

@@ -17,12 +17,12 @@ use mara.string
 // `module name`; its doc comment, the `//` lines right above it, or a
 // `/* … */` block (doc_words: the lines it shows).
 //
-// A keyword's or a builtin's entry (doc/basics.mara) is a fun named
-// keyword_<word> or builtin_<word>: found as <word>, and as each word in
-// backticks its doc comment's first line starts with, before the colon
-// ("// `if`, `elif`, `else`: ..."). It's shown with its example: its body,
-// and the definitions after it up to the next comment line at the top
-// level. Definitions in an example aren't found themselves.
+// An example (doc/basics.mara's of each keyword and builtin) is a fun named
+// example_<anything>: found by each word in backticks its doc comment's first
+// line starts with (`print`, `print_int`), else by the word after example_.
+// It's shown with its function, as written, and the definitions after it up
+// to the next comment line at the top level. Definitions in an example
+// aren't found themselves.
 
 DOCS_SHOWN     :: 40   // the most definitions shown
 DOCS_BODY      :: 40   // the most lines of a struct's body shown
@@ -37,10 +37,9 @@ DEF_FUN    :: 2   // its signature shown, to its `{`
 DEF_OTHER  :: 3   // a constant, a foreign fun: its line
 DEF_FIELD  :: 4   // a struct's: its line, and the struct named
 DEF_LINE   :: 5   // a line declaring what's at the cursor, no definition the scan finds: a local's, a param's
-DEF_KEYWORD :: 6  // a keyword's entry: its example shown
-DEF_BUILTIN :: 7  // a builtin's entry: its example shown
+DEF_EXAMPLE :: 6  // an example (example_print): its function shown
 
-ENTRY_PREFIX :: 8   // how long "keyword_" and "builtin_" are
+ENTRY_PREFIX :: 8   // how long "example_" is
 
 // What the name at the editor's cursor refers to (`mara docs at`), as the
 // compiler found it: shown first. kind empty: none; path empty: a builtin or
@@ -139,7 +138,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	if ex.kind.len > 0 do docs_show_exact(d, l, ex)
 	if d.exact_shown and d.found.len > 0 do lines_add(l, "Also found:", STYLE_DIM)
 	for fd in d.found {
-		docs_show(d, l, fd)
+		docs_show(d, l, fd, "")
 	}
 	status : [..300]utf8
 	if d.exact_shown {
@@ -485,8 +484,7 @@ definition :: fun(rest: []utf8, from: i64, fd: ^Found) {
 		fd.kind = DEF_FUN
 		// (An entry: found by the word after its prefix.)
 		if n > ENTRY_PREFIX {
-			if starts_with(rest, "keyword_") do fd.kind = DEF_KEYWORD
-			if starts_with(rest, "builtin_") do fd.kind = DEF_BUILTIN
+			if starts_with(rest, "example_") do fd.kind = DEF_EXAMPLE
 			if is_entry(fd.kind) do fd.name = Field{at = from + ENTRY_PREFIX, len = n - ENTRY_PREFIX}
 		}
 	elif starts_with(what, "struct") or starts_with(what, "class") or starts_with(what, "union") or starts_with(what, "error") or starts_with(what, "enum")
@@ -509,7 +507,7 @@ field :: fun(rest: []utf8, from: i64, fd: ^Found) {
 
 // Whether a definition's kind is a keyword's or a builtin's entry.
 is_entry :: fun(kind: i64) -> bool {
-	return kind == DEF_KEYWORD or kind == DEF_BUILTIN
+	return kind == DEF_EXAMPLE
 }
 
 // Whether an entry is for the word: its name, or one of the words its doc
@@ -732,7 +730,7 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	if d.has_exact {
 		lines_add(l, "At the cursor:", STYLE_DIM)
 		d.exact_shown = true
-		docs_show(d, l, d.exact)
+		docs_show(d, l, d.exact, ex.kind)
 		return
 	}
 	if ex.path.len == 0 {
@@ -816,7 +814,9 @@ comment_above :: fun(text: []utf8, at: i64) -> i64 {
 	return doc
 }
 
-docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
+// (`kind`: what the compiler says it is, for the cursor's — `builtin`,
+// `keyword` — shown after an example's name; else none.)
+docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8) {
 	text := docs_text(d, fd.file)
 	title : [..1200]utf8
 	&title + text[fd.name.at : fd.name.at + fd.name.len]
@@ -824,11 +824,34 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		&title + "   field of "
 		&title + text[fd.owner.at : fd.owner.at + fd.owner.len]
 	}
-	if fd.kind == DEF_KEYWORD do &title + "   keyword"
-	if fd.kind == DEF_BUILTIN do &title + "   builtin"
+	if is_entry(fd.kind) {
+		// (Named by the first word its first line names, as it's found.)
+		title.len = 0
+		&title + example_name(text, fd)
+		if kind.len > 0 {
+			&title + "   "
+			&title + kind
+		}
+	}
 	lines_add(l, title[:], STYLE_TITLE)
 	lines_link(l, docs_link(d, fd)[:])
 	docs_show_body(d, l, fd)
+}
+
+// An example's name: the first word in backticks its first line starts
+// with (`print`), else the word after example_.
+example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
+	name := text[fd.name.at : fd.name.at + fd.name.len]
+	if fd.doc < 0 do return name
+	words : [..DOC_LINES]Field
+	doc_words(text, fd.doc, fd.at, &words)
+	if words.len == 0 do return name
+	first := text[words[0].at : words[0].at + words[0].len]
+	if first.len < 2 or first[0] != '`' do return name
+	for k in 1 .. first.len {
+		if first[k] == '`' do return first[1 : k]
+	}
+	return name
 }
 
 // The place a definition opens, clicked: `<file>:<line>`.
@@ -1002,28 +1025,21 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	lines_add(l, "", STYLE_TEXT)
 }
 
-// An entry's example, below its doc comment, after "Example:": its body, a
-// level less indented, then what's defined after it, up to the next comment
-// line at the top level — blank lines at its end left out.
+// An example's code, below its doc comment: its function as written, then
+// what's defined after it, up to the next comment line at the top level —
+// blank lines at its end left out.
 docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 	first_end := line_end(text, fd.at)
 	indent, _ := indentation(text, fd.at, first_end)
-	at := first_end + 1
-	lines_add(l, "  Example:", STYLE_DIM)
-	in_body := true    // before the entry's closing `}`
+	at := fd.at
 	blanks : i64 = 0   // blank lines held back, shown when code follows
 	shown : i64 = 0
 	for at < text.len {
 		end := line_end(text, at)
 		line_indent, from := indentation(text, at, end)
 		rest := trimmed(text[from : end])
-		if line_indent == 0 and starts_with(rest, "//") do break
+		if line_indent == 0 and at > fd.at and (starts_with(rest, "//") or starts_with(rest, "/*")) do break
 		next := end + 1
-		if in_body and line_indent <= indent and starts_with(rest, "}") {
-			in_body = false
-			at = next
-			continue
-		}
 		if rest.len == 0 {
 			blanks += 1
 			at = next
@@ -1038,9 +1054,7 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 			blanks -= 1
 			shown += 1
 		}
-		cut := indent
-		if in_body do cut = indent + TAB_SPACES
-		lines_add_code(l, text[at : end], cut)
+		lines_add_code(l, text[at : end], indent)
 		shown += 1
 		at = next
 	}
