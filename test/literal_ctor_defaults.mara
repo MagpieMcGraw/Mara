@@ -5,9 +5,8 @@ module literal_ctor_defaults
 
 // A literal builds its struct as a call without arguments does — `P{}` is
 // `P(){}` — so its constructor runs on its params' defaults (a literal used
-// to call it with none: whatever the argument registers held). An array's
-// elements whose constructor needs arguments, or can fail, aren't built at
-// all: they stay zero, as the checker warns.
+// to call it with none: whatever the argument registers held). A bare array's
+// elements aren't built: they're their zero.
 
 Bad :: error {
 	Neg
@@ -36,7 +35,7 @@ Holder :: struct {
 main :: fun() {
 	p := P{}
 	p2 : P = {v = 9}
-	pb : P
+	pb := P()
 	h := Holder{}
 	print(p.v, p2.v, pb.v, h.p.v, h.q.v)
 	qs : [2]Q

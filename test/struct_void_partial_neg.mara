@@ -1,0 +1,17 @@
+module struct_void_partial_neg
+
+//@ expect-fail: field 'b' of 'p' is used before being assigned a value
+
+// A bare struct with one field written and the other read: the other is
+// unset.
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+main :: fun() {
+	p : Pair
+	p.a = 1
+	print(p.b)
+}

@@ -1,0 +1,48 @@
+module bare_no_ctor
+
+use mara.core
+use mara.string
+
+//@ expect-output: declared
+//@ expect-output: body ran
+//@ expect-output: called 2
+//@ expect-output: written 9 18
+//@ expect-output: stamped abc xy z
+
+// A bare declaration, `x : T`, doesn't run T's body: its fields are unset
+// until written (`x := T()` runs it). Its memory is zero all the same, its
+// partial arrays stamped — a field's, an element's, an element's field's —
+// so they take appends.
+
+Basic :: struct {
+	print("body ran")
+	minimum_fields : u8 = 1
+	doubled := minimum_fields * 2
+}
+
+Inner :: struct {
+	buf: [..8]utf8
+	n: i64 = 5
+}
+
+Outer :: struct {
+	inner: Inner
+	items: [..4]Inner
+	fixed: [2]Inner
+}
+
+main :: fun() {
+	a : Basic
+	print("declared")
+	b := Basic()
+	print("called", b.doubled)
+	a.minimum_fields = 9
+	a.doubled = 18
+	print("written", a.minimum_fields, a.doubled)
+	o : Outer
+	&o.inner.buf + "abc"
+	o.items.len += 1
+	&o.items[0].buf + "xy"
+	&o.fixed[1].buf + "z"
+	print("stamped", o.inner.buf, o.items[0].buf, o.fixed[1].buf)
+}

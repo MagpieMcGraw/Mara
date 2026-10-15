@@ -2,23 +2,31 @@ module arrayctor
 
 use mara.core
 
+//@ expect-output: local PA      (0 0): 0 0
+//@ expect-output: local fixed   (0 0): 0 0
+//@ expect-output: element name  (ok): ok
+//@ expect-output: field fixed   (7 7): 7 7
+//@ expect-output: str64 elem    (hi): hi
+
+// A bare array of structs is its zero: no element's constructor runs — a
+// field built of constructed ones says so (`fixed : [2]Inner = all
+// Inner()`). Each element's partial arrays are stamped all the same: they
+// take appends.
+
 Inner  :: struct { x : i32 = 7,  name : str64 }
-Holder :: struct { items : [..3]Inner,  fixed : [2]Inner }
-Nest   :: struct { h : Holder }
+Holder :: struct { items : [..3]Inner,  fixed : [2]Inner = all Inner() }
 
 main :: fun() {
     arr : [..3]Inner
-    print("local PA      (7 7):", arr[0].x, arr[2].x)
+    print("local PA      (0 0):", arr[0].x, arr[2].x)
 
     farr : [3]Inner
-    print("local fixed   (7 7):", farr[0].x, farr[1].x)
+    print("local fixed   (0 0):", farr[0].x, farr[1].x)
+    &farr[1].name + "ok"
+    print("element name  (ok):", farr[1].name)
 
-    h := Holder{}
-    print("field PA      (7 7):", h.items[0].x, h.items[2].x)
+    h := Holder()
     print("field fixed   (7 7):", h.fixed[0].x, h.fixed[1].x)
-
-    n := Nest{}
-    print("deep nest     (7 7):", n.h.items[0].x, n.h.fixed[1].x)
 
     names : [3]str64
     &names[0] + "hi"

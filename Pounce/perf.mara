@@ -19,7 +19,7 @@ Performance_Timer :: struct {
 perf_timer_begin :: fun(
 	first_phase: []utf8) -> Performance_Timer
 {
-	timer: Performance_Timer
+	timer := Performance_Timer{0}
     timer.count = 0
     timer.total_start = time_now()
     timer.phase_start = timer.total_start

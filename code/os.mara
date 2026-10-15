@@ -654,7 +654,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// this machine to connect to; pipe_accept takes each. Fails with
 	// Name_Taken when another program listens on it.
 	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
-		l : Pipe_Listener
+		l := Pipe_Listener{0}
 		if name.len > 200 do return l, Listen_Failed
 		&l.name + "\\\\.\\pipe\\"
 		&l.name + name
@@ -1346,7 +1346,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// this machine to connect to; pipe_accept takes each. Fails with
 	// Name_Taken when another program listens on it.
 	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
-		l : Pipe_Listener
+		l := Pipe_Listener{0}
 		l.id = NO_FILE
 		if not pipe_address(name, &l.at) do return l, Listen_Failed
 		ignore_broken_pipes()

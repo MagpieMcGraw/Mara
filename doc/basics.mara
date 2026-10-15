@@ -254,14 +254,20 @@ Shape :: union {
 // `struct`, `class`: a type made of named fields, like a record.
 //
 // Each field is `name: type`, with a default (`= 1`, or `name := 1` for its
-// type too) or else zero. A value: `p : Point` (every field its default),
-// `Point{x = 2}` (the fields given written over the defaults), `Point{2, 3}`
-// (in order). `p.x` reads or writes a field.
+// type too) or without one: unset until it's written. A value: `p :=
+// Point()` (its body run: every field its default), `Point{x = 2}` (the
+// fields given written over the defaults), `Point{2, 3}` (in order), `Point{0}`
+// (every field zero). `p : Point` declares one without running its body —
+// every field unset, to be written before it's read (reading one first, or
+// the whole, is an error); its memory is zero all the same. `p.x` reads or
+// writes a field.
 //
 // Params, `Grid :: struct(w: i64) { … }`, are what it's built from:
 // `Grid(4)`. Its body runs to build it, so a field can be worked out from
 // them. A fun in the body is a method: `g.cells()`, Self being the struct.
-// `class` is another spelling of `struct`.
+// A field of a struct type is unset the same way unless it's built:
+// `pos := Place()`; an array of them, `= all Place()`. `class` is another
+// spelling of `struct`.
 example_struct :: fun() {
 	Point :: struct {
 		x: f32
@@ -438,7 +444,7 @@ V2 :: struct { x: f64  y: f64 }
 // its swizzles: with `using v: [3]f32`, `p.x`, `p.yz`. A literal still names
 // the field itself: `Player{pos = Place{x = 1}}`.
 example_using :: fun() {
-	pl : Player
+	pl := Player()
 	pl.x = 4
 	print(pl.x, pl.pos.x, pl.hp)           // 4 4 10
 }
@@ -628,7 +634,7 @@ example_Self :: fun() {
 		n := 0
 		bumped :: fun(c: Self) -> Self { return Counter{n = c.n + 1} }
 	}
-	c : Counter
+	c := Counter()
 	print(c.bumped().bumped().n)           // 2
 }
 

@@ -73,7 +73,7 @@ main :: fun() {
 	print("ops", (p + q).x, (-p).y)
 
 	// A struct's fields from one call.
-	st : S
+	st := S()
 	print("fields", st.a, st.b)
 
 	// An if of text; of slices, asked for its place.

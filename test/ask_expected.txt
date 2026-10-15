@@ -21,7 +21,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.memory    3 types   · 0 funs
     mara.open_gl   19 types  · 61 funs
     mara.os        12 types  · 70 funs
-    mara.sdl       18 types  · 75 funs
+    mara.sdl       18 types  · 76 funs
     mara.skyline   2 types   · 6 funs
     mara.string    0 types   · 16 funs
     mara.time      2 types   · 7 funs
@@ -622,12 +622,12 @@ gfx_mesh_generation.mara:69:11  token '0'
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
 
-  Define                   [398,844)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [400,844)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Define                   [419,865)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [421,865)  fun(game: ^Megastruct, memory: ^[]byte) { …
       → Fun game_init, Param game, Param memory, Return
-  Assign                   [526,533)  game.vao = VAO_State()
+  Assign                   [547,554)  game.vao = VAO_State()
       → Write
-  Call                     [530,533)  VAO_State()   : VAO_State
+  Call                     [551,554)  VAO_State()   : VAO_State
       → Local temp, Arith << ×3, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object
@@ -730,8 +730,8 @@ above (calls)   (1 direct callee, full closure (depth ∞))
 === test/sibling_locals.mara | redeclared call above
 redeclared — fun  sibling_locals.mara:68   (module sibling_locals)
 
-above (calls)   (1 direct callee, full closure (depth ∞))
-  sibling_locals.Small  (struct)
+above (calls)   (0 direct callees, full closure (depth ∞))
+  (calls nothing directly; indirect calls via fn-typed params aren't tracked)
 === Pounce | cache_put_header call above
 cache_put_header — fun  cache.mara:105   (module cache)
 

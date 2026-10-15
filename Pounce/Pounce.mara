@@ -44,9 +44,9 @@ MARKER_DEPTH :: 120.0   // the squares' plane: z, facing the camera as it starts
 MARKER_HALF  :: 20.0    // half a square's side (its scale, 40)
 
 Timers :: struct {
-	work  : time.Timer
-	frame : Timer
-	fixed : time.Fixed_Timer
+	work  := time.Timer()
+	frame := Timer()
+	fixed := time.Fixed_Timer()
 }
 
 // Megastruct - this is the actual game data
@@ -58,7 +58,7 @@ Megastruct :: struct {
 	window: sdl.Window
 	gl_context: sdl.GLContext
 
-	timers: Timers
+	timers := Timers()
 
 	fps := 60.9
 	frame_counter := 0
@@ -80,12 +80,12 @@ Megastruct :: struct {
 	draw_state_highlight: DrawState
 	draw_state_text: DrawState
 
-	assets : Assets
+	assets := Assets()
 
 	// Rendering
 	quad:   Quad_Renderer
-	player: Player
-	playa : Playa
+	player := Player()
+	playa  := Playa()
 
 	markers: [4]Marker
 	dragging: i64 = -1    // the square the mouse is dragging; -1: none
@@ -232,8 +232,8 @@ game_update :: fun(game: ^Megastruct, dt: f64) {
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
 // and `color` comes through flat — a clean orientation marker.
 draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3]f32, camera: Camera) {
-	obj := Object{pos = pos, scale = Vec3{40, 40, 40}, exists = true}
-	vis := Visual{color = color}
+	obj := Object{pos = pos, scale = Vec3{40, 40, 40}, exists = true, accel = Vec3{0, 0, 0}, tracking_offset = Vec3{0, 0, 0}, speed = 0, turn_speed = 0, highlighted = false}
+	vis := Visual{color = color, texture_index = 0, resolve = false}
 	append_one(state, obj, vis, camera)
 }
 

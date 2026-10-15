@@ -1,0 +1,18 @@
+module struct_void_whole_neg
+
+//@ expect-fail: field 'b' of 'p' is used before being assigned a value
+
+// A bare struct read whole — passed by value — while a field is unset.
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+show :: fun(p: Pair) { print(p.a) }
+
+main :: fun() {
+	p : Pair
+	p.a = 1
+	show(p)
+}

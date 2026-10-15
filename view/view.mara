@@ -64,19 +64,19 @@ Ui :: struct {
 
 	// The Docs panel's and the Ask panel's lines — what's at the editor's
 	// cursor, above what was asked; the docs search's room.
-	docs:   [2]Lines         // the one shown, docs[docs_front]; the other, a lookup made while pinned
+	docs:   [2]Lines = all Lines()   // the one shown, docs[docs_front]; the other, a lookup made while pinned
 	docs_front:  i64
 	docs_pinned: bool        // lookups don't replace what's shown (the title bar's pin)
 	docs_newer:  bool        // ... one was made: shown when it's unpinned
 	docs_query:  [2]Docs_Query   // what each of docs was looked up by: a reload's
-	asked:  Lines
-	at_cursor: Lines
+	asked     := Lines()
+	at_cursor := Lines()
 	search: Docs
 	compiler_dir: [..1000]utf8   // the compiler's directory, its separator at the end
 	sep:    utf8                 // the compiler's path's separator: '\' or '/'
 
 	// The Crash panel's: the newest report of crash.txt, the file as read.
-	crash:       Lines
+	crash       := Lines()
 	crash_text:  [..2 * MB]byte
 	crash_stamp: i64             // the file's time when it was read
 	crash_hover: i64 = -1        // the call under the mouse as last drawn
@@ -113,8 +113,8 @@ Ui :: struct {
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(256 * MB))
-	ui : Ui
-	p : Profile
+	ui := Ui()
+	p := Profile()
 	hub : Hub
 	theme_set(&ui, THEME_DARK)
 

@@ -10,7 +10,7 @@ Game :: struct {
 }
 
 main :: fun() {
-	game : Game
+	game := Game()
 	game.running = true
 	assert(game.running == true)    // passes
 	assert(game.running == false)   // fails

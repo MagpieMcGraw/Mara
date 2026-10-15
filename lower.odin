@@ -620,11 +620,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     if zeroed && !prefixed { lw_fail(k, s, "a new partial array read from bytes") }
 }
 
-// `x : T` (tc_decl_bare): its zero, or its construction.
+// `x : T` (tc_decl_bare): its zero — unset until written, no constructor run.
 lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Span, field: Node_Id) {
     b := k.gb
     if _, is_error := ann.(Type_Error); is_error { return }
-    st := tc_bare_struct(ann)
     decl := field
     if decl == NO_NODE {
         decl = graph_build_decl(b, name, k.t.main[target], span, ann)
@@ -632,13 +631,9 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     } else if b.g.type_[decl] == 0 {
         graph_build_typed(b, decl, ann)
     }
-    // (Its construction is the name's, where it's written — as the checker
-    // annotates it.)
     at := lw_at(k, target)
     defer b.at = at
-    args: []Operand
-    if st != nil && constructs_bare(st) { args = lw_ctor_args(k, st, span) }
-    graph_build_bare(b, decl, ann, args, tree_span(k.t, target))
+    graph_build_bare(b, decl, ann, tree_span(k.t, target))
 }
 
 // A construction's arguments (tc_ctor_args): its params' defaults.

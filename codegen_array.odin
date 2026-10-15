@@ -35,21 +35,21 @@ emit_header_set :: proc(g: ^Codegen, header: Val, field: int, v: Val) {
 }
 
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
-// array in it — through struct fields and array elements — gets its header
-// (ptr → its elements, cap N), since a partial array's zero is not all zeros.
+// array in it — through struct fields and array elements, a partial array's
+// own elements too — gets its header (ptr → its elements, cap N), since a
+// partial array's zero is not all zeros. (Nothing is constructed: a bare
+// declaration is its zero.)
 stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
+    stamp :: proc(g: ^Codegen, ptr: Val, t: Type, _: []Ir_Arg) { stamp_zero_partial_arrays(g, ptr, t) }
     base := distinct_base(t)
     if pa, is_pa := base.(^Type_Partial_Array); is_pa {
         emit_partial_array_zero(g, ptr, pa, zero = false)
+        if pa.size > 0 && value_has_partial_array(g, pa.elem) { emit_each_element(g, partial_elements(g, ptr, pa), pa.elem, pa.size, stamp) }
         return
     }
-    // An array of partial arrays: each element. (An array of structs is
-    // constructed next, which stamps them.)
+    // An array whose elements hold partial arrays: each element.
     if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
-        inner := distinct_base(fa.elem)
-        for a, nested := inner.(^Type_Fixed_Array); nested; a, nested = inner.(^Type_Fixed_Array) { inner = distinct_base(a.elem) }
-        stamp :: proc(g: ^Codegen, ptr: Val, t: Type, _: []Ir_Arg) { stamp_zero_partial_arrays(g, ptr, t) }
-        if _, pa := inner.(^Type_Partial_Array); pa && fa.size > 0 { emit_each_element(g, ptr, fa.elem, fa.size, stamp) }
+        if fa.size > 0 && value_has_partial_array(g, fa.elem) { emit_each_element(g, ptr, fa.elem, fa.size, stamp) }
         return
     }
     sd := as_struct_body(base)

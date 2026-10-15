@@ -13,18 +13,18 @@ Point :: struct {
 DPoint :: distinct Point
 
 make_dp :: fun() -> DPoint {
-	r : DPoint
+	r := DPoint(Point())
 	return r
 }
 
 Holder :: struct {
-	p : DPoint
+	p := DPoint(Point())
 }
 
 main :: fun() {
-	dp : DPoint
+	dp := DPoint(Point())
 	print("distinct var:  ", dp)
-	h : Holder
+	h := Holder()
 	print("distinct field:", h)
 	print("distinct call: ", make_dp())
 }

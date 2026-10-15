@@ -29,6 +29,6 @@ Outer :: struct {
 main :: fun() {
 	h : Holder(Box(5))
 	print("local holds", h.inner.n)
-	o : Outer
+	o := Outer()
 	print("field holds", o.h.inner.n)
 }

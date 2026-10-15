@@ -1511,46 +1511,14 @@ graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_const(b, .Explicit, span, t, "void", nil)
 }
 
-// The struct a bare declaration constructs, or zero for anything else. An
-// array of structs is zeroed, then each element constructed. A struct that
-// can't be built bare stays zero: an array's elements (the checker warns), a
-// `~T` slot's field (the shape shortcut fills it; the checker rejects others).
-// (Its constructor runs on `args`: its params' defaults, the checker's —
-// an array's elements', each on the same ones.)
+// A bare declaration's value: its zero — a struct's, an array's, its
+// partial arrays' headers stamped (the zero op's) — and nothing more. Its
+// type's constructor doesn't run: `x : T` is unset until written (flow.odin's
+// definite assignment); `x := T()` constructs.
 @(private="file")
-graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, args: []Operand, span: Span) {
-    ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
-    append(&ops, dest)
-    append(&ops, ..args)
-    #partial switch v in distinct_base(t) {
-    case ^Type_Scope:
-        if v.kind == .Struct && !v.is_module && constructs_bare(v) {
-            graph_call_op(b, .Construct, .Synthetic, span, v, t, ..ops[:])
-            return
-        }
-    case ^Type_Fixed_Array:
-        graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, ..ops[:]) }
-        return
-    case ^Type_Partial_Array:
-        graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, ..ops[:]) }
-        return
-    }
+graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, span: Span) {
     graph_op(b, .Zero, .Synthetic, span, t, "", dest)
 }
-
-// The struct an array's elements construct, through nested arrays.
-graph_elem_struct :: proc(t: Type) -> ^Type_Scope {
-    #partial switch v in distinct_base(t) {
-    case ^Type_Scope:
-        if v.kind == .Struct && !v.is_module { return v }
-    case ^Type_Fixed_Array:   return graph_elem_struct(v.elem)
-    case ^Type_Partial_Array: return graph_elem_struct(v.elem)
-    }
-    return nil
-}
-
 
 // --- control flow -----------------------------------------------------------
 
@@ -2771,9 +2739,9 @@ graph_build_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Op
     return graph_read(b, graph_var(b, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
 }
 
-// A bare declaration's value: its type's construction, or zero.
-graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, args: []Operand, span: Span) {
-    graph_construct_bare(b, graph_var(b, d, t, span), t, args, span)
+// A bare declaration's value: its zero (graph_construct_bare).
+graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, span: Span) {
+    graph_construct_bare(b, graph_var(b, d, t, span), t, span)
 }
 
 // A call through a function value: the arguments, then the

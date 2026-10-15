@@ -37,7 +37,7 @@ pick :: fun(a: Named, b: Named, first: bool) -> Named {
 }
 wrap :: fun(x: Named) -> Tagged { return Named1{who = x} }
 mk :: fun(s: []utf8) -> Named {
-	n : Named
+	n := Named{0}
 	n.name = s
 	return n
 }

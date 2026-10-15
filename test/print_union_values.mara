@@ -43,7 +43,7 @@ main :: fun() {
 	print("coded=%", c)
 	d : Padded = A{}
 	print(d)
-	h : Holder
+	h := Holder()
 	h.s = Rect{w = 1, h = 1}
 	print(h)
 	arr : [2]Shape

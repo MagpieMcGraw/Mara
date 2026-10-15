@@ -28,7 +28,7 @@ main :: fun() {
 	made := Marker()          // construction call — the case that used to crash
 	print("ctor ok")
 
-	h : Held                  // empty struct as a field of another struct
+	h := Held()               // empty struct as a field of another struct
 	assert(h.n == 1)
 
 	r := takes(made)          // empty struct as an arg

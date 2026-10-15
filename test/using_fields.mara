@@ -33,12 +33,12 @@ move :: fun(pl: ^Player, dx: f32) {
 sum :: fun(pl: Player) -> f32 { return pl.x + pl.y }
 
 main :: fun() {
-	pl : Player
+	pl := Player()
 	pl.x = 4
 	print(pl.x, pl.pos.x, pl.hp)
 	move(&pl, 2)
 	print(pl.x, pl.y, sum(pl))
-	d : Deep
+	d := Deep()
 	d.x = 1
 	d.hp = 5
 	print(d.x, d.p.pos.x, d.hp, d.name)

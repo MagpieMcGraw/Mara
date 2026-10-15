@@ -6,8 +6,8 @@ module nestdeep
 //  - a struct that is a pure namespace (only nested `::` defs, no fields) is
 //    allowed, and its nested types still get a full body check so their field
 //    defaults apply.
-//  - both the bare-declaration form (`x : A.B.C`) and the construction-call
-//    form (`x := A.B.C()`) reach the innermost type and apply its defaults.
+//  - the construction-call form (`x := A.B.C()`) reaches the innermost type
+//    and applies its defaults (a bare declaration, `x : A.B.C`, is unset).
 
 use mara.core
 
@@ -22,7 +22,8 @@ data :: fun() {
 			v := 7
 		}
 	}
-	a : One.Deep          // decl form
+	a : One.Deep          // decl form: unset until written
+	a.v = 7
 	assert(a.v == 7)
 	a2 := One.Deep()      // construction-call form
 	assert(a2.v == 7)
@@ -35,7 +36,7 @@ data :: fun() {
 			}
 		}
 	}
-	nested : Nested.Inner.Innermost
+	nested := Nested.Inner.Innermost()
 	assert(nested.the_variable == 64)
 	made := Nested.Inner.Innermost()
 	assert(made.the_variable == 64)

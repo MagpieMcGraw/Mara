@@ -109,7 +109,7 @@ Point :: struct {
 }
 
 test_struct_init :: fun() {
-	a : Point
+	a := Point{x = 0, y = 0}
 	print(a.x)
 	print(a.y)
 	print(a.z)
@@ -250,9 +250,9 @@ test_len_cap :: fun() {
 }
 
 test_struct_arr_minimal :: fun() {
-	f : Foo
+	f := Foo{0}
 	print(f.x)
-	b : Bar
+	b := Bar{0}
 	print(b.xs[0])
 }
 

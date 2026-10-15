@@ -22,8 +22,8 @@ Big :: struct {
 	n: i64 = 1
 }
 G :: struct {
-	big: Big
-	p: P
+	big := Big()
+	p := P()
 }
 bump :: fun(v: ^i64) -> i64 {
 	v^ += 100
@@ -37,7 +37,7 @@ main :: fun() {
 	p := P{x = 1, y = 2}
 	p = P{x = p.y, y = p.x}
 	print("fields swapped:", p.x, p.y, "(want 2 1)")
-	g : G
+	g := G()
 	g.big.n = 10
 	g.big = Big{n = g.big.n + 5}
 	print("big self-read:", g.big.n, "(want 15)")

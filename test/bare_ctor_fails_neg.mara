@@ -1,9 +1,10 @@
 module bare_ctor_fails_neg
 
-//@ expect-fail: 't' of type 'T' can't be built bare
+//@ expect-fail: field 'v' of 't' is used before being assigned a value
 
-// A bare declaration runs the constructor on its defaults; one that can fail
-// has nothing to take its err.
+// A bare declaration doesn't run the constructor — one that can fail would
+// have nothing to take its err: its fields are unset until written, and read
+// before, an error.
 
 Bad :: error {
 	Neg

@@ -25,6 +25,9 @@ Flow_Pass :: struct {
     found:   map[^Program_Graph][dynamic]Flow_Finding,
     sources: map[^Type_Scope]bool,   // the checked source funs (whose codes the fun checks read)
     walk:    virtual.Arena,          // what a walk makes, until the next (flow_init_fun)
+    pc:      ^Program_Code,          // the program's codes: a construction's constructor's (flow_ctor_unset)
+    heap:    mem.Allocator,          // what outlives a walk: ...
+    ctor_unset: map[^Type_Scope][]string,   // ... each struct's constructor's unset fields, once worked out
 }
 
 Flow_Finding :: struct {
@@ -35,8 +38,10 @@ Flow_Finding :: struct {
 
 Flow_Check :: enum u8 { Literal_Range, Unused, Init, Defer_Write, Void, Missing_Return }
 
-flow_pass_make :: proc(fns: []^Type_Scope) -> Flow_Pass {
+flow_pass_make :: proc(fns: []^Type_Scope, pc: ^Program_Code = nil) -> Flow_Pass {
     fp: Flow_Pass
+    fp.pc, fp.heap = pc, context.allocator
+    fp.ctor_unset = make(map[^Type_Scope][]string, allocator = fp.heap)
     for ft in fns {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); src { fp.sources[ft] = true }
@@ -49,6 +54,7 @@ flow_pass_make :: proc(fns: []^Type_Scope) -> Flow_Pass {
 
 flow_pass_free :: proc(fp: ^Flow_Pass) {
     virtual.arena_destroy(&fp.walk)
+    delete(fp.ctor_unset)
     for _, list in fp.found { delete(list) }
     delete(fp.found)
     delete(fp.sources)
@@ -63,7 +69,7 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
     flow_literal_ranges(g, found)
     flow_unused(g, found)
     if ts, is_scope := graph_type(g, 0).(^Type_Scope); is_scope && fp.sources[ts] {
-        flow_init_fun(g, found, &fp.walk)
+        flow_init_fun(fp, g, found)
         if graph_kind_of(g, 0) == .Fun { flow_defers(g, found) }
         if !scope_body_is_empty(ts) && flow_missing_return(g, ts) {
             name := ts.source_name if ts.source_name != "" else ts.name
@@ -279,58 +285,73 @@ flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
 }
 
 // --- definite assignment --------------------------------------------------
-// Reading a pointer, a slice or a scalar set to `void` before it holds a value
-// is an error, and so is reading a pointer or slice field of a struct built
-// without one (`n : Node` leaves `n.next` unset). Forward dataflow over each
-// fun's runs: the state is what may be unset — variables, and a struct
-// variable's fields — unioned at joins, so a read is flagged when some path
-// reaches it unset. Loops iterate to their fixpoint, and a defer's block sees
-// the state at each exit that runs it.
+// Reading what holds no value yet is an error: a pointer, a slice or a scalar
+// set to `void`; a struct declared bare (`n : Node` — its constructor doesn't
+// run: it is unset until written), any field of it — a struct field's own
+// fields by their path, `n.pos.x` — read before it's written, or the struct
+// read whole while one isn't (a partial array's zero, an empty one, is a
+// value: never unset). A construction (`n := Node()`, `Node{…}`)
+// leaves unset what its constructor does: its struct's fields declared bare
+// that its body never writes (flow_ctor_unset). In a struct's own code, its
+// constructor, its fields are its variables: a bare one is unset there too.
+// Forward dataflow over each fun's runs: the state is what may be unset,
+// unioned at joins, so a read is flagged when some path reaches it unset.
+// Loops iterate to their fixpoint, and a defer's block sees the state at each
+// exit that runs it.
 //
 // A call handed a variable's address (`init(&h)`, `load(&h.buf)`, or a pointer
-// known to alias it) may assign through it: from there it counts as set. An
-// alias is a pointer every write of which is `&x`: `it = &root` makes `it.next`
-// read `root.next`.
+// known to alias it) may assign through it: from there it counts as set — so
+// does an address taken any other way but for an alias. An alias is a pointer
+// every write of which is `&x`: `it = &root` makes `it.next` read
+// `root.next`. An array's elements count as one: a write to any sets it.
+
+FLOW_FIELD_DEPTH :: 6     // how deep a struct variable's fields are followed, by path
+FLOW_FIELD_BITS  :: 512   // the most bits a variable's fields get: past them, a struct field is one
 
 // What can be unset in one fun, and who reads what: arrays by `id - node`
 // over the fun's subtree.
 @(private="file")
 Init :: struct {
     g:       ^Program_Graph,
+    fp:      ^Flow_Pass,
     own:     []i32,            // a local's own bit + 1; 0 when it can't be unset
-    fields:  [][2]i32,         // a struct local's fields that can be unset: [first, count) of field_of
+    fields:  [][2]i32,         // a struct local's fields: [first, count) of field_of
     field_of: [dynamic]Init_Field,
     alias:   map[Node_Id]Node_Id,   // a pointer local → the local it always points at
     user:    []Node_Id,        // an operation → the one that takes its output (0: none)
     words:   int,
     found:   ^[dynamic]Flow_Finding,   // the reads found unset
+    in_ctor: bool,             // a struct's own code: its fields its variables
+    scratch: mem.Allocator,    // a place's path, worked out: the walk's
 }
 
+// A struct variable's field, by its path from the variable (`pos.x`).
 @(private="file")
 Init_Field :: struct {
-    name: string,
+    path: string,
     bit:  i32,
 }
 
 @(private="file")
-flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^virtual.Arena) {
+flow_init_fun :: proc(fp: ^Flow_Pass, g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
     // (What the fun's walk makes is `walk`'s, the last fun's freed; the
     // diagnostics, the reads', outlive it.)
-    if !flow_init_unsets(g) { return }
+    in_ctor := graph_kind_of(g, 0) == .Struct
+    if !flow_init_unsets(fp, g, in_ctor) { return }
     kept := context.allocator
-    virtual.arena_free_all(walk)
-    context.allocator = virtual.arena_allocator(walk)
+    virtual.arena_free_all(&fp.walk)
+    context.allocator = virtual.arena_allocator(&fp.walk)
     runs: [dynamic]i32
     graph_code_runs(g, 0, &runs)
     if len(runs) == 0 { return }
 
     size := int(g.end) + 1
-    s := Init{g = g, found = found}
+    s := Init{g = g, fp = fp, found = found, in_ctor = in_ctor, scratch = context.allocator}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
 
     // What can be unset: its locals that are pointers, slices or scalars, and
-    // the pointer and slice fields of its struct locals that have no default.
+    // every field of its struct locals (a constructor's, its own fields).
     bits: i32 = 0
     for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
@@ -339,6 +360,8 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
             continue
         case .Local:
             if g.written[id] != .Explicit { continue }
+        case .Field:
+            if !in_ctor { continue }
         case:
             continue
         }
@@ -346,13 +369,9 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
         if flow_can_be_unset(base) {
             s.own[id] = bits + 1
             bits += 1
-        } else if sd := as_scope_body(base); sd != nil {
+        } else if sd := as_struct_body(base); sd != nil {
             first := i32(len(s.field_of))
-            for &f in sd.fields {
-                if field_has_default(f) || !flow_field_can_be_unset(f.type_) { continue }
-                append(&s.field_of, Init_Field{f.name, bits})
-                bits += 1
-            }
+            flow_add_fields(&s, sd, "", 0, &bits)
             s.fields[id] = {first, i32(len(s.field_of)) - first}
         }
     }
@@ -395,12 +414,29 @@ flow_init_fun :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding, walk: ^v
     run_flow_replay(&fl, &s, proc(s: ^Init, ri: int, op: Node_Id, state: []u64) { flow_init_op(s, op, state, true) })
 }
 
-// Whether anything in a code can leave one of its variables unset — `void`
-// written to it, a bare pointer or slice, a struct built bare or from braces
-// with pointer or slice fields that have no default. Without, nothing is
-// ever unset: there's no unset read to find.
+// A struct's fields, each a bit by its path past `prefix` — a struct field's
+// own fields instead, while they're few and not too deep.
 @(private="file")
-flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
+flow_add_fields :: proc(s: ^Init, sd: ^Scope_Body, prefix: string, depth: int, bits: ^i32) {
+    for &f in sd.fields {
+        if strings.has_prefix(f.name, "__") { continue }   // (a variant's tag and padding)
+        if _, pa := distinct_base(f.type_).(^Type_Partial_Array); pa { continue }   // (its zero an empty one: a value)
+        path := f.name if prefix == "" else strings.concatenate({prefix, ".", f.name})
+        if sub := as_struct_body(distinct_base(f.type_)); sub != nil && depth + 1 < FLOW_FIELD_DEPTH && int(bits^) + len(sub.fields) <= FLOW_FIELD_BITS {
+            flow_add_fields(s, sub, path, depth + 1, bits)
+            continue
+        }
+        append(&s.field_of, Init_Field{path, bits^})
+        bits^ += 1
+    }
+}
+
+// Whether anything in a code can leave one of its variables unset — `void`
+// written to it, a bare pointer, slice or struct, a construction whose
+// constructor leaves a field unset; in a constructor, a bare field. Without,
+// nothing is ever unset: there's no unset read to find.
+@(private="file")
+flow_init_unsets :: proc(fp: ^Flow_Pass, g: ^Program_Graph, in_ctor: bool) -> bool {
     for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct:
@@ -417,6 +453,10 @@ flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
         }
         ops := graph_operands(g, id)
         d := ops[0].op if len(ops) > 0 else NO_NODE
+        if g.op[id] == .Construct {
+            if len(flow_ctor_unset(fp, graph_called(g, id))) > 0 { return true }
+            continue
+        }
         if !graph_is_leaf(d) { continue }   // (only a whole variable is made unset)
         v := graph_refers(g, d)
         if v <= 0 || v > g.end { continue }   // (its own only: flow_own)
@@ -426,23 +466,19 @@ flow_init_unsets :: proc(g: ^Program_Graph) -> bool {
             if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" { return true }
         case .Zero:
             if g.written[id] != .Synthetic { continue }
-            #partial switch _ in distinct_base(graph_type(g, v)) {
+            if in_ctor && g.kind[v] == .Field { return true }
+            base := distinct_base(graph_type(g, v))
+            #partial switch _ in base {
             case ^Type_Ptr, ^Type_Slice: return true
             }
-        case .Construct:
-            if g.written[id] != .Synthetic && !strings.has_suffix(graph_name(g, id), "{}") { continue }
-            if sd := as_scope_body(distinct_base(graph_type(g, v))); sd != nil {
-                for &f in sd.fields {
-                    if !field_has_default(f) && flow_field_can_be_unset(f.type_) { return true }
-                }
-            }
+            if as_struct_body(base) != nil { return true }
         }
     }
     return false
 }
 
 // Whether a variable of this type can be read unset: a pointer, a slice, or a
-// scalar (unset only by `void`).
+// scalar (unset only by `void` — or, a constructor's field, declared bare).
 @(private="file")
 flow_can_be_unset :: proc(base: Type) -> bool {
     #partial switch _ in base {
@@ -453,14 +489,101 @@ flow_can_be_unset :: proc(base: Type) -> bool {
     return is_numeric(base)
 }
 
-// A struct's field that a bare construction leaves unset: a pointer or a
-// slice.
-@(private="file")
-flow_field_can_be_unset :: proc(t: Type) -> bool {
-    #partial switch _ in distinct_base(t) {
-    case ^Type_Ptr, ^Type_Slice: return true
+// What a struct's constructor leaves unset, by path from what it builds: its
+// fields declared bare that its code never writes — nor hands out the address
+// of — and, of a field it constructs whole, what that field's constructor
+// leaves unset and its code doesn't write after (`wrap := Wrap{data = d}`).
+// Worked out once a struct (each worker's own), from its code.
+flow_ctor_unset :: proc(fp: ^Flow_Pass, ts: ^Type_Scope, depth := 0) -> []string {
+    if ts == nil || fp.pc == nil || depth > FLOW_FIELD_DEPTH { return nil }
+    if known, ok := fp.ctor_unset[ts]; ok { return known }
+    fp.ctor_unset[ts] = nil   // (while it's worked out: a struct that builds itself leaves nothing)
+    g := graph_fun_code(fp.pc, ts)
+    if g == nil || graph_kind_of(g, 0) != .Struct { return nil }
+    bare := make(map[Node_Id]bool, allocator = context.temp_allocator)
+    written := make(map[Node_Id]bool, allocator = context.temp_allocator)
+    built := make(map[Node_Id]^Type_Scope, allocator = context.temp_allocator)
+    paths := make([dynamic]string, context.temp_allocator)   // the fields' parts written, by path (not a construction's own)
+    for id := Node_Id(1); id <= g.end; id += 1 {
+        #partial switch g.kind[id] {
+        case .Fun, .Struct:
+            id = graph_last(g, id)
+            continue
+        case .Op:
+        case:
+            continue
+        }
+        #partial switch g.op[id] {
+        case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Address, .Arena_Alloc:
+        case:
+            continue
+        }
+        ops := graph_operands(g, id)
+        if len(ops) == 0 { continue }
+        d := ops[0].op
+        if g.op[id] == .Zero && g.written[id] == .Synthetic && graph_is_leaf(d) {
+            if v := graph_refers(g, d); v > 0 && v <= g.end && g.kind[v] == .Field {
+                // (A partial array's zero is an empty one: a value.)
+                if _, pa := distinct_base(graph_type(g, v)).(^Type_Partial_Array); !pa { bare[v] = true }
+            }
+            continue
+        }
+        root, path := flow_ctor_path(g, d)
+        if root <= 0 || root > g.end || g.kind[root] != .Field { continue }
+        written[root] = true
+        if g.op[id] == .Construct && graph_is_leaf(d) {
+            built[root] = graph_called(g, id)
+        } else {
+            append(&paths, path)
+        }
     }
-    return false
+    unset := make([dynamic]string, fp.heap)
+    for v in bare {
+        if !written[v] { append(&unset, graph_name(g, v)) }
+    }
+    for v, st in built {
+        nested: for p in flow_ctor_unset(fp, st, depth + 1) {
+            at := strings.concatenate({graph_name(g, v), ".", p}, context.temp_allocator)
+            for w in paths {
+                if w == at || (len(at) > len(w) && strings.has_prefix(at, w) && at[len(w)] == '.') { continue nested }
+            }
+            append(&unset, strings.clone(at, fp.heap))
+        }
+    }
+    slice.sort(unset[:])
+    fp.ctor_unset[ts] = unset[:]
+    return unset[:]
+}
+
+// The constructor's field a place is in, and the place's path from it
+// (`wrap.data`; past an element, the field it's in).
+@(private="file")
+flow_ctor_path :: proc(g: ^Program_Graph, p: Node_Id) -> (root: Node_Id, path: string) {
+    names := make([dynamic]string, context.temp_allocator)
+    for id := p; id != NO_NODE; {
+        if graph_is_leaf(id) {
+            root = graph_refers(g, id)
+            break
+        }
+        if graph_kind_of(g, id) != .Op { return NO_NODE, "" }
+        #partial switch graph_op_of(g, id) {
+        case .Var:
+            root = graph_refers(g, id)
+            id = NO_NODE
+            continue
+        case .Field:
+            append(&names, graph_name(g, id))
+        case .Index, .View, .Slice, .Swizzle, .Variant:
+            clear(&names)
+        case:
+            return NO_NODE, ""
+        }
+        id = graph_operands(g, id)[0].op
+    }
+    if root <= 0 || root > g.end { return NO_NODE, "" }
+    append(&names, graph_name(g, root))
+    slice.reverse(names[:])
+    return root, strings.join(names[:], ".", context.temp_allocator)
 }
 
 // Whether declaration v is one of this fun's own.
@@ -475,13 +598,20 @@ flow_var_bit :: proc(s: ^Init, v: Node_Id) -> i32 {
     return s.own[v] - 1 if flow_own(s, v) else -1
 }
 
-// A struct variable's field's bit: -1 when it can't be unset.
+// A struct variable's fields, by path.
 @(private="file")
-flow_field_bit :: proc(s: ^Init, v: Node_Id, field: string) -> i32 {
-    if !flow_own(s, v) { return -1 }
+flow_var_fields :: proc(s: ^Init, v: Node_Id) -> []Init_Field {
+    if !flow_own(s, v) { return nil }
     r := s.fields[v]
-    for f in s.field_of[r[0]:r[0] + r[1]] { if f.name == field { return f.bit } }
-    return -1
+    return s.field_of[r[0]:r[0] + r[1]]
+}
+
+// Whether a field's path and a place's touch: the same, one inside the other.
+@(private="file")
+flow_paths_meet :: proc(field, place: string) -> bool {
+    if place == "" || field == place { return true }
+    if len(field) > len(place) { return strings.has_prefix(field, place) && field[len(place)] == '.' }
+    return strings.has_prefix(place, field) && place[len(field)] == '.'
 }
 
 @(private="file")
@@ -500,29 +630,76 @@ flow_is_unset :: proc(state: []u64, bit: i32) -> bool {
 flow_set_var :: proc(s: ^Init, state: []u64, v: Node_Id, unset, fields_unset: bool) {
     if !flow_own(s, v) { return }
     flow_set(state, s.own[v] - 1, unset)
-    r := s.fields[v]
-    for f in s.field_of[r[0]:r[0] + r[1]] { flow_set(state, f.bit, fields_unset) }
+    for f in flow_var_fields(s, v) { flow_set(state, f.bit, fields_unset) }
 }
 
-// The struct variable and field a place names: `x.f`, or `p.f` through a
-// pointer that aliases x.
+// The fields of v a place at `path` touches, set or unset ("": all of them).
 @(private="file")
-flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, via: Node_Id, ok: bool) {
-    g := s.g
-    if graph_op_of(g, f) != .Field { return }
-    base := graph_operands(g, f)[0].op
-    if base == NO_NODE || graph_kind_of(g, base) != .Op { return }
-    #partial switch graph_op_of(g, base) {
-    case .Var:
-        return graph_refers(g, base), graph_name(g, f), NO_NODE, true
-    case .Deref:
-        p := graph_operands(g, base)[0].op
-        if !graph_is_leaf(p) { return }
-        if target, is_alias := s.alias[graph_refers(g, p)]; is_alias {
-            return target, graph_name(g, f), graph_refers(g, p), true
-        }
+flow_set_path :: proc(s: ^Init, state: []u64, v: Node_Id, path: string, unset: bool) {
+    for f in flow_var_fields(s, v) {
+        if flow_paths_meet(f.path, path) { flow_set(state, f.bit, unset) }
     }
-    return
+}
+
+// A construction of `callee` at v's `path` ("": v itself): what its
+// constructor leaves unset is, the rest set.
+@(private="file")
+flow_construct :: proc(s: ^Init, state: []u64, v: Node_Id, path: string, callee: ^Type_Scope) {
+    if path == "" { flow_set_var(s, state, v, false, false) } else { flow_set_path(s, state, v, path, false) }
+    for p in flow_ctor_unset(s.fp, callee) {
+        at := p if path == "" else strings.concatenate({path, ".", p}, s.scratch)
+        flow_set_path(s, state, v, at, true)
+    }
+}
+
+// The first of v's fields a place at `path` touches that is unset: its path.
+@(private="file")
+flow_first_unset :: proc(s: ^Init, state: []u64, v: Node_Id, path: string) -> (string, bool) {
+    for f in flow_var_fields(s, v) {
+        if flow_paths_meet(f.path, path) && flow_is_unset(state, f.bit) { return f.path, true }
+    }
+    return "", false
+}
+
+// The struct variable and the path of its fields a place names: `x.pos.y` —
+// or `p.pos.y` through a pointer that aliases x. Past an element or a view
+// (`x.list[i].n`), the field it's in (`list`): its elements count as one.
+@(private="file")
+flow_place_path :: proc(s: ^Init, p: Node_Id) -> (var: Node_Id, path: string, via: Node_Id, ok: bool) {
+    g := s.g
+    via = NO_NODE
+    names := make([dynamic]string, s.scratch)
+    for id := p; id != NO_NODE; {
+        if graph_is_leaf(id) {
+            var = graph_refers(g, id)
+            break
+        }
+        if graph_kind_of(g, id) != .Op { return }
+        #partial switch graph_op_of(g, id) {
+        case .Var:
+            var = graph_refers(g, id)
+            id = NO_NODE
+            continue
+        case .Field:
+            append(&names, graph_name(g, id))
+        case .Index, .View, .Slice, .Swizzle, .Variant:
+            clear(&names)   // (inside an element: the field it's in, as a whole)
+        case .Deref:
+            ptr := graph_operands(g, id)[0].op
+            if !graph_is_leaf(ptr) { return }
+            target, is_alias := s.alias[graph_refers(g, ptr)]
+            if !is_alias { return }
+            var, via = target, graph_refers(g, ptr)
+            id = NO_NODE
+            continue
+        case:
+            return
+        }
+        id = graph_operands(g, id)[0].op
+    }
+    if var == NO_NODE { return }
+    slice.reverse(names[:])
+    return var, strings.join(names[:], ".", s.scratch), via, true
 }
 
 // Who takes an operation's output; NO_NODE for none.
@@ -531,6 +708,16 @@ flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
     if op < 0 || op > s.g.end { return NO_NODE }
     if u := s.user[op]; u != 0 { return u }   // (0: none — no operation is the code's root)
     return NO_NODE
+}
+
+// Whether op names a place step: a field, an element, a view of what's
+// below it.
+@(private="file")
+flow_is_step :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
+    #partial switch graph_op_of(g, op) {
+    case .Field, .Index, .View, .Slice, .Swizzle, .Variant: return true
+    }
+    return false
 }
 
 // Whether operation u reads its k-th operand, a place: not written to as a
@@ -553,55 +740,85 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     report :: proc(s: ^Init, span: Span, msg: string, args: ..any) {
         append(s.found, Flow_Finding{.Init, span, fmt.aprintf(msg, ..args)})
     }
-    if reporting {   // (its variables read, as they are when it runs)
+    if reporting {   // (its variables read, as they are when it runs: one whole, any field unset)
         for o, k in graph_operands(g, op) {
-            if !graph_is_leaf(o.op) || !flow_is_unset(state, flow_var_bit(s, graph_refers(g, o.op))) || !flow_reads(g, op, k) { continue }
-            report(s, graph_origin(g, o.op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
+            if !graph_is_leaf(o.op) || !flow_reads(g, op, k) { continue }
+            v := graph_refers(g, o.op)
+            if flow_is_unset(state, flow_var_bit(s, v)) {
+                report(s, graph_origin(g, o.op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
+            } else if field, unset := flow_first_unset(s, state, v, ""); unset {
+                report(s, graph_origin(g, o.op), TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, o.op))
+            }
         }
     }
     #partial switch graph_op_of(g, op) {
-    case .Field:
-        if !reporting { break }
-        v, field, via, ok := flow_field_place(s, op)
-        if !ok || !flow_is_unset(state, flow_field_bit(s, v, field)) { break }
+    case .Field, .Index, .View, .Slice, .Swizzle, .Variant:
+        // (The top of a place — `x.pos.y`, `x.list[i]` — as what takes it uses it.)
+        if !reporting || (graph_op_of(g, op) != .Field && graph_op_of(g, op) != .Index) { break }
         u := flow_user(s, op)
-        if u == NO_NODE { break }
-        if graph_op_of(g, u) == .Write || graph_op_of(g, u) == .Fill || graph_op_of(g, u) == .Zero || graph_op_of(g, u) == .Construct || graph_op_of(g, u) == .Byte_Read {
-            if graph_operands(g, u)[0].op == op { break }   // written, not read
-        }
-        if graph_op_of(g, u) == .Address || graph_op_of(g, u) == .Field || graph_op_of(g, u) == .Swizzle { break }
+        if u == NO_NODE || flow_is_step(g, u) { break }
+        uk := graph_op_of(g, u)
+        if uk == .Address || uk == .Arena_Alloc { break }
+        if (uk == .Write || uk == .Fill || uk == .Zero || uk == .Construct || uk == .Byte_Read) && graph_operands(g, u)[0].op == op { break }   // written, not read
+        v, path, via, ok := flow_place_path(s, op)
+        if !ok { break }
+        field, unset := flow_first_unset(s, state, v, path)
+        if !unset { break }
         if via != NO_NODE {
             report(s, graph_origin(g, op), TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
         } else {
             report(s, graph_origin(g, op), TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
         }
+    case .Address:
+        // An address taken may be written through — but an alias's, which
+        // the reads through it follow.
+        p := graph_operands(g, op)[0].op
+        if p == NO_NODE { break }
+        if u := flow_user(s, op); u != NO_NODE && graph_op_of(g, u) == .Write {
+            if d := graph_whole_write_dest(g, u); d != NO_NODE && graph_refers(g, d) in s.alias { break }
+        }
+        if graph_is_leaf(p) {
+            flow_set_var(s, state, graph_refers(g, p), false, false)
+        } else if v, path, _, ok := flow_place_path(s, p); ok {
+            flow_set_path(s, state, v, path, false)
+        }
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
         d := ops[0].op if len(ops) > 0 else NO_NODE
         if d == NO_NODE || graph_kind_of(g, d) != .Op { break }
+        kind := graph_op_of(g, op)
         if graph_is_leaf(d) {
             v := graph_refers(g, d)
             unset, fields_unset := false, false
-            #partial switch graph_op_of(g, op) {
+            #partial switch kind {
             case .Write:
                 val := ops[1].op
                 unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void"
                 fields_unset = unset
             case .Zero:
-                // A bare `p : ^T` or `s : []T` (a bare scalar is zero).
-                #partial switch _ in distinct_base(graph_type(g, v)) {
-                case ^Type_Ptr, ^Type_Slice: unset = graph_written(g, op) == .Synthetic
+                // A bare declaration: a pointer or a slice unset (a bare scalar
+                // is zero), a struct's every field; a constructor's bare field.
+                if graph_written(g, op) == .Synthetic {
+                    #partial switch _ in distinct_base(graph_type(g, v)) {
+                    case ^Type_Ptr, ^Type_Slice: unset = true
+                    }
+                    if s.in_ctor && flow_own(s, v) && g.kind[v] == .Field { unset = true }
+                    fields_unset = true
                 }
             case .Construct:
-                // Built bare or from braces, a struct has only what it is given
-                // (the braces' writes follow); a constructor call may set anything.
-                fields_unset = graph_written(g, op) == .Synthetic || strings.has_suffix(graph_name(g, op), "{}")
+                flow_construct(s, state, v, "", graph_called(g, op))
+                flow_init_out_params(s, op, state)
+                return
             }
             flow_set_var(s, state, v, unset, fields_unset)
-        } else if v, field, _, ok := flow_field_place(s, d); ok {
-            flow_set(state, flow_field_bit(s, v, field), false)
+        } else if v, path, _, ok := flow_place_path(s, d); ok {
+            if kind == .Construct {
+                flow_construct(s, state, v, path, graph_called(g, op))
+            } else {
+                flow_set_path(s, state, v, path, false)
+            }
         }
-        if graph_op_of(g, op) == .Construct { flow_init_out_params(s, op, state) }
+        if kind == .Construct { flow_init_out_params(s, op, state) }
     case .Call:
         flow_init_out_params(s, op, state)
     }
@@ -621,8 +838,8 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
             if p == NO_NODE || graph_kind_of(g, p) != .Op { continue }
             if graph_is_leaf(p) {
                 flow_set_var(s, state, graph_refers(g, p), false, false)
-            } else if v, field, _, ok := flow_field_place(s, p); ok {
-                flow_set(state, flow_field_bit(s, v, field), false)
+            } else if v, path, _, ok := flow_place_path(s, p); ok {
+                flow_set_path(s, state, v, path, false)
             }
         case .Read:
             p := graph_operands(g, x)[0].op

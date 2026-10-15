@@ -11,7 +11,7 @@ Pt :: struct { x: i64 = 1 }
 
 Box :: struct {
 	cells: [4]i64
-	pts: [3]Pt
+	pts: [3]Pt = all Pt()
 }
 
 walk :: fun(b: Box) -> i64 {

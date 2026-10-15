@@ -1,0 +1,49 @@
+module struct_void_ok
+
+use mara.core
+use mara.string
+
+//@ expect-output: shown 1 2
+//@ expect-output: filled 1 2
+//@ expect-output: built 1 5
+//@ expect-output: listed 2 ok
+
+// What a bare struct's void check lets by: every field written before the
+// whole is read; its address handed to a call that may write it; a
+// constructor's fields with defaults, and one written after; a partial
+// array field, whose zero — an empty one — is a value.
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+Half :: struct {
+	set: i64 = 1
+	unset: i64
+}
+
+Named :: struct {
+	name: [..16]utf8
+	n: i64
+}
+
+show :: fun(p: Pair) { print("shown", p.a, p.b) }
+fill :: fun(p: ^Pair) { p.a = 1  p.b = 2 }
+
+main :: fun() {
+	p : Pair
+	p.a = 1
+	p.b = 2
+	show(p)
+	q : Pair
+	fill(&q)
+	print("filled", q.a, q.b)
+	h := Half()
+	h.unset = 5
+	print("built", h.set, h.unset)
+	n : Named
+	&n.name + "ok"
+	n.n = 2
+	print("listed", n.n, n.name)
+}

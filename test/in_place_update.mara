@@ -130,7 +130,8 @@ main :: fun() {
 	a3 : [..4]i64
 	a3 = append2(a3, o)
 	show("otherarg", a3)
-	s := S{x = 1}
+	s := S{0}
+	s.x = 1
 	s = step(s, 10)
 	s = step(s, 5)
 	print("struct=% %", s.x, s.big[3])

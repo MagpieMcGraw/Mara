@@ -758,7 +758,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 
 	// A line (c = b) or curve from a to b, its end directions worked out.
 	make_segment :: fun(a: Node, c: Node, b: Node, curve: bool) -> Segment {
-		s := Segment{ax = a.x, ay = a.y, cx = c.x, cy = c.y, bx = b.x, by = b.y, curve = curve, implied = a.implied}
+		s := Segment{ax = a.x, ay = a.y, cx = c.x, cy = c.y, bx = b.x, by = b.y, curve = curve, implied = a.implied, corner = false}
 		s.t0x = b.x - a.x
 		s.t0y = b.y - a.y
 		s.t1x = s.t0x

@@ -39,8 +39,8 @@ main :: fun() {
 	y : []utf8 = if c do s2 else s1
 	show("typed", y)
 
-	h1 := Holder{n = 1}
-	h2 := Holder{n = 2}
+	h1 := Holder{s = s1, n = 1}
+	h2 := Holder{s = s2, n = 2}
 	h := if c do h2 else h1
 	print("struct=%", h.n)
 

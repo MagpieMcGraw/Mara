@@ -26,7 +26,7 @@ main :: fun() {
 	add_ten :: fun(a: i64) -> i64 { return a + 10 }
 	h := add_ten
 	print("local fun", h(1))
-	s : S
+	s := S()
 	by_type := S.get
 	print("method by type", by_type(&s))
 	by_value := s.get

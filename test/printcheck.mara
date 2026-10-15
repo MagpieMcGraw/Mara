@@ -13,7 +13,7 @@ Probe :: struct {
 	f      : f32       = 2.5
 	b      : bool      = true
 	label  : [..16]utf8 = "hello"
-	nested : Inner
+	nested := Inner()
 }
 
 main :: fun() {
@@ -45,6 +45,6 @@ main :: fun() {
 	grid[1][1] = 4
 	print("nested arr:", grid)
 
-	pts : [2]Inner
+	pts : [2]Inner = all Inner()
 	print("struct arr:", pts)
 }

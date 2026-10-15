@@ -1,0 +1,17 @@
+module struct_void_ctor_neg
+
+//@ expect-fail: field 'unset' of 'h' is used before being assigned a value
+
+// A construction leaves unset what its constructor does: a field declared
+// bare that its body never writes.
+
+Half :: struct {
+	set: i64 = 1
+	unset: i64
+}
+
+main :: fun() {
+	h := Half()
+	print(h.set)
+	print(h.unset)
+}

@@ -14,9 +14,9 @@ module print_struct_names
 
 P :: struct { x: i64 = 4 }
 Outer :: struct {
-	p: P
+	p := P()
 	Inner :: struct { y: i64 = 6 }
-	inner: Inner
+	inner := Inner()
 }
 Box :: struct($T: type) { v: T }
 Shape :: union {
@@ -31,12 +31,12 @@ Padded :: union(tag u8, pad [7]u8) {
 main :: fun() {
 	p := P{}
 	print(p)
-	o : Outer
+	o := Outer()
 	print(o)
 	L :: struct { z: i64 = 8 }
-	l : L
+	l := L()
 	print(l)
-	b : Box(i64)
+	b : Box(i64) = {v = 0}
 	print(b)
 	r := Shape.Rect{}
 	print(r)

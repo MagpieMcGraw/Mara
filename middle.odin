@@ -64,7 +64,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.parse_int(s) or_else 1) }
     for _ in 0 ..< n {
         mw := new(Middle_Worker)
-        mw^ = {k = lw_worker(k, p), flow = flow_pass_make(fns), fold = graph_fold_begin(pc, checked)}
+        mw^ = {k = lw_worker(k, p), flow = flow_pass_make(fns, pc), fold = graph_fold_begin(pc, checked)}
         append(&mid.workers, mw)
     }
     resize(&mid.escape, n)

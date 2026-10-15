@@ -383,7 +383,7 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 	line : i64 = 0
 	at : i64 = 0
 	doc : i64 = -1             // the comment right above: its first line's start
-	owner := Field{at = -1}    // the struct the lines are in; at -1: none
+	owner := Field{at = -1, len = 0}    // the struct the lines are in; at -1: none
 	owner_indent : i64 = 0     // its line's indentation
 	field_indent : i64 = -1    // its fields' (its first line's); -1: not seen yet
 	in_example := false        // in an entry's example: nothing found there
@@ -752,7 +752,7 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	if at < 0 do return
 	lines_add(l, "At the cursor:", STYLE_DIM)
 	d.exact_shown = true
-	here := Found{file = f, line = ex.line, at = at, doc = comment_above(text, at), kind = DEF_LINE}
+	here := Found{score = 0, file = f, line = ex.line, at = at, doc = comment_above(text, at), kind = DEF_LINE, name = Field{0}, owner = Field{0}}
 	lines_add(l, title[:], STYLE_TITLE)
 	lines_link(l, docs_link(d, here)[:])
 	docs_show_body(d, l, here)

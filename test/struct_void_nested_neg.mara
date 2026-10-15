@@ -1,0 +1,22 @@
+module struct_void_nested_neg
+
+//@ expect-fail: field 'pos.y' of 't' is used before being assigned a value
+
+// A struct field's own fields, by their path: `t.pos.x` written leaves
+// `t.pos.y` unset.
+
+Pos :: struct {
+	x: f32
+	y: f32
+}
+
+Thing :: struct {
+	pos: Pos
+	count: i64 = 3
+}
+
+main :: fun() {
+	t : Thing
+	t.pos.x = 1
+	print(t.pos.y)
+}

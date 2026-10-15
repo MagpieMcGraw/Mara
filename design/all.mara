@@ -174,7 +174,7 @@ data :: fun() {
 		print("\nStructs")
 		minimum_fields : u8 = 1
 	}
-	materialized : Basic // the above print happens here
+	materialized := Basic() // the above print happens here
 	print("Should have at least",
 		materialized.minimum_fields, "field")
 
@@ -194,21 +194,21 @@ data :: fun() {
 			}
 		}
 	}
-	nested : Nested.Inner.Innermost
+	nested := Nested.Inner.Innermost()
 	print("Let's see:", nested)
 
 	Mara_Style :: struct {
-		your_data : Inner
+		your_data := Inner()
 
 		Inner :: struct {
-			made_real : Innermost
+			made_real := Innermost()
 			
 			Innermost :: struct {
 				number := 65
 			}
 		}
 	}
-	data_layout : Mara_Style
+	data_layout := Mara_Style()
 	print("Just sixty five:",
 		data_layout.your_data.made_real.number)
 }

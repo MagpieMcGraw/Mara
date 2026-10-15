@@ -49,7 +49,11 @@ main :: fun() -> i64 {
 	ttf := TTF(&ttf_file)
 	i_glyph : Outline
 	l : Outline
-	if bool(parse_glyph(&ttf, char_glyph(&ttf, u32('i')), &i_glyph)) or bool(parse_glyph(&ttf, char_glyph(&ttf, u32('l')), &l)) {
+	if bool(parse_glyph(&ttf, char_glyph(&ttf, u32('i')), &i_glyph)) {
+		print("glyph failed")
+		return 1
+	}
+	if bool(parse_glyph(&ttf, char_glyph(&ttf, u32('l')), &l)) {
 		print("glyph failed")
 		return 1
 	}

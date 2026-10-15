@@ -168,7 +168,7 @@ profile_row :: fun(p: ^Profile, line: Field) -> bool {
 		&p.problem + "profile.txt has more funs than this window shows (20000)."
 		return false
 	}
-	row : Row
+	row := Row{0}
 	text := field_text(p, line)
 	n := 0
 	at : i64 = 0

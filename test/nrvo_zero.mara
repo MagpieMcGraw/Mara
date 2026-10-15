@@ -3,12 +3,12 @@ module nrvo_zero
 //@ expect-output: 2 0
 
 // A struct built in its caller's slot (the local every return returns) starts
-// from zero, like any declaration: `a = half(1)` once kept a's old `y`.
+// from zero when it says so (`Vec{0}`): `a = half(1)` once kept a's old `y`.
 
 Vec :: struct { x: i64, y: i64 }
 
 half :: fun(x: i64) -> Vec {
-	v : Vec
+	v := Vec{0}
 	v.x = x
 	return v
 }

@@ -61,7 +61,7 @@ Assets :: struct {
 
 	state: Stream_State,
 
-	tex_stream: Tex_Stream,
+	tex_stream := Tex_Stream()
 	mesh_stream: Mesh_Stream,
 	font_stream: Font_Stream,
 
@@ -149,6 +149,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
 load_font_test :: fun(a: ^Assets, fname: []utf8) {
 	this_font := &a.fonts[.len]
+	this_font^ = Font()   // (an element of a bare array is its zero: built here)
 	pixels : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
 	e := load_glyphs_and_metrics(fname,
 		&this_font.glyphs, &this_font.metrics, &pixels)
