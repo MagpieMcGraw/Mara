@@ -65,7 +65,7 @@ bytes_via_local :: fun(buf: ^[]byte) -> u32 {
 
 // appending through a pointer field, then reading its length
 emit :: fun(c: ^Ctx, text: []utf8) -> i64 {
-	utf8_add(c.out, text)
+	c.out + text
 	return c.out.len
 }
 

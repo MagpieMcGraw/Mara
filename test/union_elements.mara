@@ -42,7 +42,7 @@ value_of :: fun(n: Node) -> i64 {
 }
 
 push :: fun(pool: ^[]Node, n: Node) -> ^Node {
-	slice_add_item(pool, n)
+	pool + n
 	return &pool[pool.len - 1]
 }
 

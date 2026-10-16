@@ -7,7 +7,7 @@ str256 :: [..256]utf8
 // A text buffer of up to 1024 characters (see str64).
 str1024 :: [..1024]utf8
 
-// `&list + x` appends to a text buffer or a list: text, one character, items or one item.
+// `&list + x` appends to a text buffer or a list: text, one character, items or one item — and gives the list back, so appends chain: `&name + dir + "/" + file`.
 overload + add
 // Appends to a text buffer or a list; which one runs depends on what is added.
 add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
@@ -22,13 +22,15 @@ overload != not_equal
 // Whether two texts' characters differ: `a != b`.
 not_equal :: dispatch{ utf8_not_equal }
 
-// Appends text to dst; it must fit in dst's capacity.
+// Appends text to dst; it must fit in dst's capacity. dst back, for the
+// next append: `&name + dir + "/" + file`.
 // (We write 0 after it, so dst stays a valid C string.)
-utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
+utf8_add :: fun(dst: ^[]utf8, src: []utf8) -> ^[]utf8 {
 	assert(dst.len + src.len <= dst.cap)
 	dst[dst.len:] = src
 	dst.len += src.len
 	if dst.len < dst.cap do dst[dst.len] = 0
+	return dst
 }
 
 // Whether a and b hold the same characters.
@@ -45,26 +47,40 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 	return not utf8_equal(a, b)
 }
 
-// Appends one character to dst; it must fit in dst's capacity.
-utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
+// Appends one character to dst; it must fit in dst's capacity. dst back.
+utf8_add_item :: fun(dst: ^[]utf8, src: utf8) -> ^[]utf8 {
 	assert(dst.len < dst.cap)
 	dst[dst.len] = src
 	dst.len += 1
 	if dst.len < dst.cap do dst[dst.len] = 0
+	return dst
 }
 
-// Appends items to dst; they must fit in dst's capacity.
-slice_add :: fun(dst: ^[]$T, src: []$T) {
+// Appends items to dst; they must fit in dst's capacity. dst back.
+slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T {
 	assert(dst.len + src.len <= dst.cap)
 	dst[dst.len:] = src
 	dst.len += src.len
+	return dst
 }
 
-// Appends one item to dst; it must fit in dst's capacity.
-slice_add_item :: fun(dst: ^[]$T, src: $T) {
+// Appends one item to dst; it must fit in dst's capacity. dst back.
+slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 	assert(dst.len < dst.cap)
 	dst[dst.len] = src
 	dst.len += 1
+	return dst
+}
+
+// The list one item longer, and that item, to write into where it is:
+// `next(files) + dir + "/" + name` appends a filename's parts into the
+// list's next one, nothing copied. The item as it is, as an append's dst
+// is: empty in a list only grown (each item starts so); in one shrunk and
+// filled again, what it held. It must fit in the list's capacity.
+next :: fun(list: ^[]$T) -> ^T {
+	assert(list.len < list.cap)
+	list.len += 1
+	return &list[list.len - 1]
 }
 
 // The items `keep` says yes to, in their order, into storage after what's

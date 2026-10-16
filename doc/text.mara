@@ -2,8 +2,11 @@
 //
 // Text is utf8 characters. A literal "like this" can't change. A buffer
 // can: `name : str64` holds up to 64 characters (str256 and str1024 hold
-// more, `[..N]utf8` any N), and `&name + "more"` adds to it. `s[a:b]` is
-// part of a text, without a copy.
+// more, `[..N]utf8` any N), and `&name + "more"` adds to it. An add gives
+// the buffer back, so adds chain: `&path + dir + "/" + file`. A list of
+// texts, `[..100]str64`: `next(&list)` makes it one longer and gives that
+// text, to add into where it is — `next(&list) + dir + "/" + file`.
+// `s[a:b]` is part of a text, without a copy.
 //
 // The rest is in mara.string. Searching: find, find_byte, starts_with,
 // ends_with, contains, contains_folded (letters' case not minded). Taking a
@@ -30,6 +33,14 @@ main :: fun() {
 	&name + ' '                              // one character
 	&name + "Lovelace"
 	print(name, name.len, name.cap)          // Ada Lovelace 12 64
+
+	// Adds chain; a list's next text is added into where it is.
+	path : str64
+	&path + "doc" + '/' + "text.mara"
+	print(path)                              // doc/text.mara
+	paths : [..8]str64
+	next(&paths) + "doc" + "/" + "basics.mara"
+	print(paths.len, paths[0])               // 1 doc/basics.mara
 	print(name == "Ada Lovelace", name != "Ada")   // true true
 
 	// Each character, with its position.
