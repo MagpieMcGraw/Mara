@@ -74,16 +74,11 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) {
 // storage must have room for every item; short, the program stops (as
 // slice() does).
 filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
-	room := slice([:items.len]T, storage)
-	n : i64 = 0
-	for item in items {
-		if keep(item) {
-			room[n] = item
-			n += 1
-		}
-	}
-	storage.len -= (items.len - n) * size_of(T)
-	return room[0 : n]
+	new := slice([:items.len]T, storage)
+	new.len = 0   // (a take comes back full: its len is its count)
+	for item in items {if keep(item) do &new + item}
+	storage.len -= (items.len - new.len) * size_of(T)   // what wasn't kept, given back
+	return new[0 : new.len]   // (its room ends with them: the rest is storage's again)
 }
 
 // What an arena must have to be the program's allocator. Arena_Basic and
