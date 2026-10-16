@@ -68,6 +68,8 @@ Esc_Param_Set :: bit_set[0 ..< ESC_MAX_PARAMS; u128]
 // The memory a reference value may point into.
 Esc_Roots :: struct {
     params: Esc_Param_Set,   // the caller memory these parameters point at
+    two:    Esc_Param_Set,   // ... what that memory points at, one step on: a
+                             // `^[]T`'s elements (where an append lands)
     deep:   Esc_Param_Set,   // caller memory reachable further through them
     global: bool,
     temp:   int,             // deepest block holding a value it views in place; 0 = none
@@ -104,13 +106,22 @@ esc_vars_push :: proc(v: ^Esc_Vars, k: i32) {
 }
 
 // A parameter's memory stored into another's (a function-summary edge): memory
-// reachable from `src` may end up referenced from memory reachable from `dst`.
+// `src_level` steps from `src` may end up referenced from memory `dst_level`
+// steps from `dst` — ESC_LEVEL_ONE: what the parameter points at;
+// ESC_LEVEL_TWO: what that points at (a `^[]T`'s elements); ESC_LEVEL_DEEP:
+// anything reachable. (Two kept apart from deep: an append through `^[]T`
+// lands in the elements, not in what they point at — text items appended
+// to a list don't make it a store into the text.)
 Esc_Store :: struct {
-    dst:      int,  // ESC_STORE_GLOBAL: into global memory
-    dst_deep: bool,
-    src:      int,
-    src_deep: bool,
+    dst:       int,  // ESC_STORE_GLOBAL: into global memory
+    dst_level: u8,
+    src:       int,
+    src_level: u8,
 }
+
+ESC_LEVEL_ONE  :: 1
+ESC_LEVEL_TWO  :: 2
+ESC_LEVEL_DEEP :: 3
 
 Esc_Summary :: struct {
     ret:      Esc_Param_Set, // the result may point at what these arguments point at
@@ -646,26 +657,28 @@ esc_check :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots) {
     if esc_deepest_local(e, val) > esc_shallowest(e, dst) && e.report {
         esc_report_store(e, site, val)
     }
-    if val.params == {} && val.deep == {} { return }
+    if val.params == {} && val.two == {} && val.deep == {} { return }
     // Caller memory into caller memory can't be judged in here — every parameter
     // is depth 1 to the callee. Summarize it; call sites check it.
-    for i in dst.params { esc_record_stores(e, i, false, val) }
-    for i in dst.deep   { esc_record_stores(e, i, true, val) }
-    if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, false, val) }
+    for i in dst.params { esc_record_stores(e, i, ESC_LEVEL_ONE, val) }
+    for i in dst.two    { esc_record_stores(e, i, ESC_LEVEL_TWO, val) }
+    for i in dst.deep   { esc_record_stores(e, i, ESC_LEVEL_DEEP, val) }
+    if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, ESC_LEVEL_ONE, val) }
     // A constructor's field is part of the constructed result.
     for vi in 0 ..< esc_var_count(dst.vars) {
         k := esc_var_at(dst.vars, vi)
         if e.vars[k].depth == ESC_CALLER {
             e.sum.ret += val.params
-            e.sum.ret_deep += val.deep
+            e.sum.ret_deep += val.two + val.deep
         }
     }
 }
 
 @(private="file")
-esc_record_stores :: proc(e: ^Esc, dst: int, dst_deep: bool, val: Esc_Roots) {
-    for j in val.params { esc_record(e, Esc_Store{dst, dst_deep, j, false}) }
-    for j in val.deep   { esc_record(e, Esc_Store{dst, dst_deep, j, true}) }
+esc_record_stores :: proc(e: ^Esc, dst: int, dst_level: u8, val: Esc_Roots) {
+    for j in val.params { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_ONE}) }
+    for j in val.two    { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_TWO}) }
+    for j in val.deep   { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_DEEP}) }
 }
 
 @(private="file")
@@ -686,7 +699,7 @@ esc_return_op :: proc(e: ^Esc, ri: int, op: Node_Id, ops: []Operand, state: []Es
 @(private="file")
 esc_return :: proc(e: ^Esc, ri: int, op: Node_Id, val: Esc_Roots, o: Operand, state: []Esc_Roots) {
     e.sum.ret += val.params
-    e.sum.ret_deep += val.deep
+    e.sum.ret_deep += val.two + val.deep
     if esc_deepest_local(e, val) <= ESC_CALLER || !e.report { return }
     if o.op != NO_NODE && esc_report_call_return(e, ri, op, o, state) { return }
     esc_diag(e, graph_origin(e.g, op), TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
@@ -773,34 +786,42 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
         for a in args { esc_join(r, esc_at(e, a)) }   // unknown: the result may view any argument
         return
     }
-    for i in sum.ret      { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, false, state)) } }
-    for i in sum.ret_deep { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, true, state)) } }
+    for i in sum.ret      { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) } }
+    for i in sum.ret_deep { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) } }
     for st in sum.stores {
         if st.src >= len(args) || st.dst >= len(args) { continue }
-        val := esc_arg(e, callee, args, st.src, st.src_deep, state)
+        val := esc_arg(e, callee, args, st.src, st.src_level, state)
         dst: Esc_Roots
         if st.dst == ESC_STORE_GLOBAL {
             dst.global = true
         } else {
-            dst = esc_arg(e, callee, args, st.dst, st.dst_deep, state)
+            dst = esc_arg(e, callee, args, st.dst, st.dst_level, state)
         }
         esc_store(e, Esc_Site{op = op, callee = callee, st = st}, dst, val, state)
     }
 }
 
-// Argument `i` as the callee's parameter `i` sees it (decay included).
+// Argument `i` as the callee's parameter `i` sees it (decay included), at a
+// level: what it points at; one step on from there; anything reachable.
 @(private="file")
-esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, deep: bool, state: []Esc_Roots) -> Esc_Roots {
+esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8, state: []Esc_Roots) -> Esc_Roots {
     pt: Type = callee.params[i].type_ if i < len(callee.params) else nil
     r := esc_into(e, args[i], pt, state)
-    return esc_reach(e, r, state) if deep else r
+    switch level {
+    case ESC_LEVEL_ONE: return r
+    case ESC_LEVEL_TWO:
+        on: Esc_Roots
+        esc_slice_data(e, &on, r, state)
+        return on
+    }
+    return esc_reach(e, r, state)
 }
 
 // --- roots ---------------------------------------------------------------------
 
 @(private="file")
 esc_clear :: proc(r: ^Esc_Roots) {
-    r.params, r.deep, r.global, r.temp = {}, {}, false, 0
+    r.params, r.two, r.deep, r.global, r.temp = {}, {}, {}, false, 0
     r.vars.n = 0
     clear(&r.vars.more)
 }
@@ -808,6 +829,7 @@ esc_clear :: proc(r: ^Esc_Roots) {
 @(private="file")
 esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
     if !(src.params <= dst.params) { dst.params += src.params; changed = true }
+    if !(src.two <= dst.two)       { dst.two += src.two; changed = true }
     if !(src.deep <= dst.deep)     { dst.deep += src.deep; changed = true }
     if src.global && !dst.global   { dst.global = true; changed = true }
     if src.temp > dst.temp         { dst.temp = src.temp; changed = true }
@@ -825,7 +847,7 @@ esc_copy :: proc(dst: ^Esc_Roots, src: Esc_Roots) {
 
 @(private="file")
 esc_equal :: proc(a, b: Esc_Roots) -> bool {
-    if a.params != b.params || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
+    if a.params != b.params || a.two != b.two || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
     if esc_var_count(a.vars) != esc_var_count(b.vars) { return false }
     for i in 0 ..< esc_var_count(a.vars) { if !esc_vars_has(b.vars, esc_var_at(a.vars, i)) { return false } }
     return true
@@ -848,7 +870,8 @@ esc_merge :: proc(dst, src: []Esc_Roots) -> (changed: bool) {
 // parameter's memory holds more of the caller's memory.
 @(private="file")
 esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
-    dst.deep += r.params + r.deep
+    dst.two += r.params
+    dst.deep += r.two + r.deep
     if r.global { dst.global = true }
     dst.temp = max(dst.temp, r.temp)
     for vi in 0 ..< esc_var_count(r.vars) {
@@ -895,7 +918,7 @@ esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
 esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
     d := max(int)
     if r.global { d = ESC_GLOBAL }
-    if r.params != {} || r.deep != {} { d = min(d, ESC_CALLER) }
+    if r.params != {} || r.two != {} || r.deep != {} { d = min(d, ESC_CALLER) }
     if r.temp > 0 { d = min(d, r.temp) }
     for vi in 0 ..< esc_var_count(r.vars) { d = min(d, e.vars[esc_var_at(r.vars, vi)].depth) }
     return d
@@ -1018,8 +1041,8 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
     n := 0
     for i in 0 ..< min(len(args), ESC_MAX_PARAMS) {
         local := false
-        if i in sum.ret      && esc_deepest_local(e, esc_arg(e, callee, args, i, false, state)) > ESC_CALLER { local = true }
-        if i in sum.ret_deep && esc_deepest_local(e, esc_arg(e, callee, args, i, true, state))  > ESC_CALLER { local = true }
+        if i in sum.ret      && esc_deepest_local(e, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) > ESC_CALLER { local = true }
+        if i in sum.ret_deep && esc_deepest_local(e, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) > ESC_CALLER { local = true }
         if !local { continue }
         if n > 0 { strings.write_string(&sb, ", ") }
         fmt.sbprintf(&sb, "parameter `%s`", esc_param_name(callee, i))
