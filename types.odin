@@ -717,9 +717,25 @@ mangle_generic_name :: proc(base: string, type_args: []Type) -> string {
     defer delete(parts)
     append(&parts, base)
     for arg in type_args {
-        append(&parts, sanitize_for_identifier(type_name(arg)))
+        append(&parts, mangle_type_part(arg))
     }
     return strings.join(parts[:], "__")
+}
+
+// A type argument's part of an instance's name: its name — its flat one
+// when a body defines it (two funs' own `is_mara`s, two funs' own `Item`s
+// are two types: by their names as written, their instances would be one,
+// and a call would get the other's).
+mangle_type_part :: proc(t: Type) -> string {
+    flat, source, pkg: string
+    #partial switch v in t {
+    case ^Type_Scope:    flat, source, pkg = v.name, v.source_name, v.home_package
+    case ^Type_Union:    flat, source, pkg = v.name, v.source_name, v.home_package
+    case ^Type_Enum:     flat, source, pkg = v.name, v.source_name, v.home_package
+    case ^Type_Distinct: flat, source, pkg = v.name, v.source_name, v.home_package
+    }
+    if flat != "" && source != "" && flat != make_flat_name(pkg, source) { return sanitize_for_identifier(flat) }
+    return sanitize_for_identifier(type_name(t))
 }
 
 // Mara type names like `^Box` or `[]Foo` contain characters LLVM rejects in

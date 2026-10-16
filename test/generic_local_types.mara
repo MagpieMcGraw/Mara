@@ -1,0 +1,46 @@
+module generic_local_types
+
+use mara.core
+
+//@ expect-output: small: 3 1 3
+//@ expect-output: big: 3 7 9
+//@ expect-output: sizes: 8 24
+
+// Two funs' own `keep`s, two funs' own `Item`s: two functions, two types,
+// though named alike — each call to a generic gets its own instance (its
+// name the type's flat one), not the other fun's.
+
+small_ones :: fun(items: []i64, storage: ^[]byte) -> []i64 {
+	keep :: fun(n: i64) -> bool { return n < 4 }
+	return filter(items, keep, storage)
+}
+
+big_ones :: fun(items: []i64, storage: ^[]byte) -> []i64 {
+	keep :: fun(n: i64) -> bool { return n > 6 }
+	return filter(items, keep, storage)
+}
+
+// An item's size, by its type.
+each_size :: fun(xs: []$T) -> i64 { return size_of(T) }
+
+one_field :: fun() -> i64 {
+	Item :: struct { a: i64 }
+	items : [2]Item
+	return each_size(items[:])
+}
+
+three_fields :: fun() -> i64 {
+	Item :: struct { a: i64  b: i64  c: i64 }
+	items : [2]Item
+	return each_size(items[:])
+}
+
+main :: fun() {
+	nums : [9]i64 = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+	storage : [..512]byte
+	s := small_ones(nums[:], &storage)
+	b := big_ones(nums[:], &storage)
+	print("small:", s.len, s[0], s[2])
+	print("big:", b.len, b[0], b[2])
+	print("sizes:", one_field(), three_fields())
+}
