@@ -9,8 +9,8 @@
 // elsewhere), the separator kept, for a file's name to go after.
 //
 // It gives back a Path: up to 512 characters, its room past the path there
-// to add to. Cut it to its directory and add a file's name, and it's that
-// file's path — no other buffer. Too_Large when the path is longer.
+// to add to; path_dir gives one too, the directory, for a file's name to go
+// after. Too_Large when the path is longer.
 module executable_path
 
 use mara.core
@@ -31,9 +31,8 @@ main :: fun() {
 	dir := path_dir(path)
 	print("this program's directory ends with a separator:", dir.len > 0)
 
-	// A file beside it: the path cut to the directory, then the file's name.
-	path.len = dir.len
-	&path + "executable_path.mara"
-	_, re := read_entire_file(path, &storage)
+	// A file beside it: the directory, then the file's name.
+	&dir + "executable_path.mara"
+	_, re := read_entire_file(dir, &storage)
 	print("its source beside it reads:", not re)
 }

@@ -61,15 +61,20 @@ parent_dir :: fun(path: []utf8) -> []utf8 {
 	return path[0 : end]
 }
 
-// The directory a path is in, its separator kept at the end: what a file's
-// name goes after, for a file beside it — the program's own files, beside
-// its executable_path. Empty for a name alone. (parent_dir: without it.)
-path_dir :: fun(path: []utf8) -> []utf8 {
+// The directory a path is in, its separator kept at the end: a Path, for a
+// file's name to go after — a file beside it, the program's own files beside
+// its executable_path: `dir := path_dir(exe)`, `&dir + "font.ttf"`. Empty
+// for a name alone. (parent_dir: without the separator, a view of the path.)
+// A directory longer than a Path holds stops the program, as an add past
+// its room does.
+path_dir :: fun(path: []utf8) -> Path {
 	end : i64 = 0
 	for ch, i in path {
 		if ch == '/' or ch == '\\' do end = i + 1
 	}
-	return path[0 : end]
+	dir : Path
+	&dir + path[0 : end]
+	return dir
 }
 
 // The path without the separators at its end ('/' or '\').
