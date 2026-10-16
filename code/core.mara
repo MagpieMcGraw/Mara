@@ -79,6 +79,28 @@ filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
 	return new
 }
 
+// Each item into the list for its kind, in their order: one list for each
+// value of the enum kind gives back, indexed by it — `lists[Mara_File]`.
+// kind is any function taking an item and giving a value of an enum:
+// `group(entries, kind_of, &storage)`. Each kind is counted first, then
+// room for its items carved from storage (its len moved past them all),
+// then the items appended. Short of room, the program stops (as slice()
+// does).
+group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
+	counts : [K]i64
+	for item in items {
+		counts[kind(item)] += 1
+	}
+	lists : [K][]T
+	for c, i in counts {
+		lists[i] = slice([:c]T, storage)
+	}
+	for item in items {
+		&lists[kind(item)] + item
+	}
+	return lists
+}
+
 // What an arena must have to be the program's allocator. Arena_Basic and
 // Arena_Debug (mara.memory) are the ones to use.
 Arena :: struct {

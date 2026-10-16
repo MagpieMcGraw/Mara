@@ -8,29 +8,12 @@ use mara.core
 //@ expect-output: kinds: 3
 //@ expect-output: even: 4 50 7000 | odd: 2 5 7 | of 2
 
-// A generic that sorts items into one list per value of the enum its
-// function gives back: `fun(T) -> $K` binds K to that function's result,
-// `[K][]T` is one list for each of K's values. Two enums, two instances.
+// mara.core's group: items into one list per value of the enum its
+// function gives back (`fun(T) -> $K` binds K to that function's result,
+// `[K][]T` is one list for each of K's values). Two enums, two instances.
 
 Size :: union { Small  Big  Huge }
 Parity :: union { Even  Odd }
-
-// Each item into its kind's list, in order: the counts first, then room
-// for each list carved from storage, then the items appended.
-group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
-	counts : [K]i64
-	for item in items {
-		counts[kind(item)] += 1
-	}
-	lists : [K][]T
-	for c, i in counts {
-		lists[i] = slice([:c]T, storage)
-	}
-	for item in items {
-		&lists[kind(item)] + item
-	}
-	return lists
-}
 
 size_of_n :: fun(n: i64) -> Size {
 	if n < 10 do return .Small
