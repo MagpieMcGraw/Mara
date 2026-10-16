@@ -14,10 +14,10 @@ primitive_sphere :: fun(
     n_verts := (rings + 1) * (sectors + 1)
     n_inds  := rings * sectors * 6
 
+    // (Room for all of them, empty: each appended as it's made.)
     verts := slice([:n_verts]Vertex, storage)
     inds  := slice([:n_inds]u32, storage)
 
-    vi := 0
     for r in 0..rings + 1 {
         phi := PI * f32(r) / f32(rings)
         y := 0.5 * cos(phi)
@@ -36,24 +36,21 @@ primitive_sphere :: fun(
             u_coord := f32(s) / f32(sectors)
             v_coord := f32(r) / f32(rings)
 
-            verts[vi] = Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
-            vi += 1
+            &verts + Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
         }
     }
 
-    ii := 0
     for r in 0..rings {
         for s in 0..sectors {
             cur := u32(r * (sectors + 1) + s)
             next := cur + u32(sectors + 1)
 
-            inds[ii + 0] = cur
-            inds[ii + 1] = next
-            inds[ii + 2] = cur + 1
-            inds[ii + 3] = cur + 1
-            inds[ii + 4] = next
-            inds[ii + 5] = next + 1
-            ii += 6
+            &inds + cur
+            &inds + next
+            &inds + (cur + 1)
+            &inds + (cur + 1)
+            &inds + next
+            &inds + (next + 1)
         }
     }
 

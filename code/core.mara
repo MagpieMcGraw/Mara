@@ -68,10 +68,10 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) {
 }
 
 // The items `keep` says yes to, in their order, into storage after what's
-// there, its len moved past them: a view of them. keep is any function
-// taking an item and giving a bool — `filter(entries, is_mara, &storage)`.
-// Room for all the items is taken first and what isn't kept given back, so
-// storage must have room for every item; short, the program stops (as
+// there: a view of them. keep is any function taking an item and giving a
+// bool — `filter(entries, is_mara, &storage)`. Room for every item is taken
+// from storage, its len moved past it all, kept or not; the view's room is
+// that much (more appends to it fit). Short of room, the program stops (as
 // slice() does).
 filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
 	new := slice([:items.len]T, storage)
