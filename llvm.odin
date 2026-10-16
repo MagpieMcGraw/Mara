@@ -2110,9 +2110,11 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
 // address's, not the len's: storage may start anywhere), that address, the
 // cursor moved past it —
 // checked against storage's cap — and stored as its len. `let(T, s)` is that
-// memory; `slice([:n]T, s)` a header over n of them (len = cap = n), built
-// where it goes when that's fresh, as a call's result is. Positional (a view
-// of bytes for storage): `let` is the view; `slice`, n at its offset.
+// memory; `slice([:n]T, s)` a header over room for n of them, empty (len 0,
+// cap n: room carved is room to write into), built where it goes when
+// that's fresh, as a call's result is. Positional (a view of bytes for
+// storage): `let` is the view; `slice`, n at its offset (len n: bytes that
+// are there, to read).
 @(private="file")
 llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
@@ -2134,7 +2136,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         off := llvm_operand(e, vops[1], slice_header_width_type) or_return
         data, bound := llvm_bytes(e, vops[0].op) or_return
         at := emit_byte_count_ptr(g, data, bound, off, n, type_size(sl.elem), "slice")
-        llvm_carve_header(e, op, at, n)
+        llvm_carve_header(e, op, at, n, n)
         return true
     }
     if llvm_header_elem(graph_type(pg, storage)) == nil { return false }
@@ -2205,14 +2207,14 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         e.value[op] = at
         return true
     }
-    llvm_carve_header(e, op, at, count)
+    llvm_carve_header(e, op, at, ir_int(0), count)
     return true
 }
 
-// A carved slice's header over `count` elements at `at` (len = cap = count):
-// in a fresh declaration's (or the result's) slot, else a temporary.
+// A carved slice's header over `count` elements at `at` (its len `n`): in a
+// fresh declaration's (or the result's) slot, else a temporary.
 @(private="file")
-llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: Val) {
+llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, n, count: Val) {
     g, pg := e.g, e.pg
     out: Val
     if u := e.st.user[graph_ix(e.pg, op)]; u >= 0 && graph_op_of(pg, u) == .Write {
@@ -2226,7 +2228,7 @@ llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, count: Val) {
         emit_alloca(g, out, SLICE_IR_TYPE)
     }
     emit_header_set(g, out, SLICE.ptr, at)
-    emit_header_set(g, out, SLICE.len, count)
+    emit_header_set(g, out, SLICE.len, n)
     emit_header_set(g, out, SLICE.cap, count)
     e.value[op] = out
 }

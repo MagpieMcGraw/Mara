@@ -45,5 +45,5 @@ main :: fun() {
 	print(total, items.len, e)
 	pair := slice([:2]i64, &storage)
 	pair[0] = 1
-	print("carved:", pair.len, storage.len > 16)
+	print("carved:", pair.cap, storage.len > 16)
 }

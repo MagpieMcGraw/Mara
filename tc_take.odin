@@ -1,7 +1,8 @@
 package mara
 
-// A take: `let(T, s)` a value of T carved from storage, `slice([:n]T, s)` n
-// of them as a slice, `slice(s)` a slice of the type its use expects. The
+// A take: `let(T, s)` a value of T carved from storage, `slice([:n]T, s)`
+// room for n of them as a slice (empty from a cursor: to fill; n of them at
+// a byte's place: to read), `slice(s)` a slice of the type its use expects. The
 // storage: `&bytes` (a cursor, advanced: ^[]byte) or `&bytes[i]` (at a
 // place: ^byte).
 

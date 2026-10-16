@@ -4,16 +4,16 @@ use mara.core
 use mara.string
 
 //@ expect-output: evens: 0 2 4 6 8 | 5
-//@ expect-output: storage: 40
+//@ expect-output: storage: 80
 //@ expect-output: big: 7 8 9 | 3
-//@ expect-output: storage after both: 64
+//@ expect-output: storage after both: 160
 //@ expect-output: words: apple avocado | 2
-//@ expect-output: none: 0 64
-//@ expect-output: empty: 0 64
+//@ expect-output: none: 0 240
+//@ expect-output: empty: 0 240
 //@ expect-output: structs: b 2 d 4 | 2
 
 // filter: the items its function says yes to, in order, into storage after
-// what's there, its len moved past them (what isn't kept given back) — two
+// what's there (room for all the items taken: 80 bytes for 10 i64s) — two
 // filters one after the other in one storage, text items, structs, nothing
 // kept, no items at all.
 

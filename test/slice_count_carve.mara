@@ -4,7 +4,8 @@ module slice_count_carve
 //@ expect-output: twice 23 64
 //@ expect-output: generic 4 5 176
 
-// `slice([:n]T, storage)` carves a runtime count of T. The checker reads
+// `slice([:n]T, storage)` carves room for a runtime count of T (an empty
+// slice, its cap the count). The checker reads
 // `[:n]T` as type []T, count n, and records that beside the source instead of
 // rewriting it: the rewrite changed the syntax tree, and generic instances
 // share it, so the second instance of carve_generic lost its count (0).
@@ -21,18 +22,18 @@ Wide :: struct {
 carve :: fun(memory: ^[]byte, n: i64) -> i64 {
 	xs : []Cell = slice([:n]Cell, memory)
 	xs[n - 1].v = 9
-	return xs.len
+	return xs.cap
 }
 
 carve_twice :: fun(memory: ^[]byte) -> i64 {
 	a : []Cell = slice([:2]Cell, memory)
 	b : []Cell = slice([:2 + 1]Cell, memory)
-	return a.len * 10 + b.len
+	return a.cap * 10 + b.cap
 }
 
 carve_generic :: fun($T: type, proto: T, memory: ^[]byte, n: i64) -> i64 {
 	xs : []T = slice([:n]T, memory)
-	return xs.len
+	return xs.cap
 }
 
 main :: fun() {
