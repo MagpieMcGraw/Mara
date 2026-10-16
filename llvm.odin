@@ -836,8 +836,17 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         switch {
         case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), llvm_val(e, place))
         case llvm_partial(t) != nil:
-            emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t))
-            mem_probe_new(g, llvm_val(e, place), llvm_partial(t))
+            pa := llvm_partial(t)
+            if value_has_partial_array(g, pa.elem) {
+                // (Each element's own partial arrays stamped too — a list of
+                // filenames' unused ones each a valid empty one, its room
+                // there to append into in place.)
+                emit_memset_zero(g, partial_elements(g, llvm_val(e, place), pa), pa.size * type_size(pa.elem))
+                stamp_zero_partial_arrays(g, llvm_val(e, place), t)
+            } else {
+                emit_partial_array_zero(g, llvm_val(e, place), pa)
+                mem_probe_new(g, llvm_val(e, place), pa)
+            }
         case llvm_aggregate(t):
             emit_memset_zero(g, llvm_val(e, place), type_size(t))
             stamp_zero_partial_arrays(g, llvm_val(e, place), t)
@@ -1187,7 +1196,16 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
         if ir == IR_PTR { emit_store(g, ir, IR_NULL, llvm_val(e, place)) }
         else if decl { emit_store(g, ir, llvm_zero(t), llvm_val(e, place)) }
     case llvm_partial(t) != nil:
-        if decl { emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t), zero = false) }
+        // (Headers only — its elements' own partial arrays' too: their room
+        // there, nothing in it written.)
+        if decl {
+            pa := llvm_partial(t)
+            if value_has_partial_array(g, pa.elem) {
+                stamp_zero_partial_arrays(g, llvm_val(e, place), t)
+            } else {
+                emit_partial_array_zero(g, llvm_val(e, place), pa, zero = false)
+            }
+        }
     case llvm_struct(t) != nil:
         // A declared local struct is zero (a constructor's field is left as
         // it is, in Self zeroed already).

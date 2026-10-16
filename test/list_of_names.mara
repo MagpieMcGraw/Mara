@@ -1,0 +1,52 @@
+module list_of_names
+
+use mara.core
+use mara.memory
+
+//@ expect-output: in place: 2 C:/code/a.mara 14 500
+//@ expect-output: copied: 3 C:/code/b.mara
+//@ expect-output: void: 1 x/y 3
+//@ expect-output: unused: 0 500
+
+// A list whose items are partial arrays themselves — filenames: each
+// unused one a valid empty one from the start (its header stamped as the
+// list is declared), so the list can grow by one and the new item be
+// appended into in place; or an item built apart and copied in. `= void`
+// leaves their contents unwritten, their headers stamped all the same.
+
+Name :: [..500]utf8
+
+// The list one longer, the new name appended into where it is.
+add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
+	names.len += 1
+	last := &names[names.len - 1]
+	last.len = 0
+	last + dir
+	last + "/"
+	last + file
+}
+
+// A name built apart, then copied onto the list's end.
+add_copy :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
+	full : Name
+	&full + dir
+	&full + "/"
+	&full + file
+	names + full
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(4 * MB))
+	names : [..100]Name
+	add_in_place(&names, "C:/code", "a.mara")
+	add_in_place(&names, "C:/code", "c.mara")
+	print("in place:", names.len, names[0], names[0].len, names[1].cap)
+	add_copy(&names, "C:/code", "b.mara")
+	print("copied:", names.len, names[2])
+
+	quick : [..4]Name = void
+	add_in_place(&quick, "x", "y")
+	print("void:", quick.len, quick[0], quick[0].len)
+
+	print("unused:", names[50].len, names[50].cap)
+}
