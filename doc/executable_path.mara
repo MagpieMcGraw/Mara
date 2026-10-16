@@ -5,8 +5,9 @@
 // wrote, and that may be just its name (found on the PATH), a path from
 // another directory, or a link's. executable_path asks the system: the
 // program's file, its path whole, however it was started. path_dir gives
-// its directory: the path up to its last separator ('\' on Windows, '/'
-// elsewhere), the separator kept, for a file's name to go after.
+// its directory: the path up to its last separator, the separator kept, for
+// a file's name to go after. Its separators are '/', on Windows too (which
+// takes either), so a path is joined with "/" everywhere.
 //
 // It gives back a Path: up to 512 characters, its room past the path there
 // to add to; path_dir gives one too, the directory, for a file's name to go

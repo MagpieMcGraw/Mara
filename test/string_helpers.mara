@@ -22,7 +22,7 @@ use mara.os
 //@ expect-output: ints: 0 7 -42 9223372036854775807 -9223372036854775808
 //@ expect-output: paths: [C:\a\b] [] [dir] [a/b]
 //@ expect-output: same: true true false
-//@ expect-output: path_dir: [C:\a\b\] [] [a/b\] [/]
+//@ expect-output: path_dir: [C:/a/b/] [] [a/b/] [/]
 //@ expect-output: written: Ok Ok Ok [hello there]
 
 main :: fun() {

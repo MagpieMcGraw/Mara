@@ -35,7 +35,8 @@ Pipe_Error :: error {
 
 // A path, as current_dir and executable_path give one back: up to 512
 // characters (Windows' paths here end at 260), its room past them there to
-// add a name to. Under 1 KB: it lives where it's declared, no arena needed.
+// add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
+// where it's declared, no arena needed.
 Path :: [..512]utf8
 
 // A file or a directory found in a directory (dir_read): its name — not
@@ -74,7 +75,19 @@ path_dir :: fun(path: []utf8) -> Path {
 	}
 	dir : Path
 	&dir + path[0 : end]
+	#if #windows {
+		slashes_forward(&dir)
+	}
 	return dir
+}
+
+// A path's '\'s made '/': the paths this module gives back say '/' on every
+// system, Windows' too (it takes either). Only on Windows: elsewhere a '\'
+// can be part of a name.
+slashes_forward :: fun(path: ^[]utf8) {
+	for k in 0 .. path.len {
+		if path[k] == '\\' do path[k] = '/'
+	}
 }
 
 // The path without the separators at its end ('/' or '\').
@@ -419,8 +432,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// The directory the program runs in — where a path not whole starts —
-	// its path, whole (no separator at its end but a drive's root, `C:\`):
-	// a Path, its room past the path there to add to (`&cwd + "/code"`).
+	// its path, whole (no separator at its end but a drive's root, `C:/`),
+	// its separators '/': a Path, its room past the path there to add to
+	// (`&cwd + "/code"`).
 	// Too_Large when it's longer than a Path holds; Read_Failed when the
 	// system won't say. (executable_path: the program's own file, wherever
 	// it runs.)
@@ -431,6 +445,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (Too long, it says how much room it wants, its 0 counted.)
 		if n >= dir.cap do return dir, Too_Large
 		dir.len = n
+		slashes_forward(&dir)
 		return dir
 	}
 
@@ -449,6 +464,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (As long as the room, it was cut off: no room for its 0.)
 		if n >= path.cap do return path, Too_Large
 		path.len = n
+		slashes_forward(&path)
 		return path
 	}
 
