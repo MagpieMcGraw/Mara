@@ -1,0 +1,15 @@
+module generic_arg_neg
+
+//@ expect-fail: argument 2 of 'second': parameter 'x' expects i64
+
+// A generic's argument fits its param once the bindings are in: x is a T,
+// and items made T an i64.
+
+use mara.core
+
+second :: fun(items: []$T, x: T) -> i64 { return items.len }
+
+main :: fun() {
+	nums : [3]i64 = {1, 2, 3}
+	print(second(nums[:], "not a number"))
+}

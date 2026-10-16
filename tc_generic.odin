@@ -1,5 +1,7 @@
 package mara
 
+import "core:fmt"
+
 // Generics in the checker. A definition is a template when its signature
 // names a type it is given (`$T`), a struct's param is a shape (`~T`), or a
 // struct's param is used in its fields' types (`[n]T`). A template is
@@ -200,6 +202,24 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     received := make([]Arg, len(args), context.temp_allocator)
     for a, i in args { received[i] = {a, .Receiver if a == k.recv.node else .Written, -1} }
     tc_set_args(k, n, received)
+    // (Each argument fits its param, the bindings in: `x: T` given another
+    // type, a fun given for `fun(T) -> $K` taking something else — as a
+    // call of a plain fun is checked.)
+    for a, i in args {
+        if i >= len(ft.params) { break }
+        pt, at := ft.params[i].type_, arg_types[i]
+        own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
+        if own || coerce_deferred(k.c, at, pt, span) || !types_incompatible(pt, at) { continue }
+        clause := ""
+        if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
+        got := type_name(at)
+        if fs, is_fun := at.(^Type_Scope); is_fun && fs.kind == .Fun && fs.name != "" {
+            shape := fs^
+            shape.name = ""
+            got = fmt.tprintf("%s, a %s", got, type_name(&shape))
+        }
+        tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), got, "")
+    }
     for a, i in args { if i < len(ft.params) { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
     return fn_primary_return(ft)
 }

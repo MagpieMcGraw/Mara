@@ -1,0 +1,29 @@
+module generic_fun_arg_neg
+
+//@ expect-fail: parameter 'kind' expects fun([]utf8) -> Parity, got parity, a fun(i64) -> Parity
+
+// A fun given for `fun(T) -> $K` takes a T: parity takes an i64, the items
+// are text.
+
+use mara.core
+
+Parity :: union { Even  Odd }
+
+parity :: fun(n: i64) -> Parity {
+	if n % 2 == 0 do return .Even
+	return .Odd
+}
+
+count_kinds :: fun(items: []$T, kind: fun(T) -> $K) -> [K]i64 {
+	counts : [K]i64
+	for item in items {
+		counts[kind(item)] += 1
+	}
+	return counts
+}
+
+main :: fun() {
+	words : [2][]utf8 = {"a", "b"}
+	counts := count_kinds(words[:], parity)
+	print(counts.len)
+}

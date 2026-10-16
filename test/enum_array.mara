@@ -1,0 +1,55 @@
+module enum_array
+
+use mara.core
+
+//@ expect-output: slots: 6 2
+//@ expect-output: counted: 1 2 | 5 2
+//@ expect-output: after: 12
+//@ expect-output: flags: false true false
+
+// `[K]T`, K an enum: one T for each of its values — the highest value + 1
+// of them (`Blue = 5`: 6) — indexed by K: by a variant's name, by a K a fun
+// gives back; looped over by its slot numbers.
+
+Color :: union { Red  Green  Blue = 5 }
+Side :: union { Left  Right }
+
+pick :: fun(n: i64) -> Color {
+	if n > 1 do return .Blue
+	return .Green
+}
+
+main :: fun() {
+	seen : [Color]i64
+	sides : [Side]bool
+	print("slots:", seen.len, sides.len)
+
+	for n in 0 .. 4 {
+		seen[pick(n)] += 1
+	}
+	line : str64
+	for v, i in seen {
+		if v > 0 {
+			if line.len > 0 do &line + " | "
+			&line + text_of(i)
+			&line + " "
+			&line + text_of(v)
+		}
+	}
+	print("counted:", line)
+
+	c := pick(3)
+	seen[c] += 10
+	print("after:", seen[Blue])
+
+	sides[Right] = true
+	print("flags:", sides[Left], sides[Right], seen[Red] > 0)
+}
+
+// A small number's digits.
+text_of :: fun(n: i64) -> str64 {
+	out : str64
+	if n >= 10 do &out + utf8(i64('0') + n / 10)
+	&out + utf8(i64('0') + n % 10)
+	return out
+}

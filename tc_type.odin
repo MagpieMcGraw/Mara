@@ -94,6 +94,11 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         elem := tc_type(k, Tree_Id(t.b[n]), span)
         index_type: Type
         if r[1] != 0 { index_type = tc_type(k, Tree_Id(r[1]), span) }
+        // (`[K]T`: K an enum — one T for each of its values, the highest
+        // value + 1 of them, indexed by K.)
+        if r[1] == 0 {
+            if et, slots := tc_enum_slots(k, Tree_Id(r[0])); et != nil { return type_fixed_array(slots, elem, et) }
+        }
         size, ok := tc_type_size(k, Tree_Id(r[0]), elem, span)
         if !ok { return Type_Error{} }
         return type_fixed_array(size, elem, index_type)
@@ -152,6 +157,28 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
 
 // An array's size, known when the program is compiled: a number, a
 // constant, or an expression of them.
+// An array's size written as an enum's name (a union of plain variants, a
+// type param bound to one): the enum, and the slots an array indexed by it
+// needs — its highest value + 1 (a value given, `Blue = 5`, counts as
+// itself). Nil when the name isn't one.
+tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
+    t := k.t
+    if n == 0 || t.tag[n] != .Ident || k.rs.refs[n].kind != .Type { return nil, 0 }
+    ty, ok := tc_ref_type(k, k.rs.refs[n], tc_name(k, n))
+    if !ok || ty == nil { return nil, 0 }
+    hi := -1
+    #partial switch e in distinct_base(ty) {
+    case ^Type_Union:
+        for _, v in e.tag_map { hi = max(hi, v) }
+    case ^Type_Enum:
+        if e.is_error_kind { return nil, 0 }
+        for _, v in e.variants { hi = max(hi, v) }
+    case:
+        return nil, 0
+    }
+    return ty, hi + 1
+}
+
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
     if t.tag[n] == .Ident {
