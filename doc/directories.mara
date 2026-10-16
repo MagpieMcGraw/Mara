@@ -11,6 +11,10 @@
 // storage — storage then as it was. One storage takes several lists, one
 // after another, and files read too (see read_file.mara).
 //
+// To keep only some of the entries — the .mara files, the directories —
+// filter takes a function saying yes or no to each: the ones it keeps go
+// into the storage too, after the list.
+//
 // An entry is about 270 bytes (its name up to 260), so storage for a few
 // hundred lives in the program's arena: set one first (see arenas.mara).
 module directories
@@ -19,6 +23,11 @@ use mara.core
 use mara.os
 use mara.string
 use mara.memory
+
+// Whether an entry is a doc page: a .mara file.
+is_page :: fun(entry: Dir_Entry) -> bool {
+	return not entry.dir and ends_with(entry.name[:], ".mara")
+}
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
@@ -30,13 +39,8 @@ main :: fun() {
 		print("couldn't read it:", e)
 		return
 	}
-	pages := 0
-	for entry in entries {
-		name : []utf8 = entry.name[:]
-		if entry.dir do continue
-		if ends_with(name, ".mara") do pages += 1
-	}
-	print("doc/ has % pages, this one among them", pages)
+	pages := filter(entries, is_page, &storage)
+	print("doc/ has % pages, this one among them", pages.len)
 
 	// The stdlib's directory, beside doc/: what's a directory in it. Its
 	// list goes after the first, in the same storage.

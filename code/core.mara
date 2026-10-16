@@ -67,6 +67,25 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) {
 	dst.len += 1
 }
 
+// The items `keep` says yes to, in their order, into storage after what's
+// there, its len moved past them: a view of them. keep is any function
+// taking an item and giving a bool — `filter(entries, is_mara, &storage)`.
+// Room for all the items is taken first and what isn't kept given back, so
+// storage must have room for every item; short, the program stops (as
+// slice() does).
+filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
+	room := slice([:items.len]T, storage)
+	n : i64 = 0
+	for item in items {
+		if keep(item) {
+			room[n] = item
+			n += 1
+		}
+	}
+	storage.len -= (items.len - n) * size_of(T)
+	return room[0 : n]
+}
+
 // What an arena must have to be the program's allocator. Arena_Basic and
 // Arena_Debug (mara.memory) are the ones to use.
 Arena :: struct {
