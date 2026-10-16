@@ -1,0 +1,14 @@
+module let_slice_cursor_neg
+
+//@ expect-fail: let can't take a slice ([]u32)
+
+// Nor from a buffer's room: room for slices' elements is
+// `slice([:n]T, &storage)`.
+
+use mara.core
+
+main :: fun() {
+	storage : [..64]byte
+	xs := let([]u32, &storage)
+	print(xs.len)
+}

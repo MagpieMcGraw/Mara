@@ -32,7 +32,7 @@ Pounce | translation_mx in camera_update call above
 Pounce | translation_mx in camera_update type above
 Pounce | at camera.mara:148
 # A point: the nodes containing it, each typed by its annotation.
-Pounce | at gfx_mesh_generation.mara:69:11
+Pounce | at gfx_mesh_generation.mara:66:11
 Pounce | at Pounce.mara:112:13
 Pounce | what at camera.mara:52:46
 Pounce | what at Pounce.mara:163:33

@@ -1,0 +1,16 @@
+module let_slice_neg
+
+//@ expect-fail: let can't take a slice ([]i64)
+
+// `let` names a value living in the storage: a slice there would be only
+// its header, read out of the bytes — 2 of them at bytes[0] is
+// `slice([:2]i64, &bytes[0])`.
+
+use mara.core
+
+main :: fun() {
+	bytes : [..64]byte
+	bytes.len = 16
+	xs := let([:2]i64, &bytes[0])
+	print(xs.len)
+}

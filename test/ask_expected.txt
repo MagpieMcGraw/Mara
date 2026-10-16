@@ -607,17 +607,17 @@ below (flow) — what this variable affects  (forward slice)
 
   into calls — the value lands in  (1 parameter)
     mat4_mul               (param b : distinct Mat4)  camera.mara:150
-=== Pounce | at gfx_mesh_generation.mara:69:11
-gfx_mesh_generation.mara:69:11  token '0'
+=== Pounce | at gfx_mesh_generation.mara:66:11
+gfx_mesh_generation.mara:66:11  token '0'
 
-  Define                   [428,1485)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
-  Fun_Def                  [430,1485)  fun() -> [24]Vertex, [36]u32 { …
+  Define                   [391,1448)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
+  Fun_Def                  [393,1448)  fun() -> [24]Vertex, [36]u32 { …
       → Fun primitive_cube, Result result1, Result result2
-  Assign                   [461,498)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+  Assign                   [424,461)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
       → Write
-  Index                    [461,465)  verts[0]   : Vertex
+  Index                    [424,428)  verts[0]   : Vertex
       → Index
-  Number                   [463,464)  0   : i64
+  Number                   [426,427)  0   : i64
 === Pounce | at Pounce.mara:112:13
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37

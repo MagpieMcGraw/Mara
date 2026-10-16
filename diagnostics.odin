@@ -431,6 +431,7 @@ TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE :: "cannot dereference non-pointer type
 TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED :: "typed array literal: type %s is not a fixed-size array"
 TYPE_SIZE_UNKNOWN_TYPE :: "size_of: unknown type"
 TYPE_TAKE_UNKNOWN_TYPE :: "let/slice: unknown type"
+TYPE_LET_SLICE :: "let can't take a slice (%s): it names a value living in the storage, and a slice there would be only its header — for a slice over the storage, `slice([:n]T, &bytes[i])` (n already there) or `slice([:n]T, &storage)` (room for n)"
 TYPE_TAKE_COUNT_INTEGER :: "slice count must be an integer, got %s"
 TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM :: "let/slice requires ^[]byte or ^[..N]byte (cursor form, pass &buffer) or ^byte (positional form), got %s%s"
 TYPE_EXPRESSION_CONDITION_BOOL :: "if-expression condition must be bool (or an error), got %s"

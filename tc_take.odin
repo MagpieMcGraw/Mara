@@ -31,6 +31,12 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
         taken = tc_type(k, ty, span)
         if _, is_err := taken.(Type_Error); is_err { tc_error(k, span, TYPE_TAKE_UNKNOWN_TYPE) }
     }
+    // (`let` names a value living in the storage; a slice there would be its
+    // header, its elements wherever those bytes say: `slice` makes a slice
+    // over the storage instead.)
+    if tc_text(t.main[n]) == "let" && is_slice_type(taken) {
+        tc_error(k, span, TYPE_LET_SLICE, type_name(taken))
+    }
     if count != 0 {
         ct := tc_check_at(k, count, slice_header_width_type)
         if !is_any(ct) && !is_numeric(ct) {
