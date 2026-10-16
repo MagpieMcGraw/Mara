@@ -216,6 +216,7 @@ TYPE_VARIANT_NEEDS_ARGS           :: "'%s' is built by its params: write `%s(…
 TYPE_VARIANT_TAKES_NO_ARGS        :: "'%s' has no params: write `%s%s` or `.%s`"
 PARSE_VARIANT_INTRINSIC_BODY      :: "a union variant's body is its fields, not an intrinsic"
 PARSE_OVERLOAD_EXPECTED_OP        :: "expected operator after 'overload', got '%s'"
+PARSE_TYPE_KEYWORD_ALIAS          :: "`type` isn't written for another name of a type any more: `Name :: T` (`Label :: [..16]utf8`, `Fixed :: i32`)"
 PARSE_FOREIGN_NEEDS_STATIC_LIB    :: "foreign block needs `static_lib`, got `%s`"
 PARSE_NESTED_IF_EXPR              :: "nested if-expressions are not allowed"
 PARSE_MATCH_NEEDS_SUBJECT         :: "match needs a subject value to dispatch on — write `match <union-value> {{ ... }}`; subject-less `match {{ }}` was removed, use if/elif for predicate branching"

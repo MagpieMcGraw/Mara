@@ -1,11 +1,11 @@
 module mara.core
 
 // A text buffer of up to 64 characters: `name : str64`, then `&name + "text"`.
-str64 :: type [..64]utf8
+str64 :: [..64]utf8
 // A text buffer of up to 256 characters (see str64).
-str256 :: type [..256]utf8
+str256 :: [..256]utf8
 // A text buffer of up to 1024 characters (see str64).
-str1024 :: type [..1024]utf8
+str1024 :: [..1024]utf8
 
 // `&list + x` appends to a text buffer or a list: text, one character, items or one item.
 overload + add

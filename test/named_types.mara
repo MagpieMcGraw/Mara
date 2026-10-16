@@ -27,24 +27,24 @@ use mara.string
 //@ expect-output: enums: Color.Green CD.Green CD.Red green true
 //@ expect-output: plain enum: green
 
-Buf  :: type [..64]utf8
+Buf  :: [..64]utf8
 DBuf :: distinct [..64]utf8
-Arr  :: type [4]i64
+Arr  :: [4]i64
 DArr :: distinct [4]i64
-Sl   :: type []i64
+Sl   :: []i64
 
 U :: union {
 	A { x: i64 }
 	B
 }
-UA :: type U
+UA :: U
 UD :: distinct U
 
 Color :: union {
 	Red
 	Green
 }
-CA :: type Color
+CA :: Color
 CD :: distinct Color
 
 P :: struct {
@@ -52,7 +52,7 @@ P :: struct {
 	y: i64 = 5   // (not written by the literals: the constructor sets it)
 	get :: fun(p: Self) -> i64 { return p.x * 10 }
 }
-PA :: type P
+PA :: P
 PD :: distinct P
 
 Holder :: struct {

@@ -591,7 +591,21 @@ tc_register_types :: proc(k: ^TC, s: Tree_Id) {
             return
         }
     }
+    if tc_name_alias(k, s) {
+        tc_register_distinct(k, s, value)
+        return
+    }
     if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value) }
+}
+
+// `A :: B`, a name by itself naming a type (the resolver's: rs_alias_kinds):
+// another name for it, as `A :: [..16]utf8` is.
+tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
+    t := k.t
+    value := Tree_Id(t.b[s])
+    if value == 0 || t.a[s] != 0 { return false }
+    if t.tag[value] != .Ident && t.tag[value] != .Field { return false }
+    return k.rs.refs[value].kind == .Type
 }
 
 // The rest of a module statement, the second pass: a `use`, a dispatch, an
@@ -639,12 +653,12 @@ tc_register :: proc(k: ^TC, s: Tree_Id) {
     tc_unsupported(k, s, "this module statement")
 }
 
-// `T :: type U`, `T :: distinct U`: its name (its base once every name is
+// `T :: U`, `T :: distinct U`: its name (its base once every name is
 // known: tc_resolve). (`owner`: the body defining it — named for it.)
 tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
     name := tc_name(k, def)
     span := tree_span(k.t, def)
-    alias := k.t.tag[node] == .Alias_Def
+    alias := k.t.tag[node] != .Distinct_Def
     flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
     if flat in k.table.distinct_types {
         tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)
@@ -663,6 +677,10 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     if t.tag[s] != .Define { return }
     value := Tree_Id(t.b[s])
+    if tc_name_alias(k, s) {
+        tc_resolve_distinct(k, s, value)
+        return
+    }
     if value != 0 && !tc_is_definition(t.tag[value]) {
         // (A constant: checked, and built, here in its module's order.)
         if kc := k.const_at[t.main[s]] or_else nil; kc != nil && kc.def == s {
@@ -680,15 +698,17 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id) {
     tc_resolve_distinct(k, s, value)
 }
 
-// `T :: distinct U`'s (or `type U`'s) base, once every name is known.
+// `T :: distinct U`'s (or `T :: U`'s) base, once every name is known.
+// (`A :: B`, a name by itself: the value is the base.)
 tc_resolve_distinct :: proc(k: ^TC, s, value: Tree_Id) {
     t := k.t
     if dt, ok := tc_bound(k, t.main[s]); ok && dt.(^Type_Distinct).base_type == nil {
         dt := dt.(^Type_Distinct)
-        if base := Tree_Id(t.a[value]); t.tag[base] == .Type_Slice && t.a[base] != 0 {
+        base := value if t.tag[value] == .Ident || t.tag[value] == .Field else Tree_Id(t.a[value])
+        if t.tag[base] == .Type_Slice && t.a[base] != 0 {
             tc_error(k, tree_span(t, base), TYPE_SLICE_ALIAS_CAPACITY)
         }
-        dt.base_type = tc_type(k, Tree_Id(t.a[value]), tree_span(t, s))
+        dt.base_type = tc_type(k, base, tree_span(t, s))
     }
 }
 
@@ -947,6 +967,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         case .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def:
             // (A type, a dispatch: no code of its own.)
         case:
+            if tc_name_alias(k, s) { break }   // (`A :: B`, B a type: another name for it)
             d.settles, d.value = true, tc_sid(k, value)   // a constant
         }
     case:

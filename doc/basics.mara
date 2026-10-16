@@ -341,15 +341,16 @@ example_error :: fun() {
 }
 
 
-// `distinct`, `type`: a new name for a type — `distinct` a type of its own, `type` the same type.
+// `distinct`: a new type with another's shape — and `Name :: T`, the same type by another name.
 //
 // `Meters :: distinct f64` has f64's shape, but isn't f64: a plain f64
 // doesn't go where Meters does, so the two can't be mixed up. `Label ::
-// type [..16]utf8` is the same type by another name, and goes anywhere its
-// base does (core's str64 is one).
+// [..16]utf8` is the same type by another name, and goes anywhere its base
+// does (core's str64 is one); so is `Spot :: Point`, a name by itself that
+// names a type (naming a value instead, it's a constant).
 example_distinct :: fun() {
 	Meters :: distinct f64
-	Label :: type [..16]utf8
+	Label :: [..16]utf8
 	m := Meters(3)
 	print(m)                               // 3
 	l : Label

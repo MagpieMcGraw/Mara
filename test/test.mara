@@ -1174,7 +1174,7 @@ test_byte_view :: fun() {
 	print(h.payload.counter)
 }
 
-Window :: type ^byte
+Window :: ^byte
 
 Holder_Window :: struct {
 	count:  i64

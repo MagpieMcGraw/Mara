@@ -302,7 +302,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
 tc_deref :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     ot := tc_check(k, Tree_Id(k.t.a[n]))
-    if p, ok := ot.(^Type_Ptr); ok { return p.elem }
+    if p, ok := unwrap_alias(ot).(^Type_Ptr); ok { return p.elem }   // (through another name for it too)
     if !is_any(ot) { tc_error(k, span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(ot)) }
     return Type_Error{}
 }

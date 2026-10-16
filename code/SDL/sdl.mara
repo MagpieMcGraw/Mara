@@ -1103,11 +1103,11 @@ GLprofile :: union(tag i32) {
 // ---------------------------------------------------------------------------
 // Opaque handle types
 // ---------------------------------------------------------------------------
-Window    :: type ^byte
+Window    :: ^byte
 Renderer  :: distinct ^byte
 Texture   :: distinct ^byte   // a renderer's image (CreateTexture)
 Cursor    :: distinct ^byte   // a mouse cursor's look (CreateSystemCursor)
-GLContext :: type ^byte
+GLContext :: ^byte
 IOStream  :: distinct ^byte
 
 // ---------------------------------------------------------------------------

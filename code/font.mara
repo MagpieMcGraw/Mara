@@ -1271,12 +1271,12 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 // Spec type aliases. Transparent aliases over the underlying integer width —
 // arithmetic on them behaves like the underlying int. The fixed-point ones
 // need explicit conversion to f32 to get their real-number value.
-Fixed          :: type i32  // 16.16 signed fixed-point
-F2_Dot_14      :: type i16  // 2.14 signed fixed-point
-Short_Frac     :: type i16  // 1.15 signed fraction
-F_Word         :: type i16  // signed integer in font design units (FUnits)
-U_F_Word       :: type u16  // unsigned integer in FUnits
-Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
+Fixed          :: i32  // 16.16 signed fixed-point
+F2_Dot_14      :: i16  // 2.14 signed fixed-point
+Short_Frac     :: i16  // 1.15 signed fraction
+F_Word         :: i16  // signed integer in font design units (FUnits)
+U_F_Word       :: u16  // unsigned integer in FUnits
+Long_Date_Time :: i64  // seconds since 1904-01-01 00:00
 
 // The parsed font, shaped after the on-disk file: the spec types nested (reach
 // them as TTF.Head etc.) and the tables we read, filled into fields by the

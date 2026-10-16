@@ -1,0 +1,58 @@
+module alias_no_keyword
+
+use mara.core
+
+//@ expect-output: buffer: hey 3 8
+//@ expect-output: pointer: 7
+//@ expect-output: chain: 2 5
+//@ expect-output: local: 4 1
+//@ expect-output: constants: 5 9 Shape.Rect
+//@ expect-output: primitive: 3
+
+// Another name for a type is `Name :: T`, no keyword: told from a constant
+// by how it's written — `^T`, `[]T`, `[n]T`, `[..n]T`, a primitive's name
+// — and a name by itself, `A :: B`, by what B names (a type: another name
+// for it; a value: a constant). An array literal, a conversion and a
+// variant stay constants.
+
+Buf :: [..8]utf8
+IntPtr :: ^i64
+Count :: i32
+
+Point :: struct {
+	x: i64
+	y: i64
+}
+Spot :: Point     // another name for Point
+Place :: Spot     // and for that
+
+Shape :: union { Circle  Rect }
+
+PAIR :: [4, 5]
+FIVE :: i64(5)
+NINE :: PAIR[0] + FIVE
+KIND :: Shape.Rect
+
+main :: fun() {
+	b : Buf
+	&b + "hey"
+	print("buffer:", b, b.len, b.cap)
+
+	n := 7
+	p : IntPtr = &n
+	print("pointer:", p^)
+
+	at : Place = Point{x = 2, y = 5}
+	print("chain:", at.x, at.y)
+
+	Row :: [4]i64
+	Line :: Row
+	r : Line
+	r[0] = 1
+	print("local:", r.len, r[0])
+
+	print("constants:", FIVE, NINE, KIND)
+
+	c : Count = 3
+	print("primitive:", c)
+}

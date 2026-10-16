@@ -35,6 +35,11 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
                 continue
             }
         }
+        if tc_name_alias(k, s) {
+            tc_register_distinct(k, s, value, owner)
+            append(&distincts, s)
+            continue
+        }
         if value != 0 && !tc_is_definition(t.tag[value]) {
             tc_register_local_const(k, s, value, sc)
             continue

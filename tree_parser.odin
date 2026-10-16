@@ -728,6 +728,44 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
 
 // --- declarations -----------------------------------------------------------
 
+// Whether what follows `Name ::` is a type, told by its first tokens: `^T`,
+// `fn …`, `[]T`, `[..n]T`, `[:n]T`, `[n]T` and `[K]T` (the bracket's match
+// then a type — an array literal's is followed by nothing on its line), a
+// primitive's name ending the line (`Fixed :: i32`; `i32(x)` is a
+// conversion). A name by itself, `A :: B`, is a type's other name when B is
+// a type — what the resolver settles (rs_alias_kinds) — else a constant.
+tp_type_ahead :: proc(p: ^Tree_Parser) -> bool {
+    #partial switch tp_kind(p) {
+    case .Caret, .Fn:
+        return true
+    case .Left_Bracket:
+        #partial switch tp_peek(p) {
+        case .Right_Bracket, .Colon, .Dot_Dot: return true
+        }
+        depth := 0
+        for i := 0; ; i += 1 {
+            #partial switch tp_peek(p, i) {
+            case .Left_Bracket, .Left_Paren:   depth += 1
+            case .Right_Bracket, .Right_Paren: depth -= 1
+            case .Newline, .EOF:               return false
+            }
+            if depth == 0 {
+                #partial switch k := tp_peek(p, i + 1); k {
+                case .Identifier, .Caret, .Left_Bracket, .Fn, .Dollar: return true
+                case: return tp_is_type_keyword(k)
+                }
+            }
+        }
+    case:
+        if tp_is_type_keyword(tp_kind(p)) && tp_text(p) != "void" {
+            #partial switch tp_peek(p) {
+            case .Newline, .EOF, .Semicolon, .Right_Brace: return true
+            }
+        }
+    }
+    return false
+}
+
 // A statement that starts with a name: a definition, a declaration, an
 // assignment. Not one: nothing appended, and false.
 tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
@@ -766,13 +804,24 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
             }
         }
         if value == 0 && tp_kind(p) == .Identifier && tp_text(p) == "type" {
+            // (`Name :: type T` was an alias once: `Name :: T` now.)
+            tp_error(p, tp_here(p), PARSE_TYPE_KEYWORD_ALIAS)
+            tp_advance(p)
+        }
+        if value == 0 && tp_type_ahead(p) {
+            // (Another name for a type, when the type ends the line: main,
+            // its first token. More after it — `[3]f32{…}`, a typed literal
+            // — and it's a value: read again as one.)
+            m := tp_mark(p)
             def_start := p.pos
-            kw := tp_advance(p)
-            parens := tp_kind(p) == .Left_Paren
-            if parens { tp_advance(p) }
+            first := tp_here(p)
             base := tp_type(p)
-            if parens { tp_expect(p, .Right_Paren) }
-            value = tp_node(p, .Alias_Def, kw, def_start, u32(base))
+            #partial switch tp_kind(p) {
+            case .Newline, .EOF, .Semicolon, .Right_Brace:
+                value = tp_node(p, .Alias_Def, first, def_start, u32(base))
+            case:
+                tp_reset(p, m)
+            }
         }
         if value == 0 { value = tp_expr(p) }
         return tp_node(p, .Define, name, start, 0, u32(value)), true

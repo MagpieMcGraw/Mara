@@ -20,7 +20,7 @@ use mara.core
 //@ expect-output: param: 6
 //@ expect-output: longer: [1, 2, 3, 0]
 
-Arr :: type [4]i64
+Arr :: [4]i64
 
 total :: fun(xs: []i64) -> i64 {
 	t := 0

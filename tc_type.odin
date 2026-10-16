@@ -61,6 +61,15 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         if bound, is_param := tc_ref_type(k, k.rs.refs[n], ""); is_param && bound != nil { return bound }
         tc_unsupported(k, n, "a type param outside its instance")
         return Type_Error{}
+    case .Ident, .Field:
+        // (A name by itself, `A :: B`'s B: the type it names — annotated so,
+        // `m.B`'s m its module.)
+        name := tc_name(k, n) if t.tag[n] == .Ident else ""
+        tc_set_ref(k, n, k.rs.refs[n])
+        if base := Tree_Id(t.a[n]); t.tag[n] == .Field && t.tag[base] == .Ident { tc_set_ref(k, base, k.rs.refs[base]) }
+        if ty, ok := tc_ref_type(k, k.rs.refs[n], name); ok && ty != nil { return ty }
+        tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_written(k, n))
+        return Type_Error{}
     case .Type_Fun:
         // (A fun's type: its params' and results' types.)
         ft := new(Type_Scope)

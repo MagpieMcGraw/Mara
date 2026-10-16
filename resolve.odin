@@ -357,6 +357,23 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
             }
         }
     }
+    // (In a body, `A :: B` names a type when B, in sight now, is one — again
+    // until nothing changes: `A :: B`, `B :: C`. A module's: rs_alias_kinds.)
+    if into != nil { return }
+    for changed := true; changed; {
+        changed = false
+        for s in rs_live(r, stmts) {
+            if t.tag[s] != .Define || t.a[s] != 0 { continue }
+            value := Tree_Id(t.b[s])
+            if value == 0 || t.tag[value] != .Ident { continue }
+            own, _ := rs_lookup(r, rs_text(t.main[s]))
+            if own.decl != t.main[s] || own.kind == .Type { continue }
+            if ref, ok := rs_lookup(r, rs_text(t.main[value])); ok && ref.kind == .Type {
+                rs_define(r, rs_text(t.main[s]), {t.main[s], .Type})
+                changed = true
+            }
+        }
+    }
 }
 
 // Whether a union's variants hold data (else it is an enum).
@@ -479,6 +496,69 @@ rs_import :: proc(r: ^Resolver, imp: Tree_Id) -> (^Rs_Module, Token_Id) {
 
 // --- the walk -------------------------------------------------------------------------
 
+// `A :: B`, a name by itself: another name for a type when B is one — a type
+// its module defines, one its file's `use`s bring in, `m.B` — else a
+// constant (`K :: Shape.Rect`, a variant). Settled once every module's
+// definitions are known, before any name is resolved; again until nothing
+// changes (`A :: B`, `B :: C`).
+@(private="file")
+rs_alias_kinds :: proc(r: ^Resolver, names: []string) {
+    t := r.t
+    for changed := true; changed; {
+        changed = false
+        for name in names {
+            m := r.modules[name]
+            for f in m.files {
+                stmts := rs_live(r, tree_list(t, t.a[f]))
+                uses := make([dynamic]^Rs_Module, context.temp_allocator)
+                named := make(map[string]^Rs_Module, context.temp_allocator)
+                for s in stmts {
+                    imp := rs_stmt_import(t, s)
+                    if imp == 0 { continue }
+                    used, tok := rs_import(r, imp)
+                    if used == nil { continue }
+                    append(&uses, used)
+                    if t.tag[s] == .Define { tok = t.main[s] }
+                    named[rs_text(tok)] = used
+                }
+                for s in stmts {
+                    if t.tag[s] != .Define || t.a[s] != 0 { continue }
+                    def_name := rs_text(t.main[s])
+                    ref, ok := m.defs[def_name]
+                    if !ok || ref.decl != t.main[s] || ref.kind == .Type { continue }
+                    if rs_names_type(t, Tree_Id(t.b[s]), m, uses[:], named) {
+                        m.defs[def_name] = {ref.decl, .Type}
+                        changed = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Whether a definition's value is a name by itself naming a type: `B` (its
+// module's, else a use's), `m.B` (the module `m` names).
+@(private="file")
+rs_names_type :: proc(t: ^Tree, value: Tree_Id, m: ^Rs_Module, uses: []^Rs_Module, named: map[string]^Rs_Module) -> bool {
+    if value == 0 { return false }
+    #partial switch t.tag[value] {
+    case .Ident:
+        name := rs_text(t.main[value])
+        if ref, ok := m.defs[name]; ok { return ref.kind == .Type }
+        for u in uses {
+            if ref, ok := u.defs[name]; ok { return ref.kind == .Type }
+        }
+    case .Field:
+        base := Tree_Id(t.a[value])
+        if t.tag[base] != .Ident { return false }
+        u := named[rs_text(t.main[base])] or_else nil
+        if u == nil { return false }
+        ref, ok := u.defs[rs_text(Token_Id(t.b[value]))]
+        return ok && ref.kind == .Type
+    }
+    return false
+}
+
 // Every module's names resolved: its definitions in sight in each of its
 // files, each file's uses in sight in it.
 rs_program :: proc(r: ^Resolver) {
@@ -487,6 +567,7 @@ rs_program :: proc(r: ^Resolver) {
     for name in r.k.modules { append(&names, name) }
     slice.sort(names[:])
     for name in names { rs_module(r, name) }
+    rs_alias_kinds(r, names[:])
     for name in names {
         m := r.modules[name]
         rs_enter(r, .Module)
