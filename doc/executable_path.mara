@@ -8,10 +8,9 @@
 // its directory: the path up to its last separator ('\' on Windows, '/'
 // elsewhere), the separator kept, for a file's name to go after.
 //
-// It puts the path into storage you declare, `[..N]byte`, after what's in
-// it already, and gives it back, a view of storage: Too_Large when it
-// doesn't fit. The same storage can take the files you read next (see
-// read_file.mara).
+// It gives back a Path: up to 512 characters, its room past the path there
+// to add to. Cut it to its directory and add a file's name, and it's that
+// file's path — no other buffer. Too_Large when the path is longer.
 module executable_path
 
 use mara.core
@@ -22,7 +21,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
 	storage : [..64 * KB]byte
 
-	path, e := executable_path(&storage)
+	path, e := executable_path()
 	if e {
 		print("couldn't tell:", e)
 		return
@@ -32,11 +31,9 @@ main :: fun() {
 	dir := path_dir(path)
 	print("this program's directory ends with a separator:", dir.len > 0)
 
-	// A file beside it: the directory, then the file's name — read into the
-	// storage, after the path.
-	beside : [..1100]utf8
-	&beside + dir
-	&beside + "executable_path.mara"
-	_, re := read_entire_file(beside, &storage)
+	// A file beside it: the path cut to the directory, then the file's name.
+	path.len = dir.len
+	&path + "executable_path.mara"
+	_, re := read_entire_file(path, &storage)
 	print("its source beside it reads:", not re)
 }

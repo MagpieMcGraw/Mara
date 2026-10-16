@@ -5,32 +5,29 @@ use mara.os
 use mara.memory
 
 //@ expect-output: whole: true
+//@ expect-output: room: 512 true
 //@ expect-output: same file: true
-//@ expect-output: small room: File_Error.Too_Large 0
+//@ expect-output: a 0 after: true
 
-// current_dir: the directory the program runs in, its path whole — a file
-// read by its name alone is the one read by that path and its name; a room
-// too small says so.
+// current_dir: the directory the program runs in, its path whole, a Path
+// with room past it — a file read by its name alone is the one read by that
+// path and its name, added onto it; a 0 follows the path in its room.
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
 	storage : [..200 * KB]byte
-	dir, e := current_dir(&storage)
-	if bool(e) {
+	dir, e := current_dir()
+	if e {
 		print("couldn't tell:", e)
 		return
 	}
 	print("whole:", dir.len > 1 and (dir[1] == ':' or dir[0] == '/'))
+	print("room:", dir.cap, dir.len < dir.cap)
+	print("a 0 after:", dir[dir.len] == 0)
 	alone, ae := read_entire_file("current_dir_test.mara", &storage)
-	whole : [..1100]utf8
-	&whole + dir
-	&whole + "/"
-	&whole + "current_dir_test.mara"
-	again, we := read_entire_file(whole, &storage)
+	&dir + "/" + "current_dir_test.mara"
+	again, we := read_entire_file(dir, &storage)
 	a : []utf8 = alone
 	b : []utf8 = again
-	print("same file:", not bool(ae) and not bool(we) and a == b)
-	small : [..3]byte
-	_, se := current_dir(&small)
-	print("small room:", se, small.len)
+	print("same file:", not ae and not we and a == b)
 }

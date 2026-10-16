@@ -6,9 +6,9 @@
 // program runs there — executable_path says where its own file is (see
 // executable_path.mara).
 //
-// It puts the path into storage you declare, `[..N]byte`, as
-// executable_path does, and gives it back, a view of storage: Too_Large
-// when it doesn't fit. The path is whole, with no separator at its end (but
+// It gives back a Path: up to 512 characters, its room past the path there
+// to add to — `&dir + "/" + name` makes a file's path of it. Too_Large when
+// the path is longer. The path is whole, with no separator at its end (but
 // a drive's root, `C:\`, or `/`): add one before a file's name.
 module current_dir
 
@@ -20,7 +20,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
 	storage : [..64 * KB]byte
 
-	dir, e := current_dir(&storage)
+	dir, e := current_dir()
 	if e {
 		print("couldn't tell:", e)
 		return
@@ -28,10 +28,7 @@ main :: fun() {
 
 	// A file here, two ways: its name alone, and the directory and its name.
 	_, alone := read_entire_file("current_dir.mara", &storage)
-	whole : [..1100]utf8
-	&whole + dir
-	&whole + "/"
-	&whole + "current_dir.mara"
-	_, by_path := read_entire_file(whole, &storage)
+	&dir + "/" + "current_dir.mara"
+	_, by_path := read_entire_file(dir, &storage)
 	print("read by its name and by its whole path, the same:", alone == by_path)
 }

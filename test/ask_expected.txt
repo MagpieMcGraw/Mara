@@ -20,7 +20,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.math      4 types   · 55 funs
     mara.memory    3 types   · 0 funs
     mara.open_gl   19 types  · 61 funs
-    mara.os        12 types  · 73 funs
+    mara.os        13 types  · 73 funs
     mara.sdl       18 types  · 76 funs
     mara.skyline   2 types   · 6 funs
     mara.string    0 types   · 16 funs

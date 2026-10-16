@@ -6,8 +6,8 @@
 // storage sit one after another, each its own view. A file too big for
 // what's left of it fails with File_Error.Too_Large, storage as it was. Set
 // its len to 0 to fill it from the start again (the views from before then
-// see the new bytes). dir_read, executable_path and current_dir go the same
-// way: one storage can take them all, in turn.
+// see the new bytes). dir_read goes the same way: one storage can take a
+// listing and the files it names, in turn.
 //
 // Storage of 1 KB or more lives in the program's arena, so set one first
 // (see arenas.mara). The bytes can be seen as text: `text : []utf8 = data`.
