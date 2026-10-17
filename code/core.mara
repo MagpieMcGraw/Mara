@@ -96,6 +96,10 @@ join_item :: fun(a: [..$N]$T, b: T) -> [..N]T {
 // is: empty in a list only grown (each item starts so); in one shrunk and
 // filled again, what it held. It must fit in the list's capacity.
 next :: fun(list: ^[]$T) -> ^T {
+	/*
+	we could zero the slot that's about to get written
+	array append could be written as next(&list)^ = x
+	*/
 	assert(list.len < list.cap)
 	list.len += 1
 	return &list[list.len - 1]
