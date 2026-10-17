@@ -7,10 +7,11 @@ str256 :: [..256]utf8
 // A text buffer of up to 1024 characters (see str64).
 str1024 :: [..1024]utf8
 
-// `&list + x` appends to a text buffer or a list: text, one character, items or one item — and gives the list back, so appends chain: `&name + dir + "/" + file`.
+// `&list + x` appends to a text buffer or a list: text, one character, items or one item — and gives the list back, so appends chain: `&name + dir + "/" + file`. `list + x`, the list not pointed at, joins: a new one, its type the list's (`cwd + "/code"`, a Path).
 overload + add
-// Appends to a text buffer or a list; which one runs depends on what is added.
-add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
+// Appends to a text buffer or a list, or joins one to a new one; which one
+// runs depends on what is added, and to what.
+add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item, join, join_item }
 
 // `a == b` on text: whether both hold the same characters.
 overload == equal
@@ -70,6 +71,22 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 	dst[dst.len] = src
 	dst.len += 1
 	return dst
+}
+
+// A new list: a's items, then b's — of a's own type, its room (a Path
+// joined is a Path: `cwd + "/code"`), a itself as it was. `a + b`. Past the
+// room, the program stops, as an add does. (`&a + b` adds into a itself.)
+join :: fun(a: [..$N]$T, b: []T) -> [..N]T {
+	out := a
+	&out + b
+	return out
+}
+
+// A new list: a's items, then one more — of a's own type. `a + item`.
+join_item :: fun(a: [..$N]$T, b: T) -> [..N]T {
+	out := a
+	&out + b
+	return out
 }
 
 // The list one item longer, and that item, to write into where it is:

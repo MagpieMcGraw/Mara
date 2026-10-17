@@ -198,6 +198,12 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         if !tc_const_unambiguous(k, n, name, span) { return Type_Error{} }
     }
     if ok || kc != nil { tc_set_ref(k, n, ref) }
+    // (A generic's size param, `[..$N]T`, as a value: the size it was bound
+    // to, a constant — untyped, the width its use takes.)
+    if ci, is_size := t.(Type_Const_Int); ok && is_size {
+        k.annot.known[tc_sid(k, n)] = {i128(ci.value), Type_Infer_Int{}}
+        return Type_Infer_Int{}
+    }
     if !ok && kc != nil {
         // (Not bound here yet: its value's type — unless it is the value
         // being checked.)
@@ -321,6 +327,31 @@ TC_In_Range :: struct {
     span:          Span,
 }
 
+// `(x + a) + b`, `+` a join both times (mara.core's join, join_item): the
+// left one's result is a temporary nothing else sees, so b is appended into
+// it in place — the call is the add `&it + b` would make, the left built
+// into its result (Built_Into: lw_join_in_place). A chain then builds one
+// list, copying x once.
+tc_note_join_in_place :: proc(k: ^TC, at, left, right: Tree_Id, callee: ^Type_Scope, lt, rt: Type, span: Span) {
+    if at == 0 || !is_core_join(callee) { return }
+    l := tc_unparen(k, left)
+    if k.t.tag[l] != .Binary { return }
+    // (The left a join, or a join onto a join, in place itself.)
+    given := k.annot.args[tc_sid(k, l)] or_else nil
+    in_place := len(given) == 2 && given[0].kind == .Built_Into
+    if lc := tc_callee(k, l); !in_place && (lc == nil || !is_core_join(lc)) { return }
+    if add, ok := tc_operator_overload(k, .Plus, type_ptr(lt), rt, span); ok && !is_core_join(add) {
+        tc_set_callee(k, at, add)
+        tc_set_args(k, at, {{left, .Built_Into, -1}, {right, .Written, -1}})
+    }
+}
+
+// Whether a fun is an instance of mara.core's join or join_item.
+is_core_join :: proc(f: ^Type_Scope) -> bool {
+    if f == nil || f.home_package != "mara.core" { return false }
+    return strings.has_prefix(f.name, "mara_core_join__") || strings.has_prefix(f.name, "mara_core_join_item__")
+}
+
 tc_in_range :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
@@ -417,6 +448,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
             tc_settle(k, left, callee.params[0].type_)
             tc_settle(k, right, callee.params[1].type_)
+            tc_note_join_in_place(k, at, left, right, callee, lt, rt, span)
             return fn_primary_return(callee)
         }
     }
@@ -466,6 +498,11 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             // (`&buf + x` on a fixed array: no overload is missing — it can't grow.)
             if hint := tc_partial_hint(k, left, lt); hint != "" {
                 tc_error(k, span, TYPE_APPEND_TO_FIXED_ARRAY, type_name(lt), type_name(rt), hint)
+                return Type_Error{}
+            }
+            // (A view joined: it has no room to make the new one of.)
+            if is_slice_type(lt) {
+                tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt), type_name(rt))
                 return Type_Error{}
             }
             tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT, type_name(lt), type_name(rt))

@@ -1,0 +1,16 @@
+module join_view_neg
+
+//@ expect-fail: can't join onto a view ([]utf8, then [..64]utf8): a view has no room of its own
+
+// A view joined has no room to make the new text of: make one first
+// (`Path(dir) + …`), or add into a buffer (`&buf + …`).
+
+use mara.core
+
+main :: fun() {
+	whole : str64
+	&whole + "C:/Code/rest"
+	dir := whole[0 : 7]
+	path := dir + "/code"
+	print(path)
+}

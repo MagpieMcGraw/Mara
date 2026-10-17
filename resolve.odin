@@ -954,7 +954,13 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
         if !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
     case .Type_Pointer, .Type_Paren:
         rs_dollars(r, Tree_Id(t.a[n]))
-    case .Type_Slice, .Type_Partial, .Type_Array:
+    case .Type_Slice:
+        rs_dollars(r, Tree_Id(t.b[n]))
+    case .Type_Partial:
+        rs_dollars(r, Tree_Id(t.a[n]))   // (a size's `$N`)
+        rs_dollars(r, Tree_Id(t.b[n]))
+    case .Type_Array:
+        rs_dollars(r, Tree_Id(tree_rec(t, t.a[n], 2)[0]))
         rs_dollars(r, Tree_Id(t.b[n]))
     case .Type_Generic, .Type_Fun:
         for a in tree_list(t, t.a[n]) { rs_dollars(r, a) }

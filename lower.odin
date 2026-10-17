@@ -992,6 +992,9 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         if want == .Value { return {v = graph_read(b, p, ty, span), ok = true} }
         return {v = p, place = true, ok = true}
     case .Binary:
+        if given := k.annot.args[tc_sid(k, n)] or_else nil; len(given) == 2 && given[0].kind == .Built_Into {
+            return lw_join_in_place(k, n, tc_callee(k, n), want, w, dest, temp, span)
+        }
         return lw_binary_op(k, n, build_tokens[t.main[n]].kind, span, Tree_Id(t.a[n]), Tree_Id(t.b[n]), want, w, ty)
     case .Call, .Method_Call:
         return lw_call(k, n, want, w, dest, temp, temp_span)
@@ -1072,6 +1075,11 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     case name == "void":
         if want == .Place { return {} }
         return {v = graph_const(b, w, span, t, "void", nil), ok = true}
+    case ref.kind == .Type && tc_sid(k, n) in k.annot.known:
+        // (A generic's size param: the size it was bound to.)
+        if want == .Place { return {} }
+        kv := k.annot.known[tc_sid(k, n)]
+        return {v = graph_const(b, w, span, t, name, Const_Value{int = kv.value}, untyped = true), ok = true}
     }
     if ts, is_scope := t.(^Type_Scope); is_scope && !ts.is_module {
         if lw_names_fun(k, n, t) {
@@ -1128,6 +1136,40 @@ lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     lw_store(k, n, t, r, d, span)
     graph_build_typed(b, slot, t)
     return graph_var(b, slot, t, span)
+}
+
+// `(x + a) + b`, a join onto a join (tc_note_join_in_place): built where it
+// goes — a fresh destination, else a temporary (`x = y + "-" + x` would
+// read x after its first part overwrote it: an assignment's is `temp`) —
+// the left join's result there first (a join onto a join itself: there in
+// place too), then b appended into it by `add`, the call the checker chose,
+// as `&it + b` would: a chain builds one list, x copied once, no list per
+// `+`.
+lw_join_in_place :: proc(k: ^TC, n: Tree_Id, add: ^Type_Scope, want: Build_Want, w: Written, dest: Dest, temp: bool, span: Span) -> Built {
+    b := k.gb
+    t := k.t
+    jt := tc_node_type(k, n)
+    left, right := Tree_Id(t.a[n]), Tree_Id(t.b[n])
+    into := want == .Into && !temp
+    target := dest
+    slot := NO_NODE
+    if !into {
+        slot = graph_slot(b, "join", nil, span)
+        target = graph_dest_var(slot, nil)
+    }
+    r := lw_expr(k, left, .Into, w, dest = target)
+    at := graph_dest_place(b, target, span)
+    if !r.into { graph_build_write_at(b, at, lw_value(k, r, left, tc_node_type(k, left)), span) }
+    addr := graph_op_value(b, .Address, w, span, type_ptr(jt), "", at)
+    rr := lw_expr(k, right, .Either, w)
+    a0 := graph_build_as(b, addr, false, type_ptr(jt), span, span, {sig = add, param = 0})
+    a1 := graph_build_as(b, rr.v, rr.place, tc_node_type(k, right), tree_span(t, right), span, {sig = add, param = 1})
+    graph_call_op(b, .Call, w, span, add, fn_primary_return(add), a0, a1)
+    if into { return {ok = true, into = true} }
+    graph_build_typed(b, slot, jt)
+    p := graph_var(b, slot, jt, span)
+    if want == .Value { return {v = graph_read(b, p, jt, span), ok = true} }
+    return {v = p, place = true, ok = true}
 }
 
 // A unary operation (tc_unary); `of`: the operand in place of its own.
@@ -1345,6 +1387,12 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     case .Conversion:
         // (`Id(x)`, Id a distinct type: x, seen as Id.)
         if want == .Place { lw_fail(k, n, "a conversion's place") }
+        to := tc_node_type(k, n)
+        if pa, is_pa := distinct_base(to).(^Type_Partial_Array); is_pa && len(args) == 1 {
+            from := distinct_base(tc_node_type(k, args[0]))
+            _, from_pa := from.(^Type_Partial_Array)
+            if from_pa || is_slice_type(from) { return lw_into_partial(k, args[0], to, pa, want, w, span) }
+        }
         r := lw_expr(k, args[0], .Value, w)
         return {v = graph_op_value(b, .Cast, w, span, tc_node_type(k, n), name, r.v), ok = true}
     case .Fun, .Value, .Dispatch, .Generic:   // (a dispatch's member, a generic's instance: a fun called)
@@ -1405,6 +1453,8 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
                 } else {
                     r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
                 }
+            case .Built_Into:
+                lw_fail(k, a, "a join's left side built into a call (lw_join_in_place's)")
             case .Written, .Receiver:
                 held_big := false
                 if held == NO_NODE { r, held_big = lw_big_held(k, a, at, w, span) }
@@ -1432,6 +1482,22 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         return {v = graph_var(b, view_slot, ret, temp_span), place = true, ok = true}
     }
     return {v = call, ok = true}
+}
+
+// `Path(view)`: a partial array made of a slice's items (or a smaller
+// partial array's) — as many as fit, as `p = view` writes them — a fresh
+// one, to add to (`Path(dir) + "/" + name`).
+lw_into_partial :: proc(k: ^TC, arg: Tree_Id, to: Type, pa: ^Type_Partial_Array, want: Build_Want, w: Written, span: Span) -> Built {
+    b := k.gb
+    slot := graph_slot(b, "made", nil, span)
+    graph_build_typed(b, slot, to)
+    graph_build_zero_var(b, slot, to, span)
+    r := lw_expr(k, arg, .Either, w)
+    v := graph_build_as(b, r.v, r.place, tc_node_type(k, arg), tree_span(k.t, arg), span, {to = type_slice(pa.elem)})
+    graph_build_write_at(b, graph_var(b, slot, to, span), v, span)
+    p := graph_var(b, slot, to, span)
+    if want == .Value { return {v = graph_read(b, p, to, span), ok = true} }
+    return {v = p, place = true, ok = true}
 }
 
 // A builtin (tc_builtin): print, crash, a cast.

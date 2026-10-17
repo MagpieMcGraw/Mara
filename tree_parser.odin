@@ -1578,7 +1578,16 @@ tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     return tp_node(p, .Type_Name, bad, start)
 }
 
-// `[]T`, `[:N]T`, `[..N]T`, `[N]T`, `[N I]T`.
+// A size written `$N`: a generic's size param, as a type's `$T` is one.
+tp_size_dollar :: proc(p: ^Tree_Parser) -> Tree_Id {
+    start := p.pos
+    d := tp_advance(p)
+    name := tp_expect(p, .Identifier)
+    return tp_node(p, .Type_Dollar, d, start, u32(name))
+}
+
+// `[]T`, `[:N]T`, `[..N]T`, `[N]T`, `[N I]T` — N a generic's `$N` too, its
+// size bound by what's passed (`[..$N]T`).
 tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     br := tp_advance(p)
@@ -1598,7 +1607,9 @@ tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     if tp_kind(p) == .Dot_Dot {
         tp_advance(p)
         size: Tree_Id
-        if tp_kind(p) == .Number && (tp_peek(p) == .Right_Bracket || tp_peek(p) == .Comma) {
+        if tp_kind(p) == .Dollar && tp_peek(p) == .Identifier {
+            size = tp_size_dollar(p)
+        } else if tp_kind(p) == .Number && (tp_peek(p) == .Right_Bracket || tp_peek(p) == .Comma) {
             size = tp_leaf(p, .Number, tp_advance(p))
         } else if tp_kind(p) == .Identifier && (tp_peek(p) == .Right_Bracket || tp_peek(p) == .Comma) {
             size = tp_leaf(p, .Ident, tp_advance(p))
@@ -1612,7 +1623,9 @@ tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     }
     terminates := tp_peek(p) == .Right_Bracket || tp_peek(p) == .Comma || tp_peek(p) == .Identifier
     size: Tree_Id
-    if tp_kind(p) == .Number && terminates {
+    if tp_kind(p) == .Dollar && tp_peek(p) == .Identifier {
+        size = tp_size_dollar(p)
+    } else if tp_kind(p) == .Number && terminates {
         size = tp_leaf(p, .Number, tp_advance(p))
     } else if tp_kind(p) == .Identifier && terminates {
         size = tp_leaf(p, .Ident, tp_advance(p))

@@ -6,6 +6,10 @@
 // the buffer back, so adds chain: `&path + dir + "/" + file`. A list of
 // texts, `[..100]str64`: `next(&list)` makes it one longer and gives that
 // text, to add into where it is — `next(&list) + dir + "/" + file`.
+// Without the `&`, `name + "more"` joins: a new buffer of name's own type,
+// name as it was — `file := dir + "/" + name` (a chain builds it once, in
+// place). A view, `s[a:b]`, has no room to join onto: make a buffer of it
+// first, `str64(view) + "more"` (Path(view), any `[..N]utf8`).
 // `s[a:b]` is part of a text, without a copy.
 //
 // The rest is in mara.string. Searching: find, find_byte, starts_with,
@@ -42,6 +46,13 @@ main :: fun() {
 	next(&paths) + "doc" + "/" + "basics.mara"
 	print(paths.len, paths[0])               // 1 doc/basics.mara
 	print(name == "Ada Lovelace", name != "Ada")   // true true
+
+	// Without the &, a join: a new buffer, of name's type; name as it was.
+	full := name + ", " + "Countess"
+	print(full, full.cap)                    // Ada Lovelace, Countess 64
+	print(name)                              // Ada Lovelace
+	first := str64(name[0:3]) + '!'          // a view: a buffer of it first
+	print(first)                             // Ada!
 
 	// Each character, with its position.
 	for c, i in "abc" {

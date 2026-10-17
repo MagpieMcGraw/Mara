@@ -190,6 +190,12 @@ tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
 
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
+    // (A generic's size param, `$N` or `N`, in an instance: what it's bound to.)
+    if n != 0 && (t.tag[n] == .Type_Dollar || t.tag[n] == .Ident && k.rs.refs[n].kind == .Type) {
+        if ty, ok := tc_ref_type(k, k.rs.refs[n], ""); ok {
+            if ci, is_int := ty.(Type_Const_Int); is_int { return ci.value, true }
+        }
+    }
     if t.tag[n] == .Ident {
         // (A constant, known: its value.)
         name := tc_name(k, n)

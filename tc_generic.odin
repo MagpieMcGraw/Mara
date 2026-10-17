@@ -53,7 +53,9 @@ tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
     #partial switch t.tag[n] {
     case .Type_Dollar: return true
     case .Type_Pointer, .Type_Paren: return tc_type_has_dollar(k, Tree_Id(t.a[n]))
-    case .Type_Slice, .Type_Partial, .Type_Array: return tc_type_has_dollar(k, Tree_Id(t.b[n]))
+    case .Type_Slice: return tc_type_has_dollar(k, Tree_Id(t.b[n]))
+    case .Type_Partial: return tc_type_has_dollar(k, Tree_Id(t.a[n])) || tc_type_has_dollar(k, Tree_Id(t.b[n]))
+    case .Type_Array: return tc_type_has_dollar(k, Tree_Id(tree_rec(t, t.a[n], 2)[0])) || tc_type_has_dollar(k, Tree_Id(t.b[n]))
     case .Type_Generic:
         for a in tree_list(t, t.a[n]) { if tc_type_has_dollar(k, a) { return true } }
     case .Type_Fun:
@@ -129,7 +131,10 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     case .Type_Pointer:
         if pt, ok := actual.(^Type_Ptr); ok { tc_infer(k, subst, Tree_Id(t.a[n]), pt.elem) }
     case .Type_Array:
-        if fa, ok := actual.(^Type_Fixed_Array); ok { tc_infer(k, subst, Tree_Id(t.b[n]), fa.elem) }
+        if fa, ok := actual.(^Type_Fixed_Array); ok {
+            tc_infer_size(k, subst, Tree_Id(tree_rec(t, t.a[n], 2)[0]), fa.size)
+            tc_infer(k, subst, Tree_Id(t.b[n]), fa.elem)
+        }
     case .Type_Slice:
         // (An array or a partial array a slice param views drives it too:
         // `&s + "lit"` binds slice_add's T.)
@@ -139,7 +144,10 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
         case ^Type_Partial_Array: tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
         }
     case .Type_Partial:
-        if pa, ok := actual.(^Type_Partial_Array); ok { tc_infer(k, subst, Tree_Id(t.b[n]), pa.elem) }
+        if pa, ok := actual.(^Type_Partial_Array); ok {
+            tc_infer_size(k, subst, Tree_Id(t.a[n]), pa.size)
+            tc_infer(k, subst, Tree_Id(t.b[n]), pa.elem)
+        }
     case .Type_Fun:
         if ft, ok := actual.(^Type_Scope); ok {
             for p, i in tree_list(t, t.a[n]) { if i < len(ft.params) { tc_infer(k, subst, p, ft.params[i].type_) } }
@@ -153,6 +161,14 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     if decl != 0 && decl in subst^ && subst[decl] == nil {
         subst[decl] = tc_pin_default(k, actual, k.infer_at if k.infer_at != {} else tree_span(t, n))
     }
+}
+
+// An array's size written `$N`, given the size of the array passed: N bound
+// to it (a compile-time integer, as a struct's `$N: int` is).
+tc_infer_size :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, size: int) {
+    if n == 0 || k.t.tag[n] != .Type_Dollar { return }
+    decl := tc_type_param_named(k, n)
+    if decl != 0 && decl in subst^ && subst[decl] == nil { subst[decl] = Type_Const_Int{value = size} }
 }
 
 // A call of a generic fun: each argument checked, the type params bound from

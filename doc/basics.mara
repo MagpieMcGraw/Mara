@@ -78,7 +78,9 @@ example_use :: fun() {
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
 // another is seen only there. A `$T` in a param's type makes the fun
 // generic: T is whatever type the call passes. A param `kind: fun(T) -> $K`
-// takes any fun of that shape, K what it gives back. `method` is another
+// takes any fun of that shape, K what it gives back. A size can be one
+// too: `xs: [$N]T` (or `[..$N]T`) binds N to the size passed, a constant
+// in the body — a size of its types, or a value. `method` is another
 // spelling of `fun`.
 example_fun :: fun() {
 	sum :: fun(a, b: i64) -> i64 {
@@ -110,10 +112,15 @@ example_fun :: fun() {
 	print(count.sum(10))                   // 12: sum(count, 10)
 
 	print(first("xyz"), first([7, 8]))     // x 7
+	print(last([7, 8, 9]))                 // 9
 }
 
 first :: fun(xs: []$T) -> T {   // generic: T is the items' type
 	return xs[0]
+}
+
+last :: fun(xs: [$N]$T) -> T {   // N: the array's size
+	return xs[N - 1]
 }
 
 // `return`: leave a function now, giving back what it returns.
