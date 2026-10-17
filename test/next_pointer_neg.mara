@@ -1,0 +1,14 @@
+module next_pointer_neg
+
+//@ expect-fail: its param 'list' takes a pointer, and names ([..8]str64) isn't one — pass its address, `&names`
+
+// next(list) on a list itself, not its address: next takes a pointer, so
+// nothing binds its $T — the error says to pass `&names`.
+
+use mara.core
+
+main :: fun() {
+	names : [..8]str64
+	next(names) + "Ada"
+	print(names.len)
+}

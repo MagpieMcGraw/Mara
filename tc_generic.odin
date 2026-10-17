@@ -200,6 +200,21 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     }
     for p in params {
         if subst[p] == nil {
+            // (A param taking a pointer, given a value: nothing bound from it
+            // — the `&` left off, `next(list)`. Said so.)
+            i = 0
+            for g in v.params {
+                pv := params_view(tr, g)
+                for pname in pv.names {
+                    defer i += 1
+                    if i >= len(arg_types) || tr.tag[pv.type_] != .Type_Pointer || !tc_type_has_dollar(k, pv.type_) { continue }
+                    if _, is_ptr := distinct_base(arg_types[i]).(^Type_Ptr); is_ptr || is_any(arg_types[i]) { continue }
+                    arg := tc_diag_name(k, args[i])
+                    hint := fmt.tprintf("`&%s`", arg) if arg != "" else "`&` before it"
+                    tc_error(k, span, TYPE_GENERIC_PARAM_POINTER, tc_text(p), name, tc_text(pname), tc_source_desc(k, args[i], arg_types[i]), hint)
+                    return Type_Error{}
+                }
+            }
             tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
             return Type_Error{}
         }

@@ -261,6 +261,7 @@ TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC :: "'%s' is a struct/class with con
 TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME :: "'fn %s' requires a function-valued name; '%s' has type %s"
 TYPE_UNKNOWN_FUNCTION_FN :: "unknown function '%s' in 'fn %s'"
 TYPE_COULD_INFER_TYPE_PARAMETER_CALL :: "could not infer type parameter '$%s' in call to '%s'"
+TYPE_GENERIC_PARAM_POINTER :: "could not infer type parameter '$%s' in call to '%s': its param '%s' takes a pointer, and %s isn't one — pass its address, %s"
 TYPE_EXPECTS_ARGUMENT :: "'%s' expects %d argument(s), got %d"
 TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD :: "shape constraint '%s' on generic parameter '%s' could not be resolved"
 TYPE_GENERIC_ARGUMENT_CONCRETE_STRUCT_CLASS :: "generic argument for '%s: ~%s' must be a concrete struct/class, got %s"
