@@ -113,6 +113,17 @@ filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
 	return new
 }
 
+filter2 :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T, []T {
+	one := slice([:items.len]T, storage)
+	two := slice([:items.len]T, storage)
+	for item in items {
+		y1, y2 := keep(item)
+		if y1 do &one + item
+		if y2 do &two + item
+	}
+	return one, two
+}
+
 // Each item into the list for its kind, in their order: one list for each
 // value of the enum kind gives back, indexed by it — `lists[Mara_File]`.
 // kind is any function taking an item and giving a value of an enum:
