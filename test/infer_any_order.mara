@@ -23,10 +23,10 @@ p32 :: fun(p: ^i32) { p^ = p^ + 1 }
 main :: fun() {
 	a := 7
 	x := t32(a)
-	arr : [2]i32 = {a, 1}
+	arr : [2!]i32 = {a, 1}
 	print("call then element:", size_of(a), x, arr[0])
 	b := 7
-	brr : [2]i32 = {b, 1}
+	brr : [2!]i32 = {b, 1}
 	y := t32(b)
 	print("element then call:", size_of(b), brr[0], y)
 

@@ -17,7 +17,7 @@ main :: fun() {
 	p.x, p.y = 3, 4
 	p.x, p.y = p.y, p.x
 	print("fields", p.x, p.y)
-	arr : [2]i64 = [7, 8]
+	arr : [2!]i64 = [7, 8]
 	arr[0], arr[1] = arr[1], arr[0]
 	print("elements", arr[0], arr[1])
 	c := 0

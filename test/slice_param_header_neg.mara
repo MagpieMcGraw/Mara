@@ -7,7 +7,7 @@ module slice_param_header_neg
 trim :: fun(s: []i64) { s.len = 1 }
 
 main :: fun() {
-	a : [3]i64 = [1, 2, 3]
+	a : [3!]i64 = [1, 2, 3]
 	s : []i64 = a[:]
 	trim(s)
 	print(s.len)

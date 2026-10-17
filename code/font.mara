@@ -668,15 +668,15 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// inside: where the channels' median says otherwise, all three flip.
 	w := i64(cell_w)
 	h := i64(cell_h)
-	field_room : [MSDF_CELL * MSDF_CELL * 3]f32 = void   // (each one written before it's read)
+	field_room : [MSDF_CELL * MSDF_CELL * 3!]f32 = void   // (each one written before it's read)
 	field := field_room[0 : w * h * 3]
 	for py in 0 .. h {
 		for px in 0 .. w {
 			sample_x := f32(px) + 0.5
 			sample_y := f32(py) + 0.5
-			best := [3]i64{-1, -1, -1}
-			best_d := [3]f32{1000000.0, 1000000.0, 1000000.0}
-			best_slant := [3]f32{1.0, 1.0, 1.0}
+			best := [3!]i64{-1, -1, -1}
+			best_d := [3!]f32{1000000.0, 1000000.0, 1000000.0}
+			best_slant := [3!]f32{1.0, 1.0, 1.0}
 			winding : i32 = 0
 			for ei in 0 .. edges.len {
 				e := edges[ei]
@@ -706,7 +706,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 					bit = bit * 2
 				}
 			}
-			sd : [3]f32
+			sd : [3!]f32
 			for ch in 0 .. 3 {
 				sd[ch] = -1000000.0   // (no piece of this colour: far outside)
 				if best[ch] >= 0 do sd[ch] = pseudo_distance(edges[best[ch]], sample_x, sample_y)
@@ -726,7 +726,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// Where two neighbouring pixels' channels clash (the shader blending them
 	// would draw a notch), the one farther from the outline takes the median
 	// in all three.
-	clash_room : [MSDF_CELL * MSDF_CELL]bool = void
+	clash_room : [MSDF_CELL * MSDF_CELL!]bool = void
 	clash := clash_room[0 : w * h]
 	for py in 0 .. h {
 		for px in 0 .. w {
@@ -823,7 +823,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 			return
 		}
 		if corners == 1 {
-			thirds := [3]i32{3, 7, 6}
+			thirds := [3!]i32{3, 7, 6}
 			for i in 0 .. n {
 				third := i64(3.0 + 2.875 * f32(i) / f32(n - 1) - 1.4375 + 0.5) - 3   // -1, 0 or 1
 				edges[lo + (first + i) % n].color = thirds[third + 1]
@@ -1298,7 +1298,7 @@ TTF :: struct (bytes: ^[]byte) {
 	}
 
 	Table :: struct {
-		tag: [4]utf8
+		tag: [4!]utf8
 		check_sum : u32
 		offset: u32
 		len: u32

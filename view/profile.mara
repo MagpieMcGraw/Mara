@@ -23,8 +23,8 @@ Field :: struct {
 }
 
 Row :: struct {
-	fields: [MAX_COLUMNS]Field   // each as written
-	values: [MAX_COLUMNS]f64     // a number column's number
+	fields: [MAX_COLUMNS!]Field   // each as written
+	values: [MAX_COLUMNS!]f64     // a number column's number
 }
 
 Profile :: struct {
@@ -34,7 +34,7 @@ Profile :: struct {
 	rows:    [..MAX_ROWS]Row
 	order:   [..MAX_ROWS]i64         // the rows as shown: sorted
 	scratch: [..MAX_ROWS]i64         // (sorting's)
-	widths:  [MAX_COLUMNS]f32        // each column's, in pixels: its widest text, room around it
+	widths:  [MAX_COLUMNS!]f32        // each column's, in pixels: its widest text, room around it
 	sort_by: i64 = -1                // the column (its place) it's sorted by; -1: as in the file
 	descending: bool
 	problem: [..400]utf8             // why there's nothing to show, when there isn't

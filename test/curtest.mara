@@ -1,7 +1,7 @@
 module curtest
 
 main :: fun() {
-	bytes : [16]u8
+	bytes : [16!]u8
 	bytes[0] = 42
 	cursor := 10
 	x := bytes[cursor]

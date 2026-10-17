@@ -13,7 +13,7 @@ Bad :: error {
 }
 
 Thing :: struct(x: i64) -> err {
-	cells: [3]i64
+	cells: [3!]i64
 	n: i64 = 0
 	if x < 0 do return Negative
 	cells[1] = cells[1] + x

@@ -30,7 +30,7 @@ is_even_pair :: fun(p: Pair) -> bool { return p.n % 2 == 0 }
 
 main :: fun() {
 	storage : [..512]byte
-	nums : [10]i64
+	nums : [10!]i64
 	for k in 0 .. 10 {
 		nums[k] = k
 	}
@@ -43,7 +43,7 @@ main :: fun() {
 	print("big: % % % | %", big[0], big[1], big[2], big.len)
 	print("storage after both:", storage.len)
 
-	words : [4][]utf8 = {"apple", "pear", "avocado", "fig"}
+	words : [4!][]utf8 = {"apple", "pear", "avocado", "fig"}
 	text_room : [..256]byte
 	a_words := filter(words[:], starts_a, &text_room)
 	print("words: % % | %", a_words[0], a_words[1], a_words.len)

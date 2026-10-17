@@ -28,18 +28,18 @@ Header :: struct {
 }
 
 Entry :: struct {
-    name:        [64]utf8
+    name:        [64!]utf8
     name_len:    u32
-    meta:        [4]u32
+    meta:        [4!]u32
     data_offset: u64
     data_size:   u64
 }
 
 // Mirrors gfx.Vertex (32 bytes) so the typed-loop path is exercised honestly.
 Vtx :: struct {
-    position: [3]f32
-    normal:   [3]f32
-    uv:       [2]f32
+    position: [3!]f32
+    normal:   [3!]f32
+    uv:       [2!]f32
 }
 
 HSZ :: size_of(Header)
@@ -92,7 +92,7 @@ stream_open :: fun(c: ^St, path: []utf8) -> err {
     c.is_open = false
     c.count = 0
     id := file_open_read(path)?
-    hbuf : [HSZ]byte = void
+    hbuf : [HSZ!]byte = void
     head := hbuf[0 : HSZ]
     rerr := file_read(id, &head)
     if bool(rerr) or head.len < HSZ {
@@ -118,7 +118,7 @@ stream_close :: fun(c: ^St) {
 
 stream_entry :: fun(c: ^St, index: i64) -> Entry, err {
     file_seek(c.file, HSZ + index * ESZ, SEEK_SET)?
-    ebuf : [ESZ]byte = void
+    ebuf : [ESZ!]byte = void
     es := ebuf[0 : ESZ]
     file_read(c.file, &es)?
     e : Entry = es[0]
@@ -220,7 +220,7 @@ main :: fun() {
     if bool(r0err) { print("ENTRY0 FAILED:", r0err); return }
     name0 : str64
     get_name(&r0, &name0)
-    tex_back : [64]byte
+    tex_back : [64!]byte
     dst0 := tex_back[0 : 64]
     payload0, p0err := stream_read(&st, r0, &dst0)   // a slice view from a multi-return
     if bool(p0err) { print("READ0 FAILED:", p0err); return }
@@ -236,7 +236,7 @@ main :: fun() {
     get_name(&r1, &name1)
     rvcount := i64(r1.meta[0])
     ricount := i64(r1.meta[1])
-    mesh_back : [512]byte
+    mesh_back : [512!]byte
     scratch := mesh_back[0 : 512]
     mbuf, mErr := stream_read(&st, r1, &scratch)     // a slice view from a multi-return
     if bool(mErr) { print("READ1 FAILED:", mErr); return }

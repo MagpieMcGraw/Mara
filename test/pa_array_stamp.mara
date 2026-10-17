@@ -8,11 +8,11 @@ module pa_array_stamp
 // partial array, leaving these with cap 0.)
 
 Shelf :: struct {
-	rows : [3][..4]i64
+	rows : [3!][..4]i64
 }
 
 local_rows :: fun() -> i64 {
-	bufs : [2][..4]i64
+	bufs : [2!][..4]i64
 	bufs[0].len = 2
 	bufs[0][1] = 7
 	return bufs[0].cap + bufs[1].cap + bufs[0][1]

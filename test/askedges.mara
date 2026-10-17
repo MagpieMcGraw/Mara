@@ -49,8 +49,8 @@ bump6 :: fun(k6: f32) -> f32 {
 }
 
 // The mat4_transpose shape: the returned local is written only inside a loop.
-transpose_ish :: fun(m: [4]f32) -> [4]f32 {
-	r : [4]f32
+transpose_ish :: fun(m: [4!]f32) -> [4!]f32 {
+	r : [4!]f32
 	for i in 0..4 {
 		r[i] = m[3 - i]
 	}
@@ -58,7 +58,7 @@ transpose_ish :: fun(m: [4]f32) -> [4]f32 {
 }
 
 bump7 :: fun(k7: f32) -> f32 {
-	arr : [4]f32 = all k7
+	arr : [4!]f32 = all k7
 	out := transpose_ish(arr)
 	return out[0]
 }

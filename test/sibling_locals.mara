@@ -25,18 +25,18 @@ Small :: struct {
 }
 
 Big :: struct {
-	a: [32]i64
+	a: [32!]i64
 	b: i64
 }
 
 arrays :: fun(which: bool) -> i64 {
 	guard := 12345
 	if which {
-		a : [2]i64
+		a : [2!]i64
 		a[0] = 1
 		print("small", a[0])
 	else
-		a : [64]i64
+		a : [64!]i64
 		for i in 0..64 { a[i] = 7 }
 		print("big", a[63])
 	}
@@ -71,24 +71,24 @@ redeclared :: fun() {
 		v.a += 5
 		n : i64
 		n += 3
-		arr : [4]i64
+		arr : [4!]i64
 		arr[1] += 2
 	}
 	for k in 0..2 {
 		v := Small{0}
 		n : i64
-		arr : [4]i64
+		arr : [4!]i64
 		print("fresh", v.a, n, arr[1])
 	}
 }
 
 runtime_sized :: fun(which: bool, n: i64) -> i64 {
 	if which {
-		room : [8]i64
+		room : [8!]i64
 		a := room[0:n]
 		return a.len
 	else
-		room : [8]i64
+		room : [8!]i64
 		a := room[0:n]
 		return a.len
 	}

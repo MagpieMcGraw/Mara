@@ -74,7 +74,7 @@ main :: fun() -> i64 {
 		print("start failed")
 		return 1
 	}
-	held : [2]File_Id
+	held : [2!]File_Id
 	n := 0
 	for n < 2 {
 		c, ce := pipe_accept(&l)

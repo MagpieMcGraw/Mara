@@ -16,12 +16,12 @@ Cell :: struct {
 	v: i64
 }
 
-V3 :: distinct [3]i64
+V3 :: distinct [3!]i64
 
 ident :: fun($T: type, x: T) -> T { return x }
 
 first_of :: fun($T: type, proto: T) -> T {
-	arr : [3]T = {all ident(proto)}
+	arr : [3!]T = {all ident(proto)}
 	return arr[2]
 }
 
@@ -32,12 +32,12 @@ main :: fun() {
 	print("generic", a, b, c.v)
 
 	p := Cell{v = 4}
-	cells : [3]Cell = {all ident(p)}
+	cells : [3!]Cell = {all ident(p)}
 	print("plain", cells[0].v, cells[2].v)
 
-	vs : [4]V3 = {all V3{1, 2, 3}}
+	vs : [4!]V3 = {all V3{1, 2, 3}}
 	vs[0][1] = 20
 	print("vecs", vs[0][1], vs[3][1], vs[3][2])
-	ws : [2]V3 = {all V3{x = 5, z = 7}}
+	ws : [2!]V3 = {all V3{x = 5, z = 7}}
 	print("named", ws[1][0], ws[1][1], ws[1][2])
 }

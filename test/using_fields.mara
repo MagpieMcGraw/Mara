@@ -22,7 +22,7 @@ Deep :: struct {
 	name := 3
 }
 Body :: struct {
-	using at: [3]f32
+	using at: [3!]f32
 }
 
 move :: fun(pl: ^Player, dx: f32) {

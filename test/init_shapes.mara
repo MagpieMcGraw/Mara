@@ -24,7 +24,7 @@ written_through_alias :: fun(src: ^Node) -> bool {
 
 // A slice of an array is set from the start.
 sized_slice :: fun() -> i64 {
-	nodes : [4]Node
+	nodes : [4!]Node
 	s := nodes[0:4]
 	return s.cap
 }

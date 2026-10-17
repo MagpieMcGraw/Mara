@@ -45,7 +45,7 @@ main :: fun() {
 	at : Place = Point{x = 2, y = 5}
 	print("chain:", at.x, at.y)
 
-	Row :: [4]i64
+	Row :: [4!]i64
 	Line :: Row
 	r : Line
 	r[0] = 1

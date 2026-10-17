@@ -9,10 +9,10 @@ use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Debug(1 * MB))
-	small : [4]i64
+	small : [4!]i64
 	s : []i64 = small[:]
 	if s.len == 4 {
-		big : [512]i64
+		big : [512!]i64
 		big[0] = 77
 		s = big[:]
 	}

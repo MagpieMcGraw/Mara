@@ -25,11 +25,11 @@ add :: dispatch{ v2_add }
 overload - neg
 neg :: dispatch{ v2_neg }
 
-items :: fun() -> [3]i64 { return [1, 2, 3] }
-four :: fun() -> [4]i64 { return [1, 2, 3, 4] }
+items :: fun() -> [3!]i64 { return [1, 2, 3] }
+four :: fun() -> [4!]i64 { return [1, 2, 3, 4] }
 first :: fun(xs: []i64) -> i64 { return xs[0] }
 
-H :: struct { d: [4]i64 }
+H :: struct { d: [4!]i64 }
 mk :: fun() -> H { return H{d = [1, 2, 3, 4]} }
 
 two :: fun() -> i64, i64 { return 3, 4 }
@@ -37,8 +37,8 @@ S :: struct {
 	a, b := two()
 }
 
-sum3 :: fun(xs: [3]i64) -> i64 { return xs[0] + xs[1] + xs[2] }
-sumf :: fun(xs: [3]f64) -> f64 { return xs[0] + xs[1] + xs[2] }
+sum3 :: fun(xs: [3!]i64) -> i64 { return xs[0] + xs[1] + xs[2] }
+sumf :: fun(xs: [3!]f64) -> f64 { return xs[0] + xs[1] + xs[2] }
 sumb :: fun(b: bool) -> i64 { return 0 }
 sumi :: dispatch{ sum3, sumb }
 sumd :: dispatch{ sumf, sumb }
@@ -88,10 +88,10 @@ main :: fun() {
 	print("text", greet(), name())
 
 	// A named array literal out of order.
-	w : [3]f32 = [0, 0, 0]
-	w = [3]f32{z = 1, x = 2}
+	w : [3!]f32 = [0, 0, 0]
+	w = [3!]f32{z = 1, x = 2}
 	print("swizzle", w[0], w[2])
 
 	// An array's value where a slice param views it.
-	print("view", first([4]i64{4, 5, 6, 7}), first(items()) + 3)
+	print("view", first([4!]i64{4, 5, 6, 7}), first(items()) + 3)
 }

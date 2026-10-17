@@ -8,13 +8,13 @@ module addrfixedarr
 use mara.core
 
 // Takes the array by pointer (like a foreign raw-pointer param) and reads it.
-read0 :: fun(p: ^[4]u8) -> u8 {
+read0 :: fun(p: ^[4!]u8) -> u8 {
     v : []u8 = slice_from_ptr(p, 4)
     return v[0]
 }
 
 main :: fun() {
-    white := [4]u8{255, 254, 253, 252}
+    white := [4!]u8{255, 254, 253, 252}
     print(read0(&white))   // 255 — &arr passed to a pointer param
     print(white[3])        // 252 — the array itself is still usable
 }

@@ -19,16 +19,16 @@ module const_reads
 use mara.core
 use mara.math
 
-RED   :: [3]f32{0.9, 0.2, 0.2}
-PRIME :: [4]i64{10, 20, 30, 0}
+RED   :: [3!]f32{0.9, 0.2, 0.2}
+PRIME :: [4!]i64{10, 20, 30, 0}
 V     :: struct { x: f32, y: f32, z: f32 }
-Pair  :: struct { a: [2]i64, b: i64 }
+Pair  :: struct { a: [2!]i64, b: i64 }
 Quad  :: struct { lo: Pair, hi: Pair }
 TABLE :: Quad{{{1, 2}, 2}, {{3, 4}, 5}}
 Pose  :: struct { dir := QUAT_IDENTITY, pos: Vec3 }
 
-mk :: fun(n: f32) -> [3]f32 {
-	return [3]f32{n, n + 1, n + 2}
+mk :: fun(n: f32) -> [3!]f32 {
+	return [3!]f32{n, n + 1, n + 2}
 }
 
 sum_table :: fun(n: i64) -> i64 {
@@ -50,16 +50,16 @@ main :: fun() {
 	c := false
 	k := 4
 	v := V{f32(i), f32(i * 2), 0}
-	w := [2]i64{if c do 5 else 7, i64(i) - 1}
-	u := [2]i64{~k + 2, i64(5)}
-	b := [2]u8{u8(k), 1}
-	o := [2]f64{f64(k) / 4, 1}
+	w := [2!]i64{if c do 5 else 7, i64(i) - 1}
+	u := [2!]i64{~k + 2, i64(5)}
+	b := [2!]u8{u8(k), 1}
+	o := [2!]f64{f64(k) / 4, 1}
 	print("literal=% % % / % % / % % / % % / % %", v.x, v.y, v.z, w[0], w[1], u[0], u[1], b[0], b[1], o[0], o[1])
 
 	p := Pose()
 	print("default=% % % %", p.dir[0], p.dir[1], p.dir[2], p.dir[3])
 
-	print("values=% % % %", mk(5)[2], mk(f32(i))[i], [3]i64{7, 8, 9}[i], (if c do [3]f32{} else RED).x)
+	print("values=% % % %", mk(5)[2], mk(f32(i))[i], [3!]i64{7, 8, 9}[i], (if c do [3!]f32{} else RED).x)
 	pa := Pair{{1, 2}, 3}
 	pb := Pair{{4, 5}, 6}
 	print("fields=% % / % %", (if c do pa else pb).b, (if c do pa else pb).a[1], mk(5).z, mk(1).zy[0])

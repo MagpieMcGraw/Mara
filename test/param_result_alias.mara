@@ -17,7 +17,7 @@ module param_result_alias
 // place, since fresh storage can't be an argument.
 
 P :: struct { x: i64, y: i64 }
-V3 :: distinct [3]i64
+V3 :: distinct [3!]i64
 Holder :: struct { v: V3 }
 Named :: struct { name: [..8]utf8, n: i64 }
 Cam :: struct(seed: V3) {
@@ -58,7 +58,7 @@ main :: fun() {
 	h.v = rot(h.v)
 	print("field=% % %", h.v[0], h.v[1], h.v[2])
 
-	m : [2]V3
+	m : [2!]V3
 	m[1] = V3{1, 2, 3}
 	m[1] = rot(m[1])
 	print("elem=% % %", m[1][0], m[1][1], m[1][2])
@@ -70,7 +70,7 @@ main :: fun() {
 
 	// Each slot's partial array must point at its OWN bytes after the copy,
 	// not at the call's temp (which the next iteration overwrites).
-	names : [2]Named
+	names : [2!]Named
 	letters := "pq"
 	for i in 0..2 { names[i] = tag(names[i], letters[i]) }
 	print("strings=% % %", names[0].name, names[1].name, names[0].n + names[1].n)

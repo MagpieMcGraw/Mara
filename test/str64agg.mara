@@ -14,7 +14,7 @@ Named :: struct {
 }
 
 // Mirrors primitives_init: -> [3]i64, [3]str64, returned as array literals.
-labels :: fun() -> [3]i64, [3]str64 {
+labels :: fun() -> [3!]i64, [3!]str64 {
     return [10, 20, 30], ["quad", "cube", "sphere"]
 }
 

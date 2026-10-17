@@ -6,7 +6,7 @@ module esc_slice_field_neg
 Holder :: struct { sl: []i64 }
 
 leak :: fun() -> []i64 {
-	arr : [4]i64
+	arr : [4!]i64
 	arr[0] = 7
 	h : Holder
 	h.sl = arr[:]

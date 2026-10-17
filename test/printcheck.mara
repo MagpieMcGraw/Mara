@@ -3,7 +3,7 @@ module printcheck
 Inner :: struct {
 	x : i64     = 1
 	y : u8      = 200
-	s : [4]utf8 = "abcd"
+	s : [4!]utf8 = "abcd"
 }
 
 Probe :: struct {
@@ -20,31 +20,31 @@ main :: fun() {
 	p := Probe()
 	print("struct:", p)
 
-	nums : [3]i64
+	nums : [3!]i64
 	nums[0] = -7
 	nums[1] = 100
 	nums[2] = -3
 	print("i64 arr:", nums)
 
-	us : [3]u32
+	us : [3!]u32
 	us[0] = 1
 	us[1] = 4000000000
 	us[2] = 3
 	print("u32 arr:", us)
 
-	fs : [3]f32
+	fs : [3!]f32
 	fs[0] = 1.5
 	fs[1] = 2.5
 	fs[2] = 3.5
 	print("f32 arr:", fs)
 
-	grid : [2][2]i64
+	grid : [2!][2!]i64
 	grid[0][0] = 1
 	grid[0][1] = 2
 	grid[1][0] = 3
 	grid[1][1] = 4
 	print("nested arr:", grid)
 
-	pts : [2]Inner = all Inner()
+	pts : [2!]Inner = all Inner()
 	print("struct arr:", pts)
 }

@@ -31,12 +31,12 @@ main :: fun() {
     print("pa2 :", pa[8], pa[15])           // expect 1 8
 
     // fixed-array dst, bare RHS — regression guard
-    fa : [16]byte
+    fa : [16!]byte
     fa[0:8] = src
     print("fa  :", fa[0], fa[7])            // expect 1 8
 
     // field-access slice RHS — the cache's natural `obj.pixels` form
-    back : [8]byte
+    back : [8!]byte
     for i in 0..8 {
         back[i] = u8(i + 10)   // 10..17
     }

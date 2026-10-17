@@ -5,31 +5,31 @@ bswap32 :: fun(x: u32) -> u32 { @llvm.bswap.i32 }
 bswap64 :: fun(x: u64) -> u64 { @llvm.bswap.i64 }
 
 // Wanna read some big endian numbers?
-read_u16be :: fun(data: [2]byte) -> u16 {
+read_u16be :: fun(data: [2!]byte) -> u16 {
     return (u16(data[0]) << 8) | u16(data[1])
 }
 
-read_u32be :: fun(data: [4]byte) -> u32 {
+read_u32be :: fun(data: [4!]byte) -> u32 {
     hi : u32 = (u32(data[0]) << 24) | (u32(data[1]) << 16)
     lo : u32 = (u32(data[2]) << 8) | u32(data[3])
     return hi | lo
 }
 
-read_u64be :: fun(data: [8]byte) -> u64 {
+read_u64be :: fun(data: [8!]byte) -> u64 {
     hi : u64 = u64(read_u32be(data[0])) << 32
     lo : u64 = u64(read_u32be(data[4]))
     return hi | lo
 }
 
 // these look nicer than doing the cast at the call site
-read_i16be :: fun(data: [2]byte) -> i16 {
+read_i16be :: fun(data: [2!]byte) -> i16 {
     return i16(read_u16be(data))
 }
 
-read_i32be :: fun(data: [4]byte) -> i32 {
+read_i32be :: fun(data: [4!]byte) -> i32 {
     return i32(read_u32be(data))
 }
 
-read_i64be :: fun(data: [8]byte) -> i64 {
+read_i64be :: fun(data: [8!]byte) -> i64 {
     return i64(read_u64be(data))
 }

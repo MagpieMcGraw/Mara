@@ -19,7 +19,7 @@ module big_swaps
 use mara.core
 include mara.memory
 Huge :: struct {
-	data: [262144]i64
+	data: [262144!]i64
 	tag: i64 = 0
 }
 G :: struct {
@@ -35,10 +35,10 @@ Small :: struct { x: i64 = 0 }
 swap_in :: fun(g: ^G) {
 	g.a, g.b = g.b, g.a
 }
-rotate :: fun(xs: ^[3]Huge) {
+rotate :: fun(xs: ^[3!]Huge) {
 	xs[0], xs[1], xs[2] = xs[1], xs[2], xs[0]
 }
-swap_at :: fun(xs: ^[3]Huge, i: i64, j: i64) {
+swap_at :: fun(xs: ^[3!]Huge, i: i64, j: i64) {
 	xs[i], xs[j] = xs[j], xs[i]
 }
 
@@ -57,7 +57,7 @@ main :: fun() {
 	y.tag = 4
 	x, y = y, x
 	print("locals:", x.tag, y.tag)
-	xs : [3]Huge
+	xs : [3!]Huge
 	xs[0].tag = 5
 	xs[1].tag = 6
 	xs[2].tag = 7

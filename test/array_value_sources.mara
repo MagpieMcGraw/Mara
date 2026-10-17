@@ -19,7 +19,7 @@ module array_value_sources
 // or storing `m[1]` / `p^` into a field or element, was invalid IR or a codegen
 // error.
 
-Vec3 :: distinct [3]f32
+Vec3 :: distinct [3!]f32
 Obj :: struct { pos: Vec3 }
 Cam :: struct { obj: Obj }
 H :: struct { v: Vec3 }
@@ -27,7 +27,7 @@ H :: struct { v: Vec3 }
 sv :: fun(label: []utf8, v: Vec3) { print("%=% % %", label, v[0], v[1], v[2]) }
 
 main :: fun() {
-	m : [2]Vec3
+	m : [2!]Vec3
 	m[1] = Vec3{1, 2, 3}
 	b := Vec3{4, 5, 6}
 	p := &b
@@ -55,8 +55,8 @@ main :: fun() {
 	m[0] = m[1]
 	sv("elemelem", m[0])
 
-	row : [3]i64 = [1, 2, 3]
-	grid : [2][3]i64
+	row : [3!]i64 = [1, 2, 3]
+	grid : [2!][3!]i64
 	grid[1] = [4, 5, 6]
 	grid[0] = row
 	print("nested=% %", grid[1][0], grid[1][2])

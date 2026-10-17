@@ -19,7 +19,7 @@ main :: fun() {
 		n += 1
 	}
 	print("counted", n)
-	data : [3]i64
+	data : [3!]i64
 	data[0] = 10
 	data[1] = 20
 	data[2] = 30

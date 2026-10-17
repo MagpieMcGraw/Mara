@@ -27,7 +27,7 @@ Holder :: struct {
 }
 
 Names :: struct {
-	all: [3][..5]u8
+	all: [3!][..5]u8
 }
 
 Inner :: #packed struct {

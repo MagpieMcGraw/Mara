@@ -43,7 +43,7 @@ Ui :: struct {
 	saved_height: f64
 	mouse_x:  f32            // the mouse, pixels; -1 when it's outside
 	mouse_y:  f32
-	cursors:  [12]Cursor     // the system's, by SYSTEM_CURSOR_...
+	cursors:  [12!]Cursor     // the system's, by SYSTEM_CURSOR_...
 	cursor:   i32            // the one shown
 	running:  bool = true
 	dirty:    bool = true    // drawn again when it is
@@ -65,11 +65,11 @@ Ui :: struct {
 
 	// The Docs panel's and the Ask panel's lines — what's at the editor's
 	// cursor, above what was asked; the docs search's room.
-	docs:   [2]Lines = all Lines()   // the one shown, docs[docs_front]; the other, a lookup made while pinned
+	docs:   [2!]Lines = all Lines()   // the one shown, docs[docs_front]; the other, a lookup made while pinned
 	docs_front:  i64
 	docs_pinned: bool        // lookups don't replace what's shown (the title bar's pin)
 	docs_newer:  bool        // ... one was made: shown when it's unpinned
-	docs_query:  [2]Docs_Query   // what each of docs was looked up by: a reload's
+	docs_query:  [2!]Docs_Query   // what each of docs was looked up by: a reload's
 	asked     := Lines()
 	at_cursor := Lines()
 	search: Docs
@@ -111,7 +111,7 @@ Ui :: struct {
 	accent:     Color   // the column sorted by; a ticked box; a name found
 	bad:        Color
 	code:       Color   // code, as the Docs panel shows it (not Mara's: a crash's calls)
-	tokens:     [TOKENS]Color   // Mara code's, each token kind's (code.mara)
+	tokens:     [TOKENS!]Color   // Mara code's, each token kind's (code.mara)
 	selected:   Color   // text selected, behind it
 }
 

@@ -3,13 +3,13 @@ module esc_decay_elem_neg
 
 // The same decay into an element of the caller's array of slices.
 
-f :: fun(hs: ^[4][]i64) {
-	arr : [4]i64
+f :: fun(hs: ^[4!][]i64) {
+	arr : [4!]i64
 	hs[1] = arr
 }
 
 main :: fun() {
-	hs : [4][]i64
+	hs : [4!][]i64
 	f(&hs)
 	print(hs[1].len)
 }

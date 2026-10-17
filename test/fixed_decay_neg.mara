@@ -12,7 +12,7 @@ use mara.core
 takes_mut :: fun(s: ^[]i32) { }
 
 main :: fun() {
-	fixed : [8]i32
+	fixed : [8!]i32
 	takes_mut(&fixed)    // ^[]i32 <- ^[8]i32   (closed: no header to alias)
 	&fixed + 5           // append routes through ^[]$T too (closed)
 }

@@ -10,7 +10,7 @@ module discard_mixed
 //@ expect-output: x=5
 
 Big :: struct {
-	a: [64]i64
+	a: [64!]i64
 	n: i64 = 3
 }
 

@@ -4,6 +4,6 @@ module array_size_float_neg
 // An array's size is a count: a float is an error, not truncated.
 
 main :: fun() {
-	a : [1.5 + 1]i64
+	a : [1.5 + 1!]i64
 	print(a.len)
 }

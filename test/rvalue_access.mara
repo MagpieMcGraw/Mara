@@ -11,9 +11,9 @@ use mara.core
 Holder :: struct { p: ^i64, n: i64 }
 Node :: struct { v: i64 }
 
-arr4 :: fun(calls: ^i64) -> [4]i64 {
+arr4 :: fun(calls: ^i64) -> [4!]i64 {
 	calls^ += 1
-	r : [4]i64
+	r : [4!]i64
 	r[2] = 30
 	return r
 }
@@ -30,7 +30,7 @@ wrap :: fun(q: ^i64, calls: ^i64) -> Holder {
 
 node_of :: fun(n: ^Node) -> ^Node { return n }
 
-fill :: fun(out: ^[4]i64) {
+fill :: fun(out: ^[4!]i64) {
 	out[0] = 5
 	out[3] = out[0] + 1
 }
@@ -53,7 +53,7 @@ main :: fun() {
 	nd := Node{v = 4}
 	sum += node_of(&nd).v                     // 1141 pointer returned: auto-deref
 
-	a : [4]i64
+	a : [4!]i64
 	a[1] = 9
 	list : [..4][]i64                         // a partial array of slices
 	list[0] = a[:]
@@ -62,11 +62,11 @@ main :: fun() {
 	list[0][2] = 50
 	sum += a[2]                               // 1200 (written through the element)
 
-	grid : [2][]i64                           // a fixed array of slices
+	grid : [2!][]i64                           // a fixed array of slices
 	grid[1] = a[:]
 	sum += grid[1][1]                         // 1209
 
-	fixed : [4]i64
+	fixed : [4!]i64
 	fill(&fixed)                              // indexing through ^[4]T
 	sum += fixed[0] + fixed[3]                // 1220
 

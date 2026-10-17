@@ -199,7 +199,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Type_Pointer   = {a = .Node},
     .Type_Slice     = {a = .Node, b = .Node},
     .Type_Partial   = {a = .Node, b = .Node},
-    .Type_Array     = {a = .Rec, b = .Node, rec = {0 = .Node, 1 = .Node}},
+    .Type_Array     = {a = .Rec, b = .Node, rec = {0 = .Node, 1 = .Node, 2 = .Token}},
     .Type_Generic   = {a = .List},
     .Type_Fun       = {a = .List, b = .List},
     .Type_Of        = {a = .Tokens},

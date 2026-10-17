@@ -40,7 +40,7 @@ copy_in :: fun(dst: ^[]i64, src: []i64) {
 main :: fun() {
 	y : i64 = 1
 	z : i64 = 2
-	arr : [4]i64
+	arr : [4!]i64
 	arr[0] = 3
 	h : Holder
 	keep(&h, &y, arr[:])

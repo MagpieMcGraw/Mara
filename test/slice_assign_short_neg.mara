@@ -7,7 +7,7 @@ use mara.core
 // copy would read past the value's end.
 
 main :: fun() {
-	b : [4]i64 = [1, 2, 3, 4]
+	b : [4!]i64 = [1, 2, 3, 4]
 	b[0:3] = [7, 7]
 	print(b)
 }

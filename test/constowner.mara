@@ -8,10 +8,10 @@ module constowner
 
 use mara.core
 
-COLOR :: [3]f32{7, 7, 7}
+COLOR :: [3!]f32{7, 7, 7}
 SCALE :: 7
 
-Vis :: struct { color: [3]f32 }
+Vis :: struct { color: [3!]f32 }
 
 paint :: fun(v: ^Vis) {
 	v.color = COLOR

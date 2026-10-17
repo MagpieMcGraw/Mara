@@ -13,7 +13,7 @@ use mara.core
 include mara.memory
 
 E :: error { Bad }
-Big :: struct { cells: [300]i64 }
+Big :: struct { cells: [300!]i64 }
 
 big :: fun(k: i64) -> Big, i64 {
 	b : Big

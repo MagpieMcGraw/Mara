@@ -15,9 +15,9 @@ module vec_elements
 use mara.core
 use mara.math
 
-RED :: [3]f32{0.9, 0.2, 0.2}
+RED :: [3!]f32{0.9, 0.2, 0.2}
 Obj :: struct { dir: Quat, pos: Vec3 }
-Vis :: struct { color: [3]f32 }
+Vis :: struct { color: [3!]f32 }
 Shp :: struct { obj: Obj, visual: Vis }
 
 fill :: fun(out: ^[]Vec3, n: i64) {

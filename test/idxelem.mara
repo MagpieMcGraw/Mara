@@ -25,14 +25,14 @@ main :: fun() -> i64 {
 	// starts == [0, 5, 2]
 
 	// fixed array, element i32
-	fixed : [3]i32
+	fixed : [3!]i32
 	fixed[0] = 1                        // infer literal
 	fixed[1] = i32(edges.len)           // cast
 	fixed[2] = exact                    // exact width
 	// fixed == [1, 5, 2]
 
 	// slice over backing storage, element i32
-	store : [4]i32
+	store : [4!]i32
 	view : []i32 = store[:]
 	view[0] = 9                         // infer literal into slice element
 	view[1] = exact                     // exact width into slice element

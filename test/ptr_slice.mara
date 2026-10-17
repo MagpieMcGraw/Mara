@@ -11,7 +11,7 @@ use mara.core
 // `.len` on a field emitted invalid IR.
 
 Holder :: struct { s: ^[]i64 }
-Grid   :: struct { cells: ^[4]i64 }
+Grid   :: struct { cells: ^[4!]i64 }
 Ctx    :: struct { out: ^[]utf8 }
 
 // read, write, address-of, .len/.cap, slicing — through a LOCAL ^[]i64
@@ -84,10 +84,10 @@ main :: fun() {
 
 	c : [..4]i64
 	c.len = 4
-	three : [3]i64
+	three : [3!]i64
 	sum += header_writes(&c, three[:])                // 54
 
-	cells : [4]i64
+	cells : [4!]i64
 	g := Grid{cells = &cells}
 	sum += through_array_field(&g)                    // 63
 

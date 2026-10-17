@@ -4,7 +4,7 @@ module temp_address_neg
 // A ternary of aggregates yields one operand's storage; a field of it can be
 // read, but `&` into it would hand out a pointer that writes through to `x`.
 
-P :: struct { a: i64, b: [2]i64 }
+P :: struct { a: i64, b: [2!]i64 }
 
 main :: fun() {
 	c := true

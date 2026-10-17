@@ -35,6 +35,6 @@ main :: fun() {
 	print("% and %", small, umax)
 	v := V{a = -1000000000, b = 18446744073709551615}
 	print(v)
-	xs : [2]i128 = [7, -7]
+	xs : [2!]i128 = [7, -7]
 	print(xs)
 }

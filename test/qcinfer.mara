@@ -3,7 +3,7 @@ module qcinfer
 // QUALIFIED const must INFER its type from that const. Before the fix the
 // inferred field type was Type_Any and codegen panicked ("Type_Any reached
 // codegen"); the sidestep was an explicit `color : [3]f32 = ...` annotation.
-COLOR_RED :: [3]f32{0.8, 0.1, 0.1}
+COLOR_RED :: [3!]f32{0.8, 0.1, 0.1}
 
 Player :: struct {
 	color := qcinfer.COLOR_RED   // inferred [3]f32 from the self-qualified const

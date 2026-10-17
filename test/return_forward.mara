@@ -26,7 +26,7 @@ include mara.memory
 E :: error { Bad }
 Mode :: union { build  run }
 P :: struct { x: i64  y: f32 }
-Big :: struct { cells: [300]i64 }
+Big :: struct { cells: [300!]i64 }
 
 pair :: fun(n: i64) -> P, err {
 	if n < 0 do return P{0}, Bad
@@ -44,8 +44,8 @@ name :: fun(ok: bool) -> str64, bool {
 }
 fwd_name :: fun(ok: bool) -> str64, bool { return name(ok) }
 
-arr :: fun() -> [3]i64, i64 { return [1, 2, 3], 9 }
-fwd_arr :: fun() -> [3]i64, i64 { return arr() }
+arr :: fun() -> [3!]i64, i64 { return [1, 2, 3], 9 }
+fwd_arr :: fun() -> [3!]i64, i64 { return arr() }
 
 big :: fun(k: i64) -> Big, i64 {
 	b : Big

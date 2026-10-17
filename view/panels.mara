@@ -573,8 +573,8 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [17][]utf8
-	does : [17][]utf8
+	keys : [17!][]utf8
+	does : [17!][]utf8
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[1] = "Wheel"

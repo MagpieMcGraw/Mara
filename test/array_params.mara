@@ -28,7 +28,7 @@ module array_params
 // value's signature (they used to type each argument from the argument itself,
 // passing structs and strings by value).
 
-V3 :: distinct [3]i64
+V3 :: distinct [3!]i64
 Holder :: struct { v: V3 }
 P :: struct { x: i64, y: i64 }
 
@@ -38,13 +38,13 @@ vadd :: fun(a: V3, b: V3) -> V3 { return V3{a[0] + b[0], a[1] + b[1], a[2] + b[2
 overload + plus
 plus :: dispatch { vadd }
 swap :: fun(p: P) -> P { return P{x = p.y, y = p.x} }
-show_raw :: fun(label: []utf8, v: [3]i64) { print("%=% % %", label, v[0], v[1], v[2]) }
-big_sum :: fun(a: [100]i64) -> (i64, i64) {
+show_raw :: fun(label: []utf8, v: [3!]i64) { print("%=% % %", label, v[0], v[1], v[2]) }
+big_sum :: fun(a: [100!]i64) -> (i64, i64) {
 	s := 0
 	for x in a { s += x }
 	return a[99], s
 }
-corner :: fun(m: [2][3]i64) -> (i64, i64) { return m[0][0], m[1][2] }
+corner :: fun(m: [2!][3!]i64) -> (i64, i64) { return m[0][0], m[1][2] }
 sum3 :: fun(v: V3, s: []utf8, p: P) -> i64 { return v[0] + v[1] + v[2] - s.len - p.x - p.y + 3 }
 via :: fun(f: fn sum3, v: V3, p: P) -> i64 { return f(v, "abc", p) }
 via_rot :: fun(f: fn rot, v: V3) -> V3 { return f(v) }
@@ -56,7 +56,7 @@ main :: fun() {
 	show("literal", V3{4, 5, 6})
 	k := 7
 	show("runtime", V3{k, 8, k})
-	m : [2]V3
+	m : [2!]V3
 	m[1] = v
 	show("elem", m[1])
 	h := Holder{v = V3{9, 8, 7}}
@@ -66,7 +66,7 @@ main :: fun() {
 	show("ternary", if k > 1 do V3{4, 5, 6} else v)
 	show("call", rot(v))
 	show("overload", v + V3{4, 5, 6})
-	raw : [3]i64 = [1, 2, 3]
+	raw : [3!]i64 = [1, 2, 3]
 	show("distinct", V3(raw))
 
 	bytes : [..32]byte
@@ -76,11 +76,11 @@ main :: fun() {
 	bytes[16] = u64(3)
 	show_raw("bytes", bytes[0:24])
 
-	a : [100]i64
+	a : [100!]i64
 	for i in 0..100 { a[i] = i }
 	last, total := big_sum(a)
 	print("big=% %", last, total)
-	grid := [2][3]i64{[1, 2, 3], [4, 5, 6]}
+	grid := [2!][3!]i64{[1, 2, 3], [4, 5, 6]}
 	c0, c1 := corner(grid)
 	print("nested=% %", c0, c1)
 

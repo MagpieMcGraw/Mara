@@ -13,11 +13,11 @@ Cell :: struct(w: i64 = N * 2, h: f32 = 1.5) {
 }
 
 Row :: struct {
-	cells: [2]Cell = all Cell()
+	cells: [2!]Cell = all Cell()
 }
 
 main :: fun() {
-	a : [4]Cell = all Cell()
+	a : [4!]Cell = all Cell()
 	r := Row()
 	c := Cell()
 	d := Cell()

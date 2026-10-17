@@ -13,14 +13,14 @@ module escape_struct_lit_neg
 
 Holder :: struct { sl: []i32 }
 
-make_arr :: fun() -> [4]i32 {
-	r : [4]i32
+make_arr :: fun() -> [4!]i32 {
+	r : [4!]i32
 	r[0] = 7
 	return r
 }
 
 via_slice_of_local :: fun() -> Holder {
-	r : [4]i32
+	r : [4!]i32
 	return Holder{r[:]}
 }
 
@@ -28,12 +28,12 @@ via_call_decay :: fun() -> Holder {
 	return Holder{make_arr()}
 }
 
-via_param_array :: fun(arr: [4]i32) -> Holder {
+via_param_array :: fun(arr: [4!]i32) -> Holder {
 	return Holder{arr}
 }
 
 via_decl_local :: fun() -> Holder {
-	verts : [4]i32
+	verts : [4!]i32
 	return Holder{verts}
 }
 

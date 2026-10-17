@@ -13,7 +13,7 @@ main :: fun() {
 	&a + "filled later"
 	print(a)
 
-	b : [8]i64 = void
+	b : [8!]i64 = void
 	b[0] = 7
 	print(b[0])
 

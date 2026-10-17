@@ -159,10 +159,10 @@ theme_sublime :: fun(ui: ^Ui) {
 	if re do return
 	text : []utf8 = data
 	// (The six above, by PALETTE_ order; each token kind's.)
-	named : [PALETTE]Color
-	has : [PALETTE]bool
-	tokens : [TOKENS]Color
-	token_has : [TOKENS]bool
+	named : [PALETTE!]Color
+	has : [PALETTE!]bool
+	tokens : [TOKENS!]Color
+	token_has : [TOKENS!]bool
 	at : i64 = 0
 	for at < text.len {
 		for at < text.len and (text[at] == ' ' or text[at] == '\t' or text[at] == '\n' or text[at] == '\r') {

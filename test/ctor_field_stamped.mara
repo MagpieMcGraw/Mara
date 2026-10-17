@@ -19,7 +19,7 @@ Inner :: struct {
 Middle :: struct {
 	inner: Inner
 	list: [..3]Inner
-	pair: [2]Inner
+	pair: [2!]Inner
 }
 
 Outer :: struct {

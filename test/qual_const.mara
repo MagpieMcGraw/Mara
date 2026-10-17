@@ -3,7 +3,7 @@ use qual_const_a
 // Both modules define COLOR and VAL — allowed. Bare use would be ambiguous;
 // qualify with the module name (self `qual_const.X` or imported `qual_const_a.X`).
 // Codegen inlines each via the checker's resolution; it never sees a qualifier.
-COLOR :: [3]f32{0.9, 0.8, 0.7}
+COLOR :: [3!]f32{0.9, 0.8, 0.7}
 VAL   :: 9
 main :: fun() -> i64 {
 	a := qual_const.COLOR        // self, aggregate

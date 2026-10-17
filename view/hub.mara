@@ -267,7 +267,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	// (Its fields, between tabs: the directory, the words, then the cursor's
 	// kind, name, path and line. One field alone: the words, the window's
 	// own directory.)
-	fields : [6][]utf8
+	fields : [6!][]utf8
 	n : i64 = 0
 	start : i64 = 6
 	for k in 6 .. line.len + 1 {

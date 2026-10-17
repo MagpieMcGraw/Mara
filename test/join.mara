@@ -24,7 +24,7 @@ use mara.memory
 show :: fun(s: []utf8) { print("argument:", s) }
 
 // Each item doubled: an array of the same size.
-doubled :: fun(a: [$N]i64) -> [N]i64 {
+doubled :: fun(a: [$N!]i64) -> [N!]i64 {
 	out := a
 	for k in 0 .. N {
 		out[k] = out[k] * 2
@@ -77,7 +77,7 @@ main :: fun() {
 	long := big + "-a" + "-b" + "-c"
 	print("big:", long, long.len, long.cap)
 
-	three : [3]i64 = {1, 2, 3}
+	three : [3!]i64 = {1, 2, 3}
 	d := doubled(three)
 	print("generic size: % % % % | %", d[0], d[1], d[2], d.len, room_twice(code))
 }

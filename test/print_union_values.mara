@@ -25,7 +25,7 @@ Coded :: union(tag u32) {
 	Circle = 1 { r: i32 = 7 }
 	Square = 5 { s: i32 }
 }
-Padded :: union(tag u8, pad [7]u8) {
+Padded :: union(tag u8, pad [7!]u8) {
 	A { x: i64 = 9 }
 	B
 }
@@ -46,7 +46,7 @@ main :: fun() {
 	h := Holder()
 	h.s = Rect{w = 1, h = 1}
 	print(h)
-	arr : [2]Shape
+	arr : [2!]Shape
 	arr[1] = .Rect
 	print(arr)
 	m : Maybe(i64) = Some{value = 42}

@@ -23,7 +23,7 @@ Shape :: union {
 	Rect { w: i64 = 2 }
 	Dot
 }
-Padded :: union(tag u8, pad [7]u8) {
+Padded :: union(tag u8, pad [7!]u8) {
 	A { x: i64 = 9 }
 	B
 }

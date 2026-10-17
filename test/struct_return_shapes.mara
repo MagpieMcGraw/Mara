@@ -12,13 +12,13 @@ use mara.string
 
 Named  :: struct { name: str64, n: i64 }
 Holder :: struct { inner: Named }
-NAMES  :: [2]Named{{"a", 1}, {"bb", 2}}
+NAMES  :: [2!]Named{{"a", 1}, {"bb", 2}}
 
 give :: fun() -> Named {
 	return NAMES[1]
 }
 give_local :: fun() -> Named {
-	arr := [2]Named{{"a", 1}, {"bb", 2}}
+	arr := [2!]Named{{"a", 1}, {"bb", 2}}
 	return arr[1]
 }
 give_field :: fun(h: Holder) -> Named {

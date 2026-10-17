@@ -3,7 +3,7 @@ module byte_span_untyped_neg
 // hasn't.
 //@ expect-fail: copying untyped numbers into a byte buffer
 main :: fun() {
-	buf : [8]byte
+	buf : [8!]byte
 	b : []byte = buf[:]
 	b[0:3] = [1, 2, 3]
 }

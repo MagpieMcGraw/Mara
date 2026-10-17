@@ -15,7 +15,7 @@ use camera
 Game :: struct {
     camera : Camera = Camera(640, 480, 90)
     cam_b := Camera(800, 600, 75)
-    cameras: [6]Camera = void       // fixed array, uninit
+    cameras: [6!]Camera = void       // fixed array, uninit
     camera_pool: [..6]Camera = void  // partial array, uninit — header still valid
 }
 

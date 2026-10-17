@@ -27,24 +27,24 @@ module literal_self_reference
 // destination and literal is covered; the last case reads another variable
 // and stays in place.
 
-V :: distinct [2]i64
+V :: distinct [2!]i64
 P :: struct { x: i64, y: i64 }
-H :: struct { p: P, arr: [2]i64 }
+H :: struct { p: P, arr: [2!]i64 }
 Cam :: struct(seed: V) {
 	pos: V = V{seed[1], seed[0]}
 }
 Pick :: union(tag u8) { One = 1 { n: i64, m: i64 } Two = 2 { a: i64, b: i64 } }
 Holder :: struct { s: Pick }
-W :: distinct [3]i64
+W :: distinct [3!]i64
 C :: struct { pos: W, n: i64 }
 
 // `p` is the caller's storage — here, the destination's own `pos` field.
-fill :: fun(out: ^[2]C, p: W) {
+fill :: fun(out: ^[2!]C, p: W) {
 	out[0] = C{pos = p, n = p[0] + p[2]}
 }
 
 main :: fun() {
-	a : [2]i64 = [1, 2]
+	a : [2!]i64 = [1, 2]
 	a = [a[1], a[0]]
 	print("array=% %", a[0], a[1])
 
@@ -65,7 +65,7 @@ main :: fun() {
 	h.p = P{x = h.p.y, y = h.p.x}
 	print("field=% %", h.p.x, h.p.y)
 
-	ps : [2]P
+	ps : [2!]P
 	ps[1] = P{x = 5, y = 6}
 	ps[1] = P{x = ps[1].y, y = ps[1].x}
 	print("elem=% %", ps[1].x, ps[1].y)
@@ -91,7 +91,7 @@ main :: fun() {
 	h4.arr = [h4.arr[1], h4.arr[0]]
 	print("arrayfield=% %", h4.arr[0], h4.arr[1])
 
-	grid : [2][2]i64
+	grid : [2!][2!]i64
 	grid[1] = [15, 16]
 	grid[1] = [grid[1][1], grid[1][0]]
 	print("arrayelem=% %", grid[1][0], grid[1][1])
@@ -138,7 +138,7 @@ main :: fun() {
 	w = P{x = t.x, y = t.y - 3}
 	print("other=% %", w.x, w.y)
 
-	cs : [2]C
+	cs : [2!]C
 	cs[0] = C{pos = W{1, 2, 3}, n = 0}
 	fill(&cs, cs[0].pos)
 	print("paraminside=% % % n=%", cs[0].pos[0], cs[0].pos[1], cs[0].pos[2], cs[0].n)

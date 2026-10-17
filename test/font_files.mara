@@ -30,7 +30,7 @@ use mara.font
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(64 * MB))
-	names := [8][]utf8{"tiny.ttf", "tiny_bmp.ttf", "tiny_mac0.ttf", "tiny_mac6.ttf",
+	names := [8!][]utf8{"tiny.ttf", "tiny_bmp.ttf", "tiny_mac0.ttf", "tiny_mac6.ttf",
 		"tiny_symbol.ttf", "tiny_cut.ttf", "not_truetype.otf", "missing.ttf"}
 	for name in names {
 		e := show_chars(name)

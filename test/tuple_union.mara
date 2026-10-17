@@ -11,7 +11,7 @@ module tuple_union
 // fallback and became an LLVM constant holding an SSA value.
 
 Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
-Vec3 :: distinct [3]f32
+Vec3 :: distinct [3!]f32
 
 pk :: fun(k: i64) -> (Pick, i64) {
 	if k == 1 { return One{n = 4}, 1 }

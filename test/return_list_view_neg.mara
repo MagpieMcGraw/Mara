@@ -14,7 +14,7 @@ firsts :: fun() -> []i64 {
 }
 
 fours :: fun() -> []i64 {
-	four : [4]i64
+	four : [4!]i64
 	return four
 }
 

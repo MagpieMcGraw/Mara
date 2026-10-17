@@ -1,6 +1,6 @@
 // How to keep several values: fixed arrays, growable lists, and slices.
 //
-// `[4]i64` is exactly four values. `[..8]i64` holds up to eight: its len is
+// `[4!]i64` is exactly four values. `[..8]i64` holds up to eight: its len is
 // how many it has, its cap how many fit, and `&list + x` adds one.
 // `next(&list)` makes it one longer and points at the new item: `^` writes
 // it, `next(&list)^ = x` (or a field of it, `next(&list)^.name = …`). A slice
@@ -24,7 +24,7 @@ sum :: fun(xs: []i64) -> i64 {
 }
 
 main :: fun() {
-	fixed : [4]i64 = [1, 2, 3, 4]
+	fixed : [4!]i64 = [1, 2, 3, 4]
 	print(fixed.len, fixed[0], sum(fixed[:]))    // 4 1 10
 
 	list : [..8]i64

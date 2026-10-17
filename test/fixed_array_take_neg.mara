@@ -7,7 +7,7 @@ module fixed_array_take_neg
 use mara.core
 
 main :: fun() {
-	room : [256]byte
+	room : [256!]byte
 	nums := slice([:4]i64, &room)
 	print(nums.len)
 }

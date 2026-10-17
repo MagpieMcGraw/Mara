@@ -748,7 +748,7 @@ Event :: union(tag u32, pad u32, size 128) {
         timestamp: u64
         which: u32
         sensor: i32
-        data: [3]f32
+        data: [3!]f32
         sensor_timestamp: u64
     }
     GamepadUpdateComplete = 1626 {
@@ -891,7 +891,7 @@ Event :: union(tag u32, pad u32, size 128) {
     SensorUpdate = 4608 {
         timestamp: u64
         which: u32
-        data: [6]f32
+        data: [6!]f32
         sensor_timestamp: u64
     }
     PenProximityIn = 4864 {

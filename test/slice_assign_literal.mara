@@ -20,7 +20,7 @@ use mara.core
 //@ expect-output: param: 6
 //@ expect-output: longer: [1, 2, 3, 0]
 
-Arr :: [4]i64
+Arr :: [4!]i64
 
 total :: fun(xs: []i64) -> i64 {
 	t := 0
@@ -29,23 +29,23 @@ total :: fun(xs: []i64) -> i64 {
 }
 
 main :: fun() {
-	a : [4]i64 = [1, 2, 3, 4]
-	two : [2]i64 = [7, 7]
+	a : [4!]i64 = [1, 2, 3, 4]
+	two : [2!]i64 = [7, 7]
 	a[0:2] = two
 	print("var:", a)
-	b : [4]i64 = [1, 2, 3, 4]
+	b : [4!]i64 = [1, 2, 3, 4]
 	b[2:4] = a[0:2]
 	print("slice:", b)
-	c : [4]i64 = [1, 2, 3, 4]
+	c : [4!]i64 = [1, 2, 3, 4]
 	c[1:3] = [9, 9]
 	print("literal:", c)
 	d : Arr = [1, 2, 3, 4]
 	d[0:2] = [5, 6]
 	print("named:", d)
-	f : [4]f32 = [1, 2, 3, 4]
+	f : [4!]f32 = [1, 2, 3, 4]
 	f[2:4] = [0.5, 0.25]
 	print("floats:", f)
-	n : [3]i32
+	n : [3!]i32
 	n[0:2] = [3, 4]
 	print("i32s:", n)
 	g : [..8]i64
@@ -55,7 +55,7 @@ main :: fun() {
 	g[0:2] = [8, 8]
 	print("partial:", g[:])
 	print("param:", total([1, 2, 3]))
-	h : [4]i64
+	h : [4!]i64
 	h[0:3] = [1, 2, 3, 4, 5]
 	print("longer:", h)
 }

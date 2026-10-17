@@ -7,7 +7,7 @@ main :: fun() {
 	assert(flags.cap == 64)
 
 	// fixed array: len == cap == N, both fold
-	grid : [16]f32
+	grid : [16!]f32
 	seen : [..grid.len]bool
 	mask : [..grid.cap]bool
 	assert(seen.cap == 16)

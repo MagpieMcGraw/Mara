@@ -7,7 +7,7 @@ module test_slice_to_fixed_array_fail
 // silently returned a zeroed array. Diagnostic: return type []byte does not
 // match expected [8]byte.
 
-as_arr :: fun(src: []byte) -> [8]byte {
+as_arr :: fun(src: []byte) -> [8!]byte {
 	return src
 }
 

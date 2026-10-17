@@ -8,6 +8,6 @@ module fixed_array_append_neg
 use mara.core
 
 main :: fun() {
-	names : [64]utf8
+	names : [64!]utf8
 	&names + "one"
 }

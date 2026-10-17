@@ -40,7 +40,7 @@ main :: fun() {
 	x := 5
 	h := H{n = 1, p = void}          // a literal field
 	h.p = void                       // a field store
-	arr : [2]^i64 = {&x, void}       // an array element
+	arr : [2!]^i64 = {&x, void}       // an array element
 	arr[1] = void                    // an element store
 	pp := &h.p
 	pp^ = void                       // a store through a pointer

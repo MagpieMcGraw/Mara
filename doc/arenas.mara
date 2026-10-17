@@ -24,7 +24,7 @@ main :: fun() {
 	this_program = Program(Arena_Debug(16 * MB))
 
 	// 2000 i64s are 16000 bytes: in the arena.
-	table : [2000]i64
+	table : [2000!]i64
 	table[0] = 1
 	print(table.len, table[0])                    // 2000 1
 

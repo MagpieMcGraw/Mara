@@ -29,8 +29,8 @@ use mara.string
 
 Buf  :: [..64]utf8
 DBuf :: distinct [..64]utf8
-Arr  :: [4]i64
-DArr :: distinct [4]i64
+Arr  :: [4!]i64
+DArr :: distinct [4!]i64
 Sl   :: []i64
 
 U :: union {
@@ -104,7 +104,7 @@ main :: fun() {
 
 	a : Arr = [1, 2, 3, 4]
 	da : DArr = [1, 2, 3, 4]
-	backing : [3]i64 = [7, 8, 9]
+	backing : [3!]i64 = [7, 8, 9]
 	sl : Sl = backing[:]
 	print("arrays:", a[1:3], a.len, da[1:3], da.len, first(a[:]), first(sl), len(sl))
 	sum_a := 0
@@ -112,7 +112,7 @@ main :: fun() {
 	sum_da := 0
 	for x in da { sum_da += x }
 	print("array loops:", sum_a, sum_da)
-	more : [4]i64 = [5, 6, 7, 8]
+	more : [4!]i64 = [5, 6, 7, 8]
 	sl = more[:]
 	sum_sl := 0
 	for x in sl { sum_sl += x }

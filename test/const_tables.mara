@@ -28,12 +28,12 @@ Msg   :: struct { text: []utf8, n: i64 }
 
 HALF   :: 0.5
 TWO_PI :: PI * 2
-NAMES  :: [3]Named{{"a", .Big, true, 'x'}, {"bb", .Small, true, 'x'}, {kind = .Big, on = true, ch = 'x'}}
+NAMES  :: [3!]Named{{"a", .Big, true, 'x'}, {"bb", .Small, true, 'x'}, {kind = .Big, on = true, ch = 'x'}}
 PAIR   :: Pair{a = NAMES[2], b = NAMES[0]}
-SPOT   :: [2]f32{HALF * 3, f32(7) / 2}
-MASK   :: [2]i64{1 << 4, ~0}
+SPOT   :: [2!]f32{HALF * 3, f32(7) / 2}
+MASK   :: [2!]i64{1 << 4, ~0}
 MSG    :: Msg{"hello", 5}
-TAB    :: [6]i64{2, 3, 5, 7, 11, 13}
+TAB    :: [6!]i64{2, 3, 5, 7, 11, 13}
 
 id :: fun(n: Named) -> Named {
 	return n

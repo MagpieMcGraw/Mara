@@ -7,6 +7,6 @@ module infer_element_overflow_neg
 
 main :: fun() {
 	k := 70000
-	arr : [2]i16 = {k, 1}
+	arr : [2!]i16 = {k, 1}
 	print(arr[0])
 }

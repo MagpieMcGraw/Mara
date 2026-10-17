@@ -10,8 +10,8 @@ module array_field_loop
 Pt :: struct { x: i64 = 1 }
 
 Box :: struct {
-	cells: [4]i64
-	pts: [3]Pt = all Pt()
+	cells: [4!]i64
+	pts: [3!]Pt = all Pt()
 }
 
 walk :: fun(b: Box) -> i64 {
@@ -32,7 +32,7 @@ sum_index :: fun(b: Box) -> i64 {
 	return s
 }
 
-short :: fun() -> [4]i64 {
+short :: fun() -> [4!]i64 {
 	return [1, 2]
 }
 

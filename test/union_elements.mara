@@ -62,7 +62,7 @@ main :: fun() {
 	sum += eval(root)                          // -1
 
 	// Direct element stores: a literal, a local, a call result.
-	arr : [4]Node
+	arr : [4!]Node
 	arr[0] = Lit{v = 10}
 	local : Node = Lit{v = 20}
 	arr[1] = local

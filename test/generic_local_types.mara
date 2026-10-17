@@ -25,18 +25,18 @@ each_size :: fun(xs: []$T) -> i64 { return size_of(T) }
 
 one_field :: fun() -> i64 {
 	Item :: struct { a: i64 }
-	items : [2]Item
+	items : [2!]Item
 	return each_size(items[:])
 }
 
 three_fields :: fun() -> i64 {
 	Item :: struct { a: i64  b: i64  c: i64 }
-	items : [2]Item
+	items : [2!]Item
 	return each_size(items[:])
 }
 
 main :: fun() {
-	nums : [9]i64 = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+	nums : [9!]i64 = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 	storage : [..512]byte
 	s := small_ones(nums[:], &storage)
 	b := big_ones(nums[:], &storage)

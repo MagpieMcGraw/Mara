@@ -6,6 +6,6 @@ module array_element_exact_neg
 
 main :: fun() {
 	x : i32 = -5
-	arr : [2]i64 = {x, 1}
+	arr : [2!]i64 = {x, 1}
 	print(arr[0])
 }

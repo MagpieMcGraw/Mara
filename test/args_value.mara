@@ -44,11 +44,11 @@ main :: fun() -> i64 {
 	file_close(id)
 
 	// slice elements of fixed / partial / field arrays, as values
-	data : [3]i64
+	data : [3!]i64
 	data[0] = 1
 	data[1] = 2
 	data[2] = 3
-	fixed : [2][]i64
+	fixed : [2!][]i64
 	fixed[0] = data[:]
 	pa : [..4][]i64
 	pa[0] = data[:]

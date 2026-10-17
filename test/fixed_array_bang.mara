@@ -1,0 +1,33 @@
+module fixed_array_bang
+
+//@ expect-output: fixed 3 6
+//@ expect-output: | literal 1.5
+//@ expect-output: | constant 4
+//@ expect-output: | generic 3 2
+//@ expect-output: | by enum 3 true
+
+// An array of exactly N is written `[N!]T`: a number, a constant's name,
+// a generic's `$N`, a typed literal's. An enum's array, `[Kind]T`, one T
+// for each of its values, needs none — it can't be a list.
+
+use mara.core
+
+MAX :: 4
+Kind :: union { a  b  c }
+
+firsts :: fun(a: [$N!]i64) -> i64 { return N }
+
+main :: fun() {
+	three : [3!]i64 = {1, 2, 3}
+	sum := three[0] + three[1] + three[2]
+	print("fixed", three.len, sum)
+	v := [2!]f32{1.5, 2.5}
+	print("| literal", v[0])
+	four : [MAX!]byte
+	print("| constant", four.len)
+	pair : [2!]i64
+	print("| generic", firsts(three), firsts(pair))
+	seen : [Kind]bool
+	seen[.c] = true
+	print("| by enum", seen.len, seen[.c])
+}

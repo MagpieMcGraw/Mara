@@ -4,6 +4,6 @@ module index_exact_neg
 // A constant index is read exactly: no float rounding (2^53 + 1 stays odd).
 
 main :: fun() {
-	a : [4]i64
+	a : [4!]i64
 	print(a[9007199254740993])
 }

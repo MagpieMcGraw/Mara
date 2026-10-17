@@ -1,5 +1,5 @@
 module byte_write_span_neg
-//@ expect-fail: [2]u32 is 8 bytes, but slice span is 4 bytes
+//@ expect-fail: [2!]u32 is 8 bytes, but slice span is 4 bytes
 
 use mara.core
 
@@ -7,8 +7,8 @@ use mara.core
 // be its size.
 
 main :: fun() {
-	two : [2]u32 = [1, 2]
-	buf : [16]byte
+	two : [2!]u32 = [1, 2]
+	buf : [16!]byte
 	buf[0:4] = two
 	print(buf[0])
 }

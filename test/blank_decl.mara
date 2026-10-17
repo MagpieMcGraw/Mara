@@ -21,7 +21,7 @@ noisy :: fun(x: i64) -> i64 {
 	return x + 100
 }
 
-Big :: struct { data: [512]i64 }
+Big :: struct { data: [512!]i64 }
 
 big :: fun(n: i64) -> Big {
 	b : Big

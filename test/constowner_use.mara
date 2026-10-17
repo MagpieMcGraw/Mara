@@ -6,7 +6,7 @@ module constowner_use
 use mara.core
 use constowner
 
-COLOR :: [3]f32{1, 1, 1}
+COLOR :: [3!]f32{1, 1, 1}
 SCALE :: 1
 
 main :: fun() {

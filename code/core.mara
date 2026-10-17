@@ -153,7 +153,7 @@ group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
 // What an arena must have to be the program's allocator. Arena_Basic and
 // Arena_Debug (mara.memory) are the ones to use.
 Arena :: struct {
-	size: [64]byte
+	size: [64!]byte
 
 	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {

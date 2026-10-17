@@ -5,7 +5,7 @@ module const_slice_neg
 // it can't be bound to one (a write through it would fault); passing a
 // constant to a slice PARAMETER is fine, since parameters are read-only.
 
-RED :: [3]f32{0.9, 0.2, 0.2}
+RED :: [3!]f32{0.9, 0.2, 0.2}
 
 main :: fun() {
 	s := RED[:]

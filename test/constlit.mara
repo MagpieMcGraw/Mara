@@ -15,7 +15,7 @@ DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 7}
 
 Texture :: struct {
 	name:  str64,
-	uv:    [4]f32,
+	uv:    [4!]f32,
 	layer: u32,
 }
 

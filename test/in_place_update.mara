@@ -30,8 +30,8 @@ module in_place_update
 // through a function value — and still compute the right thing.
 
 H :: struct { f: [..4]i64, n: i64 }
-S :: struct { x: i64, y: i64, big: [16]i64 }
-V :: distinct [3]i64
+S :: struct { x: i64, y: i64, big: [16!]i64 }
+V :: distinct [3!]i64
 
 push :: fun(pa: [..4]i64, x: i64) -> [..4]i64 {
 	r := pa
@@ -117,7 +117,7 @@ main :: fun() {
 	h.f = push(h.f, 7)
 	h.f = push(h.f, 8)
 	show("field", h.f)
-	bufs : [2][..4]i64
+	bufs : [2!][..4]i64
 	i := 1
 	bufs[i] = push(bufs[i], 9)
 	bufs[i] = push(bufs[i], 10)

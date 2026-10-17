@@ -13,14 +13,14 @@ main :: fun() {
 	assert(z[7] == 0)
 
 	// A slice of an array too.
-	arr : [16]i64
+	arr : [16!]i64
 	s := arr[0:16]
 	assert(s[3] == 0)
 	assert(s[15] == 0)
 
 	// A count known at run time.
 	n := 12
-	more : [16]i64
+	more : [16!]i64
 	r := more[0:n]
 	assert(r[11] == 0)
 

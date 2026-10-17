@@ -8,7 +8,7 @@ module esc_sized_slice_neg
 use mara.memory
 
 make_it :: fun(n: i64) -> []i64 {
-	room : [16]i64
+	room : [16!]i64
 	s := room[0:n]
 	s[0] = 7
 	return s[0:4]

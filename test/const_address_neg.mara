@@ -4,7 +4,7 @@ module const_address_neg
 // `&` is the mutation gate: a pointer into a constant would let a write
 // through it change the constant. Same for a function-local one.
 
-P :: struct { a: i64, b: [2]i64 }
+P :: struct { a: i64, b: [2!]i64 }
 
 main :: fun() {
 	L :: P{7, {8, 9}}

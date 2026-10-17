@@ -3,7 +3,7 @@ module array_param_swizzle_neg
 
 // A swizzle write is an element write: rejected on an immutable array param.
 
-Vec3 :: distinct [3]f32
+Vec3 :: distinct [3!]f32
 f :: fun(v: Vec3) { v.x = 5 }
 
 main :: fun() {

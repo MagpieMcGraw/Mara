@@ -8,7 +8,7 @@ module escapeparam
 // ever leaked into escape's aliasing summary (return_args), `buf` would trace to
 // param 0 and wrongly look caller-rooted, silently dropping this error.
 leak :: fun(x: i64) -> []i64 {
-	buf: [4]i64
+	buf: [4!]i64
 	buf[0] = x
 	return buf[:]
 }

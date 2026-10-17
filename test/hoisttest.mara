@@ -10,8 +10,8 @@ use mara.core
 
 Holder :: struct { data: []i32 }
 
-make_arr :: fun(base: i32) -> [4]i32 {
-	r : [4]i32
+make_arr :: fun(base: i32) -> [4!]i32 {
+	r : [4!]i32
 	r[0] = base  r[1] = base + 1  r[2] = base + 2  r[3] = base + 3
 	return r
 }

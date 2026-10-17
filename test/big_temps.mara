@@ -15,7 +15,7 @@ include mara.memory
 //@ expect-output: main's own: 7 8
 
 Big :: struct {
-	data: [200]i64
+	data: [200!]i64
 	n: i64 = 1
 }
 

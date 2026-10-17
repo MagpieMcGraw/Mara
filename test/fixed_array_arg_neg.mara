@@ -9,7 +9,7 @@ use mara.core
 use mara.os
 
 main :: fun() {
-	storage : [100]byte
+	storage : [100!]byte
 	_, e := read_entire_file("fixed_array_arg_neg.mara", &storage)
 	print(e)
 }

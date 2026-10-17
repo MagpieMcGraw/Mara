@@ -7,7 +7,7 @@ module esc_decay_field_neg
 Holder :: struct { s: []i64 }
 
 f :: fun(h: ^Holder) {
-	arr : [4]i64
+	arr : [4!]i64
 	h.s = arr
 }
 

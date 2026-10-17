@@ -8,7 +8,7 @@ DEF_TEXTURE :: CM_Texture{"DEFAULT", {0, 0, 0, 0}, 0}
 
 CM_Texture :: struct {
 	name:  str64,
-	uv:    [4]f32,
+	uv:    [4!]f32,
 	layer: u32,
 }
 

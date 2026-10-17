@@ -628,24 +628,24 @@ below (flow) — what this variable affects  (forward slice)
 === Pounce | at gfx_mesh_generation.mara:66:11
 gfx_mesh_generation.mara:66:11  token '0'
 
-  Define                   [391,1448)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
-  Fun_Def                  [393,1448)  fun() -> [24]Vertex, [36]u32 { …
+  Define                   [391,1452)  primitive_cube :: fun() -> [24!]Vertex, [36!]u32 { …
+  Fun_Def                  [393,1452)  fun() -> [24!]Vertex, [36!]u32 { …
       → Fun primitive_cube, Result result1, Result result2
-  Assign                   [424,461)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+  Assign                   [428,465)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
       → Write
-  Index                    [424,428)  verts[0]   : Vertex
+  Index                    [428,432)  verts[0]   : Vertex
       → Index
-  Number                   [426,427)  0   : i64
+  Number                   [430,431)  0   : i64
 === Pounce | at Pounce.mara:112:13
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
 
-  Define                   [419,865)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [421,865)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Define                   [422,868)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [424,868)  fun(game: ^Megastruct, memory: ^[]byte) { …
       → Fun game_init, Param game, Param memory, Return
-  Assign                   [547,554)  game.vao = VAO_State()
+  Assign                   [550,557)  game.vao = VAO_State()
       → Write
-  Call                     [551,554)  VAO_State()   : VAO_State
+  Call                     [554,557)  VAO_State()   : VAO_State
       → Local temp, Arith << ×3, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object

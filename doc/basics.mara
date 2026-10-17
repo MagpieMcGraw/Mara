@@ -119,7 +119,7 @@ first :: fun(xs: []$T) -> T {   // generic: T is the items' type
 	return xs[0]
 }
 
-last :: fun(xs: [$N]$T) -> T {   // N: the array's size
+last :: fun(xs: [$N!]$T) -> T {   // N: the array's size
 	return xs[N - 1]
 }
 
@@ -200,7 +200,7 @@ example_for :: fun() {
 		print("round", i)                  // round 0, round 1, round 2
 	}
 
-	primes : [4]i64 = [2, 3, 5, 7]
+	primes : [4!]i64 = [2, 3, 5, 7]
 	for p, i in primes {
 		print(i, p)                        // 0 2, 1 3, 2 5, 3 7
 	}
@@ -384,7 +384,7 @@ example_true :: fun() {
 // isn't. The right side runs only when it's needed: in `i < n and xs[i] > 0`,
 // xs[i] isn't read once i reaches n.
 example_and :: fun() {
-	xs : [3]i64 = [4, 0, 9]
+	xs : [3!]i64 = [4, 0, 9]
 	i := 3
 	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
 	print(not (i == 3) or xs[0] == 4)      // true
@@ -463,7 +463,7 @@ V2 :: struct { x: f64  y: f64 }
 // With `using pos: Place` in Player, `player.x` is `player.pos.x`: read,
 // written, through a pointer, and through using fields inside using fields.
 // The struct's own field of a name comes first. A using fixed array gives
-// its swizzles: with `using v: [3]f32`, `p.x`, `p.yz`. A literal still names
+// its swizzles: with `using v: [3!]f32`, `p.x`, `p.yz`. A literal still names
 // the field itself: `Player{pos = Place{x = 1}}`.
 example_using :: fun() {
 	pl := Player()
@@ -531,7 +531,7 @@ example_len :: fun() {
 	print(list.len, list.cap)              // 2 8
 	word := "hello"
 	print(word.len)                        // 5
-	primes : [4]i64 = [2, 3, 5, 7]
+	primes : [4!]i64 = [2, 3, 5, 7]
 	print(len(primes), cap(primes))        // 4 4
 }
 
@@ -574,7 +574,7 @@ example_utf8 :: fun() {
 	print(c, i64(c))                       // A 65
 	print(utf8(i64(c) + 1))                // B
 
-	buf : [4]byte
+	buf : [4!]byte
 	buf[0:2] = "hi"                        // a value goes in as its bytes
 	code : u8 = buf[1]                     // bytes read as a value
 	print(code)                            // 105, the code of 'i'
@@ -605,7 +605,7 @@ Command :: union { build  run  none = 0 }
 
 // `size_of`: how many bytes a type takes, worked out when the program is built.
 example_size_of :: fun() {
-	print(size_of(i64), size_of([4]f32))   // 8 16
+	print(size_of(i64), size_of([4!]f32))   // 8 16
 }
 
 // `slice`, `let`: values carved out of a byte buffer — memory a caller handed you.
@@ -615,7 +615,7 @@ example_size_of :: fun() {
 // back is empty — its len 0, its cap n — for you to fill: append to it. `let(T,
 // &mem[k])` names a T living in the bytes at k — not a slice: one there would
 // be only its header (n Ts there are `slice([:n]T, &mem[k])`). For a count known only when
-// the program runs, slice a fixed array instead: `room : [100]i64`, then
+// the program runs, slice a fixed array instead: `room : [100!]i64`, then
 // `xs := room[0:n]`.
 example_slice :: fun() {
 	storage : [..64]byte
@@ -665,10 +665,10 @@ example_Self :: fun() {
 
 // `void`: no value — `= void` leaves a variable unset, to be written before it's read.
 //
-// `buf : [4096]byte = void` skips filling the buffer with zeros, for when
+// `buf : [4096!]byte = void` skips filling the buffer with zeros, for when
 // every item is written before it's read.
 example_void :: fun() {
-	squares : [8]i64 = void
+	squares : [8!]i64 = void
 	for i in 0 .. 8 do squares[i] = i * i
 	print(squares[7])                      // 49
 }
@@ -677,7 +677,7 @@ example_void :: fun() {
 //
 // `cams : [..6]Camera = all Camera(1280, 720)` builds each of the six.
 example_all :: fun() {
-	ones : [4]i64 = all 1
+	ones : [4!]i64 = all 1
 	print(ones)                            // [1, 1, 1, 1]
 }
 

@@ -3,7 +3,7 @@ module generic_untyped_args
 // instance was `sum__infer_int`, a codegen error. An array literal argument
 // is built at its param's type.
 //@ expect-output: 6 7 4.5
-sum :: fun(xs: [3]$T) -> T { return xs[0] + xs[1] + xs[2] }
+sum :: fun(xs: [3!]$T) -> T { return xs[0] + xs[1] + xs[2] }
 P :: struct { x: i64 }
 wrap :: fun(v: $T) -> P { return P{x = 7} }
 half :: fun(v: $T) -> T { return v / 2 }

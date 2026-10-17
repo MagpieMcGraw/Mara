@@ -13,7 +13,7 @@ set_slice :: fun(s: ^[]i64, src: []i64) { s^ = src }
 
 main :: fun() {
 	y : i64 = 5
-	buf : [4]i64
+	buf : [4!]i64
 	buf[1] = 7
 
 	h : Holder

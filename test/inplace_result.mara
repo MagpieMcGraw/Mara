@@ -21,7 +21,7 @@ swap :: fun(p: ^V) -> V {
 }
 
 Big :: struct {
-	a: [510]i64
+	a: [510!]i64
 	count: ^i64
 	label_len: i64
 }

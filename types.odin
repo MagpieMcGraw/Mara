@@ -742,7 +742,7 @@ mangle_type_part :: proc(t: Type) -> string {
 // identifiers. Replace them with safe equivalents so mangled names are usable
 // as LLVM struct names.
 sanitize_for_identifier :: proc(s: string) -> string {
-    if strings.index_any(s, "^[]., ") < 0 {
+    if strings.index_any(s, "^[]., !") < 0 {
         return s
     }
     b: strings.Builder
@@ -755,6 +755,7 @@ sanitize_for_identifier :: proc(s: string) -> string {
         case ',': strings.write_string(&b, "_")
         case '.': strings.write_string(&b, "_")
         case ' ': // drop
+        case '!': strings.write_string(&b, "_fixed_")   // ([3!]i64: not the list [3]i64's name)
         case:     strings.write_rune(&b, r)
         }
     }
@@ -1099,7 +1100,9 @@ type_name :: proc(t: Type) -> string {
         }
         return strings.to_string(b)
     case ^Type_Fixed_Array:
-        return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
+        // (Exactly N, `[N!]T`; one for each value of an enum, `[K]T`.)
+        if v.index_type != nil { return fmt.tprintf("[%s]%s", type_name(v.index_type), type_name(v.elem)) }
+        return fmt.tprintf("[%d!]%s", v.size, type_name(v.elem))
     case ^Type_Slice:
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:

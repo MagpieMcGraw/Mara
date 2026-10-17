@@ -52,7 +52,7 @@ main :: fun() {
 	d = .Rect
 	print("locals=% % % / assign=%", get(a), get(b), get(c), get(d))
 	flag := false
-	arr := [2]Shape{Shape.Rect, Shape.Circle}
+	arr := [2!]Shape{Shape.Rect, Shape.Circle}
 	print("args=% % / ternary=% / array=% %", get(Shape.Rect), get(.Circle), get(if flag do Shape.Circle else Shape.Rect), get(arr[0]), get(arr[1]))
 	h := H()
 	print("fields=% % % / return=% / const=%", get(h.a), get(h.b), get(h.c), get(mk()), get(K))

@@ -99,7 +99,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         if !ok { return Type_Error{} }
         return type_partial_array(size, elem)
     case .Type_Array:
-        r := tree_rec(t, t.a[n], 2)
+        r := tree_rec(t, t.a[n], 3)
         elem := tc_type(k, Tree_Id(t.b[n]), span)
         index_type: Type
         if r[1] != 0 { index_type = tc_type(k, Tree_Id(r[1]), span) }
@@ -107,6 +107,9 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         // value + 1 of them, indexed by K.)
         if r[1] == 0 {
             if et, slots := tc_enum_slots(k, Tree_Id(r[0])); et != nil { return type_fixed_array(slots, elem, et) }
+            // (A size by a constant's name, `[MAX]T`: exactly MAX, written
+            // `[MAX!]T` — the parser said so of any other size.)
+            if r[2] == 0 && t.tag[r[0]] == .Ident { tc_error(k, tree_span(t, n), TYPE_FIXED_ARRAY_BANG) }
         }
         size, ok := tc_type_size(k, Tree_Id(r[0]), elem, span)
         if !ok { return Type_Error{} }

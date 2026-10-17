@@ -6,7 +6,7 @@ module esc_slice_copy_neg
 
 f :: fun(dst: ^[]^i64) {
 	x : i64 = 1
-	tmp : [1]^i64
+	tmp : [1!]^i64
 	tmp[0] = &x
 	dst[0:1] = tmp[:]
 }

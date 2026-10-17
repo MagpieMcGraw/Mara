@@ -28,7 +28,7 @@ Inner :: struct {
 Outer :: struct {
 	inner: Inner
 	items: [..4]Inner
-	fixed: [2]Inner
+	fixed: [2!]Inner
 }
 
 main :: fun() {

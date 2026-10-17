@@ -9,7 +9,7 @@ Header :: struct {
 	magic : u32     // 4 bytes
 	count : u16     // 2 bytes
 	flags : u16     // 2 bytes
-	tag   : [4]byte // 4 bytes — single-byte elems, no swap
+	tag   : [4!]byte // 4 bytes — single-byte elems, no swap
 	stamp : i64     // 8 bytes
 }
 

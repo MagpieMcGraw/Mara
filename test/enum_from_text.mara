@@ -45,7 +45,7 @@ main :: fun() {
 	m = Mode.from_text(word[0:3])
 	print("slice:", m)
 	h := Holder{m = Mode.from_text("check")}
-	ms : [2]Mode
+	ms : [2!]Mode
 	ms[1] = Mode.from_text("run")
 	print("field", h.m, "element", ms)
 	if Mode.from_text(word) == run do print("compared")

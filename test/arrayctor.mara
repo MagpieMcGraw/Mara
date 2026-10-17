@@ -14,13 +14,13 @@ use mara.core
 // take appends.
 
 Inner  :: struct { x : i32 = 7,  name : str64 }
-Holder :: struct { items : [..3]Inner,  fixed : [2]Inner = all Inner() }
+Holder :: struct { items : [..3]Inner,  fixed : [2!]Inner = all Inner() }
 
 main :: fun() {
     arr : [..3]Inner
     print("local PA      (0 0):", arr[0].x, arr[2].x)
 
-    farr : [3]Inner
+    farr : [3!]Inner
     print("local fixed   (0 0):", farr[0].x, farr[1].x)
     &farr[1].name + "ok"
     print("element name  (ok):", farr[1].name)
@@ -28,7 +28,7 @@ main :: fun() {
     h := Holder()
     print("field fixed   (7 7):", h.fixed[0].x, h.fixed[1].x)
 
-    names : [3]str64
+    names : [3!]str64
     &names[0] + "hi"
     print("str64 elem    (hi):", names[0])
 }

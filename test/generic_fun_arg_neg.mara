@@ -23,7 +23,7 @@ count_kinds :: fun(items: []$T, kind: fun(T) -> $K) -> [K]i64 {
 }
 
 main :: fun() {
-	words : [2][]utf8 = {"a", "b"}
+	words : [2!][]utf8 = {"a", "b"}
 	counts := count_kinds(words[:], parity)
 	print(counts.len)
 }

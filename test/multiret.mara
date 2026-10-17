@@ -14,7 +14,7 @@ fill :: fun(buf: ^[]byte, n: i64) -> []byte, i64 {
 }
 
 main :: fun() {
-    back : [16]byte
+    back : [16!]byte
     b := back[0:16]
     view, cnt := fill(&b, 4)    // view aliases back[0:4]
 

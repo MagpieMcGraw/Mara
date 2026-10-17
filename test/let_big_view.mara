@@ -15,7 +15,7 @@ Big :: struct {
 	initialized: bool
 	n: i64
 	items: [..8]i64
-	pad: [256]i64
+	pad: [256!]i64
 }
 
 step :: fun(memory: ^[]byte) -> i64 {
@@ -30,7 +30,7 @@ step :: fun(memory: ^[]byte) -> i64 {
 
 main :: fun() {
 	this_program = Program(Arena_Debug(1 * MB))
-	buf : [4096]byte
+	buf : [4096!]byte
 	m : []byte = buf[:]
 	a := step(&m)
 	b := step(&m)

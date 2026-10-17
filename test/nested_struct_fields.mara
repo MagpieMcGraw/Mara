@@ -14,7 +14,7 @@ use mara.math
 use mara.string
 
 Pose  :: struct { k := 7, j: i64, dir := QUAT_IDENTITY }
-Outer :: struct { p: Pose, q := 5, a: [2]i64, s: str64 }
+Outer :: struct { p: Pose, q := 5, a: [2!]i64, s: str64 }
 
 mkp :: fun(n: i64) -> Pose {
 	return Pose(){j = n}

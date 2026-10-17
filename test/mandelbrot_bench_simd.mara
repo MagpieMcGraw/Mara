@@ -24,7 +24,7 @@ use mara.memory
 N    :: 16000
 VLEN :: 8
 
-F64x8 :: distinct [8]f64
+F64x8 :: distinct [8!]f64
 
 overload * mul
 overload + add
@@ -99,7 +99,7 @@ write_dec :: fun(buf: ^[]byte, off: i64, val: i64) -> i64 {
 		buf[off] = u8('0')
 		return off + 1
 	}
-	digits : [20]u8
+	digits : [20!]u8
 	count : i64 = 0
 	n := val
 	for n > 0 {
@@ -160,14 +160,14 @@ main :: fun() {
 	// One row's worth of bit-packed pixels. Filled per scanline, then
 	// flushed to disk. Holding the whole image would balloon to 32 MB at
 	// N=16000; a per-row write keeps the stack footprint flat.
-	row_arr : [N/VLEN]byte
+	row_arr : [N/VLEN!]byte
 	row_slice : []byte = row_arr[:]
 
 	_, start := time_since(0)
 
 	// PBM header: "P4\n<N> <N>\n". Build into a stack buffer, then slice
 	// down to the written length for file_write.
-	hdr_arr : [64]byte
+	hdr_arr : [64!]byte
 	hdr_slice : []byte = hdr_arr[:]
 	off : i64 = 0
 	hdr_slice[off] = u8('P'); off += 1

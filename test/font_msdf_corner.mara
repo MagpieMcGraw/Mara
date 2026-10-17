@@ -30,7 +30,7 @@ main :: fun() -> i64 {
 	outline.points[2] = Glyph_Point{1000, 1000, true}
 	outline.points[3] = Glyph_Point{1000, 0, true}
 
-	storage : [3 * MB]byte
+	storage : [3 * MB!]byte
 	atlas := Atlas(storage[:], 1000)
 	glyph : Glyph
 	if bool(rasterize_msdf(&outline, &glyph, &atlas)) {
@@ -41,7 +41,7 @@ main :: fun() -> i64 {
 	ab : []byte = storage[:]
 
 	sharp := true
-	corners := [4][4]f32{{4, 4, 1, 1}, {36, 4, -1, 1}, {4, 36, 1, -1}, {36, 36, -1, -1}}
+	corners := [4!][4!]f32{{4, 4, 1, 1}, {36, 4, -1, 1}, {4, 36, 1, -1}, {36, 36, -1, -1}}
 	for c in corners {
 		inside := sample(&ab, c[0] + 0.25 * c[2], c[1] + 0.25 * c[3])
 		outside := sample(&ab, c[0] - 0.25 * c[2], c[1] - 0.25 * c[3])
@@ -64,7 +64,7 @@ sample :: fun(atlas: ^[]byte, x: f32, y: f32) -> f32 {
 	y0 := i64(floor_f32(fy))
 	tx := fx - f32(x0)
 	ty := fy - f32(y0)
-	ch : [3]f32
+	ch : [3!]f32
 	for c in 0 .. 3 {
 		a := texel(atlas, x0, y0, c)
 		b := texel(atlas, x0 + 1, y0, c)

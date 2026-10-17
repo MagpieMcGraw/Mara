@@ -12,7 +12,7 @@ module bigtemp_reach
 use mara.memory
 
 Big :: struct {
-	a: [512]i64
+	a: [512!]i64
 }
 
 Holder :: struct {

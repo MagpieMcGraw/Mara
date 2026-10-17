@@ -25,7 +25,7 @@ module partial_array_copies
 // changes the SOURCE, and prints the copy — which must be unaffected.
 
 Named :: struct { name: [..8]utf8, n: i64 }
-Team :: struct { lead: Named, crew: [2]Named }
+Team :: struct { lead: Named, crew: [2!]Named }
 Tagged :: union(tag u8) { Named1 = 1 { who: Named } Num = 2 { n: i64 } }
 two :: fun(src: Named) -> (Named, i64) {
 	r := src
@@ -47,7 +47,7 @@ main :: fun() {
 	a.name[0] = 'X'
 	print("local=%", b.name)
 
-	ents : [3]Named
+	ents : [3!]Named
 	ents[0] = mk("orc")
 	ents[1] = mk("elf")
 	ents[2] = mk("imp")
@@ -57,7 +57,7 @@ main :: fun() {
 	ents[1].name[0] = 'Z'
 	print("swap=% % %", ents[0].name, ents[1].name, tmp.name)
 
-	sr : [3]Named
+	sr : [3!]Named
 	sr[0] = mk("orc")
 	sr[1] = mk("elf")
 	sr[2] = mk("imp")
@@ -110,7 +110,7 @@ main :: fun() {
 		print("num")
 	}
 
-	big : [8]Named
+	big : [8!]Named
 	for i in 0..8 { big[i] = mk("big") }
 	big2 := big
 	big[7].name[0] = 'B'
@@ -123,8 +123,8 @@ main :: fun() {
 	list[0].name[0] = 'L'
 	print("pa=% %", list2[0].name, list[0].name)
 
-	dst : [4]Named
-	src : [2]Named
+	dst : [4!]Named
+	src : [2!]Named
 	src[0] = mk("s0")
 	src[1] = mk("s1")
 	dst[1:3] = src
