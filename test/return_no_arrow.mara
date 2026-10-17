@@ -1,0 +1,48 @@
+module return_no_arrow
+
+//@ expect-output: single 6 | several 2 Ok | named 5 6 | err Ok
+//@ expect-output: next line 8 | arrow 9 | arrow next line 10
+//@ expect-output: fun types 5 4 Ok | kinds 3
+//@ expect-output: fields 5 0
+
+// A fun's results, `->` or not: the same list without the arrow, on the
+// `)`'s line — one type, several, named ones, `err`; fun types' too. (On
+// the next line a name is the next thing — a struct's next field.) Several
+// results inside a list, a fun type's, are in parens: `fun(i64) (i64, err)`.
+
+use mara.core
+
+twice :: fun(x: i64) i64 { return x * 2 }
+half :: fun(x: i64) i64, err { return x / 2 }
+pair :: fun(k: i64) a: i64, b: i64 { return k, k + 1 }
+check :: fun(x: i64) err { }
+thrice :: fun(x: i64) i64
+{return x * 3}
+nine :: fun() -> i64 { return 9 }
+ten :: fun()
+	-> i64 { return 10 }
+
+apply :: fun(f: fun(i64) i64, x: i64) i64 { return f(x) }
+apply2 :: fun(f: fun(i64) (i64, err), x: i64) i64, err { return f(x) }
+inc :: fun(x: i64) i64 { return x + 1 }
+count :: fun(items: []i64, kind: fun(i64) $K) i64 { return items.len }
+odd :: fun(x: i64) bool { return x % 2 == 1 }
+
+Hooks :: struct {
+	on_key: fun(i64)
+	count: i64
+	map_it: fun(i64) i64
+}
+
+main :: fun() {
+	h, e := half(4)
+	a, b := pair(5)
+	print("single % | several % % | named % % | err %", twice(3), h, e, a, b, check(1))
+	print("next line % | arrow % | arrow next line %", thrice(2) + 2, nine(), ten())
+	v, ve := apply2(half, 8)
+	xs : [3!]i64
+	print("fun types % % % | kinds %", apply(inc, 4), v, ve, count(xs[:], odd))
+	hooks := Hooks{count = 0, map_it = inc}
+	f := hooks.map_it
+	print("fields % %", f(4), hooks.count)
+}

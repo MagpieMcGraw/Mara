@@ -1205,20 +1205,8 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id) -> Tree_I
     generics = tp_list(p, gs)
     if tp_kind(p) == .Right_Paren {
         tp_advance(p)
+        returns = tp_optional_returns(p)
         tp_skip_newlines(p)
-        if tp_kind(p) == .Arrow || tp_can_start_type(p) {
-            if tp_kind(p) == .Arrow {
-                tp_advance(p)
-                tp_skip_newlines(p)
-            }
-            returns = tp_return_clause(p, false)
-            tp_skip_newlines(p)
-        } else if len(gs) > 0 {
-            tp_skip_newlines(p)
-        } else {
-            returns = tp_optional_returns(p)
-            tp_skip_newlines(p)
-        }
     } else {
         params = tp_param_loop(p, true)
         tp_expect(p, .Right_Paren)
@@ -1276,21 +1264,22 @@ tp_param_group :: proc(p: ^Tree_Parser, defaults: bool) -> Tree_Id {
     return tp_node(p, .Param_Group, first, start, tp_tokens(p, names), tree_rec_add(p.t, u32(type_), values))
 }
 
-// `-> T`, a bare `T`, or none (newlines before either allowed).
-tp_optional_returns :: proc(p: ^Tree_Parser) -> u32 {
+// A fun's results, after its `)`: `-> …` (newlines around the arrow free),
+// or the same list with no arrow, on the `)`'s line — `fun(x: i64) i64, err
+// {`, `fun() verts: [4!]Vertex, inds: [6!]u32 {`, `kind: fun(T) $K` — or
+// none. (The next line's name is the next thing — a struct's next field, a
+// foreign block's next fun — never a result.) `fn_type`: a fun type's,
+// types only.
+tp_optional_returns :: proc(p: ^Tree_Parser, fn_type := false) -> u32 {
     saved := p.pos
     for tp_kind(p) == .Newline { p.pos += 1 }
     if tp_kind(p) == .Arrow {
         tp_advance(p)
         tp_skip_newlines(p)
-        return tp_return_clause(p, false)
-    }
-    if tp_can_start_type(p) {
-        types := tp_items()
-        append(&types, tp_type(p))
-        return tp_list(p, types)
+        return tp_return_clause(p, fn_type)
     }
     p.pos = saved
+    if tp_can_start_type(p) { return tp_return_clause(p, fn_type) }
     return 0
 }
 
@@ -1575,11 +1564,7 @@ tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
             }
         }
         tp_expect(p, .Right_Paren)
-        returns: u32
-        if tp_kind(p) == .Arrow {
-            tp_advance(p)
-            returns = tp_return_clause(p, true)
-        }
+        returns := tp_optional_returns(p, fn_type = true)
         return tp_node(p, .Type_Fun, kw, start, tp_list(p, params), returns)
     case .Left_Bracket:
         return tp_bracket_type(p)
