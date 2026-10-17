@@ -1,0 +1,20 @@
+module join_view_chain_neg
+
+//@ expect-fail: Found 1 type error(s)
+
+// A chain on a view: the first `+` can't join (a view has no room), and
+// that's the one error — the next `+` fails with it, not as an append of
+// its own (`next_path` isn't a ^[]utf8 to pass on).
+
+use mara.core
+
+walk :: fun(path: []utf8, name: []utf8) {
+	next_path := path + "/" + name
+	walk(next_path, name)
+}
+
+main :: fun() {
+	cwd : str64
+	&cwd + "C:/Code"
+	walk(cwd, "x")
+}

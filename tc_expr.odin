@@ -435,6 +435,11 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         types[i] = side_of(k, in_range, i, sides[i])
     }
     lt, rt := types[0], types[1]
+    // (A side that failed is said so already: the operation fails with it, no
+    // error of its own — `(view + "/") + name` matching an append.)
+    _, l_failed := lt.(Type_Error)
+    _, r_failed := rt.(Type_Error)
+    if l_failed || r_failed { return Type_Error{} }
     and_or := op == .And || op == .Or
     t: Type = Type_Error{}
     if wrapping && (!is_wrap_operand(lt) || !is_wrap_operand(rt)) {
@@ -502,7 +507,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             }
             // (A view joined: it has no room to make the new one of.)
             if is_slice_type(lt) {
-                tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt), type_name(rt))
+                tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt))
                 return Type_Error{}
             }
             tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT, type_name(lt), type_name(rt))

@@ -1,6 +1,6 @@
 module join_view_neg
 
-//@ expect-fail: can't join onto a view ([]utf8, then [..64]utf8): a view has no room of its own
+//@ expect-fail: can't join onto a view ([]utf8): a view has no room of its own
 
 // A view joined has no room to make the new text of: make one first
 // (`Path(dir) + …`), or add into a buffer (`&buf + …`).
