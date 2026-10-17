@@ -47,7 +47,7 @@ STATE_CHAR   :: -2   // … or '…' (a block comment: its depth)
 
 // The name Sublime's Mara Ask plugin gives a token kind's color (`mara
 // colors`, colors.txt): "" for a kind with no scope of its own.
-token_name :: fun(kind: i64) -> []utf8 {
+token_name :: fun(kind: i64) -> str64 {
 	if kind == TOKEN_PLAIN do return "plain"
 	if kind == TOKEN_KEYWORD do return "keyword"
 	if kind == TOKEN_IMPORT do return "import"

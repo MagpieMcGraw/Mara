@@ -9,7 +9,9 @@
 // Without the `&`, `name + "more"` joins: a new buffer of name's own type,
 // name as it was — `file := dir + "/" + name` (a chain builds it once, in
 // place). A view, `s[a:b]`, has no room to join onto: make a buffer of it
-// first, `str64(view) + "more"` (Path(view), any `[..N]utf8`).
+// first, `str64(view) + "more"` (Path(view), any `[..N]utf8`). A fun that
+// gives text back says how much room it gets, `-> str64`: what it returns
+// is copied into the caller's (a literal too — never a view of it).
 // `s[a:b]` is part of a text, without a copy.
 //
 // The rest is in mara.string. Searching: find, find_byte, starts_with,
@@ -26,6 +28,12 @@ module text
 
 use mara.core
 use mara.string
+
+// A number's name, copied into the caller's room.
+number_name :: fun(n: i64) -> str64 {
+	if n == 1 do return "one"
+	return "many"
+}
 
 main :: fun() {
 	greeting := "hello"
@@ -53,6 +61,7 @@ main :: fun() {
 	print(name)                              // Ada Lovelace
 	first := str64(name[0:3]) + '!'          // a view: a buffer of it first
 	print(first)                             // Ada!
+	print(number_name(1) + "!")              // one!
 
 	// Each character, with its position.
 	for c, i in "abc" {

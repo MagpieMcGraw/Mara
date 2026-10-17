@@ -1,0 +1,17 @@
+module return_literal_view_neg
+
+//@ expect-fail: can't return text written here as a []utf8: text given back is copied into the caller's room
+
+// Text written in a fun and given back as a []utf8 would be a view of the
+// program's literals; it's given back in room of the caller's instead: say
+// how much, `-> str64`.
+
+use mara.core
+
+name_of :: fun() -> []utf8 {
+	return "plain"
+}
+
+main :: fun() {
+	print(name_of())
+}

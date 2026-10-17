@@ -62,7 +62,7 @@ Panel :: struct {
 }
 
 // A panel kind's title, as its title bar and the menu show it.
-panel_title :: fun(kind: i64) -> []utf8 {
+panel_title :: fun(kind: i64) -> str64 {
 	if kind == PROFILE_PANEL do return "Profile"
 	if kind == DOCS_PANEL do return "Docs"
 	if kind == ASK_PANEL do return "Ask"
@@ -71,7 +71,7 @@ panel_title :: fun(kind: i64) -> []utf8 {
 }
 
 // A panel kind's name in layout.txt.
-panel_name :: fun(kind: i64) -> []utf8 {
+panel_name :: fun(kind: i64) -> str64 {
 	if kind == PROFILE_PANEL do return "profile"
 	if kind == DOCS_PANEL do return "docs"
 	if kind == ASK_PANEL do return "ask"
@@ -117,7 +117,7 @@ reload_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
 
 // The pin's label: "pin"; pinned, "pinned" — "pinned · new" once a lookup
 // waits behind it.
-pin_label :: fun(ui: ^Ui) -> []utf8 {
+pin_label :: fun(ui: ^Ui) -> str64 {
 	if not ui.docs_pinned do return "pin"
 	if ui.docs_newer do return "pinned · new"
 	return "pinned"
@@ -453,7 +453,7 @@ ask_parts :: fun(ui: ^Ui, r: Rect) -> Rect, Rect {
 CURSOR_LINES :: 12   // the most lines of what's at the cursor shown
 
 // A menu's name, as its button shows it.
-menu_name :: fun(m: i64) -> []utf8 {
+menu_name :: fun(m: i64) -> str64 {
 	if m == MENU_PANELS do return "Panels"
 	return "Theme"
 }
@@ -483,7 +483,7 @@ menu_items :: fun(m: i64) -> i64 {
 }
 
 // Item k of menu m, as the menu shows it.
-menu_item_text :: fun(m: i64, k: i64) -> []utf8 {
+menu_item_text :: fun(m: i64, k: i64) -> str64 {
 	if m == MENU_THEME do return theme_name(k)
 	if k == PANEL_KINDS do return "Reset layout"
 	return panel_title(k)

@@ -31,7 +31,7 @@ theme_set :: fun(ui: ^Ui, theme: i64) {
 }
 
 // A theme's name, as layout.txt keeps it and the Theme menu shows it.
-theme_name :: fun(theme: i64) -> []utf8 {
+theme_name :: fun(theme: i64) -> str64 {
 	if theme == THEME_LIGHT do return "Light"
 	if theme == THEME_SUBLIME do return "Sublime"
 	return "Dark"
@@ -239,7 +239,7 @@ PALETTE_BAD            :: 5   // Sublime's region.redish
 PALETTE                :: 6
 
 // One of those colors' name in colors.txt.
-palette_name :: fun(k: i64) -> []utf8 {
+palette_name :: fun(k: i64) -> str64 {
 	if k == PALETTE_BACKGROUND do return "background"
 	if k == PALETTE_FOREGROUND do return "foreground"
 	if k == PALETTE_SELECTION do return "selection"

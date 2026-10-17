@@ -597,10 +597,10 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
 
 // An array — fixed, partial — returned where a slice is given back: an
 // error, said so (true). Elsewhere an array passes as a slice, a view of it;
-// given back, the view would outlive the array, the fun's own. Text written
-// in place excepted, a literal or a text constant: static, it outlives
-// every call (`return "plain"` from a `-> []utf8`). `val` 0: a call's
-// results forwarded, `return f()`.
+// given back, the view would outlive the array, the fun's own. A text
+// literal too (the user's call): a fun giving text back says how much room
+// it gives, `-> str64`, the literal copied into the caller's. `val` 0: a
+// call's results forwarded, `return f()`.
 tc_array_returned_as_slice :: proc(k: ^TC, val: Tree_Id, vt, want: Type, span: Span) -> bool {
     if _, to_slice := distinct_base(want).(^Type_Slice); !to_slice { return false }
     #partial switch _ in distinct_base(vt) {
@@ -608,19 +608,13 @@ tc_array_returned_as_slice :: proc(k: ^TC, val: Tree_Id, vt, want: Type, span: S
     case:
         return false
     }
-    if val != 0 && tc_static_text(k, val) { return false }
+    if val != 0 && tc_text_literal(k, val) {
+        tc_error(k, span, TYPE_RETURN_TEXT_AS_SLICE, type_name(want))
+        return true
+    }
     what := type_name(vt) if val == 0 else tc_source_desc(k, val, vt)
     tc_error(k, span, TYPE_RETURN_ARRAY_AS_SLICE, what, type_name(want), type_name(vt))
     return true
-}
-
-// Whether a value is text written in place: a literal, a text constant.
-tc_static_text :: proc(k: ^TC, n: Tree_Id) -> bool {
-    v := tc_unparen(k, n)
-    if k.t.tag[v] == .String { return true }
-    if k.t.tag[v] != .Ident || tc_ref(k, v).kind != .Const { return false }
-    pa, is_pa := distinct_base(tc_node_type(k, v)).(^Type_Partial_Array)
-    return is_pa && is_byte_or_utf8(pa.elem)
 }
 
 // `if c {…} elif d {…} else {…}`: the condition a bool or an error

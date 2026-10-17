@@ -1,0 +1,30 @@
+module return_text_room
+
+//@ expect-output: plain 5 64 | a constant | 2
+//@ expect-output: | plain-x
+
+// Text a fun gives back is copied into the caller's room, a `-> str64`: a
+// literal, a text constant — appended to after, as any buffer. A view a
+// slice param gave (the caller's memory) is given back as it is.
+
+use mara.core
+
+GREETING :: "a constant"
+
+name_of :: fun(kind: i64) -> str64 {
+	if kind == 0 do return "plain"
+	return GREETING
+}
+
+rest :: fun(xs: []i64) -> []i64 {
+	return xs[1 : xs.len]
+}
+
+main :: fun() {
+	list : [..4]i64
+	&list + 1 + 2 + 3
+	n := name_of(0)
+	print("% % % | % | %", n, n.len, n.cap, name_of(1), rest(list).len)
+	&n + "-x"
+	print("|", n)
+}

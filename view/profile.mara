@@ -43,7 +43,7 @@ Profile :: struct {
 }
 
 // A title this window knows.
-column_title :: fun(k: i64) -> []utf8 {
+column_title :: fun(k: i64) -> str64 {
 	if k == 0 do return "total ms"
 	if k == 1 do return "self ms"
 	if k == 2 do return "calls"
