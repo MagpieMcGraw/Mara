@@ -38,7 +38,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
-		log: [512]utf8 log_len := 0
+		log: [512!]utf8 log_len := 0
 		gl.GetShaderInfoLog(shader, i32(log.cap), &log_len, &log[0])
 		if bool(log_len) do print(log[:log_len])
 
@@ -70,7 +70,7 @@ make_program :: fun(filepath: []utf8) -> u32, err {
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
 	
 	// we could add an additional 448 slice type
-	log: [1024]utf8 log_len := 0 // should be type error here?
+	log: [1024!]utf8 log_len := 0 // should be type error here?
 	gl.GetProgramInfoLog(program, i32(log.cap), &log_len, &log[0])
 	if bool(log_len) do print(log[:log_len])
 

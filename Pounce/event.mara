@@ -11,8 +11,8 @@ Keyboard :: struct {
 }
 
 Mouse :: struct {
-    pressed: [6]bool
-    held:    [6]bool
+    pressed: [6!]bool
+    held:    [6!]bool
     x, y, xrel, yrel, wheel: f32
 }
 

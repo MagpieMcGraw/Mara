@@ -90,7 +90,7 @@ Mesh_Stream :: struct {
 }
 
 Font_Stream :: struct {
-	font_files:   [MAX_FONTS]str64
+	font_files:   [MAX_FONTS!]str64
 	current:      i64
 	initialized:  bool
 }
@@ -121,7 +121,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
         0, gl.RGBA, gl.UNSIGNED_BYTE, void)
 
     // White pixel at (0,0) layer 0 for default
-    white := [4]u8{255, 255, 255, 255}
+    white := [4!]u8{255, 255, 255, 255}
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
         gl.RGBA, gl.UNSIGNED_BYTE, &white)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
@@ -381,8 +381,8 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 // Texture packer - packs textures into atlas, no GL calls
 // Used by main thread (1 texture per frame) or async (pack until full)
 Texture_Packer :: struct {
-    pack_ctx: [64]byte, 	// placeholder
-    pack_nodes: [64]byte,	// placeholder
+    pack_ctx: [64!]byte, 	// placeholder
+    pack_nodes: [64!]byte,	// placeholder
     size: i32,
     is_full: bool,
 }

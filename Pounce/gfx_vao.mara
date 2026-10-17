@@ -6,16 +6,16 @@ gl :: use mara.open_gl
 // Instance data for instanced rendering
 Instance :: struct {
     mvp_matrix: Mat4
-    tex_coords: [4]f32
-    color: [3]f32
+    tex_coords: [4!]f32
+    color: [3!]f32
     layer: u32
 }
 
 // Vertex data for meshes
 Vertex :: struct {
-    position: [3]f32
-    normal:   [3]f32
-    uv:       [2]f32
+    position: [3!]f32
+    normal:   [3!]f32
+    uv:       [2!]f32
 }
 
 // Mesh_Data represents raw mesh data (no OpenGL resources)
@@ -50,7 +50,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     max_instances := max_ins
 
     // Mesh tracking
-    meshes:         [MAX_VAO_MESHES]VAO_Mesh
+    meshes:         [MAX_VAO_MESHES!]VAO_Mesh
     mesh_count:     i64
 
     // Create OpenGL objects
@@ -82,12 +82,12 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
 
     // Normal (location 6)
     gl.EnableVertexAttribArray(6)
-    gl.VertexAttribPointer(6, 3, gl.FLOAT, 0, size_of(Vertex), size_of([3]f32))
+    gl.VertexAttribPointer(6, 3, gl.FLOAT, 0, size_of(Vertex), size_of([3!]f32))
 
     // UV (location 8)
     gl.EnableVertexAttribArray(8)
     gl.VertexAttribPointer(8, 2, gl.FLOAT, 0, size_of(Vertex),
-                            size_of([3]f32) + size_of([3]f32))
+                            size_of([3!]f32) + size_of([3!]f32))
 
     // Setup instance buffer
     gl.BindBuffer(gl.ARRAY_BUFFER, instance_vbo)
@@ -116,13 +116,13 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     // Color (location 7) - vec3
     gl.EnableVertexAttribArray(7)
     gl.VertexAttribPointer(7, 3, gl.FLOAT, 0, stride,
-                            size_of(Mat4) + size_of([4]f32))
+                            size_of(Mat4) + size_of([4!]f32))
     gl.VertexAttribDivisor(7, 1)
 
     // Layer (location 10) - uint, texture array layer index
     gl.EnableVertexAttribArray(10)
     gl.VertexAttribIPointer(10, 1, gl.UNSIGNED_INT, stride,
-                            size_of(Mat4) + size_of([4]f32) + size_of([3]f32))
+                            size_of(Mat4) + size_of([4!]f32) + size_of([3!]f32))
     gl.VertexAttribDivisor(10, 1)
 
     gl.BindVertexArray(0)

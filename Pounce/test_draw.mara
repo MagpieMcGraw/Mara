@@ -35,7 +35,7 @@ quad_init :: fun(r: ^Quad_Renderer) {
 	r.u_color  = GetUniformLocation(r.program, "u_color")
 
 	// Unit quad as a TRIANGLE_STRIP: (0,0), (1,0), (0,1), (1,1).
-	verts : [8]f32 = [8]f32{0, 0, 1, 0, 0, 1, 1, 1}
+	verts : [8!]f32 = [8!]f32{0, 0, 1, 0, 0, 1, 1, 1}
 
 	GenVertexArrays(1, &r.vao)
 	BindVertexArray(r.vao)

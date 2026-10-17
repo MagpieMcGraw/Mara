@@ -50,9 +50,9 @@ Cache_Header :: struct {
 // data_offset is absolute from the start of the file, so reading a payload needs
 // nothing but the entry itself.
 Cache_Entry :: struct {
-    name:        [64]utf8
+    name:        [64!]utf8
     name_len:    u32
-    meta:        [4]u32
+    meta:        [4!]u32
     data_offset: u64
     data_size:   u64
 }
@@ -218,7 +218,7 @@ cache_open :: fun(c: ^Cache, path: []utf8) -> err {
 
     id := file_open_read(path)?
 
-    hbuf : [HEADER_SIZE]byte = void
+    hbuf : [HEADER_SIZE!]byte = void
     head := hbuf[0 : HEADER_SIZE]
     rerr := file_read(id, &head)
     if bool(rerr) or head.len < HEADER_SIZE {
@@ -248,7 +248,7 @@ cache_close :: fun(c: ^Cache) {
 // asset's shape before sizing the buffer cache_read fills.
 cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
     file_seek(c.file, HEADER_SIZE + index * ENTRY_SIZE, SEEK_SET)?
-    ebuf : [ENTRY_SIZE]byte = void
+    ebuf : [ENTRY_SIZE!]byte = void
     es := ebuf[0 : ENTRY_SIZE]
     file_read(c.file, &es)?
     e : Cache_Entry = es[0]

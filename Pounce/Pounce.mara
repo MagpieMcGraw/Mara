@@ -26,7 +26,7 @@ COLOR_GREEN   	:: Vec3{0.2, 0.75, 0.2}
 COLOR_TEAL    	:: Vec3{0.1, 0.7, 0.7}
 COLOR_BLUE    	:: Vec3{0.2, 0.4, 0.9}
 COLOR_PURPLE  	:: Vec3{0.6, 0.2, 0.8}
-COLOR_MAGENTA 	:: [3]f32{0.9, 0.2, 0.6}
+COLOR_MAGENTA 	:: [3!]f32{0.9, 0.2, 0.6}
 
 Player :: struct {
 	x, y: i64
@@ -37,7 +37,7 @@ Player :: struct {
 // A square in the scene, dragged with the left mouse button.
 Marker :: struct {
 	pos:   Vec3
-	color: [3]f32
+	color: [3!]f32
 }
 
 MARKER_DEPTH :: 120.0   // the squares' plane: z, facing the camera as it starts
@@ -87,7 +87,7 @@ Megastruct :: struct {
 	player := Player()
 	playa  := Playa()
 
-	markers: [4]Marker
+	markers: [4!]Marker
 	dragging: i64 = -1    // the square the mouse is dragging; -1: none
 	drag_offset: Vec3     // from the mouse's point on the plane to it
 }
@@ -231,7 +231,7 @@ game_update :: fun(game: ^Megastruct, dt: f64) {
 // Append a solid-colored quad through the object shader. The image atlas holds a
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
 // and `color` comes through flat — a clean orientation marker.
-draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3]f32, camera: Camera) {
+draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3!]f32, camera: Camera) {
 	obj := Object(){pos = pos, scale = Vec3{40, 40, 40}, exists = true, accel = Vec3{0, 0, 0}, tracking_offset = Vec3{0, 0, 0}, speed = 0, turn_speed = 0, highlighted = false}
 	vis := Visual(){color = color, texture_index = 0, resolve = false}
 	append_one(state, obj, vis, camera)
