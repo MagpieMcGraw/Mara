@@ -741,7 +741,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     if len(matches) == 0 {
         // A module name? Show its surface (declared types + funs). Checked before
         // the variant / fuzzy guesses — a module is an intentional, exact target.
-        if surface, is_mod := ask_module_surface(checked, target); is_mod {
+        if surface, is_mod := ask_module_surface(checked, target, kind); is_mod {
             return surface, true
         }
         // Before guessing: if the name is a known variant, say so — it's the
@@ -1328,10 +1328,88 @@ ask_module_name_matches :: proc(home, query: string) -> bool {
     return strings.has_prefix(home, "mara.") && home[len("mara."):] == query
 }
 
+// The shapes a module's declarations have — each fun's params, results and
+// locals, each struct's fields (`mara ask <module> types`): how many of each
+// are lists `[..N]T`, arrays `[N]T`, arrays by an enum `[K]T`, slices `[]T`,
+// pointers `^T`, anything else; for the array shapes, the types most written.
+// Generic instances aren't counted: the generic is, as written.
+ASK_SHAPES :: [?]string{"[..N]T", "[N]T", "[K]T", "[]T", "^T", "other"}
+ASK_SHAPE_NAMES :: [?]string{"list", "array", "by enum", "slice", "pointer", ""}
+ASK_PLACES :: [?]string{"params", "results", "locals", "fields"}
+
+ask_shape_of :: proc(t: Type) -> int {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Partial_Array: return 0
+    case ^Type_Fixed_Array:   return 2 if v.index_type != nil else 1
+    case ^Type_Slice:         return 3
+    case ^Type_Ptr:           return 4
+    }
+    return 5
+}
+
+ask_module_shapes :: proc(checked: ^Checked_Program, module: string) -> string {
+    names := ASK_SHAPE_NAMES
+    counts: [len(ASK_SHAPES)][len(ASK_PLACES)]int
+    written: [len(ASK_SHAPES)]map[string]int
+    for &w in written { w.allocator = context.temp_allocator }
+    add :: proc(counts: ^[len(ASK_SHAPES)][len(ASK_PLACES)]int, written: ^[len(ASK_SHAPES)]map[string]int, t: Type, place: int) {
+        if t == nil { return }
+        s := ask_shape_of(t)
+        counts[s][place] += 1
+        if s <= 2 { written[s][type_name(t)] += 1 }
+    }
+    owned :: proc(ts: ^Type_Scope, module: string) -> bool {
+        if ts == nil || !ask_module_name_matches(ts.home_package, module) { return false }
+        return ts.source_name != "" || ask_is_foreign(ts)   // (an instance has none: its generic counts)
+    }
+    for _, ts in checked.functions {
+        if !owned(ts, module) { continue }
+        for p in ts.params { add(&counts, &written, p.type_, 0) }
+        for r in ts.return_types { add(&counts, &written, r, 1) }
+        if checked.annot == nil { continue }
+        for v in checked.annot.vars[ts] or_else nil {
+            if v.kind == .Local { add(&counts, &written, v.type_, 2) }
+        }
+    }
+    for m in ask_all_definitions(checked.table, "", checked.functions) {
+        ts, is_scope := m.type_.(^Type_Scope)
+        if !is_scope || ts.kind != .Struct || !owned(ts, module) || ask_is_variant(m.type_) { continue }
+        for f in ts.fields { add(&counts, &written, f.type_, 3) }
+        for p in ts.params { add(&counts, &written, p.type_, 0) }
+    }
+    b := strings.builder_make()
+    fmt.sbprint(&b, "\n  shapes       (its funs' params, results, locals; its structs' fields)\n")
+    fmt.sbprintf(&b, "    %-17s", "")
+    for p in ASK_PLACES { fmt.sbprintf(&b, "%8s", p) }
+    fmt.sbprintf(&b, "%8s\n", "all")
+    for shape, s in ASK_SHAPES {
+        total := 0
+        for n in counts[s] { total += n }
+        fmt.sbprintf(&b, "    %-8s %-8s", shape, names[s])
+        for n in counts[s] { fmt.sbprintf(&b, "%8s", fmt.tprint(n)) }
+        fmt.sbprintf(&b, "%8s", fmt.tprint(total))
+        if s <= 2 && len(written[s]) > 0 {
+            Written :: struct { name: string, n: int }
+            ws: [dynamic]Written
+            ws.allocator = context.temp_allocator
+            for name, n in written[s] { append(&ws, Written{name, n}) }
+            slice.sort_by(ws[:], proc(a, c: Written) -> bool { return a.n > c.n if a.n != c.n else a.name < c.name })
+            fmt.sbprint(&b, "   ")
+            for w, i in ws {
+                if i == 5 { fmt.sbprintf(&b, "  · %d more", len(ws) - 5); break }
+                fmt.sbprintf(&b, "%s %s ×%d", "" if i == 0 else "  ·", w.name, w.n)
+            }
+        }
+        fmt.sbprint(&b, "\n")
+    }
+    return strings.to_string(b)
+}
+
 // `mara ask <Module>` — the module's own types (ranked by how many things use
-// them) and funs (source order). Returns ok=false when `target` names no loaded
-// module, so the caller falls through to variant / fuzzy handling.
-ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: string, ok: bool) {
+// them) and funs (source order); `types`, the shapes its declarations have too
+// (ask_module_shapes). Returns ok=false when `target` names no loaded module,
+// so the caller falls through to variant / fuzzy handling.
+ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := "") -> (out: string, ok: bool) {
     Entry :: struct { m: Ask_Match, users: int }
     types: [dynamic]Entry
     funs:  [dynamic]Ask_Match
@@ -1368,6 +1446,7 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
             fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
         }
     }
+    if kind == "types" { fmt.sbprint(&b, ask_module_shapes(checked, canonical)) }
     return strings.to_string(b), true
 }
 

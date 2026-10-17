@@ -57,6 +57,15 @@ camera — module   (1 type, 9 funs)
     fun      camera_update_size  camera.mara:153
     fun      world_to_screen  camera.mara:174
     fun      mouse_ray  camera.mara:196
+
+  shapes       (its funs' params, results, locals; its structs' fields)
+                       params results  locals  fields     all
+    [..N]T   list           0       0       0       0       0
+    [N]T     array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [K]T     by enum        0       0       0       0       0
+    []T      slice          0       0       0       0       0
+    ^T       pointer       13       0       0       0      13
+    other                  12       3      23       7      45
 === Pounce | camera type below
 camera — module   (1 type, 9 funs)
 
@@ -73,6 +82,15 @@ camera — module   (1 type, 9 funs)
     fun      camera_update_size  camera.mara:153
     fun      world_to_screen  camera.mara:174
     fun      mouse_ray  camera.mara:196
+
+  shapes       (its funs' params, results, locals; its structs' fields)
+                       params results  locals  fields     all
+    [..N]T   list           0       0       0       0       0
+    [N]T     array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [K]T     by enum        0       0       0       0       0
+    []T      slice          0       0       0       0       0
+    ^T       pointer       13       0       0       0      13
+    other                  12       3      23       7      45
 === Pounce | camera call above
 camera — module   (1 type, 9 funs)
 
