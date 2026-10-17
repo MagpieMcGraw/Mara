@@ -123,15 +123,26 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 
 	current : [..100]utf8   // the line coming, to know the end line
 	done := false
+	passed := false   // any of the answer passed on
+	resent := false
 	for not done {
 		file_read(s.process.output, &chunk)?
 		if chunk.len == 0 {
+			server_down(s, log)
+			// (Ended before any of its answer — as serve does when Mara was
+			// rebuilt: a new one started and asked again, once.)
+			if not passed and not resent {
+				resent = true
+				server_up(s, log)?
+				file_write(s.process.input, &bytes)?
+				continue
+			}
 			// (Serve ended answering it — maybe for it: not asked again. No
 			// end line, so `mara ask` checks for itself; the next query
 			// starts a new serve.)
-			server_down(s, log)
 			return Read_Failed
 		}
+		passed = true
 		piece : []byte = chunk[:]
 		file_write(c, &piece)?
 		for ch in chunk[:] {

@@ -65,10 +65,17 @@ lsp :: proc(args: CLI_Args) {
     s.open_uris = make(map[string]string, allocator = s.heap)
     s.hover, s.definition, s.references, s.symbols, s.completion, s.renames, s.diagnostics = true, true, true, true, true, true, true
     bufio.reader_init(&s.reader, os.to_stream(os.stdin))
+    compiler := compiler_file()
     context.allocator = context.temp_allocator   // (each message's work, freed after it)
     for {
         body, ok := lsp_read(&s.reader)
         if !ok { break }   // (the editor's gone)
+        // (Mara.exe rebuilt: ended — the editor starts the new one, which
+        // is sent the open files again.)
+        if compiler_rebuilt(compiler) {
+            fmt.eprintln("mara lsp: Mara was rebuilt — ending, so the new one starts")
+            os.exit(COMPILER_REBUILT_EXIT)
+        }
         msg, err := json.parse(transmute([]byte)body, parse_integers = true)
         if err == .None { lsp_handle(&s, msg) }
         // (After edits, a check once nothing more waits: its errors published.)

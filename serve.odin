@@ -6,6 +6,7 @@ import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 
 // ---------------------------------------------------------------------------
 // `mara serve [module]`: ask's queries, one a line from stdin, each answered
@@ -31,6 +32,7 @@ Serve_Check :: struct {
 }
 
 serve :: proc(args: CLI_Args) {
+    compiler := compiler_file()
     check: Serve_Check
     serve_check(&check, args, serve_stamp(args.compiler_dir))
     r: bufio.Reader
@@ -39,6 +41,10 @@ serve :: proc(args: CLI_Args) {
     for {
         line, rerr := bufio.reader_read_string(&r, '\n', context.temp_allocator)
         if rerr != nil && line == "" { break }
+        // (Mara.exe rebuilt: ended, the query unanswered — the window starts
+        // the new one and asks it again. Nothing said: serve's stderr reaches
+        // the window with its answers, a word of it an answer begun.)
+        if compiler_rebuilt(compiler) { os.exit(COMPILER_REBUILT_EXIT) }
         // (A blank line is a query too: `mara ask` alone, the module map.)
         if stamp := serve_stamp(args.compiler_dir); stamp != check.stamp {
             serve_check(&check, args, stamp)
@@ -50,6 +56,33 @@ serve :: proc(args: CLI_Args) {
         if rerr != nil { break }
     }
 }
+
+// The compiler a server runs — serve, lsp — as its file was when it
+// started: its path, when it was written. Another file there since is a
+// rebuild (the running one renamed aside, as Windows allows), and a server
+// answering with the old code answers wrong — new syntax in the stdlib its
+// errors. So it ends, nonzero, and its client starts the new one: the window
+// on its next query, Sublime's LSP at once (a crash it restarts).
+Compiler_File :: struct {
+    path:    string,
+    written: i64,
+}
+
+compiler_file :: proc() -> Compiler_File {
+    path := get_compiler_exe()
+    written, _ := file_written(path)
+    return {path, written}
+}
+
+// Whether another compiler is at the path now — one written 2 s ago or more,
+// so its build is done with it (one mid-link isn't; none there yet isn't).
+compiler_rebuilt :: proc(c: Compiler_File) -> bool {
+    written, there := file_written(c.path)
+    if !there || written == c.written { return false }
+    return time.time_to_unix_nano(time.now()) - written >= 2 * i64(time.Second)
+}
+
+COMPILER_REBUILT_EXIT :: 3
 
 // The module as it is on disk now, checked in a new arena — the last check's
 // freed first, whole. (The build's globals, its tokens, tree and diagnostics,

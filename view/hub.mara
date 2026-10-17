@@ -62,6 +62,9 @@ Hub :: struct {
 	cursor_started: bool      // ... its first line come: the last one's replaced
 	cursor_errors:  bool      // ... the module's errors in it: it doesn't check
 	gone:      bool           // ... its connection failed: the answer read on to its end
+	sent:      [..2100]utf8   // ... the line serve was sent
+	answered:  bool           // ... any of the answer come
+	resent:    bool           // ... sent again, to a serve started anew
 	current:   [..4000]utf8   // serve's answer's line coming
 
 	docs_name:      [..300]utf8   // the docs pipe name; none: `mara view` gave none
@@ -344,18 +347,19 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 		ui.dirty = true
 	}
 	h.gone = false
+	h.answered = false
+	h.resent = false
 	h.current.len = 0
-	sent : [..2100]utf8
-	&sent + query
-	&sent + "\n"
+	h.sent.len = 0
+	&h.sent + query + "\n"
 	if serve_up(h) {
-		if not file_write_text(h.serve.input, sent[:]) {
+		if not file_write_text(h.serve.input, h.sent[:]) {
 			h.asking = true
 			return
 		}
 		serve_down(h)
 		if serve_up(h) {
-			if not file_write_text(h.serve.input, sent[:]) {
+			if not file_write_text(h.serve.input, h.sent[:]) {
 				h.asking = true
 				return
 			}
@@ -374,9 +378,18 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	chunk : [..16 * KB]byte
 	open, e := pipe_read(h.serve.output, &chunk)
 	if e or not open {
+		serve_down(h)
+		// (Serve ended before any of its answer — as one does when Mara was
+		// rebuilt: a new one started and asked again, once.)
+		if not h.answered and not h.resent {
+			h.resent = true
+			if serve_up(h) {
+				if not file_write_text(h.serve.input, h.sent[:]) do return
+				serve_down(h)
+			}
+		}
 		// (Serve ended answering it — maybe for it. Cut off, with no end
 		// line: `mara ask` checks for itself. The next query starts serve.)
-		serve_down(h)
 		file_close(h.asked.id)
 		h.asking = false
 		if h.shown do lines_status(&ui.asked, "mara serve ended answering: mara ask checked for itself.", STYLE_BAD)
@@ -384,6 +397,7 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 		return
 	}
 	if chunk.len == 0 do return
+	h.answered = true
 	if not h.gone {
 		piece : []byte = chunk[:]
 		_, we := file_write(h.asked.id, &piece)
