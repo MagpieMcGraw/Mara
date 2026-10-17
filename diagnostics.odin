@@ -274,6 +274,7 @@ TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN :: "type '%s' does not satisfy `~%s`: m
 TYPE_TYPE_FIT_SIZE_BUDGET_NEEDS :: "type '%s' does not fit `~%s` size budget: needs %d bytes, slot is %d bytes"
 TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE :: "cannot return result of `%s(...)`: its return may reference local memory via %s — pass caller-rooted %s instead"
 TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY :: "cannot return local reference (memory freed on function return)"
+TYPE_RETURN_ARRAY_AS_SLICE :: "can't return %s as a %s: an array doesn't turn into a view when it's given back — return it as itself (`-> %s`), or write the view you mean (`x[:]`, of memory that outlives the call)"
 TYPE_ESCAPE_STORE :: "reference to %s would escape into `%s`, which outlives it"
 TYPE_ESCAPE_STORE_ANON :: "reference to %s would escape into memory that outlives it"
 TYPE_ESCAPE_CALL_STORE :: "`%s(...)` stores its `%s` argument into its `%s` argument: reference to %s would escape into memory that outlives it"

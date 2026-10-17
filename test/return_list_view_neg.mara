@@ -1,10 +1,9 @@
 module return_list_view_neg
 
-//@ expect-fail: cannot return local reference (memory freed on function return)
+//@ expect-fail: can't return list ([..4]i64) as a []i64: an array doesn't turn into a view when it's given back
 
-// A local list given back as a slice is a view of the list's own items —
-// freed when the fun returns (on the stack, or its arena reset). `return
-// list` as much as `return list[:]`.
+// An array passes as a slice — a view of it — but isn't given back as one:
+// the view would outlive the fun's own array. A list, a fixed array.
 
 use mara.core
 
@@ -14,6 +13,11 @@ firsts :: fun() -> []i64 {
 	return list
 }
 
+fours :: fun() -> []i64 {
+	four : [4]i64
+	return four
+}
+
 main :: fun() {
-	print(firsts().len)
+	print(firsts().len, fours().len)
 }
