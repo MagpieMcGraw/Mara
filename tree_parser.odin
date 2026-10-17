@@ -788,6 +788,9 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
         value: Tree_Id
         #partial switch tp_kind(p) {
         case .Fun:      value = tp_scope_def(p, .Fun_Def, 0)
+        case .Left_Paren:
+            // (`name :: (params) results { body }`: a fun, its `fun` left off.)
+            if tp_paren_starts_fun(p) { value = tp_scope_def(p, .Fun_Def, 0, bare = true) }
         case .Struct:   value = tp_scope_def(p, .Struct_Def, 0)
         case .Union:    value = tp_union_def(p)
         case .Error:    value = tp_error_def(p)
@@ -1182,10 +1185,11 @@ tp_generic_param :: proc(p: ^Tree_Parser) -> Tree_Id {
 }
 
 // `fun …` / `struct …`, its keyword next: the header — generic params,
-// params, returns — and the body.
-tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id) -> Tree_Id {
+// params, returns — and the body. `bare`: a fun with no `fun`, its `(`
+// next (tp_paren_starts_fun) — that its main token.
+tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := false) -> Tree_Id {
     start := int(packed) if packed != 0 else p.pos
-    kw := tp_advance(p)
+    kw := Token_Id(p.pos) if bare else tp_advance(p)
     commas := tag == .Struct_Def
     generics, params, returns: u32
     if tp_kind(p) == .Left_Brace {
@@ -1281,6 +1285,19 @@ tp_optional_returns :: proc(p: ^Tree_Parser, fn_type := false) -> u32 {
     p.pos = saved
     if tp_can_start_type(p) { return tp_return_clause(p, fn_type) }
     return 0
+}
+
+// After `::`, whether a `(` opens a fun's params, not an expression's
+// parens: `()`, `($T: type, …`, `(x: i64, …`, `(a, b: i64, …`, `(n := 5` —
+// a name and a colon no expression has.
+tp_paren_starts_fun :: proc(p: ^Tree_Parser) -> bool {
+    if tp_kind(p) != .Left_Paren { return false }
+    i := 1
+    for tp_peek(p, i) == .Newline { i += 1 }
+    #partial switch tp_peek(p, i) {
+    case .Right_Paren, .Dollar: return true
+    }
+    return tp_named_group_at(p, 1)
 }
 
 // Whether the tokens from `offset` on start a named group: `name:` or

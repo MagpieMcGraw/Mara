@@ -233,13 +233,14 @@ word_kind :: fun(s: []utf8, at: i64, end: i64) -> i64 {
 	if w == "index" and word_before(s, at) == "each" do return TOKEN_KEYWORD
 	kind := keyword_kind(w)
 	if kind != TOKEN_PLAIN do return kind
-	// (After it, past spaces: `::`, and then fun or not; `(`.)
+	// (After it, past spaces: `::`, and then fun — or its params, the `fun`
+	// left off — or not; `(`.)
 	next := skip_spaces(s, end)
 	if next < s.len and s[next] == ':' {
 		second := skip_spaces(s, next + 1)
 		if second < s.len and s[second] == ':' {
 			then := skip_spaces(s, second + 1)
-			is_fun := starts_with(s[then : s.len], "fun")
+			is_fun := starts_with(s[then : s.len], "fun") or opens_params(s, then)
 			if not is_fun or (w[0] >= 'A' and w[0] <= 'Z') do return TOKEN_TYPE_NAME
 			if (w[0] >= 'a' and w[0] <= 'z') or w[0] == '_' do return TOKEN_FUN_NAME
 		}
@@ -265,6 +266,26 @@ keyword_kind :: fun(w: []utf8) -> i64 {
 	if w == "and" or w == "or" or w == "not" or w == "in" do return TOKEN_LOGIC
 	if w == "void" or w == "true" or w == "false" do return TOKEN_CONSTANT
 	return TOKEN_PLAIN
+}
+
+// Whether s[at] opens a fun's params — a fun with no `fun`, `name :: (x:
+// i64) i64 {` — as the compiler tells (tp_paren_starts_fun): `(` and then
+// `)`, `$`, or a name and its `:` or `,`; or the line's end (the params on
+// the next lines). Not an expression's parens, `N :: (2 + 3) * 4`.
+opens_params :: fun(s: []utf8, at: i64) -> bool {
+	if at >= s.len or s[at] != '(' do return false
+	k := skip_spaces(s, at + 1)
+	if k >= s.len do return true
+	if s[k] == ')' or s[k] == '$' do return true
+	if not is_word_char(s[k]) do return false
+	e := k
+	for e < s.len and is_word_char(s[e]) {
+		e += 1
+	}
+	e = skip_spaces(s, e)
+	if e >= s.len do return false
+	if s[e] == ',' do return true
+	return s[e] == ':' and (e + 1 >= s.len or s[e + 1] != ':')
 }
 
 // Where the spaces (and tabs) from s[at] end.

@@ -1,0 +1,55 @@
+module fun_without_keyword
+
+//@ expect-output: twice 6
+//@ expect-output: | hello
+//@ expect-output: | first 7
+//@ expect-output: | greet hi hi
+//@ expect-output: | sum 6
+//@ expect-output: cells 9 | inner true
+//@ expect-output: | constants 20 5 | method 4 | fun 10
+
+// A fun's `fun` can go: `name :: (params) results { body }` — after `::`,
+// a `(` that opens params (`()`, `(x: …`, `(a, b: …`, `(n := 5`, `($T`), not
+// an expression's parens: `N :: (2 + 3) * 4` is a constant still. `fun`,
+// `method` and a fun type's `fun(i64) i64` stay.
+
+use mara.core
+
+twice :: (x: i64) i64 { return x * 2 }
+hello :: () { print("| hello") }
+first :: (xs: []$T) T { return xs[0] }
+greet :: (word: []utf8, times := 2) {
+	print("| greet", word, word)
+}
+sum :: (
+	a: i64,
+	b: i64,
+	c: i64
+) i64 {
+	return a + b + c
+}
+
+Grid :: struct {
+	width: i64
+	cells :: (g: Self) i64 { return g.width * g.width }
+}
+
+N :: (2 + 3) * 4
+M :: (N / 4)
+
+quad :: method(x: i64) -> i64 { return x * 4 }
+ten :: fun() i64 { return 10 }
+
+main :: () {
+	print("twice", twice(3))
+	hello()
+	nums : [2!]i64 = {7, 8}
+	print("| first", first(nums[:]))
+	greet("hi")
+	print("| sum", sum(1, 2, 3))
+	g := Grid{width = 3}
+	is_odd :: (x: i64) bool
+	{return x % 2 == 1}
+	print("cells", g.cells(), "| inner", is_odd(3))
+	print("| constants", N, M, "| method", quad(1), "| fun", ten())
+}

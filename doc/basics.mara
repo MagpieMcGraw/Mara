@@ -69,7 +69,9 @@ example_use :: fun() {
 // `a, b: i64` shares one type; `n := 5` gives a default the call can leave
 // out. After `->` come the types of what it returns, separated by commas;
 // the `->` can go, the types on the `)`'s line: `fun(x: i64) i64, err`. No
-// types: it returns nothing. `main :: fun()` is where a program starts.
+// types: it returns nothing. `main :: fun()` is where a program starts. The
+// `fun` can go too, where a fun is defined: `twice :: (x: i64) i64 { … }`
+// (a fun type keeps it: `kind: fun(T) $K`).
 //
 // A param is the caller's value: the body reads it, and can't change it —
 // copy it into a variable to work on (`left := n`). To change a caller's

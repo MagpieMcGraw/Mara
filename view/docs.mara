@@ -481,7 +481,7 @@ definition :: fun(rest: []utf8, from: i64, fd: ^Found) {
 	fd.name = Field{at = from, len = n}
 	fd.kind = DEF_OTHER
 	what := rest[skip_spaces(rest, k + 2) : rest.len]
-	if starts_with(what, "fun") {
+	if starts_with(what, "fun") or opens_params(what, 0) {
 		fd.kind = DEF_FUN
 		// (An entry: found by the word after its prefix.)
 		if n > ENTRY_PREFIX {
