@@ -1280,6 +1280,10 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
   changes that root.
 
     (no name)      module map — every module in the project at a glance
+    <shape>        where a type of that shape is written, and what's declared of it:
+                   [N]T a list, [N!]T exactly N, [K]T an enum's array, []T, ^T;
+                   sizes and elements made exact: [64]utf8, [N]Filename, ^[3!]f32
+                   (quote it in bash: '[N!]T'); your modules, or 'in <module>'
     <name>         the subject's natural view, both directions — a type's structure,
                    a function's calls, a variable's flow (add types|call|flow to switch)
     above (bfor)   only the sources — what <name> is built from / what feeds it

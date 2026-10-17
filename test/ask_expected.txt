@@ -759,3 +759,40 @@ mara ask: no type or function named 'no_such_name_anywhere' in Pounce
 === Pounce | camera types call
 mara ask: conflicting kind filters ('types' and 'call')
 [exit 1]
+=== Pounce | [K]T
+[K]T — 2 written, 2 declared   (Pounce's own modules — `in <module>` for one, the stdlib's too)
+
+  written      (each type of the shape in the source, at its first character)
+    event.mara:9:14                    [512 Scancode]bool   pressed: [512 Scancode]bool
+    event.mara:10:14                   [512 Scancode]bool   held:    [512 Scancode]bool
+
+  declared     (each param, result, local, field whose type has one — written so or not)
+    event.mara:9:5                     pressed : [Scancode]bool             field of Keyboard
+    event.mara:10:5                    held : [Scancode]bool                field of Keyboard
+=== Pounce | [N!]T in event.mara
+[N!]T — 2 written, 2 declared   (file event.mara)
+
+  written      (each type of the shape in the source, at its first character)
+    event.mara:14:14                   [6!]bool             pressed: [6!]bool
+    event.mara:15:14                   [6!]bool             held:    [6!]bool
+
+  declared     (each param, result, local, field whose type has one — written so or not)
+    event.mara:14:5                    pressed : [6!]bool                   field of Mouse
+    event.mara:15:5                    held : [6!]bool                      field of Mouse
+=== Pounce | [N]str64
+[N]str64 — 4 written, 4 declared   (Pounce's own modules — `in <module>` for one, the stdlib's too)
+
+  written      (each type of the shape in the source, at its first character)
+    asset.mara:32:11                   [MAX_MESHES]str64    models:		[MAX_MESHES]str64
+    asset.mara:33:12                   [MAX_TEXTURES]str64  textures:	[MAX_TEXTURES]str64
+    asset.mara:34:10                   [MAX_AUDIO]str64     audio:		[MAX_AUDIO]str64
+    asset.mara:35:10                   [MAX_FONTS]str64     fonts:		[MAX_FONTS]str64
+
+  declared     (each param, result, local, field whose type has one — written so or not)
+    asset.mara:32:2                    models : [512]str64                  field of Disk
+    asset.mara:33:2                    textures : [1024]str64               field of Disk
+    asset.mara:34:2                    audio : [256]str64                   field of Disk
+    asset.mara:35:2                    fonts : [64]str64                    field of Disk
+=== Pounce | [..N]T
+mara ask: '[..N]T' isn't a shape: a list is written `[N]T` now, no `..` — e.g. `[N]T` a list, `[N!]T` exactly N, `[K]T` an enum's array, `[]T`, `^T`, `[64]utf8`
+[exit 1]

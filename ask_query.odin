@@ -191,6 +191,23 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     if q.target == "" && strings.count(q.at, ":") == 2 {
         return ask_at_point(&build_tree, s.all_files, s.checked.annot, &s.checked.code, q.at)
     }
+    // `[N!]T`, `^[]byte` — a shape: where it's written, what's declared of it
+    // (ask_types.odin). In the program's own modules, or the one `in` names.
+    if ask_is_shape(q.target) {
+        modules := make(map[string]bool, allocator = context.temp_allocator)
+        desc: string
+        if in_.module != "" {
+            modules[in_.module] = true
+            desc = fmt.tprintf("module %s", in_.module)
+        } else {
+            for name, files in s.files {
+                if len(files) > 0 && !ask_file_is_stdlib(files[0].path, s.compiler_dir) { modules[name] = true }
+            }
+            desc = fmt.tprintf("%s's own modules — `in <module>` for one, the stdlib's too", s.pkg)
+        }
+        if in_.file != "" { desc = fmt.tprintf("file %s", in_.file) }
+        return ask_shape_query(s.checked, q.target, modules, desc, in_.file)
+    }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)
 }

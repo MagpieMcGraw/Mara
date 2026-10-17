@@ -59,3 +59,9 @@ Pounce | cache_put_header call above
 # Failures: exit 1, and serve's failed end line for the same.
 Pounce | no_such_name_anywhere
 Pounce | camera types call
+
+# Shapes: where a type of one is written, what is declared of it.
+Pounce | [K]T
+Pounce | [N!]T in event.mara
+Pounce | [N]str64
+Pounce | [..N]T
