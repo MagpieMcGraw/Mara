@@ -191,6 +191,7 @@ op_str :: proc(op: Token_Kind) -> string {
 }
 
 PARSE_EXPECTED_TOKEN              :: "expected %v, got %v \"%s\""
+PARSE_ASSIGN_TO_RESULT            :: "can't assign to what a call gives back: it's a value, gone after the line — a pointer it gives is written through with `^`: `next(&list)^ = …`"
 PARSE_EXPECTED_INTRINSIC_AFTER_AT :: "expected intrinsic name part after `@`, got `%s`"
 PARSE_EXPECTED_INTRINSIC_AFTER_DOT :: "expected intrinsic name part after `.`, got `%s`"
 PARSE_BARE_INTRINSIC_REMOVED      :: "bare `intrinsic` body is no longer supported — use `{{ @llvm.<name> }}` instead"

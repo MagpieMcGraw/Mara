@@ -239,6 +239,7 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
     }
     if tp_kind(p) == .Identifier || tp_kind(p) == .Ampersand {
         e := tp_expr(p)
+        if s, is_assign := tp_assign_through(p, e, start); is_assign { return s }
         return tp_node(p, .Expr_Stmt, Token_Id(start), start, u32(e))
     }
     tok := tp_tok(p)
@@ -971,6 +972,45 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
     }
     tp_reset(p, m)
     return 0, false
+}
+
+// `next(&list)^ = x`, `f(p)^.n += 1`: an assignment to a target that isn't
+// rooted at a name (tp_try_assign's) — rooted at a call, written where the
+// pointer it gives points (a `^` on the way). Without one, a write into a
+// value the call gave back, gone after the line: said so.
+tp_assign_through :: proc(p: ^Tree_Parser, lhs: Tree_Id, start: int) -> (Tree_Id, bool) {
+    #partial switch tp_kind(p) {
+    case .Equals, .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
+         .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal:
+    case:
+        return 0, false
+    }
+    through := false
+    for n := lhs; !through; {
+        #partial switch p.t.tag[n] {
+        case .Deref:          through = true
+        case .Field, .Index:  n = Tree_Id(p.t.a[n])
+        case .Paren:          n = Tree_Id(p.t.a[n])
+        case .Call, .Method_Call:
+            tp_error(p, tp_here(p), PARSE_ASSIGN_TO_RESULT)
+            tp_advance(p)
+            tp_expr(p)   // (read past: one error)
+            return tp_node(p, .Expr_Stmt, Token_Id(start), start, u32(lhs)), true
+        case:
+            return 0, false   // (`a + b = c`: the statement's error, as before)
+        }
+    }
+    if tp_kind(p) != .Equals {
+        op := tp_advance(p)
+        rhs := tp_expr(p)
+        return tp_node(p, .Compound, Token_Id(start), start, u32(lhs), tree_rec_add(p.t, u32(op), u32(rhs))), true
+    }
+    tp_advance(p)
+    targets := tp_items()
+    append(&targets, lhs)
+    values := tp_items()
+    append(&values, tp_expr(p))
+    return tp_node(p, .Assign, Token_Id(start), start, tp_list(p, targets), tp_list(p, values)), true
 }
 
 // A target an assignment can write: a name, a field, an element, a

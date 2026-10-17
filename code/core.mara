@@ -91,7 +91,8 @@ join_item :: fun(a: [..$N]$T, b: T) -> [..N]T {
 
 // The list one item longer, and that item, to write into where it is:
 // `next(files) + dir + "/" + name` appends a filename's parts into the
-// list's next one, nothing copied. The item as it is, as an append's dst
+// list's next one, nothing copied; `next(&views)^ = view` stores a value as
+// it, whole (a view, a struct). The item as it is, as an append's dst
 // is: empty in a list only grown (each item starts so); in one shrunk and
 // filled again, what it held. It must fit in the list's capacity.
 next :: fun(list: ^[]$T) -> ^T {

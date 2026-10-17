@@ -1,0 +1,47 @@
+module assign_through
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ expect-output: views: 2 true Ok
+//@ expect-output: pairs: 2 11 2 5
+//@ expect-output: counts: 1 4
+
+// An assignment's target rooted at a call, written where the pointer it
+// gives points: `next(&list)^ = x` stores x as the list's next item (an
+// append into the item would add into what it holds); its fields, `+=`.
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+load :: fun(names: [][]utf8, buf: ^[]byte) -> [..4][]byte, err {
+	views : [..4][]byte
+	for name in names
+	{next(&views)^ = read_entire_file(name, buf)?}
+	return views
+}
+
+first :: fun(list: ^[]Pair) -> ^Pair { return &list[0] }
+
+main :: fun() {
+	this_program = Program(Arena_Basic(1 * MB))
+	storage : [..16384]byte
+	names : [..2][]utf8
+	&names + "assign_through.mara"
+	&names + "assign_through.mara"
+	views, e := load(names, &storage)
+	print("views:", views.len, views[0].len == views[1].len and views[0].len > 0, e)
+
+	pairs : [..4]Pair
+	next(&pairs)^ = Pair{a = 1, b = 2}
+	next(&pairs)^.b = 5
+	first(&pairs)^.a += 10
+	print("pairs:", pairs.len, pairs[0].a, pairs[0].b, pairs[1].b)
+
+	counts : [..4]i64
+	next(&counts)^ += 4
+	print("counts:", counts.len, counts[0])
+}
