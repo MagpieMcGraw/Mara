@@ -485,7 +485,14 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_join(r, esc_at(e, ops[0]))
     case .Arith, .Compare, .Unary, .Cast:
         if esc_has_refs(graph_type(g, op)) {
-            for o in ops { esc_join(r, esc_at(e, o)) }
+            // (An array cast to a slice — `return list`, a [..N]T given back
+            // as a []T — is a view of the array's own storage, as esc_into's
+            // decay: not of what the array holds.)
+            if esc_array_to_slice(e, op, ops) {
+                esc_value_storage(e, r, ops[0])
+            } else {
+                for o in ops { esc_join(r, esc_at(e, o)) }
+            }
         }
     case .Carve:
         // let(T, s) reads a T out of s's memory; slice(..., s) views it.
@@ -751,6 +758,20 @@ esc_elems :: proc(e: ^Esc, o: Operand, elem: Type, state: []Esc_Roots) -> Esc_Ro
 @(private="file")
 esc_value_type :: proc(e: ^Esc, o: Operand) -> Type {
     return graph_type(e.g, o.op) if o.out == 0 else nil
+}
+
+// Whether a cast is a fixed or partial array's decay to a slice — of one
+// with storage of its own, a variable's or a temporary's (a constant's, a
+// text literal's, a global's: static, viewed for good).
+@(private="file")
+esc_array_to_slice :: proc(e: ^Esc, op: Node_Id, ops: []Operand) -> bool {
+    if graph_op_of(e.g, op) != .Cast || len(ops) != 1 { return false }
+    if graph_is_const(ops[0].op) || graph_op_of(e.g, ops[0].op) == .Global { return false }
+    if _, to_slice := distinct_base(graph_type(e.g, op)).(^Type_Slice); !to_slice { return false }
+    #partial switch _ in distinct_base(esc_value_type(e, ops[0])) {
+    case ^Type_Fixed_Array, ^Type_Partial_Array: return true
+    }
+    return false
 }
 
 // Where a value sits: a read's place, or else a temporary of the block

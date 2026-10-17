@@ -1,0 +1,25 @@
+module return_static_view
+
+//@ expect-output: plain 5 | a constant | 2
+
+// Views that outlive the fun are fine to give back: of a text literal, a
+// text constant (static), of what a slice param views (the caller's).
+
+use mara.core
+
+GREETING :: "a constant"
+
+name_of :: fun(kind: i64) -> []utf8 {
+	if kind == 0 do return "plain"
+	return GREETING
+}
+
+rest :: fun(xs: []i64) -> []i64 {
+	return xs[1 : xs.len]
+}
+
+main :: fun() {
+	list : [..4]i64
+	&list + 1 + 2 + 3
+	print("% % | % | %", name_of(0), name_of(0).len, name_of(1), rest(list).len)
+}

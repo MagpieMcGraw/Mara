@@ -1,0 +1,19 @@
+module return_list_view_neg
+
+//@ expect-fail: cannot return local reference (memory freed on function return)
+
+// A local list given back as a slice is a view of the list's own items —
+// freed when the fun returns (on the stack, or its arena reset). `return
+// list` as much as `return list[:]`.
+
+use mara.core
+
+firsts :: fun() -> []i64 {
+	list : [..4]i64
+	&list + 1
+	return list
+}
+
+main :: fun() {
+	print(firsts().len)
+}
