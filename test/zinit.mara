@@ -7,7 +7,7 @@ include mara.memory
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 	// Partial-array backing starts zeroed: trim up and read — all zeros.
-	z : [..8]i64
+	z : [8]i64
 	z.len = 8
 	assert(z[0] == 0)
 	assert(z[7] == 0)
@@ -27,13 +27,13 @@ main :: fun() {
 	// The payoff: a utf8 buffer filled by ELEMENT WRITES (no appends, no
 	// literals) is deterministically valid for cstring — the zeroed tail
 	// supplies the terminator.
-	path : [..64]utf8
+	path : [64]utf8
 	src := "zinit.mara"
 	path.len = src.len
 	for i in 0..src.len {
 		path[i] = src[i]
 	}
-	data : [..4096]byte = void
+	data : [4096]byte = void
 	_, err := read_entire_file(path, &data)
 	assert(not bool(err))
 	assert(data.len > 0)

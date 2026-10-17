@@ -26,7 +26,7 @@ Big :: struct {
 }
 
 fail_byte_view_oob :: fun() {
-	buf : [..16]byte
+	buf : [16]byte
 	p : ^Big = &buf[0]
 	p.a = 1
 }

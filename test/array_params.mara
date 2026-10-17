@@ -69,7 +69,7 @@ main :: fun() {
 	raw : [3!]i64 = [1, 2, 3]
 	show("distinct", V3(raw))
 
-	bytes : [..32]byte
+	bytes : [32]byte
 	bytes.len = 32
 	bytes[0] = u64(1)
 	bytes[8] = u64(2)

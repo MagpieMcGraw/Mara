@@ -24,7 +24,7 @@ u32_at_8 :: fun(bytes: ^[]byte) -> u32 {
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
-	buf : [..64]byte
+	buf : [64]byte
 	buf[0:8] = i64(42)
 	buf[8] = i64(7)
 	buf[16:20] = u32(0xD2040000)   // (1234, big-endian)
@@ -37,7 +37,7 @@ main :: fun() {
 	tail := buf[8:]
 	print("an open slice ends at the len:", tail.len)
 
-	mem : [..64]byte
+	mem : [64]byte
 	pair := let(Pair, &mem[0])
 	pair.a = 40
 	pair.b = 2

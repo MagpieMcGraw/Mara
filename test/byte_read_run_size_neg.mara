@@ -11,7 +11,7 @@ V :: struct {
 }
 
 main :: fun() {
-	buf : [..64]byte
-	room : [..8]V
+	buf : [64]byte
+	room : [8]V
 	room[0:2] = buf[0:24]
 }

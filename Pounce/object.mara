@@ -50,7 +50,7 @@ Visual :: struct {
 	mesh := DEFAULT_MESH
 	texture_index: u32
 	color: [3!]f32 = [1, 0, 0]
-	font: [..64]utf8   // for glyph resolution
+	font: [64]utf8   // for glyph resolution
 	resolve: bool      // enable automatic asset resolution
 }
 

@@ -8,7 +8,7 @@ module assign_to_result_neg
 use mara.core
 
 main :: fun() {
-	views : [..4][]byte
+	views : [4][]byte
 	data : []byte
 	next(&views) = data
 	print(views.len)

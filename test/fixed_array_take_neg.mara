@@ -1,6 +1,6 @@
 module fixed_array_take_neg
 
-//@ expect-fail: `room` is a fixed array, with no len to move: declare it a partial array, `[..256]byte`
+//@ expect-fail: `room` is a fixed array, with no len to move: declare it a list, `[256]byte`
 
 // slice()/let() carve from storage after its len: a fixed array has none.
 

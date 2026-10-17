@@ -1,6 +1,6 @@
 // How to read a file: all at once with read_entire_file, or step by step.
 //
-// read_entire_file reads into storage you declare, `[..N]byte`, which holds
+// read_entire_file reads into storage you declare, `[N]byte`, which holds
 // up to N bytes: after what's in it already, its len moved past the file.
 // It gives the file back, a view of storage — so several reads into one
 // storage sit one after another, each its own view. A file too big for
@@ -32,7 +32,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 
 	// All at once. This program reads its own source.
-	storage : [..1 * MB]byte
+	storage : [1 * MB]byte
 	data, err := read_entire_file("read_file.mara", &storage)
 	if err {
 		print("couldn't read it:", err)
@@ -46,7 +46,7 @@ main :: fun() {
 	again, _ := read_entire_file("read_file.mara", &storage)
 	print("storage holds both:", storage.len == data.len + again.len)
 
-	small : [..64]byte
+	small : [64]byte
 	err2 := read_first_bytes("read_file.mara", &small)
 	if err2 do print("couldn't read it:", err2)
 	print("read the first % bytes", small.len)

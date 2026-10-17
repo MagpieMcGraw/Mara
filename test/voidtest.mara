@@ -3,13 +3,13 @@ module voidtest
 use mara.core
 
 Holder :: struct {
-	buf : [..32]utf8 = void   // per-field uninitialized marker
+	buf : [32]utf8 = void   // per-field uninitialized marker
 	n := 5
 }
 
 main :: fun() {
 	// Annotated decls: void = uninitialized, every shape.
-	a : [..64]utf8 = void
+	a : [64]utf8 = void
 	&a + "filled later"
 	print(a)
 

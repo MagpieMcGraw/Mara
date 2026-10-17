@@ -13,13 +13,13 @@ module text_view_print
 // shader-error log, `print(log[:log_len])`, never printed): those now print,
 // and a text value print can't handle is a compile error, not an empty line.
 
-Doc :: struct { raw: [..16]byte }
+Doc :: struct { raw: [16]byte }
 
 middle :: fun(s: []utf8) -> []utf8 { return s[1:4] }
 
 main :: fun() {
 	src := "hello"
-	bytes : [..16]byte
+	bytes : [16]byte
 	for c, i in src { bytes[i] = u8(c) }
 	bytes.len = src.len
 

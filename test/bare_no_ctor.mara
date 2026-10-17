@@ -21,13 +21,13 @@ Basic :: struct {
 }
 
 Inner :: struct {
-	buf: [..8]utf8
+	buf: [8]utf8
 	n: i64 = 5
 }
 
 Outer :: struct {
 	inner: Inner
-	items: [..4]Inner
+	items: [4]Inner
 	fixed: [2!]Inner
 }
 

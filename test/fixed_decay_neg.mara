@@ -3,7 +3,7 @@ module fixed_decay_neg
 use mara.core
 
 // MUST FAIL: a fixed array has no {ptr,len,cap} header, so a POINTER to one
-// (^[N]T) can't stand in for ^[]T / ^[..M]T. By-value [N]T -> []T decay IS
+// (^[N]T) can't stand in for ^[]T / ^[M]T. By-value [N]T -> []T decay IS
 // allowed (it materialises a header — see test/hoisttest); only the pointer
 // case is closed, via ptr_pointee_layout_mismatch in types_equal's ^Type_Ptr
 // case. This is the shape that let `&fixed + x` bind to slice_add and read a

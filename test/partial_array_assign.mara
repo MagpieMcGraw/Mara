@@ -26,27 +26,27 @@ module partial_array_assign
 // loaded as a VALUE where its address belongs: as an argument, invalid IR.
 // Each case below returns its result out of a function, then reads it.
 
-H :: struct { f: [..4]i64 }
+H :: struct { f: [4]i64 }
 
-mk :: fun() -> [..4]i64 {
-	r : [..4]i64
+mk :: fun() -> [4]i64 {
+	r : [4]i64
 	r[0] = 7
 	r[1] = 8
 	r.len = 2
 	return r
 }
-bump :: fun(pa: [..4]i64) -> [..4]i64 {
+bump :: fun(pa: [4]i64) -> [4]i64 {
 	r := pa
 	r[0] += 100
 	return r
 }
-push :: fun(pa: [..4]i64, x: i64) -> [..4]i64 {
+push :: fun(pa: [4]i64, x: i64) -> [4]i64 {
 	r := pa
 	r[r.len] = x
 	r.len += 1
 	return r
 }
-sum :: fun(pa: [..4]i64) -> i64 {
+sum :: fun(pa: [4]i64) -> i64 {
 	s := 0
 	for x in pa { s += x }
 	return s
@@ -55,8 +55,8 @@ ends :: fun(s: []i64) -> i64 { return s[0] + s[s.len - 1] }
 
 // kind picks the source shape; the result is mutated at the source afterwards
 // (where there is one) and returned — so an alias or a dangling header shows.
-pick :: fun(kind: i64) -> [..4]i64 {
-	src : [..4]i64
+pick :: fun(kind: i64) -> [4]i64 {
+	src : [4]i64
 	src[0] = 1
 	src[1] = 2
 	src.len = 2
@@ -65,8 +65,8 @@ pick :: fun(kind: i64) -> [..4]i64 {
 	h.f = src
 	p := &src
 	yes := kind > 0
-	buf : [..4]i64
-	bufs : [2!][..4]i64
+	buf : [4]i64
+	bufs : [2!][4]i64
 	bufs[1] = src
 	if kind == 0 {
 		buf = mk()
@@ -89,22 +89,22 @@ pick :: fun(kind: i64) -> [..4]i64 {
 	src[0] = 99
 	return buf
 }
-decl_slice :: fun() -> [..4]i64 {
-	src : [..4]i64
+decl_slice :: fun() -> [4]i64 {
+	src : [4]i64
 	src[0] = 1
 	src[1] = 2
 	src.len = 2
-	buf : [..4]i64 = src[0:2]
+	buf : [4]i64 = src[0:2]
 	src[0] = 99
 	return buf
 }
-built :: fun() -> [..4]i64 {
-	buf : [..4]i64
+built :: fun() -> [4]i64 {
+	buf : [4]i64
 	buf = push(buf, 1)
 	buf = push(buf, 2)
 	return buf
 }
-show :: fun(label: []utf8, b: [..4]i64) { print("%=% % %", label, b[0], b[1], b.len) }
+show :: fun(label: []utf8, b: [4]i64) { print("%=% % %", label, b[0], b[1], b.len) }
 
 main :: fun() {
 	show("call", pick(0))
@@ -118,7 +118,7 @@ main :: fun() {
 	show("declslice", decl_slice())
 	show("built", built())
 
-	bufs : [3!][..4]i64
+	bufs : [3!][4]i64
 	bufs[1][0] = 5
 	bufs[1][1] = 6
 	bufs[1].len = 2
@@ -133,6 +133,6 @@ main :: fun() {
 	print("elemcall=% %", bufs[2][0], bufs[2].len)
 	bufs[0] = bump(bufs[0])
 	print("elemself=% %", bufs[0][0], bufs[0].len)
-	list : [][..4]i64 = bufs[:]
+	list : [][4]i64 = bufs[:]
 	print("sliceelem=% %", sum(list[2]), list[2][0])
 }

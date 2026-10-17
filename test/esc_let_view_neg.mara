@@ -13,7 +13,7 @@ set :: fun(memory: ^[]byte) {
 }
 
 main :: fun() {
-	buf : [..64]byte
+	buf : [64]byte
 	set(&buf)
 	print(1)
 }

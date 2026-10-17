@@ -37,12 +37,12 @@ Pipe_Error :: error {
 // characters (Windows' paths here end at 260), its room past them there to
 // add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
 // where it's declared, no arena needed.
-Path :: [..512]utf8
+Path :: [512]utf8
 
 // A file or a directory found in a directory (dir_read): its name — not
 // its path — and which it is.
 Dir_Entry :: struct {
-    name: [..260]utf8
+    name: [260]utf8
     dir:  bool   // a directory, not a file
 }
 
@@ -104,8 +104,8 @@ trim_separators :: fun(path: []utf8) -> []utf8 {
 // of a path, a view into storage too (its room ends where the path does: no
 // 0 can follow). Empty when it's too long for the copy: the call then fails
 // as for a path that isn't there.
-c_path :: fun(path: []utf8) -> [..512]utf8 {
-	c : [..512]utf8
+c_path :: fun(path: []utf8) -> [512]utf8 {
+	c : [512]utf8
 	if path.len < c.cap do &c + path
 	return c
 }
@@ -481,7 +481,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
 		if path.len > 500 do return none, Open_Failed   // (its pattern on the stack, under 1 KB)
-		pattern : [..512]utf8
+		pattern : [512]utf8
 		&pattern + path
 		&pattern + "\\*"
 		found : WIN32_FIND_DATAA
@@ -714,7 +714,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// A name a program listens on (pipe_listen), for others on this machine
 	// to connect to (pipe_connect). `id` is the pipe waiting for the next.
 	Pipe_Listener :: struct {
-		name: [..300]utf8   // \\.\pipe\ and the name
+		name: [300]utf8   // \\.\pipe\ and the name
 		id:   File_Id
 	}
 
@@ -772,7 +772,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// to write to and read from as a file's id, file_close ending it. Fails
 	// with Connect_Failed when nobody listens there.
 	pipe_connect :: fun(name: []utf8) -> File_Id, err {
-		full : [..300]utf8
+		full : [300]utf8
 		if name.len > 200 do return NO_FILE, Connect_Failed
 		&full + "\\\\.\\pipe\\"
 		&full + name
@@ -1055,7 +1055,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		defer file_close(from)
 		to := file_open_write(dst)?
 		defer file_close(to)
-		buf : [..512]byte
+		buf : [512]byte
 		for true {
 			file_read(from, &buf)?
 			if buf.len == 0 do return   // the end of the file
@@ -1125,7 +1125,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (A copy of the path, a 0 after it: any slice of a path will do, as
 		// on Windows, where its search pattern is built.)
 		if path.len > 500 do return none, Open_Failed   // (the copy on the stack, under 1 KB)
-		opened : [..512]utf8
+		opened : [512]utf8
 		&opened + path
 		dir := opendir(cstring(opened))
 		if dir == void do return none, Open_Failed
@@ -1163,7 +1163,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// for a file system whose readdir doesn't say (DT_UNKNOWN).
 	dir_entry_is_dir :: fun(path: []utf8, name: []utf8) -> bool {
 		if path.len + name.len > 500 do return false   // (on the stack, under 1 KB)
-		full : [..512]utf8
+		full : [512]utf8
 		&full + path
 		&full + "/"
 		&full + name
@@ -1507,7 +1507,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// A name's socket address: <name>.sock in the user's own runtime
 	// directory ($XDG_RUNTIME_DIR), else /tmp. False when too long for one.
 	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> bool {
-		path : [..108]utf8
+		path : [108]utf8
 		dir := getenv("XDG_RUNTIME_DIR")
 		if dir == void {
 			&path + "/tmp"

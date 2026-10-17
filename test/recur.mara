@@ -10,7 +10,7 @@ fib :: fun(n: i64) -> i64 {
 // And mutual recursion through a helper, threading a ^struct like a
 // ^Self-threaded decode would.
 Pool :: struct {
-	vals : [..64]i64
+	vals : [64]i64
 }
 
 descend :: fun(p: ^Pool, depth: i64) {

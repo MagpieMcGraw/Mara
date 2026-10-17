@@ -33,8 +33,8 @@ doubled :: fun(a: [$N!]i64) -> [N!]i64 {
 }
 
 // A list of the same room as a's, and that room again.
-room_twice :: fun(a: [..$N]$T) -> i64 {
-	spare : [..N]T
+room_twice :: fun(a: [$N]$T) -> i64 {
+	spare : [N]T
 	return spare.cap + N
 }
 
@@ -48,7 +48,7 @@ main :: fun() {
 	file := code + '/' + "core.mara"
 	print("chained:", file, file.len)
 
-	nums : [..64]i64
+	nums : [64]i64
 	&nums + 1
 	more := nums + 2 + 3
 	print("items:", nums.len, more.len, more[2], more.cap)
@@ -72,7 +72,7 @@ main :: fun() {
 	wide := Path(small) + "def"
 	print("made: % % | wider: % % %", made, made.cap, wide, wide.cap, small)
 
-	big : [..1000]utf8
+	big : [1000]utf8
 	&big + "start"
 	long := big + "-a" + "-b" + "-c"
 	print("big:", long, long.len, long.cap)

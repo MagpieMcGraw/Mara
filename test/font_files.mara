@@ -45,8 +45,8 @@ main :: fun() -> i64 {
 
 // The glyphs a font's characters map to.
 show_chars :: fun(name: []utf8) -> err {
-	file : [..64 * KB]byte
-	path : [..64]utf8
+	file : [64 * KB]byte
+	path : [64]utf8
 	&path + "fonts/"
 	&path + name
 	read_entire_file(path, &file)?
@@ -60,7 +60,7 @@ show_chars :: fun(name: []utf8) -> err {
 
 // The compound glyph B, its components resolved.
 show_compound :: fun() -> err {
-	file : [..64 * KB]byte
+	file : [64 * KB]byte
 	read_entire_file("fonts/tiny.ttf", &file)?
 	check_ttf(&file)?
 	ttf := TTF(&file)
@@ -82,9 +82,9 @@ show_compound :: fun() -> err {
 
 // Both loaders on the tiny font: A (a square) and C (all points off the curve).
 show_loads :: fun() -> err {
-	glyphs : [..3]Glyph
+	glyphs : [3]Glyph
 	metrics : Line_Metrics
-	coverage : [..128 * 128]byte
+	coverage : [128 * 128]byte
 	load_coverage_glyphs("fonts/tiny.ttf", 32.0, &glyphs, &metrics, &coverage, 128, u32('A'))?
 	drawn := 0
 	for g in glyphs {
@@ -92,7 +92,7 @@ show_loads :: fun() -> err {
 	}
 	print("coverage: % drawn, A % x %", drawn, glyphs[0].w, glyphs[0].h)
 
-	msdf : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	msdf : [MSDF_ATLAS * MSDF_ATLAS * 3]byte
 	load_glyphs_and_metrics("fonts/tiny.ttf", &glyphs, &metrics, &msdf, u32('A'))?
 	print("msdf: A % x %, C % x %", glyphs[0].w, glyphs[0].h, glyphs[2].w, glyphs[2].h)
 }

@@ -403,9 +403,9 @@ cv_unique :: proc(t: Type) -> string {
     case ^Type_Union:          return v.name
     case ^Type_Distinct:       return cv_unique(v.base_type)
     case ^Type_Ptr:            return fmt.tprintf("^%s", cv_unique(v.elem))
-    case ^Type_Fixed_Array:    return fmt.tprintf("[%d]%s", v.size, cv_unique(v.elem))
+    case ^Type_Fixed_Array:    return fmt.tprintf("[%d!]%s", v.size, cv_unique(v.elem))
     case ^Type_Slice:          return fmt.tprintf("[]%s", cv_unique(v.elem))
-    case ^Type_Partial_Array:  return fmt.tprintf("[..%d]%s", v.size, cv_unique(v.elem))
+    case ^Type_Partial_Array:  return fmt.tprintf("[%d]%s", v.size, cv_unique(v.elem))
     }
     return type_name(t)
 }

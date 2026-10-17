@@ -23,13 +23,13 @@ never :: fun(n: i64) -> bool { return false }
 starts_a :: fun(s: []utf8) -> bool { return starts_with(s, "a") }
 
 Pair :: struct {
-	name: [..8]utf8
+	name: [8]utf8
 	n: i64
 }
 is_even_pair :: fun(p: Pair) -> bool { return p.n % 2 == 0 }
 
 main :: fun() {
-	storage : [..512]byte
+	storage : [512]byte
 	nums : [10!]i64
 	for k in 0 .. 10 {
 		nums[k] = k
@@ -44,7 +44,7 @@ main :: fun() {
 	print("storage after both:", storage.len)
 
 	words : [4!][]utf8 = {"apple", "pear", "avocado", "fig"}
-	text_room : [..256]byte
+	text_room : [256]byte
 	a_words := filter(words[:], starts_a, &text_room)
 	print("words: % % | %", a_words[0], a_words[1], a_words.len)
 
@@ -55,14 +55,14 @@ main :: fun() {
 	empty := filter(nothing, is_even, &storage)
 	print("empty:", empty.len, storage.len)
 
-	pairs : [..4]Pair
+	pairs : [4]Pair
 	for name, k in "abcd" {
 		p : Pair
 		&p.name + name
 		p.n = k + 1
 		&pairs + p
 	}
-	pair_room : [..512]byte
+	pair_room : [512]byte
 	kept := filter(pairs[:], is_even_pair, &pair_room)
 	print("structs: % % % % | %", kept[0].name[:], kept[0].n, kept[1].name[:], kept[1].n, kept.len)
 }

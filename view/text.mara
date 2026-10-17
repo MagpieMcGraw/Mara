@@ -19,8 +19,8 @@ EXTRA :: "—–·∞…←→↑↓⟵⟶•×≤≥≠✦"
 
 Text :: struct {
 	texture: Texture
-	chars:   [..GLYPHS]u32     // the character each glyph is: ASCII's from ' ', then EXTRA's
-	glyphs:  [..GLYPHS]Glyph
+	chars:   [GLYPHS]u32     // the character each glyph is: ASCII's from ' ', then EXTRA's
+	glyphs:  [GLYPHS]Glyph
 	metrics: Line_Metrics
 	ascent:  f32   // a line's top to its baseline, whole pixels
 	line:    f32   // a line's height, whole pixels
@@ -47,10 +47,10 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 		&t.chars + c
 		at += n
 	}
-	atlas : [..ATLAS * ATLAS]byte
+	atlas : [ATLAS * ATLAS]byte
 	load_coverage_chars(font, pixels, t.chars[:], &t.glyphs, &t.metrics, &atlas, ATLAS)?
 	// (Each texel white, its alpha the coverage.)
-	rgba : [..ATLAS * ATLAS * 4]byte
+	rgba : [ATLAS * ATLAS * 4]byte
 	rgba.len = rgba.cap
 	for i in 0 .. atlas.len {
 		rgba[i * 4] = u8(255)

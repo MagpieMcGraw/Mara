@@ -44,7 +44,7 @@ main :: fun() {
 	arr[0] = 3
 	h : Holder
 	keep(&h, &y, arr[:])
-	buf : [..8]i64
+	buf : [8]i64
 	buf.len = 4
 	copy_in(&buf, arr[:])
 	print(back_to_param(&y, true)^ + pick(true, &y, &z)^ + h.p^ + buf[0])

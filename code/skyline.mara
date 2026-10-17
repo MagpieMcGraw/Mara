@@ -33,7 +33,7 @@ Skyline_Node :: struct {
 }
 
 Skyline :: struct (atlas_w: i64, atlas_h: i64) {
-	nodes  : [..512]Skyline_Node
+	nodes  : [512]Skyline_Node
 	width  := atlas_w
 	height := atlas_h
 

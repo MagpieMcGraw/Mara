@@ -27,7 +27,7 @@ G :: struct {
 	b: Huge
 }
 Pa :: struct {
-	items: [..300]i64
+	items: [300]i64
 	tag: i64 = 0
 }
 Small :: struct { x: i64 = 0 }

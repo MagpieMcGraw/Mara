@@ -9,7 +9,7 @@ module let_slice_neg
 use mara.core
 
 main :: fun() {
-	bytes : [..64]byte
+	bytes : [64]byte
 	bytes.len = 16
 	xs := let([:2]i64, &bytes[0])
 	print(xs.len)

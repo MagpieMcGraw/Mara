@@ -4,7 +4,7 @@ module capsize_neg
 // Guards the register-pass error suppression — the body pass must still
 // report this, not swallow it.
 main :: fun() {
-	edges : [..64]i32
-	bad : [..edges.len]bool
+	edges : [64]i32
+	bad : [edges.len]bool
 	bad[0] = true
 }

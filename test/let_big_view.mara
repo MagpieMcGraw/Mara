@@ -14,7 +14,7 @@ use mara.memory
 Big :: struct {
 	initialized: bool
 	n: i64
-	items: [..8]i64
+	items: [8]i64
 	pad: [256!]i64
 }
 

@@ -7,7 +7,7 @@ module ifarm_neg
 // suite builds native; dead arms are dropped before the guard runs.)
 main :: fun() {
 	#if #native {
-		buf : [..4096]byte = void
+		buf : [4096]byte = void
 		buf.len = 1
 		buf[0] = u8(1)
 		print("%", buf[0])

@@ -79,7 +79,7 @@ main :: fun() {
 	e2 := file_write_text(id, "")
 	e3 := file_write_text(id, "there")
 	file_close(id)
-	data : [..64]byte
+	data : [64]byte
 	text, _ := read_entire_file("string_helpers_demo.txt", &data)
 	got : []utf8 = text
 	print("written: % % % [%]", e1, e2, e3, got)

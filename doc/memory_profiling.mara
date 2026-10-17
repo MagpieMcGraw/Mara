@@ -1,6 +1,6 @@
 // How to size your memory: build with -profile memory, run, read memory.txt.
 //
-// A partial array, `[..N]T`, always holds room for N; an arena, its whole
+// A partial array, `[N]T`, always holds room for N; an arena, its whole
 // size. `mara build memory_profiling -profile memory` makes a program that
 // watches how full each one gets. When it exits (main's end, an assert, a
 // crash) it writes memory.txt next to the exe: one line per place an N is
@@ -32,13 +32,13 @@ use mara.memory
 
 // Each one names an item: its name fills part of its 64.
 Item :: struct {
-	name: [..64]utf8
+	name: [64]utf8
 	count: i64
 }
 
 // A local, once per call: it holds n.
 squares :: fun(n: i64) -> i64 {
-	found : [..1000]i64
+	found : [1000]i64
 	for k in 0 .. n {
 		&found + k * k
 	}
@@ -53,7 +53,7 @@ main :: fun() {
 		total += squares(n)    // squares.found: peak 49 of 1000
 	}
 
-	items : [..100]Item
+	items : [100]Item
 	for k in 0 .. 3 {
 		it : Item
 		it.name = "an item"    // Item.name: peak 7 of 64

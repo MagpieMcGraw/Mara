@@ -2263,7 +2263,7 @@ graph_code_owner :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
 // copy, so a caller doing `x = f(x, …)` can hand it x as both pk and the
 // result slot: the copy is then onto itself (skipped at runtime), and every
 // write to r lands in x — no temporary, no copy back. The functional update:
-// `push :: fun(pa: [..N]T, x: T) -> [..N]T { r := pa; r[r.len] = x;
+// `push :: fun(pa: [N]T, x: T) -> [N]T { r := pa; r[r.len] = x;
 // r.len += 1; return r }`, `state = update(state)`.
 @(private="file")
 graph_find_consumes :: proc(g: ^Program_Graph) {

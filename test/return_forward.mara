@@ -61,7 +61,7 @@ step :: fun(fail: bool) -> i64, err {
 	if fail do return 0, Bad
 	return 3
 }
-cleanup :: fun(fail: bool, log: ^[..8]i64) -> i64, err {
+cleanup :: fun(fail: bool, log: ^[8]i64) -> i64, err {
 	defer &log^ + 1
 	defer? &log^ + 2
 	return step(fail)
@@ -78,8 +78,8 @@ count_down :: fun(n: i64) -> i64, bool {
 	return count_down(n - 1)
 }
 
-first_two :: fun(buf: ^[..16]utf8) -> []utf8, bool { return buf[0:2], true }
-fwd_two :: fun(buf: ^[..16]utf8) -> []utf8, bool { return first_two(buf) }
+first_two :: fun(buf: ^[16]utf8) -> []utf8, bool { return buf[0:2], true }
+fwd_two :: fun(buf: ^[16]utf8) -> []utf8, bool { return first_two(buf) }
 
 Sized :: struct(n: i64) -> err {
 	if n < 0 do return Bad
@@ -103,7 +103,7 @@ main :: fun() {
 	print("big", b.cells[299], k)
 	x, y, e3 := implied()
 	print("implied", x, y, e3)
-	log : [..8]i64
+	log : [8]i64
 	_, e4 := cleanup(true, &log)
 	_, e5 := cleanup(false, &log)
 	print("log", log, e4, e5)
@@ -111,7 +111,7 @@ main :: fun() {
 	print("method", u, v)
 	z, zok := count_down(3)
 	print("down", z, zok)
-	buf : [..16]utf8
+	buf : [16]utf8
 	&buf + "word"
 	w, wok := fwd_two(&buf)
 	print(w, wok)

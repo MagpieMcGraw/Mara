@@ -20,7 +20,7 @@ use mara.memory
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(4 * MB))
-	storage : [..200 * KB]byte
+	storage : [200 * KB]byte
 	entries, e := dir_read("../code", &storage)
 	if bool(e) {
 		print("../code:", e)
@@ -39,7 +39,7 @@ main :: fun() -> i64 {
 	print("dots:", dots)
 	print("moved past them:", storage.len >= entries.len * size_of(Dir_Entry))
 
-	small : [..300]byte
+	small : [300]byte
 	none, se := dir_read("../code", &small)
 	print("small room:", se, none.len, small.len)
 	gone, me := dir_read("../no_such_directory", &storage)

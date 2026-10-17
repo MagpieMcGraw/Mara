@@ -10,12 +10,12 @@ use mara.core
 //@ expect-output: primitive: 3
 
 // Another name for a type is `Name :: T`, no keyword: told from a constant
-// by how it's written — `^T`, `[]T`, `[n]T`, `[..n]T`, a primitive's name
+// by how it's written — `^T`, `[]T`, `[n]T`, `[n]T`, a primitive's name
 // — and a name by itself, `A :: B`, by what B names (a type: another name
 // for it; a value: a constant). An array literal, a conversion and a
 // variant stay constants.
 
-Buf :: [..8]utf8
+Buf :: [8]utf8
 IntPtr :: ^i64
 Count :: i32
 

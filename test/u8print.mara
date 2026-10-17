@@ -17,7 +17,7 @@ main :: fun() {
 	print(u)         // 65
 
 	// partial-array element — high-bit-set value must print unsigned
-	buf : [..4]byte
+	buf : [4]byte
 	buf.len = 2
 	buf[0] = u8(200)
 	buf[1] = u8(15)

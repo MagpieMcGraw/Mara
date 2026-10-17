@@ -8,7 +8,7 @@ module take_partial_cursor
 use mara.core
 
 main :: fun() {
-	storage : [..100]byte
+	storage : [100]byte
 	storage.len = 3
 	got := slice([:2]i64, &storage)
 	got[0] = 7

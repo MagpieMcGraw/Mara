@@ -138,14 +138,14 @@ main :: fun() {
     print("=== cachetest ===")
 
     // Two entries: a byte payload (texture-style) and a mesh payload.
-    toc : [..512]byte
-    data : [..512]byte
+    toc : [512]byte
+    data : [512]byte
 
     base := put_header(&toc, 2)
     dcur : i64 = 0
 
     // entry 0: a byte payload, staged into `data`
-    px : [..16]u8
+    px : [16]u8
     for i in 0..16 {
         &px + u8(i * 3)
     }
@@ -162,7 +162,7 @@ main :: fun() {
     dcur += i64(px.len)
 
     // entry 1: a mesh payload (typed element blits)
-    verts : [..3]Vtx
+    verts : [3]Vtx
     for i in 0..3 {
         v : Vtx
         v.position = [f32(i), f32(i) + 0.5, f32(i) + 0.25]
@@ -170,7 +170,7 @@ main :: fun() {
         v.uv       = [f32(i) * 0.1, f32(i) * 0.2]
         &verts + v
     }
-    inds : [..3]u32
+    inds : [3]u32
     &inds + u32(0)
     &inds + u32(1)
     &inds + u32(2)
@@ -249,7 +249,7 @@ main :: fun() {
     // expected: name tri, vcount 3, icount 3, got 108 (3*32 + 3*4), last_vpos 2 2.5 2.25, last_idx 2
 
     // --- magic validation: corrupt header (in-RAM), expect Bad_Header ---
-    bad : [..64]byte
+    bad : [64]byte
     bad.len = 16
     badcount, berr := open_cache(bad[:])
     print("corrupt -> count=% err=% (expect 0 / Bad_Header)", badcount, berr)

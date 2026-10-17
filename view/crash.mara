@@ -157,7 +157,7 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	editor_load(ui)
 	crash_status(ui)
 	// (The window's own calls: its sources, beside it — a path not already whole.)
-	full : [..2000]utf8
+	full : [2000]utf8
 	whole := file.len > 1 and (file[1] == ':' or file[0] == '/' or file[0] == '\\')
 	if ui.crash_dir.len > 0 and not whole do &full + ui.crash_dir[:]
 	&full + file[0 : min_int(file.len, 1000)]
@@ -173,7 +173,7 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 		lines_status(l, "Files open in the editor once it's named: Sublime's Mara Ask plugin names its own (mara editor).", STYLE_DIM)
 		return
 	}
-	command : [..3000]utf8
+	command : [3000]utf8
 	&command + "\""
 	&command + ui.editor[:]
 	&command + "\" \""
@@ -192,7 +192,7 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 // The editor the windows were told of, as editor.txt keeps it — read again
 // each time it's wanted: another window may have been told since.
 editor_load :: fun(ui: ^Ui) {
-	buf : [..1000]byte
+	buf : [1000]byte
 	ui.editor.len = 0
 	data, re := read_entire_file(ui.editor_path, &buf)
 	if re do return

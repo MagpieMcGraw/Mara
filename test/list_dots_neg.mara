@@ -1,0 +1,12 @@
+module list_dots_neg
+
+//@ expect-fail: a list is written `[n]T` now, no `..` — up to n (an array of exactly n: `[n!]T`)
+
+// A list was written `[..n]T` once: `[n]T` now.
+
+use mara.core
+
+main :: fun() {
+	three : [..3]i64
+	print(three.len)
+}

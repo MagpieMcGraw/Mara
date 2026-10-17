@@ -32,9 +32,9 @@ Ui :: struct {
 	window:   Window
 	renderer: Renderer
 	text:     Text
-	font:     [..1000]utf8   // the font's path
-	layout_path: [..1000]utf8
-	editor_path: [..1000]utf8   // editor.txt's: the editor the windows were told of
+	font:     [1000]utf8   // the font's path
+	layout_path: [1000]utf8
+	editor_path: [1000]utf8   // editor.txt's: the editor the windows were told of
 	density:  f32            // pixels a window unit (a high-density display has more)
 	frame_ns: u64            // the display's time between frames: as often as it's drawn
 	width:    f32            // the window's size, pixels
@@ -48,7 +48,7 @@ Ui :: struct {
 	running:  bool = true
 	dirty:    bool = true    // drawn again when it is
 
-	panels:   [..8]Panel     // back to front: the last is drawn over the rest
+	panels:   [8]Panel     // back to front: the last is drawn over the rest
 	menu_open:  i64 = MENU_NONE   // the menu open: MENU_PANELS, MENU_THEME
 	menu_hover: i64 = -1     // the menu's item under the mouse as last drawn
 	drag:       i64          // DRAG_NONE, _MOVE, _RESIZE: what the mouse is doing
@@ -73,16 +73,16 @@ Ui :: struct {
 	asked     := Lines()
 	at_cursor := Lines()
 	search: Docs
-	compiler_dir: [..1000]utf8   // the compiler's directory, its separator at the end
+	compiler_dir: [1000]utf8   // the compiler's directory, its separator at the end
 	sep:    utf8                 // the compiler's path's separator: '\' or '/'
 
 	// The Crash panel's: the newest report of crash.txt, the file as read.
 	crash       := Lines()
-	crash_text:  [..2 * MB]byte
+	crash_text:  [2 * MB]byte
 	crash_stamp: i64             // the file's time when it was read
-	crash_dir:   [..1000]utf8    // where the calls' files are: the window's own report's, its directory; none, here
-	own_crash_path: [..1000]utf8 // the window's own crash.txt, beside its program
-	own_crash_seen: [..32]utf8   // that file's time when the window last looked (layout.txt's); none: never
+	crash_dir:   [1000]utf8    // where the calls' files are: the window's own report's, its directory; none, here
+	own_crash_path: [1000]utf8 // the window's own crash.txt, beside its program
+	own_crash_seen: [32]utf8   // that file's time when the window last looked (layout.txt's); none: never
 	crash_hover: i64 = -1        // the call under the mouse as last drawn
 	docs_hover:  i64 = -1        // the Docs title under the mouse as last drawn
 	// What the mouse selects in (select.mara): the lines, how many clicks
@@ -93,12 +93,12 @@ Ui :: struct {
 	sel_from:   Spot
 	sel_to:     Spot
 	sel_scrolled: u32        // when it last scrolled the lines (GetTicks)
-	clip:       [..2 * MB]utf8
-	editor:      [..1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
+	clip:       [2 * MB]utf8
+	editor:      [1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
 
 	// The theme's colors (theme.mara: theme_set).
 	theme:      i64     // THEME_DARK, _LIGHT, _SUBLIME
-	colors_path:  [..1000]utf8   // colors.txt's: Sublime's colors, as the windows were told them
+	colors_path:  [1000]utf8   // colors.txt's: Sublime's colors, as the windows were told them
 	colors_stamp: i64            // its time when they were read
 	ground:     Color   // the window behind the panels
 	background: Color   // a panel's

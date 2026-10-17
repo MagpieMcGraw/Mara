@@ -9,11 +9,11 @@ module idxelem
 // run returns 0.
 
 main :: fun() -> i64 {
-	edges : [..16]i32
+	edges : [16]i32
 	edges.len = 5                       // edges.len is i64
 
 	// partial array, element i32
-	starts : [..8]i32
+	starts : [8]i32
 	starts.len = 0
 	starts[starts.len] = 0              // infer literal -> i32 element
 	starts.len += 1
@@ -49,7 +49,7 @@ main :: fun() -> i64 {
 
 	// a WIDER element, its value cast to it (no implicit widening) — the
 	// index-store codegen materializes the zext/sext.
-	wide : [..4]u32
+	wide : [4]u32
 	wide.len = 0
 	small : u16 = 60000                 // high bit set: zext, not sext
 	wide[wide.len] = u32(small)         // u16 -> u32 element (zext)
@@ -58,7 +58,7 @@ main :: fun() -> i64 {
 		print("idxelem widen u16->u32 FAIL:", wide[0])
 		return 1
 	}
-	swide : [..4]i64
+	swide : [4]i64
 	swide.len = 0
 	neg : i32 = -7
 	swide[swide.len] = i64(neg)         // i32 -> i64 element (sext)

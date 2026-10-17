@@ -16,7 +16,7 @@ add_local :: fun(list: ^[][]utf8) {
 }
 
 main :: fun() {
-	names : [..4][]utf8
+	names : [4][]utf8
 	add_local(&names)
 	print(names.len)
 }

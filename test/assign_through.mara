@@ -17,8 +17,8 @@ Pair :: struct {
 	b: i64
 }
 
-load :: fun(names: [][]utf8, buf: ^[]byte) -> [..4][]byte, err {
-	views : [..4][]byte
+load :: fun(names: [][]utf8, buf: ^[]byte) -> [4][]byte, err {
+	views : [4][]byte
 	for name in names
 	{next(&views)^ = read_entire_file(name, buf)?}
 	return views
@@ -28,20 +28,20 @@ first :: fun(list: ^[]Pair) -> ^Pair { return &list[0] }
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
-	storage : [..16384]byte
-	names : [..2][]utf8
+	storage : [16384]byte
+	names : [2][]utf8
 	&names + "assign_through.mara"
 	&names + "assign_through.mara"
 	views, e := load(names, &storage)
 	print("views:", views.len, views[0].len == views[1].len and views[0].len > 0, e)
 
-	pairs : [..4]Pair
+	pairs : [4]Pair
 	next(&pairs)^ = Pair{a = 1, b = 2}
 	next(&pairs)^.b = 5
 	first(&pairs)^.a += 10
 	print("pairs:", pairs.len, pairs[0].a, pairs[0].b, pairs[1].b)
 
-	counts : [..4]i64
+	counts : [4]i64
 	next(&counts)^ += 4
 	print("counts:", counts.len, counts[0])
 }

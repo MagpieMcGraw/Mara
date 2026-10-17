@@ -14,7 +14,7 @@ use mara.memory
 // appended into in place; or an item built apart and copied in. `= void`
 // leaves their contents unwritten, their headers stamped all the same.
 
-Name :: [..500]utf8
+Name :: [500]utf8
 
 // The list one longer, the new name appended into where it is.
 add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
@@ -37,14 +37,14 @@ add_copy :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 
 main :: fun() {
 	this_program = Program(Arena_Basic(4 * MB))
-	names : [..100]Name
+	names : [100]Name
 	add_in_place(&names, "C:/code", "a.mara")
 	add_in_place(&names, "C:/code", "c.mara")
 	print("in place:", names.len, names[0], names[0].len, names[1].cap)
 	add_copy(&names, "C:/code", "b.mara")
 	print("copied:", names.len, names[2])
 
-	quick : [..4]Name = void
+	quick : [4]Name = void
 	add_in_place(&quick, "x", "y")
 	print("void:", quick.len, quick[0], quick[0].len)
 

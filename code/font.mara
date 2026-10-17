@@ -62,7 +62,7 @@ load_glyphs_and_metrics :: fun(
 	first: u32 = 0) -> err
 {
 	if atlas.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
-	ttf_file : [..2 * MB]byte = void
+	ttf_file : [2 * MB]byte = void
 	read_entire_file(font, &ttf_file)?
 	check_ttf(&ttf_file)?
 	ttf := TTF(&ttf_file)
@@ -129,7 +129,7 @@ load_coverage_glyphs :: fun(
 	size: i64,
 	first: u32 = 32) -> err
 {
-	chars : [..1024]u32
+	chars : [1024]u32
 	if glyphs.cap > chars.cap do return Too_Many_Chars
 	for i in 0 .. glyphs.cap {
 		&chars + (first + u32(i))
@@ -152,7 +152,7 @@ load_coverage_chars :: fun(
 {
 	if chars.len > glyphs.cap do return Too_Many_Chars
 	if size < 0 or atlas.cap < size * size do return Atlas_Too_Small
-	ttf_file : [..2 * MB]byte = void
+	ttf_file : [2 * MB]byte = void
 	read_entire_file(font, &ttf_file)?
 	check_ttf(&ttf_file)?
 	ttf := TTF(&ttf_file)
@@ -166,8 +166,8 @@ load_coverage_chars :: fun(
 	for i in 0 .. atlas.len {
 		atlas[i] = u8(0)
 	}
-	acc : [..(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
-	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
+	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
 
 	glyphs.len = chars.len
 	outline : Outline
@@ -463,9 +463,9 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	glyph.bearing_x = xmin * scale - pad
 	glyph.bearing_y = ymax * scale + pad
 
-	raw : [..MSDF_MAX_EDGES]Raster_Edge   // as the contours have them
-	nodes : [..2 * MAX_GLYPH_POINTS]Node
-	segments : [..2 * MAX_GLYPH_POINTS]Segment
+	raw : [MSDF_MAX_EDGES]Raster_Edge   // as the contours have them
+	nodes : [2 * MAX_GLYPH_POINTS]Node
+	segments : [2 * MAX_GLYPH_POINTS]Segment
 
 	point_start : i64 = 0
 	for ci in 0 .. outline.contour_end_pts.len {
@@ -603,12 +603,12 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	// Where contours cross (a glyph drawn as overlapping strokes), pieces are
 	// cut there, so that each part is on the outline or inside the glyph
 	// whole. (A cut is no end of a line or curve: no pseudo-distance past it.)
-	edges : [..MSDF_MAX_EDGES]Raster_Edge
+	edges : [MSDF_MAX_EDGES]Raster_Edge
 	for ri in 0 .. raw.len {
 		e := raw[ri]
 		length := sqrt_f32((e.x1 - e.x0) * (e.x1 - e.x0) + (e.y1 - e.y0) * (e.y1 - e.y0))
 		near_end := 0.0001 / max_f32(length, 0.0001)   // (a cut closer than 1e-4 px to an end is none)
-		cuts : [..64]f32
+		cuts : [64]f32
 		for rj in 0 .. raw.len {
 			if rj == ri do continue
 			t := crossing(e, raw[rj])
@@ -999,8 +999,8 @@ Outline :: struct {
 
 	// contour_end_pts[i] is the LAST point index of contour i; points is the
 	// flattened point list across all contours.
-	contour_end_pts : [..MAX_GLYPH_CONTOURS]u16
-	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+	contour_end_pts : [MAX_GLYPH_CONTOURS]u16
+	points  : [MAX_GLYPH_POINTS]Glyph_Point
 }
 
 Glyph_Point :: struct {
@@ -1197,7 +1197,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 	// is set, the NEXT byte counts additional points sharing the flag.
 	// Decoded flat so the coord loops index by point cheaply; the bytes the
 	// coordinates take counted on the way.
-	flags : [..MAX_GLYPH_POINTS]u8
+	flags : [MAX_GLYPH_POINTS]u8
 	flags.len = n_points
 	x_bytes := 0
 	y_bytes := 0
@@ -1294,7 +1294,7 @@ TTF :: struct (bytes: ^[]byte) {
 		search_range : u16
 		entry_selector: u16
 		range_shift : u16
-		tables: [..MAX_TTF_TABLES]Table
+		tables: [MAX_TTF_TABLES]Table
 	}
 
 	Table :: struct {
@@ -1345,7 +1345,7 @@ TTF :: struct (bytes: ^[]byte) {
 	Cmap :: struct {
 		version       : u16
 		num_subtables : u16
-		encodings     : [..16]Encoding_Record
+		encodings     : [16]Encoding_Record
 	}
 
 	Encoding_Record :: struct {
@@ -1357,7 +1357,7 @@ TTF :: struct (bytes: ^[]byte) {
 	Loca :: struct {
 		// we read this with a function rather than directly
 		// because the data here can be either u16 or u32
-		offsets : [..1 + (1<<16)]u32
+		offsets : [1 + (1<<16)]u32
 	}
 
 	// ─── glyph records: a fixed 10-byte header, then one of two variable bodies ───
@@ -1427,7 +1427,7 @@ TTF :: struct (bytes: ^[]byte) {
 		// trailing 2-byte lsb-only stream (which we don't read) follows. Cap
 		// is the u16 ceiling on num_of_long_hor_metrics — same upper bound
 		// loca.offsets uses, since both are sized by a u16 in the header.
-		long_metrics : [..1 << 16]Long_Hor_Metric
+		long_metrics : [1 << 16]Long_Hor_Metric
 	}
 
 	Long_Hor_Metric :: struct {

@@ -130,7 +130,7 @@ lead_spaces :: fun(s: []utf8) -> i64 {
 // panel's margin, an example's own: pasted, code goes where it's put — code's
 // and the rest's each its own, Mara code's indentation tabs again (a tab
 // was TAB_SPACES spaces), as it was written. (As much as `out` holds.)
-lines_copy_text :: fun(l: ^Lines, out: ^[..2 * MB]utf8) {
+lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	out.len = 0
 	from, to := lines_selection(l)
 	if not spot_before(from, to) do return

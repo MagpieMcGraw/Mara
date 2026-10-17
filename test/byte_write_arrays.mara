@@ -76,7 +76,7 @@ main :: fun() {
 	show("text:", t[:])
 
 	// (Within its cap: its len is its own to say.)
-	h : [..16]byte
+	h : [16]byte
 	h[0:8] = two
 	print("partial target:", h.len, h.cap)
 }

@@ -6,7 +6,7 @@ module alias_type_keyword_neg
 
 use mara.core
 
-Label :: type [..16]utf8
+Label :: type [16]utf8
 
 main :: fun() {
 	l : Label

@@ -3,9 +3,9 @@ module shadow_repro
 // Regression for several fixes from this session:
 //   1. Struct field name shadowing imported module name (`use camera; field: camera`).
 //   2. `field := ClassName(args)` mis-typing the field as the module.
-//   3. `field : [N]Class` / `[..N]Class` rejection when Class has required ctor
+//   3. `field : [N]Class` / `[N]Class` rejection when Class has required ctor
 //      params (declaration only valid with explicit `= void` opt-out).
-//   4. `[..N]T = void` (partial-array uninit) — the slice header must stay
+//   4. `[N]T = void` (partial-array uninit) — the slice header must stay
 //      initialized so the partial array can function; only per-element
 //      construction is skipped. Previously a spurious memcpy from
 //      `ptr zeroinitializer` clobbered the header and segfaulted at runtime.
@@ -16,7 +16,7 @@ Game :: struct {
     camera : Camera = Camera(640, 480, 90)
     cam_b := Camera(800, 600, 75)
     cameras: [6!]Camera = void       // fixed array, uninit
-    camera_pool: [..6]Camera = void  // partial array, uninit — header still valid
+    camera_pool: [6]Camera = void  // partial array, uninit — header still valid
 }
 
 main :: fun() -> i64 {

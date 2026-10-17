@@ -16,7 +16,7 @@ Font :: struct (bytes: ^[]byte) {
 }
 
 leak_font :: fun() -> Font {
-	buf : [..8]byte
+	buf : [8]byte
 	buf.len = 8
 	return Font(&buf)
 }

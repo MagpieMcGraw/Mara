@@ -57,16 +57,16 @@ Exact :: struct {
 // from, what was at the cursor.
 Docs_Query :: struct {
 	made:  bool
-	dir:   [..1000]utf8
-	words: [..400]utf8
-	kind:  [..40]utf8
-	name:  [..200]utf8
-	path:  [..1000]utf8
+	dir:   [1000]utf8
+	words: [400]utf8
+	kind:  [40]utf8
+	name:  [200]utf8
+	path:  [1000]utf8
 	line:  i64
 }
 
 Docs_File :: struct {
-	path: [..1000]utf8
+	path: [1000]utf8
 	at:   i64   // its text in Docs.source
 	len:  i64
 }
@@ -85,16 +85,16 @@ Found :: struct {
 
 // The search's room: the files read, what's found.
 Docs :: struct {
-	source: [..8 * MB]byte          // the files' text, one after another
-	files:  [..600]Docs_File
-	found:  [..DOCS_SHOWN]Found     // the best, best first
+	source: [8 * MB]byte          // the files' text, one after another
+	files:  [600]Docs_File
+	found:  [DOCS_SHOWN]Found     // the best, best first
 	count:  i64                     // how many matched in all
-	query:  [..400]utf8             // the words, lower case
-	words:  [..16]Field             // in query
+	query:  [400]utf8             // the words, lower case
+	words:  [16]Field             // in query
 	exact:  Found                   // the cursor's definition, as the scan found it
 	has_exact:   bool               // ... when it did
 	exact_off:   i64                // ... a loose one's lines from where it was
-	root:   [..1000]utf8            // the compiler's directory: a place under it shown from there
+	root:   [1000]utf8            // the compiler's directory: a place under it shown from there
 	exact_shown: bool               // the cursor's shown first, found by the scan or not
 }
 
@@ -125,7 +125,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	d.exact_shown = false
 	shown_query := asked[0 : min_int(asked.len, 60)]
 	if d.words.len == 0 and ex.kind.len == 0 {
-		none : [..300]utf8
+		none : [300]utf8
 		&none + "Nothing to look up in \""
 		&none + shown_query
 		&none + "\": no word of two letters or more."
@@ -141,7 +141,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	for fd in d.found {
 		docs_show(d, l, fd, "")
 	}
-	status : [..300]utf8
+	status : [300]utf8
 	if d.exact_shown {
 		&status + "At the cursor: "
 		&status + ex.kind
@@ -204,7 +204,7 @@ docs_reload :: fun(ui: ^Ui) {
 		return
 	}
 	// (Copies: the search keeps the query again, over these.)
-	dir, words, kind, name, path : [..1000]utf8
+	dir, words, kind, name, path : [1000]utf8
 	&dir + q.dir[:]
 	&words + q.words[:]
 	&kind + q.kind[:]
@@ -236,7 +236,7 @@ docs_pin :: fun(ui: ^Ui) {
 
 // Where a search looked, for its status line: ", in <dir's name> and the
 // stdlib" — nothing when it's the stdlib's own.
-where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[..300]utf8) {
+where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[300]utf8) {
 	if dir.len == 0 or dir == "." or stdlib_dir(ui, dir) do return
 	trimmed_dir := trim_separators(dir)
 	from := parent_dir(trimmed_dir).len
@@ -286,24 +286,24 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	elif not stdlib_dir(ui, dir)
 		docs_read_dir(d, dir, ui.sep)
 	}
-	code : [..1000]utf8
+	code : [1000]utf8
 	&code + ui.compiler_dir
 	&code + "code"
 	docs_read_dir(d, code, ui.sep)
 	// (The directories in code/, as the compiler looks in them.)
-	room : [..64 * KB]byte
+	room : [64 * KB]byte
 	entries, de := dir_read(code, &room)
 	if not de {
 		for entry in entries {
 			if not entry.dir do continue
-			sub : [..1000]utf8
+			sub : [1000]utf8
 			&sub + code[:]
 			&sub + ui.sep
 			&sub + entry.name[:]
 			docs_read_dir(d, sub, ui.sep)
 		}
 	}
-	doc : [..1000]utf8
+	doc : [1000]utf8
 	&doc + ui.compiler_dir
 	&doc + "doc"
 	docs_read_dir(d, doc, ui.sep)
@@ -312,10 +312,10 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 // Whether a directory is one the search reads anyway: the stdlib's, one in
 // it, doc/.
 stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
-	code : [..1000]utf8
+	code : [1000]utf8
 	&code + ui.compiler_dir
 	&code + "code"
-	doc : [..1000]utf8
+	doc : [1000]utf8
 	&doc + ui.compiler_dir
 	&doc + "doc"
 	return same_path(dir, code) or same_path(dir, doc) or same_path(parent_dir(trim_separators(dir)), code)
@@ -326,7 +326,7 @@ stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 // that can't be read, left out. A file's path: its name alone in ".", else
 // the directory's, sep, its name.
 docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
-	room : [..300 * KB]byte
+	room : [300 * KB]byte
 	entries, e := dir_read(dir, &room)
 	if e do return
 	for entry in entries {
@@ -334,7 +334,7 @@ docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 		if entry.dir or name.len < 6 do continue
 		if name[name.len - 5 : name.len] != ".mara" do continue
 		if d.files.len == d.files.cap do return
-		path : [..1000]utf8
+		path : [1000]utf8
 		if dir != "." {
 			&path + dir
 			&path + sep
@@ -517,7 +517,7 @@ is_entry :: fun(kind: i64) -> bool {
 entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 	if same_folded(text[fd.name.at : fd.name.at + fd.name.len], word) do return true
 	if fd.doc < 0 do return false
-	words : [..DOC_LINES]Field
+	words : [DOC_LINES]Field
 	doc_words(text, fd.doc, fd.at, &words)
 	if words.len == 0 do return false
 	first := text[words[0].at : words[0].at + words[0].len]
@@ -544,7 +544,7 @@ entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 // it's for. Empty for none.
 entry_summary :: fun(text: []utf8, fd: Found) -> []utf8 {
 	if fd.doc < 0 do return text[0 : 0]
-	words : [..DOC_LINES]Field
+	words : [DOC_LINES]Field
 	doc_words(text, fd.doc, fd.at, &words)
 	if words.len == 0 do return text[0 : 0]
 	last := words[0]
@@ -588,7 +588,7 @@ trim_end :: fun(text: []utf8, at: i64, end: i64) -> i64 {
 // words after its `//` and one space; a block's lines less its `/*` line's
 // indentation, its `/*` and `*/` left out (a first or last line with
 // nothing else on it, none). Empty lines at the end left out.
-doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[..DOC_LINES]Field) {
+doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 	out.len = 0
 	at := from
 	block := false
@@ -724,7 +724,7 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 // search shows one; else — a local's, a param's — the line declaring it (a
 // param's: its fun's signature), the comment above it; a builtin, said.
 docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
-	title : [..1200]utf8
+	title : [1200]utf8
 	&title + ex.name[0 : min_int(ex.name.len, 200)]
 	&title + "   "
 	&title + ex.kind
@@ -819,7 +819,7 @@ comment_above :: fun(text: []utf8, at: i64) -> i64 {
 // `keyword` — shown after an example's name; else none.)
 docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8) {
 	text := docs_text(d, fd.file)
-	title : [..1200]utf8
+	title : [1200]utf8
 	&title + text[fd.name.at : fd.name.at + fd.name.len]
 	if fd.kind == DEF_FIELD {
 		&title + "   field of "
@@ -844,7 +844,7 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8) {
 example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
 	name := text[fd.name.at : fd.name.at + fd.name.len]
 	if fd.doc < 0 do return name
-	words : [..DOC_LINES]Field
+	words : [DOC_LINES]Field
 	doc_words(text, fd.doc, fd.at, &words)
 	if words.len == 0 do return name
 	first := text[words[0].at : words[0].at + words[0].len]
@@ -856,8 +856,8 @@ example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
 }
 
 // The place a definition opens, clicked: `<file>:<line>`.
-docs_link :: fun(d: ^Docs, fd: Found) -> [..1100]utf8 {
-	link : [..1100]utf8
+docs_link :: fun(d: ^Docs, fd: Found) -> [1100]utf8 {
+	link : [1100]utf8
 	&link + d.files[fd.file].path[:]
 	&link + ":"
 	&link + int_text(fd.line)
@@ -885,7 +885,7 @@ docs_footer :: fun(d: ^Docs, l: ^Lines, fd: Found, names: []utf8) {
 			}
 		}
 	}
-	footer : [..1400]utf8
+	footer : [1400]utf8
 	&footer + "  "
 	if names.len > 0 {
 		&footer + names[0 : min_int(names.len, 300)]
@@ -938,10 +938,10 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	text := docs_text(d, fd.file)
 	// The doc comment: its lines' words (doc_words) — an entry's names, the
 	// words its first line starts with, shown at its end instead.
-	names : [..300]utf8
+	names : [300]utf8
 	said := false   // a doc line shown
 	if fd.doc >= 0 {
-		words : [..DOC_LINES]Field
+		words : [DOC_LINES]Field
 		doc_words(text, fd.doc, fd.at, &words)
 		for w, i in words {
 			line := text[w.at : w.at + w.len]
@@ -958,7 +958,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 				line = line[end : line.len]
 				if line.len == 0 do continue
 			}
-			doc_line : [..1200]utf8
+			doc_line : [1200]utf8
 			&doc_line + "  "
 			&doc_line + line[0 : min_int(line.len, 1000)]
 			lines_add(l, doc_line[:], STYLE_TEXT)
@@ -1135,7 +1135,7 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 		if code[end - 1] != ' ' and code[end - 1] != '\t' and code[end - 1] != '\r' do break
 		end -= 1
 	}
-	shown : [..1200]utf8
+	shown : [1200]utf8
 	&shown + "  "
 	&shown + code[k : min_int(end, k + 1000)]
 	lines_add(l, shown[:], STYLE_MARA)

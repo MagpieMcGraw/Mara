@@ -485,7 +485,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_join(r, esc_at(e, ops[0]))
     case .Arith, .Compare, .Unary, .Cast:
         if esc_has_refs(graph_type(g, op)) {
-            // (An array cast to a slice — `return list`, a [..N]T given back
+            // (An array cast to a slice — `return list`, a [N]T given back
             // as a []T — is a view of the array's own storage, as esc_into's
             // decay: not of what the array holds.)
             if esc_array_to_slice(e, op, ops) {

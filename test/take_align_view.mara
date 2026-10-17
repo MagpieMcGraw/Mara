@@ -18,7 +18,7 @@ use mara.core
 on :: fun(p: usize, n: usize) -> bool { return p % n == 0 }
 
 main :: fun() {
-	storage : [..200]byte
+	storage : [200]byte
 	whole : []byte = storage[0 : 120]
 
 	w : []byte = whole[5 : 120]

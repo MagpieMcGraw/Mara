@@ -23,7 +23,7 @@ use mara.math
 //     stays empty — a scalar intrinsic never aliases argument storage).
 //
 //   mara ask k7 in bump7 flow below    k7 -> decl out — transpose_ish fills its
-//     result INSIDE a for loop (`r[i] = m[..]` in a loop body, the
+//     result INSIDE a for loop (`r[i] = m[]` in a loop body, the
 //     mat4_transpose shape). walk_for_return_arg_sets skipped Stmt_For (and
 //     Stmt_Match / destructuring multi-assign) bodies entirely, so the
 //     function's return_deps came out empty and the caller's decl edge dropped.

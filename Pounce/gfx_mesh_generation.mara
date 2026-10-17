@@ -135,7 +135,7 @@ primitive_quad :: fun() -> verts: [4!]Vertex, inds: [6!]u32 {
 }
 
 primitives_init :: fun(vao: ^VAO_State) -> [3!]i64, [3!]str64 {
-    storage: [..1<<24]byte
+    storage: [1<<24]byte
     quad := Mesh_Data{primitive_quad()}
     cube := Mesh_Data{primitive_cube()}
     sphere := primitive_sphere(32, &storage)

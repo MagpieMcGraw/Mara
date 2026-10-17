@@ -32,12 +32,12 @@ get :: fun(buf: []byte, n: i64, dst: ^[]V) -> []V {
 }
 
 main :: fun() {
-	buf : [..64]byte
+	buf : [64]byte
 	fill(&buf)
-	room : [..8]V
+	room : [8]V
 	got := get(buf[:], 3, &room)
 	print("through a pointer:", got.len, got[2].a, got[2].b)
-	open : [..8]V
+	open : [8]V
 	open[0:] = buf[0:24]
 	print("open run:", open[0].a, open[2].b)
 	ints : [6!]u32

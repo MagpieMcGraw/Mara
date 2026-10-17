@@ -144,9 +144,12 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
         case ^Type_Partial_Array: tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
         }
     case .Type_Partial:
-        if pa, ok := actual.(^Type_Partial_Array); ok {
-            tc_infer_size(k, subst, Tree_Id(t.a[n]), pa.size)
-            tc_infer(k, subst, Tree_Id(t.b[n]), pa.elem)
+        #partial switch a in actual {
+        case ^Type_Partial_Array:
+            tc_infer_size(k, subst, Tree_Id(t.a[n]), a.size)
+            tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
+        case ^Type_Fixed_Array:   // (`[Kind]$T`: an enum's array)
+            if a.index_type != nil { tc_infer(k, subst, Tree_Id(t.b[n]), a.elem) }
         }
     case .Type_Fun:
         if ft, ok := actual.(^Type_Scope); ok {

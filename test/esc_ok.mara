@@ -66,7 +66,7 @@ set_big :: fun(memory: ^[]byte) {
 main :: fun() {
 	sum : i64 = 0
 
-	buf : [..64]byte
+	buf : [64]byte
 	v := view_of(&buf)
 	v.sl[0] = 5
 	sum += v.sl[0]                       // 5
@@ -119,7 +119,7 @@ main :: fun() {
 	forward_store(&fh, &z)
 	sum += fh.p^                         // 330
 
-	mem : [..64]byte
+	mem : [64]byte
 	mem.len = 64
 	set_big(&mem)
 	big := let(Big, &mem[0])

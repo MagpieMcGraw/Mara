@@ -51,7 +51,7 @@ main :: fun() {
 
 	m := 10
 	t16(m)
-	buf : [..16]byte
+	buf : [16]byte
 	buf[0] = m
 	print("byte write, given one before:", buf[0], buf[1])
 }

@@ -7,7 +7,7 @@ module generic_struct_methods
 //@ expect-output: stack 2 4
 //@ expect-output: floats 2.5
 Stack :: struct(item: $T) {
-	items : [..8]item
+	items : [8]item
 	push :: fun(s: ^Self, v: item) {
 		s.items.len += 1
 		s.items[s.items.len - 1] = v

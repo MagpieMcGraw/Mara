@@ -6,6 +6,6 @@ module helper
 // like a type (constants are no longer globally visible by bare name).
 // Diagnostic: undefined identifier 'MB'.
 make_buf :: fun() -> i64 {
-	buf : [..2 * MB]byte
+	buf : [2 * MB]byte
 	return i64(buf.cap)
 }

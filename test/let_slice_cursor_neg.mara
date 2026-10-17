@@ -8,7 +8,7 @@ module let_slice_cursor_neg
 use mara.core
 
 main :: fun() {
-	storage : [..64]byte
+	storage : [64]byte
 	xs := let([]u32, &storage)
 	print(xs.len)
 }

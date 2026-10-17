@@ -79,7 +79,7 @@ example_use :: fun() {
 // another is seen only there. A `$T` in a param's type makes the fun
 // generic: T is whatever type the call passes. A param `kind: fun(T) -> $K`
 // takes any fun of that shape, K what it gives back. A size can be one
-// too: `xs: [$N]T` (or `[..$N]T`) binds N to the size passed, a constant
+// too: `xs: [$N]T` (or `[$N]T`) binds N to the size passed, a constant
 // in the body — a size of its types, or a value. `method` is another
 // spelling of `fun`.
 example_fun :: fun() {
@@ -352,12 +352,12 @@ example_error :: fun() {
 //
 // `Meters :: distinct f64` has f64's shape, but isn't f64: a plain f64
 // doesn't go where Meters does, so the two can't be mixed up. `Label ::
-// [..16]utf8` is the same type by another name, and goes anywhere its base
+// [16]utf8` is the same type by another name, and goes anywhere its base
 // does (core's str64 is one); so is `Spot :: Point`, a name by itself that
 // names a type (naming a value instead, it's a constant).
 example_distinct :: fun() {
 	Meters :: distinct f64
-	Label :: [..16]utf8
+	Label :: [16]utf8
 	m := Meters(3)
 	print(m)                               // 3
 	l : Label
@@ -522,10 +522,10 @@ example_assert :: fun() {
 // `len`, `cap`: how many items an array, list, slice or text has, and how many fit.
 //
 // `xs.len` is how many items there are; `xs.cap` how many fit — for a list
-// (`[..8]i64`) that's 8, however many it has. A fixed array's are both its
+// (`[8]i64`) that's 8, however many it has. A fixed array's are both its
 // size. `len(xs)` and `cap(xs)` say the same of a fixed array or a slice.
 example_len :: fun() {
-	list : [..8]i64
+	list : [8]i64
 	&list + 3
 	&list + 4
 	print(list.len, list.cap)              // 2 8
@@ -618,7 +618,7 @@ example_size_of :: fun() {
 // the program runs, slice a fixed array instead: `room : [100!]i64`, then
 // `xs := room[0:n]`.
 example_slice :: fun() {
-	storage : [..64]byte
+	storage : [64]byte
 	mem : []byte = storage
 	xs := slice([:3]i64, &mem)             // room for 3, empty
 	&xs + 5
@@ -638,7 +638,7 @@ example_slice :: fun() {
 // buffer itself, not `buf[:]`. `slice_from_ptr(p, n)` views n bytes at a
 // pointer C gave back (n a constant, outside mara.os).
 example_cstring :: fun() {
-	// path : [..260]utf8
+	// path : [260]utf8
 	// &path + "notes.txt"
 	// handle := CreateFileA(cstring(path), …)
 }
@@ -675,7 +675,7 @@ example_void :: fun() {
 
 // `all`: every item of an array set to one value.
 //
-// `cams : [..6]Camera = all Camera(1280, 720)` builds each of the six.
+// `cams : [6]Camera = all Camera(1280, 720)` builds each of the six.
 example_all :: fun() {
 	ones : [4!]i64 = all 1
 	print(ones)                            // [1, 1, 1, 1]

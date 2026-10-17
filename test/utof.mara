@@ -8,7 +8,7 @@ main :: fun() {
 	b : u8 = 200
 	assert(f32(b) == 200.0)
 
-	buf : [..4]byte
+	buf : [4]byte
 	buf[buf.len] = u8(200)   // bare 200 adopts i64 -> 8-byte buffer write
 	buf.len += 1
 	assert(f32(buf[0]) == 200.0)   // the Type_Byte path (atlas reads)

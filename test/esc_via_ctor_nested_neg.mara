@@ -12,7 +12,7 @@ Deep :: struct (bytes: ^[]byte) {
 }
 
 leak_deep :: fun() -> Deep {
-	buf : [..8]byte
+	buf : [8]byte
 	buf.len = 8
 	return Deep(&buf)
 }

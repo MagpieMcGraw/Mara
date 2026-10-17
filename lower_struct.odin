@@ -164,7 +164,7 @@ lw_self :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
 
 // --- literals -------------------------------------------------------------------
 
-// `Foo{…}`, `Foo{0}`, `{…}`, `[3]f32{…}`, `{all v}` (tc_literal): its
+// `Foo{…}`, `Foo{0}`, `{…}`, `[3!]f32{…}`, `{all v}` (tc_literal): its
 // construction where it goes (else in a temporary), then each entry stored.
 lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
     tr := k.t

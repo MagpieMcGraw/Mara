@@ -32,7 +32,7 @@ tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
 }
 
 // A fixed array's address where a buffer that keeps a len goes — `&buf` of a
-// `[N]T` into a `^[]T` (or `^[..M]T`) param, `&buf + x`: the fix, a partial
+// `[N!]T` into a `^[]T` (or `^[M]T`) param, `&buf + x`: the fix, a partial
 // array of the same room, as the error's last clause ("" when it's not
 // that). `want` nil: any buffer (an append's).
 tc_partial_hint :: proc(k: ^TC, n: Tree_Id, got: Type, want: Type = nil) -> string {
@@ -56,7 +56,7 @@ tc_partial_hint :: proc(k: ^TC, n: Tree_Id, got: Type, want: Type = nil) -> stri
     if k.t.tag[m] == .Unary && build_tokens[k.t.main[m]].kind == .Ampersand { m = Tree_Id(k.t.a[m]) }
     name := tc_diag_name(k, m)
     what := fmt.tprintf("`%s`", name) if name != "" else "it"
-    return fmt.tprintf(" — %s is a fixed array, with no len to move: declare it a partial array, `[..%d]%s`", what, fa.size, type_name(fa.elem))
+    return fmt.tprintf(" — %s is a fixed array, with no len to move: declare it a list, `[%d]%s`", what, fa.size, type_name(fa.elem))
 }
 
 // An expression as written: "y == 0".

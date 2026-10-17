@@ -8,7 +8,7 @@ Holder :: struct {
 }
 
 main :: fun() {
-    src : [..8]utf8
+    src : [8]utf8
     &src + 'w'
     &src + 'o'
     &src + 'r'
@@ -19,7 +19,7 @@ main :: fun() {
     print(h.name)
     h.name = src[:]
     print(h.name)
-    arr : [..4]Holder
+    arr : [4]Holder
     arr[.len].name = src[:]
     arr[.len].id = 42
     arr.len += 1

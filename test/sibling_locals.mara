@@ -96,11 +96,11 @@ runtime_sized :: fun(which: bool, n: i64) -> i64 {
 
 arena_backed :: fun(which: bool) -> i64 {
 	if which {
-		p : [..4000]u8
+		p : [4000]u8
 		p.len = 1
 		return p.len
 	else
-		p : [..4000]u8
+		p : [4000]u8
 		p.len = 2
 		return p.len
 	}

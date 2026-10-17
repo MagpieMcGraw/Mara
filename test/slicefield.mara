@@ -29,7 +29,7 @@ Holder :: struct (bytes: ^[]byte) {
 }
 
 main :: fun() {
-	buf : [..8]byte
+	buf : [8]byte
 	buf.len = 8
 	for i in 0..7 {
 		buf[i] = u8(i * 10)

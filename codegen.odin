@@ -26,7 +26,7 @@ Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
 
-// A `[..N]T` partial array's IR type: the header, then its elements.
+// A `[N]T` partial array's IR type: the header, then its elements.
 partial_array_ir_type :: proc(elem_ir: Ir_Type, cap: int) -> Ir_Type {
     fields := [4]Ir_Type{SLICE_LEN_IR, SLICE_LEN_IR, IR_PTR, ir_array_type(cap, elem_ir)}
     return ir_struct_type(fields[:])

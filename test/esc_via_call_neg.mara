@@ -10,7 +10,7 @@ leaf :: fun(storage: ^[]byte) -> []i64 {
 }
 
 outer :: fun() -> []i64 {
-	storage : [..512]byte
+	storage : [512]byte
 	return leaf(&storage)
 }
 

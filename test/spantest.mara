@@ -3,7 +3,7 @@ module spantest
 // Does a slice span accept bounds wider than i32 now that the header is i64?
 
 main :: fun() {
-	buf : [..64]byte
+	buf : [64]byte
 
 	lo : i64 = 8
 	hi : i64 = 24

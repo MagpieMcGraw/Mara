@@ -154,7 +154,7 @@ theme_tokens :: fun(ui: ^Ui, c: Code_Colors) {
 theme_sublime :: fun(ui: ^Ui) {
 	theme_builtin(ui, true)
 	ui.colors_stamp = file_mtime(ui.colors_path)
-	buf : [..8000]byte
+	buf : [8000]byte
 	data, re := read_entire_file(ui.colors_path, &buf)
 	if re do return
 	text : []utf8 = data

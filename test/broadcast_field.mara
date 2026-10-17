@@ -8,8 +8,8 @@ module broadcast_field
 //
 // Coverage: every array-shape × element-kind combination of `all`:
 //   - fixed-array   scalar  ([4]i32   = all 9)
-//   - partial-array scalar  ([..5]i32 = all 2,    len := size)
-//   - partial-array STRUCT  ([..3]Cell = all Cell(), Pounce's `cameras`)
+//   - partial-array scalar  ([5]i32 = all 2,    len := size)
+//   - partial-array STRUCT  ([3]Cell = all Cell(), Pounce's `cameras`)
 //   - fixed-array   STRUCT  ([4]Cell  = all Cell()) — the one that used to break:
 //       the inline check_array_struct_literal broadcast path lost the clone's
 //       resolved_func (local case) and the per-slot store wrote a ptr where a
@@ -37,8 +37,8 @@ sum_v :: fun(cs : [4!]Cell) -> i32 {
 
 Grid :: struct {
 	flags       : [4!]i32    = all 9       // fixed-array scalar broadcast
-	counts      : [..5]i32  = all 2       // partial-array scalar broadcast (len := size)
-	cells       : [..3]Cell = all Cell()  // partial-array STRUCT broadcast — each slot runs Cell()'s defaults
+	counts      : [5]i32  = all 2       // partial-array scalar broadcast (len := size)
+	cells       : [3]Cell = all Cell()  // partial-array STRUCT broadcast — each slot runs Cell()'s defaults
 	cells_fixed : [4!]Cell   = all Cell()  // fixed-array STRUCT broadcast — the formerly-broken case
 }
 

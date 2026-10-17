@@ -6,7 +6,7 @@ module byte_slice_index_neg
 
 main :: fun() {
 	src := "hello world, and more"
-	bytes : [..32]byte
+	bytes : [32]byte
 	for c, i in src { bytes[i] = u8(c) }
 	bytes.len = src.len
 	x : []utf8 = bytes[2]

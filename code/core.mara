@@ -1,11 +1,11 @@
 module mara.core
 
 // A text buffer of up to 64 characters: `name : str64`, then `&name + "text"`.
-str64 :: [..64]utf8
+str64 :: [64]utf8
 // A text buffer of up to 256 characters (see str64).
-str256 :: [..256]utf8
+str256 :: [256]utf8
 // A text buffer of up to 1024 characters (see str64).
-str1024 :: [..1024]utf8
+str1024 :: [1024]utf8
 
 // `&list + x` appends to a text buffer or a list: text, one character, items or one item — and gives the list back, so appends chain: `&name + dir + "/" + file`. `list + x`, the list not pointed at, joins: a new one, its type the list's (`cwd + "/code"`, a Path).
 overload + add
@@ -76,14 +76,14 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 // A new list: a's items, then b's — of a's own type, its room (a Path
 // joined is a Path: `cwd + "/code"`), a itself as it was. `a + b`. Past the
 // room, the program stops, as an add does. (`&a + b` adds into a itself.)
-join :: fun(a: [..$N]$T, b: []T) -> [..N]T {
+join :: fun(a: [$N]$T, b: []T) -> [N]T {
 	out := a
 	&out + b
 	return out
 }
 
 // A new list: a's items, then one more — of a's own type. `a + item`.
-join_item :: fun(a: [..$N]$T, b: T) -> [..N]T {
+join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 	out := a
 	&out + b
 	return out
@@ -178,5 +178,5 @@ Arena :: struct {
 // pointers or slices of it).
 Program :: struct (ar_shape: ~Arena = void) {
 	scope_allocator: ar_shape
-	args: [..64][]utf8
+	args: [64][]utf8
 }

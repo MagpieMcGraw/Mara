@@ -16,7 +16,7 @@ Holder :: struct {
 }
 
 main :: fun() {
-	bytes : [..16]byte
+	bytes : [16]byte
 	bytes.len = 16
 	h : Holder = bytes[0]
 	print("unreached: n=%", h.n)

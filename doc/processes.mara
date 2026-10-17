@@ -23,8 +23,8 @@ use mara.os
 
 // The program talked to: reads its input to the end, then answers.
 child :: fun() {
-	got : [..200]byte
-	chunk : [..64]byte
+	got : [200]byte
+	chunk : [64]byte
 	for true {
 		e := file_read(standard_input(), &chunk)
 		if e or chunk.len == 0 do break   // 0 bytes: the end
@@ -52,7 +52,7 @@ main :: fun() -> i64 {
 
 	// Without waiting: nothing has arrived yet (the child is waiting for its
 	// input to end), and its output is still open.
-	early : [..64]byte
+	early : [64]byte
 	open, pe := pipe_read(p.output, &early)
 	if pe do print("couldn't read from it:", pe)
 	print("so far:", early.len, "bytes; still open:", open)
@@ -63,8 +63,8 @@ main :: fun() -> i64 {
 	process_close_input(&p)
 
 	// Read what it writes, until its output ends: it has exited.
-	out : [..400]byte
-	chunk : [..64]byte
+	out : [400]byte
+	chunk : [64]byte
 	for true {
 		re := file_read(p.output, &chunk)
 		if re or chunk.len == 0 do break

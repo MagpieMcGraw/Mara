@@ -1,9 +1,9 @@
 module fixed_array_arg_neg
 
-//@ expect-fail: `storage` is a fixed array, with no len to move: declare it a partial array, `[..100]byte`
+//@ expect-fail: `storage` is a fixed array, with no len to move: declare it a list, `[100]byte`
 
 // A fixed array's address where a buffer with a len goes (a `^[]byte`
-// param): the error says to declare it a partial array, the same room.
+// param): the error says to declare it a list, the same room.
 
 use mara.core
 use mara.os

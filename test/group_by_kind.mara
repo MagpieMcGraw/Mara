@@ -28,7 +28,7 @@ parity :: fun(n: i64) -> Parity {
 
 main :: fun() {
 	nums : [6!]i64 = {5, 50, 500, 7, 70, 7000}
-	storage : [..512]byte
+	storage : [512]byte
 	by_size := group(nums[:], size_of_n, &storage)
 	print("small:", by_size[Small].len, by_size[Small][0], by_size[Small][1])
 	print("big:", by_size[Big].len, by_size[Big][0], by_size[Big][1])

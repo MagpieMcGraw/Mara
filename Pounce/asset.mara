@@ -17,7 +17,7 @@ Font :: struct {
 	layer: u32,
 	offset_x, offset_y: i32,  // Position within atlas layer
 	metrics: Line_Metrics     // from mara.font, filled by load_glyphs_and_metrics
-	glyphs: [..256]Glyph      // partial array: carries a slice header, so &glyphs
+	glyphs: [256]Glyph      // partial array: carries a slice header, so &glyphs
 }                             // flows into the loader's ^[]Glyph param directly
 
 // Streaming state
@@ -29,10 +29,10 @@ Stream_State :: union {
 
 // Files found on disk in the data directory
 Disk :: struct {
-	models:		[..MAX_MESHES]str64
-	textures:	[..MAX_TEXTURES]str64
-	audio:		[..MAX_AUDIO]str64
-	fonts:		[..MAX_FONTS]str64
+	models:		[MAX_MESHES]str64
+	textures:	[MAX_TEXTURES]str64
+	audio:		[MAX_AUDIO]str64
+	fonts:		[MAX_FONTS]str64
 }
 
 MAX_TEXTURES :: 1024
@@ -55,9 +55,9 @@ Assets :: struct {
 	font_texture_id:   u32,
 	font_texture_size: i32,
 
-	textures:	[..MAX_TEXTURES]Texture
-	meshes:		[..MAX_MESHES]Mesh
-	fonts:		[..MAX_FONTS]Font
+	textures:	[MAX_TEXTURES]Texture
+	meshes:		[MAX_MESHES]Mesh
+	fonts:		[MAX_FONTS]Font
 
 	state: Stream_State,
 
@@ -150,7 +150,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 load_font_test :: fun(a: ^Assets, fname: []utf8) {
 	this_font := &a.fonts[.len]
 	this_font^ = Font()   // (an element of a bare array is its zero: built here)
-	pixels : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	pixels : [MSDF_ATLAS * MSDF_ATLAS * 3]byte
 	e := load_glyphs_and_metrics(fname,
 		&this_font.glyphs, &this_font.metrics, &pixels)
 	if bool(e) {

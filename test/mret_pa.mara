@@ -3,8 +3,8 @@ module mret_pa
 // into its sret slot (re-anchoring ptr); the destructure claims the slot as a
 // Slice_Var so it indexes. This used to emit malformed IR — the PA slot fell
 // through to the scalar `store {..} <ptr>` path on both sides.
-split :: fun() -> ([..8]byte, i32) {
-	buf : [..8]byte = void
+split :: fun() -> ([8]byte, i32) {
+	buf : [8]byte = void
 	buf.len = 2
 	// u8() casts are required: writing a bare literal into a byte buffer is a
 	// type error (the write width would be ambiguous — codegen_redflags.md #7).

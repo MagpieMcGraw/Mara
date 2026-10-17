@@ -59,7 +59,7 @@ main :: fun() {
 	// would parse as `x := 5 & nums + 7`. The parser rejects the ambiguous
 	// spacing (space before `&`, glued after) with a dedicated parse error.
 	// First-statement-on-line is fine:
-	nums : [..8]i64
+	nums : [8]i64
 	&nums + 7
 	assert(nums.len == 1) assert(nums[0] == 7)
 

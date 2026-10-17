@@ -37,17 +37,17 @@ main :: fun() {
 		return
 	}
 
-	room : [..100]byte
+	room : [100]byte
 	data, e := read_entire_file(PATH, &room)
 	got : []utf8 = data
 	print("exact:", e, data.len, got == text, room.len)
 
-	short : [..99]byte
+	short : [99]byte
 	cut, se := read_entire_file(PATH, &short)
 	print("short:", se, cut.len, short.len)
 
 	// One storage for both: the second file goes after the first.
-	storage : [..500]byte
+	storage : [500]byte
 	first, _ := read_entire_file(PATH, &storage)
 	second, _ := read_entire_file(PATH, &storage)
 	a : []utf8 = first

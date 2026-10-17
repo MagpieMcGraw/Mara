@@ -53,9 +53,9 @@ Line_Row :: struct {
 }
 
 Lines :: struct {
-	text:   [..2 * MB]utf8
-	lines:  [..50000]Line
-	status: [..400]utf8   // the status line; none when empty
+	text:   [2 * MB]utf8
+	lines:  [50000]Line
+	status: [400]utf8   // the status line; none when empty
 	status_style: i64
 	scroll: i64           // the first row shown
 	cut:    bool          // more came than it holds: the rest left out
@@ -65,7 +65,7 @@ Lines :: struct {
 	anchor: Spot
 	caret:  Spot
 	// The lines wrapped (lines_wrap): to rows_w wide, rows_lines of them.
-	rows:   [..100000]Line_Row
+	rows:   [100000]Line_Row
 	rows_w: f32
 	rows_lines: i64
 }
@@ -233,7 +233,7 @@ row_end :: fun(t: ^Text, s: []utf8, at: i64, w: f32) -> i64 {
 // The status line's height, wrapped to r's width; 0 for none.
 status_height :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> f32 {
 	if l.status.len == 0 do return 0
-	rows : [..STATUS_ROWS]Line_Row
+	rows : [STATUS_ROWS]Line_Row
 	_ = wrap(&ui.text, l.status[:], lines_width(r), 0, 0, &rows)
 	return f32(rows.len) * ui.text.line + 2.0 * ROW_PAD
 }
@@ -299,7 +299,7 @@ lines_line_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> i64 {
 
 // Text drawn wrapped to w, from (x, y), in a style; the y below it.
 draw_wrapped :: fun(ui: ^Ui, s: []utf8, style: i64, x: f32, y: f32, w: f32) -> f32 {
-	rows : [..STATUS_ROWS]Line_Row
+	rows : [STATUS_ROWS]Line_Row
 	_ = wrap(&ui.text, s, w, 0, 0, &rows)
 	at_y := y
 	for row in rows {

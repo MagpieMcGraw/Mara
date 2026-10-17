@@ -1,11 +1,11 @@
 module patest
 
 Holder :: struct {
-	xs : [..4]i64
+	xs : [4]i64
 }
 
-make_pa :: fun() -> [..4]i64 {
-	r : [..4]i64
+make_pa :: fun() -> [4]i64 {
+	r : [4]i64
 	r.len = 2
 	r[0] = 99
 	r[1] = 98
@@ -13,7 +13,7 @@ make_pa :: fun() -> [..4]i64 {
 }
 
 main :: fun() {
-	xs : [..4]i64
+	xs : [4]i64
 	xs.len = 3
 	xs[0] = 10
 	xs[1] = 20

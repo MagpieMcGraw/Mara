@@ -19,7 +19,7 @@ module param_result_alias
 P :: struct { x: i64, y: i64 }
 V3 :: distinct [3!]i64
 Holder :: struct { v: V3 }
-Named :: struct { name: [..8]utf8, n: i64 }
+Named :: struct { name: [8]utf8, n: i64 }
 Cam :: struct(seed: V3) {
 	pos: V3 = V3{seed[2], seed[1], 0}
 }

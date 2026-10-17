@@ -14,8 +14,8 @@ use mara.os
 main :: fun() -> i64 {
 	if this_program.args.len > 1 {
 		// The child: its whole input, then an answer.
-		got : [..200]byte
-		chunk : [..64]byte
+		got : [200]byte
+		chunk : [64]byte
 		for true {
 			e := file_read(standard_input(), &chunk)
 			if bool(e) or chunk.len == 0 do break
@@ -42,8 +42,8 @@ main :: fun() -> i64 {
 		return 1
 	}
 	process_close_input(&p)
-	out : [..400]byte
-	chunk : [..64]byte
+	out : [400]byte
+	chunk : [64]byte
 	for true {
 		re := file_read(p.output, &chunk)
 		if bool(re) {

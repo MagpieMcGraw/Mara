@@ -28,16 +28,16 @@ Row :: struct {
 }
 
 Profile :: struct {
-	text:    [..8 * MB]byte          // the file
-	header:  [..8]Field              // its lines before the columns
-	columns: [..MAX_COLUMNS]i64      // the columns it has, in order: which title each is
-	rows:    [..MAX_ROWS]Row
-	order:   [..MAX_ROWS]i64         // the rows as shown: sorted
-	scratch: [..MAX_ROWS]i64         // (sorting's)
+	text:    [8 * MB]byte          // the file
+	header:  [8]Field              // its lines before the columns
+	columns: [MAX_COLUMNS]i64      // the columns it has, in order: which title each is
+	rows:    [MAX_ROWS]Row
+	order:   [MAX_ROWS]i64         // the rows as shown: sorted
+	scratch: [MAX_ROWS]i64         // (sorting's)
 	widths:  [MAX_COLUMNS!]f32        // each column's, in pixels: its widest text, room around it
 	sort_by: i64 = -1                // the column (its place) it's sorted by; -1: as in the file
 	descending: bool
-	problem: [..400]utf8             // why there's nothing to show, when there isn't
+	problem: [400]utf8             // why there's nothing to show, when there isn't
 	missing: bool                    // (that why: no file yet — the usual, not a fault)
 	stamp:   i64                     // the file's time when it was read
 }
@@ -122,7 +122,7 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 // a problem: the format changed past it.
 read_columns :: fun(p: ^Profile, line: Field) -> bool {
 	// (Its words, one space between each.)
-	words : [..300]utf8
+	words : [300]utf8
 	text := field_text(p, line)
 	at : i64 = 0
 	for at < text.len {

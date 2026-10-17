@@ -21,7 +21,7 @@ Type :: union {
     ^Type_Scope,        // unified scope type: data struct/class (kind=.Struct) or callable fun (kind=.Fun)
     ^Type_Fixed_Array,
     ^Type_Slice,      // [:]T — slice (view into array: {ptr, len, cap})
-    ^Type_Partial_Array, // [..N]T — partial array (value with inline storage + cursor)
+    ^Type_Partial_Array, // [N]T — partial array (value with inline storage + cursor)
     ^Type_Enum,
     ^Type_Union,
     ^Type_Distinct,   // named wrapper around another type (same layout, different identity)
@@ -248,7 +248,7 @@ Type_Slice :: struct {
     elem:         Type,
 }
 
-// [..N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
+// [N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
 // ptr initialised to &elements at decl time. First 24 bytes match Type_Slice's
 // {ptr, len, cap} shape so partial arrays can flow through `^[]T` (umbrella)
 // without monomorphization. Pinned in practice: moving the value breaks ptr.
@@ -789,9 +789,9 @@ is_condition_type :: proc(t: Type) -> bool {
 }
 
 // Through a pointer there is no array→slice decay: the pointee must already
-// have the target's memory layout. A fixed array `[N]T` is N inline elements
-// with NO {ptr,len,cap} header, so `^[N]T` cannot stand in for `^[]T` or
-// `^[..M]T` — doing so let `&fixed + x` bind to core's `slice_add` (param
+// have the target's memory layout. A fixed array `[N!]T` is N inline elements
+// with NO {ptr,len,cap} header, so `^[N!]T` cannot stand in for `^[]T` or
+// `^[M]T` — doing so let `&fixed + x` bind to core's `slice_add` (param
 // `^[]$T`) and then read a header off raw inline elements. Returns true for
 // that mismatch: exactly one side a fixed array, the other a header-shaped
 // buffer (slice / partial array). Fixed↔fixed and slice↔partial (both
@@ -877,7 +877,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     case Type_CString:
         if is_cstring(b) { return true }
         // utf8 partial arrays are TYPE-compatible so string LITERALS (typed
-        // [..tier]utf8) pass free — their rodata globals carry the \0. The
+        // [tier]utf8) pass free — their rodata globals carry the \0. The
         // call-site argument check restricts the implicit path to literal
         // EXPRESSIONS; every runtime string goes through the explicit
         // `cstring(s)` constructor (copy + terminator), so codegen never
@@ -905,8 +905,8 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // ^byte accepts any pointer (all memory is bytes)
         if _, ba := va.elem.(Type_Byte); ba { return true }
         if _, bb := vb.elem.(Type_Byte); bb { return true }
-        // No array→slice decay through a pointer: ^[N]T must not satisfy
-        // ^[]T / ^[..M]T (a fixed array has no slice header to alias).
+        // No array→slice decay through a pointer: ^[N!]T must not satisfy
+        // ^[]T / ^[M]T (a fixed array has no slice header to alias).
         if ptr_pointee_layout_mismatch(va.elem, vb.elem) { return false }
         // (A pointee whose width isn't decided yet matches no decided one —
         // what's written through the pointer is the pointee's width:
@@ -941,9 +941,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // runtime-length question, so it must be explicit — never an implicit
         // coercion. (This arm used to accept []T; codegen then silently
         // dropped the copy on the return path and zeroed the result.)
-        // Implicit coercion: [N]T is compatible with [..M]T (partial array
+        // Implicit coercion: [N!]T is compatible with [M]T (partial array
         // view). Lets fixed-array decls take partial-array sources — most
-        // importantly `fa : [N]utf8 = "lit"` after the literal-type
+        // importantly `fa : [N!]utf8 = "lit"` after the literal-type
         // change made literals partial.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
             return buffer_elem_compatible(va.elem, pa.elem)
@@ -954,11 +954,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
-        // By-value fixed-array -> slice decay: `[N]T` materialises a slice
-        // header {ptr=&arr[0], len=cap=N} — honest, since [N]T is exactly N
+        // By-value fixed-array -> slice decay: `[N!]T` materialises a slice
+        // header {ptr=&arr[0], len=cap=N} — honest, since [N!]T is exactly N
         // elements (e.g. Mesh_Data{primitive_quad()}). The source is hoisted to
         // a scope-lived local, and lifetime past that scope is policed by
-        // return-escape analysis. NOT allowed THROUGH A POINTER (^[N]T has no
+        // return-escape analysis. NOT allowed THROUGH A POINTER (^[N!]T has no
         // header to alias) — that gate is ptr_pointee_layout_mismatch above,
         // which short-circuits before this case is ever reached for ^[]T.
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
@@ -971,9 +971,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if !ok { return false }
         return buffer_elem_compatible(va.elem, vb.elem)
     case ^Type_Partial_Array:
-        // Partial arrays coerce to [:]T (slice view) and to [N]T (fixed array)
+        // Partial arrays coerce to [:]T (slice view) and to [N!]T (fixed array)
         // by element type. The first 24 bytes of a partial array's layout
-        // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
+        // match a slice header, so `^[N]T` flows safely into `^[:]T` param
         // slots — cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return buffer_elem_compatible(va.elem, sl.elem)
@@ -1106,7 +1106,7 @@ type_name :: proc(t: Type) -> string {
     case ^Type_Slice:
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
-        return fmt.tprintf("[..%d]%s", v.size, type_name(v.elem))
+        return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
     case ^Type_Enum:        return v.source_name if v.source_name != "" else v.name
     case ^Type_Union:       return v.source_name if v.source_name != "" else v.name
     case ^Type_Distinct:
@@ -1149,7 +1149,7 @@ is_byte_sized_memory_type :: proc(t: Type) -> bool {
 
 // Element compatibility for buffer types (slice / fixed-array / partial-array).
 // Looser than scalar types_equal: any two 8-bit memory-view types are mutually
-// compatible at the buffer element level, so `[]u8 → []byte`, `[8]u8 → []byte`,
+// compatible at the buffer element level, so `[]u8 → []byte`, `[8!]u8 → []byte`,
 // `[]byte → []utf8` etc. all flow without explicit casts. The arithmetic
 // restriction on byte still holds at the scalar binop level (is_numeric
 // excludes Type_Byte), so this doesn't enable `byte + byte` — it only enables
@@ -1416,7 +1416,7 @@ is_infer :: proc(t: Type) -> bool {
 
 // True when a type is a byte slice ([]byte). Auto-derefs one level of ^Ptr
 // (so `^[]byte` is recognized) and unwraps distinct/alias wrappers so
-// user-named byte containers (`Block :: type [16]byte`, etc.) get the
+// user-named byte containers (`Block :: type [16!]byte`, etc.) get the
 // reinterpret-read/write machinery too.
 is_byte_slice :: proc(t: Type) -> bool {
     cur := distinct_base(t)
@@ -1427,7 +1427,7 @@ is_byte_slice :: proc(t: Type) -> bool {
     return is_byte
 }
 
-// True when a type is a byte-element fixed array [N]byte. Same unwrap
+// True when a type is a byte-element fixed array [N!]byte. Same unwrap
 // shape as is_byte_slice so named-byte-container types work.
 is_byte_fixed_array :: proc(t: Type) -> bool {
     cur := distinct_base(t)
@@ -1438,7 +1438,7 @@ is_byte_fixed_array :: proc(t: Type) -> bool {
     return is_byte
 }
 
-// True when a type is a byte-element partial array [..N]byte. Same unwrap
+// True when a type is a byte-element partial array [N]byte. Same unwrap
 // shape as the slice / fixed-array helpers — distinct/alias wrappers,
 // auto-deref of one ^Ptr.
 is_byte_partial_array :: proc(t: Type) -> bool {
@@ -1569,7 +1569,7 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //     (param count + param types + return type, treating the receiver and
 //     any other Self occurrences as positionally compatible);
 //   - fits within the constraint's declared byte size (the constraint type
-//     reserves the budget explicitly, most commonly via a `size: [N]byte`
+//     reserves the budget explicitly, most commonly via a `size: [N!]byte`
 //     filler field).
 // Each shortcoming surfaces as its own diagnostic at `span`.
 check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span) {

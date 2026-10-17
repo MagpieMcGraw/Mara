@@ -21,7 +21,7 @@ mid :: fun(bs: []byte) -> []utf8 { return bs[1:4] }
 
 main :: fun() {
 	src := "hello"
-	bytes : [..16]byte
+	bytes : [16]byte
 	for c, i in src { bytes[i] = u8(c) }
 	bytes.len = src.len
 	a := 1

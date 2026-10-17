@@ -8,7 +8,7 @@ import "core:strings"
 // Aggregate constants as read-only tables
 //
 // A struct, fixed-array or union constant (`ATLAS :: Texture{...}`,
-// `RED :: [3]f32{...}`) is compile-time data: its value is computed from its
+// `RED :: [3!]f32{...}`) is compile-time data: its value is computed from its
 // code (graph_fold.odin) and laid out here as an LLVM constant initializer,
 // stored once for the whole program — the main TU defines the table, every
 // other TU that reads it declares it external. Laid out as data (Ir_Const):

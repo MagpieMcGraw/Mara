@@ -11,7 +11,7 @@ main :: fun() {
 		x, y: f32
 		on_curve: bool
 	}
-	nodes : [..8]Node
+	nodes : [8]Node
 	nodes[0].x = 1.0
 	nodes[0].y = 2.0
 	nodes[0].on_curve = true

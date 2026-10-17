@@ -172,7 +172,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	}
 
 	// The status line.
-	status : [..300]utf8
+	status : [300]utf8
 	&status + "profile.txt: "
 	&status + int_text(p.rows.len)
 	&status + " funs"

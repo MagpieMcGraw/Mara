@@ -52,7 +52,7 @@ main :: fun() {
 	sum : i64 = 0
 
 	// A tree built in a pool: (1 + 2) + -(4)
-	pool : [..16]Node
+	pool : [16]Node
 	one  := push(&pool, Lit{v = 1})
 	two  := push(&pool, Lit{v = 2})
 	four := push(&pool, Lit{v = 4})

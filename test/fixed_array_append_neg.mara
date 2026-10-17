@@ -1,6 +1,6 @@
 module fixed_array_append_neg
 
-//@ expect-fail: `names` is a fixed array, with no len to move: declare it a partial array, `[..64]utf8`
+//@ expect-fail: `names` is a fixed array, with no len to move: declare it a list, `[64]utf8`
 
 // Appending (`&a + x`) to a fixed array: no overload is missing — it can't
 // grow. The error says to declare it a partial array.

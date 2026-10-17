@@ -1,6 +1,6 @@
 module return_list_view_neg
 
-//@ expect-fail: can't return list ([..4]i64) as a []i64: an array doesn't turn into a view when it's given back
+//@ expect-fail: can't return list ([4]i64) as a []i64: an array doesn't turn into a view when it's given back
 
 // An array passes as a slice — a view of it — but isn't given back as one:
 // the view would outlive the fun's own array. A list, a fixed array.
@@ -8,7 +8,7 @@ module return_list_view_neg
 use mara.core
 
 firsts :: fun() -> []i64 {
-	list : [..4]i64
+	list : [4]i64
 	&list + 1
 	return list
 }

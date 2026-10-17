@@ -24,7 +24,7 @@ module partial_array_copies
 // rejected ("cannot copy by value") as a stopgap. Each case below copies, then
 // changes the SOURCE, and prints the copy — which must be unaffected.
 
-Named :: struct { name: [..8]utf8, n: i64 }
+Named :: struct { name: [8]utf8, n: i64 }
 Team :: struct { lead: Named, crew: [2!]Named }
 Tagged :: union(tag u8) { Named1 = 1 { who: Named } Num = 2 { n: i64 } }
 two :: fun(src: Named) -> (Named, i64) {
@@ -116,7 +116,7 @@ main :: fun() {
 	big[7].name[0] = 'B'
 	print("bigarray=% %", big2[7].name, big[7].name)
 
-	list : [..4]Named
+	list : [4]Named
 	list[0] = mk("l0")
 	list.len = 1
 	list2 := list

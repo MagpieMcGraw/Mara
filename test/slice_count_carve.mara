@@ -37,7 +37,7 @@ carve_generic :: fun($T: type, proto: T, memory: ^[]byte, n: i64) -> i64 {
 }
 
 main :: fun() {
-	buf : [..512]byte
+	buf : [512]byte
 	print("len", carve(&buf, 3), buf.len)
 	print("twice", carve_twice(&buf), buf.len)
 	print("generic", carve_generic(Cell{0}, &buf, 4), carve_generic(Wide{0}, &buf, 5), buf.len)

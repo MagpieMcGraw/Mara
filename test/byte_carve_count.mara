@@ -13,7 +13,7 @@ carve :: fun(mem: ^[]byte, n: i64) -> i64 {
 }
 
 main :: fun() {
-	storage : [..64]byte
+	storage : [64]byte
 	buf : []byte = storage
 	a := carve(&buf, 2)
 	print("carved:", a, "cursor", buf.len)

@@ -15,7 +15,7 @@ MAX_INSTANCES_PER_BATCH  :: 512
 
 Mesh_Batch :: struct {
     mesh_id:        i64
-    instances:      [..MAX_INSTANCES_PER_BATCH]Instance
+    instances:      [MAX_INSTANCES_PER_BATCH]Instance
 }
 
 // DrawCommand for MultiDrawIndirect
@@ -40,14 +40,14 @@ DrawState :: struct {
 	command_buffer: u32,
 
 	// Per-mesh batches (one instance array per mesh type)
-	batches: [..MAX_BATCHES]Mesh_Batch
+	batches: [MAX_BATCHES]Mesh_Batch
 	batch_count: i64
 
 	// Total capacity across all batches
 	instance_capacity: i64,
 
 	// Draw commands (owned by this DrawState)
-	commands: [..256]DrawCommand,
+	commands: [256]DrawCommand,
 	command_count: i64,
 }
 

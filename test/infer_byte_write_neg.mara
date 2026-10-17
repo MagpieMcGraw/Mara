@@ -7,7 +7,7 @@ module infer_byte_write_neg
 
 main :: fun() {
 	n := 10
-	buf : [..16]byte
+	buf : [16]byte
 	buf[0] = n
 	print(buf[0])
 }

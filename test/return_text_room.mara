@@ -21,7 +21,7 @@ rest :: fun(xs: []i64) -> []i64 {
 }
 
 main :: fun() {
-	list : [..4]i64
+	list : [4]i64
 	&list + 1 + 2 + 3
 	n := name_of(0)
 	print("% % % | % | %", n, n.len, n.cap, name_of(1), rest(list).len)

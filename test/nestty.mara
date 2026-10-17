@@ -14,7 +14,7 @@ Box :: struct (v: i64) {
 	}
 	// Scope consts work in sibling field array sizes regardless of position
 	// in the body (consts pre-register before field resolution).
-	pool : [..CAP]i64
+	pool : [CAP]i64
 	CAP :: 1 << 4
 	x := v
 }

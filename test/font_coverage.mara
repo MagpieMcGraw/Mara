@@ -21,9 +21,9 @@ FONT :: "../view/Inter.ttf"
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(64 * MB))
-	glyphs : [..95]Glyph
+	glyphs : [95]Glyph
 	metrics : Line_Metrics
-	atlas : [..512 * 512]byte
+	atlas : [512 * 512]byte
 	e := load_coverage_glyphs(FONT, 16.0, &glyphs, &metrics, &atlas, 512)
 	if bool(e) {
 		print("load failed:", e)
@@ -35,7 +35,7 @@ main :: fun() -> i64 {
 	}
 	print("drawn", drawn, "of", glyphs.len)
 
-	ttf_file : [..2 * MB]byte = void
+	ttf_file : [2 * MB]byte = void
 	_, re := read_entire_file(FONT, &ttf_file)
 	if bool(re) {
 		print("read failed:", re)
@@ -66,8 +66,8 @@ main :: fun() -> i64 {
 	bottom := floor_f32(f32(l.header.y_min) * scale) - 1.0
 	w := i64(right - left)
 	h := i64(top - bottom)
-	acc : [..(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
-	cell : [..COVERAGE_CELL * COVERAGE_CELL]byte
+	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
 	rasterize_coverage(&l, scale, -left, top, w, h, &acc, &cell)
 	mid := h / 2
 	most := 0

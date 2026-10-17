@@ -22,7 +22,7 @@ main :: fun() {
 	assert(sum_pair(Pair(){b = 10}) == 10)
 
 	// struct literal as overloaded-operator operand (the slice add-item shape)
-	pairs : [..4]Pair
+	pairs : [4]Pair
 	&pairs + Pair{1, 2}
 	&pairs + Pair{30, 40}
 	assert(pairs.len == 2)

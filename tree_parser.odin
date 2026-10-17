@@ -730,7 +730,7 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
 // --- declarations -----------------------------------------------------------
 
 // Whether what follows `Name ::` is a type, told by its first tokens: `^T`,
-// `fn …`, `[]T`, `[..n]T`, `[:n]T`, `[n]T` and `[K]T` (the bracket's match
+// `fn …`, `[]T`, `[n]T`, `[:n]T`, `[n]T` and `[K]T` (the bracket's match
 // then a type — an array literal's is followed by nothing on its line), a
 // primitive's name ending the line (`Fixed :: i32`; `i32(x)` is a
 // conversion). A name by itself, `A :: B`, is a type's other name when B is
@@ -811,7 +811,7 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
         }
         if value == 0 && tp_type_ahead(p) {
             // (Another name for a type, when the type ends the line: main,
-            // its first token. More after it — `[3]f32{…}`, a typed literal
+            // its first token. More after it — `[3!]f32{…}`, a typed literal
             // — and it's a value: read again as one.)
             m := tp_mark(p)
             def_start := p.pos
@@ -1626,8 +1626,10 @@ tp_size_dollar :: proc(p: ^Tree_Parser) -> Tree_Id {
     return tp_node(p, .Type_Dollar, d, start, u32(name))
 }
 
-// `[]T`, `[:N]T`, `[..N]T`, `[N!]T`, `[K]T`, `[N I]T` — N a generic's `$N`
-// too, its size bound by what's passed (`[..$N]T`).
+// `[]T` a view, `[:N]T` a sized view, `[N]T` a list (up to N), `[N!]T`
+// exactly N, `[K]T` one for each value of an enum (the checker's to tell
+// from a list by a constant's name), `[N I]T` — N a generic's `$N` too, its
+// size bound by what's passed (`[$N]T`).
 tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     br := tp_advance(p)
@@ -1645,6 +1647,8 @@ tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
         return tp_node(p, .Type_Slice, br, start, u32(cap), u32(elem))
     }
     if tp_kind(p) == .Dot_Dot {
+        // (`[..N]T`, the list as it was written once: said so, read on as one.)
+        tp_error(p, br, PARSE_LIST_DOTS)
         tp_advance(p)
         size: Tree_Id
         if tp_kind(p) == .Dollar && tp_peek(p) == .Identifier {
@@ -1672,17 +1676,16 @@ tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     } else {
         size = tp_expr(p, 0)
     }
-    // (`[N!]T`: exactly N. `[N]T` is to mean a list, today's `[..N]T`: an
-    // array of exactly N is written so — a size that can't be an enum's, here;
-    // a bare name, which may be one (`[Kind]T`), the checker's to tell.)
+    // (`[N!]T`: exactly N; `[N I]T`, indexed by I. Else a list, `[N]T` —
+    // or, N an enum's name, one for each of its values: tc_type's to tell.)
     bang: Token_Id
     if tp_kind(p) == .Bang { bang = tp_advance(p) }
     index: Tree_Id
     if tp_kind(p) == .Identifier { index = tp_type(p) }
-    if bang == 0 && index == 0 && size != 0 && p.t.tag[size] != .Ident { tp_error(p, br, PARSE_FIXED_ARRAY_BANG) }
     tp_removed_sentinel(p)
     tp_expect(p, .Right_Bracket)
     elem := tp_type(p)
+    if bang == 0 && index == 0 { return tp_node(p, .Type_Partial, br, start, u32(size), u32(elem)) }
     return tp_node(p, .Type_Array, br, start, tree_rec_add(p.t, u32(size), u32(index), u32(bang)), u32(elem))
 }
 
@@ -1827,7 +1830,7 @@ tp_is_name_path :: proc(p: ^Tree_Parser, n: Tree_Id) -> bool {
     return false
 }
 
-// `[…] T {` ahead: a typed array literal (`[3]f32{…}`), not an array.
+// `[…] T {` ahead: a typed array literal (`[3!]f32{…}`), not an array.
 tp_is_typed_array_literal :: proc(p: ^Tree_Parser) -> bool {
     if tp_kind(p) != .Left_Bracket { return false }
     depth := 0

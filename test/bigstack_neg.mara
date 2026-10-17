@@ -5,7 +5,7 @@ module bigstack_neg
 // Storage routing (check_storage_sizes) now flags it at the declaration, the
 // same clean error a big fixed array gets.
 main :: fun() {
-	buf : [..4096]byte = void
+	buf : [4096]byte = void
 	buf.len = 1
 	buf[0] = 1
 	print("%", buf[0])

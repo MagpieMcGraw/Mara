@@ -4,7 +4,7 @@ module text_partial_array
 //@ expect-output: two 3 7
 //@ expect-output: name kenney/bridge 13
 
-// Text is only its bytes in memory, whatever its type says ([..N]utf8). As a
+// Text is only its bytes in memory, whatever its type says ([N]utf8). As a
 // partial array it's built into one: returned from a `-> str64` fun, where
 // both emitters copied a whole partial array's worth from the text (reading
 // past it — the output held its neighbours); and handed to a str64 param,

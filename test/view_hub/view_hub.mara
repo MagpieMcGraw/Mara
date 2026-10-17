@@ -82,8 +82,8 @@ server_down :: fun(s: ^Server, log: File_Id) {
 // A connection's line asked of serve, and what serve answers passed back as
 // it comes, to its end line.
 answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
-	line : [..500]byte
-	chunk : [..200]byte
+	line : [500]byte
+	chunk : [200]byte
 	for true {
 		file_read(c, &chunk)?
 		if chunk.len == 0 do break
@@ -121,7 +121,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 		file_write(s.process.input, &bytes)?
 	}
 
-	current : [..100]utf8   // the line coming, to know the end line
+	current : [100]utf8   // the line coming, to know the end line
 	done := false
 	passed := false   // any of the answer passed on
 	resent := false

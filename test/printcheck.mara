@@ -12,7 +12,7 @@ Probe :: struct {
 	c      : utf8      = 'A'
 	f      : f32       = 2.5
 	b      : bool      = true
-	label  : [..16]utf8 = "hello"
+	label  : [16]utf8 = "hello"
 	nested := Inner()
 }
 

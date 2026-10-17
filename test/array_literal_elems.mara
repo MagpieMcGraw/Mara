@@ -76,8 +76,8 @@ main :: fun() {
 	pts := [3!]Point{pt, Point{x = 5, y = 6}, mk(7)}
 	print("structs=% % % % % %", pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y)
 
-	w : [..8]utf8 = "xy"
-	strs := [2!][..8]utf8{"ab", w}
+	w : [8]utf8 = "xy"
+	strs := [2!][8]utf8{"ab", w}
 	print("strings=% %", strs[0], strs[1])
 
 	row : [3!]i64 = [1, 2, 3]

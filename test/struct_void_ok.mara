@@ -24,7 +24,7 @@ Half :: struct {
 }
 
 Named :: struct {
-	name: [..16]utf8
+	name: [16]utf8
 	n: i64
 }
 

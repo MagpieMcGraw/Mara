@@ -95,6 +95,9 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         return type_slice(tc_type(k, Tree_Id(t.b[n]), span))
     case .Type_Partial:
         elem := tc_type(k, Tree_Id(t.b[n]), span)
+        // (`[Kind]T`, Kind an enum: one T for each of its values — always
+        // full, an array, not a list.)
+        if et, slots := tc_enum_slots(k, Tree_Id(t.a[n])); et != nil { return type_fixed_array(slots, elem, et) }
         size, ok := tc_type_size(k, Tree_Id(t.a[n]), elem, span)
         if !ok { return Type_Error{} }
         return type_partial_array(size, elem)
@@ -107,9 +110,6 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         // value + 1 of them, indexed by K.)
         if r[1] == 0 {
             if et, slots := tc_enum_slots(k, Tree_Id(r[0])); et != nil { return type_fixed_array(slots, elem, et) }
-            // (A size by a constant's name, `[MAX]T`: exactly MAX, written
-            // `[MAX!]T` — the parser said so of any other size.)
-            if r[2] == 0 && t.tag[r[0]] == .Ident { tc_error(k, tree_span(t, n), TYPE_FIXED_ARRAY_BANG) }
         }
         size, ok := tc_type_size(k, Tree_Id(r[0]), elem, span)
         if !ok { return Type_Error{} }

@@ -13,9 +13,9 @@ use mara.font
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(64 * MB))
 
-	glyphs : [..96]Glyph
+	glyphs : [96]Glyph
 	metrics : Line_Metrics
-	atlas : [..MSDF_ATLAS * MSDF_ATLAS * 3]byte
+	atlas : [MSDF_ATLAS * MSDF_ATLAS * 3]byte
 	e := load_glyphs_and_metrics("../Pounce/data/fonts/Inter_18pt-Regular.ttf",
 		&glyphs, &metrics, &atlas, 32)
 	if bool(e) {

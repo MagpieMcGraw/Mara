@@ -8,7 +8,7 @@ use mara.core
 
 main :: fun() {
 	fs : [3!]f32 = [1, 2, 3]
-	is : [..4]i64
+	is : [4]i64
 	f := fs[:]
 	is[0:3] = f
 }

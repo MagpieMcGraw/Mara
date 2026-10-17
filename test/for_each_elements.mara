@@ -18,12 +18,12 @@ module for_each_elements
 
 V3 :: distinct [3!]f32
 Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
-Named :: struct { name: [..8]utf8, n: i64 }
+Named :: struct { name: [8]utf8, n: i64 }
 main :: fun() {
 	vs : [3!]V3
 	vs[1] = V3{1, 2, 3}
 	for v in vs { print("vec=% % %", v[0], v[1], v[2]) }
-	names : [2!][..8]utf8
+	names : [2!][8]utf8
 	names[0] = "orc"
 	names[1] = "elf"
 	for n in names {

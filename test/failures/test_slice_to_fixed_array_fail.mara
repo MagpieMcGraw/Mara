@@ -12,7 +12,7 @@ as_arr :: fun(src: []byte) -> [8!]byte {
 }
 
 main :: fun() -> i64 {
-	buf : [..8]byte
+	buf : [8]byte
 	buf.len = 8
 	a := as_arr(buf[:])
 	return i64(a[0])

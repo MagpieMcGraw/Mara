@@ -14,7 +14,7 @@ inner :: fun(storage: ^[]byte) -> Holder {
 }
 
 outer :: fun() -> Holder {
-	storage : [..512]byte
+	storage : [512]byte
 	return inner(&storage)
 }
 

@@ -20,7 +20,7 @@ use mara.memory
 
 main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
-	storage : [..64 * KB]byte
+	storage : [64 * KB]byte
 
 	path, e := executable_path()
 	if e {

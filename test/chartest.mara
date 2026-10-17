@@ -11,7 +11,7 @@ main :: fun() -> i64 {
 	s := "Hi"
 	print("elem:", s[0])     // expect: elem: H   (utf8 string element)
 
-	buf : [..8]utf8
+	buf : [8]utf8
 	buf.len = 0
 	buf[buf.len] = 'Z'       // char literal into a utf8 buffer
 	buf.len += 1

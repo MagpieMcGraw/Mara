@@ -14,10 +14,10 @@ use mara.core
 // take appends.
 
 Inner  :: struct { x : i32 = 7,  name : str64 }
-Holder :: struct { items : [..3]Inner,  fixed : [2!]Inner = all Inner() }
+Holder :: struct { items : [3]Inner,  fixed : [2!]Inner = all Inner() }
 
 main :: fun() {
-    arr : [..3]Inner
+    arr : [3]Inner
     print("local PA      (0 0):", arr[0].x, arr[2].x)
 
     farr : [3!]Inner

@@ -27,7 +27,7 @@ main :: fun() {
 	}
 
 	// Read it back to see it arrived (see read_file.mara).
-	storage : [..1 * KB]byte
+	storage : [1 * KB]byte
 	back, _ := read_entire_file("write_file_demo.txt", &storage)
 	print("wrote % bytes", back.len)
 

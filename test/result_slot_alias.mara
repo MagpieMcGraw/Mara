@@ -7,15 +7,15 @@ module result_slot_alias
 // still reads its argument — it goes through a temporary. (The graph emitter
 // took the result slot as fresh: f(%sret, %sret) zeroed x before reading it.)
 
-g :: fun(pa: [..4]i64) -> [..4]i64 {
-	r : [..4]i64
+g :: fun(pa: [4]i64) -> [4]i64 {
+	r : [4]i64
 	r.len = 1
 	r[0] = pa[0] + 10
 	return r
 }
 
-f :: fun() -> [..4]i64 {
-	buf : [..4]i64
+f :: fun() -> [4]i64 {
+	buf : [4]i64
 	buf.len = 1
 	buf[0] = 5
 	buf = g(buf)

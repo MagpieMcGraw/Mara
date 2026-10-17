@@ -261,14 +261,14 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // (`all v`, bare: an anonymous `{all v}`.)
     if tr.tag[n] == .Broadcast { ty, entries = 0, slice.clone([]Tree_Id{n}, context.temp_allocator) }
     name := tc_name(k, ty) if ty != 0 && tr.tag[ty] == .Ident else ""
-    // Its type: written (`Foo{…}`, `[3]f32{…}`, `Vec3{…}`), or its use's.
+    // Its type: written (`Foo{…}`, `[3!]f32{…}`, `Vec3{…}`), or its use's.
     t: Type
     variant: string   // (a union's variant's literal: its name)
     // (A struct field's `all v`: its field's type, an array — fixed or
     // partial; said at the struct when it is none.)
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
-    empty := false   // (`[..N]T{}`: its zero — len 0, where it goes)
+    empty := false   // (`[N]T{}`: its zero — len 0, where it goes)
     switch {
     case fd != nil:
         #partial switch _ in distinct_base(fd.t) {
@@ -327,7 +327,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         t = qt
     case:
-        // (A typed array's: `[3]f32{…}`, an empty `[..N]T{}`.)
+        // (A typed array's: `[3!]f32{…}`, an empty `[N]T{}`.)
         t = tc_type(k, ty, span)
         if is_partial_array(t) {
             if len(entries) > 0 {

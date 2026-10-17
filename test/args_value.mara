@@ -16,7 +16,7 @@ use mara.os
 // (More than 64 arguments is a startup error; the suite can't pass arguments,
 // so that one is checked by hand.)
 
-Bag :: struct { items: [..4][]i64 }
+Bag :: struct { items: [4][]i64 }
 
 total :: fun(s: []i64) -> i64 {
 	t : i64 = 0
@@ -50,7 +50,7 @@ main :: fun() -> i64 {
 	data[2] = 3
 	fixed : [2!][]i64
 	fixed[0] = data[:]
-	pa : [..4][]i64
+	pa : [4][]i64
 	pa[0] = data[:]
 	pa.len = 1
 	b : Bag

@@ -92,8 +92,8 @@ Tree_Tag :: enum u8 {
     Type_Tilde,     // `~T`: main: `~`; a: the name
     Type_Pointer,   // `^T`: main: `^`; a: the element
     Type_Slice,     // `[]T`, `[:N]T`: main: `[`; a: the capacity; b: the element
-    Type_Partial,   // `[..N]T`: main: `[`; a: the size; b: the element
-    Type_Array,     // `[N]T`, `[N I]T`: main: `[`; a: rec {size, index type}; b: the element
+    Type_Partial,   // `[N]T`, a list (`[Kind]T`, Kind an enum: an array): main: `[`; a: the size; b: the element
+    Type_Array,     // `[N!]T`, `[N I]T`: main: `[`; a: rec {size, index type}; b: the element
     Type_Generic,   // `Name(args)`: main: the name; a: list — the arguments (types or values)
     Type_Fun,       // `fun(T) -> R`, `fn(T -> R)`: a: list — the params; b: list — the returns
     Type_Of,        // `fn name`, `fn pkg.name`: main: `fn`; a: tokens — the name's parts
@@ -122,7 +122,7 @@ Tree_Tag :: enum u8 {
     Index,          // `x[i]`: main: `[`; a: the operand; b: the index
     Slice,          // `x[lo:hi]`: main: `[`; a: the operand; b: rec {lo, hi}
     Big_Endian,     // `#big_endian x[i]`: main: `#`; a: the read
-    Literal,        // `{…}`, `Name{…}`, `[N]T{…}`: main: `{` (a typed array's: its `[`);
+    Literal,        // `{…}`, `Name{…}`, `[N!]T{…}`: main: `{` (a typed array's: its `[`);
                     // a: its type; b: list — its entries
     Named_Entry,    // `name = v` in a literal: main: the name; a: the value
     Broadcast,      // `all v`: main: `all`; a: the value

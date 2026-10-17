@@ -631,7 +631,7 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 //   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
-	text : [..1000]utf8
+	text : [1000]utf8
 	&text + "mara view layout\nwindow "
 	&text + int_text(i64(ui.width))
 	&text + " "
@@ -676,7 +676,7 @@ layout_save :: fun(ui: ^Ui) {
 // panel kind it doesn't name, as the default layout has it. False when
 // there's none — or it isn't one: the default layout then.
 layout_load :: fun(ui: ^Ui) -> bool {
-	buf : [..4000]byte
+	buf : [4000]byte
 	data, re := read_entire_file(ui.layout_path, &buf)
 	if re do return false
 	text : []utf8 = data
@@ -694,7 +694,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		if line.len > 0 {
 			if line[line.len - 1] == '\r' do line = line[0 : line.len - 1]
 		}
-		words : [..8]Field
+		words : [8]Field
 		w_at : i64 = 0
 		for w_at < line.len {
 			w := next_word(line, w_at)
@@ -743,12 +743,12 @@ layout_load :: fun(ui: ^Ui) -> bool {
 	if first or ui.panels.len == 0 do return false
 	// (Kinds it doesn't name — panels newer than it: where the default
 	// layout has them, in front, to be seen.)
-	saved : [..8]Panel
+	saved : [8]Panel
 	for pn in ui.panels {
 		&saved + pn
 	}
 	default_layout(ui)
-	defaults : [..8]Panel
+	defaults : [8]Panel
 	for pn in ui.panels {
 		&defaults + pn
 	}

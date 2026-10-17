@@ -69,7 +69,7 @@ Megastruct :: struct {
 	// Asset system
 	//assets: Assets
 
-	cameras: [..6]Camera = all Camera(1280, 720, 90)
+	cameras: [6]Camera = all Camera(1280, 720, 90)
 
 	camera := Camera(1280, 720, 90)
 	mouse_look: bool

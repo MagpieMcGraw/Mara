@@ -14,7 +14,7 @@ safe :: fun(storage: ^[]byte) -> Holder {
 }
 
 main :: fun() {
-	buf : [..64]byte
+	buf : [64]byte
 	h := safe(&buf)
 	h.sl[0] = 5
 	print("ok:", h.sl[0])

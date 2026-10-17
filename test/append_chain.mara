@@ -16,7 +16,7 @@ use mara.memory
 // is (as an add's dst is): empty in a list only grown, what it held in one
 // shrunk and filled again.
 
-Name :: [..500]utf8
+Name :: [500]utf8
 Pair :: struct { a: i64  b: i64 }
 
 // A list's next name, from its parts, through the list's pointer.
@@ -30,26 +30,26 @@ main :: fun() {
 	&name + "C:/code" + "/" + "a.mara"
 	print("chained:", name, name.len)
 
-	files : [..10]Name
+	files : [10]Name
 	next(&files) + "C:/code" + "/" + "b.mara"
 	next(&files) + "x" + '/' + "y"
 	print("next:", files.len, files[0], files[1])
 
-	pairs : [..4]Pair
+	pairs : [4]Pair
 	p := next(&pairs)
 	p.a = 3
 	print("struct:", pairs.len, pairs[0].a, pairs[0].b)
 
-	nums : [..8]i64
+	nums : [8]i64
 	&nums + 1 + 2 + 3
 	print("items:", nums.len, nums[0], nums[1], nums[2])
 
-	names : [..4]Name
+	names : [4]Name
 	add_name(&names, "dir", "one")
 	add_name(&names, "dir", "two")
 	print("through a pointer:", names.len, names[0], names[1])
 
-	again : [..4]str64
+	again : [4]str64
 	next(&again) + "a"
 	again.len = 0
 	next(&again) + "b"

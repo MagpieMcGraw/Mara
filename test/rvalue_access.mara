@@ -41,7 +41,7 @@ main :: fun() {
 
 	sum += arr4(&calls)[2]                    // 30   fixed array returned by value
 
-	buf : [..8]i64
+	buf : [8]i64
 	buf.len = 8
 	buf[2] = 100
 	sum += view(&buf, &calls)[1]              // 130  slice returned
@@ -55,7 +55,7 @@ main :: fun() {
 
 	a : [4!]i64
 	a[1] = 9
-	list : [..4][]i64                         // a partial array of slices
+	list : [4][]i64                         // a partial array of slices
 	list[0] = a[:]
 	list.len = 1
 	sum += list[0][1]                         // 1150

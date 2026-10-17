@@ -181,12 +181,12 @@ ask_recurses :: proc(t: Type) -> bool {
     return false
 }
 
-// Peel ^ / [] / [N] / [..] wrappers, returning the core type and a wrapper prefix
+// Peel ^ / [] / [N!] / [N] wrappers, returning the core type and a wrapper prefix
 // (outermost first) to render on the target — e.g. `[]^Mesh` -> (Mesh, "[]^"),
-// `[4][4]f32` -> (f32, "[4][4]"). Fixed-array SIZES are kept so the wrapper reads
-// back as source (Vec3's `[3]f32` vs Quat's `[4]f32` stay distinct — collapsing
-// both to `[]f32` made them indistinguishable). Slices stay `[]` (no compile-time
-// size) and partial arrays `[..]` (capacity omitted — often unspecified at decl).
+// `[4!][4!]f32` -> (f32, "[4!][4!]"). SIZES are kept so the wrapper reads back
+// as source (Vec3's `[3!]f32` vs Quat's `[4!]f32` stay distinct — collapsing
+// both to `[]f32` made them indistinguishable); a list's too, `[16]`. Slices
+// stay `[]` (no compile-time size).
 ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
     cur := t
     parts: [dynamic]string
@@ -194,8 +194,8 @@ ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
         #partial switch v in cur {
         case ^Type_Ptr:           append(&parts, "^");    cur = v.elem
         case ^Type_Slice:         append(&parts, "[]");   cur = v.elem
-        case ^Type_Fixed_Array:   append(&parts, fmt.tprintf("[%d]", v.size)); cur = v.elem
-        case ^Type_Partial_Array: append(&parts, "[..]"); cur = v.elem
+        case ^Type_Fixed_Array:   append(&parts, fmt.tprintf("[%d!]", v.size)); cur = v.elem
+        case ^Type_Partial_Array: append(&parts, fmt.tprintf("[%d]", v.size)); cur = v.elem
         case: break peel
         }
     }
@@ -465,7 +465,7 @@ Ask_Out_Edge :: struct {
     core: Type,            // target type, wrappers already peeled (may be primitive — caller filters)
     kind: Ask_Edge_Kind,
     via:  string,          // field / param name ("" for returns / base)
-    wrap: string,          // "^" / "[]" / "[..]" prefix shown on the target
+    wrap: string,          // "^" / "[]" / "[16]" / "[3!]" prefix shown on the target
 }
 
 ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge) {
@@ -1034,7 +1034,7 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int, dir :
 
 // Render node_id's members at `indent` — typed fields (edges) then primitive basics,
 // recursing into struct / union targets. distinct / enum / primitive targets are
-// LEAVES: we don't unwrap a Vec3 to its `[3]f32` base. Names are module-qualified.
+// LEAVES: we don't unwrap a Vec3 to its `[3!]f32` base. Names are module-qualified.
 ask_walk_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, node_id, indent: int, seen: ^map[int]bool) {
     for e in res.edges {
         if e.from != node_id { continue }
@@ -1330,10 +1330,10 @@ ask_module_name_matches :: proc(home, query: string) -> bool {
 
 // The shapes a module's declarations have — each fun's params, results and
 // locals, each struct's fields (`mara ask <module> types`): how many of each
-// are lists `[..N]T`, arrays `[N]T`, arrays by an enum `[K]T`, slices `[]T`,
+// are lists `[N]T`, arrays `[N!]T`, arrays by an enum `[K]T`, slices `[]T`,
 // pointers `^T`, anything else; for the array shapes, the types most written.
 // Generic instances aren't counted: the generic is, as written.
-ASK_SHAPES :: [?]string{"[..N]T", "[N]T", "[K]T", "[]T", "^T", "other"}
+ASK_SHAPES :: [?]string{"[N]T", "[N!]T", "[K]T", "[]T", "^T", "other"}
 ASK_SHAPE_NAMES :: [?]string{"list", "array", "by enum", "slice", "pointer", ""}
 ASK_PLACES :: [?]string{"params", "results", "locals", "fields"}
 

@@ -43,7 +43,7 @@ ANSWER_FAILED :: "-- end of answer: failed --"
 // A connection, its line coming.
 Client :: struct {
 	id:    File_Id
-	line:  [..2000]utf8   // as it comes; whole once it ends in '\n'
+	line:  [2000]utf8   // as it comes; whole once it ends in '\n'
 	whole: bool
 	docs:  bool           // it came on the docs pipe: docs are all it's answered
 }
@@ -51,10 +51,10 @@ Client :: struct {
 Hub :: struct {
 	listening: bool
 	listener:  Pipe_Listener
-	command:   [..2000]utf8   // "<compiler>" serve <module>
+	command:   [2000]utf8   // "<compiler>" serve <module>
 	serve:     Process
 	serving:   bool           // serve started, not ended
-	waiting:   [..16]Client   // connected, their lines coming or waiting for serve
+	waiting:   [16]Client   // connected, their lines coming or waiting for serve
 	asked:     Client         // the one whose query serve is answering
 	asking:    bool
 	shown:     bool           // ... a query the Ask panel shows
@@ -62,12 +62,12 @@ Hub :: struct {
 	cursor_started: bool      // ... its first line come: the last one's replaced
 	cursor_errors:  bool      // ... the module's errors in it: it doesn't check
 	gone:      bool           // ... its connection failed: the answer read on to its end
-	sent:      [..2100]utf8   // ... the line serve was sent
+	sent:      [2100]utf8   // ... the line serve was sent
 	answered:  bool           // ... any of the answer come
 	resent:    bool           // ... sent again, to a serve started anew
-	current:   [..4000]utf8   // serve's answer's line coming
+	current:   [4000]utf8   // serve's answer's line coming
 
-	docs_name:      [..300]utf8   // the docs pipe name; none: `mara view` gave none
+	docs_name:      [300]utf8   // the docs pipe name; none: `mara view` gave none
 	docs_listening: bool
 	docs_listener:  Pipe_Listener
 	docs_tried:     u32           // when listening there was last tried (GetTicks)
@@ -227,7 +227,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 // Client c's line read, what has arrived of it: false when its connection
 // ended first.
 client_read :: fun(c: ^Client) -> bool {
-	chunk : [..512]byte
+	chunk : [512]byte
 	open, e := pipe_read(c.id, &chunk)
 	if e or not open do return false
 	text : []utf8 = chunk[:]
@@ -303,7 +303,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 // Lines sent as an answer: the status line, a blank one, each line; then the
 // end line — failed when nothing was `found`.
 answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
-	out : [..64 * KB]utf8
+	out : [64 * KB]utf8
 	&out + found.status[:]
 	&out + "\n\n"
 	for k in 0 .. found.lines.len {
@@ -338,7 +338,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	if h.cursor do query = line[8 : line.len]
 	if h.shown {
 		lines_clear(&ui.asked)
-		heading : [..2100]utf8
+		heading : [2100]utf8
 		&heading + "mara ask "
 		&heading + query
 		lines_add(&ui.asked, heading[:], STYLE_QUERY)
@@ -375,7 +375,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 // its lines to the Ask panel when it's shown; at its end line, the
 // connection closed.
 read_answer :: fun(ui: ^Ui, h: ^Hub) {
-	chunk : [..16 * KB]byte
+	chunk : [16 * KB]byte
 	open, e := pipe_read(h.serve.output, &chunk)
 	if e or not open {
 		serve_down(h)

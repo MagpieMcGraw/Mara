@@ -1,7 +1,7 @@
 // How to see what's in a directory — its files and the directories in it —
 // with dir_read.
 //
-// dir_read lists them into storage you declare, `[..N]byte`, after what's
+// dir_read lists them into storage you declare, `[N]byte`, after what's
 // in it already, and gives them back, a view of storage: a `[]Dir_Entry`,
 // an entry for each — its name (not its path: join the directory's and the
 // name to open it) and whether it's a directory. "." and ".." aren't
@@ -31,7 +31,7 @@ is_page :: fun(entry: Dir_Entry) -> bool {
 
 main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
-	storage : [..1 * MB]byte
+	storage : [1 * MB]byte
 
 	// This program's own directory, doc/: the .mara files in it.
 	entries, e := dir_read(".", &storage)

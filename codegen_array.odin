@@ -241,7 +241,7 @@ emit_slice_header_at :: proc(g: ^Codegen, at, data_ptr, len_val, cap_val: Val) {
 // ---------------------------------------------------------------------------
 // Byte-buffer reinterpret codegen
 //
-// Covers []byte, [N]byte, and Array(byte, N). All three share the same shape:
+// Covers []byte, [N!]byte, and Array(byte, N). All three share the same shape:
 //   1. Resolve the buffer to (data_ptr, cap_val)
 //   2. Check offset + size <= cap
 //   3. GEP by i8 at the offset, store/load sized by value type
@@ -352,7 +352,7 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: Val, base_ir_type: Ir_Type, t
         elem_bytes := type_size(fa.elem)
         if elem_bytes <= 1 { return }
         elem_ir := llvm_type_from_checker(fa.elem)
-        // Bounded unroll: large fixed arrays (e.g. `[65536]u32` for a TTF loca
+        // Bounded unroll: large fixed arrays (e.g. `[65536!]u32` for a TTF loca
         // table) produce ~4 IR lines per element times fa.size — a few hundred
         // is fine, tens of thousands ruins the IR file and clang. Past the
         // threshold, emit the same counter-driven loop the partial-array path
@@ -406,7 +406,7 @@ is_swappable_integer :: proc(t: Type) -> bool {
 // ---- No-arg construction of array element backings ------------------------
 //
 // Array slots are zero-filled, not constructed — so the elements of a
-// `[..N]Font` / `[N]str64` come up with field defaults un-applied and nested
+// `[N]Font` / `[N!]str64` come up with field defaults un-applied and nested
 // partial-array headers null (cap = 0). These helpers run each element type's
 // no-arg constructor at array-declaration / struct-construction time, so any
 // slot you later index or append into is already a valid value. (User decision
@@ -492,7 +492,7 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: Val, elem: Type, count
 }
 
 // `each` over `count` elements of type `elem` starting at `elements_ptr` (a
-// pointer to element 0): a runtime counted loop, so `[..256]Font` is a
+// pointer to element 0): a runtime counted loop, so `[256]Font` is a
 // handful of instructions, not 256 unrolled ones.
 emit_each_element :: proc(g: ^Codegen, elements_ptr: Val, elem: Type, count: int, each: proc(g: ^Codegen, ptr: Val, t: Type, args: []Ir_Arg), args: []Ir_Arg = nil) {
     l := emit_loop_begin(g, ir_int(count), "ctor")
@@ -603,7 +603,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
 // width. Used by `#big_endian` on partial-array reads — the count is only
 // known at runtime, so the per-element swap can't be unrolled.
 //
-// If `elem_ty` contains no multi-byte integer leaves (e.g. `[..N]byte`), the
+// If `elem_ty` contains no multi-byte integer leaves (e.g. `[N]byte`), the
 // inner body is a no-op and an optimizer will see through it — but skip the
 // loop entirely as a cheap source-level guard.
 emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr, count: Val, elem_ty: Type) {

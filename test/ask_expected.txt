@@ -60,8 +60,8 @@ camera — module   (1 type, 9 funs)
 
   shapes       (its funs' params, results, locals; its structs' fields)
                        params results  locals  fields     all
-    [..N]T   list           0       0       0       0       0
-    [N]T     array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [N]T     list           0       0       0       0       0
+    [N!]T    array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
     [K]T     by enum        0       0       0       0       0
     []T      slice          0       0       0       0       0
     ^T       pointer       13       0       0       0      13
@@ -85,8 +85,8 @@ camera — module   (1 type, 9 funs)
 
   shapes       (its funs' params, results, locals; its structs' fields)
                        params results  locals  fields     all
-    [..N]T   list           0       0       0       0       0
-    [N]T     array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [N]T     list           0       0       0       0       0
+    [N!]T    array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
     [K]T     by enum        0       0       0       0       0
     []T      slice          0       0       0       0       0
     ^T       pointer       13       0       0       0      13
@@ -165,7 +165,7 @@ above (types)   (5 types, full closure (depth ∞))
 
 below (types)   (1 user, 2 use-sites, full closure (depth ∞))
   struct Megastruct  (field camera : Camera)
-  struct Megastruct  (field cameras : [..]Camera)
+  struct Megastruct  (field cameras : [6]Camera)
 === Pounce | Camera type above
 Camera — struct  camera.mara:10   (module camera)
 
@@ -194,7 +194,7 @@ Camera — struct  camera.mara:10   (module camera)
 
 below (types)   (1 user, 2 use-sites, full closure (depth ∞))
   struct Megastruct  (field camera : Camera)
-  struct Megastruct  (field cameras : [..]Camera)
+  struct Megastruct  (field cameras : [6]Camera)
 === Pounce | Camera call above
 Camera — struct  camera.mara:10   (module camera)
 
@@ -276,11 +276,11 @@ Megastruct — struct  Pounce.mara:53   (module Pounce)
 above (types)   (33 types, depth 2)
   assets : asset.Assets
     font_stream : asset.Font_Stream
-      font_files : [64]mara.core.str64
+      font_files : [64!]mara.core.str64
       current : i64
       initialized : bool
-    fonts : [..]asset.Font
-      glyphs : [..]mara.font.Glyph
+    fonts : [64]asset.Font
+      glyphs : [256]mara.font.Glyph
       metrics : mara.font.Line_Metrics
       name : mara.core.str64
       size : i32
@@ -291,14 +291,14 @@ above (types)   (33 types, depth 2)
       file_handle : mara.os.File_Id
       cache_index : i64
       file_open : bool
-    meshes : [..]object.Mesh
+    meshes : [512]object.Mesh
       name : mara.core.str64
       index : i64
     on_disk : asset.Disk
-      audio : [..]mara.core.str64
-      fonts : [..]mara.core.str64
-      models : [..]mara.core.str64
-      textures : [..]mara.core.str64
+      audio : [256]mara.core.str64
+      fonts : [64]mara.core.str64
+      models : [512]mara.core.str64
+      textures : [1024]mara.core.str64
     state : asset.Stream_State
     tex_stream : asset.Tex_Stream
       file_handle : mara.os.File_Id
@@ -306,12 +306,12 @@ above (types)   (33 types, depth 2)
       cache_index : i64
       current_layer : u32
       file_open : bool
-    textures : [..]object.Texture
+    textures : [1024]object.Texture
       name : mara.core.str64
-      uv : [4]f32
+      uv : [4!]f32
       layer : u32
     vao : ^gfx.VAO_State
-      meshes : [512]gfx.VAO_Mesh
+      meshes : [512!]gfx.VAO_Mesh
         first_index : u32
         index_count : u32
         base_vertex : i32
@@ -330,7 +330,7 @@ above (types)   (33 types, depth 2)
     font_texture_id : u32
     font_texture_size : i32
     needs_resolve : bool
-  cameras : [..]camera.Camera
+  cameras : [6]camera.Camera
     obj : object.Object
       accel : mara.math.Vec3
       dir : mara.math.Quat
@@ -353,10 +353,10 @@ above (types)   (33 types, depth 2)
   camera : camera.Camera  (shown above)
   drag_offset : mara.math.Vec3
   draw_state_highlight : gfx.DrawState
-    batches : [..]gfx.Mesh_Batch
-      instances : [..]gfx.Instance
+    batches : [16]gfx.Mesh_Batch
+      instances : [512]gfx.Instance
       mesh_id : i64
-    commands : [..]gfx.DrawCommand
+    commands : [256]gfx.DrawCommand
       index_count : u32
       instance_count : u32
       first_index : u32
@@ -372,17 +372,17 @@ above (types)   (33 types, depth 2)
   draw_state_object : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
   gl_context : mara.sdl.GLContext
-  markers : [4]Pounce.Marker
+  markers : [4!]Pounce.Marker
     pos : mara.math.Vec3
-    color : [3]f32
+    color : [3!]f32
   playa : object.Playa
     obj : object.Object  (shown above)
     visual : object.Visual
       mesh : object.Mesh  (shown above)
       texture : object.Texture  (shown above)
       texture_index : u32
-      color : [3]f32
-      font : [..]utf8
+      color : [3!]f32
+      font : [64]utf8
       resolve : bool
   player : Pounce.Player
     color : mara.math.Vec3
@@ -411,13 +411,13 @@ above (types)   (33 types, depth 2)
   embed events : event.Event_State
     dropfile : event.Dropfile
       was_dropped : bool
-      name : [..]utf8
+      name : [256]utf8
     keyboard : event.Keyboard
-      pressed : [512]bool
-      held : [512]bool
+      pressed : [512!]bool
+      held : [512!]bool
     mouse : event.Mouse
-      pressed : [6]bool
-      held : [6]bool
+      pressed : [6!]bool
+      held : [6!]bool
       x : f32
       y : f32
       xrel : f32
@@ -640,12 +640,12 @@ gfx_mesh_generation.mara:66:11  token '0'
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
 
-  Define                   [422,868)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [424,868)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Define                   [421,867)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [423,867)  fun(game: ^Megastruct, memory: ^[]byte) { …
       → Fun game_init, Param game, Param memory, Return
-  Assign                   [550,557)  game.vao = VAO_State()
+  Assign                   [549,556)  game.vao = VAO_State()
       → Write
-  Call                     [554,557)  VAO_State()   : VAO_State
+  Call                     [553,556)  VAO_State()   : VAO_State
       → Local temp, Arith << ×3, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object
@@ -657,7 +657,7 @@ obj — field : Object
   obj_get_directions(camera.obj.dir)   : distinct Vec3
   fwd, up, right := obj_get_directions(camera.obj.dir)
 === Pounce | what at Pounce.mara:163:33
-"dropepd file: " : [..64]utf8
+"dropepd file: " : [64]utf8
   in        game_events  Pounce.mara:156
 
   print("dropepd file: ", file.name)

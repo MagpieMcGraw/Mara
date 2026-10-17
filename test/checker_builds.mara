@@ -45,8 +45,8 @@ sumd :: dispatch{ sumf, sumb }
 
 GREET :: "hi"
 NAME :: "mara"
-greet :: fun() -> [..8]utf8 { return GREET }
-name :: fun() -> [..8]utf8 { return NAME }
+greet :: fun() -> [8]utf8 { return GREET }
+name :: fun() -> [8]utf8 { return NAME }
 
 main :: fun() {
 	// A loop over what is no plain place: a call's result, text.

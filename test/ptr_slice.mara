@@ -72,17 +72,17 @@ emit :: fun(c: ^Ctx, text: []utf8) -> i64 {
 main :: fun() {
 	sum : i64 = 0
 
-	a : [..4]i64
+	a : [4]i64
 	a.len = 4
 	sum += through_local(&a)                          // 22
 
-	b : [..4]i64
+	b : [4]i64
 	b.len = 4
 	h := Holder{s = &b}
 	sum += through_field(&h)                          // 44
 	sum += through_value_field(h)                     // 49
 
-	c : [..4]i64
+	c : [4]i64
 	c.len = 4
 	three : [3!]i64
 	sum += header_writes(&c, three[:])                // 54
@@ -91,11 +91,11 @@ main :: fun() {
 	g := Grid{cells = &cells}
 	sum += through_array_field(&g)                    // 63
 
-	bytes : [..16]byte
+	bytes : [16]byte
 	bytes.len = 16
 	if bytes_via_local(&bytes) == u32(0x01020304) do sum += 100   // 163
 
-	out : [..32]utf8
+	out : [32]utf8
 	ctx := Ctx{out = &out}
 	_ = emit(&ctx, "ab")
 	sum += emit(&ctx, "cde")                          // 168

@@ -7,7 +7,7 @@ use mara.core
 // (`&buf + text`, mara.core's for []utf8) aren't its. (An alias, `type`, is
 // its base: str64 appends.)
 
-DBuf :: distinct [..64]utf8
+DBuf :: distinct [64]utf8
 
 main :: fun() {
 	d : DBuf

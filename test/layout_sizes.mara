@@ -7,7 +7,7 @@ module layout_sizes
 // One layout for every size: LLVM's. The checker's own counted every union
 // as 8 bytes (a struct holding a u8-tagged one was 16, not 2; a byte view of
 // a 48-byte struct was bounds-checked as 16). Codegen's skipped a partial
-// array's end padding (three `[..5]u8` were 87 bytes, not 96) and aligned a
+// array's end padding (three `[5]u8` were 87 bytes, not 96) and aligned a
 // #packed struct by its fields, not to a byte.
 
 use mara.core
@@ -27,7 +27,7 @@ Holder :: struct {
 }
 
 Names :: struct {
-	all: [3!][..5]u8
+	all: [3!][5]u8
 }
 
 Inner :: #packed struct {

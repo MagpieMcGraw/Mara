@@ -599,7 +599,7 @@ tc_register_types :: proc(k: ^TC, s: Tree_Id) {
 }
 
 // `A :: B`, a name by itself naming a type (the resolver's: rs_alias_kinds):
-// another name for it, as `A :: [..16]utf8` is.
+// another name for it, as `A :: [16]utf8` is.
 tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
     t := k.t
     value := Tree_Id(t.b[s])

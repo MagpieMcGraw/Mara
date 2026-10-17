@@ -27,8 +27,8 @@ use mara.string
 //@ expect-output: enums: Color.Green CD.Green CD.Red green true
 //@ expect-output: plain enum: green
 
-Buf  :: [..64]utf8
-DBuf :: distinct [..64]utf8
+Buf  :: [64]utf8
+DBuf :: distinct [64]utf8
 Arr  :: [4!]i64
 DArr :: distinct [4!]i64
 Sl   :: []i64

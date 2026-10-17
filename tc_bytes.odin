@@ -88,7 +88,7 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, op_tok: Token
 }
 
 // Into a span of bytes, a value's raw bytes: a value no array, or a fixed
-// array — `[2]u32`, `[2]u8{1, 2}` — a view of its own type, as many bytes as
+// array — `[2!]u32`, `[2!]u8{1, 2}` — a view of its own type, as many bytes as
 // the span has when its bounds are numbers; a slice's or a partial array's
 // elements, theirs, as many as it holds (tc_slice_assign leaves them to the
 // copy; byte elements are copied as they are). Plain data, of a width: no

@@ -37,7 +37,7 @@ three_fields :: fun() -> i64 {
 
 main :: fun() {
 	nums : [9!]i64 = {1, 2, 3, 4, 5, 6, 7, 8, 9}
-	storage : [..512]byte
+	storage : [512]byte
 	s := small_ones(nums[:], &storage)
 	b := big_ones(nums[:], &storage)
 	print("small:", s.len, s[0], s[2])

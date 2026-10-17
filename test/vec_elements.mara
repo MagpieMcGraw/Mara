@@ -33,11 +33,11 @@ push_pt :: fun(arr: ^[]Vec3, v: Vec3) {
 }
 
 main :: fun() {
-	pts : [..4]Vec3
+	pts : [4]Vec3
 	fill(&pts, 3)
 	print("store=% % % % % % %", pts.len, pts[1][0], pts[1][1], pts[1][2], pts[2][0], pts[2][1], pts[2][2])
 
-	more : [..4]Vec3
+	more : [4]Vec3
 	push_pt(&more, Vec3{1, 2, 3})
 	push_pt(&more, Vec3{4, 5, 6})
 	print("append=% % % %", more.len, more[0].x, more[0].y, more[0].z)

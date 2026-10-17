@@ -222,7 +222,7 @@ parse_number :: fun(s: []utf8) -> f64, bool {
 
 // A whole number as text: its digits, a '-' first when it's below 0.
 int_text :: fun(n: i64) -> str64 {
-	backwards : [..24]utf8
+	backwards : [24]utf8
 	v := n
 	for true {
 		// (Each digit off v's end without negating v: -v doesn't fit for the

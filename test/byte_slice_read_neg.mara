@@ -7,7 +7,7 @@ Holder :: struct { s: []utf8 }
 
 main :: fun() {
 	src := "hello world, and more"
-	bytes : [..32]byte
+	bytes : [32]byte
 	for c, i in src { bytes[i] = u8(c) }
 	bytes.len = src.len
 	h : Holder = bytes[0]

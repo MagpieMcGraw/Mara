@@ -9,7 +9,7 @@ Camera :: class(w, h, fovy : f32) {
 }
 
 Game :: struct {
-    cameras: [..6]Camera = all Camera(640, 480, 90)
+    cameras: [6]Camera = all Camera(640, 480, 90)
 }
 
 main :: fun() -> i64 {

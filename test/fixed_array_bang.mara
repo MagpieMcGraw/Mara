@@ -5,10 +5,12 @@ module fixed_array_bang
 //@ expect-output: | constant 4
 //@ expect-output: | generic 3 2
 //@ expect-output: | by enum 3 true
+//@ expect-output: | lists 1 3 0 4
 
 // An array of exactly N is written `[N!]T`: a number, a constant's name,
-// a generic's `$N`, a typed literal's. An enum's array, `[Kind]T`, one T
-// for each of its values, needs none — it can't be a list.
+// a generic's `$N`, a typed literal's. `[N]T` is a list, up to N. An enum's
+// array, `[Kind]T`, one T for each of its values, needs no `!` — it can't
+// be a list.
 
 use mara.core
 
@@ -30,4 +32,8 @@ main :: fun() {
 	seen : [Kind]bool
 	seen[.c] = true
 	print("| by enum", seen.len, seen[.c])
+	list : [3]i64
+	&list + 7
+	room : [MAX]byte
+	print("| lists", list.len, list.cap, room.len, room.cap)
 }

@@ -796,7 +796,7 @@ flow_basic_name :: proc(t: Type) -> string {
 }
 
 // Group supplier / consumer bindings by their nominal type — pointer / slice / array
-// layers stripped, distinct kept (so `^Camera`, `[..]Camera`, `Camera` all fold to
+// layers stripped, distinct kept (so `^Camera`, `[]Camera`, `Camera` all fold to
 // Camera) — into rows sorted named-first (the meaningful types), then most-carried,
 // then by name. Caller owns the rows' `vars` (frees them).
 @(private="file")
@@ -1002,7 +1002,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
 // ---------------------------------------------------------------------------
 
 // Strip pointer / slice / array layers to the underlying nominal type, so a
-// variable of `^Camera`, `[..]Camera`, `[3]Camera` all match a `Camera` query.
+// variable of `^Camera`, `[]Camera`, `[3!]Camera` all match a `Camera` query.
 // Distinct types are left intact — they ARE a nominal type (e.g. Vec3).
 flow_type_base :: proc(t: Type) -> Type {
     cur := t

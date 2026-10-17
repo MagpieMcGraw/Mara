@@ -33,7 +33,7 @@ main :: fun() -> i64 {
 }
 
 // -----------------------------------------------------------------------------
-// THE THREE ARRAY SHAPES:  [N]T  vs  []T  vs  [..N]T
+// THE THREE ARRAY SHAPES:  [N]T  vs  []T  vs  [N]T
 //
 // Mara has three array-shaped types, and the distinction between them is
 // value-vs-reference:
@@ -45,7 +45,7 @@ main :: fun() -> i64 {
 //           24 bytes) that views elements it does not own. `a[lo:hi]` builds a
 //           slice over existing storage.
 //
-//   [..N]T  Partial array. Inline storage for up to N elements, fronted by a
+//   [N]T  Partial array. Inline storage for up to N elements, fronted by a
 //           slice header — the growable local buffer. It starts empty (.len 0,
 //           .cap N) and you append into its capacity (see the next section).
 //
@@ -73,7 +73,7 @@ the_three_array_shapes :: fun() {
 // -----------------------------------------------------------------------------
 // PARTIAL ARRAYS:  growing a buffer with .len
 //
-// A fresh `[..N]T` starts with .len == 0 and .cap == N — empty, with room for
+// A fresh `[N]T` starts with .len == 0 and .cap == N — empty, with room for
 // N. You append by writing at index `.len` (the first free slot) and bumping
 // `.len`. An index WRITE is bounds-checked against .cap (the physical extent),
 // which is precisely why writing at `.len` is allowed: it is the append slot.
@@ -84,7 +84,7 @@ the_three_array_shapes :: fun() {
 // never the capacity — so a freshly grown buffer iterates only what you put in.
 // -----------------------------------------------------------------------------
 partial_array_growth :: fun() {
-	buf : [..4]i32
+	buf : [4]i32
 	assert(buf.len == 0)
 	assert(buf.cap == 4)
 

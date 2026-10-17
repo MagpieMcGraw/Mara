@@ -198,7 +198,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         if !tc_const_unambiguous(k, n, name, span) { return Type_Error{} }
     }
     if ok || kc != nil { tc_set_ref(k, n, ref) }
-    // (A generic's size param, `[..$N]T`, as a value: the size it was bound
+    // (A generic's size param, `[$N]T`, as a value: the size it was bound
     // to, a constant — untyped, the width its use takes.)
     if ci, is_size := t.(Type_Const_Int); ok && is_size {
         k.annot.known[tc_sid(k, n)] = {i128(ci.value), Type_Infer_Int{}}

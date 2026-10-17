@@ -19,7 +19,7 @@ main :: fun() {
 	// ...and the assign-then-convert footgun is dead: a literal copy
 	// always has room for the cstring terminator.
 	path := "quanttest.mara"
-	data : [..4096]byte
+	data : [4096]byte
 	_, err := read_entire_file(path, &data)
 	assert(not bool(err))
 	assert(data.len > 0)
