@@ -650,6 +650,14 @@ loop_elem :: proc(ct: Type) -> Type {
     return nil
 }
 
+// ... or through a pointer to one, `for f in files` (files: ^[]T): its
+// items' — one level, as indexing and fields see through it.
+loop_elem_through :: proc(ct: Type) -> Type {
+    if e := loop_elem(ct); e != nil { return e }
+    if pt, is_ptr := distinct_base(ct).(^Type_Ptr); is_ptr { return loop_elem(pt.elem) }
+    return nil
+}
+
 // A range's counter: of the type written (nil: none), else its bounds' — at
 // the header's width when they disagree or have none.
 range_counter :: proc(lt, ht, written: Type) -> Type {
@@ -673,7 +681,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         case .Array, .Literal: ct = solidify_type(ct)
         }
         tc_settle(k, v.collection, ct)
-        elem := loop_elem(ct)
+        elem := loop_elem_through(ct)
         if elem == nil {
             elem = Type_Error{}
             if st, is_scope := ct.(^Type_Scope); is_scope {

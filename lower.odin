@@ -848,7 +848,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
                 fl.walk, fl.walk_data = lw_walk_place, &walk
             }
         }
-        elem := loop_elem(ct)
+        elem := loop_elem_through(ct)
         if elem == nil { elem = Type_Error{} }
         if v.type_ != 0 { elem = tc_node_type(k, v.type_) }
         graph_build_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))

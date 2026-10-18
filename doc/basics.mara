@@ -194,8 +194,9 @@ example_do :: fun() {
 //
 // `for i in 0 .. 10` counts 0 to 9: a range has its start, not its end. It
 // counts up only; one that ends before it starts runs no times. `for x in
-// xs` takes each item of an array, list, slice or text; `for x, i in xs`
-// its position too. `for cond { … }` repeats while cond is true — `for
+// xs` takes each item of an array, list, slice or text — or of one a
+// pointer points at, `xs: ^[]T` — the items there when it begins; `for x, i
+// in xs` its position too. `for cond { … }` repeats while cond is true — `for
 // true { … }` until a break or return.
 //
 // `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10.
