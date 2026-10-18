@@ -52,14 +52,24 @@ SEEK_SET :: 0   // relative to the start of the file
 SEEK_CUR :: 1   // relative to the current position
 SEEK_END :: 2   // relative to the end of the file
 
-// The directory a path is in: the path up to its last separator ('/' or
-// '\'), without it. Empty for a name alone.
+// The directory a path is in: the path up to its last separator, without
+// it. Empty for a name alone.
 parent_dir :: fun(path: []utf8) -> []utf8 {
 	end : i64 = 0
 	for i in 0 .. path.len {
-		if path[i] == '/' or path[i] == '\\' do end = i
+		if path_separator(path[i]) do end = i
 	}
 	return path[0 : end]
+}
+
+// Whether ch separates a path's parts: '/' — and on Windows '\' too
+// (elsewhere a '\' can be part of a name).
+path_separator :: fun(ch: utf8) -> bool {
+	if ch == '/' do return true
+	#if #windows {
+		if ch == '\\' do return true
+	}
+	return false
 }
 
 // The directory a path is in, its separator kept at the end: a Path, for a
@@ -71,7 +81,7 @@ parent_dir :: fun(path: []utf8) -> []utf8 {
 path_dir :: fun(path: []utf8) -> Path {
 	end : i64 = 0
 	for ch, i in path {
-		if ch == '/' or ch == '\\' do end = i + 1
+		if path_separator(ch) do end = i + 1
 	}
 	dir : Path
 	&dir + path[0 : end]
@@ -90,11 +100,11 @@ slashes_forward :: fun(path: ^[]utf8) {
 	}
 }
 
-// The path without the separators at its end ('/' or '\').
+// The path without the separators at its end.
 trim_separators :: fun(path: []utf8) -> []utf8 {
 	n := path.len
 	for n > 0 {
-		if path[n - 1] != '/' and path[n - 1] != '\\' do break
+		if not path_separator(path[n - 1]) do break
 		n -= 1
 	}
 	return path[0 : n]
@@ -110,8 +120,8 @@ c_path :: fun(path: []utf8) -> [512]utf8 {
 	return c
 }
 
-// Whether two paths name the same place: '/' and '\' alike, separators at
-// their ends not minded, and on Windows letters' case not minded (as its
+// Whether two paths name the same place: separators at their ends not
+// minded; on Windows '/' and '\' alike, and letters' case not minded (as its
 // file system doesn't). Text only: neither path is looked up.
 same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	x := trim_separators(a)
@@ -120,9 +130,9 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	for i in 0 .. x.len {
 		cx := x[i]
 		cy := y[i]
-		if cx == '/' do cx = '\\'
-		if cy == '/' do cy = '\\'
 		#if #windows {
+			if cx == '/' do cx = '\\'
+			if cy == '/' do cy = '\\'
 			cx = lower(cx)
 			cy = lower(cy)
 		}
@@ -357,9 +367,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Reads the next piece of a file, a pipe or a program's output into data:
 	// one read, up to data's capacity — less when less has come, or when the
 	// system reads less at a time. data.len becomes the number of bytes read
-	// (0 at the end of the file, or of a pipe whose writer closed). For all
-	// of a file, read_entire_file.
+	// (0 at the end of the file, or of a pipe whose writer closed — or with
+	// no room to read into). For all of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
+		if data.cap == 0 {
+			data.len = 0
+			return
+		}
 		read: u32 = 0
 		// (ReadFile counts in a u32: at most 1 GB a call, so a room of 4 GB
 		// or more doesn't wrap to a small count — 4 GB to none.)
@@ -376,6 +390,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// may write fewer bytes than requested under disk-full / pipe conditions;
 	// compare n against data.len for partial-write detection.
 	file_write :: fun(id: File_Id, data: ^[]byte) -> i64, err {
+		if data.len == 0 do return 0   // (nothing to write: written)
 		written: u32 = 0
 		if not bool(WriteFile(id, &data[0], u32(data.len), &written, void)) do return 0, Write_Failed
 		return i64(written)
@@ -1057,9 +1072,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Reads the next piece of a file, a pipe or a program's output into data:
 	// one read, up to data's capacity — less when less has come, or when the
 	// system reads less at a time. data.len becomes the number of bytes read
-	// (0 at the end of the file, or of a pipe whose writer closed). For all
-	// of a file, read_entire_file.
+	// (0 at the end of the file, or of a pipe whose writer closed — or with
+	// no room to read into). For all of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
+		if data.cap == 0 {
+			data.len = 0
+			return
+		}
 		n := read(id, &data[0], usize(data.cap))
 		if n < 0 do return Read_Failed
 		data.len = n
@@ -1070,6 +1089,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// pipe-full / disk-full conditions; compare n against data.len for
 	// partial-write detection.
 	file_write :: fun(id: File_Id, data: ^[]byte) -> i64, err {
+		if data.len == 0 do return 0   // (nothing to write: written)
 		n := write(id, &data[0], usize(data.len))
 		if n < 0 do return 0, Write_Failed
 		return n
@@ -1504,7 +1524,6 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// A name a program listens on (pipe_listen), for others on this machine
 	// to connect to (pipe_connect). `id` is the socket listening.
 	Pipe_Listener :: struct {
-		at: Sockaddr_Un   // its socket's path
 		id: File_Id
 	}
 
@@ -1514,19 +1533,22 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
 		l := Pipe_Listener{0}
 		l.id = NO_FILE
-		if not pipe_address(name, &l.at) do return l, Listen_Failed
+		at : Sockaddr_Un
+		size := pipe_address(name, &at)
+		if size == 0 do return l, Listen_Failed
 		ignore_broken_pipes()
-		// (A socket there that answers: another listens. One that doesn't:
-		// left by a listener that ended — removed.)
-		probe := socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
-		if probe == NO_FILE do return l, Listen_Failed
-		taken := connect(probe, &l.at, SOCKADDR_UN_SIZE) == 0
-		_ = close(probe)
-		if taken do return l, Name_Taken
-		_ = unlink(cstring(l.at.path[:]))
 		l.id = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
 		if l.id == NO_FILE do return l, Listen_Failed
-		if bind(l.id, &l.at, SOCKADDR_UN_SIZE) != 0 or listen(l.id, 16) != 0 {
+		// (Taken: binding fails, at once — no other listener's queue gets a
+		// connection asking.)
+		if bind(l.id, &at, size) != 0 {
+			taken := __errno_location()^ == EADDRINUSE
+			_ = close(l.id)
+			l.id = NO_FILE
+			if taken do return l, Name_Taken
+			return l, Listen_Failed
+		}
+		if listen(l.id, 16) != 0 {
 			_ = close(l.id)
 			l.id = NO_FILE
 			return l, Listen_Failed
@@ -1552,11 +1574,12 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// with Connect_Failed when nobody listens there.
 	pipe_connect :: fun(name: []utf8) -> File_Id, err {
 		at : Sockaddr_Un
-		if not pipe_address(name, &at) do return NO_FILE, Connect_Failed
+		size := pipe_address(name, &at)
+		if size == 0 do return NO_FILE, Connect_Failed
 		ignore_broken_pipes()
 		id := socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
 		if id == NO_FILE do return NO_FILE, Connect_Failed
-		if connect(id, &at, SOCKADDR_UN_SIZE) != 0 {
+		if connect(id, &at, size) != 0 {
 			_ = close(id)
 			return NO_FILE, Connect_Failed
 		}
@@ -1569,28 +1592,34 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if l.id == NO_FILE do return
 		_ = close(l.id)
 		l.id = NO_FILE
-		_ = unlink(cstring(l.at.path[:]))
 	}
 
-	// A name's socket address: <name>.sock in the user's own runtime
-	// directory ($XDG_RUNTIME_DIR), else /tmp. False when too long for one.
-	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> bool {
+	// A name's socket address, and its size — 0 when too long for one. In
+	// Linux's abstract namespace, no file: a 0, then the name, a dot and the
+	// user's id (each user's names their own). Its size counts no 0 after.
+	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> u32 {
 		path : [108]utf8
-		dir := getenv("XDG_RUNTIME_DIR")
-		if dir == void {
-			&path + "/tmp"
-		else
-			&path + read_cstring(100, dir)
-		}
-		if path.len + name.len + 6 >= 108 do return false
-		&path + "/"
+		&path + utf8(0)
 		&path + name
-		&path + ".sock"
+		&path + "."
+		uid := getuid()
+		digits : [10!]utf8
+		n := 0
+		for true {
+			digits[n] = utf8(48 + uid % 10)
+			n += 1
+			uid = uid / 10
+			if uid == 0 do break
+		}
+		if path.len + n > 108 do return 0
+		for i in 0 .. n {
+			&path + digits[n - 1 - i]
+		}
 		at.family = AF_UNIX
 		for c, i in path {
 			at.path[i] = c
 		}
-		return true
+		return u32(2 + path.len)
 	}
 
 	// A write to a pipe or socket nobody reads any more: Write_Failed, not
@@ -1599,13 +1628,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		_ = signal(SIGPIPE, SIG_IGN)
 	}
 
-	// A Unix socket's address: its path, ending in a 0.
+	// A Unix socket's address: a path, ending in a 0 — or, in the abstract
+	// namespace, a 0 and a name, its size saying where it ends.
 	Sockaddr_Un :: struct {
 		family: u16
 		path:   [108!]utf8
 	}
 
-	SOCKADDR_UN_SIZE :: 110
 	AF_UNIX          :: 1
 	SOCK_STREAM      :: 1
 	SOCK_NONBLOCK    :: 0x800
@@ -1615,6 +1644,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	EINTR            :: 4
 	EAGAIN           :: 11
 	ECONNABORTED     :: 103
+	EADDRINUSE       :: 98
 
 	// ---------------------------------------------------------------------------
 	// libc bindings
@@ -1677,6 +1707,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun listen(fd: File_Id, backlog: i32) -> i32
 		fun accept4(fd: File_Id, at: ^byte, size: ^u32, flags: i32) -> File_Id
 		fun connect(fd: File_Id, at: ^Sockaddr_Un, size: u32) -> i32
+		fun getuid() -> u32
 		fun getenv(name: cstring) -> ^byte
 		fun signal(sig: i32, handler: usize) -> usize
 		fun __errno_location() -> ^i32
