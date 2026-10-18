@@ -97,6 +97,9 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
         elem_ir := llvm_type_from_checker(v.elem)
         elements_ptr := partial_elements(g, ptr, v)
         emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
+        // (Its room, its type's: never the source's — a copy of what came as
+        // a view's header would keep the view's.)
+        emit_header_set(g, ptr, SLICE.cap, ir_int(v.size))
         mem_probe_into(g, ptr, v)
         if value_has_partial_array(g, v.elem) {
             was := mem_elements(g)

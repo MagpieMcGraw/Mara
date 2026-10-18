@@ -1,0 +1,36 @@
+module text_to_list_param
+
+//@ expect-output: var abcde | literal abcde | constant hellode
+//@ expect-output: join abcde 5 64 | chain abcdef! 64 | const join hello, you
+//@ expect-output: generic room 64 | onto a view | indexed-0123456789 20
+
+// Text written in place — a literal, a text constant — given to a list param
+// by value (a fun's, an operator's side: a join's) arrives as a list of that
+// type, its own room: it was the text's own header, its bytes' room (cap 4
+// for "abc"), and the param's copy kept it — `"abc" + "de"` failed its room
+// check. A list copied gets its type's cap, never its source's.
+
+use mara.core
+
+GREETING :: "hello"
+
+copied :: (a: str64) str64 {
+	out := a
+	&out + "de"
+	return out
+}
+
+room :: (a: [$N]$T) i64 { return a.cap }
+
+main :: () {
+	x : str64 = "abc"
+	print("var % | literal % | constant %", copied(x), copied("abc"), copied(GREETING))
+	j := "abc" + "de"
+	c := "abc" + "de" + "f" + '!'
+	g := GREETING + ", you"
+	print("join % % % | chain % % | const join %", j, j.len, j.cap, c, c.cap, g)
+	tail : [64]utf8
+	&tail + "-0123456789"
+	b := "| indexed" + tail[:]
+	print("generic room % | onto a view % %", room("hi"), b, b.len)
+}

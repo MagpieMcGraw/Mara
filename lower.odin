@@ -1256,6 +1256,13 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             if i == 0 { graph_build_and_left(b, &sa, sides[i]) }
             continue
         }
+        if callee != nil && i < len(callee.params) {
+            if v, made := lw_text_as_list(k, side, callee.params[i].type_, span, w); made {
+                types[i] = callee.params[i].type_
+                sides[i] = v
+                continue
+            }
+        }
         r := lw_expr(k, side, .Either, w)
         st := tc_node_type(k, side)
         types[i] = st
@@ -1422,6 +1429,12 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         defer k.gb.pin = pin
         pt := ft.params[i].type_
         use, use_at := lw_use_type(k, a, pt, span)
+        if arg.kind == .Written {
+            if v, made := lw_text_as_list(k, a, pt, span, w); made {
+                append(&ops, v)
+                continue
+            }
+        }
         if arg.kind == .Receiver {
             if !k.lower.recv.r.ok { lw_fail(k, a, "a receiver taken as an argument, never built") }
             append(&ops, lw_value_as(k, a, k.lower.recv.t, k.lower.recv.r, pt, span, {sig = ft, param = i}))
@@ -1482,6 +1495,24 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         return {v = graph_var(b, view_slot, ret, temp_span), place = true, ok = true}
     }
     return {v = call, ok = true}
+}
+
+// Text written in place — a literal, a text constant's — taken by value as a
+// list (a param's, an operator's side: `"abc" + "de"`): in a zeroed
+// temporary of that list's type, written in, as a return's is — the list's
+// room, not the text's own bytes'. false: not text, or not to a list.
+lw_text_as_list :: proc(k: ^TC, e: Tree_Id, to: Type, span: Span, w: Written) -> (Operand, bool) {
+    b := k.gb
+    t := k.t
+    if !is_partial_array(to) { return {}, false }
+    et := tc_node_type(k, e)
+    literal := t.tag[tc_unparen(k, e)] == .String
+    if !literal && !(lw_const_named(k, e) && is_partial_array(et)) { return {}, false }
+    slot := graph_slot(b, "temp", to, span)
+    graph_build_zero_var(b, slot, to, span)
+    r := lw_expr(k, e, .Either, w)
+    lw_store(k, e, et, r, graph_dest_var(slot, to), span)
+    return graph_read(b, graph_var(b, slot, to, span), to, span), true
 }
 
 // `Path(view)`: a partial array made of a slice's items (or a smaller
