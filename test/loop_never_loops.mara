@@ -1,0 +1,73 @@
+module loop_never_loops
+
+//@ expect-warning: [loop_never_loops.mara:20:2] Warning: this loop never runs a second time
+//@ expect-warning: [loop_never_loops.mara:28:2] Warning: this loop never runs a second time
+//@ expect-warning: [loop_never_loops.mara:34:2] Warning: this loop never runs a second time
+//@ expect-output: once 11 10 | first 4 | both 1
+//@ expect-output: loops 3 0 3 1
+
+// A loop whose every run ends in its `break` or a `return` runs once at
+// most: a warning. The usual why — a statement one-lined out of its block,
+// `{unique = false} break`. A loop that can go round again — a `continue`,
+// a path that falls off its body's end, a `break` that's a nested loop's —
+// is no such loop.
+
+use mara.core
+
+once :: (xs: []i64, p: i64) i64 {
+	unique := 1
+	seen := 0
+	for x in xs {
+		seen += 1
+		if x == p {unique = 0} break
+	}
+	return unique + seen * 10
+}
+
+first :: (xs: []i64) i64 {
+	for x in xs { return x }
+	return -1
+}
+
+both :: (xs: []i64) i64 {
+	n := 0
+	for x in xs {
+		n += 1
+		if x > 2 {
+			break
+		else
+			return n
+		}
+	}
+	return n
+}
+
+// None of these warns.
+loops :: (xs: []i64) i64, i64, i64, i64 {
+	a := 0
+	for x in xs { if x == 9 do break
+		a += 1 }
+	b := 0
+	for x in xs {
+		if x < 3 { b += 1; continue }
+		break
+	}
+	c := 0
+	for x in xs {
+		for y in xs { if y == x do break }
+		c += 1
+	}
+	d := 0
+	for true {
+		d += 1
+		if d > 0 do break
+	}
+	return a, b, c, d
+}
+
+main :: () {
+	xs : [3!]i64 = {4, 1, 2}
+	print("once", once(xs[:], 9), once(xs[:], 4), "| first", first(xs[:]), "| both", both(xs[:]))
+	a, b, c, d := loops(xs[:])
+	print("loops", a, b, c, d)
+}

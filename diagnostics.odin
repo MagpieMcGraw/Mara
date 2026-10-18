@@ -515,6 +515,7 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 // no-op in every context and can be dropped. (Value-preserving WIDENING casts
 // are NOT flagged — `i64(x) * y` promotes the multiply to avoid overflow,
 // `len = i64(x)` does not, and the cast site can't distinguish the two.)
+WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"
 WARN_REDUNDANT_CAST :: "redundant cast to %s — %s already has that type, drop the `%s(...)`"
 
 TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"

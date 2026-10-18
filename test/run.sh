@@ -16,6 +16,8 @@
 # number): it is then RUN, and must exit 0 with each text in its output. That's
 # how a miscompile that still compiles — printing nothing, say — gets caught.
 # A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
+# `//@ expect-warning: text` lines (any number): it must still compile, each
+# text among what the build says — a warning that has to be given.
 #
 # The docs' programs, doc/*.mara, are checked too: each must build and run.
 #
@@ -68,6 +70,9 @@ check_file() {  # f
 
   if [ "$exp" = pass ]; then
     if [ "$comp" != yes ]; then verdict "$name" bad "REGRESSION (want pass, failed): $name"; return; fi
+    while IFS= read -r want; do
+      echo "$out" | grep -qF -- "$want" || { verdict "$name" bad "MISSING WARNING: $name (want: \"$want\")"; return; }
+    done < <(sed -nE 's#.*//@ expect-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
     if grep -qE '//@ expect-output:' "$f"; then
       run=$(timeout 10 "./$name.exe" 2>&1); rc=$?
       missing=""

@@ -639,6 +639,54 @@ tc_if :: proc(k: ^TC, s: Tree_Id) {
 
 // `for i in lo..hi`, `for e, i in c`, `for init; cond; step`, `for cond`: its
 // variables bound in its block, then its body.
+// How a run of a loop's body can end: leaving the loop (a `break`, a
+// `return`), going round again (a `continue`), or reaching the body's end
+// (going round again too).
+Loop_End :: enum u8 { Exit, Loop, Fall }
+
+// The ways a loop body's statements, run in order, can end its run: each
+// statement's, while one can fall through to the next.
+tc_body_ends :: proc(k: ^TC, stmts: []Tree_Id) -> bit_set[Loop_End] {
+    ends := bit_set[Loop_End]{.Fall}
+    for s in stmts {
+        if .Fall not_in ends { break }
+        ends = ends - {.Fall} + tc_stmt_ends(k, s)
+    }
+    return ends
+}
+
+// One statement's: a `break` or `return` leaves; a `continue` goes round; an
+// `if`'s, its branches' (no `else`: falls too); any other falls — or goes
+// round, when a `continue` of this loop is somewhere in it.
+tc_stmt_ends :: proc(k: ^TC, s: Tree_Id) -> bit_set[Loop_End] {
+    t := k.t
+    #partial switch t.tag[s] {
+    case .Break, .Return: return {.Exit}
+    case .Continue:       return {.Loop}
+    case .If:
+        v := if_view(t, s)
+        if v.hash == 0 {
+            ends := tc_body_ends(k, v.then)
+            return ends + (tc_body_ends(k, v.else_) if len(v.else_) > 0 else {.Fall})
+        }
+    }
+    return {.Fall, .Loop} if tc_has_continue(k, s) else {.Fall}
+}
+
+// Whether a `continue` of the loop a statement is in is somewhere in it (not
+// in a loop of its own, nor a fun defined there).
+tc_has_continue :: proc(k: ^TC, n: Tree_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Continue: return true
+    case .For_Each, .For_Range, .For_C, .For_Cond, .Fun_Def, .Struct_Def: return false
+    }
+    kids := make([dynamic]Tree_Id, context.temp_allocator)
+    tree_children(t, n, &kids)
+    for c in kids { if tc_has_continue(k, c) { return true } }
+    return false
+}
+
 // What a loop over a collection of type `ct` walks: its elements' type — an
 // array's, a slice's, a partial array's (nil: no collection).
 loop_elem :: proc(ct: Type) -> Type {
@@ -673,6 +721,10 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     v := for_view(t, s)
     k.loops += 1
     defer k.loops -= 1
+    // (A loop whose every run ends in its `break` or a `return` runs once at
+    // most: said so, a warning — a statement one-lined out of its block
+    // (`if a do x = 1; break`) is the usual why.)
+    defer if tc_body_ends(k, v.body) == {.Exit} { emit_diagnostic_once(.Warning, span, WARN_LOOP_NEVER_LOOPS) }
     #partial switch t.tag[s] {
     case .For_Each:
         ct := tc_check(k, v.collection)
