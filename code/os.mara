@@ -458,30 +458,30 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// The directory the program runs in — where a path not whole starts —
-	// its path, whole (no separator at its end but a drive's root, `C:/`),
-	// its separators '/': a Path, its room past the path there to add to
-	// (`&cwd + "/code"`).
-	// Too_Large when it's longer than a Path holds; Read_Failed when the
-	// system won't say. (executable_path: the program's own file, wherever
-	// it runs.)
+	// as the system has it (real_path's: its letters' case as on disk, links
+	// and junctions followed, a mapped drive's folder its server's), however
+	// it was entered; whole (no separator at its end but a drive's root,
+	// `C:/`), its separators '/', a 0 after it: a Path, its room past the
+	// path there to add to (`&cwd + "/code"`). Too_Large when it's longer
+	// than a Path holds; Open_Failed when it's gone (deleted while the
+	// program ran in it); Read_Failed when the system won't say.
+	// (executable_path: the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
-		dir : Path
-		n := i64(GetCurrentDirectoryA(u32(dir.cap), &dir[0]))
-		if n == 0 do return dir, Read_Failed
-		// (Too long, it says how much room it wants, its 0 counted.)
-		if n >= dir.cap do return dir, Too_Large
-		dir.len = n
-		slashes_forward(&dir)
+		dir := real_path(".")?
+		if dir.len == dir.cap do return dir, Too_Large   // (no room for its 0)
+		dir[dir.len] = 0
 		return dir
 	}
 
 	// A path as the system has it, whole — a file's or a folder's: its
 	// letters' case as on disk, its links (symlinks, junctions) followed to
-	// where they lead, `.` and `..` gone, its separators '/'. Two spellings of
-	// one place give one path: the folders a gather starts at made so
-	// (`real_path(cwd)`), the paths built on them compare as they are.
-	// Open_Failed when nothing's there; Too_Large when it's longer than a Path
-	// holds; Read_Failed when the system won't say.
+	// where they lead, a mapped drive's folder its server's
+	// (`//server/share/…`), `.` and `..` gone, its separators '/'. Two
+	// spellings of one place give one path: a path from the command line or
+	// a file made so, it compares with current_dir's and executable_path's
+	// (real already) and the paths built on them as they are. Open_Failed
+	// when nothing's there; Too_Large when it's longer than a Path holds;
+	// Read_Failed when the system won't say.
 	real_path :: fun(path: []utf8) -> Path, err {
 		out : Path
 		c := c_path(path)
@@ -512,14 +512,17 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return out
 	}
 
-	// The running program's own file: its path, whole — however it was
-	// started (by a name its PATH found, a relative path, a link), unlike
-	// this_program.args[0], which is what its starter wrote — for the files
-	// that come with it, beside it: a Path, to cut to its directory and add
-	// a file's name to (`exe.len = path_dir(exe).len`, `&exe + "font.ttf"`).
-	// Too_Large when it's longer than a Path holds; Read_Failed when the
-	// system won't say. (GetModuleFileNameA: in the system's code page, as
-	// the other files' functions here take paths.)
+	// The running program's own file: its path, whole, as the system has it
+	// (real_path's: its letters' case as on disk, a link followed to the
+	// file itself) — however it was started (by a name its PATH found, a
+	// relative path, a link), unlike this_program.args[0], which is what its
+	// starter wrote — for the files that come with it, beside it: a Path, to
+	// cut to its directory and add a file's name to (`exe.len =
+	// path_dir(exe).len`, `&exe + "font.ttf"`). Too_Large when it's longer
+	// than a Path holds; Read_Failed when the system won't say.
+	// (GetModuleFileNameA: in the system's code page, as the other files'
+	// functions here take paths; the folders spelled as the program was
+	// started — so real_path asked too.)
 	executable_path :: fun() -> Path, err {
 		path : Path
 		n := i64(GetModuleFileNameA(void, &path[0], u32(path.cap)))
@@ -527,8 +530,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (As long as the room, it was cut off: no room for its 0.)
 		if n >= path.cap do return path, Too_Large
 		path.len = n
-		slashes_forward(&path)
-		return path
+		return real_path(path[:])
 	}
 
 	// The files and directories in a directory, to look through what's there:
@@ -1012,7 +1014,6 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 		// The directory the program runs in, into buf: its length; the room it
 		// wants (its 0 counted) when buf is too small; 0 failing.
-		fun GetCurrentDirectoryA(size: u32, buf: ^utf8) -> u32
 
 		// An open file's or folder's whole path as the system has it, into buf
 		// (flags 0: its letters' case as on disk, `\\?\C:\…`): its length; the
@@ -1234,11 +1235,12 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// The directory the program runs in — where a path not whole starts —
-	// its path, whole (no separator at its end but the root, `/`): a Path,
-	// its room past the path there to add to (`&cwd + "/code"`). Too_Large
-	// when it's longer than a Path holds (or the system won't say: getcwd
-	// fails both ways). (executable_path: the program's own file, wherever
-	// it runs.)
+	// as the system has it (real_path's: links followed — getcwd gives none),
+	// however it was entered; whole (no separator at its end but the root,
+	// `/`): a Path, its room past the path there to add to (`&cwd +
+	// "/code"`). Too_Large when it's longer than a Path holds (or the system
+	// won't say, or it's gone: getcwd fails every way). (executable_path:
+	// the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir : Path
 		if getcwd(&dir[0], usize(dir.cap)) == void do return dir, Too_Large
@@ -1271,13 +1273,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return out
 	}
 
-	// The running program's own file: its path, whole — however it was
+	// The running program's own file: its path, whole, as the system has it
+	// (real_path's: a link followed to the file itself) — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// this_program.args[0], which is what its starter wrote — for the files
 	// that come with it, beside it: a Path, to cut to its directory and add
 	// a file's name to (`exe.len = path_dir(exe).len`, `&exe + "font.ttf"`).
 	// Too_Large when it's longer than a Path holds; Read_Failed when the
-	// system won't say. (/proc/self/exe: a link to the program's file.)
+	// system won't say. (/proc/self/exe: a link to the program's file, the
+	// kernel's own path for it.)
 	executable_path :: fun() -> Path, err {
 		path : Path
 		link := "/proc/self/exe"

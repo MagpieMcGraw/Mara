@@ -5,12 +5,14 @@ use mara.os
 use mara.memory
 
 // executable_path: the program's own file — its path whole (a drive's or
-// the root's at its start), its own name in it — whatever this_program.args[0]
-// says (run.sh starts it by a relative path). Its directory, path_dir's
-// Path, a file's name added: the file beside it opens.
+// the root's at its start), its own name in it, the system's own spelling
+// (real_path's) — whatever this_program.args[0] says (run.sh starts it by a
+// relative path). Its directory, path_dir's Path, a file's name added: the
+// file beside it opens.
 
 //@ expect-output: has its own name: true
 //@ expect-output: whole: true
+//@ expect-output: real already: true
 //@ expect-output: opens: true
 //@ expect-output: beside it: true
 
@@ -24,6 +26,8 @@ main :: fun() -> i64 {
 	print("has its own name:", has(path, "executable_path"))
 	whole := path.len > 2 and (path[0] == '/' or path[1] == ':')
 	print("whole:", whole)
+	real, re := real_path(path)
+	print("real already:", not re and real == path)
 	id, oe := file_open_read(path)
 	print("opens:", not oe)
 	file_close(id)
