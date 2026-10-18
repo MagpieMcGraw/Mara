@@ -40,10 +40,16 @@ Pipe_Error :: error {
 Path :: [512]utf8
 
 // A file or a directory found in a directory (dir_read): its name — not
-// its path — and which it is.
+// its path — whether it leads to a directory, and whether it's a link: a
+// symbolic link (on Windows a junction too), its `dir` saying where it
+// leads — true for a link to a directory, false for one to a file or to
+// nothing there. A walk down a tree goes into the entries that are `dir and
+// not link`: a link can lead back up, round and round, or to a tree walked
+// already.
 Dir_Entry :: struct {
     name: [260]utf8
-    dir:  bool   // a directory, not a file
+    dir:  bool   // a directory, or a link to one
+    link: bool   // a symbolic link, or a Windows junction
 }
 
 // Whence values for file_seek — identical numeric values on Win32
@@ -526,13 +532,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// The files and directories in a directory, to look through what's there:
-	// each one's name and whether it's a directory — not "." or "..", in no
-	// order to count on — into storage after what's there, side by side, its
-	// len moved past them, and given back, a view of them. Fails with
-	// Open_Failed when there's no directory there, Too_Large when they don't
-	// fit in storage's room (storage untouched). The path is copied: any
-	// slice of one will do (cstring's 0 needn't follow it). (Counted first,
-	// then each written: listed twice.)
+	// each one's name, whether it leads to a directory, and whether it's a
+	// link (Dir_Entry) — not "." or "..", in no order to count on — into
+	// storage after what's there, side by side, its len moved past them, and
+	// given back, a view of them. Fails with Open_Failed when there's no
+	// directory there, Too_Large when they don't fit in storage's room
+	// (storage untouched). The path is copied: any slice of one will do
+	// (cstring's 0 needn't follow it). (Counted first, then each written:
+	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
@@ -563,6 +570,16 @@ sys_alloc :: fun(cap: i64) -> []byte {
 				entry : Dir_Entry
 				&entry.name + name
 				entry.dir = (found.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+				entry.link = false
+				// (A link: a reparse point tagged a symbolic link or a
+				// junction — OneDrive's placeholders are reparse points too.
+				// Its own directory bit says what it was made as: asked
+				// where it leads.)
+				tag := found.reserved0
+				if (found.attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 and (tag == IO_REPARSE_TAG_SYMLINK or tag == IO_REPARSE_TAG_MOUNT_POINT) {
+					entry.link = true
+					entry.dir = link_leads_to_dir(path, name)
+				}
 				entries[k] = entry
 				k += 1
 			}
@@ -572,7 +589,43 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
-	FILE_ATTRIBUTE_DIRECTORY :: 0x10
+	FILE_ATTRIBUTE_DIRECTORY     :: 0x10
+	FILE_ATTRIBUTE_REPARSE_POINT :: 0x400
+	IO_REPARSE_TAG_SYMLINK       :: 0xA000000C
+	IO_REPARSE_TAG_MOUNT_POINT   :: 0xA0000003   // (a junction)
+
+	// Whether a link in a directory leads to a directory that's there.
+	// Opened, it's followed — asked for nothing, nothing read.
+	link_leads_to_dir :: fun(path: []utf8, name: []utf8) -> bool {
+		full : [800]utf8
+		&full + path
+		&full + "\\"
+		&full + name
+		id := CreateFileA(cstring(full), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, void, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return false
+		info : BY_HANDLE_FILE_INFORMATION
+		got := bool(GetFileInformationByHandle(id, &info))
+		file_close(id)
+		return got and (info.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+	}
+
+	// What GetFileInformationByHandle says of a file: DWORDs and FILETIMEs
+	// (DWORD pairs).
+	BY_HANDLE_FILE_INFORMATION :: struct {
+		attributes:       u32
+		creation_low:     u32
+		creation_high:    u32
+		last_access_low:  u32
+		last_access_high: u32
+		last_write_low:   u32
+		last_write_high:  u32
+		volume_serial:    u32
+		size_high:        u32
+		size_low:         u32
+		links:            u32
+		index_high:       u32
+		index_low:        u32
+	}
 
 	// WIN32_FIND_DATAA's layout: DWORDs and FILETIMEs (DWORD pairs, so no
 	// padding), then the name, MAX_PATH bytes, and the short 8.3 name's 14.
@@ -965,6 +1018,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// (flags 0: its letters' case as on disk, `\\?\C:\…`): its length; the
 		// room it wants (its 0 counted) when buf is too small; 0 failing.
 		fun GetFinalPathNameByHandleA(file: File_Id, buf: ^utf8, size: u32, flags: u32) -> u32
+		fun GetFileInformationByHandle(file: File_Id, info: ^BY_HANDLE_FILE_INFORMATION) -> i32
 
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
@@ -1236,13 +1290,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// The files and directories in a directory, to look through what's there:
-	// each one's name and whether it's a directory — not "." or "..", in no
-	// order to count on — into storage after what's there, side by side, its
-	// len moved past them, and given back, a view of them. Fails with
-	// Open_Failed when there's no directory there, Too_Large when they don't
-	// fit in storage's room (storage untouched). The path is copied: any
-	// slice of one will do (cstring's 0 needn't follow it). (Counted first,
-	// then each written: listed twice.)
+	// each one's name, whether it leads to a directory, and whether it's a
+	// link (Dir_Entry) — not "." or "..", in no order to count on — into
+	// storage after what's there, side by side, its len moved past them, and
+	// given back, a view of them. Fails with Open_Failed when there's no
+	// directory there, Too_Large when they don't fit in storage's room
+	// (storage untouched). The path is copied: any slice of one will do
+	// (cstring's 0 needn't follow it). (Counted first, then each written:
+	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
@@ -1276,7 +1331,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			entry : Dir_Entry
 			&entry.name + name
 			entry.dir = d.kind == DT_DIR
-			if d.kind == DT_UNKNOWN do entry.dir = dir_entry_is_dir(path, name)
+			entry.link = false
+			if d.kind == DT_LNK or d.kind == DT_UNKNOWN {
+				entry.link, entry.dir = dir_entry_kind(path, name)
+			}
 			entries[k] = entry
 			k += 1
 		}
@@ -1284,20 +1342,21 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
-	// Whether a directory's entry is a directory, asked of the entry itself:
-	// for a file system whose readdir doesn't say (DT_UNKNOWN).
-	dir_entry_is_dir :: fun(path: []utf8, name: []utf8) -> bool {
-		if path.len + name.len > 500 do return false   // (on the stack, under 1 KB)
+	// A directory's entry, asked of the system — not opened (a named pipe
+	// opened waits for a writer): whether it's a link (lstat), and whether
+	// it leads to a directory that's there (stat, through a link). For a
+	// link readdir names (DT_LNK), and for a file system whose readdir
+	// doesn't say what an entry is (DT_UNKNOWN).
+	dir_entry_kind :: fun(path: []utf8, name: []utf8) -> bool, bool {
+		if path.len + name.len > 500 do return false, false   // (on the stack, under 1 KB)
 		full : [512]utf8
 		&full + path
 		&full + "/"
 		&full + name
-		id := open(cstring(full), O_RDONLY | O_CLOEXEC, 0)
-		if id == NO_FILE do return false
 		st : Stat
-		got := fstat(id, &st) == 0
-		_ = close(id)
-		return got and (st.mode & S_IFMT) == S_IFDIR
+		link := lstat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFLNK
+		dir := stat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFDIR
+		return link, dir
 	}
 
 	// struct dirent (glibc, x86_64): what readdir returns, one entry.
@@ -1311,8 +1370,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	DT_UNKNOWN :: u8(0)
 	DT_DIR     :: u8(4)
+	DT_LNK     :: u8(10)
 	S_IFMT     :: u32(0xF000)   // st_mode's file kind bits
 	S_IFDIR    :: u32(0x4000)   // a directory
+	S_IFLNK    :: u32(0xA000)   // a symbolic link
 
 	// ---------------------------------------------------------------------------
 	// Stat structure (Linux x86_64 — verify per kernel ABI)
@@ -1720,6 +1781,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
 		fun unlink(path: cstring) -> i32
 		fun fstat(fd: File_Id, out: ^Stat) -> i32
+		fun stat(path: cstring, out: ^Stat) -> i32    // (through a link to where it leads)
+		fun lstat(path: cstring, out: ^Stat) -> i32   // (a link itself)
 		fun lseek(fd: File_Id, offset: i64, whence: i32) -> i64
 
 		// A directory's entries: opened, each next (void: no more), closed.

@@ -1,0 +1,89 @@
+module dir_links
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ expect-output: made: 0
+//@ expect-output: file.txt: file
+//@ expect-output: real: directory
+//@ expect-output: to_real: link to a directory
+//@ expect-output: to_gone: link to nothing
+//@ expect-output: a link to a file: true
+//@ expect-output: walk into: real
+//@ expect-output: removed: 0
+
+// dir_read and links: a link's entry says it's a link, and its `dir` where
+// it leads — a directory, or nothing there any more — so a walk can keep
+// to `dir and not link`. The links are made by the system's own commands,
+// then removed: on Windows junctions (a symbolic link wants an
+// administrator there), on Linux symbolic links, a file's too.
+
+// The system's shell runs a command line, what it says dropped: its exit
+// code.
+shell :: fun(command: []utf8) -> i64 {
+	p, e := process_start(command)
+	if e do return -1
+	code, _ := process_wait(&p)
+	return code
+}
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Basic(4 * MB))
+	made : i64 = -1
+	#if #windows {
+		made = shell("cmd /c \"(rmdir /s /q dir_links_demo & mkdir dir_links_demo\\real && mkdir dir_links_demo\\gone && echo x> dir_links_demo\\file.txt && mklink /J dir_links_demo\\to_real dir_links_demo\\real && mklink /J dir_links_demo\\to_gone dir_links_demo\\gone && rmdir dir_links_demo\\gone) >nul 2>&1\"")
+	}
+	#if #linux {
+		made = shell("exec >/dev/null 2>&1; rm -rf dir_links_demo; mkdir -p dir_links_demo/real && echo x > dir_links_demo/file.txt && ln -s real dir_links_demo/to_real && ln -s gone dir_links_demo/to_gone && ln -s file.txt dir_links_demo/to_file")
+	}
+	print("made:", made)
+
+	storage : [64 * KB]byte
+	entries, e := dir_read("dir_links_demo", &storage)
+	if e {
+		print("dir_read:", e)
+		return 1
+	}
+	for want in ["file.txt", "real", "to_real", "to_gone"] {
+		for entry in entries {
+			if entry.name[:] != want do continue
+			if entry.link {
+				if entry.dir {
+					print("%: link to a directory", want)
+				else
+					print("%: link to nothing", want)
+				}
+			elif entry.dir
+				print("%: directory", want)
+			else
+				print("%: file", want)
+			}
+		}
+	}
+
+	// (Linux's link to a file: a link, not a directory. Windows makes none
+	// without an administrator.)
+	file_link := true
+	#if #linux {
+		file_link = false
+		for entry in entries {
+			if entry.name[:] == "to_file" do file_link = entry.link and not entry.dir
+		}
+	}
+	print("a link to a file:", file_link)
+
+	for entry in entries {
+		if entry.dir and not entry.link do print("walk into:", entry.name[:])
+	}
+
+	removed : i64 = -1
+	#if #windows {
+		removed = shell("cmd /c \"rmdir /s /q dir_links_demo >nul 2>&1\"")
+	}
+	#if #linux {
+		removed = shell("rm -rf dir_links_demo")
+	}
+	print("removed:", removed)
+	return 0
+}

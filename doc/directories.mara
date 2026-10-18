@@ -5,10 +5,18 @@
 // in it already, and gives them back, a view of storage: a `[]Dir_Entry`,
 // an entry for each — its name (not its path: join the directory's and the
 // name to open it) and whether it's a directory. "." and ".." aren't
-// listed, and the order is the system's: sort them if it matters. It fails
-// with File_Error.Open_Failed when there's no directory at the path, and
-// with File_Error.Too_Large when they don't all fit in what's left of
-// storage — storage then as it was. One storage takes several lists, one
+// listed, and the order is the system's: sort them if it matters.
+//
+// An entry can be a link — a symbolic link, or on Windows a junction — to
+// somewhere else: its `link` says so, and its `dir` says where it leads, a
+// directory or not (a file, or nothing there any more). A walk down a tree
+// goes into the entries that are `dir and not link`: a link can lead back
+// up the tree, round and round, or to files found already. To follow one
+// anyway, real_path says where it leads.
+//
+// It fails with File_Error.Open_Failed when there's no directory at the
+// path, and with File_Error.Too_Large when they don't all fit in what's left
+// of storage — storage then as it was. One storage takes several lists, one
 // after another, and files read too (see read_file.mara).
 //
 // To keep only some of the entries — the .mara files, the directories —
