@@ -1,9 +1,9 @@
 // How a program finds the files that come with it — a font, a config, a
-// folder of data beside it: executable_path, its own file's path.
+// folder of data beside it: exe_path, its own file's path.
 //
 // this_program.args[0] is no good for it: it's what started the program
 // wrote, and that may be just its name (found on the PATH), a path from
-// another directory, or a link's. executable_path asks the system: the
+// another directory, or a link's. exe_path asks the system: the
 // program's file, its path whole and as the system has it (real_path's: its
 // letters' case as on disk, a link followed to the file itself), however
 // it was started — so the files beside it are the ones beside the program's
@@ -15,7 +15,7 @@
 // It gives back a Path: up to 512 characters, its room past the path there
 // to add to; path_dir gives one too, the directory, for a file's name to go
 // after. Too_Large when the path is longer.
-module executable_path
+module exe_path
 
 use mara.core
 use mara.os
@@ -25,7 +25,7 @@ main :: fun() {
 	this_program = Program(Arena_Basic(1 * MB))
 	storage : [64 * KB]byte
 
-	path, e := executable_path()
+	path, e := exe_path()
 	if e {
 		print("couldn't tell:", e)
 		return
@@ -36,7 +36,7 @@ main :: fun() {
 	print("this program's directory ends with a separator:", dir.len > 0)
 
 	// A file beside it: the directory, then the file's name.
-	&dir + "executable_path.mara"
+	&dir + "exe_path.mara"
 	_, re := read_entire_file(dir, &storage)
 	print("its source beside it reads:", not re)
 }

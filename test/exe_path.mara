@@ -1,10 +1,10 @@
-module executable_path
+module exe_path
 
 use mara.core
 use mara.os
 use mara.memory
 
-// executable_path: the program's own file — its path whole (a drive's or
+// exe_path: the program's own file — its path whole (a drive's or
 // the root's at its start), its own name in it, the system's own spelling
 // (real_path's) — whatever this_program.args[0] says (run.sh starts it by a
 // relative path). Its directory, path_dir's Path, a file's name added: the
@@ -18,12 +18,12 @@ use mara.memory
 
 main :: fun() -> i64 {
 	this_program = Program(Arena_Basic(4 * MB))
-	path, e := executable_path()
+	path, e := exe_path()
 	if e {
-		print("executable_path:", e)
+		print("exe_path:", e)
 		return 1
 	}
-	print("has its own name:", has(path, "executable_path"))
+	print("has its own name:", has(path, "exe_path"))
 	whole := path.len > 2 and (path[0] == '/' or path[1] == ':')
 	print("whole:", whole)
 	real, re := real_path(path)
@@ -32,7 +32,7 @@ main :: fun() -> i64 {
 	print("opens:", not oe)
 	file_close(id)
 	beside := path_dir(path)
-	&beside + "executable_path.mara"
+	&beside + "exe_path.mara"
 	sid, se := file_open_read(beside)
 	print("beside it:", not se)
 	file_close(sid)

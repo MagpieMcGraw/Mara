@@ -123,9 +123,9 @@ main :: fun() -> i64 {
 	theme_set(&ui, THEME_DARK)
 
 	// (Its font and its layout beside it: the directory of its own file —
-	// executable_path's, however it was started; args[0] is what its
+	// exe_path's, however it was started; args[0] is what its
 	// starter wrote, maybe just its name.)
-	exe, ee := executable_path()
+	exe, ee := exe_path()
 	if ee {
 		print("mara view: where its own file is, the system didn't say")
 		return 1

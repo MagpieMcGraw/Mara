@@ -33,7 +33,7 @@ Pipe_Error :: error {
     Connect_Failed   // nobody listens on the name
 }
 
-// A path, as current_dir and executable_path give one back: up to 512
+// A path, as current_dir and exe_path give one back: up to 512
 // characters (Windows' paths here end at 260), its room past them there to
 // add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
 // where it's declared, no arena needed.
@@ -80,7 +80,7 @@ path_separator :: fun(ch: utf8) -> bool {
 
 // The directory a path is in, its separator kept at the end: a Path, for a
 // file's name to go after — a file beside it, the program's own files beside
-// its executable_path: `dir := path_dir(exe)`, `&dir + "font.ttf"`. Empty
+// its exe_path: `dir := path_dir(exe)`, `&dir + "font.ttf"`. Empty
 // for a name alone. (parent_dir: without the separator, a view of the path.)
 // A directory longer than a Path holds stops the program, as an add past
 // its room does.
@@ -465,7 +465,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// path there to add to (`&cwd + "/code"`). Too_Large when it's longer
 	// than a Path holds; Open_Failed when it's gone (deleted while the
 	// program ran in it); Read_Failed when the system won't say.
-	// (executable_path: the program's own file, wherever it runs.)
+	// (exe_path: the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir := real_path(".")?
 		if dir.len == dir.cap do return dir, Too_Large   // (no room for its 0)
@@ -478,7 +478,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// where they lead, a mapped drive's folder its server's
 	// (`//server/share/…`), `.` and `..` gone, its separators '/'. Two
 	// spellings of one place give one path: a path from the command line or
-	// a file made so, it compares with current_dir's and executable_path's
+	// a file made so, it compares with current_dir's and exe_path's
 	// (real already) and the paths built on them as they are. Open_Failed
 	// when nothing's there; Too_Large when it's longer than a Path holds;
 	// Read_Failed when the system won't say.
@@ -523,7 +523,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// (GetModuleFileNameA: in the system's code page, as the other files'
 	// functions here take paths; the folders spelled as the program was
 	// started — so real_path asked too.)
-	executable_path :: fun() -> Path, err {
+	exe_path :: fun() -> Path, err {
 		path : Path
 		n := i64(GetModuleFileNameA(void, &path[0], u32(path.cap)))
 		if n == 0 do return path, Read_Failed
@@ -1239,7 +1239,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// however it was entered; whole (no separator at its end but the root,
 	// `/`): a Path, its room past the path there to add to (`&cwd +
 	// "/code"`). Too_Large when it's longer than a Path holds (or the system
-	// won't say, or it's gone: getcwd fails every way). (executable_path:
+	// won't say, or it's gone: getcwd fails every way). (exe_path:
 	// the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir : Path
@@ -1282,7 +1282,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Too_Large when it's longer than a Path holds; Read_Failed when the
 	// system won't say. (/proc/self/exe: a link to the program's file, the
 	// kernel's own path for it.)
-	executable_path :: fun() -> Path, err {
+	exe_path :: fun() -> Path, err {
 		path : Path
 		link := "/proc/self/exe"
 		n := readlink(cstring(link), &path[0], usize(path.cap))

@@ -3,8 +3,8 @@
 // module there; a tool given a file's name opens it from there.
 //
 // It's not where the program's file is: started from another directory, a
-// program runs there — executable_path says where its own file is (see
-// executable_path.mara).
+// program runs there — exe_path says where its own file is (see
+// exe_path.mara).
 //
 // It gives back a Path: up to 512 characters, its room past the path there
 // to add to — `&dir + "/" + name` makes a file's path of it. Too_Large when
@@ -15,10 +15,10 @@
 // It's the directory as the system has it, however it was entered: its
 // letters' case as on disk (`cd c:\code` gives `C:/Code`), links and
 // junctions followed to where they lead — real_path's spelling, as
-// executable_path's is. So paths built on it compare as they are with
-// other real paths; a path from elsewhere — the command line, a file —
-// real_path makes so. (A mapped network drive's folder comes back as its
-// server's: `//server/share/…`.)
+// exe_path's is. So paths built on it compare as they are with other real
+// paths; a path from elsewhere — the command line, a file — real_path makes
+// so. (A mapped network drive's folder comes back as its server's:
+// `//server/share/…`.)
 module current_dir
 
 use mara.core
