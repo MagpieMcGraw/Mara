@@ -15,6 +15,9 @@
 // Arena_Debug records every allocation and lists them when it runs out;
 // Arena_Basic is the fast one for a finished program. Both are in
 // mara.memory.
+//
+// Part of a program can run on an arena of its own — another Program, and
+// a `with` block run on it: see programs.mara.
 module arenas
 
 use mara.core

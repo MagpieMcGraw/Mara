@@ -1,0 +1,100 @@
+module with_program
+
+use mara.core
+use mara.memory
+
+//@ expect-output: lib before: 0
+//@ expect-output: work outside with, lib: 0
+//@ expect-output: work inside with, lib: 16424
+//@ expect-output: lib after: 0
+//@ expect-output: args: main 1, in with 0, after 1
+//@ expect-output: a return from inside: 0, after 1
+//@ expect-output: an error out: Oops.Went_Wrong, after 1
+//@ expect-output: loop: 0 then 1, 1 times
+//@ expect-output: nested: a 1 MB, b 64 KB, back in a: 524328
+//@ expect-output: back in main: 1
+
+// Program values and `with`: a second program, its own arena, and a block
+// run on it — its big values, and its callees', on that arena; this_program
+// that program there (no command line: no args) — then, at every way out
+// (its end, a return, `?`, break, continue), the program it was.
+
+Oops :: error {
+	Went_Wrong
+}
+
+// What a program's arena has in use.
+in_use :: fun(p: ^Program) -> i64 {
+	return p.scope_allocator.base.len
+}
+
+// A big local — on the arena of the program it runs on — and lib's use then.
+work :: fun(lib: ^Program) -> i64 {
+	big : [16 * KB]byte
+	big[0] = u8(1)
+	return in_use(lib)
+}
+
+args_now :: fun() -> i64 {
+	return this_program.args.len
+}
+
+early :: fun(p: ^Program) -> i64 {
+	with p {
+		return args_now()
+	}
+}
+
+fails :: fun() -> err {
+	return Went_Wrong
+}
+through :: fun(p: ^Program) -> err {
+	with p do fails()?
+}
+
+// Half a megabyte on what this_program's arena is: its use then.
+half_mb :: fun() -> i64 {
+	room : [512 * KB]byte
+	room[0] = u8(1)
+	return this_program.scope_allocator.base.len
+}
+
+main :: () {
+	this_program = Program(Arena_Basic(16 * MB))
+	lib := Program(Arena_Basic(1 * MB))
+
+	print("lib before:", in_use(&lib))
+	print("work outside with, lib:", work(&lib))
+	with &lib do print("work inside with, lib:", work(&lib))
+	print("lib after:", in_use(&lib))
+
+	main_args := args_now()
+	inside : i64 = -1
+	with &lib do inside = args_now()
+	print("args: main %, in with %, after %", main_args, inside, args_now())
+
+	print("a return from inside: %, after %", early(&lib), args_now())
+	e := through(&lib)
+	print("an error out: %, after %", e, args_now())
+
+	seen : i64 = -1
+	rounds := 0
+	for i in 0 .. 5 {
+		with &lib {
+			if i == 1 do continue
+			if i == 2 do break
+			seen = args_now()
+		}
+		rounds += 1
+		print("loop: % then %, % times", seen, args_now(), rounds)
+	}
+
+	// (b's 64 KB couldn't hold half a megabyte: back in a, a has.)
+	a := Program(Arena_Basic(1 * MB))
+	b := Program(Arena_Basic(64 * KB))
+	with &a {
+		with &b do _ = args_now()
+		print("nested: a 1 MB, b 64 KB, back in a:", half_mb())
+	}
+	print("back in main:", args_now())
+}

@@ -347,6 +347,39 @@ lw_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
     return {v = graph_read(b, graph_dest_place(b, at, span), ts, span), ok = true}
 }
 
+// `Program(arena)` as a value (tc_program_value): the program's struct —
+// its arena built in its first field, the rest zero (no args) — where it
+// goes, else in a temporary, as a constructor's result is.
+lw_program_value :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id, want: Build_Want, w: Written,
+                         dest: Dest, temp: bool, temp_span: Span) -> Built {
+    b := k.gb
+    span := tree_span(k.t, n)
+    if want == .Place { lw_fail(k, n, "a call's place") }
+    ts, is_scope := tc_node_type(k, n).(^Type_Scope)
+    if !is_scope || len(ts.sd.fields) == 0 || ts.sd.fields[0].name != "scope_allocator" || len(args) != 1 {
+        lw_fail(k, n, "a Program with no arena")
+    }
+    at: Dest
+    if want == .Into && temp {
+        at = graph_build_temp(b, temp_span, build_temp_type(dest))
+    } else if want == .Into {
+        at = dest
+    } else {
+        at = graph_dest_var(graph_slot(b, "temp", ts, span), ts)
+    }
+    gl := graph_build_literal(b, span, "Program", true, ts, at)
+    lw_literal_field(k, args[0], ts.sd.fields[0], 0, "scope_allocator", span, gl)
+    switch {
+    case want == .Into && temp:
+        tt: Type = at.type_ if at.type_ != nil else Type(ts)
+        p := graph_build_temp_end(b, at, tt, temp_span)
+        return {v = graph_read(b, p, tt, temp_span), ok = true, temp = true}
+    case want == .Into:
+        return {v = NO_VALUE, ok = true, into = true}
+    }
+    return {v = graph_read(b, graph_dest_place(b, at, span), ts, span), ok = true}
+}
+
 // `v{ x = 1 }` as a statement (tc_override): each field given written into v's
 // — through a pointer, into what it points at's (as `v.x = 1` is).
 lw_override :: proc(k: ^TC, e: Tree_Id) -> bool {

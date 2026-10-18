@@ -120,6 +120,114 @@ tc_program_assign :: proc(k: ^TC, value: Tree_Id) {
     for a in inner { tc_check(k, a) }
 }
 
+// `Program(Arena_Basic(size))` as a value (not main's `this_program =
+// Program(…)`): another program, its own arena, the program's kind — a
+// block run on it with `with &p {…}`. Its size needn't be a constant: it's
+// built when this runs.
+tc_program_value :: proc(k: ^TC, n: Tree_Id, args: []Tree_Id) -> Type {
+    span := tree_span(k.t, n)
+    pt := k.table.builtins["Program"]
+    if len(args) != 1 {
+        tc_error(k, span, TYPE_PROGRAM_VALUE_ONE_ARENA, len(args))
+        for a in args { tc_check(k, a) }
+        return pt
+    }
+    at := tc_check(k, args[0])
+    if !k.table.has_scope_allocator {
+        tc_error(k, span, TYPE_PROGRAM_VALUE_NEEDS_ARENA)
+        return pt
+    }
+    if is_any(at) { return pt }
+    name := k.table.scope_allocator_name
+    ats, is_scope := at.(^Type_Scope)
+    if !is_scope || !(ats.name == name || strings.has_suffix(ats.name, strings.concatenate({"_", name}, context.temp_allocator))) {
+        tc_error(k, span, TYPE_PROGRAM_VALUE_ARENA_KIND, name, type_name(at))
+    }
+    return pt
+}
+
+// Whether t is ^Program.
+tc_is_program_ptr :: proc(k: ^TC, t: Type) -> bool {
+    p, is_ptr := unwrap_alias(t).(^Type_Ptr)
+    if !is_ptr { return false }
+    ps, is_scope := p.elem.(^Type_Scope)
+    return is_scope && ps == (k.table.builtins["Program"].(^Type_Scope) or_else nil)
+}
+
+// `with p {…}` (or `with p do s`): its block run on another program — p a
+// ^Program; what the block, and everything it calls, puts on an arena goes
+// on p's, and this_program is p there. The program it was is back at every
+// way out of the block, as a defer's block runs: its callers never see p.
+tc_with :: proc(k: ^TC, s: Tree_Id) {
+    t := k.t
+    p := Tree_Id(t.a[s])
+    pt := tc_check(k, p)
+    if ps, is_scope := pt.(^Type_Scope); is_scope && ps == (k.table.builtins["Program"].(^Type_Scope) or_else nil) {
+        name := tc_diag_name(k, p)
+        tc_error(k, tree_span(t, p), TYPE_WITH_NEEDS_PROGRAM_ADDRESS, name if name != "" else "p")
+    } else if !is_any(pt) && !tc_is_program_ptr(k, pt) {
+        tc_error(k, tree_span(t, p), TYPE_WITH_NEEDS_PROGRAM_POINTER, type_name(pt))
+    }
+    append(&k.withs, TC_With{span = tree_span(t, s), sid = tc_sid(k, s)})
+    tc_scope(k, tree_list(t, t.b[s]))
+}
+
+// mara.memory's program_swap: what `with` sets the program with, and puts it
+// back with (nil: not in the program).
+tc_program_swap :: proc(table: ^SymbolTable) -> ^Type_Scope {
+    for _, ft in table.funs {
+        if ft != nil && ft.kind == .Fun && ft.home_package == "mara.memory" && (ft.source_name == "program_swap" || ft.name == "program_swap") { return ft }
+    }
+    return nil
+}
+
+// A `with` checked: where it is, and its node (in the instance it was
+// checked in) — a call of program_swap's, as the call graph is told.
+TC_With :: struct {
+    span: Span,
+    sid:  Syntax_Id,
+}
+
+// Every `with`: mara.memory there, its program_swap with it — and, to the
+// call graph (made from the annotations: callees first), a call of it, the
+// `with` its call.
+tc_validate_withs :: proc(k: ^TC) {
+    if len(k.withs) == 0 { return }
+    swap := tc_program_swap(k.table)
+    for w in k.withs {
+        if swap == nil {
+            tc_error(k, w.span, TYPE_WITH_NEEDS_MEMORY)
+            continue
+        }
+        k.annot.callees[w.sid] = swap
+        k.annot.forms[w.sid] = .Fun
+    }
+}
+
+// The arena's type main names, `*_<name>` among the funs (nil: none yet —
+// its module not checked, or no such type).
+tc_find_allocator :: proc(k: ^TC) -> ^Type_Scope {
+    name := k.table.scope_allocator_name
+    if name == "" { return nil }
+    suffix := strings.concatenate({"_", name}, context.temp_allocator)
+    for fname, ft in k.table.funs {
+        if ft == nil || ft.functions == nil { continue }
+        if strings.has_suffix(fname, suffix) || fname == name { return ft }
+    }
+    return nil
+}
+
+// The program's struct's arena field typed as soon as the arena's type is
+// known (tc_validate_allocator, at the end, at the latest): a read through
+// it — `this_program.scope_allocator.base.len`, a Program value's — is of a
+// type, then, not a placeholder.
+tc_program_arena_typed :: proc(k: ^TC) {
+    prog, ok := k.table.builtins["Program"].(^Type_Scope)
+    if !ok || len(prog.fields) == 0 || prog.fields[0].name != "scope_allocator" { return }
+    if _, placeholder := prog.fields[0].type_.(Type_Any); !placeholder { return }
+    if alloc := tc_find_allocator(k); alloc != nil { prog.fields[0].type_ = alloc }
+}
+
 // The arena's type: a fun `*_<name>` with what an arena has (mark, alloc,
 // reset); its size, a constant.
 tc_validate_allocator :: proc(k: ^TC) {
@@ -130,15 +238,7 @@ tc_validate_allocator :: proc(k: ^TC) {
         k.table.has_scope_allocator = false
         return
     }
-    suffix := strings.concatenate({"_", name}, context.temp_allocator)
-    alloc: ^Type_Scope
-    for fname, ft in k.table.funs {
-        if ft.functions == nil { continue }
-        if strings.has_suffix(fname, suffix) || fname == name {
-            alloc = ft
-            break
-        }
-    }
+    alloc := tc_find_allocator(k)
     if alloc == nil {
         tc_error(k, {}, TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE, name)
         k.table.has_scope_allocator = false

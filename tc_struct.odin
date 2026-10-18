@@ -53,6 +53,8 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
             return bt
         }
     }
+    // (The program's arena, typed by now if its type's known: tc_program_arena_typed.)
+    if field == "scope_allocator" { tc_program_arena_typed(k) }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
     tc_set_ref(k, n, tc_member_ref(k, bt, t, field, is_member))
     if known_ok { k.annot.known[tc_sid(k, n)] = {known, t} }

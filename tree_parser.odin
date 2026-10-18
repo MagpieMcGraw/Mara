@@ -194,6 +194,12 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
     case .Break:    return tp_leaf(p, .Break, tp_advance(p))
     case .Continue: return tp_leaf(p, .Continue, tp_advance(p))
     case .Defer, .Defer_Err: return tp_defer(p)
+    case .With:
+        // `with p {…}`, `with p do s`: the program, then the body.
+        kw := tp_advance(p)
+        program := tp_condition(p)
+        body := tp_loop_body(p)
+        return tp_node(p, .With, kw, start, u32(program), body)
     case .If:       return tp_if(p, 0)
     case .Hash:
         if tp_peek(p) == .If {

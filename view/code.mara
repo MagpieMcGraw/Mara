@@ -260,7 +260,7 @@ keyword_kind :: fun(w: []utf8) -> i64 {
 	if w == "fun" or w == "method" or w == "fn" or w == "union" or w == "dispatch" or w == "error" or w == "distinct" or w == "var" or w == "intrinsic" do return TOKEN_STORAGE
 	if w == "int" or w == "float" or w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "f32" or w == "f64" or w == "isize" or w == "usize" or w == "bool" or w == "string" or w == "cstr" or w == "ptr" or w == "byte" or w == "utf8" or w == "err" do return TOKEN_BASIC_TYPE
 	if w == "uint" or w == "c8" do return TOKEN_BAD
-	if w == "if" or w == "elif" or w == "else" or w == "for" or w == "match" or w == "each" or w == "other" or w == "return" or w == "do" or w == "where" or w == "defer" or w == "break" or w == "continue" or w == "foreign" do return TOKEN_KEYWORD
+	if w == "if" or w == "elif" or w == "else" or w == "for" or w == "match" or w == "each" or w == "other" or w == "return" or w == "do" or w == "where" or w == "defer" or w == "with" or w == "break" or w == "continue" or w == "foreign" do return TOKEN_KEYWORD
 	if w == "module" or w == "include" or w == "use" do return TOKEN_IMPORT
 	if w == "using" or w == "overload" do return TOKEN_OTHER
 	if w == "and" or w == "or" or w == "not" or w == "in" do return TOKEN_LOGIC

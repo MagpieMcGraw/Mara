@@ -77,6 +77,7 @@ TC :: struct {
     rs:            ^Resolver,
     top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
     in_defer:      bool,                // a defer's block being checked (its body's)
+    withs:         [dynamic]TC_With,    // each `with` (tc_with): mara.memory's program_swap found for it, once every module is checked
     loops:         int,                 // the loops around the statement being checked (in its body, or its defer's block)
     module_scopes: map[string]^Type_Scope,   // each module's record, by its name: what its definitions are declared in
     bound:         []u32,               // by token: its binding's place in binds (0: none)
@@ -474,6 +475,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     tc_event(k, {kind = .Program_Struct})
     tc_validate_allocator(k)
+    tc_validate_withs(k)
     tc_validate_main(k, main)
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
@@ -889,12 +891,9 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
         fn := sc.ts
         // (A DLL's entry takes the host's context first: a ^Program.)
         if fn != nil && fn.is_exposed {
-            ok := false
-            if len(fn.params) > 0 {
-                if pt, is_ptr := fn.params[0].type_.(^Type_Ptr); is_ptr {
-                    if ps, is_scope := pt.elem.(^Type_Scope); is_scope && ps.name == "Program" { ok = true }
-                }
-            }
+            // (The program's struct itself, however it's named: Program, or
+            // mara_core_Program beside mara.core's declaration of it.)
+            ok := len(fn.params) > 0 && tc_is_program_ptr(k, fn.params[0].type_)
             if !ok { tc_error(k, tree_span(k.t, sc.def), TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, fn.source_name) }
         }
         if fn == nil || fn.kind != .Fun || fn.source_name != "main" { continue }

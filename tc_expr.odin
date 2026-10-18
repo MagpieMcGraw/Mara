@@ -1065,6 +1065,8 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope) {
 tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, bool) {
     span := tree_span(k.t, n)
     switch name {
+    case "Program":
+        return tc_program_value(k, n, args), true
     case "print_cstr", "print_int", "print_float":
         msg := TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE
         if name == "print_int" { msg = TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT }

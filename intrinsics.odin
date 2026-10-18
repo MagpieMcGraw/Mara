@@ -29,6 +29,9 @@ LLVM_Type_Rule :: enum {
                                // return is the other kind, as wide — a float's bits as an integer, or an
                                // integer's as a float. LLVM's `bitcast` instruction, not a call: no work
                                // on the machine.
+    Program_Swap,              // `@llvm.mara_program_swap.ptr` (mara.core's program_swap): ^Program in,
+                               // ^Program out — the program's slot set, the one it held given back; no
+                               // LLVM intrinsic, a load and a store of @__mara_program (`with`'s).
 }
 
 LLVM_Intrinsic_Spec :: struct {
@@ -53,6 +56,7 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"umax",   2, .Match_Unsigned_Int_Suffix},
     {"bswap",  1, .Match_Any_Int_Suffix},
     {"bitcast", 1, .Bit_Cast},
+    {"mara_program_swap", 1, .Program_Swap},
 }
 
 find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
@@ -159,6 +163,21 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
         return false
     }
 
+    if spec.rule == .Program_Swap {
+        // (^Program in, ^Program out; its suffix names no type.)
+        is_program_ptr :: proc(t: Type) -> bool {
+            p, is_ptr := unwrap_alias(t).(^Type_Ptr)
+            if !is_ptr { return false }
+            ps, is_scope := p.elem.(^Type_Scope)   // (named Program, or mara_core_Program: program_ir_name)
+            return is_scope && (ps.name == "Program" || ps.source_name == "Program" || strings.has_suffix(ps.name, "_Program"))
+        }
+        if !is_program_ptr(ft.params[0].type_) || len(ft.return_types) != 1 || !is_program_ptr(fn_primary_return(ft)) {
+            check_error(c, span, "intrinsic `@%s` takes a ^Program and returns one", name)
+            return false
+        }
+        return true
+    }
+
     expected_type, suffix_ok := type_from_llvm_suffix(suffix)
     if !suffix_ok {
         check_error(c, span, "intrinsic `@%s` has unrecognised type suffix `%s`", name, suffix)
@@ -223,6 +242,8 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
             return false
         }
         return true
+    case .Program_Swap:
+        return true   // (checked above, before its suffix)
     case .Bit_Cast:
         // f32/f64: the param that float, the return an integer as wide; iN:
         // the param any integer that wide, the return the float as wide.

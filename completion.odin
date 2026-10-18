@@ -35,7 +35,7 @@ Completion :: struct {
 
 COMPLETION_KEYWORDS :: [?]string{
     "fun", "struct", "union", "enum", "error", "distinct", "use", "include", "module",
-    "if", "elif", "else", "for", "in", "match", "do", "return", "break", "continue", "defer", "defer?",
+    "if", "elif", "else", "for", "in", "match", "do", "return", "break", "continue", "defer", "defer?", "with",
     "and", "or", "not", "void", "true", "false",
 }
 

@@ -1,0 +1,13 @@
+module with_neg
+//@ expect-fail: `with` takes the program's address, a ^Program: `with &lib`
+
+// `with` takes a ^Program: given a Program, it says to take its address.
+
+use mara.core
+use mara.memory
+
+main :: () {
+	this_program = Program(Arena_Basic(16 * MB))
+	lib := Program(Arena_Basic(1 * MB))
+	with lib do print("x")
+}

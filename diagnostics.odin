@@ -409,6 +409,12 @@ TYPE_PROGRAM_READ_ONLY :: "cannot %s 'this_program'%s: it's read only — set on
 TYPE_PROGRAM_SET_OUTSIDE_MAIN :: "'this_program' is set only at the top of main's body (`this_program = Program(…)`): here it would do nothing"
 TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE :: "program scope allocator: '%s' is not a known type"
 TYPE_PROGRAM_SCOPE_ALLOCATOR_MISSING_REQUIRED :: "program scope allocator: '%s' is missing required function '%s'"
+TYPE_PROGRAM_VALUE_ONE_ARENA :: "Program(…) takes its arena, one argument — `Program(Arena_Basic(4 * MB))` (got %d)"
+TYPE_PROGRAM_VALUE_NEEDS_ARENA :: "a Program value needs the program's own arena set first: `this_program = Program(Arena_Basic(…))` at the top of main — another program's arena is the same kind"
+TYPE_PROGRAM_VALUE_ARENA_KIND :: "a Program value's arena is the program's own kind, %s (main's `this_program = Program(…)` says so): got %s"
+TYPE_WITH_NEEDS_PROGRAM_POINTER :: "`with` runs its block on another program: give it a ^Program (got %s)"
+TYPE_WITH_NEEDS_PROGRAM_ADDRESS :: "`with` takes the program's address, a ^Program: `with &%s`"
+TYPE_WITH_NEEDS_MEMORY :: "`with` needs mara.memory (its program_swap): `use mara.memory`"
 TYPE_FUN_MAIN_RETURN_INT_RETURN :: "fun main() must return int or have no return type"
 TYPE_FUN_MAIN_TAKE_PARAMETERS :: "fun main() must take no parameters"
 TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER :: "#expose function '%s' must take its first parameter as `^Program`"
@@ -529,7 +535,7 @@ TYPE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compil
 // Codegen fatals
 // ============================================================
 
-CODE_DLL_EXPOSE_FN_USES_ARENA :: "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)"
+CODE_DLL_EXPOSE_FN_USES_ARENA :: "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `this_program = Program(Arena_Basic(…))` at the top of an #expose fun: it names the arena's kind (the host's program's, which runs), and builds nothing"
 CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested but no scope_allocator declared"
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"

@@ -42,6 +42,7 @@ Token_Kind :: enum u8 {
     Defer,
     Defer_Err,  // defer? — a defer only a failure runs
     Using,
+    With,       // with p {…} — a block run on another program
     Distinct,
     Dispatch,
     Overload,
@@ -290,6 +291,10 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case 'v':
         switch text {
         case "var": return .Var, true
+        }
+    case 'w':
+        switch text {
+        case "with": return .With, true
         }
     }
     return .EOF, false

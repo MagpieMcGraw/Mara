@@ -48,6 +48,8 @@ Tree_Tag :: enum u8 {
     Continue,
     Defer,          // `defer`, `defer?`: main: the keyword (tree_defer_on_failure);
                     // a: list — the body
+    With,           // `with p {…}`: a: the program (a Program, or a ^Program); b:
+                    // list — the body, run on it
     If,             // `if c {…}`, `if c do s`, `#if`: a: the condition; b: rec {then:
                     // list, else: list, `#` token}; an `elif` chain is an Elif in the else list
     Elif,           // as If
@@ -162,6 +164,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Break          = {},
     .Continue       = {},
     .Defer          = {a = .List},
+    .With           = {a = .Node, b = .List},
     .If             = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
     .Elif           = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
     .Match          = {a = .Node, b = .List},
@@ -404,7 +407,7 @@ tree_stmt :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
     for n != 0 {
         #partial switch t.tag[n] {
         case .Assign, .Compound, .Decl, .Using, .Expr_Stmt, .Return, .Break, .Continue, .Defer,
-             .If, .Elif, .Match, .For_Range, .For_Each, .For_C, .For_Cond, .Define, .Variant:
+             .With, .If, .Elif, .Match, .For_Range, .For_Each, .For_C, .For_Cond, .Define, .Variant:
             return n
         }
         n = t.parent[n]

@@ -20,6 +20,13 @@ GB :: 1 << 30
 
 // Dynamic arena idea rejected
 
+// The program the code after it runs on — the arena its big values go on,
+// what this_program is — set to p, and the one it was given back. `with p
+// {…}` is the way to: it puts the old one back at every way out of its
+// block, so its callers never see p. Called by hand, it changes the program
+// for everything after it, the callers' code too.
+program_swap :: fun(p: ^Program) -> ^Program { @llvm.mara_program_swap.ptr }
+
 // ---------------------------------------------------------------------------
 // Arena_Basic — pure bump allocation with mark/reset, no per-alloc overhead.
 //

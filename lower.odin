@@ -304,6 +304,8 @@ lw_scan_returns :: proc(k: ^TC, stmts: []Tree_Id, r: ^LW_Returns) {
             lw_scan_returns(k, v.else_, r)
         case .For_Range, .For_Each, .For_C, .For_Cond:
             lw_scan_returns(k, for_view(t, s).body, r)
+        case .With:
+            lw_scan_returns(k, tree_list(t, t.b[s]), r)
         case .Match:
             for arm in tree_list(t, t.b[s]) { lw_scan_returns(k, lw_arm_body(k, arm), r) }
         }
@@ -517,6 +519,8 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned), tree_defer_on_failure(t, s))
         lw_scope(k, body)
         graph_build_defer_end(k.gb, gd)
+    case .With:
+        lw_with(k, s)
     case .Match:
         lw_match(k, s)
     case .Break, .Continue:
@@ -810,6 +814,36 @@ lw_if :: proc(k: ^TC, s: Tree_Id) {
     graph_build_else(b, &fi, span, lw_scope_arena(k, v.else_, b.body.returned))
     if len(v.else_) > 0 { lw_scope(k, v.else_) }
     graph_build_if_end(b, &fi)
+}
+
+// `with p {…}` (tc_with): a block of its own that sets the program's slot to
+// p — program_swap, the one it held kept — and puts that back by a defer of
+// its own at every way out; inside it the body's block, so the body's arena
+// marks and resets are p's, done before the slot is put back.
+lw_with :: proc(k: ^TC, s: Tree_Id) {
+    t := k.t
+    b := k.gb
+    span := tree_span(t, s)
+    swap := tc_program_swap(k.table)
+    if swap == nil { lw_fail(k, s, "a `with` with no program_swap") }
+    pt := fn_primary_return(swap)
+    p := Tree_Id(t.a[s])
+    body := tree_list(t, t.b[s])
+    outer := graph_build_block_open(b, "with", span, false)
+    r := lw_expr(k, p, .Value)
+    arg := graph_build_as(b, r.v, r.place, tc_node_type(k, p), tree_span(t, p), span, {sig = swap, param = 0})
+    was := Operand{graph_call_op(b, .Call, .Synthetic, span, swap, pt, arg), 0}
+    slot := graph_slot(b, "with", nil, span)
+    graph_build_write_at(b, graph_var(b, slot, nil, span), was, span)
+    graph_build_typed(b, slot, pt)
+    gd := graph_build_defer(b, span, false, false)
+    back := graph_read(b, graph_var(b, slot, pt, span), pt, span)
+    graph_call_op(b, .Call, .Synthetic, span, swap, pt, back)
+    graph_build_defer_end(b, gd)
+    inner := graph_build_block_open(b, "with body", span, lw_scope_arena(k, body, b.body.returned))
+    lw_scope(k, body)
+    graph_build_block_close(b, inner)
+    graph_build_block_close(b, outer)
 }
 
 // A loop (tc_for): its block, its variables, then its runs.
@@ -1390,6 +1424,7 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     if !has_form { lw_fail(k, n, "a call of no form annotated") }
     switch form {
     case .Builtin:
+        if name == "Program" { return lw_program_value(k, n, args, want, w, dest, temp, temp_span) }
         return lw_builtin(k, n, name, args, want, w)
     case .Conversion:
         // (`Id(x)`, Id a distinct type: x, seen as Id.)

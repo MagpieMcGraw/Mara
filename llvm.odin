@@ -2716,6 +2716,16 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.note = "an intrinsic's shape"
         return false
     }
+    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "mara_program_swap" {
+        // (Not a call: the program's slot read, then set — what it held, the value.)
+        p := fn_param(callee, 0)
+        v := llvm_operand(e, ops[0], p.type_) or_return
+        was := fresh_tmp(g)
+        ir_load(g, was, IR_PTR, ir_global("__mara_program"))
+        ir_store(g, IR_PTR, v, ir_global("__mara_program"))
+        e.value[op] = was
+        return true
+    }
     if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "bitcast" {
         // (Not a call: LLVM's `bitcast` — the same bits, another type.)
         p := fn_param(callee, 0)

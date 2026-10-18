@@ -739,6 +739,9 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         rs_stmt(r, Tree_Id(t.a[s]))
     case .Defer:
         rs_block(r, tree_list(t, t.a[s]))
+    case .With:
+        rs_node(r, Tree_Id(t.a[s]))
+        rs_block(r, tree_list(t, t.b[s]))
     case .If, .Elif:
         v := if_view(t, s)
         rs_node(r, v.cond)
