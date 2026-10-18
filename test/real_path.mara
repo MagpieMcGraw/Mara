@@ -16,7 +16,11 @@ main :: () {
 	here, _ := real_path(".")
 	again, _ := real_path("../code/../test")
 	print("same place", here == again, "| dots gone", not contains(again, ".."))
-	core, _ := real_path("../CODE/CORE.mara")
+	// (Windows' names don't mind case: asked in the wrong one, the file's
+	// found, and comes back in its own. Elsewhere that's another name.)
+	asked := "../code/core.mara"
+	#if #windows { asked = "../CODE/CORE.mara" }
+	core, _ := real_path(asked)
 	print("| case on disk", ends_with(core, "/code/core.mara"), "| file", core.len > here.len)
 	_, e := real_path("../no_such_folder_here")
 	print("missing", e)
