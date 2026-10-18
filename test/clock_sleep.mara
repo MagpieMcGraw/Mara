@@ -1,0 +1,34 @@
+module clock_sleep
+
+use mara.core
+use mara.os
+use mara.time
+
+//@ expect-output: forward: true
+//@ expect-output: slept at least: true true
+//@ expect-output: not much more: true
+//@ expect-output: time_since: true
+
+// mara.os's clock and sleeps, and mara.time on them (no SDL): the clock only
+// goes forward; a sleep lasts at least what was asked — and not a great deal
+// more, though fixtures run side by side on a busy machine.
+
+main :: () {
+	a := clock_ns()
+	b := clock_ns()
+	print("forward:", b >= a)
+
+	t := clock_ns()
+	sleep_ns(3000000)
+	took := clock_ns() - t
+	t = clock_ns()
+	sleep_ms(2)
+	took_ms := clock_ns() - t
+	print("slept at least:", took >= 3000000, took_ms >= 2000000)
+	print("not much more:", took < 3000000 + 200000000)
+
+	start := time_now()
+	sleep_ns(1000000)
+	seconds, _ := time_since(start)
+	print("time_since:", seconds >= 0.001 and seconds < 1.0)
+}

@@ -758,10 +758,41 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	STD_INPUT_HANDLE     :: 0xFFFFFFF6   // (DWORD)-10
 	STD_OUTPUT_HANDLE    :: 0xFFFFFFF5   // (DWORD)-11
 	ERROR_BROKEN_PIPE    :: 109
+	CREATE_WAITABLE_TIMER_HIGH_RESOLUTION :: 0x00000002
+	SYNCHRONIZE          :: 0x00100000
+	TIMER_MODIFY_STATE   :: 0x00000002
+
+	// Now, on a clock that only goes forward: nanoseconds since some point —
+	// the system's start, not a date. How long something took: the
+	// difference of two.
+	clock_ns :: fun() -> i64 {
+		count : i64 = 0
+		per_second : i64 = 0
+		_ = QueryPerformanceCounter(&count)
+		_ = QueryPerformanceFrequency(&per_second)   // (fixed while the system runs)
+		// (Whole seconds, then the rest: count·10^9 at once would overflow.)
+		return count / per_second * 1000000000 + count % per_second * 1000000000 / per_second
+	}
+
+	// Waits: the program does nothing for `ns` nanoseconds — at least, and
+	// a little more, as the system wakes it: a fraction of a millisecond (a
+	// high-resolution timer; Sleep's waits round up to the system's tick,
+	// 15.6 ms). Before Windows 10's 1803 there's none: whole milliseconds.
+	sleep_ns :: fun(ns: i64) {
+		if ns <= 0 do return
+		timer := CreateWaitableTimerExW(void, void, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, SYNCHRONIZE | TIMER_MODIFY_STATE)
+		if timer == NO_FILE {
+			Sleep(u32((ns + 999999) / 1000000))
+			return
+		}
+		due : i64 = -((ns + 99) / 100)   // (from now: negative, in 100 ns)
+		if bool(SetWaitableTimer(timer, &due, 0, void, void, 0)) do _ = WaitForSingleObject(timer, INFINITE)
+		_ = CloseHandle(timer)
+	}
 
 	// Waits: the program does nothing for `ms` milliseconds (at least).
 	sleep_ms :: fun(ms: u32) {
-		Sleep(ms)
+		sleep_ns(i64(ms) * 1000000)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -970,6 +1001,12 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun GetLastError() -> u32
 		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
 		fun Sleep(ms: u32)
+
+		// Clocks and timers
+		fun QueryPerformanceCounter(count: ^i64) -> i32
+		fun QueryPerformanceFrequency(per_second: ^i64) -> i32
+		fun CreateWaitableTimerExW(attributes: ^byte, name: ^byte, flags: u32, access: u32) -> File_Id
+		fun SetWaitableTimer(timer: File_Id, due: ^i64, period: i32, routine: ^byte, argument: ^byte, resume: i32) -> i32
 
 		// Named pipes
 		fun CreateNamedPipeA(
@@ -1505,13 +1542,33 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	POLLIN :: 0x0001
 
-	// Waits: the program does nothing for `ms` milliseconds (at least).
-	sleep_ms :: fun(ms: u32) {
-		want := Timespec{seconds = i64(ms / 1000), nanoseconds = i64(ms % 1000) * 1000000}
-		_ = nanosleep(&want, void)
+	// Now, on a clock that only goes forward: nanoseconds since some point —
+	// the system's start, not a date. How long something took: the
+	// difference of two.
+	clock_ns :: fun() -> i64 {
+		now := Timespec{seconds = 0, nanoseconds = 0}
+		_ = clock_gettime(CLOCK_MONOTONIC, &now)
+		return now.seconds * 1000000000 + now.nanoseconds
 	}
 
-	// nanosleep's time.
+	// Waits: the program does nothing for `ns` nanoseconds — at least, and
+	// a little more, as the system wakes it.
+	sleep_ns :: fun(ns: i64) {
+		if ns <= 0 do return
+		want := Timespec{seconds = ns / 1000000000, nanoseconds = ns % 1000000000}
+		left := Timespec{seconds = 0, nanoseconds = 0}
+		for nanosleep(&want, &left) != 0 {
+			if __errno_location()^ != EINTR do return
+			want = left   // (a signal cut it short: the rest)
+		}
+	}
+
+	// Waits: the program does nothing for `ms` milliseconds (at least).
+	sleep_ms :: fun(ms: u32) {
+		sleep_ns(i64(ms) * 1000000)
+	}
+
+	// clock_gettime's and nanosleep's time.
 	Timespec :: struct {
 		seconds:     i64
 		nanoseconds: i64
@@ -1645,6 +1702,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	EAGAIN           :: 11
 	ECONNABORTED     :: 103
 	EADDRINUSE       :: 98
+	CLOCK_MONOTONIC  :: 1   // (clock_gettime: a clock that only goes forward)
 
 	// ---------------------------------------------------------------------------
 	// libc bindings
@@ -1700,6 +1758,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
 		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
 		fun nanosleep(want: ^Timespec, left: ^Timespec) -> i32
+		fun clock_gettime(clock: i32, now: ^Timespec) -> i32
 
 		// Named pipes: Unix sockets
 		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id

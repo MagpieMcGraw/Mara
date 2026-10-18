@@ -1,7 +1,11 @@
 module mara.time
 
-sdl :: use mara.sdl
+use mara.os
 use mara.math
+
+// A game loop's timing: a Timer, how long a frame took; a Fixed_Timer, the
+// game's time in fixed steps out of that. Its clock is mara.os's clock_ns —
+// a counter here is its nanoseconds, as a u64.
 
 Timer :: struct {
 	counter: u64 = time_now()
@@ -22,14 +26,15 @@ one_step :: fun(fixed : ^Fixed_Timer) -> bool {
 	return false
 }
 
+// Now: nanoseconds on a clock that only goes forward (clock_ns).
 time_now :: fun() -> u64 {
-	return sdl.GetPerformanceCounter()
+	return u64(clock_ns())
 }
 
+// The seconds since `last` (a time_now), and now.
 time_since :: fun(last: u64) -> (f64, u64) {
-    now := sdl.GetPerformanceCounter()
-    seconds := f64(now - last) / f64(sdl.GetPerformanceFrequency())
-    return seconds, now
+	now := time_now()
+	return f64(now - last) / 1000000000.0, now
 }
 
 tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
@@ -37,6 +42,8 @@ tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
 	fixed.tally += min(fixed.limit, frame.seconds)
 }
 
+// Waits out the rest of a frame at `fps` frames a second, the frame's work
+// timed from `work`.
 sleep :: fun(work: Timer, fps: f64) {
 	work_seconds, _ := time_since(work.counter)
 	sleep_time := 1.0 / fps - work_seconds
@@ -48,6 +55,5 @@ seconds_to_ns :: fun (seconds: f64) -> u64 {
 }
 
 delay_ns :: fun(nanoseconds: u64) {
-	//sdl.DelayNS(nanoseconds)
-	sdl.Delay(u32(nanoseconds / 1000000))
+	sleep_ns(i64(nanoseconds))
 }

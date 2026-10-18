@@ -1,0 +1,53 @@
+// How a program tells how long something took, and how it waits.
+//
+// clock_ns() is now on a clock that only goes forward: nanoseconds since
+// some point — the system's start, not a date. How long something took is
+// the difference of two: `start := clock_ns()`, the work, then
+// `clock_ns() - start`. (A date and a time of day are another clock, which
+// can be set back: not this one.)
+//
+// sleep_ns(ns) waits: the program does nothing for that long — at least,
+// and a little more, as the system wakes it: a fraction of a millisecond.
+// sleep_ms(ms) is the same in milliseconds. (On Windows a high-resolution
+// timer: a plain Sleep there rounds a wait up to the system's tick, 15.6 ms,
+// a whole frame at 60 a second.)
+//
+// mara.time builds a game loop's timing on them: a Timer holds when a frame
+// started and how long the last one took (tally_up), a Fixed_Timer turns
+// that into fixed steps of game time (one_step), and sleep(work, fps) waits
+// out the rest of a frame.
+//
+// This program times some work, then paces three frames at 60 a second.
+module timing
+
+use mara.core
+use mara.os
+use mara.time
+
+main :: fun() {
+	// How long a loop takes.
+	start := clock_ns()
+	sum : i64 = 0
+	for i in 0 .. 1000000 {
+		sum += i % 7
+	}
+	took := clock_ns() - start
+	print("a million steps:", took / 1000, "microseconds; their sum:", sum)
+
+	// Three frames: the work, then the rest of a 60th of a second asleep.
+	frame := 1000000000 / 60
+	for f in 0 .. 3 {
+		frame_start := clock_ns()
+		// (a frame's work goes here)
+		rest := frame - (clock_ns() - frame_start)
+		sleep_ns(rest)
+		print("frame", f, "took", (clock_ns() - frame_start) / 1000, "microseconds")
+	}
+
+	// The same with mara.time's Timer: its counter set when the work starts.
+	work := Timer()
+	work.counter = time_now()
+	sleep(work, 60.0)
+	seconds, _ := time_since(work.counter)
+	print("mara.time's frame:", seconds, "seconds")
+}
