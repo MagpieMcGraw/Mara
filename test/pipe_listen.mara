@@ -35,11 +35,11 @@ client :: fun(word: []utf8) -> i64 {
 	return 4
 }
 
-// This program again, as a client saying a word.
-start_client :: fun(word: []utf8) -> Process, err {
+// This program again (exe: its path, args[0]), as a client saying a word.
+start_client :: fun(exe: []utf8, word: []utf8) -> Process, err {
 	command : str256
 	&command + "\""
-	&command + this_program.args[0]
+	&command + exe
 	&command + "\" client "
 	&command + word
 	return process_start(command)
@@ -54,8 +54,8 @@ answer :: fun(c: File_Id) -> err {
 	file_close(c)
 }
 
-main :: fun() -> i64 {
-	if this_program.args.len > 2 do return client(this_program.args[2])
+main :: fun(args: [][]utf8) -> i64 {
+	if args.len > 2 do return client(args[2])
 	l, e := pipe_listen(NAME)
 	if bool(e) {
 		print("listen failed:", e)
@@ -68,8 +68,8 @@ main :: fun() -> i64 {
 	_, e3 := pipe_connect("mara-test-nobody-listens-here")
 	print("nobody there:", e3)
 
-	a, ae := start_client("alpha")
-	b, be := start_client("beta")
+	a, ae := start_client(args[0], "alpha")
+	b, be := start_client(args[0], "beta")
 	if bool(ae) or bool(be) {
 		print("start failed")
 		return 1

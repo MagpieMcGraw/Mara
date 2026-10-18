@@ -25,8 +25,9 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	storage : [64 * KB]byte
 
 	dir, e := current_dir()

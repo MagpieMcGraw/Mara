@@ -30,6 +30,8 @@ module memory_profiling
 use mara.core
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 // Each one names an item: its name fills part of its 64.
 Item :: struct {
 	name: [64]utf8
@@ -46,8 +48,6 @@ squares :: fun(n: i64) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
-
 	total := 0
 	for n in 1 .. 50 {
 		total += squares(n)    // squares.found: peak 49 of 1000

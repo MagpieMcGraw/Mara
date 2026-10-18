@@ -22,6 +22,8 @@ use mara.math
 use mara.sdl
 use mara.memory
 
+#allocator Arena_Basic(256 * MB)
+
 PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
 PAD       :: 12.0            // room around text: a panel's margin, a column's
@@ -115,8 +117,7 @@ Ui :: struct {
 	selected:   Color   // text selected, behind it
 }
 
-main :: fun() -> i64 {
-	this_program = Program(Arena_Basic(256 * MB))
+main :: fun(args: [][]utf8) -> i64 {
 	ui := Ui()
 	p := Profile()
 	hub : Hub
@@ -144,16 +145,16 @@ main :: fun() -> i64 {
 
 	// (The compiler's directory: its stdlib and doc pages, for the docs. Its
 	// separator, the paths made from it.)
-	if this_program.args.len > 1 {
-		compiler_dir := path_dir(this_program.args[1])
+	if args.len > 1 {
+		compiler_dir := path_dir(args[1])
 		&ui.compiler_dir + compiler_dir
 		ui.sep = '/'
 		if compiler_dir.len > 0 do ui.sep = compiler_dir[compiler_dir.len - 1]
 	}
 
 	title : str256
-	if this_program.args.len > 2 {
-		&title + this_program.args[2]
+	if args.len > 2 {
+		&title + args[2]
 		&title + " - "
 	}
 	&title + "mara view"
@@ -196,7 +197,7 @@ main :: fun() -> i64 {
 	}
 	clamp_panels(&ui)
 	own_crash_look(&ui)
-	hub_start(&ui, &hub)
+	hub_start(&ui, &hub, args)
 	run(&ui, &p, &hub)
 	layout_save(&ui)
 	DestroyRenderer(ui.renderer)

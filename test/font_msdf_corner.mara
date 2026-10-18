@@ -5,6 +5,8 @@ use mara.math
 use mara.memory
 use mara.font
 
+#allocator Arena_Debug(16 * MB)
+
 // An MSDF keeps a glyph's corners sharp: its three channels, each blended
 // between pixels as a GPU samples them, then their median, put a square's
 // corner where it is. A point a quarter pixel inside a corner, along the
@@ -16,8 +18,6 @@ use mara.font
 //@ expect-output: corners sharp
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(16 * MB))
-
 	outline : Outline
 	outline.header.num_contours = 1
 	outline.header.x_max = 1000

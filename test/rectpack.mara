@@ -3,9 +3,9 @@ module rectpack
 use mara.memory
 use mara.skyline
 
-main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
+#allocator Arena_Debug(1 * MB)
 
+main :: fun() {
 	p := Skyline(256, 256)
 
 	// Pack a handful of rects; expect tight bottom-left placement.

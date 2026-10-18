@@ -2,6 +2,8 @@ module blank_decl
 
 include mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 // `_` in a declaration names nothing, as in `_ = e` (discard_mixed): no
 // variable, no field, its value still built. In a struct's body `a, _ := f()`
 // made a field named `_` the graph then lacked ("field '_' is missing", an
@@ -41,7 +43,6 @@ S :: struct (n: i64) {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	s := S(3)
 	print("fields", s.a, s.b, s.c, s.d, s.e)
 	x, _ := pair(5)

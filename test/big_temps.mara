@@ -3,6 +3,8 @@ module big_temps
 use mara.core
 include mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 // A big value with nowhere to go — an argument, a dropped result, a field's
 // base, a match's subject, an `if` expression's — lives on the arena as a
 // big local does: bumped once when its scope is entered, freed when it's
@@ -62,7 +64,6 @@ work :: fun(rounds: i64) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	print("work:", work(200000))
 	print("main's own:", total(plain_big(7)), plain_big(8).n)
 }

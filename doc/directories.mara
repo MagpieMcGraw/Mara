@@ -32,13 +32,14 @@ use mara.os
 use mara.string
 use mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 // Whether an entry is a doc page: a .mara file.
 is_page :: fun(entry: Dir_Entry) -> bool {
 	return not entry.dir and ends_with(entry.name[:], ".mara")
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	storage : [1 * MB]byte
 
 	// This program's own directory, doc/: the .mara files in it.

@@ -74,7 +74,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // Constants, and the structs a constant's value may construct.
     for e, i in k.events {
         #partial switch e.kind {
-        case .Const, .Program_Struct: append(&run.list, i)
+        case .Const: append(&run.list, i)
         case .Body:                   if e.sc.ts.kind == .Struct { append(&run.list, i) }
         }
     }

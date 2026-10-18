@@ -73,9 +73,9 @@ Hub :: struct {
 	docs_tried:     u32           // when listening there was last tried (GetTicks)
 }
 
-// Listening on the pipe name, serve started — when `mara view` gave a name.
-hub_start :: fun(ui: ^Ui, h: ^Hub) {
-	args := this_program.args
+// Listening on the pipe name, serve started — when `mara view` gave a name
+// (the view's command line, main's args).
+hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 	if args.len > 4 {
 		&h.docs_name + args[4]
 		docs_listen(h)

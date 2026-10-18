@@ -800,7 +800,7 @@ flip — fun  operator_calls.mara:30   (module operator_calls)
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_neg
 === test/sibling_locals.mara | redeclared call above
-redeclared — fun  sibling_locals.mara:68   (module sibling_locals)
+redeclared — fun  sibling_locals.mara:70   (module sibling_locals)
 
 above (calls)   (0 direct callees, full closure (depth ∞))
   (calls nothing directly; indirect calls via fn-typed params aren't tracked)

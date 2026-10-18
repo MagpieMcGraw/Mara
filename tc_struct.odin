@@ -53,8 +53,6 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
             return bt
         }
     }
-    // (The program's arena, typed by now if its type's known: tc_program_arena_typed.)
-    if field == "scope_allocator" { tc_program_arena_typed(k) }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
     tc_set_ref(k, n, tc_member_ref(k, bt, t, field, is_member))
     if known_ok { k.annot.known[tc_sid(k, n)] = {known, t} }
@@ -694,7 +692,6 @@ tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     span := tree_span(tr, e)
     if pname, immutable := tc_write_root_param(k, ty); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }
     if cname, is_const := tc_write_root_const(k, ty); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
-    if tc_in_program(k, ty) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
     tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd)
     return true
 }

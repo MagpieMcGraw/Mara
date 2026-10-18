@@ -279,11 +279,12 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // (The result slots' names taken: a local named `sret` gets another.)
     for p in params { if strings.has_prefix(p.v.name, "sret") { e.used[p.v.name] = true } }
-    // `#expose`: in a DLL's export table, and the host's program — its first
-    // param — is the one the DLL's code reads, set first thing.
+    // `#expose`: in a DLL's export table, and — when the DLL names an arena's
+    // kind — its host's arena, its first param, the one the DLL's code puts
+    // big values on, set first thing.
     e.head = {name = mara_fn_name(g, cf.name), ret = e.ret, params = params[:], export = cf.is_exposed}
-    if cf.is_exposed && len(cf.params) > 0 {
-        append(&e.fields, Ir{op = .Store, ty = IR_PTR, a = params[0].v, b = ir_global("__mara_program")})
+    if cf.is_exposed && g.checked.table.has_scope_allocator && len(cf.params) > 0 {
+        append(&e.fields, Ir{op = .Store, ty = IR_PTR, a = params[0].v, b = ir_global("__mara_arena")})
     }
 
     // Entry first, then the runs as they were built; each gets its label, by
@@ -411,10 +412,6 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             t := graph_type(pg, id)
             if !llvm_scalar(t) && !llvm_aggregate(t) { return false }
         case .Field:
-            // The program's struct is set up by main's entry (`this_program =
-            // Program(…)` names the arena), never constructed: its fields,
-            // nothing.
-            if e.ctor && e.ft == (e.g.checked.table.funs["Program"] or_else nil) { continue }
             // A constructor's field: its place in Self, first thing in the entry.
             t := graph_type(pg, id)
             if !e.ctor || pg.parent[id] != 0 || (!llvm_scalar(t) && !llvm_aggregate(t)) { return false }
@@ -556,14 +553,6 @@ llvm_leaf_made :: proc(e: ^Llvm, leaf: Node_Id) -> bool {
     d := graph_refers(pg, leaf)
     if e.ctor && d == 0 {   // Self: the value under construction
         v^ = e.slot
-        return true
-    }
-    if storage_this_program(e.pg, d) {
-        // The program's own storage, which main hands over: at each use,
-        // where @__mara_program points.
-        at := fresh_tmp(g)
-        ir_load(g, at, IR_PTR, ir_global("__mara_program"))
-        v^ = at
         return true
     }
     if d <= 0 || d > pg.end { return false }   // not this fun's
@@ -1226,7 +1215,7 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
     if !graph_is_leaf(place) { return e.held[place] }   // a held view's len or cap
     d := graph_refers(pg, place)
     if graph_kind_of(pg, d) == .Param { return llvm_scalar(graph_type(pg, d)) }
-    if d <= 0 || d > pg.end { return false }   // this_program's: in memory
+    if d <= 0 || d > pg.end { return false }   // (not this fun's)
     return e.held[d]
 }
 
@@ -2716,13 +2705,13 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.note = "an intrinsic's shape"
         return false
     }
-    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "mara_program_swap" {
-        // (Not a call: the program's slot read, then set — what it held, the value.)
+    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "mara_arena_swap" {
+        // (Not a call: the arena slot read, then set — what it held, the value.)
         p := fn_param(callee, 0)
         v := llvm_operand(e, ops[0], p.type_) or_return
         was := fresh_tmp(g)
-        ir_load(g, was, IR_PTR, ir_global("__mara_program"))
-        ir_store(g, IR_PTR, v, ir_global("__mara_program"))
+        ir_load(g, was, IR_PTR, ir_global("__mara_arena"))
+        ir_store(g, IR_PTR, v, ir_global("__mara_arena"))
         e.value[op] = was
         return true
     }

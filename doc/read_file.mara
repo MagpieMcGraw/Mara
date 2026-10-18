@@ -17,6 +17,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 // Step by step: open, size, read, close — each can fail, and `?` passes the
 // failure on to whoever called (see errors.mara). file_read fills data from
 // its start, as much as it holds: its len becomes the number read.
@@ -29,8 +31,6 @@ read_first_bytes :: fun(path: []utf8, data: ^[]byte) -> err {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
-
 	// All at once. This program reads its own source.
 	storage : [1 * MB]byte
 	data, err := read_entire_file("read_file.mara", &storage)

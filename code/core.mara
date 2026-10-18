@@ -185,15 +185,3 @@ Arena :: struct {
 	dump :: fun(a: ^Self, size: i64, name, span: ^byte)	{
 	}
 }
-
-// The running program, `this_program`: its command-line arguments and its
-// allocator. args[0] is the program's own path, the rest what it was run
-// with. Values of 1 KB or more live in the allocator, not on the stack: a
-// program with any sets one at the top of main —
-// `this_program = Program(Arena_Basic(16 * MB))`. That's the only write: any
-// fun can read this_program, none can change it (no writes into it, no
-// pointers or slices of it).
-Program :: struct (ar_shape: ~Arena = void) {
-	scope_allocator: ar_shape
-	args: [64][]utf8
-}

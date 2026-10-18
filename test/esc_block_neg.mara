@@ -7,8 +7,9 @@ module esc_block_neg
 
 use mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
 	small : [4!]i64
 	s : []i64 = small[:]
 	if s.len == 4 {

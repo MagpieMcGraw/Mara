@@ -1,0 +1,12 @@
+module this_program_gone_neg
+//@ expect-fail: 'this_program' is gone: the program's arena is named at the module's top
+
+// The old setup says what took its place: #allocator at the module's top,
+// `with` for another arena, main's args for the command line.
+
+use mara.core
+use mara.memory
+
+main :: () {
+	this_program = Program(Arena_Basic(16 * MB))
+}

@@ -1,11 +1,11 @@
 // How memory works: small values on the stack, big ones in the program's arena.
 //
 // A value under 1 KB lives on the stack, like a local in C. A value of 1 KB
-// or more (a big array, a big buffer) lives in `this_program`'s arena, so
-// a program with one sets an arena at the top of main; without one, the
-// compiler stops and says so:
+// or more (a big array, a big buffer) lives in the program's arena, so a
+// program with one names an arena at the top of its module — the one main
+// is in; without one, the compiler stops and says so:
 //
-//     this_program = Program(Arena_Debug(16 * MB))
+//     #allocator Arena_Debug(16 * MB)
 //
 // 16 * MB is how much the arena holds in all. It hands out memory by moving
 // a cursor forward, and frees by moving it back to a mark. A block holding a
@@ -16,16 +16,16 @@
 // Arena_Basic is the fast one for a finished program. Both are in
 // mara.memory.
 //
-// Part of a program can run on an arena of its own — another Program, and
-// a `with` block run on it: see programs.mara.
+// Part of a program can run on an arena of its own — an arena as a value,
+// and a `with` block run on it: see with_arena.mara.
 module arenas
 
 use mara.core
 use mara.memory
 
-main :: fun() {
-	this_program = Program(Arena_Debug(16 * MB))
+#allocator Arena_Debug(16 * MB)
 
+main :: fun() {
 	// 2000 i64s are 16000 bytes: in the arena.
 	table : [2000!]i64
 	table[0] = 1

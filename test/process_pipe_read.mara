@@ -12,8 +12,8 @@ use mara.os
 //@ expect-output: got: child got: ping
 //@ expect-output: ended, exit 5
 
-main :: fun() -> i64 {
-	if this_program.args.len > 1 {
+main :: fun(args: [][]utf8) -> i64 {
+	if args.len > 1 {
 		// The child: its whole input, then an answer.
 		got : [200]byte
 		chunk : [64]byte
@@ -28,7 +28,7 @@ main :: fun() -> i64 {
 	}
 	command : str256
 	&command + "\""
-	&command + this_program.args[0]
+	&command + args[0]
 	&command + "\" child"
 	p, e := process_start(command)
 	if bool(e) {

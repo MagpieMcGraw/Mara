@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(4 * MB)
+
 //@ expect-output: made: 0
 //@ expect-output: file.txt: file
 //@ expect-output: real: directory
@@ -29,7 +31,6 @@ shell :: fun(command: []utf8) -> i64 {
 }
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Basic(4 * MB))
 	made : i64 = -1
 	#if #windows {
 		made = shell("cmd /c \"(rmdir /s /q dir_links_demo & mkdir dir_links_demo\\real && mkdir dir_links_demo\\gone && echo x> dir_links_demo\\file.txt && mklink /J dir_links_demo\\to_real dir_links_demo\\real && mklink /J dir_links_demo\\to_gone dir_links_demo\\gone && rmdir dir_links_demo\\gone) >nul 2>&1\"")

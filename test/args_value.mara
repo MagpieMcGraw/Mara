@@ -4,15 +4,17 @@ use mara.core
 use mara.memory
 use mara.os
 
-// Command-line arguments as ordinary values: `this_program.args[i]` declared,
+#allocator Arena_Debug(16 * MB)
+
+// Command-line arguments as ordinary values: main's `args[i]` declared,
 // passed and handed to C. args[0] (the program's own path) is always present,
 // so this runs without extra arguments.
 //   - A slice ELEMENT used as a value (decl / argument / return) loaded its
 //     header instead of handing over its address — invalid IR.
 //   - Each argument's cap now counts argv's terminating 0, so cstring(arg)
 //     finds it: opening the file an argument names works.
-//   - args are text ([]utf8, as mara.core declares) — the synthesized Program
-//     had []byte, so an inferred local printed as a list of numbers.
+//   - args are text ([][]utf8, main's param): an inferred local prints as
+//     text, not a list of numbers.
 // (More than 64 arguments is a startup error; the suite can't pass arguments,
 // so that one is checked by hand.)
 
@@ -28,15 +30,13 @@ first_of :: fun(b: ^Bag) -> []i64 { return b.items[0] }
 
 name_len :: fun(s: []utf8) -> i64 { return s.len }
 
-main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(16 * MB))
-
-	self_path := this_program.args[0]
+main :: fun(args: [][]utf8) -> i64 {
+	self_path := args[0]
 	assert(self_path.len > 0)
-	assert(name_len(this_program.args[0]) == self_path.len)
+	assert(name_len(args[0]) == self_path.len)
 
 	// open this program's own executable through an argument
-	id, err := file_open_read(this_program.args[0])
+	id, err := file_open_read(args[0])
 	assert(err == .Ok)
 	size, size_err := file_size(id)
 	assert(size_err == .Ok)

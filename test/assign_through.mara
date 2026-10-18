@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 //@ expect-output: views: 2 true Ok
 //@ expect-output: pairs: 2 11 2 5
 //@ expect-output: counts: 1 4
@@ -27,7 +29,6 @@ load :: fun(names: [][]utf8, buf: ^[]byte) -> [4][]byte, err {
 first :: fun(list: ^[]Pair) -> ^Pair { return &list[0] }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	storage : [16384]byte
 	names : [2][]utf8
 	&names + "assign_through.mara"

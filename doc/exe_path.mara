@@ -1,7 +1,7 @@
 // How a program finds the files that come with it — a font, a config, a
 // folder of data beside it: exe_path, its own file's path.
 //
-// this_program.args[0] is no good for it: it's what started the program
+// main's args[0] is no good for it: it's what started the program
 // wrote, and that may be just its name (found on the PATH), a path from
 // another directory, or a link's. exe_path asks the system: the
 // program's file, its path whole and as the system has it (real_path's: its
@@ -21,8 +21,9 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	storage : [64 * KB]byte
 
 	path, e := exe_path()

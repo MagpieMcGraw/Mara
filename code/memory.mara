@@ -20,12 +20,12 @@ GB :: 1 << 30
 
 // Dynamic arena idea rejected
 
-// The program the code after it runs on — the arena its big values go on,
-// what this_program is — set to p, and the one it was given back. `with p
-// {…}` is the way to: it puts the old one back at every way out of its
-// block, so its callers never see p. Called by hand, it changes the program
-// for everything after it, the callers' code too.
-program_swap :: fun(p: ^Program) -> ^Program { @llvm.mara_program_swap.ptr }
+// The arena the code after it puts its big values on — set to a (an arena
+// of the program's kind: #allocator's), and the one it was given back.
+// `with &a {…}` is the way to: it puts the old one back at every way out of
+// its block, so its callers never see a. Called by hand, it changes the
+// arena for everything after it, the callers' code too.
+arena_swap :: fun(a: ^byte) -> ^byte { @llvm.mara_arena_swap.ptr }
 
 // ---------------------------------------------------------------------------
 // Arena_Basic — pure bump allocation with mark/reset, no per-alloc overhead.
@@ -48,7 +48,7 @@ oom_string :: "
 
 // An arena: memory handed out by moving a cursor forward, and freed all at
 // once back to a mark. The fast one, for a finished program; make it the
-// program's allocator with `this_program = Program(Arena_Basic(16 * MB))`.
+// program's allocator with `#allocator Arena_Basic(16 * MB)`.
 // A block holding a value of 1 KB or more marks it when it starts and
 // resets it when it ends, by itself.
 Arena_Basic :: class(cap: i64) {
@@ -128,7 +128,7 @@ Arena_Basic :: class(cap: i64) {
 
 // An arena like Arena_Basic that also records each allocation's size and
 // where it was asked for, and lists them all when it runs out. Use it while
-// writing a program: `this_program = Program(Arena_Debug(16 * MB))`.
+// writing a program: `#allocator Arena_Debug(16 * MB)`.
 Arena_Debug :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap

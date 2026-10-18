@@ -289,7 +289,6 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_PARAMETER, tc_name(k, p), tc_name(k, p))
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
-        if tc_in_program(k, operand) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "take the address of", " (a pointer could write it)") }
         if tr.tag[operand] == .String { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL) }
         // (A part of a value — an if's, a literal's — is no storage; a
         // slice builds a header with nowhere to point.)
@@ -1065,8 +1064,6 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope) {
 tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, bool) {
     span := tree_span(k.t, n)
     switch name {
-    case "Program":
-        return tc_program_value(k, n, args), true
     case "print_cstr", "print_int", "print_float":
         msg := TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE
         if name == "print_int" { msg = TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT }

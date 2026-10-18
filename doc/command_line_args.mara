@@ -1,20 +1,19 @@
 // How to read the command-line arguments a program was run with.
 //
-// They are `this_program.args`: args[0] is the program's own path, then
-// each argument, as text. `this_program.args.len` says how many. They're
-// read only, like all of this_program: copy what you'd change into a
-// variable.
+// They are main's parameter: `main :: (args: [][]utf8)` — args[0] is the
+// program's own path, then each argument, as text; `args.len` says how
+// many. A fun that needs them is given them, as any value is.
 module command_line_args
 
 use mara.core
 
-main :: fun() {
-	if this_program.args.len < 2 {
+main :: fun(args: [][]utf8) {
+	if args.len < 2 {
 		print("usage: command_line_args <name>...")
 		return
 	}
 	// Every argument after the program's own path.
-	for arg, i in this_program.args {
+	for arg, i in args {
 		if i == 0 do continue
 		print("argument", i, "is", arg)
 	}

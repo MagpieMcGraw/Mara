@@ -89,7 +89,6 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             }
             tt := tc_check(k, tg)
             if cname, is_const := tc_write_root_const(k, tg); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
-            if tc_in_program(k, tg) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
             if !is_any(tt) && !is_any(rt) && !types_equal(tt, rt) {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(tt))
             }

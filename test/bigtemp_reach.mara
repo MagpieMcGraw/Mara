@@ -11,6 +11,8 @@ module bigtemp_reach
 
 use mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 Big :: struct {
 	a: [512!]i64
 }
@@ -34,7 +36,6 @@ step :: fun(b: Big) -> Big {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	h : Holder
 	h.big.a[0] = 21
 	p := &h.big.a[0]

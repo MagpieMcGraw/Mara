@@ -1,0 +1,40 @@
+// How to give part of a program memory of its own: another arena, and a
+// block run on it.
+//
+// The program's arena — `#allocator Arena_Basic(16 * MB)`, at the top of the
+// module main is in — is where values of 1 KB or more go (see arenas.mara).
+// Another arena of its kind is a value: `level := Arena_Basic(4 * MB)`.
+//
+// `with &level {…}` (or `with &level do …`) runs its block on it: what the
+// block puts on an arena, and what everything it calls puts there, goes on
+// level. At every way out of the block — its end, a return, `?`, a break or
+// continue — the arena it was is back, so the code around it never sees
+// level. A with inside a with runs on the inner one's.
+//
+// It's how a job gets memory apart from the rest: a level's, a request's, a
+// library's. A DLL's #expose funs run on the arena their host hands them
+// (their first param, when the DLL names the kind: `#allocator Arena_Basic`).
+// An arena's memory is reserved for as long as the program runs: make one
+// for a long-lived job, not one per call.
+module with_arena
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+// A level's work: a big buffer — on the arena in use.
+load_level :: fun(level: ^Arena_Basic) {
+	tiles : [64 * KB]byte
+	tiles[0] = u8(1)
+	print("loading: the level's arena holds", level.base.len, "bytes")
+}
+
+main :: fun() {
+	level := Arena_Basic(1 * MB)
+
+	// Run on the level's arena, load_level's buffer goes there — and is gone
+	// when load_level ends.
+	with &level do load_level(&level)
+	print("after: the level's arena holds", level.base.len, "bytes")   // 0
+}

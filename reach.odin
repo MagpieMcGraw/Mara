@@ -155,7 +155,7 @@ reach_summarize :: proc(code: ^Program_Code, cache: ^Reach_Summaries, f: ^Type_S
                 } else if graph_is_leaf(x) {
                     uses.leaf[x - LEAF] = {by, at}
                     d := graph_refers(pg, x)
-                    if d > 0 && d <= pg.end {   // (not `this_program`, outside the code)
+                    if d > 0 && d <= pg.end {   // (this code's own)
                         if d not_in vars { vars[d] = make([dynamic]Node_Id, context.temp_allocator) }
                         append(&vars[d], x)
                     }

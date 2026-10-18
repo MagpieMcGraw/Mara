@@ -1,6 +1,8 @@
 module sibling_locals
 include mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 //@ expect-output: small 1
 //@ expect-output: big 7
 //@ expect-output: guard 12345
@@ -107,7 +109,6 @@ arena_backed :: fun(which: bool) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	_ = arrays(true)
 	guard := arrays(false)
 	print("guard", guard)

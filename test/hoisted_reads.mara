@@ -13,6 +13,8 @@ module hoisted_reads
 
 use mara.core
 include mara.memory
+
+#allocator Arena_Basic(16 * MB)
 P :: struct {
 	x: i64 = 0
 	y: i64 = 0
@@ -33,7 +35,6 @@ grow :: fun(game: ^G) {
 	game.big = Big(){n = game.big.n + 5}
 }
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	p := P{x = 1, y = 2}
 	p = P{x = p.y, y = p.x}
 	print("fields swapped:", p.x, p.y, "(want 2 1)")

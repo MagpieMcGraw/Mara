@@ -7,6 +7,8 @@ module esc_sized_slice_neg
 
 use mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 make_it :: fun(n: i64) -> []i64 {
 	room : [16!]i64
 	s := room[0:n]
@@ -15,7 +17,6 @@ make_it :: fun(n: i64) -> []i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
 	t := make_it(4)
 	u := make_it(4)
 	u[0] = 9

@@ -572,7 +572,7 @@ rs_program :: proc(r: ^Resolver) {
         m := r.modules[name]
         rs_enter(r, .Module)
         // (The build's own names, every module's: the program, std, void.)
-        for b in ([]string{"this_program", "Program", "std", "void"}) { rs_define(r, b, {kind = .Builtin}) }
+        for b in ([]string{"std", "void"}) { rs_define(r, b, {kind = .Builtin}) }
         r.module = m
         for name, ref in m.defs { rs_define(r, name, ref) }
         // (A file's imports are its own — `use m`, and `include m`, another
@@ -737,6 +737,8 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         rs_stmt(r, Tree_Id(t.a[s]))
     case .Expose:
         rs_stmt(r, Tree_Id(t.a[s]))
+    case .Allocator:
+        rs_node(r, Tree_Id(t.a[s]))
     case .Defer:
         rs_block(r, tree_list(t, t.a[s]))
     case .With:

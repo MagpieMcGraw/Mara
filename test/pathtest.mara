@@ -4,8 +4,9 @@ use mara.core
 use mara.os
 include mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
 	// mara.os copies a path for C, a 0 after it (c_path): any slice of a
 	// path opens. The arena backs the 4 KB read buffer.
 	path : [64]utf8

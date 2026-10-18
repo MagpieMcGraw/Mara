@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 //@ build-flags: -profile memory
 //@ expect-output: 1225 3 Ok
 //@ expect-output: carved: 2 true
@@ -28,7 +30,6 @@ squares :: fun(n: i64) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	total := 0
 	for n in 1 .. 50 {
 		total += squares(n)

@@ -214,6 +214,14 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
             if !tp_is_fun_define(p, inner) { tp_error(p, hash, PARSE_EXPOSE_NEEDS_FUN_DECL) }
             return tp_node(p, .Expose, hash, start, u32(inner))
         }
+        if tp_peek(p) == .Identifier && tp_text(p, 1) == "allocator" {
+            // `#allocator Arena_Basic(16 * MB)`: the program's arena (in a
+            // DLL, `#allocator Arena_Basic`: its kind alone).
+            hash := tp_advance(p)
+            tp_advance(p)   // `allocator`
+            arena := tp_expr(p)
+            return tp_node(p, .Allocator, hash, start, u32(arena))
+        }
         if tp_peek(p) == .Identifier && tp_text(p, 1) == "packed" {
             tp_error(p, tp_here(p), PARSE_PACKED_NEEDS_STRUCT_DECL)
             tp_advance(p); tp_advance(p)

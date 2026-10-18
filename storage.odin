@@ -271,7 +271,7 @@ storage_direct :: proc(s: ^Storage, place: Node_Id) -> bool {
     if !graph_is_leaf(place) { return false }   // (a held view's len or cap is one only as it's emitted)
     d := graph_refers(pg, place)
     if graph_kind_of(pg, d) == .Param { return llvm_scalar(graph_type(pg, d)) }
-    if d <= 0 || d > pg.end { return false }   // this_program's: in memory
+    if d <= 0 || d > pg.end { return false }   // (not this code's)
     return s.held[d]
 }
 
@@ -646,9 +646,6 @@ storage_where :: proc(s: ^Storage, p: Node_Id) -> Place_Where {
                 continue
             }
             w.root = graph_refers(pg, id)
-            // this_program is an object of its type, reached through the
-            // pointer the program's code is handed.
-            if !w.via_ptr { w.via_ptr, w.region = storage_this_program(pg, w.root), graph_type(pg, id) }
             return w
         }
         ops := graph_operands(pg, id)
@@ -669,12 +666,6 @@ storage_where :: proc(s: ^Storage, p: Node_Id) -> Place_Where {
         }
     }
     return w
-}
-
-// Whether a variable is `this_program`, the compiler's global: a declaration
-// the code names from outside it.
-storage_this_program :: proc(pg: ^Program_Graph, d: Node_Id) -> bool {
-    return d > pg.end && graph_name(pg, d) == "this_program"
 }
 
 // Whether reading place `read` can observe place `dest`. Yes when both are
@@ -709,9 +700,8 @@ storage_overlaps :: proc(s: ^Storage, read, dest: Node_Id) -> bool {
 // that place while it runs: it would read, or write over, what it has already
 // written there. A call reaches what it's passed as storage (a pointer; an
 // aggregate, passed by its address) where its code — or a fun it calls —
-// reads or writes through it. Nothing else: `this_program`, which every fun
-// can read, is read only (tc_in_program) — no place being built is in it,
-// and its arena's bookkeeping is in it.
+// reads or writes through it. Nothing else: no code names a place outside it
+// but through what it's passed.
 
 // Whether a call may reach `dest`, the place its result goes, while it runs:
 // through an argument passed as storage its callee reaches through — unless

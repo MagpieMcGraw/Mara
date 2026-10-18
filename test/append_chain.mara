@@ -3,6 +3,8 @@ module append_chain
 use mara.core
 use mara.memory
 
+#allocator Arena_Basic(4 * MB)
+
 //@ expect-output: chained: C:/code/a.mara 14
 //@ expect-output: next: 2 C:/code/b.mara x/y
 //@ expect-output: struct: 1 3 0
@@ -25,7 +27,6 @@ add_name :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(4 * MB))
 	name : str64
 	&name + "C:/code" + "/" + "a.mara"
 	print("chained:", name, name.len)

@@ -48,8 +48,10 @@ Tree_Tag :: enum u8 {
     Continue,
     Defer,          // `defer`, `defer?`: main: the keyword (tree_defer_on_failure);
                     // a: list — the body
-    With,           // `with p {…}`: a: the program (a Program, or a ^Program); b:
-                    // list — the body, run on it
+    With,           // `with &a {…}`: a: the arena (a pointer to one); b: list — the
+                    // body, run on it
+    Allocator,      // `#allocator Arena_Basic(16 * MB)` (a DLL's: `#allocator
+                    // Arena_Basic`): main: the `#`; a: the arena
     If,             // `if c {…}`, `if c do s`, `#if`: a: the condition; b: rec {then:
                     // list, else: list, `#` token}; an `elif` chain is an Elif in the else list
     Elif,           // as If
@@ -165,6 +167,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Continue       = {},
     .Defer          = {a = .List},
     .With           = {a = .Node, b = .List},
+    .Allocator      = {a = .Node},
     .If             = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
     .Elif           = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
     .Match          = {a = .Node, b = .List},
@@ -443,10 +446,10 @@ tree_stmt_kind :: proc(t: ^Tree, s: Tree_Id) -> Stmt_Kind {
 }
 
 // An assignment's statement kind, by its target: a place's a write; `_`'s
-// and this_program's no assignment.
+// no assignment.
 tree_assign_kind :: proc(t: ^Tree, target: Tree_Id) -> Stmt_Kind {
     if t.tag[target] != .Ident { return .Write }
-    if name := token_text(build_tokens[t.main[target]]); name == "_" || name == "this_program" { return .Other }
+    if name := token_text(build_tokens[t.main[target]]); name == "_" { return .Other }
     return .Assign
 }
 

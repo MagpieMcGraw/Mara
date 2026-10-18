@@ -3,6 +3,8 @@ module inplace_result
 use mara.core
 use mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 //@ expect-output: swapped 2 1
 //@ expect-output: tagged 5 7 true
 
@@ -36,8 +38,6 @@ tag :: fun(count: ^i64, label: []utf8) -> Big {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
-
 	v := V{ x = 1, y = 2 }
 	r := swap(&v)
 	v = r

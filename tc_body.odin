@@ -127,6 +127,8 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         k.in_defer, k.loops = in_defer, loops
     case .With:
         tc_with(k, s)
+    case .Allocator:
+        tc_error(k, span, TYPE_ALLOCATOR_AT_TOP)
     case .Match:
         tc_match(k, s)
     case .Break, .Continue:
@@ -374,6 +376,11 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
         tc_error(k, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, miss.hidden)
         return
     }
+    // (What there was before #allocator, `with` and main's args: what's there now.)
+    if name == "this_program" || name == "Program" {
+        tc_error(k, span, TYPE_THIS_PROGRAM_GONE, name)
+        return
+    }
     tc_error(k, span, msg, name)
 }
 
@@ -459,7 +466,6 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     case .Field, .Index, .Slice, .Deref:
         // (Into a constant: its storage is read-only.)
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
-        if tc_in_program(k, target) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
         return
     case .Ident:
     case:
@@ -471,11 +477,6 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         // A discard: the value checked for its own sake.
         k.hint = nil
         tc_check(k, value)
-        return
-    }
-    if name == "this_program" {
-        if !tc_program_set_here(k, s) { tc_error(k, span, TYPE_PROGRAM_SET_OUTSIDE_MAIN) }
-        tc_program_assign(k, value)
         return
     }
     existing, ref, ok := tc_name_write(k, target, name, span)
@@ -788,7 +789,6 @@ tc_compound :: proc(k: ^TC, s: Tree_Id) {
         case .Deref: tc_deref_assign(k, s, target, value, op_tok)
         }
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
-        if tc_in_program(k, target) { tc_error(k, span, TYPE_PROGRAM_READ_ONLY, "write into", "") }
         return
     case .Ident:
     case:

@@ -49,8 +49,6 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
             codes.bodies[e.sc.ts] = i
         case .Const:
             codes.consts[tc_sid(k, e.kc.def)] = i
-        case .Program_Struct:
-            if pt := k.table.funs["Program"] or_else nil; pt != nil { codes.bodies[pt] = i }
         }
     }
     return p, codes
@@ -126,7 +124,6 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     #partial switch e.kind {
     case .Const:          codes.code[i] = lw_const(k, e.kc)
     case .Body:           codes.code[i] = lw_body(k, e.sc)
-    case .Program_Struct: codes.code[i] = lw_program_struct(k)
     }
 }
 
@@ -187,11 +184,9 @@ lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, 
 }
 
 // The declaration of the variable a name refers to: in the code being built,
-// by the token its annotation says declares it (graph_local); else one of
-// the compiler's own globals (graph_global).
+// by the token its annotation says declares it (graph_local).
 lw_local :: proc(k: ^TC, n: Tree_Id) -> Node_Id {
     if d := graph_local(k.gb, tc_ref(k, n).decl); d != NO_NODE { return d }
-    if d := graph_global(k.gb, tc_name(k, n)); d != NO_NODE { return d }
     lw_fail(k, n, "a name no code here declares")
 }
 
@@ -415,37 +410,6 @@ lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
     case .Value:
     }
     return tc_node_type(k, target), true
-}
-
-// The program's struct (the compiler's): built from mara.core's declaration
-// of it — its fields, each a declaration, and no code (nothing constructs
-// it: main's entry sets up its storage).
-lw_program_struct :: proc(k: ^TC) -> ^Program_Graph {
-    pt := k.table.funs["Program"] or_else nil
-    if pt == nil || pt.body_span == {} { return nil }
-    t := k.t
-    for _, tmpl in k.templates {
-        span := tree_span(t, tmpl.def)
-        if span != pt.body_span { continue }
-        v := scope_view(t, tmpl.node)
-        b := k.gb
-        at := lw_at(k, tmpl.node)
-        defer b.at = at
-        f := graph_body_begin(k.gb, pt, span, v.intrinsic != 0, .Synthetic)
-        for s in v.body {
-            if t.tag[s] != .Decl {
-                graph_body_fail(b, f, "the program's struct declares no field")
-                break
-            }
-            ss := tree_span(t, s)
-            graph_build_body_stmt(b, ss)
-            lw_at(k, s)
-            for target in decl_view(t, s).targets { graph_build_program_field(b, tc_name(k, target), t.main[target], ss) }
-            b.at = tc_sid(k, tmpl.node)
-        }
-        return graph_body_end(b, f)
-    }
-    return nil
 }
 
 // A block's statements (tc_scope).
@@ -702,7 +666,6 @@ lw_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         lw_expr(k, value, .Value)
         return
     }
-    if name == "this_program" { return }   // (its arena: set up by main's entry, nothing built here)
     existing := tc_node_type(k, target)
     if tc_is_void(k, value) {
         graph_build_void_assign(b, name, lw_local(k, target), distinct_base(existing), span, tree_span(t, value))
@@ -816,22 +779,23 @@ lw_if :: proc(k: ^TC, s: Tree_Id) {
     graph_build_if_end(b, &fi)
 }
 
-// `with p {…}` (tc_with): a block of its own that sets the program's slot to
-// p — program_swap, the one it held kept — and puts that back by a defer of
-// its own at every way out; inside it the body's block, so the body's arena
-// marks and resets are p's, done before the slot is put back.
+// `with &a {…}` (tc_with): a block of its own that sets the arena slot to a
+// — arena_swap, the one it held kept — and puts that back by a defer of its
+// own at every way out; inside it the body's block, so the body's arena
+// marks and resets are a's, done before the slot is put back.
 lw_with :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     b := k.gb
     span := tree_span(t, s)
-    swap := tc_program_swap(k.table)
-    if swap == nil { lw_fail(k, s, "a `with` with no program_swap") }
+    swap := tc_arena_swap(k.table)
+    if swap == nil { lw_fail(k, s, "a `with` with no arena_swap") }
     pt := fn_primary_return(swap)
     p := Tree_Id(t.a[s])
     body := tree_list(t, t.b[s])
     outer := graph_build_block_open(b, "with", span, false)
     r := lw_expr(k, p, .Value)
-    arg := graph_build_as(b, r.v, r.place, tc_node_type(k, p), tree_span(t, p), span, {sig = swap, param = 0})
+    // (A pointer to the arena, as arena_swap takes any: its address alone.)
+    arg := graph_op_value(b, .Cast, .Synthetic, span, pt, "", r.v)
     was := Operand{graph_call_op(b, .Call, .Synthetic, span, swap, pt, arg), 0}
     slot := graph_slot(b, "with", nil, span)
     graph_build_write_at(b, graph_var(b, slot, nil, span), was, span)
@@ -1424,7 +1388,6 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
     if !has_form { lw_fail(k, n, "a call of no form annotated") }
     switch form {
     case .Builtin:
-        if name == "Program" { return lw_program_value(k, n, args, want, w, dest, temp, temp_span) }
         return lw_builtin(k, n, name, args, want, w)
     case .Conversion:
         // (`Id(x)`, Id a distinct type: x, seen as Id.)

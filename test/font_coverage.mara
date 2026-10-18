@@ -6,6 +6,8 @@ use mara.math
 use mara.font
 include mara.memory
 
+#allocator Arena_Basic(64 * MB)
+
 // mara.font's coverage glyphs (load_coverage_glyphs — text drawn pixel for
 // pixel, as `mara view` draws it), from the window's own font: every
 // character ' ' to '~' drawn but the space, compound glyphs (Inter builds
@@ -20,7 +22,6 @@ include mara.memory
 FONT :: "../view/Inter.ttf"
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Basic(64 * MB))
 	glyphs : [95]Glyph
 	metrics : Line_Metrics
 	atlas : [512 * 512]byte

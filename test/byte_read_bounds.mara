@@ -3,6 +3,8 @@ module byte_read_bounds
 use mara.endian
 include mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 // A byte buffer's len is a cursor — the bytes it holds, what appends and a
 // file read move; its cap, the room it has. A value at an offset, read or
 // written (`x : T = bytes[k]`, `bytes[k] = x`), is memory, as indexing is:
@@ -23,7 +25,6 @@ u32_at_8 :: fun(bytes: ^[]byte) -> u32 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	buf : [64]byte
 	buf[0:8] = i64(42)
 	buf[8] = i64(7)

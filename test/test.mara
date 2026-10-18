@@ -11,6 +11,8 @@ use mara.math
 use mara.maybe
 use mara.string
 
+#allocator Arena_Debug(1 * MB)
+
 // ============================================================================
 // io / function syntax
 // ============================================================================
@@ -1631,8 +1633,6 @@ test_sized_read :: fun() {
 // <<< FUNCS END >>>
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(1 * MB))
-
 	test_io_arrow()
 	test_hex_literals()
 	test_in_range()

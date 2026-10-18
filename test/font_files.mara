@@ -6,6 +6,8 @@ use mara.math
 use mara.memory
 use mara.font
 
+#allocator Arena_Basic(64 * MB)
+
 // mara.font on small and broken font files (test/fonts/, written by
 // make_test_fonts.py). A font of a few hundred bytes reads: TTF once read
 // loca and hmtx a whole array's capacity at a time, which ran past the end
@@ -29,7 +31,6 @@ use mara.font
 //@ expect-output: missing.ttf: File_Error.Open_Failed
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Basic(64 * MB))
 	names := [8!][]utf8{"tiny.ttf", "tiny_bmp.ttf", "tiny_mac0.ttf", "tiny_mac6.ttf",
 		"tiny_symbol.ttf", "tiny_cut.ttf", "not_truetype.otf", "missing.ttf"}
 	for name in names {

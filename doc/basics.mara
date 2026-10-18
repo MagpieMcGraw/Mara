@@ -650,14 +650,21 @@ example_cstring :: fun() {
 	// handle := CreateFileA(cstring(path), …)
 }
 
-// `this_program`, `Program`: the running program's setup — its arena, its command line.
-//
-// main sets it first: `this_program = Program(Arena_Debug(16 * MB))` gives
-// the program an arena, where values of 1 KB or more live (see
-// arenas.mara). `this_program.args` is the command line. Only main sets
-// it; other funs read it. See program.mara, command_line_args.mara.
-example_this_program :: fun() {
-	print(this_program.args.len > 0)       // true: args[0] is the program's path
+// `#allocator`: the program's arena, where values of 1 KB or more live —
+// named once, at the top of the module main is in (see arenas.mara). main's
+// command line is its parameter, `main :: (args: [][]utf8)`: args[0] is the
+// program's path (see command_line_args.mara, program.mara).
+example_allocator :: fun() {
+	// #allocator Arena_Debug(16 * MB)
+	// main :: (args: [][]utf8) { print(args.len) }
+}
+
+// `with`: a block run on another arena, an arena as a value — what the
+// block, and what it calls, puts on an arena goes on it; the program's is
+// back after (see with_arena.mara).
+example_with :: fun() {
+	// level := Arena_Basic(4 * MB)
+	// with &level { load_level() }
 }
 
 // `Self`: the type whose body you're in, inside a struct or union.
@@ -721,7 +728,8 @@ main :: fun() {
 	example_size_of()
 	example_slice()
 	example_cstring()
-	example_this_program()
+	example_allocator()
+	example_with()
 	example_Self()
 	example_void()
 	example_all()

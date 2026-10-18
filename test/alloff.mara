@@ -4,6 +4,8 @@ use mara.memory
 use mara.math
 use mara.font
 
+#allocator Arena_Debug(16 * MB)
+
 // A TrueType contour may contain NO on-curve points: a ring of pure quadratic
 // controls (circles/dots ship like this). The implied on-curve anchors are
 // the midpoints between consecutive controls. Four controls on the corners
@@ -11,8 +13,6 @@ use mara.font
 // anchors sit at the edge midpoints -- NOT as a shape with a sharp corner
 // where control 0 was wrongly anointed as the start anchor.
 main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(16 * MB))
-
 	outline : Outline
 	outline.header.num_contours = 1
 	outline.header.x_min = -100

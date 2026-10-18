@@ -42,7 +42,7 @@ Ref_Kind :: enum u8 {
     Fun,       // a fun, a method, a struct's constructor (its struct)
     Type,      // a struct, a union, an enum, a distinct type, a type param
     Module,    // a module, by the `use` that names it
-    Builtin,   // what no source declares: `void`, `this_program`, a builtin type
+    Builtin,   // what no source declares: `void`, a builtin type
 }
 
 // What a param of a call receives: an argument written at the call, the

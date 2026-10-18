@@ -1,0 +1,85 @@
+module with_arena
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+//@ expect-output: lib before: 0
+//@ expect-output: work outside with, lib: 0
+//@ expect-output: work inside with, lib: 16424
+//@ expect-output: lib after: 0
+//@ expect-output: a return from inside: 16424, after 0
+//@ expect-output: an error out: Oops.Went_Wrong, after 0
+//@ expect-output: loop: 16424 then 0, 1 times
+//@ expect-output: nested: a 1 MB, b 64 KB, back in a: 524328
+//@ expect-output: a after: 0
+
+// An arena as a value, and `with`: a block run on it — its big values, and
+// its callees', on that arena — then, at every way out (its end, a return,
+// `?`, break, continue), the arena it was.
+
+Oops :: error {
+	Went_Wrong
+}
+
+// A big local — on the arena in use — and lib's use then.
+work :: fun(lib: ^Arena_Basic) -> i64 {
+	big : [16 * KB]byte
+	big[0] = u8(1)
+	return lib.base.len
+}
+
+early :: fun(lib: ^Arena_Basic) -> i64 {
+	with lib {
+		return work(lib)
+	}
+}
+
+fails :: fun() -> err {
+	return Went_Wrong
+}
+through :: fun(lib: ^Arena_Basic) -> err {
+	with lib do fails()?
+}
+
+// Half a megabyte on the arena in use: a's use then.
+half_mb :: fun(a: ^Arena_Basic) -> i64 {
+	room : [512 * KB]byte
+	room[0] = u8(1)
+	return a.base.len
+}
+
+main :: () {
+	lib := Arena_Basic(1 * MB)
+
+	print("lib before:", lib.base.len)
+	print("work outside with, lib:", work(&lib))
+	with &lib do print("work inside with, lib:", work(&lib))
+	print("lib after:", lib.base.len)
+
+	print("a return from inside: %, after %", early(&lib), lib.base.len)
+	e := through(&lib)
+	print("an error out: %, after %", e, lib.base.len)
+
+	seen : i64 = -1
+	rounds := 0
+	for i in 0 .. 5 {
+		with &lib {
+			if i == 1 do continue
+			if i == 2 do break
+			seen = work(&lib)
+		}
+		rounds += 1
+		print("loop: % then %, % times", seen, lib.base.len, rounds)
+	}
+
+	// (b's 64 KB couldn't hold half a megabyte: back in a, a has.)
+	a := Arena_Basic(1 * MB)
+	b := Arena_Basic(64 * KB)
+	with &a {
+		with &b do _ = work(&b)
+		print("nested: a 1 MB, b 64 KB, back in a:", half_mb(&a))
+	}
+	print("a after:", a.base.len)
+}

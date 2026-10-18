@@ -309,7 +309,6 @@ graph_name :: proc(g: ^Program_Graph, id: Node_Id) -> string {
     if id >= CONST && id < LEAF { return g.names[g.consts[id - CONST].name] }
     if id >= LEAF {
         d := g.leaves[id - LEAF].decl
-        if d < 0 { return graph_outside_name(int(-3 - d)) }
         if d == 0 && g.kind[0] == .Struct { return "Self" }
         return g.names[g.name[d]]
     }
@@ -428,16 +427,13 @@ graph_refers :: #force_inline proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
     return g.leaves[id - LEAF].decl if id >= LEAF else NO_NODE if id >= CONST else g.binds[id] or_else NO_NODE
 }
 
-// How a node is written; a leaf as its declaration is — but the compiler's
-// own globals, as their names are written (graph_place_outside's: past the
-// code's own, no parent).
+// How a node is written; a leaf as its declaration is.
 graph_written :: proc(g: ^Program_Graph, id: Node_Id) -> Written {
     id := id
     if id >= READ { id = g.reads[id - READ].op }   // (a read's: its leaf's)
     if id >= CONST && id < LEAF { return g.consts[id - CONST].written }
     if id < LEAF { return g.written[id] }
     d := g.leaves[id - LEAF].decl
-    if d < 0 || g.kind[d] == .Field && g.parent[d] == NO_NODE { return .Explicit }
     return g.written[d]
 }
 
@@ -610,10 +606,6 @@ Graph_Builder :: struct {
     // struct's, a constant's; its defers' are its own — by the token that
     // declares it (graph_declare, graph_local).
     locals:     map[Token_Id]Node_Id,
-    // The compiler's own globals — this_program, context: their types, and
-    // whether the code being built names one (graph_global).
-    globals:       [2]Type,
-    outside_named: bool,
     self:       Node_Id,         // what `Self` names in a struct's code
     main:       ^Type_Scope,     // main (its body marks no arena: graph_scope_open)
     // The body being built.
@@ -702,30 +694,6 @@ graph_local :: proc(b: ^Graph_Builder, tok: Token_Id) -> Node_Id {
     return b.locals[tok] or_else NO_NODE
 }
 
-// The compiler's own global a name is — `this_program`, `context` — when it
-// is one: as the code being built names it, its placeholder (OUTSIDE), made
-// a node of its own past the code's once the code is built
-// (graph_place_outside).
-graph_global :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
-    switch name {
-    case "this_program": b.outside_named = true; return OUTSIDE[0]
-    case "context":      b.outside_named = true; return OUTSIDE[1]
-    }
-    return NO_NODE
-}
-
-@(private="file")
-OUTSIDE :: [2]Node_Id{-3, -4}
-@(private="file")
-graph_outside_name :: proc(k: int) -> string { return "this_program" if k == 0 else "context" }
-
-// Whether a declaration is one of the compiler's globals, as the code being
-// built names them.
-@(private="file")
-graph_is_outside :: proc(b: ^Graph_Builder, d: Node_Id) -> bool {
-    return d == OUTSIDE[0] || d == OUTSIDE[1]
-}
-
 
 // The code being built: a fun's body, a struct's field initializers, a defer's
 // block. Saved and restored around a defer's.
@@ -808,9 +776,6 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     b.checked = checked
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
     b.main = checked.functions["main"] or_else nil
-    for name, i in ([]string{"this_program", "context"}) {
-        b.globals[i] = checked.table.builtins[name] or_else nil
-    }
     b.store.arena = new(virtual.Arena)
     if err := virtual.arena_init_growing(b.store.arena); err != nil { graph_fatal({}, "no memory for the program's code") }
     in_store := virtual.arena_allocator(b.store.arena)
@@ -1147,11 +1112,9 @@ graph_code_open :: proc(b: ^Graph_Builder) {
     b.leaves = 0
     b.consts = 0
     b.reads = 0
-    b.outside_named = false
 }
 
-// The code built: the compiler's globals it names past its own nodes, its
-// columns trimmed where they are. Nil when it failed (graph_body_fail): it
+// The code built: its columns trimmed where they are. Nil when it failed (graph_body_fail): it
 // is left out.
 @(private="file")
 graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
@@ -1170,7 +1133,6 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
     }
     g.end = g.last[0] or_else 0   // (the root's subtree: graph_last)
     delete_key(&g.last, 0)
-    if b.outside_named { graph_place_outside(b) }
     resize(&g.leaves, b.leaves)
     resize(&g.consts, b.consts)
     resize(&g.reads, b.reads)
@@ -1191,27 +1153,6 @@ graph_code_close :: proc(b: ^Graph_Builder, f: ^Graph_Body) -> ^Program_Graph {
         g.code_runs = runs[:]
     }
     return g
-}
-
-// The compiler's globals the code names — this_program, context: a node
-// each, in the order it first does, past its own (the root's subtree
-// closed), each name's placeholder (OUTSIDE) made the node.
-@(private="file")
-graph_place_outside :: proc(b: ^Graph_Builder) {
-    g := b.g
-    made := [2]Node_Id{NO_NODE, NO_NODE}
-    for &l in g.leaves[:b.leaves] {
-        k: int
-        switch l.decl {
-        case OUTSIDE[0]: k = 0
-        case OUTSIDE[1]: k = 1
-        case:            continue
-        }
-        if made[k] == NO_NODE {
-            made[k] = graph_node(b, .Field, .Synthetic, NO_NODE, graph_outside_name(k), b.globals[k], {})
-        }
-        l.decl = made[k]
-    }
 }
 
 // (What the code is as built: each node's type settled — but an untyped

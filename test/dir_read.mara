@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(4 * MB)
+
 // dir_read: a directory's names, each a file or a directory, into storage
 // after what's there. The stdlib's directory, beside test/ — its os.mara a
 // file, its SDL a directory, no "." or ".." among them; a storage too small
@@ -19,7 +21,6 @@ use mara.memory
 //@ expect-output: twice: true true
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Basic(4 * MB))
 	storage : [200 * KB]byte
 	entries, e := dir_read("../code", &storage)
 	if bool(e) {

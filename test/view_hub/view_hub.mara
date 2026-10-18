@@ -24,9 +24,9 @@ Server :: struct {
 	running: bool
 }
 
-main :: fun() -> i64 {
-	if this_program.args.len < 4 do return 1
-	l, le := pipe_listen(this_program.args[3])
+main :: fun(args: [][]utf8) -> i64 {
+	if args.len < 4 do return 1
+	l, le := pipe_listen(args[3])
 	if bool(le) do return 1   // (another listens there: it answers)
 	defer pipe_listen_stop(&l)
 	log, oe := file_open_write("view_hub.log")
@@ -34,9 +34,9 @@ main :: fun() -> i64 {
 	defer file_close(log)
 	s : Server
 	&s.command + "\""
-	&s.command + this_program.args[1]
+	&s.command + args[1]
 	&s.command + "\" serve "
-	&s.command + this_program.args[2]
+	&s.command + args[2]
 	if bool(server_up(&s, log)) do return 1
 
 	// (A look each 10 ms; 100 with no one: a second or so — Windows' sleeps

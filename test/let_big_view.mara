@@ -11,6 +11,8 @@ module let_big_view
 use mara.core
 use mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 Big :: struct {
 	initialized: bool
 	n: i64
@@ -29,7 +31,6 @@ step :: fun(memory: ^[]byte) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
 	buf : [4096!]byte
 	m : []byte = buf[:]
 	a := step(&m)

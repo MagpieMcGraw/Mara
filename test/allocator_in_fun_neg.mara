@@ -1,0 +1,12 @@
+module allocator_in_fun_neg
+//@ expect-fail: #allocator goes at a module's top, not in a fun
+
+// The program's arena is named once, at the top of the module main is in:
+// in a fun it would name nothing.
+
+use mara.core
+use mara.memory
+
+main :: () {
+	#allocator Arena_Basic(16 * MB)
+}

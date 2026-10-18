@@ -23,6 +23,8 @@ module return_forward
 use mara.core
 include mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 E :: error { Bad }
 Mode :: union { build  run }
 P :: struct { x: i64  y: f32 }
@@ -88,7 +90,6 @@ Sized :: struct(n: i64) -> err {
 fwd_sized :: fun(n: i64) -> Sized, err { return Sized(n) }
 
 main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
 	p, e := fwd_pair(5)
 	print(p, e)
 	p2, e2 := fwd_pair(-1)

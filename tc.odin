@@ -77,7 +77,8 @@ TC :: struct {
     rs:            ^Resolver,
     top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
     in_defer:      bool,                // a defer's block being checked (its body's)
-    withs:         [dynamic]TC_With,    // each `with` (tc_with): mara.memory's program_swap found for it, once every module is checked
+    withs:         [dynamic]TC_With,    // each `with` (tc_with): mara.memory's arena_swap found for it, once every module is checked
+    allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
     loops:         int,                 // the loops around the statement being checked (in its body, or its defer's block)
     module_scopes: map[string]^Type_Scope,   // each module's record, by its name: what its definitions are declared in
     bound:         []u32,               // by token: its binding's place in binds (0: none)
@@ -240,7 +241,7 @@ TC_Event :: struct {
     pkg:      string,
 }
 
-TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt, Program_Struct }
+TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt }
 
 tc_event :: proc(k: ^TC, e: TC_Event) {
     e := e
@@ -434,25 +435,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         }
     }
 
-    // The program's struct (the compiler-managed global): its args (an
-    // arena when `this_program = Program(...)`).
-    {
-        args_type := type_partial_array(64, type_slice(Type_Utf8{}))
-        prog_type := new(Type_Scope)
-        prog_type.name = "Program"
-        prog_type.home_package = main_package
-        prog_type.kind = .Struct
-        if table.has_scope_allocator {
-            // (Its type the arena's, once that is found: tc_validate_allocator.)
-            append(&prog_type.fields, Struct_Type_Field{name = "scope_allocator", type_ = Type_Any{}})
-            prog_type.field_map["scope_allocator"] = 0
-        }
-        prog_type.field_map["args"] = len(prog_type.fields)
-        append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
-        table.funs["Program"] = prog_type
-        table.builtins["this_program"] = prog_type
-        table.builtins["Program"] = prog_type
-    }
     void_type := type_ptr(Type_Any{})
     table.builtins["void"] = void_type
 
@@ -473,7 +455,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         ft.origin = Origin_Source{}
         checked.functions[key] = ft
     }
-    tc_event(k, {kind = .Program_Struct})
     tc_validate_allocator(k)
     tc_validate_withs(k)
     tc_validate_main(k, main)
@@ -648,6 +629,9 @@ tc_register :: proc(k: ^TC, s: Tree_Id) {
         return
     case .Foreign:
         tc_register_foreign(k, s)
+        return
+    case .Allocator:
+        tc_allocator(k, s)
         return
     case .Overload:
         return   // (the resolver's: resolve_overloads)
@@ -884,17 +868,26 @@ tc_intrinsic_name :: proc(k: ^TC, n: Tree_Id) -> string {
 
 // The main package defines `main`, which returns nothing or an i64 (the
 // exit code) and takes no params.
+// Whether t is main's command line's type, `[][]utf8`: a view of texts.
+tc_is_args_type :: proc(t: Type) -> bool {
+    outer, is_view := unwrap_alias(t).(^Type_Slice)
+    if !is_view { return false }
+    inner, is_text := unwrap_alias(outer.elem).(^Type_Slice)
+    if !is_text { return false }
+    _, is_utf8 := inner.elem.(Type_Utf8)
+    return is_utf8
+}
+
 tc_validate_main :: proc(k: ^TC, main: []int) {
     found := false
     for i in main {
         sc := k.scopes[i]
         fn := sc.ts
-        // (A DLL's entry takes the host's context first: a ^Program.)
-        if fn != nil && fn.is_exposed {
-            // (The program's struct itself, however it's named: Program, or
-            // mara_core_Program beside mara.core's declaration of it.)
-            ok := len(fn.params) > 0 && tc_is_program_ptr(k, fn.params[0].type_)
-            if !ok { tc_error(k, tree_span(k.t, sc.def), TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, fn.source_name) }
+        // (A DLL's entry, when the DLL names an arena's kind, takes its
+        // host's arena first: what its code then runs on.)
+        if fn != nil && fn.is_exposed && k.table.has_scope_allocator {
+            ok := len(fn.params) > 0 && tc_is_arena_ptr(k, fn.params[0].type_)
+            if !ok { tc_error(k, tree_span(k.t, sc.def), TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, fn.source_name, k.table.scope_allocator_name) }
         }
         if fn == nil || fn.kind != .Fun || fn.source_name != "main" { continue }
         found = true
@@ -906,7 +899,8 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
             if is_any(rts[0]) { ok = true }
         }
         if !ok { tc_error(k, span, TYPE_FUN_MAIN_RETURN_INT_RETURN) }
-        if len(fn.params) != 0 { tc_error(k, span, TYPE_FUN_MAIN_TAKE_PARAMETERS) }
+        // (None, or the command line: `args: [][]utf8` — main's setup makes it.)
+        if len(fn.params) > 1 || len(fn.params) == 1 && !tc_is_args_type(fn.params[0].type_) { tc_error(k, span, TYPE_FUN_MAIN_TAKE_PARAMETERS) }
     }
     if !found && !k.shared {
         tc_error(k, {}, "module '%s' must define fun main()", k.main_package)
@@ -953,7 +947,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     case .Expr_Stmt:
         // (A bare `use m` the checker settles.)
         if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import { d.settles = true }
-    case .Module, .Return, .Break, .Continue, .Overload, .Foreign:
+    case .Module, .Return, .Break, .Continue, .Overload, .Foreign, .Allocator:
     case .Define:
         d.name = tc_name(k, s)
         value := Tree_Id(t.b[s])
@@ -1183,15 +1177,15 @@ SymbolTable :: struct {
 
     scope_allocator_size: Maybe(i64),    // the first: the arena's size (a constant: nothing but constants exists before main runs)
 
-    // Shared (DLL/SO) build with `#expose` fn(s) present: the host promises
-    // to pass a real Context at runtime, so arena-using constructs (`var`,
-    // big-array auto-promotion) are permitted inside the DLL without a local
-    // `context.scope_allocator = X` declaration. Gated separately from
-    // has_scope_allocator so the *codegen* path still requires the type to
-    // be declared (errors at codegen if arena calls would be emitted).
+    // Shared (DLL/SO) build with `#expose` fn(s) present: the host's arena
+    // runs, so arena-using constructs (big-array auto-promotion) are
+    // permitted inside the DLL without its own `#allocator` sizing one.
+    // Gated separately from has_scope_allocator so the *codegen* path still
+    // requires the kind to be named (errors at codegen if arena calls would
+    // be emitted).
     context_expected_at_runtime: bool,
 
-    // What no source declares, by name: this_program, Program, std, void.
+    // What no source declares, by name: std, void.
     builtins: map[string]Type,
 }
 

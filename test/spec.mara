@@ -19,12 +19,12 @@ module spec
 //   - Every section is a `fun` called from main, in reading order.
 // =============================================================================
 
-use mara.memory   // Program / Arena_Debug, and the MB constant
+use mara.memory   // Arena_Debug (#allocator), and the MB constant
 use mara.string
 
-main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(1 * MB))
+#allocator Arena_Debug(1 * MB)
 
+main :: fun() -> i64 {
 	the_three_array_shapes()
 	partial_array_growth()
 

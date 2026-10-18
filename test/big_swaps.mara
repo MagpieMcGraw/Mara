@@ -18,6 +18,8 @@ module big_swaps
 
 use mara.core
 include mara.memory
+
+#allocator Arena_Basic(64 * MB)
 Huge :: struct {
 	data: [262144!]i64
 	tag: i64 = 0
@@ -43,7 +45,6 @@ swap_at :: fun(xs: ^[3!]Huge, i: i64, j: i64) {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(64 * MB))
 	g : G
 	g.a.tag = 1
 	g.a.data[262143] = 11

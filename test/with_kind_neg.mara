@@ -1,0 +1,15 @@
+module with_kind_neg
+//@ expect-fail: give it a ^Arena_Basic, of the program's kind (got ^Arena_Debug)
+
+// A block runs on an arena of the program's kind, the one #allocator names:
+// the program's arena functions are that kind's.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+main :: () {
+	debug := Arena_Debug(1 * MB)
+	with &debug do print("x")
+}

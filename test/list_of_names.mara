@@ -3,6 +3,8 @@ module list_of_names
 use mara.core
 use mara.memory
 
+#allocator Arena_Basic(4 * MB)
+
 //@ expect-output: in place: 2 C:/code/a.mara 14 500
 //@ expect-output: copied: 3 C:/code/b.mara
 //@ expect-output: void: 1 x/y 3
@@ -36,7 +38,6 @@ add_copy :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(4 * MB))
 	names : [100]Name
 	add_in_place(&names, "C:/code", "a.mara")
 	add_in_place(&names, "C:/code", "c.mara")

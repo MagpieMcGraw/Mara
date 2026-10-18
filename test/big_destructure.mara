@@ -12,6 +12,8 @@ module big_destructure
 use mara.core
 include mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 E :: error { Bad }
 Big :: struct { cells: [300!]i64 }
 
@@ -34,7 +36,6 @@ sum :: fun(k: i64) -> i64, err {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Debug(1 * MB))
 	for round in 0 .. 3 {
 		b, k := big(round)
 		print(b.cells[299], k)

@@ -515,7 +515,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The running program's own file: its path, whole, as the system has it
 	// (real_path's: its letters' case as on disk, a link followed to the
 	// file itself) — however it was started (by a name its PATH found, a
-	// relative path, a link), unlike this_program.args[0], which is what its
+	// relative path, a link), unlike main's args[0], which is what its
 	// starter wrote — for the files that come with it, beside it: a Path, to
 	// cut to its directory and add a file's name to (`exe.len =
 	// path_dir(exe).len`, `&exe + "font.ttf"`). Too_Large when it's longer
@@ -1276,7 +1276,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// The running program's own file: its path, whole, as the system has it
 	// (real_path's: a link followed to the file itself) — however it was
 	// started (by a name its PATH found, a relative path, a link), unlike
-	// this_program.args[0], which is what its starter wrote — for the files
+	// main's args[0], which is what its starter wrote — for the files
 	// that come with it, beside it: a Path, to cut to its directory and add
 	// a file's name to (`exe.len = path_dir(exe).len`, `&exe + "font.ttf"`).
 	// Too_Large when it's longer than a Path holds; Read_Failed when the

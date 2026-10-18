@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 //@ expect-output: whole: true
 //@ expect-output: room: 512 true
 //@ expect-output: same file: true
@@ -16,7 +18,6 @@ use mara.memory
 // it's the system's own spelling, as real_path gives it.
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	storage : [200 * KB]byte
 	dir, e := current_dir()
 	if e {

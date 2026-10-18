@@ -339,10 +339,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // g.out is now a swap target driven by switch_to_module; each per-module
     // buffer is pre-sized to 4MB on first creation. No global pre-size here.
 
-    // Context system: scope allocator setup. Enabled when either:
-    //   - the user declared `context.scope_allocator = X` (has_scope_allocator), OR
-    //   - we're in shared mode and there's at least one `#expose` fn (host
-    //     will pass a Context at runtime).
+    // The program's arena. Enabled when either:
+    //   - the main module names one, `#allocator X` (has_scope_allocator), OR
+    //   - we're in shared mode and there's at least one `#expose` fn (the
+    //     host's arena runs).
     g.context_enabled = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
     if g.context_enabled && checked.table.scope_allocator_type != nil {
         // The arena: a struct constructed with its size (`Arena_Debug(cap)`),
@@ -502,7 +502,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
-    // handover into @__mara_program on entry, so there's nothing for a single
+    // handover into @__mara_arena on entry, so there's nothing for a single
     // init function to do.
     if !g.shared {
 
@@ -618,7 +618,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     // Per-module output: each home_package gets its own .ll file. Main TU
-    // owns the runtime helper definitions, @__mara_program globals, and
+    // owns the runtime helper definitions, the @__mara_arena globals, and
     // @main; every other TU just declares those externally.
 
     // Resolve output directory: <output_path stem>_build/ next to the
@@ -743,7 +743,7 @@ x86_write_module :: proc(g: ^Codegen, m: ^X86_Module, build_dir, module_name: st
 // Build the LLVM IR contents for a single module's .ll file. The shared
 // prelude (target triple, struct decls, string globals, foreign + libc +
 // intrinsic declares) appears in every TU. The runtime helper definitions
-// + @__mara_program globals live in the main TU only; other TUs see them
+// + @__mara_arena globals live in the main TU only; other TUs see them
 // as extern declares. @main lives only in the main TU.
 @(private="file")
 build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
@@ -778,10 +778,9 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     // Struct/union type definitions — TU-local LLVM type namespace means we
     // only need the types this module uses (and those their bodies hold):
     // its functions' — the main TU's, @main's and the runtime helpers' too —
-    // and its constant tables'. The `@__mara_program_storage` global below
-    // names the program's context in every TU (the main TU defines it, the
-    // others declare it), so its type is always one. Defined in the order the
-    // program's are (g.named_types).
+    // and its constant tables'. The main TU's `@__mara_arena_storage` global
+    // below is of the arena's type, so that's one there. Defined in the order
+    // the program's are (g.named_types).
     {
         used: map[Ir_Type]bool
         defer delete(used)
@@ -812,7 +811,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
             mark(gl.ty, &used)
             mark_const(gl.init, &used)
         }
-        mark(program_ir_name(checked), &used)
+        if ty, has := arena_ir_type(checked); has && is_main_tu { mark(ty, &used) }
         wrote_any := false
         for t in g.named_types {
             if t not_in used { continue }
@@ -841,8 +840,9 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     }
     if wrote_any_string { strings.write_byte(&b, '\n') }
 
-    // Context globals: main TU defines, others declare external.
-    strings.write_string(&b, "; Context system\n")
+    // The arena slot (and, in the main TU, the arena and the command line):
+    // the main TU defines them, the others declare the slot external.
+    strings.write_string(&b, "; The program's arena\n")
     for gl in program_globals(checked, is_main_tu) { ir_print_global(&b, gl) }
     strings.write_byte(&b, '\n')
     if len(consts) > 0 {
@@ -1033,15 +1033,22 @@ module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
     return strings.concatenate({build_dir, "/", safe, ext})
 }
 
-// The program's globals: its context's pointer and the context itself — the
-// main TU's own, every other's to link to.
+// The program's globals: the arena slot (what every big local is put on,
+// `with` sets) — the main TU's own, every other's to link to — and, in a
+// program (a DLL runs on its host's), the main TU's arena itself and its
+// command line, main's `args`.
 @(private="file")
 program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
-    gls := make([]Ir_Global, 2)
+    gls := make([dynamic]Ir_Global)
     linkage: Ir_Linkage = .Default if own else .External
-    gls[0] = {name = "__mara_program", linkage = linkage, ty = IR_PTR, init = {v = IR_NULL}}
-    gls[1] = {name = "__mara_program_storage", linkage = linkage, ty = program_ir_name(checked), init = {v = IR_ZERO}}
-    return gls
+    append(&gls, Ir_Global{name = "__mara_arena", linkage = linkage, ty = IR_PTR, init = {v = IR_NULL}})
+    if own && "main" in checked.functions {
+        if ty, has := arena_ir_type(checked); has {
+            append(&gls, Ir_Global{name = "__mara_arena_storage", ty = ty, init = {v = IR_ZERO}})
+        }
+        append(&gls, Ir_Global{name = "__mara_args", ty = partial_array_ir_type(SLICE_IR_TYPE, 64), init = {v = IR_ZERO}})
+    }
+    return gls[:]
 }
 
 @(private="file")
@@ -1051,40 +1058,32 @@ ensure_dir :: proc(path: string) -> bool {
     return err == os.ERROR_NONE
 }
 
-// The program's setup, at @main's entry: the program global (the context), its
-// arena when there is a scope allocator, and context.args from argv. The
-// user's main body follows it.
+// The program's setup, at @main's entry: its arena (when #allocator names
+// one) made, the slot pointing at it, and the command line from argv, main's
+// `args` when it takes it. The user's main body follows it.
 emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
-    // Context: backed by a real LLVM global so it survives main returning.
+    // The arena and the command line: globals, so they outlive main's frame.
     // Required for web builds where emscripten owns the main loop —
     // emscripten_set_main_loop_arg returns to JS, the rAF callback runs
-    // after main's stack is gone, and any later @__mara_program load would
+    // after main's stack is gone, and any later @__mara_arena load would
     // dereference a dangling stack pointer (manifests as arena.base.cap
     // reading 0 and the very first byte-buffer write tripping the bounds
     // check). Native is unaffected: same global lifetime, same fields.
     {
-        ctx_alloca := ir_global("__mara_program_storage")
-        ir_store(g, IR_PTR, ctx_alloca, ir_global("__mara_program"))
-
-        // Arena init (if scope allocator is active).
-        if g.context_enabled {
-            arena_ptr := fresh_tmp(g)
-            emit_field_gep_into(g, arena_ptr, program_ir_name(checked), ctx_alloca, 0)
+        if _, has := arena_ir_type(checked); has && g.context_enabled {
+            arena_ptr := ir_global("__mara_arena_storage")
+            ir_store(g, IR_PTR, arena_ptr, ir_global("__mara_arena"))
             new_ir := mara_fn(g, g.arena_new_name)
             alloc_size := 268435456  // default 256 MB
             if n, sized := checked.table.scope_allocator_size.?; sized { alloc_size = int(n) }
             ir_call(g, {}, IR_VOID, new_ir, {IR_I64, ir_int(alloc_size), {}}, {IR_PTR, arena_ptr, {}})
         }
 
-        // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
-        // embedded as a field of Context.
-        args_field_idx := 1 if g.context_enabled else 0
+        // The command line — a partial array {len, cap, ptr, [64 x slice]},
+        // its own global.
         ARGS_CAP :: 64
         pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
-
-        // GEP to the partial-array field within Context
-        args_ptr := fresh_tmp(g)
-        emit_field_gep_into(g, args_ptr, program_ir_name(checked), ctx_alloca, args_field_idx)
+        args_ptr := ir_global("__mara_args")
 
         // More arguments than the args array holds is an error, not a silent
         // truncation — a program handed a long file list must not quietly
@@ -1160,5 +1159,15 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_br(g, loop_lbl)
 
         emit_label(g, done_lbl)
+
+        // main's `args`, when it takes it: a view of the list (an aggregate
+        // param is its address — main's, this slot).
+        if main_cf, has_main := checked.functions["main"]; has_main && len(main_cf.params) == 1 {
+            view := ir_local(fmt.tprintf("%s.arg", main_cf.params[0].name))
+            emit_alloca(g, view, SLICE_IR_TYPE)
+            emit_header_set(g, view, SLICE.ptr, elements_ptr)
+            emit_header_set(g, view, SLICE.len, len_store_val)
+            emit_header_set(g, view, SLICE.cap, ir_int(ARGS_CAP))
+        }
     }
 }

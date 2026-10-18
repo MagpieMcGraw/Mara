@@ -3,6 +3,8 @@ module infer_open_decisions
 use mara.math
 include mara.memory
 
+#allocator Arena_Basic(1 * MB)
+
 // A decision that needs a binding's width — which member of a dispatch
 // group, a generic's type, how many bytes a byte write takes — takes the
 // width its uses have given it so far. None yet: its default from there on
@@ -33,7 +35,6 @@ t32 :: fun(x: i32) {}
 ident :: fun(x: $T) -> T { return x }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(1 * MB))
 	a := 0
 	print("one member:", show1(a), size_of(a))
 	c := 0

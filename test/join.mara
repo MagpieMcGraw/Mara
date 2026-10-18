@@ -4,6 +4,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(4 * MB)
+
 //@ expect-output: joined: C:/Code/code 64 | kept: C:/Code 7
 //@ expect-output: chained: C:/Code/code/core.mara 22
 //@ expect-output: items: 1 3 3 64
@@ -39,7 +41,6 @@ room_twice :: fun(a: [$N]$T) -> i64 {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(4 * MB))
 	cwd : str64
 	&cwd + "C:/Code"
 	code := cwd + "/code"

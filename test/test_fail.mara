@@ -13,6 +13,8 @@ module test_fail
 
 use mara.memory
 
+#allocator Arena_Debug(1 * MB)
+
 // ============================================================================
 // runtime traps — compile OK, abort at runtime. Uncomment a call in main.
 // ============================================================================
@@ -124,8 +126,6 @@ fail_assert :: fun() {
 // }
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Debug(1 * MB))
-
 	// Uncomment exactly ONE:
 	// fail_byte_view_oob()
 	// fail_assert()

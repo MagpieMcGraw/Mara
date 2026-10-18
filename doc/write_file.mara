@@ -10,6 +10,8 @@ use mara.core
 use mara.os
 use mara.memory
 
+#allocator Arena_Basic(16 * MB)
+
 // Writes text to the file at path, replacing what was there.
 save :: fun(path: []utf8, text: []utf8) -> err {
 	id := file_open_write(path)?
@@ -18,8 +20,6 @@ save :: fun(path: []utf8, text: []utf8) -> err {
 }
 
 main :: fun() {
-	this_program = Program(Arena_Basic(16 * MB))
-
 	err := save("write_file_demo.txt", "one line\nanother line\n")
 	if err {
 		print("couldn't write it:", err)

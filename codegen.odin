@@ -98,8 +98,8 @@ Codegen :: struct {
     registered_structs: map[string]bool,         // dedup guard for struct decl emission
     // Enum values: read from checked.enums directly (no shadow map)
     // Union support: read from checked.table.unions directly
-    // Context system: automatic scope-based arena mark/reset
-    context_enabled:  bool,                       // true when user set context.scope_allocator
+    // The program's arena: automatic scope-based arena mark/reset
+    context_enabled:  bool,                       // #allocator names one (or a DLL runs on its host's)
     arena_alloc_name: string,                     // flat name for the arena alloc function
     arena_mark_name:  string,                     // flat name for the arena mark function
     arena_reset_name: string,                     // flat name for the arena reset function
@@ -374,20 +374,11 @@ ir_class_type :: proc(sd: ^Scope_Body) -> Ir_Type {
     return ir_type_remember(sd, t)
 }
 
-// IR type of the synthetic Program context struct. The type checker names
-// the synthetic struct (it may be a bare "Program" or a mangled "mara_core_Program"
-// depending on how it interns alongside the user's generic Program template), and
-// register_struct_decl emits `%class.<that name>`. Codegen's global + its GEPs must
-// follow the SAME name rather than hardcode "%class.Program", or the storage global
-// references a type that was emitted under a different name. Falls back to the bare
-// name when there's no Program (a context-free build emits no global anyway).
-program_ir_name :: proc(checked: ^Checked_Program) -> Ir_Type {
-    if checked != nil && checked.table != nil {
-        if prog, ok := checked.table.funs["Program"]; ok && prog != nil {
-            return ir_class_type(&prog.sd)
-        }
-    }
-    return ir_named_type("class.Program", IR_EMPTY)
+// The IR type of the arena #allocator names — its class's — when it names
+// one (its type checked: tc_validate_allocator).
+arena_ir_type :: proc(checked: ^Checked_Program) -> (Ir_Type, bool) {
+    if checked == nil || checked.table == nil || checked.table.scope_allocator_type == nil { return IR_NONE, false }
+    return ir_class_type(&checked.table.scope_allocator_type.sd), true
 }
 
 // Get the LLVM field index of a named field. Returns -1 if not found.
@@ -845,12 +836,11 @@ can_elide_overflow :: proc(op: string, ir_type: Ir_Type, left, right: Val) -> bo
 // Context system: automatic scope-based arena mark/reset
 // ---------------------------------------------------------------------------
 
-// Load the context's arena pointer (field 0 of Context struct).
+// The arena big values go on now: what the slot points at (main's arena,
+// an #expose fun's host's, a `with`'s).
 get_context_arena_ptr :: proc(g: ^Codegen) -> Val {
-    ctx_ptr := fresh_tmp(g)
-    ir_load(g, ctx_ptr, IR_PTR, ir_global("__mara_program"))
     arena_ptr := fresh_tmp(g)
-    emit_field_gep_into(g, arena_ptr, program_ir_name(g.checked), ctx_ptr, 0)
+    ir_load(g, arena_ptr, IR_PTR, ir_global("__mara_arena"))
     return arena_ptr
 }
 
@@ -881,9 +871,9 @@ emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: s
 // accesses the null ptr, same as any other broken function.
 emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>", loc: string = "<unknown>") -> Val {
     // Deferred check: only fires if some code actually wants the arena. A
-    // shared-build DLL with `#expose` fn(s) but no `context.scope_allocator
-    // = X` declaration reaches here with no allocator name. Tell the user
-    // what to add; suppressed for DLLs that never touch the arena.
+    // shared-build DLL with `#expose` fn(s) but no `#allocator` naming its
+    // kind reaches here with no allocator name. Tell the user what to add;
+    // suppressed for DLLs that never touch the arena.
     if g.arena_alloc_name == "" {
         if g.shared {
             codegen_fatal(g, {},
