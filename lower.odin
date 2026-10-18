@@ -485,6 +485,8 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         graph_build_defer_end(k.gb, gd)
     case .With:
         lw_with(k, s)
+    case .Allocator:
+        // (main's: its entry made the arena.)
     case .Match:
         lw_match(k, s)
     case .Break, .Continue:

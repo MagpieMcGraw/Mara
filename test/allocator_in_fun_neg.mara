@@ -1,12 +1,16 @@
 module allocator_in_fun_neg
-//@ expect-fail: #allocator goes at a module's top, not in a fun
+//@ expect-fail: #allocator goes at a module's top, or among main's own statements: not in another fun, or in a block
 
-// The program's arena is named once, at the top of the module main is in:
-// in a fun it would name nothing.
+// The program's arena is named once: at the top of the module main is in, or
+// among main's own statements. In another fun it would name nothing.
 
 use mara.core
 use mara.memory
 
-main :: () {
+setup :: () {
 	#allocator Arena_Basic(16 * MB)
+}
+
+main :: () {
+	setup()
 }

@@ -7,6 +7,9 @@
 //
 //     #allocator Arena_Debug(16 * MB)
 //
+// It can also go among main's own statements, if that reads better there —
+// main's entry makes the arena either way, so code before it runs on it too.
+//
 // 16 * MB is how much the arena holds in all. It hands out memory by moving
 // a cursor forward, and frees by moving it back to a mark. A block holding a
 // big value marks the arena when it starts and resets it when it ends, so

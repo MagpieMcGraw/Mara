@@ -1,0 +1,30 @@
+module allocator_in_main
+
+use mara.core
+use mara.memory
+
+//@ expect-output: before it
+//@ expect-output: big: 7
+//@ expect-output: with: 16424
+
+// The program's arena named among main's own statements: main's entry makes
+// it either way, so what comes before it runs on it too.
+
+work :: fun(lib: ^Arena_Basic) -> i64 {
+	big : [16 * KB]byte
+	big[0] = u8(1)
+	return lib.base.len
+}
+
+main :: () {
+	print("before it")
+
+	#allocator Arena_Basic(4 * MB)
+
+	big : [2 * MB]byte
+	big[2 * MB - 1] = u8(7)
+	print("big:", big[2 * MB - 1])
+
+	lib := Arena_Basic(1 * MB)
+	with &lib do print("with:", work(&lib))
+}

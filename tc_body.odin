@@ -1,6 +1,7 @@
 package mara
 
 import "core:mem/virtual"
+import "core:slice"
 import "core:strings"
 
 // Bodies, checked statement by statement in the order they run: a fun's
@@ -128,7 +129,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .With:
         tc_with(k, s)
     case .Allocator:
-        tc_error(k, span, TYPE_ALLOCATOR_AT_TOP)
+        if slice.contains(k.main_allocators[:], s) { tc_allocator(k, s) } else { tc_error(k, span, TYPE_ALLOCATOR_AT_TOP) }
     case .Match:
         tc_match(k, s)
     case .Break, .Continue:

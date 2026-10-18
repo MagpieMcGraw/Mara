@@ -2,7 +2,7 @@
 // block run on it.
 //
 // The program's arena — `#allocator Arena_Basic(16 * MB)`, at the top of the
-// module main is in — is where values of 1 KB or more go (see arenas.mara).
+// module main is in, or among main's statements — is where values of 1 KB or more go (see arenas.mara).
 // Another arena of its kind is a value: `level := Arena_Basic(4 * MB)`.
 //
 // `with &level {…}` (or `with &level do …`) runs its block on it: what the

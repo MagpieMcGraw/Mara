@@ -1,0 +1,13 @@
+module allocator_twice_neg
+//@ expect-fail: the program's arena is named once: an #allocator came before this one
+
+// At the module's top and in main both: one of them would be ignored.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+main :: () {
+	#allocator Arena_Debug(16 * MB)
+}

@@ -12,28 +12,41 @@ import "core:strings"
 // Another arena of its kind is a value (`Arena_Basic(1 * MB)`), and a block
 // runs on it with `with &a {…}`.
 
-// The main module's `#allocator`: the arena's name, and its size's node.
+// The main module's `#allocator` — at its top, or among main's own
+// statements (main's entry makes the arena either way: what comes before it
+// runs on it too): the arena's name, and its size's node.
 tc_scan_allocator :: proc(k: ^TC) {
     t := k.t
+    scan :: proc(k: ^TC, s: Tree_Id) {
+        t := k.t
+        if k.table.has_scope_allocator { return }   // (a second: tc_allocator says)
+        k.table.has_scope_allocator = true
+        #partial switch arena := tc_unparen(k, Tree_Id(t.a[s])); t.tag[arena] {
+        case .Call:
+            k.table.scope_allocator_name = tc_name(k, arena)
+            inner := tree_list(t, t.a[arena])
+            k.arena_size = inner[0] if len(inner) > 0 else 0
+        case .Ident:
+            k.table.scope_allocator_name = tc_name(k, arena)
+        }
+    }
     for file in k.modules[k.main_package] or_else nil {
         for s in tc_live(k, tree_list(t, t.a[file])) {
-            if t.tag[s] != .Allocator || k.table.has_scope_allocator { continue }   // (a second: tc_allocator says)
-            k.table.has_scope_allocator = true
-            #partial switch arena := tc_unparen(k, Tree_Id(t.a[s])); t.tag[arena] {
-            case .Call:
-                k.table.scope_allocator_name = tc_name(k, arena)
-                inner := tree_list(t, t.a[arena])
-                k.arena_size = inner[0] if len(inner) > 0 else 0
-            case .Ident:
-                k.table.scope_allocator_name = tc_name(k, arena)
+            if t.tag[s] == .Allocator { scan(k, s); continue }
+            is_main := t.tag[s] == .Define && tc_name(k, s) == "main" && t.tag[t.b[s]] == .Fun_Def
+            if !is_main { continue }
+            for b in tc_live(k, scope_view(t, Tree_Id(t.b[s])).body) {
+                if t.tag[b] != .Allocator { continue }
+                append(&k.main_allocators, b)
+                scan(k, b)
             }
         }
     }
 }
 
-// `#allocator …` where it's written (a module statement): in the module
-// main is in, once — its size's expression checked (a constant:
-// tc_validate_allocator) — or, in a DLL, the kind alone.
+// `#allocator …` where it's written (a module statement, or one of main's
+// own): in the module main is in, once — its size's expression checked (a
+// constant: tc_validate_allocator) — or, in a DLL, the kind alone.
 tc_allocator :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)

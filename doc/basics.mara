@@ -651,9 +651,10 @@ example_cstring :: fun() {
 }
 
 // `#allocator`: the program's arena, where values of 1 KB or more live —
-// named once, at the top of the module main is in (see arenas.mara). main's
-// command line is its parameter, `main :: (args: [][]utf8)`: args[0] is the
-// program's path (see command_line_args.mara, program.mara).
+// named once, at the top of the module main is in or among main's own
+// statements (see arenas.mara). main's command line is its parameter,
+// `main :: (args: [][]utf8)`: args[0] is the program's path (see
+// command_line_args.mara, program.mara).
 example_allocator :: fun() {
 	// #allocator Arena_Debug(16 * MB)
 	// main :: (args: [][]utf8) { print(args.len) }

@@ -1,0 +1,14 @@
+module allocator_in_block_neg
+//@ expect-fail: #allocator goes at a module's top, or among main's own statements: not in another fun, or in a block
+
+// In a block of main's, #allocator would look as if it only sometimes named
+// the arena: main's entry makes it, so it goes among main's own statements.
+
+use mara.core
+use mara.memory
+
+main :: () {
+	if true {
+		#allocator Arena_Basic(16 * MB)
+	}
+}
