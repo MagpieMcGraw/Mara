@@ -1,11 +1,11 @@
-module utf8_compare_neg
-//@ expect-fail: cannot compare utf8 with i64 using '<'
-
-// utf8 orders against utf8 (or a number written): an i64 beside one is a
-// cast — no implicit widening (utf8_order).
-
-main :: fun() {
-	ch : utf8 = 'A'
-	n : i64 = 65
-	print(ch < n)
-}
+module utf8_compare_neg
+//@ expect-fail: cannot compare utf8 with i64 using '<'
+
+// utf8 orders against utf8 (or a number written): an i64 beside one is a
+// cast — no implicit widening (utf8_order).
+
+main :: fun() {
+	ch : utf8 = 'A'
+	n : i64 = 65
+	print(ch < n)
+}

@@ -36,7 +36,7 @@ if [ -z "${MARA_EXE:-}" ] && [ ! -x "$MARA" ] && [ -x "$PWD/../mara_dev.exe" ]; 
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
 # won't auto-skip). Clean these up and the entries go away.
-LEGACY_SKIP="leak_consumer:stale-multimodule-uses-removed-Arena_Basic mandelbrot_bench_simd:preexisting-not-applied-to-err"
+LEGACY_SKIP="leak_consumer:stale-multimodule-uses-removed-Arena_Basic"
 
 in_list() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
 skip_reason() { for kv in $LEGACY_SKIP; do case "$kv" in "$1:"*) echo "${kv#*:}"; return ;; esac; done; }
@@ -55,7 +55,7 @@ check_file() {  # f
   local f=$1 name="${1%.mara}" exp=pass substr="" out comp run rc missing want flags
   if grep -qE '//@ expect-fail' "$f" 2>/dev/null; then
     exp=fail
-    substr=$(sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' "$f" | head -1)
+    substr=$(sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' "$f" | head -1 | tr -d '\r')
   elif grep -qE '//@ expect-skip:' "$f" 2>/dev/null; then
     exp=skip
   elif in_list "$LEGACY_FAIL" "$name"; then
@@ -107,7 +107,7 @@ check_dir() {  # d
   [ -f "$d/.shared" ] && flags=-shared
   if grep -rqE '//@ expect-fail' "$d" 2>/dev/null; then
     exp=fail
-    substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
+    substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1 | tr -d '\r')
   fi
   out=$(cd "$d" && "$MARA" build "$d" $flags 2>&1)
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
