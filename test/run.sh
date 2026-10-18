@@ -26,7 +26,11 @@
 #  until `mara` grows a check-only mode.)
 
 cd "$(dirname "$0")" || exit 2
-MARA=${MARA_EXE:-$PWD/../mara_dev.exe}   # (the debug build; MARA_EXE=… names another)
+# A program's file: `name.exe` on Windows, `name` elsewhere (Linux). The
+# compiler: the debug build, mara_dev — or mara_dev.exe, as Windows names it.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
+MARA=${MARA_EXE:-$PWD/../mara_dev$EXE}   # (MARA_EXE=… names another)
+if [ -z "${MARA_EXE:-}" ] && [ ! -x "$MARA" ] && [ -x "$PWD/../mara_dev.exe" ]; then MARA=$PWD/../mara_dev.exe; fi
 
 
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg widenneg"
@@ -44,7 +48,7 @@ skip_reason() { for kv in $LEGACY_SKIP; do case "$kv" in "$1:"*) echo "${kv#*:}"
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
 RES=$(mktemp -d)
 ROOT="$(cd .. && pwd)"
-export MARA RES ROOT LEGACY_FAIL LEGACY_SKIP
+export MARA EXE RES ROOT LEGACY_FAIL LEGACY_SKIP
 verdict() { printf '%s\n' "$2" "${3-}" > "$RES/$1.res"; }                   # key kind [message]
 
 check_file() {  # f
@@ -74,7 +78,7 @@ check_file() {  # f
       echo "$out" | grep -qF -- "$want" || { verdict "$name" bad "MISSING WARNING: $name (want: \"$want\")"; return; }
     done < <(sed -nE 's#.*//@ expect-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
     if grep -qE '//@ expect-output:' "$f"; then
-      run=$(timeout 10 "./$name.exe" 2>&1); rc=$?
+      run=$(timeout 10 "./$name$EXE" 2>&1); rc=$?
       missing=""
       while IFS= read -r want; do
         echo "$run" | grep -qF -- "$want" || missing="$want"
@@ -114,7 +118,7 @@ check_dir() {  # d
     elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then verdict "$key" bad "WRONG ERROR (multi-file subdir): $d (want: $substr)"
     else verdict "$key" xfail; fi
   fi
-  rm -f "$d/$d.exe" "$d/$d.dll" "$d/$d.lib" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
+  rm -f "$d/$d$EXE" "$d/$d.dll" "$d/$d.lib" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
 }
 
 # The docs' programs (doc/*.mara): each must build and run with no arguments
@@ -126,8 +130,8 @@ check_doc() {  # f
     verdict "$key" bad "DOC DOESN'T BUILD: doc/$f"
     return
   fi
-  (cd "$ROOT/doc" && timeout 10 "./$name.exe" > /dev/null 2>&1); rc=$?
-  rm -rf "$ROOT/doc/$name.exe" "$ROOT/doc/$name.pdb" "$ROOT/doc/${name}_build"
+  (cd "$ROOT/doc" && timeout 10 "./$name$EXE" > /dev/null 2>&1); rc=$?
+  rm -rf "$ROOT/doc/$name$EXE" "$ROOT/doc/$name.pdb" "$ROOT/doc/${name}_build"
   if [ $rc -ne 0 ]; then verdict "$key" bad "DOC FAILS WHEN RUN: doc/$f (exit $rc)"; else verdict "$key" pass; fi
 }
 export -f in_list skip_reason verdict check_file check_dir check_doc

@@ -14,6 +14,7 @@
 # the module named by its working directory.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 MARA=${MARA:-${MARA_EXE:-$ROOT/mara_dev.exe}}   # (the debug build) another to compare: MARA=... test/ask.sh
+[ -x "$MARA" ] || [ -n "${MARA_EXE:-}" ] || MARA=$ROOT/mara_dev   # (built as mara_dev, off Windows)
 QUERIES=$ROOT/test/ask_queries.txt
 EXPECTED=$ROOT/test/ask_expected.txt
 WORK=${TMP:-/tmp}/mara_ask

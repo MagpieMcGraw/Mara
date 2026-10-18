@@ -18,6 +18,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 WORK=${MARA_EXE:-$ROOT/mara_dev.exe}   # (the debug build; MARA_EXE=… names another)
+[ -n "${MARA_EXE:-}" ] || [ -x "$WORK" ] || WORK=$ROOT/mara_dev   # (built as mara_dev, off Windows)
 rm -rf "$OUT"; mkdir -p "$OUT"
 export ROOT OUT WORK
 
