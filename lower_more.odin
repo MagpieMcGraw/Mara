@@ -144,11 +144,58 @@ lw_in_range :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     tr := k.t
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
+    if hi == 0 { return lw_in_items(k, n, lo, want, w) }
     rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
     if build_tokens[tr.main[n]].kind != .Not { return lw_binary_op(k, 0, .And, span, 0, 0, want, w, Type_Bool{}, &rng) }
     if want == .Place { lw_fail(k, n, "a unary's place") }
     r := lw_binary_op(k, 0, .And, span, 0, 0, .Value, w, Type_Bool{}, &rng)
     return {v = graph_op_value(k.gb, .Unary, w, span, Type_Bool{}, graph_token_text(.Not), r.v), ok = true}
+}
+
+// `x in xs` (tc_in_items): the overload's call with xs — through a pointer,
+// what it points at; a value with no place (an array literal), held first —
+// then x (text to a list: its own, lw_text_as_list); `not in`, negated.
+// x is built first, as written.
+lw_in_items :: proc(k: ^TC, n, coll: Tree_Id, want: Build_Want, w: Written) -> Built {
+    b := k.gb
+    tr := k.t
+    span := tree_span(tr, n)
+    if want == .Place { lw_fail(k, n, "an `in`'s place") }
+    callee := tc_callee(k, n)
+    if callee == nil || len(callee.params) != 2 { lw_fail(k, n, "an `in` with no overload to call") }
+    value := Tree_Id(tr.a[n])
+    a1, made := lw_text_as_list(k, value, callee.params[1].type_, span, w)
+    if !made {
+        rv := lw_expr(k, value, .Either, w)
+        a1 = graph_build_as(b, rv.v, rv.place, tc_node_type(k, value), tree_span(tr, value), span, {sig = callee, param = 1})
+    }
+    ct := tc_node_type(k, coll)
+    cv: Operand
+    place := true
+    switch {
+    case lw_pure_place(k, coll):
+        cv = lw_expr(k, coll, .Place, w).v
+    case is_slice_type(ct) || is_ptr_type(ct):
+        r := lw_expr(k, coll, .Either, w)
+        cv, place = r.v, r.place
+        if is_ptr_type(ct) && !place { cv, place = lw_hold(k, coll, span), true }
+    case:
+        cv = lw_hold(k, coll, span)
+    }
+    if pt, is_ptr := distinct_base(ct).(^Type_Ptr); is_ptr {
+        cv = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", cv)   // (through the pointer, what it points at)
+        ct = pt.elem
+    }
+    a0 := lw_value_as(k, coll, ct, Built{v = cv, place = place, ok = true}, callee.params[0].type_, span, {sig = callee, param = 0})
+    call := Operand{graph_call_op(b, .Call, w, span, callee, fn_primary_return(callee), a0, a1), 0}
+    if build_tokens[tr.main[n]].kind == .Not { call = graph_op_value(b, .Unary, w, span, Type_Bool{}, graph_token_text(.Not), call) }
+    return {v = call, ok = true}
+}
+
+// Whether a type is a pointer.
+is_ptr_type :: proc(t: Type) -> bool {
+    _, is_ptr := distinct_base(t).(^Type_Ptr)
+    return is_ptr
 }
 
 // `#caller_name`, `#caller_span` (tc_hash_name): text — the enclosing fun's

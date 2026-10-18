@@ -114,7 +114,7 @@ Tree_Tag :: enum u8 {
     Try,            // `x?`: main: `?`; a: the operand
     Binary,         // main: the operator; a, b: the operands
     In_Range,       // `x in lo..hi`, `x not in lo..hi`: main: `in` / `not`; a: the value;
-                    // b: rec {lo, hi}
+                    // b: rec {lo, hi} — hi none: `x in xs`, among xs's items
     Call,           // `f(args)`, `i32(x)`: main: the callee; a: list — the args;
                     // b: an override literal (`Foo() {x = 1}`)
     Method_Call,    // `x.f(args)`: main: `.`; a: rec {receiver, name, args: list, overrides}

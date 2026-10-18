@@ -199,7 +199,9 @@ example_do :: fun() {
 // in xs` its position too. `for cond { … }` repeats while cond is true — `for
 // true { … }` until a break or return.
 //
-// `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10.
+// `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10; `x in xs`, whether
+// some item of xs is x (`==` as their type has it: text, the same
+// characters) — mara.core's includes. `not in`: the opposite.
 example_for :: fun() {
 	for i in 0 .. 3 {
 		print("round", i)                  // round 0, round 1, round 2

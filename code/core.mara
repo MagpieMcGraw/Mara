@@ -105,6 +105,23 @@ next :: fun(list: ^[]$T) -> ^T {
 	return &list[list.len - 1]
 }
 
+// `x in xs`: whether some item of xs is x — includes(xs, x) — and `x not in
+// xs`, whether none is. A list, an array, a view; through one pointer too
+// (`this_file not in files`, files a ^[]Filename). (An overload names a
+// dispatch group: includes is this one's one member.)
+overload in in_items
+in_items :: dispatch{ includes }
+
+// Whether some item of items is x, `==` as their types have it: numbers the
+// same number; text the same characters, letters' case minded, of any room
+// (a str64 item, x a view). The items one at a time, from the first.
+includes :: fun(items: []$T, x: $U) -> bool {
+	for item in items {
+		if item == x do return true
+	}
+	return false
+}
+
 // The items `keep` says yes to, in their order, into storage after what's
 // there: a view of them. keep is any function taking an item and giving a
 // bool — `filter(entries, is_mara, &storage)`. Room for every item is taken

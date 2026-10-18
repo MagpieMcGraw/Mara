@@ -356,11 +356,49 @@ tc_in_range :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
+    if hi == 0 { return tc_in_items(k, n, Tree_Id(tr.a[n]), lo, span) }
     rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
     if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, 0, .And, span, 0, 0, &rng) }
     ot := tc_binary_op(k, 0, .And, span, 0, 0, &rng)
     if _, is_bool := ot.(Type_Bool); !is_bool && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
     return Type_Bool{}
+}
+
+// `x in xs` (no `..`): whether some item of xs is x — the `overload in`
+// (mara.core's includes), called with xs, then x; `not in`, its negation
+// (lw_in_items). Through one pointer, as `for` sees: `x in files`, files a
+// `^[]T`.
+tc_in_items :: proc(k: ^TC, n, value, coll: Tree_Id, span: Span) -> Type {
+    vt := tc_check(k, value)
+    ct := tc_check(k, coll)
+    seen := ct
+    if pt, is_ptr := distinct_base(ct).(^Type_Ptr); is_ptr && loop_elem(pt.elem) != nil { seen = pt.elem }
+    if is_any(vt) || is_any(seen) { return Type_Bool{} }   // (said so already)
+    // (Said at the `in`, not in includes: an item `==` can't compare with x.)
+    if elem := loop_elem(seen); elem != nil && !tc_can_equal(k, elem, vt, span) {
+        tc_error(k, span, TYPE_IN_ITEM_TYPE, type_name(solidify_type(vt)), type_name(solidify_type(elem)))
+        return Type_Error{}
+    }
+    callee, found := tc_operator_overload(k, .In, seen, vt, span)
+    if !found {
+        tc_error(k, span, TYPE_IN_NEEDS_ITEMS, type_name(solidify_type(ct)))
+        return Type_Error{}
+    }
+    tc_set_callee(k, n, callee)
+    tc_set_args(k, n, {{coll, .Written, -1}, {value, .Written, -1}})
+    tc_settle(k, coll, callee.params[0].type_)
+    tc_settle(k, value, callee.params[1].type_)
+    return Type_Bool{}
+}
+
+// Whether `a == b` compares an a with a b: numbers (or characters) both, one
+// comparable type, or an `overload ==` that takes them (text).
+tc_can_equal :: proc(k: ^TC, a, b: Type, span: Span) -> bool {
+    if (is_numeric(a) || is_infer(a)) && (is_numeric(b) || is_infer(b)) { return true }
+    if is_byte_or_utf8(a) && is_byte_or_utf8(b) { return true }
+    if types_equal(distinct_base(a), distinct_base(b)) && is_comparable(a) { return true }
+    _, found := tc_operator_overload(k, .Equal_Equal, a, b, span)
+    return found
 }
 
 is_utf8_type :: proc(t: Type) -> bool {

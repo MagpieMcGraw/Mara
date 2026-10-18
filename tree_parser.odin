@@ -685,7 +685,7 @@ tp_overload :: proc(p: ^Tree_Parser) -> Tree_Id {
     kw := tp_advance(p)
     op := tp_advance(p)
     #partial switch build_tokens[op].kind {
-    case .Star, .Plus, .Minus, .Slash, .Modulo, .Equal_Equal, .Not_Equal:
+    case .Star, .Plus, .Minus, .Slash, .Modulo, .Equal_Equal, .Not_Equal, .In:
     case:
         tp_error(p, op, PARSE_OVERLOAD_EXPECTED_OP, token_text(build_tokens[op]))
     }
@@ -1719,13 +1719,12 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             kw := tp_advance(p)
             if is_not_in { tp_advance(p) }
             lo := tp_expr(p, 4)
-            if tp_kind(p) != .Dot_Dot {
-                tp_error(p, tp_here(p), PARSE_RANGE_NEEDS_DOTS, "not " if is_not_in else "")
-                left = lo
-                continue
+            // (No `..`: `x in xs`, among a collection's items — hi none.)
+            hi: Tree_Id
+            if tp_kind(p) == .Dot_Dot {
+                tp_advance(p)
+                hi = tp_expr(p, 4)
             }
-            tp_advance(p)
-            hi := tp_expr(p, 4)
             left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi)))
             continue
         }

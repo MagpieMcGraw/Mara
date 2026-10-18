@@ -1,0 +1,14 @@
+module in_items_neg
+
+//@ expect-fail: can't look for a [64]utf8 among i64 items: `==` doesn't compare them
+
+// `x in xs` compares with `==`: text looked for among numbers is said so at
+// the `in`, not inside mara.core's includes.
+
+use mara.core
+
+main :: () {
+	nums : [4]i64
+	&nums + 1
+	print("x" in nums)
+}
