@@ -205,7 +205,7 @@ TYPE_CSTRING_FOREIGN_ONLY         :: "`cstring` is the C boundary type — only 
 TYPE_CSTRING_ARG_EXPLICIT         :: "a runtime string doesn't convert to `cstring` implicitly — wrap the argument: `cstring(s)` copies it and writes the terminator. String literals pass free"
 TYPE_CSTRING_CTOR_ARGUMENT        :: "cstring() takes a utf8/byte string (slice, partial array, or literal), got %s"
 TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL :: "cannot take the address of a string literal — its bytes are read-only. Bind it first (`s := \"...\"`) for a mutable copy"
-TYPE_SLICE_CANNOT_BIND_STRING_LITERAL :: "a string literal is `[N]utf8` storage, not a `[]utf8` view — a slice here would alias read-only bytes. Use `s := \"...\"` for a mutable copy, or `s : [..N]utf8 = \"...\"` for one with room to grow"
+TYPE_SLICE_CANNOT_BIND_STRING_LITERAL :: "a string literal is `[N]utf8` storage, not a `[]utf8` view — a slice here would alias read-only bytes. Use `s := \"...\"` for a mutable copy, or `s : [N]utf8 = \"...\"` for one with room to grow"
 PARSE_BIG_ENDIAN_NEEDS_BYTE_READ  :: "`#big_endian` must precede a byte-buffer read — `buf[off]` or `buf[lo:hi]`"
 PARSE_USING_NOT_ALLOWED_ON_INCLUDE :: "`using` is not allowed before `use`/`include` — use bare `use %s` (private) or `include %s` (re-export), or `name :: use path` for qualified access"
 PARSE_INCLUDE_NEEDS_COLON_COLON   :: "`:=` is not allowed for `use`/`include` — modules are comptime, use `name :: use path` (private) or `name :: include path` (re-export)"

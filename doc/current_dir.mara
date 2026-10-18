@@ -11,6 +11,13 @@
 // the path is longer. The path is whole, its separators '/' (Windows' too),
 // with none at its end (but a drive's root, `C:/`, or `/`): add one before a
 // file's name.
+//
+// It's spelled as the directory was entered: `cd c:\code` gives `c:/code`,
+// and a link or junction on the way stays as it is. real_path(dir) asks the
+// system for its own spelling — its letters' case as on disk, links followed
+// to where they lead — so two spellings of one folder come out the same:
+// make the folders a search starts from so, and the paths built on them
+// compare as they are.
 module current_dir
 
 use mara.core
@@ -32,4 +39,9 @@ main :: fun() {
 	&dir + "/" + "current_dir.mara"
 	_, by_path := read_entire_file(dir, &storage)
 	print("read by its name and by its whole path, the same:", alone == by_path)
+
+	// Two spellings of this directory, one as the system has it.
+	here, _ := real_path(".")
+	there, _ := real_path("../doc")
+	print("one folder, however it's spelled:", here == there)
 }

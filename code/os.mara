@@ -257,6 +257,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// dwFlagsAndAttributes
 	FILE_ATTRIBUTE_NORMAL :: 0x80
+	// (A folder opened too: a handle to it, nothing read — real_path.)
+	FILE_FLAG_BACKUP_SEMANTICS :: 0x02000000
+
+	// dwShareMode, a file others may delete while it's open
+	FILE_SHARE_DELETE :: 0x00000004
 
 	// ---------------------------------------------------------------------------
 	// VirtualAlloc / VirtualFree flags
@@ -447,6 +452,43 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		dir.len = n
 		slashes_forward(&dir)
 		return dir
+	}
+
+	// A path as the system has it, whole — a file's or a folder's: its
+	// letters' case as on disk, its links (symlinks, junctions) followed to
+	// where they lead, `.` and `..` gone, its separators '/'. Two spellings of
+	// one place give one path: the folders a gather starts at made so
+	// (`real_path(cwd)`), the paths built on them compare as they are.
+	// Open_Failed when nothing's there; Too_Large when it's longer than a Path
+	// holds; Read_Failed when the system won't say.
+	real_path :: fun(path: []utf8) -> Path, err {
+		out : Path
+		c := c_path(path)
+		id := CreateFileA(cstring(c), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, void, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return out, Open_Failed
+		defer file_close(id)
+		// (Its whole name, `\\?\C:\…` or `\\?\UNC\server\…`: its length, or
+		// the room it wants, its 0 counted, when that's more than full has.)
+		full : [600]utf8
+		n := i64(GetFinalPathNameByHandleA(id, &full[0], u32(full.cap), 0))
+		if n == 0 do return out, Read_Failed
+		if n >= full.cap do return out, Too_Large
+		full.len = n
+		name : []utf8 = full[:]
+		unc := false
+		if starts_with(name, "\\\\?\\UNC\\") {
+			name = name[8 : name.len]
+			unc = true
+		elif starts_with(name, "\\\\?\\")
+			name = name[4 : name.len]
+		}
+		room := name.len
+		if unc do room += 2
+		if room > out.cap do return out, Too_Large
+		if unc do &out + "\\\\"
+		&out + name
+		slashes_forward(&out)
+		return out
 	}
 
 	// The running program's own file: its path, whole — however it was
@@ -873,6 +915,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// wants (its 0 counted) when buf is too small; 0 failing.
 		fun GetCurrentDirectoryA(size: u32, buf: ^utf8) -> u32
 
+		// An open file's or folder's whole path as the system has it, into buf
+		// (flags 0: its letters' case as on disk, `\\?\C:\…`): its length; the
+		// room it wants (its 0 counted) when buf is too small; 0 failing.
+		fun GetFinalPathNameByHandleA(file: File_Id, buf: ^utf8, size: u32, flags: u32) -> u32
+
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
 		fun FreeLibrary(mod: ^byte) -> i32
@@ -1090,6 +1137,27 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		}
 		dir.len = n
 		return dir
+	}
+
+	// A path as the system has it, whole — a file's or a folder's: its links
+	// followed to where they lead, `.` and `..` gone. Two spellings of one
+	// place give one path: the folders a gather starts at made so
+	// (`real_path(cwd)`), the paths built on them compare as they are.
+	// Open_Failed when nothing's there; Too_Large when it's longer than a
+	// Path holds. (realpath's own room, given back: none here past 1 KB.)
+	real_path :: fun(path: []utf8) -> Path, err {
+		out : Path
+		c := c_path(path)
+		full := realpath(cstring(c), void)
+		if full == void do return out, Open_Failed
+		name := read_cstring(4096, full)
+		if name.len > out.cap {
+			free(full)
+			return out, Too_Large
+		}
+		&out + name
+		free(full)
+		return out
 	}
 
 	// The running program's own file: its path, whole — however it was
@@ -1577,6 +1645,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// The directory the program runs in, 0-ended, into buf: buf; void failing
 		// (too long for buf among the ways).
 		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
+
+		// A path whole, links followed, 0-ended: in room it makes (resolved
+		// void) — free it — or void failing.
+		fun realpath(path: cstring, resolved: ^byte) -> ^byte
+		fun free(p: ^byte)
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte

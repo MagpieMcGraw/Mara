@@ -1,0 +1,23 @@
+module real_path
+
+//@ expect-output: same place true | dots gone true
+//@ expect-output: | case on disk true | file true
+//@ expect-output: missing File_Error.Open_Failed
+
+// real_path: a path as the system has it — whole, `.` and `..` gone, links
+// followed, its letters' case as on disk (on Windows) — so two spellings of
+// one place compare equal. Run from test/, beside code/.
+
+use mara.core
+use mara.os
+use mara.string
+
+main :: () {
+	here, _ := real_path(".")
+	again, _ := real_path("../code/../test")
+	print("same place", here == again, "| dots gone", not contains(again, ".."))
+	core, _ := real_path("../CODE/CORE.mara")
+	print("| case on disk", ends_with(core, "/code/core.mara"), "| file", core.len > here.len)
+	_, e := real_path("../no_such_folder_here")
+	print("missing", e)
+}
