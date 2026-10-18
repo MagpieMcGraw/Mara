@@ -1239,8 +1239,8 @@ x86_call :: proc(f: ^X86_Fn, callee: X86_Val, rt: ^X86_Type, args: []X86_Arg, de
     x86_put(f, dest)
 }
 
-// An LLVM intrinsic: the machine's instruction for it, or the C library's
-// function.
+// An LLVM intrinsic: the machine's instructions for it. (None calls the C
+// library: math.mara computes sin, cos, acos and pow itself.)
 @(private="file")
 x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, dest: Val) {
     op := name
@@ -1323,14 +1323,20 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
         append(&f.code, 9 if op == "floor" else 10 if op == "ceil" else 11)
         x86_from_xmm(f, .AX, 0)
         x86_put(f, dest)
-    case "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pow", "exp", "exp2", "log", "log2", "log10", "minnum", "maxnum", "fma", "round":
-        c := op
-        switch op {
-        case "minnum": c = "fmin"
-        case "maxnum": c = "fmax"
-        }
-        if args[0].t.kind == .F32 { c = strings.concatenate({c, "f"}) }
-        x86_call(f, {kind = .Global, name = c}, rt, args, dest)
+    case "minnum", "maxnum":
+        // (mins?/maxs? xmm0, xmm1 give xmm1 when either is a NaN: right when
+        // a is, but minnum's answer for a NaN b is a — so b's checked first.)
+        x86_get(f, args[0].v, .AX)
+        x86_get(f, args[1].v, .CX)
+        x86_to_xmm(f, 0, .AX)
+        x86_to_xmm(f, 1, .CX)
+        done := x86_label(f)
+        x86_sse(f, 0 if args[0].t.kind == .F32 else 0x66, false, 0x2E, 1, 1)   // ucomis xmm1, xmm1
+        x86_jump(f, done, X86_CC.P)
+        x86_sse(f, x86_fpre(args[0].t), false, 0x5D if op == "minnum" else 0x5F, 0, 1)
+        x86_place(f, done)
+        x86_from_xmm(f, .AX, 0)
+        x86_put(f, dest)
     case:
         x86_fail("the intrinsic", name)
     }

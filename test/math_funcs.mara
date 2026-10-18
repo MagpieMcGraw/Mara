@@ -1,0 +1,44 @@
+module math_funcs
+
+use mara.core
+use mara.math
+
+// sin, cos, acos and pow — math.mara's own, no C library — each result's
+// bits against the correctly rounded ones: arguments near a multiple of
+// π/2, past 2^20·π/2 (reduced by 2/π's own bits), results subnormal or near
+// overflow, the f32 ones; then C's special cases.
+
+//@ expect-output: sin: 4602308182625945072 13829223199258964887 13817624441271014747 13828914081749328773 13677896226296847367 4607182418800017408
+//@ expect-output: cos: 4602887919370356980 4604544271217802189 4364452196894661639 13826729873758864577
+//@ expect-output: acos: 4614256656552045848 4607394977673999206 4611908099330352563 4490088828488384512 4609753056924675352
+//@ expect-output: pow: 4609047870845172685 2024022533073106 1 13844065254536904704 8070212521554638328 11623207344234851 0 9217098554343486296
+//@ expect-output: sin f32: 1062693540 3204555054 1002598580
+//@ expect-output: cos f32: 1063043310 1039907958
+//@ expect-output: acos f32: 1075498643 1054746777
+//@ expect-output: pow f32: 1149239296 1939536269 512
+//@ expect-output: special: 9223372036854775808 4607182418800017408 0 18442240474082181120 9223372036854775808 9218868437227405312 4607182418800017408 4607182418800017408 4607182418800017408 18442240474082181120 4607182418800017408
+//@ expect-output: nan: true true true true
+
+bits32 :: fun(x: f32) -> u32 {
+	b : [4!]byte
+	b[0:4] = x
+	u : u32 = b[0:4]
+	return u
+}
+
+is_nan :: fun(x: f64) -> bool {
+	return x != x
+}
+
+main :: () {
+	print("sin:", f64_bits(sin(f64_from_bits(0x3FE0000000000000))), f64_bits(sin(f64_from_bits(0x4480F0CF064DD592))), f64_bits(sin(f64_from_bits(0xC008000000000000))), f64_bits(sin(f64_from_bits(0x7E37E43C8800759C))), f64_bits(sin(f64_from_bits(0x413921FB54442D18))), f64_bits(sin(f64_from_bits(0x7506AC5B262CA1FF))))
+	print("cos:", f64_bits(cos(f64_from_bits(0x4480F0CF064DD592))), f64_bits(cos(f64_from_bits(0x3FE921FB54442D18))), f64_bits(cos(f64_from_bits(0x3FF921FB54442D18))), f64_bits(cos(f64_from_bits(0xFE37E43C8800759C))))
+	print("acos:", f64_bits(acos(f64_from_bits(0xBFF0000000000000))), f64_bits(acos(f64_from_bits(0x3FE0000000000000))), f64_bits(acos(f64_from_bits(0xBFE01DF695CFF8B4))), f64_bits(acos(f64_from_bits(0x3FEFFFFFFFFFFFFF))), f64_bits(acos(f64_from_bits(0x3BC79CA10C924223))))
+	print("pow:", f64_bits(pow(f64_from_bits(0x4000000000000000), f64_from_bits(0x3FE0000000000000))), f64_bits(pow(f64_from_bits(0x4024000000000000), f64_from_bits(0xC073400000000000))), f64_bits(pow(f64_from_bits(0x4000000000000000), f64_from_bits(0xC090C80000000000))), f64_bits(pow(f64_from_bits(0xC000000000000000), f64_from_bits(0x4008000000000000))), f64_bits(pow(f64_from_bits(0x3FEFFFFFFFFFC575), f64_from_bits(0xC2F2357EA84C0775))), f64_bits(pow(f64_from_bits(0x402010DE3CC31F79), f64_from_bits(0xC075371361B6265D))), f64_bits(pow(f64_from_bits(0x3FE0000000000000), f64_from_bits(0x4091300000000000))), f64_bits(pow(f64_from_bits(0x3FF8000000000000), f64_from_bits(0x409B580000000000))))
+	print("sin f32:", bits32(sin(f32(f64_from_bits(0x3FF0000000000000)))), bits32(sin(f32(f64_from_bits(0x4059000000000000)))), bits32(sin(f32(f64_from_bits(0x41325C3720000000)))))
+	print("cos f32:", bits32(cos(f32(f64_from_bits(0x4059000000000000)))), bits32(cos(f32(f64_from_bits(0xC0842DC3A0000000)))))
+	print("acos f32:", bits32(acos(f32(f64_from_bits(0xBFE8000000000000)))), bits32(acos(f32(f64_from_bits(0x3FED08DC40000000)))))
+	print("pow f32:", bits32(pow(f32(f64_from_bits(0x4000000000000000)), f32(f64_from_bits(0x4024000000000000)))), bits32(pow(f32(f64_from_bits(0x4023D381C0000000)), f32(f64_from_bits(0x403F8275C0000000)))), bits32(pow(f32(f64_from_bits(0x3FE0000000000000)), f32(f64_from_bits(0x4061800000000000)))))
+	print("special:", f64_bits(sin(f64_from_bits(0x8000000000000000))), f64_bits(cos(f64_from_bits(0x8000000000000000))), f64_bits(acos(f64_from_bits(0x3FF0000000000000))), f64_bits(pow(f64_from_bits(0x8000000000000000), f64_from_bits(0xC008000000000000))), f64_bits(pow(f64_from_bits(0x8000000000000000), f64_from_bits(0x4008000000000000))), f64_bits(pow(f64_from_bits(0x0000000000000000), f64_from_bits(0xBFF0000000000000))), f64_bits(pow(f64_from_bits(0xBFF0000000000000), f64_from_bits(0x7FF0000000000000))), f64_bits(pow(f64_from_bits(0x7FF8000000000000), f64_from_bits(0x0000000000000000))), f64_bits(pow(f64_from_bits(0x3FF0000000000000), f64_from_bits(0x7FF8000000000000))), f64_bits(pow(f64_from_bits(0xFFF0000000000000), f64_from_bits(0x4008000000000000))), f64_bits(pow(f64_from_bits(0xBFF0000000000000), f64_from_bits(0x4450000000000000))))
+	print("nan:", is_nan(sin(f64_from_bits(0x7FF0000000000000))), is_nan(acos(f64_from_bits(0x3FF8000000000000))), is_nan(pow(f64_from_bits(0xC020000000000000), f64_from_bits(0x3FE0000000000000))), is_nan(cos(f64_from_bits(0x7FF8000000000000))))
+}

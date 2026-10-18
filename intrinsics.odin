@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:strings"
 import "core:strconv"
 
@@ -24,6 +25,10 @@ LLVM_Type_Rule :: enum {
     Match_Any_Int_Suffix,      // suffix = iN; params/return are any integer (signed or unsigned) of width N.
                                // For sign-agnostic LLVM ops like bswap — LLVM iN carries no signedness,
                                // so accepting either Mara sign matches the actual semantics of the op.
+    Bit_Cast,                  // suffix = the param's type: f32/f64, or iN (any integer that wide); the
+                               // return is the other kind, as wide — a float's bits as an integer, or an
+                               // integer's as a float. LLVM's `bitcast` instruction, not a call: no work
+                               // on the machine.
 }
 
 LLVM_Intrinsic_Spec :: struct {
@@ -32,15 +37,14 @@ LLVM_Intrinsic_Spec :: struct {
     rule:  LLVM_Type_Rule,
 }
 
+// Only those that are the machine's own instructions: LLVM turns `sin`, `pow`
+// and the like into calls to the C library's (and older LLVMs miss some, as
+// 17 does acos) — math.mara computes those itself.
 llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"sqrt",   1, .Match_Float_Suffix},
-    {"sin",    1, .Match_Float_Suffix},
-    {"cos",    1, .Match_Float_Suffix},
-    {"acos",   1, .Match_Float_Suffix},
     {"fabs",   1, .Match_Float_Suffix},
     {"floor",  1, .Match_Float_Suffix},
     {"ceil",   1, .Match_Float_Suffix},
-    {"pow",    2, .Match_Float_Suffix},
     {"minnum", 2, .Match_Float_Suffix},
     {"maxnum", 2, .Match_Float_Suffix},
     {"smin",   2, .Match_Signed_Int_Suffix},
@@ -48,6 +52,7 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"umin",   2, .Match_Unsigned_Int_Suffix},
     {"umax",   2, .Match_Unsigned_Int_Suffix},
     {"bswap",  1, .Match_Any_Int_Suffix},
+    {"bitcast", 1, .Bit_Cast},
 }
 
 find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
@@ -215,6 +220,36 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
         if len(ft.return_types) != 1 || !int_type_matches_width(primary, bits) {
             check_error(c, span, "intrinsic `@%s` expects return type to be a %d-bit integer, got `%s`",
                 name, bits, type_name(primary))
+            return false
+        }
+        return true
+    case .Bit_Cast:
+        // f32/f64: the param that float, the return an integer as wide; iN:
+        // the param any integer that wide, the return the float as wide.
+        float_in := suffix_is_float(suffix)
+        if !float_in && !suffix_is_signed_int(suffix) {
+            check_error(c, span, "intrinsic `@%s` requires a type suffix (f32/f64 or iN), got `%s`", name, suffix)
+            return false
+        }
+        bits := (32 if suffix == "f32" else 64) if float_in else int_width_from_suffix(suffix)
+        float_out: Type
+        switch bits {
+        case 32: float_out = Type_Numeric{kind = .Float, bits = 32}
+        case 64: float_out = Type_F64{}
+        case:
+            check_error(c, span, "intrinsic `@%s`: no float is %d bits wide", name, bits)
+            return false
+        }
+        p := ft.params[0].type_
+        if float_in ? !types_equal(distinct_base(p), expected_type) : !int_type_matches_width(p, bits) {
+            check_error(c, span, "intrinsic `@%s` expects its param to be %s, got `%s`",
+                name, float_in ? type_name(expected_type) : fmt.tprintf("a %d-bit integer", bits), type_name(p))
+            return false
+        }
+        primary := fn_primary_return(ft)
+        if len(ft.return_types) != 1 || (float_in ? !int_type_matches_width(primary, bits) : !types_equal(distinct_base(primary), float_out)) {
+            check_error(c, span, "intrinsic `@%s` expects its return type to be %s, got `%s`",
+                name, float_in ? fmt.tprintf("a %d-bit integer", bits) : type_name(float_out), type_name(primary))
             return false
         }
         return true

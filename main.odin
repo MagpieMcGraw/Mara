@@ -931,14 +931,9 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     for lib in lf.native_libs {
         strings.write_string(&b, " -l"); strings.write_string(&b, lib)
     }
-    when ODIN_OS == .Linux {
-        // libm provides sinf/cosf/floorf etc. — separate from libc on Linux
-        // (Windows tucks math into the universal CRT, which clang already
-        // links by default). Add unconditionally; cost is negligible if
-        // unused, missing it produces "undefined reference to sinf" errors
-        // for any program that touches math.
-        strings.write_string(&b, " -lm")
-    }
+    // (No libm: math.mara computes sin, cos, acos and pow itself, and the
+    // intrinsics left are the machine's instructions — a program that pulls
+    // in libm's anyway fails to link, and says so.)
 
     cmd: string
     when ODIN_OS == .Windows {

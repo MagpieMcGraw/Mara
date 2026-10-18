@@ -2716,6 +2716,15 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.note = "an intrinsic's shape"
         return false
     }
+    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "bitcast" {
+        // (Not a call: LLVM's `bitcast` — the same bits, another type.)
+        p := fn_param(callee, 0)
+        v := llvm_operand(e, ops[0], p.type_) or_return
+        tmp := fresh_tmp(g)
+        ir_cast(g, tmp, .Bitcast, llvm_type_from_checker(p.type_), v, llvm_type_from_checker(fn_result(callee, 0)))
+        e.value[op] = tmp
+        return true
+    }
     args := make([dynamic]Ir_Arg, 0, len(ops), context.temp_allocator)
     for _, i in callee.params {
         p := fn_param(callee, i)

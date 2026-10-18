@@ -19,6 +19,15 @@ QUERIES=$ROOT/test/ask_queries.txt
 EXPECTED=$ROOT/test/ask_expected.txt
 WORK=${TMP:-/tmp}/mara_ask
 rm -rf "$WORK"; mkdir -p "$WORK"
+# A file outside the module asked about (the stdlib's) prints as a whole
+# path: its root made <root>, its separators '/', so the goldens hold on any
+# machine.
+ROOT_NATIVE=$ROOT
+command -v cygpath > /dev/null && ROOT_NATIVE=$(cygpath -w "$ROOT")
+export ROOT ROOT_NATIVE
+norm_paths() {
+  perl -pe 's{(?:\Q$ENV{ROOT_NATIVE}\E|\Q$ENV{ROOT}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>$p"}ge'
+}
 actual=$WORK/actual.txt
 : > "$actual"
 
@@ -35,7 +44,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     dir=$ROOT/$target
   fi
   echo "=== $target | $args" >> "$actual"
-  ( cd "$dir" && "$MARA" ask $args 2>&1 ) | tr -d '\r' >> "$actual"
+  ( cd "$dir" && "$MARA" ask $args 2>&1 ) | tr -d '\r' | norm_paths >> "$actual"
   [ ${PIPESTATUS[0]} -ne 0 ] && echo "[exit 1]" >> "$actual"   # (a failure: recorded, as serve's end line says it)
   targets+=("$target"); argss+=("$args"); dirs+=("$dir")
 done < "$QUERIES"
@@ -59,7 +68,7 @@ while [ $i -lt ${#targets[@]} ]; do
     else
       echo "$l" >> "$served"
     fi
-  done < <(printf '%s\n' "${argss[@]:$i:$((j-i))}" | ( cd "${dirs[$i]}" && "$MARA" serve 2>&1 ) | tr -d '\r')
+  done < <(printf '%s\n' "${argss[@]:$i:$((j-i))}" | ( cd "${dirs[$i]}" && "$MARA" serve 2>&1 ) | tr -d '\r' | norm_paths)
   i=$j
 done
 # The fixtures' queries through a window: the stand-in test/view_hub, started
@@ -99,7 +108,7 @@ while [ $i -lt ${#targets[@]} ]; do
       fi
       echo "=== ${targets[$k]} | ${argss[$k]}" >> "$routed"
       show=""; [ $(( (k - i) % 2 )) -eq 1 ] && show=-show
-      ( cd "$d" && "$MARA" ask $show ${argss[$k]} 2>&1 ) | tr -d '\r' >> "$routed"
+      ( cd "$d" && "$MARA" ask $show ${argss[$k]} 2>&1 ) | tr -d '\r' | norm_paths >> "$routed"
       [ ${PIPESTATUS[0]} -ne 0 ] && echo "[exit 1]" >> "$routed"
     done
     for t in $(seq 1 100); do grep -qs '^ended' "$d/view_hub.log" && break; sleep 0.1; done

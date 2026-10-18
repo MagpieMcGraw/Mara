@@ -15,7 +15,7 @@ use mara.math
 //     RHS (c, f), field-path targets (f), conditions, nested call args.
 //
 //   mara ask k6 in bump6 flow below    k6 -> the return + decl w + lands in
-//     pow_f32 (param exp). pow_f32's body is `@llvm.pow.f32` — an intrinsic
+//     sqrt_f32 (param x). sqrt_f32's body is `@llvm.sqrt.f32` — an intrinsic
 //     body parses as an EMPTY stmts list, so the return-deps walk found no
 //     `return` and concluded "the return depends on no argument", severing the
 //     def->def edge k6 -> w in every caller. An intrinsic's result is computed
@@ -44,7 +44,7 @@ bump :: fun(hp: ^Holder, k: f32) {
 }
 
 bump6 :: fun(k6: f32) -> f32 {
-	w := math.pow_f32(2.0, k6)   // intrinsic-bodied callee in a := decl
+	w := math.sqrt_f32(k6)   // intrinsic-bodied callee in a := decl
 	return w
 }
 
