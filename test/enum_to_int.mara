@@ -1,0 +1,27 @@
+module enum_to_int
+
+use mara.core
+
+//@ expect-output: Token { kind: Kind.Br_Right, at: 4 } 2 1
+//@ expect-output: not eof
+
+// A variant's number, asked for: `i64(EOF)`. A field of the union's type
+// prints the variant's name (enum_to_int_neg: no number without asking).
+
+Kind :: union {
+	Br_Left
+	Br_Right
+	EOF
+}
+
+Token :: struct {
+	kind: Kind
+	at:   i64
+}
+
+main :: () {
+	t := Token{Br_Right, 4}
+	n := i64(EOF)
+	print(t, n, i64(t.kind))
+	if t.kind != EOF do print("not eof")
+}

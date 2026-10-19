@@ -1,0 +1,19 @@
+module enum_to_int_neg
+
+use mara.core
+
+//@ expect-fail: cannot assign Kind to variable 'n' of type i64
+
+// A variant is no integer: put into an i64 it's a type error, not its
+// number. `i64(EOF)` converts (enum_to_int).
+
+Kind :: union {
+	Br_Left
+	Br_Right
+	EOF
+}
+
+main :: () {
+	n : i64 = EOF
+	print(n)
+}

@@ -874,10 +874,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Utf8); ok {
             return (va.kind == .Unsigned || va.kind == .Signed) && va.bits == 8
         }
-        // Symmetric with the Type_Enum case below: enums coerce to integer types.
-        if _, ok := b.(^Type_Enum); ok {
-            return va.kind == .Signed || va.kind == .Unsigned
-        }
+        // (An enum's value is no integer's: `i64(e)` converts, said so.)
         return false
     case Type_F64:
         if _, ok := b.(Type_Infer_Int); ok { return true }
@@ -1013,11 +1010,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         return false
     case ^Type_Enum:
-        // Enums are compatible with infer_int, numeric integer types, and the same enum
+        // Enums are compatible with infer_int and the same enum — not with an
+        // integer type: `i64(e)`, `Kind(n)` convert, said so.
         if _, ok := b.(Type_Infer_Int); ok { return true }
-        if nb, ok := b.(Type_Numeric); ok {
-            return nb.kind == .Signed || nb.kind == .Unsigned
-        }
         if vb, ok := b.(^Type_Enum); ok { return va.name == vb.name }
         return false
     case ^Type_Union:

@@ -97,7 +97,7 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	init_err := sdl.Init(Video)
 
-	_ = sdl.GL_SetAttribute(ContextProfileMask, .Core)
+	_ = sdl.GL_SetAttribute(ContextProfileMask, i32(GLprofile.Core))
 	_ = sdl.GL_SetAttribute(ContextMajorVersion, 4)
 	_ = sdl.GL_SetAttribute(ContextMinorVersion, 5)
 

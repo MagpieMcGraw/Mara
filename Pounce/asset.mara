@@ -110,13 +110,13 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
     gl.GenTextures(1, &a.texture_id)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.texture_id)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, i32(gl.NEAREST))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.NEAREST))
 
     // Allocate texture array on GPU
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
         a.texture_size, a.texture_size, ATLAS_LAYERS,
         0, gl.RGBA, gl.UNSIGNED_BYTE, void)
 
@@ -134,12 +134,12 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
     gl.GenTextures(1, &a.font_texture_id)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, i32(gl.LINEAR_MIPMAP_LINEAR))
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.LINEAR))
 
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
         a.font_texture_size, a.font_texture_size, MAX_FONTS,
         0, gl.RGBA, gl.UNSIGNED_BYTE, void)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)

@@ -29,7 +29,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
 
-	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32, err {
+	compile :: fun(text: ^[]utf8, shader_type: gl.GL_Shader_Type) -> u32, err {
 		shader := gl.CreateShader(shader_type)
 		slen := i32(text.len)
 		gl.ShaderSource(shader, 1, &text.ptr, &slen)
