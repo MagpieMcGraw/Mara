@@ -80,7 +80,7 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
 }
 
 // A literal's fields left unset, said together — "Token has 4 fields but
-// only 3 were set. len was unset." (the user's words). (A generic's
+// only 3 were set. len was not set." (the user's words). (A generic's
 // instances note the same literal again: each field said once.)
 flow_report_gaps :: proc(c: ^Checker, gaps: []Literal_Gap) {
     names := make([dynamic]string, context.temp_allocator)

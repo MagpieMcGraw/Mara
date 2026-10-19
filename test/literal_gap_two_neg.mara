@@ -2,7 +2,7 @@ module literal_gap_two_neg
 
 use mara.core
 
-//@ expect-fail: Token has 4 fields but only 2 were set. offset and len were unset.
+//@ expect-fail: Token has 4 fields but only 2 were set. offset and len were not set.
 
 // A literal that leaves several fields unset: one error for it, naming them
 // all.
