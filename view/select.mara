@@ -229,11 +229,16 @@ select_press :: fun(ui: ^Ui, pn: Panel, x: f32, y: f32, clicks: i64) {
 	at := lines_spot_at(ui, l, r, x, y)
 	l.anchor = at
 	l.caret = at
-	if clicks == 2 do lines_select_word(l, at)
-	if clicks >= 3 do lines_select_line(l, at.line)
+	// (On a fun's signature (a fold's), quick presses are clicks each, no
+	// word or line selected: each opens or shuts its code.)
+	n := clicks
+	k := lines_line_at(ui, l, r, x, y)
+	if k >= 0 and l.lines[k].fold_len > 0 do n = 1
+	if n == 2 do lines_select_word(l, at)
+	if n >= 3 do lines_select_line(l, at.line)
 	ui.sel_from, ui.sel_to = lines_selection(l)
 	ui.sel = l
-	ui.sel_clicks = clicks
+	ui.sel_clicks = n
 	ui.drag = DRAG_SELECT
 	ui.dirty = true
 }
