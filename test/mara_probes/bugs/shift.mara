@@ -1,0 +1,9 @@
+module shift
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	one := pick(1)
+	print("1 << 64 =", one << pick(64))
+	print("1 << 70 =", one << pick(70))
+	print("1 << -1 =", one << pick(-1))
+}

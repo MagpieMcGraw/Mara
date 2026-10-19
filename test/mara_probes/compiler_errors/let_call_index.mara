@@ -1,0 +1,9 @@
+module let_call_index
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	storage : [16]byte
+	storage.len = 16
+	n := let(i64, &storage[pick(12)])
+	print(n)
+}

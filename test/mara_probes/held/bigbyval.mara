@@ -1,0 +1,16 @@
+module bigbyval
+use mara.core
+use mara.memory
+#allocator Arena_Basic(4 * MB)
+view_of :: (a: [2000!]i64) -> []i64 { return a[:] }
+smash :: () {
+	junk : [2000!]i64
+	for i in 0 .. 2000 do junk[i] = 9
+}
+main :: () {
+	src : [2000!]i64
+	for i in 0 .. 2000 do src[i] = 7
+	v := view_of(src)
+	smash()
+	print("v[0] =", v[0], "src[0] =", src[0])
+}

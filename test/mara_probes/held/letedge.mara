@@ -1,0 +1,11 @@
+module letedge
+use mara.core
+main :: () {
+	storage : [16]byte
+	storage.len = 16
+	n := let(i64, &storage[12])
+	print("let i64 at byte 12 of 16:", n)
+	m := let(i64, &storage[15])
+	m = 0x4141414141414141
+	print("wrote an i64 at byte 15 of 16")
+}

@@ -1,0 +1,13 @@
+module negappend
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	word := "hello"
+	bad := word[pick(4):pick(1)]
+	print("bad.len", bad.len)
+	buf : str64
+	&buf + "x"
+	&buf + bad
+	print("buf.len after append", buf.len)
+	print(buf)
+}

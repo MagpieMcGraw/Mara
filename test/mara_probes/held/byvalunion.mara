@@ -1,0 +1,18 @@
+module byvalunion
+use mara.core
+Shape :: union {
+	Box { w: i64 }
+	Dot
+}
+width_of :: (s: Shape) -> ^i64 {
+	match s {
+	Box b
+		return &b.w
+	else
+		return void
+	}
+}
+main :: () {
+	q := width_of(Box{w = 5})
+	print("q^ =", q^)
+}

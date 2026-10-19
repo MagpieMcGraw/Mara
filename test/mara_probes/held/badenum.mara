@@ -1,0 +1,22 @@
+module badenum
+use mara.core
+Light :: union { Red  Yellow  Green }
+main :: () {
+	storage : [16]byte
+	storage.len = 16
+	storage[0] = u8(200)
+	l := let(Light, &storage[0])
+	print("light", l)
+	seen : [Light]i64
+	seen[l] = 5
+	print("wrote seen[l]")
+	match l {
+	Red
+		print("red")
+	Yellow
+		print("yellow")
+	Green
+		print("green")
+	}
+	print("after match")
+}

@@ -1,0 +1,14 @@
+module withescape
+use mara.core
+use mara.memory
+#allocator Arena_Basic(4 * MB)
+main :: () {
+	level := Arena_Basic(1 * MB)
+	keep : []i64
+	with &level {
+		big : [2000!]i64
+		for i in 0 .. 2000 do big[i] = 7
+		keep = big[:]
+	}
+	print("keep[0]", keep[0])
+}

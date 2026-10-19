@@ -1,0 +1,8 @@
+module ftoi
+use mara.core
+pickf :: (x: f64) -> f64 { return x }
+main :: () {
+	print("i64(1e300-ish) =", i64(pickf(10000000000000000000000000000000.0)))
+	print("u8(300.5) =", u8(pickf(300.5)))
+	print("i64(nan) =", i64(pickf(0.0) / pickf(0.0)))
+}

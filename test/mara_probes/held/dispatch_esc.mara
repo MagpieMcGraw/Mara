@@ -1,0 +1,15 @@
+module dispatch_esc
+use mara.core
+Box :: struct { p: ^i64 }
+put_i :: (b: ^Box, p: ^i64) { b.p = p }
+put_f :: (b: ^Box, p: ^f64) { }
+put :: dispatch { put_i, put_f }
+fill :: (b: ^Box) {
+	local : i64 = 1234
+	put(b, &local)
+}
+main :: () {
+	box : Box
+	fill(&box)
+	print(box.p^)
+}

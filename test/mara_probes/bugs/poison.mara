@@ -1,0 +1,21 @@
+module poison
+use mara.core
+use mara.string
+main :: (args: [][]utf8) {
+	nf, _ := parse_number(args[1])
+	n := i64(nf)
+	one : i64 = 1
+	if n >= 64 {
+		x := one << n
+		print("n =", n, "so 1 << n =", x)
+		if x == 0 do print("  x == 0")
+		if x != 0 do print("  x != 0")
+	}
+	f := nf * 1000000000000000000000.0
+	if f > 10000000000000000000000.0 {
+		k := i64(f)
+		print("f =", f, "so i64(f) =", k)
+		if k > 0 do print("  k > 0")
+		if k <= 0 do print("  k <= 0")
+	}
+}

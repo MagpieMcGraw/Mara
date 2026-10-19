@@ -1,0 +1,13 @@
+module negslice
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	secret : [4!]i64 = [111, 222, 333, 444]
+	xs : [4!]i64 = [1, 2, 3, 4]
+	s := xs[pick(3):pick(1)]
+	print("len", s.len)
+	print("s[5] =", s[pick(5)])
+	s[pick(6)] = 999
+	print("wrote s[6]")
+	print("secret", secret[0], secret[1], secret[2], secret[3])
+}

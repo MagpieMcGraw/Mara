@@ -1,0 +1,7 @@
+module minover
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	m := pick(-9223372036854775807) - 1
+	print("min / -1 =", m / pick(-1))
+}

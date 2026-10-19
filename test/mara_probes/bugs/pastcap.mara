@@ -1,0 +1,9 @@
+module pastcap
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	xs : [4!]i64 = [1, 2, 3, 4]
+	s := xs[pick(1):pick(9)]
+	print("len", s.len)
+	print("s[7] =", s[pick(7)])
+}

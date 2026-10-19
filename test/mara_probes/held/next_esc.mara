@@ -1,0 +1,11 @@
+module next_esc
+use mara.core
+fill :: (list: ^[]^i64) {
+	local : i64 = 1234
+	next(list)^ = &local
+}
+main :: () {
+	list : [4]^i64
+	fill(&list)
+	print(list[0]^)
+}

@@ -1,0 +1,11 @@
+module bytewrite_edge
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	a : [4!]i64 = [1, 2, 3, 4]
+	storage : [16]byte
+	storage.len = 16
+	k := pick(12)
+	storage[k:k+8] = 0x4141414141414141
+	print("a:", a[0], a[1], a[2], a[3])
+}

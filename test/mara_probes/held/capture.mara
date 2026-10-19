@@ -1,0 +1,7 @@
+module capture
+use mara.core
+main :: () {
+	n := 5
+	inner :: () -> i64 { return n }
+	print(inner())
+}

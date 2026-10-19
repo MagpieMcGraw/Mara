@@ -1,0 +1,19 @@
+module bigreturn
+use mara.core
+use mara.memory
+#allocator Arena_Basic(4 * MB)
+make :: () -> [2000!]i64 {
+	t : [2000!]i64
+	for i in 0 .. 2000 do t[i] = 7
+	return t
+}
+scribble :: () {
+	junk : [2000!]i64
+	for i in 0 .. 2000 do junk[i] = 9
+	print("scribbled", junk[0])
+}
+main :: () {
+	got := make()
+	scribble()
+	print("got[0] =", got[0], "got[1999] =", got[1999])
+}

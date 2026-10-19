@@ -1,0 +1,13 @@
+module keeper_direct
+use mara.core
+Box :: struct { p: ^i64 }
+keep :: (b: ^Box, p: ^i64) { b.p = p }
+fill :: (b: ^Box) {
+	local := 1234
+	keep(b, &local)
+}
+main :: () {
+	box : Box
+	fill(&box)
+	print("box.p^ =", box.p^)
+}

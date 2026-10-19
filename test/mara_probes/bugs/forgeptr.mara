@@ -1,0 +1,10 @@
+module forgeptr
+use mara.core
+main :: () {
+	storage : [64]byte
+	storage.len = 64
+	storage[0:8] = 0x4141414141
+	p := let(^i64, &storage[0])
+	print("forged pointer", p)
+	print("deref", p^)
+}

@@ -1,0 +1,12 @@
+module listret_esc
+use mara.core
+get :: () -> [4][]i64 {
+	local : [3!]i64 = [1, 2, 3]
+	out : [4][]i64
+	&out + local[:]
+	return out
+}
+main :: () {
+	l := get()
+	print(l[0][0])
+}

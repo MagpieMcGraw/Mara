@@ -1,0 +1,13 @@
+module byvalarr
+use mara.core
+view_of :: (a: [4!]i64) -> []i64 { return a[:] }
+smash :: () {
+	x : [8!]i64 = [9, 9, 9, 9, 9, 9, 9, 9]
+	print("smash", x[0])
+}
+main :: () {
+	src : [4!]i64 = [1, 2, 3, 4]
+	v := view_of(src)
+	smash()
+	print("v:", v[0], v[1], v[2], v[3])
+}

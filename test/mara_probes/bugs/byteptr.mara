@@ -1,0 +1,10 @@
+module byteptr
+use mara.core
+main :: () {
+	storage : [64]byte
+	storage.len = 64
+	storage[0:8] = 0x4141414141
+	p : ^i64 = storage[0:8]
+	print("pointer from bytes", p)
+	print("deref", p^)
+}

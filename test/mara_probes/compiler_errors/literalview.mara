@@ -1,0 +1,8 @@
+module literalview
+use mara.core
+main :: () {
+	storage : [64]byte
+	views := slice([:1][]i64, &storage)
+	&views + [1, 2, 3][:]
+	print(views.len)
+}

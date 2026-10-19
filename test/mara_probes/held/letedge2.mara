@@ -1,0 +1,10 @@
+module letedge2
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	storage : [16]byte
+	storage.len = 16
+	k := pick(12)
+	n := let(i64, &storage[k])
+	print("let i64 at byte 12 of 16:", n)
+}

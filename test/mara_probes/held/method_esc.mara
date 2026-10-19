@@ -1,0 +1,15 @@
+module method_esc
+use mara.core
+Box :: struct {
+	p: ^i64
+	set :: (b: ^Self, p: ^i64) { b.p = p }
+}
+fill :: (b: ^Box) {
+	local := 1234
+	b.set(&local)
+}
+main :: () {
+	box : Box
+	fill(&box)
+	print(box.p^)
+}

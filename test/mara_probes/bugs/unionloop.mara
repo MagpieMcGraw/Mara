@@ -1,0 +1,19 @@
+module unionloop
+use mara.core
+Thing :: union {
+	Ref { p: ^i64 }
+	Num { n: i64 }
+}
+main :: () {
+	x : i64 = 42
+	things : [2]Thing
+	&things + Ref{p = &x}
+	&things + Ref{p = &x}
+	match things[0] {
+	Ref r
+		things[0] = Num{n = 0x4242424242}
+		print("through r.p:", r.p^)
+	Num n
+		print(n.n)
+	}
+}

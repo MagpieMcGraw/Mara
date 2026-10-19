@@ -1,0 +1,9 @@
+module divzero
+use mara.core
+pick :: (n: i64) -> i64 { return n }
+main :: () {
+	a := pick(7)
+	b := pick(0)
+	print("div", a / b)
+	print("rem", a % b)
+}

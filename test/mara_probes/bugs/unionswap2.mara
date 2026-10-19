@@ -1,0 +1,18 @@
+module unionswap2
+use mara.core
+Thing :: union {
+	Ref { p: ^i64 }
+	Num { n: i64 }
+}
+clobber :: (t: ^Thing) { t^ = Num{n = 0x4141414141} }
+main :: () {
+	x := 42
+	t : Thing = Ref{p = &x}
+	match t {
+	Ref r
+		clobber(&t)
+		print("reading through r.p:", r.p^)
+	Num n
+		print("num", n.n)
+	}
+}

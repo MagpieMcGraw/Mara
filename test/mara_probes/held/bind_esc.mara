@@ -1,0 +1,26 @@
+module bind_esc
+use mara.core
+Thing :: union {
+	Ref { p: ^i64 }
+	Num { n: i64 }
+}
+fill :: (t: ^Thing) {
+	local : i64 = 1234
+	match t^ {
+	Ref r
+		r.p = &local
+	Num n
+		print(n.n)
+	}
+}
+main :: () {
+	x : i64 = 1
+	t : Thing = Ref{p = &x}
+	fill(&t)
+	match t {
+	Ref r
+		print(r.p^)
+	Num n
+		print(n.n)
+	}
+}

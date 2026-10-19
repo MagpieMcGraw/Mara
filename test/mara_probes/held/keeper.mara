@@ -1,0 +1,21 @@
+module keeper
+use mara.core
+Box :: struct { p: ^i64 }
+keep :: (b: ^Box, p: ^i64) { b.p = p }
+call_it :: (f: fn keep, b: ^Box, p: ^i64) { f(b, p) }
+fill :: (b: ^Box) {
+	local := 1234
+	call_it(keep, b, &local)
+}
+smash :: () {
+	a := 1
+	b := 2
+	c := 3
+	print("smash", a + b + c)
+}
+main :: () {
+	box : Box
+	fill(&box)
+	smash()
+	print("box.p^ =", box.p^)
+}
