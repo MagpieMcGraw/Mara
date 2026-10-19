@@ -3566,7 +3566,6 @@ graph_results :: proc(b: ^Graph_Builder, ts: ^Type_Scope, parent: Node_Id, span:
 }
 
 // A union's tag type: the one it declares (`union(tag u32)`), else i64.
-@(private="file")
 graph_tag_type :: proc(t: Type) -> Type {
     ut, _ := distinct_base(t).(^Type_Union)
     switch ut.tag_type if ut != nil else "" {

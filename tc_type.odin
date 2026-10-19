@@ -313,6 +313,51 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
     return i64(v), true
 }
 
+// A float known as the program is checked — a literal with a point, a
+// constant's, negated or in arithmetic of such — and its value.
+tc_comptime_float :: proc(k: ^TC, n: Tree_Id) -> (f64, bool) {
+    t := k.t
+    if n == 0 { return 0, false }
+    #partial switch t.tag[n] {
+    case .Number:
+        text := tc_text(t.main[n])
+        f, _, err := parse_number_text(text)
+        return f, err == .None
+    case .Paren:
+        return tc_comptime_float(k, Tree_Id(t.a[n]))
+    case .Unary:
+        x, ok := tc_comptime_float(k, Tree_Id(t.a[n]))
+        if !ok || build_tokens[t.main[n]].kind != .Minus { return 0, false }
+        return -x, true
+    case .Binary:
+        l, l_ok := tc_comptime_float(k, Tree_Id(t.a[n]))
+        r, r_ok := tc_comptime_float(k, Tree_Id(t.b[n]))
+        if !l_ok || !r_ok { return 0, false }
+        #partial switch build_tokens[t.main[n]].kind {
+        case .Plus:  return l + r, true
+        case .Minus: return l - r, true
+        case .Star:  return l * r, true
+        case .Slash: return l / r, true
+        }
+    case .Ident:
+        kc := k.const_at[k.rs.refs[n].decl] if k.rs.refs[n].kind == .Const else nil
+        if kc == nil || kc.visiting { return 0, false }
+        kc.visiting = true
+        defer kc.visiting = false
+        return tc_comptime_float(k, kc.value)
+    }
+    return 0, false
+}
+
+// Whether a float's whole part is an int of these bits (NaN: no).
+float_fits_int :: proc(x: f64, bits: int, unsigned: bool) -> bool {
+    high := 1.0
+    for _ in 0 ..< (bits if unsigned else bits - 1) { high *= 2 }
+    if unsigned { return x > -1 && x < high }
+    if bits <= 53 { return x > -high - 1 && x < high }
+    return x >= -high && x < high
+}
+
 // `q.T`: a module's type (q its alias), a union's variant's struct, a type a
 // struct holds (`Outer.Inner.Innermost`) or a method of it (as a fun's
 // type) — what its ref says — else a variable's struct's method (by the

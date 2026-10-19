@@ -931,7 +931,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
         if !llvm_scalar(from) || !llvm_scalar(to) { return false }
         v := llvm_operand(e, ops[0], from) or_return
-        e.value[op] = llvm_convert(e, v, from, to)
+        e.value[op] = llvm_convert(e, v, from, to, span)
     case .Call:
         return llvm_call(e, op, ops)
     case .Jump:
@@ -1044,6 +1044,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
         emit_crash(g, span, msg)
     case .Variant:
+        if len(ops) == 2 { return llvm_variant_check(e, op, ops, span) }
         // A union seen as one of its variants: each variant's struct overlays
         // the union from its start, so it is the union's own address.
         u := ops[0].op
@@ -1064,6 +1065,32 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if d <= 0 || d > pg.end || graph_kind_of(pg, d) != .Local { return false }
         e.value[d] = emit_arena_bump(g, type_size(graph_type(pg, op)), graph_name(pg, d), span_location(span))
     }
+    return true
+}
+
+// A match arm's binding seen as its union again, its tag checked first
+// (lw_bind_check): the binding is the payload in place — the union's own
+// address — and the union must still hold the arm's variant, else the
+// binding would read another's bytes as its fields.
+@(private="file")
+llvm_variant_check :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    ut := llvm_union(graph_type(pg, op))
+    bound := ops[0].op
+    want, known := graph_value(pg, ops[1].op)
+    if ut == nil || !known || llvm_direct(e, bound) { return false }
+    at := llvm_val(e, bound)
+    ir := union_tag_ir_type(ut)
+    tag := load_union_tag(g, ut, at)
+    same := fresh_tmp(g)
+    ir_icmp(g, same, .Eq, ir, tag, ir_int128(want.int))
+    ok_label, fail_label := fresh_label(g, "bound.ok"), fresh_label(g, "bound.fail")
+    emit_cond_br(g, same, ok_label, fail_label)
+    emit_label(g, fail_label)
+    name := graph_place_name(pg, ops[0])
+    emit_fail(g, fmt.tprintf("%s runtime error: '%s' is the %s its match found, but the union holds another variant now\n", span_location(span), name, graph_name(pg, op)))
+    emit_label(g, ok_label)
+    e.value[op] = at
     return true
 }
 
@@ -1333,6 +1360,7 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
             case ">>": inst = .Lshr if unsigned else .Ashr
             case:      return false
             }
+            if inst == .Shl || inst == .Lshr || inst == .Ashr { emit_shift_check(g, r, ir, unsigned, type_name(t), span) }
             tmp = fresh_tmp(g)
             ir_bin(g, tmp, inst, ir, l, r)
         }
@@ -1417,10 +1445,11 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 }
 
 // A number's conversion: widening by the source's signedness, narrowing by
-// truncation, between ints and floats by the target's (to an int) or the
-// source's (from one) signedness; to a bool, whether it's nonzero.
+// truncation, between ints and floats by the target's (to an int: the float
+// checked within its range) or the source's (from one) signedness; to a
+// bool, whether it's nonzero.
 @(private="file")
-llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type) -> Val {
+llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type, span: Span) -> Val {
     g := e.g
     fi, ti := llvm_type_from_checker(from), llvm_type_from_checker(to)
     if fi == ti { return v }
@@ -1443,7 +1472,9 @@ llvm_convert :: proc(e: ^Llvm, v: Val, from, to: Type) -> Val {
     inst: Ir_Inst
     switch {
     case ff && tf:  inst = .Fpext if fb < tb else .Fptrunc
-    case ff:        inst = .Fptoui if llvm_unsigned(to) else .Fptosi
+    case ff:
+        inst = .Fptoui if llvm_unsigned(to) else .Fptosi
+        emit_float_to_int_check(g, v, fi, tb, llvm_unsigned(to), type_name(to), span)
     case tf:        inst = .Uitofp if llvm_unsigned(from) else .Sitofp
     case fb == tb:  return v
     case fb < tb:   inst = .Zext if llvm_unsigned(from) else .Sext

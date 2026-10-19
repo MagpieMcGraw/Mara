@@ -62,9 +62,184 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
         }
         ra.arena = lw_scope_arena(k, a.body, b.body.returned)
         blk := graph_build_arm(b, gm, ra, i)
+        // (A binding of a subject in place: its uses that need it, checked.)
+        checked: []Tree_Id
+        if ra.is_union && a.bound != "" && slot == NO_NODE {
+            checked = lw_bind_checks(k, subj, a.body, a.bound_tok, {union_t = st, variant = a.variant, tag = ra.tag})
+        }
         lw_scope(k, a.body)
+        for u in checked { delete_key(&k.lower.bind_checks, u) }
         graph_build_arm_end(b, gm, blk)
     }
+}
+
+// A match arm's binding is its subject's payload, in place (graph_build_arm),
+// so an arm that may give the subject another variant has each use of the
+// binding after such a change — or in a loop of the arm's with one — check
+// the subject's tag first (lw_bind_check), stopping when it's another's.
+// What may change it: a write into it, its address taken, a method called
+// on it; and where code elsewhere can reach it — through a pointer or a
+// slice, a param's (passed by its address), the receiver's field, a local
+// whose address is taken in the fun or that is itself a view (a `let`'s, a
+// binding) — any call, any write but to a local's own variable. Arms that
+// change nothing check nothing. (A subject held in a slot of its own is a
+// copy no one else sees: lw_match asks for none.)
+LW_Bind_Check :: struct {
+    union_t: Type,
+    variant: string,
+    tag:     int,
+}
+
+lw_bind_checks :: proc(k: ^TC, subj: Tree_Id, body: []Tree_Id, bound: Token_Id, check: LW_Bind_Check) -> []Tree_Id {
+    Walk :: struct {
+        k:               ^TC,
+        root, bound:     Token_Id,
+        shared:          bool,
+        changes, loops:  [dynamic]Span,
+        uses:            [dynamic]Tree_Id,
+    }
+    change :: proc(w: ^Walk, n: Tree_Id) { append(&w.changes, tree_span(w.k.t, n)) }
+    write :: proc(w: ^Walk, target, at: Tree_Id) {
+        r, through := lw_place_root(w.k, target)
+        switch {
+        case r == w.bound && !through:                  // (the payload's own fields: not its tag)
+        case r != 0 && r == w.root:                     change(w, at)
+        case w.shared && (through || r == 0):           change(w, at)
+        }
+    }
+    walk :: proc(w: ^Walk, n: Tree_Id) {
+        t := w.k.t
+        #partial switch t.tag[n] {
+        case .Fun_Def, .Struct_Def:
+            return   // (a nested definition's body runs when it's called)
+        case .Ident:
+            if r := tc_ref(w.k, n); r.kind == .Local && r.decl == w.bound { append(&w.uses, n) }
+        case .For_Range, .For_Each, .For_C, .For_Cond:
+            append(&w.loops, tree_span(t, n))
+        case .Assign:
+            for tg in tree_list(t, t.a[n]) { write(w, tg, n) }
+        case .Compound:
+            write(w, Tree_Id(t.a[n]), n)
+        case .Unary:
+            if build_tokens[t.main[n]].kind == .Ampersand {
+                if r, _ := lw_place_root(w.k, Tree_Id(t.a[n])); r != 0 && r == w.root { change(w, n) }
+            }
+        case .Call, .Method_Call:
+            form := w.k.annot.forms[tc_sid(w.k, n)] or_else .Fun
+            if form == .Builtin || form == .Conversion { break }
+            if w.shared { change(w, n); break }
+            if t.tag[n] == .Method_Call {
+                if r, _ := lw_place_root(w.k, method_view(t, n).receiver); r != 0 && r == w.root { change(w, n) }
+            }
+        }
+        kids := make([dynamic]Tree_Id, context.temp_allocator)
+        tree_children(t, n, &kids)
+        for c in kids { walk(w, c) }
+    }
+    root, shared := lw_place_root(k, subj)
+    if root != 0 && !shared {
+        facts := lw_fun_facts(k)
+        shared = root in facts.addressed || root in facts.views
+    }
+    w := Walk{k = k, root = root, bound = bound, shared = shared}
+    w.changes = make([dynamic]Span, context.temp_allocator)
+    w.loops = make([dynamic]Span, context.temp_allocator)
+    w.uses = make([dynamic]Tree_Id, context.temp_allocator)
+    for s in body { walk(&w, s) }
+    if len(w.changes) == 0 { return nil }
+    checked := make([dynamic]Tree_Id, context.temp_allocator)
+    for u in w.uses {
+        at := tree_span(k.t, u).at
+        needs := false
+        for c in w.changes {
+            if c.at < at { needs = true; break }
+            for l in w.loops {
+                if l.at <= c.at && c.at <= l.end && l.at <= at && at <= l.end { needs = true; break }
+            }
+            if needs { break }
+        }
+        if needs {
+            k.lower.bind_checks[u] = check
+            append(&checked, u)
+        }
+    }
+    return checked[:]
+}
+
+// A place's root variable — the token that declares it (0: none, a call's
+// result, the receiver) — and whether it is reached through memory others
+// can reach too: a pointer, a slice, a param's (passed by its address), a
+// field's of the receiver.
+lw_place_root :: proc(k: ^TC, n: Tree_Id) -> (root: Token_Id, through: bool) {
+    t := k.t
+    n := tc_unparen(k, n)
+    #partial switch t.tag[n] {
+    case .Ident:
+        r := tc_ref(k, n)
+        return r.decl, r.kind != .Local
+    case .Deref:
+        r, _ := lw_place_root(k, Tree_Id(t.a[n]))
+        return r, true
+    case .Field, .Index, .Slice:
+        base := Tree_Id(t.a[n])
+        r, through := lw_place_root(k, base)
+        #partial switch _ in distinct_base(tc_node_type(k, base)) {
+        case ^Type_Ptr, ^Type_Slice: through = true
+        }
+        return r, through
+    }
+    return 0, true
+}
+
+// What a fun's body does to its locals, for lw_bind_checks: each whose
+// address it takes (`&x`, `&x.f`, `&x[i]` — an append's too), each that is
+// itself a view of other memory (a `let`'s, a match arm's binding).
+LW_Fun_Facts :: struct {
+    addressed: map[Token_Id]bool,
+    views:     map[Token_Id]bool,
+}
+
+lw_fun_facts :: proc(k: ^TC) -> ^LW_Fun_Facts {
+    if k.lower.facts != nil { return k.lower.facts }
+    f := new(LW_Fun_Facts, context.temp_allocator)
+    f.addressed = make(map[Token_Id]bool, context.temp_allocator)
+    f.views = make(map[Token_Id]bool, context.temp_allocator)
+    walk :: proc(k: ^TC, f: ^LW_Fun_Facts, n: Tree_Id) {
+        t := k.t
+        #partial switch t.tag[n] {
+        case .Unary:
+            if build_tokens[t.main[n]].kind == .Ampersand {
+                if r, _ := lw_place_root(k, Tree_Id(t.a[n])); r != 0 { f.addressed[r] = true }
+            }
+        case .Method_Call:   // (a method taking ^Self: the receiver's address)
+            if r, _ := lw_place_root(k, method_view(t, n).receiver); r != 0 { f.addressed[r] = true }
+        case .Arm_Variant:
+            if tok := Token_Id(t.b[n]); tok != 0 { f.views[tok] = true }
+        case .Decl:
+            v := decl_view(t, n)
+            if len(v.values) == 1 && t.tag[tc_unparen(k, v.values[0])] == .Take {
+                for tg in v.targets { if t.tag[tg] == .Ident { f.views[t.main[tg]] = true } }
+            }
+        }
+        kids := make([dynamic]Tree_Id, context.temp_allocator)
+        tree_children(t, n, &kids)
+        for c in kids { walk(k, f, c) }
+    }
+    if k.lower.node != 0 {
+        for s in scope_view(k.t, k.lower.node).body { walk(k, f, s) }
+    }
+    k.lower.facts = f
+    return f
+}
+
+// A binding's use that checks its subject's tag first: the union it views
+// — a check of its tag against the arm's (graph: a Variant of the binding,
+// with the tag) — then the payload again.
+lw_bind_check :: proc(k: ^TC, place: Operand, t: Type, name: string, bc: LW_Bind_Check, span: Span) -> Operand {
+    b := k.gb
+    tag := graph_const(b, .Implied, span, graph_tag_type(bc.union_t), bc.variant, Const_Value{int = i128(bc.tag)})
+    whole := graph_op_value(b, .Variant, .Implied, span, bc.union_t, bc.variant, place, tag)
+    return graph_op_value(b, .Variant, .Implied, span, t, name, whole)
 }
 
 lw_variant_struct :: proc(ut: ^Type_Union, name: string) -> Type {

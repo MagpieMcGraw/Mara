@@ -1,0 +1,12 @@
+module shift_count_neg
+//@ expect-fail: shift by 32, outside 0..31 for i32
+
+// A known shift count past the value's bits is said so when it's built (one
+// known only as the program runs stops it there).
+
+use mara.core
+
+main :: () {
+	x : i32 = 1
+	print(x << 32)
+}

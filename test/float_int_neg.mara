@@ -1,0 +1,12 @@
+module float_int_neg
+//@ expect-fail: 300.5 doesn't fit in u8
+
+// A known float made an int it doesn't fit is said so when it's built (one
+// known only as the program runs stops it there; an int made a narrower int
+// keeps its low bits).
+
+use mara.core
+
+main :: () {
+	print(u8(300.5))
+}

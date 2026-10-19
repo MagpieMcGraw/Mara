@@ -584,6 +584,8 @@ __MARA_OVERFLOW_FAIL  :: "__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "__mara_match_fail"
+__MARA_FTOI_FAIL      :: "__mara_ftoi_fail"
+__MARA_SHIFT_FAIL     :: "__mara_shift_fail"
 
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
 Runtime_Param :: struct { ty: Ir_Type, name: string }
@@ -594,6 +596,8 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_DIVZ_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: division by zero\n"},
     {__MARA_SLICE_LEN_FAIL, {{IR_PTR, "loc"}, {IR_I64, "new_len"}, {IR_I64, "cap"}, {IR_PTR, "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
     {__MARA_MATCH_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
+    {__MARA_FTOI_FAIL,      {{IR_PTR, "loc"}, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              "%s runtime error: %.15g doesn't fit in %s\n"},
+    {__MARA_SHIFT_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, "%s runtime error: shift by %lld, outside 0..%lld for %s\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -767,6 +771,66 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     ir_call(g, {}, IR_VOID, ir_global(__MARA_DIVZ_FAIL), {IR_PTR, loc_global, {}})
     ir_unreachable(g)
 
+    emit_label(g, ok_label)
+}
+
+// A shift's count within the value's bits, 0 ..< bits: past them — or
+// negative — the hardware takes the count modulo the width, LLVM gives no
+// defined value; Mara stops, as it does at an overflow. Nothing for a
+// constant count in range (the checker has said so of one out of it).
+emit_shift_check :: proc(g: ^Codegen, count: Val, ir_type: Ir_Type, unsigned: bool, type_text: string, span: Span = {}) {
+    bits := ir_type_bits(ir_type)
+    if count.kind == .Int && count.n >= 0 && count.n < i128(bits) { return }
+    past := fresh_tmp(g)
+    ir_icmp(g, past, .Uge, ir_type, count, ir_int(bits))
+    ok_label, fail_label := fresh_label(g, "shift.ok"), fresh_label(g, "shift.fail")
+    emit_cond_br(g, past, fail_label, ok_label)
+    emit_label(g, fail_label)
+    wide := count
+    if bits < 64 {
+        wide = fresh_tmp(g)
+        ir_cast(g, wide, .Zext if unsigned else .Sext, ir_type, count, IR_I64)
+    }
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_SHIFT_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, fail_i64(wide),
+            fail_i64(ir_int(bits - 1)), {IR_PTR, get_string_literal(g, type_text), {}})
+    ir_unreachable(g)
+    emit_label(g, ok_label)
+}
+
+// A float made an int: its whole part within the int's range — past it, or
+// NaN, the hardware gives the smallest int and LLVM no defined value; Mara
+// stops, as at an overflow. Compared as an f64 (every float's value exactly):
+// above the lowest whole number that doesn't fit — the int's smallest less 1
+// (its smallest itself, when that much isn't an f64: no f64 lies between
+// them) — and below the highest. NaN is neither.
+emit_float_to_int_check :: proc(g: ^Codegen, v: Val, from: Ir_Type, bits: int, unsigned: bool, type_text: string, span: Span = {}) {
+    x := v
+    if from != IR_DOUBLE {
+        x = fresh_tmp(g)
+        ir_cast(g, x, .Fpext, from, v, IR_DOUBLE)
+    }
+    f :: proc(n: f64) -> Val { return ir_float(transmute(u64)n) }
+    two_to :: proc(n: int) -> f64 { r := 1.0; for _ in 0 ..< n { r *= 2 }; return r }
+    low, high: f64
+    low_in := false   // (low itself fits: >=, not >)
+    if unsigned {
+        low, high = -1, two_to(bits)
+    } else {
+        high = two_to(bits - 1)
+        if bits <= 53 { low = -high - 1 } else { low, low_in = -high, true }
+    }
+    above := fresh_tmp(g)
+    ir_fcmp(g, above, .Oge if low_in else .Ogt, IR_DOUBLE, x, f(low))
+    below := fresh_tmp(g)
+    ir_fcmp(g, below, .Olt, IR_DOUBLE, x, f(high))
+    fits := fresh_tmp(g)
+    ir_bin(g, fits, .And, IR_I1, above, below)
+    ok_label, fail_label := fresh_label(g, "ftoi.ok"), fresh_label(g, "ftoi.fail")
+    emit_cond_br(g, fits, ok_label, fail_label)
+    emit_label(g, fail_label)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_FTOI_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, {IR_DOUBLE, x, {}},
+            {IR_PTR, get_string_literal(g, type_text), {}})
+    ir_unreachable(g)
     emit_label(g, ok_label)
 }
 

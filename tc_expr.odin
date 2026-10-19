@@ -573,6 +573,14 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             return Type_Error{}
         }
         t = coerce_infer_to_hint(k.c, promote_numeric(k.c, lt, rt, span), hint, span)
+        // (A known count past the value's bits, or negative: said so now.)
+        if op == .Shift_Left || op == .Shift_Right {
+            bits := 64
+            if nt, is_num := unwrap_alias(t).(Type_Numeric); is_num { bits = int(nt.bits) }
+            if count, known := tc_comptime_int(k, right); known && (count < 0 || count >= i64(bits)) {
+                tc_error(k, span, TYPE_SHIFT_COUNT_CONST, count, bits - 1, type_name(t))
+            }
+        }
     case:
         tc_error(k, span, "tc: the operator %v is not supported yet", tok)
         return Type_Error{}
@@ -923,6 +931,17 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
         return Type_Error{}, true
     }
     each(k, args, &types)
+    // (A known float made an int it doesn't fit: said so now.)
+    if nt, to_int := target.(Type_Numeric); to_int && nt.kind != .Float && nt.bits > 0 {
+        _, from_kind, from_num := numeric_info(types[0])
+        _, from_f64 := distinct_base(resolve_infer(types[0])).(Type_F64)
+        _, from_open := resolve_infer(types[0]).(Type_Infer_Float)
+        if from_f64 || from_open || from_num && from_kind == .Float {
+            if x, known := tc_comptime_float(k, args[0]); known && !float_fits_int(x, int(nt.bits), nt.kind == .Unsigned) {
+                tc_error(k, span, TYPE_FLOAT_DOESNT_FIT_CONST, x, name)
+            }
+        }
+    }
     // (One that changes nothing is said to.)
     if cast_target_same_as_operand(types[0], target) {
         operand := tc_diag_name(k, args[0])

@@ -13,19 +13,59 @@ use mara.os
 //@ expect-output: slice assignment [3:1] into 'xs': its low is past its high
 //@ expect-output: divmin exit 1
 //@ expect-output: integer overflow
+//@ expect-output: shift exit 1
+//@ expect-output: shift by 64, outside 0..63 for i64
+//@ expect-output: negshift exit 1
+//@ expect-output: shift by -1, outside 0..63 for i64
+//@ expect-output: ftoi exit 1
+//@ expect-output: 300.5 doesn't fit in u8
+//@ expect-output: nan exit 1
+//@ expect-output: doesn't fit in i64
+//@ expect-output: swap exit 1
+//@ expect-output: 'r' is the Ref its match found, but the union holds another variant now
+//@ expect-output: clobber exit 1
+//@ expect-output: element exit 1
+//@ expect-output: byval exit 1
+//@ expect-output: loop exit 1
 //@ expect-output: in bounds: 2 3 rem 0 0
+//@ expect-output: shifts: 8 -4 128
+//@ expect-output: whole parts: -2147483648 255 0
+//@ expect-output: same variant again: 7
+//@ expect-output: written through: 99
 
 // Run-time checks that stop a program, each case in a child — this program
 // again, given the case's name — its exit code and what it said read back:
 // a slice past its room or crossed is never made, a crossed run is never
-// written, and the smallest value by -1 is an overflow (its remainder, 0).
+// written, the smallest value by -1 is an overflow (its remainder, 0), a
+// shift's count is within the value's bits, a float made an int fits it, and
+// a match arm's binding is never read once its union holds another variant.
 
-Case :: union {past, crossed, cap, run, divmin, none = 0}
+Case :: union {past, crossed, cap, run, divmin, shift, negshift, ftoi, nan, swap, clobber, element, byval, loop, none = 0}
+
+Thing :: union {
+	Ref { p: ^i64 }
+	Num { n: i64 }
+}
 
 pick :: (n: i64) -> i64 { return n }
+pickf :: (x: f64) -> f64 { return x }
+clobber :: (t: ^Thing) { t^ = Num{n = 0x4141414141} }
+
+// A binding of a by-value param, its union changed through a pointer to
+// the caller's.
+through :: (s: Thing, q: ^Thing) {
+	match s {
+	Ref r
+		clobber(q)
+		print(r.p^)
+	Num n
+	}
+}
 
 child :: (c: Case) {
 	xs : [4!]i64 = [1, 2, 3, 4]
+	x := 42
+	t : Thing = Ref{p = &x}
 	match c {
 	past
 		s := xs[pick(1):pick(9)]
@@ -44,6 +84,48 @@ child :: (c: Case) {
 	divmin
 		m := pick(-9223372036854775807) - 1
 		print(m / pick(-1))
+	shift
+		print(pick(1) << pick(64))
+	negshift
+		print(pick(1) >> pick(-1))
+	ftoi
+		print(u8(pickf(300.5)))
+	nan
+		print(i64(pickf(0.0) / pickf(0.0)))
+	swap
+		match t {
+		Ref r
+			t = Num{n = 0x4141414141}
+			print(r.p^)
+		Num n
+		}
+	clobber
+		match t {
+		Ref r
+			clobber(&t)
+			print(r.p^)
+		Num n
+		}
+	element
+		things : [2]Thing
+		&things + Ref{p = &x}
+		match things[0] {
+		Ref r
+			things[0] = Num{n = 0x4242424242}
+			print(r.p^)
+		Num n
+		}
+	byval
+		through(t, &t)
+	loop
+		match t {
+		Ref r
+			for i in 0 .. 2 {
+				print(r.p^)
+				t = Num{n = 0x4141414141}
+			}
+		Num n
+		}
 	none
 	}
 }
@@ -84,8 +166,41 @@ main :: (args: [][]utf8) {
 	run_case(args[0], "cap")
 	run_case(args[0], "run")
 	run_case(args[0], "divmin")
+	run_case(args[0], "shift")
+	run_case(args[0], "negshift")
+	run_case(args[0], "ftoi")
+	run_case(args[0], "nan")
+	run_case(args[0], "swap")
+	run_case(args[0], "clobber")
+	run_case(args[0], "element")
+	run_case(args[0], "byval")
+	run_case(args[0], "loop")
+
+	// What stays in bounds runs as it did.
 	xs : [4!]i64 = [1, 2, 3, 4]
 	t := xs[pick(1):pick(3)]
 	m := pick(-9223372036854775807) - 1
 	print("in bounds:", t[0], t[1], "rem", m % pick(-1), m % -1)
+	print("shifts:", pick(1) << pick(3), pick(-16) >> pick(2), u8(1) << u8(pick(7)))
+	print("whole parts:", i32(pickf(-2147483648.9)), u8(pickf(255.9)), u8(pickf(-0.5)))
+	x := 42
+	y := 7
+	u : Thing = Ref{p = &x}
+	match u {
+	Ref r
+		u = Ref{p = &y}
+		print("same variant again:", r.p^)
+	Num n
+	}
+	v : Thing = Num{n = 5}
+	match v {
+	Num n
+		n.n = 99
+	Ref r
+	}
+	match v {
+	Num n
+		print("written through:", n.n)
+	Ref r
+	}
 }

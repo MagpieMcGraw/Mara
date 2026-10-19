@@ -30,6 +30,9 @@ Lower :: struct {
     span_read:  Built_Span_Read,            // the span of bytes last built to be read as its destination's type
     parallel:   ^[dynamic]LW_Held,          // assigned together (`a, b = b, a`): each store, held
     compound:   struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
+    node:       Tree_Id,                    // its Fun_Def or Struct_Def (0: a constant's)
+    facts:      ^LW_Fun_Facts,              // what its body does to its locals (lw_fun_facts: made at its first match)
+    bind_checks: map[Tree_Id]LW_Bind_Check, // a match arm's binding's uses that check its subject's tag first (lw_bind_checks)
 }
 
 lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
@@ -246,7 +249,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     span := tree_span(t, sc.def)
     is_struct := ts.kind == .Struct
     saved := k.lower
-    k.lower = {ts = ts}
+    k.lower = {ts = ts, node = sc.node}
     defer k.lower = saved
     at := b.at
     b.at = tc_sid(k, sc.node)   // (its node: an instance's own — its definition is the template's)
@@ -1091,6 +1094,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     // it is built, lw_field.)
     if ref.kind == .Module || ref.kind == .Type { return {} }
     place := graph_var(b, lw_local(k, n), t, span)
+    if bc, checked := k.lower.bind_checks[n]; checked { place = lw_bind_check(k, place, t, name, bc, span) }
     if want == .Value { return {v = graph_read(b, place, t, span), ok = true} }
     return {v = place, place = true, ok = true}
 }
