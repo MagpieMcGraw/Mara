@@ -300,13 +300,15 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	answer_lines(found, c, ui.search.count > 0 or ui.search.exact_shown)
 }
 
-// Lines sent as an answer: the status line, a blank one, each line; then the
+// Lines sent as an answer: the status line, a blank one, each line shown (a
+// fun's signature, its body hidden: as the panel shows it first); then the
 // end line — failed when nothing was `found`.
 answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 	out : [64 * KB]utf8
 	&out + found.status[:]
 	&out + "\n\n"
 	for k in 0 .. found.lines.len {
+		if found.lines[k].hidden do continue
 		text := line_text(found, k)
 		if out.len + text.len + 1 > out.cap {
 			if file_write_text(c.id, out[:]) do return

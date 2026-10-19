@@ -27,7 +27,8 @@ TAB_SPACES :: 4    // a tab, shown
 // A line: its text in Lines.text, and its style; a place it opens, clicked
 // (`<file>:<line>`, kept after its text there; none: link_len 0). Mara
 // code's: what's open at its start (code_token's state), from the line
-// above it.
+// above it. A fold's (lines_fold) — a fun's signature: the lines it shows
+// and hides, clicked; a line hidden isn't drawn or copied.
 Line :: struct {
 	at:    i64
 	len:   i64
@@ -35,6 +36,9 @@ Line :: struct {
 	link_at:  i64
 	link_len: i64
 	state: i64
+	fold_at:  i64   // the first line it shows and hides
+	fold_len: i64   // ... how many; 0: none, not a fold's
+	hidden:   bool
 }
 
 // A place in the lines' text: `off` bytes into line `line`.
@@ -106,7 +110,7 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 			&l.text + ch
 		}
 	}
-	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state, link_at = 0, link_len = 0}
+	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state, link_at = 0, link_len = 0, fold_at = 0, fold_len = 0, hidden = false}
 }
 
 // Line k's text.
@@ -130,6 +134,53 @@ lines_link :: fun(l: ^Lines, link: []utf8) {
 	&l.text + link
 }
 
+// The n lines from k — a fun's signature — made a fold's: clicked, they show
+// or hide the `count` lines right after them, hidden at first.
+lines_fold :: fun(l: ^Lines, k: i64, n: i64, count: i64) {
+	if count <= 0 do return
+	for i in k .. k + n {
+		l.lines[i].fold_at = k + n
+		l.lines[i].fold_len = count
+	}
+	for i in k + n .. k + n + count {
+		l.lines[i].hidden = true
+	}
+}
+
+// Whether line k is a fold's first (its mark drawn before it).
+lines_fold_head :: fun(l: ^Lines, k: i64) -> bool {
+	ln := l.lines[k]
+	if ln.fold_len == 0 do return false
+	if k == 0 do return true
+	above := l.lines[k - 1]
+	return above.fold_len == 0 or above.fold_at != ln.fold_at
+}
+
+// Line k clicked: a fold's, the lines it shows and hides shown when they're
+// hidden, else hidden — all wrapped again, the scroll kept at its line.
+// Whether it was a fold's.
+lines_toggle :: fun(l: ^Lines, k: i64) -> bool {
+	if k < 0 or k >= l.lines.len do return false
+	ln := l.lines[k]
+	if ln.fold_len == 0 do return false
+	hide := not l.lines[ln.fold_at].hidden
+	for i in ln.fold_at .. ln.fold_at + ln.fold_len {
+		l.lines[i].hidden = hide
+	}
+	l.rows_w = -1.0
+	return true
+}
+
+// Whether line k is lit: the line lit, or a line of the same fold's (a
+// signature's lines lit together).
+lines_lit :: fun(l: ^Lines, k: i64) -> bool {
+	if k == l.lit do return true
+	if l.lit < 0 or l.lit >= l.lines.len do return false
+	lit := l.lines[l.lit]
+	ln := l.lines[k]
+	return lit.fold_len > 0 and ln.fold_len > 0 and ln.fold_at == lit.fold_at
+}
+
 // The status line: its text, in a style (as much as it holds).
 lines_status :: fun(l: ^Lines, s: []utf8, style: i64) {
 	l.status.len = 0
@@ -144,7 +195,8 @@ lines_width :: fun(r: Rect) -> f32 {
 
 // The lines wrapped to rows w wide: all of them again when the width
 // changed — the scroll kept at the line it showed first — else the lines
-// added since. (No room for more rows: the lines after them left out.)
+// added since; a hidden line, none. (No room for more rows: the lines after
+// them left out.)
 lines_wrap :: fun(ui: ^Ui, l: ^Lines, w: f32) {
 	top : i64 = -1
 	if w != l.rows_w {
@@ -155,7 +207,9 @@ lines_wrap :: fun(ui: ^Ui, l: ^Lines, w: f32) {
 	}
 	for l.rows_lines < l.lines.len {
 		ln := l.lines[l.rows_lines]
-		if not wrap(&ui.text, l.text[ln.at : ln.at + ln.len], w, l.rows_lines, ln.at, &l.rows) {
+		if ln.hidden {
+			l.rows_lines += 1
+		elif not wrap(&ui.text, l.text[ln.at : ln.at + ln.len], w, l.rows_lines, ln.at, &l.rows)
 			l.rows_lines = l.lines.len
 			l.cut = true
 		else
@@ -265,8 +319,11 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 		row := l.rows[at]
 		ln := l.lines[row.line]
 		x := r.x + PAD + row.indent
-		if row.line == l.lit do fill(rd, r.x, y, r.w, ui.text.line, ui.hover)
+		if lines_lit(l, row.line) do fill(rd, r.x, y, r.w, ui.text.line, ui.hover)
 		if selected do draw_selected(ui, l, row, from, to, x, y)
+		// (A fold's mark: where its first line starts, in the room code's
+		// lines are indented by.)
+		if row.at == ln.at and lines_fold_head(l, row.line) do draw_fold_mark(ui, r.x + PAD, y, not l.lines[ln.fold_at].hidden)
 		if ln.style == STYLE_MARA {
 			draw_code_row(ui, l, row, x, y)
 		else
@@ -284,6 +341,26 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 		h := status_height(ui, l, r)
 		fill(rd, r.x, r.y + r.h - h, r.w, h, ui.header)
 		_ = draw_wrapped(ui, l.status[:], l.status_style, r.x + PAD, r.y + r.h - h + ROW_PAD, w)
+	}
+}
+
+// A fold's mark, centered on x in the row at y: ▸ shut, ▾ open — a
+// triangle, filled a row of pixels at a time.
+draw_fold_mark :: fun(ui: ^Ui, x: f32, y: f32, open: bool) {
+	s := floor_f32(ui.text.line * 0.4)   // how wide pointing down, how tall pointing right
+	t := floor_f32(s * 0.75)             // ... the other way
+	if open {
+		top := y + floor_f32((ui.text.line - t) / 2.0)
+		for i in 0 .. i64(t) {
+			w := s * (1.0 - (f32(i) + 0.5) / t)
+			fill(ui.renderer, x - w / 2.0, top + f32(i), w, 1.0, ui.dim)
+		}
+		return
+	}
+	top := y + floor_f32((ui.text.line - s) / 2.0)
+	for i in 0 .. i64(s) {
+		off := abs_f32(f32(i) + 0.5 - s / 2.0) / (s / 2.0)
+		fill(ui.renderer, x - t / 2.0, top + f32(i), t * (1.0 - off), 1.0, ui.dim)
 	}
 }
 

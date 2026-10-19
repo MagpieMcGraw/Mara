@@ -129,7 +129,8 @@ lead_spaces :: fun(s: []utf8) -> i64 {
 // indent the lines it takes from their start share is left out — the
 // panel's margin, an example's own: pasted, code goes where it's put — code's
 // and the rest's each its own, Mara code's indentation tabs again (a tab
-// was TAB_SPACES spaces), as it was written. (As much as `out` holds.)
+// was TAB_SPACES spaces), as it was written; hidden lines (a fold's) left
+// out. (As much as `out` holds.)
 lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	out.len = 0
 	from, to := lines_selection(l)
@@ -138,6 +139,7 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	code_lead := big
 	text_lead := big
 	for k in from.line .. to.line + 1 {
+		if l.lines[k].hidden do continue
 		if k == from.line and from.off > 0 do continue
 		s := line_text(l, k)
 		n := lead_spaces(s)
@@ -150,14 +152,17 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	}
 	if code_lead == big do code_lead = 0
 	if text_lead == big do text_lead = 0
+	first := true
 	for k in from.line .. to.line + 1 {
+		if l.lines[k].hidden do continue
 		s := line_text(l, k)
 		lo : i64 = 0
 		if k == from.line do lo = from.off
 		hi := s.len
 		if k == to.line do hi = to.off
 		if out.len + 1 + s.len > out.cap do return
-		if k > from.line do &out^ + '\n'
+		if not first do &out^ + '\n'
+		first = false
 		code := l.lines[k].style == STYLE_MARA
 		if lo == 0 {
 			// (Its share of the indent left out.)

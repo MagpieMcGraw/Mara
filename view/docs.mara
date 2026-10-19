@@ -12,7 +12,8 @@ use mara.string
 // stdlib's (the compiler's code/, and the directories in it) and the doc/
 // pages beside it. Each definition whose name has a
 // word, or whose doc comment does, is found; the best are shown first, each
-// with its doc comment and its signature (a struct's body). Crude: it reads
+// with its doc comment and its signature (a struct's body; a fun's body
+// shown when its signature's clicked). Crude: it reads
 // lines, not the program. A definition is a line `name :: ...`, a foreign
 // block's `fun name(...)`, a struct's `name: type` (a field), or a file's
 // `module name`; its doc comment, the `//` lines right above it, or a
@@ -28,15 +29,14 @@ use mara.string
 DOCS_SHOWN     :: 40   // the most definitions shown
 DOCS_BODY      :: 40   // the most lines of a struct's body shown
 DOCS_SIGNATURE :: 12   // ... of a signature with no body (a param's fun, a foreign fun)
-DOCS_FUN       :: 30   // the most lines of a fun shown whole
-DOCS_FUN_SHOWN :: 20   // ... of a longer one, how many more there are said after
+DOCS_FUN       :: 200  // ... of a fun's code (a longer one's: how many more there are, said after)
 DOCS_EXAMPLE   :: 60   // ... of an entry's example
 DOC_LINES      :: 200  // the most lines of a doc comment shown
 
 // What a definition is.
 DEF_MODULE :: 0   // a file's module: its doc comment, its `module` line
 DEF_TYPE   :: 1   // a struct, union, error set: its body shown
-DEF_FUN    :: 2   // its code shown, to its closing `}` (a long one's first lines)
+DEF_FUN    :: 2   // its signature shown; clicked, its body below it
 DEF_OTHER  :: 3   // a constant, a foreign fun: its line
 DEF_FIELD  :: 4   // a struct's: its line, and the struct named
 DEF_LINE   :: 5   // a line declaring what's at the cursor, no definition the scan finds: a local's, a param's
@@ -193,9 +193,10 @@ docs_keep_query :: fun(q: ^Docs_Query, dir: []utf8, words: []utf8, ex: Exact) {
 }
 
 // The lookup the Docs panel shows, made again — the files read again, your
-// edits in them shown — where it is, scrolled as it was: the reload button,
-// F5. What was at the cursor is found by its name in its file, nearest the
-// line it was on (edits may have moved it).
+// edits in them shown — where it is, scrolled as it was, the funs whose code
+// was shown shown again: the reload button, F5. What was at the cursor is
+// found by its name in its file, nearest the line it was on (edits may have
+// moved it).
 docs_reload :: fun(ui: ^Ui) {
 	i := ui.docs_front
 	l := &ui.docs[i]
@@ -213,11 +214,62 @@ docs_reload :: fun(ui: ^Ui) {
 	&name + q.name[:]
 	&path + q.path[:]
 	scroll := l.scroll
+	open : [16 * KB]utf8
+	docs_open_folds(l, &open)
 	docs_search(ui, dir, words, Exact{kind = kind, name = name, path = path, line = q.line, loose = true}, i)
+	docs_reopen_folds(l, open[:])
 	l.scroll = scroll
 	// (Where it was found now: where the next reload looks.)
 	if ui.search.has_exact do q.line = ui.search.exact.line
 	ui.dirty = true
+}
+
+// The funs whose code l shows, a line each into `open`: how many funs above
+// it have the same signature's first line (two systems' file_read), a space,
+// that line. (As many as it holds.)
+docs_open_folds :: fun(l: ^Lines, open: ^[16 * KB]utf8) {
+	for k in 0 .. l.lines.len {
+		if not lines_fold_head(l, k) or l.lines[l.lines[k].fold_at].hidden do continue
+		s := line_text(l, k)
+		if open.len + s.len + 30 > open.cap do return
+		&open^ + int_text(fold_same_above(l, k))
+		&open^ + ' '
+		&open^ + s
+		&open^ + '\n'
+	}
+}
+
+// The funs in l that `open` has a line for (docs_open_folds: a reload's),
+// their code shown again.
+docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
+	for k in 0 .. l.lines.len {
+		if not lines_fold_head(l, k) do continue
+		key : [1100]utf8
+		&key + int_text(fold_same_above(l, k))
+		&key + ' '
+		&key + line_text(l, k)[0 : min_int(line_text(l, k).len, 1000)]
+		at : i64 = 0
+		for at < open.len {
+			end := at
+			for end < open.len and open[end] != '\n' {
+				end += 1
+			}
+			if open[at : end] == key[:] {
+				_ = lines_toggle(l, k)
+				break
+			}
+			at = end + 1
+		}
+	}
+}
+
+// How many folds above line k (a fold's first) start with the same line.
+fold_same_above :: fun(l: ^Lines, k: i64) -> i64 {
+	n : i64 = 0
+	for above in 0 .. k {
+		if lines_fold_head(l, above) and line_text(l, above) == line_text(l, k) do n += 1
+	}
+	return n
 }
 
 // The Docs panel's lines, the ones it shows.
@@ -976,9 +1028,9 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		return
 	}
 
-	// The code, from the definition's line: a fun's whole (docs_show_fun), a
-	// type's to its `}`, the rest's to where its parentheses close (a foreign
-	// fun's signature can take lines).
+	// The code, from the definition's line: a fun's whole, its body hidden
+	// (docs_show_fun); a type's to its `}`, the rest's to where its
+	// parentheses close (a foreign fun's signature can take lines).
 	first_end := line_end(text, fd.at)
 	indent, _ := indentation(text, fd.at, first_end)
 	if fd.kind == DEF_FUN {
@@ -999,17 +1051,6 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		line_indent, from := indentation(text, at, end)
 		rest := trimmed(text[from : end])
 		last := shown + 1 == most
-		if fd.kind == DEF_FUN {
-			// (Its `{` left out.)
-			brace : i64 = -1
-			for i in 0 .. rest.len {
-				if rest[i] == '{' do brace = i
-			}
-			if brace >= 0 {
-				code = text[at : from + brace]
-				last = true
-			}
-		}
 		if fd.kind == DEF_OTHER or fd.kind == DEF_LINE {
 			for ch in rest {
 				if ch == '(' do depth += 1
@@ -1038,12 +1079,16 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	lines_add(l, "", STYLE_TEXT)
 }
 
-// A fun's code as written, its signature its first line: its lines to its
-// closing `}` — a fun of one line, its first; else the `}` no further in than
-// it. A long one: its first DOCS_FUN_SHOWN lines, and how many more.
+// A fun's code as written, to its closing `}` — a fun of one line, its
+// first; else the `}` no further in than it: its signature, to the `{` its
+// body opens with (a line, or several), then its body, hidden until the
+// signature's clicked (lines_fold). A long one: its first DOCS_FUN lines,
+// and how many more.
 docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 	// (Its lines counted first: to say how many aren't shown.)
 	count : i64 = 0
+	sig : i64 = 0     // its signature's lines
+	depth : i64 = 0   // the signature's parentheses open
 	at := from
 	for at < text.len {
 		end := line_end(text, at)
@@ -1051,11 +1096,18 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 		rest := trimmed(text[start : end])
 		count += 1
 		at = end + 1
+		for ch in rest {
+			if sig > 0 do break
+			if ch == '(' do depth += 1
+			if ch == ')' do depth -= 1
+			if ch == '{' and depth == 0 do sig = count
+		}
 		if count == 1 and rest.len > 0 and rest[rest.len - 1] == '}' do break   // (`{ return n }`)
 		if count > 1 and line_indent <= indent and rest.len > 0 and rest[0] == '}' do break
 	}
-	most := count
-	if count > DOCS_FUN do most = DOCS_FUN_SHOWN
+	most := min_int(count, DOCS_FUN)
+	if sig == 0 or sig > most do sig = most
+	first := l.lines.len
 	at = from
 	for _ in 0 .. most {
 		end := line_end(text, at)
@@ -1069,6 +1121,9 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 		&more + " more lines"
 		lines_add(l, more[:], STYLE_DIM)
 	}
+	// (Its body hidden: as much of it as there was room for.)
+	added := l.lines.len - first
+	if added > sig do lines_fold(l, first, sig, added - sig)
 }
 
 // An example's code, below its doc comment: its function as written, then
@@ -1124,8 +1179,9 @@ docs_place :: fun(l: ^Lines, k: i64) -> []utf8, i64, bool {
 	return text[0 : colon], i64(line), true
 }
 
-// The definition title under the mouse in the Docs panel: its line (any of
-// its rows); -1 when it's over none (or over a panel in front of Docs).
+// The definition title, or the fun's signature, under the mouse in the Docs
+// panel: its line (any of its rows); -1 when it's over none (or over a
+// panel in front of Docs).
 docs_hover :: fun(ui: ^Ui) -> i64 {
 	i := panel_at(ui, ui.mouse_x, ui.mouse_y)
 	if i < 0 do return -1
@@ -1134,23 +1190,29 @@ docs_hover :: fun(ui: ^Ui) -> i64 {
 	k := lines_line_at(ui, l, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
 	if k < 0 do return -1
 	_, _, place := docs_place(l, k)
-	if not place do return -1
+	if not place and l.lines[k].fold_len == 0 do return -1
 	return k
 }
 
-// The Docs panel: what was found, the title under the mouse lit.
+// The Docs panel: what was found, the title or signature under the mouse
+// lit.
 draw_docs :: fun(ui: ^Ui, r: Rect) {
 	ui.docs_hover = docs_hover(ui)
 	l := docs_shown(ui)
 	l.lit = ui.docs_hover
-	draw_lines(ui, l, r, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up. A title clicked opens its file there.")
+	draw_lines(ui, l, r, "Select words in Sublime (Mara Ask), or run mara docs <words> anywhere, to look them up. A title clicked opens its file there; a fun's signature clicked shows its code.")
 }
 
-// A press in the Docs panel's content r: a definition's title, its file
-// opened in the editor at its line.
+// A press in the Docs panel's content r: a fun's signature, its body shown
+// or hidden; a definition's title, its file opened in the editor at its
+// line.
 docs_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	l := docs_shown(ui)
 	k := lines_line_at(ui, l, r, x, y)
+	if lines_toggle(l, k) {
+		ui.dirty = true
+		return
+	}
 	file, line, place := docs_place(l, k)
 	if not place do return
 	editor_open(ui, l, file, line)
