@@ -1,0 +1,97 @@
+module for_call
+
+use mara.core
+
+//@ expect-output: count: 3 last: 30
+//@ expect-output: round 0 got 10
+//@ expect-output: even rounds' sum: 40
+//@ expect-output: none: 0
+//@ expect-output: stopped at 20
+//@ expect-output: words: let|x|=|10|
+//@ expect-output: tokens: 4 rounds: 4
+
+// A loop over a call, `for x in f()`: f gives a value and a bool, and is
+// called each round; x is the value, and the loop ends when the bool is
+// false. `for x, i in f()`: i counts the rounds from 0.
+
+Counter :: struct {
+	at:  i64
+	end: i64
+}
+
+next :: fun(c: ^Counter) -> i64, bool {
+	if c.at >= c.end do return 0, false
+	c.at += 1
+	return c.at * 10, true
+}
+
+Token :: struct {
+	at:  i64
+	len: i64
+}
+
+Lexer :: struct {
+	text: [64]utf8
+	pos:  i64
+}
+
+// The next word, between spaces; false at the end.
+next_token :: fun(l: ^Lexer) -> Token, bool {
+	for l.pos < l.text.len and l.text[l.pos] == ' ' {
+		l.pos += 1
+	}
+	if l.pos >= l.text.len do return Token{0}, false
+	start := l.pos
+	for l.pos < l.text.len and l.text[l.pos] != ' ' {
+		l.pos += 1
+	}
+	return Token{at = start, len = l.pos - start}, true
+}
+
+main :: () {
+	c := Counter{at = 0, end = 3}
+	count := 0
+	last : i64 = 0
+	for v in next(&c) {
+		count += 1
+		last = v
+	}
+	print("count:", count, "last:", last)
+
+	c = Counter{at = 0, end = 4}
+	sum : i64 = 0
+	for v, i in next(&c) {
+		if i == 0 do print("round", i, "got", v)
+		if i % 2 == 1 do continue
+		sum += v
+	}
+	print("even rounds' sum:", sum)
+
+	e := Counter{at = 5, end = 5}
+	none := 0
+	for _ in next(&e) {
+		none += 1
+	}
+	print("none:", none)
+
+	c = Counter{at = 0, end = 9}
+	for v in next(&c) {
+		if v == 20 {
+			print("stopped at", v)
+			break
+		}
+	}
+
+	l := Lexer{text = "let x = 10", pos = 0}
+	words : [64]utf8
+	tokens := 0
+	rounds : i64 = 0
+	for t, i in next_token(&l) {
+		&words + l.text[t.at : t.at + t.len]
+		&words + '|'
+		tokens += 1
+		rounds = i + 1
+	}
+	print("words:", words[:])
+	print("tokens:", tokens, "rounds:", rounds)
+}

@@ -836,6 +836,10 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     walk: LW_Walk   // (a plain place collection's: what the loop's runs walk)
     #partial switch tag {
     case .For_Each:
+        if returns := tc_call_returns(k, v.collection); len(returns) > 1 {
+            lw_for_call(k, &fl, v, returns)
+            return
+        }
         ct: Type
         coll := NO_VALUE
         if !lw_pure_place(k, v.collection) {
@@ -879,6 +883,16 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
             lw_stmt(k, v.post)
         }
     }
+}
+
+// `for x, i in f()` (tc_for_call): its variables, then each round's check —
+// the call, its value to x, its bool the condition — then the body.
+lw_for_call :: proc(k: ^TC, fl: ^Graph_For, v: For_View, returns: []Type) {
+    b := k.gb
+    graph_build_for_call(b, fl, distinct_base(solidify_type(returns[0])))
+    r := lw_expr(k, v.collection, .Value)
+    graph_build_for_call_check(b, fl, r.v)
+    lw_scope(k, v.body)
 }
 
 // A plain place, built again where a loop's run walks it (Graph_For.walk).

@@ -3078,6 +3078,7 @@ Graph_For :: struct {
     coll_t:                  Type,
     coll_self:               bool,
     elem_t:                  Type,      // a collection loop's element's
+    of_call:                 bool,      // a loop over a call: its element written by its check, its counter the round (graph_build_for_call)
     check, body, post, done: ^Run,
     body_block:              Node_Id,
     has_post:                bool,
@@ -3179,15 +3180,43 @@ graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Node_Id,
     graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.coll_slot, view, span), val)
 }
 
+// A loop over a call, `for x, i in f()`: its element, of type elem_t, and
+// its index, the round counted from 0 (when named); then the check run,
+// where the call is built (graph_build_for_call_check).
+graph_build_for_call :: proc(b: ^Graph_Builder, fl: ^Graph_For, elem_t: Type) {
+    fl.of_call, fl.has_cond, fl.elem_t = true, true, elem_t
+    span := fl.span
+    if fl.elem_name != "" {
+        fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, elem_t, span)
+        graph_declare(b, fl.elem, fl.elem_tok)
+    }
+    if fl.index_name != "" {
+        index_t := Type(slice_header_width_type)
+        fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.index_name, index_t, span)
+        graph_declare(b, fl.counter, fl.index_tok)
+        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.counter, index_t, span),
+                 graph_const(b, .Synthetic, span, index_t, "0", Const_Value{}))
+    }
+    graph_build_for_runs(b, fl)
+}
+
+// The call built (`call`): its value to the element, its bool the condition.
+graph_build_for_call_check :: proc(b: ^Graph_Builder, fl: ^Graph_For, call: Operand) {
+    span := fl.span
+    if fl.elem != NO_NODE { graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, fl.elem, fl.elem_t, span), call) }
+    graph_build_for_cond(b, fl, {graph_outputs_op(b, call, span), 1})
+}
+
 // The loop's runs, into the check: a counter against its bound; else the
 // condition, checked next (graph_build_for_cond); else none (`for {}`).
+// (A loop over a call's counter is its round, checked against nothing.)
 graph_build_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     fl.check, fl.body, fl.post, fl.done = graph_run_new(b), graph_run_new(b), graph_run_new(b), graph_run_new(b)
     fl.has_post = fl.has_step || fl.counter != NO_NODE
     graph_jump(b, fl.check, .Synthetic, fl.span)
     b.code.run = fl.check
     span := fl.span
-    if fl.counter != NO_NODE {
+    if fl.counter != NO_NODE && !fl.of_call {
         ct := graph_type(b.g, fl.counter)
         cur := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
         bound: Operand
@@ -3225,7 +3254,7 @@ graph_build_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     fl.body_block = graph_node(b, .Block, .Explicit, fl.f, "body", nil, span)
     b.code.block = fl.body_block
     graph_scope_open(b, fl.body_block, span, fl.body_arena)
-    if fl.elem != NO_NODE {
+    if fl.elem != NO_NODE && !fl.of_call {
         ct := graph_type(b.g, fl.counter)
         at := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
         at = graph_widen(b, at, slice_header_width_type, span)

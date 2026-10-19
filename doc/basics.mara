@@ -199,6 +199,10 @@ example_do :: fun() {
 // in xs` its position too. `for cond { … }` repeats while cond is true — `for
 // true { … }` until a break or return.
 //
+// `for x in f()` calls f each round. f returns a value and a bool: x is the
+// value, and the loop ends when the bool is false. `for x, i in f()` also
+// counts the rounds in i, from 0. A lexer's loop: `for t in next_token(&l)`.
+//
 // `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10; `x in xs`, whether
 // some item of xs is x (`==` as their type has it: text, the same
 // characters) — mara.core's includes. `not in`: the opposite.
@@ -219,6 +223,17 @@ example_for :: fun() {
 	print(n)                               // 243
 
 	if n in 200 .. 300 do print("in range")   // in range
+
+	left : i64 = 3
+	for c in countdown(&left) {
+		print(c)                           // 3, 2, 1
+	}
+}
+
+countdown :: fun(left: ^i64) -> i64, bool {
+	if left^ == 0 do return 0, false
+	left^ -= 1
+	return left^ + 1, true
 }
 
 // `break`, `continue`: leave a loop now, or skip to its next round.

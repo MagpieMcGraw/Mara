@@ -732,7 +732,15 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     defer if tc_body_ends(k, v.body) == {.Exit} { emit_diagnostic_once(.Warning, span, WARN_LOOP_NEVER_LOOPS) }
     #partial switch t.tag[s] {
     case .For_Each:
+        // (A call of several results: a loop over the call — tc_for_call.)
+        call := tc_unparen(k, v.collection)
+        if tc_is_call(k, call) { k.several_ok = call }
         ct := tc_check(k, v.collection)
+        k.several_ok = 0
+        if returns := tc_call_returns(k, v.collection); len(returns) > 1 {
+            tc_for_call(k, s, v, ct, returns)
+            return
+        }
         // (A literal looped over is held at its own type, settled.)
         #partial switch k.t.tag[tc_unparen(k, v.collection)] {
         case .Array, .Literal: ct = solidify_type(ct)
@@ -773,6 +781,30 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }
+}
+
+// `for x in f()`, `for x, i in f()`: f gives a value and a bool, and is
+// called each round — x its value, while its bool is true; i which round,
+// from 0. (`ct`: the call's type as checked.)
+tc_for_call :: proc(k: ^TC, s: Tree_Id, v: For_View, ct: Type, returns: []Type) {
+    span := tree_span(k.t, s)
+    elem := solidify_type(returns[0])
+    _, is_bool := distinct_base(returns[len(returns) - 1]).(Type_Bool)
+    if _, is_error := ct.(Type_Error); is_error {
+        elem = Type_Error{}
+    } else if len(returns) != 2 || !is_bool {
+        names := make([]string, len(returns), context.temp_allocator)
+        for r, i in returns { names[i] = type_name(r) }
+        tc_error(k, span, TYPE_LOOP_CALL_RESULTS, tc_call_name(k, tc_unparen(k, v.collection)), strings.join(names, ", ", context.temp_allocator))
+        elem = Type_Error{}
+    } else if v.type_ != 0 {
+        if written := tc_type(k, v.type_, span); !types_equal(written, elem) {
+            tc_error(k, span, TYPE_LOOP_CALL_WRITTEN_TYPE, type_name(elem), type_name(written))
+        }
+    }
+    if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
+    if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+    tc_scope(k, v.body)
 }
 
 // `x op= v`: `x = x op v`, the operation at the `op=`.

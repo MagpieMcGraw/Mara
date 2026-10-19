@@ -328,6 +328,8 @@ TYPE_FUNCTION_MISSING_RETURN_ALL_CODE :: "function '%s' missing return on all co
 TYPE_UNREACHABLE_CODE :: "unreachable code: it follows a return, break or continue"
 TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE :: "cannot iterate over struct type '%s'"
 TYPE_CANNOT_ITERATE_OVER_TYPE :: "cannot iterate over type '%s'"
+TYPE_LOOP_CALL_RESULTS :: "a loop over a call takes a value and a bool from it each round (false: done) — %s gives %s"
+TYPE_LOOP_CALL_WRITTEN_TYPE :: "a loop over a call: its variable is the call's value, a %s — not %s"
 TYPE_RANGE_LOWER_BOUND_NUMERIC :: "range lower bound must be numeric, got %s"
 TYPE_RANGE_UPPER_BOUND_NUMERIC :: "range upper bound must be numeric, got %s"
 TYPE_DESCENDING_RANGE :: "descending range `%d..%d` -- `..` only counts up, so this would silently iterate zero times. To count down, use a C-style for, e.g. `for i := %d; i > %d; i -= 1`"
