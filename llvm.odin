@@ -688,7 +688,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // Into a partial array, text or a slice's elements fill a prefix.
         if pa := llvm_partial(t); pa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
             if text, is_text := llvm_text(e, ops[1].op); is_text { return llvm_text_into(e, place, pa, text) }
-            if llvm_slice(graph_type(pg, ops[1].op)) != nil { return llvm_elements_into(e, place, pa, ops[1].op) }
+            if llvm_slice(graph_type(pg, ops[1].op)) != nil { return llvm_elements_into(e, place, pa, ops[1].op, span) }
         }
         // Into a fixed utf8 array, text: the array zeroed, then its bytes.
         if fa := llvm_array(t); fa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
@@ -2060,18 +2060,24 @@ llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: 
     return true
 }
 
-// A slice's elements into a partial array: as many as fit (up to its cap),
-// len their count; the elements past them keep what they held.
+// A slice's elements into a list (`l : [8]T = s`, `Short(big)`): all of them,
+// len their count — more than its room, and the program stops, as an append
+// past it does. The elements past them keep what they held.
 @(private="file")
-llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, src: Node_Id) -> bool {
+llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, src: Node_Id, span: Span) -> bool {
     g, pg := e.g, e.pg
     if !llvm_same_type(llvm_slice(graph_type(pg, src)).elem, pa.elem) { return false }
     w := SLICE_LEN_IR
     at := llvm_val(e, place)
     data := llvm_hdr_data(e, src)
-    n0 := llvm_hdr_len(e, src)
-    cmp := fresh_tmp(g); ir_icmp(g, cmp, .Slt, w, n0, ir_int(int(pa.size)))
-    n := fresh_tmp(g); ir_select(g, n, cmp, w, n0, ir_int(int(pa.size)))
+    n := llvm_hdr_len(e, src)
+    past := fresh_tmp(g)
+    ir_icmp(g, past, .Ugt, w, n, ir_int(int(pa.size)))
+    ok_label, fail_label := fresh_label(g, "fill.ok"), fresh_label(g, "fill.fail")
+    emit_cond_br(g, past, fail_label, ok_label)
+    emit_label(g, fail_label)
+    emit_fail(g, fmt.tprintf("%s runtime error: %%lld items into a list with room for %d\n", span_location(span), pa.size), fail_i64(n))
+    emit_label(g, ok_label)
     elements := partial_elements(g, at, pa)
     nbytes := fresh_tmp(g); ir_bin(g, nbytes, .Mul, w, n, ir_int(int(type_size(pa.elem))))
     emit_memcpy_runtime(g, elements, data, nbytes)
