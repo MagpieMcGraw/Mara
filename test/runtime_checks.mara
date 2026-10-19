@@ -1,0 +1,91 @@
+module runtime_checks
+
+use mara.core
+use mara.os
+
+//@ expect-output: past exit 1
+//@ expect-output: slice [1:9] of 'xs' out of bounds: needs 0 <= low <= high <= 4
+//@ expect-output: crossed exit 1
+//@ expect-output: slice [3:1] of 'xs' out of bounds: needs 0 <= low <= high <= 4
+//@ expect-output: cap exit 1
+//@ expect-output: slice [0:12] of 's' out of bounds: needs 0 <= low <= high <= 4
+//@ expect-output: run exit 1
+//@ expect-output: slice assignment [3:1] into 'xs': its low is past its high
+//@ expect-output: divmin exit 1
+//@ expect-output: integer overflow
+//@ expect-output: in bounds: 2 3 rem 0 0
+
+// Run-time checks that stop a program, each case in a child — this program
+// again, given the case's name — its exit code and what it said read back:
+// a slice past its room or crossed is never made, a crossed run is never
+// written, and the smallest value by -1 is an overflow (its remainder, 0).
+
+Case :: union {past, crossed, cap, run, divmin, none = 0}
+
+pick :: (n: i64) -> i64 { return n }
+
+child :: (c: Case) {
+	xs : [4!]i64 = [1, 2, 3, 4]
+	match c {
+	past
+		s := xs[pick(1):pick(9)]
+		print(s.len)
+	crossed
+		s := xs[pick(3):pick(1)]
+		print(s.len)
+	cap
+		s := xs[:]
+		wide := s[pick(0):pick(12)]
+		print(wide.len)
+	run
+		ys : [4!]i64 = [9, 9, 9, 9]
+		xs[pick(3):pick(1)] = ys[:]
+		print(xs[0])
+	divmin
+		m := pick(-9223372036854775807) - 1
+		print(m / pick(-1))
+	none
+	}
+}
+
+// The child for one case: what it said, and its exit code.
+run_case :: (exe: []utf8, name: []utf8) {
+	command : str256
+	&command + "\""
+	&command + exe
+	&command + "\" "
+	&command + name
+	p, e := process_start(command)
+	if e {
+		print("start failed:", e)
+		return
+	}
+	process_close_input(&p)
+	out : [400]byte
+	chunk : [64]byte
+	for true {
+		re := file_read(p.output, &chunk)
+		if re or chunk.len == 0 do break
+		&out + chunk[:]
+	}
+	code, _ := process_wait(&p)
+	text : []utf8 = out[:]
+	print(name, "exit", code)
+	print(text)
+}
+
+main :: (args: [][]utf8) {
+	if args.len > 1 {
+		child(Case.from_text(args[1]))
+		return
+	}
+	run_case(args[0], "past")
+	run_case(args[0], "crossed")
+	run_case(args[0], "cap")
+	run_case(args[0], "run")
+	run_case(args[0], "divmin")
+	xs : [4!]i64 = [1, 2, 3, 4]
+	t := xs[pick(1):pick(3)]
+	m := pick(-9223372036854775807) - 1
+	print("in bounds:", t[0], t[1], "rem", m % pick(-1), m % -1)
+}

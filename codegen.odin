@@ -708,6 +708,27 @@ emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Sp
     emit_label(g, ok_label)
 }
 
+// A slice's bounds checked, 0 <= lo <= hi <= bound (the array's size, the
+// header's cap, the text's length): a slice past its room, or of a negative
+// len, is never made. Both compares unsigned — a negative lo or hi is past
+// any bound.
+emit_slice_bounds_check :: proc(g: ^Codegen, lo, hi, bound: Val, name: string, span: Span) {
+    if lo.kind == .Int && hi.kind == .Int && bound.kind == .Int && 0 <= lo.n && lo.n <= hi.n && hi.n <= bound.n { return }
+    w := SLICE_LEN_IR
+    past := fresh_tmp(g)
+    ir_icmp(g, past, .Ugt, w, hi, bound)
+    crossed := fresh_tmp(g)
+    ir_icmp(g, crossed, .Ugt, w, lo, hi)
+    bad := fresh_tmp(g)
+    ir_bin(g, bad, .Or, IR_I1, past, crossed)
+    ok_label, fail_label := fresh_label(g, "slice.bounds.ok"), fresh_label(g, "slice.bounds.fail")
+    emit_cond_br(g, bad, fail_label, ok_label)
+    emit_label(g, fail_label)
+    emit_fail(g, fmt.tprintf("%s runtime error: slice [%%lld:%%lld] of '%s' out of bounds: needs 0 <= low <= high <= %%lld\n", span_location(span), name),
+              fail_i64(lo), fail_i64(hi), fail_i64(bound))
+    emit_label(g, ok_label)
+}
+
 // True when a slice assignment's value surely holds the run it fills: lo, hi
 // and the value's length all integer constants, hi - lo no more than it.
 can_elide_source_check :: proc(lo, hi, have: Val) -> bool {
@@ -747,6 +768,43 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     ir_unreachable(g)
 
     emit_label(g, ok_label)
+}
+
+// A signed division's one overflow, the smallest value by -1 (its negation
+// doesn't fit): an integer overflow, as `+` past the range is — not the
+// hardware's trap, nor LLVM's undefined result. A remainder by -1 is 0: the
+// divisor given back as 1 then (the same remainder, no trap). Nothing when
+// the divisor is a constant other than -1, or the dividend one other than
+// the smallest.
+emit_div_min_check :: proc(g: ^Codegen, rem: bool, ir_type: Ir_Type, left, right: Val, span: Span = {}) -> Val {
+    if right.kind == .Int && right.n != -1 { return right }
+    bits := ir_type_bits(ir_type)
+    smallest := -(i128(1) << uint(bits - 1))
+    if rem {
+        if right.kind == .Int { return ir_int(1) }
+        minus_one := fresh_tmp(g)
+        ir_icmp(g, minus_one, .Eq, ir_type, right, ir_int(-1))
+        safe := fresh_tmp(g)
+        ir_select(g, safe, minus_one, ir_type, ir_int(1), right)
+        return safe
+    }
+    if left.kind == .Int && i128(left.n) != smallest { return right }
+    is_min := fresh_tmp(g)
+    ir_icmp(g, is_min, .Eq, ir_type, left, ir_int(int(smallest)))
+    bad := is_min
+    if right.kind != .Int {
+        minus_one := fresh_tmp(g)
+        ir_icmp(g, minus_one, .Eq, ir_type, right, ir_int(-1))
+        bad = fresh_tmp(g)
+        ir_bin(g, bad, .And, IR_I1, is_min, minus_one)
+    }
+    ok_label, fail_label := fresh_label(g, "divmin.ok"), fresh_label(g, "divmin.fail")
+    emit_cond_br(g, bad, fail_label, ok_label)
+    emit_label(g, fail_label)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_OVERFLOW_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}})
+    ir_unreachable(g)
+    emit_label(g, ok_label)
+    return right
 }
 
 // Emit an overflow-checked integer arithmetic operation using LLVM intrinsics.

@@ -1005,7 +1005,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Assert:
         return llvm_assert(e, op, ops, span)
     case .Slice:
-        return llvm_slice_op(e, op, ops)
+        return llvm_slice_op(e, op, ops, span)
     case .View:
         return llvm_view(e, op, ops, span)
     case .Carve:
@@ -1316,6 +1316,8 @@ llvm_arith :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
             emit_div_zero_check(g, r, ir, span)
             inst := Ir_Inst.Udiv if unsigned else .Sdiv
             if name == "%" { inst = .Urem if unsigned else .Srem }
+            r := r
+            if !unsigned { r = emit_div_min_check(g, name == "%", ir, l, r, span) }
             tmp = fresh_tmp(g)
             ir_bin(g, tmp, inst, ir, l, r)
         case:
@@ -1628,9 +1630,10 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
 // hi the array's size or the slice's len when not given — as a new header,
-// len = cap = hi - lo.
+// len = cap = hi - lo. Bounds given are checked: 0 <= lo <= hi <= the
+// array's size, the header's cap.
 @(private="file")
-llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
+llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
     if graph_name(pg, op) == "slice_from_ptr" {
         // Over raw memory: its pointer, len = cap = the count given.
@@ -1675,25 +1678,29 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if len(ops) > 2 && ops[2].op != NO_NODE { hi = llvm_operand(e, ops[2], slice_header_width_type) or_return }
     bt := graph_type(pg, base)
     at := llvm_val(e, base)
-    data: Val
+    data, bound: Val
+    given := lo.kind != .None || hi.kind != .None
     if text, is_text := llvm_text(e, base); is_text {
         // Text in its global (a constant's, a literal's): its bytes' address,
         // its length known — no header there to read.
         data = at
-        if hi.kind == .None { hi = ir_int(len(text)) }
+        bound = ir_int(len(text))
+        if hi.kind == .None { hi = bound }
         if lo.kind != .None {
             data = fresh_tmp(g)
             emit_elem_gep(g, data, IR_I8, at, lo, SLICE_LEN_IR)
         }
     } else if fa := llvm_array(bt); fa != nil {
         data = at
-        if hi.kind == .None { hi = ir_int(fa.size) }
+        bound = ir_int(fa.size)
+        if hi.kind == .None { hi = bound }
         if lo.kind != .None {
             data = fresh_tmp(g)
             emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, SLICE_LEN_IR)
         }
     } else if elem := llvm_header_elem(bt); elem != nil {
         data = emit_header_field(g, at, SLICE.ptr)
+        if given { bound = emit_header_field(g, at, SLICE.cap) }
         if hi.kind == .None {
             hi = emit_header_field(g, at, SLICE.len)
         }
@@ -1704,6 +1711,10 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
     } else {
         return false   // a partial array (later)
+    }
+    if given {
+        name := graph_place_name(pg, ops[0])
+        emit_slice_bounds_check(g, lo if lo.kind != .None else ir_int(0), hi, bound, name if name != "" else "slice", span)
     }
     n := hi
     if lo.kind != .None {
@@ -1897,6 +1908,17 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     emit_fail(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", name),
               fail_i64(hi), fail_i64(dst.bound))
     emit_label(g, hi_ok)
+    if run_given && !(lo.kind == .Int && hi.kind == .Int && lo.n <= hi.n) {
+        // (A run of negative length would fill nothing, silently.)
+        lo_ok, lo_err := fresh_label(g, "slice.order.ok"), fresh_label(g, "slice.order.err")
+        lo_cmp := fresh_tmp(g)
+        ir_icmp(g, lo_cmp, .Sgt, w, lo, hi)
+        emit_cond_br(g, lo_cmp, lo_err, lo_ok)
+        emit_label(g, lo_err)
+        emit_fail(g, fmt.tprintf("%s runtime error: slice assignment [%%lld:%%lld] into '%s': its low is past its high\n", span_location(span), name),
+                  fail_i64(lo), fail_i64(hi))
+        emit_label(g, lo_ok)
+    }
     // (A run written, lo:hi: src holds hi - lo elements, else the copy would
     // read past its end. A longer src gives its first hi - lo.)
     if run_given {

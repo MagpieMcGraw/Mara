@@ -35,7 +35,7 @@ main :: fun() {
 	buf : [64]byte
 	fill(&buf)
 	room : [8]V
-	got := get(buf[:], 3, &room)
+	got := get(buf[0:24], 3, &room)   // (the run fill wrote: buf's len, a cursor, didn't move)
 	print("through a pointer:", got.len, got[2].a, got[2].b)
 	open : [8]V
 	open[0:] = buf[0:24]

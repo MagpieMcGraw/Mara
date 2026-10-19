@@ -1128,7 +1128,7 @@ lw_const_of :: proc(k: ^TC, use: Tree_Id, decl: Token_Id) -> ^TC_Const {
 // its value fills a prefix of it — the value stored in it.
 lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     b := k.gb
-    t := tc_node_type(k, n)
+    t := solidify_type(tc_node_type(k, n))   // (a literal held as itself: its width, the default when no use gave one)
     slot := graph_slot(b, "temp", nil, span)
     if lw_fills_prefix(k, n, t) { graph_build_zero_var(b, slot, t, span) }
     d := graph_dest_var(slot, nil)

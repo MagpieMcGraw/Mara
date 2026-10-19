@@ -183,6 +183,16 @@ tc_slice :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     if elem == nil { return Type_Error{} }
+    // (A fixed array's known bounds past its end, or crossed: said so now.)
+    if fa, is_fixed := target.(^Type_Fixed_Array); is_fixed {
+        size := i64(fa.size)
+        lo, lo_known := i64(0), true
+        hi, hi_known := size, true
+        if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n) }
+        if hi_n != 0 { hi, hi_known = tc_comptime_int(k, hi_n) }
+        bad := lo_known && (lo < 0 || lo > size) || hi_known && (hi < 0 || hi > size) || lo_known && hi_known && lo > hi
+        if bad { tc_error(k, span, TYPE_SLICE_OUT_OF_BOUNDS_CONST, lo if lo_known else 0, hi if hi_known else size, size, size) }
+    }
     return type_slice(elem)
 }
 

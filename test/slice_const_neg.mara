@@ -1,0 +1,13 @@
+module slice_const_neg
+//@ expect-fail: slice [1:9] out of bounds — array has 4 elements (needs 0 <= low <= high <= 4)
+
+// A fixed array's slice with known bounds past its end is said so when it's
+// built, as a known index past it is.
+
+use mara.core
+
+main :: () {
+	xs : [4!]i64 = [1, 2, 3, 4]
+	s := xs[1:9]
+	print(s.len)
+}

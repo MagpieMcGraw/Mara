@@ -171,7 +171,7 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     case t.tag[ty] == .Type_Slice && t.a[ty] != 0:
         count = Tree_Id(t.a[ty])
     }
-    if want == .Place || !lw_carves_place(k, storage) { lw_fail(k, n, "a take's place, or a take from no plain place") }
+    if want == .Place { lw_fail(k, n, "a take's place") }
     count_op := NO_VALUE
     if count != 0 { count_op = lw_bound(k, count, w, span) }
     su := tc_unparen(k, storage)
@@ -187,14 +187,6 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     taken := tc_node_type(k, n)
     v := graph_build_carve(b, span, tc_text(t.main[n]), taken, from, st, addressed, t.tag[su] == .Self, count_op, w)
     return {v = v, ok = true}
-}
-
-// Whether a take's storage is a plain place (`&s`, `&bytes[i]`, `s`): what
-// is walked where the carve is.
-lw_carves_place :: proc(k: ^TC, storage: Tree_Id) -> bool {
-    su := tc_unparen(k, storage)
-    if k.t.tag[su] == .Unary && build_tokens[k.t.main[su]].kind == .Ampersand { return lw_pure_place(k, Tree_Id(k.t.a[su])) }
-    return lw_pure_place(k, storage)
 }
 
 // `x := let(T, s)`, `x : T = slice([:n]T, s)` (tc_decl_take): the local bound

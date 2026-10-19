@@ -111,8 +111,8 @@ tc_number :: proc(k: ^TC, n: Tree_Id) -> Type {
 
 // What a use takes a value at, where the value's width is the use's to
 // decide (tc_open_node): a number, a constant's name, `void`, an operation
-// of such, an array literal of such, an if of such — typed `t`, and what it
-// is made of with it. (`t` a binding's open width: as the binding settles,
+// of such, an array literal of such (or a slice of one), an if of such —
+// typed `t`, and what it is made of with it. (`t` a binding's open width: as the binding settles,
 // graph_settled.)
 tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
     if n == 0 || t == nil || tc_open(t) || !tc_open_node(k, n) { return }
@@ -144,6 +144,8 @@ tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
         if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array {
             for e in tree_list(tr, tr.a[n]) { tc_settle(k, e, fa.elem) }
         }
+    case .Slice:
+        tc_settle(k, Tree_Id(tr.a[n]), t)   // (`[1, 2, 3][:]`: the array it views, of the slice's elements)
     case .If_Expr:
         then_n, else_n := tree_pair(tr, n)
         tc_settle(k, then_n, t)
@@ -169,6 +171,9 @@ tc_open_node :: proc(k: ^TC, n: Tree_Id) -> bool {
     case .Array, .If_Expr:
         if fa, is_array := t.(^Type_Fixed_Array); is_array { return tc_open(fa.elem) }
         return k.t.tag[n] == .If_Expr && tc_open(t)
+    case .Slice:
+        sl, is_slice := t.(^Type_Slice)
+        return is_slice && tc_open(sl.elem) && tc_open_node(k, Tree_Id(k.t.a[n]))
     }
     return false
 }
