@@ -9,7 +9,7 @@ use mara.memory
 // exe_path: the program's own file — its path whole (a drive's or
 // the root's at its start), its own name in it, the system's own spelling
 // (real_path's) — whatever main's args[0] says (run.sh starts it by a
-// relative path). Its directory, path_dir's Path, a file's name added: the
+// relative path). Its directory, get_dir's Path, a file's name added: the
 // file beside it opens.
 
 //@ expect-output: has its own name: true
@@ -32,7 +32,7 @@ main :: fun() -> i64 {
 	id, oe := file_open_read(path)
 	print("opens:", not oe)
 	file_close(id)
-	beside := path_dir(path)
+	beside := get_dir(path)
 	&beside + "exe_path.mara"
 	sid, se := file_open_read(beside)
 	print("beside it:", not se)

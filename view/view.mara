@@ -131,7 +131,7 @@ main :: fun(args: [][]utf8) -> i64 {
 		print("mara view: where its own file is, the system didn't say")
 		return 1
 	}
-	dir := path_dir(exe)
+	dir := get_dir(exe)
 	&ui.font + dir
 	&ui.font + "Inter.ttf"
 	&ui.layout_path + dir
@@ -146,7 +146,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	// (The compiler's directory: its stdlib and doc pages, for the docs. Its
 	// separator, the paths made from it.)
 	if args.len > 1 {
-		compiler_dir := path_dir(args[1])
+		compiler_dir := get_dir(args[1])
 		&ui.compiler_dir + compiler_dir
 		ui.sep = '/'
 		if compiler_dir.len > 0 do ui.sep = compiler_dir[compiler_dir.len - 1]

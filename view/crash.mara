@@ -39,7 +39,7 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 	if re do return false
 	if own {
 		lines_add(&ui.crash, "mara view itself crashed the last time it ran. Its report, from view/crash.txt:", STYLE_TITLE)
-		&ui.crash_dir + path_dir(path)
+		&ui.crash_dir + get_dir(path)
 	}
 	text : []utf8 = ui.crash_text[:]
 	end := text.len

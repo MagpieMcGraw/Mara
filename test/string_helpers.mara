@@ -20,9 +20,9 @@ use mara.os
 //@ expect-output: folded compare: 0 1 -1
 //@ expect-output: numbers: true true true true false false false true true
 //@ expect-output: ints: 0 7 -42 9223372036854775807 -9223372036854775808
-//@ expect-output: paths: [C:/a/b] [] [dir] [a/b]
+//@ expect-output: paths: [c.mara] [name] [dir] [c] []
 //@ expect-output: same: true true false
-//@ expect-output: path_dir: [C:/a/b/] [] [a/b/] [/]
+//@ expect-output: get_dir: [C:/a/b/] [] [a/b/] [/]
 //@ expect-output: backslashes: true true true true
 //@ expect-output: written: Ok Ok Ok [hello there]
 
@@ -66,16 +66,16 @@ main :: fun() {
 	big : i64 = 9223372036854775807
 	print("ints:", int_text(0), int_text(7), int_text(-42), int_text(big), int_text(-big - 1))
 
-	print("paths: [%] [%] [%] [%]", parent_dir("C:/a/b/c.mara"), parent_dir("name"), trim_separators("dir//"), parent_dir("a/b/c"))
+	print("paths: [%] [%] [%] [%] [%]", get_file("C:/a/b/c.mara"), get_file("name"), trim_separators("dir//"), get_file("a/b/c"), get_file("a/b/"))
 	print("same:", same_path("a/b/", "a/b"), same_path("a/b", "a/b"), same_path("a/b", "a/bc"))
-	print("path_dir: [%] [%] [%] [%]", path_dir("C:/a/b/c.mara"), path_dir("name"), path_dir("a/b/c"), path_dir("/x"))
-	// (A '\': on Windows a separator — '/' in what path_dir gives back — and
+	print("get_dir: [%] [%] [%] [%]", get_dir("C:/a/b/c.mara"), get_dir("name"), get_dir("a/b/c"), get_dir("/x"))
+	// (A '\': on Windows a separator — '/' in what get_dir gives back — and
 	// a path's case not minded; elsewhere part of a name.)
 	#if #windows {
-		print("backslashes:", parent_dir("a/b\\c") == "a/b", path_dir("a\\b\\c") == "a/b/", same_path("C:/Code/Mara/", "c:\\code\\mara"), trim_separators("x\\") == "x")
+		print("backslashes:", get_file("a/b\\c") == "c", get_dir("a\\b\\c") == "a/b/", same_path("C:/Code/Mara/", "c:\\code\\mara"), trim_separators("x\\") == "x")
 	}
 	#if #linux {
-		print("backslashes:", parent_dir("a/b\\c") == "a", path_dir("a\\b\\c").len == 0, not same_path("a/b", "a\\b"), trim_separators("x\\") == "x\\")
+		print("backslashes:", get_file("a/b\\c") == "b\\c", get_dir("a\\b\\c").len == 0, not same_path("a/b", "a\\b"), trim_separators("x\\") == "x\\")
 	}
 
 	// Text written whole; an empty one writes nothing, and that's no failure.

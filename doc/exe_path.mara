@@ -7,13 +7,13 @@
 // program's file, its path whole and as the system has it (real_path's: its
 // letters' case as on disk, a link followed to the file itself), however
 // it was started — so the files beside it are the ones beside the program's
-// own file, not beside a link to it. path_dir gives its directory: the
+// own file, not beside a link to it. get_dir gives its directory: the
 // path up to its last separator, the separator kept, for a file's name to
 // go after. Its separators are '/', on Windows too (which takes either), so
 // a path is joined with "/" everywhere.
 //
 // It gives back a Path: up to 512 characters, its room past the path there
-// to add to; path_dir gives one too, the directory, for a file's name to go
+// to add to; get_dir gives one too, the directory, for a file's name to go
 // after. Too_Large when the path is longer.
 module exe_path
 
@@ -33,7 +33,7 @@ main :: fun() {
 	}
 
 	// Its directory, the separator at its end.
-	dir := path_dir(path)
+	dir := get_dir(path)
 	print("this program's directory ends with a separator:", dir.len > 0)
 
 	// A file beside it: the directory, then the file's name.

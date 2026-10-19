@@ -58,21 +58,11 @@ SEEK_SET :: 0   // relative to the start of the file
 SEEK_CUR :: 1   // relative to the current position
 SEEK_END :: 2   // relative to the end of the file
 
-// The directory a path is in: the path up to its last separator, without
-// it. Empty for a name alone.
-parent_dir :: fun(path: []utf8) -> []utf8 {
-	end : i64 = 0
-	for i in 0 .. path.len {
-		if path_separator(path[i]) do end = i
-	}
-	return path[0 : end]
-}
-
 // Returns the file's name at the end of a path: the part after its last
 // separator. A path with no separator is returned whole; one ending in a
 // separator gives an empty slice. The result is a slice of the path, not a
 // copy.
-file_name :: fun(path: []utf8) -> []utf8 {
+get_file :: fun(path: []utf8) -> []utf8 {
 	start : i64 = 0
 	for i in 0 .. path.len {
 		if path_separator(path[i]) do start = i + 1
@@ -90,13 +80,12 @@ path_separator :: fun(ch: utf8) -> bool {
 	return false
 }
 
-// The directory a path is in, its separator kept at the end: a Path, for a
-// file's name to go after — a file beside it, the program's own files beside
-// its exe_path: `dir := path_dir(exe)`, `&dir + "font.ttf"`. Empty
-// for a name alone. (parent_dir: without the separator, a view of the path.)
-// A directory longer than a Path holds stops the program, as an add past
-// its room does.
-path_dir :: fun(path: []utf8) -> Path {
+// Returns the directory a path is in, as a Path of its own: the path up to
+// and including its last separator ('\'s made '/' on Windows), so a file's
+// name can go after it: `dir := get_dir(exe)`, `&dir + "font.ttf"`. A name
+// alone gives an empty Path. A directory longer than a Path holds stops the
+// program.
+get_dir :: fun(path: []utf8) -> Path {
 	end : i64 = 0
 	for ch, i in path {
 		if path_separator(ch) do end = i + 1
@@ -529,7 +518,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// relative path, a link), unlike main's args[0], which is what its
 	// starter wrote — for the files that come with it, beside it: a Path, to
 	// cut to its directory and add a file's name to (`exe.len =
-	// path_dir(exe).len`, `&exe + "font.ttf"`). Too_Large when it's longer
+	// get_dir(exe).len`, `&exe + "font.ttf"`). Too_Large when it's longer
 	// than a Path holds; Read_Failed when the system won't say.
 	// (GetModuleFileNameA: in the system's code page, as the other files'
 	// functions here take paths; the folders spelled as the program was
@@ -1289,7 +1278,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// main's args[0], which is what its starter wrote — for the files
 	// that come with it, beside it: a Path, to cut to its directory and add
-	// a file's name to (`exe.len = path_dir(exe).len`, `&exe + "font.ttf"`).
+	// a file's name to (`exe.len = get_dir(exe).len`, `&exe + "font.ttf"`).
 	// Too_Large when it's longer than a Path holds; Read_Failed when the
 	// system won't say. (/proc/self/exe: a link to the program's file, the
 	// kernel's own path for it.)

@@ -292,11 +292,8 @@ docs_pin :: fun(ui: ^Ui) {
 // stdlib" — nothing when it's the stdlib's own.
 where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[300]utf8) {
 	if dir.len == 0 or dir == "." or stdlib_dir(ui, dir) do return
-	trimmed_dir := trim_separators(dir)
-	from := parent_dir(trimmed_dir).len
-	if from > 0 do from += 1
 	&status^ + ", in "
-	&status^ + trimmed_dir[from : trimmed_dir.len]
+	&status^ + get_file(trim_separators(dir))
 	&status^ + " and the stdlib"
 }
 
@@ -372,7 +369,7 @@ stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 	doc : [1000]utf8
 	&doc + ui.compiler_dir
 	&doc + "doc"
-	return same_path(dir, code) or same_path(dir, doc) or same_path(parent_dir(trim_separators(dir)), code)
+	return same_path(dir, code) or same_path(dir, doc) or same_path(get_dir(trim_separators(dir)), code)
 }
 
 // The .mara files in a directory read into d.source, as many as fit — a

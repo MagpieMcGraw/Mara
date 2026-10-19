@@ -1,0 +1,29 @@
+module path_parts
+
+use mara.core
+use mara.os
+
+//@ expect-output: [lexer.mara] [lexer.mara] [lexer.mara] [] []
+//@ expect-output: through UFCS: lexer.mara C:/Code/Mara3/
+
+// get_file: the part of a path after its last separator; get_dir, the
+// rest. Either called on a path too, `path.get_file()`.
+
+main :: () {
+	a := get_file("C:/Code/Mara3/lexer.mara")
+	b := get_file("C:\\Code\\Mara3\\lexer.mara")
+	c := get_file("lexer.mara")
+	d := get_file("C:/Code/Mara3/")
+	e := get_file("")
+	out : [200]utf8
+	for part, i in [5!][]utf8{a, b, c, d, e} {
+		if i > 0 do &out + " "
+		&out + "["
+		&out + part
+		&out + "]"
+	}
+	print(out[:])
+
+	path : Path = "C:/Code/Mara3/lexer.mara"
+	print("through UFCS:", path.get_file(), path.get_dir())
+}
