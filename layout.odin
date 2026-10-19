@@ -29,7 +29,10 @@ type_layout :: proc(t: Type) -> Layout {
         return {4, 4}   // an i32: its set's id and its tag
     case Type_Void:
         return {0, 1}   // `{}`
-    case Type_CString, ^Type_Ptr:
+    case ^Type_Ptr:
+        if slice_ref_of(v) != nil { return slice_ref_layout() }
+        return {word_bytes(), word_bytes()}
+    case Type_CString:
         return {word_bytes(), word_bytes()}
     case ^Type_Scope:
         if v.kind != .Struct { return {word_bytes(), word_bytes()} }   // a fun value: its address
@@ -57,6 +60,26 @@ type_layout :: proc(t: Type) -> Layout {
         return {8, 8}
     }
     return {8, 8}
+}
+
+// A ^[]T — a reference to a slice's or a list's elements, by value: where
+// its len is, its cap, its data (`{ ptr, i64, ptr }`: its cap and data where
+// a slice header's are).
+slice_ref_layout :: proc() -> Layout {
+    l := Layout{0, 1}
+    layout_field(&l, {word_bytes(), word_bytes()})
+    layout_field(&l, {8, 8})
+    layout_field(&l, {word_bytes(), word_bytes()})
+    return layout_close(l)
+}
+
+// The slice a ^[]T refers to (nil: t is no ^[]T).
+slice_ref_of :: proc(t: Type) -> ^Type_Slice {
+    pt, is_ptr := distinct_base(t).(^Type_Ptr)
+    if !is_ptr || pt.elem == nil { return nil }
+    sl, is_slice := distinct_base(pt.elem).(^Type_Slice)
+    if !is_slice { return nil }
+    return sl
 }
 
 word_bytes :: proc() -> int {

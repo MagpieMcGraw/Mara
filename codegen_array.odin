@@ -230,6 +230,42 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr, len_val, cap_val: Val) -> V
     return slice_alloca
 }
 
+// A header's cap and data where it is, by its type: a slice's header holds
+// them, as a list's does.
+hdr_cap_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
+    return emit_header_field(g, at, SLICE.cap)
+}
+
+hdr_data_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
+    return emit_header_field(g, at, SLICE.ptr)
+}
+
+// A ^[]T made (slice_ref_ir_type): where the len is, the cap, the data — in
+// a temporary of its own (an aggregate is where it is). A slice's: its
+// header's address, cap -1 (slice_ref_to).
+emit_slice_ref :: proc(g: ^Codegen, len_at, cap, data: Val) -> Val {
+    ref := fresh_tmp(g)
+    emit_alloca(g, ref, slice_ref_ir_type())
+    at := fresh_tmp(g)
+    emit_slice_gep(g, at, ref, SLICE.len)
+    emit_store(g, IR_PTR, len_at, at)
+    emit_header_set(g, ref, SLICE.cap, cap)
+    emit_header_set(g, ref, SLICE.ptr, data)
+    return ref
+}
+
+// A ^[]T to the header at `at` of type t: a list's, its len's address, its
+// cap and data; a slice's, its header's address and cap -1 (its cap and data
+// read from it when used).
+slice_ref_to :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
+    if _, is_list := distinct_base(t).(^Type_Partial_Array); is_list {
+        len_at := fresh_tmp(g)
+        emit_slice_gep(g, len_at, at, SLICE.len)
+        return emit_slice_ref(g, len_at, hdr_cap_at(g, at, t), hdr_data_at(g, at, t))
+    }
+    return emit_slice_ref(g, at, ir_int(-1), IR_NULL)
+}
+
 // A slice header's fields stored at `at`: ptr, len, cap.
 emit_slice_header_at :: proc(g: ^Codegen, at, data_ptr, len_val, cap_val: Val) {
     emit_header_set(g, at, SLICE.ptr, data_ptr)
@@ -651,10 +687,9 @@ emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: Val) {
 // ---------------------------------------------------------------------------
 
 
-// A new `.len` for the slice header at `hdr` is within 0 ..= its cap, or the
+// A new `.len` for a header is within 0 ..= its cap (cap_val), or the
 // program stops.
-emit_slice_len_check :: proc(g: ^Codegen, hdr, val: Val, span: Span) {
-    cap_val := emit_header_field(g, hdr, SLICE.cap)
+emit_slice_len_check :: proc(g: ^Codegen, cap_val, val: Val, span: Span) {
 
     w := SLICE_LEN_IR
     ok_label   := fresh_label(g, "slice_len.ok")

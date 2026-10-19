@@ -26,6 +26,17 @@ Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
 
+// A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
+// the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
+// address at SLICE.len. A list's: its len's address, its cap, its data, none
+// of which change. A slice's: its header's address (its len's), and cap -1 —
+// its cap and data read from the header, which a whole slice written through
+// the reference replaces.
+slice_ref_ir_type :: proc() -> Ir_Type {
+    fields := [3]Ir_Type{IR_PTR, SLICE_LEN_IR, IR_PTR}
+    return ir_struct_type(fields[:])
+}
+
 // A `[N]T` partial array's IR type: the header, then its elements.
 partial_array_ir_type :: proc(elem_ir: Ir_Type, cap: int) -> Ir_Type {
     fields := [4]Ir_Type{SLICE_LEN_IR, SLICE_LEN_IR, IR_PTR, ir_array_type(cap, elem_ir)}
@@ -475,7 +486,9 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     case Type_Utf8:         return IR_I8
     case Type_Byte:         return IR_I8
     case Type_CString:      return IR_PTR
-    case ^Type_Ptr:         return IR_PTR
+    case ^Type_Ptr:
+        if slice_ref_of(v) != nil { return slice_ref_ir_type() }
+        return IR_PTR
     case ^Type_Scope:
         if v.kind == .Struct {
             return ir_class_type(&v.sd)

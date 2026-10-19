@@ -84,8 +84,9 @@ main :: fun() {
 
 	c : [4]i64
 	c.len = 4
+	cs : []i64 = c[:]   // (a slice, written whole through its pointer: a list stays where it is)
 	three : [3!]i64
-	sum += header_writes(&c, three[:])                // 54
+	sum += header_writes(&cs, three[:])               // 54
 
 	cells : [4!]i64
 	g := Grid{cells = &cells}
@@ -105,8 +106,8 @@ main :: fun() {
 	view : []i64 = q^
 	pa := &a
 	whole := pa^
-	sum += view.len + whole[1] + whole.len            // 168 + 3 + 5 + 4 = 180
+	sum += view.len + whole[1] + whole.len            // 168 + 4 + 5 + 4 = 181
 
-	assert(sum == 180)
+	assert(sum == 181)
 	print("ptr_slice", sum)
 }
