@@ -181,6 +181,8 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     empty := fd == nil && ty != 0 && tr.tag[ty] != .Ident && tr.tag[ty] != .Field && is_partial_array(t)
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
+    _, to_list := distinct_base(t).(^Type_Partial_Array)
+    list_fill := fd == nil && to_list && tr.tag[n] == .Broadcast   // (`all v` into a list where it goes: tc_literal)
     // (A named struct or union — `type P`, `distinct U` — built as its base.)
     ts, _ := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
@@ -189,7 +191,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !empty {
+    } else if fa == nil && fd == nil && !list_fill && !empty {
         sd = &ts.sd
     }
     d := dest
@@ -198,9 +200,9 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     placed := want != .Into && temp_span != {}
     at := temp_span if into_temp || placed else span
     gl: ^Graph_Literal
-    broadcast := (fa != nil || fd != nil) && tc_is_broadcast(k, n)
+    broadcast := (fa != nil || fd != nil || list_fill) && tc_is_broadcast(k, n)
     if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
-    if fa != nil || fd != nil {
+    if fa != nil || fd != nil || list_fill {
         if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
     } else if empty {
         gl = graph_build_literal(b, span, name, zero, t, d)
@@ -209,7 +211,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         gl = graph_build_literal(b, span, name, zero, t, d)
     }
     if gl == nil && !broadcast { lw_fail(k, n, "a literal the graph builds no way") }
-    if fd != nil {
+    if fd != nil || list_fill {
         lw_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, d)
     } else if fa != nil {
         lw_array_entries(k, n, entries, t, gl, d, broadcast)

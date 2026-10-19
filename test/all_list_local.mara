@@ -1,0 +1,24 @@
+module all_list_local
+
+use mara.core
+
+//@ expect-output: local: 4 5 | numbers: 6 7 | field: 3 5 | fixed: 5
+
+// `all v` fills a list where it goes, a local's as a field's default: every
+// element v, its len its room.
+
+State :: struct {
+	n: i64 = 5
+}
+
+Holder :: struct {
+	states: [3]State = all State()
+}
+
+main :: () {
+	listed : [4]State = all State()
+	nums : [6]i64 = all 7
+	h := Holder()
+	fixed : [3!]State = all State()
+	print("local: % % | numbers: % % | field: % % | fixed: %", listed.len, listed[3].n, nums.len, nums[5], h.states.len, h.states[2].n, fixed[2].n)
+}

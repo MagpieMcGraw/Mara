@@ -284,7 +284,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, type_name(ut))
             return Type_Error{}
         }
-        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint)) {
+        // (`all v` into a list, as a field's default goes: its every element.)
+        _, list_fill := distinct_base(hint).(^Type_Partial_Array)
+        list_fill = list_fill && tr.tag[n] == .Broadcast
+        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint) && !list_fill) {
             tc_unsupported(k, n, "a literal typed by its use")
             return Type_Error{}
         }
@@ -356,11 +359,13 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
+    _, to_list := distinct_base(t).(^Type_Partial_Array)
+    list_fill := fd == nil && to_list && tr.tag[n] == .Broadcast   // (`all v` into a list where it goes)
     // (A named struct or union — `type P`, `distinct P` — built as its base.)
     ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
-    if fa == nil && vst == nil && fd == nil && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
+    if fa == nil && vst == nil && fd == nil && !list_fill && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
     }
@@ -368,7 +373,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !empty {
+    } else if fa == nil && fd == nil && !list_fill && !empty {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
     }
@@ -380,6 +385,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     if fd != nil {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, fd)
+    } else if list_fill {
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[n]), t, name)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name)
     } else if !zero && !empty {
