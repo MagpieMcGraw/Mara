@@ -1,0 +1,21 @@
+module literal_gap_two_neg
+
+use mara.core
+
+//@ expect-fail: Token has 4 fields but only 2 were set. offset and len were unset.
+
+// A literal that leaves several fields unset: one error for it, naming them
+// all.
+
+Token :: struct {
+	kind:   i64
+	file:   i64
+	offset: i64
+	len:    i64
+}
+
+show :: fun(t: Token) { print(t.kind, t.len) }
+
+main :: fun() {
+	show(Token{1, 0})
+}

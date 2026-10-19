@@ -248,11 +248,13 @@ lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body,
     }
     owner := sd.source_name if sd.source_name != "" else sd.name
     if vst != nil && variant != "" { owner = variant }
+    gaps := make([dynamic]Literal_Gap, context.temp_allocator)
     for f in user {
         if given[f.name] { continue }
         if _, pa := distinct_base(f.type_).(^Type_Partial_Array); pa { continue }
-        graph_note_literal_gap(b, Literal_Gap{tree_span(tr, n), f.name, owner, vst != nil})
+        append(&gaps, Literal_Gap{tree_span(tr, n), f.name, owner, len(user)})
     }
+    if len(gaps) > 0 { graph_note_literal_gaps(b, gaps[:]) }
 }
 
 // `all v` into an array (tc_broadcast_fill): v, then the fill.

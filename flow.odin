@@ -79,6 +79,28 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
     flow_void(g, found)
 }
 
+// A literal's fields left unset, said together — "Token has 4 fields but
+// only 3 were set. len was unset." (the user's words). (A generic's
+// instances note the same literal again: each field said once.)
+flow_report_gaps :: proc(c: ^Checker, gaps: []Literal_Gap) {
+    names := make([dynamic]string, context.temp_allocator)
+    for g in gaps { if !slice.contains(names[:], g.field) { append(&names, g.field) } }
+    total := gaps[0].fields
+    set := total - len(names)
+    given: string
+    switch {
+    case set <= 0: given = "none were set"
+    case set == 1: given = "only 1 was set"
+    case:          given = fmt.tprintf("only %d were set", set)
+    }
+    unset := names[0]
+    if len(names) > 1 {
+        unset = fmt.tprintf("%s and %s", strings.join(names[:len(names) - 1], ", ", context.temp_allocator), names[len(names) - 1])
+    }
+    check_error(c, gaps[0].span, TYPE_LITERAL_LEAVES_UNSET, gaps[0].owner, total, "field" if total == 1 else "fields",
+                given, unset, "was" if len(names) == 1 else "were")
+}
+
 // Every code's findings reported, check by check.
 flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass, fns: []^Type_Scope, void_defaults: map[Span]bool) {
     // (Each code is one pass's: their findings, together.)
@@ -102,8 +124,12 @@ flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass
         // (Generic instances share their template's spans: check_error
         // reports one once — and the checks that say so, once a span.)
         for span in checked.code.unreachable { check_error(c, span, TYPE_UNREACHABLE_CODE) }
-        for gap in checked.code.literal_gaps {
-            check_error(c, gap.span, TYPE_VARIANT_LITERAL_LEAVES_UNSET if gap.variant else TYPE_LITERAL_LEAVES_UNSET, gap.field, gap.owner, gap.owner)
+        gaps := checked.code.literal_gaps[:]
+        for i := 0; i < len(gaps); {
+            j := i + 1
+            for j < len(gaps) && gaps[j].span == gaps[i].span { j += 1 }
+            flow_report_gaps(c, gaps[i:j])
+            i = j
         }
         of_codes(c, fp, codes, .Literal_Range)
         of_codes(c, fp, codes, .Unused)

@@ -3424,18 +3424,19 @@ graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, s
 }
 
 // A literal's field it gives no value, where nothing can give it one after:
-// reported with flow's findings (TYPE_LITERAL_LEAVES_UNSET).
+// reported with flow's findings, a literal's together (flow_report_gaps).
 Literal_Gap :: struct {
-    span:    Span,
-    field:   string,
-    owner:   string,   // its struct's (or variant's) name, as written
-    variant: bool,
+    span:   Span,
+    field:  string,
+    owner:  string,   // its struct's (or variant's) name, as written
+    fields: int,      // how many fields it has
 }
 
-graph_note_literal_gap :: proc(b: ^Graph_Builder, gap: Literal_Gap) {
+// A literal's gaps, all at once: one after another in the list.
+graph_note_literal_gaps :: proc(b: ^Graph_Builder, gaps: []Literal_Gap) {
     pc := &b.prog.pc
     if pc.lock != nil { sync.mutex_lock(pc.lock) }
-    append(&pc.literal_gaps, gap)
+    append(&pc.literal_gaps, ..gaps)
     if pc.lock != nil { sync.mutex_unlock(pc.lock) }
 }
 
