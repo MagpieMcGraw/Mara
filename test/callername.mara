@@ -2,13 +2,16 @@ module callername
 
 // #caller_name resolves (at the call site) to the caller's enclosing function
 // name — now read from the durable Type_Scope instead of a Type_Env mirror.
-// Guards that it's the SOURCE name ("helper"), not the flat name.
+// Guards that it's the SOURCE name ("helper"), not the flat name. (An atom:
+// its text where a []utf8 goes, printed as itself.)
+//@ expect-output: callername ok helper
 
-who    :: fun(n: ^byte = #caller_name) -> ^byte { return n }
-helper :: fun() -> ^byte { return who() }      // caller is `helper`
+who    :: fun(n: atom = #caller_name) -> atom { return n }
+helper :: fun() -> atom { return who() }        // caller is `helper`
+first  :: fun(s: []utf8) -> utf8 { return s[0] }
 
 main :: fun() {
-	assert(utf8(who()^) == 'm')      // called from main   -> "main"
-	assert(utf8(helper()^) == 'h')   // who's caller is helper -> "helper"
-	print("callername ok")
+	assert(first(who()) == 'm')      // called from main   -> "main"
+	assert(first(helper()) == 'h')   // who's caller is helper -> "helper"
+	print("callername ok", helper())
 }

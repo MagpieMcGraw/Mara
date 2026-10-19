@@ -5,6 +5,8 @@ import "core:mem/virtual"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:sync"
+import "base:runtime"
 
 // The type checker, on the flat tree (design/flat_tree.md). It fills the
 // Checked_Program — the symbol table, the Type_Scopes, the diagnostics —
@@ -476,6 +478,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         // (Each constant's names, by its value, for the builder to name tables.)
         for key, kc in k.consts { mid.prog.constant_names[key] = kc.sid }
         checked.code = build_program_graph(mid.prog)
+        atoms_for_arena(checked)
         // (The analyses ran as each code was lowered: their time is
         // analysis's, with the report of what they found.)
         if perf != nil { perf_timer_mark_carry(perf, "analysis", mid.analysed) }
@@ -1052,6 +1055,52 @@ tc_sid :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
 }
 
 // What a name refers to, as checked (a declaration's name: itself).
+// An atom's id: its text's place in the program's table, given it the first
+// time it's asked for (lowering's workers may ask at once).
+checked_atom :: proc(checked: ^Checked_Program, text: string) -> u32 {
+    sync.mutex_lock(&checked.atoms_lock)
+    defer sync.mutex_unlock(&checked.atoms_lock)
+    if id, ok := checked.atom_ids[text]; ok { return id }
+    heap := runtime.heap_allocator()
+    if checked.atom_ids == nil { checked.atom_ids = make(map[string]u32, 16, heap) }
+    if checked.atoms == nil { checked.atoms = make([dynamic]string, 0, 16, heap) }
+    kept := strings.clone(text, heap)
+    id := u32(len(checked.atoms))
+    append(&checked.atoms, kept)
+    checked.atom_ids[kept] = id
+    return id
+}
+
+// The atoms the program's own arena allocations name — a big local's name
+// and where it is, a big temporary's ("temp") — each given its place now, in
+// the codes' written order, when the arena's alloc takes them (Arena_Debug's
+// report): codegen, on several threads, finds them there (emit_arena_bump).
+atoms_for_arena :: proc(checked: ^Checked_Program) {
+    alloc_type := checked.table.scope_allocator_type
+    if alloc_type == nil { return }
+    fn := alloc_type.functions["alloc"] or_else nil
+    if fn == nil || len(fn.params) <= 2 { return }
+    for pg in checked.code.codes {
+        if pg == nil { continue }
+        for id := Node_Id(1); id <= pg.end; id += 1 {
+            #partial switch pg.kind[id] {
+            case .Local:
+                if !routes_to_arena(graph_type(pg, id)) { continue }
+                checked_atom(checked, graph_name(pg, id))
+                checked_atom(checked, span_location(graph_origin(pg, id)))
+            case .Op:
+                if graph_op_of(pg, id) == .Arena_Alloc {
+                    checked_atom(checked, graph_name(pg, graph_refers(pg, graph_operands(pg, id)[0].op)))
+                    checked_atom(checked, span_location(graph_origin(pg, id)))
+                } else if t := graph_type(pg, id); t != nil && routes_to_arena(t) {
+                    checked_atom(checked, "temp")
+                    checked_atom(checked, span_location(graph_origin(pg, id)))
+                }
+            }
+        }
+    }
+}
+
 tc_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
     if n == 0 { return {} }
     return annot_ref(k.annot, tc_instance(k, n), n)
@@ -1098,6 +1147,13 @@ tc_set_callee :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope) {
 Checked_Program :: struct {
     // Shared symbol table (type definitions, constants, generics, etc.)
     table:          ^SymbolTable,
+
+    // The program's atoms — `#caller_name`'s, `#caller_span`'s text — each
+    // text once, its id its place here: the table codegen writes into the
+    // program (__mara_atoms). Handed out as code is lowered (checked_atom).
+    atoms:          [dynamic]string,
+    atom_ids:       map[string]u32,
+    atoms_lock:     sync.Mutex,
 
     // Its names (design/name_resolution.md): the resolver's, and what each
     // declaration meant once the check was done (checked_binding) — mara

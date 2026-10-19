@@ -148,6 +148,7 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
     case "byte":    return Type_Byte{}, true
     case "void":    return Type_Void{}, true
     case "err":     return Type_Err{}, true
+    case "atom":    return Type_Atom{}, true
     case "cstring": return Type_CString{}, true
     case "i8":      return Type_Numeric{kind = .Signed,   bits = 8}, true
     case "i16":     return Type_Numeric{kind = .Signed,   bits = 16}, true

@@ -2,6 +2,9 @@ module runtime_checks
 
 use mara.core
 use mara.os
+use mara.memory
+
+#allocator Arena_Debug(64 * KB)
 
 //@ expect-output: past exit 1
 //@ expect-output: slice [1:9] of 'xs' out of bounds: needs 0 <= low <= high <= 4
@@ -33,6 +36,10 @@ use mara.os
 //@ expect-output: overfill exit 1
 //@ expect-output: 5 items into a list with room for 4
 //@ expect-output: slicefill exit 1
+//@ expect-output: badatom exit 1
+//@ expect-output: atom 9999 is none of the program's
+//@ expect-output: oom exit 1
+//@ expect-output: Failed allocation: second, 40008 bytes in
 //@ expect-output: a slice written whole through a ^[]T that refers to a list
 //@ expect-output: in bounds: 2 3 rem 0 0
 //@ expect-output: shifts: 8 -4 128
@@ -48,9 +55,10 @@ use mara.os
 // a match arm's binding is never read once its union holds another variant,
 // a list's len written over as bytes is never trusted past its room, and a
 // list isn't repointed through a ^[]T, nor filled past its room (a list made
-// another's, `Short(big)`, a slice into one).
+// another's, `Short(big)`, a slice into one); an atom read from bytes is one
+// of the program's; Arena_Debug, out of room, names each allocation.
 
-Case :: union {past, crossed, cap, run, divmin, shift, negshift, ftoi, nan, swap, clobber, element, byval, loop, forgelen, repoint, overfill, slicefill, none = 0}
+Case :: union {past, crossed, cap, run, divmin, shift, negshift, ftoi, nan, swap, clobber, element, byval, loop, forgelen, repoint, overfill, slicefill, badatom, oom, none = 0}
 
 Thing :: union {
 	Ref { p: ^i64 }
@@ -159,6 +167,16 @@ child :: (c: Case) {
 		six : [6!]i64
 		into : [4]i64 = six[:]
 		print(into.len)
+	badatom
+		bytes : [8]byte
+		bytes.len = 8
+		bytes[0:4] = u32(9999)
+		forged : atom = bytes[0:4]
+		print(forged)
+	oom
+		first : [40000]byte
+		second : [40000]byte
+		print(first.len, second.len)
 	none
 	}
 }
@@ -176,7 +194,7 @@ run_case :: (exe: []utf8, name: []utf8) {
 		return
 	}
 	process_close_input(&p)
-	out : [400]byte
+	out : [4000]byte
 	chunk : [64]byte
 	for true {
 		re := file_read(p.output, &chunk)
@@ -212,6 +230,8 @@ main :: (args: [][]utf8) {
 	run_case(args[0], "repoint")
 	run_case(args[0], "overfill")
 	run_case(args[0], "slicefill")
+	run_case(args[0], "badatom")
+	run_case(args[0], "oom")
 
 	// What stays in bounds runs as it did.
 	xs : [4!]i64 = [1, 2, 3, 4]

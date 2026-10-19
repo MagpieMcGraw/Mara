@@ -1509,6 +1509,7 @@ view_kind :: proc(to, from: Type) -> View_Kind {
     _, to_ptr := distinct_base(to).(^Type_Ptr)
     _, from_ptr := distinct_base(from).(^Type_Ptr)
     if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return .Header }
+    if _, from_atom := distinct_base(from).(Type_Atom); from_atom && !to_ptr && graph_header_of(to) { return .Header }   // (its text, looked up)
     _, to_slice := distinct_base(to).(^Type_Slice)
     _, from_array := distinct_base(from).(^Type_Fixed_Array)
     return .Slice if to_slice && from_array else .None
@@ -2445,7 +2446,8 @@ graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read
     // A cast only where one can be taken — a number's widening, a partial
     // array's header — and a slice only of a fixed array's place.
     _, _, num := numeric_info(graph_settled(t))
-    if !num && !graph_partial_of(t) || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
+    _, atom := distinct_base(t).(Type_Atom)
+    if !num && !graph_partial_of(t) && !atom || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
     to := graph_widen_to(w)
     if !w.binary {
         #partial switch view_kind(to, t) {

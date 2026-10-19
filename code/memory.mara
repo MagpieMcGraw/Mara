@@ -83,8 +83,8 @@ Arena_Basic :: class(cap: i64) {
 	alloc :: fun(
 		a: ^Self,
 		size: i64,
-		name: ^byte = #caller_name,
-		span: ^byte = #caller_span) -> []byte
+		name: atom = #caller_name,
+		span: atom = #caller_span) -> []byte
 	{
 		off := (a.base.len + 15) & -16
 		end := off + size
@@ -117,8 +117,8 @@ Arena_Basic :: class(cap: i64) {
 	dump :: fun(
 		a: ^Self,
 		failed_size: i64,
-		failed_name: ^byte,
-		failed_span: ^byte)
+		failed_name: atom,
+		failed_span: atom)
 	{
 		print(oom_string,
 			a.capacity, a.base.len, a.capacity - a.base.len,
@@ -160,8 +160,8 @@ Arena_Debug :: class(cap: i64) {
 	AllocHeader :: class{
 		prev: i64
 		size: i64
-		name: ^byte
-		span: ^byte
+		name: atom   // (where it was asked for: by id, so the header is plain data)
+		span: atom
 	}
 	// AllocHeader's size in bytes.
 	HEADER_SIZE :: size_of(AllocHeader)
@@ -171,8 +171,8 @@ Arena_Debug :: class(cap: i64) {
 	alloc :: fun(
 		a: ^Self,
 		size: i64,
-		name: ^byte = #caller_name,
-		span: ^byte = #caller_span) -> []byte
+		name: atom = #caller_name,
+		span: atom = #caller_span) -> []byte
 	{
 		off := (a.base.len + 15) & -16
 		cap := a.capacity
@@ -217,8 +217,8 @@ Arena_Debug :: class(cap: i64) {
 	dump :: fun(
 		a: ^Self,
 		failed_size: i64,
-		failed_name: ^byte,
-		failed_span: ^byte)
+		failed_name: atom,
+		failed_span: atom)
 	{
 		print(oom_string,
 			a.capacity, a.base.len, a.capacity - a.base.len,

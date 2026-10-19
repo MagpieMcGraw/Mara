@@ -1042,6 +1042,38 @@ program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
     gls := make([dynamic]Ir_Global)
     linkage: Ir_Linkage = .Default if own else .External
     append(&gls, Ir_Global{name = "__mara_arena", linkage = linkage, ty = IR_PTR, init = {v = IR_NULL}})
+    // The program's atoms (checked_atom): each one's text, a 0 after it, the
+    // table of them (its address, its length) and their count — in the module
+    // that owns the program's globals, written once every code is made; the
+    // others name them. (No atom: a table of one empty entry, count 0.)
+    {
+        n := len(checked.atoms)
+        entry_t := atom_entry_ir_type()
+        table_t := ir_array_type(max(n, 1), entry_t)
+        if own {
+            entries := make([]Ir_Const, max(n, 1))
+            for text, i in checked.atoms {
+                name := fmt.aprintf("__mara_atom.%d", i)
+                append(&gls, Ir_Global{name = name, unnamed = true, constant = true, ty = ir_array_type(len(text) + 1, IR_I8),
+                                       init = {kind = .Bytes, bytes = strings.concatenate({text, "\x00"})}})
+                fields := make([]Ir_Const, 2)
+                fields[0] = ir_const(IR_PTR, ir_global(name))
+                fields[1] = ir_const(IR_I64, ir_int(len(text)))
+                entries[i] = {kind = .Struct, ty = entry_t, parts = fields}
+            }
+            if n == 0 {
+                fields := make([]Ir_Const, 2)
+                fields[0] = ir_const(IR_PTR, IR_NULL)
+                fields[1] = ir_const(IR_I64, ir_int(0))
+                entries[0] = {kind = .Struct, ty = entry_t, parts = fields}
+            }
+            append(&gls, Ir_Global{name = "__mara_atoms", constant = true, ty = table_t, init = {kind = .Array, ty = table_t, parts = entries}})
+            append(&gls, Ir_Global{name = "__mara_atom_count", constant = true, ty = IR_I64, init = ir_const(IR_I64, ir_int(n))})
+        } else {
+            append(&gls, Ir_Global{name = "__mara_atoms", linkage = .External, constant = true, ty = table_t})
+            append(&gls, Ir_Global{name = "__mara_atom_count", linkage = .External, constant = true, ty = IR_I64})
+        }
+    }
     if own && "main" in checked.functions {
         if ty, has := arena_ir_type(checked); has {
             append(&gls, Ir_Global{name = "__mara_arena_storage", ty = ty, init = {v = IR_ZERO}})

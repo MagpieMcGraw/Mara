@@ -1057,7 +1057,7 @@ tc_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, span: Span) -> Type {
 tc_hash_name :: proc(k: ^TC, n: Tree_Id) -> Type {
     switch tc_text(Token_Id(k.t.a[n])) {
     case "caller_name", "caller_span":
-        return type_ptr(Type_Byte{})
+        return Type_Atom{}
     case "web", "native", "windows", "linux", "mac", "profile_memory":
         return Type_Bool{}
     }

@@ -1,0 +1,31 @@
+module atoms
+
+use mara.core
+
+//@ expect-output: asked by main at atoms.mara:23:7
+//@ expect-output: asked by helper at atoms.mara:20:31
+//@ expect-output: same: true different: false len: 4 size: 4
+//@ expect-output: through bytes: main
+
+// An atom: constant text by id — 4 bytes, plain data. `#caller_name` and
+// `#caller_span`, as defaults, are the calling fun's name and where the
+// call is; an atom prints as its text, goes where a []utf8 does, compares as
+// its id, and comes back out of bytes it was written into.
+
+where_from :: (who: atom = #caller_name, at: atom = #caller_span) -> atom {
+	print("asked by", who, "at", at)
+	return who
+}
+text_len :: (s: []utf8) -> i64 { return s.len }
+helper :: () -> atom { return where_from() }
+
+main :: () {
+	a := where_from()
+	b := helper()
+	print("same:", a == a, "different:", a == b, "len:", text_len(a), "size:", size_of(atom))
+	buf : [16]byte
+	buf.len = 16
+	buf[0:4] = a
+	back : atom = buf[0:4]
+	print("through bytes:", back)
+}

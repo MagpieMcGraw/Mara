@@ -489,7 +489,7 @@ flow_can_be_unset :: proc(base: Type) -> bool {
     #partial switch _ in base {
     case ^Type_Ptr, ^Type_Slice: return true
     case Type_Error:             return false
-    case Type_Bool, Type_Utf8, Type_Byte, Type_CString, Type_Err: return true
+    case Type_Bool, Type_Utf8, Type_Byte, Type_CString, Type_Err, Type_Atom: return true
     }
     return is_numeric(base)
 }

@@ -373,9 +373,9 @@ is_ptr_type :: proc(t: Type) -> bool {
     return is_ptr
 }
 
-// `#caller_name`, `#caller_span` (tc_hash_name): text — the enclosing fun's
-// name, where it is (a default's: the call's, `span`); `#web` and the
-// targets: a bool.
+// `#caller_name`, `#caller_span` (tc_hash_name): an atom — the enclosing
+// fun's name, where it is (a default's: the call's, `span`), by its place in
+// the program's table; `#web` and the targets: a bool.
 lw_hash_name :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, span: Span) -> Built {
     b := k.gb
     name := tc_text(Token_Id(k.t.a[n]))
@@ -383,9 +383,9 @@ lw_hash_name :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, span: Spa
     flag: bool
     switch name {
     case "caller_name", "caller_span":
-        t := new_clone(Type_Ptr{elem = Type_Byte{}})
-        text := strings.clone(lw_enclosing_fn_name(k) if name == "caller_name" else span_location(span))
-        return {v = graph_text(b, graph_op_value(b, .Global, w, span, t), Const_Value{text = text, is_text = true}), ok = true}
+        text := lw_enclosing_fn_name(k) if name == "caller_name" else span_location(span)
+        id := checked_atom(k.checked, text)
+        return {v = graph_const(b, w, span, Type_Atom{}, name, Const_Value{int = i128(id)}), ok = true}
     case "web":     flag = k.c.target_web
     case "native":  flag = !k.c.target_web
     case "windows": flag = k.c.target_os == .Windows

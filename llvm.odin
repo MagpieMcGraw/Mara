@@ -945,6 +945,16 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if llvm_is_cstring(to) && !llvm_is_cstring(from) { return llvm_cstring(e, op, x, span) }
+        // An atom where text goes: a view of its text (its cap counting the 0
+        // after it, as text's does).
+        if _, is_atom := distinct_base(from).(Type_Atom); is_atom && llvm_slice(to) != nil {
+            id := llvm_operand(e, ops[0], from) or_return
+            data, n := emit_atom_text(g, id, span)
+            cap := fresh_tmp(g)
+            ir_bin(g, cap, .Add, SLICE_LEN_IR, n, ir_int(1))
+            e.value[op] = emit_build_temp_slice(g, data, n, cap)
+            return true
+        }
         // A list taken as a slice: a header over its elements, its len, its cap.
         if pa := llvm_partial(from); pa != nil && llvm_slice(to) != nil {
             // Text is no header: a view of its bytes, len its length (cap
@@ -2914,7 +2924,7 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
 llvm_scalar :: proc(t: Type) -> bool {
     if slice_ref_of(t) != nil { return false }   // (a ^[]T: a reference, by value)
     #partial switch v in distinct_base(resolve_infer(t)) {
-    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err:
+    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err, Type_Atom:
         return true
     case ^Type_Scope:
         return v.kind == .Fun   // a function value: its pointer

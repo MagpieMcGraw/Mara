@@ -524,6 +524,7 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     case Type_Error:
         panic("llvm_type_from_checker: Type_Error reached codegen — codegen runs only on a clean check")
     case Type_Err:          return IR_I32 // open error type — u32 (set_id<<16 | tag)
+    case Type_Atom:         return IR_I32 // its place in the program's table
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
         // violation as Type_Any above — abort loudly instead of silently sizing
@@ -603,6 +604,7 @@ __MARA_MATCH_FAIL     :: "__mara_match_fail"
 __MARA_FTOI_FAIL      :: "__mara_ftoi_fail"
 __MARA_SHIFT_FAIL     :: "__mara_shift_fail"
 __MARA_LEN_FAIL       :: "__mara_len_fail"
+__MARA_ATOM_FAIL      :: "__mara_atom_fail"
 
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
 Runtime_Param :: struct { ty: Ir_Type, name: string }
@@ -616,6 +618,7 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_FTOI_FAIL,      {{IR_PTR, "loc"}, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              "%s runtime error: %.15g doesn't fit in %s\n"},
     {__MARA_SHIFT_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, "%s runtime error: shift by %lld, outside 0..%lld for %s\n"},
     {__MARA_LEN_FAIL,       {{IR_PTR, "loc"}, {IR_I64, "len"}, {IR_I64, "cap"}},                   "%s runtime error: a len of %lld, past its room of %lld: what holds it was written over\n"},
+    {__MARA_ATOM_FAIL,      {{IR_PTR, "loc"}, {IR_I64, "id"}, {IR_I64, "count"}},                   "%s runtime error: atom %lld is none of the program's %lld: what holds it was written over\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -790,6 +793,43 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     ir_unreachable(g)
 
     emit_label(g, ok_label)
+}
+
+// An atom's table entry's IR type: its text's address, its length.
+atom_entry_ir_type :: proc() -> Ir_Type {
+    fields := [2]Ir_Type{IR_PTR, IR_I64}
+    return ir_struct_type(fields[:])
+}
+
+// An atom's text, looked up in the program's table (__mara_atoms): its bytes
+// (a 0 after them) and its length. An id none of the table's — bytes read
+// as an atom can say anything — stops the program.
+emit_atom_text :: proc(g: ^Codegen, id: Val, span: Span = {}) -> (data, n: Val) {
+    // (The table's count, as the program has it: atoms may be given places
+    // after this code is made — codegen's own.)
+    count := fresh_tmp(g)
+    emit_load_into(g, count, IR_I64, ir_global("__mara_atom_count"))
+    wide := fresh_tmp(g)
+    ir_cast(g, wide, .Zext, IR_I32, id, IR_I64)
+    loc := get_string_literal(g, span_location(span))
+    past := fresh_tmp(g)
+    ir_icmp(g, past, .Uge, IR_I64, wide, count)
+    ok_label, fail_label := fresh_label(g, "atom.ok"), fresh_label(g, "atom.fail")
+    emit_cond_br(g, past, fail_label, ok_label)
+    emit_label(g, fail_label)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_ATOM_FAIL), {IR_PTR, loc, {}}, fail_i64(wide), fail_i64(count))
+    ir_unreachable(g)
+    emit_label(g, ok_label)
+    entry_t := atom_entry_ir_type()
+    entry := fresh_tmp(g)
+    ir_gep(g, entry, entry_t, ir_global("__mara_atoms"), {IR_I64, wide, {}})
+    data_at, n_at := fresh_tmp(g), fresh_tmp(g)
+    emit_field_gep_into(g, data_at, entry_t, entry, 0)
+    emit_field_gep_into(g, n_at, entry_t, entry, 1)
+    data, n = fresh_tmp(g), fresh_tmp(g)
+    emit_load_into(g, data, IR_PTR, data_at)
+    emit_load_into(g, n, IR_I64, n_at)
+    return
 }
 
 // A list's len, where it bounds memory (a view of it, a print, a copy from
@@ -1041,17 +1081,17 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>"
     // Alloca for the sret slice result { ptr, i64, i64 }
     tmp_slice := fresh_tmp(g)
     emit_slice_alloca(g, tmp_slice)
-    // Get a pointer to the name string literal
-    name_ptr := get_string_literal(g, name)
-    // Get a pointer to the span/location string literal
-    span_ptr := get_string_literal(g, loc)
+    // Its name and where it is: atoms (each given its place before codegen:
+    // atoms_for_arena).
+    name_id := ir_int(int(checked_atom(g.checked, name)))
+    span_id := ir_int(int(checked_atom(g.checked, loc)))
     // sret goes last, after the regular params. The size operand width matches
     // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
     // alloc hands back a `[]byte`, the size shares the slice header width.
     alloc_ir := mara_fn(g, g.arena_alloc_name)
     w := SLICE_LEN_IR
     if g.arena_alloc_has_debug {
-        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_PTR, name_ptr, {}}, {IR_PTR, span_ptr, {}}, {IR_PTR, tmp_slice, {}})
+        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_I32, name_id, {}}, {IR_I32, span_id, {}}, {IR_PTR, tmp_slice, {}})
     } else {
         ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_PTR, tmp_slice, {}})
     }

@@ -299,7 +299,7 @@ is_plain_data :: proc(t: Type) -> bool {
     }
     #partial switch v in base {
     case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool, Type_Utf8, Type_Byte,
-         Type_Numeric, ^Type_Enum, Type_Err:
+         Type_Numeric, ^Type_Enum, Type_Err, Type_Atom:
         return true
     case ^Type_Fixed_Array:
         return is_plain_data(v.elem)
@@ -484,6 +484,11 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
     }
     if _, ok := bt.(Type_Err); ok {
         ir_call(g, {}, IR_VOID, ir_global("__mara_print_err"), {IR_I32, val, {}})
+        return
+    }
+    if _, ok := bt.(Type_Atom); ok {   // (its text, looked up)
+        data, n := emit_atom_text(g, val, g.print_span)
+        emit_print_text(g, data, n)
         return
     }
     if pt, ok := bt.(^Type_Ptr); ok {

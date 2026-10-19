@@ -650,6 +650,19 @@ example_cstring :: fun() {
 	// handle := CreateFileA(cstring(path), …)
 }
 
+// `atom`, `#caller_name`, `#caller_span`: constant text by id.
+//
+// An atom is 4 bytes, an id into a table of text the program carries, so it
+// goes anywhere data does — a struct written into bytes, a file. It prints
+// as its text and goes where a []utf8 does. `#caller_name` and
+// `#caller_span`, as a param's default, are the calling fun's name and where
+// the call is: Arena_Debug keeps them for each allocation it reports.
+example_atom :: fun() {
+	where_from :: fun(who: atom = #caller_name) -> atom { return who }
+	who := where_from()
+	print(who, size_of(atom))              // example_atom 4
+}
+
 // `#allocator`: the program's arena, where values of 1 KB or more live —
 // named once, at the top of the module main is in or among main's own
 // statements (see arenas.mara). main's command line is its parameter,
@@ -729,6 +742,7 @@ main :: fun() {
 	example_size_of()
 	example_slice()
 	example_cstring()
+	example_atom()
 	example_allocator()
 	example_with()
 	example_Self()

@@ -34,6 +34,7 @@ Type :: union {
                          //   a type error.
     Type_Error,       // error recovery — suppresses cascading type errors
     Type_Err,         // open error type — accepts any variant from any `error { ... }` decl
+    Type_Atom,        // constant text by id: its place in the program's table (checked_atom)
 }
 
 Type_F64 :: struct {}
@@ -51,6 +52,7 @@ Type_Any :: struct {}
 Type_Void :: struct {}
 Type_Error :: struct {}
 Type_Err :: struct {}
+Type_Atom :: struct {}
 
 Numeric_Kind :: enum u8 { Signed, Unsigned, Float }
 Type_Numeric :: struct {
@@ -112,7 +114,7 @@ type_table_new :: proc() -> ^Type_Table {
 // as Type lists them; of the value, what the variant holds, by this mask.
 #assert(size_of(Type) == 16)
 @(private="file")
-TYPE_VALUE_MASK := [22]u64{
+TYPE_VALUE_MASK := [23]u64{
     0,                      // (nil)
     0,                      // Type_F64
     max(u64), max(u64),     // Type_Infer_Int, Type_Infer_Float: their cells
@@ -123,6 +125,7 @@ TYPE_VALUE_MASK := [22]u64{
                                             // ^Type_Enum, ^Type_Union, ^Type_Distinct
     max(u64),               // Type_Const_Int: its value
     0, 0, 0, 0,             // Type_Any, Type_Void, Type_Error, Type_Err
+    0,                      // Type_Atom
 }
 
 // A composite type made once while the program is checked: the same shape,
@@ -964,6 +967,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
+        // (An atom where text goes: the compiler looks its text up.)
+        if _, is_atom := b.(Type_Atom); is_atom {
+            _, is_text := distinct_base(va.elem).(Type_Utf8)
+            return is_text
+        }
         // By-value fixed-array -> slice decay: `[N!]T` materialises a slice
         // header {ptr=&arr[0], len=cap=N} — honest, since [N!]T is exactly N
         // elements (e.g. Mesh_Data{primitive_quad()}). The source is hoisted to
@@ -1044,6 +1052,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // circuit before alias unwrapping; reaching this arm means neither
         // side matched there — be conservative and report inequality.
         return false
+    case Type_Atom:
+        _, ok := b.(Type_Atom)
+        return ok
     }
     return false
 }
@@ -1134,6 +1145,7 @@ type_name :: proc(t: Type) -> string {
     case Type_Void:         return "void"
     case Type_Error:        return "<error>"
     case Type_Err:          return "err"
+    case Type_Atom:         return "atom"
     }
     return "void"
 }
@@ -1403,7 +1415,7 @@ is_composite :: proc(t: Type) -> bool {
 // compares only through an overload.
 is_comparable :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(resolve_infer(t)) {
-    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err,
+    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err, Type_Atom,
          Type_Infer_Int, Type_Infer_Float, Type_Any, Type_Error:
         return true
     case ^Type_Scope:

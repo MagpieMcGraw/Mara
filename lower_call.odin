@@ -47,7 +47,7 @@ lw_method_call :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: D
 // A compiler name's type (tc_hash_name's): text's, else a bool.
 lw_hash_name_type :: proc(k: ^TC, n: Tree_Id) -> Type {
     switch tc_text(Token_Id(k.t.a[n])) {
-    case "caller_name", "caller_span": return new_clone(Type_Ptr{elem = Type_Byte{}})
+    case "caller_name", "caller_span": return Type_Atom{}
     }
     return Type_Bool{}
 }
