@@ -3,8 +3,8 @@
 // How full each partial array ([..N]T) ever gets, and how much of each arena
 // is ever in use at once: what to size their N, their bytes, by.
 //
-// The compiler tells it about a partial array by its header's address
-// ({len, cap, ptr}, the elements after it):
+// The compiler tells it about a partial array by its address — its len, the
+// elements right after it (codegen.odin, PARTIAL_ELEMENTS_FIELD):
 //   __mara_mem_new(hdr, site)   one laid down — a declaration, a constructor's
 //                               field, a zeroing: a new instance of its site
 //   __mara_mem_into(hdr, site)  one copied into place: the instance there when
@@ -24,9 +24,9 @@
 //   __mara_mem_arena(kind, base)  base's len the bytes in use, its cap the
 //                                 arena's size; base's elements say which
 //
-// What's at a header's address later may be something else: the instance
-// there ended (its frame left, its storage reused). A header whose elements
-// or cap aren't the instance's is that — the instance dropped, its peak kept.
+// What's at a list's address later may be something else: the instance there
+// ended (its frame left, its storage reused) — told by a new one laid down
+// there, or one of another site copied in.
 //
 // Per site: instances, cap, element size, the peak len any instance reached,
 // the median of the instances' peaks (a log histogram: within about 3%), and
@@ -65,13 +65,18 @@
 #define HIST_SUB      (1 << HIST_SUB_BITS)
 #define HIST_BUCKETS  (HIST_LINEAR + (64 - HIST_SUB_BITS) * HIST_SUB)
 
-// A slice's or partial array's header, as Mara lays it out (codegen.odin,
-// SLICE): its len, its cap, its elements' address.
+// A slice's header, as Mara lays it out (codegen.odin, SLICE): its len, its
+// cap, its elements' address — an arena's base.
 typedef struct Mara_Header {
     int64_t len;
     int64_t cap;
     void*   data;
 } Mara_Header;
+// A partial array: its len, its elements after it (its cap, its type's: the
+// site's).
+typedef struct Mara_List {
+    int64_t len;
+} Mara_List;
 
 typedef struct Mara_Mem_Rec {
     const char* name;
@@ -95,14 +100,14 @@ typedef struct Mara_Mem_Site {
 
 // An instance: a partial array alive at its header's address.
 typedef struct Mara_Mem_Inst {
-    const Mara_Header* hdr;   // NULL: empty; TOMB: was one
+    const Mara_List* hdr;     // NULL: empty; TOMB: was one
     void*         data;
     int64_t       cap;
     Mara_Mem_Rec* rec;
     int64_t       peak;
 } Mara_Mem_Inst;
 
-#define TOMB ((const Mara_Header*)1)
+#define TOMB ((const Mara_List*)1)
 
 typedef struct Mara_Mem_Arena {
     const char* kind;
@@ -196,7 +201,7 @@ static size_t mem_hash(const void* p) {
 }
 
 // The instance at a header's address, or NULL.
-static Mara_Mem_Inst* mem_find(const Mara_Header* hdr) {
+static Mara_Mem_Inst* mem_find(const Mara_List* hdr) {
     if (!mem.cap) return NULL;
     size_t mask = mem.cap - 1;
     for (size_t i = mem_hash(hdr) & mask;; i = (i + 1) & mask) {
@@ -236,7 +241,7 @@ static void mem_grow(void) {
 }
 
 // A new instance at hdr, of site's record: one there before ends.
-static void mem_begin(const Mara_Header* hdr, Mara_Mem_Site* site) {
+static void mem_begin(const Mara_List* hdr, Mara_Mem_Site* site) {
     Mara_Mem_Inst* s = mem_find(hdr);
     if (s) mem_end(s);
     if ((mem.used + 1) * 2 > mem.cap) mem_grow();
@@ -246,20 +251,20 @@ static void mem_begin(const Mara_Header* hdr, Mara_Mem_Site* site) {
     if (mem.slots[i].hdr == NULL) mem.used++;
     s = &mem.slots[i];
     s->hdr = hdr;
-    s->data = hdr->data;
-    s->cap = hdr->cap;
+    s->data = (void*)(hdr + 1);
+    s->cap = site->cap;
     s->rec = mem_rec(site);
     s->peak = hdr->len;
     mem.live++;
 }
 
-void __mara_mem_new(const Mara_Header* hdr, Mara_Mem_Site* site) {
+void __mara_mem_new(const Mara_List* hdr, Mara_Mem_Site* site) {
     if (site) mem_begin(hdr, site);
 }
 
-void __mara_mem_into(const Mara_Header* hdr, Mara_Mem_Site* site) {
+void __mara_mem_into(const Mara_List* hdr, Mara_Mem_Site* site) {
     Mara_Mem_Inst* s = mem_find(hdr);
-    if (s && s->data == hdr->data && s->cap == hdr->cap && (!site || s->rec == mem_rec(site))) {
+    if (s && (!site || s->rec == mem_rec(site))) {
         if (hdr->len > s->peak) s->peak = hdr->len;
         return;
     }
@@ -267,11 +272,10 @@ void __mara_mem_into(const Mara_Header* hdr, Mara_Mem_Site* site) {
     if (s) mem_end(s);   // (something else is there now)
 }
 
-void __mara_mem_len(const Mara_Header* hdr) {
+void __mara_mem_len(const Mara_List* hdr) {
     mem.len_probes++;
     Mara_Mem_Inst* s = mem_find(hdr);
     if (!s) return;
-    if (s->data != hdr->data || s->cap != hdr->cap) { mem_end(s); return; }
     if (hdr->len > s->peak) s->peak = hdr->len;
 }
 

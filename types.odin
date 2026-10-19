@@ -248,10 +248,12 @@ Type_Slice :: struct {
     elem:         Type,
 }
 
-// [N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
-// ptr initialised to &elements at decl time. First 24 bytes match Type_Slice's
-// {ptr, len, cap} shape so partial arrays can flow through `^[]T` (umbrella)
-// without monomorphization. Pinned in practice: moving the value breaks ptr.
+// [N]T — partial array (a list). IR layout: {len, elements: [N x T]}: its cap
+// is N, its data its own elements, so nothing in it can point anywhere (bytes
+// written over it can only say a len, checked against N where it bounds
+// memory). A ^[]T to one carries its len's address, N and its elements
+// (slice_ref_ir_type), so lists flow through `^[]T` without monomorphization.
+// Copied, it is whole as it is.
 Type_Partial_Array :: struct {
     size:         int,
     elem:         Type,

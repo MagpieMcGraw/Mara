@@ -5,7 +5,7 @@ use mara.memory
 
 //@ expect-output: before it
 //@ expect-output: big: 7
-//@ expect-output: with: 16424
+//@ expect-output: with: 16408
 
 // The program's arena named among main's own statements: main's entry makes
 // it either way, so what comes before it runs on it too.

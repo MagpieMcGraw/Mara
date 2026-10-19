@@ -34,12 +34,13 @@ emit_header_set :: proc(g: ^Codegen, header: Val, field: int, v: Val) {
     emit_store(g, IR_PTR if field == SLICE.ptr else SLICE_LEN_IR, v, gep)
 }
 
-// A zeroed value of type `t` at `ptr` made a valid zero value: each partial
-// array in it — through struct fields and array elements, a partial array's
-// own elements too — gets its header (ptr → its elements, cap N), since a
-// partial array's zero is not all zeros. (Nothing is constructed: a bare
-// declaration is its zero.)
-stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
+// A value of type `t` at `ptr` made a valid zero value: each list in it —
+// through struct fields and array elements, a list's own elements too —
+// empty, its len 0. (Nothing is constructed: a bare declaration is its zero.)
+// Over zeroed storage (`zeroed`) that is so already; under -profile memory,
+// each list there is still a new instance of its site.
+stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type, zeroed := false) {
+    if zeroed && !g.profile_memory { return }
     stamp :: proc(g: ^Codegen, ptr: Val, t: Type, _: []Ir_Arg) { stamp_zero_partial_arrays(g, ptr, t) }
     base := distinct_base(t)
     if pa, is_pa := base.(^Type_Partial_Array); is_pa {
@@ -77,8 +78,11 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: Val, t: Type) {
     }
 }
 
+// A value of type `t` copied in at `ptr`: under -profile memory, each list in
+// it the instance there (a list holds nothing that points at itself, so a
+// copy is whole as it is).
 reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
-    if !value_has_partial_array(g, t) { return }
+    if !g.profile_memory || !value_has_partial_array(g, t) { return }
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil {
         llvm_name := ir_class_type(sd)
@@ -96,10 +100,6 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: Val) {
     case ^Type_Partial_Array:
         elem_ir := llvm_type_from_checker(v.elem)
         elements_ptr := partial_elements(g, ptr, v)
-        emit_header_set(g, ptr, SLICE.ptr, elements_ptr)
-        // (Its room, its type's: never the source's — a copy of what came as
-        // a view's header would keep the view's.)
-        emit_header_set(g, ptr, SLICE.cap, ir_int(v.size))
         mem_probe_into(g, ptr, v)
         if value_has_partial_array(g, v.elem) {
             was := mem_elements(g)
@@ -230,13 +230,22 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr, len_val, cap_val: Val) -> V
     return slice_alloca
 }
 
+// A list's len where it bounds memory: checked within its N (emit_len_check).
+list_len_checked :: proc(g: ^Codegen, at: Val, pa: ^Type_Partial_Array, span: Span = {}) -> Val {
+    n := emit_header_field(g, at, SLICE.len)
+    emit_len_check(g, n, ir_int(pa.size), span)
+    return n
+}
+
 // A header's cap and data where it is, by its type: a slice's header holds
-// them, as a list's does.
+// them; a list's are its type's N and its own elements.
 hdr_cap_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
+    if pa, is_list := distinct_base(t).(^Type_Partial_Array); is_list { return ir_int(pa.size) }
     return emit_header_field(g, at, SLICE.cap)
 }
 
 hdr_data_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
+    if pa, is_list := distinct_base(t).(^Type_Partial_Array); is_list { return partial_elements(g, at, pa) }
     return emit_header_field(g, at, SLICE.ptr)
 }
 
@@ -549,15 +558,12 @@ partial_elements :: proc(g: ^Codegen, addr: Val, pa: ^Type_Partial_Array) -> Val
     return elements_ptr
 }
 
-// A partial array's zero value at `addr`: its elements zeroed (`zero`; over
-// zeroed storage, not), and its header over them — ptr → the elements, len 0,
-// cap N. Returns the elements' address.
+// A list's zero value at `addr`: its elements zeroed (`zero`; over zeroed
+// storage, not), its len 0. Returns the elements' address.
 emit_partial_array_zero :: proc(g: ^Codegen, addr: Val, pa: ^Type_Partial_Array, zero := true) -> Val {
     elements_ptr := partial_elements(g, addr, pa)
     if zero { emit_memset_zero(g, elements_ptr, pa.size * type_size(pa.elem)) }
-    emit_header_set(g, addr, SLICE.ptr, elements_ptr)
     emit_header_set(g, addr, SLICE.len, ir_int(0))
-    emit_header_set(g, addr, SLICE.cap, ir_int(pa.size))
     return elements_ptr
 }
 

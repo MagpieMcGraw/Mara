@@ -43,8 +43,9 @@ type_layout :: proc(t: Type) -> Layout {
     case ^Type_Slice:
         return slice_header_layout()
     case ^Type_Partial_Array:
-        // `{ len, cap, ptr, [N x T] }`: a slice header over its own elements.
-        l := slice_header_fields()
+        // `{ len, [N x T] }`: its len, then its elements.
+        l := Layout{0, 1}
+        layout_field(&l, {8, 8})
         e := type_layout(v.elem)
         layout_field(&l, {v.size * e.size, e.align})
         return layout_close(l)

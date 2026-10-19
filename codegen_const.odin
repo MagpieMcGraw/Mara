@@ -235,17 +235,11 @@ const_partial :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, v: ^Fold) -> Ir_C
 @(private="file")
 const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elems: Ir_Const) -> Ir_Const {
     elem_ir := llvm_type_from_checker(pa.elem)
-    // Its pointer: its own elements' address, from the table's root.
-    index := make([dynamic]Ir_Const, 0, len(cx.path) + 2)
-    append(&index, ir_const(IR_I32, ir_int(0)))
-    append(&index, ..cx.path[:])
-    append(&index, ir_const(IR_I32, ir_int(PARTIAL_ELEMENTS_FIELD)))
-    parts := make([]Ir_Const, 4)
+    // Its len, then its elements.
+    parts := make([]Ir_Const, 2)
     parts[0] = ir_const(SLICE_LEN_IR, ir_int(n))
-    parts[1] = ir_const(SLICE_LEN_IR, ir_int(pa.size))
-    parts[2] = {kind = .Gep, ty = IR_PTR, v = ir_global(cx.global), src = cx.gtype, parts = index[:]}
-    parts[3] = elems
-    parts[3].ty = ir_array_type(pa.size, elem_ir)
+    parts[1] = elems
+    parts[1].ty = ir_array_type(pa.size, elem_ir)
     return {kind = .Struct, parts = parts}
 }
 

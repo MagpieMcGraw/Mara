@@ -7,12 +7,12 @@ use mara.memory
 
 //@ expect-output: lib before: 0
 //@ expect-output: work outside with, lib: 0
-//@ expect-output: work inside with, lib: 16424
+//@ expect-output: work inside with, lib: 16408
 //@ expect-output: lib after: 0
-//@ expect-output: a return from inside: 16424, after 0
+//@ expect-output: a return from inside: 16408, after 0
 //@ expect-output: an error out: Oops.Went_Wrong, after 0
-//@ expect-output: loop: 16424 then 0, 1 times
-//@ expect-output: nested: a 1 MB, b 64 KB, back in a: 524328
+//@ expect-output: loop: 16408 then 0, 1 times
+//@ expect-output: nested: a 1 MB, b 64 KB, back in a: 524312
 //@ expect-output: a after: 0
 
 // An arena as a value, and `with`: a block run on it — its big values, and

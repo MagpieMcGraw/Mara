@@ -635,8 +635,9 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: Val, ty: Type) {
         return
     }
     if elem := llvm_header_elem(bt); elem != nil {
-        data := emit_header_field(g, addr, SLICE.ptr)
+        data := hdr_data_at(g, addr, bt)
         n := emit_header_field(g, addr, SLICE.len)
+        if pa, is_list := bt.(^Type_Partial_Array); is_list { emit_len_check(g, n, ir_int(pa.size), g.print_span) }
         if _, u := distinct_base(elem).(Type_Utf8); u {
             emit_print_text(g, data, n)
         } else {

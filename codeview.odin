@@ -315,6 +315,18 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
     case Type_Err:
         id = cv_err(cv)
     case ^Type_Ptr:
+        if sl := slice_ref_of(v); sl != nil {
+            // A ^[]T: where its len is, its cap (-1: a slice's, read from its
+            // header there), its data (a list's).
+            name := type_name(v)
+            fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
+            cv.made[key] = fwd
+            names := [3]string{"len_at", "cap", "data"}
+            types := [3]u32{T_64PTR | 0x76, 0x76, cv_pointer(cv, cv_type(cv, sl.elem))}
+            offsets := [3]int{0, 8, 16}
+            id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
+            break
+        }
         elem := cv_type(cv, v.elem)
         if elem < 0x1000 && elem & T_64PTR == 0 { return T_64PTR | elem }
         id = cv_pointer(cv, elem)
@@ -346,21 +358,21 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
         cv_view(cv, name, "array(ptr, len)")
     case ^Type_Partial_Array:
-        // Its header over its own elements.
+        // Its len, then its elements: its len of them, as raddbg shows it.
         name := type_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd
         elem := cv_type(cv, v.elem)
-        ptr := cv_pointer(cv, elem)
         e := type_layout(v.elem)
         elems := cv_array(cv, elem, v.size * e.size)
-        l := slice_header_fields()
+        l := Layout{0, 1}
+        layout_field(&l, {8, 8})
         at := layout_field(&l, {v.size * e.size, e.align})
-        names := [4]string{"len", "cap", "ptr", "elements"}
-        types := [4]u32{0x76, 0x76, ptr, elems}
-        offsets := [4]int{0, 8, 16, at}
+        names := [2]string{"len", "elements"}
+        types := [2]u32{0x76, elems}
+        offsets := [2]int{0, at}
         id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
-        cv_view(cv, name, "array(ptr, len)")
+        cv_view(cv, name, "array(elements, len)")
     case ^Type_Enum:
         id = cv_enum(cv, v)
     case ^Type_Union:

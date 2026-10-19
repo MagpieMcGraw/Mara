@@ -430,7 +430,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             if value_has_partial_array(e.g, t) {
                 llvm_into_fields(e, true)
                 was := mem_field(e.g, llvm_struct(e.sret), &llvm_struct(e.sret).fields[i])
-                stamp_zero_partial_arrays(e.g, at, t)
+                stamp_zero_partial_arrays(e.g, at, t, zeroed = true)
                 mem_restore(e.g, was)
                 llvm_into_fields(e, false)
             }
@@ -806,6 +806,12 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 e.value[op] = llvm_hdr_len_at(e, base)
                 return true
             }
+            // (A list's cap and data: its type's N, its own elements — values.)
+            if pa := llvm_partial(graph_type(pg, base)); pa != nil {
+                e.value[op] = ir_int(pa.size) if i == SLICE.cap else partial_elements(g, llvm_val(e, base), pa)
+                e.held[op] = true
+                return true
+            }
             tmp := fresh_tmp(g)
             emit_slice_gep(g, tmp, llvm_ref_src(e, base) if llvm_ref_place(e, base) else llvm_val(e, base), i)
             e.value[op] = tmp
@@ -849,20 +855,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         switch {
         case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), llvm_val(e, place))
         case llvm_partial(t) != nil:
-            pa := llvm_partial(t)
-            if value_has_partial_array(g, pa.elem) {
-                // (Each element's own partial arrays stamped too — a list of
-                // filenames' unused ones each a valid empty one, its room
-                // there to append into in place.)
-                emit_memset_zero(g, partial_elements(g, llvm_val(e, place), pa), pa.size * type_size(pa.elem))
-                stamp_zero_partial_arrays(g, llvm_val(e, place), t)
-            } else {
-                emit_partial_array_zero(g, llvm_val(e, place), pa)
-                mem_probe_new(g, llvm_val(e, place), pa)
-            }
+            // (All zeros: its elements' own lists too — a list of filenames'
+            // unused ones each a valid empty one.)
+            emit_partial_array_zero(g, llvm_val(e, place), llvm_partial(t))
+            stamp_zero_partial_arrays(g, llvm_val(e, place), t, zeroed = true)
         case llvm_aggregate(t):
             emit_memset_zero(g, llvm_val(e, place), type_size(t))
-            stamp_zero_partial_arrays(g, llvm_val(e, place), t)
+            stamp_zero_partial_arrays(g, llvm_val(e, place), t, zeroed = true)
         case:                   return false
         }
     case .Index:
@@ -946,8 +945,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if llvm_is_cstring(to) && !llvm_is_cstring(from) { return llvm_cstring(e, op, x, span) }
-        // A partial array taken as a slice is its own header: no instruction.
-        if llvm_partial(from) != nil && llvm_slice(to) != nil {
+        // A list taken as a slice: a header over its elements, its len, its cap.
+        if pa := llvm_partial(from); pa != nil && llvm_slice(to) != nil {
             // Text is no header: a view of its bytes, len its length (cap
             // counts the terminating zero).
             if text, is_text := llvm_text(e, x); is_text {
@@ -955,7 +954,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 e.value[op] = emit_build_temp_slice(g, llvm_val(e, x), ir_int(n), ir_int(n + 1))
                 return true
             }
-            e.value[op] = llvm_val(e, x)
+            at := llvm_val(e, x)
+            e.value[op] = emit_build_temp_slice(g, partial_elements(g, at, pa), list_len_checked(g, at, pa, span), ir_int(pa.size))
             return true
         }
         from = llvm_type_of(e, ops[0])   // (a call's result: its own type)
@@ -1590,7 +1590,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
         emit_store(g, union_tag_ir_type(ut), ir_int(ut.tag_map[graph_name(pg, op)]), tag)
-        stamp_zero_partial_arrays(g, at, st)   // (a partial array's zero isn't all zeros: no constructor stamps a variant's)
+        stamp_zero_partial_arrays(g, at, st, zeroed = true)
         return llvm_variant_ctor(e, op, at, args)
     }
     // An array's elements: each constructed on the same arguments.
@@ -1620,7 +1620,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, llvm_type_from_checker(t), at, 0)
         emit_store(g, field_ir_type(&callee.fields[0]), ir_int(int(callee.union_variant_tag)), tag)
-        stamp_zero_partial_arrays(g, at, callee)
+        stamp_zero_partial_arrays(g, at, callee, zeroed = true)
         return llvm_variant_ctor(e, op, at, args)
     }
     if _, has_init := g.checked.functions[callee.name]; !has_init && len(ops) == 1 {
@@ -2336,6 +2336,8 @@ llvm_carve_header :: proc(e: ^Llvm, op: Node_Id, at, n, count: Val) {
 @(private="file")
 llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
+    g.print_span = span
+    defer g.print_span = {}
     args := make([dynamic]Print_Arg, 0, len(ops), context.temp_allocator)
     for o in ops {
         if o.op == NO_NODE || o.out != 0 { return false }
@@ -2989,10 +2991,14 @@ llvm_hdr_len_at :: proc(e: ^Llvm, base: Node_Id) -> Val {
     return p
 }
 
+// (A list's, or what a ^[]T refers to, checked within its cap: emit_len_check.)
 @(private="file")
 llvm_hdr_len :: proc(e: ^Llvm, base: Node_Id) -> Val {
     v := fresh_tmp(e.g)
     emit_load_into(e.g, v, SLICE_LEN_IR, llvm_hdr_len_at(e, base))
+    if llvm_partial(graph_type(e.pg, base)) != nil || llvm_ref_place(e, base) {
+        emit_len_check(e.g, v, llvm_hdr_cap(e, base), graph_origin(e.pg, base))
+    }
     return v
 }
 

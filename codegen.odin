@@ -20,11 +20,13 @@ import "core:os"
 SLICE_IR_TYPE :: IR_SLICE
 SLICE_LEN_IR  :: IR_I64   // a header's len's and cap's IR type
 
-// Slice header field positions. A partial array's elements follow the
-// header at PARTIAL_ELEMENTS_FIELD.
+// Slice header field positions. A list ([N]T) is its len — at SLICE.len, as
+// a slice's is — then its elements, at PARTIAL_ELEMENTS_FIELD: its cap is
+// its type's N and its data its own elements (hdr_cap_at, hdr_data_at), so
+// nothing in it can say otherwise.
 Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
-PARTIAL_ELEMENTS_FIELD :: 3
+PARTIAL_ELEMENTS_FIELD :: 1
 
 // A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
 // the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
@@ -37,9 +39,9 @@ slice_ref_ir_type :: proc() -> Ir_Type {
     return ir_struct_type(fields[:])
 }
 
-// A `[N]T` partial array's IR type: the header, then its elements.
+// A `[N]T` list's IR type: its len, then its elements.
 partial_array_ir_type :: proc(elem_ir: Ir_Type, cap: int) -> Ir_Type {
-    fields := [4]Ir_Type{SLICE_LEN_IR, SLICE_LEN_IR, IR_PTR, ir_array_type(cap, elem_ir)}
+    fields := [2]Ir_Type{SLICE_LEN_IR, ir_array_type(cap, elem_ir)}
     return ir_struct_type(fields[:])
 }
 
@@ -153,6 +155,9 @@ Codegen :: struct {
     // emissions route through __mara_tee_printf, which mirrors the message
     // into crash.txt (runtime/mara_crash.c). Off everywhere else.
     tee: bool,
+    // The print being made's place (llvm_print): what a check in printing a
+    // value says (emit_print_at_addr's list len).
+    print_span: Span,
 }
 
 // What outlives a function's emission is made with (Codegen.keep).
@@ -599,6 +604,7 @@ __MARA_SLICE_LEN_FAIL :: "__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "__mara_match_fail"
 __MARA_FTOI_FAIL      :: "__mara_ftoi_fail"
 __MARA_SHIFT_FAIL     :: "__mara_shift_fail"
+__MARA_LEN_FAIL       :: "__mara_len_fail"
 
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
 Runtime_Param :: struct { ty: Ir_Type, name: string }
@@ -611,6 +617,7 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_MATCH_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
     {__MARA_FTOI_FAIL,      {{IR_PTR, "loc"}, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              "%s runtime error: %.15g doesn't fit in %s\n"},
     {__MARA_SHIFT_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, "%s runtime error: shift by %lld, outside 0..%lld for %s\n"},
+    {__MARA_LEN_FAIL,       {{IR_PTR, "loc"}, {IR_I64, "len"}, {IR_I64, "cap"}},                   "%s runtime error: a len of %lld, past its room of %lld: what holds it was written over\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -784,6 +791,21 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     ir_call(g, {}, IR_VOID, ir_global(__MARA_DIVZ_FAIL), {IR_PTR, loc_global, {}})
     ir_unreachable(g)
 
+    emit_label(g, ok_label)
+}
+
+// A list's len, where it bounds memory (a view of it, a print, a copy from
+// it): within 0 ..= its room. Its own writes keep it so; bytes written over
+// it — a list in a byte buffer, a `let` — can say anything.
+emit_len_check :: proc(g: ^Codegen, n, cap: Val, span: Span = {}) {
+    if n.kind == .Int && cap.kind == .Int && n.n >= 0 && n.n <= cap.n { return }
+    past := fresh_tmp(g)
+    ir_icmp(g, past, .Ugt, SLICE_LEN_IR, n, cap)
+    ok_label, fail_label := fresh_label(g, "len.ok"), fresh_label(g, "len.fail")
+    emit_cond_br(g, past, fail_label, ok_label)
+    emit_label(g, fail_label)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_LEN_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, fail_i64(n), fail_i64(cap))
+    ir_unreachable(g)
     emit_label(g, ok_label)
 }
 

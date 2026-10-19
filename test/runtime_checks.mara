@@ -27,6 +27,10 @@ use mara.os
 //@ expect-output: element exit 1
 //@ expect-output: byval exit 1
 //@ expect-output: loop exit 1
+//@ expect-output: forgelen exit 1
+//@ expect-output: a len of 1000, past its room of 2: what holds it was written over
+//@ expect-output: repoint exit 1
+//@ expect-output: a slice written whole through a ^[]T that refers to a list
 //@ expect-output: in bounds: 2 3 rem 0 0
 //@ expect-output: shifts: 8 -4 128
 //@ expect-output: whole parts: -2147483648 255 0
@@ -38,9 +42,11 @@ use mara.os
 // a slice past its room or crossed is never made, a crossed run is never
 // written, the smallest value by -1 is an overflow (its remainder, 0), a
 // shift's count is within the value's bits, a float made an int fits it, and
-// a match arm's binding is never read once its union holds another variant.
+// a match arm's binding is never read once its union holds another variant,
+// a list's len written over as bytes is never trusted past its room, and a
+// list isn't repointed through a ^[]T.
 
-Case :: union {past, crossed, cap, run, divmin, shift, negshift, ftoi, nan, swap, clobber, element, byval, loop, none = 0}
+Case :: union {past, crossed, cap, run, divmin, shift, negshift, ftoi, nan, swap, clobber, element, byval, loop, forgelen, repoint, none = 0}
 
 Thing :: union {
 	Ref { p: ^i64 }
@@ -126,6 +132,18 @@ child :: (c: Case) {
 			}
 		Num n
 		}
+	forgelen
+		storage : [64]byte
+		storage.len = 64
+		l := let([2]i64, &storage[0])
+		storage[0:8] = 1000
+		for v in l do print(v)
+	repoint
+		four : [4]i64
+		three : [3!]i64
+		p : ^[]i64 = &four
+		p^ = three[:]
+		print(four.len)
 	none
 	}
 }
@@ -175,6 +193,8 @@ main :: (args: [][]utf8) {
 	run_case(args[0], "element")
 	run_case(args[0], "byval")
 	run_case(args[0], "loop")
+	run_case(args[0], "forgelen")
+	run_case(args[0], "repoint")
 
 	// What stays in bounds runs as it did.
 	xs : [4!]i64 = [1, 2, 3, 4]

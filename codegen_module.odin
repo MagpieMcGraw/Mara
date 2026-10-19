@@ -1099,15 +1099,13 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_label(g, args_ok_lbl)
         argc_min := argc // every argument fits from here on
 
-        // Its header: len argc (i32, as the loop counter below; the header's
-        // i64), cap 64, ptr its elements (field 3).
+        // Its len: argc (i32, as the loop counter below; the len's i64). Its
+        // elements after it.
         len_store_val := fresh_tmp(g)
         ir_cast(g, len_store_val, .Sext, IR_I32, argc_min, SLICE_LEN_IR)
         emit_header_set(g, args_ptr, SLICE.len, len_store_val)
-        emit_header_set(g, args_ptr, SLICE.cap, ir_int(ARGS_CAP))
         elements_ptr := fresh_tmp(g)
-        emit_field_gep_into(g, elements_ptr, pa_ir, args_ptr, 3)
-        emit_header_set(g, args_ptr, SLICE.ptr, elements_ptr)
+        emit_field_gep_into(g, elements_ptr, pa_ir, args_ptr, PARTIAL_ELEMENTS_FIELD)
 
         // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
         // Counter is i32 to match argc and the slice header — no widen/trunc.
