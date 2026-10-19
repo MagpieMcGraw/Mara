@@ -68,6 +68,18 @@ parent_dir :: fun(path: []utf8) -> []utf8 {
 	return path[0 : end]
 }
 
+// Returns the file's name at the end of a path: the part after its last
+// separator. A path with no separator is returned whole; one ending in a
+// separator gives an empty slice. The result is a slice of the path, not a
+// copy.
+file_name :: fun(path: []utf8) -> []utf8 {
+	start : i64 = 0
+	for i in 0 .. path.len {
+		if path_separator(path[i]) do start = i + 1
+	}
+	return path[start : path.len]
+}
+
 // Whether ch separates a path's parts: '/' — and on Windows '\' too
 // (elsewhere a '\' can be part of a name).
 path_separator :: fun(ch: utf8) -> bool {

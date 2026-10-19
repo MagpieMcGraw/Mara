@@ -1,0 +1,24 @@
+module file_name
+
+use mara.core
+use mara.os
+
+//@ expect-output: [lexer.mara] [lexer.mara] [lexer.mara] [] []
+
+// file_name: the part of a path after its last separator.
+
+main :: () {
+	a := file_name("C:/Code/Mara3/lexer.mara")
+	b := file_name("C:\\Code\\Mara3\\lexer.mara")
+	c := file_name("lexer.mara")
+	d := file_name("C:/Code/Mara3/")
+	e := file_name("")
+	out : [200]utf8
+	for part, i in [5!][]utf8{a, b, c, d, e} {
+		if i > 0 do &out + " "
+		&out + "["
+		&out + part
+		&out + "]"
+	}
+	print(out[:])
+}
