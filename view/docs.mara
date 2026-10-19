@@ -27,14 +27,16 @@ use mara.string
 
 DOCS_SHOWN     :: 40   // the most definitions shown
 DOCS_BODY      :: 40   // the most lines of a struct's body shown
-DOCS_SIGNATURE :: 12   // ... of a fun's signature
+DOCS_SIGNATURE :: 12   // ... of a signature with no body (a param's fun, a foreign fun)
+DOCS_FUN       :: 30   // the most lines of a fun shown whole
+DOCS_FUN_SHOWN :: 20   // ... of a longer one, how many more there are said after
 DOCS_EXAMPLE   :: 60   // ... of an entry's example
 DOC_LINES      :: 200  // the most lines of a doc comment shown
 
 // What a definition is.
 DEF_MODULE :: 0   // a file's module: its doc comment, its `module` line
 DEF_TYPE   :: 1   // a struct, union, error set: its body shown
-DEF_FUN    :: 2   // its signature shown, to its `{`
+DEF_FUN    :: 2   // its code shown, to its closing `}` (a long one's first lines)
 DEF_OTHER  :: 3   // a constant, a foreign fun: its line
 DEF_FIELD  :: 4   // a struct's: its line, and the struct named
 DEF_LINE   :: 5   // a line declaring what's at the cursor, no definition the scan finds: a local's, a param's
@@ -974,11 +976,17 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		return
 	}
 
-	// The code, from the definition's line: a fun's to its `{`, a type's to
-	// its `}`, the rest's to where its parentheses close (a foreign fun's
-	// signature can take lines).
+	// The code, from the definition's line: a fun's whole (docs_show_fun), a
+	// type's to its `}`, the rest's to where its parentheses close (a foreign
+	// fun's signature can take lines).
 	first_end := line_end(text, fd.at)
 	indent, _ := indentation(text, fd.at, first_end)
+	if fd.kind == DEF_FUN {
+		docs_show_fun(l, text, fd.at, indent)
+		docs_footer(d, l, fd, names[:])
+		lines_add(l, "", STYLE_TEXT)
+		return
+	}
 	at := fd.at
 	most := DOCS_SIGNATURE
 	if fd.kind == DEF_TYPE do most = DOCS_BODY
@@ -1028,6 +1036,39 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	}
 	docs_footer(d, l, fd, names[:])
 	lines_add(l, "", STYLE_TEXT)
+}
+
+// A fun's code as written, its signature its first line: its lines to its
+// closing `}` — a fun of one line, its first; else the `}` no further in than
+// it. A long one: its first DOCS_FUN_SHOWN lines, and how many more.
+docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
+	// (Its lines counted first: to say how many aren't shown.)
+	count : i64 = 0
+	at := from
+	for at < text.len {
+		end := line_end(text, at)
+		line_indent, start := indentation(text, at, end)
+		rest := trimmed(text[start : end])
+		count += 1
+		at = end + 1
+		if count == 1 and rest.len > 0 and rest[rest.len - 1] == '}' do break   // (`{ return n }`)
+		if count > 1 and line_indent <= indent and rest.len > 0 and rest[0] == '}' do break
+	}
+	most := count
+	if count > DOCS_FUN do most = DOCS_FUN_SHOWN
+	at = from
+	for _ in 0 .. most {
+		end := line_end(text, at)
+		lines_add_code(l, text[at : end], indent)
+		at = end + 1
+	}
+	if most < count {
+		more : [60]utf8
+		&more + "  … "
+		&more + int_text(count - most)
+		&more + " more lines"
+		lines_add(l, more[:], STYLE_DIM)
+	}
 }
 
 // An example's code, below its doc comment: its function as written, then

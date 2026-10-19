@@ -159,10 +159,9 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 	}
 }
 
-// Reads a whole file into storage — after what's there, its len moved past
-// it — and gives it back, a view of storage: all of it, or Too_Large when it
-// doesn't fit in storage's room (storage untouched) — never a file cut off.
-// (As many reads as that takes: one read may stop short.)
+// Opens a file and reads its data into the provided buffer. Then closes the
+// file. Returns a slice of the buffer containing the read data. Slice .len
+// and .cap are both set to the size of the file in bytes.
 read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 	start := storage.len
 	none := storage[start : start]
