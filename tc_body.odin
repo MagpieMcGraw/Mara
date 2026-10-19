@@ -757,7 +757,12 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         elem := loop_elem_through(ct)
         if elem == nil {
             elem = Type_Error{}
-            if st, is_scope := ct.(^Type_Scope); is_scope {
+            _, is_error := ct.(Type_Error)
+            if is_error {
+            } else if tc_is_call(k, call) {
+                // (A call of one result: what a loop over a call needs said.)
+                tc_error(k, span, TYPE_CANNOT_LOOP_OVER_CALL, tc_call_name(k, call), type_name(ct), type_name(ct))
+            } else if st, is_scope := ct.(^Type_Scope); is_scope {
                 tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, scope_display_name(st))
             } else {
                 tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))

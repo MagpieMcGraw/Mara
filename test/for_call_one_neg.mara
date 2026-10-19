@@ -1,0 +1,25 @@
+module for_call_one_neg
+
+use mara.core
+
+//@ expect-fail: cannot loop over next_token's result, a Token — a loop over a call needs it to give back a value and a bool each round: `-> Token, bool` (false: no more)
+
+// A loop over a call that gives back one value, a struct: the error says
+// what a loop over a call needs.
+
+Token :: struct {
+	kind: i64
+	at:   i64
+}
+
+next_token :: fun(at: ^i64) -> Token {
+	at^ += 1
+	return Token{1, at^}
+}
+
+main :: () {
+	at : i64 = 0
+	for t in next_token(&at) {
+		print(t.at)
+	}
+}
