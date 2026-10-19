@@ -359,6 +359,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         cv_view(cv, name, "array(ptr, len)")
     case ^Type_Partial_Array:
         // Its len, then its elements: its len of them, as raddbg shows it.
+        if v.text != 0 { return cv_type(cv, type_partial_array(v.size, v.elem)) }   // (text: the list it is)
         name := type_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd

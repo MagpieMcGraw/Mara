@@ -1,0 +1,14 @@
+module list_size_neg
+//@ expect-fail: argument 1 of 'grow': parameter 'p' expects ^[4]i64, got ^[2]i64
+
+// A list's room is part of its type (its cap is its N): a pointer to a [2]
+// list is no pointer to a [4] one. A fun for any list takes ^[]T.
+
+use mara.core
+
+grow :: (p: ^[4]i64) { &p^ + 7 }
+
+main :: () {
+	small : [2]i64
+	grow(&small)
+}

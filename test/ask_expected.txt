@@ -714,7 +714,7 @@ obj — field : Object
   obj_get_directions(camera.obj.dir)   : distinct Vec3
   fwd, up, right := obj_get_directions(camera.obj.dir)
 === Pounce | what at Pounce.mara:163:33
-"dropepd file: " : [64]utf8
+"dropepd file: " : text (14 bytes)
   in        game_events  Pounce.mara:156
 
   print("dropepd file: ", file.name)

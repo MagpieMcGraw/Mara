@@ -32,7 +32,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id) -> Type {
         return tc_number(k, n)
     case .String:
         text := token_text(build_tokens[t.main[n]])
-        return type_partial_array(string_literal_cap(len(text)), Type_Utf8{})
+        return type_text_list(len(text), Type_Utf8{})
     case .Char:
         return Type_Utf8{}
     case .True, .False:
@@ -1193,10 +1193,20 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
     k.hint = dt.base_type
     at := tc_check(k, args[0])
     k.hint = saved
+    // (A list of another room, made one of this: the copy asked for.)
+    if from, to := distinct_base(at), distinct_base(dt.base_type); tc_list_resized(from, to) { return dt }
     if !is_any(at) && !is_infer(at) && types_incompatible(dt.base_type, at) {
         tc_error(k, span, TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE, name, type_name(at), type_name(dt.base_type))
     }
     return dt
+}
+
+// Whether `from` is a list of another room than the list `to`, of elements
+// it takes: what only an explicit conversion makes one of the other.
+tc_list_resized :: proc(from, to: Type) -> bool {
+    fa, from_list := from.(^Type_Partial_Array)
+    ta, to_list := to.(^Type_Partial_Array)
+    return from_list && to_list && fa.size != ta.size && buffer_elem_compatible(ta.elem, fa.elem)
 }
 
 // `f()?`: the call, its err returned when it is one — its value the call's

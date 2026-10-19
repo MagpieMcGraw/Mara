@@ -1,0 +1,12 @@
+module text_room_neg
+//@ expect-fail: cannot assign text (6 bytes) to variable 'tiny' of type [2]utf8
+
+// Text goes into any list it fits in (its room is its use's); one too small
+// for it is said so when it's built.
+
+use mara.core
+
+main :: () {
+	tiny : [2]utf8 = "abcdef"
+	print(tiny)
+}

@@ -180,6 +180,13 @@ type_partial_array :: proc(size: int, elem: Type) -> ^Type_Partial_Array {
     return type_shape(Type_Partial_Array, 13, size, elem, nil, Type_Partial_Array{size = size, elem = elem})
 }
 
+// A text literal's type: a list of its quantized room (string_literal_cap)
+// where nothing else decides, but its room is its use's — any list it fits
+// in. Bound by `:=`, a list of that room (solidify_type).
+type_text_list :: proc(bytes: int, elem: Type) -> ^Type_Partial_Array {
+    return type_shape(Type_Partial_Array, 14, bytes, elem, nil, Type_Partial_Array{size = string_literal_cap(bytes), elem = elem, text = bytes + 1})
+}
+
 // A type's id, made the first time the program has it.
 type_id :: proc(tt: ^Type_Table, t: Type) -> Type_Id {
     // (The type asked for last, again: its id, its bits alike.)
@@ -257,6 +264,7 @@ Type_Slice :: struct {
 Type_Partial_Array :: struct {
     size:         int,
     elem:         Type,
+    text:         int,   // a text literal's: its bytes + 1 — its room is its use's, any list it fits in (types_equal); 0: a list
 }
 
 Struct_Type_Field :: struct {
@@ -984,11 +992,15 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             return buffer_elem_compatible(va.elem, fa.elem)
         }
         if pa, ok := b.(^Type_Partial_Array); ok {
-            // Partial-to-partial interop is by header shape: same elem
-            // type. Size doesn't gate compatibility because params are
-            // passed by header pointer (cap is read at runtime);
-            // assignment paths in codegen are responsible for fitting
-            // source bytes into dest storage.
+            // A list's room is part of its type (its cap is its N): lists
+            // of one size — text excepted, whose room is its use's, any
+            // list it fits in.
+            switch {
+            case va.text != 0 && pa.text != 0:
+            case va.text != 0: if pa.size < va.text - 1 { return false }
+            case pa.text != 0: if va.size < pa.text - 1 { return false }
+            case va.size > 0 && pa.size > 0 && va.size != pa.size: return false
+            }
             return buffer_elem_compatible(va.elem, pa.elem)
         }
         return false
@@ -1108,6 +1120,7 @@ type_name :: proc(t: Type) -> string {
     case ^Type_Slice:
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
+        if v.text != 0 { return fmt.tprintf("text (%d bytes)", v.text - 1) }
         return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
     case ^Type_Enum:        return v.source_name if v.source_name != "" else v.name
     case ^Type_Union:       return v.source_name if v.source_name != "" else v.name
@@ -1712,6 +1725,8 @@ solidify_type :: proc(t: Type) -> Type {
     if fa, ok := rt.(^Type_Fixed_Array); ok && is_infer(fa.elem) {
         return type_fixed_array(fa.size, solidify_type(fa.elem), fa.index_type)
     }
+    // Text bound as itself: a list of its room.
+    if pa, ok := rt.(^Type_Partial_Array); ok && pa.text != 0 { return type_partial_array(pa.size, solidify_type(pa.elem)) }
     // A slice or list of them (`[1, 2, 3][:]`): the same.
     if s, ok := rt.(^Type_Slice); ok && is_infer(s.elem) { return type_slice(solidify_type(s.elem)) }
     if pa, ok := rt.(^Type_Partial_Array); ok && is_infer(pa.elem) { return type_partial_array(pa.size, solidify_type(pa.elem)) }

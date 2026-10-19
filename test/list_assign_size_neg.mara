@@ -1,0 +1,13 @@
+module list_assign_size_neg
+//@ expect-fail: cannot assign [8]i64 to variable 'a' of type [4]i64
+
+// Lists of different rooms don't assign: copy explicitly — `&a + big[:]`, or
+// a conversion to a named list type, `Short(big)`.
+
+use mara.core
+
+main :: () {
+	big : [8]i64
+	a : [4]i64 = big
+	print(a.len)
+}
