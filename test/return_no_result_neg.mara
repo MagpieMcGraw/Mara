@@ -1,0 +1,21 @@
+module return_no_result_neg
+
+use mara.core
+
+//@ expect-fail: this return gives back Token, but its fun has no result — declare it after the params: `-> Token`
+
+// A value returned from a fun with no `-> T`: the error names what's given
+// back, and the result to declare.
+
+Token :: struct {
+	kind: i64
+	at:   i64
+}
+
+next_token :: fun(at: i64) {
+	return Token{1, at}
+}
+
+main :: () {
+	next_token(0)
+}

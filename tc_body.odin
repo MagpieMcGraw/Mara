@@ -575,8 +575,16 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
         }
     }
     switch {
-    case expected == 0 && supplied > 0, expected == 1 && supplied > 1:
-        tc_error(k, span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
+    case expected == 0 && supplied > 0:
+        // (What it gives back named: the `-> T` its fun is missing.)
+        k.hint = nil
+        names := make([]string, supplied, context.temp_allocator)
+        for val, i in values { names[i] = type_name(solidify_type(tc_check(k, val))) }
+        what := strings.join(names, ", ", context.temp_allocator)
+        tc_error(k, span, TYPE_RETURN_FROM_NO_RESULT, what, what)
+        return
+    case expected == 1 && supplied > 1:
+        tc_error(k, span, TYPE_RETURN_SEVERAL_FOR_ONE, supplied, type_name(rts[0]))
         return
     case expected == 1 && supplied == 0 && least > 0, expected > 1 && (supplied > expected || supplied < least):
         tc_error(k, span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED, supplied, expected)
