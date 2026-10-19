@@ -250,8 +250,7 @@ hdr_data_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
 }
 
 // A ^[]T made (slice_ref_ir_type): where the len is, the cap, the data — in
-// a temporary of its own (an aggregate is where it is). A slice's: its
-// header's address, cap -1 (slice_ref_to).
+// a temporary of its own (an aggregate is where it is).
 emit_slice_ref :: proc(g: ^Codegen, len_at, cap, data: Val) -> Val {
     ref := fresh_tmp(g)
     emit_alloca(g, ref, slice_ref_ir_type())
@@ -263,16 +262,20 @@ emit_slice_ref :: proc(g: ^Codegen, len_at, cap, data: Val) -> Val {
     return ref
 }
 
-// A ^[]T to the header at `at` of type t: a list's, its len's address, its
-// cap and data; a slice's, its header's address and cap -1 (its cap and data
-// read from it when used).
+// A ^[]T to the header at `at` of type t — a list's or a slice's: its len's
+// address, its cap and its data, as they are now. (A slice repointed through
+// the reference updates it: llvm_write_through_ref.)
 slice_ref_to :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
-    if _, is_list := distinct_base(t).(^Type_Partial_Array); is_list {
-        len_at := fresh_tmp(g)
-        emit_slice_gep(g, len_at, at, SLICE.len)
-        return emit_slice_ref(g, len_at, hdr_cap_at(g, at, t), hdr_data_at(g, at, t))
-    }
-    return emit_slice_ref(g, at, ir_int(-1), IR_NULL)
+    len_at := fresh_tmp(g)
+    emit_slice_gep(g, len_at, at, SLICE.len)
+    return emit_slice_ref(g, len_at, hdr_cap_at(g, at, t), hdr_data_at(g, at, t))
+}
+
+// Where a list's elements start past its len, for elements of type elem: the
+// len's 8 bytes, rounded up to the elements' alignment.
+list_elements_offset :: proc(elem: Type) -> int {
+    a := type_align(elem)
+    return 8 if a <= 8 else a
 }
 
 // A slice header's fields stored at `at`: ptr, len, cap.

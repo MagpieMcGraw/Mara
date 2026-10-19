@@ -316,8 +316,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         id = cv_err(cv)
     case ^Type_Ptr:
         if sl := slice_ref_of(v); sl != nil {
-            // A ^[]T: where its len is, its cap (-1: a slice's, read from its
-            // header there), its data (a list's).
+            // A ^[]T: where its len is, its cap, its data.
             name := type_name(v)
             fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
             cv.made[key] = fwd

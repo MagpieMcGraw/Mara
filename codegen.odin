@@ -30,10 +30,8 @@ PARTIAL_ELEMENTS_FIELD :: 1
 
 // A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
 // the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
-// address at SLICE.len. A list's: its len's address, its cap, its data, none
-// of which change. A slice's: its header's address (its len's), and cap -1 —
-// its cap and data read from the header, which a whole slice written through
-// the reference replaces.
+// address at SLICE.len. A list's never change; a slice's are its header's as
+// the reference was made (a whole slice written through it updates them).
 slice_ref_ir_type :: proc() -> Ir_Type {
     fields := [3]Ir_Type{IR_PTR, SLICE_LEN_IR, IR_PTR}
     return ir_struct_type(fields[:])

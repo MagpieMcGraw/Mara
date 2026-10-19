@@ -813,7 +813,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 return true
             }
             tmp := fresh_tmp(g)
-            emit_slice_gep(g, tmp, llvm_ref_src(e, base) if llvm_ref_place(e, base) else llvm_val(e, base), i)
+            emit_slice_gep(g, tmp, llvm_val(e, base), i)
             e.value[op] = tmp
             return true
         }
@@ -1729,7 +1729,8 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
         case:
             dest = NO_NODE
         }
-        if dest != NO_NODE && llvm_slice(graph_type(pg, dest)) != nil && !llvm_direct(e, dest) && llvm_ahead(e, dest) {
+        // (Not what a ^[]T refers to: the reference is there, not a header.)
+        if dest != NO_NODE && llvm_slice(graph_type(pg, dest)) != nil && !llvm_direct(e, dest) && !llvm_ref_place(e, dest) && llvm_ahead(e, dest) {
             at := llvm_place(e, dest)
             n := ir_int(llvm_array(graph_type(pg, ops[0].op)).size)
             emit_slice_header_at(g, at, llvm_val(e, ops[0].op), n, n)
@@ -3008,54 +3009,43 @@ llvm_hdr_len :: proc(e: ^Llvm, base: Node_Id) -> Val {
     return v
 }
 
+// (What a ^[]T refers to: the reference holds its cap and data, as a slice
+// header does, at the same places.)
 @(private="file")
 llvm_hdr_cap :: proc(e: ^Llvm, base: Node_Id) -> Val {
-    if llvm_ref_place(e, base) { return emit_header_field(e.g, llvm_ref_src(e, base), SLICE.cap) }
+    if llvm_ref_place(e, base) { return emit_header_field(e.g, llvm_val(e, base), SLICE.cap) }
     return hdr_cap_at(e.g, llvm_val(e, base), graph_type(e.pg, base))
 }
 
 @(private="file")
 llvm_hdr_data :: proc(e: ^Llvm, base: Node_Id) -> Val {
-    if llvm_ref_place(e, base) { return emit_header_field(e.g, llvm_ref_src(e, base), SLICE.ptr) }
+    if llvm_ref_place(e, base) { return emit_header_field(e.g, llvm_val(e, base), SLICE.ptr) }
     return hdr_data_at(e.g, llvm_val(e, base), graph_type(e.pg, base))
 }
 
-// Where what a ^[]T refers to keeps its cap and data (slice_ref_ir_type): a
-// list's, in the reference itself; a slice's (cap -1), in its header, where
-// its len is — chosen without a branch.
-@(private="file")
-llvm_ref_src :: proc(e: ^Llvm, base: Node_Id) -> Val {
-    g := e.g
-    ref := llvm_val(e, base)
-    cap := emit_header_field(g, ref, SLICE.cap)
-    is_slice := fresh_tmp(g)
-    ir_icmp(g, is_slice, .Slt, SLICE_LEN_IR, cap, ir_int(0))
-    at := fresh_tmp(g)
-    emit_slice_gep(g, at, ref, SLICE.len)
-    hdr := fresh_tmp(g)
-    emit_load_into(g, hdr, IR_PTR, at)
-    src := fresh_tmp(g)
-    ir_select(g, src, is_slice, IR_PTR, hdr, ref)
-    return src
-}
-
 // A whole slice written through a ^[]T (`p^ = s`, `next(&views)^ = v`): a
-// slice's header replaced. A list stays where it is: written so, the program
-// stops.
+// slice's header replaced, and the reference's cap and data with it. A list
+// stays where it is — its elements right past its len, where the reference's
+// data points — written so, the program stops.
 @(private="file")
 llvm_write_through_ref :: proc(e: ^Llvm, place: Node_Id, value: Operand, t: Type, span: Span) -> bool {
     g := e.g
     v := llvm_operand(e, value, t) or_return
     ref := llvm_val(e, place)
-    cap := emit_header_field(g, ref, SLICE.cap)
-    is_slice := fresh_tmp(g)
-    ir_icmp(g, is_slice, .Slt, SLICE_LEN_IR, cap, ir_int(0))
+    len_at := llvm_hdr_len_at(e, place)
+    elements := fresh_tmp(g)
+    ir_gep(g, elements, IR_I8, len_at, {IR_I64, ir_int(list_elements_offset(llvm_slice(t).elem)), {}})
+    data := emit_header_field(g, ref, SLICE.ptr)
+    is_list := fresh_tmp(g)
+    ir_icmp(g, is_list, .Eq, IR_PTR, data, elements)
     ok_label, fail_label := fresh_label(g, "repoint.ok"), fresh_label(g, "repoint.fail")
-    emit_cond_br(g, is_slice, ok_label, fail_label)
+    emit_cond_br(g, is_list, fail_label, ok_label)
     emit_label(g, fail_label)
     emit_fail(g, fmt.tprintf("%s runtime error: a slice written whole through a ^[]T that refers to a list: a list's elements stay where they are (append to it, or write its elements)\n", span_location(span)))
     emit_label(g, ok_label)
-    llvm_copy(e, llvm_hdr_len_at(e, place), v, t)
+    llvm_copy(e, len_at, v, t)
+    emit_header_set(g, ref, SLICE.cap, emit_header_field(g, len_at, SLICE.cap))
+    emit_header_set(g, ref, SLICE.ptr, emit_header_field(g, len_at, SLICE.ptr))
     return true
 }
 

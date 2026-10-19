@@ -1239,6 +1239,25 @@ x86_call :: proc(f: ^X86_Fn, callee: X86_Val, rt: ^X86_Type, args: []X86_Arg, de
     x86_put(f, dest)
 }
 
+// A copy's or a fill's byte count when it's a constant small enough to do
+// with plain moves (up to 64 bytes).
+@(private="file")
+x86_small_size :: proc(v: X86_Val) -> (int, bool) {
+    if v.kind != .Int || v.n <= 0 || v.n > 64 { return 0, false }
+    return int(v.n), true
+}
+
+// The widest move that fits in what's left: 8, 4, 2 or 1 bytes.
+@(private="file")
+x86_chunk :: proc(left: int) -> int {
+    switch {
+    case left >= 8: return 8
+    case left >= 4: return 4
+    case left >= 2: return 2
+    }
+    return 1
+}
+
 // An LLVM intrinsic: the machine's instructions for it. (None calls the C
 // library: math.mara computes sin, cos, acos and pow itself.)
 @(private="file")
@@ -1249,10 +1268,32 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
     case "memcpy":
         x86_get(f, args[0].v, .DI)
         x86_get(f, args[1].v, .SI)
+        // (A small copy of a known size — a slice's header, a ^[]T: a few
+        // moves; `rep movsb` costs dozens of cycles before its first byte.)
+        if n, small := x86_small_size(args[2].v); small {
+            for off := 0; off < n; {
+                size := x86_chunk(n - off)
+                x86_load(f, .AX, {base = u8(X86_Reg.SI), disp = i32(off)}, size)
+                x86_store(f, {base = u8(X86_Reg.DI), disp = i32(off)}, .AX, size)
+                off += size
+            }
+            break
+        }
         x86_get(f, args[2].v, .CX)
         append(&f.code, 0xF3, 0xA4)   // rep movsb
     case "memset":
         x86_get(f, args[0].v, .DI)
+        // (A small run of zeros of a known size: as many stores.)
+        zero := args[1].v.kind == .Zero || args[1].v.kind == .Int && args[1].v.n == 0
+        if n, small := x86_small_size(args[2].v); small && zero {
+            x86_rr(f, 4, 0x30, .AX, .AX)   // xor eax, eax
+            for off := 0; off < n; {
+                size := x86_chunk(n - off)
+                x86_store(f, {base = u8(X86_Reg.DI), disp = i32(off)}, .AX, size)
+                off += size
+            }
+            break
+        }
         x86_get(f, args[1].v, .AX)
         x86_get(f, args[2].v, .CX)
         append(&f.code, 0xF3, 0xAA)   // rep stosb

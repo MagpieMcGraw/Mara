@@ -806,7 +806,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_string(&cb, " -o ")
         strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
         strings.write_string(&cb, " -Wno-override-module -mf16c")
-        if release { strings.write_string(&cb, " -O3") }
+        if release { strings.write_string(&cb, " -O3 -flto") }   // (bitcode: optimized whole at the link)
         // Redirect stderr to a per-task file so parallel clangs don't
         // interleave their diagnostics on the shared parent stderr.
         // Read back and print serially after the pool finishes.
@@ -892,9 +892,13 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // Optimization level. Default debug build skips -O entirely (clang's
     // implicit -O0); `mara build … -release` flips on -O3 for benchmarking
     // and shippable binaries. -O3 turns on the full LLVM pipeline including
-    // vectorisation and aggressive inlining.
+    // vectorisation and aggressive inlining. With LTO the modules' objects
+    // are bitcode, optimized together here: a call into another module
+    // (an append into mara.core's) inlines as one within a module does.
+    // (Full LTO, not thin: thin left appends 3x slower; test_1M builds no
+    // slower either way.)
     if release {
-        strings.write_string(&b, " -O3")
+        strings.write_string(&b, " -O3 -flto")
     }
     // The objects' debug info, merged by lld into a PDB beside the program —
     // or none, and an earlier build's PDB taken away: a debugger, or a
