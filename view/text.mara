@@ -67,6 +67,15 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 	t.line = ceil_f32(t.metrics.ascent - t.metrics.descent + t.metrics.line_gap)
 }
 
+// The window's fonts at its size: the text's, and code's — a monospace one,
+// set on the text's baseline and line height, so a row of both lines up.
+fonts_load :: fun(ui: ^Ui) -> err {
+	text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)?
+	text_load(&ui.mono, ui.renderer, ui.mono_font, FONT_SIZE * ui.density)?
+	ui.mono.ascent = ui.text.ascent
+	ui.mono.line = ui.text.line
+}
+
 // How wide the text is drawn, in pixels.
 text_width :: fun(t: ^Text, s: []utf8) -> f32 {
 	w : f32 = 0

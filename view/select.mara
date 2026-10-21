@@ -46,18 +46,20 @@ lines_spot_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> Spot {
 	ln := l.lines[row.line]
 	if y < top do return Spot{line = row.line, off = row.at - ln.at}
 	if below do return Spot{line = row.line, off = row.at - ln.at + row.len}
-	end := row.at + row.len
-	text := l.text[0 : end]
+	// (Each character measured in its font, as the row was laid out:
+	// line_char.)
+	s := l.text[ln.at : ln.at + ln.len]
+	end := row.at - ln.at + row.len
 	pen := r.x + PAD + row.indent
-	at := row.at
+	at := row.at - ln.at
+	code := ln.style == STYLE_DOC and doc_code_at(s, at)
 	for at < end {
-		c, n := char_at(text, at)
-		w := char_width(&ui.text, c)
+		w, n := line_char(ui, ln.style, s, at, &code)
 		if x < pen + w / 2.0 do break
 		pen += w
 		at += n
 	}
-	return Spot{line = row.line, off = at - ln.at}
+	return Spot{line = row.line, off = at}
 }
 
 // The part of a row drawn at (x, y) that's selected — from..to — its
@@ -75,9 +77,9 @@ draw_selected :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, from: Spot, to: Spot, x:
 	a := max_int(lo, start)
 	b := min_int(hi, end)
 	if a > b do return
-	s := l.text[row.at : row.at + row.len]
-	x0 := x + text_width(&ui.text, s[0 : a - start])
-	x1 := x + text_width(&ui.text, s[0 : b - start])
+	s := l.text[ln.at : ln.at + ln.len]
+	x0 := x + line_width(ui, ln.style, s, start, a)
+	x1 := x + line_width(ui, ln.style, s, start, b)
 	if hi > end do x1 += char_width(&ui.text, u32(' '))
 	if x1 > x0 do fill(ui.renderer, x0, y, x1 - x0, ui.text.line, ui.selected)
 }

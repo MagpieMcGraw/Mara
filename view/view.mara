@@ -12,7 +12,8 @@ module view
 // light, are kept. It answers `mara ask` here from a `mara serve` of its
 // own (hub.mara).
 //   view <compiler> <module> <pipe name> <docs pipe name>   (as `mara view` starts it)
-// Its font, Inter (OFL.txt), and SDL3.dll are beside it, and its layout,
+// Its fonts, Inter (OFL.txt) and for code JetBrains Mono
+// (OFL-JetBrainsMono.txt), and SDL3.dll are beside it, and its layout,
 // layout.txt. Built here: `mara build view` — with the window closed
 // (Windows won't write over a program that's running).
 
@@ -35,6 +36,8 @@ Ui :: struct {
 	renderer: Renderer
 	text:     Text
 	font:     [1000]utf8   // the font's path
+	mono:     Text           // code's: a monospace font, on text's baseline (fonts_load)
+	mono_font: [1000]utf8  // ... its path
 	layout_path: [1000]utf8
 	editor_path: [1000]utf8   // editor.txt's: the editor the windows were told of
 	density:  f32            // pixels a window unit (a high-density display has more)
@@ -134,6 +137,8 @@ main :: fun(args: [][]utf8) -> i64 {
 	dir := get_dir(exe)
 	&ui.font + dir
 	&ui.font + "Inter.ttf"
+	&ui.mono_font + dir
+	&ui.mono_font + "JetBrainsMono-Regular.ttf"
 	&ui.layout_path + dir
 	&ui.layout_path + "layout.txt"
 	&ui.editor_path + dir
@@ -180,9 +185,9 @@ main :: fun(args: [][]utf8) -> i64 {
 		ui.cursors[id] = CreateSystemCursor(i32(id))
 	}
 	measure(&ui)
-	e := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
+	e := fonts_load(&ui)
 	if e {
-		print("mara view: its font didn't load:", e)
+		print("mara view: its fonts didn't load:", e)
 		return 1
 	}
 	profile_read(&p, PROFILE)
@@ -275,8 +280,8 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		ui.dirty = true
 	WindowDisplayScaleChanged
 		measure(ui)
-		le := text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)
-		if le do print("mara view: its font didn't load:", le)
+		le := fonts_load(ui)
+		if le do print("mara view: its fonts didn't load:", le)
 		measure_columns(ui, p)
 		window_changed(ui)
 	MouseMotion

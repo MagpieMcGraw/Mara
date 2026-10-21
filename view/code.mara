@@ -328,20 +328,17 @@ token_color :: fun(ui: ^Ui, kind: i64) -> Color {
 }
 
 // A row of doc text drawn at (x, y): the text in ink, and what's between
-// backticks as Mara code — each token in its color, on a box. The backticks
-// aren't drawn: their room is the box's edges, so where the row wraps and
-// what's selected stay as the text has them. A backtick with none after it
-// on its line is drawn as itself.
+// backticks as Mara code — in the monospace font, each token in its color,
+// on a box. The backticks aren't drawn: their room, in the text's font, is
+// the box's edges, so where the row wraps and what's selected stay as
+// line_char measures them. A backtick with none after it on its line is
+// drawn as itself.
 draw_doc_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 	ln := l.lines[row.line]
 	s := l.text[ln.at : ln.at + ln.len]
 	from := row.at - ln.at
 	to := from + row.len
-	// (In code where the row begins: the backticks before it, paired.)
-	code := false
-	for k in 0 .. from {
-		if s[k] == '`' and (code or tick_after(s, k + 1)) do code = not code
-	}
+	code := doc_code_at(s, from)
 	pen := x
 	at := from
 	for at < to {
@@ -383,10 +380,11 @@ code_box_width :: fun(ui: ^Ui, s: []utf8, at: i64, to: i64) -> f32 {
 	for close < s.len and s[close] != '`' {
 		close += 1
 	}
-	return text_width(&ui.text, s[at : min_int(close + 1, to)])
+	return line_width(ui, STYLE_DOC, s, at, min_int(close + 1, to))
 }
 
-// Code drawn at (x, y), each token in its color; the x after it.
+// Code drawn at (x, y) in the monospace font, each token in its color; the
+// x after it.
 draw_code_run :: fun(ui: ^Ui, s: []utf8, x: f32, y: f32) -> f32 {
 	pen := x
 	at : i64 = 0
@@ -394,15 +392,15 @@ draw_code_run :: fun(ui: ^Ui, s: []utf8, x: f32, y: f32) -> f32 {
 	for at < s.len {
 		end, kind, next := code_token(s, at, state)
 		state = next
-		pen = text_draw(&ui.text, ui.renderer, s[at : end], pen, y, token_color(ui, kind))
+		pen = text_draw(&ui.mono, ui.renderer, s[at : end], pen, y, token_color(ui, kind))
 		at = end
 	}
 	return pen
 }
 
-// A row of a line of Mara code drawn at (x, y), each token in its color —
-// the line's tokens found from its start, for what's open where the row
-// begins.
+// A row of a line of Mara code drawn at (x, y) in the monospace font, each
+// token in its color — the line's tokens found from its start, for what's
+// open where the row begins.
 draw_code_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 	ln := l.lines[row.line]
 	s := l.text[ln.at : ln.at + ln.len]
@@ -416,7 +414,7 @@ draw_code_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 		state = next
 		a := max_int(at, from)
 		b := min_int(end, to)
-		if a < b do pen = text_draw(&ui.text, ui.renderer, s[a : b], pen, y, token_color(ui, kind))
+		if a < b do pen = text_draw(&ui.mono, ui.renderer, s[a : b], pen, y, token_color(ui, kind))
 		at = end
 	}
 }
