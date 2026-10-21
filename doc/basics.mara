@@ -388,58 +388,69 @@ example_distinct :: fun() {
 }
 
 
-// `true`, `false`, `bool`: the two truth values, and their type.
-//
-// Comparisons give a bool (`a < b`), and `if`, `for` and `and`/`or`/`not`
-// take one (or an err: true when it failed). A number isn't a bool:
-// `bool(n)` is true when n isn't 0.
+/*
+`true`, `false`, `bool`: the two truth values, and their type.
+
+Comparisons give a bool, like `a < b`. `if`, `for`, `and`, `or` and `not`
+take a bool, or an err, which counts as true when it failed.
+
+A number isn't a bool. `bool(n)` is true when `n` isn't 0.
+*/
 example_true :: fun() {
 	ready := true
 	done : bool = false
-	print(ready, done, 3 > 2)              // true false true
-	print(bool(0), bool(7))                // false true
+	print(ready, done, 3 > 2)   // true false true
+	print(bool(0), bool(7))     // false true
 }
 
-// `and`: true when both sides are true.
-//
-// `a and b` runs a first. When a is false the answer is already false, so b
-// doesn't run: in `i < n and xs[i] > 0`, xs[i] isn't read once i reaches n.
-//
-// With `or` and `not`: `not` applies first, to the value right after it;
-// then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
+/*
+`and`: true when both sides are true.
+
+`a and b` runs `a` first. When `a` is false the answer is already false, so
+`b` doesn't run.
+
+Evaluation order: first `not`, then `and`, then `or`.
+`a and not b or c` would be `(a and (not b)) or c`
+*/
 example_and :: fun() {
-	xs := [4, 0, 9]
-	i := 3
-	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
-	print(true and true, true and false)   // true false
+	list := [4, 0, 9]
+	index := 3
+	print(index < list.len and list[index] > 0) // false, and list[3] never read
+	print(true and true, true and false)        // true false
+	print(false and true or true)               // true: (false and true) or true
 }
 
-// `or`: true when either side is true.
-//
-// `a or b` runs a first. When a is true the answer is already true, so b
-// doesn't run: in `i >= n or xs[i] > 0`, xs[i] isn't read once i reaches n.
-//
-// With `and` and `not`: `not` applies first, to the value right after it;
-// then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
+/* #magpie
+`or`: true when either side is true.
+
+`a or b` runs a first. When `a` is true the answer is already true, so `b`
+doesn't run.
+
+Evaluation order: first `not`, then `and`, then `or`.
+`a or not b and c` would be `a or ((not b) and c)`
+*/
 example_or :: fun() {
-	xs := [4, 0, 9]
-	i := 3
-	print(i >= xs.len or xs[i] > 0)        // true, and xs[3] never read
-	print(false or true, false or false)   // true false
-	print(true or false and false)         // true: true or (false and false)
+	list := [4, 0, 9]
+	index := 3
+	print(index >= list.len or list[index] > 0) // true, and list[3] never read
+	print(false or true, false or false)        // true false
+	print(true or false and false)              // true: true or (false and false)
 }
 
-// `not`: true when its value is false, and false when it's true.
-//
-// `not` applies to the value right after it, before a comparison, `and` or
-// `or` around it: `not i == 3` means `(not i) == 3`, an error, since i isn't
-// a bool. To turn a comparison around, put it in parentheses: `not (i == 3)`.
-//
-// With `and` and `or`: `not` applies first; then `and`; then `or`.
+/*
+`not`: true when its value is false, and false when it's true.
+
+`not` applies to the value right after it, before any comparison.
+`not index == 3` would be `(not index) == 3`, an error, since `index` isn't a
+bool. To flip a comparison, put it in parentheses: `not (index == 3)`.
+
+Evaluation order: first `not`, then `and`, then `or`.
+`not a and b` would be `(not a) and b`
+*/
 example_not :: fun() {
-	i := 3
-	print(not (i == 3), not false)         // false true
-	print(not false or false)              // true: (not false) or false
+	index := 3
+	print(not (index == 3), not false)  // false true
+	print(not false or false)           // true: (not false) or false
 }
 
 // ---- when a block ends ----------------------------------------------------------
