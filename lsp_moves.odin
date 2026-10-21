@@ -25,17 +25,11 @@ import "core:strings"
 // yet put back changes nothing known.
 // ---------------------------------------------------------------------------
 
-// What an order is of.
-Lsp_Order_Kind :: enum { Fields, Results, Params }
-
-// What a place giving an order's parts is.
-Lsp_Site_Kind :: enum { Literal, Return, Destructure, Call }
-
 // A place giving an order's parts by position: where its entries are (the
 // first's start to the last's end), each one's text, and the part each text
 // is for — nil when not known (its entries weren't as many as the parts).
 Lsp_Site :: struct {
-    kind:    Lsp_Site_Kind,
+    kind:    Site_Kind,
     path:    string,
     at, end: int,
     texts:   []string,
@@ -46,7 +40,7 @@ Lsp_Site :: struct {
 // fun's results or params — and as it was written when its places last all
 // fit it: what's put back.
 Lsp_Order :: struct {
-    kind:       Lsp_Order_Kind,
+    kind:       Order_Kind,
     name:       string,    // the struct's or fun's
     path:       string,
     name_at:    int,       // its name's place
@@ -123,150 +117,48 @@ lsp_keep_orders :: proc(s: ^Lsp) {
     s.orders = fresh
 }
 
-// The check's orders declared in the editor's open files — structs' fields,
-// funs' results (two or more) and params (two or more) — and every place
-// giving them by position (any file's), in the order they're written.
+// The check's orders declared in the editor's open files (orders_of, the
+// compiler's), each place's entries as their texts and where they are. (A
+// method call's: not followed — its receiver isn't among its entries.)
 @(private="file")
 lsp_fresh_orders :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Order) {
-    a := s.check.session.checked.annot
     t := &build_tree
-    of_struct := make(map[^Type_Scope]int, allocator = context.temp_allocator)
-    of_results := make(map[Tree_Id]int, allocator = context.temp_allocator)   // (by the fun's Fun_Def)
-    of_params := make(map[Tree_Id]int, allocator = context.temp_allocator)
-    funs := make([dynamic]Tree_Id, context.temp_allocator)   // (the open files' Fun_Defs: a return's own fun)
-    for key, ts in a.decls {
-        if ts == nil || ts.is_module { continue }
-        _, n := annot_split(key)
-        first := build_tokens[t.first[n]]
-        file := build_files[first.file]
-        path := lsp_abs(s, file.path)
-        if path_key(path) not_in s.overlays { continue }
-        name := ts.source_name if ts.source_name != "" else ts.name
-        // (Its name: before its `::`.)
-        name_at := int(first.offset)
-        if t.first[n] >= 2 && token_text(build_tokens[t.first[n] - 2]) == name { name_at = int(build_tokens[t.first[n] - 2].offset) }
-        order :: proc(kind: Lsp_Order_Kind, name, path: string, name_at, at, end: int, parts: []string) -> Lsp_Order {
-            return {kind = kind, name = strings.clone(name), path = strings.clone(path), name_at = name_at,
-                    span_at = at, span_end = end, parts = parts, sites = make([dynamic]Lsp_Site)}
-        }
-        switch {
-        case ts.kind == .Struct && !ts.is_union_variant && t.tag[n] == .Struct_Def:
-            // (Its body: its braces' inside.)
-            open, close := -1, -1
-            for k := t.first[n]; k < t.end[n]; k += 1 {
+    open := make(map[u16]bool, allocator = context.temp_allocator)
+    for f, i in build_files { if path_key(lsp_abs(s, f.path)) in s.overlays { open[u16(i)] = true } }
+    for o in orders_of(t, s.check.session.checked.annot, &open) {
+        first := build_tokens[t.first[o.def]]
+        path := lsp_abs(s, build_files[first.file].path)
+        name_at := int(build_tokens[o.name_tok].offset) if o.name_tok != 0 else int(first.offset)
+        // (What's put back: a struct's body, inside its braces; a fun's results or params.)
+        at, end := -1, -1
+        if o.kind == .Fields {
+            for k := t.first[o.def]; k < t.end[o.def]; k += 1 {
                 tk := build_tokens[k]
-                if tk.kind == .Left_Brace && open < 0 { open = int(tk.offset + tk.len) }
-                if tk.kind == .Right_Brace { close = int(tk.offset) }
+                if tk.kind == .Left_Brace && at < 0 { at = int(tk.offset + tk.len) }
+                if tk.kind == .Right_Brace { end = int(tk.offset) }
             }
-            if open < 0 || close < open { continue }
-            parts := make([]string, len(ts.fields) - first_user_field(ts))
-            for f, i in ts.fields[first_user_field(ts):] { parts[i] = strings.clone(f.name) }
-            append(out, order(.Fields, name, path, name_at, open, close, parts))
-            of_struct[ts] = len(out) - 1
-        case ts.kind == .Fun && t.tag[n] == .Fun_Def:
-            append(&funs, n)
-            r := tree_rec(t, t.a[n], 5)
-            params, results := tree_list(t, r[1]), tree_list(t, r[2])
-            if len(results) >= 2 && len(results) == len(ts.return_types) {
-                parts := make([]string, len(results))
-                for rt, i in ts.return_types { parts[i] = strings.clone(type_name(rt)) }
-                at, end := lsp_nodes_span(t, results)
-                append(out, order(.Results, name, path, name_at, at, end, parts))
-                of_results[n] = len(out) - 1
-            }
-            if len(params) > 0 && len(ts.params) >= 2 {
-                parts := make([]string, len(ts.params))
-                for p, i in ts.params { parts[i] = strings.clone(p.name) }
-                at, end := lsp_nodes_span(t, params)
-                append(out, order(.Params, name, path, name_at, at, end, parts))
-                of_params[n] = len(out) - 1
-            }
+        } else if o.groups != nil {
+            last := build_tokens[o.groups[len(o.groups) - 1].end - 1]
+            at, end = int(build_tokens[o.groups[0].first].offset), int(last.offset + last.len)
         }
-    }
-    if len(out) == 0 { return }
-    seen := make(map[[2]u32]bool, allocator = context.temp_allocator)   // (a generic's instances: one place)
-    for inst, i in a.instances {
-        for k in 0 ..< len(a.types[i]) {
-            n := inst.lo + Tree_Id(k)
-            site: Lsp_Site_Kind
-            entries: []Tree_Id
-            at := -1   // (its order)
-            #partial switch t.tag[n] {
-            case .Literal:
-                ts, is_scope := distinct_base(annot_type(a, Instance_Id(i), n)).(^Type_Scope)
-                if !is_scope { continue }
-                o, kept := of_struct[ts]
-                if !kept { continue }
-                entries = tree_list(t, t.b[n])
-                if len(entries) == 0 || t.tag[entries[0]] == .Named_Entry { continue }
-                if len(entries) == 1 && len(out[o].parts) != 1 { continue }   // (`Token{0}`: its zero, not its first field)
-                site, at = .Literal, o
-            case .Return:
-                entries = tree_list(t, t.a[n])
-                if len(entries) < 2 { continue }
-                fun := lsp_own_fun(t, funs[:], n)
-                o, kept := of_results[fun]
-                if fun == 0 || !kept { continue }
-                site, at = .Return, o
-            case .Decl, .Assign:
-                entries = tree_list(t, t.a[n])
-                values := tree_list(t, tree_rec(t, t.b[n], 2)[1]) if t.tag[n] == .Decl else tree_list(t, t.b[n])
-                if len(entries) < 2 || len(values) != 1 { continue }
-                call := values[0]
-                for t.tag[call] == .Paren { call = Tree_Id(t.a[call]) }
-                if t.tag[call] != .Call { continue }
-                callee := a.callees[annot_key(Instance_Id(i), call)] or_else nil
-                if callee == nil { continue }
-                o, kept := of_results[callee.node]
-                if !kept { continue }
-                site, at = .Destructure, o
-            case .Call:
-                callee := a.callees[annot_key(Instance_Id(i), n)] or_else nil
-                if callee == nil || callee.kind != .Fun { continue }
-                o, kept := of_params[callee.node]
-                if !kept { continue }
-                entries = tree_list(t, t.a[n])
-                if len(entries) == 0 { continue }
-                site, at = .Call, o
-            case:
-                continue
-            }
-            key := [2]u32{u32(t.first[n]), u32(site)}
-            if at < 0 || seen[key] { continue }
-            seen[key] = true
-            first, last := build_tokens[t.first[entries[0]]], build_tokens[t.end[entries[len(entries) - 1]] - 1]
-            src := build_files[first.file].source
-            texts := make([]string, len(entries))
-            for e, j in entries {
+        if at < 0 || end < at { continue }
+        lo := Lsp_Order{kind = o.kind, name = strings.clone(o.name), path = strings.clone(path), name_at = name_at,
+                        span_at = at, span_end = end, parts = lsp_clone_names(o.parts), sites = make([dynamic]Lsp_Site)}
+        for site in o.sites {
+            if site.kind == .Method_Call || len(site.entries) == 0 { continue }
+            e0, e1 := build_tokens[t.first[site.entries[0]]], build_tokens[t.end[site.entries[len(site.entries) - 1]] - 1]
+            src := build_files[e0.file].source
+            texts := make([]string, len(site.entries))
+            for e, j in site.entries {
                 a0, a1 := build_tokens[t.first[e]], build_tokens[t.end[e] - 1]
                 texts[j] = strings.clone(src[a0.offset:a1.offset + a1.len])
             }
-            append(&out[at].sites, Lsp_Site{kind = site, path = strings.clone(lsp_abs(s, build_files[first.file].path)),
-                                             at = int(first.offset), end = int(last.offset + last.len), texts = texts})
+            append(&lo.sites, Lsp_Site{kind = site.kind, path = strings.clone(lsp_abs(s, build_files[e0.file].path)),
+                                       at = int(e0.offset), end = int(e1.offset + e1.len), texts = texts})
         }
+        slice.sort_by(lo.sites[:], proc(x, y: Lsp_Site) -> bool { return x.path < y.path || x.path == y.path && x.at < y.at })
+        append(out, lo)
     }
-    for &o in out {
-        slice.sort_by(o.sites[:], proc(x, y: Lsp_Site) -> bool { return x.path < y.path || x.path == y.path && x.at < y.at })
-    }
-}
-
-// From the first node's start to the last's end, in its file's text.
-@(private="file")
-lsp_nodes_span :: proc(t: ^Tree, nodes: []Tree_Id) -> (at, end: int) {
-    first, last := build_tokens[t.first[nodes[0]]], build_tokens[t.end[nodes[len(nodes) - 1]] - 1]
-    return int(first.offset), int(last.offset + last.len)
-}
-
-// The fun a node is in: the innermost Fun_Def around it, of `funs`; 0 for none.
-@(private="file")
-lsp_own_fun :: proc(t: ^Tree, funs: []Tree_Id, n: Tree_Id) -> Tree_Id {
-    best := Tree_Id(0)
-    for f in funs {
-        if t.first[f] <= t.first[n] && t.first[n] < t.end[f] && (best == 0 || t.first[f] > t.first[best]) { best = f }
-    }
-    // (Inside another fun nested in it: that one's, kept or not.)
-    if best == 0 { return 0 }
-    return best
 }
 
 // The parts renamed in place since the order was kept: the same count, a
@@ -282,7 +174,7 @@ lsp_part_renames :: proc(old: ^Lsp_Order, parts: []string) -> map[string]string 
 }
 
 @(private="file")
-lsp_find_order :: proc(orders: []Lsp_Order, kind: Lsp_Order_Kind, name, path: string) -> ^Lsp_Order {
+lsp_find_order :: proc(orders: []Lsp_Order, kind: Order_Kind, name, path: string) -> ^Lsp_Order {
     for &o in orders {
         if o.kind == kind && o.name == name && path_key(o.path) == path_key(path) { return &o }
     }
@@ -434,33 +326,22 @@ lsp_part_list :: proc(names: []string) -> string {
     return strings.join(names, ", ", context.temp_allocator)
 }
 
-// What an order's parts are called: "fields", "results", "params".
-@(private="file")
-lsp_parts_word :: proc(kind: Lsp_Order_Kind) -> string {
-    switch kind {
-    case .Fields:  return "fields"
-    case .Results: return "results"
-    case .Params:  return "params"
-    }
-    return ""
-}
-
 // What a place does with the parts, said of it: "this literal still gives
 // them", "this destructure still names them", ...
 @(private="file")
-lsp_site_said :: proc(kind: Lsp_Site_Kind) -> string {
+lsp_site_said :: proc(kind: Site_Kind) -> string {
     switch kind {
     case .Literal:     return "this literal still gives them"
     case .Return:      return "this return still gives them"
     case .Destructure: return "this destructure still names them"
-    case .Call:        return "this call still passes them"
+    case .Call, .Method_Call: return "this call still passes them"
     }
     return ""
 }
 
 // An order's places, said: "30 literals", "1 place", "2 calls".
 @(private="file")
-lsp_sites_word :: proc(kind: Lsp_Order_Kind, n: int) -> string {
+lsp_sites_word :: proc(kind: Order_Kind, n: int) -> string {
     noun := "literal" if kind == .Fields else "call" if kind == .Params else "place"
     return fmt.tprintf("%d %s%s", n, noun, "" if n == 1 else "s")
 }
@@ -478,13 +359,13 @@ lsp_moved_diagnostics :: proc(s: ^Lsp, by_uri: ^map[string][dynamic]string) {
             end := p.end
             if nl := strings.index_byte(text[p.at:p.end], '\n'); nl >= 0 { end = p.at + nl }   // (its first line)
             message := fmt.tprintf("%s's %s were reordered (%s), but %s in the old order (%s)",
-                                   o.name, lsp_parts_word(o.kind), lsp_part_list(o.parts), lsp_site_said(p.kind), lsp_part_list(given))
+                                   o.name, order_parts_word(o.kind), lsp_part_list(o.parts), lsp_site_said(p.kind), lsp_part_list(given))
             lsp_add_diagnostic(s, by_uri, p.path, text, p.at, end, message)
         }
         if left == 0 { continue }
         text, _ := lsp_editor_text(s, o.path)
         message := fmt.tprintf("%s's %s were reordered: %s still use%s the old order. A code action puts them in the new one, or the %s back.",
-                               o.name, lsp_parts_word(o.kind), lsp_sites_word(o.kind, left), "s" if left == 1 else "", lsp_parts_word(o.kind))
+                               o.name, order_parts_word(o.kind), lsp_sites_word(o.kind, left), "s" if left == 1 else "", order_parts_word(o.kind))
         lsp_add_diagnostic(s, by_uri, o.path, text, o.name_at, o.name_at + len(o.name), message)
     }
 }
@@ -537,7 +418,7 @@ lsp_moved_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[d
         append(&put_back, lsp_text_edit(s, text, o.span_at, o.span_end, o.text))
         back[lsp_uri(s, o.path)] = put_back
         append(actions, fmt.tprintf(`{{"title":%s,"kind":"quickfix","edit":%s}}`,
-                                    json_str(fmt.tprintf("Put %s's %s back in the old order (%s)", o.name, lsp_parts_word(o.kind), lsp_part_list(o.text_parts))),
+                                    json_str(fmt.tprintf("Put %s's %s back in the old order (%s)", o.name, order_parts_word(o.kind), lsp_part_list(o.text_parts))),
                                     lsp_workspace_edit(back)))
     }
 }

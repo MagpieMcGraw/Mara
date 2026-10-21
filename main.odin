@@ -1074,7 +1074,7 @@ run_view :: proc(args: CLI_Args) {
 // summary — for build and ask to print and exit on, and serve to answer
 // with. `shared`: the module builds a DLL (no main, or -shared).
 check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, perf: ^Performance_Timer) -> (checked: ^Checked_Program, shared: bool, failure: string) {
-    analysis := args.ask || args.serve   // (read-only: no code, no entry point needed)
+    analysis := args.ask || args.serve || args.edit   // (read-only: no code, no entry point needed)
 
     perf_timer_mark(perf, "lex")
     lex_target_files(files)
@@ -1135,7 +1135,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                analysis_only = analysis,
                                no_assert     = args.no_assert,
                                perf          = perf,
-                               lower         = !args.lsp)
+                               lower         = !args.lsp && !args.edit)
     if checked.errors > 0 || len(parse_errors) > 0 {
         return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
     }
@@ -1169,6 +1169,11 @@ CLI_Args :: struct {
     // `mara docs <words>` — the window open here looks the words up in the
     // docs: shown in its Docs panel, printed here (docs_via_view).
     docs:         bool,
+    // `mara edit [module] <name>.<fields|results|params> <part> ...`: an order
+    // put in another, in the module's files (edit.odin, EDIT_USAGE).
+    edit:         bool,
+    edit_target:  string,
+    edit_to:      []string,
     docs_words:   []string,
     docs_at:      string,     // `at <file>:<line>:<col>`: the point the words are at
 
@@ -1191,7 +1196,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1207,6 +1212,18 @@ LSP_USAGE :: `Usage: mara lsp
   document symbols, completion and renames, and publishes each check's errors and warnings.
   initializationOptions turn each off: {"hover": false, "definition":
   false, "references": false, "symbols": false, "completion": false, "renames": false, "diagnostics": false}.`
+EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> ...
+
+  Puts a struct's fields, a fun's results or a fun's params in another
+  order, and every place that gives them by position with them: the
+  struct's literals; the fun's returns and destructures (a, b := f()); its
+  calls. Named ones (Token{kind = …}) need nothing. The module must check
+  first. Parts declared together (file, offset, len : i64) move together.
+
+    mara edit Token.fields file offset len kind
+    mara edit next_token.results bool Token     (results by their types)
+    mara edit span.params len at`
+
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
 
@@ -1420,6 +1437,40 @@ parse_args :: proc() -> CLI_Args {
     // positional[0] is the exe name itself. positional[1] is the subcommand.
     subcmd := positional[1] if len(positional) >= 2 else ""
 
+    // `mara edit [module] <name>.<kind> <part> ...` — an order put in another
+    // in the module here, or the one named (EDIT_USAGE).
+    if subcmd == "edit" {
+        rest := positional[2:]
+        if len(rest) == 0 || is_help_flag(rest[0]) {
+            fmt.println(EDIT_USAGE)
+            if len(rest) > 0 { os.exit(0) }
+            return args
+        }
+        cwd, _ := os.get_working_directory(context.allocator)
+        if !strings.contains(rest[0], ".") {
+            args.pkg_name, rest = rest[0], rest[1:]
+        } else {
+            name, problem := module_here("edit", cwd)
+            if problem != "" {
+                fmt.println(problem)
+                return args
+            }
+            args.pkg_name = name
+        }
+        if len(rest) < 2 {
+            fmt.println(EDIT_USAGE)
+            return args
+        }
+        // (The parts: words, or written with commas between.)
+        to := make([dynamic]string)
+        for word in rest[1:] {
+            for part in strings.split(word, ",") { if p := strings.trim_space(part); p != "" { append(&to, p) } }
+        }
+        args.edit, args.edit_target, args.edit_to = true, rest[0], to[:]
+        args.ok = true
+        return args
+    }
+
     // `mara ask <name> [types|call|flow] [above|below] …` — analyze the module
     // in the cwd and answer a static query about <name> (ASK_USAGE).
     if subcmd == "ask" {
@@ -1585,7 +1636,7 @@ main :: proc() {
     }
 
     perf: Performance_Timer
-    perf.quiet = args.ask   // `ask` keeps stdout clean for machine/AI consumption
+    perf.quiet = args.ask || args.edit   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
 
     all_files := discover_all_files(args.compiler_dir, ".")   // (the project: the current directory)
@@ -1627,6 +1678,15 @@ main :: proc() {
         perf_timer_end(&perf)
         fmt.print(failure)
         os.exit(1)
+    }
+
+    // `edit` stops here too: the orders the check found, one put in another (edit.odin).
+    if args.edit {
+        flush_diagnostics()
+        said, ok := edit_run(checked, args.edit_target, args.edit_to)
+        fmt.print(said)
+        if !ok { os.exit(1) }
+        return
     }
 
     // `ask` stops here — the checked program is the query substrate; no codegen.
