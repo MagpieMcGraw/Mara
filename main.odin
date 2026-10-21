@@ -1213,6 +1213,7 @@ LSP_USAGE :: `Usage: mara lsp
   initializationOptions turn each off: {"hover": false, "definition":
   false, "references": false, "symbols": false, "completion": false, "renames": false, "diagnostics": false}.`
 EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> ...
+       mara edit [module] <fun>.calls
 
   Puts a struct's fields, a fun's results or a fun's params in another
   order, and every place that gives them by position with them: the
@@ -1222,7 +1223,13 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
 
     mara edit Token.fields file offset len kind
     mara edit next_token.results bool Token     (results by their types)
-    mara edit span.params len at`
+    mara edit span.params len at
+
+  mara edit [module] <fun>.calls calls the fun in each place its body is
+  written out: its params whatever's there, its first locals left out where
+  a local holding the same value is used instead (nothing writing it between).
+
+    mara edit emit.calls`
 
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
@@ -1457,7 +1464,7 @@ parse_args :: proc() -> CLI_Args {
             }
             args.pkg_name = name
         }
-        if len(rest) < 2 {
+        if len(rest) < 2 && !(len(rest) == 1 && strings.has_suffix(rest[0], ".calls")) {
             fmt.println(EDIT_USAGE)
             return args
         }

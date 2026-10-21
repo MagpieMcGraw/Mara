@@ -422,3 +422,40 @@ lsp_moved_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[d
                                     lsp_workspace_edit(back)))
     }
 }
+
+// --- a fun's body written out (shapes.odin) -----------------------------------
+
+// The code action at a fun's name, asked for (nothing said on its own): the
+// fun called in each place its body is written out, its run of statements
+// there the call.
+lsp_shape_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
+    session := &s.check.session
+    if session.checked == nil { return }
+    t := &build_tree
+    a := session.checked.annot
+    key := path_key(path)
+    for k, ts in a.decls {
+        _, n := annot_split(k)
+        if ts == nil || ts.kind != .Fun || t.tag[n] != .Fun_Def { continue }
+        name_tok := t.first[n] - 2 if t.first[n] >= 2 else t.first[n]
+        tok := build_tokens[name_tok]
+        if path_key(lsp_abs(s, build_files[tok.file].path)) != key { continue }
+        line := token_line(tok) - 1
+        if line < l0 || line > l1 { continue }
+        name := ts.source_name if ts.source_name != "" else ts.name
+        matches := shape_matches(t, a, n, ts)
+        if len(matches) == 0 { continue }
+        by_uri := make(map[string][dynamic]string)
+        for m in matches {
+            file, at, end := shape_span(t, m)
+            p := lsp_abs(s, build_files[file].path)
+            text, _ := lsp_editor_text(s, p)
+            uri := lsp_uri(s, p)
+            edits := by_uri[uri]
+            append(&edits, lsp_text_edit(s, text, at, end, shape_call_text(t, name, m)))
+            by_uri[uri] = edits
+        }
+        title := fmt.tprintf("Call %s in the %d place%s its body is written out", name, len(matches), "" if len(matches) == 1 else "s")
+        append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), lsp_workspace_edit(by_uri)))
+    }
+}

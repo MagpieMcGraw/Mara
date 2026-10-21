@@ -1,0 +1,57 @@
+module shapes
+
+use mara.core
+
+// (mara edit's <fun>.calls, test/edit_test.py: emit's body written out
+// where it can be its call — and where `here` is stale, not.)
+
+Lexer :: struct {
+	pos:  i64
+	text: [16]utf8
+}
+
+Tok :: struct {
+	at, len, kind : i64
+}
+
+emit :: fun(l: ^Lexer, len: i64, kind: i64) -> bool, Tok {
+	here := l.pos
+	l.pos += len
+	return true, Tok{here, len, kind}
+}
+
+look :: fun(l: ^Lexer) -> utf8 {
+	if l.pos >= l.text.len do return 0
+	return l.text[l.pos]
+}
+
+skip :: fun(l: ^Lexer) {
+	l.pos += 1
+}
+
+next :: fun(l: ^Lexer) -> bool, Tok {
+	here := l.pos
+	c := look(l)
+	if c == '+' {
+		l.pos += 1
+		return true, Tok{here, 1, 1}
+	}
+	if c == '-' {
+		skip(l)
+		l.pos += 1
+		return true, Tok{here, 2, 2}
+	}
+	if c == '*' {
+		start := l.pos
+		l.pos += 1
+		return true, Tok{start, 1, 3}
+	}
+	return false, Tok{0}
+}
+
+main :: () {
+	l := Lexer{pos = 0, text = "+-x*"}
+	for t in next(&l) {
+		print(t.at, t.len, t.kind)
+	}
+}

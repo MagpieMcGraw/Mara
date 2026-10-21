@@ -18,6 +18,7 @@ POUNCE = os.path.join(ROOT, "Pounce")
 CAMERA = os.path.join(POUNCE, "camera.mara")
 FIELDS = os.path.join(ROOT, "test", "lsp_fields", "fields.mara")   # (moved_fields)
 FUNS = os.path.join(ROOT, "test", "lsp_fields", "funs.mara")       # (moved_results_params)
+SHAPES = os.path.join(ROOT, "test", "edit_shapes", "shapes.mara")  # (fun_calls)
 
 
 def uri(path):
@@ -248,6 +249,27 @@ def moved_results_params(c):
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 
+def fun_calls(c):
+    """At a fun's name, asked: the fun called where its body is written out."""
+    text = open(SHAPES, encoding="utf-8", newline="").read()
+    doc = {"uri": uri(SHAPES)}
+    c.notify("textDocument/didOpen", {"textDocument": {"uri": uri(SHAPES), "languageId": "mara", "version": 1, "text": text}})
+    c.diagnostics_for(SHAPES)
+    line = next(i for i, l in enumerate(text.split("\n")) if l.startswith("emit :: fun"))
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": line, "character": 0},
+                  "end": {"line": line, "character": 0}}, "context": {"diagnostics": []}})
+    acts = {a["title"]: a for a in r or []}
+    act = acts.get("Call emit in the 2 places its body is written out")
+    check("calls: offered at the fun's name", act is not None, list(acts))
+    done = apply(text, act and [e for es in act["edit"]["changes"].values() for e in es] or [])
+    check("calls: the two places its call", done.replace("\r", "").count("return emit(l, 1, ") == 2 and "skip(l)" in done, done)
+    other = next(i for i, l in enumerate(text.split("\n")) if l.startswith("next :: fun"))
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": other, "character": 0},
+                  "end": {"line": other, "character": 0}}, "context": {"diagnostics": []}})
+    check("calls: nothing at a fun whose body isn't written out elsewhere", not any(a["title"].startswith("Call ") for a in r or []), r)
+    c.notify("textDocument/didClose", {"textDocument": doc})
+
+
 def main():
     text = open(CAMERA, encoding="utf-8", newline="").read()
     c = Client()
@@ -391,6 +413,7 @@ def main():
     c.notify("textDocument/didClose", {"textDocument": doc})
     moved_fields(c)
     moved_results_params(c)
+    fun_calls(c)
     code = c.close()
     check("shut down: exit 0", code == 0, code)
 

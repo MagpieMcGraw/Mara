@@ -74,6 +74,28 @@ def main():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+    # A fun's body written out: its call put there — not where its local
+    # would be stale (a call writing l.pos between).
+    d = tempfile.mkdtemp(prefix="mara_edit_")
+    try:
+        shutil.copy(os.path.join(ROOT, "test", "edit_shapes", "shapes.mara"), d)
+        exe = os.path.join(d, "shapes.exe" if os.name == "nt" else "shapes")
+        mara(d, "build", "shapes")
+        before = subprocess.run([exe], capture_output=True, text=True).stdout
+        code, out = mara(d, "edit", "emit.calls")
+        text = read(d, "shapes.mara")
+        check("calls: two places, said", code == 0 and "emit called in the 2 places" in out, out)
+        check("calls: `here` held by a local unchanged, and a local of its own: calls", "if c == '+' {\n\t\treturn emit(l, 1, 1)\n\t}" in text.replace("\r", "")
+              and "if c == '*' {\n\t\treturn emit(l, 1, 3)\n\t}" in text.replace("\r", ""), text)
+        check("calls: `here` stale (skip(l) writes l.pos): left", "skip(l)\n\t\tl.pos += 1\n\t\treturn true, Tok{here, 2, 2}" in text.replace("\r", ""), text)
+        code, out = mara(d, "build", "shapes")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("calls: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
+        code, out = mara(d, "edit", "emit.calls")
+        check("calls: again, nothing left", code == 0 and "No place writes out emit's body" in out, out)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
     if bad:
         print("EDIT: %d FAILED" % len(bad))
         sys.exit(1)

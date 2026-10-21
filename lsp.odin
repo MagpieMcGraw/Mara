@@ -204,7 +204,7 @@ lsp_initialize :: proc(s: ^Lsp, id, params: json.Value) {
         `"serverInfo":{{"name":"mara lsp"}}}}`,
         json_str("utf-8" if s.utf8 else "utf-16"), s.hover, s.definition, s.references, s.symbols,
         strings.concatenate({`,"completionProvider":{"triggerCharacters":["."]}` if s.completion else "",
-                             `,"renameProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}` if s.renames else ""})))
+                             `,"renameProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor"]}` if s.renames else ""})))
 }
 
 // --- the editor's files -----------------------------------------------------

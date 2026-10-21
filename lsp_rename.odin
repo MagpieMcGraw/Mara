@@ -139,7 +139,8 @@ lsp_renamings :: proc(s: ^Lsp) -> []Lsp_Renaming {
 
 // Code actions, for a declaration being renamed with its declaration or a
 // use on the lines asked about, in this file: its uses renamed too, or its
-// name put back. And fields, results, params being moved (lsp_moved_actions).
+// name put back. And fields, results, params being moved (lsp_moved_actions);
+// at a fun's name, its body written out elsewhere called (lsp_shape_actions).
 lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
     if !s.renames { return "[]" }
     path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
@@ -184,6 +185,7 @@ lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
                                      json_str(fmt.tprintf("Put the name back: %s", r.from)), lsp_workspace_edit(back)))
     }
     lsp_moved_actions(s, path, here, l0, l1, &actions)   // (fields, results, params moved: lsp_moves.odin)
+    lsp_shape_actions(s, path, here, l0, l1, &actions)   // (a fun's body written out: shapes.odin)
     return strings.concatenate({"[", strings.join(actions[:], ","), "]"})
 }
 

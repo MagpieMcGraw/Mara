@@ -416,17 +416,19 @@ token_location :: proc(tok: Token) -> string {
 
 // `mara edit [module] <name>.<fields|results|params> <part> ...` (EDIT_USAGE):
 // the order named put in the one given, in the module checked here — the
-// files written. What was done, or what stopped it (false).
+// files written. `<fun>.calls`: the fun called where its body is written out
+// (shape_matches). What was done, or what stopped it (false).
 edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (said: string, ok: bool) {
     dot := strings.last_index_byte(target, '.')
-    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params>\n", target), false }
+    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls>\n", target), false }
     name, kind_word := target[:dot], target[dot + 1:]
+    if kind_word == "calls" { return edit_calls(checked, name) }
     kind: Order_Kind
     switch kind_word {
     case "fields":  kind = .Fields
     case "results": kind = .Results
     case "params":  kind = .Params
-    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results or params\n", kind_word), false
+    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params or calls\n", kind_word), false
     }
     orders := orders_of(&build_tree, checked.annot)
     found := make([dynamic]Order)
@@ -442,26 +444,68 @@ edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (sa
     edits, problem := edit_order(&build_tree, o, to)
     if problem != "" { return fmt.tprintf("mara edit: %s\n", problem), false }
     if slice.equal(o.parts, to) { return fmt.tprintf("%s's %s are in that order already.\n", name, kind_word), true }
-    // Each file's edits, last first: its text made again, written.
+    written, failed := edit_apply(edits[:])
+    if failed != "" { return failed, false }
+    places := len(o.sites)
+    return fmt.tprintf("%s's %s now %s: its declaration and %d place%s (%s)\n", name, kind_word, strings.join(to, ", "),
+                       places, "" if places == 1 else "s", strings.join(written, ", ")), true
+}
+
+// `mara edit <fun>.calls`: the fun called in each place its body is written
+// out — the run of statements there its call.
+@(private="file")
+edit_calls :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: bool) {
+    t := &build_tree
+    a := checked.annot
+    found := make([dynamic]Tree_Id)
+    scopes := make([dynamic]^Type_Scope)
+    for key, ts in a.decls {
+        _, n := annot_split(key)
+        if ts == nil || ts.kind != .Fun || t.tag[n] != .Fun_Def { continue }
+        if (ts.source_name if ts.source_name != "" else ts.name) != name || slice.contains(found[:], n) { continue }
+        append(&found, n)
+        append(&scopes, ts)
+    }
+    if len(found) == 0 { return fmt.tprintf("mara edit: no fun named %s here\n", name), false }
+    if len(found) > 1 {
+        b := strings.builder_make()
+        fmt.sbprintf(&b, "mara edit: %d funs named %s here — which isn't told yet:\n", len(found), name)
+        for n in found { fmt.sbprintf(&b, "  %s\n", token_location(build_tokens[t.first[n]])) }
+        return strings.to_string(b), false
+    }
+    matches := shape_matches(t, a, found[0], scopes[0])
+    if len(matches) == 0 { return fmt.tprintf("No place writes out %s's body.\n", name), true }
+    edits := make([dynamic]Order_Edit)
+    for m in matches {
+        file, at, end := shape_span(t, m)
+        append(&edits, Order_Edit{file, at, end, shape_call_text(t, name, m)})
+    }
+    written, failed := edit_apply(edits[:])
+    if failed != "" { return failed, false }
+    return fmt.tprintf("%s called in the %d place%s its body was written out (%s)\n", name, len(matches),
+                       "" if len(matches) == 1 else "s", strings.join(written, ", ")), true
+}
+
+// Edits made: each file's, last first, its text made again and written.
+// The files written; else why not.
+edit_apply :: proc(edits: []Order_Edit) -> (written: []string, problem: string) {
     by_file := make(map[u16][dynamic]Order_Edit)
     for e in edits {
         list := by_file[e.file]
         append(&list, e)
         by_file[e.file] = list
     }
-    places := len(o.sites)
-    written := make([dynamic]string)
+    out := make([dynamic]string)
     for file, list in by_file {
         slice.sort_by(list[:], proc(x, y: Order_Edit) -> bool { return x.at > y.at })
         text := build_files[file].source
         for e in list { text = strings.concatenate({text[:e.at], e.text, text[e.end:]}) }
         path := build_files[file].path
         if err := os.write_entire_file(path, transmute([]byte)text); err != nil {
-            return fmt.tprintf("mara edit: %s couldn't be written: %v\n", path, err), false
+            return nil, fmt.tprintf("mara edit: %s couldn't be written: %v\n", path, err)
         }
-        append(&written, path)
+        append(&out, path)
     }
-    slice.sort(written[:])
-    return fmt.tprintf("%s's %s now %s: its declaration and %d place%s (%s)\n", name, kind_word, strings.join(to, ", "),
-                       places, "" if places == 1 else "s", strings.join(written[:], ", ")), true
+    slice.sort(out[:])
+    return out[:], ""
 }
