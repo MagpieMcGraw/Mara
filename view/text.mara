@@ -71,7 +71,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 // set on the text's baseline and line height, so a row of both lines up.
 fonts_load :: fun(ui: ^Ui) -> err {
 	text_load(&ui.text, ui.renderer, ui.font, FONT_SIZE * ui.density)?
-	text_load(&ui.mono, ui.renderer, ui.mono_font, FONT_SIZE * ui.density)?
+	text_load(&ui.mono, ui.renderer, ui.mono_font, FONT_SIZE * MONO_SCALE * ui.density)?
 	ui.mono.ascent = ui.text.ascent
 	ui.mono.line = ui.text.line
 }

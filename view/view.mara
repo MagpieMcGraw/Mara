@@ -27,6 +27,7 @@ use mara.memory
 
 PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
+MONO_SCALE :: 0.9            // code's em, of the text's: its monospace font runs bigger
 PAD       :: 12.0            // room around text: a panel's margin, a column's
 ROW_PAD   :: 3.0             // room above and below a line of text in a bar or row
 
