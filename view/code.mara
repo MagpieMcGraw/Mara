@@ -400,19 +400,21 @@ draw_code_run :: fun(ui: ^Ui, s: []utf8, x: f32, y: f32) -> f32 {
 
 // A row of a line of Mara code drawn at (x, y) in the monospace font, each
 // token in its color — the line's tokens found from its start, for what's
-// open where the row begins.
+// open where the row begins. Its margin (code_margin) is the text's room.
 draw_code_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 	ln := l.lines[row.line]
 	s := l.text[ln.at : ln.at + ln.len]
 	from := row.at - ln.at
 	to := from + row.len
+	margin := code_margin(s)
 	pen := x
+	if from < margin do pen += text_width(&ui.text, s[from : min_int(margin, to)])
 	at : i64 = 0
 	state := ln.state
 	for at < to {
 		end, kind, next := code_token(s, at, state)
 		state = next
-		a := max_int(at, from)
+		a := max_int(at, max_int(from, margin))
 		b := min_int(end, to)
 		if a < b do pen = text_draw(&ui.mono, ui.renderer, s[a : b], pen, y, token_color(ui, kind))
 		at = end

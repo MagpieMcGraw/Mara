@@ -24,6 +24,7 @@ STYLE_MARA  :: 6   // Mara code: each token in its color
 STYLE_DOC   :: 7   // text with `code` in it: the code as Mara's, on a box (draw_doc_row)
 
 TAB_SPACES :: 4    // a tab, shown
+CODE_MARGIN :: 2   // a code line's first spaces, the panel's margin as a text line's: in the text's font
 
 // A line: its text in Lines.text, and its style; a place it opens, clicked
 // (`<file>:<line>`, kept after its text there; none: link_len 0). Mara
@@ -242,9 +243,7 @@ wrap :: fun(ui: ^Ui, s: []utf8, style: i64, w: f32, line: i64, base: i64, rows: 
 		if s[lead] != ' ' do break
 		lead += 1
 	}
-	space := char_width(&ui.text, u32(' '))
-	if style == STYLE_MARA do space = char_width(&ui.mono, u32(' '))
-	indent := min_f32(f32(lead) * space, w / 2.0)
+	indent := min_f32(line_width(ui, style, s, 0, lead), w / 2.0)
 	at : i64 = 0
 	x : f32 = 0
 	more := true
@@ -291,12 +290,16 @@ row_end :: fun(ui: ^Ui, s: []utf8, style: i64, at: i64, w: f32) -> i64 {
 }
 
 // How far s[at]'s character moves the pen in a line of `style`, and its
-// bytes: Mara code's in the monospace font; doc text's (STYLE_DOC) what's
+// bytes: Mara code's in the monospace font (its margin, code_margin, in the
+// text's, so code starts where text does); doc text's (STYLE_DOC) what's
 // between paired backticks too, the backticks and the rest in the text's.
 // `code`: whether doc text's code is open before it, then after it.
 line_char :: fun(ui: ^Ui, style: i64, s: []utf8, at: i64, code: ^bool) -> f32, i64 {
 	c, n := char_at(s, at)
-	if style == STYLE_MARA do return char_width(&ui.mono, c), n
+	if style == STYLE_MARA {
+		if at < code_margin(s) do return char_width(&ui.text, c), n
+		return char_width(&ui.mono, c), n
+	}
 	if style != STYLE_DOC do return char_width(&ui.text, c), n
 	if c == u32('`') and (code^ or tick_after(s, at + 1)) {
 		code^ = not code^
@@ -304,6 +307,15 @@ line_char :: fun(ui: ^Ui, style: i64, s: []utf8, at: i64, code: ^bool) -> f32, i
 	}
 	if code^ do return char_width(&ui.mono, c), n
 	return char_width(&ui.text, c), n
+}
+
+// A code line's margin: its first spaces, CODE_MARGIN at most.
+code_margin :: fun(s: []utf8) -> i64 {
+	k : i64 = 0
+	for k < CODE_MARGIN and k < s.len and s[k] == ' ' {
+		k += 1
+	}
+	return k
 }
 
 // How wide s[from : to] is drawn, s a line of `style` (line_char).
