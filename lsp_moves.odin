@@ -462,9 +462,9 @@ lsp_shape_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[d
 
 // --- one-statement ifs written with `do` (shapes.odin) -----------------------
 
-// The code actions for ifs written with `do`, asked for: at an if that can
-// be, it written so — over a selection, every one starting in it — and when
-// its fun has more, all of them; at a fun's name, all of its.
+// The code actions for ifs written with `do`, asked for: at an if, or a
+// branch, that can be, it written so — over a selection, every one in it —
+// and when its fun has more, all of them; at a fun's name, all of its.
 lsp_do_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
     session := &s.check.session
     if session.checked == nil { return }
@@ -477,38 +477,46 @@ lsp_do_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dyna
         if path_key(lsp_abs(s, build_files[first.file].path)) != key { continue }
         last := build_tokens[t.end[n] - 1]
         if token_line(first) - 1 > l1 || token_line(last) - 1 < l0 { continue }
-        chains := do_chains(t, n)
-        if len(chains) == 0 { continue }
+        found := do_edits(t, n)
+        if len(found) == 0 { continue }
         name := ts.source_name if ts.source_name != "" else ts.name
-        edit_of :: proc(s: ^Lsp, t: ^Tree, chains: []Tree_Id) -> string {
+        edit_of :: proc(s: ^Lsp, found: []Do_Edit) -> string {
             by_uri := make(map[string][dynamic]string)
-            for c in chains {
-                file, at, end := do_span(t, c)
-                p := lsp_abs(s, build_files[file].path)
+            for d in found {
+                p := lsp_abs(s, build_files[d.edit.file].path)
                 text, _ := lsp_editor_text(s, p)
                 uri := lsp_uri(s, p)
                 edits := by_uri[uri]
-                append(&edits, lsp_text_edit(s, text, at, end, do_text(t, c)))
+                append(&edits, lsp_text_edit(s, text, d.edit.at, d.edit.end, d.edit.text))
                 by_uri[uri] = edits
             }
             return lsp_workspace_edit(by_uri)
         }
-        // (The ones the lines asked about start on: at the cursor, one; a selection, all in it.)
-        picked := make([dynamic]Tree_Id, context.temp_allocator)
-        for c in chains {
-            line := token_line(build_tokens[t.first[c]]) - 1
-            if line >= l0 && line <= l1 { append(&picked, c) }
+        // (The ones the lines asked about touch: a whole chain by its if's
+        // line, a branch by its own.)
+        picked := make([dynamic]Do_Edit, context.temp_allocator)
+        for d in found {
+            text, _ := lsp_editor_text(s, lsp_abs(s, build_files[d.edit.file].path))
+            line := strings.count(text[:clamp(d.edit.at, 0, len(text))], "\n")
+            if d.whole { line = token_line(build_tokens[t.first[d.chain]]) - 1 }
+            if line >= l0 && line <= l1 { append(&picked, d) }
         }
         if len(picked) == 1 {
-            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str("Write this if with do"), edit_of(s, t, picked[:])))
+            title := "Write this if with do" if picked[0].whole else "Write this branch with do"
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, picked[:])))
         } else if len(picked) > 1 {
-            title := fmt.tprintf("Write the %d selected ifs with do", len(picked))
-            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, picked[:])))
+            title := fmt.tprintf("Write the %d selected ifs and branches with do", len(picked))
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, picked[:])))
         }
         name_line := token_line(build_tokens[t.first[n] - 2 if t.first[n] >= 2 else t.first[n]]) - 1
-        if (len(picked) > 0 && len(picked) < len(chains)) || (name_line >= l0 && name_line <= l1) {
-            title := fmt.tprintf("Write %s's %d one-statement if%s with do", name, len(chains), "" if len(chains) == 1 else "s")
-            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, chains[:])))
+        if (len(picked) > 0 && len(picked) < len(found)) || (name_line >= l0 && name_line <= l1) {
+            chains, branches := 0, 0
+            for d in found { if d.whole { chains += 1 } else { branches += 1 } }
+            parts := make([dynamic]string, context.temp_allocator)
+            if chains > 0 { append(&parts, fmt.tprintf("%d if%s", chains, "" if chains == 1 else "s")) }
+            if branches > 0 { append(&parts, fmt.tprintf("%d branch%s", branches, "" if branches == 1 else "es")) }
+            title := fmt.tprintf("Write %s's %s with do", name, strings.join(parts[:], " and "))
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, found[:])))
         }
     }
 }

@@ -158,6 +158,9 @@ example_return :: fun() {
 // takes the braces' place: `if n < 0 do return`, then `elif b do s` and
 // `else do s`, on that line or the next ones.
 //
+// Inside braces, a branch of one statement can be written with do too:
+// `elif b do s` and `else do s`, the other branches blocks as usual.
+//
 // `if` also picks a value: `x := if a do 1 else 2`, both of one type.
 example_if :: fun() {
 	temperature := 101

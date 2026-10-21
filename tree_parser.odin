@@ -406,9 +406,18 @@ tp_if_branch_end :: proc(p: ^Tree_Parser) -> bool {
     return k == .Right_Brace || k == .Else || k == .Elif || k == .EOF
 }
 
+// A braced chain's branch: its statements, to the next elif, else or `}` —
+// or, `do` first (`elif c do s`, `else do s`), the one statement after it
+// on its line, the next elif, else or `}` after it.
 tp_if_branch :: proc(p: ^Tree_Parser) -> u32 {
     tp_skip_newlines(p)
     body := tp_items()
+    if tp_kind(p) == .Do {
+        tp_advance(p)
+        append(&body, tp_stmt(p))
+        tp_skip_newlines(p)
+        return tp_list(p, body)
+    }
     for !tp_if_branch_end(p) {
         append(&body, tp_stmt(p))
         tp_skip_separator(p)

@@ -89,9 +89,35 @@ sign :: fun(n: i64) -> i64 {
 	return 1
 }
 
+// (mara edit's <fun>.elif: a braced if then a chain written with do, one
+// braced chain — its `}` after the do lines.)
+classify :: fun(c: utf8) -> i64 {
+	if c == 'a' {
+		x := 1
+		return x
+	}
+	if c == 'b' do return 2
+	elif c == 'c' do return 3
+	else do return 4
+}
+
+// (mara edit's <fun>.do: a braced chain's one-statement branches after its
+// first, each with do inside the braces.)
+grade :: fun(n: i64) -> i64 {
+	if n > 90 {
+		print("top")
+		return 1
+	elif n > 50
+		return 2
+	else
+		return 3
+	}
+}
+
 main :: () {
 	l := Lexer{pos = 0, text = "+-x*"}
 	print(sign(-5), sign(0), sign(500), sign(70), sign(3))
+	print(classify('a'), classify('b'), classify('c'), classify('z'), grade(95), grade(60), grade(10))
 	for t in next(&l) {
 		print(t.at, t.len, t.kind, kind_of(l.text[t.at]))
 	}

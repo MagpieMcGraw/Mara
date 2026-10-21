@@ -114,6 +114,20 @@ def main():
         code, out = mara(d, "build", "shapes")
         after = subprocess.run([exe], capture_output=True, text=True).stdout
         check("elif: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
+
+        # A braced if then a chain with do: one braced chain, its `}` after.
+        code, out = mara(d, "edit", "classify.elif")
+        text = read(d, "shapes.mara").replace("\r", "")
+        check("elif: a braced if and a do chain joined, the } after them", code == 0 and
+              "\t\treturn x\n\telif c == 'b' do return 2\n\telif c == 'c' do return 3\n\telse do return 4\n\t}\n}" in text, out + text)
+        # A braced chain's one-statement branches, with do inside its braces.
+        code, out = mara(d, "edit", "grade.do")
+        text = read(d, "shapes.mara").replace("\r", "")
+        check("do: a braced chain's one-statement branches", code == 0 and "grade: 2 branches written with do" in out and
+              "\t\treturn 1\n\telif n > 50 do return 2\n\telse do return 3\n\t}" in text, out + text)
+        code, out = mara(d, "build", "shapes")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("mixed: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

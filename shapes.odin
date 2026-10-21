@@ -525,30 +525,49 @@ shape_span :: proc(t: ^Tree, m: Shape_Match) -> (file: u16, at, end: int) {
 // One-statement ifs written with `do` (`mara edit <fun>.do`; mara lsp's code
 // action at an if). An if chain whose every branch — the if's, each elif's,
 // the else's — is one statement on one line (no block of its own: no if,
-// loop, match, with, defer, declaration), with no comment inside its braces
-// and none already written with `do`, becomes `if c do s`, each elif and
-// the else on a line of its own after it, as far in as the if.
+// loop, match, with, defer, declaration), with no comment inside it and its
+// if not written with `do` already, becomes `if c do s`, each elif and the
+// else on a line of its own after it, as far in as the if. A braced chain
+// with other branches: each elif or else after its first that is one such
+// statement becomes `elif c do s`, `else do s`, inside the braces.
 // ---------------------------------------------------------------------------
 
-// The if chains in a fun's body that can be written with `do`.
-do_chains :: proc(t: ^Tree, def: Tree_Id) -> [dynamic]Tree_Id {
-    out := make([dynamic]Tree_Id)
+// A `do` edit: the chain or branch it writes, the if it's in, and whether
+// it's the whole chain.
+Do_Edit :: struct {
+    edit:  Order_Edit,
+    chain: Tree_Id,
+    whole: bool,
+}
+
+// The `do` edits in a fun's body: each chain that can be written with `do`
+// whole; in each other braced chain, its branches that can.
+do_edits :: proc(t: ^Tree, def: Tree_Id) -> [dynamic]Do_Edit {
+    out := make([dynamic]Do_Edit)
     lists := make([dynamic][]Tree_Id, context.temp_allocator)
     shape_lists(t, scope_view(t, def).body, &lists)
     for list in lists {
-        for s in list { if t.tag[s] == .If && do_chain_ok(t, s) { append(&out, s) } }
+        for s in list {
+            if t.tag[s] != .If { continue }
+            if do_chain_ok(t, s) {
+                file, at, end := do_span(t, s)
+                append(&out, Do_Edit{Order_Edit{file, at, end, do_text(t, s)}, s, true})
+            } else if build_tokens[t.end[if_view(t, s).cond]].kind == .Left_Brace {
+                for e in do_branch_edits(t, s) { append(&out, Do_Edit{e, s, false}) }
+            }
+        }
     }
     return out
 }
 
-// Whether an if chain can be written with `do` (do_chains).
+// Whether an if chain can be written with `do` whole (do_edits).
 do_chain_ok :: proc(t: ^Tree, s: Tree_Id) -> bool {
     src := build_files[build_tokens[t.first[s]].file].source
     node := s
     for {
         v := if_view(t, node)
         if v.hash != 0 { return false }   // (`#if`: chosen when built)
-        if build_tokens[t.end[v.cond]].kind == .Do { return false }   // (written with `do` already)
+        if node == s && build_tokens[t.end[v.cond]].kind == .Do { return false }   // (written with `do` already)
         if !do_one(t, src, v.cond) || len(v.then) != 1 || !do_one(t, src, v.then[0]) { return false }
         if len(v.else_) == 0 { break }
         if len(v.else_) == 1 && t.tag[v.else_[0]] == .Elif {
@@ -558,13 +577,62 @@ do_chain_ok :: proc(t: ^Tree, s: Tree_Id) -> bool {
         if len(v.else_) != 1 || !do_one(t, src, v.else_[0]) { return false }
         break
     }
-    // (A comment anywhere in it: between two of its tokens.)
-    for k := t.first[s]; k + 1 < t.end[s]; k += 1 {
+    return !do_comment(t, src, t.first[s], t.end[s])
+}
+
+// A braced chain's elifs and else, after its first branch, that are one
+// statement on one line written as a block: each `elif c do s`, `else do s`.
+@(private="file")
+do_branch_edits :: proc(t: ^Tree, s: Tree_Id) -> [dynamic]Order_Edit {
+    out := make([dynamic]Order_Edit)
+    src := build_files[build_tokens[t.first[s]].file].source
+    text :: proc(t: ^Tree, src: string, n: Tree_Id) -> string {
+        a, b := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]
+        return src[a.offset:b.offset + b.len]
+    }
+    node := s
+    for {
+        v := if_view(t, node)
+        if v.hash != 0 { break }
+        if len(v.else_) == 0 { break }
+        if t.tag[v.else_[0]] == .Elif {
+            e := v.else_[0]
+            ve := if_view(t, e)
+            // (From its condition's end to its one statement's: ` do s`.)
+            after := t.end[ve.cond]
+            if build_tokens[after].kind != .Do && len(ve.then) == 1 && do_one(t, src, ve.cond) && do_one(t, src, ve.then[0]) &&
+               !do_comment(t, src, t.end[ve.cond] - 1, t.end[ve.then[0]]) {
+                at := int(build_tokens[after - 1].offset + build_tokens[after - 1].len)
+                last := build_tokens[t.end[ve.then[0]] - 1]
+                append(&out, Order_Edit{build_tokens[t.first[s]].file, at, int(last.offset + last.len), fmt.tprintf(" do %s", text(t, src, ve.then[0]))})
+            }
+            node = e
+            continue
+        }
+        // (The else: from `else` to its one statement's end.)
+        if len(v.else_) == 1 && do_one(t, src, v.else_[0]) {
+            else_tok := t.first[v.else_[0]] - 1
+            for else_tok > t.first[node] && build_tokens[else_tok].kind != .Else { else_tok -= 1 }
+            if build_tokens[else_tok + 1].kind != .Do && !do_comment(t, src, else_tok, t.end[v.else_[0]]) {
+                last := build_tokens[t.end[v.else_[0]] - 1]
+                et := build_tokens[else_tok]
+                append(&out, Order_Edit{et.file, int(et.offset + et.len), int(last.offset + last.len), fmt.tprintf(" do %s", text(t, src, v.else_[0]))})
+            }
+        }
+        break
+    }
+    return out
+}
+
+// Whether there's a comment between tokens first and end - 1.
+@(private="file")
+do_comment :: proc(t: ^Tree, src: string, first, end: Token_Id) -> bool {
+    for k := first; k + 1 < end; k += 1 {
         a, b := build_tokens[k], build_tokens[k + 1]
         gap := src[a.offset + a.len:b.offset]
-        if strings.contains(gap, "//") || strings.contains(gap, "/*") { return false }
+        if strings.contains(gap, "//") || strings.contains(gap, "/*") { return true }
     }
-    return true
+    return false
 }
 
 // Whether a node is one simple statement (or a condition) on one line.
@@ -629,13 +697,30 @@ do_span :: proc(t: ^Tree, s: Tree_Id) -> (file: u16, at, end: int) {
 // <fun>.elif`; mara lsp's code action at an if, or a selection of them).
 // `if a {…}` then `if b {…}` is `if a {…} elif b {…}` when a's branch always
 // leaves — every way through it ends in a return, break or continue: b is
-// tested only when a was false, as an elif is. So the first of two may be a
-// chain of elifs itself, each branch leaving, with no else; both are written
-// with braces, or both with `do` (not one of each); no comment between them.
-// Braces: the first's `}` and the second's `if … {` become `elif …`, as far
-// in as the if (a blank line between them kept); `do`: the second's `if` is
-// `elif`.
+// tested only when a was false, as an elif is. So each if but the last may
+// be a chain of elifs itself, each branch leaving, with no else; no comment
+// between two. A run starting with a braced if: each after it its branches
+// inside the braces — a braced one's `}` and the next's `if … {` become
+// `elif …`, a `do` one's `if` becomes `elif` — and, the last written with
+// `do`, a `}` after it. A run starting with `do`: all written with `do`,
+// each after the first's `if` an `elif`. A blank line between two kept.
 // ---------------------------------------------------------------------------
+
+// How an if chain is written: with braces, with `do`; neither (an `#if`).
+@(private="file")
+Elif_Form :: enum { Neither, Braces, Do }
+
+@(private="file")
+elif_form :: proc(t: ^Tree, s: Tree_Id) -> Elif_Form {
+    if t.tag[s] != .If { return .Neither }
+    v := if_view(t, s)
+    if v.hash != 0 { return .Neither }
+    #partial switch build_tokens[t.end[v.cond]].kind {
+    case .Left_Brace: return .Braces if build_tokens[t.end[s] - 1].kind == .Right_Brace else .Neither
+    case .Do:         return .Do
+    }
+    return .Neither
+}
 
 // The runs of two or more ifs in a fun's body that can be joined.
 elif_runs :: proc(t: ^Tree, def: Tree_Id) -> [dynamic][]Tree_Id {
@@ -645,7 +730,7 @@ elif_runs :: proc(t: ^Tree, def: Tree_Id) -> [dynamic][]Tree_Id {
     for list in lists {
         for i := 0; i < len(list); {
             j := i
-            for j + 1 < len(list) && elif_joins(t, list[j], list[j + 1]) { j += 1 }
+            for j + 1 < len(list) && elif_joins(t, list[i], list[j], list[j + 1]) { j += 1 }
             if j > i { append(&out, list[i:j + 1]) }
             i = j + 1
         }
@@ -653,14 +738,11 @@ elif_runs :: proc(t: ^Tree, def: Tree_Id) -> [dynamic][]Tree_Id {
     return out
 }
 
-// Whether two ifs one after another can be joined (elif_runs).
-elif_joins :: proc(t: ^Tree, a, b: Tree_Id) -> bool {
-    if t.tag[a] != .If || t.tag[b] != .If { return false }
-    va, vb := if_view(t, a), if_view(t, b)
-    if va.hash != 0 || vb.hash != 0 { return false }
-    after_a, after_b := build_tokens[t.end[va.cond]].kind, build_tokens[t.end[vb.cond]].kind
-    if after_a != after_b || (after_a != .Do && after_a != .Left_Brace) { return false }
-    if after_a == .Left_Brace && build_tokens[t.end[a] - 1].kind != .Right_Brace { return false }
+// Whether if b can join the run that starts at `first`, after a.
+elif_joins :: proc(t: ^Tree, first, a, b: Tree_Id) -> bool {
+    lead, fa, fb := elif_form(t, first), elif_form(t, a), elif_form(t, b)
+    if lead == .Neither || fa == .Neither || fb == .Neither { return false }
+    if lead == .Do && fb != .Do { return false }   // (no braces in a chain written with `do`)
     // (a's every branch leaving; no else.)
     node := a
     for {
@@ -685,23 +767,39 @@ elif_edits :: proc(t: ^Tree, run: []Tree_Id) -> [dynamic]Order_Edit {
     for line_start > 0 && src[line_start - 1] != '\n' { line_start -= 1 }
     indent := src[line_start:first.offset]
     newline := "\r\n" if strings.contains(src, "\r\n") else "\n"
+    lead := elif_form(t, run[0])
     for k in 1 ..< len(run) {
         a, b := run[k - 1], run[k]
         vb := if_view(t, b)
         if_tok := build_tokens[t.first[b]]
-        if build_tokens[t.end[vb.cond]].kind == .Do {
-            append(&out, Order_Edit{if_tok.file, int(if_tok.offset), int(if_tok.offset + if_tok.len), "elif"})
-            continue
+        fa, fb := elif_form(t, a), elif_form(t, b)
+        // (From a's `}` line's start — a braced — else b's `if`; to b's `{` —
+        // b braced — else b's `if`'s end.)
+        at := int(if_tok.offset)
+        lead_text := ""
+        if fa == .Braces {
+            close := build_tokens[t.end[a] - 1]
+            at = int(close.offset)
+            for at > 0 && src[at - 1] != '\n' { at -= 1 }
+            if strings.count(src[close.offset + close.len:if_tok.offset], "\n") >= 2 { lead_text = newline }
+            lead_text = strings.concatenate({lead_text, indent})
         }
-        // (From the start of a's `}` line to b's `{`.)
-        close := build_tokens[t.end[a] - 1]
-        at := int(close.offset)
-        for at > 0 && src[at - 1] != '\n' { at -= 1 }
-        open := build_tokens[t.end[vb.cond]]
-        c0, c1 := build_tokens[t.first[vb.cond]], build_tokens[t.end[vb.cond] - 1]
-        blank := strings.count(src[close.offset + close.len:if_tok.offset], "\n") >= 2
-        text := fmt.tprintf("%s%selif %s", newline if blank else "", indent, src[c0.offset:c1.offset + c1.len])
-        append(&out, Order_Edit{if_tok.file, at, int(open.offset + open.len), text})
+        end := int(if_tok.offset + if_tok.len)
+        text := strings.concatenate({lead_text, "elif"})
+        if fb == .Braces {
+            open := build_tokens[t.end[vb.cond]]
+            c0, c1 := build_tokens[t.first[vb.cond]], build_tokens[t.end[vb.cond] - 1]
+            end = int(open.offset + open.len)
+            text = fmt.tprintf("%selif %s", lead_text, src[c0.offset:c1.offset + c1.len])
+        }
+        append(&out, Order_Edit{if_tok.file, at, end, text})
+    }
+    // (A braced run ending in a chain written with `do`: its `}` after it.)
+    last := run[len(run) - 1]
+    if lead == .Braces && elif_form(t, last) == .Do {
+        end_tok := build_tokens[t.end[last] - 1]
+        e := int(end_tok.offset + end_tok.len)
+        append(&out, Order_Edit{end_tok.file, e, e, strings.concatenate({newline, indent, "}"})})
     }
     return out
 }

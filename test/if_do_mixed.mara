@@ -1,0 +1,38 @@
+module if_do_mixed
+
+use mara.core
+
+//@ expect-output: neg
+//@ expect-output: small
+//@ expect-output: -1 0 1 2
+//@ expect-output: two
+//@ expect-output: after 3
+
+// Inside a braced chain, a branch of one statement can be written with do:
+// `elif c do s`, `else do s` — the others as blocks.
+
+f :: fun(n: i64) -> i64 {
+	if n < 0 {
+		print("neg")
+		return -1
+	elif n == 0 do return 0
+	elif n < 10
+		print("small")
+		return 1
+	else do return 2
+	}
+}
+
+g :: fun(n: i64) {
+	if n == 1 {
+		print("one")
+	elif n == 2 do print("two")
+	}
+	print("after", n)
+}
+
+main :: () {
+	print(f(-1), f(0), f(5), f(50))
+	g(2)
+	g(3)
+}

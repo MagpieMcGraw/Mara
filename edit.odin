@@ -497,23 +497,27 @@ edit_calls :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok
                        "" if len(matches) == 1 else "s", strings.join(written, ", ")), true
 }
 
-// `mara edit <fun>.do`: the fun's one-statement if chains written with `do`
-// (do_chains).
+// `mara edit <fun>.do`: the fun's one-statement if chains written with `do`,
+// and in its other braced chains the one-statement branches (do_edits).
 @(private="file")
 edit_do :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: bool) {
     t := &build_tree
     def, _, problem := edit_fun(checked, name)
     if problem != "" { return problem, false }
-    chains := do_chains(t, def)
-    if len(chains) == 0 { return fmt.tprintf("No if in %s has one statement a branch, as `do` writes it.\n", name), true }
+    found := do_edits(t, def)
+    if len(found) == 0 { return fmt.tprintf("No if in %s has a branch of one statement written as a block.\n", name), true }
     edits := make([dynamic]Order_Edit)
-    for c in chains {
-        file, at, end := do_span(t, c)
-        append(&edits, Order_Edit{file, at, end, do_text(t, c)})
+    chains, branches := 0, 0
+    for d in found {
+        append(&edits, d.edit)
+        if d.whole { chains += 1 } else { branches += 1 }
     }
     written, failed := edit_apply(edits[:])
     if failed != "" { return failed, false }
-    return fmt.tprintf("%s: %d if%s written with do (%s)\n", name, len(chains), "" if len(chains) == 1 else "s", strings.join(written, ", ")), true
+    parts := make([dynamic]string, context.temp_allocator)
+    if chains > 0 { append(&parts, fmt.tprintf("%d if%s", chains, "" if chains == 1 else "s")) }
+    if branches > 0 { append(&parts, fmt.tprintf("%d branch%s", branches, "" if branches == 1 else "es")) }
+    return fmt.tprintf("%s: %s written with do (%s)\n", name, strings.join(parts[:], " and "), strings.join(written, ", ")), true
 }
 
 // `mara edit <fun>.elif`: the fun's runs of ifs, each branch leaving, joined

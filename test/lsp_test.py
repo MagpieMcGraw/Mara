@@ -280,7 +280,7 @@ def fun_calls(c):
     check("do: at the if, it written with do", "\tif c == '+' do return 1\n\telif c == '-' do return 2\n" in done, list(acts))
     r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": at_name, "character": 0},
                   "end": {"line": at_name, "character": 0}}, "context": {"diagnostics": []}})
-    check("do: at the fun's name, all of its", any(a["title"] == "Write kind_of's 1 one-statement if with do" for a in r or []), r)
+    check("do: at the fun's name, all of its", any(a["title"] == "Write kind_of's 1 if with do" for a in r or []), r)
 
     # Ifs joined with elif: at one, its run; over a selection, the ones in it.
     first_if = next(i for i, l in enumerate(lines) if l.strip() == "if n < 0 {")
