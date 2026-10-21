@@ -43,6 +43,7 @@ Lsp :: struct {
     utf8:     bool,                // positions count bytes; else UTF-16 units (LSP's default)
     hover, definition, references, symbols, completion, renames, diagnostics: bool,   // offered (initializationOptions)
     names:    Lsp_Names,           // the open files' declarations and their uses (lsp_rename.odin)
+    structs:  Lsp_Structs,         // ... their structs' fields and positional literals (lsp_fields.odin)
     check:    Serve_Check,
     checked:  bool,                // a check made
     dir:      string,              // its module's directory
@@ -276,6 +277,7 @@ lsp_check :: proc(s: ^Lsp, path: string) -> bool {
     s.checked = true
     s.checked_edits = s.edits
     lsp_keep_names(s)
+    lsp_keep_structs(s)
     // (The edited file's module this one: its check made.)
     if s.edit_path != "" && path_key(dir) == path_key(filepath.dir(s.edit_path)) && module == lsp_module(s, s.edit_path) { s.dirty = false }
     if s.diagnostics { lsp_publish(s) }
@@ -304,6 +306,7 @@ lsp_publish :: proc(s: ^Lsp) {
                                    lsp_range(s, text, line, c0, line, text, c1), severity, json_str(d.message)))
         by_uri[uri] = items
     }
+    if s.renames { lsp_moved_diagnostics(s, &by_uri) }   // (literals left in a moved struct's old order)
     for uri, items in by_uri {
         lsp_notify("textDocument/publishDiagnostics", fmt.tprintf(`{{"uri":%s,"diagnostics":[%s]}}`, json_str(uri), strings.join(items[:], ",")))
     }

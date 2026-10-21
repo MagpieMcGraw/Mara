@@ -85,7 +85,8 @@ lsp_keep_names :: proc(s: ^Lsp) {
 
 // An edit of an open file — its text before and after: one stretch replaced,
 // found by what the two share at their ends — the kept places in it moved
-// with it; a place in the stretch replaced, to its start.
+// with it (the names', the structs': lsp_fields.odin); a place in the
+// stretch replaced, to its start.
 lsp_map_edit :: proc(s: ^Lsp, key: string, before, after: string) {
     p := 0
     for p < len(before) && p < len(after) && before[p] == after[p] { p += 1 }
@@ -101,6 +102,16 @@ lsp_map_edit :: proc(s: ^Lsp, key: string, before, after: string) {
         if path_key(n.decl.path) == key { n.decl.at = move(n.decl.at, p, old_end, delta) }
         for &u in n.uses {
             if path_key(u.path) == key { u.at = move(u.at, p, old_end, delta) }
+        }
+    }
+    for &st in s.structs.structs {
+        if path_key(st.path) == key {
+            st.name_at = move(st.name_at, p, old_end, delta)
+            st.body_at = move(st.body_at, p, old_end, delta)
+            st.body_end = move(st.body_end, p, old_end, delta)
+        }
+        for &l in st.literals {
+            if path_key(l.path) == key { l.at, l.end = move(l.at, p, old_end, delta), move(l.end, p, old_end, delta) }
         }
     }
 }
@@ -128,7 +139,7 @@ lsp_renamings :: proc(s: ^Lsp) -> []Lsp_Renaming {
 
 // Code actions, for a declaration being renamed with its declaration or a
 // use on the lines asked about, in this file: its uses renamed too, or its
-// name put back.
+// name put back. And a struct's fields being moved (lsp_moved_actions).
 lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
     if !s.renames { return "[]" }
     path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
@@ -172,6 +183,7 @@ lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
         append(&actions, fmt.tprintf(`{{"title":%s,"kind":"quickfix","edit":%s}}`,
                                      json_str(fmt.tprintf("Put the name back: %s", r.from)), lsp_workspace_edit(back)))
     }
+    lsp_moved_actions(s, path, here, l0, l1, &actions)   // (a struct's fields moved: lsp_fields.odin)
     return strings.concatenate({"[", strings.join(actions[:], ","), "]"})
 }
 

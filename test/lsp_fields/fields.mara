@@ -1,0 +1,21 @@
+module fields
+
+use mara.core
+
+// (mara lsp's moved fields, test/lsp_test.py: a struct whose fields are all
+// i64 — one moved, its literals still check, meaning something else.)
+
+Token :: class {
+	kind : i64
+	file, offset, len : i64
+}
+
+first :: fun() -> Token {
+	return Token{1, 0, 10, 2}
+}
+
+main :: () {
+	t := Token{2, 0, 20, 3}
+	n := Token{kind = 3, file = 0, offset = 30, len = 4}
+	print(first(), t, n)
+}

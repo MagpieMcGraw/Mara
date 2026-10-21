@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MARA = os.environ.get("MARA_EXE") or os.path.join(ROOT, "mara_dev.exe" if os.name == "nt" else "mara_dev")   # (the debug build)
 POUNCE = os.path.join(ROOT, "Pounce")
 CAMERA = os.path.join(POUNCE, "camera.mara")
+FIELDS = os.path.join(ROOT, "test", "lsp_fields", "fields.mara")   # (moved_fields)
 
 
 def uri(path):
@@ -105,6 +106,72 @@ def pos(text, line_no, needle, nth=0):
     for _ in range(nth + 1):
         at = line.index(needle, at + 1)
     return {"line": line_no - 1, "character": len(line[:at].encode("utf-8"))}
+
+
+def apply(text, edits):
+    """Text edits (UTF-8 byte positions) made to a text, last first."""
+    lines = text.split("\n")
+    for e in sorted(edits, key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True):
+        r = e["range"]
+        start = sum(len(l.encode("utf-8")) + 1 for l in lines[:r["start"]["line"]]) + r["start"]["character"]
+        end = sum(len(l.encode("utf-8")) + 1 for l in lines[:r["end"]["line"]]) + r["end"]["character"]
+        raw = "\n".join(lines).encode("utf-8")
+        lines = (raw[:start] + e["newText"].encode("utf-8") + raw[end:]).decode("utf-8").split("\n")
+    return "\n".join(lines)
+
+
+def moved_fields(c):
+    """A struct's field moved: its positional literals said to be in the old
+    order — even where they still check — and put in the new one, or the
+    field put back, by a code action."""
+    text = open(FIELDS, encoding="utf-8", newline="").read()
+    doc = {"uri": uri(FIELDS)}
+    c.notify("textDocument/didOpen", {"textDocument": {"uri": uri(FIELDS), "languageId": "mara", "version": 1, "text": text}})
+    check("fields: opened, no errors", c.diagnostics_for(FIELDS) == [], None)
+    version = 1
+
+    def edit(new):
+        nonlocal version
+        version += 1
+        c.notify("textDocument/didChange", {"textDocument": {"uri": uri(FIELDS), "version": version}, "contentChanges": [{"text": new}]})
+        return c.diagnostics_for(FIELDS)
+
+    def actions_at(line_no):
+        r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": line_no - 1, "character": 0},
+                      "end": {"line": line_no - 1, "character": 0}}, "context": {"diagnostics": []}})
+        return {a["title"]: a for a in r or []}
+
+    # kind moved to the end the way an editor does it: cut, then pasted.
+    kind_line = "\tkind : i64\n"
+    cut = text.replace(kind_line, "", 1)
+    moved = cut.replace("\tfile, offset, len : i64\n", "\tfile, offset, len : i64\n" + kind_line, 1)
+    edit(cut)
+    diags = edit(moved)
+    said = [d["message"] for d in diags]
+    check("fields: kind moved, the two positional literals said to be in the old order (they still check)",
+          sum("this literal still gives them in the old order (kind, file, offset, len)" in m for m in said) == 2
+          and sum("2 literals still give them in the old order" in m for m in said) == 1 and len(said) == 3, said)
+    struct_line = 1 + next(i for i, l in enumerate(moved.split("\n")) if l.startswith("Token :: class"))
+    acts = actions_at(struct_line)
+    put = acts.get("Put the 2 Token literals in the new order (file, offset, len, kind)")
+    back = acts.get("Put Token's fields back in the old order (kind, file, offset, len)")
+    check("fields: at the struct, reorder the literals or put the fields back", put is not None and back is not None, list(acts))
+    edits = put and [e for es in put["edit"]["changes"].values() for e in es] or []
+    fixed = apply(moved, edits)
+    check("fields: the literals reordered, the named one left", "Token{0, 10, 2, 1}" in fixed and "Token{0, 20, 3, 2}" in fixed
+          and "Token{kind = 3, file = 0, offset = 30, len = 4}" in fixed, fixed)
+    check("fields: reordered, nothing said", edit(fixed) == [], None)
+    check("fields: nothing more offered", actions_at(struct_line) == {}, list(actions_at(struct_line)))
+
+    # Moved again, then put back by the other action.
+    again = fixed.replace("\tfile, offset, len : i64\n" + kind_line, kind_line + "\tfile, offset, len : i64\n", 1)
+    check("fields: moved back by hand, the literals said again", len(edit(again)) == 3, None)
+    acts = actions_at(struct_line)
+    back = acts.get("Put Token's fields back in the old order (file, offset, len, kind)")
+    restored = apply(again, back and [e for es in back["edit"]["changes"].values() for e in es] or [])
+    check("fields: put back, as it was", restored == fixed, restored)
+    check("fields: put back, nothing said", edit(restored) == [], None)
+    c.notify("textDocument/didClose", {"textDocument": doc})
 
 
 def main():
@@ -248,6 +315,7 @@ def main():
         check("rename to no name: refused", "isn't a name" in str(e), str(e))
 
     c.notify("textDocument/didClose", {"textDocument": doc})
+    moved_fields(c)
     code = c.close()
     check("shut down: exit 0", code == 0, code)
 
