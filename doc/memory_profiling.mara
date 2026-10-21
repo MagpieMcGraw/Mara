@@ -8,16 +8,18 @@
 // could give back first, then one line per arena.
 //
 // The columns:
-//   unused B    what each instance would save with N its peak: where to look
-//   reserved B  the room each instance holds: N times an element's bytes
-//   peak        the most any instance ever held (its len at its fullest)
-//   median      the middle of the instances' peaks: a typical one
-//   cap         N
-//   elem B      an element's bytes
-//   instances   how many there were: a fun's local, once per call; a
-//               struct's field, once per struct made (or copied in)
-//   name        `fun.local` or `Struct.field`; an array's elements, `name[]`
-//   where       the file and line it's written at
+//
+// - `unused B`: what each instance would save with N its peak: where to look
+// - `reserved B`: the room each instance holds: N times an element's bytes
+// - `peak`: the most any instance ever held (its len at its fullest)
+// - `median`: the middle of the instances' peaks: a typical one
+// - `cap`: N
+// - `elem B`: an element's bytes
+// - `instances`: how many there were: a fun's local, once per call; a
+//   struct's field, once per struct made (or copied in)
+// - `name`: `fun.local` or `Struct.field`; an array's elements, `name[]`
+// - `where`: the file and line it's written at
+//
 // And for each arena: its size, the most of it in use at once, and that as a
 // percent.
 //

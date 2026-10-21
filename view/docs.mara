@@ -1012,12 +1012,18 @@ names_end :: fun(first: []utf8) -> i64 {
 docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	text := docs_text(d, fd.file)
 	// The doc comment: its lines' words (doc_words) — an entry's names, the
-	// words its first line starts with, shown at its end instead.
+	// words its first line starts with, shown at its end instead — as
+	// Markdown has them: a paragraph's lines joined, wrapped to the panel's
+	// width; a blank line between paragraphs. A list item (`- `, `* `, `1. `)
+	// starts a line of its own. Code keeps its lines, shown as Mara code: a
+	// line indented by a tab (or four spaces), or the lines between ```s.
 	names : [300]utf8
 	said := false   // a doc line shown
 	if fd.doc >= 0 {
 		words : [DOC_LINES]Field
 		doc_words(text, fd.doc, fd.at, &words)
+		para : [8 * KB]utf8   // the paragraph being joined, two spaces in
+		fenced := false
 		for w, i in words {
 			line := text[w.at : w.at + w.len]
 			if i == 0 and is_entry(fd.kind) {
@@ -1033,12 +1039,35 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 				line = line[end : line.len]
 				if line.len == 0 do continue
 			}
-			doc_line : [1200]utf8
-			&doc_line + "  "
-			&doc_line + line[0 : min_int(line.len, 1000)]
-			lines_add(l, doc_line[:], STYLE_DOC)
+			words_in := trimmed(line)
+			if starts_with(words_in, "```") {
+				doc_paragraph(l, &para)
+				fenced = not fenced
+				continue
+			}
+			if fenced or doc_code_line(line) {
+				doc_paragraph(l, &para)
+				indent : i64 = 0
+				if not fenced do indent = TAB_SPACES
+				lines_add_code(l, line, indent)
+				said = true
+				continue
+			}
+			if words_in.len == 0 {
+				doc_paragraph(l, &para)
+				if l.lines.len > 0 and l.lines[l.lines.len - 1].len > 0 do lines_add(l, "", STYLE_TEXT)
+				continue
+			}
+			if doc_list_item(words_in) or para.len + 1 + words_in.len > para.cap do doc_paragraph(l, &para)
+			if para.len == 0 {
+				&para + "  "
+			else
+				&para + ' '
+			}
+			&para + words_in[0 : min_int(words_in.len, para.cap - para.len)]
 			said = true
 		}
+		doc_paragraph(l, &para)
 	}
 	if is_entry(fd.kind) {
 		// (An example's function a line below what's said of it.)
@@ -1098,6 +1127,29 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	}
 	docs_footer(d, l, fd, names[:])
 	lines_add(l, "", STYLE_TEXT)
+}
+
+// The paragraph joined so far added as a line, and emptied; none, nothing.
+doc_paragraph :: fun(l: ^Lines, para: ^[8 * KB]utf8) {
+	if para.len == 0 do return
+	lines_add(l, para[:], STYLE_DOC)
+	para.len = 0
+}
+
+// Whether a doc comment's line is code: indented by a tab, or four spaces.
+doc_code_line :: fun(line: []utf8) -> bool {
+	return starts_with(line, "\t") or starts_with(line, "    ")
+}
+
+// Whether a doc comment's line (its spaces left out) starts a list item:
+// `- `, `* `, or a number and `. `.
+doc_list_item :: fun(s: []utf8) -> bool {
+	if starts_with(s, "- ") or starts_with(s, "* ") do return true
+	k : i64 = 0
+	for k < s.len and s[k] >= '0' and s[k] <= '9' {
+		k += 1
+	}
+	return k > 0 and starts_with(s[k : s.len], ". ")
 }
 
 // A fun's code as written, to its closing `}` — a fun of one line, its

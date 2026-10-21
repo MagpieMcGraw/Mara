@@ -5,11 +5,12 @@ module mara.maybe
 // and usable anywhere in pure Mara code.
 //
 // Usage:
-//   m : Maybe(i64) = Some{value = 42}
-//   match m {
-//   None     return -1
-//   Some s   return s.value
-//   }
+//
+//     m : Maybe(i64) = Some{value = 42}
+//     match m {
+//     None     return -1
+//     Some s   return s.value
+//     }
 //
 // For `Maybe(^T)` the compiler may collapse the representation to a single
 // nullable pointer (niche optimization) — None is the null bit pattern, Some
