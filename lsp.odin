@@ -587,9 +587,13 @@ lsp_split_location :: proc(location: string) -> (file: string, line, col: int, o
     return location[:a], line, col, line > 0
 }
 
+// A doc comment's line marking it as one the user wrote or approved, in
+// their style: left out of what's shown (the Docs panel's DOC_MARK too).
+DOC_MARK :: "#magpie"
+
 // The doc comment above a declaration's name: the `//` lines right above its
 // line, or a `/* … */` block ending on the line above (`doc_block_words`) —
-// their words.
+// their words, a DOC_MARK line left out.
 doc_comment_above :: proc(tok: Token) -> string {
     f := build_files[tok.file]
     lines := make([dynamic]string)
@@ -603,15 +607,18 @@ doc_comment_above :: proc(tok: Token) -> string {
         _, text := line_at(f.source, n)
         text = strings.trim_space(text)
         if !strings.has_prefix(text, "//") { break }
+        if strings.trim_space(text[2:]) == DOC_MARK { continue }
         inject_at(&lines, 0, strings.trim_space(text[2:]))
     }
+    for len(lines) > 0 && lines[len(lines) - 1] == "" { pop(&lines) }
     return strings.join(lines[:], "\n")
 }
 
 // A `/* … */` doc comment's words, the block ending on line `last`: from the
 // line its `/*` starts (that line's own `/*` its first) — each line less the
 // `/*` line's indentation, the `/*` and `*/` left out, blank first and last
-// lines dropped. "" when no block starting a line ends there.
+// lines dropped, a DOC_MARK line too. "" when no block starting a line ends
+// there.
 doc_block_words :: proc(source: string, last: int) -> string {
     first := last
     for ; first >= 1; first -= 1 {
@@ -627,6 +634,7 @@ doc_block_words :: proc(source: string, last: int) -> string {
         text = strings.trim_right_space(text)
         if n == first { text = strings.trim_left_space(text)[2:] } else { text = strings.trim_prefix(text, indent) }
         if n == last { text = strings.trim_right_space(strings.trim_suffix(text, "*/")) }
+        if strings.trim_space(text) == DOC_MARK { continue }
         append(&lines, text)
     }
     for len(lines) > 0 && strings.trim_space(lines[0]) == "" { ordered_remove(&lines, 0) }

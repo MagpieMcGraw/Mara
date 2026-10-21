@@ -33,6 +33,10 @@ DOCS_FUN       :: 200  // ... of a fun's code (a longer one's: how many more the
 DOCS_EXAMPLE   :: 60   // ... of an entry's example
 DOC_LINES      :: 200  // the most lines of a doc comment shown
 
+// A doc comment's line that marks it as one the user wrote or approved, in
+// their style: the comments to match. Not shown.
+DOC_MARK :: "#magpie"
+
 // What a definition is.
 DEF_MODULE :: 0   // a file's module: its doc comment, its `module` line
 DEF_TYPE   :: 1   // a struct, union, error set: its body shown
@@ -645,7 +649,8 @@ trim_end :: fun(text: []utf8, at: i64, end: i64) -> i64 {
 // — as the panel shows them, into out as places in text: a `//` line's
 // words after its `//` and one space; a block's lines less its `/*` line's
 // indentation, its `/*` and `*/` left out (a first or last line with
-// nothing else on it, none). Empty lines at the end left out.
+// nothing else on it, none). A line of DOC_MARK alone left out; empty
+// lines at the end too.
 doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 	out.len = 0
 	at := from
@@ -683,6 +688,8 @@ doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 				keep = c < e   // (`*/` alone: no line)
 			}
 		}
+		// (The mark of a comment the user wrote or approved: not shown.)
+		if keep and c < e and trimmed(text[c : e]) == DOC_MARK do keep = false
 		if keep {
 			if c > e do c = e
 			&out^ + Field{at = c, len = e - c}
