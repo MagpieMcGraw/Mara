@@ -17,6 +17,7 @@ MARA = os.environ.get("MARA_EXE") or os.path.join(ROOT, "mara_dev.exe" if os.nam
 POUNCE = os.path.join(ROOT, "Pounce")
 CAMERA = os.path.join(POUNCE, "camera.mara")
 FIELDS = os.path.join(ROOT, "test", "lsp_fields", "fields.mara")   # (moved_fields)
+FUNS = os.path.join(ROOT, "test", "lsp_fields", "funs.mara")       # (moved_results_params)
 
 
 def uri(path):
@@ -156,7 +157,7 @@ def moved_fields(c):
     said = order_said(edit(moved))
     check("fields: kind moved, the two positional literals said to be in the old order (they still check)",
           sum("this literal still gives them in the old order (kind, file, offset, len)" in m for m in said) == 2
-          and sum("2 literals still give them in the old order" in m for m in said) == 1 and len(said) == 3, said)
+          and sum("2 literals still use the old order" in m for m in said) == 1 and len(said) == 3, said)
     acts = actions_at(struct_line)
     put = acts.get("Put the 2 Token literals in the new order (file, offset, len, kind)")
     back = acts.get("Put Token's fields back in the old order (kind, file, offset, len)")
@@ -197,6 +198,52 @@ def moved_fields(c):
     moved_renamed = renamed.replace("\tkin : i64" + nl, "", 1).replace(group_line, group_line + "\tkin : i64" + nl, 1)
     said = order_said(edit(moved_renamed))
     check("fields: the renamed field moved, said in its name", len(said) == 3 and "(kin, file, offset, len)" in said[0], said)
+    edit(text)
+    c.notify("textDocument/didClose", {"textDocument": doc})
+
+
+def moved_results_params(c):
+    """A fun's results swapped: its returns and destructures said and put in
+    the new order; then its params, its calls."""
+    text = open(FUNS, encoding="utf-8", newline="").read()
+    doc = {"uri": uri(FUNS)}
+    c.notify("textDocument/didOpen", {"textDocument": {"uri": uri(FUNS), "languageId": "mara", "version": 1, "text": text}})
+    check("results: opened, no errors", c.diagnostics_for(FUNS) == [], None)
+    version = 1
+
+    def edit(new):
+        nonlocal version
+        version += 1
+        c.notify("textDocument/didChange", {"textDocument": {"uri": uri(FUNS), "version": version}, "contentChanges": [{"text": new}]})
+        return [d["message"] for d in c.diagnostics_for(FUNS) if "reordered" in d["message"]]
+
+    def actions_at(line_no):
+        r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": line_no - 1, "character": 0},
+                      "end": {"line": line_no - 1, "character": 0}}, "context": {"diagnostics": []}})
+        return {a["title"]: a for a in r or []}
+
+    fun_line = 1 + next(i for i, l in enumerate(text.split("\n")) if l.startswith("span :: fun"))
+    swapped = text.replace("-> i64, bool {", "-> bool, i64 {", 1)
+    said = edit(swapped)
+    check("results: swapped, the returns and destructures said", len(said) == 5
+          and sum("this return still gives them in the old order (i64, bool)" in m for m in said) == 2
+          and sum("this destructure still names them in the old order (i64, bool)" in m for m in said) == 2, said)
+    acts = actions_at(fun_line)
+    put = acts.get("Put the 4 places using span's results in the new order (bool, i64)")
+    check("results: the action, and putting them back", put is not None and "Put span's results back in the old order (i64, bool)" in acts, list(acts))
+    fixed = apply(swapped, put and [e for es in put["edit"]["changes"].values() for e in es] or [])
+    check("results: returns and destructures swapped", "return false, 0" in fixed and "return true, at + len" in fixed
+          and "ok, end := span(3, 4)" in fixed and "fine, more := span(10, 0)" in fixed, fixed)
+    check("results: then nothing said", edit(fixed) == [], None)
+
+    params = fixed.replace("span :: fun(at: i64, len: i64)", "span :: fun(len: i64, at: i64)", 1)
+    said = edit(params)
+    check("params: swapped, the calls said", len(said) == 3
+          and sum("this call still passes them in the old order (at, len)" in m for m in said) == 2, said)
+    put = actions_at(fun_line).get("Put the 2 calls of span in the new order (len, at)")
+    called = apply(params, put and [e for es in put["edit"]["changes"].values() for e in es] or [])
+    check("params: the calls' arguments swapped", "span(4, 3)" in called and "span(0, 10)" in called, called)
+    check("params: then nothing said", edit(called) == [], None)
     edit(text)
     c.notify("textDocument/didClose", {"textDocument": doc})
 
@@ -343,6 +390,7 @@ def main():
 
     c.notify("textDocument/didClose", {"textDocument": doc})
     moved_fields(c)
+    moved_results_params(c)
     code = c.close()
     check("shut down: exit 0", code == 0, code)
 

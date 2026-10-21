@@ -17,5 +17,5 @@ first :: fun() -> Token {
 main :: () {
 	t := Token{2, 0, 20, 3}
 	n := Token{kind = 3, file = 0, offset = 30, len = 4}
-	print(first(), t, n)
+	print(first(), t, n, ends())
 }

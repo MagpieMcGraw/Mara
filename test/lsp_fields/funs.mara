@@ -1,0 +1,19 @@
+module fields
+
+use mara.core
+
+// (mara lsp's moved results and params, test/lsp_test.py: a fun's results
+// swapped, its returns and destructures follow; its params, its calls.)
+
+span :: fun(at: i64, len: i64) -> i64, bool {
+	if len == 0 do return 0, false
+	return at + len, true
+}
+
+ends :: fun() -> i64 {
+	end, ok := span(3, 4)
+	if not ok do return -1
+	more, fine := span(10, 0)
+	if fine do return more
+	return end
+}
