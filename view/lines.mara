@@ -21,6 +21,7 @@ STYLE_CODE  :: 3   // code
 STYLE_BAD   :: 4   // a failure
 STYLE_QUERY :: 5   // what was asked: the accent
 STYLE_MARA  :: 6   // Mara code: each token in its color
+STYLE_DOC   :: 7   // text with `code` in it: the code as Mara's, on a box (draw_doc_row)
 
 TAB_SPACES :: 4    // a tab, shown
 
@@ -326,6 +327,8 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 		if row.at == ln.at and lines_fold_head(l, row.line) do draw_fold_mark(ui, r.x + PAD, y, not l.lines[ln.fold_at].hidden)
 		if ln.style == STYLE_MARA {
 			draw_code_row(ui, l, row, x, y)
+		elif ln.style == STYLE_DOC
+			draw_doc_row(ui, l, row, x, y)
 		else
 			draw_line(ui, l.text[row.at : row.at + row.len], ln.style, row.at == ln.at, x, y)
 		}

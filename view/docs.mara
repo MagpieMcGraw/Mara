@@ -1029,7 +1029,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 			doc_line : [1200]utf8
 			&doc_line + "  "
 			&doc_line + line[0 : min_int(line.len, 1000)]
-			lines_add(l, doc_line[:], STYLE_TEXT)
+			lines_add(l, doc_line[:], STYLE_DOC)
 			said = true
 		}
 	}
