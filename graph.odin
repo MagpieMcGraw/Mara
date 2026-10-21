@@ -3078,7 +3078,9 @@ Graph_For :: struct {
     coll_t:                  Type,
     coll_self:               bool,
     elem_t:                  Type,      // a collection loop's element's
-    of_call:                 bool,      // a loop over a call: its element written by its check, its counter the round (graph_build_for_call)
+    of_call:                 bool,      // a loop over a call: its values written by its check, its counter the round (graph_build_for_call)
+    call_values:             []Graph_Call_Value,   // ... its values
+    call_flag:               int,       // ... which of the call's results is its bool
     check, body, post, done: ^Run,
     body_block:              Node_Id,
     has_post:                bool,
@@ -3180,31 +3182,49 @@ graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, held: Node_Id,
     graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.coll_slot, view, span), val)
 }
 
-// A loop over a call, `for x, i in f()`: its element, of type elem_t, and
-// its index, the round counted from 0 (when named); then the check run,
-// where the call is built (graph_build_for_call_check).
-graph_build_for_call :: proc(b: ^Graph_Builder, fl: ^Graph_For, elem_t: Type) {
-    fl.of_call, fl.has_cond, fl.elem_t = true, true, elem_t
+// A value of a loop over a call: which of the call's results, its type, the
+// name it's bound to ("" for none) and the token declaring it; its local.
+Graph_Call_Value :: struct {
+    result: int,
+    t:      Type,
+    name:   string,
+    tok:    Token_Id,
+    local:  Node_Id,
+}
+
+// A loop over a call, `for a, b, i in f()`: its values' locals, and the
+// round, counted from 0 (when named); then the check run, where the call is
+// built (graph_build_for_call_check). `flag`: which result is its bool.
+graph_build_for_call :: proc(b: ^Graph_Builder, fl: ^Graph_For, values: []Graph_Call_Value, flag: int, round_name: string, round_tok: Token_Id) {
+    fl.of_call, fl.has_cond, fl.call_flag, fl.call_values = true, true, flag, values
     span := fl.span
-    if fl.elem_name != "" {
-        fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, elem_t, span)
-        graph_declare(b, fl.elem, fl.elem_tok)
+    for &cv in fl.call_values {
+        cv.local = NO_NODE
+        if cv.name == "" { continue }
+        cv.local = graph_node(b, .Local, .Explicit, fl.f, cv.name, cv.t, span)
+        graph_declare(b, cv.local, cv.tok)
     }
-    if fl.index_name != "" {
+    if round_name != "" {
         index_t := Type(slice_header_width_type)
-        fl.counter = graph_node(b, .Local, .Explicit, fl.f, fl.index_name, index_t, span)
-        graph_declare(b, fl.counter, fl.index_tok)
+        fl.counter = graph_node(b, .Local, .Explicit, fl.f, round_name, index_t, span)
+        graph_declare(b, fl.counter, round_tok)
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.counter, index_t, span),
                  graph_const(b, .Synthetic, span, index_t, "0", Const_Value{}))
     }
     graph_build_for_runs(b, fl)
 }
 
-// The call built (`call`): its value to the element, its bool the condition.
+// The call built (`call`): each value to its local, its bool the condition.
 graph_build_for_call_check :: proc(b: ^Graph_Builder, fl: ^Graph_For, call: Operand) {
     span := fl.span
-    if fl.elem != NO_NODE { graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, fl.elem, fl.elem_t, span), call) }
-    graph_build_for_cond(b, fl, {graph_outputs_op(b, call, span), 1})
+    result :: proc(b: ^Graph_Builder, call: Operand, i: int, span: Span) -> Operand {
+        if i == 0 { return call }
+        return {graph_outputs_op(b, call, span), i32(i)}
+    }
+    for cv in fl.call_values {
+        if cv.local != NO_NODE { graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, cv.local, cv.t, span), result(b, call, cv.result, span)) }
+    }
+    graph_build_for_cond(b, fl, result(b, call, fl.call_flag, span))
 }
 
 // The loop's runs, into the check: a counter against its bound; else the

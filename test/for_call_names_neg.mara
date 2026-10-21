@@ -1,0 +1,21 @@
+module for_call_names_neg
+
+use mara.core
+
+//@ expect-fail: pair gives 2 values each round: a name for each, and one more after them for the round if you want it — not 1
+
+// A loop over a call of two values with one name: which would it be? An
+// error, not the first one quietly.
+
+pair :: fun(n: ^i64) -> i64, i64, bool {
+	if n^ >= 3 do return 0, 0, false
+	n^ += 1
+	return n^, n^ * 2, true
+}
+
+main :: () {
+	n : i64 = 0
+	for a in pair(&n) {
+		print(a)
+	}
+}

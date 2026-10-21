@@ -749,6 +749,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
             tc_for_call(k, s, v, ct, returns)
             return
         }
+        if names := loop_names(v); len(names) > 2 { tc_error(k, span, TYPE_LOOP_ITEM_NAMES, len(names)) }
         // (A literal looped over is held at its own type, settled.)
         #partial switch k.t.tag[tc_unparen(k, v.collection)] {
         case .Array, .Literal: ct = solidify_type(ct)
@@ -796,28 +797,68 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// `for x in f()`, `for x, i in f()`: f gives a value and a bool, and is
-// called each round — x its value, while its bool is true; i which round,
+// `for x in f()`, `for x, i in f()`, `for a, b in g()`: the call gives one
+// bool, anywhere among its results, and is called each round while it's
+// true; its other results are the round's values, in order (loop_call_shape).
+// A name for each value, and one more after them that counts the rounds,
 // from 0. (`ct`: the call's type as checked.)
 tc_for_call :: proc(k: ^TC, s: Tree_Id, v: For_View, ct: Type, returns: []Type) {
     span := tree_span(k.t, s)
-    elem := solidify_type(returns[0])
-    _, is_bool := distinct_base(returns[len(returns) - 1]).(Type_Bool)
+    names := loop_names(v)
+    flag, values, shaped := loop_call_shape(returns)
+    call := tc_call_name(k, tc_unparen(k, v.collection))
+    bad := false
     if _, is_error := ct.(Type_Error); is_error {
-        elem = Type_Error{}
-    } else if len(returns) != 2 || !is_bool {
-        names := make([]string, len(returns), context.temp_allocator)
-        for r, i in returns { names[i] = type_name(r) }
-        tc_error(k, span, TYPE_LOOP_CALL_RESULTS, tc_call_name(k, tc_unparen(k, v.collection)), strings.join(names, ", ", context.temp_allocator))
-        elem = Type_Error{}
+        bad = true
+    } else if !shaped {
+        results := make([]string, len(returns), context.temp_allocator)
+        for r, i in returns { results[i] = type_name(r) }
+        tc_error(k, span, TYPE_LOOP_CALL_RESULTS, call, strings.join(results, ", ", context.temp_allocator))
+        bad = true
+    } else if len(names) != len(values) && len(names) != len(values) + 1 {
+        tc_error(k, span, TYPE_LOOP_CALL_NAMES, call, len(values), "" if len(values) == 1 else "s", len(names))
+        bad = true
     } else if v.type_ != 0 {
-        if written := tc_type(k, v.type_, span); !types_equal(written, elem) {
-            tc_error(k, span, TYPE_LOOP_CALL_WRITTEN_TYPE, type_name(elem), type_name(written))
+        if len(values) != 1 {
+            tc_error(k, span, TYPE_LOOP_CALL_WRITTEN_TYPES)
+        } else if written := tc_type(k, v.type_, span); !types_equal(written, solidify_type(returns[values[0]])) {
+            tc_error(k, span, TYPE_LOOP_CALL_WRITTEN_TYPE, type_name(solidify_type(returns[values[0]])), type_name(written))
         }
     }
-    if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
-    if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+    _ = flag
+    for tok, i in names {
+        if tc_text(tok) == "_" { continue }
+        t: Type = slice_header_width_type   // (one after the values: the round)
+        if bad { t = Type_Error{} } else if i < len(values) { t = solidify_type(returns[values[i]]) }
+        tc_bind(k, tc_text(tok), t, {tok, .Local})
+    }
     tc_scope(k, v.body)
+}
+
+// A for-each's names, in order: its first, its index, the rest.
+loop_names :: proc(v: For_View) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    if v.elem != 0 { append(&out, v.elem) }
+    if v.index != 0 { append(&out, v.index) }
+    append(&out, ..v.more)
+    return out[:]
+}
+
+// A loop over a call, by its results: which one is its bool, the flag (false:
+// done), and its values — the others, in order. ok false when it gives no
+// bool, or more than one, or nothing else.
+loop_call_shape :: proc(returns: []Type) -> (flag: int, values: []int, ok: bool) {
+    flag = -1
+    out := make([dynamic]int, context.temp_allocator)
+    for r, i in returns {
+        if _, is_bool := distinct_base(r).(Type_Bool); is_bool {
+            if flag >= 0 { return -1, nil, false }
+            flag = i
+        } else {
+            append(&out, i)
+        }
+    }
+    return flag, out[:], flag >= 0 && len(out) > 0
 }
 
 // `x op= v`: `x = x op v`, the operation at the `op=`.

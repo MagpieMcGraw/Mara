@@ -199,9 +199,11 @@ example_do :: fun() {
 // in xs` its position too. `for cond { … }` repeats while cond is true — `for
 // true { … }` until a break or return.
 //
-// `for x in f()` calls f each round. f returns a value and a bool: x is the
-// value, and the loop ends when the bool is false. `for x, i in f()` also
-// counts the rounds in i, from 0. A lexer's loop: `for t in next_token(&l)`.
+// `for x in f()` calls f each round. f returns one bool and one or more
+// values, in any order: the loop ends when the bool is false, and each value
+// gets a name, `for t, pos in g()` for two. One more name after the values
+// counts the rounds, from 0: `for x, i in f()`. A lexer's loop:
+// `for t in next_token(&l)`.
 //
 // `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10; `x in xs`, whether
 // some item of xs is x (`==` as their type has it: text, the same

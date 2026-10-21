@@ -783,6 +783,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         if v.var != 0 { rs_declare(r, rs_text(v.var), {v.var, .Local}) }
         if v.elem != 0 { rs_declare(r, rs_text(v.elem), {v.elem, .Local}) }
         if v.index != 0 { rs_declare(r, rs_text(v.index), {v.index, .Local}) }
+        for tok in v.more { rs_declare(r, rs_text(tok), {tok, .Local}) }
         if v.init != 0 { rs_stmt(r, v.init) }
         rs_node(r, v.cond)
         if v.post != 0 { rs_stmt(r, v.post) }

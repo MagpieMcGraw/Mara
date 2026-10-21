@@ -308,7 +308,10 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     // token in its header, no name node — what reads it is checked.)
                     if !compared && (t.tag[n] == .For_Range || t.tag[n] == .For_Each) {
                         v := for_view(t, n)
-                        for tok in ([]Token_Id{v.var, v.elem, v.index}) {
+                        names := make([dynamic]Token_Id, context.temp_allocator)
+                        append(&names, v.var, v.elem, v.index)
+                        append(&names, ..v.more)
+                        for tok in names {
                             if tok != 0 && token_text(build_tokens[tok]) == graph_name(g, d) && tok >= graph_origin(g, d).tok && tok < graph_origin(g, d).end {
                                 compared = true
                                 loops += 1

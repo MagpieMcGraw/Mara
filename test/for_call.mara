@@ -9,10 +9,15 @@ use mara.core
 //@ expect-output: stopped at 20
 //@ expect-output: words: let|x|=|10|
 //@ expect-output: tokens: 4 rounds: 4
+//@ expect-output: bool first: 1
+//@ expect-output: bool first: 2
+//@ expect-output: value 3 square 9 round 2
+//@ expect-output: two names: 1 1
 
 // A loop over a call, `for x in f()`: f gives a value and a bool, and is
 // called each round; x is the value, and the loop ends when the bool is
-// false. `for x, i in f()`: i counts the rounds from 0.
+// false. `for x, i in f()`: i counts the rounds from 0. The bool can be any
+// of its results, and the others are the values, a name each: `for a, b, i`.
 
 Counter :: struct {
 	at:  i64
@@ -94,4 +99,30 @@ main :: () {
 	}
 	print("words:", words[:])
 	print("tokens:", tokens, "rounds:", rounds)
+
+	// (The bool first; two values, then the round after them.)
+	c = Counter{at = 0, end = 2}
+	for v in more_first(&c) {
+		print("bool first:", v)
+	}
+	c = Counter{at = 0, end = 3}
+	for v, sq, i in with_square(&c) {
+		print("value", v, "square", sq, "round", i)
+	}
+	c = Counter{at = 0, end = 1}
+	for v, sq in with_square(&c) {
+		print("two names:", v, sq)
+	}
+}
+
+more_first :: fun(c: ^Counter) -> bool, i64 {
+	if c.at >= c.end do return false, 0
+	c.at += 1
+	return true, c.at
+}
+
+with_square :: fun(c: ^Counter) -> i64, bool, i64 {
+	if c.at >= c.end do return 0, false, 0
+	c.at += 1
+	return c.at, true, c.at * c.at
 }

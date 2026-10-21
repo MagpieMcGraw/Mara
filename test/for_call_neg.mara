@@ -2,7 +2,7 @@ module for_call_neg
 
 use mara.core
 
-//@ expect-fail: a loop over a call takes a value and a bool from it each round
+//@ expect-fail: a loop over a call takes one bool from it each round
 
 // A loop over a call whose results end in no bool: an error, not a loop
 // that guesses when to stop.

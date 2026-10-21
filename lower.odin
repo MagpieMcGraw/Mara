@@ -885,11 +885,22 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// `for x, i in f()` (tc_for_call): its variables, then each round's check —
-// the call, its value to x, its bool the condition — then the body.
+// `for a, b, i in f()` (tc_for_call): its variables — a name for each of
+// the call's values, the round after them — then each round's check (the
+// call, each value to its name, its bool the condition), then the body.
 lw_for_call :: proc(k: ^TC, fl: ^Graph_For, v: For_View, returns: []Type) {
     b := k.gb
-    graph_build_for_call(b, fl, distinct_base(solidify_type(returns[0])))
+    flag, values, _ := loop_call_shape(returns)
+    names := loop_names(v)
+    named :: proc(tok: Token_Id) -> bool { return tok != 0 && tc_text(tok) != "_" }
+    vals := make([]Graph_Call_Value, len(values), context.temp_allocator)
+    for r, i in values {
+        vals[i] = {result = r, t = distinct_base(solidify_type(returns[r]))}
+        if i < len(names) && named(names[i]) { vals[i].name, vals[i].tok = tc_text(names[i]), names[i] }
+    }
+    round: Token_Id
+    if len(names) == len(values) + 1 && named(names[len(values)]) { round = names[len(values)] }
+    graph_build_for_call(b, fl, vals, flag, tc_text(round) if round != 0 else "", round)
     r := lw_expr(k, v.collection, .Value)
     graph_build_for_call_check(b, fl, r.v)
     lw_scope(k, v.body)

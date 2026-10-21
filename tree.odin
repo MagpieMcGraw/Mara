@@ -61,7 +61,7 @@ Tree_Tag :: enum u8 {
     Arm_Variant,    // `V`, `V binding`: main: the variant; a: list — the body; b: the binding
     Arm_Value,      // a: the value; b: list — the body
     For_Range,      // `for i [: T] in lo..hi`: a: rec {var, type, lo, hi, body: list}
-    For_Each,       // `for e[, i] [: T] in c`: a: rec {elem, index, type, collection, body: list}
+    For_Each,       // `for e[, i, …] [: T] in c`: a: rec {elem, the names after it: tokens, type, collection, body: list}
     For_C,          // `for init; cond; post`: a: rec {init, cond, post, body: list}
     For_Cond,       // `for cond`: a: the condition; b: list — the body
     Overload,       // `overload + name`: a: the operator; b: the dispatch's name
@@ -176,7 +176,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Arm_Variant    = {a = .List, b = .Token},
     .Arm_Value      = {a = .Node, b = .List},
     .For_Range      = {a = .Rec, rec = {0 = .Token, 1 = .Node, 2 = .Node, 3 = .Node, 4 = .List}},
-    .For_Each       = {a = .Rec, rec = {0 = .Token, 1 = .Token, 2 = .Node, 3 = .Node, 4 = .List}},
+    .For_Each       = {a = .Rec, rec = {0 = .Token, 1 = .Tokens, 2 = .Node, 3 = .Node, 4 = .List}},
     .For_C          = {a = .Rec, rec = {0 = .Node, 1 = .Node, 2 = .Node, 3 = .List}},
     .For_Cond       = {a = .Node, b = .List},
     .Overload       = {a = .Token, b = .Token},
@@ -523,6 +523,7 @@ params_view :: proc(t: ^Tree, n: Tree_Id) -> Params_View {
 
 For_View :: struct {
     var, elem, index:       Token_Id,
+    more:                   []Token_Id,   // a for-each's names after its index (a loop over a call's values)
     type_:                  Tree_Id,
     lo, hi, collection:     Tree_Id,
     init, cond, post:       Tree_Id,
@@ -536,7 +537,10 @@ for_view :: proc(t: ^Tree, n: Tree_Id) -> For_View {
         return {var = Token_Id(r[0]), type_ = Tree_Id(r[1]), lo = Tree_Id(r[2]), hi = Tree_Id(r[3]), body = tree_list(t, r[4])}
     case .For_Each:
         r := tree_rec(t, t.a[n], 5)
-        return {elem = Token_Id(r[0]), index = Token_Id(r[1]), type_ = Tree_Id(r[2]), collection = Tree_Id(r[3]), body = tree_list(t, r[4])}
+        names := tree_token_list(t, r[1])
+        v := For_View{elem = Token_Id(r[0]), type_ = Tree_Id(r[2]), collection = Tree_Id(r[3]), body = tree_list(t, r[4])}
+        if len(names) > 0 { v.index, v.more = names[0], names[1:] }
+        return v
     case .For_C:
         r := tree_rec(t, t.a[n], 4)
         return {init = Tree_Id(r[0]), cond = Tree_Id(r[1]), post = Tree_Id(r[2]), body = tree_list(t, r[3])}

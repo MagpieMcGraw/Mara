@@ -650,15 +650,13 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
     if tp_kind(p) == .Identifier {
         m := tp_mark(p)
         first := tp_advance(p)
-        second: Token_Id
-        has_second := false
-        if tp_kind(p) == .Comma {
+        // (The names after the first: an index; a loop over a call's values.)
+        after_first := make([dynamic]Token_Id, context.temp_allocator)
+        for tp_kind(p) == .Comma && tp_peek(p) == .Identifier {
             tp_advance(p)
-            if tp_kind(p) == .Identifier {
-                second = tp_advance(p)
-                has_second = true
-            }
+            append(&after_first, tp_advance(p))
         }
+        has_second := len(after_first) > 0
         iter_type: Tree_Id
         if tp_kind(p) == .Colon && tp_peek(p) != .Equals {
             tp_advance(p)
@@ -675,7 +673,7 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
                 return tp_node(p, .For_Range, kw, start, tree_rec_add(p.t, u32(first), u32(iter_type), u32(after), u32(high), body))
             }
             body := tp_loop_body(p)
-            return tp_node(p, .For_Each, kw, start, tree_rec_add(p.t, u32(first), u32(second), u32(iter_type), u32(after), body))
+            return tp_node(p, .For_Each, kw, start, tree_rec_add(p.t, u32(first), tree_tokens_add(p.t, after_first[:]), u32(iter_type), u32(after), body))
         }
         tp_reset(p, m)
     }
