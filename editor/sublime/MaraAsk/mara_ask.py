@@ -608,27 +608,29 @@ def _cursor_send(number, key, cwd, words, at, what_at, view):
     _tell_editor(mara, cwd)
     _tell_colors(mara, cwd, view)
     if _settings().get("docs_at_cursor", True):
-        _docs_send(mara, cwd, words, at)
+        _docs_send(mara, cwd, words, at, say=False)
     if what_at and _settings().get("what_at_cursor", True):
         _run_mara([mara, "ask", "-cursor", "what", "at", what_at], cwd)
 
 
 # The words looked up in a window's Docs panel (mara docs), what it found on
-# the status bar. `wait`: a window just opened may not listen yet — asked
-# again, a little apart, until one answers (DOCS_WAIT seconds at most).
-# Whether one did.
+# the status bar — unless `say` is False: a cursor's rest says nothing there,
+# where the line and column are (the panel shows it). `wait`: a window just
+# opened may not listen yet — asked again, a little apart, until one answers
+# (DOCS_WAIT seconds at most). Whether one did.
 DOCS_WAIT = 8.0
 
 
-def _docs_send(mara, cwd, words, at, wait=False):
+def _docs_send(mara, cwd, words, at, wait=False, say=True):
     give_up = time.time() + (DOCS_WAIT if wait else 0)
     while True:
         rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
         if "no window is open" not in out or time.time() >= give_up:
             break
         time.sleep(0.15)
-    first = out.strip().splitlines()[0] if out.strip() else "no answer"
-    sublime.status_message("Mara Docs: " + first)
+    if say:
+        first = out.strip().splitlines()[0] if out.strip() else "no answer"
+        sublime.status_message("Mara Docs: " + first)
     return "no window is open" not in out
 
 
