@@ -49,9 +49,29 @@ next :: fun(l: ^Lexer) -> bool, Tok {
 	return false, Tok{0}
 }
 
+// (mara edit's <fun>.do: the first chain written with do; a branch of two
+// statements, a comment, one written with do already, left.)
+kind_of :: fun(c: utf8) -> i64 {
+	if c == '+' {
+		return 1
+	elif c == '-'
+		return 2
+	}
+	if c == '*' {
+		x := 3
+		return x
+	}
+	if c == '/' {
+		// (kept)
+		return 4
+	}
+	if c == '%' do return 5
+	return 0
+}
+
 main :: () {
 	l := Lexer{pos = 0, text = "+-x*"}
 	for t in next(&l) {
-		print(t.at, t.len, t.kind)
+		print(t.at, t.len, t.kind, kind_of(l.text[t.at]))
 	}
 }

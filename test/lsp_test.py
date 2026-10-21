@@ -267,6 +267,20 @@ def fun_calls(c):
     r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": other, "character": 0},
                   "end": {"line": other, "character": 0}}, "context": {"diagnostics": []}})
     check("calls: nothing at a fun whose body isn't written out elsewhere", not any(a["title"].startswith("Call ") for a in r or []), r)
+
+    # One-statement ifs with do: at the if, at its fun's name.
+    lines = text.split("\n")
+    at_name = next(i for i, l in enumerate(lines) if l.startswith("kind_of :: fun"))
+    at_if = next(i for i, l in enumerate(lines) if i > at_name and l.strip() == "if c == '+' {")
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": at_if, "character": 0},
+                  "end": {"line": at_if, "character": 0}}, "context": {"diagnostics": []}})
+    acts = {a["title"]: a for a in r or []}
+    one = acts.get("Write this if with do")
+    done = apply(text, one and [e for es in one["edit"]["changes"].values() for e in es] or []).replace("\r", "")
+    check("do: at the if, it written with do", "\tif c == '+' do return 1\n\telif c == '-' do return 2\n" in done, list(acts))
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": at_name, "character": 0},
+                  "end": {"line": at_name, "character": 0}}, "context": {"diagnostics": []}})
+    check("do: at the fun's name, all of its", any(a["title"] == "Write kind_of's 1 one-statement if with do" for a in r or []), r)
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 
@@ -358,7 +372,8 @@ def main():
     def actions_at(line_no):
         r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": line_no - 1, "character": 0},
                       "end": {"line": line_no - 1, "character": 0}}, "context": {"diagnostics": []}})
-        return {a["title"]: a for a in r or []}
+        # (Its quick fixes: a fun's refactors may be offered on its line too.)
+        return {a["title"]: a for a in r or [] if a.get("kind") != "refactor"}
 
     # camera_move renamed at its definition, a keystroke at a time; its use is in Pounce.mara, not open.
     version = 20

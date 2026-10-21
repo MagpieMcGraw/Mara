@@ -420,15 +420,16 @@ token_location :: proc(tok: Token) -> string {
 // (shape_matches). What was done, or what stopped it (false).
 edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (said: string, ok: bool) {
     dot := strings.last_index_byte(target, '.')
-    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls>\n", target), false }
+    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do>\n", target), false }
     name, kind_word := target[:dot], target[dot + 1:]
     if kind_word == "calls" { return edit_calls(checked, name) }
+    if kind_word == "do" { return edit_do(checked, name) }
     kind: Order_Kind
     switch kind_word {
     case "fields":  kind = .Fields
     case "results": kind = .Results
     case "params":  kind = .Params
-    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params or calls\n", kind_word), false
+    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls or do\n", kind_word), false
     }
     orders := orders_of(&build_tree, checked.annot)
     found := make([dynamic]Order)
@@ -451,29 +452,38 @@ edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (sa
                        places, "" if places == 1 else "s", strings.join(written, ", ")), true
 }
 
+// The fun named, in the module checked: its Fun_Def and scope; else why not.
+@(private="file")
+edit_fun :: proc(checked: ^Checked_Program, name: string) -> (def: Tree_Id, ts: ^Type_Scope, problem: string) {
+    t := &build_tree
+    found := make([dynamic]Tree_Id)
+    scopes := make([dynamic]^Type_Scope)
+    for key, s in checked.annot.decls {
+        _, n := annot_split(key)
+        if s == nil || s.kind != .Fun || t.tag[n] != .Fun_Def { continue }
+        if (s.source_name if s.source_name != "" else s.name) != name || slice.contains(found[:], n) { continue }
+        append(&found, n)
+        append(&scopes, s)
+    }
+    if len(found) == 0 { return 0, nil, fmt.tprintf("mara edit: no fun named %s here\n", name) }
+    if len(found) > 1 {
+        b := strings.builder_make()
+        fmt.sbprintf(&b, "mara edit: %d funs named %s here — which isn't told yet:\n", len(found), name)
+        for n in found { fmt.sbprintf(&b, "  %s\n", token_location(build_tokens[t.first[n]])) }
+        return 0, nil, strings.to_string(b)
+    }
+    return found[0], scopes[0], ""
+}
+
 // `mara edit <fun>.calls`: the fun called in each place its body is written
 // out — the run of statements there its call.
 @(private="file")
 edit_calls :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: bool) {
     t := &build_tree
     a := checked.annot
-    found := make([dynamic]Tree_Id)
-    scopes := make([dynamic]^Type_Scope)
-    for key, ts in a.decls {
-        _, n := annot_split(key)
-        if ts == nil || ts.kind != .Fun || t.tag[n] != .Fun_Def { continue }
-        if (ts.source_name if ts.source_name != "" else ts.name) != name || slice.contains(found[:], n) { continue }
-        append(&found, n)
-        append(&scopes, ts)
-    }
-    if len(found) == 0 { return fmt.tprintf("mara edit: no fun named %s here\n", name), false }
-    if len(found) > 1 {
-        b := strings.builder_make()
-        fmt.sbprintf(&b, "mara edit: %d funs named %s here — which isn't told yet:\n", len(found), name)
-        for n in found { fmt.sbprintf(&b, "  %s\n", token_location(build_tokens[t.first[n]])) }
-        return strings.to_string(b), false
-    }
-    matches := shape_matches(t, a, found[0], scopes[0])
+    def, ts, problem := edit_fun(checked, name)
+    if problem != "" { return problem, false }
+    matches := shape_matches(t, a, def, ts)
     if len(matches) == 0 { return fmt.tprintf("No place writes out %s's body.\n", name), true }
     edits := make([dynamic]Order_Edit)
     for m in matches {
@@ -484,6 +494,25 @@ edit_calls :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok
     if failed != "" { return failed, false }
     return fmt.tprintf("%s called in the %d place%s its body was written out (%s)\n", name, len(matches),
                        "" if len(matches) == 1 else "s", strings.join(written, ", ")), true
+}
+
+// `mara edit <fun>.do`: the fun's one-statement if chains written with `do`
+// (do_chains).
+@(private="file")
+edit_do :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: bool) {
+    t := &build_tree
+    def, _, problem := edit_fun(checked, name)
+    if problem != "" { return problem, false }
+    chains := do_chains(t, def)
+    if len(chains) == 0 { return fmt.tprintf("No if in %s has one statement a branch, as `do` writes it.\n", name), true }
+    edits := make([dynamic]Order_Edit)
+    for c in chains {
+        file, at, end := do_span(t, c)
+        append(&edits, Order_Edit{file, at, end, do_text(t, c)})
+    }
+    written, failed := edit_apply(edits[:])
+    if failed != "" { return failed, false }
+    return fmt.tprintf("%s: %d if%s written with do (%s)\n", name, len(chains), "" if len(chains) == 1 else "s", strings.join(written, ", ")), true
 }
 
 // Edits made: each file's, last first, its text made again and written.

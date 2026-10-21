@@ -93,6 +93,17 @@ def main():
         check("calls: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
         code, out = mara(d, "edit", "emit.calls")
         check("calls: again, nothing left", code == 0 and "No place writes out emit's body" in out, out)
+
+        # One-statement ifs written with do: the chain whose every branch
+        # is one; a branch of two, a comment, one with do already, left.
+        code, out = mara(d, "edit", "kind_of.do")
+        text = read(d, "shapes.mara").replace("\r", "")
+        check("do: one chain, said", code == 0 and "kind_of: 1 if written with do" in out, out)
+        check("do: the chain written with do, its elif after it", "\tif c == '+' do return 1\n\telif c == '-' do return 2\n" in text, text)
+        check("do: the others left", "\t\tx := 3\n" in text and "// (kept)" in text and "if c == '%' do return 5" in text, text)
+        code, out = mara(d, "build", "shapes")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("do: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

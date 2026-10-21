@@ -520,3 +520,106 @@ shape_span :: proc(t: ^Tree, m: Shape_Match) -> (file: u16, at, end: int) {
     first, last := build_tokens[t.first[m.stmts[0]]], build_tokens[t.end[m.stmts[len(m.stmts) - 1]] - 1]
     return first.file, int(first.offset), int(last.offset + last.len)
 }
+
+// ---------------------------------------------------------------------------
+// One-statement ifs written with `do` (`mara edit <fun>.do`; mara lsp's code
+// action at an if). An if chain whose every branch — the if's, each elif's,
+// the else's — is one statement on one line (no block of its own: no if,
+// loop, match, with, defer, declaration), with no comment inside its braces
+// and none already written with `do`, becomes `if c do s`, each elif and
+// the else on a line of its own after it, as far in as the if.
+// ---------------------------------------------------------------------------
+
+// The if chains in a fun's body that can be written with `do`.
+do_chains :: proc(t: ^Tree, def: Tree_Id) -> [dynamic]Tree_Id {
+    out := make([dynamic]Tree_Id)
+    lists := make([dynamic][]Tree_Id, context.temp_allocator)
+    shape_lists(t, scope_view(t, def).body, &lists)
+    for list in lists {
+        for s in list { if t.tag[s] == .If && do_chain_ok(t, s) { append(&out, s) } }
+    }
+    return out
+}
+
+// Whether an if chain can be written with `do` (do_chains).
+do_chain_ok :: proc(t: ^Tree, s: Tree_Id) -> bool {
+    src := build_files[build_tokens[t.first[s]].file].source
+    node := s
+    for {
+        v := if_view(t, node)
+        if v.hash != 0 { return false }   // (`#if`: chosen when built)
+        if build_tokens[t.end[v.cond]].kind == .Do { return false }   // (written with `do` already)
+        if !do_one(t, src, v.cond) || len(v.then) != 1 || !do_one(t, src, v.then[0]) { return false }
+        if len(v.else_) == 0 { break }
+        if len(v.else_) == 1 && t.tag[v.else_[0]] == .Elif {
+            node = v.else_[0]
+            continue
+        }
+        if len(v.else_) != 1 || !do_one(t, src, v.else_[0]) { return false }
+        break
+    }
+    // (A comment anywhere in it: between two of its tokens.)
+    for k := t.first[s]; k + 1 < t.end[s]; k += 1 {
+        a, b := build_tokens[k], build_tokens[k + 1]
+        gap := src[a.offset + a.len:b.offset]
+        if strings.contains(gap, "//") || strings.contains(gap, "/*") { return false }
+    }
+    return true
+}
+
+// Whether a node is one simple statement (or a condition) on one line.
+@(private="file")
+do_one :: proc(t: ^Tree, src: string, n: Tree_Id) -> bool {
+    #partial switch t.tag[n] {
+    case .If, .Elif, .For_Range, .For_Each, .For_C, .For_Cond, .Match, .With, .Defer, .Decl, .Define:
+        return false
+    }
+    first, last := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]
+    return !strings.contains(src[first.offset:last.offset + last.len], "\n")
+}
+
+// An if chain written with `do`: its text, in place of the chain's.
+do_text :: proc(t: ^Tree, s: Tree_Id) -> string {
+    first := build_tokens[t.first[s]]
+    src := build_files[first.file].source
+    // (The lines after its first: as far in as it, the file's line ends.)
+    line_start := int(first.offset)
+    for line_start > 0 && src[line_start - 1] != '\n' { line_start -= 1 }
+    indent := src[line_start:first.offset]
+    newline := "\r\n" if strings.contains(src, "\r\n") else "\n"
+    text :: proc(t: ^Tree, src: string, n: Tree_Id) -> string {
+        a, b := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]
+        return src[a.offset:b.offset + b.len]
+    }
+    b := strings.builder_make()
+    node, word := s, "if"
+    // (A blank line before an elif or the else: kept.)
+    blank :: proc(t: ^Tree, src: string, b: ^strings.Builder, after: Tree_Id, keyword: Token_Id, newline: string) {
+        end := build_tokens[t.end[after] - 1]
+        if strings.count(src[end.offset + end.len:build_tokens[keyword].offset], "\n") >= 2 { strings.write_string(b, newline) }
+    }
+    for {
+        v := if_view(t, node)
+        fmt.sbprintf(&b, "%s %s do %s", word, text(t, src, v.cond), text(t, src, v.then[0]))
+        if len(v.else_) == 0 { break }
+        if t.tag[v.else_[0]] == .Elif {
+            blank(t, src, &b, v.then[0], t.first[v.else_[0]], newline)
+            strings.write_string(&b, newline)
+            strings.write_string(&b, indent)
+            node, word = v.else_[0], "elif"
+            continue
+        }
+        else_tok := t.first[v.else_[0]] - 1
+        for else_tok > t.first[node] && build_tokens[else_tok].kind != .Else { else_tok -= 1 }
+        blank(t, src, &b, v.then[0], else_tok, newline)
+        fmt.sbprintf(&b, "%s%selse do %s", newline, indent, text(t, src, v.else_[0]))
+        break
+    }
+    return strings.to_string(b)
+}
+
+// Where an if chain is: its `if` to its end.
+do_span :: proc(t: ^Tree, s: Tree_Id) -> (file: u16, at, end: int) {
+    first, last := build_tokens[t.first[s]], build_tokens[t.end[s] - 1]
+    return first.file, int(first.offset), int(last.offset + last.len)
+}

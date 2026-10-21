@@ -1214,6 +1214,7 @@ LSP_USAGE :: `Usage: mara lsp
   false, "references": false, "symbols": false, "completion": false, "renames": false, "diagnostics": false}.`
 EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> ...
        mara edit [module] <fun>.calls
+       mara edit [module] <fun>.do
 
   Puts a struct's fields, a fun's results or a fun's params in another
   order, and every place that gives them by position with them: the
@@ -1229,7 +1230,13 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
   written out: its params whatever's there, its first locals left out where
   a local holding the same value is used instead (nothing writing it between).
 
-    mara edit emit.calls`
+    mara edit emit.calls
+
+  mara edit [module] <fun>.do writes the fun's ifs whose every branch is one
+  statement on one line with do: if c do s, each elif and else on a line
+  of its own.
+
+    mara edit next_token.do`
 
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
@@ -1464,7 +1471,7 @@ parse_args :: proc() -> CLI_Args {
             }
             args.pkg_name = name
         }
-        if len(rest) < 2 && !(len(rest) == 1 && strings.has_suffix(rest[0], ".calls")) {
+        if len(rest) < 2 && !(len(rest) == 1 && (strings.has_suffix(rest[0], ".calls") || strings.has_suffix(rest[0], ".do"))) {
             fmt.println(EDIT_USAGE)
             return args
         }

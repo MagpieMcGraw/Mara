@@ -459,3 +459,51 @@ lsp_shape_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[d
         append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), lsp_workspace_edit(by_uri)))
     }
 }
+
+// --- one-statement ifs written with `do` (shapes.odin) -----------------------
+
+// The code actions for ifs written with `do`, asked for: at an if that can
+// be, it written so — and when its fun has more, all of them; at a fun's
+// name, all of its.
+lsp_do_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
+    session := &s.check.session
+    if session.checked == nil { return }
+    t := &build_tree
+    key := path_key(path)
+    for k, ts in session.checked.annot.decls {
+        _, n := annot_split(k)
+        if ts == nil || ts.kind != .Fun || t.tag[n] != .Fun_Def { continue }
+        first := build_tokens[t.first[n]]
+        if path_key(lsp_abs(s, build_files[first.file].path)) != key { continue }
+        last := build_tokens[t.end[n] - 1]
+        if token_line(first) - 1 > l1 || token_line(last) - 1 < l0 { continue }
+        chains := do_chains(t, n)
+        if len(chains) == 0 { continue }
+        name := ts.source_name if ts.source_name != "" else ts.name
+        edit_of :: proc(s: ^Lsp, t: ^Tree, chains: []Tree_Id) -> string {
+            by_uri := make(map[string][dynamic]string)
+            for c in chains {
+                file, at, end := do_span(t, c)
+                p := lsp_abs(s, build_files[file].path)
+                text, _ := lsp_editor_text(s, p)
+                uri := lsp_uri(s, p)
+                edits := by_uri[uri]
+                append(&edits, lsp_text_edit(s, text, at, end, do_text(t, c)))
+                by_uri[uri] = edits
+            }
+            return lsp_workspace_edit(by_uri)
+        }
+        on_if := false
+        for c in chains {
+            line := token_line(build_tokens[t.first[c]]) - 1
+            if line < l0 || line > l1 { continue }
+            on_if = true
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str("Write this if with do"), edit_of(s, t, []Tree_Id{c})))
+        }
+        name_line := token_line(build_tokens[t.first[n] - 2 if t.first[n] >= 2 else t.first[n]]) - 1
+        if (on_if && len(chains) > 1) || (name_line >= l0 && name_line <= l1) {
+            title := fmt.tprintf("Write %s's %d one-statement if%s with do", name, len(chains), "" if len(chains) == 1 else "s")
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, chains[:])))
+        }
+    }
+}
