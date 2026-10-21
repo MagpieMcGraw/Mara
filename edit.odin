@@ -420,16 +420,17 @@ token_location :: proc(tok: Token) -> string {
 // (shape_matches). What was done, or what stopped it (false).
 edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (said: string, ok: bool) {
     dot := strings.last_index_byte(target, '.')
-    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do>\n", target), false }
+    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do|elif>\n", target), false }
     name, kind_word := target[:dot], target[dot + 1:]
     if kind_word == "calls" { return edit_calls(checked, name) }
     if kind_word == "do" { return edit_do(checked, name) }
+    if kind_word == "elif" { return edit_elif(checked, name) }
     kind: Order_Kind
     switch kind_word {
     case "fields":  kind = .Fields
     case "results": kind = .Results
     case "params":  kind = .Params
-    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls or do\n", kind_word), false
+    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls, do or elif\n", kind_word), false
     }
     orders := orders_of(&build_tree, checked.annot)
     found := make([dynamic]Order)
@@ -513,6 +514,26 @@ edit_do :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: b
     written, failed := edit_apply(edits[:])
     if failed != "" { return failed, false }
     return fmt.tprintf("%s: %d if%s written with do (%s)\n", name, len(chains), "" if len(chains) == 1 else "s", strings.join(written, ", ")), true
+}
+
+// `mara edit <fun>.elif`: the fun's runs of ifs, each branch leaving, joined
+// into chains with elif (elif_runs).
+@(private="file")
+edit_elif :: proc(checked: ^Checked_Program, name: string) -> (said: string, ok: bool) {
+    t := &build_tree
+    def, _, problem := edit_fun(checked, name)
+    if problem != "" { return problem, false }
+    runs := elif_runs(t, def)
+    if len(runs) == 0 { return fmt.tprintf("No ifs in %s one after another can be one chain with elif.\n", name), true }
+    edits := make([dynamic]Order_Edit)
+    joined := 0
+    for run in runs {
+        append(&edits, ..elif_edits(t, run)[:])
+        joined += len(run)
+    }
+    written, failed := edit_apply(edits[:])
+    if failed != "" { return failed, false }
+    return fmt.tprintf("%s: %d ifs joined into %d chain%s with elif (%s)\n", name, joined, len(runs), "" if len(runs) == 1 else "s", strings.join(written, ", ")), true
 }
 
 // Edits made: each file's, last first, its text made again and written.

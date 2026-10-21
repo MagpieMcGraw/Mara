@@ -623,3 +623,85 @@ do_span :: proc(t: ^Tree, s: Tree_Id) -> (file: u16, at, end: int) {
     first, last := build_tokens[t.first[s]], build_tokens[t.end[s] - 1]
     return first.file, int(first.offset), int(last.offset + last.len)
 }
+
+// ---------------------------------------------------------------------------
+// Ifs one after another joined into one chain with elif (`mara edit
+// <fun>.elif`; mara lsp's code action at an if, or a selection of them).
+// `if a {…}` then `if b {…}` is `if a {…} elif b {…}` when a's branch always
+// leaves — every way through it ends in a return, break or continue: b is
+// tested only when a was false, as an elif is. So the first of two may be a
+// chain of elifs itself, each branch leaving, with no else; both are written
+// with braces, or both with `do` (not one of each); no comment between them.
+// Braces: the first's `}` and the second's `if … {` become `elif …`, as far
+// in as the if (a blank line between them kept); `do`: the second's `if` is
+// `elif`.
+// ---------------------------------------------------------------------------
+
+// The runs of two or more ifs in a fun's body that can be joined.
+elif_runs :: proc(t: ^Tree, def: Tree_Id) -> [dynamic][]Tree_Id {
+    out := make([dynamic][]Tree_Id)
+    lists := make([dynamic][]Tree_Id, context.temp_allocator)
+    shape_lists(t, scope_view(t, def).body, &lists)
+    for list in lists {
+        for i := 0; i < len(list); {
+            j := i
+            for j + 1 < len(list) && elif_joins(t, list[j], list[j + 1]) { j += 1 }
+            if j > i { append(&out, list[i:j + 1]) }
+            i = j + 1
+        }
+    }
+    return out
+}
+
+// Whether two ifs one after another can be joined (elif_runs).
+elif_joins :: proc(t: ^Tree, a, b: Tree_Id) -> bool {
+    if t.tag[a] != .If || t.tag[b] != .If { return false }
+    va, vb := if_view(t, a), if_view(t, b)
+    if va.hash != 0 || vb.hash != 0 { return false }
+    after_a, after_b := build_tokens[t.end[va.cond]].kind, build_tokens[t.end[vb.cond]].kind
+    if after_a != after_b || (after_a != .Do && after_a != .Left_Brace) { return false }
+    if after_a == .Left_Brace && build_tokens[t.end[a] - 1].kind != .Right_Brace { return false }
+    // (a's every branch leaving; no else.)
+    node := a
+    for {
+        v := if_view(t, node)
+        if shape_falls_through(t, v.then) { return false }
+        if len(v.else_) == 0 { break }
+        if len(v.else_) != 1 || t.tag[v.else_[0]] != .Elif { return false }
+        node = v.else_[0]
+    }
+    end_a, start_b := build_tokens[t.end[a] - 1], build_tokens[t.first[b]]
+    src := build_files[end_a.file].source
+    gap := src[end_a.offset + end_a.len:start_b.offset]
+    return !strings.contains(gap, "//") && !strings.contains(gap, "/*")
+}
+
+// A run's edits: each if after the first joined to the one before it.
+elif_edits :: proc(t: ^Tree, run: []Tree_Id) -> [dynamic]Order_Edit {
+    out := make([dynamic]Order_Edit)
+    first := build_tokens[t.first[run[0]]]
+    src := build_files[first.file].source
+    line_start := int(first.offset)
+    for line_start > 0 && src[line_start - 1] != '\n' { line_start -= 1 }
+    indent := src[line_start:first.offset]
+    newline := "\r\n" if strings.contains(src, "\r\n") else "\n"
+    for k in 1 ..< len(run) {
+        a, b := run[k - 1], run[k]
+        vb := if_view(t, b)
+        if_tok := build_tokens[t.first[b]]
+        if build_tokens[t.end[vb.cond]].kind == .Do {
+            append(&out, Order_Edit{if_tok.file, int(if_tok.offset), int(if_tok.offset + if_tok.len), "elif"})
+            continue
+        }
+        // (From the start of a's `}` line to b's `{`.)
+        close := build_tokens[t.end[a] - 1]
+        at := int(close.offset)
+        for at > 0 && src[at - 1] != '\n' { at -= 1 }
+        open := build_tokens[t.end[vb.cond]]
+        c0, c1 := build_tokens[t.first[vb.cond]], build_tokens[t.end[vb.cond] - 1]
+        blank := strings.count(src[close.offset + close.len:if_tok.offset], "\n") >= 2
+        text := fmt.tprintf("%s%selif %s", newline if blank else "", indent, src[c0.offset:c1.offset + c1.len])
+        append(&out, Order_Edit{if_tok.file, at, int(open.offset + open.len), text})
+    }
+    return out
+}

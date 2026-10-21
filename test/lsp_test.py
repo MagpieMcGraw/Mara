@@ -281,6 +281,18 @@ def fun_calls(c):
     r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": at_name, "character": 0},
                   "end": {"line": at_name, "character": 0}}, "context": {"diagnostics": []}})
     check("do: at the fun's name, all of its", any(a["title"] == "Write kind_of's 1 one-statement if with do" for a in r or []), r)
+
+    # Ifs joined with elif: at one, its run; over a selection, the ones in it.
+    first_if = next(i for i, l in enumerate(lines) if l.strip() == "if n < 0 {")
+    second_if = next(i for i, l in enumerate(lines) if l.strip() == "if n == 0 {")
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": first_if, "character": 0},
+                  "end": {"line": first_if, "character": 0}}, "context": {"diagnostics": []}})
+    check("elif: at an if, its run of three", any(a["title"] == "Join these 3 ifs into one chain with elif" for a in r or []), [a["title"] for a in r or []])
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": first_if, "character": 0},
+                  "end": {"line": second_if, "character": 3}}, "context": {"diagnostics": []}})
+    two = next((a for a in r or [] if a["title"] == "Join the 2 selected ifs into one chain with elif"), None)
+    done = apply(text, two and [e for es in two["edit"]["changes"].values() for e in es] or []).replace("\r", "")
+    check("elif: a selection of two, those two", "\telif n == 0\n\t\treturn 0\n\t}\n\tif n > 100 {" in done, [a["title"] for a in r or []])
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 

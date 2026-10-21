@@ -1215,6 +1215,7 @@ LSP_USAGE :: `Usage: mara lsp
 EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> ...
        mara edit [module] <fun>.calls
        mara edit [module] <fun>.do
+       mara edit [module] <fun>.elif
 
   Puts a struct's fields, a fun's results or a fun's params in another
   order, and every place that gives them by position with them: the
@@ -1236,7 +1237,14 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
   statement on one line with do: if c do s, each elif and else on a line
   of its own.
 
-    mara edit next_token.do`
+    mara edit next_token.do
+
+  mara edit [module] <fun>.elif joins the fun's ifs that come one after
+  another into one chain with elif, where it means the same: each branch
+  before the last ends in a return, break or continue, so the next if is
+  only tested when the one before was false.
+
+    mara edit next_token.elif`
 
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
@@ -1471,7 +1479,7 @@ parse_args :: proc() -> CLI_Args {
             }
             args.pkg_name = name
         }
-        if len(rest) < 2 && !(len(rest) == 1 && (strings.has_suffix(rest[0], ".calls") || strings.has_suffix(rest[0], ".do"))) {
+        if len(rest) < 2 && !(len(rest) == 1 && (strings.has_suffix(rest[0], ".calls") || strings.has_suffix(rest[0], ".do") || strings.has_suffix(rest[0], ".elif"))) {
             fmt.println(EDIT_USAGE)
             return args
         }

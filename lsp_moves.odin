@@ -463,8 +463,8 @@ lsp_shape_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[d
 // --- one-statement ifs written with `do` (shapes.odin) -----------------------
 
 // The code actions for ifs written with `do`, asked for: at an if that can
-// be, it written so — and when its fun has more, all of them; at a fun's
-// name, all of its.
+// be, it written so — over a selection, every one starting in it — and when
+// its fun has more, all of them; at a fun's name, all of its.
 lsp_do_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
     session := &s.check.session
     if session.checked == nil { return }
@@ -493,17 +493,82 @@ lsp_do_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dyna
             }
             return lsp_workspace_edit(by_uri)
         }
-        on_if := false
+        // (The ones the lines asked about start on: at the cursor, one; a selection, all in it.)
+        picked := make([dynamic]Tree_Id, context.temp_allocator)
         for c in chains {
             line := token_line(build_tokens[t.first[c]]) - 1
-            if line < l0 || line > l1 { continue }
-            on_if = true
-            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str("Write this if with do"), edit_of(s, t, []Tree_Id{c})))
+            if line >= l0 && line <= l1 { append(&picked, c) }
+        }
+        if len(picked) == 1 {
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str("Write this if with do"), edit_of(s, t, picked[:])))
+        } else if len(picked) > 1 {
+            title := fmt.tprintf("Write the %d selected ifs with do", len(picked))
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, picked[:])))
         }
         name_line := token_line(build_tokens[t.first[n] - 2 if t.first[n] >= 2 else t.first[n]]) - 1
-        if (on_if && len(chains) > 1) || (name_line >= l0 && name_line <= l1) {
+        if (len(picked) > 0 && len(picked) < len(chains)) || (name_line >= l0 && name_line <= l1) {
             title := fmt.tprintf("Write %s's %d one-statement if%s with do", name, len(chains), "" if len(chains) == 1 else "s")
             append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, chains[:])))
+        }
+    }
+}
+
+// --- ifs joined into a chain with elif (shapes.odin) --------------------------
+
+// The code actions for ifs joined with elif, asked for: at an if of a run
+// that can be joined, its run — over a selection, the ifs of a run starting
+// in it (two or more); at a fun's name, all of its runs.
+lsp_elif_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
+    session := &s.check.session
+    if session.checked == nil { return }
+    t := &build_tree
+    key := path_key(path)
+    for k, ts in session.checked.annot.decls {
+        _, n := annot_split(k)
+        if ts == nil || ts.kind != .Fun || t.tag[n] != .Fun_Def { continue }
+        first := build_tokens[t.first[n]]
+        if path_key(lsp_abs(s, build_files[first.file].path)) != key { continue }
+        if token_line(first) - 1 > l1 || token_line(build_tokens[t.end[n] - 1]) - 1 < l0 { continue }
+        runs := elif_runs(t, n)
+        if len(runs) == 0 { continue }
+        name := ts.source_name if ts.source_name != "" else ts.name
+        edit_of :: proc(s: ^Lsp, t: ^Tree, runs: [][]Tree_Id) -> string {
+            by_uri := make(map[string][dynamic]string)
+            for run in runs {
+                for e in elif_edits(t, run) {
+                    p := lsp_abs(s, build_files[e.file].path)
+                    text, _ := lsp_editor_text(s, p)
+                    uri := lsp_uri(s, p)
+                    edits := by_uri[uri]
+                    append(&edits, lsp_text_edit(s, text, e.at, e.end, e.text))
+                    by_uri[uri] = edits
+                }
+            }
+            return lsp_workspace_edit(by_uri)
+        }
+        line_of :: proc(t: ^Tree, n: Tree_Id) -> int { return token_line(build_tokens[t.first[n]]) - 1 }
+        for run in runs {
+            // (The ifs of it starting on the lines asked about.)
+            lo, hi := -1, -1
+            for s, i in run {
+                if line_of(t, s) >= l0 && line_of(t, s) <= l1 {
+                    if lo < 0 { lo = i }
+                    hi = i
+                }
+            }
+            if lo < 0 { continue }
+            picked := run if lo == hi else run[lo:hi + 1]
+            if len(picked) < 2 { continue }
+            title := fmt.tprintf("Join these %d ifs into one chain with elif", len(picked))
+            if lo != hi { title = fmt.tprintf("Join the %d selected ifs into one chain with elif", len(picked)) }
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, [][]Tree_Id{picked})))
+        }
+        name_line := token_line(build_tokens[t.first[n] - 2 if t.first[n] >= 2 else t.first[n]]) - 1
+        if name_line >= l0 && name_line <= l1 {
+            total := 0
+            for run in runs { total += len(run) }
+            title := fmt.tprintf("Join %s's %d ifs into %d chain%s with elif", name, total, len(runs), "" if len(runs) == 1 else "s")
+            append(actions, fmt.tprintf(`{{"title":%s,"kind":"refactor","edit":%s}}`, json_str(title), edit_of(s, t, runs[:])))
         }
     }
 }

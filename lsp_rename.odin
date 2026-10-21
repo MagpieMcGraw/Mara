@@ -141,7 +141,8 @@ lsp_renamings :: proc(s: ^Lsp) -> []Lsp_Renaming {
 // use on the lines asked about, in this file: its uses renamed too, or its
 // name put back. And fields, results, params being moved (lsp_moved_actions);
 // at a fun's name, its body written out elsewhere called (lsp_shape_actions);
-// at an if, or a fun's name, its one-statement ifs with `do` (lsp_do_actions).
+// at an if, or a fun's name, its one-statement ifs with `do` (lsp_do_actions),
+// its runs of ifs joined with elif (lsp_elif_actions).
 lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
     if !s.renames { return "[]" }
     path := uri_path(json_text(json_at(json_at(params, "textDocument"), "uri")))
@@ -188,6 +189,7 @@ lsp_code_actions :: proc(s: ^Lsp, params: json.Value) -> string {
     lsp_moved_actions(s, path, here, l0, l1, &actions)   // (fields, results, params moved: lsp_moves.odin)
     lsp_shape_actions(s, path, here, l0, l1, &actions)   // (a fun's body written out: shapes.odin)
     lsp_do_actions(s, path, here, l0, l1, &actions)      // (one-statement ifs written with `do`: shapes.odin)
+    lsp_elif_actions(s, path, here, l0, l1, &actions)    // (ifs joined into a chain with elif: shapes.odin)
     return strings.concatenate({"[", strings.join(actions[:], ","), "]"})
 }
 

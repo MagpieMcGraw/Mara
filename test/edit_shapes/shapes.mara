@@ -69,8 +69,29 @@ kind_of :: fun(c: utf8) -> i64 {
 	return 0
 }
 
+// (mara edit's <fun>.elif: the first three ifs one chain — each before the
+// last leaving — the blank line kept; the fourth after one that falls
+// through, left.)
+sign :: fun(n: i64) -> i64 {
+	if n < 0 {
+		return -1
+	}
+
+	if n == 0 {
+		return 0
+	}
+	if n > 100 {
+		print("big")
+	}
+	if n > 50 {
+		return 2
+	}
+	return 1
+}
+
 main :: () {
 	l := Lexer{pos = 0, text = "+-x*"}
+	print(sign(-5), sign(0), sign(500), sign(70), sign(3))
 	for t in next(&l) {
 		print(t.at, t.len, t.kind, kind_of(l.text[t.at]))
 	}

@@ -104,6 +104,16 @@ def main():
         code, out = mara(d, "build", "shapes")
         after = subprocess.run([exe], capture_output=True, text=True).stdout
         check("do: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
+
+        # Ifs one after another, each before the last leaving: one chain.
+        code, out = mara(d, "edit", "sign.elif")
+        text = read(d, "shapes.mara").replace("\r", "")
+        check("elif: three ifs, one chain, said", code == 0 and "sign: 3 ifs joined into 1 chain with elif" in out, out)
+        check("elif: joined, the blank line kept, the one after a falling-through branch left",
+              "\tif n < 0 {\n\t\treturn -1\n\n\telif n == 0\n\t\treturn 0\n\telif n > 100\n\t\tprint(\"big\")\n\t}\n\tif n > 50 {\n" in text, text)
+        code, out = mara(d, "build", "shapes")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("elif: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
