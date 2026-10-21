@@ -408,7 +408,7 @@ example_true :: fun() {
 // With `or` and `not`: `not` applies first, to the value right after it;
 // then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
 example_and :: fun() {
-	xs : [3!]i64 = [4, 0, 9]
+	xs := [4, 0, 9]
 	i := 3
 	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
 	print(true and true, true and false)   // true false
@@ -422,7 +422,7 @@ example_and :: fun() {
 // With `and` and `not`: `not` applies first, to the value right after it;
 // then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
 example_or :: fun() {
-	xs : [3!]i64 = [4, 0, 9]
+	xs := [4, 0, 9]
 	i := 3
 	print(i >= xs.len or xs[i] > 0)        // true, and xs[3] never read
 	print(false or true, false or false)   // true false
