@@ -400,16 +400,46 @@ example_true :: fun() {
 	print(bool(0), bool(7))                // false true
 }
 
-// `and`, `or`, `not`: combine bools.
+// `and`: true when both sides are true.
 //
-// `a and b` is true when both are; `a or b` when either is; `not a` when a
-// isn't. The right side runs only when it's needed: in `i < n and xs[i] > 0`,
-// xs[i] isn't read once i reaches n.
+// `a and b` runs a first. When a is false the answer is already false, so b
+// doesn't run: in `i < n and xs[i] > 0`, xs[i] isn't read once i reaches n.
+//
+// With `or` and `not`: `not` applies first, to the value right after it;
+// then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
 example_and :: fun() {
 	xs : [3!]i64 = [4, 0, 9]
 	i := 3
 	print(i < xs.len and xs[i] > 0)        // false, and xs[3] never read
-	print(not (i == 3) or xs[0] == 4)      // true
+	print(true and true, true and false)   // true false
+}
+
+// `or`: true when either side is true.
+//
+// `a or b` runs a first. When a is true the answer is already true, so b
+// doesn't run: in `i >= n or xs[i] > 0`, xs[i] isn't read once i reaches n.
+//
+// With `and` and `not`: `not` applies first, to the value right after it;
+// then `and`; then `or`. So `a or b and c` means `a or (b and c)`.
+example_or :: fun() {
+	xs : [3!]i64 = [4, 0, 9]
+	i := 3
+	print(i >= xs.len or xs[i] > 0)        // true, and xs[3] never read
+	print(false or true, false or false)   // true false
+	print(true or false and false)         // true: true or (false and false)
+}
+
+// `not`: true when its value is false, and false when it's true.
+//
+// `not` applies to the value right after it, before a comparison, `and` or
+// `or` around it: `not i == 3` means `(not i) == 3`, an error, since i isn't
+// a bool. To turn a comparison around, put it in parentheses: `not (i == 3)`.
+//
+// With `and` and `or`: `not` applies first; then `and`; then `or`.
+example_not :: fun() {
+	i := 3
+	print(not (i == 3), not false)         // false true
+	print(not false or false)              // true: (not false) or false
 }
 
 // ---- when a block ends ----------------------------------------------------------
@@ -741,6 +771,8 @@ main :: fun() {
 	example_distinct()
 	example_true()
 	example_and()
+	example_or()
+	example_not()
 	example_defer()
 	example_fn()
 	example_dispatch()

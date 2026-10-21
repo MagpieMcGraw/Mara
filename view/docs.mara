@@ -141,7 +141,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	if ex.kind.len > 0 do docs_show_exact(d, l, ex)
 	if d.exact_shown and d.found.len > 0 do lines_add(l, "Also found:", STYLE_DIM)
 	for fd in d.found {
-		docs_show(d, l, fd, "")
+		docs_show(d, l, fd, "", "")
 	}
 	status : [300]utf8
 	if d.exact_shown {
@@ -567,10 +567,17 @@ is_entry :: fun(kind: i64) -> bool {
 // in backticks, before the colon. Case not minded.
 entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 	if same_folded(text[fd.name.at : fd.name.at + fd.name.len], word) do return true
-	if fd.doc < 0 do return false
+	return entry_name_of(text, fd, word).len > 0
+}
+
+// The one of an entry's names that's the word — `elif` of "`if`, `elif`,
+// `else`: ...", as written there. Empty when none is. Case not minded.
+entry_name_of :: fun(text: []utf8, fd: Found, word: []utf8) -> []utf8 {
+	none := text[0 : 0]
+	if fd.doc < 0 or word.len == 0 do return none
 	words : [DOC_LINES]Field
 	doc_words(text, fd.doc, fd.at, &words)
-	if words.len == 0 do return false
+	if words.len == 0 do return none
 	first := text[words[0].at : words[0].at + words[0].len]
 	at : i64 = 0
 	for at < first.len {
@@ -578,17 +585,17 @@ entry_names :: fun(text: []utf8, fd: Found, word: []utf8) -> bool {
 			at += 1
 			continue
 		}
-		if first[at] != '`' do return false
+		if first[at] != '`' do return none
 		close := at + 1
 		for close < first.len {
 			if first[close] == '`' do break
 			close += 1
 		}
-		if close == first.len do return false
-		if same_folded(first[at + 1 : close], word) do return true
+		if close == first.len do return none
+		if same_folded(first[at + 1 : close], word) do return first[at + 1 : close]
 		at = close + 1
 	}
-	return false
+	return none
 }
 
 // An entry's doc comment's first paragraph — to its first empty line: what
@@ -782,7 +789,7 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	if d.has_exact {
 		lines_add(l, "At the cursor:", STYLE_DIM)
 		d.exact_shown = true
-		docs_show(d, l, d.exact, ex.kind)
+		docs_show(d, l, d.exact, ex.kind, ex.name)
 		return
 	}
 	if ex.path.len == 0 {
@@ -868,7 +875,9 @@ comment_above :: fun(text: []utf8, at: i64) -> i64 {
 
 // (`kind`: what the compiler says it is, for the cursor's — `builtin`,
 // `keyword` — shown after an example's name; else none.)
-docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8) {
+// (`word`: the name at the cursor, an entry titled by it; else none, an
+// entry titled by the word looked up of its names.)
+docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8, word: []utf8) {
 	text := docs_text(d, fd.file)
 	title : [1200]utf8
 	&title + text[fd.name.at : fd.name.at + fd.name.len]
@@ -877,9 +886,17 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8) {
 		&title + text[fd.owner.at : fd.owner.at + fd.owner.len]
 	}
 	if is_entry(fd.kind) {
-		// (Named by the first word its first line names, as it's found.)
+		// (Named by the word clicked or looked up, when it's one of the names
+		// its first line gives — `elif` of `if`, `elif`, `else` — else by the
+		// first.)
 		title.len = 0
-		&title + example_name(text, fd)
+		name := entry_name_of(text, fd, word)
+		for w in d.words {
+			if name.len > 0 do break
+			name = entry_name_of(text, fd, d.query[w.at : w.at + w.len])
+		}
+		if name.len == 0 do name = example_name(text, fd)
+		&title + name
 		if kind.len > 0 {
 			&title + "   "
 			&title + kind
