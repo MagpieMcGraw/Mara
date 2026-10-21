@@ -117,6 +117,39 @@ Token_Kind :: enum u8 {
     Newline,
 }
 
+// Each kind's text as written — two for a keyword with two spellings — or,
+// for a kind written many ways, what it is in angle brackets. EOF and Invalid
+// have none. (`mara ask #tokens` lists them.)
+TOKEN_TEXTS := [Token_Kind][2]string{
+    .EOF = {}, .Invalid = {},
+    .Number = {"<number>", ""}, .String = {"<string>", ""}, .Char = {"<char>", ""}, .Identifier = {"<name>", ""},
+    .True = {"true", ""}, .False = {"false", ""}, .If = {"if", ""}, .Else = {"else", ""}, .Elif = {"elif", ""},
+    .Fun = {"fun", "method"}, .Fn = {"fn", ""}, .Struct = {"struct", "class"}, .Union = {"union", ""},
+    .Error = {"error", ""}, .Use = {"use", ""}, .Include = {"include", ""}, .Module = {"module", ""},
+    .Return = {"return", ""}, .For = {"for", ""}, .In = {"in", ""}, .Break = {"break", ""},
+    .Continue = {"continue", ""}, .And = {"and", ""}, .Or = {"or", ""}, .Not = {"not", ""},
+    .Match = {"match", ""}, .Foreign = {"foreign", ""}, .Defer = {"defer", ""}, .Defer_Err = {"defer?", ""},
+    .Using = {"using", ""}, .With = {"with", ""}, .Distinct = {"distinct", ""}, .Dispatch = {"dispatch", ""},
+    .Overload = {"overload", ""}, .Do = {"do", ""}, .Var = {"var", ""}, .Intrinsic = {"intrinsic", ""},
+    .Int = {"int", ""}, .F64 = {"f64", ""}, .Bool_Type = {"bool", ""},
+    .I8 = {"i8", ""}, .I16 = {"i16", ""}, .I32 = {"i32", ""}, .I64 = {"i64", ""},
+    .U8 = {"u8", ""}, .U16 = {"u16", ""}, .U32 = {"u32", ""}, .U64 = {"u64", ""},
+    .F32 = {"f32", ""}, .Utf8 = {"utf8", ""}, .Byte = {"byte", ""},
+    .Plus = {"+", ""}, .Minus = {"-", ""}, .Star = {"*", ""}, .Slash = {"/", ""}, .Modulo = {"%", ""},
+    .Wrap_Plus = {"+%", ""}, .Wrap_Minus = {"-%", ""}, .Wrap_Star = {"*%", ""},
+    .Equals = {"=", ""}, .Equal_Equal = {"==", ""}, .Not_Equal = {"!=", ""},
+    .Less = {"<", ""}, .Less_Equal = {"<=", ""}, .Greater = {">", ""}, .Greater_Equal = {">=", ""},
+    .Plus_Equal = {"+=", ""}, .Minus_Equal = {"-=", ""}, .Mul_Equal = {"*=", ""}, .Div_Equal = {"/=", ""},
+    .Mod_Equal = {"%=", ""}, .And_Equal = {"&=", ""}, .Or_Equal = {"|=", ""}, .Xor_Equal = {"~=", ""},
+    .Shift_Left_Equal = {"<<=", ""}, .Shift_Right_Equal = {">>=", ""},
+    .Arrow = {"->", ""}, .Bang = {"!", ""}, .Question = {"?", ""}, .Double_Colon = {"::", ""},
+    .Ampersand = {"&", ""}, .Pipe = {"|", ""}, .Tilde = {"~", ""}, .Caret = {"^", ""}, .Hash = {"#", ""},
+    .Dollar = {"$", ""}, .At = {"@", ""}, .Dot_Dot = {"..", ""}, .Shift_Left = {"<<", ""}, .Shift_Right = {">>", ""},
+    .Left_Paren = {"(", ""}, .Right_Paren = {")", ""}, .Left_Brace = {"{", ""}, .Right_Brace = {"}", ""},
+    .Left_Bracket = {"[", ""}, .Right_Bracket = {"]", ""}, .Comma = {",", ""}, .Dot = {".", ""},
+    .Colon = {":", ""}, .Semicolon = {";", ""}, .Newline = {"<newline>", ""},
+}
+
 // A token is where it is: its text is its file's source there (token_text), its
 // line and column follow from where it starts (token_line, token_col).
 Token :: struct {

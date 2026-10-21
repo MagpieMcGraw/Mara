@@ -697,12 +697,12 @@ gfx_mesh_generation.mara:66:11  token '0'
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
 
-  Define                   [421,867)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [423,867)  fun(game: ^Megastruct, memory: ^[]byte) { …
+  Define                   [421,871)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Fun_Def                  [423,871)  fun(game: ^Megastruct, memory: ^[]byte) { …
       → Fun game_init, Param game, Param memory, Return
-  Assign                   [549,556)  game.vao = VAO_State()
+  Assign                   [553,560)  game.vao = VAO_State()
       → Write
-  Call                     [553,556)  VAO_State()   : VAO_State
+  Call                     [557,560)  VAO_State()   : VAO_State
       → Local temp, Arith << ×3, Construct VAO_State, Read
 === Pounce | what at camera.mara:52:46
 obj — field : Object
@@ -852,4 +852,118 @@ mara ask: conflicting kind filters ('types' and 'call')
     asset.mara:35:2                    fonts : [64]str64                    field of Disk
 === Pounce | [..N]T
 mara ask: '[..N]T' isn't a shape: a list is written `[N]T` now, no `..` — e.g. `[N]T` a list, `[N!]T` exactly N, `[K]T` an enum's array, `[]T`, `^T`, `[64]utf8`
+[exit 1]
+=== test/askmod.mara | #tokens
+Tokens in module askmod: 104 in 1 file
+
+  <newline>  40   38.5%
+  <name>     14   13.5%
+  <number>    4    3.8%
+  (           4    3.8%
+  )           4    3.8%
+  {           4    3.8%
+  }           4    3.8%
+  :           4    3.8%
+  if          2    1.9%
+  fun         2    1.9%
+  return      2    1.9%
+  bool        2    1.9%
+  i64         2    1.9%
+  f32         2    1.9%
+  =           2    1.9%
+  *=          2    1.9%
+  ->          2    1.9%
+  ::          2    1.9%
+  ,           2    1.9%
+  true        1    1.0%
+  false       1    1.0%
+  module      1    1.0%
+  *           1    1.0%
+  <string>    0
+  <char>      0
+  else        0
+  elif        0
+  method      0
+  fn          0
+  struct      0
+  class       0
+  union       0
+  error       0
+  use         0
+  include     0
+  for         0
+  in          0
+  break       0
+  continue    0
+  and         0
+  or          0
+  not         0
+  match       0
+  foreign     0
+  defer       0
+  defer?      0
+  using       0
+  with        0
+  distinct    0
+  dispatch    0
+  overload    0
+  do          0
+  var         0
+  intrinsic   0
+  int         0
+  f64         0
+  i8          0
+  i16         0
+  i32         0
+  u8          0
+  u16         0
+  u32         0
+  u64         0
+  utf8        0
+  byte        0
+  +           0
+  -           0
+  /           0
+  %           0
+  +%          0
+  -%          0
+  *%          0
+  ==          0
+  !=          0
+  <           0
+  <=          0
+  >           0
+  >=          0
+  +=          0
+  -=          0
+  /=          0
+  %=          0
+  &=          0
+  |=          0
+  ~=          0
+  <<=         0
+  >>=         0
+  !           0
+  ?           0
+  &           0
+  |           0
+  ~           0
+  ^           0
+  #           0
+  $           0
+  @           0
+  ..          0
+  <<          0
+  >>          0
+  [           0
+  ]           0
+  .           0
+  ;           0
+
+Comments aren't tokens: the lexer skips them.
+=== test/askmod.mara | #tokens above
+mara ask: #tokens takes only `in <module>` or `in <file>`
+[exit 1]
+=== test/askmod.mara | #tokens in nosuchfn
+mara ask: #tokens counts a module or a file — 'nosuchfn' is neither
 [exit 1]

@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     if q.target == "" && q.at == "" {
         return ask_module_map(s.checked, s.all_files, s.compiler_dir, s.pkg), true
     }
+    if q.target == "#tokens" { return ask_tokens(s, q, in_) }
     // `at <file>:<line>:<col>` with no name — the position query. A point in
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.
@@ -210,4 +212,76 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)
+}
+
+// `#tokens`: every token Mara has (TOKEN_TEXTS) and how many times each is
+// written in the module here, or in the module or file `in` names. Most used
+// first; the ones not used at the end.
+@(private="file")
+ask_tokens :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string, found: bool) {
+    if q.kind != "" || q.dir != "" || q.at != "" || q.depth >= 0 || q.control {
+        return "mara ask: #tokens takes only `in <module>` or `in <file>`\n", false
+    }
+    if in_.fn != "" { return fmt.tprintf("mara ask: #tokens counts a module or a file — '%s' is neither\n", in_.fn), false }
+    // (Each text lexes as its kind: checked in the debug build.)
+    when ODIN_DEBUG {
+        for texts, k in TOKEN_TEXTS {
+            #partial switch k { case .Number, .String, .Char, .Identifier, .Newline: continue }
+            for text in texts {
+                if text == "" { continue }
+                l := lexer_init(text)
+                got := next_token(&l)
+                if got.kind != k || int(got.len) != len(text) { fmt.panicf("TOKEN_TEXTS: %q lexes as %v, not %v", text, got.kind, k) }
+            }
+        }
+    }
+    // The files: the module's, or the one file named (in any module of the program).
+    module := in_.module if in_.module != "" else s.pkg
+    files := make([dynamic]^Source_File, context.temp_allocator)
+    for name, module_files in s.files {
+        if in_.file == "" && name != module { continue }
+        if in_.module != "" && name != module { continue }
+        for f in module_files {
+            if in_.file == "" || filepath.base(f.path) == in_.file { append(&files, f) }
+        }
+    }
+    if in_.file != "" && len(files) != 1 {
+        if len(files) == 0 { return fmt.tprintf("mara ask: no file %s in this program\n", in_.file), false }
+        return fmt.tprintf("mara ask: %d files are named %s — add `in <module>` for one\n", len(files), in_.file), false
+    }
+    counts: [Token_Kind][2]int
+    total := 0
+    for f in files {
+        for id in int(f.first_token) ..< int(f.end_token) {
+            t := build_tokens[id]
+            if t.kind == .EOF || t.kind == .Invalid { continue }
+            second := TOKEN_TEXTS[t.kind][1]
+            counts[t.kind][1 if second != "" && f.source[t.offset:][:t.len] == second else 0] += 1
+            total += 1
+        }
+    }
+    Row :: struct { text: string, count: int }
+    rows := make([dynamic]Row, context.temp_allocator)
+    width := 0
+    for texts, k in TOKEN_TEXTS {
+        for text, i in texts {
+            if text == "" { continue }
+            append(&rows, Row{text, counts[k][i]})
+            width = max(width, len(text))
+        }
+    }
+    slice.stable_sort_by(rows[:], proc(a, b: Row) -> bool { return a.count > b.count })
+    b := strings.builder_make(context.temp_allocator)
+    where_ := fmt.tprintf("%s (module %s)", in_.file, files[0].module) if in_.file != "" else fmt.tprintf("module %s", module)
+    fmt.sbprintf(&b, "Tokens in %s: %d in %d file%s\n\n", where_, total, len(files), "" if len(files) == 1 else "s")
+    digits := len(fmt.tprint(rows[0].count))
+    for r in rows {
+        text := strings.left_justify(r.text, width, " ", context.temp_allocator)
+        count := strings.right_justify(fmt.tprint(r.count), digits, " ", context.temp_allocator)
+        if r.count == 0 { fmt.sbprintf(&b, "  %s  %s\n", text, count); continue }
+        share := strings.right_justify(fmt.tprintf("%.1f%%", 100 * f64(r.count) / f64(total)), 6, " ", context.temp_allocator)
+        fmt.sbprintf(&b, "  %s  %s  %s\n", text, count, share)
+    }
+    strings.write_string(&b, "\nComments aren't tokens: the lexer skips them.\n")
+    return strings.to_string(b), true
 }

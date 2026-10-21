@@ -1318,6 +1318,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
   changes that root.
 
     (no name)      module map — every module in the project at a glance
+    #tokens        every token Mara has and how many times each is written, most
+                   used first: in the module here, or 'in <module>' / 'in <file>'
+                   (quote it in bash and PowerShell, where # starts a comment: '#tokens')
     <shape>        where a type of that shape is written, and what's declared of it:
                    [N]T a list, [N!]T exactly N, [K]T an enum's array, []T, ^T;
                    sizes and elements made exact: [64]utf8, [N]Filename, ^[3!]f32
@@ -1662,6 +1665,14 @@ main :: proc() {
     perf_timer_begin(&perf, "discover")
 
     all_files := discover_all_files(args.compiler_dir, ".")   // (the project: the current directory)
+
+    // No module here, but `ask … in <module>` names one: it's the root (as
+    // ask_no_module_here says).
+    if args.ask && args.pkg_name not_in all_files {
+        for sc in ([2]string{args.ask_query.scope, args.ask_query.scope2}) {
+            if sc in all_files { args.pkg_name = sc; break }
+        }
+    }
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise. `ask` defaults
