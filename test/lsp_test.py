@@ -141,17 +141,22 @@ def moved_fields(c):
                       "end": {"line": line_no - 1, "character": 0}}, "context": {"diagnostics": []}})
         return {a["title"]: a for a in r or []}
 
+    nl = "\r\n" if "\r\n" in text else "\n"
+    kind_line = "\tkind : i64" + nl
+    group_line = "\tfile, offset, len : i64" + nl
+    struct_line = 1 + next(i for i, l in enumerate(text.split("\n")) if l.startswith("Token :: class"))
+
+    def order_said(diags):
+        return [d["message"] for d in diags if "reordered" in d["message"]]
+
     # kind moved to the end the way an editor does it: cut, then pasted.
-    kind_line = "\tkind : i64\n"
     cut = text.replace(kind_line, "", 1)
-    moved = cut.replace("\tfile, offset, len : i64\n", "\tfile, offset, len : i64\n" + kind_line, 1)
+    moved = cut.replace(group_line, group_line + kind_line, 1)
     edit(cut)
-    diags = edit(moved)
-    said = [d["message"] for d in diags]
+    said = order_said(edit(moved))
     check("fields: kind moved, the two positional literals said to be in the old order (they still check)",
           sum("this literal still gives them in the old order (kind, file, offset, len)" in m for m in said) == 2
           and sum("2 literals still give them in the old order" in m for m in said) == 1 and len(said) == 3, said)
-    struct_line = 1 + next(i for i, l in enumerate(moved.split("\n")) if l.startswith("Token :: class"))
     acts = actions_at(struct_line)
     put = acts.get("Put the 2 Token literals in the new order (file, offset, len, kind)")
     back = acts.get("Put Token's fields back in the old order (kind, file, offset, len)")
@@ -163,14 +168,36 @@ def moved_fields(c):
     check("fields: reordered, nothing said", edit(fixed) == [], None)
     check("fields: nothing more offered", actions_at(struct_line) == {}, list(actions_at(struct_line)))
 
+    # Undone a step at a time: the literals back (wrong for the struct now:
+    # said), then the field back (right again: nothing said).
+    check("fields: the fix undone, the literals said again", len(order_said(edit(moved))) == 3, None)
+    check("fields: the move undone too, nothing said", edit(text) == [], None)
+
     # Moved again, then put back by the other action.
-    again = fixed.replace("\tfile, offset, len : i64\n" + kind_line, kind_line + "\tfile, offset, len : i64\n", 1)
-    check("fields: moved back by hand, the literals said again", len(edit(again)) == 3, None)
+    edit(cut)
+    edit(moved)
     acts = actions_at(struct_line)
-    back = acts.get("Put Token's fields back in the old order (file, offset, len, kind)")
-    restored = apply(again, back and [e for es in back["edit"]["changes"].values() for e in es] or [])
-    check("fields: put back, as it was", restored == fixed, restored)
+    back = acts.get("Put Token's fields back in the old order (kind, file, offset, len)")
+    restored = apply(moved, back and [e for es in back["edit"]["changes"].values() for e in es] or [])
+    check("fields: put back, as it was", restored == text, restored)
     check("fields: put back, nothing said", edit(restored) == [], None)
+
+    # Typed at the end, a key at a time, after the line was cut.
+    edit(cut)
+    typing = ""
+    for ch in "\tkind : i64":
+        typing += ch
+        edit(cut.replace(group_line, group_line + typing + nl, 1))
+    check("fields: typed in its new place, the literals said", len(order_said(edit(moved))) == 3, None)
+    check("fields: and back", edit(text) == [], None)
+
+    # A field renamed in place: its literals fit still; then moved, said.
+    renamed = text.replace(kind_line, "\tkin : i64" + nl, 1)
+    check("fields: a field renamed, nothing said", order_said(edit(renamed)) == [], None)
+    moved_renamed = renamed.replace("\tkin : i64" + nl, "", 1).replace(group_line, group_line + "\tkin : i64" + nl, 1)
+    said = order_said(edit(moved_renamed))
+    check("fields: the renamed field moved, said in its name", len(said) == 3 and "(kin, file, offset, len)" in said[0], said)
+    edit(text)
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 

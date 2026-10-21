@@ -6,40 +6,47 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Moved fields (mara lsp). The server keeps, from the last check that
-// parsed, each struct declared in the editor's open files — its fields in
-// order, its body as written — and every literal of it that gives its
-// fields by position: where its entries are, kept up with each edit
-// (lsp_map_edit), and each one's text as written. A struct whose fields come
-// back in another order — the same names — while some of those literals
-// still read as written is having its fields moved: each such literal is
-// said to give them in the old order (lsp_publish), and a code action puts
-// them all in the new one, or the fields back (lsp_code_actions). Said even
-// when the literal still checks: two fields of one type swapped would
-// quietly mean another thing.
+// Moved fields (mara lsp). The server keeps, from each check that parsed,
+// each struct declared in the editor's open files — its fields in order —
+// and every literal of it that gives its fields by position: each entry's
+// text, and the field that text is for. A literal is known by its entries:
+// the next check's literal with the same texts, in any order, is it (in the
+// order literals come) — so what it's for survives its entries moved, by a
+// code action, by hand, by an undo. Its texts changed (a value edited), or
+// new, it's taken as written for its struct's order then. A literal whose
+// entries, as they are now, give its struct's fields in another order than
+// the struct has — the same fields — is said to (lsp_publish), and a code
+// action puts each in the struct's order, or the struct's fields back as
+// they were when every literal last fit (lsp_code_actions). Said even when
+// the literal still checks: two fields of one type swapped would quietly
+// mean another thing. A field renamed in place is followed (its literals'
+// texts are for it still); a field cut and not yet put back changes
+// nothing known.
 // ---------------------------------------------------------------------------
 
-// A literal giving a kept struct's fields by position: from its first
-// entry's start to its last's end, and each entry's text as written.
+// A literal giving a kept struct's fields by position: where its entries
+// are (the first's start to the last's end), each one's text, and the field
+// each text is for — nil when not known (its entries weren't as many as
+// its struct's fields).
 Lsp_Literal :: struct {
     path:    string,
     at, end: int,
-    entries: []string,
+    texts:   []string,
+    fields:  []string,
 }
 
-// A struct as the last check that parsed saw it — or, while its fields are
-// being moved (or one is cut, not put back yet), as it was before: its
-// fields' order then, its literals then.
+// A struct as the last check that saw it had it, and its body as it was
+// when its literals last all fit it: what's put back.
 Lsp_Struct :: struct {
-    name:     string,
-    path:     string,
-    name_at:  int,              // its name's place
-    body_at:  int,              // its body: after its `{` ...
-    body_end: int,              // ... to its `}`
-    body:     string,           // ... as it was written
-    fields:   []string,         // its fields, in order
-    literals: [dynamic]Lsp_Literal,
-    moved:    []string,         // being moved: its fields' order now; nil when not
+    name:        string,
+    path:        string,
+    name_at:     int,       // its name's place
+    body_at:     int,       // its body: after its `{` ...
+    body_end:    int,       // ... to its `}`
+    fields:      []string,  // its fields, in order
+    body:        string,    // its body when its literals last all fit it ("" for never) ...
+    body_fields: []string,  // ... its fields' order then
+    literals:    [dynamic]Lsp_Literal,
 }
 
 // The structs kept, in an arena of their own: let go whole when kept again.
@@ -49,10 +56,9 @@ Lsp_Structs :: struct {
 }
 
 // The structs kept again, from the check just made — unless it didn't
-// parse. A struct whose literals still read as the kept ones were written,
-// its fields now in another order (being moved) or fewer or more of them
-// (one cut, not put back yet), keeps what was kept of it. Its fields
-// renamed or retyped in place, as many as before: what the check says.
+// parse. Each literal keeps what was known of the one with its texts; a
+// struct the check didn't see (another module's check), its file still
+// open, is kept as it was.
 lsp_keep_structs :: proc(s: ^Lsp) {
     session := &s.check.session
     if session.checked == nil { return }
@@ -65,17 +71,43 @@ lsp_keep_structs :: proc(s: ^Lsp) {
         lsp_fresh_structs(s, &fresh.structs)
         for &f in fresh.structs {
             old := lsp_kept_struct(s, f.name, f.path)
-            if old == nil || slice.equal(old.fields, f.fields) || lsp_as_written(s, old^) == 0 { continue }
-            same_count := len(old.fields) == len(f.fields)
-            if same_count && !lsp_same_names(old.fields, f.fields) { continue }
-            kept := Lsp_Struct{name = f.name, path = f.path, name_at = f.name_at, body_at = f.body_at, body_end = f.body_end,
-                               body = strings.clone(old.body), fields = lsp_clone_names(old.fields)}
-            if same_count { kept.moved = f.fields }
-            kept.literals = make([dynamic]Lsp_Literal)
-            for l in old.literals {
-                append(&kept.literals, Lsp_Literal{path = strings.clone(l.path), at = l.at, end = l.end, entries = lsp_clone_names(l.entries)})
+            renames := lsp_field_renames(old, f.fields)
+            next := 0   // (old's literals gone past, in order)
+            for &l in f.literals {
+                if old != nil {
+                    for k in next ..< len(old.literals) {
+                        ol := old.literals[k]
+                        if path_key(ol.path) != path_key(l.path) || !lsp_same_texts(ol.texts, l.texts) { continue }
+                        next = k + 1
+                        if ol.fields != nil {
+                            l.texts = lsp_clone_names(ol.texts)
+                            l.fields = lsp_clone_names(ol.fields)
+                            for &name in l.fields { if to, renamed := renames[name]; renamed { name = to } }
+                        }
+                        break
+                    }
+                }
+                // (New, its values changed, or not known: as written for its struct's order now.)
+                if l.fields == nil && len(l.texts) == len(f.fields) { l.fields = lsp_clone_names(f.fields) }
             }
-            f = kept
+            // (Its body now, what's put back, when every literal fits it.)
+            fits := true
+            for l in f.literals {
+                order := lsp_literal_order(s, l)
+                if order == nil || !slice.equal(order, f.fields) { fits = false }
+            }
+            if fits {
+                text, _ := lsp_editor_text(s, f.path)
+                if f.body_end <= len(text) { f.body = strings.clone(text[f.body_at:f.body_end]) }
+                f.body_fields = lsp_clone_names(f.fields)
+            } else if old != nil {
+                f.body = strings.clone(old.body)
+                f.body_fields = lsp_clone_names(old.body_fields)
+            }
+        }
+        for st in s.structs.structs {
+            if path_key(st.path) not_in s.overlays || lsp_find_struct(fresh.structs[:], st.name, st.path) != nil { continue }
+            append(&fresh.structs, lsp_struct_clone(st))
         }
     }
     virtual.arena_destroy(&s.structs.arena)
@@ -83,7 +115,8 @@ lsp_keep_structs :: proc(s: ^Lsp) {
 }
 
 // The check's structs declared in the editor's open files, and their
-// literals that give fields by position, all of them (any file's).
+// literals that give fields by position, all of them (any file's), in the
+// order they're written.
 @(private="file")
 lsp_fresh_structs :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Struct) {
     a := s.check.session.checked.annot
@@ -111,8 +144,7 @@ lsp_fresh_structs :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Struct) {
         fields := make([]string, len(ts.fields) - first_user_field(ts))
         for f, i in ts.fields[first_user_field(ts):] { fields[i] = strings.clone(f.name) }
         append(out, Lsp_Struct{name = strings.clone(name), path = strings.clone(path), name_at = name_at,
-                               body_at = open, body_end = close, body = strings.clone(file.source[open:close]),
-                               fields = fields, literals = make([dynamic]Lsp_Literal)})
+                               body_at = open, body_end = close, fields = fields, literals = make([dynamic]Lsp_Literal)})
         index[ts] = len(out) - 1
     }
     if len(index) == 0 { return }
@@ -126,7 +158,9 @@ lsp_fresh_structs :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Struct) {
             at, kept := index[ts]
             if !kept { continue }
             entries := tree_list(t, t.b[n])
-            if len(entries) == 0 || len(entries) != len(out[at].fields) || t.tag[entries[0]] == .Named_Entry { continue }
+            if len(entries) == 0 || t.tag[entries[0]] == .Named_Entry { continue }
+            // (`Token{0}`: its zero, not its first field.)
+            if len(entries) == 1 && len(out[at].fields) != 1 { continue }
             seen[t.first[n]] = true
             first, last := build_tokens[t.first[entries[0]]], build_tokens[t.end[entries[len(entries) - 1]] - 1]
             src := build_files[first.file].source
@@ -136,18 +170,58 @@ lsp_fresh_structs :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Struct) {
                 texts[j] = strings.clone(src[a0.offset:a1.offset + a1.len])
             }
             append(&out[at].literals, Lsp_Literal{path = strings.clone(lsp_abs(s, build_files[first.file].path)),
-                                                  at = int(first.offset), end = int(last.offset + last.len), entries = texts})
+                                                  at = int(first.offset), end = int(last.offset + last.len), texts = texts})
         }
+    }
+    for &st in out {
+        slice.sort_by(st.literals[:], proc(x, y: Lsp_Literal) -> bool { return x.path < y.path || x.path == y.path && x.at < y.at })
     }
 }
 
-// The kept struct of a name declared in a file; nil for none.
+// The fields renamed in place since the struct was kept: the same count,
+// a name at a place where the other's isn't anywhere — the old's to the new.
+@(private="file")
+lsp_field_renames :: proc(old: ^Lsp_Struct, fields: []string) -> map[string]string {
+    out := make(map[string]string, allocator = context.temp_allocator)
+    if old == nil || len(old.fields) != len(fields) { return out }
+    for name, i in old.fields {
+        if fields[i] != name && !slice.contains(fields, name) && !slice.contains(old.fields, fields[i]) { out[name] = fields[i] }
+    }
+    return out
+}
+
 @(private="file")
 lsp_kept_struct :: proc(s: ^Lsp, name, path: string) -> ^Lsp_Struct {
-    for &st in s.structs.structs {
+    return lsp_find_struct(s.structs.structs[:], name, path)
+}
+
+@(private="file")
+lsp_find_struct :: proc(structs: []Lsp_Struct, name, path: string) -> ^Lsp_Struct {
+    for &st in structs {
         if st.name == name && path_key(st.path) == path_key(path) { return &st }
     }
     return nil
+}
+
+@(private="file")
+lsp_struct_clone :: proc(st: Lsp_Struct) -> Lsp_Struct {
+    out := st
+    out.name, out.path, out.body = strings.clone(st.name), strings.clone(st.path), strings.clone(st.body)
+    out.fields, out.body_fields = lsp_clone_names(st.fields), lsp_clone_names(st.body_fields)
+    out.literals = make([dynamic]Lsp_Literal)
+    for l in st.literals {
+        append(&out.literals, Lsp_Literal{path = strings.clone(l.path), at = l.at, end = l.end,
+                                          texts = lsp_clone_names(l.texts), fields = lsp_clone_names(l.fields)})
+    }
+    return out
+}
+
+@(private="file")
+lsp_clone_names :: proc(names: []string) -> []string {
+    if names == nil { return nil }
+    out := make([]string, len(names))
+    for n, i in names { out[i] = strings.clone(n) }
+    return out
 }
 
 // Whether two lists of names have the same names, in any order.
@@ -158,39 +232,54 @@ lsp_same_names :: proc(a, b: []string) -> bool {
     return true
 }
 
+// Whether two literals' entries are the same texts, in any order.
 @(private="file")
-lsp_clone_names :: proc(names: []string) -> []string {
-    out := make([]string, len(names))
-    for n, i in names { out[i] = strings.clone(n) }
-    return out
-}
-
-// How many of a struct's kept literals still read as they were written.
-@(private="file")
-lsp_as_written :: proc(s: ^Lsp, st: Lsp_Struct) -> int {
-    n := 0
-    for l in st.literals { if lsp_reads_as_written(s, l) { n += 1 } }
-    return n
-}
-
-// Whether a kept literal's entries, in the editor's text now, are the ones
-// it was written with, in that order.
-lsp_reads_as_written :: proc(s: ^Lsp, l: Lsp_Literal) -> bool {
-    text, ok := lsp_editor_text(s, l.path)
-    if !ok || l.at < 0 || l.end > len(text) || l.at > l.end { return false }
-    slots := lsp_entry_slots(text[l.at:l.end])
-    if len(slots) != len(l.entries) { return false }
-    for sl, i in slots {
-        if text[l.at + sl[0]:l.at + sl[1]] != l.entries[i] { return false }
+lsp_same_texts :: proc(a, b: []string) -> bool {
+    if len(a) != len(b) { return false }
+    used := make([]bool, len(b), context.temp_allocator)
+    outer: for x in a {
+        for y, j in b {
+            if !used[j] && x == y {
+                used[j] = true
+                continue outer
+            }
+        }
+        return false
     }
     return true
+}
+
+// The fields a kept literal's entries give, in the order its entries are
+// in the editor's text now (each text's field, an alike text's taken in
+// turn); nil when that's not known — its entries' texts aren't the ones
+// known, or what they're for isn't.
+lsp_literal_order :: proc(s: ^Lsp, l: Lsp_Literal) -> []string {
+    if l.fields == nil { return nil }
+    text, ok := lsp_editor_text(s, l.path)
+    if !ok || l.at < 0 || l.end > len(text) || l.at > l.end { return nil }
+    slots := lsp_entry_slots(text[l.at:l.end])
+    if len(slots) != len(l.texts) { return nil }
+    out := make([]string, len(slots), context.temp_allocator)
+    used := make([]bool, len(l.texts), context.temp_allocator)
+    outer: for sl, i in slots {
+        here := text[l.at + sl[0]:l.at + sl[1]]
+        for t, j in l.texts {
+            if !used[j] && t == here {
+                used[j] = true
+                out[i] = l.fields[j]
+                continue outer
+            }
+        }
+        return nil
+    }
+    return out
 }
 
 // A literal's entries in its text (from its first's start to its last's
 // end): each one's start and end, its spaces left out — parted by the
 // commas and line ends not inside brackets, braces, parentheses, quotes.
 lsp_entry_slots :: proc(text: string) -> [][2]int {
-    out := make([dynamic][2]int)
+    out := make([dynamic][2]int, context.temp_allocator)
     depth := 0
     start := 0
     add :: proc(out: ^[dynamic][2]int, text: string, a, b: int) {
@@ -221,27 +310,23 @@ lsp_entry_slots :: proc(text: string) -> [][2]int {
     return out[:]
 }
 
-// A kept literal said to give its struct's fields in the old order: as
-// written still, and not the same written in the new one (its entries all
-// alike).
-lsp_literal_moved :: proc(s: ^Lsp, st: Lsp_Struct, l: Lsp_Literal) -> bool {
-    if st.moved == nil || !lsp_reads_as_written(s, l) { return false }
-    for name, i in st.moved {
-        j, _ := slice.linear_search(st.fields, name)
-        if l.entries[j] != l.entries[i] { return true }
-    }
-    return false
+// A kept literal giving its struct's fields in another order than its
+// struct has them now (the same fields): that order; nil when it doesn't.
+lsp_literal_moved :: proc(s: ^Lsp, st: Lsp_Struct, l: Lsp_Literal) -> []string {
+    order := lsp_literal_order(s, l)
+    if order == nil || !lsp_same_names(order, st.fields) || slice.equal(order, st.fields) { return nil }
+    return order
 }
 
-// A kept literal's entries in the new order: each one's text where the
-// field its value is for now is — the text between them as it is.
-lsp_literal_reordered :: proc(s: ^Lsp, st: Lsp_Struct, l: Lsp_Literal, text: string) -> string {
+// A literal's entries in its struct's order: each one's text where its
+// field is now — the text between them as it is.
+lsp_literal_reordered :: proc(st: Lsp_Struct, l: Lsp_Literal, order: []string, text: string) -> string {
     stretch := text[l.at:l.end]
     slots := lsp_entry_slots(stretch)
     b := strings.builder_make()
     from := 0
-    for name, i in st.moved {
-        j, _ := slice.linear_search(st.fields, name)
+    for name, i in st.fields {
+        j, _ := slice.linear_search(order, name)
         strings.write_string(&b, stretch[from:slots[i][0]])
         strings.write_string(&b, stretch[slots[j][0]:slots[j][1]])
         from = slots[i][1]
@@ -250,25 +335,25 @@ lsp_literal_reordered :: proc(s: ^Lsp, st: Lsp_Struct, l: Lsp_Literal, text: str
     return strings.to_string(b)
 }
 
-// The fields' names, as a list for a message: "kind, file, offset, len".
+// Fields' names as a list for a message: "kind, file, offset, len".
 lsp_field_list :: proc(names: []string) -> string {
     return strings.join(names, ", ", context.temp_allocator)
 }
 
 // The moved fields' diagnostics, each file's, added to `by_uri`: each
-// literal still in the old order, and the struct (how many there are).
+// literal in another order than its struct's, and the struct (how many).
 lsp_moved_diagnostics :: proc(s: ^Lsp, by_uri: ^map[string][dynamic]string) {
     for st in s.structs.structs {
-        if st.moved == nil { continue }
         left := 0
         for l in st.literals {
-            if !lsp_literal_moved(s, st, l) { continue }
+            order := lsp_literal_moved(s, st, l)
+            if order == nil { continue }
             left += 1
             text, _ := lsp_editor_text(s, l.path)
             end := l.end
             if nl := strings.index_byte(text[l.at:l.end], '\n'); nl >= 0 { end = l.at + nl }   // (its first line)
             message := fmt.tprintf("%s's fields were reordered (%s), but this literal still gives them in the old order (%s)",
-                                   st.name, lsp_field_list(st.moved), lsp_field_list(st.fields))
+                                   st.name, lsp_field_list(st.fields), lsp_field_list(order))
             lsp_add_diagnostic(s, by_uri, l.path, text, l.at, end, message)
         }
         if left == 0 { continue }
@@ -289,37 +374,39 @@ lsp_add_diagnostic :: proc(s: ^Lsp, by_uri: ^map[string][dynamic]string, path, t
     by_uri[uri] = items
 }
 
-// The moved fields' code actions for the lines asked about in a file (its
-// struct's name or body there, or a literal still in the old order): its
-// literals put in the new order, or its fields put back.
+// The moved fields' code actions for the lines asked about in a file (a
+// struct there, or a literal of it in another order): its literals put in
+// its order, or its fields put back as they were when its literals last
+// fit.
 lsp_moved_actions :: proc(s: ^Lsp, path, here: string, l0, l1: int, actions: ^[dynamic]string) {
     key := path_key(path)
     line_of :: proc(text: string, at: int) -> int { return strings.count(text[:clamp(at, 0, len(text))], "\n") }
     for st in s.structs.structs {
-        if st.moved == nil { continue }
         on := path_key(st.path) == key && line_of(here, st.name_at) <= l1 && line_of(here, st.body_end) >= l0
         left := 0
         by_uri := make(map[string][dynamic]string)
         for l in st.literals {
-            if !lsp_literal_moved(s, st, l) { continue }
+            order := lsp_literal_moved(s, st, l)
+            if order == nil { continue }
             left += 1
             text, _ := lsp_editor_text(s, l.path)
             if path_key(l.path) == key && line_of(here, l.at) <= l1 && line_of(here, l.end) >= l0 { on = true }
             uri := lsp_uri(s, l.path)
             edits := by_uri[uri]
-            append(&edits, lsp_text_edit(s, text, l.at, l.end, lsp_literal_reordered(s, st, l, text)))
+            append(&edits, lsp_text_edit(s, text, l.at, l.end, lsp_literal_reordered(st, l, order, text)))
             by_uri[uri] = edits
         }
         if left == 0 || !on { continue }
-        title := fmt.tprintf("Put the %d %s literal%s in the new order (%s)", left, st.name, "" if left == 1 else "s", lsp_field_list(st.moved))
+        title := fmt.tprintf("Put the %d %s literal%s in the new order (%s)", left, st.name, "" if left == 1 else "s", lsp_field_list(st.fields))
         append(actions, fmt.tprintf(`{{"title":%s,"kind":"quickfix","isPreferred":true,"edit":%s}}`, json_str(title), lsp_workspace_edit(by_uri)))
         // Or its fields as they were.
+        if st.body == "" || slice.equal(st.body_fields, st.fields) { continue }
         text, _ := lsp_editor_text(s, st.path)
         back := make(map[string][dynamic]string)
         put_back := make([dynamic]string)
         append(&put_back, lsp_text_edit(s, text, st.body_at, st.body_end, st.body))
         back[lsp_uri(s, st.path)] = put_back
         append(actions, fmt.tprintf(`{{"title":%s,"kind":"quickfix","edit":%s}}`,
-                                    json_str(fmt.tprintf("Put %s's fields back in the old order (%s)", st.name, lsp_field_list(st.fields))), lsp_workspace_edit(back)))
+                                    json_str(fmt.tprintf("Put %s's fields back in the old order (%s)", st.name, lsp_field_list(st.body_fields))), lsp_workspace_edit(back)))
     }
 }
