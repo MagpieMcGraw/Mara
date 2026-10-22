@@ -1,0 +1,71 @@
+module if_chain_misaligned
+
+//@ expect-warning: [if_chain_misaligned.mara:22:3] Warning: this `elif` belongs to the `if` on line 20, but is indented differently
+//@ expect-warning: [if_chain_misaligned.mara:32:3] Warning: this `else` belongs to the `if` on line 30, but is indented differently
+//@ expect-warning: [if_chain_misaligned.mara:40:3] Warning: this `elif` belongs to the `if` on line 39, but is indented differently
+//@ expect-output: trap 3 2
+//@ expect-output: pick 1 2
+//@ expect-output: sign 1 -1 0
+//@ expect-output: fine 1 -1 0 | 2 1 0 | 1 -1 0
+
+// An `elif` or `else` indented differently from the `if` it belongs to
+// gets a warning: it was likely written for another `if`.
+
+use mara.core
+
+// The trap: `if b do s` takes only an `elif` with `do`. This one has none,
+// so it belongs to the braced chain around it, `if a`'s, though it's lined
+// up with `if b`.
+trap :: (a: bool, b: bool) i64 {
+	if a {
+		if b do return 1
+		elif true
+			return 2
+	}
+	return 3
+}
+
+// An `else` indented like the branch above it.
+pick :: (n: i64) i64 {
+	if n > 0 {
+		return 1
+		else
+		return 2
+	}
+}
+
+// A `do` chain's `elif`, indented further than its `if`.
+sign :: (n: i64) i64 {
+	if n > 0 do return 1
+		elif n < 0 do return -1
+	return 0
+}
+
+// None of these warns: lined up, or on the `if`'s own line.
+fine :: (n: i64) i64 {
+	if n > 0 {
+		return 1
+	elif n < 0
+		return -1
+	else
+		return 0
+	}
+}
+
+fine_do :: (n: i64) i64 {
+	if n > 10 do return 2
+	elif n > 0 do return 1
+	else do return 0
+}
+
+one_line :: (n: i64) i64 {
+	if n > 0 do return 1 elif n < 0 do return -1
+	return 0
+}
+
+main :: () {
+	print("trap", trap(true, false), trap(false, false))
+	print("pick", pick(1), pick(-1))
+	print("sign", sign(5), sign(-5), sign(0))
+	print("fine", fine(1), fine(-1), fine(0), "|", fine_do(11), fine_do(5), fine_do(0), "|", one_line(3), one_line(-3), one_line(0))
+}

@@ -444,7 +444,7 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
         body := tp_items()
         append(&body, tp_stmt(p))
         then := tp_list(p, body)
-        return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p), u32(hash)))
+        return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p, kw), u32(hash)))
     }
     tp_expect(p, .Left_Brace)
     tp_skip_newlines(p)
@@ -452,10 +452,10 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
     else_: u32
     if tp_kind(p) == .Elif {
         chain := tp_items()
-        append(&chain, tp_elif(p))
+        append(&chain, tp_elif(p, kw))
         else_ = tp_list(p, chain)
     } else if tp_kind(p) == .Else {
-        tp_advance(p)
+        tp_check_aligned(p, kw, tp_advance(p))
         tp_skip_newlines(p)
         else_ = tp_if_branch(p)
     }
@@ -466,7 +466,8 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
 // What follows `if c do s` (or `elif c do s`), on its line or the next:
 // `elif c do s` — its own chain after it — or `else do s`; 0 for neither. An
 // `elif`, an `else`, without `do` is a braced chain's around it, left there.
-tp_do_chain :: proc(p: ^Tree_Parser) -> u32 {
+// `if_kw`: the chain's `if`.
+tp_do_chain :: proc(p: ^Tree_Parser, if_kw: Token_Id) -> u32 {
     m := tp_mark(p)
     tp_skip_newlines(p)
     #partial switch tp_kind(p) {
@@ -474,18 +475,19 @@ tp_do_chain :: proc(p: ^Tree_Parser) -> u32 {
         if tp_elif_has_do(p) {
             start := p.pos
             kw := tp_advance(p)
+            tp_check_aligned(p, if_kw, kw)
             cond := tp_condition(p)
             tp_expect(p, .Do)
             body := tp_items()
             append(&body, tp_stmt(p))
             then := tp_list(p, body)
             chain := tp_items()
-            append(&chain, tp_node(p, .Elif, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p), 0)))
+            append(&chain, tp_node(p, .Elif, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p, if_kw), 0)))
             return tp_list(p, chain)
         }
     case .Else:
         if tp_peek(p) == .Do {
-            tp_advance(p)
+            tp_check_aligned(p, if_kw, tp_advance(p))
             tp_advance(p)
             body := tp_items()
             append(&body, tp_stmt(p))
@@ -510,23 +512,49 @@ tp_elif_has_do :: proc(p: ^Tree_Parser) -> bool {
     return false
 }
 
-tp_elif :: proc(p: ^Tree_Parser) -> Tree_Id {
+// A braced chain's `elif`, and the rest of the chain after it; `if_kw`: the
+// chain's `if`.
+tp_elif :: proc(p: ^Tree_Parser, if_kw: Token_Id) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
+    tp_check_aligned(p, if_kw, kw)
     cond := tp_condition(p)
     tp_skip_newlines(p)
     then := tp_if_branch(p)
     else_: u32
     if tp_kind(p) == .Elif {
         chain := tp_items()
-        append(&chain, tp_elif(p))
+        append(&chain, tp_elif(p, if_kw))
         else_ = tp_list(p, chain)
     } else if tp_kind(p) == .Else {
-        tp_advance(p)
+        tp_check_aligned(p, if_kw, tp_advance(p))
         tp_skip_newlines(p)
         else_ = tp_if_branch(p)
     }
     return tp_node(p, .Elif, kw, start, u32(cond), tree_rec_add(p.t, then, else_, 0))
+}
+
+// A warning when an `elif` or `else` starts its line indented differently
+// from the line of the `if` it belongs to. It was likely written for
+// another `if`: a braced chain's `elif` after an inner `if c do s`, say,
+// belongs to the outer `if`.
+tp_check_aligned :: proc(p: ^Tree_Parser, if_kw, kw: Token_Id) {
+    a, b := build_tokens[if_kw], build_tokens[kw]
+    if token_line(a) == token_line(b) { return }
+    if_lead, _ := line_lead(a)
+    kw_lead, first := line_lead(b)
+    if !first || if_lead == kw_lead { return }
+    emit_diagnostic(.Warning, format_location(p.file, token_line(b), token_col(b)), WARN_CHAIN_MISALIGNED, token_text(b), token_line(a))
+}
+
+// The spaces and tabs a token's line starts with, and whether the token
+// comes right after them: first on its line.
+line_lead :: proc(t: Token) -> (lead: string, first: bool) {
+    f := build_files[t.file]
+    start := f.lines[token_line(t) - 1]
+    end := start
+    for end < t.offset && (f.source[end] == ' ' || f.source[end] == '\t') { end += 1 }
+    return f.source[start:end], end == t.offset
 }
 
 tp_match_arm_start :: proc(p: ^Tree_Parser) -> bool {
