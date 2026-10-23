@@ -131,6 +131,36 @@ def main():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+    # Every address written &x, then ^x: the one character, nothing else —
+    # not `a & b`, not `p^`, not a type's `^T`; the program the same each way.
+    d = tempfile.mkdtemp(prefix="mara_edit_")
+    try:
+        shutil.copy(os.path.join(ROOT, "test", "address_caret.mara"), d)
+        exe = os.path.join(d, "address_caret.exe" if os.name == "nt" else "address_caret")
+        mara(d, "build", "address_caret")
+        before = subprocess.run([exe], capture_output=True, text=True).stdout
+        code, out = mara(d, "edit", "address_caret.address", "ampersand")
+        text = read(d, "address_caret.mara")
+        check("address: to &x, said", code == 0 and "address_caret: 9 addresses written &x" in out, out)
+        check("address: &x everywhere, the rest left (p^, ^T, the comment)", text.count("^") == 9 and "p := &x" in text and "&x == &x" in text
+              and "with &lib do print(\"with:\", work(&lib))" in text and "6 & 3" in text and "n^ += 1" in text and "lib: ^Arena_Basic" in text, text)
+        code, out = mara(d, "build", "address_caret")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("address: the program builds, and means what it did", code == 0 and after == before, (before, after, out))
+        code, out = mara(d, "edit", "address_caret.address", "caret")
+        text = read(d, "address_caret.mara")
+        check("address: back to ^x", code == 0 and "address_caret: 10 addresses written ^x" in out
+              and text.count("^") == 19 and "^x == ^x" in text and "next(^list)^ = 5" in text and "6 & 3" in text, out + text)
+        code, out = mara(d, "edit", "address_caret.address", "caret")
+        check("address: again, nothing left", code == 0 and "No address in address_caret is written &x" in out, out)
+        code, out = mara(d, "edit", "address_caret.address", "pointy")
+        check("address: a word it doesn't know, refused", code == 1 and "caret (^x) or ampersand (&x)" in out, out)
+        code, out = mara(d, "build", "address_caret")
+        after = subprocess.run([exe], capture_output=True, text=True).stdout
+        check("address: built again, the same", code == 0 and after == before, (before, after, out))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
     if bad:
         print("EDIT: %d FAILED" % len(bad))
         sys.exit(1)
