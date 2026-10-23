@@ -255,10 +255,8 @@ ask_tokens :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: stri
         for id in int(f.first_token) ..< int(f.end_token) {
             t := build_tokens[id]
             if t.kind == .EOF || t.kind == .Invalid { continue }
-            text := f.source[t.offset:][:t.len]
-            if t.kind == .Ampersand && text == "^" { t.kind = .Caret }   // (`^x`: the parser takes it as `&`'s kind)
             second := TOKEN_TEXTS[t.kind][1]
-            counts[t.kind][1 if second != "" && text == second else 0] += 1
+            counts[t.kind][1 if second != "" && f.source[t.offset:][:t.len] == second else 0] += 1
             total += 1
         }
     }

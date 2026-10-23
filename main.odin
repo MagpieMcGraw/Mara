@@ -1216,7 +1216,6 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
        mara edit [module] <fun>.calls
        mara edit [module] <fun>.do
        mara edit [module] <fun>.elif
-       mara edit [module] <module>.address caret|ampersand
 
   Puts a struct's fields, a fun's results or a fun's params in another
   order, and every place that gives them by position with them: the
@@ -1245,12 +1244,7 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
   before the last ends in a return, break or continue, so the next if is
   only tested when the one before was false.
 
-    mara edit next_token.elif
-
-  mara edit [module] <module>.address caret|ampersand writes every address
-  the module takes as ^x, or as &x. The two mean the same.
-
-    mara edit lexer.address caret`
+    mara edit next_token.elif`
 
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload

@@ -420,18 +420,17 @@ token_location :: proc(tok: Token) -> string {
 // (shape_matches). What was done, or what stopped it (false).
 edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (said: string, ok: bool) {
     dot := strings.last_index_byte(target, '.')
-    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do|elif|address>\n", target), false }
+    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do|elif>\n", target), false }
     name, kind_word := target[:dot], target[dot + 1:]
     if kind_word == "calls" { return edit_calls(checked, name) }
     if kind_word == "do" { return edit_do(checked, name) }
     if kind_word == "elif" { return edit_elif(checked, name) }
-    if kind_word == "address" { return edit_address(name, to) }
     kind: Order_Kind
     switch kind_word {
     case "fields":  kind = .Fields
     case "results": kind = .Results
     case "params":  kind = .Params
-    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls, do, elif or address\n", kind_word), false
+    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls, do or elif\n", kind_word), false
     }
     orders := orders_of(&build_tree, checked.annot)
     found := make([dynamic]Order)
@@ -452,35 +451,6 @@ edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (sa
     places := len(o.sites)
     return fmt.tprintf("%s's %s now %s: its declaration and %d place%s (%s)\n", name, kind_word, strings.join(to, ", "),
                        places, "" if places == 1 else "s", strings.join(written, ", ")), true
-}
-
-// `mara edit <module>.address caret|ampersand`: every address the module's
-// files take written `^x`, or `&x`. The two are the same node (the parser
-// takes a prefix `^` as `&`), so each edit is the one character.
-@(private="file")
-edit_address :: proc(module: string, to: []string) -> (said: string, ok: bool) {
-    if len(to) != 1 { return "mara edit: <module>.address takes one word: caret (^x) or ampersand (&x)\n", false }
-    want: string
-    switch to[0] {
-    case "caret", "^":     want = "^"
-    case "ampersand", "&": want = "&"
-    case: return fmt.tprintf("mara edit: '%s': an address is written caret (^x) or ampersand (&x)\n", to[0]), false
-    }
-    files := make(map[u16]bool, allocator = context.temp_allocator)
-    for f, i in build_files { if f.module == module { files[u16(i)] = true } }
-    if len(files) == 0 { return fmt.tprintf("mara edit: no module %s in this program\n", module), false }
-    t := &build_tree
-    edits := make([dynamic]Order_Edit)
-    for n in 0 ..< len(t.tag) {
-        if t.tag[n] != .Unary { continue }
-        tok := build_tokens[t.main[n]]
-        if tok.kind != .Ampersand || tok.file not_in files || token_text(tok) == want { continue }
-        append(&edits, Order_Edit{tok.file, int(tok.offset), int(tok.offset) + 1, want})
-    }
-    if len(edits) == 0 { return fmt.tprintf("No address in %s is written %sx.\n", module, "&" if want == "^" else "^"), true }
-    written, failed := edit_apply(edits[:])
-    if failed != "" { return failed, false }
-    return fmt.tprintf("%s: %d address%s written %sx (%s)\n", module, len(edits), "" if len(edits) == 1 else "es", want, strings.join(written, ", ")), true
 }
 
 // The fun named, in the module checked: its Fun_Def and scope; else why not.

@@ -251,7 +251,7 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
             return s
         }
     }
-    if tp_kind(p) == .Identifier || tp_kind(p) == .Ampersand || tp_kind(p) == .Caret {
+    if tp_kind(p) == .Identifier || tp_kind(p) == .Ampersand {
         e := tp_expr(p)
         if s, is_assign := tp_assign_through(p, e, start); is_assign { return s }
         return tp_node(p, .Expr_Stmt, Token_Id(start), start, u32(e))
@@ -2067,11 +2067,8 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
         op := tp_advance(p)
         tp_error(p, op, PARSE_BANG_NOT)
         result = tp_node(p, .Unary, op, start, u32(tp_primary(p)))
-    case .Ampersand, .Caret:
-        // (`^x` is `&x` written another way: its token is `&`'s kind from
-        // here on, so what reads an address sees one.)
+    case .Ampersand:
         op := tp_advance(p)
-        build_tokens[op].kind = .Ampersand
         result = tp_node(p, .Unary, op, start, u32(tp_primary(p, allow_dot = true)))
     case .If:
         kw := tp_advance(p)
