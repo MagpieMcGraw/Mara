@@ -64,6 +64,20 @@ max_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umax.i16 }
 max_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.maxnum.f32 }
 max_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.maxnum.f64 }
 
+// How many 0 bits come before the lowest 1 bit: 0 for an odd number, 3 for
+// 8. A 0 has no 1 bit, so it gives its width: 64 for a u64. One machine
+// instruction. Two values XORed: the first byte they differ in is
+// trailing_zeros(a ~ b) / 8.
+trailing_zeros :: dispatch {
+	trailing_zeros_u64
+	trailing_zeros_u32
+	trailing_zeros_i64
+}
+
+trailing_zeros_u64 :: fun(x: u64) -> u64 { @llvm.cttz.i64 }
+trailing_zeros_u32 :: fun(x: u32) -> u32 { @llvm.cttz.i32 }
+trailing_zeros_i64 :: fun(x: i64) -> i64 { @llvm.cttz.i64 }
+
 // abs(i64_min) TRAPS, on purpose. |i64_min| = 2^63 isn't representable as i64,
 // so `-x` overflow-traps like all Mara arithmetic (every build mode) — a loud
 // crash on the one impossible input beats a silent wrong value. Do NOT "fix"

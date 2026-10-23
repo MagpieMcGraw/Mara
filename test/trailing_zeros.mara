@@ -1,0 +1,35 @@
+module trailing_zeros
+
+use mara.core
+use mara.math
+
+//@ expect-output: u64: 0 3 63 64 0
+//@ expect-output: u32: 4 31 32
+//@ expect-output: i64: 1 63 64
+//@ expect-output: first differing byte: 3
+
+// trailing_zeros: the 0 bits before the lowest 1, the width for 0.
+
+main :: fun() {
+	a : u64 = 1
+	b : u64 = 8
+	c : u64 = 0x8000000000000000
+	z : u64 = 0
+	odd : u64 = 0xFFFF
+	print("u64:", trailing_zeros(a), trailing_zeros(b), trailing_zeros(c), trailing_zeros(z), trailing_zeros(odd))
+
+	d : u32 = 16
+	e : u32 = 0x80000000
+	y : u32 = 0
+	print("u32:", trailing_zeros(d), trailing_zeros(e), trailing_zeros(y))
+
+	f : i64 = -2
+	g : i64 = -9223372036854775807 - 1
+	w : i64 = 0
+	print("i64:", trailing_zeros(f), trailing_zeros(g), trailing_zeros(w))
+
+	// Two words that agree in their lowest 3 bytes, the first 3 in memory.
+	p : u64 = 0x1122334455667788
+	q : u64 = 0x11223377AA667788
+	print("first differing byte:", trailing_zeros(p ~ q) / 8)
+}

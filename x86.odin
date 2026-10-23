@@ -1340,6 +1340,19 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
         case:   x86_fail("a byte swap", name)
         }
         x86_put(f, dest)
+    case "cttz":
+        // (bsf: the lowest 1 bit's place, and ZF when there's none, then the
+        // width instead. A narrow value widened first, 0s above it.)
+        n := args[0].t.size
+        x86_get(f, args[0].v, .AX)
+        switch n {
+        case 1: x86_enc_rr(f, 0, false, {0x0F, 0xB6}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, al
+        case 2: x86_enc_rr(f, 0, false, {0x0F, 0xB7}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, ax
+        }
+        x86_enc_rr(f, 0, n == 8, {0x0F, 0xBC}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // bsf
+        x86_imm(f, .CX, i64(n * 8))   // (a mov: the flags left as bsf set them)
+        x86_cmov(f, .E, .AX, .CX)
+        x86_put(f, dest)
     case "sqrt":
         x86_get(f, args[0].v, .AX)
         x86_to_xmm(f, 0, .AX)
