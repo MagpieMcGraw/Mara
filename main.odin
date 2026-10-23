@@ -32,6 +32,15 @@ CLANG_BIN :: "clang.exe" when ODIN_OS == .Windows else "clang"
 // work without the user spelling out their extension.
 STATIC_LIB_EXT :: ".lib" when ODIN_OS == .Windows else ".a"
 
+// The machine -release builds for, on an x86-64: x86-64-v2 (SSE4.2 and
+// POPCNT; 2009 on, every machine Windows 11 runs on), so count_ones is
+// popcnt and floor and ceil are roundsd — at the baseline, popcount is a
+// run of bit tricks and floor a call into the C library's. With LTO the
+// code is made at the link, from bitcode carrying no CPU of its own (a
+// .ll's functions don't take -march), so the linker is told too.
+RELEASE_MARCH :: " -march=x86-64-v2" when ODIN_ARCH == .amd64 else ""
+RELEASE_LINK_CPU :: (" -Wl,/mllvm:-mcpu=x86-64-v2" when ODIN_OS == .Windows else " -Wl,-mllvm,-mcpu=x86-64-v2") when ODIN_ARCH == .amd64 else ""
+
 // ---------------------------------------------------------------------------
 // Compiler layout — where bundled things live
 // ---------------------------------------------------------------------------
@@ -806,7 +815,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_string(&cb, " -o ")
         strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
         strings.write_string(&cb, " -Wno-override-module -mf16c")
-        if release { strings.write_string(&cb, " -O3 -flto") }   // (bitcode: optimized whole at the link)
+        if release { strings.write_string(&cb, " -O3 -flto" + RELEASE_MARCH) }   // (bitcode: optimized whole at the link)
         // Redirect stderr to a per-task file so parallel clangs don't
         // interleave their diagnostics on the shared parent stderr.
         // Read back and print serially after the pool finishes.
@@ -896,9 +905,9 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // are bitcode, optimized together here: a call into another module
     // (an append into mara.core's) inlines as one within a module does.
     // (Full LTO, not thin: thin left appends 3x slower; test_1M builds no
-    // slower either way.)
+    // slower either way.) The machine: RELEASE_MARCH, told the linker too.
     if release {
-        strings.write_string(&b, " -O3 -flto")
+        strings.write_string(&b, " -O3 -flto" + RELEASE_MARCH + RELEASE_LINK_CPU)
     }
     // The objects' debug info, merged by lld into a PDB beside the program —
     // or none, and an earlier build's PDB taken away: a debugger, or a
