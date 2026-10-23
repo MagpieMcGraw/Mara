@@ -163,7 +163,7 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 		hi := s.len
 		if k == to.line do hi = to.off
 		if out.len + 1 + s.len > out.cap do return
-		if not first do &out^ + '\n'
+		if not first do out + '\n'
 		first = false
 		code := l.lines[k].style == STYLE_MARA
 		if lo == 0 {
@@ -174,15 +174,15 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 			if code {
 				n := lead_spaces(s[lo : hi])
 				for _ in 0 .. n / TAB_SPACES {
-					&out^ + '\t'
+					out + '\t'
 				}
 				for _ in 0 .. n % TAB_SPACES {
-					&out^ + ' '
+					out + ' '
 				}
 				lo += n
 			}
 		}
-		&out^ + s[lo : hi]
+		out + s[lo : hi]
 	}
 }
 

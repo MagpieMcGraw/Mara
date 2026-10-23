@@ -236,10 +236,10 @@ docs_open_folds :: fun(l: ^Lines, open: ^[16 * KB]utf8) {
 		if not lines_fold_head(l, k) or l.lines[l.lines[k].fold_at].hidden do continue
 		s := line_text(l, k)
 		if open.len + s.len + 30 > open.cap do return
-		&open^ + int_text(fold_same_above(l, k))
-		&open^ + ' '
-		&open^ + s
-		&open^ + '\n'
+		open + int_text(fold_same_above(l, k))
+		open + ' '
+		open + s
+		open + '\n'
 	}
 }
 
@@ -296,9 +296,9 @@ docs_pin :: fun(ui: ^Ui) {
 // stdlib" — nothing when it's the stdlib's own.
 where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[300]utf8) {
 	if dir.len == 0 or dir == "." or stdlib_dir(ui, dir) do return
-	&status^ + ", in "
-	&status^ + get_file(trim_separators(dir))
-	&status^ + " and the stdlib"
+	status + ", in "
+	status + get_file(trim_separators(dir))
+	status + " and the stdlib"
 }
 
 // The words asked, lower case: each run of letters, digits and _, two or
@@ -692,7 +692,7 @@ doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 		if keep and c < e and trimmed(text[c : e]) == DOC_MARK do keep = false
 		if keep {
 			if c > e do c = e
-			&out^ + Field{at = c, len = e - c}
+			out + Field{at = c, len = e - c}
 		}
 		at = end + 1
 	}
