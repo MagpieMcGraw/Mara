@@ -1,0 +1,15 @@
+module append_chain_neg
+
+use mara.core
+
+//@ expect-fail: `&nums + 1` appends, and an append gives nothing back, so there's nothing to add 2 to: put each append on a line of its own, or for a sum write `&nums + (1 + 2)`
+
+// Appends don't chain: `&nums + 1 + 2` is `(&nums + 1) + 2`, and the
+// append gives nothing back to add 2 to. Read as one sum, `1 + 2`, it
+// would have been an easy mistake to miss.
+
+main :: fun() {
+	nums : [8]i64
+	&nums + 1 + 2
+	print(nums.len)
+}

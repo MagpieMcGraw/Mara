@@ -1,0 +1,14 @@
+module append_chain_text_neg
+
+use mara.core
+
+//@ expect-fail: `&name + dir` appends, and an append gives nothing back, so there's nothing to add "/" to: put each append on a line of its own
+
+// Text appends don't chain either: one to a line.
+
+main :: fun() {
+	name : str64
+	dir := "C:/code"
+	&name + dir + "/"
+	print(name)
+}

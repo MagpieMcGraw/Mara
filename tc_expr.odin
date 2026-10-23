@@ -350,6 +350,17 @@ tc_note_join_in_place :: proc(k: ^TC, at, left, right: Tree_Id, callee: ^Type_Sc
     }
 }
 
+// Whether a fun is one of mara.core's appends, `&list + x`: they give
+// nothing back.
+is_core_append :: proc(f: ^Type_Scope) -> bool {
+    if f == nil || f.home_package != "mara.core" { return false }
+    switch f.source_name if f.source_name != "" else f.name {
+    case "utf8_add", "utf8_add_item", "slice_add", "slice_add_item": return true
+    }
+    // (A generic one's instance: by its name, as is_core_join.)
+    return strings.has_prefix(f.name, "mara_core_slice_add__") || strings.has_prefix(f.name, "mara_core_slice_add_item__")
+}
+
 // Whether a fun is an instance of mara.core's join or join_item.
 is_core_join :: proc(f: ^Type_Scope) -> bool {
     if f == nil || f.home_package != "mara.core" { return false }
@@ -545,6 +556,17 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             // (`&buf + x` on a fixed array: no overload is missing — it can't grow.)
             if hint := tc_partial_hint(k, left, lt); hint != "" {
                 tc_error(k, span, TYPE_APPEND_TO_FIXED_ARRAY, type_name(lt), type_name(rt), hint)
+                return Type_Error{}
+            }
+            // (`&list + a + b`: the left an append, which gives nothing back.)
+            if l := tc_unparen(k, left); tr.tag[l] == .Binary && is_core_append(tc_callee(k, l)) {
+                target, item := Tree_Id(tr.a[l]), Tree_Id(tr.b[l])
+                if is_numeric(rt) && is_numeric(tc_node_type(k, item)) {
+                    tc_error(k, span, TYPE_APPEND_CHAIN_SUM, tc_written(k, l), tc_written(k, right),
+                             tc_written(k, target), tc_written(k, item), tc_written(k, right))
+                } else {
+                    tc_error(k, span, TYPE_APPEND_CHAIN, tc_written(k, l), tc_written(k, right))
+                }
                 return Type_Error{}
             }
             // (A view joined: it has no room to make the new one of.)

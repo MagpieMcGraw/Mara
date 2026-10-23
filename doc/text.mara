@@ -3,11 +3,11 @@
 // Text is utf8 characters. A literal "like this" can't change. A buffer
 // can: `name : str64` holds up to 64 characters (str256 and str1024 hold
 // more, `[N]utf8` any N), and `&name + "more"` adds to it. An add gives
-// the buffer back, so adds chain: `&path + dir + "/" + file`. A list of
-// texts, `[100]str64`: `next(&list)` makes it one longer and gives that
-// text, to add into where it is — `next(&list) + dir + "/" + file`.
+// nothing back, so adds don't chain: one to a line. A list of texts,
+// `[100]str64`: `next(&list)` makes it one longer and gives that text, to
+// add into where it is — `next(&list) + file`.
 // Without the `&`, `name + "more"` joins: a new buffer of name's own type,
-// name as it was — `file := dir + "/" + name` (a chain builds it once, in
+// name as it was. Joins chain — `file := dir + "/" + name` (built once, in
 // place). A view, `s[a:b]`, has no room to join onto: make a buffer of it
 // first, `str64(view) + "more"` (Path(view), any `[N]utf8`). A fun that
 // gives text back says how much room it gets, `-> str64`: what it returns
@@ -46,12 +46,14 @@ main :: fun() {
 	&name + "Lovelace"
 	print(name, name.len, name.cap)          // Ada Lovelace 12 64
 
-	// Adds chain; a list's next text is added into where it is.
+	// One add a line; a list's next text is added into where it is.
 	path : str64
-	&path + "doc" + '/' + "text.mara"
+	&path + "doc"
+	&path + '/'
+	&path + "text.mara"
 	print(path)                              // doc/text.mara
 	paths : [8]str64
-	next(&paths) + "doc" + "/" + "basics.mara"
+	next(&paths) + "doc/basics.mara"
 	print(paths.len, paths[0])               // 1 doc/basics.mara
 	print(name == "Ada Lovelace", name != "Ada")   // true true
 

@@ -20,7 +20,9 @@ add_new :: (files: ^[]Filename, name: []utf8) {
 
 main :: () {
 	nums : [8]i64
-	&nums + 1 + 2 + 3
+	&nums + 1
+	&nums + 2
+	&nums + 3
 	fixed : [3!]i64 = {4, 5, 6}
 	print("numbers", 2 in nums, 9 in nums, 5 in fixed, "| not in", 3 not in nums, 7 not in nums[0 : 2])
 	names : [4]str64

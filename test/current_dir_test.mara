@@ -30,7 +30,7 @@ main :: fun() {
 	real, re := real_path(dir)
 	print("real already:", not re and real == dir)
 	alone, ae := read_entire_file("current_dir_test.mara", &storage)
-	&dir + "/" + "current_dir_test.mara"
+	&dir + "/current_dir_test.mara"
 	again, we := read_entire_file(dir, &storage)
 	a : []utf8 = alone
 	b : []utf8 = again

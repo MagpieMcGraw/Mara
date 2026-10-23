@@ -353,7 +353,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	h.resent = false
 	h.current.len = 0
 	h.sent.len = 0
-	&h.sent + query + "\n"
+	&h.sent + query
+	&h.sent + '\n'
 	if serve_up(h) {
 		if not file_write_text(h.serve.input, h.sent[:]) {
 			h.asking = true

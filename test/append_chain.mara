@@ -5,35 +5,47 @@ use mara.memory
 
 #allocator Arena_Basic(4 * MB)
 
-//@ expect-output: chained: C:/code/a.mara 14
+//@ expect-output: one a line: C:/code/a.mara 14
 //@ expect-output: next: 2 C:/code/b.mara x/y
 //@ expect-output: struct: 1 3 0
 //@ expect-output: items: 3 1 2 3
 //@ expect-output: through a pointer: 2 dir/one dir/two
 //@ expect-output: as it is: 1 ab
 
-// An add gives its list back, so adds chain: `&name + dir + "/" + file`.
+// An add gives nothing back, so adds don't chain: one to a line.
 // `next(&list)` makes a list one longer and gives that item, to write into
-// where it is — `next(&files) + dir + "/" + name`, nothing copied — as it
-// is (as an add's dst is): empty in a list only grown, what it held in one
-// shrunk and filled again.
+// where it is — `f := next(&files)`, then `f + dir`, `f + "/"`, `f + name`,
+// nothing copied — as it is (as an add's dst is): empty in a list only
+// grown, what it held in one shrunk and filled again. (`&name + a + b`
+// is an error: append_chain_neg.)
 
 Name :: [500]utf8
 Pair :: struct { a: i64  b: i64 }
 
 // A list's next name, from its parts, through the list's pointer.
 add_name :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
-	next(names) + dir + "/" + file
+	n := next(names)
+	n + dir
+	n + "/"
+	n + file
 }
 
 main :: fun() {
 	name : str64
-	&name + "C:/code" + "/" + "a.mara"
-	print("chained:", name, name.len)
+	&name + "C:/code"
+	&name + "/"
+	&name + "a.mara"
+	print("one a line:", name, name.len)
 
 	files : [10]Name
-	next(&files) + "C:/code" + "/" + "b.mara"
-	next(&files) + "x" + '/' + "y"
+	f := next(&files)
+	f + "C:/code"
+	f + "/"
+	f + "b.mara"
+	g := next(&files)
+	g + "x"
+	g + '/'
+	g + "y"
 	print("next:", files.len, files[0], files[1])
 
 	pairs : [4]Pair
@@ -42,7 +54,9 @@ main :: fun() {
 	print("struct:", pairs.len, pairs[0].a, pairs[0].b)
 
 	nums : [8]i64
-	&nums + 1 + 2 + 3
+	&nums + 1
+	&nums + 2
+	&nums + 3
 	print("items:", nums.len, nums[0], nums[1], nums[2])
 
 	names : [4]Name
