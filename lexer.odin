@@ -491,7 +491,16 @@ next_token :: proc(l: ^Lexer) -> Token {
             }
         } else if l.pos < len(l.source) {
             char_val = l.source[l.pos]
-            lexer_advance(l)
+            // (A character of more than one byte, é or € or an emoji, doesn't
+            // fit a char's one: said, and the whole of it passed over.)
+            if n := utf8_width(char_val); n > 1 {
+                text := l.source[l.pos:min(l.pos + n, len(l.source))]
+                emit_diagnostic(.Parse_Error, format_location(l.file, l.line, l.col), LEX_CHAR_TOO_WIDE, text, n, text)
+                l.errors += 1
+                lexer_advance(l, len(text))
+            } else {
+                lexer_advance(l)
+            }
         }
         if l.pos < len(l.source) && l.source[l.pos] == '\'' {
             lexer_advance(l) // skip closing quote
@@ -716,6 +725,17 @@ lex_file :: proc(f: ^Source_File) {
     }
     f.end_token = Token_Id(len(build_tokens))
     f.lex_errors = l.errors
+}
+
+// How many bytes the UTF-8 character starting with byte c takes: 1 for an
+// ASCII one, and for a byte no character starts with.
+utf8_width :: proc(c: u8) -> int {
+    switch c {
+    case 0xC0 ..= 0xDF: return 2
+    case 0xE0 ..= 0xEF: return 3
+    case 0xF0 ..= 0xF7: return 4
+    }
+    return 1
 }
 
 // Helper: is this an ASCII digit?

@@ -1,0 +1,12 @@
+module char_wide_neg
+
+use mara.core
+
+//@ expect-fail: is 2 bytes in UTF-8, and a char is one byte: write it as text
+
+// A char is one byte, utf8; é is two in UTF-8, so it can only be text.
+
+main :: fun() {
+	c := 'é'
+	print(c)
+}
