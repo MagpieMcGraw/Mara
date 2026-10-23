@@ -1,0 +1,17 @@
+module fields
+
+use mara.core
+
+// (mara lsp, test/lsp_test.py: a new call written with its arguments the
+// wrong way round, a type error, then put right by hand: nothing to say.)
+
+find :: fun(char: utf8, text: []utf8) -> i64 {
+	for c, i in text {
+		if c == char do return i
+	}
+	return -1
+}
+
+where_comma :: fun() -> i64 {
+	return 0
+}

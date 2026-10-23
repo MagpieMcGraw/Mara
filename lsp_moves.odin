@@ -27,13 +27,15 @@ import "core:strings"
 
 // A place giving an order's parts by position: where its entries are (the
 // first's start to the last's end), each one's text, and the part each text
-// is for — nil when not known (its entries weren't as many as the parts).
+// is for — nil when not known (its entries weren't as many as the parts, or
+// it was new with an error in it). `flagged`: the check had an error in it.
 Lsp_Site :: struct {
     kind:    Site_Kind,
     path:    string,
     at, end: int,
     texts:   []string,
     parts:   []string,
+    flagged: bool,
 }
 
 // An order as the last check that saw it had it — a struct's fields, a
@@ -90,8 +92,10 @@ lsp_keep_orders :: proc(s: ^Lsp) {
                         break
                     }
                 }
-                // (New, its values changed, or not known: as written for the order now.)
-                if p.parts == nil && len(p.texts) == len(o.parts) { p.parts = lsp_clone_names(o.parts) }
+                // (New, its values changed, or not known: as written for the order
+                // now — once it checks. One written with its entries the wrong way
+                // round has an error in it: it's taken when it's put right.)
+                if p.parts == nil && !p.flagged && len(p.texts) == len(o.parts) { p.parts = lsp_clone_names(o.parts) }
             }
             // (Its span now, what's put back, when every place fits it.)
             fits := true
@@ -125,6 +129,9 @@ lsp_fresh_orders :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Order) {
     t := &build_tree
     open := make(map[u16]bool, allocator = context.temp_allocator)
     for f, i in build_files { if path_key(lsp_abs(s, f.path)) in s.overlays { open[u16(i)] = true } }
+    // (Where the check's errors are, by token: a place with one in it is flagged.)
+    errors := make([dynamic]Token_Id, context.temp_allocator)
+    for d in s.check.diagnostics { if d.kind != .Warning && d.at != 0 { append(&errors, d.at) } }
     for o in orders_of(t, s.check.session.checked.annot, &open) {
         first := build_tokens[t.first[o.def]]
         path := lsp_abs(s, build_files[first.file].path)
@@ -153,8 +160,10 @@ lsp_fresh_orders :: proc(s: ^Lsp, out: ^[dynamic]Lsp_Order) {
                 a0, a1 := build_tokens[t.first[e]], build_tokens[t.end[e] - 1]
                 texts[j] = strings.clone(src[a0.offset:a1.offset + a1.len])
             }
+            flagged := false
+            for e in errors { if e >= t.first[site.node] && e < t.end[site.node] { flagged = true } }
             append(&lo.sites, Lsp_Site{kind = site.kind, path = strings.clone(lsp_abs(s, build_files[e0.file].path)),
-                                       at = int(e0.offset), end = int(e1.offset + e1.len), texts = texts})
+                                       at = int(e0.offset), end = int(e1.offset + e1.len), texts = texts, flagged = flagged})
         }
         slice.sort_by(lo.sites[:], proc(x, y: Lsp_Site) -> bool { return x.path < y.path || x.path == y.path && x.at < y.at })
         append(out, lo)
@@ -189,7 +198,7 @@ lsp_order_clone :: proc(o: Lsp_Order) -> Lsp_Order {
     out.sites = make([dynamic]Lsp_Site)
     for p in o.sites {
         append(&out.sites, Lsp_Site{kind = p.kind, path = strings.clone(p.path), at = p.at, end = p.end,
-                                    texts = lsp_clone_names(p.texts), parts = lsp_clone_names(p.parts)})
+                                    texts = lsp_clone_names(p.texts), parts = lsp_clone_names(p.parts), flagged = p.flagged})
     }
     return out
 }

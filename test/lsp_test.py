@@ -18,6 +18,7 @@ POUNCE = os.path.join(ROOT, "Pounce")
 CAMERA = os.path.join(POUNCE, "camera.mara")
 FIELDS = os.path.join(ROOT, "test", "lsp_fields", "fields.mara")   # (moved_fields)
 FUNS = os.path.join(ROOT, "test", "lsp_fields", "funs.mara")       # (moved_results_params)
+CALLS = os.path.join(ROOT, "test", "lsp_fields", "calls.mara")     # (new_call_put_right)
 SHAPES = os.path.join(ROOT, "test", "edit_shapes", "shapes.mara")  # (fun_calls)
 
 
@@ -249,6 +250,38 @@ def moved_results_params(c):
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 
+def new_call_put_right(c):
+    """A new call written with its arguments the wrong way round, a type
+    error there, then swapped by hand: it's taken as written once it checks,
+    not as it was first written — nothing said, no action to swap it back."""
+    text = open(CALLS, encoding="utf-8", newline="").read()
+    doc = {"uri": uri(CALLS)}
+    c.notify("textDocument/didOpen", {"textDocument": {"uri": uri(CALLS), "languageId": "mara", "version": 1, "text": text}})
+    check("new call: opened, no errors", c.diagnostics_for(CALLS) == [], None)
+    version = 1
+
+    def edit(new):
+        nonlocal version
+        version += 1
+        c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CALLS), "version": version}, "contentChanges": [{"text": new}]})
+        return [d["message"] for d in c.diagnostics_for(CALLS)]
+
+    wrong = text.replace("\treturn 0", "\treturn find(\"a,b\", ',')", 1)
+    said = edit(wrong)
+    check("new call: written the wrong way round, a type error, no order said",
+          any("parameter 'char' expects utf8" in m for m in said) and not any("reordered" in m for m in said), said)
+    right = text.replace("\treturn 0", "\treturn find(',', \"a,b\")", 1)
+    said = edit(right)
+    check("new call: swapped by hand, nothing said", said == [], said)
+    call_line = 1 + next(i for i, l in enumerate(right.split("\n")) if "return find(" in l)
+    r = c.request("textDocument/codeAction", {"textDocument": doc, "range": {"start": {"line": call_line - 1, "character": 0},
+                  "end": {"line": call_line - 1, "character": 0}}, "context": {"diagnostics": []}})
+    titles = [a["title"] for a in r or [] if a.get("kind") != "refactor"]
+    check("new call: no action to swap it back", titles == [], titles)
+    edit(text)
+    c.notify("textDocument/didClose", {"textDocument": doc})
+
+
 def fun_calls(c):
     """At a fun's name, asked: the fun called where its body is written out."""
     text = open(SHAPES, encoding="utf-8", newline="").read()
@@ -440,6 +473,7 @@ def main():
     c.notify("textDocument/didClose", {"textDocument": doc})
     moved_fields(c)
     moved_results_params(c)
+    new_call_put_right(c)
     fun_calls(c)
     code = c.close()
     check("shut down: exit 0", code == 0, code)
