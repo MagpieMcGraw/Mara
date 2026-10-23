@@ -282,7 +282,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         if !is_condition_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
         t = Type_Bool{}
     case .Tilde:
-        if !is_integer(ot) && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
+        if !is_integer(ot) && !is_any(ot) && !is_utf8_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
         t = ot
     case .Ampersand:
         // (An address of an immutable param's storage, of a constant's: what
@@ -495,6 +495,12 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     if l_failed || r_failed { return Type_Error{} }
     and_or := op == .And || op == .Or
     t: Type = Type_Error{}
+    // (utf8 takes arithmetic and bitwise operators as u8 does: tc_utf8_op —
+    // with a number or utf8 on the other side; `&buf + ch` is an append.)
+    scalar :: proc(t: Type) -> bool { return is_utf8_type(t) || is_numeric(t) || is_any(t) }
+    if !and_or && !is_comparison_op(op) && in_range == nil && (is_utf8_type(lt) || is_utf8_type(rt)) && scalar(lt) && scalar(rt) {
+        return tc_utf8_op(k, op, span, left, right, lt, rt)
+    }
     if wrapping && (!is_wrap_operand(lt) || !is_wrap_operand(rt)) {
         tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER, op_str(op), type_name(lt), type_name(rt))
         return Type_Error{}
@@ -616,6 +622,31 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         tc_settle(k, left, t)
         tc_settle(k, right, t)
     }
+    return t
+}
+
+// An arithmetic or bitwise operation on utf8 (tc_binary_op), as on u8: the
+// other side utf8 too, or an integer literal, which takes utf8's width; the
+// result utf8. Any other integer is converted first, as anywhere (no
+// widening): `c - '0'` is utf8, `i64(c - '0')` a number.
+@(private="file")
+tc_utf8_op :: proc(k: ^TC, op: Token_Kind, span: Span, left, right: Tree_Id, lt, rt: Type) -> Type {
+    for side in ([2]Type{lt, rt}) {
+        _, float_lit := resolve_infer(side).(Type_Infer_Float)
+        if is_utf8_type(side) || is_any(side) || (is_infer(resolve_infer(side)) && !float_lit) { continue }
+        tc_error(k, span, TYPE_UTF8_OPERAND, op_str(op), type_name(lt), type_name(rt))
+        return Type_Error{}
+    }
+    t := lt if is_utf8_type(lt) else rt
+    if !is_utf8_type(lt) || !is_utf8_type(rt) { t = promote_numeric(k.c, lt, rt, span) }
+    // (A known shift count past its 8 bits, or negative: said so now.)
+    if op == .Shift_Left || op == .Shift_Right {
+        if count, known := tc_comptime_int(k, right); known && (count < 0 || count >= 8) {
+            tc_error(k, span, TYPE_SHIFT_COUNT_CONST, count, 7, type_name(t))
+        }
+    }
+    tc_settle(k, left, t)
+    tc_settle(k, right, t)
     return t
 }
 

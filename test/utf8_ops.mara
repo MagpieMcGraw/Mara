@@ -1,0 +1,52 @@
+module utf8_ops
+
+use mara.core
+
+//@ expect-output: case: a A a
+//@ expect-output: digit 7, hex 11 15
+//@ expect-output: next: B, back: A
+//@ expect-output: bits: 65 158 130 32 176
+//@ expect-output: compound: c 99
+//@ expect-output: wraps: 0 255
+//@ expect-output: a number: 9
+
+// utf8 takes arithmetic and bitwise operators as u8 does: the other side
+// utf8 or a literal, the result utf8; a number from it by a conversion.
+
+lower :: fun(c: utf8) -> utf8 {
+	if c >= 'A' and c <= 'Z' do return c | 0x20
+	return c
+}
+
+hex_value :: fun(c: utf8) -> utf8 {
+	if c >= '0' and c <= '9' do return c - '0'
+	return (c | 0x20) - 'a' + 10
+}
+
+main :: fun() {
+	big : utf8 = 'A'
+	small : utf8 = 'a'
+	print("case:", lower(big), small & 0xDF, lower(small))
+
+	seven : utf8 = '7'
+	b : utf8 = 'b'
+	f : utf8 = 'F'
+	print("digit %, hex % %", i64(seven - '0'), i64(hex_value(b)), i64(hex_value(f)))
+
+	print("next: %, back: %", big + 1, (big + 1) - 1)
+
+	print("bits:", i64(big), i64(~small & 0xFE), i64(big << 1), i64(big ~ small), i64((small >> 1) | 0x80))
+
+	c : utf8 = 'a'
+	c += 2
+	n : utf8 = 'a'
+	n |= 0x02
+	print("compound:", c, i64(n))
+
+	z : utf8 = 0
+	print("wraps:", i64(z +% 0), i64(z -% 1))
+
+	nine : utf8 = '9'
+	digit := i64(nine - '0')
+	print("a number:", digit)
+}

@@ -1,0 +1,14 @@
+module utf8_ops_neg
+
+use mara.core
+
+//@ expect-fail: '+' on utf8 and i64: utf8 goes with utf8 or a whole-number literal
+
+// utf8 with another integer, not a literal: a conversion first, as any two
+// integer types of different widths need.
+
+main :: fun() {
+	c : utf8 = 'a'
+	k : i64 = 2
+	print(c + k)
+}
