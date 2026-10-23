@@ -1,0 +1,45 @@
+module split_lines
+
+use mara.core
+
+//@ expect-output: hex: true true false true
+//@ expect-output: both: yes
+//@ expect-output: sum: 47
+//@ expect-output: inside: true false
+//@ expect-output: with do: split
+
+// An expression goes on past a line that ends in an operator: a long
+// condition split after `or` and `and`, a sum after `+`, an `in` after its
+// `..`. (A line starting with the operator doesn't: the line before ends.)
+
+is_hex :: fun(c: utf8) -> bool {
+	return (c >= '0' and c <= '9') or
+		(c >= 'a' and c <= 'f') or
+		(c >= 'A' and c <= 'F')
+}
+
+main :: fun() {
+	print("hex:", is_hex('7'), is_hex('c'), is_hex('g'), is_hex('E'))
+
+	a := 3
+	b := 4
+	if a > 2 and
+		b > 3 {
+		print("both: yes")
+	}
+
+	total := 1 +
+		2 * 3 +
+		40
+	print("sum:", total)
+
+	n := 5
+	inside := n in 1 ..
+		10
+	outside := n in 6 ..
+		10
+	print("inside:", inside, outside)
+
+	if a == 3 or
+		b == 0 do print("with do: split")
+}

@@ -1767,11 +1767,13 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             first := int(p.t.first[left])
             kw := tp_advance(p)
             if is_not_in { tp_advance(p) }
+            tp_skip_newlines(p)
             lo := tp_expr(p, 4)
             // (No `..`: `x in xs`, among a collection's items — hi none.)
             hi: Tree_Id
             if tp_kind(p) == .Dot_Dot {
                 tp_advance(p)
+                tp_skip_newlines(p)
                 hi = tp_expr(p, 4)
             }
             left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi)))
@@ -1790,6 +1792,8 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
         }
         first := int(p.t.first[left])
         op := tp_advance(p)
+        // (A line ending in an operator goes on: `a or` then `b` below it.)
+        tp_skip_newlines(p)
         right := tp_expr(p, prec + 1)
         left = tp_node(p, .Binary, op, first, u32(left), u32(right))
     }
