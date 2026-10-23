@@ -2844,8 +2844,9 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         }
         append(&args, Ir_Arg{ty = ir, v = v})
     }
-    // (cttz's second argument: whether 0 is poison. It isn't: 0 gives the width.)
-    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "cttz" { append(&args, Ir_Arg{ty = IR_I1, v = IR_FALSE}) }
+    // (cttz's and ctlz's second argument: whether 0 is poison. It isn't: 0
+    // gives the width.)
+    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "cttz" || iop == "ctlz" { append(&args, Ir_Arg{ty = IR_I1, v = IR_FALSE}) }
     tmp := fresh_tmp(g)
     ir_call(g, tmp, llvm_type_from_checker(fn_result(callee, 0)), ir_global(name), ..args[:])
     e.value[op] = tmp

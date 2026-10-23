@@ -78,6 +78,61 @@ trailing_zeros_u64 :: fun(x: u64) -> u64 { @llvm.cttz.i64 }
 trailing_zeros_u32 :: fun(x: u32) -> u32 { @llvm.cttz.i32 }
 trailing_zeros_i64 :: fun(x: i64) -> i64 { @llvm.cttz.i64 }
 
+// How many 0 bits come above the highest 1 bit: 63 for a u64's 1, 0 when
+// the top bit is 1. A 0 gives its width. The highest 1 bit's place is
+// 63 - leading_zeros(x) for a u64, so it's a whole number's log2.
+leading_zeros :: dispatch {
+	leading_zeros_u64
+	leading_zeros_u32
+	leading_zeros_i64
+}
+
+leading_zeros_u64 :: fun(x: u64) -> u64 { @llvm.ctlz.i64 }
+leading_zeros_u32 :: fun(x: u32) -> u32 { @llvm.ctlz.i32 }
+leading_zeros_i64 :: fun(x: i64) -> i64 { @llvm.ctlz.i64 }
+
+// How many bits are 1.
+count_ones :: dispatch {
+	count_ones_u64
+	count_ones_u32
+	count_ones_i64
+}
+
+count_ones_u64 :: fun(x: u64) -> u64 { @llvm.ctpop.i64 }
+count_ones_u32 :: fun(x: u32) -> u32 { @llvm.ctpop.i32 }
+count_ones_i64 :: fun(x: i64) -> i64 { @llvm.ctpop.i64 }
+
+// x's bits turned left by n places: the ones pushed out at the top come
+// back in at the bottom. n is taken modulo the width, so turning a u64 by
+// 64 leaves it as it was.
+rotate_left :: dispatch {
+	rotate_left_u64
+	rotate_left_u32
+}
+
+// x's bits turned right by n places: the ones pushed out at the bottom come
+// back in at the top. n is taken modulo the width.
+rotate_right :: dispatch {
+	rotate_right_u64
+	rotate_right_u32
+}
+
+rotate_left_u64 :: fun(x: u64, n: u64) -> u64 { return funnel_left_u64(x, x, n) }
+rotate_left_u32 :: fun(x: u32, n: u32) -> u32 { return funnel_left_u32(x, x, n) }
+rotate_right_u64 :: fun(x: u64, n: u64) -> u64 { return funnel_right_u64(x, x, n) }
+rotate_right_u32 :: fun(x: u32, n: u32) -> u32 { return funnel_right_u32(x, x, n) }
+
+// a and b side by side as one number twice as wide, a the top half, shifted
+// left by n (modulo the width): the top half then. With a and b the same,
+// a rotate.
+funnel_left_u64 :: fun(a: u64, b: u64, n: u64) -> u64 { @llvm.fshl.i64 }
+funnel_left_u32 :: fun(a: u32, b: u32, n: u32) -> u32 { @llvm.fshl.i32 }
+
+// a and b side by side as one number twice as wide, a the top half, shifted
+// right by n (modulo the width): the bottom half then.
+funnel_right_u64 :: fun(a: u64, b: u64, n: u64) -> u64 { @llvm.fshr.i64 }
+funnel_right_u32 :: fun(a: u32, b: u32, n: u32) -> u32 { @llvm.fshr.i32 }
+
 // abs(i64_min) TRAPS, on purpose. |i64_min| = 2^63 isn't representable as i64,
 // so `-x` overflow-traps like all Mara arithmetic (every build mode) — a loud
 // crash on the one impossible input beats a silent wrong value. Do NOT "fix"

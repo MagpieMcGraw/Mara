@@ -56,6 +56,10 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"umax",   2, .Match_Unsigned_Int_Suffix},
     {"bswap",  1, .Match_Any_Int_Suffix},
     {"cttz",   1, .Match_Any_Int_Suffix},   // (llvm_intrinsic adds its `i1 false`: 0 gives the width)
+    {"ctlz",   1, .Match_Any_Int_Suffix},   // (the same)
+    {"ctpop",  1, .Match_Any_Int_Suffix},
+    {"fshl",   3, .Match_Any_Int_Suffix},   // funnel shifts: a rotate when both are the same value
+    {"fshr",   3, .Match_Any_Int_Suffix},
     {"bitcast", 1, .Bit_Cast},
     {"mara_arena_swap", 1, .Arena_Swap},
 }

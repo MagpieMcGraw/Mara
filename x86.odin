@@ -1353,6 +1353,48 @@ x86_intrinsic :: proc(f: ^X86_Fn, name: string, rt: ^X86_Type, args: []X86_Arg, 
         x86_imm(f, .CX, i64(n * 8))   // (a mov: the flags left as bsf set them)
         x86_cmov(f, .E, .AX, .CX)
         x86_put(f, dest)
+    case "ctlz":
+        // (bsr: the highest 1 bit's place, and ZF when there's none, then -1;
+        // width - 1 - place is the count, the width for 0.)
+        n := args[0].t.size
+        x86_get(f, args[0].v, .AX)
+        switch n {
+        case 1: x86_enc_rr(f, 0, false, {0x0F, 0xB6}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, al
+        case 2: x86_enc_rr(f, 0, false, {0x0F, 0xB7}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, ax
+        }
+        x86_enc_rr(f, 0, n == 8, {0x0F, 0xBD}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // bsr
+        x86_imm(f, .CX, -1)
+        x86_cmov(f, .E, .AX, .CX)
+        x86_imm(f, .CX, i64(n * 8 - 1))
+        x86_rr(f, 8, 0x28, .CX, .AX)   // sub rcx, rax
+        x86_mov(f, .AX, .CX)
+        x86_put(f, dest)
+    case "ctpop":
+        // (popcnt: x86-64-v2, as every machine Windows 11 runs on has; the
+        // backend's roundsd, SSE4.1, about as old.)
+        n := args[0].t.size
+        x86_get(f, args[0].v, .AX)
+        switch n {
+        case 1: x86_enc_rr(f, 0, false, {0x0F, 0xB6}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, al
+        case 2: x86_enc_rr(f, 0, false, {0x0F, 0xB7}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // movzx eax, ax
+        }
+        x86_enc_rr(f, 0xF3, n == 8, {0x0F, 0xB8}, u8(X86_Reg.AX), u8(X86_Reg.AX))   // popcnt
+        x86_put(f, dest)
+    case "fshl", "fshr":
+        // (shld/shrd: a's and b's bits as one, shifted by n modulo the width
+        // — 32 or 64: shld's count for 16 bits isn't taken modulo 16.)
+        n := args[0].t.size
+        if n != 4 && n != 8 { x86_fail("a funnel shift narrower than 32 bits", name) }
+        if op == "fshl" {
+            x86_get(f, args[0].v, .AX)   // shld rax, rdx, cl: rax's bits, then rdx's
+            x86_get(f, args[1].v, .DX)
+        } else {
+            x86_get(f, args[1].v, .AX)   // shrd rax, rdx, cl: rdx's bits, then rax's
+            x86_get(f, args[0].v, .DX)
+        }
+        x86_get(f, args[2].v, .CX)
+        x86_enc_rr(f, 0, n == 8, {0x0F, 0xA5 if op == "fshl" else 0xAD}, u8(X86_Reg.DX), u8(X86_Reg.AX))
+        x86_put(f, dest)
     case "sqrt":
         x86_get(f, args[0].v, .AX)
         x86_to_xmm(f, 0, .AX)

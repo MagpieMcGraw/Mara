@@ -1,0 +1,73 @@
+module bit_ops
+
+use mara.core
+use mara.math
+
+//@ expect-output: leading u64: 63 0 60 64
+//@ expect-output: leading u32: 31 0 27 32
+//@ expect-output: leading i64: 0 63 64
+//@ expect-output: log2 of 1000: 9
+//@ expect-output: ones u64: 0 1 64 32
+//@ expect-output: ones u32: 0 32 16
+//@ expect-output: ones i64: 64 2
+//@ expect-output: rotl u64: 2 1 1 2 1311768467463790320
+//@ expect-output: rotr u64: 9223372036854775808 1 1 17298946664678735070
+//@ expect-output: rotl u32: 1 2 1
+//@ expect-output: rotr u32: 2147483648 2147483648 1
+//@ expect-output: funnel: 4783 313458688
+
+// leading_zeros, count_ones, rotate_left, rotate_right and the funnel
+// shifts, at the edges: 0, the top bit, all bits; a rotate by 0, by the
+// width, past it.
+
+main :: fun() {
+	one : u64 = 1
+	top : u64 = 0x8000000000000000
+	ten : u64 = 10
+	zero : u64 = 0
+	print("leading u64:", leading_zeros(one), leading_zeros(top), leading_zeros(ten), leading_zeros(zero))
+
+	a : u32 = 1
+	b : u32 = 0x80000000
+	c : u32 = 16
+	d : u32 = 0
+	print("leading u32:", leading_zeros(a), leading_zeros(b), leading_zeros(c), leading_zeros(d))
+
+	neg : i64 = -1
+	pos : i64 = 1
+	z : i64 = 0
+	print("leading i64:", leading_zeros(neg), leading_zeros(pos), leading_zeros(z))
+
+	thousand : u64 = 1000
+	print("log2 of 1000:", 63 - leading_zeros(thousand))
+
+	all_ones : u64 = 0xFFFFFFFFFFFFFFFF
+	half : u64 = 0x5555555555555555
+	print("ones u64:", count_ones(zero), count_ones(one), count_ones(all_ones), count_ones(half))
+	ff : u32 = 0xFFFFFFFF
+	h32 : u32 = 0x0F0F0F0F
+	print("ones u32:", count_ones(d), count_ones(ff), count_ones(h32))
+	five : i64 = 5
+	print("ones i64:", count_ones(neg), count_ones(five))
+
+	n0 : u64 = 0
+	n1 : u64 = 1
+	n4 : u64 = 4
+	n64 : u64 = 64
+	n65 : u64 = 65
+	word : u64 = 0x0123456789ABCDEF
+	print("rotl u64:", rotate_left(one, n1), rotate_left(one, n0), rotate_left(one, n64), rotate_left(one, n65), rotate_left(word, n4))
+	print("rotr u64:", rotate_right(one, n1), rotate_right(one, n0), rotate_right(one, n64), rotate_right(word, n4))
+
+	m0 : u32 = 0
+	m1 : u32 = 1
+	m32 : u32 = 32
+	m33 : u32 = 33
+	print("rotl u32:", rotate_left(b, m1), rotate_left(a, m1), rotate_left(a, m32))
+	print("rotr u32:", rotate_right(a, m1), rotate_right(a, m33), rotate_right(a, m0))
+
+	hi : u32 = 0x12
+	lo : u32 = 0xAF000000
+	eight : u32 = 8
+	print("funnel:", funnel_left_u32(hi, lo, eight), funnel_right_u32(hi, lo, eight))
+}
