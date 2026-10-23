@@ -1,0 +1,18 @@
+module for_ref_param_neg
+
+use mara.core
+
+//@ expect-fail: points into 'xs', an immutable parameter
+
+// A reference loop writes into its collection: not into an immutable
+// param's (a fixed array passed by value).
+
+fill :: fun(xs: [3!]i64) {
+	for &x in xs { x^ = 1 }
+}
+
+main :: fun() {
+	a : [3!]i64 = {1, 2, 3}
+	fill(a)
+	print(a[0])
+}

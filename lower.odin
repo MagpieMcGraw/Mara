@@ -858,6 +858,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         elem := loop_elem_through(ct)
         if elem == nil { elem = Type_Error{} }
         if v.type_ != 0 { elem = tc_node_type(k, v.type_) }
+        fl.by_ref = v.by_ref != 0
         graph_build_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         lw_scope(k, v.body)
     case .For_Range:

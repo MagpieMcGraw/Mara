@@ -3078,6 +3078,7 @@ Graph_For :: struct {
     coll_t:                  Type,
     coll_self:               bool,
     elem_t:                  Type,      // a collection loop's element's
+    by_ref:                  bool,      // `for &item in xs`: its variable each element's address
     of_call:                 bool,      // a loop over a call: its values written by its check, its counter the round (graph_build_for_call)
     call_values:             []Graph_Call_Value,   // ... its values
     call_flag:               int,       // ... which of the call's results is its bool
@@ -3143,7 +3144,7 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
         }
     }
     if fl.elem_name != "" {
-        fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, elem_t, fl.span)
+        fl.elem = graph_node(b, .Local, .Explicit, fl.f, fl.elem_name, type_ptr(elem_t) if fl.by_ref else elem_t, fl.span)
         graph_declare(b, fl.elem, fl.elem_tok)
     }
     index_t := Type(slice_header_width_type)
@@ -3280,8 +3281,14 @@ graph_build_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
         at = graph_widen(b, at, slice_header_width_type, span)
         et := fl.elem_t
         slot := graph_op_value(b, .Index, .Synthetic, span, et, "", graph_coll_place(b, fl, span), at)
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.elem, et, span),
-                 graph_read(b, slot, et, span))
+        if fl.by_ref {   // (`for &item`: where the element is, not a copy)
+            pt := type_ptr(et)
+            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.elem, pt, span),
+                     graph_op_value(b, .Address, .Synthetic, span, pt, "", slot))
+        } else {
+            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.elem, et, span),
+                     graph_read(b, slot, et, span))
+        }
     }
 }
 

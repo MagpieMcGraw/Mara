@@ -1,0 +1,11 @@
+module for_ref_range_neg
+
+use mara.core
+
+//@ expect-fail: a range's counter is a number, not an item
+
+// `&` before a loop's name is for a collection's items: not a range's counter.
+
+main :: fun() {
+	for &i in 0..3 { print(i) }
+}

@@ -1,0 +1,18 @@
+module for_ref_value_neg
+
+use mara.core
+
+//@ expect-fail: and these items are a value made here, kept nowhere
+
+// A reference loop over a call's list: the list is a value made for the
+// loop, so what's written through the items is lost.
+
+made :: fun() -> [4]i64 {
+	out : [4]i64
+	&out + 1
+	return out
+}
+
+main :: fun() {
+	for &x in made() { x^ = 2 }
+}

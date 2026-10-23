@@ -684,6 +684,9 @@ tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
 tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
+    // (`for &item in xs`: each item where it is, a pointer to it.)
+    by_ref: Token_Id
+    if tp_kind(p) == .Ampersand && tp_peek(p) == .Identifier { by_ref = tp_advance(p) }
     if tp_kind(p) == .Identifier {
         m := tp_mark(p)
         first := tp_advance(p)
@@ -704,14 +707,16 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
             after := tp_condition(p)
             if tp_kind(p) == .Dot_Dot {
                 if has_second { tp_error(p, tp_here(p), PARSE_RANGE_FOR_ONE_VAR) }
+                if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_RANGE) }
                 tp_advance(p)
                 high := tp_condition(p)
                 body := tp_loop_body(p)
                 return tp_node(p, .For_Range, kw, start, tree_rec_add(p.t, u32(first), u32(iter_type), u32(after), u32(high), body))
             }
             body := tp_loop_body(p)
-            return tp_node(p, .For_Each, kw, start, tree_rec_add(p.t, u32(first), tree_tokens_add(p.t, after_first[:]), u32(iter_type), u32(after), body))
+            return tp_node(p, .For_Each, kw, start, tree_rec_add(p.t, u32(first), tree_tokens_add(p.t, after_first[:]), u32(iter_type), u32(after), body), u32(by_ref))
         }
+        if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_NO_IN) }
         tp_reset(p, m)
     }
     m := tp_mark(p)

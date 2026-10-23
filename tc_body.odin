@@ -746,6 +746,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         ct := tc_check(k, v.collection)
         k.several_ok = 0
         if returns := tc_call_returns(k, v.collection); len(returns) > 1 {
+            if v.by_ref != 0 { tc_error(k, span, TYPE_REF_LOOP_OVER_CALL) }
             tc_for_call(k, s, v, ct, returns)
             return
         }
@@ -770,6 +771,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
             }
         }
         if v.type_ != 0 { elem = tc_type(k, v.type_, span) }
+        if v.by_ref != 0 { elem = tc_ref_loop(k, v, ct, elem, span) }
         // (A loop variable named `_` is none: nothing the body can name.)
         if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
         if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
@@ -795,6 +797,31 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }
+}
+
+// `for &item in xs`: the loop's name a pointer to each item where it is
+// (`item.x += 1`, `item^ = v` write the collection). Its items must be
+// somewhere it can write: not an immutable param's, not a constant's, not
+// a value made for the loop and kept nowhere (a call's list, a literal) —
+// a view or a pointer, whatever gives it, is somewhere.
+@(private="file")
+tc_ref_loop :: proc(k: ^TC, v: For_View, ct: Type, elem: Type, span: Span) -> Type {
+    name := tc_text(v.elem)
+    coll := tc_written(k, v.collection)
+    if pname, immutable := tc_write_root_param(k, v.collection); immutable {
+        tc_error(k, span, TYPE_REF_LOOP_IMMUTABLE_PARAMETER, name, pname, name, coll)
+    } else if cname, is_const := tc_write_root_const(k, v.collection); is_const {
+        tc_error(k, span, TYPE_REF_LOOP_CONSTANT, name, cname, name, coll)
+    } else {
+        base := distinct_base(ct)
+        _, is_ptr := base.(^Type_Ptr)
+        #partial switch k.t.tag[tc_access_root(k, v.collection)] {
+        case .Ident, .Deref:
+        case:
+            if !is_ptr && !is_slice_type(base) { tc_error(k, span, TYPE_REF_LOOP_NO_PLACE, name) }
+        }
+    }
+    return type_ptr(elem)
 }
 
 // `for x in f()`, `for x, i in f()`, `for a, b in g()`: the call gives one

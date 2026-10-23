@@ -202,6 +202,10 @@ example_do :: fun() {
 // in xs` its position too. `for cond { … }` repeats while cond is true — `for
 // true { … }` until a break or return.
 //
+// `for &x in xs` takes each item where it is, x a pointer to it: `x.count
+// += 1` and `x^ = v` change the items themselves. Not for an immutable
+// param's items, a constant's, or a list a call made for the loop.
+//
 // `for x in f()` calls f each round. f returns one bool and one or more
 // values, in any order: the loop ends when the bool is false, and each value
 // gets a name, `for t, pos in g()` for two. One more name after the values
@@ -220,6 +224,10 @@ example_for :: fun() {
 	for p, i in primes {
 		print(i, p)                        // 0 2, 1 3, 2 5, 3 7
 	}
+	for &p in primes {
+		p^ = p^ * 10
+	}
+	print(primes[0], primes[3])            // 20 70
 
 	n := 1
 	for n < 100 {
