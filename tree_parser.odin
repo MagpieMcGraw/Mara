@@ -862,21 +862,27 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
             }
         }
         if value == 0 && tp_kind(p) == .Identifier && tp_text(p) == "type" {
-            // (`Name :: type T` was an alias once: `Name :: T` now.)
+            // (`Name :: type T` was an alias once: `Name :: alias T` now.)
             tp_error(p, tp_here(p), PARSE_TYPE_KEYWORD_ALIAS)
             tp_advance(p)
         }
+        if value == 0 && tp_kind(p) == .Identifier && tp_text(p) == "alias" {
+            // (`Name :: alias T`: another name for T, the same type.)
+            def_start := p.pos
+            kw := tp_advance(p)
+            value = tp_node(p, .Alias_Def, kw, def_start, u32(tp_type(p)))
+        }
         if value == 0 && tp_type_ahead(p) {
-            // (Another name for a type, when the type ends the line: main,
-            // its first token. More after it — `[3!]f32{…}`, a typed literal
-            // — and it's a value: read again as one.)
+            // (A type of its own, when the type ends the line: main, its
+            // first token. More after it — `[3!]f32{…}`, a typed literal —
+            // and it's a value: read again as one.)
             m := tp_mark(p)
             def_start := p.pos
             first := tp_here(p)
             base := tp_type(p)
             #partial switch tp_kind(p) {
             case .Newline, .EOF, .Semicolon, .Right_Brace:
-                value = tp_node(p, .Alias_Def, first, def_start, u32(base))
+                value = tp_node(p, .Distinct_Def, first, def_start, u32(base))
             case:
                 tp_reset(p, m)
             }

@@ -37,7 +37,7 @@ Pipe_Error :: error {
 // characters (Windows' paths here end at 260), its room past them there to
 // add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
 // where it's declared, no arena needed.
-Path :: [512]utf8
+Path :: alias [512]utf8
 
 // A file or a directory found in a directory (dir_read): its name — not
 // its path — whether it leads to a directory, and whether it's a link: a

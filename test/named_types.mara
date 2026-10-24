@@ -3,7 +3,7 @@ module named_types
 use mara.core
 use mara.string
 
-// A named type — `type T`, an alias, T itself by another name; `distinct T`,
+// A named type — `alias T`, T itself by another name; `T`, `distinct T`,
 // a type of its own with T's shape — does what T's shape does: sliced,
 // indexed, looped over, through a pointer too; a named union matched, its
 // tag read, its variants built into it (a distinct one's too: a variant is a
@@ -27,24 +27,24 @@ use mara.string
 //@ expect-output: enums: Color.Green CD.Green CD.Red green true
 //@ expect-output: plain enum: green
 
-Buf  :: [64]utf8
+Buf  :: alias [64]utf8
 DBuf :: distinct [64]utf8
-Arr  :: [4!]i64
+Arr  :: alias [4!]i64
 DArr :: distinct [4!]i64
-Sl   :: []i64
+Sl   :: alias []i64
 
 U :: union {
 	A { x: i64 }
 	B
 }
-UA :: U
+UA :: alias U
 UD :: distinct U
 
 Color :: union {
 	Red
 	Green
 }
-CA :: Color
+CA :: alias Color
 CD :: distinct Color
 
 P :: struct {
@@ -52,7 +52,7 @@ P :: struct {
 	y: i64 = 5   // (not written by the literals: the constructor sets it)
 	get :: fun(p: Self) -> i64 { return p.x * 10 }
 }
-PA :: P
+PA :: alias P
 PD :: distinct P
 
 Holder :: struct {

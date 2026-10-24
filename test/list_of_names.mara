@@ -16,7 +16,7 @@ use mara.memory
 // appended into in place; or an item built apart and copied in. `= void`
 // leaves their contents unwritten, their headers stamped all the same.
 
-Name :: [500]utf8
+Name :: alias [500]utf8
 
 // The list one longer, the new name appended into where it is.
 add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {

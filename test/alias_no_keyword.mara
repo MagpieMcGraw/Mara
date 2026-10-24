@@ -9,11 +9,12 @@ use mara.core
 //@ expect-output: constants: 5 9 Shape.Rect
 //@ expect-output: primitive: 3
 
-// Another name for a type is `Name :: T`, no keyword: told from a constant
-// by how it's written — `^T`, `[]T`, `[n]T`, `[n]T`, a primitive's name
-// — and a name by itself, `A :: B`, by what B names (a type: another name
-// for it; a value: a constant). An array literal, a conversion and a
-// variant stay constants.
+// A type of its own is `Name :: T`, no keyword: told from a constant by
+// how it's written — `^T`, `[]T`, `[n]T`, `[n]T`, a primitive's name — and
+// a name by itself, `A :: B`, by what B names (a type: a type of its own
+// with its shape; a value: a constant). An array literal, a conversion and
+// a variant stay constants. It takes a literal (`"hey"`, `3`), and a value
+// of its base by a conversion: `IntPtr(&n)`.
 
 Buf :: [8]utf8
 IntPtr :: ^i64
@@ -23,8 +24,8 @@ Point :: struct {
 	x: i64
 	y: i64
 }
-Spot :: Point     // another name for Point
-Place :: Spot     // and for that
+Spot :: Point     // a type with Point's shape
+Place :: Spot     // and with that's
 
 Shape :: union { Circle  Rect }
 
@@ -34,15 +35,14 @@ NINE :: PAIR[0] + FIVE
 KIND :: Shape.Rect
 
 main :: fun() {
-	b : Buf
-	&b + "hey"
+	b : Buf = "hey"
 	print("buffer:", b, b.len, b.cap)
 
 	n := 7
-	p : IntPtr = &n
+	p := IntPtr(&n)
 	print("pointer:", p^)
 
-	at : Place = Point{x = 2, y = 5}
+	at := Place{x = 2, y = 5}
 	print("chain:", at.x, at.y)
 
 	Row :: [4!]i64

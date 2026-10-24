@@ -266,6 +266,11 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
                 tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER_UNARY, type_name(ot))
                 return Type_Error{}
             }
+        } else if own, is_own := own_number(ot); is_own {
+            // (A type of its own over a number negates as its base does.)
+            if _, kind, _ := numeric_info(distinct_base(own)); kind == .Unsigned {
+                tc_error(k, span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(ot))
+            }
         } else if !is_numeric(ot) {
             // (`overload -`: a function of the one operand, when one fits.)
             if callee := tc_unary_overload(k, ot, tr.main[n]); callee != nil {
@@ -282,7 +287,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         if !is_condition_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
         t = Type_Bool{}
     case .Tilde:
-        if !is_integer(ot) && !is_any(ot) && !is_utf8_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
+        if !is_integer(distinct_base(ot)) && !is_any(ot) && !is_utf8_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
         t = ot
     case .Ampersand:
         // (An address of an immutable param's storage, of a constant's: what
@@ -312,7 +317,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
 tc_deref :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     ot := tc_check(k, Tree_Id(k.t.a[n]))
-    if p, ok := unwrap_alias(ot).(^Type_Ptr); ok { return p.elem }   // (through another name for it too)
+    if p, ok := distinct_base(ot).(^Type_Ptr); ok { return p.elem }   // (through a type of its own, another name, too)
     if !is_any(ot) { tc_error(k, span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(ot)) }
     return Type_Error{}
 }
@@ -495,6 +500,12 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     if l_failed || r_failed { return Type_Error{} }
     and_or := op == .And || op == .Or
     t: Type = Type_Error{}
+    // (A type of its own over a number takes its base's operators: tc_own_op.)
+    _, l_own := own_number(lt)
+    _, r_own := own_number(rt)
+    if !and_or && (l_own || r_own) {
+        return tc_own_op(k, op, wrapping, span, left, right, lt, rt)
+    }
     // (utf8 takes arithmetic and bitwise operators as u8 does: tc_utf8_op —
     // with a number or utf8 on the other side; `&buf + ch` is an append.)
     scalar :: proc(t: Type) -> bool { return is_utf8_type(t) || is_numeric(t) || is_any(t) }
@@ -622,6 +633,50 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         tc_settle(k, left, t)
         tc_settle(k, right, t)
     }
+    return t
+}
+
+// An operation on a type of its own over a number (`Count :: i32`), as on its
+// base (tc_binary_op): the other side the same type, or a literal, which
+// takes it. The result that type, a comparison's bool. A plain number beside
+// it is converted first, as with any two types: `c + Count(n)`, `i32(c) + n`.
+@(private="file")
+tc_own_op :: proc(k: ^TC, op: Token_Kind, wrapping: bool, span: Span, left, right: Tree_Id, lt, rt: Type) -> Type {
+    own, l_own := own_number(lt)
+    if !l_own { own, _ = own_number(rt) }
+    base := distinct_base(own)
+    for side in ([2]Type{lt, rt}) {
+        if is_any(side) || (types_equal(own, side) && types_equal(side, own)) { continue }
+        tc_error(k, span, TYPE_OWN_NUMBER_OPERAND, op_str(op), type_name(solidify_type(lt)), type_name(solidify_type(rt)),
+                 type_name(own), type_name(own), type_name(own), type_name(base))
+        return Type_Error{}
+    }
+    if wrapping && !is_wrap_operand(own) {
+        tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER, op_str(op), type_name(lt), type_name(rt))
+        return Type_Error{}
+    }
+    t: Type = own
+    #partial switch op {
+    case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+        t = Type_Bool{}
+    case .Plus, .Minus, .Star, .Slash, .Modulo:
+    case .Ampersand, .Pipe, .Tilde, .Shift_Left, .Shift_Right:
+        if !is_integer(base) {
+            tc_error(k, span, TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS, type_name(own))
+            return Type_Error{}
+        }
+        // (A known shift count past its bits, or negative: said so now.)
+        if nt, is_num := base.(Type_Numeric); is_num && (op == .Shift_Left || op == .Shift_Right) {
+            if count, known := tc_comptime_int(k, right); known && (count < 0 || count >= i64(nt.bits)) {
+                tc_error(k, span, TYPE_SHIFT_COUNT_CONST, count, nt.bits - 1, type_name(own))
+            }
+        }
+    case:
+        tc_error(k, span, "tc: the operator %v is not supported yet", op)
+        return Type_Error{}
+    }
+    tc_settle(k, left, own)
+    tc_settle(k, right, own)
     return t
 }
 
@@ -1246,8 +1301,13 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
     k.hint = dt.base_type
     at := tc_check(k, args[0])
     k.hint = saved
+    // (A pointer to a binding of no written width, its width the base's
+    // pointee: `IntPtr(&n)`, as `p : ^i64 = &n`.)
+    if coerce_deferred_pointee(k.c, at, dt.base_type, span) { at = dt.base_type }
     // (A list of another room, made one of this: the copy asked for.)
     if from, to := distinct_base(at), distinct_base(dt.base_type); tc_list_resized(from, to) { return dt }
+    // (A number of any width, as its base's conversion takes one: `Count(i)`.)
+    if _, own := own_number(dt); own && is_numeric(distinct_base(at)) { return dt }
     if !is_any(at) && !is_infer(at) && types_incompatible(dt.base_type, at) {
         tc_error(k, span, TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE, name, type_name(at), type_name(dt.base_type))
     }

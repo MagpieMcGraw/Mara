@@ -1,6 +1,6 @@
 module alias_type_keyword_neg
 
-//@ expect-fail: `type` isn't written for another name of a type any more: `Name :: T`
+//@ expect-fail: `type` isn't written for another name of a type any more: `Name :: alias T`
 
 // The old spelling, `Name :: type T`, says how to write it now.
 

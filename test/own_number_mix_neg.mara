@@ -1,0 +1,14 @@
+module own_number_mix_neg
+
+//@ expect-fail: '+' on Count and i32: a Count goes with a Count or a literal
+
+// A Count and an i32 don't mix, though a Count has an i32's shape: one is
+// converted first, `c + Count(n)` or `i32(c) + n`.
+
+Count :: i32
+
+main :: fun() {
+	c : Count = 3
+	n : i32 = 4
+	print(c + n)
+}

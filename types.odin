@@ -850,6 +850,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     a := unwrap_alias(resolve_infer(a))
     b := unwrap_alias(resolve_infer(b))
 
+    // (A type of its own takes a literal its base takes — `c : Count = 3`,
+    // `name : Name = "Ann"` — and nothing else of its base's.)
+    if da, ok := a.(^Type_Distinct); ok && is_untyped_literal(b) { return types_equal(distinct_base(da), b) }
+    if db, ok := b.(^Type_Distinct); ok && is_untyped_literal(a) { return types_equal(a, distinct_base(db)) }
+
     switch va in a {
     case Type_Infer_Int:
         // Infer int is compatible with any numeric type
@@ -1062,7 +1067,27 @@ distinct_base :: proc(t: Type) -> Type {
     return distinct_base(dt.base_type)
 }
 
-// Unwrap transparent type aliases (`Name :: type(T)`) — recursively — to
+// A literal no type is written for yet: a number, a text.
+is_untyped_literal :: proc(t: Type) -> bool {
+    #partial switch v in resolve_infer(t) {
+    case Type_Infer_Int, Type_Infer_Float: return true
+    case ^Type_Partial_Array:              return v.text != 0
+    }
+    return false
+}
+
+// A type of its own over a number (`Count :: i32`, not an alias): it takes
+// its base's operators, with its own type on the other side (tc_own_op).
+own_number :: proc(t: Type) -> (^Type_Distinct, bool) {
+    dt, ok := unwrap_alias(resolve_infer(t)).(^Type_Distinct)
+    if !ok { return nil, false }
+    #partial switch _ in distinct_base(dt) {
+    case Type_Numeric, Type_F64: return dt, true
+    }
+    return nil, false
+}
+
+// Unwrap transparent type aliases (`Name :: alias T`) — recursively — to
 // reveal the underlying type. Distinct types (with is_alias=false) are
 // preserved so their nominal identity is kept intact for type-equality
 // checks; aliases dissolve.
@@ -1131,9 +1156,7 @@ type_name :: proc(t: Type) -> string {
     case ^Type_Enum:        return v.source_name if v.source_name != "" else v.name
     case ^Type_Union:       return v.source_name if v.source_name != "" else v.name
     case ^Type_Distinct:
-        disp := v.source_name if v.source_name != "" else v.name
-        if v.is_alias { return disp }
-        return fmt.tprintf("distinct %s", disp)
+        return v.source_name if v.source_name != "" else v.name
     case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
 
     case Type_Any:          return "any"

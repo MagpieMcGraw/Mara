@@ -86,8 +86,8 @@ Tree_Tag :: enum u8 {
     Variant,        // main: the name; a: its tag's value; b: its body, a Struct_Def (0: none)
     Error_Def,      // main: `error`; a: tokens — the variants
     Dispatch_Def,   // main: `dispatch`; a: tokens — the functions
-    Distinct_Def,   // main: `distinct`; a: the type
-    Alias_Def,      // `type(T)`, `type T`: main: `type`; a: the type
+    Distinct_Def,   // `T`, `distinct T`: main: the type's first token, or `distinct`; a: the type
+    Alias_Def,      // `alias T`: main: `alias`; a: the type
 
     // --- types ---
     Type_Name,      // `T`, `pkg.T`, `A.B.C`: a: tokens — the parts

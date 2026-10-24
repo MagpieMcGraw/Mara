@@ -1,0 +1,62 @@
+module own_numbers
+
+use mara.core
+
+//@ expect-output: ops: 7 9 true false -3 true
+//@ expect-output: bits: 7 1 6 -4
+//@ expect-output: float: 2.25 true
+//@ expect-output: literals: 4 14 true true 10 3
+//@ expect-output: field: 3
+//@ expect-output: converted: 4 6 7
+//@ expect-output: text: Ann hi
+//@ expect-output: inferred: 5
+
+// `Count :: i32` is a type of its own with i32's shape. It does i32's math
+// with another Count, or with a literal, which becomes a Count; the result
+// is a Count, a comparison's a bool. An i32 goes in by a conversion,
+// `Count(n)`, and comes out by one, `i32(c)` (own_number_mix_neg: mixing).
+// A text type of its own takes a text literal the same way.
+
+Count :: i32
+Scale :: f32
+Name :: [16]utf8
+IntPtr :: ^i64
+
+Box :: struct {
+	count : Count = 2
+}
+
+twice :: fun(c: Count) -> Count { return c * 2 }
+three :: fun() -> Count { return 3 }
+greet :: fun() -> Name { return "hi" }
+
+main :: fun() {
+	a := Count(3)
+	b := Count(4)
+	print("ops:", a + b, a * b - a, a < b, a == b, -a, a != 4)
+	print("bits:", a | b ~ Count(1), a & Count(1), a << 1, ~a)
+
+	x := Scale(1.5)
+	print("float:", x * x, x > 1)
+
+	c : Count = 3
+	c += 1
+	print("literals:", c, c + 10, c == 4, c < 10, twice(5), three())
+
+	box := Box()
+	box.count += 1
+	print("field:", box.count)
+
+	wide : i64 = 6
+	n : i64 = 7
+	p := IntPtr(&n)
+	print("converted:", i32(c), Count(wide), p^)
+
+	nm : Name = "Ann"
+	print("text:", nm, greet())
+
+	// (A binding of no written width used as a Count is one.)
+	k := 5
+	held : Count = k
+	print("inferred:", held)
+}

@@ -257,7 +257,7 @@ word_kind :: fun(s: []utf8, at: i64, end: i64) -> i64 {
 // A word's kind among the syntax's keywords and types; plain for none.
 keyword_kind :: fun(w: []utf8) -> i64 {
 	if w.len < 2 or w.len > 9 do return TOKEN_PLAIN
-	if w == "fun" or w == "method" or w == "fn" or w == "union" or w == "dispatch" or w == "error" or w == "distinct" or w == "var" or w == "intrinsic" do return TOKEN_STORAGE
+	if w == "fun" or w == "method" or w == "fn" or w == "union" or w == "dispatch" or w == "error" or w == "distinct" or w == "alias" or w == "var" or w == "intrinsic" do return TOKEN_STORAGE
 	if w == "int" or w == "float" or w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "f32" or w == "f64" or w == "isize" or w == "usize" or w == "bool" or w == "string" or w == "cstr" or w == "ptr" or w == "byte" or w == "utf8" or w == "err" do return TOKEN_BASIC_TYPE
 	if w == "c8" do return TOKEN_BAD
 	if w == "if" or w == "elif" or w == "else" or w == "for" or w == "match" or w == "each" or w == "other" or w == "return" or w == "do" or w == "where" or w == "defer" or w == "with" or w == "break" or w == "continue" or w == "foreign" do return TOKEN_KEYWORD

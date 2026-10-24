@@ -12,7 +12,7 @@ module in_items
 
 use mara.core
 
-Filename :: [32]utf8
+Filename :: alias [32]utf8
 
 add_new :: (files: ^[]Filename, name: []utf8) {
 	if name not in files do next(files) + name

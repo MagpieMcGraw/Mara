@@ -17,7 +17,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.core      4 types   · 4 funs
     mara.endian    0 types   · 9 funs
     mara.font      31 types  · 20 funs
-    mara.math      4 types   · 74 funs
+    mara.math      4 types   · 91 funs
     mara.memory    3 types   · 1 fun
     mara.open_gl   19 types  · 61 funs
     mara.os        14 types  · 84 funs
@@ -61,7 +61,7 @@ camera — module   (1 type, 9 funs)
   shapes       (its funs' params, results, locals; its structs' fields)
                        params results  locals  fields     all
     [N]T     list           0       0       0       0       0
-    [N!]T    array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [N!]T    array          1       4      31       3      39    Mat4 ×15  · Vec3 ×12  · Vec4 ×7  · Quat ×5
     [K]T     by enum        0       0       0       0       0
     []T      slice          0       0       0       0       0
     ^T       pointer       13       0       0       0      13
@@ -86,7 +86,7 @@ camera — module   (1 type, 9 funs)
   shapes       (its funs' params, results, locals; its structs' fields)
                        params results  locals  fields     all
     [N]T     list           0       0       0       0       0
-    [N!]T    array          1       4      31       3      39    distinct Mat4 ×15  · distinct Vec3 ×12  · distinct Vec4 ×7  · distinct Quat ×5
+    [N!]T    array          1       4      31       3      39    Mat4 ×15  · Vec3 ×12  · Vec4 ×7  · Quat ×5
     [K]T     by enum        0       0       0       0       0
     []T      slice          0       0       0       0       0
     ^T       pointer       13       0       0       0      13
@@ -560,25 +560,25 @@ below (flow) — what this variable affects  (forward slice)
 
   into calls — the value lands in  (17 parameters)
     1 hop (direct):
-      mat4_from_quat         (param q : distinct Quat)  camera.mara:149
-      mat4_mul               (param a : distinct Mat4)  camera.mara:150
-      mat4_mul               (param b : distinct Mat4)  camera.mara:150
-      mat4_translate         (param pos : distinct Vec3)  camera.mara:148
-      mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+      mat4_from_quat         (param q : Quat)  camera.mara:149
+      mat4_mul               (param a : Mat4)  camera.mara:150
+      mat4_mul               (param b : Mat4)  camera.mara:150
+      mat4_translate         (param pos : Vec3)  camera.mara:148
+      mat4_transpose         (param m : Mat4)  camera.mara:149
       pow_f32                (param exp : f32)  camera.mara:145
-      vec3_add               (param a : distinct Vec3)  camera.mara:146
-      vec3_add               (param b : distinct Vec3)  camera.mara:146
-      vec3_negate            (param v : distinct Vec3)  camera.mara:148
-      vec3_scale             (param v : distinct Vec3)  camera.mara:146
+      vec3_add               (param a : Vec3)  camera.mara:146
+      vec3_add               (param b : Vec3)  camera.mara:146
+      vec3_negate            (param v : Vec3)  camera.mara:148
+      vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:460  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:469
-      pow_special            (param y : f64)  <root>/code/math.mara:461
+      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
+      pow_special            (param y : f64)  <root>/code/math.mara:530
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:788
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:788
-      floor_f64              (param x : f64)  <root>/code/math.mara:506  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:857
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
+      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
 === Pounce | physics_this_frame in camera_update flow above
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
@@ -600,25 +600,25 @@ below (flow) — what this variable affects  (forward slice)
 
   into calls — the value lands in  (17 parameters)
     1 hop (direct):
-      mat4_from_quat         (param q : distinct Quat)  camera.mara:149
-      mat4_mul               (param a : distinct Mat4)  camera.mara:150
-      mat4_mul               (param b : distinct Mat4)  camera.mara:150
-      mat4_translate         (param pos : distinct Vec3)  camera.mara:148
-      mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+      mat4_from_quat         (param q : Quat)  camera.mara:149
+      mat4_mul               (param a : Mat4)  camera.mara:150
+      mat4_mul               (param b : Mat4)  camera.mara:150
+      mat4_translate         (param pos : Vec3)  camera.mara:148
+      mat4_transpose         (param m : Mat4)  camera.mara:149
       pow_f32                (param exp : f32)  camera.mara:145
-      vec3_add               (param a : distinct Vec3)  camera.mara:146
-      vec3_add               (param b : distinct Vec3)  camera.mara:146
-      vec3_negate            (param v : distinct Vec3)  camera.mara:148
-      vec3_scale             (param v : distinct Vec3)  camera.mara:146
+      vec3_add               (param a : Vec3)  camera.mara:146
+      vec3_add               (param b : Vec3)  camera.mara:146
+      vec3_negate            (param v : Vec3)  camera.mara:148
+      vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:460  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:469
-      pow_special            (param y : f64)  <root>/code/math.mara:461
+      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
+      pow_special            (param y : f64)  <root>/code/math.mara:530
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:788
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:788
-      floor_f64              (param x : f64)  <root>/code/math.mara:506  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:857
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
+      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
 === Pounce | physics_this_frame in camera_update call below
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
@@ -626,25 +626,25 @@ below (calls) — calls physics_this_frame supplies
 
   into calls — the value lands in  (17 parameters)
     1 hop (direct):
-      mat4_from_quat         (param q : distinct Quat)  camera.mara:149
-      mat4_mul               (param a : distinct Mat4)  camera.mara:150
-      mat4_mul               (param b : distinct Mat4)  camera.mara:150
-      mat4_translate         (param pos : distinct Vec3)  camera.mara:148
-      mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+      mat4_from_quat         (param q : Quat)  camera.mara:149
+      mat4_mul               (param a : Mat4)  camera.mara:150
+      mat4_mul               (param b : Mat4)  camera.mara:150
+      mat4_translate         (param pos : Vec3)  camera.mara:148
+      mat4_transpose         (param m : Mat4)  camera.mara:149
       pow_f32                (param exp : f32)  camera.mara:145
-      vec3_add               (param a : distinct Vec3)  camera.mara:146
-      vec3_add               (param b : distinct Vec3)  camera.mara:146
-      vec3_negate            (param v : distinct Vec3)  camera.mara:148
-      vec3_scale             (param v : distinct Vec3)  camera.mara:146
+      vec3_add               (param a : Vec3)  camera.mara:146
+      vec3_add               (param b : Vec3)  camera.mara:146
+      vec3_negate            (param v : Vec3)  camera.mara:148
+      vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:460  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:469
-      pow_special            (param y : f64)  <root>/code/math.mara:461
+      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
+      pow_special            (param y : f64)  <root>/code/math.mara:530
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:788
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:788
-      floor_f64              (param x : f64)  <root>/code/math.mara:506  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:857
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
+      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
 === Pounce | translation_mx in camera_update call above
 translation_mx — local in camera_update  camera.mara:148   (module camera)
 
@@ -681,7 +681,7 @@ below (flow) — what this variable affects  (forward slice)
     write   camera         camera.mara:150
 
   into calls — the value lands in  (1 parameter)
-    mat4_mul               (param b : distinct Mat4)  camera.mara:150
+    mat4_mul               (param b : Mat4)  camera.mara:150
 === Pounce | at gfx_mesh_generation.mara:66:11
 gfx_mesh_generation.mara:66:11  token '0'
 
@@ -710,8 +710,8 @@ obj — field : Object
   in        camera_move  camera.mara:48
 
   camera.obj   : Object
-  camera.obj.dir   : distinct Quat
-  obj_get_directions(camera.obj.dir)   : distinct Vec3
+  camera.obj.dir   : Quat
+  obj_get_directions(camera.obj.dir)   : Vec3
   fwd, up, right := obj_get_directions(camera.obj.dir)
 === Pounce | what at Pounce.mara:163:33
 "dropepd file: " : text (14 bytes)

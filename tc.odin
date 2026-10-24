@@ -586,7 +586,7 @@ tc_register_types :: proc(k: ^TC, s: Tree_Id) {
 }
 
 // `A :: B`, a name by itself naming a type (the resolver's: rs_alias_kinds):
-// another name for it, as `A :: [16]utf8` is.
+// a type of its own, as `A :: [16]utf8` is.
 tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
     t := k.t
     value := Tree_Id(t.b[s])
@@ -643,12 +643,13 @@ tc_register :: proc(k: ^TC, s: Tree_Id) {
     tc_unsupported(k, s, "this module statement")
 }
 
-// `T :: U`, `T :: distinct U`: its name (its base once every name is
-// known: tc_resolve). (`owner`: the body defining it — named for it.)
+// `T :: U`, `T :: alias U`: its name (its base once every name is known:
+// tc_resolve). `T :: U` is a type of its own, `alias` another name for U.
+// (`owner`: the body defining it — named for it.)
 tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
     name := tc_name(k, def)
     span := tree_span(k.t, def)
-    alias := k.t.tag[node] != .Distinct_Def
+    alias := k.t.tag[node] == .Alias_Def
     flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
     if flat in k.table.distinct_types {
         tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)

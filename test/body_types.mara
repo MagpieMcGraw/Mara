@@ -24,7 +24,7 @@ other :: fun() -> i64 {
 	m := slow
 	E :: error { Broke }
 	Meters :: distinct f64
-	Name :: [16]utf8
+	Name :: alias [16]utf8
 	d := Meters(2.5)
 	n : Name
 	&n + "hi"

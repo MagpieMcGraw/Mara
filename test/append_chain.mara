@@ -19,7 +19,7 @@ use mara.memory
 // grown, what it held in one shrunk and filled again. (`&name + a + b`
 // is an error: append_chain_neg.)
 
-Name :: [500]utf8
+Name :: alias [500]utf8
 Pair :: struct { a: i64  b: i64 }
 
 // A list's next name, from its parts, through the list's pointer.
