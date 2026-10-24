@@ -1176,13 +1176,11 @@ test_byte_view :: fun() {
 	print(h.payload.counter)
 }
 
-Window :: ^byte
-
+// (A pointer read out of bytes is refused: test/byte_pointer_read_neg.)
 Holder_Window :: struct {
 	count:  i64
 	flag:   i64
 	pair:   Pair
-	window: Window
 }
 
 test_field_byte_read :: fun() {
@@ -1199,10 +1197,6 @@ test_field_byte_read :: fun() {
 	print(h.flag)
 	print(h.pair.a)
 	print(h.pair.b)
-	w : Window = buf[0]
-	print(i64(w))
-	h.window = buf[8:16]
-	print(i64(h.window))
 }
 
 read_into :: fun(n: i32, buf: []byte) {

@@ -1,0 +1,19 @@
+module byte_pointer_field_neg
+
+use mara.core
+
+//@ expect-fail: `next` is a pointer
+
+// A record read out of bytes can't hold a pointer either: the field would
+// be whatever the bytes say.
+
+Node :: struct {
+	value: i64
+	next:  ^Node
+}
+
+main :: fun() {
+	buf : [32]byte
+	n : Node = buf[0]
+	print(n.value)
+}

@@ -1,0 +1,14 @@
+module byte_pointer_read_neg
+
+use mara.core
+
+//@ expect-fail: cannot read a `^i64` out of bytes: a pointer is an address, not data
+
+// A pointer read out of bytes points wherever the bytes say: refused.
+
+main :: fun() {
+	buf : [16]byte
+	buf[0:8] = i64(42)
+	p : ^i64 = buf[0]
+	print(p^)
+}

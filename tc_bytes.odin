@@ -41,7 +41,7 @@ tc_check_byte_flow :: proc(k: ^TC, dest: Type, value: Tree_Id, vt: Type, span: S
     case .Read:
         if is_slice_type(dest) {
             tc_error(k, span, TYPE_BYTE_READ_SLICE_BY_INDEX, type_name(dest))
-        } else if why := byte_slice_reason(k.c, dest); why != "" {
+        } else if why := byte_reference_reason(k.c, dest); why != "" {
             tc_error(k, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
         }
     }
@@ -101,11 +101,11 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
     }
     if is_array_shaped(vt) && !fixed {
         if elem := index_elem_type(vt); elem != nil {
-            if why := byte_slice_reason(k.c, elem); why != "" { tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why) }
+            if why := byte_reference_reason(k.c, elem); why != "" { tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why) }
         }
         return nil
     }
-    if why := byte_slice_reason(k.c, vt); why != "" {
+    if why := byte_reference_reason(k.c, vt); why != "" {
         tc_error(k, span, TYPE_BYTE_WRITE_REFERENCE, type_name(vt), why)
         return nil
     }
@@ -125,7 +125,7 @@ tc_byte_span_checks :: proc(k: ^TC, lo_n, hi_n: Tree_Id, tt, vt: Type, span: Spa
 // bytes (an open run, `verts[lo:]`, a whole number of elements of them);
 // else checked as the program runs (llvm_copy_into).
 tc_byte_read_run :: proc(k: ^TC, lo_n, hi_n, value: Tree_Id, vt, elem: Type, span: Span) {
-    if why := byte_slice_reason(k.c, elem); why != "" {
+    if why := byte_reference_reason(k.c, elem); why != "" {
         tc_error(k, span, TYPE_BYTE_READ_REFERENCE, type_name(elem), why)
         return
     }

@@ -1,0 +1,20 @@
+module byte_fun_field_neg
+
+use mara.core
+
+//@ expect-fail: `run` is a fun, its code's address
+
+// A fun value in a record is its code's address: not out of bytes either.
+
+double :: fun(x: i64) -> i64 { return x * 2 }
+
+Job :: struct {
+	n:   i64
+	run: fn double
+}
+
+main :: fun() {
+	buf : [32]byte
+	j : Job = buf[0]
+	print(j.n)
+}

@@ -1,0 +1,15 @@
+module byte_pointer_write_neg
+
+use mara.core
+
+//@ expect-fail: cannot write a `^i64` into bytes: a pointer is an address, not data
+
+// A pointer written into bytes is an address in the data: refused, as reading
+// one back is.
+
+main :: fun() {
+	x : i64 = 5
+	buf : [16]byte
+	buf[0] = &x
+	print(buf.len)
+}

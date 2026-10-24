@@ -1489,26 +1489,38 @@ is_array_shaped :: proc(t: Type) -> bool {
     return false
 }
 
-// Why `t` can't be reinterpreted from/to bytes — the first slice in its layout —
-// or "" when it can.
-byte_slice_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
+// Why `t` can't be reinterpreted from/to bytes — the first address in its
+// layout: a slice (its header), a pointer, a cstring, a fun value — or ""
+// when it can. Bytes are data: an address read out of them points wherever
+// the bytes say. (A real use for one can be let through when it comes up.)
+byte_reference_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
     #partial switch v in distinct_base(t) {
     case ^Type_Slice:
         if path == "" { return "a slice is a (len, cap, ptr) header, not data" }
         return fmt.tprintf("`%s` is a slice", path)
+    case ^Type_Ptr:
+        if path == "" { return "a pointer is an address, not data" }
+        return fmt.tprintf("`%s` is a pointer", path)
+    case Type_CString:
+        if path == "" { return "a cstring is a pointer to text, not data" }
+        return fmt.tprintf("`%s` is a cstring, a pointer to text", path)
     case ^Type_Fixed_Array:
-        return byte_slice_reason(c, v.elem, fmt.tprintf("%s[i]", path))
+        return byte_reference_reason(c, v.elem, fmt.tprintf("%s[i]", path))
     case ^Type_Partial_Array:
-        return byte_slice_reason(c, v.elem, fmt.tprintf("%s[i]", path))
+        return byte_reference_reason(c, v.elem, fmt.tprintf("%s[i]", path))
     case ^Type_Union:
         for vname, st in v.variant_structs {
-            if r := byte_slice_reason(c, st, path == "" ? vname : fmt.tprintf("%s.%s", path, vname)); r != "" { return r }
+            if r := byte_reference_reason(c, st, path == "" ? vname : fmt.tprintf("%s.%s", path, vname)); r != "" { return r }
         }
     case ^Type_Scope:
+        if v.kind == .Fun {
+            if path == "" { return "a fun value is its code's address, not data" }
+            return fmt.tprintf("`%s` is a fun, its code's address", path)
+        }
         sd := as_struct_body(v)
         if sd == nil { return "" }
         for &f in sd.fields[first_user_field(sd):] {
-            if r := byte_slice_reason(c, f.type_, path == "" ? f.name : fmt.tprintf("%s.%s", path, f.name)); r != "" { return r }
+            if r := byte_reference_reason(c, f.type_, path == "" ? f.name : fmt.tprintf("%s.%s", path, f.name)); r != "" { return r }
         }
     }
     return ""
@@ -1519,7 +1531,7 @@ Byte_Flow :: enum { None, View, Read }
 // A value written into a byte buffer (`bytes[off] = v`, `bytes[lo:hi] = v`) is
 // stored as its raw bytes, so it can't hold a slice header.
 check_byte_write :: proc(c: ^Checker, val_type: Type, span: Span) {
-    if why := byte_slice_reason(c, val_type); why != "" {
+    if why := byte_reference_reason(c, val_type); why != "" {
         check_error(c, span, TYPE_BYTE_WRITE_REFERENCE, type_name(val_type), why)
     }
 }
