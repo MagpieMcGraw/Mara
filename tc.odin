@@ -298,6 +298,16 @@ tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
     check_error(k.c, span, msg, ..args)
 }
 
+// A condition of type t that isn't one, said with msg; for an enum, what
+// makes one a condition too: a variant written `= 0`.
+tc_not_condition :: proc(k: ^TC, span: Span, t: Type, msg: string, args: ..any) {
+    if et, is_enum := distinct_base(t).(^Type_Enum); is_enum && !et.is_synthetic && !et.is_error_kind {
+        tc_error(k, span, TYPE_CONDITION_ENUM_NO_ZERO, fmt.tprintf(msg, ..args), type_name(t))
+        return
+    }
+    tc_error(k, span, msg, ..args)
+}
+
 // What the checker doesn't check yet: an error, so the program fails
 // visibly rather than differently.
 tc_unsupported :: proc(k: ^TC, n: Tree_Id, what: string) {

@@ -642,7 +642,7 @@ tc_if :: proc(k: ^TC, s: Tree_Id) {
         return
     }
     ct := tc_check(k, v.cond)
-    if !is_condition_type(ct) { tc_error(k, span, TYPE_CONDITION_BOOL_2, type_name(ct)) }
+    if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_CONDITION_BOOL_2, type_name(ct)) }
     tc_scope(k, v.then)
     if len(v.else_) > 0 { tc_scope(k, v.else_) }
 }
@@ -793,7 +793,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     case:
         if v.init != 0 { tc_stmt(k, v.init) }
         ct := tc_check(k, v.cond)
-        if !is_condition_type(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
+        if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_CONDITION_BOOL, type_name(ct)) }
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }

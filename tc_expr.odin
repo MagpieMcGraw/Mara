@@ -284,7 +284,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
             tc_error(k, span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(ot))
         }
     case .Not:
-        if !is_condition_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
+        if !is_condition_type(ot) { tc_not_condition(k, span, ot, TYPE_CANNOT_APPLY, type_name(ot)) }
         t = Type_Bool{}
     case .Tilde:
         if !is_integer(distinct_base(ot)) && !is_any(ot) && !is_utf8_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
@@ -531,7 +531,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     case .And, .Or:
         word := "and" if op == .And else "or"
         if !is_condition_type(lt) {
-            tc_error(k, span, TYPE_LEFT_OPERAND_BOOL, word, type_name(lt))
+            tc_not_condition(k, span, lt, TYPE_LEFT_OPERAND_BOOL, word, type_name(lt))
             // (`x and y == 0` is `x and (y == 0)`: show the form meant.)
             if r := tc_unparen(k, right); in_range == nil && tr.tag[r] == .Binary && is_numeric(lt) {
                 if cmp := build_tokens[tr.main[r]].kind; is_comparison_op(cmp) {
@@ -542,7 +542,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
                 }
             }
         }
-        if !is_condition_type(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_BOOL, word, type_name(rt)) }
+        if !is_condition_type(rt) { tc_not_condition(k, span, rt, TYPE_RIGHT_OPERAND_BOOL, word, type_name(rt)) }
         t = Type_Bool{}
     case .Equal_Equal, .Not_Equal:
         // (Two of one type: numbers at one width, as arithmetic takes them;
@@ -962,7 +962,7 @@ tc_literal_value :: proc(k: ^TC, n: Tree_Id) -> (f64, i128, bool) {
 tc_assert :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     ct := tc_check(k, Tree_Id(k.t.a[n]))
-    if !is_condition_type(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
+    if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_CONDITION_BOOL, type_name(ct)) }
     return Type_Void{}
 }
 
@@ -1359,7 +1359,7 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(tr, n)
     then_n, else_n := tree_pair(tr, n)
     ct := tc_check(k, Tree_Id(tr.a[n]))
-    if !is_condition_type(ct) { tc_error(k, span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(ct)) }
+    if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_EXPRESSION_CONDITION_BOOL, type_name(ct)) }
     types: [2]Type
     for branch, i in ([2]Tree_Id{then_n, else_n}) { types[i] = tc_check(k, branch) }
     t := types[0]

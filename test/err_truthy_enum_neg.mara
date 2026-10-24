@@ -1,9 +1,10 @@
 module err_truthy_enum_neg
 
-//@ expect-fail: if condition must be bool (or an error), got Color
+//@ expect-fail: an enum is one when a variant is written `= 0`, the false one, and Color has none
 
-// Only an error is a condition besides a bool: a plain enum isn't true or
-// false (compare it: `c == .Red`).
+// An enum is a condition only when one of its variants is written `= 0`,
+// the false one (truthy_enum). Red is 0 here too, but no variant says so:
+// compare it instead, `c == .Red`.
 
 Color :: union { Red  Green }
 

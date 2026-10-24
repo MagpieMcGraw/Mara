@@ -154,7 +154,8 @@ example_return :: fun() {
 // The braces go around the whole chain, not around each part: `if a {`,
 // then `elif b` and `else` on their own lines, one `}` at the end. A
 // condition is a bool — `n != 0`, not `n` — or an err, true when it failed
-// (`if e do return e`). With one statement each, `do`
+// (`if e do return e`), or an enum with a variant written `= 0`, false for
+// that one and true for the rest (`if kind`). With one statement each, `do`
 // takes the braces' place: `if n < 0 do return`, then `elif b do s` and
 // `else do s`, on that line or the next ones.
 //
@@ -342,8 +343,10 @@ example_struct :: fun() {
 // type is known, `.Red`; or by itself, `Red`, when one enum in sight has
 // it, or the other side of an `==` says which (a variable of that name comes
 // first). A variant given no value takes the one after the variant before
-// it, skipping values others are given: `{ a, b, none = 0 }` is 1, 2, 0. An
-// enum can be defined in a fun's body, and is seen there only. A variant
+// it, skipping values others are given: `{ a, b, none = 0 }` is 1, 2, 0.
+// An enum with a variant written `= 0` is a condition, as a bool is:
+// `if mode` is true unless mode is none. An enum can be defined in a fun's
+// body, and is seen there only. A variant
 // with fields is built by its name as a value, `.Rect` (its body run: its
 // fields' defaults), its call when it has params, `Rect(5)`, or a literal,
 // `Rect{w = 4, h = 3}`, which runs no body: it gives every field.

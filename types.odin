@@ -794,11 +794,18 @@ is_err_type :: proc(t: Type) -> bool {
 }
 
 // What a condition takes — an if's, a for's, an assert's, an if's as a
-// value's, `and` / `or`'s sides, `not`'s: a bool, or an error, true when it
-// failed (not Ok), as bool(e) is (lw_truth).
+// value's, `and` / `or`'s sides, `not`'s: a bool; an error, true when it
+// failed (not Ok), as bool(e) is; an enum with a variant written `= 0`,
+// false for that one and true for the rest (lw_truth).
 is_condition_type :: proc(t: Type) -> bool {
     if _, ok := t.(Type_Bool); ok { return true }
-    return is_any(t) || is_err_type(t)
+    return is_any(t) || is_err_type(t) || is_truthy_enum(t)
+}
+
+// An enum with a variant written `= 0`: a condition, that variant false.
+is_truthy_enum :: proc(t: Type) -> bool {
+    et, ok := distinct_base(t).(^Type_Enum)
+    return ok && !et.is_synthetic && et.zero_name != ""
 }
 
 // Through a pointer there is no array→slice decay: the pointee must already

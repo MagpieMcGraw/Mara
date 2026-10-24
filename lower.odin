@@ -764,9 +764,10 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
 }
 
 // A condition's value, its node n's (is_condition_type): a bool's own; an
-// error's, whether it failed — not Ok, as bool(e) has it.
+// error's, whether it failed — not Ok, as bool(e) has it; an enum's, whether
+// it isn't its `= 0` variant.
 lw_truth :: proc(k: ^TC, n: Tree_Id, v: Operand) -> Operand {
-    if !is_err_type(tc_node_type(k, n)) { return v }
+    if t := tc_node_type(k, n); !is_err_type(t) && !is_truthy_enum(t) { return v }
     return graph_op_value(k.gb, .Cast, .Implied, tree_span(k.t, n), Type_Bool{}, "bool", v)
 }
 

@@ -347,6 +347,7 @@ TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED :: "return value count %d does not match 
 TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED :: "return value %d: type %s does not match expected %s"
 TYPE_RETURN_TYPE_MATCH_EXPECTED :: "return type %s does not match expected %s"
 TYPE_CONDITION_BOOL_2 :: "if condition must be bool (or an error), got %s"
+TYPE_CONDITION_ENUM_NO_ZERO :: "%s — an enum is one when a variant is written `= 0`, the false one, and %s has none (or compare it: `x == .A`)"
 TYPE_DISCARDED_RETURN :: "return value of '%s' is discarded — capture it (`x := ...`) or discard it explicitly (`_ = ...`)"
 TYPE_UNUSED_ERR :: "error value '%s' is unused — check it, propagate with `?`, or discard with `_`"
 TYPE_DEFER_CHANGES_RETURNED :: "a defer can't change '%s': the return on line %d returns it, and defers run after it takes its value"

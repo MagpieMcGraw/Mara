@@ -1,0 +1,47 @@
+module truthy_enum
+
+//@ expect-output: if: number
+//@ expect-output: none is false
+//@ expect-output: not: none
+//@ expect-output: and: true
+//@ expect-output: as a value: yes no
+//@ expect-output: loop: 2
+//@ expect-output: given last: build
+//@ expect-output: u8 tag: on
+//@ expect-output: own type: true
+
+// An enum with a variant written `= 0` is a condition: that variant is
+// false, every other one true — for `if`, `for`, `not`, `and`, `or`, an
+// if's value and assert, as an err is. One without `= 0` isn't
+// (err_truthy_enum_neg), though its first variant is 0 too.
+
+Kind :: union { none = 0  name  number }
+Mode :: union { build  serve  none = 0 }   // 1, 2, 0
+Small :: union(tag u8) { off = 0  on }
+Own :: Kind
+
+next :: fun(i: i64) -> Kind {
+	if i == 0 do return .name
+	if i == 1 do return .number
+	return .none
+}
+
+main :: fun() {
+	k := Kind.number
+	if k do print("if:", "number")
+	n := Kind.none
+	if n do print("wrong") else do print("none is false")
+	if not n do print("not:", "none")
+	print("and:", k and not n)
+	print("as a value:", if k do "yes" else "no", if n do "yes" else "no")
+	assert(k)
+	i := 0
+	for next(i) { i += 1 }
+	print("loop:", i)
+	m := Mode.build
+	if m do print("given last:", "build")
+	s := Small.on
+	if s do print("u8 tag:", "on")
+	o := Own.name
+	print("own type:", not not o)
+}
