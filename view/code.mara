@@ -37,7 +37,7 @@ TOKEN_FIELD      :: 19   // .len, .cap: support.constant
 TOKEN_MODULE     :: 20   // mara.math: support.module
 TOKEN_PUNCT      :: 21   // ( ) { } [ ] , ;: punctuation.separator
 TOKEN_ACCESSOR   :: 22   // .: punctuation.accessor
-TOKEN_BAD        :: 23   // uint, c8, an escape that isn't one: invalid.illegal
+TOKEN_BAD        :: 23   // c8, an escape that isn't one: invalid.illegal
 TOKEN_CAPITAL    :: 24   // a name starting with a capital: no scope (the dark and light themes' type)
 TOKEN_BARE       :: 25   // struct, class, type: no scope (the dark and light themes' keyword)
 TOKENS           :: 26
@@ -259,7 +259,7 @@ keyword_kind :: fun(w: []utf8) -> i64 {
 	if w.len < 2 or w.len > 9 do return TOKEN_PLAIN
 	if w == "fun" or w == "method" or w == "fn" or w == "union" or w == "dispatch" or w == "error" or w == "distinct" or w == "var" or w == "intrinsic" do return TOKEN_STORAGE
 	if w == "int" or w == "float" or w == "i8" or w == "i16" or w == "i32" or w == "i64" or w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "f32" or w == "f64" or w == "isize" or w == "usize" or w == "bool" or w == "string" or w == "cstr" or w == "ptr" or w == "byte" or w == "utf8" or w == "err" do return TOKEN_BASIC_TYPE
-	if w == "uint" or w == "c8" do return TOKEN_BAD
+	if w == "c8" do return TOKEN_BAD
 	if w == "if" or w == "elif" or w == "else" or w == "for" or w == "match" or w == "each" or w == "other" or w == "return" or w == "do" or w == "where" or w == "defer" or w == "with" or w == "break" or w == "continue" or w == "foreign" do return TOKEN_KEYWORD
 	if w == "module" or w == "include" or w == "use" do return TOKEN_IMPORT
 	if w == "using" or w == "overload" do return TOKEN_OTHER
