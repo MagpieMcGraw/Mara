@@ -345,7 +345,8 @@ example_struct :: fun() {
 // first). A variant given no value takes the one after the variant before
 // it, skipping values others are given: `{ a, b, none = 0 }` is 1, 2, 0.
 // A variant written `= 0` counts as the first wherever it is: `{ a, none =
-// 0, b }` is 1, 0, 2. Two variants of one value are an error.
+// 0, b }` is 1, 0, 2. One not given a value never lands on another's
+// (that's an error); two given the same one are two names for it.
 // An enum with a variant written `= 0` is a condition, as a bool is:
 // `if mode` is true unless mode is none. An enum can be defined in a fun's
 // body, and is seen there only. A variant

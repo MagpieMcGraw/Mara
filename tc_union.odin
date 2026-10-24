@@ -144,16 +144,17 @@ tc_union_variants :: proc(k: ^TC, node: Tree_Id) -> [dynamic]TC_Variant {
     return variants
 }
 
-// Two variants of one value, said so at the second: `{ x = 2, y, z = 1, w }`
-// gives w y's 3.
+// A variant not given a value that lands on another's, said so at the
+// second: `{ x = 2, y, z = 1, w }` gives w y's 3. (Two written alike are
+// allowed: another name for one value.)
 tc_union_same_tags :: proc(k: ^TC, variants: []TC_Variant) {
-    first := make(map[int]string, context.temp_allocator)
+    first := make(map[int]TC_Variant, context.temp_allocator)
     for v in variants {
         if other, taken := first[v.tag]; taken {
-            tc_error(k, v.span, TYPE_UNION_SAME_TAG, other, v.name, v.tag)
+            if !v.explicit || !other.explicit { tc_error(k, v.span, TYPE_UNION_SAME_TAG, other.name, v.name, v.tag) }
             continue
         }
-        first[v.tag] = v.name
+        first[v.tag] = v
     }
 }
 

@@ -8,6 +8,7 @@ module enum_numbering
 //@ expect-output: 2 3 0 4
 //@ expect-output: 1 0 2
 //@ expect-output: 1 2 3 0 4
+//@ expect-output: 1 1 2
 
 // A variant not given a value takes the one after the variant before it —
 // skipping any value another variant is given: `{ build, ask, none = 0 }`
@@ -15,8 +16,8 @@ module enum_numbering
 // one value, build printed for none.) A variant written `= 0` counts as the
 // first wherever it is, so the ones after it go on from the ones before:
 // `{ a, none = 0, b }` is 1, 0, 2. (b was 1 beside a's 1: a lexer's `not`
-// printed as its EOF.) Two of one value left are an error:
-// enum_same_tag_neg.
+// printed as its EOF.) One not given a value landing on another's is an
+// error (enum_same_tag_neg); two written alike are two names for one value.
 
 use mara.core
 
@@ -28,6 +29,7 @@ E :: union { a, b, c = 1 }
 F :: union { x = 2, y, z = 0, w }
 G :: union { a, none = 0, b }
 Kind :: union { Not, And, At, Mystery = 0, EOF }
+H :: union { a = 1, b = 1, c }
 
 main :: fun() {
 	print(i64(A.build), i64(A.ask), i64(A.none))
@@ -38,4 +40,5 @@ main :: fun() {
 	print(i64(F.x), i64(F.y), i64(F.z), i64(F.w))
 	print(i64(G.a), i64(G.none), i64(G.b))
 	print(i64(Kind.Not), i64(Kind.And), i64(Kind.At), i64(Kind.Mystery), i64(Kind.EOF))
+	print(i64(H.a), i64(H.b), i64(H.c))
 }
