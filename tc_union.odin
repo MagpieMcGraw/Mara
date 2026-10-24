@@ -37,6 +37,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
     } else {
         h = tc_union_header(k, node)
         variants = tc_union_variants(k, node)
+        tc_union_same_tags(k, variants[:])
     }
     has_data := false
     for v in variants { if v.fields { has_data = true } }
@@ -112,7 +113,8 @@ tc_union_header :: proc(k: ^TC, node: Tree_Id) -> (h: TC_Union_Header) {
 }
 
 // A union's variants as written, each its tag: as written, else one past
-// the one before.
+// the one before. A variant written `= 0` counts as the first, wherever it
+// is: `{ a, none = 0, b }` is 1, 0, 2.
 tc_union_variants :: proc(k: ^TC, node: Tree_Id) -> [dynamic]TC_Variant {
     t := k.t
     variants := make([dynamic]TC_Variant, context.temp_allocator)
@@ -133,12 +135,26 @@ tc_union_variants :: proc(k: ^TC, node: Tree_Id) -> [dynamic]TC_Variant {
         if !explicit {
             for written[tag] { tag += 1 }
         }
-        next = tag + 1
+        // (A `= 0` leaves the count where it was: as if written first.)
+        if !explicit || tag != 0 { next = tag + 1 }
         variant := tc_variant(k, vn, tag)
         variant.explicit = explicit
         append(&variants, variant)
     }
     return variants
+}
+
+// Two variants of one value, said so at the second: `{ x = 2, y, z = 1, w }`
+// gives w y's 3.
+tc_union_same_tags :: proc(k: ^TC, variants: []TC_Variant) {
+    first := make(map[int]string, context.temp_allocator)
+    for v in variants {
+        if other, taken := first[v.tag]; taken {
+            tc_error(k, v.span, TYPE_UNION_SAME_TAG, other, v.name, v.tag)
+            continue
+        }
+        first[v.tag] = v.name
+    }
 }
 
 // A union's type, made: `name` in module `pkg` (an instance's, its mangled

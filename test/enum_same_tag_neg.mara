@@ -1,0 +1,13 @@
+module enum_same_tag_neg
+
+//@ expect-fail: `y` and `w` are both 3: give one of them another value
+
+// Two variants of one value: w comes after z's 1, so it would be 2, which x
+// is given — and the next one, 3, is y's. Said at the second of the two
+// (enum_numbering: how variants are numbered).
+
+T :: union { x = 2, y, z = 1, w }
+
+main :: fun() {
+	print(i64(T.w))
+}
