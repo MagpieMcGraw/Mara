@@ -8,7 +8,7 @@ Node :: struct { next : ^Node  val : i64 }
 
 unset_on_the_back_edge :: fun(src: ^i64) {
 	p := src
-	for i in 0..3 {
+	for i in 0..<3 {
 		print(p^)            // the second time round, p is void
 		p = void
 	}

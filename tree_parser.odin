@@ -681,6 +681,13 @@ tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
     return tp_block(p)
 }
 
+// A range's `..` (its end included) or `..<` (stopped before), taken.
+// (Bare `..` stopped before its end once: written `..<` now, said so.)
+tp_range_dots :: proc(p: ^Tree_Parser) -> Token_Id {
+    if tp_kind(p) == .Dot_Dot { tp_error(p, tp_here(p), PARSE_RANGE_DOTS) }
+    return tp_advance(p)
+}
+
 tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
@@ -705,13 +712,13 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
         if tp_kind(p) == .In {
             tp_advance(p)
             after := tp_condition(p)
-            if tp_kind(p) == .Dot_Dot {
+            if tp_kind(p) == .Dot_Dot || tp_kind(p) == .Dot_Dot_Less {
                 if has_second { tp_error(p, tp_here(p), PARSE_RANGE_FOR_ONE_VAR) }
                 if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_RANGE) }
-                tp_advance(p)
+                dots := tp_range_dots(p)
                 high := tp_condition(p)
                 body := tp_loop_body(p)
-                return tp_node(p, .For_Range, kw, start, tree_rec_add(p.t, u32(first), u32(iter_type), u32(after), u32(high), body))
+                return tp_node(p, .For_Range, kw, start, tree_rec_add(p.t, u32(first), u32(iter_type), u32(after), u32(high), body), u32(dots))
             }
             body := tp_loop_body(p)
             return tp_node(p, .For_Each, kw, start, tree_rec_add(p.t, u32(first), tree_tokens_add(p.t, after_first[:]), u32(iter_type), u32(after), body), u32(by_ref))
@@ -1782,12 +1789,13 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             lo := tp_expr(p, 4)
             // (No `..`: `x in xs`, among a collection's items — hi none.)
             hi: Tree_Id
-            if tp_kind(p) == .Dot_Dot {
-                tp_advance(p)
+            dots: Token_Id
+            if tp_kind(p) == .Dot_Dot || tp_kind(p) == .Dot_Dot_Less {
+                dots = tp_range_dots(p)
                 tp_skip_newlines(p)
                 hi = tp_expr(p, 4)
             }
-            left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi)))
+            left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi), u32(dots)))
             continue
         }
         prec := tp_precedence(tp_kind(p))

@@ -7,7 +7,7 @@ module pafill
 
 fill :: fun(buf: ^[]i32) {
 	buf.len = buf.cap
-	for i in 0..i32(buf.len) {
+	for i in 0..<i32(buf.len) {
 		buf[i] = i * 10
 	}
 }

@@ -12,7 +12,7 @@ use mara.sdl
 
 // Each column's width: its widest text, title included, room around it.
 measure_columns :: fun(ui: ^Ui, p: ^Profile) {
-	for c in 0 .. p.columns.len {
+	for c in 0 ..< p.columns.len {
 		widest := text_width(&ui.text, column_title(p.columns[c])) + arrow_room(ui)
 		for row in p.rows {
 			widest = max_f32(widest, text_width(&ui.text, field_text(p, row.fields[c])))
@@ -24,7 +24,7 @@ measure_columns :: fun(ui: ^Ui, p: ^Profile) {
 // The table's width: its columns', the margins.
 table_width :: fun(p: ^Profile) -> f32 {
 	w := 2.0 * PAD
-	for c in 0 .. p.columns.len {
+	for c in 0 ..< p.columns.len {
 		w += p.widths[c]
 	}
 	return w
@@ -80,7 +80,7 @@ profile_click :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) {
 	top := table_top(ui, p, r)
 	if y < top or y >= top + row_height(ui) do return
 	left := r.x + PAD - ui.scroll_x
-	for c in 0 .. p.columns.len {
+	for c in 0 ..< p.columns.len {
 		if x >= left and x < left + p.widths[c] {
 			if p.sort_by == c {
 				p.descending = not p.descending
@@ -121,7 +121,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	fill(rd, r.x, top, r.w, row_h, ui.header)
 	ui.scroll_x = max_f32(0, min_f32(ui.scroll_x, table_width(p) - r.w))
 	left := r.x + PAD - ui.scroll_x
-	for c in 0 .. p.columns.len {
+	for c in 0 ..< p.columns.len {
 		title := column_title(p.columns[c])
 		color := ui.dim
 		if c == p.sort_by do color = ui.accent
@@ -141,7 +141,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
 	ui.hover_row = profile_hover(ui, p)
 	rows_top := top + row_h
-	for k in 0 .. shown {
+	for k in 0 ..< shown {
 		at := ui.scroll + k
 		if at >= p.rows.len do break
 		ry := rows_top + f32(k) * row_h
@@ -152,7 +152,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		}
 		row := p.rows[p.order[at]]
 		left = r.x + PAD - ui.scroll_x
-		for c in 0 .. p.columns.len {
+		for c in 0 ..< p.columns.len {
 			s := field_text(p, row.fields[c])
 			color := ui.ink
 			if p.columns[c] == 9 do color = ui.dim   // (where: quieter)
@@ -206,7 +206,7 @@ draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
 	size := arrow_room(ui)
 	half := floor_f32(size * 0.5)
 	top := floor_f32(y + (ui.text.line - half) * 0.5)
-	for k in 0 .. i64(half) {
+	for k in 0 ..< i64(half) {
 		inset := f32(k)
 		row_y := top + f32(k)
 		if not down do row_y = top + half - 1.0 - f32(k)

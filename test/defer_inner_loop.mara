@@ -8,7 +8,7 @@ module defer_inner_loop
 main :: fun() {
 	defer {
 		sum := 0
-		for i in 0..10 {
+		for i in 0..<10 {
 			if i == 1 do continue
 			if i == 4 do break
 			sum += i

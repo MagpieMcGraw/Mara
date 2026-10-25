@@ -10,7 +10,7 @@ module settled_literal_range_neg
 main :: fun() {
 	n : u16 = 3
 	f := -1
-	for k in 0..n {
+	for k in 0..<n {
 		if k == 1 do f = k
 	}
 	print(f < 0)

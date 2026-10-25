@@ -13,9 +13,9 @@ find :: fun(haystack: []utf8, needle: []utf8, start: i64 = 0) -> i64, bool {
 	if haystack.len < needle.len do return -1, false
 
 	end := haystack.len - needle.len + 1
-	for i in start..end {
+	for i in start..<end {
 		matched := true
-		for j in 0..needle.len {
+		for j in 0..<needle.len {
 			if haystack[i + j] != needle[j] {
 				matched = false
 				break
@@ -39,7 +39,7 @@ find_byte :: fun(s: []utf8, b: utf8) -> i64, bool {
 // care about the head of the string (`#include`, `#version`, etc.).
 starts_with :: fun(s: []utf8, prefix: []utf8) -> bool {
 	if s.len < prefix.len do return false
-	for i in 0..prefix.len {
+	for i in 0..<prefix.len {
 		if s[i] != prefix[i] do return false
 	}
 	return true
@@ -53,7 +53,7 @@ ends_with :: fun(s: []utf8, suffix: []utf8) -> bool {
 
 // Whether s has `what` anywhere in it.
 contains :: fun(s: []utf8, what: []utf8) -> bool {
-	for k in 0 .. s.len - what.len + 1 {
+	for k in 0 ..< s.len - what.len + 1 {
 		if s[k : k + what.len] == what do return true
 	}
 	return false
@@ -61,9 +61,9 @@ contains :: fun(s: []utf8, what: []utf8) -> bool {
 
 // Whether s has `what` anywhere in it, letters' case not minded: A to Z as a to z.
 contains_folded :: fun(s: []utf8, what: []utf8) -> bool {
-	for k in 0 .. s.len - what.len + 1 {
+	for k in 0 ..< s.len - what.len + 1 {
 		same := true
-		for i in 0 .. what.len {
+		for i in 0 ..< what.len {
 			if lower(s[k + i]) != lower(what[i]) {
 				same = false
 				break
@@ -145,7 +145,7 @@ char_at :: fun(s: []utf8, at: i64) -> u32, i64 {
 		return u32(0xFFFD), 1
 	}
 	if at + n > s.len do return u32(0xFFFD), s.len - at
-	for k in 1 .. n {
+	for k in 1 ..< n {
 		c = (c << 6) | (u32(s[at + k]) & 0x3F)
 	}
 	return c, n
@@ -156,7 +156,7 @@ char_at :: fun(s: []utf8, at: i64) -> u32, i64 {
 compare :: fun(a: []utf8, b: []utf8) -> i64 {
 	n := a.len
 	if b.len < n do n = b.len
-	for i in 0 .. n {
+	for i in 0 ..< n {
 		if a[i] < b[i] do return -1
 		if a[i] > b[i] do return 1
 	}
@@ -170,7 +170,7 @@ compare :: fun(a: []utf8, b: []utf8) -> i64 {
 compare_folded :: fun(a: []utf8, b: []utf8) -> i64 {
 	n := a.len
 	if b.len < n do n = b.len
-	for i in 0 .. n {
+	for i in 0 ..< n {
 		ca := lower(a[i])
 		cb := lower(b[i])
 		if ca < cb do return -1
@@ -235,7 +235,7 @@ int_text :: fun(n: i64) -> str64 {
 	}
 	out : str64
 	if n < 0 do &out + '-'
-	for i in 0 .. backwards.len {
+	for i in 0 ..< backwards.len {
 		&out + backwards[backwards.len - 1 - i]
 	}
 	return out

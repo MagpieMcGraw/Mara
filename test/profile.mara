@@ -18,7 +18,7 @@ square :: fun(x: i64) -> i64 {
 // A loop, no calls: timed.
 sum_to :: fun(n: i64) -> i64 {
 	total := 0
-	for i in 0..n { total += i }
+	for i in 0..<n { total += i }
 	return total
 }
 

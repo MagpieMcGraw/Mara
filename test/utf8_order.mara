@@ -19,7 +19,7 @@ main :: fun() {
 	ch : utf8 = 'A'
 	hi := utf8(0xC3)
 	print(ch < 65, ch <= 65, hi >= 0x80, ch >= 0x80, 0x80 <= hi, 65 == ch, ch != 66)
-	print(ch in 'A'..'Z', hi in 'A'..'Z', 'm' in 'a'..'z')
+	print(ch in 'A'..<'Z', hi in 'A'..<'Z', 'm' in 'a'..<'z')
 	n := 0
 	for c in "héllo" { if c >= 0x80 do n += 1 }
 	print("high bytes:", n)

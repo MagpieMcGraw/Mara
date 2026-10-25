@@ -170,7 +170,7 @@ front_panel :: fun(ui: ^Ui) -> i64 {
 bring_to_front :: fun(ui: ^Ui, i: i64) -> i64 {
 	last := ui.panels.len - 1
 	pn := ui.panels[i]
-	for k in i .. last {
+	for k in i ..< last {
 		ui.panels[k] = ui.panels[k + 1]
 	}
 	ui.panels[last] = pn
@@ -210,7 +210,7 @@ default_layout :: fun(ui: ^Ui) {
 // the least.
 clamp_panels :: fun(ui: ^Ui) {
 	top := bar_height(ui)
-	for i in 0 .. ui.panels.len {
+	for i in 0 ..< ui.panels.len {
 		b := ui.panels[i].box
 		b.w = max_f32(MIN_W, min_f32(b.w, ui.width))
 		b.h = max_f32(MIN_H, min_f32(b.h, ui.height - top))
@@ -461,7 +461,7 @@ menu_name :: fun(m: i64) -> str64 {
 // Menu m's button in the menu bar: after the ones before it.
 menu_button_rect :: fun(ui: ^Ui, m: i64) -> Rect {
 	x : f32 = 0
-	for k in 0 .. m {
+	for k in 0 ..< m {
 		x += text_width(&ui.text, menu_name(k)) + 2.0 * PAD
 	}
 	return Rect{x = x, y = 0, w = text_width(&ui.text, menu_name(m)) + 2.0 * PAD, h = bar_height(ui)}
@@ -469,7 +469,7 @@ menu_button_rect :: fun(ui: ^Ui, m: i64) -> Rect {
 
 // The menu button at (x, y); -1 for none.
 menu_button_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
-	for m in 0 .. MENUS {
+	for m in 0 ..< MENUS {
 		if inside(menu_button_rect(ui, m), x, y) do return m
 	}
 	return -1
@@ -506,7 +506,7 @@ menu_item_boxed :: fun(m: i64, k: i64) -> bool {
 // Menu m's width: its widest item's, a box to tick beside it, room.
 menu_width :: fun(ui: ^Ui, m: i64) -> f32 {
 	w : f32 = 0
-	for k in 0 .. menu_items(m) {
+	for k in 0 ..< menu_items(m) {
 		w = max_f32(w, text_width(&ui.text, menu_item_text(m, k)))
 	}
 	return ceil_f32(w + ui.text.line + 3.0 * PAD)
@@ -522,7 +522,7 @@ menu_item_rect :: fun(ui: ^Ui, m: i64, k: i64) -> Rect {
 
 // Menu m's item at (x, y); -1 for none.
 menu_item_at :: fun(ui: ^Ui, m: i64, x: f32, y: f32) -> i64 {
-	for k in 0 .. menu_items(m) {
+	for k in 0 ..< menu_items(m) {
 		if inside(menu_item_rect(ui, m, k), x, y) do return k
 	}
 	return -1
@@ -534,7 +534,7 @@ draw_menu_bar :: fun(ui: ^Ui) {
 	bar := bar_height(ui)
 	fill(r, 0, 0, ui.width, bar, ui.header)
 	fill(r, 0, bar - 1.0, ui.width, 1.0, ui.border)
-	for m in 0 .. MENUS {
+	for m in 0 ..< MENUS {
 		button := menu_button_rect(ui, m)
 		if ui.menu_open == m do fill(r, button.x, button.y, button.w, button.h - 1.0, ui.hover)
 		_ = text_draw(&ui.text, r, menu_name(m), button.x + PAD, ROW_PAD, ui.ink)
@@ -554,7 +554,7 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 	hovered := menu_item_at(ui, m, ui.mouse_x, ui.mouse_y)
 	ui.menu_hover = hovered
 	box := floor_f32(ui.text.line * 0.6)
-	for k in 0 .. n {
+	for k in 0 ..< n {
 		item := menu_item_rect(ui, m, k)
 		if k == hovered do fill(r, item.x, item.y, item.w, item.h, ui.hover)
 		if not menu_item_boxed(m, k) {
@@ -720,14 +720,14 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		}
 		if head == "theme" and words.len == 2 {
 			name := word_text(line, words[1])
-			for theme in 0 .. 3 {
+			for theme in 0 ..< 3 {
 				if same_folded(name, theme_name(theme)) do theme_set(ui, theme)
 			}
 		}
 		if head == "panel" and words.len == 7 {
 			name := word_text(line, words[1])
 			kind : i64 = -1
-			for k in 0 .. PANEL_KINDS {
+			for k in 0 ..< PANEL_KINDS {
 				if name == panel_name(k) do kind = k
 			}
 			if kind >= 0 and find_panel(ui, kind) < 0 and ui.panels.len < ui.panels.cap {

@@ -29,7 +29,7 @@ save :: fun(path: []utf8, text: []utf8) -> err {
 
 main :: fun() {
 	text : str256
-	for _ in 0 .. 10 {
+	for _ in 0 ..< 10 {
 		&text + "0123456789"
 	}
 	if bool(save(PATH, text)) or bool(save(EMPTY, "")) {

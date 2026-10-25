@@ -56,7 +56,7 @@ perf_timer_end :: fun(timer: ^Performance_Timer) {
     total, _ := time_since(timer.total_start)
 
     print("=== Performance ===")
-    for i in 0..timer.count {
+    for i in 0..<timer.count {
         print(" ", timer.names[i], ":", timer.times[i] * 1000, "ms")
     }
     print("  Total:", total * 1000, "ms")

@@ -18,7 +18,7 @@ Holder :: struct {
 
 main :: fun() {
     src : [8]byte
-    for i in 0..8 {
+    for i in 0..<8 {
         &src + u8(i + 1)   // 1,2,3,4,5,6,7,8
     }
 
@@ -37,7 +37,7 @@ main :: fun() {
 
     // field-access slice RHS — the cache's natural `obj.pixels` form
     back : [8!]byte
-    for i in 0..8 {
+    for i in 0..<8 {
         back[i] = u8(i + 10)   // 10..17
     }
     hold := Holder{ back[:] }

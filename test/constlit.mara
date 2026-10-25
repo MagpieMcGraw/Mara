@@ -50,7 +50,7 @@ main :: fun() -> i64 {
 
 	// ...inside a loop, and stored into a field
 	acc : f32 = 0
-	for i in 0..4 {
+	for i in 0..<4 {
 		t.uv = ATLAS_TEXTURE.uv
 		acc = acc + t.uv[1]
 	}

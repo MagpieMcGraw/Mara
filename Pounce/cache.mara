@@ -85,7 +85,7 @@ cache_toc_bytes :: fun(count: i64) -> i64 {
 entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
     n := name.len
     if n > 64 do n = 64
-    for i in 0..n {
+    for i in 0..<n {
         e.name[i] = name[i]
     }
     e.name_len = u32(n)
@@ -94,7 +94,7 @@ entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
 // Reconstruct the entry's name as a str64.
 entry_name :: fun(e: ^Cache_Entry) -> str64 {
     out : str64
-    for i in 0..i64(e.name_len) {
+    for i in 0..<i64(e.name_len) {
         &out + e.name[i]
     }
     return out
@@ -123,7 +123,7 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
     count := blobs.len
     off := cache_put_header(toc, count)   // absolute payload start
 
-    for i in 0..count {
+    for i in 0..<count {
         b := blobs[i]
         e : Cache_Entry
         entry_set_name(&e, b.name)
@@ -140,7 +140,7 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
 
     head := toc[0 : cache_toc_bytes(count)]
     _ = file_write(id, &head)?
-    for i in 0..count {
+    for i in 0..<count {
         px := blobs[i].pixels
         _ = file_write(id, &px)?
     }
@@ -154,7 +154,7 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
     base := cache_put_header(toc, count)   // absolute payload start
     dcur : i64 = 0                         // cursor within `data`
 
-    for i in 0..count {
+    for i in 0..<count {
         b := blobs[i]
         vcount := b.mesh.vertices.len
         icount := b.mesh.indices.len

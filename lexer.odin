@@ -99,7 +99,8 @@ Token_Kind :: enum u8 {
     Hash,         // #
     Dollar,       // $
     At,           // @
-    Dot_Dot,      // .. — exclusive range operator (only form)
+    Dot_Dot,      // .. — a range that includes its end: `1..n`
+    Dot_Dot_Less, // ..< — a range that stops before its end: `0..<n`
     Shift_Left,   // <<
     Shift_Right,  // >>
 
@@ -144,7 +145,7 @@ TOKEN_TEXTS := [Token_Kind][2]string{
     .Shift_Left_Equal = {"<<=", ""}, .Shift_Right_Equal = {">>=", ""},
     .Arrow = {"->", ""}, .Bang = {"!", ""}, .Question = {"?", ""}, .Double_Colon = {"::", ""},
     .Ampersand = {"&", ""}, .Pipe = {"|", ""}, .Tilde = {"~", ""}, .Caret = {"^", ""}, .Hash = {"#", ""},
-    .Dollar = {"$", ""}, .At = {"@", ""}, .Dot_Dot = {"..", ""}, .Shift_Left = {"<<", ""}, .Shift_Right = {">>", ""},
+    .Dollar = {"$", ""}, .At = {"@", ""}, .Dot_Dot = {"..", ""}, .Dot_Dot_Less = {"..<", ""},.Shift_Left = {"<<", ""}, .Shift_Right = {">>", ""},
     .Left_Paren = {"(", ""}, .Right_Paren = {")", ""}, .Left_Brace = {"{", ""}, .Right_Brace = {"}", ""},
     .Left_Bracket = {"[", ""}, .Right_Bracket = {"]", ""}, .Comma = {",", ""}, .Dot = {".", ""},
     .Colon = {":", ""}, .Semicolon = {";", ""}, .Newline = {"<newline>", ""},
@@ -668,10 +669,10 @@ next_token :: proc(l: ^Lexer) -> Token {
     case '|': return op(l, 2, .Or_Equal) if c1 == '=' else op(l, 1, .Pipe)
     case '~': return op(l, 2, .Xor_Equal) if c1 == '=' else op(l, 1, .Tilde)
     case ':': return op(l, 2, .Double_Colon) if c1 == ':' else op(l, 1, .Colon)
-    // .. is the (exclusive) range operator. The legacy `..<` form was
-    // dropped — `..` is the only spelling. Use `n+1` on the upper bound
-    // when you want to include the endpoint.
-    case '.': return op(l, 2, .Dot_Dot) if c1 == '.' else op(l, 1, .Dot)
+    // (`a..b`, a range that includes b; `a..<b`, one that stops before it.)
+    case '.':
+        if c1 == '.' { return op(l, 3, .Dot_Dot_Less) if c2 == '<' else op(l, 2, .Dot_Dot) }
+        return op(l, 1, .Dot)
     case '(': return op(l, 1, .Left_Paren)
     case ')': return op(l, 1, .Right_Paren)
     case '{': return op(l, 1, .Left_Brace)

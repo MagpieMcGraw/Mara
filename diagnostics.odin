@@ -186,6 +186,7 @@ op_str :: proc(op: Token_Kind) -> string {
     case .Shift_Left_Equal:  return "<<="
     case .Shift_Right_Equal: return ">>="
     case .Dot_Dot:       return ".."
+    case .Dot_Dot_Less:  return "..<"
     }
     return fmt.tprintf("%v", op)
 }
@@ -223,6 +224,7 @@ PARSE_FOREIGN_NEEDS_STATIC_LIB    :: "foreign block needs `static_lib`, got `%s`
 PARSE_NESTED_IF_EXPR              :: "nested if-expressions are not allowed"
 PARSE_MATCH_NEEDS_SUBJECT         :: "match needs a subject value to dispatch on — write `match <union-value> {{ ... }}`; subject-less `match {{ }}` was removed, use if/elif for predicate branching"
 PARSE_RANGE_FOR_ONE_VAR           :: "range-for loop takes one variable, not two"
+PARSE_RANGE_DOTS                  :: "a range up to its end, not including it, is written `..<` now: `0..<n`"
 PARSE_REF_LOOP_RANGE              :: "`&` before a loop's name takes each item of a collection where it is — a range's counter is a number, not an item: drop the `&`"
 PARSE_REF_LOOP_NO_IN              :: "`for &name` loops over a collection: `for &item in items`"
 PARSE_EXPECTED_TYPE               :: "expected type, got %v \"%s\""

@@ -182,7 +182,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	// faster, they'd queue to be shown, behind the mouse — a click's, a
 	// dragged panel's.)
 	_ = SetRenderVSync(ui.renderer, 1)
-	for id in 0 .. 12 {
+	for id in 0 ..< 12 {
 		ui.cursors[id] = CreateSystemCursor(i32(id))
 	}
 	measure(&ui)

@@ -40,6 +40,6 @@ main :: fun() {
 	h.big.a[0] = 21
 	p := &h.big.a[0]
 	h.big = first_doubled(p)
-	for i in 0 .. 3 { h.big = step(h.big) }
+	for i in 0 ..< 3 { h.big = step(h.big) }
 	print(h.big.a[0], h.big.a[1])
 }

@@ -74,7 +74,7 @@ test_hex_literals :: fun() {
 // ============================================================================
 
 check :: fun(label: []utf8, x: i64, lo: i64, hi: i64) {
-	if x in lo..hi {
+	if x in lo..<hi {
 		print(label, "in")
 	else
 		print(label, "out")
@@ -82,7 +82,7 @@ check :: fun(label: []utf8, x: i64, lo: i64, hi: i64) {
 }
 
 check_not :: fun(label: []utf8, x: i64, lo: i64, hi: i64) {
-	if x not in lo..hi {
+	if x not in lo..<hi {
 		print(label, "out")
 	else
 		print(label, "in")
@@ -761,7 +761,7 @@ defer_if_scope :: fun() {
 }
 
 defer_loop_iter :: fun() {
-	for i in 0..3 {
+	for i in 0..<3 {
 		defer print("loop-defer")
 		print("iter")
 	}
@@ -846,7 +846,7 @@ Loca :: struct {
 
 make_loca :: fun(n: i32) -> loca: Loca {
 	loca.offsets.len = i64(n)
-	for i in 0..n {
+	for i in 0..<n {
 		loca.offsets[i] = u32(i * 10)
 	}
 	return loca
@@ -992,7 +992,7 @@ test_take_return :: fun() {
 }
 
 fill :: fun(pairs: ^[]Pair, base: i64) {
-	for i in 0..pairs.len {
+	for i in 0..<pairs.len {
 		pairs[i].a = base + i64(i) * 10
 		pairs[i].b = base + i64(i) * 10 + 1
 	}
@@ -1056,7 +1056,7 @@ test_pa_literal :: fun() {
 	print("after literal: len:", c.items.len, "cap:", c.items.cap)
 	storage : [256]byte
 	storage.len = 64
-	for i in 0..32 {
+	for i in 0..<32 {
 		storage[i*2] = u8(0)
 		storage[i*2 + 1] = u8(i + 1)
 	}
@@ -1073,7 +1073,7 @@ test_runtime_cap :: fun() {
 	n : i32 = 7
 	buf := room[0:n]
 	print("buf.len:", buf.len, "buf.cap:", buf.cap)
-	for i in 0..7 {
+	for i in 0..<7 {
 		buf[i32(i)] = i32(i) * 10
 	}
 	for v, i in buf {
@@ -1087,7 +1087,7 @@ test_runtime_cap :: fun() {
 fill_manual :: fun(n: i32, buf: []byte) {
 	off : [64]u16
 	off.len = i64(n)
-	for i in 0..n {
+	for i in 0..<n {
 		off[i] = (u16(buf[i*2]) << 8) | u16(buf[i*2 + 1])
 	}
 	print("manual -> len:", off.len, "cap:", off.cap)
@@ -1099,7 +1099,7 @@ fill_manual :: fun(n: i32, buf: []byte) {
 test_runtime_pa :: fun() {
 	buf : [64]byte
 	buf.len = 64
-	for i in 0..32 {
+	for i in 0..<32 {
 		buf[i*2]     = u8(0)
 		buf[i*2 + 1] = u8(i + 1)
 	}
@@ -1212,7 +1212,7 @@ read_into :: fun(n: i32, buf: []byte) {
 test_reassign_byteread :: fun() {
 	buf : [64]byte
 	buf.len = 64
-	for i in 0..32 {
+	for i in 0..<32 {
 		buf[i*2]     = u8(0)
 		buf[i*2 + 1] = u8(i + 1)
 	}
@@ -1468,7 +1468,7 @@ test_multiline_str :: fun() {
 GLYPHS :: " .,-~:;=!*#$@"
 
 test_const_string_index :: fun() {
-	for i in 0..13 {
+	for i in 0..<13 {
 		row : [1!]utf8
 		row[0] = GLYPHS[i]
 		print(row)

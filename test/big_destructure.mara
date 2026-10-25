@@ -36,7 +36,7 @@ sum :: fun(k: i64) -> i64, err {
 }
 
 main :: fun() {
-	for round in 0 .. 3 {
+	for round in 0 ..< 3 {
 		b, k := big(round)
 		print(b.cells[299], k)
 	}

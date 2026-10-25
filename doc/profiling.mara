@@ -37,12 +37,12 @@ wrap :: fun(x: i64) -> i64 {
 // Loops: timed. Its self time has wrap's in it.
 step :: fun(seed: i64) -> i64 {
 	t := seed
-	for i in 0..10000 { t = wrap(t + i) }
+	for i in 0..<10000 { t = wrap(t + i) }
 	return t
 }
 
 main :: fun() {
 	s := 0
-	for frame in 0..100 { s += step(frame) }
+	for frame in 0..<100 { s += step(frame) }
 	print(s)
 }

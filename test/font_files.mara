@@ -71,7 +71,7 @@ show_compound :: fun() -> err {
 	lo_y := i64(b.points[4].y)
 	hi_x := lo_x
 	hi_y := lo_y
-	for i in 4 .. b.points.len {
+	for i in 4 ..< b.points.len {
 		lo_x = min_int(lo_x, i64(b.points[i].x))
 		lo_y = min_int(lo_y, i64(b.points[i].y))
 		hi_x = max_int(hi_x, i64(b.points[i].x))

@@ -165,7 +165,7 @@ escape_len :: fun(s: []utf8, at: i64) -> i64 {
 // Whether n hex digits start at s[at].
 hex_run :: fun(s: []utf8, at: i64, n: i64) -> bool {
 	if at + n > s.len do return false
-	for k in at .. at + n {
+	for k in at ..< at + n {
 		c := s[k]
 		if not ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) do return false
 	}
@@ -366,7 +366,7 @@ draw_doc_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 
 // Whether s has a backtick from k on.
 tick_after :: fun(s: []utf8, k: i64) -> bool {
-	for i in k .. s.len {
+	for i in k ..< s.len {
 		if s[i] == '`' do return true
 	}
 	return false

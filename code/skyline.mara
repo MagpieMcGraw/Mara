@@ -54,7 +54,7 @@ pack_rect :: fun(sky: ^Skyline, w: i64, h: i64) -> i64, i64, bool {
 	best_y   := 0
 	best_idx := -1
 
-	for idx in 0..sky.nodes.len {
+	for idx in 0..<sky.nodes.len {
 		candidate_y, fits := skyline_fit_test(sky, idx, w)
 		if not fits do continue
 		if candidate_y + h > sky.height do continue
@@ -126,7 +126,7 @@ skyline_insert :: fun(sky: ^Skyline, start_idx: i64, x: i64, new_y: i64, w: i64)
 	if delta < 0 {
 		// Multiple middle nodes consumed — close the gap by shifting left.
 		shift := -delta
-		for j in (start_idx + replacement_size)..(sky.nodes.len - shift) {
+		for j in (start_idx + replacement_size)..<(sky.nodes.len - shift) {
 			sky.nodes[j] = sky.nodes[j + shift]
 		}
 	elif delta > 0
@@ -153,7 +153,7 @@ skyline_insert :: fun(sky: ^Skyline, start_idx: i64, x: i64, new_y: i64, w: i64)
 		if i > start_idx + 1 do break
 		if sky.nodes[i].y == sky.nodes[i + 1].y {
 			sky.nodes[i].width += sky.nodes[i + 1].width
-			for j in (i + 1)..(sky.nodes.len - 1) {
+			for j in (i + 1)..<(sky.nodes.len - 1) {
 				sky.nodes[j] = sky.nodes[j + 1]
 			}
 			sky.nodes.len -= 1

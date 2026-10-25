@@ -7,5 +7,5 @@ use mara.core
 // `&` before a loop's name is for a collection's items: not a range's counter.
 
 main :: fun() {
-	for &i in 0..3 { print(i) }
+	for &i in 0..<3 { print(i) }
 }

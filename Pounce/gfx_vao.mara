@@ -100,7 +100,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     stride :: size_of(Instance)
 
     // MVP Matrix (locations 1-4) - each column is a vec4
-    for i in 0..4 {
+    for i in 0..<4 {
         loc := u32(1 + i)
         offset := i * size_of(Vec4)
         gl.EnableVertexAttribArray(loc)

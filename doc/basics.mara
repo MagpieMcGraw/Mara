@@ -101,7 +101,7 @@ example_fun :: fun() {
 
 	// A default, used when the call leaves it out.
 	greet :: fun(name: []utf8, times := 1) {
-		for i in 0 .. times do print("hi", name)
+		for i in 0 ..< times do print("hi", name)
 	}
 	greet("Ada")                           // hi Ada
 	greet("Bob", 2)                        // hi Bob, twice
@@ -191,7 +191,7 @@ example_do :: fun() {
 	n := 3
 	if n > 2 do print("big")               // big
 	else do print("small")
-	for i in 0 .. n do print(i)            // 0, 1, 2
+	for i in 0 ..< n do print(i)            // 0, 1, 2
 }
 
 // `for`, `in`: a loop — code repeated over a range of numbers, over the items of an array, or while a condition holds.
@@ -217,7 +217,7 @@ example_do :: fun() {
 // some item of xs is x (`==` as their type has it: text, the same
 // characters) — mara.core's includes. `not in`: the opposite.
 example_for :: fun() {
-	for i in 0 .. 3 {
+	for i in 0 ..< 3 {
 		print("round", i)                  // round 0, round 1, round 2
 	}
 
@@ -236,7 +236,7 @@ example_for :: fun() {
 	}
 	print(n)                               // 243
 
-	if n in 200 .. 300 do print("in range")   // in range
+	if n in 200 ..< 300 do print("in range")   // in range
 
 	left : i64 = 3
 	for c in countdown(&left) {
@@ -254,7 +254,7 @@ countdown :: fun(left: ^i64) -> i64, bool {
 //
 // Both act on the innermost loop they're in.
 example_break :: fun() {
-	for i in 0 .. 10 {
+	for i in 0 ..< 10 {
 		if i % 2 == 1 do continue          // odd ones skipped
 		if i > 6 do break                  // stops at 8
 		print(i)                           // 0, 2, 4, 6
@@ -783,7 +783,7 @@ example_Self :: fun() {
 // every item is written before it's read.
 example_void :: fun() {
 	squares : [8!]i64 = void
-	for i in 0 .. 8 do squares[i] = i * i
+	for i in 0 ..< 8 do squares[i] = i * i
 	print(squares[7])                      // 49
 }
 

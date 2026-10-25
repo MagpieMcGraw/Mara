@@ -24,7 +24,7 @@ main :: fun() {
 	sides : [Side]bool
 	print("slots:", seen.len, sides.len)
 
-	for n in 0 .. 4 {
+	for n in 0 ..< 4 {
 		seen[pick(n)] += 1
 	}
 	line : str64

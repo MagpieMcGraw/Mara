@@ -31,7 +31,7 @@ make_cells :: fun() -> [4!]Cell { return all Cell() }
 // argument (the gen_expr value-position path).
 sum_v :: fun(cs : [4!]Cell) -> i32 {
 	total : i32 = 0
-	for i in 0..4 { total = total + cs[i].v }
+	for i in 0..<4 { total = total + cs[i].v }
 	return total
 }
 

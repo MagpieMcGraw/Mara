@@ -60,7 +60,7 @@ Tree_Tag :: enum u8 {
     Arm_Dot,        // `.V`: main: the variant; a: list — the body
     Arm_Variant,    // `V`, `V binding`: main: the variant; a: list — the body; b: the binding
     Arm_Value,      // a: the value; b: list — the body
-    For_Range,      // `for i [: T] in lo..hi`: a: rec {var, type, lo, hi, body: list}
+    For_Range,      // `for i [: T] in lo..hi`: a: rec {var, type, lo, hi, body: list}; b: its `..` or `..<`
     For_Each,       // `for e[, i, …] [: T] in c`: a: rec {elem, the names after it: tokens, type, collection, body: list}
     For_C,          // `for init; cond; post`: a: rec {init, cond, post, body: list}
     For_Cond,       // `for cond`: a: the condition; b: list — the body
@@ -118,7 +118,7 @@ Tree_Tag :: enum u8 {
     Try,            // `x?`: main: `?`; a: the operand
     Binary,         // main: the operator; a, b: the operands
     In_Range,       // `x in lo..hi`, `x not in lo..hi`: main: `in` / `not`; a: the value;
-                    // b: rec {lo, hi} — hi none: `x in xs`, among xs's items
+                    // b: rec {lo, hi, its `..` or `..<`} — hi none: `x in xs`, among xs's items
     Call,           // `f(args)`, `i32(x)`: main: the callee; a: list — the args;
                     // b: an override literal (`Foo() {x = 1}`)
     Method_Call,    // `x.f(args)`: main: `.`; a: rec {receiver, name, args: list, overrides}
@@ -175,7 +175,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Arm_Dot        = {a = .List},
     .Arm_Variant    = {a = .List, b = .Token},
     .Arm_Value      = {a = .Node, b = .List},
-    .For_Range      = {a = .Rec, rec = {0 = .Token, 1 = .Node, 2 = .Node, 3 = .Node, 4 = .List}},
+    .For_Range      = {a = .Rec, b = .Token, rec = {0 = .Token, 1 = .Node, 2 = .Node, 3 = .Node, 4 = .List}},
     .For_Each       = {a = .Rec, b = .Token, rec = {0 = .Token, 1 = .Tokens, 2 = .Node, 3 = .Node, 4 = .List}},
     .For_C          = {a = .Rec, rec = {0 = .Node, 1 = .Node, 2 = .Node, 3 = .List}},
     .For_Cond       = {a = .Node, b = .List},
@@ -222,7 +222,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Deref          = {a = .Node, b = .Token},
     .Try            = {a = .Node},
     .Binary         = {a = .Node, b = .Node},
-    .In_Range       = {a = .Node, b = .Rec, rec = {0 = .Node, 1 = .Node}},
+    .In_Range       = {a = .Node, b = .Rec, rec = {0 = .Node, 1 = .Node, 2 = .Token}},
     .Call           = {a = .List, b = .Node},
     .Method_Call    = {a = .Rec, rec = {0 = .Node, 1 = .Token, 2 = .List, 3 = .Node}},
     .Field          = {a = .Node, b = .Token},
@@ -524,6 +524,7 @@ params_view :: proc(t: ^Tree, n: Tree_Id) -> Params_View {
 For_View :: struct {
     var, elem, index:       Token_Id,
     by_ref:                 Token_Id,     // `for &item in xs`: its `&` (b); 0 for a loop over copies
+    dots:                   Token_Id,     // a range's `..` (its end included) or `..<` (b)
     more:                   []Token_Id,   // a for-each's names after its index (a loop over a call's values)
     type_:                  Tree_Id,
     lo, hi, collection:     Tree_Id,
@@ -535,7 +536,7 @@ for_view :: proc(t: ^Tree, n: Tree_Id) -> For_View {
     #partial switch t.tag[n] {
     case .For_Range:
         r := tree_rec(t, t.a[n], 5)
-        return {var = Token_Id(r[0]), type_ = Tree_Id(r[1]), lo = Tree_Id(r[2]), hi = Tree_Id(r[3]), body = tree_list(t, r[4])}
+        return {var = Token_Id(r[0]), type_ = Tree_Id(r[1]), lo = Tree_Id(r[2]), hi = Tree_Id(r[3]), body = tree_list(t, r[4]), dots = Token_Id(t.b[n])}
     case .For_Each:
         r := tree_rec(t, t.a[n], 5)
         names := tree_token_list(t, r[1])
@@ -585,6 +586,13 @@ foreign_fun_view :: proc(t: ^Tree, n: Tree_Id) -> Foreign_Fun_View {
 
 // A two-field record's (a slice's bounds, an array type's size and index
 // type, an if expression's branches, a range's ends).
+// Whether an In_Range's or a For_Range's end is in it: written `..`, not
+// `..<`.
+range_includes_end :: proc(t: ^Tree, n: Tree_Id) -> bool {
+    dots := Token_Id(t.b[n]) if t.tag[n] == .For_Range else Token_Id(tree_rec(t, t.b[n], 3)[2])
+    return dots != 0 && build_tokens[dots].kind == .Dot_Dot
+}
+
 tree_pair :: proc(t: ^Tree, n: Tree_Id) -> (Tree_Id, Tree_Id) {
     r := tree_rec(t, t.b[n], 2)
     return Tree_Id(r[0]), Tree_Id(r[1])

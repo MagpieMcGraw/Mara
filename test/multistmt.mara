@@ -47,7 +47,7 @@ main :: fun() {
 
 	// loop body with two statements on the header's line
 	s := 0 t := 0
-	for i in 0..4 { s += i t += 1 }
+	for i in 0..<4 { s += i t += 1 }
 	assert(s == 6) assert(t == 4)
 
 	// call statements back to back

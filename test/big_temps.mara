@@ -44,7 +44,7 @@ drop :: fun(n: i64) -> Big { return plain_big(n) }
 // Every kind, in a function of its own, in a loop.
 work :: fun(rounds: i64) -> i64 {
 	sum := 0
-	for i in 0 .. rounds {
+	for i in 0 ..< rounds {
 		sum += total(plain_big(i))               // an argument
 		_ = drop(i)                              // a dropped result
 		sum += plain_big(i).n                    // a field of a call's result

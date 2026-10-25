@@ -64,7 +64,7 @@ SEEK_END :: 2   // relative to the end of the file
 // copy.
 get_file :: fun(path: []utf8) -> []utf8 {
 	start : i64 = 0
-	for i in 0 .. path.len {
+	for i in 0 ..< path.len {
 		if path_separator(path[i]) do start = i + 1
 	}
 	return path[start : path.len]
@@ -102,7 +102,7 @@ get_dir :: fun(path: []utf8) -> Path {
 // system, Windows' too (it takes either). Only on Windows: elsewhere a '\'
 // can be part of a name.
 slashes_forward :: fun(path: ^[]utf8) {
-	for k in 0 .. path.len {
+	for k in 0 ..< path.len {
 		if path[k] == '\\' do path[k] = '/'
 	}
 }
@@ -134,7 +134,7 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	x := trim_separators(a)
 	y := trim_separators(b)
 	if x.len != y.len do return false
-	for i in 0 .. x.len {
+	for i in 0 ..< x.len {
 		cx := x[i]
 		cy := y[i]
 		#if #windows {
@@ -919,7 +919,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if name.len > 200 do return NO_FILE, Connect_Failed
 		&full + "\\\\.\\pipe\\"
 		&full + name
-		for _ in 0 .. 5 {
+		for _ in 0 ..< 5 {
 			id := CreateFileA(cstring(full), GENERIC_READ | GENERIC_WRITE, 0, void, OPEN_EXISTING, 0, NO_FILE)
 			if id != INVALID_HANDLE_VALUE do return id
 			// (Each one taken, between one accept and the next: wait for one.)
@@ -1734,7 +1734,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			if uid == 0 do break
 		}
 		if path.len + n > 108 do return 0
-		for i in 0 .. n {
+		for i in 0 ..< n {
 			&path + digits[n - 1 - i]
 		}
 		at.family = AF_UNIX

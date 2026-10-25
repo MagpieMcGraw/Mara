@@ -140,7 +140,7 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	big : i64 = 1000000
 	code_lead := big
 	text_lead := big
-	for k in from.line .. to.line + 1 {
+	for k in from.line ..< to.line + 1 {
 		if l.lines[k].hidden do continue
 		if k == from.line and from.off > 0 do continue
 		s := line_text(l, k)
@@ -155,7 +155,7 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 	if code_lead == big do code_lead = 0
 	if text_lead == big do text_lead = 0
 	first := true
-	for k in from.line .. to.line + 1 {
+	for k in from.line ..< to.line + 1 {
 		if l.lines[k].hidden do continue
 		s := line_text(l, k)
 		lo : i64 = 0
@@ -173,10 +173,10 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 			lo = min_int(min_int(lead, lead_spaces(s)), hi)
 			if code {
 				n := lead_spaces(s[lo : hi])
-				for _ in 0 .. n / TAB_SPACES {
+				for _ in 0 ..< n / TAB_SPACES {
 					out + '\t'
 				}
-				for _ in 0 .. n % TAB_SPACES {
+				for _ in 0 ..< n % TAB_SPACES {
 					out + ' '
 				}
 				lo += n
@@ -212,7 +212,7 @@ select_rect :: fun(ui: ^Ui) -> Rect {
 
 // Nothing selected anywhere.
 unselect_all :: fun(ui: ^Ui) {
-	for k in 0 .. 2 {
+	for k in 0 ..< 2 {
 		ui.docs[k].anchor = ui.docs[k].caret
 	}
 	ui.asked.anchor = ui.asked.caret

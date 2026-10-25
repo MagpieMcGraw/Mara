@@ -175,20 +175,20 @@ theme_sublime :: fun(ui: ^Ui) {
 		word := text[at : end]
 		at = end
 		eq := -1
-		for k in 0 .. word.len {
+		for k in 0 ..< word.len {
 			if word[k] == '=' and eq < 0 do eq = k
 		}
 		if eq < 0 do continue
 		color, ok := hex_color(word[eq + 1 : word.len])
 		if not ok do continue
 		name := word[0 : eq]
-		for k in 0 .. PALETTE {
+		for k in 0 ..< PALETTE {
 			if name == palette_name(k) {
 				named[k] = color
 				has[k] = true
 			}
 		}
-		for k in 0 .. TOKENS {
+		for k in 0 ..< TOKENS {
 			if name == token_name(k) {
 				tokens[k] = color
 				token_has[k] = true
@@ -221,7 +221,7 @@ theme_sublime :: fun(ui: ^Ui) {
 	// (Code that isn't Mara's — a crash's calls — as Sublime colors a call.)
 	ui.code = plain
 	if token_has[TOKEN_CALL] do ui.code = tokens[TOKEN_CALL]
-	for k in 0 .. TOKENS {
+	for k in 0 ..< TOKENS {
 		ui.tokens[k] = plain
 		if token_has[k] do ui.tokens[k] = tokens[k]
 	}

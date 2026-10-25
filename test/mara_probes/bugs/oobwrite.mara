@@ -7,7 +7,7 @@ main :: () {
 	print("b before:", b[0], b[1], b[2], b[3])
 	print("a before:", a[0], a[1], a[2], a[3])
 	wide := b[pick(0):pick(12)]
-	for i in 0 .. 12 do wide[i] = -1
+	for i in 0 ..< 12 do wide[i] = -1
 	print("b after: ", b[0], b[1], b[2], b[3])
 	print("a after: ", a[0], a[1], a[2], a[3])
 }

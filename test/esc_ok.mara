@@ -45,7 +45,7 @@ choose_expr :: fun(c: bool, a: ^i64, b: ^i64) -> ^i64 {
 
 // returning a view of a slice param, from inside a loop
 first_positive :: fun(s: []i64) -> []i64 {
-	for i in 0..s.len {
+	for i in 0..<s.len {
 		if s[i] > 0 do return s[i:s.len]
 	}
 	return s[0:0]
@@ -103,7 +103,7 @@ main :: fun() {
 
 	// a block-local pointer into an outer array is fine to keep in an outer var
 	best := &arr[0]
-	for i in 0..4 {
+	for i in 0..<4 {
 		cur := &arr[i]
 		if cur^ > best^ do best = cur
 	}

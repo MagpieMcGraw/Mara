@@ -101,7 +101,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
     // default meshes
     prim_indices, prim_names := gfx.primitives_init(vao)
-    for i in 0..prim_names.cap {
+    for i in 0..<prim_names.cap {
         &a.meshes + Mesh{prim_names[i], prim_indices[i]}
     }
 

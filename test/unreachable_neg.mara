@@ -11,7 +11,7 @@ after_return :: fun(x: i64) {
 }
 
 in_loop :: fun(n: i64) -> i64 {
-	for i in 0..n {
+	for i in 0..<n {
 		if i > 2 {
 			break
 			print("dead after break")

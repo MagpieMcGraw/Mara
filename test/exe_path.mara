@@ -43,7 +43,7 @@ main :: fun() -> i64 {
 // Whether text has `part` in it.
 has :: fun(text: []utf8, part: []utf8) -> bool {
 	if text.len < part.len do return false
-	for k in 0 .. text.len - part.len + 1 {
+	for k in 0 ..< text.len - part.len + 1 {
 		if text[k : k + part.len] == part do return true
 	}
 	return false
