@@ -15,7 +15,7 @@ Pair :: struct {
 
 sum :: fun(entry: Pair) -> (run1: i64) {
 	run1 = entry.a
-	for i in 0 ..< 2 {
+	for i in 0:2 {
 		if i > 0 do run1 += entry.b
 	}
 	return run1

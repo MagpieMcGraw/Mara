@@ -65,7 +65,7 @@ sample :: fun(atlas: ^[]byte, x: f32, y: f32) -> f32 {
 	tx := fx - f32(x0)
 	ty := fy - f32(y0)
 	ch : [3!]f32
-	for c in 0 ..< 3 {
+	for c in 0:3 {
 		a := texel(atlas, x0, y0, c)
 		b := texel(atlas, x0 + 1, y0, c)
 		d := texel(atlas, x0, y0 + 1, c)

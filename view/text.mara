@@ -36,7 +36,7 @@ Color :: struct {
 // The font's glyphs, `pixels` high (its em), in a texture of the renderer's.
 text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err {
 	t.chars.len = 0
-	for c in 32 ..< 127 {
+	for c in 32:127 {
 		&t.chars + u32(c)
 	}
 	extra_text := EXTRA
@@ -52,7 +52,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 	// (Each texel white, its alpha the coverage.)
 	rgba : [ATLAS * ATLAS * 4]byte
 	rgba.len = rgba.cap
-	for i in 0 ..< atlas.len {
+	for i in 0:atlas.len {
 		rgba[i * 4] = u8(255)
 		rgba[i * 4 + 1] = u8(255)
 		rgba[i * 4 + 2] = u8(255)
@@ -118,7 +118,7 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 // A character's glyph: '?' for one the glyphs don't have.
 glyph_of :: fun(t: ^Text, c: u32) -> i64 {
 	if c >= 32 and c < 127 do return i64(c) - 32
-	for k in 95 ..< t.chars.len {
+	for k in 95:t.chars.len {
 		if t.chars[k] == c do return k
 	}
 	return i64('?') - 32

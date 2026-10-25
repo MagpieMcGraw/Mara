@@ -10,7 +10,7 @@ use mara.core
 //@ expect-fail: descending range
 
 main :: fun() -> i64 {
-	for i in 10 ..< 0 {
+	for i in 10:0 {
 		print(i)
 	}
 	return 0

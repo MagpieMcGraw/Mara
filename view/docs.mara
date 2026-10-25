@@ -139,7 +139,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 		return
 	}
 	docs_read(ui, d, dir)
-	for f in 0 ..< d.files.len {
+	for f in 0:d.files.len {
 		docs_scan(d, f, ex)
 	}
 	if ex.kind.len > 0 do docs_show_exact(d, l, ex)
@@ -232,7 +232,7 @@ docs_reload :: fun(ui: ^Ui) {
 // it have the same signature's first line (two systems' file_read), a space,
 // that line. (As many as it holds.)
 docs_open_folds :: fun(l: ^Lines, open: ^[16 * KB]utf8) {
-	for k in 0 ..< l.lines.len {
+	for k in 0:l.lines.len {
 		if not lines_fold_head(l, k) or l.lines[l.lines[k].fold_at].hidden do continue
 		s := line_text(l, k)
 		if open.len + s.len + 30 > open.cap do return
@@ -246,7 +246,7 @@ docs_open_folds :: fun(l: ^Lines, open: ^[16 * KB]utf8) {
 // The funs in l that `open` has a line for (docs_open_folds: a reload's),
 // their code shown again.
 docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
-	for k in 0 ..< l.lines.len {
+	for k in 0:l.lines.len {
 		if not lines_fold_head(l, k) do continue
 		key : [1100]utf8
 		&key + int_text(fold_same_above(l, k))
@@ -270,7 +270,7 @@ docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
 // How many folds above line k (a fold's first) start with the same line.
 fold_same_above :: fun(l: ^Lines, k: i64) -> i64 {
 	n : i64 = 0
-	for above in 0 ..< k {
+	for above in 0:k {
 		if lines_fold_head(l, above) and line_text(l, above) == line_text(l, k) do n += 1
 	}
 	return n
@@ -319,7 +319,7 @@ docs_words :: fun(d: ^Docs, asked: []utf8) {
 		}
 		if end - at >= 2 and d.words.len < d.words.cap and d.query.len + end - at <= d.query.cap {
 			w := Field{at = d.query.len, len = end - at}
-			for k in at ..< end {
+			for k in at:end {
 				&d.query + lower(asked[k])
 			}
 			&d.words + w
@@ -415,7 +415,7 @@ docs_add_file :: fun(d: ^Docs, path: []utf8) -> bool {
 // The file at a path among d.files — read now when it isn't: its place;
 // -1 when it can't be read.
 docs_file_of :: fun(d: ^Docs, path: []utf8) -> i64 {
-	for f in 0 ..< d.files.len {
+	for f in 0:d.files.len {
 		if same_path(d.files[f].path, path) do return f
 	}
 	if not docs_add_file(d, path) do return -1
@@ -715,7 +715,7 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 	// (A module by its last part: mara.os's is os.)
 	if fd.kind == DEF_MODULE {
 		last_dot : i64 = -1
-		for i in 0 ..< name.len {
+		for i in 0:name.len {
 			if name[i] == '.' do last_dot = i
 		}
 		name = name[last_dot + 1 : name.len]
@@ -726,7 +726,7 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 	if fd.kind == DEF_FIELD {
 		end := line_end(text, fd.at)
 		line := text[fd.at : end]
-		for i in 0 ..< line.len - 1 {
+		for i in 0 : line.len - 1 {
 			if line[i] == '/' and line[i + 1] == '/' {
 				trailing = line[i : line.len]
 				break
@@ -924,7 +924,7 @@ example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
 	if words.len == 0 do return name
 	first := text[words[0].at : words[0].at + words[0].len]
 	if first.len < 2 or first[0] != '`' do return name
-	for k in 1 ..< first.len {
+	for k in 1:first.len {
 		if first[k] == '`' do return first[1 : k]
 	}
 	return name
@@ -1182,7 +1182,7 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 	if sig == 0 or sig > most do sig = most
 	first := l.lines.len
 	at = from
-	for _ in 0 ..< most {
+	for _ in 0:most {
 		end := line_end(text, at)
 		lines_add_code(l, text[at : end], indent)
 		at = end + 1

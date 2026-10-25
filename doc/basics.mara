@@ -101,7 +101,7 @@ example_fun :: fun() {
 
 	// A default, used when the call leaves it out.
 	greet :: fun(name: []utf8, times := 1) {
-		for i in 0 ..< times do print("hi", name)
+		for i in 0:times do print("hi", name)
 	}
 	greet("Ada")                           // hi Ada
 	greet("Bob", 2)                        // hi Bob, twice
@@ -191,14 +191,15 @@ example_do :: fun() {
 	n := 3
 	if n > 2 do print("big")               // big
 	else do print("small")
-	for i in 0 ..< n do print(i)            // 0, 1, 2
+	for i in 0:n do print(i)            // 0, 1, 2
 }
 
 // `for`, `in`: a loop — code repeated over a range of numbers, over the items of an array, or while a condition holds.
 //
 // `for i in 1..10` counts 1 to 10: a range has its start and its end.
-// `for i in 0..<10` counts 0 to 9, stopping before its end — a count, n
-// times from 0, is `0..<n`. A range counts up only; one that ends before it
+// `for i in 0:10` counts 0 to 9, stopping before its end, as a slice
+// `x[0:10]` does — a count, n times from 0, is `0:n`. A range counts up
+// only; one that ends before it
 // starts runs no times. `for x in
 // xs` takes each item of an array, list, slice or text — or of one a
 // pointer points at, `xs: ^[]T` — the items there when it begins; `for x, i
@@ -215,7 +216,7 @@ example_do :: fun() {
 // counts the rounds, from 0: `for x, i in f()`. A lexer's loop:
 // `for t in next_token(&l)`.
 //
-// `in` is also a test: `x in 1..10` is whether 1 <= x <= 10, `x in 0..<10`
+// `in` is also a test: `x in 1..10` is whether 1 <= x <= 10, `x in 0:10`
 // whether 0 <= x < 10 (`c in 'a'..'z'`, a lower-case letter); `x in xs`, whether
 // some item of xs is x (`==` as their type has it: text, the same
 // characters) — mara.core's includes. `not in`: the opposite.
@@ -257,7 +258,7 @@ countdown :: fun(left: ^i64) -> i64, bool {
 //
 // Both act on the innermost loop they're in.
 example_break :: fun() {
-	for i in 0 ..< 10 {
+	for i in 0:10 {
 		if i % 2 == 1 do continue          // odd ones skipped
 		if i > 6 do break                  // stops at 8
 		print(i)                           // 0, 2, 4, 6
@@ -786,7 +787,7 @@ example_Self :: fun() {
 // every item is written before it's read.
 example_void :: fun() {
 	squares : [8!]i64 = void
-	for i in 0 ..< 8 do squares[i] = i * i
+	for i in 0:8 do squares[i] = i * i
 	print(squares[7])                      // 49
 }
 

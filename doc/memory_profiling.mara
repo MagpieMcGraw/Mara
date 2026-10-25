@@ -43,7 +43,7 @@ Item :: struct {
 // A local, once per call: it holds n.
 squares :: fun(n: i64) -> i64 {
 	found : [1000]i64
-	for k in 0 ..< n {
+	for k in 0:n {
 		&found + k * k
 	}
 	return found.len
@@ -51,12 +51,12 @@ squares :: fun(n: i64) -> i64 {
 
 main :: fun() {
 	total := 0
-	for n in 1 ..< 50 {
+	for n in 1:50 {
 		total += squares(n)    // squares.found: peak 49 of 1000
 	}
 
 	items : [100]Item
-	for k in 0 ..< 3 {
+	for k in 0:3 {
 		it : Item
 		it.name = "an item"    // Item.name: peak 7 of 64
 		it.count = k

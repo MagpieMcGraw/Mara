@@ -31,7 +31,7 @@ main :: fun() {
 	path : [64]utf8
 	src := "zinit.mara"
 	path.len = src.len
-	for i in 0..<src.len {
+	for i in 0:src.len {
 		path[i] = src[i]
 	}
 	data : [4096]byte = void

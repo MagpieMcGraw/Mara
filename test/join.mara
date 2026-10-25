@@ -28,7 +28,7 @@ show :: fun(s: []utf8) { print("argument:", s) }
 // Each item doubled: an array of the same size.
 doubled :: fun(a: [$N!]i64) -> [N!]i64 {
 	out := a
-	for k in 0 ..< N {
+	for k in 0:N {
 		out[k] = out[k] * 2
 	}
 	return out

@@ -736,7 +736,7 @@ rem_pio2_large :: fun(x: f64) -> i64, f64, f64 {
 	q := (i0 - 1) / 32
 	sh := u64((i0 - 1) % 32)
 	win : [6!]u64
-	for j in 0 ..< 6 {
+	for j in 0:6 {
 		a := two_over_pi[q + j]
 		if sh == 0 {
 			win[j] = a
@@ -749,7 +749,7 @@ rem_pio2_large :: fun(x: f64) -> i64, f64, f64 {
 	m_lo := m & 0xffffffff
 	m_hi := m >> 32
 	p : [8!]u64
-	for a in 0 ..< 6 {
+	for a in 0:6 {
 		f := win[5 - a]
 		t := f * m_lo + p[a]
 		p[a] = t & 0xffffffff
@@ -762,7 +762,7 @@ rem_pio2_large :: fun(x: f64) -> i64, f64, f64 {
 	n := i64(limb_bit(p[:], point) + 2 * limb_bit(p[:], point + 1))
 	f1 : u64 = 0   // (the fraction's first 64 bits)
 	f2 : u64 = 0   // (its next 64)
-	for b in 1 ..< 65 {
+	for b in 1:65 {
 		f1 = f1 | (limb_bit(p[:], point - b) << u64(64 - b))
 		f2 = f2 | (limb_bit(p[:], point - 64 - b) << u64(64 - b))
 	}
@@ -1025,10 +1025,10 @@ normalize :: dispatch {
 
 mat4_mul :: fun(a: Mat4, b: Mat4) -> Mat4 {
 	result : Mat4
-	for col in 0..<4 {
-		for row in 0..<4 {
+	for col in 0:4 {
+		for row in 0:4 {
 			sum : f32 = 0.0
-			for k in 0..<4 {
+			for k in 0:4 {
 				sum = sum + a[k][row] * b[col][k]
 			}
 			result[col][row] = sum
@@ -1048,7 +1048,7 @@ mat4_mul_vec4 :: fun(m: Mat4, v: Vec4) -> Vec4 {
 
 mat4_identity :: fun() -> Mat4 {
 	m : Mat4
-	for i in 0..<4 {
+	for i in 0:4 {
 		m[i][i] = 1.0
 	}
 	return m
@@ -1056,8 +1056,8 @@ mat4_identity :: fun() -> Mat4 {
 
 mat4_transpose :: fun(m: Mat4) -> Mat4 {
 	r : Mat4
-	for i in 0..<4 {
-		for j in 0..<4 {
+	for i in 0:4 {
+		for j in 0:4 {
 			r[i][j] = m[j][i]
 		}
 	}

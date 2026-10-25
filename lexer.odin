@@ -100,7 +100,7 @@ Token_Kind :: enum u8 {
     Dollar,       // $
     At,           // @
     Dot_Dot,      // .. — a range that includes its end: `1..n`
-    Dot_Dot_Less, // ..< — a range that stops before its end: `0..<n`
+    Dot_Dot_Less, // ..< — written `a:b` now, a range that stops before b (PARSE_RANGE_LESS)
     Shift_Left,   // <<
     Shift_Right,  // >>
 
@@ -669,7 +669,7 @@ next_token :: proc(l: ^Lexer) -> Token {
     case '|': return op(l, 2, .Or_Equal) if c1 == '=' else op(l, 1, .Pipe)
     case '~': return op(l, 2, .Xor_Equal) if c1 == '=' else op(l, 1, .Tilde)
     case ':': return op(l, 2, .Double_Colon) if c1 == ':' else op(l, 1, .Colon)
-    // (`a..b`, a range that includes b; `a..<b`, one that stops before it.)
+    // (`a..b`, a range that includes b; `a..<b` was `a:b`, said so.)
     case '.':
         if c1 == '.' { return op(l, 3, .Dot_Dot_Less) if c2 == '<' else op(l, 2, .Dot_Dot) }
         return op(l, 1, .Dot)

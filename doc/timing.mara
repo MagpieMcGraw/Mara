@@ -28,7 +28,7 @@ main :: fun() {
 	// How long a loop takes.
 	start := clock_ns()
 	sum : i64 = 0
-	for i in 0 ..< 1000000 {
+	for i in 0:1000000 {
 		sum += i % 7
 	}
 	took := clock_ns() - start
@@ -36,7 +36,7 @@ main :: fun() {
 
 	// Three frames: the work, then the rest of a 60th of a second asleep.
 	frame := 1000000000 / 60
-	for f in 0 ..< 3 {
+	for f in 0:3 {
 		frame_start := clock_ns()
 		// (a frame's work goes here)
 		rest := frame - (clock_ns() - frame_start)

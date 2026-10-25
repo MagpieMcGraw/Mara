@@ -101,7 +101,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
     // default meshes
     prim_indices, prim_names := gfx.primitives_init(vao)
-    for i in 0..<prim_names.cap {
+    for i in 0:prim_names.cap {
         &a.meshes + Mesh{prim_names[i], prim_indices[i]}
     }
 
@@ -176,7 +176,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 //     best_idx := -1
 //     best_pos := max(int)
 
-//     for i in 0..<a.texture_count {
+//     for i in 0:a.texture_count {
 //         pos := string_match(a.textures[i].name, query)
 //         if pos >= 0 && pos < best_pos {
 //             best_pos = pos
@@ -196,7 +196,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 //     best_idx := -1
 //     best_pos := max(int)
 
-//     for i in 0..<a.mesh_count {
+//     for i in 0:a.mesh_count {
 //         pos := string_match(a.meshes[i].name, query)
 //         if pos >= 0 && pos < best_pos {
 //             best_pos = pos
@@ -216,7 +216,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 //     best_idx := -1
 //     best_pos := max(int)
 
-//     for i in 0..<a.font_count {
+//     for i in 0:a.font_count {
 //         pos := string_match(a.fonts[i].name, query)
 //         if pos >= 0 && pos < best_pos {
 //             best_pos = pos
@@ -237,7 +237,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 //     best_idx := -1
 //     best_pos := max(int)
 
-//     for i in 0..<a.texture_count {
+//     for i in 0:a.texture_count {
 //         pos := string_match(a.textures[i].name, query)
 //         if pos >= 0 && pos < best_pos {
 //             best_pos = pos
@@ -253,7 +253,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 
 // // Check if a specific mesh is loaded
 // mesh_loaded :: proc(a: ^Assets, query: string) -> bool {
-//     for i in 0..<a.mesh_count {
+//     for i in 0:a.mesh_count {
 //         if string_match(a.meshes[i].name, query) >= 0 {
 //             return true
 //         }
@@ -263,7 +263,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
 
 // // Check if a specific font is loaded
 // font_loaded :: proc(a: ^Assets, query: string) -> bool {
-//     for i in 0..<a.font_count {
+//     for i in 0:a.font_count {
 //         if string_match(a.fonts[i].name, query) >= 0 {
 //             return true
 //         }

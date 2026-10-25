@@ -31,7 +31,7 @@ is_even_pair :: fun(p: Pair) -> bool { return p.n % 2 == 0 }
 main :: fun() {
 	storage : [512]byte
 	nums : [10!]i64
-	for k in 0 ..< 10 {
+	for k in 0:10 {
 		nums[k] = k
 	}
 

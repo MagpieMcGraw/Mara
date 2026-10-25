@@ -33,7 +33,7 @@ mk :: fun(n: f32) -> [3!]f32 {
 
 sum_table :: fun(n: i64) -> i64 {
 	s := 0
-	for i in 0..<n {
+	for i in 0:n {
 		s = s + PRIME[i]
 	}
 	return s

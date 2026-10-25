@@ -5,7 +5,7 @@ module defer_break_neg
 // A defer's block can't break the loop around it.
 
 main :: fun() {
-	for i in 0..<3 {
+	for i in 0:3 {
 		defer {
 			if i == 1 do break
 			print("defer", i)

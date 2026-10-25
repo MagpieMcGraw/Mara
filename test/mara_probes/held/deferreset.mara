@@ -4,11 +4,11 @@ use mara.memory
 #allocator Arena_Basic(4 * MB)
 scribble :: () {
 	junk : [2000!]i64
-	for i in 0 ..< 2000 do junk[i] = 9
+	for i in 0:2000 do junk[i] = 9
 }
 work :: () {
 	big : [2000!]i64
-	for i in 0 ..< 2000 do big[i] = 7
+	for i in 0:2000 do big[i] = 7
 	defer print("in defer, big[0] =", big[0])
 	defer scribble()
 }

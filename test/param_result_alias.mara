@@ -72,7 +72,7 @@ main :: fun() {
 	// not at the call's temp (which the next iteration overwrites).
 	names : [2!]Named
 	letters := "pq"
-	for i in 0..<2 { names[i] = tag(names[i], letters[i]) }
+	for i in 0:2 { names[i] = tag(names[i], letters[i]) }
 	print("strings=% % %", names[0].name, names[1].name, names[0].n + names[1].n)
 
 	q := P{x = 1, y = 2}

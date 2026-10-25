@@ -22,7 +22,7 @@ Shp :: struct { obj: Obj, visual: Vis }
 
 fill :: fun(out: ^[]Vec3, n: i64) {
 	out.len = 0
-	for i in 0..<(n) {
+	for i in 0:(n) {
 		x := f32(i)
 		out[i] = Vec3{x, x * 2, 0}
 		out.len = i + 1

@@ -39,7 +39,7 @@ arrays :: fun(which: bool) -> i64 {
 		print("small", a[0])
 	else
 		a : [64!]i64
-		for i in 0..<64 { a[i] = 7 }
+		for i in 0:64 { a[i] = 7 }
 		print("big", a[63])
 	}
 	return guard
@@ -56,11 +56,11 @@ scalars :: fun(which: bool) {
 }
 
 structs :: fun() {
-	for k in 0..<2 {
+	for k in 0:2 {
 		v := Small{a = k}
 		if k == 1 do print("struct", 0, v.a)
 	}
-	for k in 0..<2 {
+	for k in 0:2 {
 		v := Big{b = 9}
 		v.a[31] = 9
 		if k == 1 do print("struct", v.a[31], v.b)
@@ -68,7 +68,7 @@ structs :: fun() {
 }
 
 redeclared :: fun() {
-	for k in 0..<2 {
+	for k in 0:2 {
 		v : Small
 		v.a += 5
 		n : i64
@@ -76,7 +76,7 @@ redeclared :: fun() {
 		arr : [4!]i64
 		arr[1] += 2
 	}
-	for k in 0..<2 {
+	for k in 0:2 {
 		v := Small{0}
 		n : i64
 		arr : [4!]i64

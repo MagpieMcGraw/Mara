@@ -48,7 +48,7 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 		end -= 1
 	}
 	start : i64 = 0
-	for k in 1 ..< end {
+	for k in 1:end {
 		if text[k - 1] == '\n' and text[k] == '\n' do start = k + 1
 	}
 	// (Its first line when; the calls in code's color; the rest, what went

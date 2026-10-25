@@ -72,7 +72,7 @@ main :: fun() -> i64 {
 	rasterize_coverage(&l, scale, -left, top, w, h, &acc, &cell)
 	mid := h / 2
 	most := 0
-	for x in 0 ..< w {
+	for x in 0:w {
 		most = max_int(most, i64(cell[mid * w + x]))
 	}
 	print("l stem %, beside it %", most, i64(cell[mid * w]))

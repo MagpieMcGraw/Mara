@@ -50,7 +50,7 @@ ESZ :: size_of(Entry)
 set_name :: fun(e: ^Entry, name: str64) {
     n := i64(name.len)
     if n > 64 do n = 64
-    for i in 0..<n {
+    for i in 0:n {
         e.name[i] = name[i]
     }
     e.name_len = u32(n)
@@ -58,7 +58,7 @@ set_name :: fun(e: ^Entry, name: str64) {
 
 get_name :: fun(e: ^Entry, out: ^str64) {
     out.len = 0
-    for i in 0..<i64(e.name_len) {
+    for i in 0:i64(e.name_len) {
         out + e.name[i]
     }
 }
@@ -147,7 +147,7 @@ main :: fun() {
 
     // entry 0: a byte payload, staged into `data`
     px : [16]u8
-    for i in 0..<16 {
+    for i in 0:16 {
         &px + u8(i * 3)
     }
     e0 : Entry
@@ -157,14 +157,14 @@ main :: fun() {
     e0.data_offset = u64(base + dcur)
     e0.data_size = u64(px.len)
     toc[HSZ + 0 * ESZ] = e0
-    for j in 0..<i64(px.len) {
+    for j in 0:i64(px.len) {
         data[dcur + j] = px[j]
     }
     dcur += i64(px.len)
 
     // entry 1: a mesh payload (typed element blits)
     verts : [3]Vtx
-    for i in 0..<3 {
+    for i in 0:3 {
         v : Vtx
         v.position = [f32(i), f32(i) + 0.5, f32(i) + 0.25]
         v.normal   = [0.0, 1.0, 0.0]
@@ -188,11 +188,11 @@ main :: fun() {
     e1.data_offset = u64(base + dcur)
     e1.data_size = u64(vbytes + ibytes)
     toc[HSZ + 1 * ESZ] = e1
-    for v in 0..<vcount {
+    for v in 0:vcount {
         data[dcur + v * size_of(Vtx)] = verts[v]
     }
     ioff := dcur + vbytes
-    for k in 0..<icount {
+    for k in 0:icount {
         data[ioff + k * size_of(u32)] = inds[k]
     }
     dcur += vbytes + ibytes

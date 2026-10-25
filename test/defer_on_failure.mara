@@ -69,7 +69,7 @@ fell_off :: fun(log: ^i64) -> err {
 // Each pass's `defer?` is its own: a `continue` leaves it unrun, the failure
 // in the third pass runs that pass's.
 looped :: fun(log: ^i64) -> err {
-	for i in 0..<4 {
+	for i in 0:4 {
 		defer? add(log, 9)
 		add(log, 1)
 		if i < 2 do continue
@@ -79,7 +79,7 @@ looped :: fun(log: ^i64) -> err {
 }
 
 broke :: fun(log: ^i64) -> err {
-	for i in 0..<4 {
+	for i in 0:4 {
 		defer? add(log, 9)
 		add(log, 1)
 		if i == 1 do break

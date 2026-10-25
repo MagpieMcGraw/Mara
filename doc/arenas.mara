@@ -36,7 +36,7 @@ main :: fun() {
 
 	// Each round's buffer is freed when the round ends, so going round
 	// doesn't use up the arena.
-	for round in 0..<3 {
+	for round in 0:3 {
 		buffer : [4 * KB]byte
 		print("round", round, "buffer holds", buffer.cap)
 	}

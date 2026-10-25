@@ -15,6 +15,7 @@ Tree_Parser :: struct {
     file:          string,
     errors:        int,
     no_struct_lit: bool,      // a `{` after an expression opens a body (a condition's)
+    slice_low:     bool,      // a `:` after an expression is a slice's, not a range's (`x[a:b]`'s a)
     // The statement's first error at a boundary — a line's end, a block's,
     // the file's — where a token was missing; -1 for none. Recovery stops
     // there, though the parse went on past it (tp_recover).
@@ -681,8 +682,20 @@ tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
     return tp_block(p)
 }
 
-// A range's `..` (its end included) or `..<` (stopped before), taken.
+// Whether a range's mark is next: `..`, its end included; `:`, stopped
+// before it (`0:n`, as a slice `x[0:n]` is) — not inside a slice's
+// brackets before its own `:`; `..<`, said to be written `:`.
+tp_is_range_mark :: proc(p: ^Tree_Parser) -> bool {
+    #partial switch tp_kind(p) {
+    case .Dot_Dot, .Dot_Dot_Less: return true
+    case .Colon:                  return !p.slice_low
+    }
+    return false
+}
+
+// A range's `..` or `:`, taken. (`..<` was `:` for a day: said so.)
 tp_range_dots :: proc(p: ^Tree_Parser) -> Token_Id {
+    if tp_kind(p) == .Dot_Dot_Less { tp_error(p, tp_here(p), PARSE_RANGE_LESS) }
     return tp_advance(p)
 }
 
@@ -710,7 +723,7 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
         if tp_kind(p) == .In {
             tp_advance(p)
             after := tp_condition(p)
-            if tp_kind(p) == .Dot_Dot || tp_kind(p) == .Dot_Dot_Less {
+            if tp_is_range_mark(p) {
                 if has_second { tp_error(p, tp_here(p), PARSE_RANGE_FOR_ONE_VAR) }
                 if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_RANGE) }
                 dots := tp_range_dots(p)
@@ -942,7 +955,10 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
             #partial switch tp_kind(p) {
             case .Left_Bracket:
                 tp_advance(p)
+                saved_low := p.slice_low
+                p.slice_low = true
                 low := tp_expr(p)
+                p.slice_low = saved_low
                 if tp_kind(p) == .Colon {
                     tp_advance(p)
                     high: Tree_Id
@@ -1788,7 +1804,7 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             // (No `..`: `x in xs`, among a collection's items — hi none.)
             hi: Tree_Id
             dots: Token_Id
-            if tp_kind(p) == .Dot_Dot || tp_kind(p) == .Dot_Dot_Less {
+            if tp_is_range_mark(p) {
                 dots = tp_range_dots(p)
                 tp_skip_newlines(p)
                 hi = tp_expr(p, 4)
@@ -1948,8 +1964,9 @@ tp_is_typed_array_literal :: proc(p: ^Tree_Parser) -> bool {
 // A call's arguments, its `(` consumed; its override literal after.
 tp_call_args :: proc(p: ^Tree_Parser) -> u32 {
     tp_skip_newlines(p)
-    saved := p.no_struct_lit
-    p.no_struct_lit = false
+    saved, saved_low := p.no_struct_lit, p.slice_low
+    p.no_struct_lit, p.slice_low = false, false
+    defer p.slice_low = saved_low
     args := tp_items()
     if tp_kind(p) != .Right_Paren {
         append(&args, tp_expr(p))
@@ -2033,10 +2050,10 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
     case .Char:   result = tp_leaf(p, .Char, tp_advance(p))
     case .Left_Paren:
         paren := tp_advance(p)
-        saved := p.no_struct_lit
-        p.no_struct_lit = false
+        saved, saved_low := p.no_struct_lit, p.slice_low
+        p.no_struct_lit, p.slice_low = false, false
         inner := tp_expr(p)
-        p.no_struct_lit = saved
+        p.no_struct_lit, p.slice_low = saved, saved_low
         tp_expect(p, .Right_Paren)
         result = tp_node(p, .Paren, paren, start, u32(inner))
     case .Left_Bracket:
@@ -2179,7 +2196,10 @@ tp_postfix :: proc(p: ^Tree_Parser, operand: Tree_Id, allow_dot: bool) -> Tree_I
                 tp_expect(p, .Right_Bracket)
                 result = tp_node(p, .Slice, br, first, u32(result), tree_rec_add(p.t, 0, u32(high)))
             } else {
+                saved_low := p.slice_low
+                p.slice_low = true
                 index := tp_expr(p)
+                p.slice_low = saved_low
                 if tp_kind(p) == .Colon {
                     tp_advance(p)
                     high: Tree_Id

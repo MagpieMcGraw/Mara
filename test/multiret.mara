@@ -7,7 +7,7 @@ module multiret
 // codegen with "not an array or slice". The scalar sibling (`n`) must still bind.
 
 fill :: fun(buf: ^[]byte, n: i64) -> []byte, i64 {
-    for i in 0..<n {
+    for i in 0:n {
         buf[i] = u8(i * 3)
     }
     return buf[0:n], n          // a slice viewing the caller's buffer + a count
@@ -19,7 +19,7 @@ main :: fun() {
     view, cnt := fill(&b, 4)    // view aliases back[0:4]
 
     sum : i64 = 0
-    for i in 0..<view.len {      // .len on a multi-return slice
+    for i in 0:view.len {      // .len on a multi-return slice
         sum += i64(view[i])     // indexing a multi-return slice
     }
 

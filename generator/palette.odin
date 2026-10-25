@@ -501,7 +501,7 @@ gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Str
 }
 
 // Emit a function that builds a partial array of structs containing Vec3
-// fields, slices over it, runs a `for i in 0..<slc.len` loop, and
+// fields, slices over it, runs a `for i in 0:slc.len` loop, and
 // accumulates a Vec3 via mara.math's overloaded +/-/* dispatch. This is
 // the cross-cutting pattern: partial array allocation, slice header,
 // indexed loop, overload resolution per iteration. Returns the call-site
@@ -529,7 +529,7 @@ gen_slice_loop_fn :: proc(b: ^strings.Builder, name: string, vec3_structs: []Str
     // on a partial array doesn't depend on `.len` (which is 0 here).
     w(b, "\tslc : []", chosen.name, " = items[0:", n_str, "]\n")
     w(b, "\tacc : Vec3\n")
-    w(b, "\tfor i in 0..<slc.len {\n")
+    w(b, "\tfor i in 0:slc.len {\n")
 
     n_ops := 2 + rand.int_max(4) // 2..5 ops per iteration
     for k in 0..<n_ops {

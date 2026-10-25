@@ -18,7 +18,7 @@ main :: fun() {
 	nodes.len = 1
 
 	sum : f32 = 0.0
-	for i in 0..<i32(nodes.len) {
+	for i in 0:i32(nodes.len) {
 		sum = sum + nodes[i].x + nodes[i].y
 	}
 	assert(sum > 2.9)

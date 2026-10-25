@@ -6,7 +6,7 @@ main :: () {
 	views := slice([:1][]i64, &storage)
 	&views + nums[:]
 	print("before: view len", views[0].len, "view[0]", views[0][0])
-	for i in 0 ..< 16 do storage[i] = u8(0x41)
+	for i in 0:16 do storage[i] = u8(0x41)
 	print("after: view len", views[0].len)
 	print("view[0]", views[0][0])
 }

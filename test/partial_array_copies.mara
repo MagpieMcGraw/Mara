@@ -111,7 +111,7 @@ main :: fun() {
 	}
 
 	big : [8!]Named
-	for i in 0..<8 { big[i] = mk("big") }
+	for i in 0:8 { big[i] = mk("big") }
 	big2 := big
 	big[7].name[0] = 'B'
 	print("bigarray=% %", big2[7].name, big[7].name)

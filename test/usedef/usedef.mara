@@ -23,7 +23,7 @@ flow :: fun(p: i64) -> i64 {
 		a = p + 2
 	}
 	b := a
-	for i in 0..<p {
+	for i in 0:p {
 		b = b + i
 	}
 	return b

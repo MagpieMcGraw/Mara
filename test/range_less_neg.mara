@@ -1,0 +1,11 @@
+module range_less_neg
+
+//@ expect-fail: a range up to its end, not including it, is written `a:b` (as a slice is): `0:n`
+
+// `..<` was the mark of a range that stops before its end for a day; it is
+// written `a:b` now, as a slice is (range_inclusive). Said so, not read as
+// either.
+
+main :: fun() {
+	for i in 0..<3 do print(i)
+}

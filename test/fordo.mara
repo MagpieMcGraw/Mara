@@ -4,7 +4,7 @@ module fordo
 main :: fun() {
 	// range-for
 	sum := 0
-	for i in 0..<5 do sum += i
+	for i in 0:5 do sum += i
 	assert(sum == 10)
 
 	// collection-for
@@ -25,7 +25,7 @@ main :: fun() {
 
 	// block bodies still parse
 	count := 0
-	for i in 0..<3 {
+	for i in 0:3 {
 		count += 1
 	}
 	assert(count == 3)

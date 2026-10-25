@@ -12,7 +12,7 @@ use mara.core
 //@ expect-output: found: true false false
 
 contains :: fun(s: []utf8, word: []utf8) -> bool {
-	for k in 0 ..< s.len - word.len + 1 {
+	for k in 0 : s.len - word.len + 1 {
 		if s[k : k + word.len] == word do return true
 	}
 	return false
@@ -21,21 +21,21 @@ contains :: fun(s: []utf8, word: []utf8) -> bool {
 main :: fun() -> i64 {
 	n := 5
 	same := 0
-	for _ in n ..< n {
+	for _ in n:n {
 		same += 1
 	}
 	one := 0
-	for _ in n ..< n + 1 {
+	for _ in n : n + 1 {
 		one += 1
 	}
 	below := 0
-	for _ in n ..< n - 3 {
+	for _ in n : n - 3 {
 		below += 1
 	}
 	lo : u32 = 5
 	hi : u32 = 2
 	unsigned := 0
-	for _ in lo ..< hi {
+	for _ in lo:hi {
 		unsigned += 1
 	}
 	print("runs:", same, one, below, unsigned)

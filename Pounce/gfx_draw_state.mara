@@ -118,7 +118,7 @@ draw_state_assert_ready :: fun(state: ^DrawState) {
 }
 
 get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
-    for i in 0..<state.batch_count {
+    for i in 0:state.batch_count {
         if state.batches[i].mesh_id == mesh_id {
             return &state.batches[i]
         }
@@ -142,7 +142,7 @@ draw_state_append :: fun(
 	if objects.len == 0 do return
 	if visuals.len == 0 do return
 
-	for i in 0..<objects.len {
+	for i in 0:objects.len {
 		if not objects[i].exists do continue
 
 		// FOR NOW ASSUMING DIRECT MAPPING FROM OBJ TO VIS
@@ -199,7 +199,7 @@ append_one :: fun(
 }
 
 draw_state_reset :: fun(state: ^DrawState) {
-    for i in 0..<state.batch_count {
+    for i in 0:state.batch_count {
         state.batches[i].instances.len = 0
     }
     state.batch_count = 0
@@ -214,13 +214,13 @@ draw_state_render :: fun(state: ^DrawState) {
 
 	gpu_offset: isize = 0
 	state.command_count = 0
-	for i in 0..<state.batch_count {
+	for i in 0:state.batch_count {
 	    batch := &state.batches[i]
 	    // instances.len is the single source of truth for the instance count
 	    // (the append operator maintains it). No second counter to fall out of sync.
 	    count := batch.instances.len
 	    if count == 0 do continue
-	    if batch.mesh_id not in 0..<vao_info.mesh_count do continue
+	    if batch.mesh_id not in 0:vao_info.mesh_count do continue
 	    if state.command_count > 255 do break
 	    mesh := vao_info.meshes[batch.mesh_id]
 	    state.commands[state.command_count] = DrawCommand{

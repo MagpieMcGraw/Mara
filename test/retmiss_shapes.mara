@@ -6,7 +6,7 @@ module retmiss_shapes
 Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
 
 looped :: fun(n: i64) -> i64 {       // the loop can finish
-	for i in 0..<n {
+	for i in 0:n {
 		if i == 3 { return i }
 	}
 }

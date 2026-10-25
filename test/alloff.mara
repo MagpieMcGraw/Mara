@@ -65,13 +65,13 @@ main :: fun() -> i64 {
 	// shape toward one corner and these go unequal.
 	first_in_left : i32 = -1
 	first_in_right : i32 = -1
-	for dx in 0..<cx {
+	for dx in 0:cx {
 		if first_in_left < 0 and inside(&ab, 1024, dx, cy) do first_in_left = dx
 		if first_in_right < 0 and inside(&ab, 1024, glyph.w - 1 - dx, cy) do first_in_right = dx
 	}
 	first_in_top : i32 = -1
 	first_in_bottom : i32 = -1
-	for dy in 0..<cy {
+	for dy in 0:cy {
 		if first_in_top < 0 and inside(&ab, 1024, cx, dy) do first_in_top = dy
 		if first_in_bottom < 0 and inside(&ab, 1024, cx, glyph.h - 1 - dy) do first_in_bottom = dy
 	}

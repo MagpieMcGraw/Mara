@@ -17,7 +17,7 @@ get :: fun(k: i64) -> i64, err {
 }
 
 main :: fun() {
-	for k in 0 ..< 3 {
+	for k in 0:3 {
 		_, e := get(k)
 		if bool(e) {
 			print(k, "error", e, bool(e))

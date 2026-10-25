@@ -138,7 +138,7 @@ read_columns :: fun(p: ^Profile, line: Field) -> bool {
 	at = 0
 	for at < words.len {
 		found : i64 = -1
-		for k in 0 ..< KNOWN {
+		for k in 0:KNOWN {
 			title := column_title(k)
 			end := at + title.len
 			if end <= words.len {
@@ -182,7 +182,7 @@ profile_row :: fun(p: ^Profile, line: Field) -> bool {
 		at = w.at + w.len
 	}
 	ok := n == p.columns.len
-	for c in 0 ..< p.columns.len {
+	for c in 0:p.columns.len {
 		if not ok do break
 		if is_number(p.columns[c]) {
 			v, number := parse_number(field_text(p, row.fields[c]))
@@ -222,7 +222,7 @@ profile_sort :: fun(p: ^Profile) {
 	n := p.rows.len
 	p.order.len = n
 	p.scratch.len = n
-	for i in 0 ..< n {
+	for i in 0:n {
 		p.order[i] = i
 	}
 	if p.sort_by < 0 do return
@@ -236,7 +236,7 @@ profile_sort :: fun(p: ^Profile) {
 			merge_runs(p, lo, mid, hi)
 			lo += 2 * width
 		}
-		for i in 0 ..< n {
+		for i in 0:n {
 			p.order[i] = p.scratch[i]
 		}
 		width *= 2

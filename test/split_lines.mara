@@ -34,9 +34,9 @@ main :: fun() {
 	print("sum:", total)
 
 	n := 5
-	inside := n in 1 ..<
+	inside := n in 1 :
 		10
-	outside := n in 6 ..<
+	outside := n in 6 :
 		10
 	print("inside:", inside, outside)
 

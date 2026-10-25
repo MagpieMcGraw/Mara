@@ -15,7 +15,7 @@ use mara.core
 
 main :: fun() {
 	n := 0
-	for _ in 0 ..< 5 {
+	for _ in 0:5 {
 		n += 1
 	}
 	print("counted", n)

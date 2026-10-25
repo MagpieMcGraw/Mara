@@ -140,7 +140,7 @@ child :: (c: Case) {
 	loop
 		match t {
 		Ref r
-			for i in 0 ..< 2 {
+			for i in 0:2 {
 				print(r.p^)
 				t = Num{n = 0x4141414141}
 			}
@@ -160,7 +160,7 @@ child :: (c: Case) {
 		print(four.len)
 	overfill
 		big : [8]i64
-		for i in 0 ..< 5 do &big + i
+		for i in 0:5 do &big + i
 		s := Short(big)
 		print(s.len)
 	slicefill

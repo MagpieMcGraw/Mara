@@ -334,7 +334,7 @@ tc_binary :: proc(k: ^TC, n: Tree_Id) -> Type {
 TC_In_Range :: struct {
     value, lo, hi: Tree_Id,
     span:          Span,
-    includes_end:  bool,   // written `..`: x <= hi; `..<`: x < hi
+    includes_end:  bool,   // written `..`: x <= hi; `:`: x < hi
 }
 
 // `(x + a) + b`, `+` a join both times (mara.core's join, join_item): the

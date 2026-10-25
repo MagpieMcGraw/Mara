@@ -21,7 +21,7 @@ V :: struct {
 // Three Vs' bytes into buf.
 fill :: fun(buf: ^[]byte) {
 	src : [3!]V
-	for k in 0 ..< 3 { src[k] = V{a = u32(k + 1), b = u32(10 * (k + 1))} }
+	for k in 0:3 { src[k] = V{a = u32(k + 1), b = u32(10 * (k + 1))} }
 	buf[0:24] = src
 }
 

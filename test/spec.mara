@@ -80,7 +80,7 @@ the_three_array_shapes :: fun() {
 //
 //     buf[buf.len] = x   buf.len += 1
 //
-// Range-for over a partial array (or a slice) walks the LIVE region, 0..<len —
+// Range-for over a partial array (or a slice) walks the LIVE region, 0:len —
 // never the capacity — so a freshly grown buffer iterates only what you put in.
 // -----------------------------------------------------------------------------
 partial_array_growth :: fun() {

@@ -5,6 +5,8 @@ use mara.core
 //@ expect-output: incl 3
 //@ expect-output: excl 2
 //@ expect-output: u8 to 255: 6
+//@ expect-output: typed, stops before: 5
+//@ expect-output: range in a slice: 2
 //@ expect-output: empty at run time: 0
 //@ expect-output: continue: 5
 //@ expect-output: break: 7
@@ -12,18 +14,25 @@ use mara.core
 //@ expect-output: to a variable: 10
 //@ expect-output: in: true false false false
 
-// `a..b` includes b; `a..<b` stops before it. A loop over `a..b` stops at
+// `a..b` includes b; `a:b` stops before it. A loop over `a..b` stops at
 // b before counting past it, so a range ending at its counter type's last
 // value (`250..255` on a u8) ends rather than wrapping round. An end below
 // the start, worked out as the program runs, runs zero times. `x in a..b`
-// is whether a <= x <= b; `x in a..<b`, a <= x < b.
+// is whether a <= x <= b; `x in a:b`, a <= x < b. (Inside a slice's
+// brackets, before its own `:`, a `:` is the slice's.)
 
 main :: fun() {
 	for i in 0..3 do print("incl", i)
-	for i in 0..<3 do print("excl", i)
+	for i in 0:3 do print("excl", i)
 	count := 0
 	for b : u8 in 250..255 { count += 1 }
 	print("u8 to 255:", count)
+	steps := 0
+	for b : u8 in 250:255 { steps += 1 }
+	print("typed, stops before:", steps)
+	xs : [4!]i64 = {1, 2, 3, 4}
+	part := xs[0:(if 2 in 0:5 do 2 else 1)]
+	print("range in a slice:", part.len)
 	n := -1
 	runs := 0
 	for i in 0..n { runs += 1 }
@@ -48,5 +57,5 @@ main :: fun() {
 	for i in 1..e { sum += i }
 	print("to a variable:", sum)
 	c : utf8 = 'z'
-	print("in:", c in 'a'..'z', '{' in 'a'..'z', 3 not in 1..3, 3 in 1..<3)
+	print("in:", c in 'a'..'z', '{' in 'a'..'z', 3 not in 1..3, 3 in 1:3)
 }

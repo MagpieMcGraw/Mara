@@ -105,7 +105,7 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 	at := l.text.len
 	for ch in s {
 		if ch == '\t' {
-			for _ in 0 ..< TAB_SPACES {
+			for _ in 0:TAB_SPACES {
 				&l.text + ' '
 			}
 		elif ch != '\r'
@@ -140,11 +140,11 @@ lines_link :: fun(l: ^Lines, link: []utf8) {
 // or hide the `count` lines right after them, hidden at first.
 lines_fold :: fun(l: ^Lines, k: i64, n: i64, count: i64) {
 	if count <= 0 do return
-	for i in k ..< k + n {
+	for i in k : k + n {
 		l.lines[i].fold_at = k + n
 		l.lines[i].fold_len = count
 	}
-	for i in k + n ..< k + n + count {
+	for i in k + n : k + n + count {
 		l.lines[i].hidden = true
 	}
 }
@@ -166,7 +166,7 @@ lines_toggle :: fun(l: ^Lines, k: i64) -> bool {
 	ln := l.lines[k]
 	if ln.fold_len == 0 do return false
 	hide := not l.lines[ln.fold_at].hidden
-	for i in ln.fold_at ..< ln.fold_at + ln.fold_len {
+	for i in ln.fold_at : ln.fold_at + ln.fold_len {
 		l.lines[i].hidden = hide
 	}
 	l.rows_w = -1.0
@@ -335,7 +335,7 @@ line_width :: fun(ui: ^Ui, style: i64, s: []utf8, from: i64, to: i64) -> f32 {
 // opening one paired with one after it.
 doc_code_at :: fun(s: []utf8, at: i64) -> bool {
 	code := false
-	for k in 0 ..< at {
+	for k in 0:at {
 		if s[k] == '`' and (code or tick_after(s, k + 1)) do code = not code
 	}
 	return code
@@ -370,7 +370,7 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	from, to := lines_selection(l)
 	selected := spot_before(from, to)
 	y := r.y + PAD
-	for k in 0 ..< shown {
+	for k in 0:shown {
 		at := l.scroll + k
 		if at >= l.rows.len do break
 		row := l.rows[at]
@@ -410,14 +410,14 @@ draw_fold_mark :: fun(ui: ^Ui, x: f32, y: f32, open: bool) {
 	t := floor_f32(s * 0.75)             // ... the other way
 	if open {
 		top := y + floor_f32((ui.text.line - t) / 2.0)
-		for i in 0 ..< i64(t) {
+		for i in 0 : i64(t) {
 			w := s * (1.0 - (f32(i) + 0.5) / t)
 			fill(ui.renderer, x - w / 2.0, top + f32(i), w, 1.0, ui.dim)
 		}
 		return
 	}
 	top := y + floor_f32((ui.text.line - s) / 2.0)
-	for i in 0 ..< i64(s) {
+	for i in 0 : i64(s) {
 		off := abs_f32(f32(i) + 0.5 - s / 2.0) / (s / 2.0)
 		fill(ui.renderer, x - t / 2.0, top + f32(i), t * (1.0 - off), 1.0, ui.dim)
 	}

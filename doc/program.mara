@@ -48,7 +48,7 @@ main :: fun() {
 	if count > 5 do print("more than five")
 
 	// `for` over a range, from the first number up to (not including) the second.
-	for i in 0..<3 {
+	for i in 0:3 {
 		print("round", i)
 	}
 }

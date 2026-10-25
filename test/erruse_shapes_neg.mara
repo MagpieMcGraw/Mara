@@ -52,7 +52,7 @@ in_defer :: fun() {
 }
 
 in_loop :: fun() {
-	for i in 0..<3 {
+	for i in 0:3 {
 		e := just_err(i)           // unused, in a loop body
 	}
 }

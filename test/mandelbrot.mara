@@ -13,9 +13,9 @@ main :: fun() {
 	// 13 glyphs + null terminator; index 0..GRADIENT_LEN, never reach the null.
 	gradient := " .,-~:;=!*#$@"
 
-	for py in 0..<HEIGHT {
+	for py in 0:HEIGHT {
 		row : [WIDTH!]utf8
-		for px in 0..<WIDTH {
+		for px in 0:WIDTH {
 			// Pixel -> complex plane. Real spans [-2.5, 1.0], imaginary
 			// spans [-1.0, 1.0]. Terminal rows are roughly 2x taller
 			// than columns, so the 3.5:2.0 ratio comes out about square.

@@ -64,7 +64,7 @@ main :: () {
 
 	seen : i64 = -1
 	rounds := 0
-	for i in 0 ..< 5 {
+	for i in 0:5 {
 		with &lib {
 			if i == 1 do continue
 			if i == 2 do break

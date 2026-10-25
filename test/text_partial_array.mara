@@ -22,7 +22,7 @@ pair :: fun() -> str64, i64 {
 Entry :: struct { name: [64!]utf8, n: i64 }
 set_name :: fun(e: ^Entry, name: str64) {
 	e.n = name.len
-	for i in 0 ..< name.len { e.name[i] = name[i] }
+	for i in 0:name.len { e.name[i] = name[i] }
 }
 
 main :: fun() {
