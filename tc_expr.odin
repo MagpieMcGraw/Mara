@@ -221,6 +221,9 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         kc.visiting = false
         return ct
     }
+    // (A completion's placeholder: the type its place takes, for the
+    // variants of it — completions_at.)
+    if !ok && k.annot.complete_hint == nil && strings.contains(name, COMPLETE_HERE) { k.annot.complete_hint = hint }
     if !ok && ref.kind == .None {
         // (A variant's name by itself, naming nothing else: the one enum in
         // sight with that variant — `mode := help`.)

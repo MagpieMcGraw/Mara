@@ -19,6 +19,7 @@ CAMERA = os.path.join(POUNCE, "camera.mara")
 FIELDS = os.path.join(ROOT, "test", "lsp_fields", "fields.mara")   # (moved_fields)
 FUNS = os.path.join(ROOT, "test", "lsp_fields", "funs.mara")       # (moved_results_params)
 CALLS = os.path.join(ROOT, "test", "lsp_fields", "calls.mara")     # (new_call_put_right)
+VARIANTS = os.path.join(ROOT, "test", "lsp_fields", "variants.mara")   # (variants_completed)
 SHAPES = os.path.join(ROOT, "test", "edit_shapes", "shapes.mara")  # (fun_calls)
 
 
@@ -282,6 +283,27 @@ def new_call_put_right(c):
     c.notify("textDocument/didClose", {"textDocument": doc})
 
 
+def variants_completed(c):
+    """A name completed where a type with variants goes — a fun's return, its
+    result a Token_Kind: the type's variants offered, though no variant is a
+    name in sight by itself (the checker finds a bare one, not the resolver)."""
+    text = open(VARIANTS, encoding="utf-8", newline="").read()
+    doc = {"uri": uri(VARIANTS)}
+    c.notify("textDocument/didOpen", {"textDocument": {"uri": uri(VARIANTS), "languageId": "mara", "version": 1, "text": text}})
+    check("variants: opened, no errors", c.diagnostics_for(VARIANTS) == [], None)
+    edited = text.replace("\treturn Mystery", "\treturn Na", 1)
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(VARIANTS), "version": 2}, "contentChanges": [{"text": edited}]})
+    lines = edited.split("\n")
+    line_no = next(i for i, l in enumerate(lines) if "return Na" in l)
+    at = lines[line_no].index("return Na") + len("return Na")
+    r = c.request("textDocument/completion", {"textDocument": doc, "position": {"line": line_no, "character": at}})
+    items = {i["label"]: i for i in (r or {}).get("items", [])}
+    check("variants: a return's, its result type's", {"Mystery", "Name", "Number"} <= set(items)
+          and items["Name"]["kind"] == 20, sorted(items)[:30])
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(VARIANTS), "version": 3}, "contentChanges": [{"text": text}]})
+    c.notify("textDocument/didClose", {"textDocument": doc})
+
+
 def fun_calls(c):
     """At a fun's name, asked: the fun called where its body is written out."""
     text = open(SHAPES, encoding="utf-8", newline="").read()
@@ -474,6 +496,7 @@ def main():
     moved_fields(c)
     moved_results_params(c)
     new_call_put_right(c)
+    variants_completed(c)
     fun_calls(c)
     code = c.close()
     check("shut down: exit 0", code == 0, code)

@@ -93,6 +93,10 @@ Annotations :: struct {
     // Each fun's and struct's definition node (its Fun_Def or Struct_Def; a
     // variant's body), in its instance → its scope (tc_scope_body).
     decls:     map[Syntax_Id]^Type_Scope,
+    // The type the place of a completion's placeholder takes (COMPLETE_HERE,
+    // a name written there): `return Eli|` in a fun giving a Kind — Kind.
+    // Its variants are offered first (completions_at). Nil: none known.
+    complete_hint: Type,
 
     // What only some nodes have, by node and instance (annot_key).
     callees:    map[Syntax_Id]^Type_Scope,   // a call's fun, or struct (its constructor)

@@ -8,8 +8,10 @@ import "core:strings"
 // after whatever of the name is typed already — so it parses, and the check
 // of that text says what the placeholder is. A field's name, after `x.`:
 // x's type's members — a struct's fields and methods, a module's names, a
-// union's or an enum's variants, a slice's len and cap. Else a name: what the
-// resolver had in sight at the placeholder (resolve_completing) — the
+// union's or an enum's variants, a slice's len and cap. Else a name: the
+// variants of the type its place takes, when that's an enum or a union
+// (`return Eli|`, the fun giving a Kind: the checker's, complete_hint); what
+// the resolver had in sight at the placeholder (resolve_completing) — the
 // variables declared before it, the params, what the scopes out to the
 // module define and use — and the keywords.
 // ---------------------------------------------------------------------------
@@ -55,7 +57,9 @@ completions_at :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a:
         return c.out[:]
     }
 
-    // A name: what's in sight where it's written.
+    // A name: the variants of the type its place takes, first; then what's
+    // in sight where it's written.
+    if a != nil && a.complete_hint != nil { completion_variants(&c, a.complete_hint) }
     if checked != nil && checked.rs != nil {
         for seen in checked.rs.in_sight { completion_named(&c, checked, seen.name, seen.ref) }
     }
@@ -92,6 +96,14 @@ completion_add :: proc(c: ^Completions, label: string, kind: Completion_Kind, de
     if label == "" || label in c.seen || strings.has_prefix(label, "__") || strings.contains(label, COMPLETE_HERE) { return }
     c.seen[label] = true
     append(&c.out, Completion{label, kind, detail})
+}
+
+// An enum's or a union's variants, the type named (`Kind`) as their detail.
+completion_variants :: proc(c: ^Completions, t: Type) {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Enum:  for name in v.variants { completion_add(c, name, .Variant, type_name(t)) }
+    case ^Type_Union: for name in v.variants { completion_add(c, name, .Variant, type_name(t)) }
+    }
 }
 
 // A type's members, through pointers and distinct types to what has some.

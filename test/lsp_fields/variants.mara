@@ -1,0 +1,11 @@
+module fields
+
+// (mara lsp, test/lsp_test.py: a name completed where a Token_Kind goes —
+// a return of kind_of's — offers Token_Kind's variants.)
+
+Token_Kind :: union { Mystery = 0  Name  Number }
+
+kind_of :: fun(c: utf8) -> Token_Kind {
+	if c >= '0' and c <= '9' do return Number
+	return Mystery
+}
