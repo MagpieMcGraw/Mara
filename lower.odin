@@ -831,6 +831,7 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
                             index_name = tc_text(index_tok) if index_tok != 0 else "",
                             var_tok = var_tok, elem_tok = elem_tok, index_tok = index_tok,
                             is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
+                            includes_end = tag == .For_Range && range_includes_end(t, s),
                             end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number,
                             body_arena = lw_scope_arena(k, v.body, b.body.returned)})
     defer graph_build_for_end(b, &fl)
@@ -1280,7 +1281,7 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             switch {
             case in_range == nil: r = lw_expr(k, side, .Value, w)
             case i == 0:          r = lw_binary_op(k, 0, .Greater_Equal, in_range.span, in_range.value, in_range.lo, .Value, w, Type_Bool{})
-            case:                 r = lw_binary_op(k, 0, .Less, in_range.span, in_range.value, in_range.hi, .Value, w, Type_Bool{})
+            case:                 r = lw_binary_op(k, 0, .Less_Equal if in_range.includes_end else .Less, in_range.span, in_range.value, in_range.hi, .Value, w, Type_Bool{})
             }
             types[i] = tc_node_type(k, side)
             sides[i] = r.v if in_range != nil else lw_truth(k, side, r.v)

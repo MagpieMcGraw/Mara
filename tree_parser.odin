@@ -682,9 +682,7 @@ tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
 }
 
 // A range's `..` (its end included) or `..<` (stopped before), taken.
-// (Bare `..` stopped before its end once: written `..<` now, said so.)
 tp_range_dots :: proc(p: ^Tree_Parser) -> Token_Id {
-    if tp_kind(p) == .Dot_Dot { tp_error(p, tp_here(p), PARSE_RANGE_DOTS) }
     return tp_advance(p)
 }
 

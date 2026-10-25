@@ -320,7 +320,7 @@ lw_in_range :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
     if hi == 0 { return lw_in_items(k, n, lo, want, w) }
-    rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
+    rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span, includes_end = range_includes_end(tr, n)}
     if build_tokens[tr.main[n]].kind != .Not { return lw_binary_op(k, 0, .And, span, 0, 0, want, w, Type_Bool{}, &rng) }
     if want == .Place { lw_fail(k, n, "a unary's place") }
     r := lw_binary_op(k, 0, .And, span, 0, 0, .Value, w, Type_Bool{}, &rng)

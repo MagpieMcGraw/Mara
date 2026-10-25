@@ -3054,6 +3054,7 @@ Graph_Loop :: struct {
     index_name:  string,
     var_tok, elem_tok, index_tok: Token_Id,   // (the tokens that declare them)
     is_range:    bool,
+    includes_end: bool,  // a range written `..`: its end is a run of its own (graph_build_for_end)
     has_cond:    bool,   // `for cond {}`, a C-style loop
     has_step:    bool,   // a C-style loop's
     end_literal: bool,   // a range whose end is a literal
@@ -3116,7 +3117,7 @@ graph_build_range_bound :: proc(b: ^Graph_Builder, v: Operand, t, ct: Type, span
 // The range's bounds built: the counter typed, the end held (a literal's is
 // itself), and the counter's first value; then the check run. An end below
 // the start, worked out as the program runs, is a range with nothing in it:
-// the check (counter < end) runs it zero times. (Both bounds constant, the
+// the check (counter < end; counter <= end, its end in it) runs it zero times. (Both bounds constant, the
 // checker said so already: a countdown written as a range.)
 graph_build_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, ct: Type) {
     graph_retype(b, fl.counter, ct)
@@ -3240,23 +3241,22 @@ graph_build_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     if fl.counter != NO_NODE && !fl.of_call {
         ct := graph_type(b.g, fl.counter)
         cur := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
-        bound: Operand
-        if fl.is_range {
-            if fl.end_slot != NO_NODE {
-                bound = graph_read(b, graph_var(b, fl.end_slot, graph_type(b.g, fl.end_slot), span), graph_type(b.g, fl.end_slot), span)
-            } else {
-                bound = graph_place_again(b, fl.high, span)   // (a literal)
-            }
-        } else {
-            bound = graph_len(b, graph_coll_place(b, fl, span), fl.coll_t, span)
-        }
-        cmp := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", cur, bound)
+        bound := graph_range_end(b, fl, span) if fl.is_range else graph_len(b, graph_coll_place(b, fl, span), fl.coll_t, span)
+        cmp := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<=" if fl.includes_end else "<", cur, bound)
         graph_branch(b, cmp, fl.body, fl.done, .Synthetic, span)
         graph_build_for_body(b, fl)
     } else if !fl.has_cond {
         graph_jump(b, fl.body, .Synthetic, span)   // `for {}`: until a break
         graph_build_for_body(b, fl)
     }
+}
+
+// A range's end, as the loop holds it: its slot's, else the literal again.
+@(private="file")
+graph_range_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, span: Span) -> Operand {
+    if fl.end_slot == NO_NODE { return graph_place_again(b, fl.high, span) }
+    et := graph_type(b.g, fl.end_slot)
+    return graph_read(b, graph_var(b, fl.end_slot, et, span), et, span)
 }
 
 // A condition loop's condition, built in its check run.
@@ -3315,6 +3315,15 @@ graph_build_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
         if fl.counter != NO_NODE {
             ct := graph_type(b.g, fl.counter)
             cur := graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
+            // (Its end in it: done at the end, before counting past it — an
+            // end that is the counter type's last value would wrap round.)
+            if fl.includes_end {
+                at_end := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "==", cur, graph_range_end(b, fl, span))
+                step := graph_run_new(b)
+                graph_branch(b, at_end, fl.done, step, .Synthetic, span)
+                b.code.run = step
+                cur = graph_read(b, graph_var(b, fl.counter, ct, span), ct, span)
+            }
             next := graph_op_value(b, .Arith, .Synthetic, span, ct, "+%", cur, graph_const(b, .Synthetic, span, ct, "1", Const_Value{int = 1}))
             graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, fl.counter, ct, span), next)
         }

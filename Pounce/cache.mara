@@ -189,7 +189,7 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
 //
 //   c : Cache
 //   cache_open(&c, path)?               // header read + validated, handle left open
-//   for i in 0..c.count {
+//   for i in 0..<c.count {
 //       e := cache_entry(&c, i)?        // one TOC entry (name, w/h or counts, size)
 //       px := cache_read(&c, e, &dst)?              // a texture's pixels (a view into dst), or
 //       m  := cache_read_mesh(&c, e, &scratch, &verts, &inds)?   // a mesh

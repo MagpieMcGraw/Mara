@@ -334,6 +334,7 @@ tc_binary :: proc(k: ^TC, n: Tree_Id) -> Type {
 TC_In_Range :: struct {
     value, lo, hi: Tree_Id,
     span:          Span,
+    includes_end:  bool,   // written `..`: x <= hi; `..<`: x < hi
 }
 
 // `(x + a) + b`, `+` a join both times (mara.core's join, join_item): the
@@ -377,7 +378,7 @@ tc_in_range :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(tr, n)
     lo, hi := tree_pair(tr, n)
     if hi == 0 { return tc_in_items(k, n, Tree_Id(tr.a[n]), lo, span) }
-    rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span}
+    rng := TC_In_Range{value = Tree_Id(tr.a[n]), lo = lo, hi = hi, span = span, includes_end = range_includes_end(tr, n)}
     if build_tokens[tr.main[n]].kind != .Not { return tc_binary_op(k, 0, .And, span, 0, 0, &rng) }
     ot := tc_binary_op(k, 0, .And, span, 0, 0, &rng)
     if _, is_bool := ot.(Type_Bool); !is_bool && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY, type_name(ot)) }
@@ -463,7 +464,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     side_of :: proc(k: ^TC, rng: ^TC_In_Range, i: int, side: Tree_Id) -> Type {
         if rng == nil { return tc_check(k, side) }
         if i == 0 { return tc_binary_op(k, 0, .Greater_Equal, rng.span, rng.value, rng.lo) }
-        return tc_binary_op(k, 0, .Less, rng.span, rng.value, rng.hi)
+        return tc_binary_op(k, 0, .Less_Equal if rng.includes_end else .Less, rng.span, rng.value, rng.hi)
     }
     tr := k.t
     op := tok

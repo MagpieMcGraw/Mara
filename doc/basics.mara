@@ -183,7 +183,7 @@ example_if :: fun() {
 
 // `do`: one statement as a body, without braces — after `if`, `elif`, `else` or `for`.
 //
-// `if done do return`, `for i in 0 .. 3 do print(i)`: the same as braces
+// `if done do return`, `for i in 1..3 do print(i)`: the same as braces
 // around that one statement. An `if … do` chain goes on with `elif c do s`
 // and `else do s`, each on its own line or the same one. For more than one
 // statement, use braces.
@@ -196,8 +196,10 @@ example_do :: fun() {
 
 // `for`, `in`: a loop — code repeated over a range of numbers, over the items of an array, or while a condition holds.
 //
-// `for i in 0 .. 10` counts 0 to 9: a range has its start, not its end. It
-// counts up only; one that ends before it starts runs no times. `for x in
+// `for i in 1..10` counts 1 to 10: a range has its start and its end.
+// `for i in 0..<10` counts 0 to 9, stopping before its end — a count, n
+// times from 0, is `0..<n`. A range counts up only; one that ends before it
+// starts runs no times. `for x in
 // xs` takes each item of an array, list, slice or text — or of one a
 // pointer points at, `xs: ^[]T` — the items there when it begins; `for x, i
 // in xs` its position too. `for cond { … }` repeats while cond is true — `for
@@ -213,12 +215,13 @@ example_do :: fun() {
 // counts the rounds, from 0: `for x, i in f()`. A lexer's loop:
 // `for t in next_token(&l)`.
 //
-// `in` is also a test: `x in 0 .. 10` is whether 0 <= x < 10; `x in xs`, whether
+// `in` is also a test: `x in 1..10` is whether 1 <= x <= 10, `x in 0..<10`
+// whether 0 <= x < 10 (`c in 'a'..'z'`, a lower-case letter); `x in xs`, whether
 // some item of xs is x (`==` as their type has it: text, the same
 // characters) — mara.core's includes. `not in`: the opposite.
 example_for :: fun() {
-	for i in 0 ..< 3 {
-		print("round", i)                  // round 0, round 1, round 2
+	for i in 1..3 {
+		print("round", i)                  // round 1, round 2, round 3
 	}
 
 	primes : [4!]i64 = [2, 3, 5, 7]
@@ -236,7 +239,7 @@ example_for :: fun() {
 	}
 	print(n)                               // 243
 
-	if n in 200 ..< 300 do print("in range")   // in range
+	if n in 200..299 do print("in range")      // in range
 
 	left : i64 = 3
 	for c in countdown(&left) {

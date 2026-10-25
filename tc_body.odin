@@ -784,10 +784,10 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         tc_settle(k, v.hi, it)
         if !is_numeric(lt) && !is_infer(lt) && !is_any(lt) { tc_error(k, span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(lt)) }
         if !is_numeric(ht) && !is_infer(ht) && !is_any(ht) { tc_error(k, span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(ht)) }
-        // (`..` counts up: known bounds that count down are an error.)
+        // (A range counts up: known bounds that count down are an error.)
         lc, lc_ok := tc_comptime_int(k, v.lo)
         hc, hc_ok := tc_comptime_int(k, v.hi)
-        if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
+        if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, tc_text(v.dots), hc, lc, hc) }
         if tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
         tc_scope(k, v.body)
     case:

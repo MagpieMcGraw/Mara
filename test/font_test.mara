@@ -8,7 +8,7 @@ use mara.font
 #allocator Arena_Debug(64 * MB)
 
 // Exercises the MSDF loader on a real TTF without launching the game (Pounce's
-// font, the way Pounce loads it): bake printable ASCII (32..127) into the
+// font, the way Pounce loads it): bake printable ASCII (32..126) into the
 // atlas, then dump 'A'.
 
 //@ expect-output: glyph 'A': cell 29 x 32
