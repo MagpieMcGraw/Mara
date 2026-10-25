@@ -1,0 +1,15 @@
+module append_pointer_pointer_neg
+
+//@ expect-fail: `&list` is a pointer to a pointer (^^[4]str64): 'list' is already a pointer (^[4]str64) — append through it as it is, `list + "b"`
+
+// An append onto `&p`, p a pointer to a list already: said so, with the
+// append it meant (address_pointer_param_neg: the same for a param).
+
+use mara.core
+
+main :: fun() {
+	names : [4]str64
+	list := &names
+	&list + "b"
+	print(names.len)
+}

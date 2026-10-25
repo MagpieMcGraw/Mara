@@ -290,6 +290,16 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         if !is_integer(distinct_base(ot)) && !is_any(ot) && !is_utf8_type(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
         t = ot
     case .Ampersand:
+        // (A param that is a pointer, its address taken: the pointer itself
+        // meant — `files + name` with `files: ^[]Path`. Said so, and nothing
+        // more of it: an append on `^^[]Path` would only say that again.)
+        if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.rs.refs[p].kind == .Param {
+            if _, is_ptr := distinct_base(ot).(^Type_Ptr); is_ptr {
+                name := tc_name(k, p)
+                tc_error(k, span, TYPE_ADDRESS_OF_POINTER_PARAMETER, name, type_name(ot), name, name)
+                return Type_Error{}
+            }
+        }
         // (An address of an immutable param's storage, of a constant's: what
         // it would let be written can't be.)
         if pname, immutable := tc_write_root_param(k, operand); immutable {
@@ -591,6 +601,15 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             if is_slice_type(lt) {
                 tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt))
                 return Type_Error{}
+            }
+            // (`&p + x`, p a pointer to a list already: p itself meant.)
+            if pt, is_ptr := distinct_base(lt).(^Type_Ptr); is_ptr {
+                if inner, to_ptr := distinct_base(pt.elem).(^Type_Ptr); to_ptr && loop_elem(inner.elem) != nil {
+                    target := tc_written(k, tc_unparen(k, left))
+                    name := target[1:] if strings.has_prefix(target, "&") else target
+                    tc_error(k, span, TYPE_APPEND_POINTER_TO_POINTER, target, type_name(lt), name, type_name(pt.elem), name, tc_written(k, right))
+                    return Type_Error{}
+                }
             }
             // (A view onto a list of lists: an item takes it, not the list.)
             if pt, is_ptr := distinct_base(lt).(^Type_Ptr); is_ptr {

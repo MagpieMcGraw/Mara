@@ -1,0 +1,19 @@
+module address_pointer_param_neg
+
+//@ expect-fail: 'files' is already a pointer (^[]str64): use it as it is, `files`, not `&files`
+
+// A param that is a pointer, its address taken: the pointer itself is what
+// was meant (`files + name`). Said so — not "copy it into a variable", and
+// no second error from the append on `^^[]str64` after it.
+
+use mara.core
+
+add_name :: fun(files: ^[]str64, name: []utf8) {
+	if name not in files do &files + name
+}
+
+main :: fun() {
+	files : [4]str64
+	add_name(&files, "a")
+	print(files.len)
+}
