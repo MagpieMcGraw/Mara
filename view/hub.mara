@@ -270,7 +270,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	fields : [6!][]utf8
 	n : i64 = 0
 	start : i64 = 6
-	for k in 6 : line.len + 1 {
+	for k in 6..line.len {
 		ends := k == line.len
 		if not ends do ends = line[k] == '\t'
 		if ends {

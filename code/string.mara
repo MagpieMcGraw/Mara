@@ -53,7 +53,7 @@ ends_with :: fun(s: []utf8, suffix: []utf8) -> bool {
 
 // Whether s has `what` anywhere in it.
 contains :: fun(s: []utf8, what: []utf8) -> bool {
-	for k in 0 : s.len - what.len + 1 {
+	for k in 0..s.len - what.len {
 		if s[k : k + what.len] == what do return true
 	}
 	return false
@@ -61,7 +61,7 @@ contains :: fun(s: []utf8, what: []utf8) -> bool {
 
 // Whether s has `what` anywhere in it, letters' case not minded: A to Z as a to z.
 contains_folded :: fun(s: []utf8, what: []utf8) -> bool {
-	for k in 0 : s.len - what.len + 1 {
+	for k in 0..s.len - what.len {
 		same := true
 		for i in 0:what.len {
 			if lower(s[k + i]) != lower(what[i]) {

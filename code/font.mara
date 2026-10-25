@@ -263,7 +263,7 @@ coverage_contour :: fun(o: ^Outline, start: i64, end: i64, scale: f32, ox: f32, 
 	qx : f32 = 0
 	qy : f32 = 0
 	pending := false   // qx, qy a point off the curve, not yet drawn
-	for j in 1 : n + 1 {
+	for j in 1..n {
 		at := start + (first + j) % n
 		px, py := coverage_point(o, at, scale, ox, oy)
 		if o.points[at].on_curve {
@@ -314,7 +314,7 @@ coverage_quad :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1:
 	n := 1 + i64(floor_f32(sqrt_f32(sqrt_f32(3.0 * devsq))))
 	px := x0
 	py := y0
-	for i in 1 : n + 1 {
+	for i in 1..n {
 		t := f32(i) / f32(n)
 		u := 1.0 - t
 		qx := u * u * x0 + 2.0 * u * t * x1 + t * t * x2
@@ -580,7 +580,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 				if raw.len + pieces > raw.cap do return Glyph_Too_Complex
 				fx := s.ax
 				fy := s.ay
-				for p in 1 : pieces + 1 {
+				for p in 1..pieces {
 					qx := s.bx
 					qy := s.by
 					if p < pieces {
@@ -626,7 +626,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 		if edges.len + cuts.len + 1 > edges.cap do return Glyph_Too_Complex
 		x0 := e.x0
 		y0 := e.y0
-		for k in 0 : cuts.len + 1 {
+		for k in 0..cuts.len {
 			part := e
 			part.x0 = x0
 			part.y0 = y0
@@ -1486,8 +1486,8 @@ TTF :: struct (bytes: ^[]byte) {
 		return c
 	}
 	read_loca :: fun(head: Head, maxp: Maxp, bytes: []byte) -> loca: Loca {
-		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
-		for i in 0 : i64(maxp.num_glyphs) + 1 {
+		// (num_glyphs + 1 offsets; an i64 counter, as `4 * i` passes a u16.)
+		for i in 0..i64(maxp.num_glyphs) {
 			if head.index_to_loc_format == 0 {
 				&loca.offsets + u32(read_u16be(bytes[2 * i])) * 2
 			else
@@ -1546,7 +1546,7 @@ check_ttf :: fun(bytes: ^[]byte) -> err {
 	if loc_format == 1 do entry = 4
 	if entry * (glyphs + 1) > loca_len do return Bad_Table
 	last : i64 = 0
-	for i in 0 : glyphs + 1 {
+	for i in 0..glyphs {
 		at : i64 = 0
 		if loc_format == 0 {
 			at = 2 * i64(read_u16be(bytes[loca + 2 * i]))

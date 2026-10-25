@@ -18,12 +18,12 @@ primitive_sphere :: fun(
     verts := slice([:n_verts]Vertex, storage)
     inds  := slice([:n_inds]u32, storage)
 
-    for r in 0:rings + 1 {
+    for r in 0..rings {
         phi := PI * f32(r) / f32(rings)
         y := 0.5 * cos(phi)
         ring_radius := 0.5 * sin(phi)
 
-        for s in 0:sectors + 1 {
+        for s in 0..sectors {
             theta := TAU * f32(s) / f32(sectors)
             x := ring_radius * sin(theta)
             z := ring_radius * cos(theta)

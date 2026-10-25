@@ -685,14 +685,14 @@ below (flow) — what this variable affects  (forward slice)
 === Pounce | at gfx_mesh_generation.mara:66:11
 gfx_mesh_generation.mara:66:11  token '0'
 
-  Define                   [391,1452)  primitive_cube :: fun() -> [24!]Vertex, [36!]u32 { …
-  Fun_Def                  [393,1452)  fun() -> [24!]Vertex, [36!]u32 { …
+  Define                   [387,1448)  primitive_cube :: fun() -> [24!]Vertex, [36!]u32 { …
+  Fun_Def                  [389,1448)  fun() -> [24!]Vertex, [36!]u32 { …
       → Fun primitive_cube, Result result1, Result result2
-  Assign                   [428,465)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+  Assign                   [424,461)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
       → Write
-  Index                    [428,432)  verts[0]   : Vertex
+  Index                    [424,428)  verts[0]   : Vertex
       → Index
-  Number                   [430,431)  0   : i64
+  Number                   [426,427)  0   : i64
 === Pounce | at Pounce.mara:112:13
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
