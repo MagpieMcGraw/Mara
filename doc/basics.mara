@@ -80,7 +80,11 @@ example_use :: fun() {
 //
 // A param is the caller's value: the body reads it, and can't change it —
 // copy it into a variable to work on (`left := n`). To change a caller's
-// variable, take a pointer — `n: ^i64` — and the caller passes `&x`.
+// variable, take a pointer — `n: ^i64` — and the caller passes `&x`; `n =
+// v`, `n += 1` write what n points at (a param can't point elsewhere), as
+// `n^ = v` does. A pointer a call gives back is written the same way:
+// `next(&list) = v`. A pointer variable is written through with `^`, since
+// `p = q` points it elsewhere.
 //
 // `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
@@ -113,7 +117,7 @@ example_fun :: fun() {
 
 	// A pointer param changes the caller's variable.
 	bump :: fun(n: ^i64) {
-		n^ += 1
+		n += 1
 	}
 	count := 1
 	bump(&count)

@@ -31,7 +31,7 @@ main :: fun() {
 	&list + 10
 	&list + 20
 	print(list.len, list.cap, sum(list[:]))      // 2 8 30
-	next(&list)^ = 30
+	next(&list) = 30
 	print(list.len, list[2])                     // 3 30
 
 	middle := fixed[1:3]

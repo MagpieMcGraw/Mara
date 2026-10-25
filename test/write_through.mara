@@ -1,0 +1,50 @@
+module write_through
+
+//@ expect-output: param: 17
+//@ expect-output: struct: 1 5
+//@ expect-output: calls: hello 4 9 1 4 8
+//@ expect-output: local: 1
+
+// `=` writes what a pointer points at where the pointer can't be pointed
+// elsewhere: a param (`out = v`, `out += 10`: a param can't change) and a
+// call's result (`next(&list) = v`, `next(&pairs).b = 9`, `next(&counts) += 4`:
+// a value gone after the line). A pointer local can point elsewhere, so it is
+// written through with `^`: `q^ = 1` (write_through_local_neg; a param
+// given another pointer: param_pointer_write_neg).
+
+use mara.core
+
+Pair :: struct { a: i64  b: i64 }
+
+set :: fun(out: ^i64, v: i64) { out = v }
+bump :: fun(out: ^i64) { out += 10 }
+fill :: fun(out: ^Pair) {
+	out = Pair{a = 1, b = 2}
+	out.b = 5
+}
+first :: fun(xs: ^[]i64) -> ^i64 { return &xs[0] }
+
+main :: fun() {
+	n : i64 = 0
+	set(&n, 7)
+	bump(&n)
+	print("param:", n)
+	p : Pair
+	fill(&p)
+	print("struct:", p.a, p.b)
+	views : [4][]utf8
+	next(&views) = "hello"
+	pairs : [2]Pair
+	next(&pairs) = Pair{a = 3, b = 4}
+	next(&pairs).b = 9
+	counts : [3]i64
+	next(&counts) = 1
+	next(&counts) += 4
+	xs : [2]i64
+	&xs + 0
+	first(&xs) = 8
+	print("calls:", views[0], pairs[0].b, pairs[1].b, counts[0], counts[1], xs[0])
+	q := &n
+	q^ = 1
+	print("local:", n)
+}

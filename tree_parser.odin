@@ -16,6 +16,7 @@ Tree_Parser :: struct {
     errors:        int,
     no_struct_lit: bool,      // a `{` after an expression opens a body (a condition's)
     slice_low:     bool,      // a `:` after an expression is a slice's, not a range's (`x[a:b]`'s a)
+    ptr_params:    []string,  // the fun being read's params typed `^T`: written through (tp_write_target)
     // The statement's first error at a boundary — a line's end, a block's,
     // the file's — where a token was missing; -1 for none. Recovery stops
     // there, though the parse went on past it (tp_recover).
@@ -937,14 +938,14 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
     case .Equals:
         tp_advance(p)
         target := tp_items()
-        append(&target, tp_leaf_at(p, .Ident, name))
+        append(&target, tp_write_target(p, name))
         values := tp_items()
         append(&values, tp_expr(p))
         return tp_node(p, .Assign, name, start, tp_list(p, target), tp_list(p, values)), true
 
     case .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
          .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal:
-        target := tp_leaf_at(p, .Ident, name)
+        target := tp_write_target(p, name)
         op := tp_advance(p)
         rhs := tp_expr(p)
         return tp_node(p, .Compound, name, start, u32(target), tree_rec_add(p.t, u32(op), u32(rhs))), true
@@ -1058,10 +1059,11 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
     return 0, false
 }
 
-// `next(&list)^ = x`, `f(p)^.n += 1`: an assignment to a target that isn't
-// rooted at a name (tp_try_assign's) — rooted at a call, written where the
-// pointer it gives points (a `^` on the way). Without one, a write into a
-// value the call gave back, gone after the line: said so.
+// `next(&list) = x`, `f(p).n += 1`, `next(&list)^ = x`: an assignment to a
+// target that isn't rooted at a name (tp_try_assign's) — rooted at a call,
+// written where the pointer it gives points. With no `^` on the way, the
+// call is read through (tp_through): a call that gives no pointer, a value
+// gone after the line, is the checker's to refuse (TYPE_ASSIGN_TO_RESULT).
 tp_assign_through :: proc(p: ^Tree_Parser, lhs: Tree_Id, start: int) -> (Tree_Id, bool) {
     #partial switch tp_kind(p) {
     case .Equals, .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
@@ -1069,17 +1071,19 @@ tp_assign_through :: proc(p: ^Tree_Parser, lhs: Tree_Id, start: int) -> (Tree_Id
     case:
         return 0, false
     }
+    lhs := lhs
     through := false
+    above: Tree_Id   // (the node over n on the way down: its a, n)
     for n := lhs; !through; {
         #partial switch p.t.tag[n] {
         case .Deref:          through = true
-        case .Field, .Index:  n = Tree_Id(p.t.a[n])
-        case .Paren:          n = Tree_Id(p.t.a[n])
+        case .Field, .Index, .Paren:
+            above = n
+            n = Tree_Id(p.t.a[n])
         case .Call, .Method_Call:
-            tp_error(p, tp_here(p), PARSE_ASSIGN_TO_RESULT)
-            tp_advance(p)
-            tp_expr(p)   // (read past: one error)
-            return tp_node(p, .Expr_Stmt, Token_Id(start), start, u32(lhs)), true
+            read := tp_through(p, n)
+            if above == 0 { lhs = read } else { p.t.a[above] = u32(read) }
+            through = true
         case:
             return 0, false   // (`a + b = c`: the statement's error, as before)
         }
@@ -1095,6 +1099,23 @@ tp_assign_through :: proc(p: ^Tree_Parser, lhs: Tree_Id, start: int) -> (Tree_Id
     values := tp_items()
     append(&values, tp_expr(p))
     return tp_node(p, .Assign, Token_Id(start), start, tp_list(p, targets), tp_list(p, values)), true
+}
+
+// A name written to: what it points at when it's a param of the fun being
+// read typed `^T` — `out = v` is `out^ = v`, as a param can't point
+// elsewhere — else the name.
+tp_write_target :: proc(p: ^Tree_Parser, name: Token_Id) -> Tree_Id {
+    leaf := tp_leaf_at(p, .Ident, name)
+    text := token_text(p.tokens[name])
+    for ptr in p.ptr_params { if ptr == text { return tp_through(p, leaf) } }
+    return leaf
+}
+
+// n read through, a `^` no one wrote (b: none): what n points at.
+tp_through :: proc(p: ^Tree_Parser, n: Tree_Id) -> Tree_Id {
+    d := tree_add(p.t, .Deref, p.t.main[n], u32(n), 0)
+    p.t.first[d], p.t.end[d] = p.t.first[n], p.t.end[n]
+    return d
 }
 
 // A target an assignment can write: a name, a field, an element, a
@@ -1274,7 +1295,10 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
     commas := tag == .Struct_Def
     generics, params, returns: u32
     if tp_kind(p) == .Left_Brace {
+        saved_ptrs := p.ptr_params
+        p.ptr_params = nil
         body, intrinsic := tp_scope_body(p, commas)
+        p.ptr_params = saved_ptrs
         return tp_node(p, tag, kw, start, tree_rec_add(p.t, 0, 0, 0, body, u32(intrinsic)), u32(packed))
     }
     tp_expect(p, .Left_Paren)
@@ -1298,7 +1322,18 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
         returns = tp_optional_returns(p)
         tp_skip_newlines(p)
     }
+    // (Its params typed `^T`, for its body: `out = v` writes what out points
+    // at — tp_write_target. A fun inside has its own.)
+    saved_ptrs := p.ptr_params
+    ptrs := make([dynamic]string, context.temp_allocator)
+    for g in tree_list(p.t, params) {
+        pv := params_view(p.t, g)
+        if pv.type_ == 0 || p.t.tag[pv.type_] != .Type_Pointer { continue }
+        for name in pv.names { append(&ptrs, token_text(p.tokens[name])) }
+    }
+    p.ptr_params = ptrs[:]
     body, intrinsic := tp_scope_body(p, commas)
+    p.ptr_params = saved_ptrs
     return tp_node(p, tag, kw, start, tree_rec_add(p.t, generics, params, returns, body, u32(intrinsic)), u32(packed))
 }
 

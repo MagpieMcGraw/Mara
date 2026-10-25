@@ -500,7 +500,14 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         return
     }
     k.hint = existing if !is_untyped(existing) else nil
-    tc_check_write(k, value, tc_check(k, value), existing, name, span)
+    vt := tc_check(k, value)
+    // (A pointer given what it points at: written through with `^` — a local
+    // can point elsewhere, so `=` doesn't guess. A param can't: `out = v`.)
+    if p, is_ptr := distinct_base(existing).(^Type_Ptr); is_ptr && types_incompatible(existing, vt) && !types_incompatible(p.elem, vt) {
+        tc_error(k, span, TYPE_ASSIGN_POINTER_LOCAL, name, type_name(existing), name, tc_written(k, value))
+        return
+    }
+    tc_check_write(k, value, vt, existing, name, span)
 }
 
 // A write to a bare name, checked: the name is declared, no constant, and no
@@ -981,15 +988,32 @@ tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     tr := k.t
     span := tree_span(tr, s)
     diag := value if op_tok == 0 else 0
-    pt := tc_check(k, Tree_Id(tr.a[target]))
-    vt := tc_store_at(k, value, op_tok, target, s)
-    if p, is_ptr := pt.(^Type_Ptr); is_ptr {
-        tc_set_type(k, target, p.elem)
-        if types_incompatible(p.elem, vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem)) }
-        tc_value_at(k, diag, vt, p.elem, span)
-    } else if !is_any(pt) {
-        tc_error(k, span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(pt))
+    of := Tree_Id(tr.a[target])
+    pt := tc_check(k, of)
+    // (A `^` no one wrote — `next(&l) = v`, `out = v`: tp_through.)
+    unwritten := tr.b[target] == 0
+    _, gives_ptr := distinct_base(pt).(^Type_Ptr)
+    if !unwritten || gives_ptr || is_any(pt) {
+        vt := tc_store_at(k, value, op_tok, target, s)
+        if p, is_ptr := distinct_base(pt).(^Type_Ptr); is_ptr {
+            tc_set_type(k, target, p.elem)
+            if types_incompatible(p.elem, vt) {
+                if unwritten && tr.tag[of] == .Ident && !types_incompatible(pt, vt) {
+                    name := tc_name(k, of)
+                    tc_error(k, span, TYPE_PARAM_POINTS_ELSEWHERE, name, name, type_name(p.elem), type_name(vt))
+                } else {
+                    tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem))
+                }
+            }
+            tc_value_at(k, diag, vt, p.elem, span)
+        } else if !is_any(pt) {
+            tc_error(k, span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(pt))
+        }
+        return
     }
+    // (A call giving no pointer, written to: a value gone after the line.)
+    tc_check(k, value)
+    tc_error(k, span, TYPE_ASSIGN_TO_RESULT)
 }
 
 // A block's statements with each `#if` whose condition is known replaced by

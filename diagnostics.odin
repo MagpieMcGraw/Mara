@@ -193,7 +193,9 @@ op_str :: proc(op: Token_Kind) -> string {
 
 PARSE_EXPECTED_TOKEN              :: "expected %v, got %v \"%s\""
 PARSE_LIST_DOTS                   :: "a list is written `[n]T` now, no `..` — up to n (an array of exactly n: `[n!]T`)"
-PARSE_ASSIGN_TO_RESULT            :: "can't assign to what a call gives back: it's a value, gone after the line — a pointer it gives is written through with `^`: `next(&list)^ = …`"
+TYPE_ASSIGN_TO_RESULT             :: "can't assign to what a call gives back: it's a value, gone after the line — a call that gives a pointer is written through: `next(&list) = …`"
+TYPE_PARAM_POINTS_ELSEWHERE       :: "'%s' is a param, and a param can't point elsewhere: `%s = v` writes what it points at (%s); this is a pointer, %s"
+TYPE_ASSIGN_POINTER_LOCAL         :: "'%s' is a pointer (%s): `=` would point it elsewhere — to write what it points at, `%s^ = %s`"
 PARSE_EXPECTED_INTRINSIC_AFTER_AT :: "expected intrinsic name part after `@`, got `%s`"
 PARSE_EXPECTED_INTRINSIC_AFTER_DOT :: "expected intrinsic name part after `.`, got `%s`"
 PARSE_BARE_INTRINSIC_REMOVED      :: "bare `intrinsic` body is no longer supported — use `{{ @llvm.<name> }}` instead"

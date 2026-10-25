@@ -2,14 +2,17 @@ module assign_to_result_neg
 
 //@ expect-fail: can't assign to what a call gives back: it's a value, gone after the line
 
-// Assigning to a call's result, a value: the pointer it gives is written
-// through with `^` — `next(&list)^ = …`.
+// Assigning to a call's result, a value (not a pointer): gone after the
+// line, so the write would be lost. A call that gives a pointer is written
+// through: `next(&list) = …` (write_through).
 
-use mara.core
+Pair :: struct { a: i64  b: i64 }
+
+value :: fun() -> i64 { return 3 }
+pair :: fun() -> Pair { return Pair{a = 1, b = 2} }
 
 main :: fun() {
-	views : [4][]byte
-	data : []byte
-	next(&views) = data
-	print(views.len)
+	value() = 5
+	pair().b = 5
+	print(value())
 }

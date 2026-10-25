@@ -328,6 +328,11 @@ tc_deref :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     ot := tc_check(k, Tree_Id(k.t.a[n]))
     if p, ok := distinct_base(ot).(^Type_Ptr); ok { return p.elem }   // (through a type of its own, another name, too)
+    // (A `^` no one wrote, under a target: `f().n = v`, f giving no pointer.)
+    if k.t.b[n] == 0 && !is_any(ot) {
+        tc_error(k, span, TYPE_ASSIGN_TO_RESULT)
+        return Type_Error{}
+    }
     if !is_any(ot) { tc_error(k, span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(ot)) }
     return Type_Error{}
 }

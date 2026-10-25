@@ -1,7 +1,8 @@
 module param_pointer_write_neg
-//@ expect-fail: cannot assign to parameter 'p'
+//@ expect-fail: 'p' is a param, and a param can't point elsewhere: `p = v` writes what it points at (i64); this is a pointer, ^i64
 
-// A pointer param itself can't be written either (what it points at can).
+// A pointer param itself can't be written either: `p = v` writes what it
+// points at (write_through), and another pointer isn't that.
 
 pick :: fun(p: ^i64, q: ^i64) -> i64 {
 	p = q

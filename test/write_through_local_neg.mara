@@ -1,0 +1,13 @@
+module write_through_local_neg
+
+//@ expect-fail: 'q' is a pointer (^i64): `=` would point it elsewhere — to write what it points at, `q^ = 5`
+
+// A pointer local can point elsewhere, so `=` on it isn't a write through
+// it (as it is on a param, or a call's result: write_through): `q^ = v`.
+
+main :: fun() {
+	n : i64 = 0
+	q := &n
+	q = 5
+	print(n)
+}
