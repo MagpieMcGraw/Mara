@@ -351,11 +351,11 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	if not de {
 		for entry in entries {
 			if not entry.dir do continue
-			sub : [1000]utf8
-			&sub + code[:]
-			&sub + ui.sep
-			&sub + entry.name[:]
-			docs_read_dir(d, sub, ui.sep)
+			sub_dir : [1000]utf8
+			&sub_dir + code[:]
+			&sub_dir + ui.sep
+			&sub_dir + entry.name[:]
+			docs_read_dir(d, sub_dir, ui.sep)
 		}
 	}
 	doc : [1000]utf8
@@ -1213,10 +1213,10 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 		line_indent, from := indentation(text, at, end)
 		rest := trimmed(text[from : end])
 		if line_indent == 0 and at > fd.at and (starts_with(rest, "//") or starts_with(rest, "/*")) do break
-		next := end + 1
+		line_after := end + 1
 		if rest.len == 0 {
 			blanks += 1
-			at = next
+			at = line_after
 			continue
 		}
 		if shown + blanks >= DOCS_EXAMPLE {
@@ -1230,7 +1230,7 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 		}
 		lines_add_code(l, text[at : end], indent)
 		shown += 1
-		at = next
+		at = line_after
 	}
 }
 

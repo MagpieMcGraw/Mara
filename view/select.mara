@@ -192,9 +192,9 @@ lines_copy_text :: fun(l: ^Lines, out: ^[2 * MB]utf8) {
 panel_lines_at :: fun(ui: ^Ui, pn: Panel, x: f32, y: f32) -> ^Lines, Rect, bool {
 	c := content_rect(ui, pn)
 	if pn.kind == ASK_PANEL {
-		upper, lower := ask_parts(ui, c)
-		if upper.h > 0 and y < upper.y + upper.h do return &ui.at_cursor, upper, true
-		return &ui.asked, lower, true
+		top, bottom := ask_parts(ui, c)
+		if top.h > 0 and y < top.y + top.h do return &ui.at_cursor, top, true
+		return &ui.asked, bottom, true
 	}
 	l, has := panel_lines(ui, pn.kind)
 	return l, c, has
@@ -205,9 +205,9 @@ select_rect :: fun(ui: ^Ui) -> Rect {
 	i := find_panel(ui, ui.drag_kind)
 	c := content_rect(ui, ui.panels[i])
 	if ui.drag_kind != ASK_PANEL do return c
-	upper, lower := ask_parts(ui, c)
-	if ui.sel == &ui.at_cursor do return upper
-	return lower
+	top, bottom := ask_parts(ui, c)
+	if ui.sel == &ui.at_cursor do return top
+	return bottom
 }
 
 // Nothing selected anywhere.

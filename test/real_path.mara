@@ -20,8 +20,8 @@ main :: () {
 	// found, and comes back in its own. Elsewhere that's another name.)
 	asked := "../code/core.mara"
 	#if #windows { asked = "../CODE/CORE.mara" }
-	core, _ := real_path(asked)
-	print("| case on disk", ends_with(core, "/code/core.mara"), "| file", core.len > here.len)
+	found, _ := real_path(asked)
+	print("| case on disk", ends_with(found, "/code/core.mara"), "| file", found.len > here.len)
 	_, e := real_path("../no_such_folder_here")
 	print("missing", e)
 }

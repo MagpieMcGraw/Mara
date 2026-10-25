@@ -1,0 +1,13 @@
+module hide_module_neg
+
+//@ expect-fail: variable 'os' would hide the module 'os'
+
+// A variable may not take the name of a module its file uses: `os.` would
+// mean the variable below it.
+
+use mara.os
+
+main :: fun() {
+	os := 1
+	print(os)
+}

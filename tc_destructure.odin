@@ -77,6 +77,8 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                     tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
             } else {
+                // (Declarable as a declaration of one name is: tc_declarable.)
+                if !tc_declarable(k, k.t.main[tg], name, span, fields_of != nil) { rt = Type_Error{} }
                 tc_bind(k, name, rt, tc_decl_ref(k, tg, fields_of))
                 tc_set_type(k, tg, rt)
                 tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))

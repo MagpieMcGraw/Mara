@@ -1,0 +1,20 @@
+module hide_ok
+
+//@ expect-output: field: 3
+//@ expect-output: variant's name: 7
+
+// What may share a fun's name: a struct's field, reached through its
+// struct (`h.next`, beside mara.core's next). And a local may share a bare
+// variant's name: the local comes first (hide_fun_neg: a local and a fun).
+
+use mara.core
+
+Holder :: struct { next: i64 = 3 }
+Mode :: union { fast  slow }
+
+main :: fun() {
+	h := Holder()
+	print("field:", h.next)
+	fast := 7
+	print("variant's name:", fast)
+}

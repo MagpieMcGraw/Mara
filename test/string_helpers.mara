@@ -89,8 +89,8 @@ main :: fun() {
 	e3 := file_write_text(id, "there")
 	file_close(id)
 	data : [64]byte
-	text, _ := read_entire_file("string_helpers_demo.txt", &data)
-	got : []utf8 = text
+	read_back, _ := read_entire_file("string_helpers_demo.txt", &data)
+	got : []utf8 = read_back
 	print("written: % % % [%]", e1, e2, e3, got)
 	_ = file_delete("string_helpers_demo.txt")
 }

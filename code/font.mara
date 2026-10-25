@@ -606,8 +606,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 	edges : [MSDF_MAX_EDGES]Raster_Edge
 	for ri in 0:raw.len {
 		e := raw[ri]
-		length := sqrt_f32((e.x1 - e.x0) * (e.x1 - e.x0) + (e.y1 - e.y0) * (e.y1 - e.y0))
-		near_end := 0.0001 / max_f32(length, 0.0001)   // (a cut closer than 1e-4 px to an end is none)
+		edge_len := sqrt_f32((e.x1 - e.x0) * (e.x1 - e.x0) + (e.y1 - e.y0) * (e.y1 - e.y0))
+		near_end := 0.0001 / max_f32(edge_len, 0.0001)   // (a cut closer than 1e-4 px to an end is none)
 		cuts : [64]f32
 		for rj in 0:raw.len {
 			if rj == ri do continue
@@ -649,14 +649,14 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 		e := edges[ei]
 		dx := e.x1 - e.x0
 		dy := e.y1 - e.y0
-		length := sqrt_f32(dx*dx + dy*dy)
-		if length <= 0.0 {
+		edge_len := sqrt_f32(dx*dx + dy*dy)
+		if edge_len <= 0.0 {
 			edges[ei].hidden = true
 		else
 			mx := (e.x0 + e.x1) * 0.5
 			my := (e.y0 + e.y1) * 0.5
-			nx := -dy / length * 0.01
-			ny := dx / length * 0.01
+			nx := -dy / edge_len * 0.01
+			ny := dx / edge_len * 0.01
 			one_side := winding_at(&edges, mx + nx, my + ny) != 0
 			other_side := winding_at(&edges, mx - nx, my - ny) != 0
 			edges[ei].hidden = one_side == other_side
@@ -1576,10 +1576,10 @@ ttf_table :: fun(bytes: ^[]byte, tag: []utf8) -> i64, i64 {
 // hasn't one, Bad_Table when it is shorter than `least` bytes or runs past
 // the file's end.
 table_in_file :: fun(bytes: ^[]byte, tag: []utf8, least: i64) -> i64, i64, err {
-	start, length := ttf_table(bytes, tag)
+	start, size := ttf_table(bytes, tag)
 	if start < 0 do return 0, 0, Missing_Table
-	if length < least or start + length > bytes.len do return 0, 0, Bad_Table
-	return start, length
+	if size < least or start + size > bytes.len do return 0, 0, Bad_Table
+	return start, size
 }
 
 // The character map a font's characters go through: of its subtables in a

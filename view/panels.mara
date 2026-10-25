@@ -430,14 +430,14 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 // then the query asked, its answer, below.
 draw_ask :: fun(ui: ^Ui, r: Rect) {
 	asked_hint := "Queries Sublime's Mara Ask asks (mara ask -show) show here, with their answers."
-	upper, lower := ask_parts(ui, r)
-	if upper.h == 0 {
+	top, bottom := ask_parts(ui, r)
+	if top.h == 0 {
 		draw_lines(ui, &ui.asked, r, asked_hint)
 		return
 	}
-	draw_lines(ui, &ui.at_cursor, upper, "")
-	fill(ui.renderer, r.x, upper.y + upper.h, r.w, 1.0, ui.border)
-	if lower.h >= 2.0 * PAD + ui.text.line do draw_lines(ui, &ui.asked, lower, asked_hint)
+	draw_lines(ui, &ui.at_cursor, top, "")
+	fill(ui.renderer, r.x, top.y + top.h, r.w, 1.0, ui.border)
+	if bottom.h >= 2.0 * PAD + ui.text.line do draw_lines(ui, &ui.asked, bottom, asked_hint)
 }
 
 // The Ask panel's parts in its content r: what's at the cursor's lines (0

@@ -225,19 +225,19 @@ number_end :: fun(s: []utf8, at: i64) -> i64 {
 // or a plain one.
 word_kind :: fun(s: []utf8, at: i64, end: i64) -> i64 {
 	w := s[at : end]
-	dot := at > 0 and s[at - 1] == '.'
+	after_dot := at > 0 and s[at - 1] == '.'
 	if w == "mara" and end + 1 < s.len and s[end] == '.' and is_word_char(s[end + 1]) do return TOKEN_MODULE
-	if dot and word_before(s, at - 1) == "mara" do return TOKEN_MODULE
-	if dot and (w == "len" or w == "cap") do return TOKEN_FIELD
+	if after_dot and word_before(s, at - 1) == "mara" do return TOKEN_MODULE
+	if after_dot and (w == "len" or w == "cap") do return TOKEN_FIELD
 	if w == "all" and word_before(s, at) == "match" do return TOKEN_KEYWORD
 	if w == "index" and word_before(s, at) == "each" do return TOKEN_KEYWORD
 	kind := keyword_kind(w)
 	if kind != TOKEN_PLAIN do return kind
 	// (After it, past spaces: `::`, and then fun — or its params, the `fun`
 	// left off — or not; `(`.)
-	next := skip_spaces(s, end)
-	if next < s.len and s[next] == ':' {
-		second := skip_spaces(s, next + 1)
+	after := skip_spaces(s, end)
+	if after < s.len and s[after] == ':' {
+		second := skip_spaces(s, after + 1)
 		if second < s.len and s[second] == ':' {
 			then := skip_spaces(s, second + 1)
 			is_fun := starts_with(s[then : s.len], "fun") or opens_params(s, then)
@@ -245,7 +245,7 @@ word_kind :: fun(s: []utf8, at: i64, end: i64) -> i64 {
 			if (w[0] >= 'a' and w[0] <= 'z') or w[0] == '_' do return TOKEN_FUN_NAME
 		}
 	}
-	call := next < s.len and s[next] == '('
+	call := after < s.len and s[after] == '('
 	if call and (w == "print" or w == "assert" or w == "crash" or w == "take" or w == "size_of") do return TOKEN_BUILTIN
 	if w == "struct" or w == "class" do return TOKEN_BARE
 	if call do return TOKEN_CALL
@@ -315,9 +315,9 @@ code_state_after :: fun(s: []utf8, state: i64) -> i64 {
 	open := state
 	at : i64 = 0
 	for at < s.len {
-		end, _, next := code_token(s, at, open)
+		end, _, state_after := code_token(s, at, open)
 		at = end
-		open = next
+		open = state_after
 	}
 	return open
 }
@@ -390,8 +390,8 @@ draw_code_run :: fun(ui: ^Ui, s: []utf8, x: f32, y: f32) -> f32 {
 	at : i64 = 0
 	state : i64 = 0
 	for at < s.len {
-		end, kind, next := code_token(s, at, state)
-		state = next
+		end, kind, state_after := code_token(s, at, state)
+		state = state_after
 		pen = text_draw(&ui.mono, ui.renderer, s[at : end], pen, y, token_color(ui, kind))
 		at = end
 	}
@@ -412,8 +412,8 @@ draw_code_row :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, x: f32, y: f32) {
 	at : i64 = 0
 	state := ln.state
 	for at < to {
-		end, kind, next := code_token(s, at, state)
-		state = next
+		end, kind, state_after := code_token(s, at, state)
+		state = state_after
 		a := max_int(at, max_int(from, margin))
 		b := min_int(end, to)
 		if a < b do pen = text_draw(&ui.mono, ui.renderer, s[a : b], pen, y, token_color(ui, kind))

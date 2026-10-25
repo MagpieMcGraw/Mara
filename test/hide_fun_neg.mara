@@ -1,0 +1,14 @@
+module hide_fun_neg
+
+//@ expect-fail: variable 'next' would hide the fun 'next'
+
+// A variable may not take the name of a fun in sight, its own module's or
+// one it uses (mara.core's next here): the fun would be out of reach
+// below it, and nothing would say so. A field may (hide_ok).
+
+use mara.core
+
+main :: fun() {
+	next := 3
+	print(next)
+}

@@ -26,11 +26,11 @@ client :: fun(word: []utf8) -> i64 {
 	question : []byte = word[:]
 	_, we := file_write(id, &question)
 	if bool(we) do return 2
-	answer : [64]byte
-	re := file_read(id, &answer)
+	reply : [64]byte
+	re := file_read(id, &reply)
 	file_close(id)
 	if bool(re) do return 3
-	text : []utf8 = answer[:]
+	text : []utf8 = reply[:]
 	if text == word do return 7
 	return 4
 }

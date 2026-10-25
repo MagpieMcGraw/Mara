@@ -1,0 +1,15 @@
+module destructure_taken_neg
+
+//@ expect-fail: variable 'a' already declared in this scope
+
+// Names declared by a destructure, `a, b := f()`, are declared as one
+// name is: not again in the same scope (they were bound without the check
+// once).
+
+two :: fun() -> i64, i64 { return 1, 2 }
+
+main :: fun() {
+	a := 0
+	a, b := two()
+	print(a, b)
+}

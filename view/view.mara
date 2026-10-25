@@ -222,12 +222,12 @@ main :: fun(args: [][]utf8) -> i64 {
 // hub_wait — or, with something to draw, until it's time to.)
 run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 	looked := GetTicks()
-	next : u64 = 0   // the soonest the next frame is drawn (GetTicksNS)
+	next_frame : u64 = 0   // the soonest the next frame is drawn (GetTicksNS)
 	for ui.running {
 		wait := hub_wait(hub)
 		if ui.dirty {
 			now := GetTicksNS()
-			if now >= next {
+			if now >= next_frame {
 				measure(ui)
 				draw_window(ui, p)
 				ui.dirty = false
@@ -235,9 +235,9 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 				// sent faster than the display shows them queue up — the window
 				// isn't made to wait — and the picture falls behind, the longer
 				// the more: a dragged panel went on moving after its release.)
-				next = now + ui.frame_ns + ui.frame_ns / 50
+				next_frame = now + ui.frame_ns + ui.frame_ns / 50
 			else
-				wait = i32((next - now) / 1000000) + 1
+				wait = i32((next_frame - now) / 1000000) + 1
 			}
 		}
 		ev : Event

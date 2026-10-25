@@ -43,14 +43,14 @@ primitive_sphere :: fun(
     for r in 0:rings {
         for s in 0:sectors {
             cur := u32(r * (sectors + 1) + s)
-            next := cur + u32(sectors + 1)
+            below := cur + u32(sectors + 1)
 
             &inds + cur
-            &inds + next
+            &inds + below
             &inds + (cur + 1)
             &inds + (cur + 1)
-            &inds + next
-            &inds + (next + 1)
+            &inds + below
+            &inds + (below + 1)
         }
     }
 

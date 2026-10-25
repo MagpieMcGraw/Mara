@@ -114,6 +114,7 @@ Rs_Miss :: struct {
 Rs_Clash :: struct {
     taken, param, shadows, constant: bool,
     before: Token_Id,
+    hides:  Ref,   // a fun, a type or a module of that name in sight (kind None: none)
 }
 
 // What a file sees of the groups calls and operators choose among: its
@@ -290,7 +291,14 @@ rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
             break
         }
     }
-    if ref, ok := rs_lookup(r, name); ok && ref.kind == .Const { c.constant = true }
+    if ref, ok := rs_lookup(r, name); ok {
+        // (A constant's name, a fun's, a type's, a module's in sight — its
+        // own module's or one it uses: a variable of that name would hide it.)
+        #partial switch ref.kind {
+        case .Const:              c.constant = true
+        case .Fun, .Type, .Module: c.hides = ref
+        }
+    }
     r.miss = {}
     return
 }
@@ -730,7 +738,9 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
             if t.tag[tg] != .Ident { rs_node(r, tg); continue }
             ref := Ref{t.main[tg], kind}
             r.refs[tg] = ref
-            if c := rs_clash(r, rs_text(t.main[tg])); c.taken || c.before != 0 || c.constant { r.clashes[t.main[tg]] = c }
+            c := rs_clash(r, rs_text(t.main[tg]))
+            if kind == .Field { c.hides = {} }   // (a field is reached through its struct: `x.name`)
+            if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[t.main[tg]] = c }
             rs_declare(r, rs_text(t.main[tg]), ref)
         }
     case .Using:

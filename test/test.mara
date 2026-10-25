@@ -281,9 +281,9 @@ test_partial_array :: fun() {
 	name : [16]utf8
 	print(name.cap)
 	print(name.len)
-	greet : [32]utf8 = "hello"
-	print(greet.cap)
-	print(greet.len)
+	greeting : [32]utf8 = "hello"
+	print(greeting.cap)
+	print(greeting.len)
 	src : [4]i64
 	src[0] = 111
 	src[1] = 222
