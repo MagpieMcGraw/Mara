@@ -1,0 +1,18 @@
+module view_list_param_neg
+
+//@ expect-fail: argument 1 ('view') of 'shout': parameter 'text' expects str64, got []utf8
+
+// A list param takes a list, not a view: a view has no room of its own to
+// be one. (An assignment copies a view into a list, `buf = view`, and a
+// conversion makes one, `str64(view)`; a call does neither. It got past the
+// checker once, and failed to build.)
+
+use mara.core
+
+shout :: fun(text: str64) { print(text) }
+
+main :: fun() {
+	whole := "hey"
+	view : []utf8 = whole
+	shout(view)
+}

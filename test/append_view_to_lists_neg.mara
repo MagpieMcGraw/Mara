@@ -1,0 +1,17 @@
+module append_view_to_lists_neg
+
+//@ expect-fail: `&names + view` would make a view an item, and an item is a str64, not a view: append to an item, `&names[i] + view`, or to a new one, `next(&names) + view`
+
+// A list of lists takes items, and a view is no item: it has no room of
+// its own. Its text goes into one — an item there, or a new one next(&names)
+// gives (append_chain). (It got past the checker once, and failed to build.)
+
+use mara.core
+
+main :: fun() {
+	names : [4]str64
+	whole := "Ada"
+	view : []utf8 = whole
+	&names + view
+	print(names.len)
+}

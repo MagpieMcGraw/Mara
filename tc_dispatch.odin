@@ -43,7 +43,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
                 if !field_has_default(ft.params[i]) { continue candidates }
                 continue
             }
-            if types_incompatible(ft.params[i].type_, at) { continue candidates }
+            if arg_incompatible(ft.params[i].type_, at) { continue candidates }
             // (A binding of no width yet fits a param of its kind only: a whole
             // number's no float.)
             if tc_open_binding(at) && !tc_binding_kind_fits(at, ft.params[i].type_) { continue candidates }
@@ -133,7 +133,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -
             if found, ok := tc_ref_type(k, m.ref, f); ok {
                 ft, is_scope := found.(^Type_Scope)
                 if !is_scope || len(ft.params) != 2 { continue }
-                if types_incompatible(ft.params[0].type_, lt) || types_incompatible(ft.params[1].type_, rt) { continue }
+                if arg_incompatible(ft.params[0].type_, lt) || arg_incompatible(ft.params[1].type_, rt) { continue }
                 score := 3 if types_name_equal(ft.params[0].type_, lt) && types_name_equal(ft.params[1].type_, rt) else 2
                 if score > best_score {
                     actual := [2]Type{lt, rt}
@@ -178,13 +178,13 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     p0 := tc_type(k, ptypes[0], span)
     p1 := tc_type(k, ptypes[1], span)
     tc_type_params_restore(k, was)
-    if types_incompatible(p0, lt) || types_incompatible(p1, rt) { return nil }
+    if arg_incompatible(p0, lt) || arg_incompatible(p1, rt) { return nil }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }
     mangled := mangle_generic_name(name, type_args[:])
     ft := k.instances[mangled] or_else nil
     if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
-    if len(ft.params) != 2 || types_incompatible(ft.params[0].type_, lt) || types_incompatible(ft.params[1].type_, rt) { return nil }
+    if len(ft.params) != 2 || arg_incompatible(ft.params[0].type_, lt) || arg_incompatible(ft.params[1].type_, rt) { return nil }
     return ft
 }
 
@@ -199,7 +199,7 @@ tc_unary_overload :: proc(k: ^TC, t: Type, at: Token_Id) -> ^Type_Scope {
             found, ok := tc_ref_type(k, m.ref, m.name)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)
-            if !is_scope || len(ft.params) != 1 || types_incompatible(ft.params[0].type_, t) { continue }
+            if !is_scope || len(ft.params) != 1 || arg_incompatible(ft.params[0].type_, t) { continue }
             score := 3 if types_name_equal(ft.params[0].type_, t) else 2
             if score > best_score { best, best_score = ft, score }
         }

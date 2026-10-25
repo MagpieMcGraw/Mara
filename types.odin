@@ -1587,6 +1587,18 @@ types_name_equal :: proc(a: Type, b: Type) -> bool {
     return types_equal(a, b)
 }
 
+// Whether an argument of type `at` can't go to a param of type `pt`: as
+// types_incompatible, and a view never where a list goes by value — it has
+// no room of its own (an assignment copies one in: `buf = view`; a param
+// isn't one). `&names + view` on a list of lists is that: an item takes it,
+// `&names[i] + view`, `next(&names) + view`.
+arg_incompatible :: proc(pt, at: Type) -> bool {
+    if pa, to_list := distinct_base(pt).(^Type_Partial_Array); to_list && pa.text == 0 {
+        if _, is_view := distinct_base(resolve_infer(at)).(^Type_Slice); is_view { return true }
+    }
+    return types_incompatible(pt, at)
+}
+
 types_incompatible :: proc(a: Type, b: Type) -> bool {
     if is_any(a) || is_any(b) { return false }
     // Allow `^byte → fn(...)` for raw-pointer-to-function-pointer assignments.

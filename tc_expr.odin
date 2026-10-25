@@ -592,6 +592,15 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
                 tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt))
                 return Type_Error{}
             }
+            // (A view onto a list of lists: an item takes it, not the list.)
+            if pt, is_ptr := distinct_base(lt).(^Type_Ptr); is_ptr {
+                if items := loop_elem(pt.elem); items != nil && arg_incompatible(items, rt) && !types_incompatible(items, rt) {
+                    target, item := tc_written(k, tc_unparen(k, left)), tc_written(k, right)
+                    list := target[1:] if strings.has_prefix(target, "&") else fmt.tprintf("%s^", target)
+                    tc_error(k, span, TYPE_APPEND_VIEW_TO_LISTS, target, item, type_name(items), list, item, target, item)
+                    return Type_Error{}
+                }
+            }
             tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT, type_name(lt), type_name(rt))
             return Type_Error{}
         }
@@ -891,7 +900,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         // (A method's receiver of a distinct struct — `distinct P` — is a P
         // to it: the struct's methods are its too.)
         own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
-        if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) {
+        if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && arg_incompatible(pt, at) {
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at), tc_partial_hint(k, a, at, pt))

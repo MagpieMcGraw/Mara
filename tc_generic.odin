@@ -243,7 +243,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         if i >= len(ft.params) { break }
         pt, at := ft.params[i].type_, arg_types[i]
         own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
-        if own || coerce_deferred(k.c, at, pt, span) || !types_incompatible(pt, at) { continue }
+        if own || coerce_deferred(k.c, at, pt, span) || !arg_incompatible(pt, at) { continue }
         clause := ""
         if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
         got := type_name(at)
