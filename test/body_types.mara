@@ -6,14 +6,14 @@ module body_types
 //@ expect-output: Color.green
 //@ expect-output: Mode.slow 2.5 hi
 //@ expect-output: E.Broke Ok
-//@ expect-output: 3
 
 // Types defined in a fun's body — an enum, an error set, a distinct type, an
 // alias — seen in that body (and the funs inside it), named for it: two funs
 // each have a Mode. A variant's name by itself is a value, `mode := help`,
-// when one enum in sight has it; a local of that name comes first. They
-// used to be "a definition in a body is not supported yet", and a bare
-// variant "undefined identifier" unless a type was expected.
+// when one enum in sight has it; no variable may take its name
+// (variant_name_neg). They used to be "a definition in a body is not
+// supported yet", and a bare variant "undefined identifier" unless a type
+// was expected.
 
 use mara.core
 
@@ -63,6 +63,4 @@ main :: fun() {
 	print(c)
 	print(other())
 	print(fails(true), fails(false))
-	help := 3
-	print(help)
 }

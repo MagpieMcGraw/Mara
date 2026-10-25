@@ -308,6 +308,7 @@ TYPE_ASSIGN_UNDECLARED_VARIABLE :: "cannot assign to '%s' — it is not declared
 TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING :: "variable '%s' shadows an enclosing binding"
 TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE :: "variable '%s' shadows a constant from an outer scope"
 TYPE_VARIABLE_HIDES_DEFINITION :: "variable '%s' would hide the %s '%s', %s: give it a name of its own"
+TYPE_VARIABLE_HIDES_VARIANT :: "%s '%s' would hide the variant %s.%s, %s: give it a name of its own"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %s"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"

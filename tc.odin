@@ -263,6 +263,10 @@ tc_results :: proc(k: ^TC) -> []Type {
 // checked — a param, a named result, a local — kept as one of its variables
 // (Annotations.vars). (`_` names no variable.)
 tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
+    #partial switch ref.kind {
+    case .Local, .Param, .Result:
+        if ref.decl != 0 && name != "_" { tc_variant_named(k, name, ref) }
+    }
     tc_bound_set(k, ref.decl, t)
     #partial switch ref.kind {
     case .Local, .Param, .Result:
@@ -296,6 +300,25 @@ TC_Scope :: struct {
 
 tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
     check_error(k.c, span, msg, ..args)
+}
+
+// A variable, a param or a result named as a variant in sight (its name by
+// itself is a value, `mode := help`): it would hide the variant, so it's
+// refused, as a fun's name is (tc_declarable). A field may share it.
+tc_variant_named :: proc(k: ^TC, name: string, ref: Ref) {
+    at := Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}
+    owner: ^Type_Enum
+    for _, edef in k.table.enums {
+        if name not_in edef.variants || !tc_sees_enum(k, edef, at) { continue }
+        // (Of two, the first by name: the same one every build.)
+        if owner == nil || edef.name < owner.name { owner = edef }
+    }
+    if owner == nil { return }
+    word := "param" if ref.kind == .Param else "result" if ref.kind == .Result else "variable"
+    enum_name := type_name(owner)
+    if owner.is_synthetic { enum_name = strings.trim_suffix(enum_name, "_Tag") }   // (a union's tag: the union's)
+    v := variant_decl(owner, name)
+    tc_error(k, at, TYPE_VARIABLE_HIDES_VARIANT, word, name, enum_name, name, span_loc(Span{at = v, tok = v, end = v + 1}))
 }
 
 // A condition of type t that isn't one, said with msg; for an enum, what

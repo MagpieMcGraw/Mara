@@ -17,7 +17,7 @@ use mara.core
 MAX :: 4
 Kind :: union { a  b  c }
 
-firsts :: fun(a: [$N!]i64) -> i64 { return N }
+firsts :: fun(xs: [$N!]i64) -> i64 { return N }
 
 main :: fun() {
 	three : [3!]i64 = {1, 2, 3}
