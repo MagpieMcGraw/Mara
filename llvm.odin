@@ -2271,6 +2271,19 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     data := llvm_hdr_data(e, storage)
     cursor := fresh_tmp(g)
     emit_load_into(g, cursor, w, len_at)
+    // (Storage of the items taken, not bytes — `slice([:n]T, &list)`, a list
+    // of T: its len and cap count items. Scaled to bytes here, as a byte
+    // cursor's are, and the cursor stored back as items.)
+    item := 1
+    if se := llvm_header_elem(graph_type(pg, storage)); se != nil {
+        if _, is_byte := distinct_base(se).(Type_Byte); !is_byte { item = type_size(se) }
+    }
+    at_item := cursor   // (where it is, in items: what a failure says)
+    if item > 1 {
+        scaled := fresh_tmp(g)
+        ir_bin(g, scaled, .Mul, w, cursor, ir_int(item))
+        cursor = scaled
+    }
     advance := ir_int(size)
     if !let {
         advance = fresh_tmp(g)
@@ -2296,6 +2309,12 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     moved := fresh_tmp(g)
     ir_bin(g, moved, .Add, w, cursor, advance)
     cap_val := llvm_hdr_cap(e, storage)
+    cap_items := cap_val
+    if item > 1 {
+        cap_bytes := fresh_tmp(g)
+        ir_bin(g, cap_bytes, .Mul, w, cap_val, ir_int(item))
+        cap_val = cap_bytes
+    }
     // (Its count of elements, or its one value, in the room past the aligned
     // cursor: a negative count is outside.)
     over: Val
@@ -2311,9 +2330,19 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     name := graph_place_name(pg, ops[0])
     // What was asked for, as asked (the advance itself may have wrapped).
     asked := ir_int(1) if let else count
-    emit_fail(g, fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name),
-              fail_i64(asked), fail_i64(cursor), fail_i64(cap_val))
+    if item > 1 {
+        emit_fail(g, fmt.tprintf("%s runtime error: take overflows storage: %%lld items at item %%lld exceed its cap, %%lld, for '%s'\n", loc, name),
+                  fail_i64(asked), fail_i64(at_item), fail_i64(cap_items))
+    } else {
+        emit_fail(g, fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name),
+                  fail_i64(asked), fail_i64(cursor), fail_i64(cap_val))
+    }
     emit_label(g, ok)
+    if item > 1 {
+        moved_items := fresh_tmp(g)
+        ir_bin(g, moved_items, .Sdiv, w, moved, ir_int(item))
+        moved = moved_items
+    }
     emit_store(g, w, moved, len_at)
     mem_probe_len(g, len_at)   // (a header's address is its len's)
     if let {

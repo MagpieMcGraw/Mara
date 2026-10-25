@@ -4,7 +4,9 @@ package mara
 // room for n of them as a slice (empty from a cursor: to fill; n of them at
 // a byte's place: to read), `slice(s)` a slice of the type its use expects. The
 // storage: `&bytes` (a cursor, advanced: ^[]byte) or `&bytes[i]` (at a
-// place: ^byte).
+// place: ^byte). A slice's storage may be a list of what it takes, too:
+// `slice([:n]Token, &tokens)` carves n of its items (a cursor, advanced by n)
+// — no bytes read as another type.
 
 // Its type; its count, an integer at the header's width; its storage, a
 // cursor or a byte's place.
@@ -50,12 +52,19 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
     // from 0.)
     st := tc_check(k, storage)
     cursor, at_byte := false, false
+    // (A slice of T from a list of T: its items carved, the cursor counted
+    // in them.)
+    items: Type
+    if sl, is_slice := distinct_base(taken).(^Type_Slice); is_slice && tc_text(t.main[n]) == "slice" { items = sl.elem }
+    of_items :: proc(elem, items: Type) -> bool { return items != nil && !types_incompatible(items, elem) && !types_incompatible(elem, items) }
     if pt, is_ptr := distinct_base(st).(^Type_Ptr); is_ptr {
         #partial switch elem in distinct_base(pt.elem) {
         case ^Type_Slice:
             _, cursor = elem.elem.(Type_Byte)
+            cursor ||= of_items(elem.elem, items)
         case ^Type_Partial_Array:
             _, cursor = elem.elem.(Type_Byte)
+            cursor ||= of_items(elem.elem, items)
         case Type_Byte:
             at_byte = true
         }

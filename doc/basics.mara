@@ -719,7 +719,10 @@ example_size_of :: fun() {
 //
 // `slice([:n]T, mem)` takes room for n Ts from mem, a `^[]byte`, after its
 // len, and moves the len past them: the next take comes after. What it gives
-// back is empty — its len 0, its cap n — for you to fill: append to it. `let(T,
+// back is empty — its len 0, its cap n — for you to fill: append to it. mem
+// can be a list of Ts too, `&tokens`: then its items are carved, one part
+// after another, nothing read as another type (a list of anything else is
+// refused). `let(T,
 // &mem[k])` names a T living in the bytes at k — not a slice: one there would
 // be only its header (n Ts there are `slice([:n]T, &mem[k])`). For a count known only when
 // the program runs, slice a fixed array instead: `room : [100!]i64`, then

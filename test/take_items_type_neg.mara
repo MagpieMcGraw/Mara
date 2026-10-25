@@ -1,0 +1,13 @@
+module take_items_type_neg
+
+//@ expect-fail: a slice also a list of what it takes, ^[N]T — got ^[8]f64
+
+// A take from a list carves its items as they are: a list of another type
+// would be its bytes read as i64s, so it's refused — bytes are what a take
+// reads as another type (take_items: a list of what it takes).
+
+main :: fun() {
+	floats : [8]f64
+	other := slice([:4]i64, &floats)
+	print(other.len)
+}
