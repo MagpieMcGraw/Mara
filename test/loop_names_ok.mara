@@ -1,0 +1,21 @@
+module loop_names_ok
+
+use mara.core
+
+//@ expect-output: sums: 6 12 4
+
+// Loops one after another may take one name; nested ones each their own,
+// and `_` as many times as it likes (loop_shadow_neg: nested, one name).
+
+main :: fun() {
+	a := 0
+	for i in 1..3 { a += i }
+	b := 0
+	for i in 1..3 { b += i * 2 }
+	c := 0
+	for _, i in [5, 6] {
+		for _, j in [7, 8] { if i == j do c += 1 }
+		for k in 0:1 { c += k + 1 }
+	}
+	print("sums:", a, b, c)
+}

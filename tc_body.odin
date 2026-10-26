@@ -821,6 +821,8 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
             tc_error(k, span, TYPE_LOOP_ITEM_TOO_BIG, name, type_name(elem), type_size(elem), name, tc_written(k, v.collection))
         }
         // (A loop variable named `_` is none: nothing the body can name.)
+        tc_loop_name(k, v.elem)
+        tc_loop_name(k, v.index)
         if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
         if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
         tc_scope(k, v.body)
@@ -836,6 +838,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         lc, lc_ok := tc_comptime_int(k, v.lo)
         hc, hc_ok := tc_comptime_int(k, v.hi)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, tc_text(v.dots), hc, lc, hc) }
+        tc_loop_name(k, v.var)
         if tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
         tc_scope(k, v.body)
     case:
@@ -845,6 +848,15 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }
+}
+
+// A loop's name, said wrong as a declaration's would be (tc_declarable):
+// an enclosing loop's name, `for i` inside `for value, i`, hides it — the
+// inner loop ran the outer's own counter (sooblivion). It's bound all the
+// same.
+tc_loop_name :: proc(k: ^TC, tok: Token_Id) {
+    if tok == 0 || tc_text(tok) == "_" { return }
+    _ = tc_declarable(k, tok, tc_text(tok), Span{at = tok, tok = tok, end = tok + 1}, false)
 }
 
 // `for &item in xs`: the loop's name a pointer to each item where it is
@@ -905,6 +917,7 @@ tc_for_call :: proc(k: ^TC, s: Tree_Id, v: For_View, ct: Type, returns: []Type) 
         if tc_text(tok) == "_" { continue }
         t: Type = slice_header_width_type   // (one after the values: the round)
         if bad { t = Type_Error{} } else if i < len(values) { t = solidify_type(returns[values[i]]) }
+        tc_loop_name(k, tok)
         tc_bind(k, tc_text(tok), t, {tok, .Local})
     }
     tc_scope(k, v.body)

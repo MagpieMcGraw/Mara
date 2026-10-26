@@ -401,6 +401,19 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
     }
 }
 
+// A loop's name, declared in its block: what it runs into noted as a
+// declaration's is (an enclosing loop's name, `for i` in `for value, i`:
+// it would hide it) — said by tc_for (tc_declarable).
+@(private="file")
+rs_declare_loop :: proc(r: ^Resolver, tok: Token_Id) {
+    name := rs_text(tok)
+    if name != "_" {
+        c := rs_clash(r, name)
+        if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[tok] = c }
+    }
+    rs_declare(r, name, {tok, .Local})
+}
+
 // A foreign block's funs, in sight in the current scope.
 @(private="file")
 rs_define_foreign :: proc(r: ^Resolver, s: Tree_Id) {
@@ -842,10 +855,10 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         rs_node(r, v.hi)
         rs_node(r, v.collection)
         rs_enter(r, .Block)
-        if v.var != 0 { rs_declare(r, rs_text(v.var), {v.var, .Local}) }
-        if v.elem != 0 { rs_declare(r, rs_text(v.elem), {v.elem, .Local}) }
-        if v.index != 0 { rs_declare(r, rs_text(v.index), {v.index, .Local}) }
-        for tok in v.more { rs_declare(r, rs_text(tok), {tok, .Local}) }
+        if v.var != 0 { rs_declare_loop(r, v.var) }
+        if v.elem != 0 { rs_declare_loop(r, v.elem) }
+        if v.index != 0 { rs_declare_loop(r, v.index) }
+        for tok in v.more { rs_declare_loop(r, tok) }
         if v.init != 0 { rs_stmt(r, v.init) }
         rs_node(r, v.cond)
         if v.post != 0 { rs_stmt(r, v.post) }

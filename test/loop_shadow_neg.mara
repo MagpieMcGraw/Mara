@@ -1,0 +1,16 @@
+module loop_shadow_neg
+
+//@ expect-fail: variable 'i' shadows an enclosing binding
+
+// A loop's name hides an enclosing one, as a declaration's would: an error
+// (loop_names_ok). It ran the outer loop's own counter: after the inner
+// loop the outer went on from 2, never ending (sooblivion's `nifs`).
+
+use mara.core
+
+main :: fun() {
+	for value, i in [10, 20, 30, 40] {
+		for i in 0:2 { }
+		print(value, i)
+	}
+}
