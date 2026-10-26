@@ -2594,6 +2594,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
+        if fn, is_from_number := callee.origin.(Origin_From_Number); is_from_number { return llvm_from_number(e, op, ops, callee, fn.enum_) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn(g, callee.name)
     }
@@ -2706,6 +2707,51 @@ llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
     v := fresh_tmp(g)
     ir_load(g, v, tag, at)
     e.value[op] = v
+    return true
+}
+
+// `E(n)` (Origin_From_Number), where it's called: the variant whose value n
+// is — a constant's as it is (tc_enum_number checked it); else n, widened,
+// switched on over E's values, the program stopped at none
+// (__mara_enum_fail), then taken at E's tag width.
+@(private="file")
+llvm_from_number :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
+    g := e.g
+    if len(ops) != 1 { e.note = "an enum's number"; return false }
+    pt := fn_param(callee, 0).type_
+    v := llvm_operand(e, ops[0], pt) or_return
+    if v.kind == .Int {
+        e.value[op] = v
+        return true
+    }
+    from, tag := llvm_type_from_checker(pt), llvm_type_from_checker(fn_result(callee, 0))
+    wide := v
+    if from != IR_I64 {
+        wide = fresh_tmp(g)
+        ir_cast(g, wide, Ir_Inst.Zext if llvm_unsigned(pt) else .Sext, from, v, IR_I64)
+    }
+    // (Each value once — variants may share one — in order: the same code
+    // each build.)
+    values := make([dynamic]int, 0, len(et.variants), context.temp_allocator)
+    for _, value in et.variants { if !slice.contains(values[:], value) { append(&values, value) } }
+    slice.sort(values[:])
+    ok, miss := fresh_label(g, "from_number.ok"), fresh_label(g, "from_number.miss")
+    arms := make([]Ir_Arg, len(values), context.temp_allocator)
+    for value, i in values { arms[i] = {IR_I64, ir_int(value), ok} }
+    ir_switch(g, IR_I64, wide, miss, arms)
+    emit_label(g, miss)
+    loc := get_string_literal(g, span_location(graph_origin(e.pg, op)))
+    name := get_string_literal(g, et.source_name if et.source_name != "" else et.name)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_ENUM_FAIL), {IR_PTR, loc, {}}, {IR_I64, wide, {}}, {IR_PTR, name, {}})
+    ir_unreachable(g)
+    emit_label(g, ok)
+    if tag == IR_I64 {
+        e.value[op] = wide
+    } else {
+        t := fresh_tmp(g)
+        ir_cast(g, t, .Trunc, IR_I64, wide, tag)
+        e.value[op] = t
+    }
     return true
 }
 

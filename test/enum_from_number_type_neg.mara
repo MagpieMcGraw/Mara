@@ -1,0 +1,13 @@
+module enum_from_number_type_neg
+
+//@ expect-fail: Mode(n) takes an integer, the value of one of its variants: f64 is none
+
+// `E(n)` takes an integer: a variant's value (enum_from_number).
+
+use mara.core
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+
+main :: fun() {
+	print(Mode(1.5))
+}

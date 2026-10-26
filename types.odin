@@ -699,6 +699,8 @@ Target_OS :: enum {
 //               import lib (the linker writes the DLL/SO dep into the binary)
 //   From_Text → `E.from_text(s)`: no function at all — each call compares
 //               the text with E's variants' names where it is
+//   From_Number → `E(n)`: likewise — each call finds the variant whose
+//               value n is where it is (a constant's, when it's checked)
 //
 // Foreign-only metadata (library, link_name) lives in the Foreign variant, so
 // source funs don't carry empty fields they never use.
@@ -707,6 +709,7 @@ Function_Origin :: union {
     Origin_Intrinsic,
     Origin_Foreign,
     Origin_From_Text,
+    Origin_From_Number,
 }
 
 Origin_Source :: struct {}
@@ -722,6 +725,10 @@ Origin_Foreign :: struct {
 
 Origin_From_Text :: struct {
     enum_: ^Type_Enum,                 // whose variants' names the text is compared with
+}
+
+Origin_From_Number :: struct {
+    enum_: ^Type_Enum,                 // whose variants' values the number is compared with
 }
 
 // Build a mangled name for a generic instantiation: "Array" + [int] -> "Array__int"

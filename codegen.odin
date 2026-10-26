@@ -605,6 +605,7 @@ __MARA_FTOI_FAIL      :: "__mara_ftoi_fail"
 __MARA_SHIFT_FAIL     :: "__mara_shift_fail"
 __MARA_LEN_FAIL       :: "__mara_len_fail"
 __MARA_ATOM_FAIL      :: "__mara_atom_fail"
+__MARA_ENUM_FAIL      :: "__mara_enum_fail"
 
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
 Runtime_Param :: struct { ty: Ir_Type, name: string }
@@ -619,6 +620,7 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_SHIFT_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, "%s runtime error: shift by %lld, outside 0..%lld for %s\n"},
     {__MARA_LEN_FAIL,       {{IR_PTR, "loc"}, {IR_I64, "len"}, {IR_I64, "cap"}},                   "%s runtime error: a len of %lld, past its room of %lld: what holds it was written over\n"},
     {__MARA_ATOM_FAIL,      {{IR_PTR, "loc"}, {IR_I64, "id"}, {IR_I64, "count"}},                   "%s runtime error: atom %lld is none of the program's %lld: what holds it was written over\n"},
+    {__MARA_ENUM_FAIL,      {{IR_PTR, "loc"}, {IR_I64, "value"}, {IR_PTR, "type"}},                "%s runtime error: %lld is no %s variant's value\n"},
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the

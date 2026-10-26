@@ -8,6 +8,7 @@ gl :: use mara.open_gl
 //@ expect-output: filters: 9985 9986 33648
 //@ expect-output: limits: 34930 34047
 //@ expect-output: buffers: 37074 35345
+//@ expect-output: numbered: GL_Tex_Param.TEXTURE_MAX_LEVEL GL_Texture_Unit.TEXTURE5
 
 // mara.open_gl's values, as GL numbers them, and its functions linked: a
 // call to each is built (not run — that needs a GL context) so a name
@@ -44,5 +45,9 @@ main :: fun(args: [][]utf8) {
 	print("filters:", u32(gl.LINEAR_MIPMAP_NEAREST), u32(gl.NEAREST_MIPMAP_LINEAR), u32(gl.MIRRORED_REPEAT))
 	print("limits:", u32(gl.MAX_TEXTURE_IMAGE_UNITS), u32(gl.MAX_TEXTURE_MAX_ANISOTROPY))
 	print("buffers:", u32(gl.SHADER_STORAGE_BUFFER), u32(gl.UNIFORM_BUFFER))
+	// (A number as its enum's value: a constant checked now, a unit's at run time.)
+	unit := 5
+	if args.len > 100 do unit = 2
+	print("numbered:", gl.GL_Tex_Param(0x813D), gl.GL_Texture_Unit(33984 + unit))
 	if args.len > 100 do uses()
 }

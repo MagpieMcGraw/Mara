@@ -1,0 +1,13 @@
+module enum_from_number_value_neg
+
+//@ expect-fail: 4 is no Mode variant's value — its variants are Off = 0, Slow = 3, Fast = 7
+
+// `E(n)` with a constant n: checked when it's built (enum_from_number).
+
+use mara.core
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+
+main :: fun() {
+	print(Mode(4))
+}

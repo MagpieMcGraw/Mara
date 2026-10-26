@@ -1,0 +1,20 @@
+module enum_from_number_stop
+
+use mara.core
+
+//@ expect-exit: 1
+//@ expect-output: before
+//@ expect-output: runtime error: 5 is no Mode variant's value
+
+// `E(n)` with a number known only when it runs: checked then, and the
+// program stops when it's no variant's value (enum_from_number).
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+
+main :: fun(args: [][]utf8) {
+	n := 5
+	if args.len > 5 do n = 3
+	print("before")
+	print(Mode(n))
+	print("after")
+}

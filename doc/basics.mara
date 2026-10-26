@@ -370,6 +370,11 @@ example_struct :: fun() {
 //
 // An enum can size an array: `[Light]bool` holds one for each of its values
 // (the highest value + 1 of them), indexed by them — `seen[Green]`.
+//
+// A number gives the variant whose value it is: `Light(2)` is Green, and
+// `i64(Green)` is 2 again. A constant that's no variant's value is an error;
+// a number known only when the program runs is checked then, and the
+// program stops on one that's none.
 example_union :: fun() {
 	Light :: union { Red  Yellow  Green }
 	l : Light = .Yellow
@@ -380,6 +385,7 @@ example_union :: fun() {
 	seen : [Light]bool
 	seen[go] = true
 	print(seen.len, seen[Green])           // 3 true
+	print(Light(2), i64(Light.Red))        // Light.Green 0
 }
 
 

@@ -1,0 +1,45 @@
+module enum_from_number
+
+use mara.core
+
+//@ expect-output: constants: Mode.Slow Param.B Sign.Neg
+//@ expect-output: run time: Mode.Fast Param.A
+//@ expect-output: wide: Param.Huge
+//@ expect-output: shared: Param.B
+//@ expect-output: truthy: false true
+//@ expect-output: local: Light.Green
+//@ expect-output: passed: Mode.Fast
+
+// `E(n)`: the variant of the enum E whose value the integer n is. A
+// constant is checked when it's built (enum_from_number_value_neg), a
+// number known only when it runs is checked then: the program stops on
+// none (enum_from_number_stop). Any integer width goes in.
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+Sign :: union { Neg = -1  Zero = 0  Pos = 1 }
+
+Param :: union(tag u32) {
+	A = 10
+	B = 20
+	C = 20
+	Huge = 4000000000
+}
+
+speed :: fun(m: Mode) -> Mode { return m }
+
+main :: fun(args: [][]utf8) {
+	print("constants:", Mode(3), Param(20), Sign(-1))
+	n := 7
+	if args.len > 5 do n = 2
+	small : u8 = 10
+	print("run time:", Mode(n), Param(small))
+	wide : u32 = 4000000000
+	print("wide:", Param(wide))
+	// (Two variants of one value: the first's name.)
+	print("shared:", Param(20))
+	off := Mode(i64(args.len) - 1)
+	print("truthy:", if off do true else false, if Mode(3) do true else false)
+	Light :: union { Red  Yellow  Green }
+	print("local:", Light(2))
+	print("passed:", speed(Mode(n)))
+}

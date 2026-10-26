@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:strings"
+import "core:slice"
 
 // Expressions, checked: each its type, kept on its node (tc_check), with
 // what it names, what it calls and what each call's params receive
@@ -857,6 +858,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         k.annot.forms[tc_sid(k, n)] = .Conversion
         return tc_distinct_conversion(k, n, name, dt, args)
     }
+    if et, is_enum := ft_raw.(^Type_Enum); is_enum && !et.is_error_kind && !et.is_synthetic {
+        return tc_enum_number(k, n, name, et, args)
+    }
     ft, is_scope := ft_raw.(^Type_Scope)
     // (A fun written in the program, or a foreign one; else a fun's value — a
     // name no declared fun has, holding one — called through it.)
@@ -1378,6 +1382,65 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
         tc_error(k, span, TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE, name, type_name(at), type_name(dt.base_type))
     }
     return dt
+}
+
+// `E(n)`, E an enum: the variant whose value the integer n is
+// (`GL_Tex_Param(0x813D)`). A constant that's no variant's value is an
+// error here; a number known only when it runs is checked there, the
+// program stopped when it's none (llvm_from_number).
+tc_enum_number :: proc(k: ^TC, n: Tree_Id, name: string, et: ^Type_Enum, args: []Tree_Id) -> Type {
+    span := tree_span(k.t, n)
+    tc_set_ref(k, n, {type_decl(et), .Type})   // (the call names its enum: `Mode(3)`, `gl.GL_Tex_Param(n)`)
+    if len(args) != 1 {
+        tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+        for a in args { tc_check(k, a) }
+        return Type_Error{}
+    }
+    saved := k.hint
+    k.hint = nil
+    at := tc_check(k, args[0])
+    k.hint = saved
+    if _, failed := at.(Type_Error); failed { return Type_Error{} }
+    _, from_enum := distinct_base(at).(^Type_Enum)
+    if from_enum || !is_integer(distinct_base(at)) && !is_any(at) {
+        tc_error(k, span, TYPE_ENUM_NUMBER_INTEGER, name, type_name(solidify_type(at)))
+        return Type_Error{}
+    }
+    if v, known := tc_comptime_int(k, args[0]); known && !enum_has_value(et, v) {
+        tc_error(k, span, TYPE_ENUM_NO_SUCH_VALUE, v, name, enum_variants_text(et))
+    }
+    // (Its fun takes it at its own type: a literal, or a name of no width
+    // written, at i64 — that use deciding it, as an argument's does.)
+    pt := solidify_type(at)
+    tc_value_at(k, args[0], at, pt, span)
+    k.annot.forms[tc_sid(k, n)] = .Fun   // (its fun's, made here)
+    tc_set_callee(k, n, tc_from_number_fun(et, et, pt))
+    tc_set_args(k, n, {{args[0], .Written, -1}})
+    return et
+}
+
+// Whether a variant of the enum has the value v.
+enum_has_value :: proc(et: ^Type_Enum, v: i64) -> bool {
+    for _, value in et.variants { if i64(value) == v { return true } }
+    return false
+}
+
+// An enum's variants as an error lists them, by value: `Off = 0, Slow = 3`
+// (the first 8, then how many more).
+enum_variants_text :: proc(et: ^Type_Enum) -> string {
+    Variant :: struct { name: string, value: int }
+    vs := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
+    for name, value in et.variants { append(&vs, Variant{name, value}) }
+    slice.sort_by(vs[:], proc(a, b: Variant) -> bool { return a.value < b.value || a.value == b.value && a.name < b.name })
+    b := strings.builder_make(context.temp_allocator)
+    for v, i in vs {
+        if i == 8 {
+            fmt.sbprintf(&b, ", and %d more", len(vs) - 8)
+            break
+        }
+        fmt.sbprintf(&b, "%s%s = %d", ", " if i > 0 else "", v.name, v.value)
+    }
+    return strings.to_string(b)
 }
 
 // Whether `from` is a list of another room than the list `to`, of elements

@@ -53,6 +53,8 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
+                } else if et := tc_held_enum(mt); has && mref.kind == .Type && et != nil {
+                    return tc_enum_number(k, n, name, et, args)   // (`gl.GL_Tex_Param(n)`)
                 } else if has && mref.kind == .Type {
                     qual, resolved = tc_held_type(k, n, mt), true
                     failed = qual == nil
@@ -71,6 +73,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                         args, failed = tc_self_args(k, n, fn, qsd, qt, recv, args)
                     }
                 } else if t, holds := qsd.types[name]; holds {
+                    if et := tc_held_enum(t); et != nil { return tc_enum_number(k, n, name, et, args) }
                     qual, resolved = tc_held_type(k, n, t), true
                     failed = qual == nil
                 }
@@ -93,6 +96,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         if resolved {
             // (from_text's, above)
         } else if mt, has := tc_ref_type(k, mref, name); has && mref.kind == .Type {
+            if et := tc_held_enum(mt); et != nil { return tc_enum_number(k, n, name, et, args) }
             qual, resolved = tc_held_type(k, n, mt), true
             failed = qual == nil
         } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
@@ -159,6 +163,13 @@ tc_with_receiver :: proc(recv: Tree_Id, args: []Tree_Id) -> []Tree_Id {
     return out
 }
 
+// A type a scope holds, when it's an enum (no error set): called, the
+// variant a number is (`gl.GL_Tex_Param(n)`, tc_enum_number).
+tc_held_enum :: proc(t: Type) -> ^Type_Enum {
+    et, is_enum := t.(^Type_Enum)
+    return et if is_enum && !et.is_error_kind && !et.is_synthetic else nil
+}
+
 // A type a scope holds, called: its constructor.
 tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
     k.annot.call_names[tc_sid(k, n)] = type_flat_name(t)
@@ -183,6 +194,23 @@ tc_from_text_fun :: proc(qt: Type) -> ^Type_Scope {
     append(&ft.params, Struct_Type_Field{name = "text", type_ = type_slice(Type_Utf8{})})
     append(&ft.return_types, qt)
     ft.origin = Origin_From_Text{enum_ = et}
+    ft.body_span = et.span
+    return ft
+}
+
+// `E(n)`, E an enum (no error set): its fun — made at each call, its body
+// generated where it's called (Origin_From_Number) — taking the number, of
+// its own type `pt`, giving the variant whose value it is; none, the program
+// stops (llvm_from_number). A constant's is checked first (tc_enum_number).
+tc_from_number_fun :: proc(qt: Type, et: ^Type_Enum, pt: Type) -> ^Type_Scope {
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.home_package = et.home_package
+    ft.name = strings.concatenate({type_name(qt), "(n)"})
+    ft.source_name = type_name(qt)
+    append(&ft.params, Struct_Type_Field{name = "n", type_ = pt})
+    append(&ft.return_types, qt)
+    ft.origin = Origin_From_Number{enum_ = et}
     ft.body_span = et.span
     return ft
 }

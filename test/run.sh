@@ -15,6 +15,8 @@
 # A compiling fixture may also carry `//@ expect-output: text` lines (any
 # number): it is then RUN, and must exit 0 with each text in its output. That's
 # how a miscompile that still compiles — printing nothing, say — gets caught.
+# A `//@ expect-exit: N` line makes N the exit it must give instead: a program
+# a run-time check stops (1), its message among the expected output.
 # A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
 # `//@ expect-warning: text` lines (any number): it must still compile, each
 # text among what the build says — a warning that has to be given.
@@ -79,11 +81,12 @@ check_file() {  # f
     done < <(sed -nE 's#.*//@ expect-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
     if grep -qE '//@ expect-output:' "$f"; then
       run=$(timeout 10 "./$name$EXE" 2>&1); rc=$?
+      want_rc=$(sed -nE 's#.*//@ expect-exit:[[:space:]]*([0-9]+).*#\1#p' "$f" | head -1)
       missing=""
       while IFS= read -r want; do
         echo "$run" | grep -qF -- "$want" || missing="$want"
       done < <(sed -nE 's#.*//@ expect-output:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
-      if [ $rc -ne 0 ] || [ -n "$missing" ]; then
+      if [ $rc -ne "${want_rc:-0}" ] || [ -n "$missing" ]; then
         verdict "$name" bad "WRONG OUTPUT: $name (exit $rc${missing:+, missing: \"$missing\"})"; return
       fi
     fi
