@@ -14,11 +14,10 @@ gl :: use mara.open_gl
 // (a view of C's memory has no 0 after it for cstring(): it stopped the
 // program). SDL's text comes back as buffers, C text again: the base path
 // handed back to SDL works. Nothing is opened: SDL isn't started, so each
-// GL address is none and SDL says why. (`sdl.GL_GetProcAddress` as a
-// value doesn't lower yet: the bare name does.)
+// GL address is none and SDL says why.
 
 main :: fun() {
-	gl.gl_load(GL_GetProcAddress)
+	gl.gl_load(sdl.GL_GetProcAddress)
 	print("loaded:", true)
 	err := sdl.GetError()
 	print("error said:", err.len > 0)

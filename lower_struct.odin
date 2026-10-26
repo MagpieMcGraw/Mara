@@ -80,6 +80,12 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want
         return lw_enum_value(k, et, et.variants[field], field, span, want, w)
     }
     if ref.kind == .Const { return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w) }
+    // (A fun of the module as a value, `gl_load(sdl.GL_GetProcAddress)`: its
+    // global, as its bare name gives — lw_ident. A module holds no place.)
+    if lw_names_fun(k, n, t) {
+        if want == .Place { return {} }
+        return {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
+    }
     p := lw_member_place(k, n, field, lw_field_base(k, base, span, w), bt, t)
     if p == NO_VALUE { return {} }
     if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }

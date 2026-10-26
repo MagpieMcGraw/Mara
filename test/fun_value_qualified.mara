@@ -1,0 +1,23 @@
+module fun_value_qualified
+
+use mara.core
+str :: use mara.string
+
+//@ expect-output: passed: 42
+//@ expect-output: held: 7
+//@ expect-output: bare: 9
+
+// A fun named through its module is a value as its bare name is: passed
+// (`gl_load(sdl.GL_GetProcAddress)`, sdl_text) or held. It failed to lower:
+// "a field of a value".
+
+apply :: fun(f: fun(i64) -> str64, x: i64) -> str64 {
+	return f(x)
+}
+
+main :: fun() {
+	print("passed:", apply(str.int_text, 42))
+	f := str.int_text
+	print("held:", f(7))
+	print("bare:", apply(int_text, 9))
+}
