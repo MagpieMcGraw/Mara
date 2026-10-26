@@ -218,7 +218,9 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
         base := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, sl_span, is_self)
         place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", base, lo, hi)
-        if !bytes {
+        // (Bytes into bytes — `out[0:4] = bits.input[2:6]` — a copy, as any
+        // slice's is: no bytes read as another type.)
+        if !bytes || is_byte_buffer(vt) {
             lw_store_at(k, value, place, span)
             return
         }

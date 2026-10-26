@@ -1,0 +1,36 @@
+module slice_assign_bytes
+
+//@ expect-output: from a field: 3 4 5 6 | 0
+//@ expect-output: from a local: 9 9
+//@ expect-output: a value into bytes: 7
+
+// `out[a:b] = bits.input[c:d]`, bytes into bytes, a field's span on the
+// right: a copy, as any slice's is (it failed to build once, "a span of
+// bytes read as another type"). A value of another type into bytes is its
+// raw bytes still.
+
+use mara.core
+
+Bits :: struct { input: [16]byte }
+
+at :: fun(bytes: []byte, i: i64) -> u8 {
+	v : u8 = bytes[i]
+	return v
+}
+
+main :: fun() {
+	bits : Bits
+	for i in 0:8 do bits.input[i] = u8(i + 1)
+	output : [16]byte
+	for i in 0:8 do output[i] = u8(0)
+	output[0:4] = bits.input[2:6]
+	print("from a field:", at(output[0:16], 0), at(output[0:16], 1), at(output[0:16], 2), at(output[0:16], 3), "|", at(output[0:16], 4))
+	nines : [2]byte
+	nines[0] = u8(9)
+	nines[1] = u8(9)
+	output[4:6] = nines[0:2]
+	print("from a local:", at(output[0:16], 4), at(output[0:16], 5))
+	n : u8 = 7
+	output[6:7] = n
+	print("a value into bytes:", at(output[0:16], 6))
+}
