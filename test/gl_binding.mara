@@ -22,6 +22,9 @@ uses :: fun() {
 	most : f32 = 0
 	gl.GetFloatv(gl.MAX_TEXTURE_MAX_ANISOTROPY, &most)
 	gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, 0, 1)
+	// (Offsets into the bound buffers, in bytes: a draw group's own.)
+	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 24)
+	gl.MultiDrawElementsIndirect(gl.TRIANGLES, gl.UNSIGNED_INT, 3 * 20, 2, 0)
 	gl.TexStorage2D(gl.TEXTURE_2D, 1, u32(gl.RGBA8), 4, 4)
 	gl.TexStorage3D(gl.TEXTURE_2D_ARRAY, 3, u32(gl.RGBA_S3TC_DXT5), 64, 64, 16)
 	block : [16!]byte

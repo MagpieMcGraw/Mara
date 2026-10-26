@@ -219,7 +219,9 @@ foreign static_lib "opengl32" prefix gl {
     fun CullFace(mode: GL_Face)
     fun DepthMask(flag: u8)                                             // GLboolean
     fun DrawArrays(mode: GL_Draw_Mode, first: i32, count: i32)
-    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: ^byte)   // const void* indices
+    // `indices`: where in the bound element buffer the indices start, in
+    // bytes (GL's `const void*`, an offset when a buffer is bound).
+    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: usize)
     fun BindTexture(target: GL_Texture_Target, texture: u32)
     fun TexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
     fun TexParameterf(target: GL_Texture_Target, pname: GL_Tex_Param, param: f32)
@@ -349,5 +351,8 @@ foreign static_lib "open_gl" prefix gl {
     fun UniformHandleui64ARB(location: i32, value: u64)
 
     // Multi-draw indirect
-    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: ^byte, drawcount: i32, stride: i32)   // const void* indirect
+    // `indirect`: where in the bound DRAW_INDIRECT_BUFFER the commands start,
+    // in bytes (GL's `const void*`, an offset), so one buffer holds every
+    // group's commands.
+    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32)
 }
