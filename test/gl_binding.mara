@@ -7,6 +7,7 @@ gl :: use mara.open_gl
 //@ expect-output: params: 33085 34046 34049 32882
 //@ expect-output: filters: 9985 9986 33648
 //@ expect-output: limits: 34930 34047
+//@ expect-output: buffers: 37074 35345
 
 // mara.open_gl's values, as GL numbers them, and its functions linked: a
 // call to each is built (not run — that needs a GL context) so a name
@@ -20,6 +21,12 @@ uses :: fun() {
 	gl.GetIntegerv(gl.MAX_TEXTURE_IMAGE_UNITS, &units)
 	most : f32 = 0
 	gl.GetFloatv(gl.MAX_TEXTURE_MAX_ANISOTROPY, &most)
+	gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, 0, 1)
+	gl.TexStorage2D(gl.TEXTURE_2D, 1, u32(gl.RGBA8), 4, 4)
+	gl.TexStorage3D(gl.TEXTURE_2D_ARRAY, 3, u32(gl.RGBA_S3TC_DXT5), 64, 64, 16)
+	block : [16!]byte
+	gl.CompressedTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 4, 4, 1, gl.RGBA_S3TC_DXT5, 16, &block[0])
+	gl.CompressedTexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA_S3TC_DXT5, 4, 4, 1, 0, 16, &block[0])
 }
 
 main :: fun(args: [][]utf8) {
@@ -27,5 +34,6 @@ main :: fun(args: [][]utf8) {
 	print("params:", u32(gl.TEXTURE_MAX_LEVEL), u32(gl.TEXTURE_MAX_ANISOTROPY), u32(gl.TEXTURE_LOD_BIAS), u32(gl.TEXTURE_WRAP_R))
 	print("filters:", u32(gl.LINEAR_MIPMAP_NEAREST), u32(gl.NEAREST_MIPMAP_LINEAR), u32(gl.MIRRORED_REPEAT))
 	print("limits:", u32(gl.MAX_TEXTURE_IMAGE_UNITS), u32(gl.MAX_TEXTURE_MAX_ANISOTROPY))
+	print("buffers:", u32(gl.SHADER_STORAGE_BUFFER), u32(gl.UNIFORM_BUFFER))
 	if args.len > 100 do uses()
 }

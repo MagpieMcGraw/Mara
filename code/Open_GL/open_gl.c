@@ -70,6 +70,11 @@ typedef void   (*PFN_glTexImage3D)(GLenum target, GLint level, GLint internalfor
 typedef void   (*PFN_glTexSubImage3D)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels);
 typedef void   (*PFN_glGenerateMipmap)(GLenum target);
 typedef void   (*PFN_glCompressedTexImage2D)(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data);
+typedef void   (*PFN_glCompressedTexImage3D)(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void *data);
+typedef void   (*PFN_glCompressedTexSubImage3D)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data);
+typedef void   (*PFN_glTexStorage2D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
+typedef void   (*PFN_glTexStorage3D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
+typedef void   (*PFN_glBindBufferBase)(GLenum target, GLuint index, GLuint buffer);
 typedef void   (*PFN_glGetShaderiv)(GLuint shader, GLenum pname, GLint *params);
 typedef void   (*PFN_glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 typedef void   (*PFN_glGetProgramiv)(GLuint program, GLenum pname, GLint *params);
@@ -112,6 +117,11 @@ static PFN_glTexImage3D               _glTexImage3D;
 static PFN_glTexSubImage3D            _glTexSubImage3D;
 static PFN_glGenerateMipmap           _glGenerateMipmap;
 static PFN_glCompressedTexImage2D     _glCompressedTexImage2D;
+static PFN_glCompressedTexImage3D     _glCompressedTexImage3D;
+static PFN_glCompressedTexSubImage3D  _glCompressedTexSubImage3D;
+static PFN_glTexStorage2D             _glTexStorage2D;
+static PFN_glTexStorage3D             _glTexStorage3D;
+static PFN_glBindBufferBase           _glBindBufferBase;
 static PFN_glGetShaderiv              _glGetShaderiv;
 static PFN_glGetShaderInfoLog         _glGetShaderInfoLog;
 static PFN_glGetProgramiv             _glGetProgramiv;
@@ -159,6 +169,11 @@ void gl_load(GetProcAddressFn SDL_GL_GetProcAddress) {
     _glTexSubImage3D           = (PFN_glTexSubImage3D)SDL_GL_GetProcAddress("glTexSubImage3D");
     _glGenerateMipmap          = (PFN_glGenerateMipmap)SDL_GL_GetProcAddress("glGenerateMipmap");
     _glCompressedTexImage2D    = (PFN_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
+    _glCompressedTexImage3D    = (PFN_glCompressedTexImage3D)SDL_GL_GetProcAddress("glCompressedTexImage3D");
+    _glCompressedTexSubImage3D = (PFN_glCompressedTexSubImage3D)SDL_GL_GetProcAddress("glCompressedTexSubImage3D");
+    _glTexStorage2D            = (PFN_glTexStorage2D)SDL_GL_GetProcAddress("glTexStorage2D");
+    _glTexStorage3D            = (PFN_glTexStorage3D)SDL_GL_GetProcAddress("glTexStorage3D");
+    _glBindBufferBase          = (PFN_glBindBufferBase)SDL_GL_GetProcAddress("glBindBufferBase");
     _glGetShaderiv             = (PFN_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     _glGetShaderInfoLog        = (PFN_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog");
     _glGetProgramiv            = (PFN_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
@@ -203,6 +218,7 @@ void   glGenBuffers(GLsizei n, GLuint *buffers)                                 
 void   glBindBuffer(GLenum target, GLuint buffer)                                     { _glBindBuffer(target, buffer); }
 void   glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage)   { _glBufferData(target, size, data, usage); }
 void   glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data) { _glBufferSubData(target, offset, size, data); }
+void   glBindBufferBase(GLenum target, GLuint index, GLuint buffer)                   { _glBindBufferBase(target, index, buffer); }
 
 // Vertex attributes
 void   glEnableVertexAttribArray(GLuint index)                                        { _glEnableVertexAttribArray(index); }
@@ -216,6 +232,10 @@ void   glTexImage3D(GLenum target, GLint level, GLint internalformat, GLsizei wi
 void   glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels) { _glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
 void   glGenerateMipmap(GLenum target)                                                { _glGenerateMipmap(target); }
 void   glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) { _glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data); }
+void   glCompressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void *data) { _glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data); }
+void   glCompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data) { _glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data); }
+void   glTexStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) { _glTexStorage2D(target, levels, internalformat, width, height); }
+void   glTexStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) { _glTexStorage3D(target, levels, internalformat, width, height, depth); }
 
 // Shader info
 void   glGetShaderiv(GLuint shader, GLenum pname, GLint *params)                      { _glGetShaderiv(shader, pname, params); }

@@ -25,10 +25,15 @@ GL_Draw_Mode :: union(tag u32) {
     TRIANGLE_FAN   = 6
 }
 
+// What BindBuffer binds a buffer as. A shader storage buffer (GL 4.3) and a
+// uniform buffer are read by shaders at a numbered binding: BindBufferBase
+// puts one there, `layout(std430, binding = 0) buffer ...` reads it.
 GL_Buffer_Target :: union(tag u32) {
-    ARRAY_BUFFER         = 34962
-    ELEMENT_ARRAY_BUFFER = 34963
-    DRAW_INDIRECT_BUFFER = 36671
+    ARRAY_BUFFER          = 34962
+    ELEMENT_ARRAY_BUFFER  = 34963
+    DRAW_INDIRECT_BUFFER  = 36671
+    UNIFORM_BUFFER        = 35345   // 0x8A11
+    SHADER_STORAGE_BUFFER = 37074   // 0x90D2
 }
 
 GL_Buffer_Usage :: union(tag u32) {
@@ -287,6 +292,9 @@ foreign static_lib "open_gl" prefix gl {
     fun BindBuffer(target: GL_Buffer_Target, buffer: u32)
     fun BufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr size, const void* data
     fun BufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)         // GLintptr offset, GLsizeiptr size, const void* data
+    // A buffer at a shader's numbered binding (`binding = index`): a uniform
+    // or shader storage buffer.
+    fun BindBufferBase(target: GL_Buffer_Target, index: u32, buffer: u32)
 
     // Vertex attributes
     fun EnableVertexAttribArray(index: u32)
@@ -302,6 +310,16 @@ foreign static_lib "open_gl" prefix gl {
     // A block-compressed image as it is in the file: `size` bytes of `data`
     // for one mip level of width x height.
     fun CompressedTexImage2D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, border: i32, size: i32, data: ^byte)
+    // The same for a 2D array's mip level, all `depth` layers at once.
+    fun CompressedTexImage3D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, depth: i32, border: i32, size: i32, data: ^byte)
+    // Part of a mip level: `depth` layers from layer `zoffset`, as the file
+    // holds them — one layer at a time into storage TexStorage3D made.
+    fun CompressedTexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Compressed_Format, size: i32, data: ^byte)
+    // Room for a texture's `levels` mip levels, filled after (TexSubImage3D,
+    // CompressedTexSubImage3D). GL 4.2. The format is a sized one or a
+    // compressed one, as a number: `u32(gl.RGBA8)`, `u32(gl.RGBA_S3TC_DXT5)`.
+    fun TexStorage2D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32)
+    fun TexStorage3D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32, depth: i32)
 
     // Shader info
     fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^i32)           // GLint* params
