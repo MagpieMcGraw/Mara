@@ -9,6 +9,10 @@ gl :: use mara.open_gl
 //@ expect-output: limits: 34930 34047
 //@ expect-output: buffers: 37074 35345
 //@ expect-output: numbered: GL_Tex_Param.TEXTURE_MAX_LEVEL GL_Texture_Unit.TEXTURE5
+//@ expect-output: framebuffers: 36160 36064 36096 36053 36161
+//@ expect-output: depth: 33190 36012 6402 35056 34042
+//@ expect-output: hdr: 34842 35898 5131
+//@ expect-output: cube: 34067 34069 34074 12288
 
 // mara.open_gl's values, as GL numbers them, and its functions linked: a
 // call to each is built (not run — that needs a GL context) so a name
@@ -31,6 +35,35 @@ uses :: fun() {
 	block : [16!]byte
 	gl.CompressedTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 4, 4, 1, gl.RGBA_S3TC_DXT5, 16, &block[0])
 	gl.CompressedTexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA_S3TC_DXT5, 4, 4, 1, 0, 16, &block[0])
+	// (A framebuffer of a color texture and a depth texture — a
+	// reflection's, the scene's depth — and one of a depth renderbuffer.)
+	fbo : u32 = 0
+	gl.GenFramebuffers(1, &fbo)
+	gl.BindFramebuffer(gl.FRAMEBUFFER, fbo)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.RGBA16F), 512, 512, 0, gl.RGBA, gl.HALF_FLOAT, void)
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, 1, 0)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.DEPTH_COMPONENT24), 512, 512, 0, gl.DEPTH_COMPONENT, gl.FLOAT, void)
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, 2, 0)
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_CUBE_MAP_POSITIVE_X, 3, 0)
+	gl.FramebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, 4, 0, 7)
+	outs : [2!]gl.GL_Attachment = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
+	gl.DrawBuffers(2, &outs[0])
+	if gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != u32(gl.FRAMEBUFFER_COMPLETE) do print("incomplete")
+	rbo : u32 = 0
+	gl.GenRenderbuffers(1, &rbo)
+	gl.BindRenderbuffer(gl.RENDERBUFFER, rbo)
+	gl.RenderbufferStorage(gl.RENDERBUFFER, u32(gl.DEPTH24_STENCIL8), 512, 512)
+	gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, rbo)
+	gl.DrawBuffer(gl.NONE)
+	gl.ReadBuffer(gl.COLOR_ATTACHMENT0)
+	gl.ClearDepth(1.0)
+	gl.ColorMask(0, 0, 0, 0)
+	gl.Enable(gl.CLIP_DISTANCE0)
+	gl.BindFramebuffer(gl.READ_FRAMEBUFFER, fbo)
+	gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
+	gl.BlitFramebuffer(0, 0, 512, 512, 0, 0, 1024, 1024, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST)
+	gl.DeleteRenderbuffers(1, &rbo)
+	gl.DeleteFramebuffers(1, &fbo)
 	if gl.gl_has_extension("GL_ARB_bindless_texture") == 1 {
 		handle := gl.GetTextureHandleARB(1)
 		gl.MakeTextureHandleResidentARB(handle)
@@ -49,5 +82,9 @@ main :: fun(args: [][]utf8) {
 	unit := 5
 	if args.len > 100 do unit = 2
 	print("numbered:", gl.GL_Tex_Param(0x813D), gl.GL_Texture_Unit(33984 + unit))
+	print("framebuffers:", u32(gl.FRAMEBUFFER), u32(gl.COLOR_ATTACHMENT0), u32(gl.DEPTH_ATTACHMENT), u32(gl.FRAMEBUFFER_COMPLETE), u32(gl.RENDERBUFFER))
+	print("depth:", u32(gl.DEPTH_COMPONENT24), u32(gl.DEPTH_COMPONENT32F), u32(gl.DEPTH_COMPONENT), u32(gl.DEPTH24_STENCIL8), u32(gl.UNSIGNED_INT_24_8))
+	print("hdr:", u32(gl.RGBA16F), u32(gl.R11F_G11F_B10F), u32(gl.HALF_FLOAT))
+	print("cube:", u32(gl.TEXTURE_CUBE_MAP), u32(gl.TEXTURE_CUBE_MAP_POSITIVE_X), u32(gl.TEXTURE_CUBE_MAP_NEGATIVE_Z), u32(gl.CLIP_DISTANCE0))
 	if args.len > 100 do uses()
 }

@@ -13,6 +13,8 @@ GL_Type :: union(tag u32) {
     UNSIGNED_INT   = 5125
     FLOAT          = 5126
     DOUBLE         = 5130
+    HALF_FLOAT        = 5131    // 0x140B
+    UNSIGNED_INT_24_8 = 34042   // 0x84FA, a DEPTH24_STENCIL8 texel
 }
 
 GL_Draw_Mode :: union(tag u32) {
@@ -48,11 +50,18 @@ GL_Clear_Mask :: union(tag u32) {
     COLOR_BUFFER_BIT   = 16384
 }
 
+// What Enable turns on. CLIP_DISTANCE0 and 1 clip by gl_ClipDistance[0]
+// and [1], which the vertex shader writes: a planar reflection drawn only
+// above its plane.
 GL_Capability :: union(tag u32) {
     DEPTH_TEST    = 2929
     CULL_FACE     = 2884
     BLEND         = 3042
     SCISSOR_TEST  = 3089
+    CLIP_DISTANCE0            = 12288   // 0x3000
+    CLIP_DISTANCE1            = 12289   // 0x3001
+    TEXTURE_CUBE_MAP_SEAMLESS = 34895   // 0x884F
+    FRAMEBUFFER_SRGB          = 36281   // 0x8DB9
 }
 
 GL_Blend_Factor :: union(tag u32) {
@@ -62,9 +71,18 @@ GL_Blend_Factor :: union(tag u32) {
     ONE_MINUS_SRC_ALPHA = 771
 }
 
+// A cube map is bound as TEXTURE_CUBE_MAP; each face is filled, or
+// attached to a framebuffer, as its own target.
 GL_Texture_Target :: union(tag u32) {
     TEXTURE_2D       = 3553
     TEXTURE_2D_ARRAY = 35866
+    TEXTURE_CUBE_MAP            = 34067   // 0x8513
+    TEXTURE_CUBE_MAP_POSITIVE_X = 34069   // 0x8515
+    TEXTURE_CUBE_MAP_NEGATIVE_X = 34070
+    TEXTURE_CUBE_MAP_POSITIVE_Y = 34071
+    TEXTURE_CUBE_MAP_NEGATIVE_Y = 34072
+    TEXTURE_CUBE_MAP_POSITIVE_Z = 34073
+    TEXTURE_CUBE_MAP_NEGATIVE_Z = 34074   // 0x851A
 }
 
 // The texture units ActiveTexture picks, all 32 GL can name (a driver has
@@ -140,6 +158,12 @@ GL_Tex_Wrap :: union(tag u32) {
     MIRRORED_REPEAT = 33648   // 0x8370
 }
 
+// A texture's pixel formats: the layout of the pixels handed in (RED, RG,
+// RGB, RGBA, DEPTH_COMPONENT, DEPTH_STENCIL — TexImage2D's `format`), and the
+// sized ones textures and renderbuffers are made of (TexImage2D's
+// `internalformat`, as a number: `i32(gl.RGBA16F)`). A framebuffer's depth
+// texture is DEPTH_COMPONENT24 or 32F, read as DEPTH_COMPONENT with FLOAT;
+// RGBA16F and R11F_G11F_B10F hold colors past 1, for HDR.
 GL_Tex_Format :: union(tag u32) {
     RED   = 6403
     RGB   = 6407
@@ -147,6 +171,21 @@ GL_Tex_Format :: union(tag u32) {
     RGBA8 = 32856
     RGB8  = 32849
     R8    = 33321
+    RG              = 33319   // 0x8227
+    DEPTH_COMPONENT = 6402    // 0x1902
+    DEPTH_STENCIL   = 34041   // 0x84F9
+    SRGB8_ALPHA8       = 35907   // 0x8C43
+    R16F               = 33325   // 0x822D
+    R32F               = 33326   // 0x822E
+    RG16F              = 33327   // 0x822F
+    RGBA32F            = 34836   // 0x8814
+    RGBA16F            = 34842   // 0x881A
+    RGB16F             = 34843   // 0x881B
+    R11F_G11F_B10F     = 35898   // 0x8C3A
+    DEPTH_COMPONENT16  = 33189   // 0x81A5
+    DEPTH_COMPONENT24  = 33190   // 0x81A6
+    DEPTH_COMPONENT32F = 36012   // 0x8CAC
+    DEPTH24_STENCIL8   = 35056   // 0x88F0
 }
 
 // Block-compressed texture formats, S3TC (DXT): what DDS textures hold.
@@ -197,12 +236,60 @@ GL_Polygon_Mode :: union(tag u32) {
     FILL  = 6914
 }
 
+// What BindFramebuffer binds: one framebuffer to draw into and read from
+// (FRAMEBUFFER), or each apart, as BlitFramebuffer copies between them.
+// Framebuffer 0 is the window's.
+GL_Framebuffer_Target :: union(tag u32) {
+    FRAMEBUFFER      = 36160   // 0x8D40
+    READ_FRAMEBUFFER = 36008   // 0x8CA8
+    DRAW_FRAMEBUFFER = 36009   // 0x8CA9
+}
+
+GL_Renderbuffer_Target :: union(tag u32) {
+    RENDERBUFFER = 36161   // 0x8D41
+}
+
+// Where in a framebuffer a texture or renderbuffer goes; DrawBuffers and
+// DrawBuffer pick which color ones a shader's outputs write, and NONE
+// none — a depth-only framebuffer's.
+GL_Attachment :: union(tag u32) {
+    NONE                     = 0
+    COLOR_ATTACHMENT0        = 36064   // 0x8CE0
+    COLOR_ATTACHMENT1        = 36065
+    COLOR_ATTACHMENT2        = 36066
+    COLOR_ATTACHMENT3        = 36067
+    COLOR_ATTACHMENT4        = 36068
+    COLOR_ATTACHMENT5        = 36069
+    COLOR_ATTACHMENT6        = 36070
+    COLOR_ATTACHMENT7        = 36071
+    DEPTH_ATTACHMENT         = 36096   // 0x8D00
+    STENCIL_ATTACHMENT       = 36128   // 0x8D20
+    DEPTH_STENCIL_ATTACHMENT = 33306   // 0x821A
+}
+
+// What CheckFramebufferStatus says (as a number: compare it with
+// `u32(gl.FRAMEBUFFER_COMPLETE)`, or name it with GL_Framebuffer_Status(n)
+// — 0 is none of these: the call itself failed).
+GL_Framebuffer_Status :: union(tag u32) {
+    FRAMEBUFFER_COMPLETE                      = 36053   // 0x8CD5
+    FRAMEBUFFER_UNDEFINED                     = 33305   // 0x8219
+    FRAMEBUFFER_INCOMPLETE_ATTACHMENT         = 36054   // 0x8CD6
+    FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT = 36055   // 0x8CD7
+    FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER        = 36059   // 0x8CDB
+    FRAMEBUFFER_INCOMPLETE_READ_BUFFER        = 36060   // 0x8CDC
+    FRAMEBUFFER_UNSUPPORTED                   = 36061   // 0x8CDD
+    FRAMEBUFFER_INCOMPLETE_MULTISAMPLE        = 36182   // 0x8D56
+    FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS      = 36264   // 0x8DA8
+}
+
 // What GetIntegerv and GetFloatv read: the driver's limits.
 GL_Get_Param :: union(tag u32) {
     MAX_TEXTURE_IMAGE_UNITS          = 34930   // 0x8872, per fragment shader
     MAX_COMBINED_TEXTURE_IMAGE_UNITS = 35661   // 0x8B4D, all stages together
     MAX_ARRAY_TEXTURE_LAYERS         = 35071   // 0x88FF
     MAX_TEXTURE_MAX_ANISOTROPY       = 34047   // 0x84FF, a float
+    MAX_COLOR_ATTACHMENTS            = 36063   // 0x8CDF
+    MAX_DRAW_BUFFERS                 = 34852   // 0x8824
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +323,10 @@ foreign static_lib "opengl32" prefix gl {
     fun LineWidth(width: f32)
     fun Scissor(x: i32, y: i32, width: i32, height: i32)
     fun FrontFace(mode: GL_Winding)
+    fun ClearDepth(depth: f64)                                          // what Clear's DEPTH_BUFFER_BIT writes, 1 at first
+    fun ColorMask(r: u8, g: u8, b: u8, a: u8)                           // GLboolean each: which color channels draws write
+    fun DrawBuffer(buf: GL_Attachment)                                  // the bound framebuffer's one color output, or NONE
+    fun ReadBuffer(src: GL_Attachment)                                  // what reads and blits take from it
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +429,31 @@ foreign static_lib "open_gl" prefix gl {
     // Cleanup
     fun DeleteVertexArrays(n: i32, arrays: ^u32)                        // const GLuint* arrays
     fun DeleteBuffers(n: i32, buffers: ^u32)                            // const GLuint* buffers
+
+    // Framebuffers (GL 3.0): draws go into the bound one's attachments —
+    // textures (FramebufferTexture2D; a 2D array's layer, a cube map's face)
+    // or renderbuffers, storage only drawn into (a depth buffer no shader
+    // reads). Framebuffer 0 is the window's. CheckFramebufferStatus says
+    // whether the bound one can be drawn into: FRAMEBUFFER_COMPLETE.
+    fun GenFramebuffers(n: i32, framebuffers: ^u32)                     // GLuint* framebuffers
+    fun DeleteFramebuffers(n: i32, framebuffers: ^u32)
+    fun BindFramebuffer(target: GL_Framebuffer_Target, framebuffer: u32)
+    fun FramebufferTexture2D(target: GL_Framebuffer_Target, attachment: GL_Attachment, textarget: GL_Texture_Target, texture: u32, level: i32)
+    fun FramebufferTextureLayer(target: GL_Framebuffer_Target, attachment: GL_Attachment, texture: u32, level: i32, layer: i32)
+    fun CheckFramebufferStatus(target: GL_Framebuffer_Target) -> u32    // a GL_Framebuffer_Status's value; 0: the call failed
+    fun GenRenderbuffers(n: i32, renderbuffers: ^u32)
+    fun DeleteRenderbuffers(n: i32, renderbuffers: ^u32)
+    fun BindRenderbuffer(target: GL_Renderbuffer_Target, renderbuffer: u32)
+    // The format a sized one, as a number: `u32(gl.DEPTH24_STENCIL8)`.
+    fun RenderbufferStorage(target: GL_Renderbuffer_Target, internalformat: u32, width: i32, height: i32)
+    fun FramebufferRenderbuffer(target: GL_Framebuffer_Target, attachment: GL_Attachment, renderbuffertarget: GL_Renderbuffer_Target, renderbuffer: u32)
+    // Which color attachment each of a shader's outputs writes: `n` of them
+    // at `bufs` (`layout(location = i) out` takes bufs[i]).
+    fun DrawBuffers(n: i32, bufs: ^GL_Attachment)
+    // The read framebuffer's rectangle copied into the draw one's, scaled:
+    // its color, depth or stencil (`mask`), filtered LINEAR or NEAREST
+    // (depth and stencil NEAREST only).
+    fun BlitFramebuffer(src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32, dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32, mask: GL_Clear_Mask, filter: GL_Tex_Filter)
 
     // Bindless textures (ARB_bindless_texture, where gl_has_extension says
     // so). A texture's handle, made resident, is read by any shader without

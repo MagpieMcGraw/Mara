@@ -82,6 +82,19 @@ typedef GLuint64 (*PFN_glGetTextureHandleARB)(GLuint texture);
 typedef void   (*PFN_glMakeTextureHandleResidentARB)(GLuint64 handle);
 typedef void   (*PFN_glMakeTextureHandleNonResidentARB)(GLuint64 handle);
 typedef void   (*PFN_glUniformHandleui64ARB)(GLint location, GLuint64 value);
+typedef void   (*PFN_glGenFramebuffers)(GLsizei n, GLuint *framebuffers);
+typedef void   (*PFN_glDeleteFramebuffers)(GLsizei n, const GLuint *framebuffers);
+typedef void   (*PFN_glBindFramebuffer)(GLenum target, GLuint framebuffer);
+typedef void   (*PFN_glFramebufferTexture2D)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+typedef void   (*PFN_glFramebufferTextureLayer)(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer);
+typedef GLenum (*PFN_glCheckFramebufferStatus)(GLenum target);
+typedef void   (*PFN_glGenRenderbuffers)(GLsizei n, GLuint *renderbuffers);
+typedef void   (*PFN_glDeleteRenderbuffers)(GLsizei n, const GLuint *renderbuffers);
+typedef void   (*PFN_glBindRenderbuffer)(GLenum target, GLuint renderbuffer);
+typedef void   (*PFN_glRenderbufferStorage)(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
+typedef void   (*PFN_glFramebufferRenderbuffer)(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
+typedef void   (*PFN_glDrawBuffers)(GLsizei n, const GLenum *bufs);
+typedef void   (*PFN_glBlitFramebuffer)(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
 typedef void   (*PFN_glGetShaderiv)(GLuint shader, GLenum pname, GLint *params);
 typedef void   (*PFN_glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 typedef void   (*PFN_glGetProgramiv)(GLuint program, GLenum pname, GLint *params);
@@ -134,6 +147,19 @@ static PFN_glGetTextureHandleARB      _glGetTextureHandleARB;
 static PFN_glMakeTextureHandleResidentARB    _glMakeTextureHandleResidentARB;
 static PFN_glMakeTextureHandleNonResidentARB _glMakeTextureHandleNonResidentARB;
 static PFN_glUniformHandleui64ARB    _glUniformHandleui64ARB;
+static PFN_glGenFramebuffers          _glGenFramebuffers;
+static PFN_glDeleteFramebuffers       _glDeleteFramebuffers;
+static PFN_glBindFramebuffer          _glBindFramebuffer;
+static PFN_glFramebufferTexture2D     _glFramebufferTexture2D;
+static PFN_glFramebufferTextureLayer  _glFramebufferTextureLayer;
+static PFN_glCheckFramebufferStatus   _glCheckFramebufferStatus;
+static PFN_glGenRenderbuffers         _glGenRenderbuffers;
+static PFN_glDeleteRenderbuffers      _glDeleteRenderbuffers;
+static PFN_glBindRenderbuffer         _glBindRenderbuffer;
+static PFN_glRenderbufferStorage      _glRenderbufferStorage;
+static PFN_glFramebufferRenderbuffer  _glFramebufferRenderbuffer;
+static PFN_glDrawBuffers              _glDrawBuffers;
+static PFN_glBlitFramebuffer          _glBlitFramebuffer;
 static PFN_glGetShaderiv              _glGetShaderiv;
 static PFN_glGetShaderInfoLog         _glGetShaderInfoLog;
 static PFN_glGetProgramiv             _glGetProgramiv;
@@ -192,6 +218,19 @@ void gl_load(GetProcAddressFn SDL_GL_GetProcAddress) {
     _glMakeTextureHandleResidentARB    = (PFN_glMakeTextureHandleResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleResidentARB");
     _glMakeTextureHandleNonResidentARB = (PFN_glMakeTextureHandleNonResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleNonResidentARB");
     _glUniformHandleui64ARB    = (PFN_glUniformHandleui64ARB)SDL_GL_GetProcAddress("glUniformHandleui64ARB");
+    _glGenFramebuffers          = (PFN_glGenFramebuffers)SDL_GL_GetProcAddress("glGenFramebuffers");
+    _glDeleteFramebuffers       = (PFN_glDeleteFramebuffers)SDL_GL_GetProcAddress("glDeleteFramebuffers");
+    _glBindFramebuffer          = (PFN_glBindFramebuffer)SDL_GL_GetProcAddress("glBindFramebuffer");
+    _glFramebufferTexture2D     = (PFN_glFramebufferTexture2D)SDL_GL_GetProcAddress("glFramebufferTexture2D");
+    _glFramebufferTextureLayer  = (PFN_glFramebufferTextureLayer)SDL_GL_GetProcAddress("glFramebufferTextureLayer");
+    _glCheckFramebufferStatus   = (PFN_glCheckFramebufferStatus)SDL_GL_GetProcAddress("glCheckFramebufferStatus");
+    _glGenRenderbuffers         = (PFN_glGenRenderbuffers)SDL_GL_GetProcAddress("glGenRenderbuffers");
+    _glDeleteRenderbuffers      = (PFN_glDeleteRenderbuffers)SDL_GL_GetProcAddress("glDeleteRenderbuffers");
+    _glBindRenderbuffer         = (PFN_glBindRenderbuffer)SDL_GL_GetProcAddress("glBindRenderbuffer");
+    _glRenderbufferStorage      = (PFN_glRenderbufferStorage)SDL_GL_GetProcAddress("glRenderbufferStorage");
+    _glFramebufferRenderbuffer  = (PFN_glFramebufferRenderbuffer)SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
+    _glDrawBuffers              = (PFN_glDrawBuffers)SDL_GL_GetProcAddress("glDrawBuffers");
+    _glBlitFramebuffer          = (PFN_glBlitFramebuffer)SDL_GL_GetProcAddress("glBlitFramebuffer");
     _glGetShaderiv             = (PFN_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     _glGetShaderInfoLog        = (PFN_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog");
     _glGetProgramiv            = (PFN_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
@@ -267,6 +306,21 @@ void   glDetachShader(GLuint program, GLuint shader)                            
 // Cleanup
 void   glDeleteVertexArrays(GLsizei n, const GLuint *arrays)                           { _glDeleteVertexArrays(n, arrays); }
 void   glDeleteBuffers(GLsizei n, const GLuint *buffers)                               { _glDeleteBuffers(n, buffers); }
+
+// Framebuffers and renderbuffers
+void   glGenFramebuffers(GLsizei n, GLuint *framebuffers) { _glGenFramebuffers(n, framebuffers); }
+void   glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) { _glDeleteFramebuffers(n, framebuffers); }
+void   glBindFramebuffer(GLenum target, GLuint framebuffer) { _glBindFramebuffer(target, framebuffer); }
+void   glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) { _glFramebufferTexture2D(target, attachment, textarget, texture, level); }
+void   glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) { _glFramebufferTextureLayer(target, attachment, texture, level, layer); }
+GLenum glCheckFramebufferStatus(GLenum target) { return _glCheckFramebufferStatus(target); }
+void   glGenRenderbuffers(GLsizei n, GLuint *renderbuffers) { _glGenRenderbuffers(n, renderbuffers); }
+void   glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers) { _glDeleteRenderbuffers(n, renderbuffers); }
+void   glBindRenderbuffer(GLenum target, GLuint renderbuffer) { _glBindRenderbuffer(target, renderbuffer); }
+void   glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) { _glRenderbufferStorage(target, internalformat, width, height); }
+void   glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) { _glFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer); }
+void   glDrawBuffers(GLsizei n, const GLenum *bufs) { _glDrawBuffers(n, bufs); }
+void   glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) { _glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter); }
 
 // Bindless textures (ARB_bindless_texture)
 GLuint64 glGetTextureHandleARB(GLuint texture)                                        { return _glGetTextureHandleARB(texture); }
