@@ -322,7 +322,7 @@ TYPE_BYTE_BUFFER_READ_BYTES_SLICE :: "byte buffer read: %s is %d bytes, but slic
 TYPE_BYTE_READ_REFERENCE :: "cannot read a `%s` out of bytes: %s — taken from bytes, it would point wherever the bytes say"
 TYPE_BYTE_READ_SLICE_BY_INDEX :: "cannot read a `%s` out of bytes: a slice is a (len, cap, ptr) header, not data — to view the bytes, slice them: bytes[lo:hi]"
 TYPE_BYTE_WRITE_REFERENCE :: "cannot write a `%s` into bytes: %s — its bytes would be an address, not the data it points at"
-TYPE_VOID_INTO_POINTER :: "cannot store `void` in %s, a `%s`: a pointer always points at something — `void` only de-initializes a variable, or passes a C function a null"
+TYPE_VOID_INTO_POINTER :: "cannot store `void` in %s, a `%s`: a Mara pointer always points at something — `void` only de-initializes a variable, or passes a C function a null. A pointer a C function gives back can be null: test it, `p == void`"
 TYPE_BYTE_VIEW_WIDE_ELEM :: "a range of bytes can only be viewed as a slice of byte / utf8 / u8 / i8, not as `%s` — to view the bytes as %s, use slice([:n]%s, &bytes[lo])"
 TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER :: "#big_endian requires a byte-buffer source, got `%s`"
 TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING :: "variable '%s' has no concrete type (type checking bypassed)"

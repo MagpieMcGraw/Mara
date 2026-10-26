@@ -1,0 +1,26 @@
+module void_from_c
+
+//@ expect-output: null, seen
+
+// A Mara pointer always points at something, but one a C function gives
+// back can be null: it's tested with `== void` (void_ptr_store_neg: storing
+// void in one is refused). GetModuleHandleA of a module not loaded gives
+// null; a named pointer type, as SDL's Window is, the same.
+
+Module :: ^byte
+
+#if #windows {
+	foreign static_lib "kernel32" {
+		fun GetModuleHandleA(name: cstring) -> Module
+	}
+}
+
+main :: fun() {
+	#if #windows {
+		handle := GetModuleHandleA("no_such_module_here.dll")
+		if handle == void do print("null, seen")
+		else do print("not null")
+	else
+		print("null, seen")
+	}
+}
