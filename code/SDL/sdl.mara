@@ -1135,16 +1135,19 @@ PathInfo :: struct {
     access_time: i64
 }
 
-// C's text at p, 0-ended, as Mara text: a view of C's memory, while C
-// keeps it there (none: empty).
-c_text :: fun(p: ^byte) -> []utf8 {
-    view : []utf8 = []
-    if p == void do return view
-    view = slice_from_ptr(p, 1 << 20)
-    for ch, i in view {
-        if ch == 0 do return view[:i]
+// C's text at p, 0-ended, appended into the buffer `out`, as much as its
+// room holds (p void: none). A buffer keeps a 0 after its text, so it's C
+// text again — a view of C's memory wouldn't be: its len is its cap, and
+// cstring() finds no 0 after it.
+c_text :: fun(p: ^byte, out: ^[]utf8) {
+    if p == void do return
+    view : []utf8 = slice_from_ptr(p, 1 << 20)
+    for ch in view {
+        if ch == 0 or out.len + 1 >= out.cap do break
+        out[out.len] = ch
+        out.len += 1
     }
-    return view
+    out[out.len] = 0
 }
 
 // MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
@@ -1207,6 +1210,7 @@ foreign static_lib "SDL3" {
     fun SDL_DelayPrecise(ns: u64)
     fun SDL_GetError() -> ^byte
     fun SDL_malloc(size: usize) -> ^byte
+    fun SDL_free(mem: ^byte)
     fun SDL_IOFromFile(file: cstring, mode: cstring) -> IOStream
     fun SDL_CloseIO(context: IOStream) -> bool
     fun SDL_ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
@@ -1307,7 +1311,12 @@ GetPerformanceCounter :: fun() -> u64 { return SDL_GetPerformanceCounter() }
 GetPerformanceFrequency :: fun() -> u64 { return SDL_GetPerformanceFrequency() }
 DelayNS :: fun(ns: u64) { SDL_DelayNS(ns) }
 DelayPrecise :: fun(ns: u64) { SDL_DelayPrecise(ns) }
-GetError :: fun() -> []utf8 { return c_text(SDL_GetError()) }
+// What failed last, as SDL says it.
+GetError :: fun() -> [256]utf8 {
+    out : [256]utf8
+    c_text(SDL_GetError(), &out)
+    return out
+}
 
 // Memory
 malloc :: fun(size: usize) -> ^byte { return SDL_malloc(size) }
@@ -1329,9 +1338,29 @@ LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(c
 SaveFile :: fun(file: []utf8, data: []$T) -> bool { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
 
 // Filesystem — paths & metadata
-GetBasePath :: fun() -> []utf8 { return c_text(SDL_GetBasePath()) }
-GetPrefPath :: fun(org: []utf8, app: []utf8) -> []utf8 { return c_text(SDL_GetPrefPath(cstring(org), cstring(app))) }
-GetCurrentDirectory :: fun() -> []utf8 { return c_text(SDL_GetCurrentDirectory()) }
+// The directory the program runs from, '/'-ended (SDL's to keep).
+GetBasePath :: fun() -> [512]utf8 {
+    out : [512]utf8
+    c_text(SDL_GetBasePath(), &out)
+    return out
+}
+// The directory for the program's own files, made if it isn't there
+// (SDL's memory, freed once copied).
+GetPrefPath :: fun(org: []utf8, app: []utf8) -> [512]utf8 {
+    out : [512]utf8
+    p := SDL_GetPrefPath(cstring(org), cstring(app))
+    c_text(p, &out)
+    if p != void do SDL_free(p)
+    return out
+}
+// The directory the program runs in (SDL's memory, freed once copied).
+GetCurrentDirectory :: fun() -> [512]utf8 {
+    out : [512]utf8
+    p := SDL_GetCurrentDirectory()
+    c_text(p, &out)
+    if p != void do SDL_free(p)
+    return out
+}
 CreateDirectory :: fun(path: []utf8) -> bool { return SDL_CreateDirectory(cstring(path)) }
 RemovePath :: fun(path: []utf8) -> bool { return SDL_RemovePath(cstring(path)) }
 RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }

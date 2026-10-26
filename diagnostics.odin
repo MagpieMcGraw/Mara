@@ -208,7 +208,7 @@ PARSE_SENTINEL_REMOVED            :: "sentinel arrays were removed — use the p
 PARSE_SKIP_CONSTRUCTOR_REMOVED    :: "`#skip_constructor` was removed — initialize with `void` instead: `x : T = void` declares x uninitialized"
 TYPE_VOID_INIT_REQUIRES_EXPLICIT  :: "`%s := void` has no type to infer — annotate it: `%s : T = void` declares uninitialized storage"
 TYPE_CSTRING_FOREIGN_ONLY         :: "`cstring` is the C boundary type — only `foreign` signatures may declare it. Take `[]utf8` and convert at the C call with `cstring(s)`"
-TYPE_CSTRING_ARG_EXPLICIT         :: "a runtime string doesn't convert to `cstring` implicitly — wrap the argument: `cstring(s)` copies it and writes the terminator. String literals pass free"
+TYPE_CSTRING_ARG_EXPLICIT         :: "a runtime string doesn't convert to `cstring` implicitly — wrap the argument: `cstring(s)` hands C its bytes as they are, checked to have a 0 after them (a buffer keeps one after its text; a slice over one doesn't). String literals pass free"
 TYPE_CSTRING_CTOR_ARGUMENT        :: "cstring() takes a utf8/byte string (slice, partial array, or literal), got %s"
 TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL :: "cannot take the address of a string literal — its bytes are read-only. Bind it first (`s := \"...\"`) for a mutable copy"
 TYPE_SLICE_CANNOT_BIND_STRING_LITERAL :: "a string literal is `[N]utf8` storage, not a `[]utf8` view — a slice here would alias read-only bytes. Use `s := \"...\"` for a mutable copy, or `s : [N]utf8 = \"...\"` for one with room to grow"

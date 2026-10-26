@@ -1,0 +1,36 @@
+module cstring_buffers
+
+use mara.core
+
+//@ expect-output: literal: 5
+//@ expect-output: buffer: 3
+//@ expect-output: through a param: 5 3
+//@ expect-output: emptied: 0
+
+// cstring(s) hands C s's bytes as they are — no copy — checked to have a 0
+// after them: a literal has one, and a buffer keeps one after its text
+// (appends write it). A slice over a buffer has none past its end (its len
+// is its cap): cstring_slice_stop. So text for C stays a buffer, unsliced.
+
+#if #windows {
+	foreign static_lib "kernel32" {
+		fun lstrlenA(s: cstring) -> i32
+	}
+	c_len :: fun(s: []utf8) -> i64 { return i64(lstrlenA(cstring(s))) }
+else
+	foreign static_lib "c" {
+		fun strlen(s: cstring) -> usize
+	}
+	c_len :: fun(s: []utf8) -> i64 { return i64(strlen(cstring(s))) }
+}
+
+main :: fun() {
+	print("literal:", c_len("hello"))
+	b : str64
+	&b + "abc"
+	print("buffer:", c_len(b))
+	print("through a param:", c_len("hello"), c_len(b))
+	b.len = 0
+	&b + ""
+	print("emptied:", c_len(b))
+}

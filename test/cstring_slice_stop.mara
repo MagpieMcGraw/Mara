@@ -1,0 +1,30 @@
+module cstring_slice_stop
+
+use mara.core
+
+//@ expect-exit: 1
+//@ expect-output: before
+//@ expect-output: no terminating 0 in the slice
+
+// A slice over a buffer, `b[0:2]`, has its len at its cap: no 0 after it,
+// so cstring() stops the program rather than hand C bytes that run on
+// (cstring_buffers). Pass the buffer itself.
+
+#if #windows {
+	foreign static_lib "kernel32" {
+		fun lstrlenA(s: cstring) -> i32
+	}
+	c_len :: fun(s: []utf8) -> i64 { return i64(lstrlenA(cstring(s))) }
+else
+	foreign static_lib "c" {
+		fun strlen(s: cstring) -> usize
+	}
+	c_len :: fun(s: []utf8) -> i64 { return i64(strlen(cstring(s))) }
+}
+
+main :: fun() {
+	b : str64
+	&b + "abcd"
+	print("before")
+	print(c_len(b[0:2]))
+}
