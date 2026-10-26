@@ -1,0 +1,15 @@
+module byte_literal_number_neg
+
+//@ expect-fail: element 1, 'n', is a number (i64), not a byte
+
+// Only an int literal goes into an array of bytes as a byte: a number in a
+// variable doesn't, since a byte isn't a number (byte_literals). Its byte
+// goes in by a write: `data[0] = u8(n)`.
+
+use mara.core
+
+main :: fun() {
+	n : i64 = 1
+	data : [2!]byte = [n, 0]
+	print(data[0] == 1)
+}

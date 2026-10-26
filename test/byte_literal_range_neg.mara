@@ -1,0 +1,13 @@
+module byte_literal_range_neg
+
+//@ expect-fail: constant 256 overflows byte (range 0..255)
+
+// An int literal into an array of bytes is one byte: from 0 to 255, as a
+// comparison with a byte takes it (byte_literals).
+
+use mara.core
+
+main :: fun() {
+	data : [4!]byte = [1, 256, 0, 0]
+	print(data[0] == 1)
+}

@@ -126,21 +126,46 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
+    // (The element type of where it goes, when that's an array.)
+    place: Type
+    #partial switch v in distinct_base(k.hint) {
+    case ^Type_Slice:         place = v.elem
+    case ^Type_Partial_Array: place = v.elem
+    case ^Type_Fixed_Array:   place = v.elem
+    }
     if len(elems) == 0 {
         // (`[]`: none, of the element type its place takes — a view of
         // nothing, an empty list. With no place saying, said so.)
-        #partial switch v in distinct_base(k.hint) {
-        case ^Type_Slice:         return type_fixed_array(0, v.elem)
-        case ^Type_Partial_Array: return type_fixed_array(0, v.elem)
-        case ^Type_Fixed_Array:   return type_fixed_array(0, v.elem)
-        }
+        if place != nil { return type_fixed_array(0, place) }
         if _, failed := k.hint.(Type_Error); !failed { tc_error(k, span, TYPE_EMPTY_ARRAY_NO_TYPE) }
         return Type_Error{}
     }
-    et := tc_check(k, elems[0])
+    _, into_bytes := distinct_base(place).(Type_Byte)
+    // An element's type. Into bytes (`data : [4!]byte = [1, 0, 0, 0]`), an
+    // int literal is one byte, from 0 to 255, as a comparison with a byte
+    // takes it (tc_byte_compare). Any other number is refused: a byte isn't
+    // a number.
+    elem_type :: proc(k: ^TC, e: Tree_Id, i: int, into_bytes: bool, place: Type) -> Type {
+        k.hint = place   // (each element's hint its place's element type)
+        t := tc_check(k, e)
+        if !into_bytes { return t }
+        at := tree_span(k.t, e)
+        if lit, is_int := t.(Type_Infer_Int); is_int && lit.cell == nil {
+            if v, known := tc_comptime_int(k, e); known && (v < 0 || v > 255) {
+                tc_error(k, at, TYPE_CONSTANT_OVERFLOWS_RANGE_2, v, type_name(place), 255)
+            }
+            return place
+        }
+        if is_numeric(t) {
+            tc_error(k, at, TYPE_BYTE_ELEMENT_NUMBER, i + 1, tc_written(k, e), type_name(solidify_type(t)))
+            return place
+        }
+        return t
+    }
+    et := elem_type(k, elems[0], 0, into_bytes, place)
     for e, i in elems[1:] {
         // (A pointee's width not yet decided, either side: decided by the other.)
-        if t := tc_check(k, e); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
+        if t := elem_type(k, e, i + 1, into_bytes, place); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }

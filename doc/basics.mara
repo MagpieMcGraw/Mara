@@ -675,7 +675,8 @@ example_f64 :: fun() {
 // their codes do, but aren't numbers: `i64(c)` and `utf8(n)` convert. A
 // byte is 8 bits of anything — file contents, pixels. Any value written into
 // a byte buffer goes in as its bytes, and a value read from one comes out of
-// them.
+// them. A byte isn't a number either, but an int literal from 0 to 255
+// stands for one where a byte goes: `b == 0x7f`, `[1, 0, 0, 0]` into bytes.
 example_utf8 :: fun() {
 	c := 'A'
 	print(c, i64(c))                       // A 65
@@ -685,6 +686,8 @@ example_utf8 :: fun() {
 	buf[0:2] = "hi"                        // a value goes in as its bytes
 	code : u8 = buf[1]                     // bytes read as a value
 	print(code)                            // 105, the code of 'i'
+	magic : [4!]byte = [0x52, 0x49, 0x46, 0x46]   // R I F F
+	print(magic[0] == 0x52)                // true
 }
 
 // `from_text`: an enum's variant from its name as text — `Mode.from_text(s)`, for command words and settings.
