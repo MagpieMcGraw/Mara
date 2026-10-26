@@ -19,7 +19,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.font      31 types  · 20 funs
     mara.math      4 types   · 91 funs
     mara.memory    3 types   · 1 fun
-    mara.open_gl   19 types  · 61 funs
+    mara.open_gl   20 types  · 62 funs
     mara.os        14 types  · 84 funs
     mara.sdl       18 types  · 76 funs
     mara.skyline   2 types   · 6 funs
@@ -943,6 +943,9 @@ Tokens in module askmod: 104 in 1 file
   ~=          0
   <<=         0
   >>=         0
+  +%=         0
+  -%=         0
+  *%=         0
   !           0
   ?           0
   &           0
