@@ -2447,7 +2447,10 @@ graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read
     // array's header — and a slice only of a fixed array's place.
     _, _, num := numeric_info(graph_settled(t))
     _, atom := distinct_base(t).(Type_Atom)
-    if !num && !graph_partial_of(t) && !atom || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
+    // (A fixed array's place goes on, to be sliced where a slice is taken:
+    // `kind == "TES4"`, kind a `[4!]utf8` param, into core's []utf8 equal.)
+    _, fixed := distinct_base(t).(^Type_Fixed_Array)
+    if !num && !graph_partial_of(t) && !atom && !(fixed && place) || is_infer(t) && infer_cell_of(t) == nil { return read(b, v, place, t, read_span) }
     to := graph_widen_to(w)
     if !w.binary {
         #partial switch view_kind(to, t) {

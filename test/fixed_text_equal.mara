@@ -1,0 +1,25 @@
+module fixed_text_equal
+
+//@ expect-output: param: true false
+//@ expect-output: field: true
+//@ expect-output: local: true false
+
+// A fixed array of utf8 compared with text, `kind == "TES4"` — a record's
+// four-letter tag — compares their characters through mara.core's `==`,
+// whether the array is a param (it failed to build once: the overload's
+// operand went as the array's value, not a view of it), a field or a local.
+
+use mara.core
+
+Header :: struct { kind: [4!]utf8  size: u32 }
+
+is_tes4 :: fun(kind: [4!]utf8) -> bool { return kind == "TES4" }
+
+main :: fun() {
+	tes4 : [4!]utf8 = ['T', 'E', 'S', '4']
+	grup : [4!]utf8 = ['G', 'R', 'U', 'P']
+	print("param:", is_tes4(tes4), is_tes4(grup))
+	h := Header{kind = tes4, size = 0}
+	print("field:", h.kind == "TES4")
+	print("local:", tes4 == "TES4", grup == "TES4")
+}
