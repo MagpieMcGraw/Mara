@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:runtime"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -736,6 +737,23 @@ Origin_From_Number :: struct {
 Origin_Variant_Text :: struct {
     enum_: ^Type_Enum,                 // whose variants' names it gives; nil: an err's, of every error set
     where_: bool,                      // e.where(): an err's site, its high 32 bits, instead
+}
+
+// The error sets with a variant named `name` (sorted), and its value — an
+// err's kind — when one has it: what an arm of a match on an err names
+// (`Not_A_Digit`). Ok is every set's: 0, none named.
+err_variant_named :: proc(table: ^SymbolTable, name: string) -> (value: int, sets: []string) {
+    if name == "Ok" { return 0, nil }
+    found := make([dynamic]string, context.temp_allocator)
+    for _, et in table.enums {
+        if !et.is_error_kind { continue }
+        if v, has := et.variants[name]; has {
+            value = v
+            append(&found, et.source_name)
+        }
+    }
+    slice.sort(found[:])
+    return value, found[:]
 }
 
 // The text `x.text()` gives for a variant of an enum: its own name, as

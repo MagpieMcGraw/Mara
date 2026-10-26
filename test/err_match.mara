@@ -1,0 +1,48 @@
+module err_match
+
+use mara.core
+
+//@ expect-output: kinds: not a digit|fine|empty|lost|other
+
+// A match on an err picks its arm by the err's kind: an arm names an error
+// set's variant (`Not_A_Digit`), or Ok, or — a name two sets have — which
+// (`Parse_Error.Empty`). Every arm matched Ok before, whatever it named
+// (err_match_unknown_neg, err_match_ambiguous_neg).
+
+Parse_Error :: error { Empty, Not_A_Digit }
+Other_Error :: error { Lost, Empty, Gone }
+
+digit :: fun(c: utf8) -> i64, err {
+	if c == 0 do return 0, Parse_Error.Empty
+	if c < '0' or c > '9' do return 0, Not_A_Digit
+	return 1, Ok
+}
+
+kind :: fun(e: err) -> str64 {
+	match e {
+	Not_A_Digit
+		return "not a digit"
+	Lost
+		return "lost"
+	Ok
+		return "fine"
+	Parse_Error.Empty
+		return "empty"
+	else
+		return "other"
+	}
+}
+
+main :: fun() {
+	_, a := digit('x')
+	_, b := digit('5')
+	_, c := digit(0)
+	lost : err = Lost
+	gone : err = Gone
+	out : str256
+	for e in [a, b, c, lost, gone] {
+		if out.len > 0 do &out + "|"
+		&out + kind(e)
+	}
+	print("kinds:", out)
+}

@@ -1214,6 +1214,15 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
             }
         case .Arm_Variant:
             if is_union && name not_in ut.tag_map { tc_error(k, span, TYPE_VARIANT_UNION, name, type_name(ut)) }
+            // (An err's: an error set's variant, by kind — one set's, else
+            // said which: `Parse_Error.Lost`.)
+            if is_err && name != "Ok" {
+                if _, sets := err_variant_named(k.table, name); len(sets) == 0 {
+                    tc_error(k, span, TYPE_ERR_ARM_NO_VARIANT, name)
+                } else if len(sets) > 1 {
+                    tc_error(k, span, TYPE_ERR_ARM_AMBIGUOUS, name, strings.join(sets, " and ", context.temp_allocator), sets[0], name)
+                }
+            }
             if is_union {
                 if vs := ut.variant_structs[name]; vs != nil && a.bound != "" {
                     // (A rebound subject: its meaning back after the arm.)

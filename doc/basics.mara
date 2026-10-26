@@ -401,7 +401,9 @@ example_union :: fun() {
 // to go in a file or a window's title. An err remembers where it was made
 // — the return, the err param, the `e : err = …` that made it of a
 // variant — and `?` passes that on: `e.where()`, "lexer.mara:12:30 in
-// digit" ("" for Ok). It compares by its kind alone. See errors.mara.
+// digit" ("" for Ok). It compares by its kind alone, and `match e` picks
+// its arm by it: `Not_A_Digit`, `Ok`, or `Parse_Error.Empty` where two
+// sets have the name, with an else for the rest. See errors.mara.
 example_error :: fun() {
 	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {

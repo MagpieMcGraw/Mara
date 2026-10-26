@@ -1,0 +1,19 @@
+module err_match_unknown_neg
+
+//@ expect-fail: 'Missing' is no error set's variant
+
+// An arm of a match on an err names an error set's variant (err_match).
+
+use mara.core
+
+Parse_Error :: error { Empty, Not_A_Digit }
+
+main :: fun() {
+	e : err = Empty
+	match e {
+	Missing
+		print("missing")
+	else
+		print("other")
+	}
+}

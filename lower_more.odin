@@ -29,6 +29,7 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     }
     ut, is_union := distinct_base(st).(^Type_Union)
     et, is_enum := distinct_base(st).(^Type_Enum)
+    _, is_err := distinct_base(st).(Type_Err)
     gm := graph_build_match_begin(b, span, len(arms), slot, subject, st, tr.tag[tc_unparen(k, subj)] == .Self)
     for arm, i in arms {
         tag := tr.tag[arm]
@@ -58,6 +59,8 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
             switch {
             case is_enum:  ra.tag = et.variants[a.variant]
             case is_union: ra.tag, ra.payload = ut.tag_map[a.variant], lw_variant_struct(ut, a.variant)
+            // (An err's: its kind — it matched Ok, 0, whatever it named.)
+            case is_err:   ra.tag, _ = err_variant_named(k.table, a.variant)
             }
         }
         ra.arena = lw_scope_arena(k, a.body, b.body.returned)

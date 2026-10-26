@@ -1,0 +1,21 @@
+module err_match_ambiguous_neg
+
+//@ expect-fail: 'Empty' is a variant of Other_Error and Parse_Error: say which, `Other_Error.Empty`
+
+// A name two error sets have, as an arm of a match on an err: said which
+// (err_match: `Parse_Error.Empty`).
+
+use mara.core
+
+Parse_Error :: error { Empty, Not_A_Digit }
+Other_Error :: error { Lost, Empty }
+
+main :: fun() {
+	e : err = Lost
+	match e {
+	Empty
+		print("empty")
+	else
+		print("other")
+	}
+}
