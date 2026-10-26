@@ -87,6 +87,9 @@ Token_Kind :: enum u8 {
     Xor_Equal,        // ~=
     Shift_Left_Equal, // <<=
     Shift_Right_Equal,// >>=
+    Wrap_Plus_Equal,  // +%=
+    Wrap_Minus_Equal, // -%=
+    Wrap_Star_Equal,  // *%=
 
     Arrow,        // ->
     Bang,         // !
@@ -143,6 +146,7 @@ TOKEN_TEXTS := [Token_Kind][2]string{
     .Plus_Equal = {"+=", ""}, .Minus_Equal = {"-=", ""}, .Mul_Equal = {"*=", ""}, .Div_Equal = {"/=", ""},
     .Mod_Equal = {"%=", ""}, .And_Equal = {"&=", ""}, .Or_Equal = {"|=", ""}, .Xor_Equal = {"~=", ""},
     .Shift_Left_Equal = {"<<=", ""}, .Shift_Right_Equal = {">>=", ""},
+    .Wrap_Plus_Equal = {"+%=", ""}, .Wrap_Minus_Equal = {"-%=", ""}, .Wrap_Star_Equal = {"*%=", ""},
     .Arrow = {"->", ""}, .Bang = {"!", ""}, .Question = {"?", ""}, .Double_Colon = {"::", ""},
     .Ampersand = {"&", ""}, .Pipe = {"|", ""}, .Tilde = {"~", ""}, .Caret = {"^", ""}, .Hash = {"#", ""},
     .Dollar = {"$", ""}, .At = {"@", ""}, .Dot_Dot = {"..", ""}, .Dot_Dot_Less = {"..<", ""},.Shift_Left = {"<<", ""}, .Shift_Right = {">>", ""},
@@ -652,20 +656,20 @@ next_token :: proc(l: ^Lexer) -> Token {
     case '+':
         switch c1 {
         case '=': return op(l, 2, .Plus_Equal)
-        case '%': return op(l, 2, .Wrap_Plus)
+        case '%': return op(l, 3, .Wrap_Plus_Equal) if c2 == '=' else op(l, 2, .Wrap_Plus)
         }
         return op(l, 1, .Plus)
     case '-':
         switch c1 {
         case '=': return op(l, 2, .Minus_Equal)
-        case '%': return op(l, 2, .Wrap_Minus)
+        case '%': return op(l, 3, .Wrap_Minus_Equal) if c2 == '=' else op(l, 2, .Wrap_Minus)
         case '>': return op(l, 2, .Arrow)
         }
         return op(l, 1, .Minus)
     case '*':
         switch c1 {
         case '=': return op(l, 2, .Mul_Equal)
-        case '%': return op(l, 2, .Wrap_Star)
+        case '%': return op(l, 3, .Wrap_Star_Equal) if c2 == '=' else op(l, 2, .Wrap_Star)
         }
         return op(l, 1, .Star)
     case '/': return op(l, 2, .Div_Equal) if c1 == '=' else op(l, 1, .Slash)
@@ -854,6 +858,9 @@ compound_assign_op :: proc(kind: Token_Kind) -> (Token_Kind, bool) {
     case .Xor_Equal:         return .Tilde, true
     case .Shift_Left_Equal:  return .Shift_Left, true
     case .Shift_Right_Equal: return .Shift_Right, true
+    case .Wrap_Plus_Equal:   return .Wrap_Plus, true
+    case .Wrap_Minus_Equal:  return .Wrap_Minus, true
+    case .Wrap_Star_Equal:   return .Wrap_Star, true
     }
     return .EOF, false
 }

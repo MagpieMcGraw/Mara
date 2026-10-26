@@ -1,0 +1,33 @@
+module wrap_compound
+
+//@ expect-output: plus: 4
+//@ expect-output: minus: 250
+//@ expect-output: star: 44
+//@ expect-output: through a pointer: 1
+//@ expect-output: field: 255
+
+// `x +%= v`, `x -%= v`, `x *%= v`: `x = x +% v` and so on — the wrapping
+// operators' compound forms, as `+=` is `+`'s: at the value's width, past
+// its last value round to 0 (no overflow check).
+
+Counter :: struct { hits: u8 }
+
+bump :: fun(n: ^u8) { n +%= 7 }
+
+main :: fun() {
+	a : u8 = 250
+	a +%= 10
+	print("plus:", a)
+	b : u8 = 4
+	b -%= 10
+	print("minus:", b)
+	c : u8 = 100
+	c *%= 3
+	print("star:", c)
+	d : u8 = 250
+	bump(&d)
+	print("through a pointer:", d)
+	k := Counter{hits = 0}
+	k.hits -%= 1
+	print("field:", k.hits)
+}

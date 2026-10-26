@@ -647,8 +647,8 @@ example_len :: fun() {
 // iN holds signed numbers of N bits, uN unsigned. `n := 0` is an i64 unless
 // its uses give it another width. Numbers of different widths don't mix:
 // `i64(x)` turns x into an i64 (a float's fraction dropped). `+ - *` stop
-// the program on overflow; `+% -% *%` wrap around instead. `int` and
-// `uint` aren't types: write i64 or u64.
+// the program on overflow; `+% -% *%` wrap around instead (`n +%= 1`, as
+// `n += 1` is `+`'s). `int` and `uint` aren't types: write i64 or u64.
 example_i64 :: fun() {
 	small : u8 = 200
 	big := i64(small) * 10

@@ -944,7 +944,8 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
         return tp_node(p, .Assign, name, start, tp_list(p, target), tp_list(p, values)), true
 
     case .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
-         .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal:
+         .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal,
+         .Wrap_Plus_Equal, .Wrap_Minus_Equal, .Wrap_Star_Equal:
         target := tp_write_target(p, name)
         op := tp_advance(p)
         rhs := tp_expr(p)
@@ -1047,7 +1048,8 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
         }
         #partial switch tp_kind(p) {
         case .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
-             .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal:
+             .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal,
+             .Wrap_Plus_Equal, .Wrap_Minus_Equal, .Wrap_Star_Equal:
             op := tp_advance(p)
             rhs := tp_expr(p)
             return tp_node(p, .Compound, name, start, u32(lhs), tree_rec_add(p.t, u32(op), u32(rhs))), true
@@ -1067,7 +1069,8 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
 tp_assign_through :: proc(p: ^Tree_Parser, lhs: Tree_Id, start: int) -> (Tree_Id, bool) {
     #partial switch tp_kind(p) {
     case .Equals, .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
-         .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal:
+         .And_Equal, .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal,
+         .Wrap_Plus_Equal, .Wrap_Minus_Equal, .Wrap_Star_Equal:
     case:
         return 0, false
     }

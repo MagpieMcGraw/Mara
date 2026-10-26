@@ -185,6 +185,9 @@ op_str :: proc(op: Token_Kind) -> string {
     case .Xor_Equal:     return "~="
     case .Shift_Left_Equal:  return "<<="
     case .Shift_Right_Equal: return ">>="
+    case .Wrap_Plus_Equal:   return "+%="
+    case .Wrap_Minus_Equal:  return "-%="
+    case .Wrap_Star_Equal:   return "*%="
     case .Dot_Dot:       return ".."
     case .Dot_Dot_Less:  return "..<"
     }
