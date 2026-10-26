@@ -1083,7 +1083,7 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, span: Span, slo
         return solidify_type(tc_check(k, def))
     }
     if k.t.tag[def] == .Number {
-        if strings.index_byte(tc_text(k.t.main[def]), '.') >= 0 { return Type_F64{} }
+        if number_text_is_float(tc_text(k.t.main[def])) { return Type_F64{} }
         cell := new(Infer_Cell)
         cell.name, cell.span = name, span
         return Type_Infer_Int{cell = cell}

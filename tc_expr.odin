@@ -107,7 +107,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id) -> Type {
 
 // A number: untyped, its width its use's.
 tc_number :: proc(k: ^TC, n: Tree_Id) -> Type {
-    return Type_Infer_Float{} if strings.index_byte(token_text(build_tokens[k.t.main[n]]), '.') >= 0 else Type_Infer_Int{}
+    return Type_Infer_Float{} if number_text_is_float(token_text(build_tokens[k.t.main[n]])) else Type_Infer_Int{}
 }
 
 // What a use takes a value at, where the value's width is the use's to

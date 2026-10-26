@@ -230,7 +230,7 @@ tc_has_float :: proc(k: ^TC, n: Tree_Id) -> bool {
     t := k.t
     #partial switch t.tag[n] {
     case .Number:
-        return strings.index_byte(tc_text(t.main[n]), '.') >= 0
+        return number_text_is_float(tc_text(t.main[n]))
     case .Paren, .Unary:
         return tc_has_float(k, Tree_Id(t.a[n]))
     case .Binary:
@@ -250,7 +250,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
     #partial switch t.tag[n] {
     case .Number:
         text := tc_text(t.main[n])
-        if strings.index_byte(text, '.') >= 0 { return 0, false }
+        if number_text_is_float(text) { return 0, false }
         _, i, err := parse_number_text(text)
         if err != .None { return 0, false }
         v = i

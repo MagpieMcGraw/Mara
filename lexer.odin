@@ -613,6 +613,16 @@ next_token :: proc(l: ^Lexer) -> Token {
             for p < len(src) && (is_digit(src[p]) || src[p] == '_') { p += 1 }
             lex_skip_to(l, p)
         }
+        // An exponent — `e` or `E`, a sign maybe, digits — makes it a float
+        // literal too: `1.5e3`, `2e-3`, `3.4E38` (number_text_is_float).
+        if e := peek(l); e == 'e' || e == 'E' {
+            p = l.pos + 1
+            if p < len(src) && (src[p] == '+' || src[p] == '-') { p += 1 }
+            if p < len(src) && is_digit(src[p]) {
+                for p < len(src) && (is_digit(src[p]) || src[p] == '_') { p += 1 }
+                lex_skip_to(l, p)
+            }
+        }
         return make_token(l, .Number)
     }
 
@@ -913,6 +923,14 @@ token_range_text :: proc(lo, hi: int) -> string {
         strings.write_string(&sb, assert_token_display(build_tokens[i]))
     }
     return strings.clone(strings.to_string(sb))
+}
+
+// Whether a Number token's text is a float literal's: a point in it, or a
+// decimal exponent (`2e-3`) — not a hex literal's digit `e` (`0x1E`).
+number_text_is_float :: proc(text: string) -> bool {
+    if strings.index_byte(text, '.') >= 0 { return true }
+    if len(text) > 1 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') { return false }
+    return strings.index_byte(text, 'e') >= 0 || strings.index_byte(text, 'E') >= 0
 }
 
 // Outcome of parsing a Number token's text.

@@ -1069,7 +1069,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
 lw_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Build_Want, w: Written) -> Built {
     text := token_text(build_tokens[k.t.main[n]])
     f, i, _ := parse_number_text(text)
-    is_float := strings.index_byte(text, '.') >= 0
+    is_float := number_text_is_float(text)
     if negate { f, i = -f, -i }
     if want == .Place { return {} }
     t := tc_node_type(k, n)   // (its width, its use's: tc_settle)

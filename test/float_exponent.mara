@@ -1,0 +1,25 @@
+module float_exponent
+
+use mara.core
+
+//@ expect-output: values: 1500 3.4e+38 -0.0025 2000 6.02e+23
+//@ expect-output: floats: 666.333 0.5
+//@ expect-output: hex: 30
+
+// A float literal may have an exponent: `e` or `E`, a sign maybe, digits
+// (`1.5e3`, `2e-3`); with one and no point it's a float still (`2e3`).
+// It was read as a number, then a name: "undefined identifier 'e3'", and
+// at a module's top "this module statement is not supported yet". A hex
+// literal's `e` is a digit (`0x1E`). (sooblivion's UNSET_BEYOND.)
+
+BEYOND :: 3.4e38
+SMALL :: -2.5E-3
+
+main :: fun() {
+	x : f32 = 1.5e3
+	y := 2e3
+	print("values:", x, BEYOND, SMALL, y, 6.02e23)
+	half := 1_000e-3 / 2
+	print("floats:", (y - 1) / 3, half)
+	print("hex:", 0x1E)
+}
