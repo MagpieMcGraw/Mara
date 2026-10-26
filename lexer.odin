@@ -505,6 +505,11 @@ next_token :: proc(l: ^Lexer) -> Token {
         }
         if l.pos < len(l.source) && l.source[l.pos] == '\'' {
             lexer_advance(l) // skip closing quote
+        } else {
+            // (No closing quote: `'\'` was a quote by itself, its `\'` read
+            // as the escape and nothing closing it. Said so.)
+            emit_diagnostic(.Parse_Error, format_location(l.file, l.line, l.col), LEX_CHAR_UNCLOSED)
+            l.errors += 1
         }
         buf := [1]u8{char_val}
         l.value = strings.clone_from_bytes(buf[:])

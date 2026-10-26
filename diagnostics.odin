@@ -239,6 +239,7 @@ PARSE_BINARY_OVERFLOWS_U64        :: "binary literal '%s' overflows u64 (more th
 PARSE_INVALID_NUMBER              :: "invalid number '%s'"
 LEX_UNTERMINATED_COMMENT          :: "a `/*` comment that never ends — each `/*` needs its `*/` (they nest: one inside another needs its own)"
 LEX_CHAR_TOO_WIDE                 :: `'%s' is %d bytes in UTF-8, and a char is one byte: write it as text, "%s"`
+LEX_CHAR_UNCLOSED                 :: "a char literal ends with `'`: a quote is `'\\''`, a backslash `'\\\\'`"
 LEX_UNKNOWN_ESCAPE                ::`unknown escape '\%c' — the escapes are \n \t \r \0 \\ \' \"  (for a literal backslash, write \\)`
 PARSE_EXPECTED_VARIANT_NAME       :: "expected variant name after '.'"
 PARSE_UNEXPECTED_LBRACE_IN_EXPR   :: "unexpected '{{' in expression"

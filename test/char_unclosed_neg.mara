@@ -1,0 +1,12 @@
+module char_unclosed_neg
+
+//@ expect-fail: a char literal ends with `'`
+
+// `'\'` has no closing quote: its `\'` is the escaped quote, and
+// nothing closes the literal. It used to be a quote, silently. A quote is
+// `'\''`, a backslash `'\\'`.
+
+main :: fun() {
+	c := '\'
+	print(c)
+}
