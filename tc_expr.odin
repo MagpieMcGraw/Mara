@@ -849,7 +849,11 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
                 return Type_Error{}
             }
         }
-        tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
+        if owner := resolve_foreign_owner(k.rs, tr.main[n], name); owner != "" {
+            tc_error(k, span, TYPE_FOREIGN_FUN_PRIVATE, name, owner)
+        } else {
+            tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
+        }
         for a in args { tc_check(k, a) }
         return Type_Error{}
     }

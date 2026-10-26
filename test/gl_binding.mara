@@ -13,10 +13,13 @@ gl :: use mara.open_gl
 //@ expect-output: depth: 33190 36012 6402 35056 34042
 //@ expect-output: hdr: 34842 35898 5131
 //@ expect-output: cube: 34067 34069 34074 12288
+//@ expect-output: names: Clear
 
 // mara.open_gl's values, as GL numbers them, and its functions linked: a
 // call to each is built (not run — that needs a GL context) so a name
-// missing from opengl32 or open_gl.c stops the build.
+// missing from opengl32 or open_gl.c stops the build. Its C funs are its
+// file's (foreign_private_neg): these are the Mara funs that call them,
+// taking data as slices (`[]`: none) and text as Mara text.
 
 uses :: fun() {
 	gl.ActiveTexture(gl.TEXTURE31)
@@ -33,21 +36,32 @@ uses :: fun() {
 	gl.TexStorage2D(gl.TEXTURE_2D, 1, u32(gl.RGBA8), 4, 4)
 	gl.TexStorage3D(gl.TEXTURE_2D_ARRAY, 3, u32(gl.RGBA_S3TC_DXT5), 64, 64, 16)
 	block : [16!]byte
-	gl.CompressedTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 4, 4, 1, gl.RGBA_S3TC_DXT5, 16, &block[0])
-	gl.CompressedTexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA_S3TC_DXT5, 4, 4, 1, 0, 16, &block[0])
+	gl.CompressedTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 4, 4, 1, gl.RGBA_S3TC_DXT5, block)
+	gl.CompressedTexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA_S3TC_DXT5, 4, 4, 1, 0, block)
+	// (Buffers: room only, `[]`; data, a slice of any items; text, Mara's.)
+	verts : [6!]f32 = [0, 0, 1, 0, 0, 1]
+	gl.BufferData(gl.ARRAY_BUFFER, 1024, [], gl.DYNAMIC_DRAW)
+	gl.BufferData(gl.ARRAY_BUFFER, 24, verts, gl.STATIC_DRAW)
+	gl.BufferSubData(gl.ARRAY_BUFFER, 8, verts[2:6])
+	shader := gl.CreateShader(gl.VERTEX_SHADER)
+	gl.ShaderSource(shader, "#version 330 core\nvoid main() {}")
+	log : [256]utf8
+	gl.GetShaderInfoLog(shader, &log)
+	gl.GetProgramInfoLog(1, &log)
+	if gl.GetUniformLocation(1, "model") < 0 do print(log[:])
 	// (A framebuffer of a color texture and a depth texture — a
 	// reflection's, the scene's depth — and one of a depth renderbuffer.)
 	fbo : u32 = 0
 	gl.GenFramebuffers(1, &fbo)
 	gl.BindFramebuffer(gl.FRAMEBUFFER, fbo)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.RGBA16F), 512, 512, 0, gl.RGBA, gl.HALF_FLOAT, void)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.RGBA16F), 512, 512, 0, gl.RGBA, gl.HALF_FLOAT, [])
 	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, 1, 0)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.DEPTH_COMPONENT24), 512, 512, 0, gl.DEPTH_COMPONENT, gl.FLOAT, void)
+	gl.TexImage2D(gl.TEXTURE_2D, 0, i32(gl.DEPTH_COMPONENT24), 512, 512, 0, gl.DEPTH_COMPONENT, gl.FLOAT, [])
 	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, 2, 0)
 	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_CUBE_MAP_POSITIVE_X, 3, 0)
 	gl.FramebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, 4, 0, 7)
 	outs : [2!]gl.GL_Attachment = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
-	gl.DrawBuffers(2, &outs[0])
+	gl.DrawBuffers(outs)
 	if gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != u32(gl.FRAMEBUFFER_COMPLETE) do print("incomplete")
 	rbo : u32 = 0
 	gl.GenRenderbuffers(1, &rbo)
@@ -86,5 +100,8 @@ main :: fun(args: [][]utf8) {
 	print("depth:", u32(gl.DEPTH_COMPONENT24), u32(gl.DEPTH_COMPONENT32F), u32(gl.DEPTH_COMPONENT), u32(gl.DEPTH24_STENCIL8), u32(gl.UNSIGNED_INT_24_8))
 	print("hdr:", u32(gl.RGBA16F), u32(gl.R11F_G11F_B10F), u32(gl.HALF_FLOAT))
 	print("cube:", u32(gl.TEXTURE_CUBE_MAP), u32(gl.TEXTURE_CUBE_MAP_POSITIVE_X), u32(gl.TEXTURE_CUBE_MAP_NEGATIVE_Z), u32(gl.CLIP_DISTANCE0))
+	// (A local may take a C fun's name: it's open_gl.mara's alone.)
+	glClear := "Clear"
+	print("names:", glClear)
 	if args.len > 100 do uses()
 }

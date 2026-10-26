@@ -1,0 +1,20 @@
+module foreign_names_free
+
+use mara.core
+use mara.os
+
+//@ expect-output: locals: 1 2 3 4 b.txt
+
+// A foreign block lends its funs to its own scope, as a `use` does a
+// module's: mara.os's C funs are its file's alone. So a local may take
+// one's name — `open` on Linux, where os.mara declares libc's open, failed
+// to build ("a variable can't take the name of a fun") while Windows built
+// it. (Calling one: foreign_private_neg.)
+
+main :: fun() {
+	open := 1
+	read := 2
+	GetLastError := 3
+	CloseHandle := 4
+	print("locals:", open, read, GetLastError, CloseHandle, get_file("a/b.txt"))
+}

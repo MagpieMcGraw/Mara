@@ -1,0 +1,17 @@
+module foreign_file_private
+
+use mara.core
+
+// This file's foreign block: its C fun seen here alone, wrapped in a Mara
+// fun the module's other files call (b.mara calls the C fun itself, and
+// fails).
+
+foreign static_lib "c" {
+	fun abs(x: i32) -> i32
+}
+
+magnitude :: fun(x: i32) -> i32 { return abs(x) }
+
+main :: fun() {
+	print(magnitude(-3), twice(-4))
+}

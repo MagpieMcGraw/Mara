@@ -41,7 +41,7 @@ quad_init :: fun(r: ^Quad_Renderer) {
 	BindVertexArray(r.vao)
 	GenBuffers(1, &r.vbo)
 	BindBuffer(ARRAY_BUFFER, r.vbo)
-	BufferData(ARRAY_BUFFER, 32, &verts[0], STATIC_DRAW)
+	BufferData(ARRAY_BUFFER, 32, verts, STATIC_DRAW)
 	EnableVertexAttribArray(0)
 	VertexAttribPointer(0, 2, FLOAT, 0, 8, 0)
 }

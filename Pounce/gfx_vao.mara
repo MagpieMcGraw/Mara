@@ -65,14 +65,14 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     gl.BindBuffer(gl.ARRAY_BUFFER, vertex_vbo)
     gl.BufferData(gl.ARRAY_BUFFER,
                   isize(max_vertices * size_of(Vertex)),
-                  void,
+                  [],
                   gl.STATIC_DRAW)
 
     // Pre-allocate index buffer (no data yet)
     gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
     gl.BufferData(gl.ELEMENT_ARRAY_BUFFER,
                   isize(max_indices * size_of(u32)),
-                  void,
+                  [],
                   gl.STATIC_DRAW)
 
     // Vertex attributes (per-vertex)
@@ -93,7 +93,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     gl.BindBuffer(gl.ARRAY_BUFFER, instance_vbo)
     gl.BufferData(gl.ARRAY_BUFFER,
                   isize(max_instances * size_of(Instance)),
-                  void,
+                  [],
                   gl.DYNAMIC_DRAW)
 
     // Instance attributes (per-instance)
@@ -155,15 +155,13 @@ vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
     gl.BindBuffer(gl.ARRAY_BUFFER, state.vertex_vbo)
     gl.BufferSubData(gl.ARRAY_BUFFER,
                      isize(state.vertex_offset * size_of(Vertex)),
-                     isize(vertex_count * size_of(Vertex)),
-                     &geom.vertices[0])
+                     geom.vertices[0:vertex_count])
 
     // Upload index data at current offset
     gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.ebo)
     gl.BufferSubData(gl.ELEMENT_ARRAY_BUFFER,
                      isize(state.index_offset * size_of(u32)),
-                     isize(index_count * size_of(u32)),
-                     &geom.indices[0])
+                     geom.indices[0:index_count])
 
     // Update offsets
     state.vertex_offset += vertex_count

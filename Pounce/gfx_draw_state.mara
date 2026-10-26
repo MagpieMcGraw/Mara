@@ -70,7 +70,7 @@ draw_state_init :: fun(
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
 	gl.BufferData(gl.DRAW_INDIRECT_BUFFER,
 				  max_commands * size_of(DrawCommand),
-				  void,
+				  [],
 				  gl.DYNAMIC_DRAW)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
@@ -231,19 +231,16 @@ draw_state_render :: fun(state: ^DrawState) {
 	        base_instance  = u32(gpu_offset),
 	    }
 	    state.command_count += 1
-	    bytes := count * size_of(Instance)
 	    gl.BufferSubData(gl.ARRAY_BUFFER,
 	                     gpu_offset * size_of(Instance),
-	                     isize(bytes),
-	                     &batch.instances[0])
+	                     batch.instances[0:count])
 	    gpu_offset += isize(count)
 	}
 
 	// Upload command data
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, state.command_buffer)
 	gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0,
-					 isize(state.command_count) * size_of(DrawCommand),
-					 &state.commands[0])
+					 state.commands[0:state.command_count])
 
 	// ONE DRAW CALL FOR EVERYTHING
 	draw_state_bind(state)

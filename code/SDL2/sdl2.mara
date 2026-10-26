@@ -326,69 +326,130 @@ Texture   :: distinct ^byte
 // Foreign declarations
 // ---------------------------------------------------------------------------
 
-// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
-foreign static_lib "SDL2" prefix SDL_ {
-    fun Init(flags: Init_Flags) -> i32
-    fun Quit()
-    fun SetHint(name: cstring, value: cstring) -> i32  // SDL_bool, i32-sized
-    fun GetError() -> cstring
-    fun GetRevision() -> cstring
-
-    // Windowing — note SDL2's CreateWindow has six args (x, y included).
-    fun CreateWindow(title: cstring, x: WindowPos, y: WindowPos, w: i32, h: i32, flags: WindowFlags) -> Window
-    fun DestroyWindow(window: Window)
-
-    // Events
-    fun PollEvent(event: ^Event) -> i32  // 1 if event present, 0 otherwise
-    fun PumpEvents()
-    fun WaitEvent(event: ^Event) -> i32
-
-    // Timing
-    fun Delay(ms: u32)
-    fun GetTicks() -> u32               // Uint32 milliseconds (rolls over after ~49 days)
-    fun GetTicks64() -> u64              // SDL >= 2.0.18 — preferred over GetTicks
-    fun GetPerformanceCounter() -> u64
-    fun GetPerformanceFrequency() -> u64
-
-    // OpenGL
-    fun GL_SetAttribute(attr: GLattr, value: i32) -> i32   // value heterogeneous (GLprofile, version i64, …) — pass via i32
-    fun GL_GetAttribute(attr: GLattr, value: ^i32) -> i32
-    fun GL_CreateContext(window: Window) -> GLContext
-    fun GL_MakeCurrent(window: Window, context: GLContext) -> i32
-    fun GL_DeleteContext(context: GLContext)              // SDL2 spelling (SDL3 renamed to DestroyContext)
-    fun GL_SetSwapInterval(interval: i32) -> i32
-    fun GL_GetSwapInterval() -> i32
-    fun GL_SwapWindow(window: Window)
-    fun GL_GetProcAddress(name: cstring) -> ^byte
-
-    // Renderer (SDL2's 2D renderer — index=-1 to auto-pick driver)
-    fun CreateRenderer(window: Window, index: i32, flags: RendererFlags) -> Renderer
-    fun DestroyRenderer(renderer: Renderer)
-    fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> i32
-    fun RenderClear(renderer: Renderer) -> i32
-    fun RenderFillRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
-    fun RenderDrawRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
-    fun RenderDrawLine(renderer: Renderer, x1: i32, y1: i32, x2: i32, y2: i32) -> i32
-    fun RenderDrawPoint(renderer: Renderer, x: i32, y: i32) -> i32
-    fun RenderPresent(renderer: Renderer)
-
-    // Filesystem — RWops (SDL2's IO stream type)
-    fun RWFromFile(file: cstring, mode: cstring) -> RWops
-    fun RWclose(context: RWops) -> i32
-    fun RWread(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
-    fun RWwrite(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
-    fun RWseek(context: RWops, offset: i64, whence: i32) -> i64
-    fun RWtell(context: RWops) -> i64
-    fun RWsize(context: RWops) -> i64
-    fun LoadFile(file: cstring, datasize: ^usize) -> ^byte
-
-    // Filesystem — paths
-    fun GetBasePath() -> cstring
-    fun GetPrefPath(org: cstring, app: cstring) -> cstring
-
-    // Memory (SDL allocator — needed when freeing SDL-allocated strings like DropFile.file).
-    // malloc is also useful as the platform-agnostic allocator when targeting web,
-    // since LoadLibrary/VirtualAlloc don't exist there but SDL2's allocator does.
-    fun malloc(size: i32) -> ^byte
-    fun free(mem: ^byte)
+// C's text at p, 0-ended, as Mara text: a view of C's memory, while C
+// keeps it there (none: empty).
+c_text :: fun(p: ^byte) -> []utf8 {
+    view : []utf8 = []
+    if p == void do return view
+    view = slice_from_ptr(p, 1 << 20)
+    for ch, i in view {
+        if ch == 0 do return view[:i]
+    }
+    return view
 }
+
+// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
+foreign static_lib "SDL2" {
+    fun SDL_Init(flags: Init_Flags) -> i32
+    fun SDL_Quit()
+    fun SDL_SetHint(name: cstring, value: cstring) -> i32                // SDL_bool, i32-sized
+    fun SDL_GetError() -> ^byte
+    fun SDL_GetRevision() -> ^byte
+    fun SDL_CreateWindow(title: cstring, x: WindowPos, y: WindowPos, w: i32, h: i32, flags: WindowFlags) -> Window
+    fun SDL_DestroyWindow(window: Window)
+    fun SDL_PollEvent(event: ^Event) -> i32                              // 1 if event present, 0 otherwise
+    fun SDL_PumpEvents()
+    fun SDL_WaitEvent(event: ^Event) -> i32
+    fun SDL_Delay(ms: u32)
+    fun SDL_GetTicks() -> u32                                            // Uint32 milliseconds (rolls over after ~49 days)
+    fun SDL_GetTicks64() -> u64                                          // SDL >= 2.0.18 — preferred over GetTicks
+    fun SDL_GetPerformanceCounter() -> u64
+    fun SDL_GetPerformanceFrequency() -> u64
+    fun SDL_GL_SetAttribute(attr: GLattr, value: i32) -> i32             // value heterogeneous (GLprofile, version i64, …) — pass via i32
+    fun SDL_GL_GetAttribute(attr: GLattr, value: ^i32) -> i32
+    fun SDL_GL_CreateContext(window: Window) -> GLContext
+    fun SDL_GL_MakeCurrent(window: Window, context: GLContext) -> i32
+    fun SDL_GL_DeleteContext(context: GLContext)                         // SDL2 spelling (SDL3 renamed to DestroyContext)
+    fun SDL_GL_SetSwapInterval(interval: i32) -> i32
+    fun SDL_GL_GetSwapInterval() -> i32
+    fun SDL_GL_SwapWindow(window: Window)
+    fun SDL_GL_GetProcAddress(name: cstring) -> ^byte
+    fun SDL_CreateRenderer(window: Window, index: i32, flags: RendererFlags) -> Renderer
+    fun SDL_DestroyRenderer(renderer: Renderer)
+    fun SDL_SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> i32
+    fun SDL_RenderClear(renderer: Renderer) -> i32
+    fun SDL_RenderFillRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
+    fun SDL_RenderDrawRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
+    fun SDL_RenderDrawLine(renderer: Renderer, x1: i32, y1: i32, x2: i32, y2: i32) -> i32
+    fun SDL_RenderDrawPoint(renderer: Renderer, x: i32, y: i32) -> i32
+    fun SDL_RenderPresent(renderer: Renderer)
+    fun SDL_RWFromFile(file: cstring, mode: cstring) -> RWops
+    fun SDL_RWclose(context: RWops) -> i32
+    fun SDL_RWread(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
+    fun SDL_RWwrite(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
+    fun SDL_RWseek(context: RWops, offset: i64, whence: i32) -> i64
+    fun SDL_RWtell(context: RWops) -> i64
+    fun SDL_RWsize(context: RWops) -> i64
+    fun SDL_LoadFile(file: cstring, datasize: ^usize) -> ^byte
+    fun SDL_GetBasePath() -> ^byte
+    fun SDL_GetPrefPath(org: cstring, app: cstring) -> ^byte
+    fun SDL_malloc(size: i32) -> ^byte
+    fun SDL_free(mem: ^byte)
+}
+
+Init :: fun(flags: Init_Flags) -> i32 { return SDL_Init(flags) }
+Quit :: fun() { SDL_Quit() }
+SetHint :: fun(name: []utf8, value: []utf8) -> i32 { return SDL_SetHint(cstring(name), cstring(value)) }
+GetError :: fun() -> []utf8 { return c_text(SDL_GetError()) }
+GetRevision :: fun() -> []utf8 { return c_text(SDL_GetRevision()) }
+
+// Windowing — note SDL2's CreateWindow has six args (x, y included).
+CreateWindow :: fun(title: []utf8, x: WindowPos, y: WindowPos, w: i32, h: i32, flags: WindowFlags) -> Window { return SDL_CreateWindow(cstring(title), x, y, w, h, flags) }
+DestroyWindow :: fun(window: Window) { SDL_DestroyWindow(window) }
+
+// Events
+PollEvent :: fun(event: ^Event) -> i32 { return SDL_PollEvent(event) }
+PumpEvents :: fun() { SDL_PumpEvents() }
+WaitEvent :: fun(event: ^Event) -> i32 { return SDL_WaitEvent(event) }
+
+// Timing
+Delay :: fun(ms: u32) { SDL_Delay(ms) }
+GetTicks :: fun() -> u32 { return SDL_GetTicks() }
+GetTicks64 :: fun() -> u64 { return SDL_GetTicks64() }
+GetPerformanceCounter :: fun() -> u64 { return SDL_GetPerformanceCounter() }
+GetPerformanceFrequency :: fun() -> u64 { return SDL_GetPerformanceFrequency() }
+
+// OpenGL
+GL_SetAttribute :: fun(attr: GLattr, value: i32) -> i32 { return SDL_GL_SetAttribute(attr, value) }
+GL_GetAttribute :: fun(attr: GLattr, value: ^i32) -> i32 { return SDL_GL_GetAttribute(attr, value) }
+GL_CreateContext :: fun(window: Window) -> GLContext { return SDL_GL_CreateContext(window) }
+GL_MakeCurrent :: fun(window: Window, context: GLContext) -> i32 { return SDL_GL_MakeCurrent(window, context) }
+GL_DeleteContext :: fun(context: GLContext) { SDL_GL_DeleteContext(context) }
+GL_SetSwapInterval :: fun(interval: i32) -> i32 { return SDL_GL_SetSwapInterval(interval) }
+GL_GetSwapInterval :: fun() -> i32 { return SDL_GL_GetSwapInterval() }
+GL_SwapWindow :: fun(window: Window) { SDL_GL_SwapWindow(window) }
+GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
+
+// Renderer (SDL2's 2D renderer — index=-1 to auto-pick driver)
+CreateRenderer :: fun(window: Window, index: i32, flags: RendererFlags) -> Renderer { return SDL_CreateRenderer(window, index, flags) }
+DestroyRenderer :: fun(renderer: Renderer) { SDL_DestroyRenderer(renderer) }
+SetRenderDrawColor :: fun(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> i32 { return SDL_SetRenderDrawColor(renderer, r, g, b, a) }
+RenderClear :: fun(renderer: Renderer) -> i32 { return SDL_RenderClear(renderer) }
+RenderFillRect :: fun(renderer: Renderer, rect: ^SDL_Rect) -> i32 { return SDL_RenderFillRect(renderer, rect) }
+RenderDrawRect :: fun(renderer: Renderer, rect: ^SDL_Rect) -> i32 { return SDL_RenderDrawRect(renderer, rect) }
+RenderDrawLine :: fun(renderer: Renderer, x1: i32, y1: i32, x2: i32, y2: i32) -> i32 { return SDL_RenderDrawLine(renderer, x1, y1, x2, y2) }
+RenderDrawPoint :: fun(renderer: Renderer, x: i32, y: i32) -> i32 { return SDL_RenderDrawPoint(renderer, x, y) }
+RenderPresent :: fun(renderer: Renderer) { SDL_RenderPresent(renderer) }
+
+// Filesystem — RWops (SDL2's IO stream type)
+RWFromFile :: fun(file: []utf8, mode: []utf8) -> RWops { return SDL_RWFromFile(cstring(file), cstring(mode)) }
+RWclose :: fun(context: RWops) -> i32 { return SDL_RWclose(context) }
+// As many of `into`'s items as the stream holds read into it: how many
+// came (0 at its end or failing).
+RWread :: fun(context: RWops, into: []$T) -> usize { return SDL_RWread(context, into.ptr, usize(size_of(T)), usize(into.len)) }
+// `data`'s items written to the stream: how many went.
+RWwrite :: fun(context: RWops, data: []$T) -> usize { return SDL_RWwrite(context, data.ptr, usize(size_of(T)), usize(data.len)) }
+RWseek :: fun(context: RWops, offset: i64, whence: i32) -> i64 { return SDL_RWseek(context, offset, whence) }
+RWtell :: fun(context: RWops) -> i64 { return SDL_RWtell(context) }
+RWsize :: fun(context: RWops) -> i64 { return SDL_RWsize(context) }
+LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(cstring(file), datasize) }
+
+// Filesystem — paths
+GetBasePath :: fun() -> []utf8 { return c_text(SDL_GetBasePath()) }
+GetPrefPath :: fun(org: []utf8, app: []utf8) -> []utf8 { return c_text(SDL_GetPrefPath(cstring(org), cstring(app))) }
+
+// Memory (SDL allocator — needed when freeing SDL-allocated strings like DropFile.file).
+// malloc is also useful as the platform-agnostic allocator when targeting web,
+// since LoadLibrary/VirtualAlloc don't exist there but SDL2's allocator does.
+malloc :: fun(size: i32) -> ^byte { return SDL_malloc(size) }
+free :: fun(mem: ^byte) { SDL_free(mem) }

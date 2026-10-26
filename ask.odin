@@ -1416,7 +1416,8 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
     canonical := target
     for m in ask_all_definitions(checked.table, "", checked.functions) {
         hp := ask_home_package(m.type_)
-        if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
+        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+        if ask_is_foreign(m.type_) { continue }   // (a foreign block's funs are its file's: the module's are the Mara funs that call them)
         if ask_is_variant(m.type_) { continue }   // (a union's variant: its union's)
         if !ask_module_name_matches(hp, target) { continue }
         canonical = hp
@@ -1530,7 +1531,8 @@ ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic
     Counts :: struct { types, funs: int, file: string }
     by_home: map[string]Counts
     for m in ask_all_definitions(checked.table, "", checked.functions) {
-        if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
+        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+        if ask_is_foreign(m.type_) { continue }   // (a foreign block's funs are its file's: the module's are the Mara funs that call them)
         if ask_is_variant(m.type_) { continue }   // (a union's variant: its union's)
         hp := ask_home_package(m.type_)
         if hp == "" { continue }

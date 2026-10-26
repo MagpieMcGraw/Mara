@@ -1,0 +1,13 @@
+module foreign_private_neg
+
+//@ expect-fail: 'glClear' is a C function mara.open_gl declares, seen only in the file that declares it
+
+// mara.open_gl's C funs are its file's (foreign_names_free): a module that
+// uses it calls its Mara funs, `Clear`, not `glClear`.
+
+use mara.core
+use mara.open_gl
+
+main :: fun() {
+	glClear(COLOR_BUFFER_BIT)
+}

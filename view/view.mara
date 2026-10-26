@@ -173,7 +173,7 @@ main :: fun(args: [][]utf8) -> i64 {
 		return 1
 	}
 	defer Quit()
-	ui.window = CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
+	ui.window = CreateWindow(title, 1100, 700, Resizable | HighPixelDensity)
 	// (SDL's OpenGL renderer: Direct3D 11's, its default on Windows, showed a
 	// frame late now and then — a dragged panel moved on after its release,
 	// again when the mouse came over it. OpenGL's, as Pounce draws, didn't.)

@@ -301,7 +301,7 @@ select_copy :: fun(ui: ^Ui) {
 	if ui.clip.len == ui.clip.cap do ui.clip.len -= 1
 	&ui.clip + utf8(0)
 	ui.clip.len -= 1
-	_ = SetClipboardText(cstring(ui.clip))
+	_ = SetClipboardText(ui.clip)
 }
 
 // Ctrl+A: all the front panel's lines selected — the Ask panel's, what was

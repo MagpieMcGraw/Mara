@@ -1135,107 +1135,205 @@ PathInfo :: struct {
     access_time: i64
 }
 
-// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
-foreign static_lib "SDL3" prefix SDL_ {
-    fun Init(flags: Init_Flags) -> bool
-    fun SetHint(name: cstring, value: cstring) -> bool
-    fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window
-    fun DestroyWindow(window: Window)
-    fun GetWindowSize(window: Window, w: ^i32, h: ^i32) -> bool
-    fun GetWindowSizeInPixels(window: Window, w: ^i32, h: ^i32) -> bool
-    // Locks the cursor to the window, hides it, and feeds relative motion.
-    fun SetWindowRelativeMouseMode(window: Window, enabled: bool) -> bool
-    fun PollEvent(event: ^Event) -> bool
-    fun Delay(ms: u32)
-    fun Quit()
-    // name: a driver's, or void — SDL picks one.
-    fun CreateRenderer(window: Window, name: cstring) -> Renderer
-    fun DestroyRenderer(renderer: Renderer)
-    fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool
-    fun RenderClear(renderer: Renderer) -> bool
-    fun RenderFillRect(renderer: Renderer, rect: ^SDL_FRect) -> bool
-    fun RenderPresent(renderer: Renderer) -> bool
-    fun SetRenderDrawBlendMode(renderer: Renderer, mode: u32) -> bool
-    fun SetRenderVSync(renderer: Renderer, vsync: i32) -> bool
-    // The renderer's size in pixels (a window's on a high-density display
-    // has more than its size says).
-    fun GetRenderOutputSize(renderer: Renderer, w: ^i32, h: ^i32) -> bool
-    // Drawing kept inside rect (void: everywhere again).
-    fun SetRenderClipRect(renderer: Renderer, rect: ^SDL_Rect) -> bool
-    fun CreateTexture(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture
-    // rect void: the whole texture; pitch: bytes from a row to the next.
-    fun UpdateTexture(texture: Texture, rect: ^SDL_Rect, pixels: ^byte, pitch: i32) -> bool
-    fun RenderTexture(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> bool
-    fun SetTextureBlendMode(texture: Texture, mode: u32) -> bool
-    // Each texel's color multiplied by this: white texels drawn in it.
-    fun SetTextureColorMod(texture: Texture, r: u8, g: u8, b: u8) -> bool
-    fun SetTextureScaleMode(texture: Texture, mode: i32) -> bool
-    fun DestroyTexture(texture: Texture)
-    // The next event, waiting for it up to ms milliseconds: false when none came.
-    fun WaitEventTimeout(event: ^Event, ms: i32) -> bool
-    fun SetWindowTitle(window: Window, title: cstring) -> bool
-    fun SetWindowSize(window: Window, w: i32, h: i32) -> bool
-    // The display the window is on, and the part of it windows can use
-    // (the taskbar's left out).
-    fun GetDisplayForWindow(window: Window) -> u32
-    fun GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> bool
-    // The display's mode now: its refresh rate among it. (void: none.)
-    fun GetCurrentDisplayMode(display: u32) -> ^Display_Mode
-    // The modifier keys held now: KMOD_SHIFT, ...
-    fun GetModState() -> u16
-    // Text put on the system's clipboard, for pasting anywhere.
-    fun SetClipboardText(text: cstring) -> bool
-    // Where the cursor is on the screen (and the buttons held).
-    fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
-    // Where the window's inside is on the screen.
-    fun GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> bool
-    // The window's state, WindowFlags' bits: Minimized, InputFocus, ...
-    fun GetWindowFlags(window: Window) -> u64
-    // A minimized (or maximized) window back to its size and place.
-    fun RestoreWindow(window: Window) -> bool
-    fun MaximizeWindow(window: Window) -> bool
-    // The window in front of the others, given the keyboard.
-    fun RaiseWindow(window: Window) -> bool
-    fun CreateSystemCursor(id: i32) -> Cursor
-    // The mouse cursor's look, over the windows of this program.
-    fun SetCursor(cursor: Cursor) -> bool
-    fun GL_SetAttribute(attr: GLattr, value: i32) -> bool
-    fun GL_CreateContext(window: Window) -> GLContext
-    fun GL_MakeCurrent(window: Window, context: GLContext) -> bool
-    fun GL_DestroyContext(context: GLContext) -> bool
-    fun GL_SetSwapInterval(interval: i32) -> bool
-    fun GL_SwapWindow(window: Window) -> bool
-    fun GL_GetProcAddress(name: cstring) -> ^byte
-    fun GetTicks() -> u32
-    fun GetTicksNS() -> u64
-    fun GetPerformanceCounter() -> u64
-    fun GetPerformanceFrequency() -> u64
-    fun DelayNS(ns: u64)
-    fun DelayPrecise(ns: u64)
-    fun GetError() -> cstring
-
-    // Memory
-    fun malloc(size: usize) -> ^byte
-
-    // Filesystem — IOStream
-    fun IOFromFile(file: cstring, mode: cstring) -> IOStream
-    fun CloseIO(context: IOStream) -> bool
-    fun ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
-    fun WriteIO(context: IOStream, ptr: ^byte, size: usize) -> usize
-    fun SeekIO(context: IOStream, offset: i64, whence: IOWhence) -> i64
-    fun TellIO(context: IOStream) -> i64
-    fun GetIOSize(context: IOStream) -> i64
-    fun FlushIO(context: IOStream) -> bool
-    fun LoadFile(file: cstring, datasize: ^usize) -> ^byte
-    fun SaveFile(file: cstring, data: ^byte, datasize: usize) -> bool
-
-    // Filesystem — paths & metadata
-    fun GetBasePath() -> cstring
-    fun GetPrefPath(org: cstring, app: cstring) -> cstring
-    fun GetCurrentDirectory() -> cstring
-    fun CreateDirectory(path: cstring) -> bool
-    fun RemovePath(path: cstring) -> bool
-    fun RenamePath(oldpath: cstring, newpath: cstring) -> bool
-    fun CopyFile(oldpath: cstring, newpath: cstring) -> bool
-    fun GetPathInfo(path: cstring, info: ^PathInfo) -> bool
+// C's text at p, 0-ended, as Mara text: a view of C's memory, while C
+// keeps it there (none: empty).
+c_text :: fun(p: ^byte) -> []utf8 {
+    view : []utf8 = []
+    if p == void do return view
+    view = slice_from_ptr(p, 1 << 20)
+    for ch, i in view {
+        if ch == 0 do return view[:i]
+    }
+    return view
 }
+
+// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
+foreign static_lib "SDL3" {
+    fun SDL_Init(flags: Init_Flags) -> bool
+    fun SDL_SetHint(name: cstring, value: cstring) -> bool
+    fun SDL_CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window
+    fun SDL_DestroyWindow(window: Window)
+    fun SDL_GetWindowSize(window: Window, w: ^i32, h: ^i32) -> bool
+    fun SDL_GetWindowSizeInPixels(window: Window, w: ^i32, h: ^i32) -> bool
+    fun SDL_SetWindowRelativeMouseMode(window: Window, enabled: bool) -> bool
+    fun SDL_PollEvent(event: ^Event) -> bool
+    fun SDL_Delay(ms: u32)
+    fun SDL_Quit()
+    fun SDL_CreateRenderer(window: Window, name: cstring) -> Renderer
+    fun SDL_DestroyRenderer(renderer: Renderer)
+    fun SDL_SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool
+    fun SDL_RenderClear(renderer: Renderer) -> bool
+    fun SDL_RenderFillRect(renderer: Renderer, rect: ^SDL_FRect) -> bool
+    fun SDL_RenderPresent(renderer: Renderer) -> bool
+    fun SDL_SetRenderDrawBlendMode(renderer: Renderer, mode: u32) -> bool
+    fun SDL_SetRenderVSync(renderer: Renderer, vsync: i32) -> bool
+    fun SDL_GetRenderOutputSize(renderer: Renderer, w: ^i32, h: ^i32) -> bool
+    fun SDL_SetRenderClipRect(renderer: Renderer, rect: ^SDL_Rect) -> bool
+    fun SDL_CreateTexture(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture
+    fun SDL_UpdateTexture(texture: Texture, rect: ^SDL_Rect, pixels: ^byte, pitch: i32) -> bool
+    fun SDL_RenderTexture(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> bool
+    fun SDL_SetTextureBlendMode(texture: Texture, mode: u32) -> bool
+    fun SDL_SetTextureColorMod(texture: Texture, r: u8, g: u8, b: u8) -> bool
+    fun SDL_SetTextureScaleMode(texture: Texture, mode: i32) -> bool
+    fun SDL_DestroyTexture(texture: Texture)
+    fun SDL_WaitEventTimeout(event: ^Event, ms: i32) -> bool
+    fun SDL_SetWindowTitle(window: Window, title: cstring) -> bool
+    fun SDL_SetWindowSize(window: Window, w: i32, h: i32) -> bool
+    fun SDL_GetDisplayForWindow(window: Window) -> u32
+    fun SDL_GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> bool
+    fun SDL_GetCurrentDisplayMode(display: u32) -> ^Display_Mode
+    fun SDL_GetModState() -> u16
+    fun SDL_SetClipboardText(text: cstring) -> bool
+    fun SDL_GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
+    fun SDL_GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> bool
+    fun SDL_GetWindowFlags(window: Window) -> u64
+    fun SDL_RestoreWindow(window: Window) -> bool
+    fun SDL_MaximizeWindow(window: Window) -> bool
+    fun SDL_RaiseWindow(window: Window) -> bool
+    fun SDL_CreateSystemCursor(id: i32) -> Cursor
+    fun SDL_SetCursor(cursor: Cursor) -> bool
+    fun SDL_GL_SetAttribute(attr: GLattr, value: i32) -> bool
+    fun SDL_GL_CreateContext(window: Window) -> GLContext
+    fun SDL_GL_MakeCurrent(window: Window, context: GLContext) -> bool
+    fun SDL_GL_DestroyContext(context: GLContext) -> bool
+    fun SDL_GL_SetSwapInterval(interval: i32) -> bool
+    fun SDL_GL_SwapWindow(window: Window) -> bool
+    fun SDL_GL_GetProcAddress(name: cstring) -> ^byte
+    fun SDL_GetTicks() -> u32
+    fun SDL_GetTicksNS() -> u64
+    fun SDL_GetPerformanceCounter() -> u64
+    fun SDL_GetPerformanceFrequency() -> u64
+    fun SDL_DelayNS(ns: u64)
+    fun SDL_DelayPrecise(ns: u64)
+    fun SDL_GetError() -> ^byte
+    fun SDL_malloc(size: usize) -> ^byte
+    fun SDL_IOFromFile(file: cstring, mode: cstring) -> IOStream
+    fun SDL_CloseIO(context: IOStream) -> bool
+    fun SDL_ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
+    fun SDL_WriteIO(context: IOStream, ptr: ^byte, size: usize) -> usize
+    fun SDL_SeekIO(context: IOStream, offset: i64, whence: IOWhence) -> i64
+    fun SDL_TellIO(context: IOStream) -> i64
+    fun SDL_GetIOSize(context: IOStream) -> i64
+    fun SDL_FlushIO(context: IOStream) -> bool
+    fun SDL_LoadFile(file: cstring, datasize: ^usize) -> ^byte
+    fun SDL_SaveFile(file: cstring, data: ^byte, datasize: usize) -> bool
+    fun SDL_GetBasePath() -> ^byte
+    fun SDL_GetPrefPath(org: cstring, app: cstring) -> ^byte
+    fun SDL_GetCurrentDirectory() -> ^byte
+    fun SDL_CreateDirectory(path: cstring) -> bool
+    fun SDL_RemovePath(path: cstring) -> bool
+    fun SDL_RenamePath(oldpath: cstring, newpath: cstring) -> bool
+    fun SDL_CopyFile(oldpath: cstring, newpath: cstring) -> bool
+    fun SDL_GetPathInfo(path: cstring, info: ^PathInfo) -> bool
+}
+
+Init :: fun(flags: Init_Flags) -> bool { return SDL_Init(flags) }
+SetHint :: fun(name: []utf8, value: []utf8) -> bool { return SDL_SetHint(cstring(name), cstring(value)) }
+CreateWindow :: fun(title: []utf8, w: i32, h: i32, flags: WindowFlags) -> Window { return SDL_CreateWindow(cstring(title), w, h, flags) }
+DestroyWindow :: fun(window: Window) { SDL_DestroyWindow(window) }
+GetWindowSize :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSize(window, w, h) }
+GetWindowSizeInPixels :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSizeInPixels(window, w, h) }
+// Locks the cursor to the window, hides it, and feeds relative motion.
+SetWindowRelativeMouseMode :: fun(window: Window, enabled: bool) -> bool { return SDL_SetWindowRelativeMouseMode(window, enabled) }
+PollEvent :: fun(event: ^Event) -> bool { return SDL_PollEvent(event) }
+Delay :: fun(ms: u32) { SDL_Delay(ms) }
+Quit :: fun() { SDL_Quit() }
+// name: a driver's ("opengl", "direct3d11", …).
+CreateRenderer :: fun(window: Window, name: []utf8) -> Renderer { return SDL_CreateRenderer(window, cstring(name)) }
+DestroyRenderer :: fun(renderer: Renderer) { SDL_DestroyRenderer(renderer) }
+SetRenderDrawColor :: fun(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool { return SDL_SetRenderDrawColor(renderer, r, g, b, a) }
+RenderClear :: fun(renderer: Renderer) -> bool { return SDL_RenderClear(renderer) }
+RenderFillRect :: fun(renderer: Renderer, rect: ^SDL_FRect) -> bool { return SDL_RenderFillRect(renderer, rect) }
+RenderPresent :: fun(renderer: Renderer) -> bool { return SDL_RenderPresent(renderer) }
+SetRenderDrawBlendMode :: fun(renderer: Renderer, mode: u32) -> bool { return SDL_SetRenderDrawBlendMode(renderer, mode) }
+SetRenderVSync :: fun(renderer: Renderer, vsync: i32) -> bool { return SDL_SetRenderVSync(renderer, vsync) }
+// The renderer's size in pixels (a window's on a high-density display
+// has more than its size says).
+GetRenderOutputSize :: fun(renderer: Renderer, w: ^i32, h: ^i32) -> bool { return SDL_GetRenderOutputSize(renderer, w, h) }
+// Drawing kept inside rect (ClearRenderClipRect: everywhere again).
+SetRenderClipRect :: fun(renderer: Renderer, rect: ^SDL_Rect) -> bool { return SDL_SetRenderClipRect(renderer, rect) }
+// Drawing everywhere again: no clip rect.
+ClearRenderClipRect :: fun(renderer: Renderer) -> bool { return SDL_SetRenderClipRect(renderer, void) }
+CreateTexture :: fun(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture { return SDL_CreateTexture(renderer, format, access, w, h) }
+// The pixels of the texture's rect, `pitch` bytes from a row to the next
+// (UpdateWholeTexture: all of it).
+UpdateTexture :: fun(texture: Texture, rect: ^SDL_Rect, pixels: []$T, pitch: i32) -> bool { return SDL_UpdateTexture(texture, rect, pixels.ptr, pitch) }
+// The whole texture's pixels, as UpdateTexture writes a rect's.
+UpdateWholeTexture :: fun(texture: Texture, pixels: []$T, pitch: i32) -> bool { return SDL_UpdateTexture(texture, void, pixels.ptr, pitch) }
+RenderTexture :: fun(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> bool { return SDL_RenderTexture(renderer, texture, src, dst) }
+SetTextureBlendMode :: fun(texture: Texture, mode: u32) -> bool { return SDL_SetTextureBlendMode(texture, mode) }
+// Each texel's color multiplied by this: white texels drawn in it.
+SetTextureColorMod :: fun(texture: Texture, r: u8, g: u8, b: u8) -> bool { return SDL_SetTextureColorMod(texture, r, g, b) }
+SetTextureScaleMode :: fun(texture: Texture, mode: i32) -> bool { return SDL_SetTextureScaleMode(texture, mode) }
+DestroyTexture :: fun(texture: Texture) { SDL_DestroyTexture(texture) }
+// The next event, waiting for it up to ms milliseconds: false when none came.
+WaitEventTimeout :: fun(event: ^Event, ms: i32) -> bool { return SDL_WaitEventTimeout(event, ms) }
+SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+SetWindowSize :: fun(window: Window, w: i32, h: i32) -> bool { return SDL_SetWindowSize(window, w, h) }
+// The display the window is on, and the part of it windows can use
+// (the taskbar's left out).
+GetDisplayForWindow :: fun(window: Window) -> u32 { return SDL_GetDisplayForWindow(window) }
+GetDisplayUsableBounds :: fun(display: u32, rect: ^SDL_Rect) -> bool { return SDL_GetDisplayUsableBounds(display, rect) }
+// The display's mode now: its refresh rate among it. (void: none.)
+GetCurrentDisplayMode :: fun(display: u32) -> ^Display_Mode { return SDL_GetCurrentDisplayMode(display) }
+// The modifier keys held now: KMOD_SHIFT, ...
+GetModState :: fun() -> u16 { return SDL_GetModState() }
+// Text put on the system's clipboard, for pasting anywhere.
+SetClipboardText :: fun(text: []utf8) -> bool { return SDL_SetClipboardText(cstring(text)) }
+// Where the cursor is on the screen (and the buttons held).
+GetGlobalMouseState :: fun(x: ^f32, y: ^f32) -> u32 { return SDL_GetGlobalMouseState(x, y) }
+// Where the window's inside is on the screen.
+GetWindowPosition :: fun(window: Window, x: ^i32, y: ^i32) -> bool { return SDL_GetWindowPosition(window, x, y) }
+// The window's state, WindowFlags' bits: Minimized, InputFocus, ...
+GetWindowFlags :: fun(window: Window) -> u64 { return SDL_GetWindowFlags(window) }
+// A minimized (or maximized) window back to its size and place.
+RestoreWindow :: fun(window: Window) -> bool { return SDL_RestoreWindow(window) }
+MaximizeWindow :: fun(window: Window) -> bool { return SDL_MaximizeWindow(window) }
+// The window in front of the others, given the keyboard.
+RaiseWindow :: fun(window: Window) -> bool { return SDL_RaiseWindow(window) }
+CreateSystemCursor :: fun(id: i32) -> Cursor { return SDL_CreateSystemCursor(id) }
+// The mouse cursor's look, over the windows of this program.
+SetCursor :: fun(cursor: Cursor) -> bool { return SDL_SetCursor(cursor) }
+GL_SetAttribute :: fun(attr: GLattr, value: i32) -> bool { return SDL_GL_SetAttribute(attr, value) }
+GL_CreateContext :: fun(window: Window) -> GLContext { return SDL_GL_CreateContext(window) }
+GL_MakeCurrent :: fun(window: Window, context: GLContext) -> bool { return SDL_GL_MakeCurrent(window, context) }
+GL_DestroyContext :: fun(context: GLContext) -> bool { return SDL_GL_DestroyContext(context) }
+GL_SetSwapInterval :: fun(interval: i32) -> bool { return SDL_GL_SetSwapInterval(interval) }
+GL_SwapWindow :: fun(window: Window) -> bool { return SDL_GL_SwapWindow(window) }
+GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
+GetTicks :: fun() -> u32 { return SDL_GetTicks() }
+GetTicksNS :: fun() -> u64 { return SDL_GetTicksNS() }
+GetPerformanceCounter :: fun() -> u64 { return SDL_GetPerformanceCounter() }
+GetPerformanceFrequency :: fun() -> u64 { return SDL_GetPerformanceFrequency() }
+DelayNS :: fun(ns: u64) { SDL_DelayNS(ns) }
+DelayPrecise :: fun(ns: u64) { SDL_DelayPrecise(ns) }
+GetError :: fun() -> []utf8 { return c_text(SDL_GetError()) }
+
+// Memory
+malloc :: fun(size: usize) -> ^byte { return SDL_malloc(size) }
+
+// Filesystem — IOStream
+IOFromFile :: fun(file: []utf8, mode: []utf8) -> IOStream { return SDL_IOFromFile(cstring(file), cstring(mode)) }
+CloseIO :: fun(context: IOStream) -> bool { return SDL_CloseIO(context) }
+// As much as `into` holds read into it from the stream: how many bytes
+// came (fewer at its end; 0, failing).
+ReadIO :: fun(context: IOStream, into: []$T) -> usize { return SDL_ReadIO(context, into.ptr, usize(into.len * size_of(T))) }
+// `data` written to the stream: how many bytes went.
+WriteIO :: fun(context: IOStream, data: []$T) -> usize { return SDL_WriteIO(context, data.ptr, usize(data.len * size_of(T))) }
+SeekIO :: fun(context: IOStream, offset: i64, whence: IOWhence) -> i64 { return SDL_SeekIO(context, offset, whence) }
+TellIO :: fun(context: IOStream) -> i64 { return SDL_TellIO(context) }
+GetIOSize :: fun(context: IOStream) -> i64 { return SDL_GetIOSize(context) }
+FlushIO :: fun(context: IOStream) -> bool { return SDL_FlushIO(context) }
+LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(cstring(file), datasize) }
+// `data` written to the file `file`, made new or over what it held.
+SaveFile :: fun(file: []utf8, data: []$T) -> bool { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
+
+// Filesystem — paths & metadata
+GetBasePath :: fun() -> []utf8 { return c_text(SDL_GetBasePath()) }
+GetPrefPath :: fun(org: []utf8, app: []utf8) -> []utf8 { return c_text(SDL_GetPrefPath(cstring(org), cstring(app))) }
+GetCurrentDirectory :: fun() -> []utf8 { return c_text(SDL_GetCurrentDirectory()) }
+CreateDirectory :: fun(path: []utf8) -> bool { return SDL_CreateDirectory(cstring(path)) }
+RemovePath :: fun(path: []utf8) -> bool { return SDL_RemovePath(cstring(path)) }
+RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
+CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
+GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }

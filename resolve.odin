@@ -83,6 +83,7 @@ Rs_Module :: struct {
     variants: map[string]Ref,   // its enums' variants: what `m.X` reaches past its definitions
     dispatches: map[string][dynamic]Token_Id,   // its dispatch groups, by name (one name's join)
     overloads: [dynamic]Rs_Overload,            // its `overload op name`s, in order
+    c_funs:   map[string]bool,   // its files' foreign funs: each file's own, said when called from past it
 }
 
 @(private="file")
@@ -367,10 +368,11 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
                 r.defs[t.main[value]] = s
             }
         case .Foreign:
-            for ff in foreign_view(t, s).funs {
-                name := foreign_fun_view(t, ff).name
-                def(r, into, rs_text(name), {name, .Fun})
-            }
+            // (A foreign block lends its funs to the scope it's in, as a
+            // `use` does its module's: a body's, or at a module's top its
+            // file's (rs_file_foreign) — never the module's table, which
+            // the modules that use it see.)
+            if into == nil { rs_define_foreign(r, s) }
         case .Using:
             // (`using x :: …`: as written without it.)
             inner := Tree_Id(t.a[s])
@@ -396,6 +398,15 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
                 changed = true
             }
         }
+    }
+}
+
+// A foreign block's funs, in sight in the current scope.
+@(private="file")
+rs_define_foreign :: proc(r: ^Resolver, s: Tree_Id) {
+    for ff in foreign_view(r.t, s).funs {
+        name := foreign_fun_view(r.t, ff).name
+        rs_define(r, rs_text(name), {name, .Fun})
     }
 }
 
@@ -469,6 +480,12 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Rs_Module {
     r.modules[name] = m
     for f in m.files { rs_each_def(r, tree_list(r.t, r.t.a[f]), &m.defs) }
     t := r.t
+    for f in m.files {
+        for s in rs_live(r, tree_list(t, t.a[f])) {
+            if t.tag[s] != .Foreign { continue }
+            for ff in foreign_view(t, s).funs { m.c_funs[rs_text(foreign_fun_view(t, ff).name)] = true }
+        }
+    }
     // (Its dispatch groups and its operators' overloads: what a call, an
     // operation, in sight of it chooses among.)
     for f in m.files {
@@ -614,6 +631,8 @@ rs_program :: proc(r: ^Resolver) {
                 r.named[tok] = used
                 rs_define(r, rs_text(tok), {tok, .Module})
             }
+            // (Its foreign blocks' funs, its own: rs_each_def.)
+            for s in stmts { if t.tag[s] == .Foreign { rs_define_foreign(r, s) } }
             for s in stmts { rs_stmt(r, s) }
             // (What it sees of the groups: its module's, then what it uses —
             // each once.)
@@ -628,6 +647,24 @@ rs_program :: proc(r: ^Resolver) {
         }
         rs_leave(r)
     }
+}
+
+// The module a file of which declares a foreign fun `name` — the module
+// `at` is in (another file of it), or one its file uses — when it's none
+// of `at`'s own file: a foreign block lends its names to its own scope
+// alone, so a call from here reaches nothing. "" for none.
+resolve_foreign_owner :: proc(r: ^Resolver, at: Token_Id, name: string) -> string {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return "" }
+    if sight.module.c_funs[name] { return sight.module.name }
+    for u in sight.uses { if u.c_funs[name] { return u.name } }
+    return ""
+}
+
+// Whether a file of the module `module` declares a foreign fun `name`.
+resolve_module_foreign :: proc(r: ^Resolver, module: string, name: string) -> bool {
+    m := r.modules[module] or_else nil
+    return m != nil && m.c_funs[name]
 }
 
 // The dispatch groups named `name` in sight where `at` is: its module's,

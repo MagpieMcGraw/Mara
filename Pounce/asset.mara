@@ -118,12 +118,12 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     // Allocate texture array on GPU
     gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
         a.texture_size, a.texture_size, ATLAS_LAYERS,
-        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
+        0, gl.RGBA, gl.UNSIGNED_BYTE, [])
 
     // White pixel at (0,0) layer 0 for default
     white := [4!]u8{255, 255, 255, 255}
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
-        gl.RGBA, gl.UNSIGNED_BYTE, &white)
+        gl.RGBA, gl.UNSIGNED_BYTE, white)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
     // Register default texture so it can be queried by name
@@ -141,7 +141,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
     gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
         a.font_texture_size, a.font_texture_size, MAX_FONTS,
-        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
+        0, gl.RGBA, gl.UNSIGNED_BYTE, [])
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
     load_font_test(a, fname)
@@ -162,7 +162,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0,
         0, 0, i32(a.fonts.len),
         this_font.size, this_font.size, 1,
-        gl.RGB, gl.UNSIGNED_BYTE, &pixels[0])
+        gl.RGB, gl.UNSIGNED_BYTE, pixels[0:pixels.cap])
     gl.GenerateMipmap(gl.TEXTURE_2D_ARRAY)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 

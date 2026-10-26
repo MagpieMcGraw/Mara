@@ -422,7 +422,7 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	else
 		draw_keys(ui, c)
 	}
-	_ = SetRenderClipRect(r, void)
+	_ = ClearRenderClipRect(r)
 }
 
 // The Ask panel: what's at the editor's cursor at its top (mara ask

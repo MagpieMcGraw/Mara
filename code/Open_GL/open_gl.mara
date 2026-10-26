@@ -296,38 +296,88 @@ GL_Get_Param :: union(tag u32) {
 // GL 1.1 functions — available directly from opengl32.lib (Windows)
 // ---------------------------------------------------------------------------
 
-foreign static_lib "opengl32" prefix gl {
-    fun Enable(cap: GL_Capability)
-    fun Disable(cap: GL_Capability)
-    fun Clear(mask: GL_Clear_Mask)
-    fun ClearColor(r: f32, g: f32, b: f32, a: f32)
-    fun Viewport(x: i32, y: i32, w: i32, h: i32)
-    fun BlendFunc(sfactor: GL_Blend_Factor, dfactor: GL_Blend_Factor)
-    fun CullFace(mode: GL_Face)
-    fun DepthMask(flag: u8)                                             // GLboolean
-    fun DrawArrays(mode: GL_Draw_Mode, first: i32, count: i32)
-    // `indices`: where in the bound element buffer the indices start, in
-    // bytes (GL's `const void*`, an offset when a buffer is bound).
-    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: usize)
-    fun BindTexture(target: GL_Texture_Target, texture: u32)
-    fun TexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
-    fun TexParameterf(target: GL_Texture_Target, pname: GL_Tex_Param, param: f32)
-    fun GetIntegerv(pname: GL_Get_Param, data: ^i32)                    // GLint* data
-    fun GetFloatv(pname: GL_Get_Param, data: ^f32)                      // GLfloat* data
-    fun GetError() -> u32
-    fun GenTextures(n: i32, textures: ^u32)                             // GLuint* textures
-    fun DeleteTextures(n: i32, textures: ^u32)                          // const GLuint* textures
-    fun TexImage2D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
-    fun DepthFunc(func: GL_Depth_Func)
-    fun PolygonMode(face: GL_Face, mode: GL_Polygon_Mode)
-    fun LineWidth(width: f32)
-    fun Scissor(x: i32, y: i32, width: i32, height: i32)
-    fun FrontFace(mode: GL_Winding)
-    fun ClearDepth(depth: f64)                                          // what Clear's DEPTH_BUFFER_BIT writes, 1 at first
-    fun ColorMask(r: u8, g: u8, b: u8, a: u8)                           // GLboolean each: which color channels draws write
-    fun DrawBuffer(buf: GL_Attachment)                                  // the bound framebuffer's one color output, or NONE
-    fun ReadBuffer(src: GL_Attachment)                                  // what reads and blits take from it
+// C's text at p, 0-ended, as Mara text: a view of C's memory, while C
+// keeps it there (none: empty).
+c_text :: fun(p: ^byte) -> []utf8 {
+    view : []utf8 = []
+    if p == void do return view
+    view = slice_from_ptr(p, 1 << 20)
+    for ch, i in view {
+        if ch == 0 do return view[:i]
+    }
+    return view
 }
+
+foreign static_lib "opengl32" {
+    fun glEnable(cap: GL_Capability)
+    fun glDisable(cap: GL_Capability)
+    fun glClear(mask: GL_Clear_Mask)
+    fun glClearColor(r: f32, g: f32, b: f32, a: f32)
+    fun glViewport(x: i32, y: i32, w: i32, h: i32)
+    fun glBlendFunc(sfactor: GL_Blend_Factor, dfactor: GL_Blend_Factor)
+    fun glCullFace(mode: GL_Face)
+    fun glDepthMask(flag: u8)                                            // GLboolean
+    fun glDrawArrays(mode: GL_Draw_Mode, first: i32, count: i32)
+    fun glDrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: usize)
+    fun glBindTexture(target: GL_Texture_Target, texture: u32)
+    fun glTexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
+    fun glTexParameterf(target: GL_Texture_Target, pname: GL_Tex_Param, param: f32)
+    fun glGetIntegerv(pname: GL_Get_Param, data: ^i32)                   // GLint* data
+    fun glGetFloatv(pname: GL_Get_Param, data: ^f32)                     // GLfloat* data
+    fun glGetError() -> u32
+    fun glGenTextures(n: i32, textures: ^u32)                            // GLuint* textures
+    fun glDeleteTextures(n: i32, textures: ^u32)                         // const GLuint* textures
+    fun glTexImage2D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun glDepthFunc(func: GL_Depth_Func)
+    fun glPolygonMode(face: GL_Face, mode: GL_Polygon_Mode)
+    fun glLineWidth(width: f32)
+    fun glScissor(x: i32, y: i32, width: i32, height: i32)
+    fun glFrontFace(mode: GL_Winding)
+    fun glClearDepth(depth: f64)                                         // what Clear's DEPTH_BUFFER_BIT writes, 1 at first
+    fun glColorMask(r: u8, g: u8, b: u8, a: u8)                          // GLboolean each: which color channels draws write
+    fun glDrawBuffer(buf: GL_Attachment)                                 // the bound framebuffer's one color output, or NONE
+    fun glReadBuffer(src: GL_Attachment)                                 // what reads and blits take from it
+}
+
+Enable :: fun(cap: GL_Capability) { glEnable(cap) }
+Disable :: fun(cap: GL_Capability) { glDisable(cap) }
+Clear :: fun(mask: GL_Clear_Mask) { glClear(mask) }
+ClearColor :: fun(r: f32, g: f32, b: f32, a: f32) { glClearColor(r, g, b, a) }
+Viewport :: fun(x: i32, y: i32, w: i32, h: i32) { glViewport(x, y, w, h) }
+BlendFunc :: fun(sfactor: GL_Blend_Factor, dfactor: GL_Blend_Factor) { glBlendFunc(sfactor, dfactor) }
+CullFace :: fun(mode: GL_Face) { glCullFace(mode) }
+DepthMask :: fun(flag: u8) { glDepthMask(flag) }
+DrawArrays :: fun(mode: GL_Draw_Mode, first: i32, count: i32) { glDrawArrays(mode, first, count) }
+// `indices`: where in the bound element buffer the indices start, in
+// bytes (GL's `const void*`, an offset when a buffer is bound).
+DrawElements :: fun(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: usize) { glDrawElements(mode, count, type, indices) }
+BindTexture :: fun(target: GL_Texture_Target, texture: u32) { glBindTexture(target, texture) }
+TexParameteri :: fun(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32) { glTexParameteri(target, pname, param) }
+TexParameterf :: fun(target: GL_Texture_Target, pname: GL_Tex_Param, param: f32) { glTexParameterf(target, pname, param) }
+GetIntegerv :: fun(pname: GL_Get_Param, data: ^i32) { glGetIntegerv(pname, data) }
+GetFloatv :: fun(pname: GL_Get_Param, data: ^f32) { glGetFloatv(pname, data) }
+GetError :: fun() -> u32 { return glGetError() }
+GenTextures :: fun(n: i32, textures: ^u32) { glGenTextures(n, textures) }
+DeleteTextures :: fun(n: i32, textures: ^u32) { glDeleteTextures(n, textures) }
+// A texture's image at `level`: `pixels`, as many as width x height
+// texels of `format` and `type` take — or none, `[]`: room to draw into or
+// to fill after (TexSubImage3D).
+TexImage2D :: fun(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: []$T) {
+    if pixels.len == 0 {
+        glTexImage2D(target, level, internalformat, width, height, border, format, type, void)
+        return
+    }
+    glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels.ptr)
+}
+DepthFunc :: fun(func: GL_Depth_Func) { glDepthFunc(func) }
+PolygonMode :: fun(face: GL_Face, mode: GL_Polygon_Mode) { glPolygonMode(face, mode) }
+LineWidth :: fun(width: f32) { glLineWidth(width) }
+Scissor :: fun(x: i32, y: i32, width: i32, height: i32) { glScissor(x, y, width, height) }
+FrontFace :: fun(mode: GL_Winding) { glFrontFace(mode) }
+ClearDepth :: fun(depth: f64) { glClearDepth(depth) }
+ColorMask :: fun(r: u8, g: u8, b: u8, a: u8) { glColorMask(r, g, b, a) }
+DrawBuffer :: fun(buf: GL_Attachment) { glDrawBuffer(buf) }
+ReadBuffer :: fun(src: GL_Attachment) { glReadBuffer(src) }
 
 // ---------------------------------------------------------------------------
 // Modern GL functions (3.0+) — loaded at runtime via open_gl.c.
@@ -337,138 +387,268 @@ foreign static_lib "opengl32" prefix gl {
 // then on: after a change to open_gl.c, delete open_gl.lib so the next
 // build compiles it again.
 // gl_load takes the platform's proc-address function as a parameter, so
-// open_gl.c has no link-time dependency on a specific windowing lib.
+// open_gl.c has no link-time dependency on a specific windowing lib. Each
+// foreign block is this file's own: the module's names are the Mara funs
+// after it, which call it.
 // ---------------------------------------------------------------------------
 
-// Loader — no prefix (custom C function, not an OpenGL symbol).
-// `get_proc` is the platform's `void *(name)` proc-address function,
-// e.g. sdl.GL_GetProcAddress. Structural function-type so any module
-// (SDL2, SDL3, GLFW, …) with a matching-shaped function can satisfy it.
+// open_gl.c's own: its table of the functions it loads (gl_load), and its
+// helpers.
 foreign static_lib "open_gl" {
-    fun gl_load(get_proc: fun(cstring) -> ^byte)
-    // Convenience: compile a shader from a single source string.
-    // Returns shader id on success, 0 on failure (error printed to stdout).
-    fun gl_compile_shader(type: GL_Shader_Type, src: cstring) -> u32
-    // Convenience: link vertex+fragment shaders into a program.
-    // Returns program id on success, 0 on failure (error printed to stdout).
-    fun gl_link_program(vs: u32, fs: u32) -> u32
-    // 1 when the driver has the extension `name`, else 0:
-    // `gl.gl_has_extension("GL_ARB_bindless_texture")`. Asked after gl_load.
-    fun gl_has_extension(name: cstring) -> u8
+    fun mara_gl_proc_count() -> i32
+    fun mara_gl_proc_name(i: i32) -> ^byte
+    fun mara_gl_proc_set(i: i32, address: ^byte)
+    fun mara_gl_compile_shader(type: GL_Shader_Type, src: cstring) -> u32
+    fun mara_gl_link_program(vs: u32, fs: u32) -> u32
+    fun mara_gl_has_extension(name: cstring) -> u8
 }
 
-foreign static_lib "open_gl" prefix gl {
-    // Shaders
-    fun CreateShader(type: GL_Shader_Type) -> u32
-    fun ShaderSource(shader: u32, count: i32, strings: ^^utf8, lengths: ^i32)
-    fun CompileShader(shader: u32)
-    fun DeleteShader(shader: u32)
-
-    // Programs
-    fun CreateProgram() -> u32
-    fun AttachShader(program: u32, shader: u32)
-    fun LinkProgram(program: u32)
-    fun DeleteProgram(program: u32)
-    fun UseProgram(program: u32)
-
-    // Uniforms
-    fun GetUniformLocation(program: u32, name: cstring) -> i32
-    fun Uniform1f(location: i32, v0: f32)
-    fun Uniform1i(location: i32, v0: i32)
-    fun Uniform2f(location: i32, v0: f32, v1: f32)
-    fun Uniform3f(location: i32, v0: f32, v1: f32, v2: f32)
-    fun UniformMatrix4fv(location: i32, count: i32, transpose: u8, value: ^f32)   // GLboolean transpose, const GLfloat* value
-
-    // VAOs
-    fun GenVertexArrays(n: i32, arrays: ^u32)                           // GLuint* arrays
-    fun BindVertexArray(array: u32)
-
-    // Buffers
-    fun GenBuffers(n: i32, buffers: ^u32)                               // GLuint* buffers
-    fun BindBuffer(target: GL_Buffer_Target, buffer: u32)
-    fun BufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr size, const void* data
-    fun BufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)         // GLintptr offset, GLsizeiptr size, const void* data
-    // A buffer at a shader's numbered binding (`binding = index`): a uniform
-    // or shader storage buffer.
-    fun BindBufferBase(target: GL_Buffer_Target, index: u32, buffer: u32)
-
-    // Vertex attributes
-    fun EnableVertexAttribArray(index: u32)
-    fun VertexAttribPointer(index: u32, size: i32, type: GL_Type, normalized: u8, stride: i32, pointer: usize)   // GLboolean normalized; pointer is uintptr_t cast (byte offset)
-    fun VertexAttribIPointer(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize)                  // pointer is byte offset
-    fun VertexAttribDivisor(index: u32, divisor: u32)
-
-    // Texture
-    fun ActiveTexture(texture: GL_Texture_Unit)
-    fun TexImage3D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, depth: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
-    fun TexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
-    fun GenerateMipmap(target: GL_Texture_Target)
-    // A block-compressed image as it is in the file: `size` bytes of `data`
-    // for one mip level of width x height.
-    fun CompressedTexImage2D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, border: i32, size: i32, data: ^byte)
-    // The same for a 2D array's mip level, all `depth` layers at once.
-    fun CompressedTexImage3D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, depth: i32, border: i32, size: i32, data: ^byte)
-    // Part of a mip level: `depth` layers from layer `zoffset`, as the file
-    // holds them — one layer at a time into storage TexStorage3D made.
-    fun CompressedTexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Compressed_Format, size: i32, data: ^byte)
-    // Room for a texture's `levels` mip levels, filled after (TexSubImage3D,
-    // CompressedTexSubImage3D). GL 4.2. The format is a sized one or a
-    // compressed one, as a number: `u32(gl.RGBA8)`, `u32(gl.RGBA_S3TC_DXT5)`.
-    fun TexStorage2D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32)
-    fun TexStorage3D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32, depth: i32)
-
-    // Shader info
-    fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^i32)           // GLint* params
-    fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)
-    fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^i32)
-    fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)   // GLchar* infoLog
-
-    // Shader management
-    fun DetachShader(program: u32, shader: u32)
-
-    // Cleanup
-    fun DeleteVertexArrays(n: i32, arrays: ^u32)                        // const GLuint* arrays
-    fun DeleteBuffers(n: i32, buffers: ^u32)                            // const GLuint* buffers
-
-    // Framebuffers (GL 3.0): draws go into the bound one's attachments —
-    // textures (FramebufferTexture2D; a 2D array's layer, a cube map's face)
-    // or renderbuffers, storage only drawn into (a depth buffer no shader
-    // reads). Framebuffer 0 is the window's. CheckFramebufferStatus says
-    // whether the bound one can be drawn into: FRAMEBUFFER_COMPLETE.
-    fun GenFramebuffers(n: i32, framebuffers: ^u32)                     // GLuint* framebuffers
-    fun DeleteFramebuffers(n: i32, framebuffers: ^u32)
-    fun BindFramebuffer(target: GL_Framebuffer_Target, framebuffer: u32)
-    fun FramebufferTexture2D(target: GL_Framebuffer_Target, attachment: GL_Attachment, textarget: GL_Texture_Target, texture: u32, level: i32)
-    fun FramebufferTextureLayer(target: GL_Framebuffer_Target, attachment: GL_Attachment, texture: u32, level: i32, layer: i32)
-    fun CheckFramebufferStatus(target: GL_Framebuffer_Target) -> u32    // a GL_Framebuffer_Status's value; 0: the call failed
-    fun GenRenderbuffers(n: i32, renderbuffers: ^u32)
-    fun DeleteRenderbuffers(n: i32, renderbuffers: ^u32)
-    fun BindRenderbuffer(target: GL_Renderbuffer_Target, renderbuffer: u32)
-    // The format a sized one, as a number: `u32(gl.DEPTH24_STENCIL8)`.
-    fun RenderbufferStorage(target: GL_Renderbuffer_Target, internalformat: u32, width: i32, height: i32)
-    fun FramebufferRenderbuffer(target: GL_Framebuffer_Target, attachment: GL_Attachment, renderbuffertarget: GL_Renderbuffer_Target, renderbuffer: u32)
-    // Which color attachment each of a shader's outputs writes: `n` of them
-    // at `bufs` (`layout(location = i) out` takes bufs[i]).
-    fun DrawBuffers(n: i32, bufs: ^GL_Attachment)
-    // The read framebuffer's rectangle copied into the draw one's, scaled:
-    // its color, depth or stencil (`mask`), filtered LINEAR or NEAREST
-    // (depth and stencil NEAREST only).
-    fun BlitFramebuffer(src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32, dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32, mask: GL_Clear_Mask, filter: GL_Tex_Filter)
-
-    // Bindless textures (ARB_bindless_texture, where gl_has_extension says
-    // so). A texture's handle, made resident, is read by any shader without
-    // binding it to a unit: handles go in a buffer or a uniform, and a
-    // shader with `#extension GL_ARB_bindless_texture : require` samples
-    // through them. A handle's texture can't change after (its parameters,
-    // its storage); make it non-resident before deleting the texture.
-    fun GetTextureHandleARB(texture: u32) -> u64
-    fun MakeTextureHandleResidentARB(handle: u64)
-    fun MakeTextureHandleNonResidentARB(handle: u64)
-    fun UniformHandleui64ARB(location: i32, value: u64)
-
-    // Multi-draw indirect
-    // `indirect`: where in the bound DRAW_INDIRECT_BUFFER the commands start,
-    // in bytes (GL's `const void*`, an offset), so one buffer holds every
-    // group's commands.
-    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32)
+// Loads the GL functions open_gl.c calls, once a GL context is current:
+// `get_proc` gives each one's address by its name (sdl.GL_GetProcAddress),
+// void for one the driver hasn't (an extension's: gl_has_extension).
+gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
+    for i in 0:mara_gl_proc_count() {
+        mara_gl_proc_set(i, get_proc(c_text(mara_gl_proc_name(i))))
+    }
 }
+// Convenience: compile a shader from a single source string.
+// Returns shader id on success, 0 on failure (error printed to stdout).
+gl_compile_shader :: fun(type: GL_Shader_Type, src: []utf8) -> u32 { return mara_gl_compile_shader(type, cstring(src)) }
+// Convenience: link vertex+fragment shaders into a program.
+// Returns program id on success, 0 on failure (error printed to stdout).
+gl_link_program :: fun(vs: u32, fs: u32) -> u32 { return mara_gl_link_program(vs, fs) }
+// 1 when the driver has the extension `name`, else 0:
+// `gl.gl_has_extension("GL_ARB_bindless_texture")`. Asked after gl_load.
+gl_has_extension :: fun(name: []utf8) -> u8 { return mara_gl_has_extension(cstring(name)) }
+
+foreign static_lib "open_gl" {
+    fun glCreateShader(type: GL_Shader_Type) -> u32
+    fun glShaderSource(shader: u32, count: i32, strings: ^^utf8, lengths: ^i32)
+    fun glCompileShader(shader: u32)
+    fun glDeleteShader(shader: u32)
+    fun glCreateProgram() -> u32
+    fun glAttachShader(program: u32, shader: u32)
+    fun glLinkProgram(program: u32)
+    fun glDeleteProgram(program: u32)
+    fun glUseProgram(program: u32)
+    fun glGetUniformLocation(program: u32, name: cstring) -> i32
+    fun glUniform1f(location: i32, v0: f32)
+    fun glUniform1i(location: i32, v0: i32)
+    fun glUniform2f(location: i32, v0: f32, v1: f32)
+    fun glUniform3f(location: i32, v0: f32, v1: f32, v2: f32)
+    fun glUniformMatrix4fv(location: i32, count: i32, transpose: u8, value: ^f32)   // GLboolean transpose, const GLfloat* value
+    fun glGenVertexArrays(n: i32, arrays: ^u32)                          // GLuint* arrays
+    fun glBindVertexArray(array: u32)
+    fun glGenBuffers(n: i32, buffers: ^u32)                              // GLuint* buffers
+    fun glBindBuffer(target: GL_Buffer_Target, buffer: u32)
+    fun glBufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr size, const void* data
+    fun glBufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)   // GLintptr offset, GLsizeiptr size, const void* data
+    fun glBindBufferBase(target: GL_Buffer_Target, index: u32, buffer: u32)
+    fun glEnableVertexAttribArray(index: u32)
+    fun glVertexAttribPointer(index: u32, size: i32, type: GL_Type, normalized: u8, stride: i32, pointer: usize)   // GLboolean normalized; pointer is uintptr_t cast (byte offset)
+    fun glVertexAttribIPointer(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize)   // pointer is byte offset
+    fun glVertexAttribDivisor(index: u32, divisor: u32)
+    fun glActiveTexture(texture: GL_Texture_Unit)
+    fun glTexImage3D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, depth: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun glTexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun glGenerateMipmap(target: GL_Texture_Target)
+    fun glCompressedTexImage2D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, border: i32, size: i32, data: ^byte)
+    fun glCompressedTexImage3D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, depth: i32, border: i32, size: i32, data: ^byte)
+    fun glCompressedTexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Compressed_Format, size: i32, data: ^byte)
+    fun glTexStorage2D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32)
+    fun glTexStorage3D(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32, depth: i32)
+    fun glGetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^i32)   // GLint* params
+    fun glGetShaderInfoLog(shader: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)
+    fun glGetProgramiv(program: u32, pname: GL_Shader_Param, params: ^i32)
+    fun glGetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)   // GLchar* infoLog
+    fun glDetachShader(program: u32, shader: u32)
+    fun glDeleteVertexArrays(n: i32, arrays: ^u32)                       // const GLuint* arrays
+    fun glDeleteBuffers(n: i32, buffers: ^u32)                           // const GLuint* buffers
+    fun glGenFramebuffers(n: i32, framebuffers: ^u32)                    // GLuint* framebuffers
+    fun glDeleteFramebuffers(n: i32, framebuffers: ^u32)
+    fun glBindFramebuffer(target: GL_Framebuffer_Target, framebuffer: u32)
+    fun glFramebufferTexture2D(target: GL_Framebuffer_Target, attachment: GL_Attachment, textarget: GL_Texture_Target, texture: u32, level: i32)
+    fun glFramebufferTextureLayer(target: GL_Framebuffer_Target, attachment: GL_Attachment, texture: u32, level: i32, layer: i32)
+    fun glCheckFramebufferStatus(target: GL_Framebuffer_Target) -> u32   // a GL_Framebuffer_Status's value; 0: the call failed
+    fun glGenRenderbuffers(n: i32, renderbuffers: ^u32)
+    fun glDeleteRenderbuffers(n: i32, renderbuffers: ^u32)
+    fun glBindRenderbuffer(target: GL_Renderbuffer_Target, renderbuffer: u32)
+    fun glRenderbufferStorage(target: GL_Renderbuffer_Target, internalformat: u32, width: i32, height: i32)
+    fun glFramebufferRenderbuffer(target: GL_Framebuffer_Target, attachment: GL_Attachment, renderbuffertarget: GL_Renderbuffer_Target, renderbuffer: u32)
+    fun glDrawBuffers(n: i32, bufs: ^GL_Attachment)
+    fun glBlitFramebuffer(src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32, dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32, mask: GL_Clear_Mask, filter: GL_Tex_Filter)
+    fun glGetTextureHandleARB(texture: u32) -> u64
+    fun glMakeTextureHandleResidentARB(handle: u64)
+    fun glMakeTextureHandleNonResidentARB(handle: u64)
+    fun glUniformHandleui64ARB(location: i32, value: u64)
+    fun glMultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32)
+}
+
+// Shaders
+CreateShader :: fun(type: GL_Shader_Type) -> u32 { return glCreateShader(type) }
+// A shader's source text, in place of what it had.
+ShaderSource :: fun(shader: u32, source: []utf8) {
+    text := source.ptr
+    n := i32(source.len)
+    glShaderSource(shader, 1, &text, &n)
+}
+CompileShader :: fun(shader: u32) { glCompileShader(shader) }
+DeleteShader :: fun(shader: u32) { glDeleteShader(shader) }
+
+// Programs
+CreateProgram :: fun() -> u32 { return glCreateProgram() }
+AttachShader :: fun(program: u32, shader: u32) { glAttachShader(program, shader) }
+LinkProgram :: fun(program: u32) { glLinkProgram(program) }
+DeleteProgram :: fun(program: u32) { glDeleteProgram(program) }
+UseProgram :: fun(program: u32) { glUseProgram(program) }
+
+// Uniforms
+GetUniformLocation :: fun(program: u32, name: []utf8) -> i32 { return glGetUniformLocation(program, cstring(name)) }
+Uniform1f :: fun(location: i32, v0: f32) { glUniform1f(location, v0) }
+Uniform1i :: fun(location: i32, v0: i32) { glUniform1i(location, v0) }
+Uniform2f :: fun(location: i32, v0: f32, v1: f32) { glUniform2f(location, v0, v1) }
+Uniform3f :: fun(location: i32, v0: f32, v1: f32, v2: f32) { glUniform3f(location, v0, v1, v2) }
+UniformMatrix4fv :: fun(location: i32, count: i32, transpose: u8, value: ^f32) { glUniformMatrix4fv(location, count, transpose, value) }
+
+// VAOs
+GenVertexArrays :: fun(n: i32, arrays: ^u32) { glGenVertexArrays(n, arrays) }
+BindVertexArray :: fun(array: u32) { glBindVertexArray(array) }
+
+// Buffers
+GenBuffers :: fun(n: i32, buffers: ^u32) { glGenBuffers(n, buffers) }
+BindBuffer :: fun(target: GL_Buffer_Target, buffer: u32) { glBindBuffer(target, buffer) }
+// Room for `size` bytes in the bound buffer: `data`'s first size bytes
+// copied in — or none, `[]`, to write after (BufferSubData). Past what
+// data holds, the program stops.
+BufferData :: fun(target: GL_Buffer_Target, size: isize, data: []$T, usage: GL_Buffer_Usage) {
+    if data.len == 0 {
+        glBufferData(target, size, void, usage)
+        return
+    }
+    assert(size <= isize(data.len) * isize(size_of(T)))
+    glBufferData(target, size, data.ptr, usage)
+}
+// `data` written into the bound buffer from byte `offset` on.
+BufferSubData :: fun(target: GL_Buffer_Target, offset: isize, data: []$T) {
+    glBufferSubData(target, offset, isize(data.len) * isize(size_of(T)), data.ptr)
+}
+// A buffer at a shader's numbered binding (`binding = index`): a uniform
+// or shader storage buffer.
+BindBufferBase :: fun(target: GL_Buffer_Target, index: u32, buffer: u32) { glBindBufferBase(target, index, buffer) }
+
+// Vertex attributes
+EnableVertexAttribArray :: fun(index: u32) { glEnableVertexAttribArray(index) }
+VertexAttribPointer :: fun(index: u32, size: i32, type: GL_Type, normalized: u8, stride: i32, pointer: usize) { glVertexAttribPointer(index, size, type, normalized, stride, pointer) }
+VertexAttribIPointer :: fun(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize) { glVertexAttribIPointer(index, size, type, stride, pointer) }
+VertexAttribDivisor :: fun(index: u32, divisor: u32) { glVertexAttribDivisor(index, divisor) }
+
+// Texture
+ActiveTexture :: fun(texture: GL_Texture_Unit) { glActiveTexture(texture) }
+// A 2D array's (or a 3D texture's) image at `level`, all `depth` layers:
+// `pixels`, or none, `[]` (TexImage2D).
+TexImage3D :: fun(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, depth: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: []$T) {
+    if pixels.len == 0 {
+        glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, void)
+        return
+    }
+    glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixels.ptr)
+}
+// Part of a texture's image at `level`: width x height x depth texels from
+// (xoffset, yoffset, zoffset), `pixels` holding them.
+TexSubImage3D :: fun(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Tex_Format, type: GL_Type, pixels: []$T) {
+    glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels.ptr)
+}
+GenerateMipmap :: fun(target: GL_Texture_Target) { glGenerateMipmap(target) }
+// A block-compressed image as it is in the file: `size` bytes of `data`
+// for one mip level of width x height.
+// A block-compressed image as it is in the file: `data`, one mip level
+// of width x height.
+CompressedTexImage2D :: fun(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, border: i32, data: []$T) {
+    glCompressedTexImage2D(target, level, internalformat, width, height, border, i32(data.len * size_of(T)), data.ptr)
+}
+// The same for a 2D array's mip level, all `depth` layers at once.
+// The same for a 2D array's mip level, all `depth` layers at once.
+CompressedTexImage3D :: fun(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, depth: i32, border: i32, data: []$T) {
+    glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, i32(data.len * size_of(T)), data.ptr)
+}
+// Part of a mip level: `depth` layers from layer `zoffset`, as the file
+// holds them — one layer at a time into storage TexStorage3D made.
+// Part of a mip level: `depth` layers from layer `zoffset`, as the file
+// holds them — one layer at a time into storage TexStorage3D made.
+CompressedTexSubImage3D :: fun(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Compressed_Format, data: []$T) {
+    glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, i32(data.len * size_of(T)), data.ptr)
+}
+// Room for a texture's `levels` mip levels, filled after (TexSubImage3D,
+// CompressedTexSubImage3D). GL 4.2. The format is a sized one or a
+// compressed one, as a number: `u32(gl.RGBA8)`, `u32(gl.RGBA_S3TC_DXT5)`.
+TexStorage2D :: fun(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32) { glTexStorage2D(target, levels, internalformat, width, height) }
+TexStorage3D :: fun(target: GL_Texture_Target, levels: i32, internalformat: u32, width: i32, height: i32, depth: i32) { glTexStorage3D(target, levels, internalformat, width, height, depth) }
+
+// Shader info
+GetShaderiv :: fun(shader: u32, pname: GL_Shader_Param, params: ^i32) { glGetShaderiv(shader, pname, params) }
+// The shader's log (its compile's, its link's) into `log`, as much as its
+// room holds; log.len its length.
+GetShaderInfoLog :: fun(shader: u32, log: ^[]utf8) {
+    n : i32 = 0
+    glGetShaderInfoLog(shader, i32(log.cap), &n, &log[0])
+    log.len = i64(n)
+}
+GetProgramiv :: fun(program: u32, pname: GL_Shader_Param, params: ^i32) { glGetProgramiv(program, pname, params) }
+// The program's log (its compile's, its link's) into `log`, as much as its
+// room holds; log.len its length.
+GetProgramInfoLog :: fun(program: u32, log: ^[]utf8) {
+    n : i32 = 0
+    glGetProgramInfoLog(program, i32(log.cap), &n, &log[0])
+    log.len = i64(n)
+}
+
+// Shader management
+DetachShader :: fun(program: u32, shader: u32) { glDetachShader(program, shader) }
+
+// Cleanup
+DeleteVertexArrays :: fun(n: i32, arrays: ^u32) { glDeleteVertexArrays(n, arrays) }
+DeleteBuffers :: fun(n: i32, buffers: ^u32) { glDeleteBuffers(n, buffers) }
+
+// Framebuffers (GL 3.0): draws go into the bound one's attachments —
+// textures (FramebufferTexture2D; a 2D array's layer, a cube map's face)
+// or renderbuffers, storage only drawn into (a depth buffer no shader
+// reads). Framebuffer 0 is the window's. CheckFramebufferStatus says
+// whether the bound one can be drawn into: FRAMEBUFFER_COMPLETE.
+GenFramebuffers :: fun(n: i32, framebuffers: ^u32) { glGenFramebuffers(n, framebuffers) }
+DeleteFramebuffers :: fun(n: i32, framebuffers: ^u32) { glDeleteFramebuffers(n, framebuffers) }
+BindFramebuffer :: fun(target: GL_Framebuffer_Target, framebuffer: u32) { glBindFramebuffer(target, framebuffer) }
+FramebufferTexture2D :: fun(target: GL_Framebuffer_Target, attachment: GL_Attachment, textarget: GL_Texture_Target, texture: u32, level: i32) { glFramebufferTexture2D(target, attachment, textarget, texture, level) }
+FramebufferTextureLayer :: fun(target: GL_Framebuffer_Target, attachment: GL_Attachment, texture: u32, level: i32, layer: i32) { glFramebufferTextureLayer(target, attachment, texture, level, layer) }
+CheckFramebufferStatus :: fun(target: GL_Framebuffer_Target) -> u32 { return glCheckFramebufferStatus(target) }
+GenRenderbuffers :: fun(n: i32, renderbuffers: ^u32) { glGenRenderbuffers(n, renderbuffers) }
+DeleteRenderbuffers :: fun(n: i32, renderbuffers: ^u32) { glDeleteRenderbuffers(n, renderbuffers) }
+BindRenderbuffer :: fun(target: GL_Renderbuffer_Target, renderbuffer: u32) { glBindRenderbuffer(target, renderbuffer) }
+// The format a sized one, as a number: `u32(gl.DEPTH24_STENCIL8)`.
+RenderbufferStorage :: fun(target: GL_Renderbuffer_Target, internalformat: u32, width: i32, height: i32) { glRenderbufferStorage(target, internalformat, width, height) }
+FramebufferRenderbuffer :: fun(target: GL_Framebuffer_Target, attachment: GL_Attachment, renderbuffertarget: GL_Renderbuffer_Target, renderbuffer: u32) { glFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) }
+// Which color attachment each of a shader's outputs writes: `n` of them
+// at `bufs` (`layout(location = i) out` takes bufs[i]).
+// Which color attachment each of a shader's outputs writes: `bufs[i]` for
+// `layout(location = i) out`.
+DrawBuffers :: fun(bufs: []GL_Attachment) { glDrawBuffers(i32(bufs.len), bufs.ptr) }
+// The read framebuffer's rectangle copied into the draw one's, scaled:
+// its color, depth or stencil (`mask`), filtered LINEAR or NEAREST
+// (depth and stencil NEAREST only).
+BlitFramebuffer :: fun(src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32, dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32, mask: GL_Clear_Mask, filter: GL_Tex_Filter) { glBlitFramebuffer(src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter) }
+
+// Bindless textures (ARB_bindless_texture, where gl_has_extension says
+// so). A texture's handle, made resident, is read by any shader without
+// binding it to a unit: handles go in a buffer or a uniform, and a
+// shader with `#extension GL_ARB_bindless_texture : require` samples
+// through them. A handle's texture can't change after (its parameters,
+// its storage); make it non-resident before deleting the texture.
+GetTextureHandleARB :: fun(texture: u32) -> u64 { return glGetTextureHandleARB(texture) }
+MakeTextureHandleResidentARB :: fun(handle: u64) { glMakeTextureHandleResidentARB(handle) }
+MakeTextureHandleNonResidentARB :: fun(handle: u64) { glMakeTextureHandleNonResidentARB(handle) }
+UniformHandleui64ARB :: fun(location: i32, value: u64) { glUniformHandleui64ARB(location, value) }
+
+// Multi-draw indirect
+// `indirect`: where in the bound DRAW_INDIRECT_BUFFER the commands start,
+// in bytes (GL's `const void*`, an offset), so one buffer holds every
+// group's commands.
+MultiDrawElementsIndirect :: fun(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32) { glMultiDrawElementsIndirect(mode, type, indirect, drawcount, stride) }

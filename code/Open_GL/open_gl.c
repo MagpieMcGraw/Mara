@@ -174,72 +174,80 @@ static PFN_glDeleteBuffers             _glDeleteBuffers;
 // proc-address function (typically SDL_GL_GetProcAddress) so this file has no
 // link-time dependency on a specific windowing library.
 // ---------------------------------------------------------------------------
-typedef void *(*GetProcAddressFn)(const char *);
+// The functions open_gl.c loads, each its name and its pointer. gl_load
+// (open_gl.mara's) asks the platform's proc-address function for each by
+// name once a context is current, and sets it here: NULL for one the
+// driver hasn't (an extension's, ARB_bindless_texture's: gl_has_extension).
+// ---------------------------------------------------------------------------
+typedef struct { const char *name; void **at; } Gl_Proc;
 
-void gl_load(GetProcAddressFn SDL_GL_GetProcAddress) {
-    _glCreateShader            = (PFN_glCreateShader)SDL_GL_GetProcAddress("glCreateShader");
-    _glShaderSource            = (PFN_glShaderSource)SDL_GL_GetProcAddress("glShaderSource");
-    _glCompileShader           = (PFN_glCompileShader)SDL_GL_GetProcAddress("glCompileShader");
-    _glDeleteShader            = (PFN_glDeleteShader)SDL_GL_GetProcAddress("glDeleteShader");
-    _glCreateProgram           = (PFN_glCreateProgram)SDL_GL_GetProcAddress("glCreateProgram");
-    _glAttachShader            = (PFN_glAttachShader)SDL_GL_GetProcAddress("glAttachShader");
-    _glLinkProgram             = (PFN_glLinkProgram)SDL_GL_GetProcAddress("glLinkProgram");
-    _glDeleteProgram           = (PFN_glDeleteProgram)SDL_GL_GetProcAddress("glDeleteProgram");
-    _glUseProgram              = (PFN_glUseProgram)SDL_GL_GetProcAddress("glUseProgram");
-    _glGetUniformLocation      = (PFN_glGetUniformLocation)SDL_GL_GetProcAddress("glGetUniformLocation");
-    _glUniform1f               = (PFN_glUniform1f)SDL_GL_GetProcAddress("glUniform1f");
-    _glUniform1i               = (PFN_glUniform1i)SDL_GL_GetProcAddress("glUniform1i");
-    _glUniform2f               = (PFN_glUniform2f)SDL_GL_GetProcAddress("glUniform2f");
-    _glUniform3f               = (PFN_glUniform3f)SDL_GL_GetProcAddress("glUniform3f");
-    _glUniformMatrix4fv        = (PFN_glUniformMatrix4fv)SDL_GL_GetProcAddress("glUniformMatrix4fv");
-    _glGenVertexArrays         = (PFN_glGenVertexArrays)SDL_GL_GetProcAddress("glGenVertexArrays");
-    _glBindVertexArray         = (PFN_glBindVertexArray)SDL_GL_GetProcAddress("glBindVertexArray");
-    _glGenBuffers              = (PFN_glGenBuffers)SDL_GL_GetProcAddress("glGenBuffers");
-    _glBindBuffer              = (PFN_glBindBuffer)SDL_GL_GetProcAddress("glBindBuffer");
-    _glBufferData              = (PFN_glBufferData)SDL_GL_GetProcAddress("glBufferData");
-    _glBufferSubData           = (PFN_glBufferSubData)SDL_GL_GetProcAddress("glBufferSubData");
-    _glEnableVertexAttribArray = (PFN_glEnableVertexAttribArray)SDL_GL_GetProcAddress("glEnableVertexAttribArray");
-    _glVertexAttribPointer     = (PFN_glVertexAttribPointer)SDL_GL_GetProcAddress("glVertexAttribPointer");
-    _glVertexAttribIPointer    = (PFN_glVertexAttribIPointer)SDL_GL_GetProcAddress("glVertexAttribIPointer");
-    _glVertexAttribDivisor     = (PFN_glVertexAttribDivisor)SDL_GL_GetProcAddress("glVertexAttribDivisor");
-    _glActiveTexture           = (PFN_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
-    _glTexImage3D              = (PFN_glTexImage3D)SDL_GL_GetProcAddress("glTexImage3D");
-    _glTexSubImage3D           = (PFN_glTexSubImage3D)SDL_GL_GetProcAddress("glTexSubImage3D");
-    _glGenerateMipmap          = (PFN_glGenerateMipmap)SDL_GL_GetProcAddress("glGenerateMipmap");
-    _glCompressedTexImage2D    = (PFN_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
-    _glCompressedTexImage3D    = (PFN_glCompressedTexImage3D)SDL_GL_GetProcAddress("glCompressedTexImage3D");
-    _glCompressedTexSubImage3D = (PFN_glCompressedTexSubImage3D)SDL_GL_GetProcAddress("glCompressedTexSubImage3D");
-    _glTexStorage2D            = (PFN_glTexStorage2D)SDL_GL_GetProcAddress("glTexStorage2D");
-    _glTexStorage3D            = (PFN_glTexStorage3D)SDL_GL_GetProcAddress("glTexStorage3D");
-    _glBindBufferBase          = (PFN_glBindBufferBase)SDL_GL_GetProcAddress("glBindBufferBase");
-    _glGetStringi              = (PFN_glGetStringi)SDL_GL_GetProcAddress("glGetStringi");
-    // (ARB_bindless_texture: NULL where the driver hasn't it — gl_has_extension says.)
-    _glGetTextureHandleARB     = (PFN_glGetTextureHandleARB)SDL_GL_GetProcAddress("glGetTextureHandleARB");
-    _glMakeTextureHandleResidentARB    = (PFN_glMakeTextureHandleResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleResidentARB");
-    _glMakeTextureHandleNonResidentARB = (PFN_glMakeTextureHandleNonResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleNonResidentARB");
-    _glUniformHandleui64ARB    = (PFN_glUniformHandleui64ARB)SDL_GL_GetProcAddress("glUniformHandleui64ARB");
-    _glGenFramebuffers          = (PFN_glGenFramebuffers)SDL_GL_GetProcAddress("glGenFramebuffers");
-    _glDeleteFramebuffers       = (PFN_glDeleteFramebuffers)SDL_GL_GetProcAddress("glDeleteFramebuffers");
-    _glBindFramebuffer          = (PFN_glBindFramebuffer)SDL_GL_GetProcAddress("glBindFramebuffer");
-    _glFramebufferTexture2D     = (PFN_glFramebufferTexture2D)SDL_GL_GetProcAddress("glFramebufferTexture2D");
-    _glFramebufferTextureLayer  = (PFN_glFramebufferTextureLayer)SDL_GL_GetProcAddress("glFramebufferTextureLayer");
-    _glCheckFramebufferStatus   = (PFN_glCheckFramebufferStatus)SDL_GL_GetProcAddress("glCheckFramebufferStatus");
-    _glGenRenderbuffers         = (PFN_glGenRenderbuffers)SDL_GL_GetProcAddress("glGenRenderbuffers");
-    _glDeleteRenderbuffers      = (PFN_glDeleteRenderbuffers)SDL_GL_GetProcAddress("glDeleteRenderbuffers");
-    _glBindRenderbuffer         = (PFN_glBindRenderbuffer)SDL_GL_GetProcAddress("glBindRenderbuffer");
-    _glRenderbufferStorage      = (PFN_glRenderbufferStorage)SDL_GL_GetProcAddress("glRenderbufferStorage");
-    _glFramebufferRenderbuffer  = (PFN_glFramebufferRenderbuffer)SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
-    _glDrawBuffers              = (PFN_glDrawBuffers)SDL_GL_GetProcAddress("glDrawBuffers");
-    _glBlitFramebuffer          = (PFN_glBlitFramebuffer)SDL_GL_GetProcAddress("glBlitFramebuffer");
-    _glGetShaderiv             = (PFN_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
-    _glGetShaderInfoLog        = (PFN_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog");
-    _glGetProgramiv            = (PFN_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
-    _glGetProgramInfoLog       = (PFN_glGetProgramInfoLog)SDL_GL_GetProcAddress("glGetProgramInfoLog");
-    _glMultiDrawElementsIndirect = (PFN_glMultiDrawElementsIndirect)SDL_GL_GetProcAddress("glMultiDrawElementsIndirect");
-    _glDetachShader              = (PFN_glDetachShader)SDL_GL_GetProcAddress("glDetachShader");
-    _glDeleteVertexArrays        = (PFN_glDeleteVertexArrays)SDL_GL_GetProcAddress("glDeleteVertexArrays");
-    _glDeleteBuffers             = (PFN_glDeleteBuffers)SDL_GL_GetProcAddress("glDeleteBuffers");
-}
+static Gl_Proc gl_procs[] = {
+    {"glCreateShader",                    (void **)&_glCreateShader},
+    {"glShaderSource",                    (void **)&_glShaderSource},
+    {"glCompileShader",                   (void **)&_glCompileShader},
+    {"glDeleteShader",                    (void **)&_glDeleteShader},
+    {"glCreateProgram",                   (void **)&_glCreateProgram},
+    {"glAttachShader",                    (void **)&_glAttachShader},
+    {"glLinkProgram",                     (void **)&_glLinkProgram},
+    {"glDeleteProgram",                   (void **)&_glDeleteProgram},
+    {"glUseProgram",                      (void **)&_glUseProgram},
+    {"glGetUniformLocation",              (void **)&_glGetUniformLocation},
+    {"glUniform1f",                       (void **)&_glUniform1f},
+    {"glUniform1i",                       (void **)&_glUniform1i},
+    {"glUniform2f",                       (void **)&_glUniform2f},
+    {"glUniform3f",                       (void **)&_glUniform3f},
+    {"glUniformMatrix4fv",                (void **)&_glUniformMatrix4fv},
+    {"glGenVertexArrays",                 (void **)&_glGenVertexArrays},
+    {"glBindVertexArray",                 (void **)&_glBindVertexArray},
+    {"glGenBuffers",                      (void **)&_glGenBuffers},
+    {"glBindBuffer",                      (void **)&_glBindBuffer},
+    {"glBufferData",                      (void **)&_glBufferData},
+    {"glBufferSubData",                   (void **)&_glBufferSubData},
+    {"glEnableVertexAttribArray",         (void **)&_glEnableVertexAttribArray},
+    {"glVertexAttribPointer",             (void **)&_glVertexAttribPointer},
+    {"glVertexAttribIPointer",            (void **)&_glVertexAttribIPointer},
+    {"glVertexAttribDivisor",             (void **)&_glVertexAttribDivisor},
+    {"glActiveTexture",                   (void **)&_glActiveTexture},
+    {"glTexImage3D",                      (void **)&_glTexImage3D},
+    {"glTexSubImage3D",                   (void **)&_glTexSubImage3D},
+    {"glGenerateMipmap",                  (void **)&_glGenerateMipmap},
+    {"glCompressedTexImage2D",            (void **)&_glCompressedTexImage2D},
+    {"glCompressedTexImage3D",            (void **)&_glCompressedTexImage3D},
+    {"glCompressedTexSubImage3D",         (void **)&_glCompressedTexSubImage3D},
+    {"glTexStorage2D",                    (void **)&_glTexStorage2D},
+    {"glTexStorage3D",                    (void **)&_glTexStorage3D},
+    {"glBindBufferBase",                  (void **)&_glBindBufferBase},
+    {"glGetStringi",                      (void **)&_glGetStringi},
+    {"glGetTextureHandleARB",             (void **)&_glGetTextureHandleARB},
+    {"glMakeTextureHandleResidentARB",    (void **)&_glMakeTextureHandleResidentARB},
+    {"glMakeTextureHandleNonResidentARB", (void **)&_glMakeTextureHandleNonResidentARB},
+    {"glUniformHandleui64ARB",            (void **)&_glUniformHandleui64ARB},
+    {"glGenFramebuffers",                 (void **)&_glGenFramebuffers},
+    {"glDeleteFramebuffers",              (void **)&_glDeleteFramebuffers},
+    {"glBindFramebuffer",                 (void **)&_glBindFramebuffer},
+    {"glFramebufferTexture2D",            (void **)&_glFramebufferTexture2D},
+    {"glFramebufferTextureLayer",         (void **)&_glFramebufferTextureLayer},
+    {"glCheckFramebufferStatus",          (void **)&_glCheckFramebufferStatus},
+    {"glGenRenderbuffers",                (void **)&_glGenRenderbuffers},
+    {"glDeleteRenderbuffers",             (void **)&_glDeleteRenderbuffers},
+    {"glBindRenderbuffer",                (void **)&_glBindRenderbuffer},
+    {"glRenderbufferStorage",             (void **)&_glRenderbufferStorage},
+    {"glFramebufferRenderbuffer",         (void **)&_glFramebufferRenderbuffer},
+    {"glDrawBuffers",                     (void **)&_glDrawBuffers},
+    {"glBlitFramebuffer",                 (void **)&_glBlitFramebuffer},
+    {"glGetShaderiv",                     (void **)&_glGetShaderiv},
+    {"glGetShaderInfoLog",                (void **)&_glGetShaderInfoLog},
+    {"glGetProgramiv",                    (void **)&_glGetProgramiv},
+    {"glGetProgramInfoLog",               (void **)&_glGetProgramInfoLog},
+    {"glMultiDrawElementsIndirect",       (void **)&_glMultiDrawElementsIndirect},
+    {"glDetachShader",                    (void **)&_glDetachShader},
+    {"glDeleteVertexArrays",              (void **)&_glDeleteVertexArrays},
+    {"glDeleteBuffers",                   (void **)&_glDeleteBuffers},
+};
+
+int         mara_gl_proc_count(void)              { return (int)(sizeof(gl_procs) / sizeof(gl_procs[0])); }
+const char *mara_gl_proc_name(int i)              { return gl_procs[i].name; }
+void        mara_gl_proc_set(int i, void *address) { *gl_procs[i].at = address; }
 
 // ---------------------------------------------------------------------------
 // Wrapper functions — these are real function symbols that LLVM IR can call
@@ -350,7 +358,7 @@ extern void glGetIntegerv(GLenum pname, GLint *data);   // GL 1.1, opengl32
 // 1 when the context's driver has the extension `name`
 // ("GL_ARB_bindless_texture"), else 0: its functions are there to call only
 // then. Asks GL for its extensions one at a time (GL 3.0).
-GLboolean gl_has_extension(const char *name) {
+GLboolean mara_gl_has_extension(const char *name) {
     if (!_glGetStringi) return 0;
     GLint count = 0;
     glGetIntegerv(GL_NUM_EXTENSIONS, &count);
@@ -364,7 +372,7 @@ GLboolean gl_has_extension(const char *name) {
     return 0;
 }
 
-GLuint gl_compile_shader(GLenum type, const char *src) {
+GLuint mara_gl_compile_shader(GLenum type, const char *src) {
     GLuint shader = _glCreateShader(type);
     const char *sources[1] = { src };
     _glShaderSource(shader, 1, sources, NULL);
@@ -381,7 +389,7 @@ GLuint gl_compile_shader(GLenum type, const char *src) {
     return shader;
 }
 
-GLuint gl_link_program(GLuint vs, GLuint fs) {
+GLuint mara_gl_link_program(GLuint vs, GLuint fs) {
     GLuint program = _glCreateProgram();
     _glAttachShader(program, vs);
     _glAttachShader(program, fs);

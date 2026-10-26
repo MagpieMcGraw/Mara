@@ -183,24 +183,48 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         tc_unsupported(k, n, "a generic struct's construction")
         return Type_Error{}
     }
-    arg_types := make([dynamic]Type, context.temp_allocator)
-    for a in args { append(&arg_types, tc_arg(k, a)) }
+    // (`[]` given a generic slice param, `[]$T`, is checked after the rest:
+    // a slice of what they bind T to, else of bytes — it holds none, as a
+    // binding's `data: []$T` given no data.)
+    empty :: proc(k: ^TC, a: Tree_Id) -> bool {
+        m := tc_unparen(k, a)
+        return k.t.tag[m] == .Array && k.t.a[m] == 0
+    }
+    arg_types := make([dynamic]Type, len(args), context.temp_allocator)
+    for a, i in args { if !empty(k, a) { arg_types[i] = tc_arg(k, a) } }
     params := tc_generic_params(k, tmpl.node)
     subst: TC_Bindings
     for p in params { subst[p] = nil }
     v := scope_view(tr, tmpl.node)
-    i := 0
+    param_types := make([dynamic]Tree_Id, context.temp_allocator)
     for g in v.params {
         pv := params_view(tr, g)
-        for _ in pv.names {
-            if i < len(arg_types) {
-                k.infer_at = tree_span(tr, args[i])
-                tc_infer(k, &subst, pv.type_, arg_types[i])
-                k.infer_at = {}
-            }
-            i += 1
+        for _ in pv.names { append(&param_types, pv.type_) }
+    }
+    for pt, i in param_types {
+        if i < len(arg_types) && arg_types[i] != nil {
+            k.infer_at = tree_span(tr, args[i])
+            tc_infer(k, &subst, pt, arg_types[i])
+            k.infer_at = {}
         }
     }
+    for a, i in args {
+        if arg_types[i] != nil { continue }
+        saved := k.hint
+        if i < len(param_types) && tr.tag[param_types[i]] == .Type_Slice {
+            if decl := tc_type_param_named(k, Tree_Id(tr.b[param_types[i]])); decl != 0 && decl in subst {
+                k.hint = type_slice(subst[decl] if subst[decl] != nil else Type_Byte{})
+            }
+        }
+        arg_types[i] = tc_arg(k, a)
+        k.hint = saved
+        if i < len(param_types) {
+            k.infer_at = tree_span(tr, a)
+            tc_infer(k, &subst, param_types[i], arg_types[i])
+            k.infer_at = {}
+        }
+    }
+    i := 0
     for p in params {
         if subst[p] == nil {
             // (A param taking a pointer, given a value: nothing bound from it

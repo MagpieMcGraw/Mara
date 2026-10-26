@@ -1,0 +1,13 @@
+module foreign_private_qualified_neg
+
+//@ expect-fail: 'glEnable' is a C function mara.open_gl declares, seen only in the file that declares it
+
+// Named through the module, a C fun is out of reach too
+// (foreign_private_neg): `gl.Enable` is the one to call.
+
+use mara.core
+gl :: use mara.open_gl
+
+main :: fun() {
+	gl.glEnable(gl.BLEND)
+}

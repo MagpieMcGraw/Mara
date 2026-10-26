@@ -53,13 +53,19 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
+                } else if tmpl, is_template := tc_template(k, mref); mref.kind == .Fun && is_template && k.t.tag[tmpl.node] == .Fun_Def {
+                    return tc_generic_call(k, n, name, tmpl, args)   // (`gl.BufferData(…, data)`: a generic fun a module has)
                 } else if et := tc_held_enum(mt); has && mref.kind == .Type && et != nil {
                     return tc_enum_number(k, n, name, et, args)   // (`gl.GL_Tex_Param(n)`)
                 } else if has && mref.kind == .Type {
                     qual, resolved = tc_held_type(k, n, mt), true
                     failed = qual == nil
                 } else if sd_is_module(qsd) {
-                    tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
+                    if resolve_module_foreign(k.rs, qsd.name, name) {
+                        tc_error(k, span, TYPE_FOREIGN_FUN_PRIVATE, name, scope_display_name(qsd))
+                    } else {
+                        tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
+                    }
                     return Type_Error{}
                 }
             } else if qsd := as_scope_body(qt); qsd != nil {

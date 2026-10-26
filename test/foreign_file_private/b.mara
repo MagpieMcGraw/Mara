@@ -1,0 +1,8 @@
+module foreign_file_private
+
+//@ expect-fail: 'abs' is a C function foreign_file_private declares, seen only in the file that declares it
+
+// a.mara's foreign block is a.mara's: another file of its module reaches
+// its C fun only through the Mara fun that wraps it (`magnitude`).
+
+twice :: fun(x: i32) -> i32 { return abs(x) * 2 }

@@ -595,15 +595,23 @@ Place :: struct { x: f32  y: f32 }
 // A `foreign static_lib "<library>" { … }` block lists C's functions with
 // Mara types; calls to them go straight to the library. `prefix SDL_` after
 // the library's name lets the functions go without it: `Init` for SDL_Init.
-// The standard library's os.mara and the SDL and OpenGL bindings in code/
-// are made of these. Text goes to C as a cstring.
+// Like a `use`, the block lends its names to the scope it's in — at a
+// module's top, its file — and no further: another file, or a module that
+// uses it, sees none of them, so a variable elsewhere may take one's name.
+// A module gives what C does as Mara functions that call it, taking Mara's
+// types: text as []utf8 (made a cstring where C is called), data as a
+// slice (`[]` for none, where C takes NULL). The standard library's
+// os.mara and the SDL and OpenGL bindings in code/ are made so.
 example_foreign :: fun() {
-	// From code/os.mara:
+	// From code/SDL/sdl.mara:
 	//
-	//     foreign static_lib "kernel32" {
-	//         fun Sleep(ms: u32)
-	//         fun GetLastError() -> u32
+	//     foreign static_lib "SDL3" {
+	//         fun SDL_Delay(ms: u32)
+	//         fun SDL_SetWindowTitle(window: Window, title: cstring) -> bool
 	//     }
+	//
+	//     Delay :: fun(ms: u32) { SDL_Delay(ms) }
+	//     SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
 }
 
 // ---- built-ins ------------------------------------------------------------------

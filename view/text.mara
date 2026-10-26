@@ -60,7 +60,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -
 	}
 	if t.texture != void do DestroyTexture(t.texture)
 	t.texture = CreateTexture(renderer, PIXELFORMAT_RGBA32, TEXTUREACCESS_STATIC, ATLAS, ATLAS)
-	_ = UpdateTexture(t.texture, void, &rgba[0], ATLAS * 4)
+	_ = UpdateWholeTexture(t.texture, rgba[0:rgba.cap], ATLAS * 4)
 	_ = SetTextureBlendMode(t.texture, BLENDMODE_BLEND)
 	_ = SetTextureScaleMode(t.texture, SCALEMODE_NEAREST)
 	t.ascent = ceil_f32(t.metrics.ascent)
