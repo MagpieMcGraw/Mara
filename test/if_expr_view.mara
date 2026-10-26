@@ -1,0 +1,28 @@
+module if_expr_view
+
+//@ expect-output: given: data.bsa
+//@ expect-output: none: (default)
+//@ expect-output: other way: (default) 9
+//@ expect-output: a list: abc
+
+// `if c do a else b` where one branch is a view and the other text, or a
+// list: the if is the view's type, and the other branch is viewed, as an
+// argument is (it failed to build once: "an if's branch viewed").
+
+use mara.core
+
+pick :: fun(args: [][]utf8, at: i64) -> []utf8 {
+	return if args.len > at do args[at] else "(default)"
+}
+
+main :: fun() {
+	given : [2!][]utf8 = ["sooblivion", "data.bsa"]
+	print("given:", pick(given[:], 1))
+	print("none:", pick(given[:], 5))
+	name := if given.len > 9 do given[0] else "(default)"
+	print("other way:", name, name.len)
+	letters : str64
+	&letters + "abc"
+	chosen := if given.len > 1 do letters[:] else given[0]
+	print("a list:", chosen)
+}

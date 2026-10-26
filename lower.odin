@@ -1367,8 +1367,16 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
         if lw_may_fill_prefix(k, branch) && lw_fills_prefix(k, branch, t) {
             graph_build_zero_var(b, slot, t, span)
         }
-        r := lw_expr(k, branch, .Into, dest = graph_dest_var(slot, nil))
         types[i] = tc_node_type(k, branch)
+        // (A branch the if's type views — a text literal beside a view, `if c
+        // do args[2] else "none"`: viewed, as an argument is.)
+        if view_kind(t, types[i]) != .None {
+            r := lw_expr(k, branch, .Either, w)
+            graph_build_write_at(b, graph_var(b, slot, nil, span), lw_value_as(k, branch, types[i], r, t, span, {to = t}), span)
+            types[i] = t
+            continue
+        }
+        r := lw_expr(k, branch, .Into, dest = graph_dest_var(slot, nil))
         if r.into { continue }
         if lw_builds_into(k, branch) || tc_byte_index(k, branch) { lw_fail(k, branch, "an if's branch built in place, or of bytes") }
         val := graph_build_widen(b, lw_value(k, r, branch, types[i]), span, {to = t})
