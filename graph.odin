@@ -1989,7 +1989,7 @@ graph_elem_type :: proc(t: Type) -> Type {
 
 // `?` after its call is built: a branch on the call's err — its failure
 // returns the err — then the call's value, where it didn't fail.
-graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand) -> Operand {
+graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand, passed: ^Type_Scope = nil, site := u32(0)) -> Operand {
     outs := graph_outputs_op(b, inner, span)
     n := graph_outputs(b, outs)
     if n == 0 { graph_fatal(span, "`?` on a call with no err output") }
@@ -2002,6 +2002,11 @@ graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand) -> Operan
     rts := graph_result_types(b)
     vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
     for i in 0 ..< len(rts) - 1 { append(&vals, graph_const(b, .Implied, span, rts[i], "zero", Const_Value{})) }
+    // (Where it passes the err on: its trace's next site — err_passed.)
+    if passed != nil && site != 0 {
+        s := graph_const(b, .Synthetic, span, Type_Atom{}, "site", Const_Value{int = i128(site) - 1})
+        err = Operand{graph_call_op(b, .Call, .Implied, span, passed, Type_Err{}, err, s), 0}
+    }
     append(&vals, err)
     graph_exit_scopes(b, 0, span, failing = true)
     graph_op(b, .Return, .Implied, span, nil, "", ..vals[:])

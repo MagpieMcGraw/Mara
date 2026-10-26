@@ -753,7 +753,11 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
         r := lw_expr(k, val, .Either, dest = use, temp_span = at)
         if is_partial_array(want) && !text == built_is_text_constant(b, r) { lw_fail(k, val, "a text constant, or not one, other than lowering found") }
         if !text {
-            append(&vals, lw_value_as(k, val, vt, r, want, span, {to = want}, held))
+            v := lw_value_as(k, val, vt, r, want, span, {to = want}, held)
+            // (An err passed on by hand, `return 0, e`: its site added to its
+            // trace — tc_note_err_pass.)
+            if site := lw_err_pass(k, val, returned = true); site != 0 { v = lw_err_passed(k, v, site, span) }
+            append(&vals, v)
         } else {
             lw_store(k, val, vt, r, graph_dest_var(slot, want), span)
             append(&vals, graph_read(b, graph_var(b, slot, want, span), want, span))
@@ -1060,7 +1064,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         if want == .Place { return {} }
         r := lw_expr(k, Tree_Id(t.a[n]), .Value, w)
         if !r.ok { return {} }
-        return {v = graph_try_after(b, span, r.v), ok = true}
+        return {v = graph_try_after(b, span, r.v, k.checked.err_passed, lw_err_pass(k, n)), ok = true}
     }
     lw_unsupported(k, n, "this expression")
 }

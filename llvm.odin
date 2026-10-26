@@ -2601,7 +2601,8 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
         if fn, is_from_number := callee.origin.(Origin_From_Number); is_from_number { return llvm_from_number(e, op, ops, callee, fn.enum_) }
-        if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_, vt.where_) }
+        if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_) }
+        if er, is_err := callee.origin.(Origin_Err_Runtime); is_err { return llvm_err_runtime(e, op, ops, callee, er.which) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn(g, callee.name)
     }
@@ -2768,14 +2769,13 @@ llvm_from_number :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
 // atoms were made as the program was checked (tc_text_fun,
 // atoms_for_err_text): found here, none made.
 @(private="file")
-llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum, where_ := false) -> bool {
+llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
     g := e.g
     if len(ops) != 1 { e.note = "text()'s value"; return false }
     pt := fn_param(callee, 0).type_
     v := llvm_operand(e, ops[0], pt) or_return
     ty, atom_ty := llvm_type_from_checker(pt), llvm_type_from_checker(fn_result(callee, 0))
     atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
-    if where_ { return llvm_err_where(e, op, v, ty, atom_ty, atom(g, "")) }
     if err_kinded(pt) { v = llvm_err_kind(e, v, ty) }   // (its name is its kind's)
     Case :: struct { value: int, text: string }
     cases := make([dynamic]Case, 0, 16, context.temp_allocator)
@@ -2840,23 +2840,50 @@ llvm_err_kind :: proc(e: ^Llvm, v: Val, ty: Ir_Type) -> Val {
     return kind
 }
 
-// `e.where()`: where the err was made, its high 32 bits — the site's atom
-// + 1 (tc_note_err_site) — as the atom; none (Ok): `none`, the "" atom.
+// An err's trace (Origin_Err_Runtime), where it's called: runtime/mara_err.c
+// does it — an err made (its trace begun), passed on (a site added), where
+// it was made, its sites copied into a list (e.trace(): ERR_TRACE_SITES at
+// most). On the web, with no runtime linked, an err is its kind alone: no
+// trace, where() "", trace() empty.
 @(private="file")
-llvm_err_where :: proc(e: ^Llvm, op: Node_Id, v: Val, ty, atom_ty: Ir_Type, none: Val) -> bool {
+llvm_err_runtime :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, which: Err_Runtime) -> bool {
     g := e.g
-    if v.kind == .Int {
-        site := v.n >> 32
-        e.value[op] = ir_int128(site - 1) if site != 0 else none
-        return true
+    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
+    if len(ops) != len(callee.params) { e.note = "an err's trace's arguments"; return false }
+    v := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    switch which {
+    case .Made, .Passed:
+        site := llvm_operand(e, ops[1], fn_param(callee, 1).type_) or_return
+        if g.web {
+            e.value[op] = v
+            return true
+        }
+        r := fresh_tmp(g)
+        ir_call(g, r, IR_I64, ir_global("__mara_err_made" if which == .Made else "__mara_err_passed"), {IR_I64, v, {}}, {IR_I32, site, {}})
+        e.value[op] = r
+    case .Where:
+        if g.web {
+            e.value[op] = atom(g, "")
+            return true
+        }
+        r := fresh_tmp(g)
+        ir_call(g, r, IR_I32, ir_global("__mara_err_where"), {IR_I64, v, {}}, {IR_I32, atom(g, ""), {}}, {IR_I32, atom(g, "?"), {}})
+        e.value[op] = r
+    case .Trace:
+        lt := fn_result(callee, 0)
+        ty := llvm_type_from_checker(lt)
+        at := llvm_temporary(e, {op, 0}, lt, as_local = true)
+        len_at, elems := fresh_tmp(g), fresh_tmp(g)
+        ir_gep(g, len_at, ty, at, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(0), {}})
+        ir_gep(g, elems, ty, at, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(1), {}})
+        n := ir_int(0)
+        if !g.web {
+            n = fresh_tmp(g)
+            ir_call(g, n, IR_I64, ir_global("__mara_err_trace"), {IR_I64, v, {}}, {IR_PTR, elems, {}})
+        }
+        emit_store(g, SLICE_LEN_IR, n, len_at)
+        e.value[op] = at
     }
-    high, site, has, id, r := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
-    ir_bin(g, high, .Lshr, ty, v, ir_int(32))
-    ir_cast(g, site, .Trunc, ty, high, atom_ty)
-    ir_icmp(g, has, .Ne, atom_ty, site, ir_int(0))
-    ir_bin(g, id, .Sub, atom_ty, site, ir_int(1))
-    ir_select(g, r, has, atom_ty, id, none)
-    e.value[op] = r
     return true
 }
 

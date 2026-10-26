@@ -13,7 +13,7 @@ use mara.core
 // err param, `e : err = Lost`). `?` passes it on as it is, so a caller up
 // the chain still sees where it began. It compares, prints and gives its
 // text by its kind alone; Ok is made nowhere (where() is ""). An err is 8
-// bytes: its kind low, its site's atom above it.
+// bytes: its kind low, its trace's id above it (err_trace: the way it came).
 
 Parse_Error :: error { Empty, Not_A_Digit }
 

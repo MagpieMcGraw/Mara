@@ -125,9 +125,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
             }
         }
         // (`m.text()`, `e.text()`: an enum's or an err's name; `e.where()`,
-        // where an err was made.)
-        if !resolved && (name == "text" || name == "where") && len(args) == 0 {
-            if ft := tc_text_fun(k, qt, name == "where"); ft != nil {
+        // where an err was made, `e.trace()` the way it came.)
+        if !resolved && (name == "text" || name == "where" || name == "trace") && len(args) == 0 {
+            if ft := tc_text_fun(k, qt, name); ft != nil {
                 qual, resolved = ft, true
                 k.annot.call_names[tc_sid(k, n)] = ft.name
                 args = tc_with_receiver(arg, args)
@@ -237,13 +237,17 @@ tc_from_number_fun :: proc(qt: Type, et: ^Type_Enum, pt: Type) -> ^Type_Scope {
 // are made now, in a fixed order, so their ids are the same each build: an
 // enum's here, an open err's — any error set's — once all are checked
 // (atoms_for_err_text). nil: x is neither.
-tc_text_fun :: proc(k: ^TC, qt: Type, where_ := false) -> ^Type_Scope {
+tc_text_fun :: proc(k: ^TC, qt: Type, method: string) -> ^Type_Scope {
     et, is_enum := distinct_base(qt).(^Type_Enum)
     _, is_err := distinct_base(qt).(Type_Err)
-    if !is_enum && !is_err || where_ && !is_err { return nil }
+    if !is_enum && !is_err || method != "text" && !is_err { return nil }
     checked_atom(k.checked, "?")
-    if where_ {
-        checked_atom(k.checked, "")   // (an err made nowhere: Ok)
+    if method != "text" {
+        // (An err's trace's: its first site, its sites — runtime/mara_err.c.)
+        checked_atom(k.checked, "")   // (an err with no trace: Ok)
+        which: Err_Runtime = .Where if method == "where" else .Trace
+        result: Type = Type_Atom{} if which == .Where else type_partial_array(ERR_TRACE_SITES, Type_Atom{})
+        return err_runtime_fun(which, method, {{name = "err", type_ = qt}}, result)
     } else if is_err {
         k.checked.err_text = true
     } else {
@@ -255,11 +259,11 @@ tc_text_fun :: proc(k: ^TC, qt: Type, where_ := false) -> ^Type_Scope {
     ft := new(Type_Scope)
     ft.kind = .Fun
     ft.home_package = et.home_package if is_enum else k.pkg
-    ft.name = strings.concatenate({type_name(qt), ".where" if where_ else ".text"})
-    ft.source_name = "where" if where_ else "text"
+    ft.name = strings.concatenate({type_name(qt), ".text"})
+    ft.source_name = "text"
     append(&ft.params, Struct_Type_Field{name = "value", type_ = qt})
     append(&ft.return_types, Type_Atom{})
-    ft.origin = Origin_Variant_Text{enum_ = et if is_enum else nil, where_ = where_}
+    ft.origin = Origin_Variant_Text{enum_ = et if is_enum else nil}
     return ft
 }
 

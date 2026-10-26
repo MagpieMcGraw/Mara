@@ -93,7 +93,7 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             if !r.ok { lw_fail(k, v, "a `?` on no call built") }
             graph_retype(b, r.v.op, nil)
             at := lw_at(k, v)   // (the `?`'s branch and return: its)
-            mr.call = graph_try_after(b, tree_span(t, v), r.v)
+            mr.call = graph_try_after(b, tree_span(t, v), r.v, k.checked.err_passed, lw_err_pass(k, v))
             b.at = at
         }
     } else {

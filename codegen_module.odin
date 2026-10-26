@@ -865,6 +865,11 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
         strings.write_string(&b, "declare void @__mara_crash_end()\n")
         strings.write_string(&b, "declare void @__mara_crash_install()\n")
+        // An err's trace, runtime/mara_err.c: linked into every native build.
+        strings.write_string(&b, "declare i64 @__mara_err_made(i64, i32)\n")
+        strings.write_string(&b, "declare i64 @__mara_err_passed(i64, i32)\n")
+        strings.write_string(&b, "declare i32 @__mara_err_where(i64, i32, i32)\n")
+        strings.write_string(&b, "declare i64 @__mara_err_trace(i64, ptr)\n")
     }
     if g.profile != "" {
         // The profiler, runtime/mara_prof.c: linked into a -profile time build.

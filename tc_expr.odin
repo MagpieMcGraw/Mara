@@ -38,9 +38,22 @@ tc_note_err_site :: proc(k: ^TC, n: Tree_Id, t: Type, hint: Type) {
     case:            return
     }
     if value, has := et.variants[name]; !has || value == 0 { return }
-    place := span_location(tree_span(tr, n))
-    text := fmt.tprintf("%s in %s", place, scope_display_name(k.body)) if k.body != nil else place
-    k.annot.err_sites[tc_sid(k, n)] = checked_atom(k.checked, text) + 1
+    k.annot.err_sites[tc_sid(k, n)] = checked_atom(k.checked, tc_err_place(k, n)) + 1
+}
+
+// Where an err is passed on — a `?` (n the `?`), a `return …, e` of one
+// made before (n the value; `returned`) — noted as an atom, for lowering to
+// add to its trace (lw_err_pass). Apart: `return f()?` is both a `?` and a
+// value, one that isn't the err.
+tc_note_err_pass :: proc(k: ^TC, n: Tree_Id, returned := false) {
+    site := checked_atom(k.checked, tc_err_place(k, n)) + 1
+    if returned { k.annot.err_returns[tc_sid(k, n)] = site } else { k.annot.err_passes[tc_sid(k, n)] = site }
+}
+
+// A place in an err's trace: "lexer.mara:12:37 in digit".
+tc_err_place :: proc(k: ^TC, n: Tree_Id) -> string {
+    place := span_location(tree_span(k.t, n))
+    return fmt.tprintf("%s in %s", place, scope_display_name(k.body)) if k.body != nil else place
 }
 
 // An expression checked, used at `t` (tc_settle).
@@ -908,7 +921,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     // (No source, and called: a foreign fun, an enum's from_text.)
     _, from_text := ft.origin.(Origin_From_Text)
     _, variant_text := ft.origin.(Origin_Variant_Text)
-    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text {
+    _, err_runtime := ft.origin.(Origin_Err_Runtime)
+    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }
@@ -1520,6 +1534,7 @@ tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_error(k, span, TYPE_TRY_REQUIRES_ERR_RETURN)
         return Type_Error{}
     }
+    tc_note_err_pass(k, n)   // (where it passes a failure on: its trace's next site)
     if rts := tc_results(k); k.in_defer {
         tc_error(k, span, TYPE_TRY_IN_DEFER)   // (its value still typed: no errors after it)
     } else if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {

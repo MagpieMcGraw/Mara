@@ -441,6 +441,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.table = table
     checked := new(Checked_Program)
     checked.table = table
+    checked.err_made = err_runtime_fun(.Made, "err_made", {{name = "kind", type_ = Type_Err{}}, {name = "site", type_ = Type_Atom{}}}, Type_Err{})
+    checked.err_passed = err_runtime_fun(.Passed, "err_passed", {{name = "err", type_ = Type_Err{}}, {name = "site", type_ = Type_Atom{}}}, Type_Err{})
     checked.target_os = target_os
     checked.main_package = main_package
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
@@ -1117,6 +1119,18 @@ checked_atom :: proc(checked: ^Checked_Program, text: string) -> u32 {
     return id
 }
 
+// One of an err's trace's funs (Origin_Err_Runtime): no body — its code is
+// the call's, the runtime's (llvm_err_runtime).
+err_runtime_fun :: proc(which: Err_Runtime, name: string, params: []Struct_Type_Field, result: Type) -> ^Type_Scope {
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.name, ft.source_name = name, name
+    append(&ft.params, ..params)
+    append(&ft.return_types, result)
+    ft.origin = Origin_Err_Runtime{which = which}
+    return ft
+}
+
 // An err's text(), asked for somewhere: every error set's variants' names
 // (and Ok) made atoms now that all are checked — in their values' order,
 // the same each build — for codegen to find (llvm_variant_text).
@@ -1216,6 +1230,10 @@ Checked_Program :: struct {
     atom_ids:       map[string]u32,
     atoms_lock:     sync.Mutex,
     err_text:       bool,   // an err's text() asked for: every error set's names made atoms (atoms_for_err_text)
+    // The funs lowering calls where an err is made and passed on, its trace's
+    // (runtime/mara_err.c): made once, here.
+    err_made:       ^Type_Scope,
+    err_passed:     ^Type_Scope,
 
     // Its names (design/name_resolution.md): the resolver's, and what each
     // declaration meant once the check was done (checked_binding) — mara

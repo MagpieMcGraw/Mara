@@ -398,12 +398,15 @@ example_union :: fun() {
 // fails; reaching its end or `return n` succeeds (the err is Ok). The caller
 // must look at the err — `if e`, true when it failed — or pass it on with
 // `?`. `e.text()` is its name as text, `Parse_Error.Not_A_Digit`: an atom,
-// to go in a file or a window's title. An err remembers where it was made
-// — the return, the err param, the `e : err = …` that made it of a
-// variant — and `?` passes that on: `e.where()`, "lexer.mara:12:30 in
-// digit" ("" for Ok). It compares by its kind alone, and `match e` picks
-// its arm by it: `Not_A_Digit`, `Ok`, or `Parse_Error.Empty` where two
-// sets have the name, with an else for the rest. See errors.mara.
+// to go in a file or a window's title. An err remembers the way it came:
+// where it was made — the return, the err param, the `e : err = …` that
+// made it of a variant — then each `?` or `return …, e` that passed it on.
+// `e.where()` is the first, "lexer.mara:12:30 in digit" ("" for Ok);
+// `e.trace()` all of them, a list of atoms (16 at most: the first and the
+// last; the newest 64 errs keep theirs). It compares by its kind alone,
+// and `match e` picks its arm by it: `Not_A_Digit`, `Ok`, or
+// `Parse_Error.Empty` where two sets have the name, with an else for the
+// rest. See errors.mara.
 example_error :: fun() {
 	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {

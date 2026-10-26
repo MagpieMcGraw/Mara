@@ -33,7 +33,9 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     t, is_member, known, known_ok := lw_field_is(k, n)
     if known_ok {
         if want == .Place { return {} }
-        return {v = graph_const(b, w, span, t, field, Const_Value{int = known | lw_err_site(k, n)}), ok = true}
+        v := graph_const(b, w, span, t, field, Const_Value{int = known})
+        if site := lw_err_site(k, n); site != 0 { v = lw_err_made(k, v, site, w, span) }
+        return {v = v, ok = true}
     }
     if fun, is_fun := t.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun {
         if want == .Place { return {} }
@@ -95,25 +97,48 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want
 // A variant by itself (`.Circle`, `Shape.Circle`): a union's, constructed;
 // an enum's, its value.
 lw_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span, want: Build_Want, w: Written,
-                      dest: Dest, temp: bool, temp_span: Span, site := i128(0)) -> Built {
+                      dest: Dest, temp: bool, temp_span: Span, site := u32(0)) -> Built {
     // (A named one's — `type U`, `distinct E` — as its base's.)
     tb := distinct_base(t)
     if ut, is_union := tb.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
     return lw_enum_value(k, tb.(^Type_Enum), lw_variant_value(t, name), name, span, want, w, site)
 }
 
-// An error's variant's site, where it makes an err (tc_note_err_site): its
-// atom + 1, above the kind's 32 bits. 0: none.
-lw_err_site :: proc(k: ^TC, n: Tree_Id) -> i128 {
-    if site, ok := k.annot.err_sites[tc_sid(k, n)]; ok { return i128(site) << 32 }
-    return 0
+// Where an error's variant makes an err (tc_note_err_site): its site's
+// atom + 1. 0: none — it makes none there.
+lw_err_site :: proc(k: ^TC, n: Tree_Id) -> u32 {
+    return k.annot.err_sites[tc_sid(k, n)] or_else 0
 }
 
-// An enum's variant, as a value: its tag, known (an error's, with where it
-// makes an err above it: `site`, lw_err_site).
-lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written, site := i128(0)) -> Built {
+// Where an err is passed on (tc_note_err_pass): its site's atom + 1, or 0 —
+// a `?`'s, or (`returned`) an err value returned's.
+lw_err_pass :: proc(k: ^TC, n: Tree_Id, returned := false) -> u32 {
+    if returned { return k.annot.err_returns[tc_sid(k, n)] or_else 0 }
+    return k.annot.err_passes[tc_sid(k, n)] or_else 0
+}
+
+// An err made of a kind at a site (its atom + 1): its trace begun —
+// err_made, runtime/mara_err.c.
+lw_err_made :: proc(k: ^TC, kind: Operand, site: u32, w: Written, span: Span) -> Operand {
+    b := k.gb
+    s := graph_const(b, .Synthetic, span, Type_Atom{}, "site", Const_Value{int = i128(site) - 1})
+    return {graph_call_op(b, .Call, w, span, k.checked.err_made, Type_Err{}, kind, s), 0}
+}
+
+// An err passed on at a site (its atom + 1): the site added to its trace.
+lw_err_passed :: proc(k: ^TC, e: Operand, site: u32, span: Span) -> Operand {
+    b := k.gb
+    s := graph_const(b, .Synthetic, span, Type_Atom{}, "site", Const_Value{int = i128(site) - 1})
+    return {graph_call_op(b, .Call, .Implied, span, k.checked.err_passed, Type_Err{}, e, s), 0}
+}
+
+// An enum's variant, as a value: its tag, known (an error's, where it makes
+// an err — `site`, lw_err_site — that err, its trace begun).
+lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written, site := u32(0)) -> Built {
     if want == .None || want == .Place { return {} }
-    return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value) | site}), ok = true}
+    v := graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value)})
+    if site != 0 { v = lw_err_made(k, v, site, w, span) }
+    return {v = v, ok = true}
 }
 
 // A union's variant as a value, `.Rect`: constructed where it goes — else in

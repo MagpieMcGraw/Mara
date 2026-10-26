@@ -635,6 +635,10 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
         want := rts[i]
         k.hint = want
         vt := lone if i == 0 && lone != nil else tc_check(k, val)
+        // (An err passed on by hand, `return 0, e`: its trace's next site.)
+        if _, to_err := distinct_base(want).(Type_Err); to_err {
+            if _, of_err := distinct_base(vt).(Type_Err); of_err { tc_note_err_pass(k, val, returned = true) }
+        }
         if tc_array_returned_as_slice(k, val, vt, want, span) { continue }
         if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
            !types_equal(want, vt) {

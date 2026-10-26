@@ -106,6 +106,8 @@ Annotations :: struct {
     receivers:  map[Syntax_Id]bool,          // a method call whose receiver is built as a value first
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
     err_sites:  map[Syntax_Id]u32,           // an error's variant made an err there: its site's atom + 1 (tc_note_err_site)
+    err_passes: map[Syntax_Id]u32,           // a `?` passing an err on: its site's atom + 1
+    err_returns: map[Syntax_Id]u32,          // an err value returned, `return …, e`: its site's atom + 1
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
     known:      map[Syntax_Id]Known_Value,   // a field whose value the checker knows: an enum's variant, an array's length, a text constant's; a generic's size param named as a value
@@ -267,6 +269,9 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                     }
                 case .Call, .Construct:
                     if want = graph_called(g, op); want == nil { continue }
+                    // (An err's trace's, lowering's own where an err is made
+                    // or passed on: no call written.)
+                    if er, err_trace := want.origin.(Origin_Err_Runtime); err_trace && (er.which == .Made || er.which == .Passed) { continue }
                 case:
                     continue
                 }

@@ -713,6 +713,7 @@ Function_Origin :: union {
     Origin_From_Text,
     Origin_From_Number,
     Origin_Variant_Text,
+    Origin_Err_Runtime,
 }
 
 Origin_Source :: struct {}
@@ -736,8 +737,20 @@ Origin_From_Number :: struct {
 
 Origin_Variant_Text :: struct {
     enum_: ^Type_Enum,                 // whose variants' names it gives; nil: an err's, of every error set
-    where_: bool,                      // e.where(): an err's site, its high 32 bits, instead
 }
+
+// An err's trace (runtime/mara_err.c): made where an error's variant becomes
+// an err, a site added where `?` or `return …, e` passes it on; e.where()
+// its first site, e.trace() all of them. An err's high 32 bits are its
+// trace's id.
+Origin_Err_Runtime :: struct {
+    which: Err_Runtime,
+}
+
+Err_Runtime :: enum u8 { Made, Passed, Where, Trace }
+
+// How many sites e.trace() gives at most (mara_err.c's MARA_ERR_SITES).
+ERR_TRACE_SITES :: 16
 
 // The error sets with a variant named `name` (sorted), and its value — an
 // err's kind — when one has it: what an arm of a match on an err names

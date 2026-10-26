@@ -730,6 +730,7 @@ compile_task_proc :: proc(t: thread.Task) {
 
 // A runtime file (runtime/<name>.c) a native build links: mara_crash, in
 // every one, so asserts and crash() can tee their message into crash.txt;
+// mara_err, in every one, for errs' traces;
 // mara_prof, in a -profile time build; mara_mem, in a -profile memory build.
 // Compiled once to a sibling .o and reused;
 // recompiled when the .c is newer (compiler update). runtime/ holds
@@ -770,6 +771,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
 
     runtimes := make([dynamic]string, context.temp_allocator)
     append(&runtimes, "mara_crash")
+    append(&runtimes, "mara_err")   // (an err's trace: e.where(), e.trace())
     if profile { append(&runtimes, "mara_prof") }
     if profile_memory { append(&runtimes, "mara_mem") }
     runtime_os := make([dynamic]string, context.temp_allocator)

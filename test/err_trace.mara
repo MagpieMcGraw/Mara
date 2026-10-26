@@ -1,0 +1,58 @@
+module err_trace
+
+use mara.core
+
+//@ expect-output: made: err_trace.mara:23:37 in digit
+//@ expect-output: 0: err_trace.mara:23:37 in digit
+//@ expect-output: 1: err_trace.mara:28:15 in twice
+//@ expect-output: 2: err_trace.mara:34:20 in by_hand
+//@ expect-output: ok: Ok 0 0
+//@ expect-output: deep: 16 err_trace.mara:23:37 in digit | err_trace.mara:40:23 in deep
+//@ expect-output: gone: ? 0 Parse_Error.Not_A_Digit
+
+// An err's trace: where it was made, then each `?` — or `return …, e` —
+// that passed it on: `e.trace()`, a list of atoms, `e.where()` its first.
+// Ok has none. Past 16 sites a trace keeps its first ones and its last; the
+// newest 64 errs keep theirs, an older one's trace is gone (where() "?",
+// trace() empty) — its kind, as ever, its own (runtime/mara_err.c). Before,
+// an err said only where it was made, deep in the call it failed in.
+
+Parse_Error :: error { Empty, Not_A_Digit }
+
+digit :: fun(c: utf8) -> i64, err {
+	if c < '0' or c > '9' do return 0, Not_A_Digit
+	return i64(c - '0'), Ok
+}
+
+twice :: fun(c: utf8) -> i64, err {
+	d := digit(c)?
+	return d * 2, Ok
+}
+
+by_hand :: fun(c: utf8) -> i64, err {
+	n, e := twice(c)
+	if e do return 0, e
+	return n, Ok
+}
+
+deep :: fun(levels: i64) -> i64, err {
+	if levels == 0 do return digit('x')
+	n := deep(levels - 1)?
+	return n, Ok
+}
+
+main :: fun() {
+	_, e := by_hand('x')
+	print("made:", e.where())
+	for site, i in e.trace() do print("%: %", i, site)
+	_, ok := by_hand('4')
+	none : []utf8 = ok.where()
+	print("ok:", ok, none.len, ok.trace().len)
+	_, d := deep(20)
+	sites := d.trace()
+	print("deep:", sites.len, sites[0], "|", sites[sites.len - 1])
+	// (64 newer errs take every slot of the ring: e's trace is gone.)
+	for _ in 0:64 { _, _ = digit('y') }
+	gone := e.trace()
+	print("gone:", e.where(), gone.len, e)
+}
