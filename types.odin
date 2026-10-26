@@ -1789,16 +1789,29 @@ solidify_type :: proc(t: Type) -> Type {
     if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
     if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
     // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
-    // needs a width — the elements' default.
-    if fa, ok := rt.(^Type_Fixed_Array); ok && is_infer(fa.elem) {
+    // needs a width — the elements' default; an array of such arrays
+    // (`[[4, 4], [16, 16]]`) too, at every depth.
+    if fa, ok := rt.(^Type_Fixed_Array); ok && has_open_elems(fa.elem) {
         return type_fixed_array(fa.size, solidify_type(fa.elem), fa.index_type)
     }
     // Text bound as itself: a list of its room.
     if pa, ok := rt.(^Type_Partial_Array); ok && pa.text != 0 { return type_partial_array(pa.size, solidify_type(pa.elem)) }
     // A slice or list of them (`[1, 2, 3][:]`): the same.
-    if s, ok := rt.(^Type_Slice); ok && is_infer(s.elem) { return type_slice(solidify_type(s.elem)) }
-    if pa, ok := rt.(^Type_Partial_Array); ok && is_infer(pa.elem) { return type_partial_array(pa.size, solidify_type(pa.elem)) }
+    if s, ok := rt.(^Type_Slice); ok && has_open_elems(s.elem) { return type_slice(solidify_type(s.elem)) }
+    if pa, ok := rt.(^Type_Partial_Array); ok && has_open_elems(pa.elem) { return type_partial_array(pa.size, solidify_type(pa.elem)) }
     return rt
+}
+
+// Whether a type is a width not decided yet, or an array (a slice, a list)
+// of such, at any depth: what solidify_type gives its default.
+has_open_elems :: proc(t: Type) -> bool {
+    if is_infer(t) { return true }
+    #partial switch v in resolve_infer(t) {
+    case ^Type_Fixed_Array:   return has_open_elems(v.elem)
+    case ^Type_Slice:         return has_open_elems(v.elem)
+    case ^Type_Partial_Array: return v.text == 0 && has_open_elems(v.elem)
+    }
+    return false
 }
 
 // ---------------------------------------------------------------------------

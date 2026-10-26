@@ -1,0 +1,44 @@
+module loop_nested_literal
+
+use mara.core
+
+//@ expect-output: points: 4 16
+//@ expect-output: structs: 2 4
+//@ expect-output: rows: 2.5 4.5
+//@ expect-output: grid: 3
+//@ expect-output: cubes: 4 8
+
+// A loop over a literal array of arrays (sooblivion's `for point in [[4, 4],
+// [16, 16]]`), or of struct literals: each element built where it goes, its
+// numbers at their default width at every depth. It failed to lower ("a
+// value built in place, taken as one", then "its local 'items'").
+
+Vec :: struct {
+	x: i64
+	y: i64
+}
+
+main :: fun() {
+	columns : [2!]i64
+	for point, i in [[4, 4], [16, 16]] {
+		columns[i] = point[0]
+	}
+	print("points:", columns[0], columns[1])
+	ys : [2!]i64
+	for v, i in [Vec{x = 1, y = 2}, Vec{x = 3, y = 4}] {
+		ys[i] = v.y
+	}
+	print("structs:", ys[0], ys[1])
+	seconds : [2!]f64
+	for row, i in [[1.5, 2.5], [3.5, 4.5]] {
+		seconds[i] = row[1]
+	}
+	print("rows:", seconds[0], seconds[1])
+	grid := [[1, 2], [3, 4]]
+	print("grid:", grid[1][0])
+	corners : [2!]i64
+	for cube, i in [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] {
+		corners[i] = cube[1][1]
+	}
+	print("cubes:", corners[0], corners[1])
+}

@@ -93,10 +93,17 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     if len(elems) == 0 {
         // (Nothing to store: what it is, its zero.)
     } else if ga.elem_t == nil {
-        r := lw_expr(k, elems[0], .Either)
         et := tc_node_type(k, elems[0])
         lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
-        lw_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span)
+        if lw_builds_into(k, elems[0]) {
+            // (An element built where it goes — an array, a struct literal:
+            // `for p in [[4, 4], [16, 16]]` — its slot first, at the type
+            // the checker gave it.)
+            lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, et, lit_t), span)
+        } else {
+            r := lw_expr(k, elems[0], .Either)
+            lw_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span)
+        }
     } else {
         lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, nil, nil), span)
     }
