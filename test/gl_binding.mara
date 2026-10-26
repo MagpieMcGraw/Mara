@@ -1,0 +1,31 @@
+module gl_binding
+
+use mara.core
+gl :: use mara.open_gl
+
+//@ expect-output: units: 33984 34015
+//@ expect-output: params: 33085 34046 34049 32882
+//@ expect-output: filters: 9985 9986 33648
+//@ expect-output: limits: 34930 34047
+
+// mara.open_gl's values, as GL numbers them, and its functions linked: a
+// call to each is built (not run — that needs a GL context) so a name
+// missing from opengl32 or open_gl.c stops the build.
+
+uses :: fun() {
+	gl.ActiveTexture(gl.TEXTURE31)
+	gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAX_LEVEL, 4)
+	gl.TexParameterf(gl.TEXTURE_2D, gl.TEXTURE_MAX_ANISOTROPY, 16.0)
+	units : i32 = 0
+	gl.GetIntegerv(gl.MAX_TEXTURE_IMAGE_UNITS, &units)
+	most : f32 = 0
+	gl.GetFloatv(gl.MAX_TEXTURE_MAX_ANISOTROPY, &most)
+}
+
+main :: fun(args: [][]utf8) {
+	print("units:", u32(gl.TEXTURE0), u32(gl.TEXTURE31))
+	print("params:", u32(gl.TEXTURE_MAX_LEVEL), u32(gl.TEXTURE_MAX_ANISOTROPY), u32(gl.TEXTURE_LOD_BIAS), u32(gl.TEXTURE_WRAP_R))
+	print("filters:", u32(gl.LINEAR_MIPMAP_NEAREST), u32(gl.NEAREST_MIPMAP_LINEAR), u32(gl.MIRRORED_REPEAT))
+	print("limits:", u32(gl.MAX_TEXTURE_IMAGE_UNITS), u32(gl.MAX_TEXTURE_MAX_ANISOTROPY))
+	if args.len > 100 do uses()
+}

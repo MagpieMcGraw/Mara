@@ -62,30 +62,77 @@ GL_Texture_Target :: union(tag u32) {
     TEXTURE_2D_ARRAY = 35866
 }
 
+// The texture units ActiveTexture picks, all 32 GL can name (a driver has
+// at least 16 for fragment shaders; GetIntegerv's MAX_TEXTURE_IMAGE_UNITS
+// says how many).
 GL_Texture_Unit :: union(tag u32) {
-    TEXTURE0 = 33984
-    TEXTURE1 = 33985
-    TEXTURE2 = 33986
-    TEXTURE3 = 33987
+    TEXTURE0  = 33984
+    TEXTURE1  = 33985
+    TEXTURE2  = 33986
+    TEXTURE3  = 33987
+    TEXTURE4  = 33988
+    TEXTURE5  = 33989
+    TEXTURE6  = 33990
+    TEXTURE7  = 33991
+    TEXTURE8  = 33992
+    TEXTURE9  = 33993
+    TEXTURE10 = 33994
+    TEXTURE11 = 33995
+    TEXTURE12 = 33996
+    TEXTURE13 = 33997
+    TEXTURE14 = 33998
+    TEXTURE15 = 33999
+    TEXTURE16 = 34000
+    TEXTURE17 = 34001
+    TEXTURE18 = 34002
+    TEXTURE19 = 34003
+    TEXTURE20 = 34004
+    TEXTURE21 = 34005
+    TEXTURE22 = 34006
+    TEXTURE23 = 34007
+    TEXTURE24 = 34008
+    TEXTURE25 = 34009
+    TEXTURE26 = 34010
+    TEXTURE27 = 34011
+    TEXTURE28 = 34012
+    TEXTURE29 = 34013
+    TEXTURE30 = 34014
+    TEXTURE31 = 34015
 }
 
+// TexParameteri's parameters (TexParameterf's for the anisotropy and the
+// LOD bias, both floats). TEXTURE_BASE_LEVEL and TEXTURE_MAX_LEVEL bound the
+// mip levels sampled: a texture whose chain stops short sets its last one as
+// TEXTURE_MAX_LEVEL. TEXTURE_MAX_ANISOTROPY (GL 4.6, and the EXT extension
+// before it) sharpens textures seen at a shallow angle: up to what
+// GetFloatv's MAX_TEXTURE_MAX_ANISOTROPY says, 16 on most drivers.
 GL_Tex_Param :: union(tag u32) {
-    TEXTURE_MIN_FILTER = 10241
-    TEXTURE_MAG_FILTER = 10240
-    TEXTURE_WRAP_S     = 10242
-    TEXTURE_WRAP_T     = 10243
+    TEXTURE_MIN_FILTER     = 10241
+    TEXTURE_MAG_FILTER     = 10240
+    TEXTURE_WRAP_S         = 10242
+    TEXTURE_WRAP_T         = 10243
+    TEXTURE_WRAP_R         = 32882   // 0x8072
+    TEXTURE_MIN_LOD        = 33082   // 0x813A
+    TEXTURE_MAX_LOD        = 33083   // 0x813B
+    TEXTURE_BASE_LEVEL     = 33084   // 0x813C
+    TEXTURE_MAX_LEVEL      = 33085   // 0x813D
+    TEXTURE_MAX_ANISOTROPY = 34046   // 0x84FE
+    TEXTURE_LOD_BIAS       = 34049   // 0x8501
 }
 
 GL_Tex_Filter :: union(tag u32) {
     NEAREST                = 9728
     LINEAR                 = 9729
     NEAREST_MIPMAP_NEAREST = 9984
+    LINEAR_MIPMAP_NEAREST  = 9985
+    NEAREST_MIPMAP_LINEAR  = 9986
     LINEAR_MIPMAP_LINEAR   = 9987
 }
 
 GL_Tex_Wrap :: union(tag u32) {
-    CLAMP_TO_EDGE = 33071
-    REPEAT        = 10497
+    CLAMP_TO_EDGE   = 33071
+    REPEAT          = 10497
+    MIRRORED_REPEAT = 33648   // 0x8370
 }
 
 GL_Tex_Format :: union(tag u32) {
@@ -145,6 +192,14 @@ GL_Polygon_Mode :: union(tag u32) {
     FILL  = 6914
 }
 
+// What GetIntegerv and GetFloatv read: the driver's limits.
+GL_Get_Param :: union(tag u32) {
+    MAX_TEXTURE_IMAGE_UNITS          = 34930   // 0x8872, per fragment shader
+    MAX_COMBINED_TEXTURE_IMAGE_UNITS = 35661   // 0x8B4D, all stages together
+    MAX_ARRAY_TEXTURE_LAYERS         = 35071   // 0x88FF
+    MAX_TEXTURE_MAX_ANISOTROPY       = 34047   // 0x84FF, a float
+}
+
 // ---------------------------------------------------------------------------
 // GL 1.1 functions — available directly from opengl32.lib (Windows)
 // ---------------------------------------------------------------------------
@@ -162,6 +217,9 @@ foreign static_lib "opengl32" prefix gl {
     fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: ^byte)   // const void* indices
     fun BindTexture(target: GL_Texture_Target, texture: u32)
     fun TexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
+    fun TexParameterf(target: GL_Texture_Target, pname: GL_Tex_Param, param: f32)
+    fun GetIntegerv(pname: GL_Get_Param, data: ^i32)                    // GLint* data
+    fun GetFloatv(pname: GL_Get_Param, data: ^f32)                      // GLfloat* data
     fun GetError() -> u32
     fun GenTextures(n: i32, textures: ^u32)                             // GLuint* textures
     fun DeleteTextures(n: i32, textures: ^u32)                          // const GLuint* textures
