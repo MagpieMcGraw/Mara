@@ -194,6 +194,15 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
         if view == .Header {
             return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), lw_value(k, r, e, t))
         }
+        // (A fixed array its list takes, `count(three)`: a list made of its
+        // items, as `list = three` writes them.)
+        if elem, into_list := lw_fixed_into_list(to, t); into_list && !is_literal {
+            made := graph_slot(b, "made", nil, span)
+            graph_build_typed(b, made, to)
+            graph_build_zero_var(b, made, to, span)
+            graph_build_write_at(b, graph_var(b, made, to, span), lw_items_of_fixed(k, e, r, t, elem, span), span)
+            return graph_read(b, graph_var(b, made, to, span), to, span)
+        }
         if view == .Slice {
             if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
             if held == NO_NODE { lw_fail(k, e, "a slice of an array value") }
@@ -223,9 +232,34 @@ lw_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, to: Type, span: Span,
 }
 
 // Whether value `n`, written to a partial array of type `t`, fills a prefix
-// of it — text, a slice's elements: what's past it, zero first.
+// of it — text, a slice's elements, a fixed array's (not a literal's: built
+// in place): what's past it, zero first.
 lw_fills_prefix :: proc(k: ^TC, n: Tree_Id, t: Type) -> bool {
-    return is_partial_array(t) && (k.t.tag[tc_unparen(k, n)] == .String || is_slice_type(tc_node_type(k, n)))
+    m := tc_unparen(k, n)
+    _, fixed := lw_fixed_into_list(t, tc_node_type(k, n))
+    return is_partial_array(t) && (k.t.tag[m] == .String || is_slice_type(tc_node_type(k, n)) || fixed && k.t.tag[m] != .Array)
+}
+
+// A fixed array's items, as a slice of it — what a list takes from it. A
+// value no place holds goes into a temporary first, to be sliced.
+lw_items_of_fixed :: proc(k: ^TC, e: Tree_Id, r: Built, t, elem: Type, span: Span) -> Operand {
+    b := k.gb
+    src := r.v
+    if !r.place {
+        tmp := graph_build_temp(b, span, t)
+        graph_build_write_at(b, graph_dest_place(b, tmp, span), lw_value(k, r, e, t), span)
+        src = graph_build_temp_end(b, tmp, t, span)
+    }
+    return graph_op_value(b, .Slice, .Implied, span, type_slice(elem), "", src)
+}
+
+// Whether a fixed array of type `from` is written into a list of type `to`
+// as its items (lw_store, lw_value_as): the list's elements' type.
+lw_fixed_into_list :: proc(to, from: Type) -> (Type, bool) {
+    pa, to_list := distinct_base(to).(^Type_Partial_Array)
+    _, from_fixed := distinct_base(from).(^Type_Fixed_Array)
+    if !to_list || !from_fixed { return nil, false }
+    return pa.elem, true
 }
 
 // Whether a branch may fill only a prefix of a partial array: what is no
@@ -260,6 +294,12 @@ lw_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Built, d: Dest, span: Span, set
         v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
         graph_build_write_at(b, graph_dest_place(b, d, span), v, span)
         return
+    }
+    // A fixed array into a list, `list = three`: its items, as a slice of
+    // them is written (the list's len their count).
+    if elem, into_list := lw_fixed_into_list(dt, t); into_list {
+        graph_build_write_at(b, graph_dest_place(b, d, span), lw_items_of_fixed(k, e, r, t, elem, span), span)
+        return true, false
     }
     // (Bytes read as the destination's type: lw_store_bytes, lw_store_span.)
     if m, _ := tc_byte_node(k, e); d.type_ != nil && tc_byte_flow(k, d.type_, e, t) == .Read {

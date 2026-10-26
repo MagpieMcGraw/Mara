@@ -1,0 +1,54 @@
+module list_from_fixed
+
+use mara.core
+
+//@ expect-output: decl: 3 3 0
+//@ expect-output: assign: 3 3
+//@ expect-output: bytes: 3 true
+//@ expect-output: result: 2 6
+//@ expect-output: field: 3 3
+//@ expect-output: arg: 3 2
+//@ expect-output: return: 3 3
+
+// A fixed array into a list: the list holds its items, its len their
+// count, past them zero (as a slice's items go in). It failed to lower:
+// "its write '' (the value's type)". Past the list's room is an error
+// (list_fixed_room_neg).
+
+Bag :: struct {
+	items: [4]i64,
+}
+
+make :: fun() -> [2!]i64 {
+	return [5, 6]
+}
+
+count :: fun(list: [8]i64) -> i64 {
+	return list.len
+}
+
+grow :: fun() -> [8]i64 {
+	three : [3!]i64 = [1, 2, 3]
+	return three
+}
+
+main :: fun() {
+	three : [3!]i64 = [1, 2, 3]
+	ints : [8]i64 = three
+	print("decl:", ints.len, ints[2], ints[3])
+	ints = [9, 9, 9, 9, 9]
+	ints = three
+	print("assign:", ints.len, ints[2])
+	raw : [3!]byte
+	raw[1] = u8(7)
+	bytes : [8]byte = raw
+	print("bytes:", bytes.len, bytes[1] == 7)
+	two : [8]i64 = make()
+	print("result:", two.len, two[1])
+	bag := Bag{items = three}
+	bag.items = three
+	print("field:", bag.items.len, bag.items[2])
+	print("arg:", count(three), count(make()))
+	grown := grow()
+	print("return:", grown.len, grown[2])
+}

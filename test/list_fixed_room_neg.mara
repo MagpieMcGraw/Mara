@@ -1,0 +1,14 @@
+module list_fixed_room_neg
+
+//@ expect-fail: 3 items don't fit in a [2]i64: it has room for 2
+
+// A fixed array into a list must fit in its room (list_from_fixed), as a
+// literal must (list_literal_room_neg).
+
+use mara.core
+
+main :: fun() {
+	three : [3!]i64 = [1, 2, 3]
+	small : [2]i64 = three
+	print(small.len)
+}
