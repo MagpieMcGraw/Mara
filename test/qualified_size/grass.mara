@@ -1,0 +1,8 @@
+module grass
+
+GRASS_PER_CELL :: 16
+
+Placed_Grass :: struct {
+	x: f32
+	y: f32
+}

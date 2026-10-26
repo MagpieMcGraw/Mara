@@ -1,0 +1,19 @@
+module qualified_const_size
+
+use mara.core
+mem :: use mara.memory
+
+//@ expect-output: sizes: 64 8 128 16
+
+// A constant named through its module sizes an array as its bare name does
+// (sooblivion's `[render.GRASS_PER_CELL]render.Placed_Grass`): a list, a
+// fixed array, in arithmetic. It said "array size must be a compile-time
+// constant". (Another module of the program: qualified_size/.)
+
+main :: fun() {
+	a : [mem.KB / 16]byte
+	b : [mem.KB / 128!]u8
+	c : [2 * (mem.KB / 16)]u8
+	d : [mem.KB >> 6!]i32
+	print("sizes:", a.cap, b.len, c.cap, d.len)
+}

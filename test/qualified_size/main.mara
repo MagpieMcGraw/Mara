@@ -1,0 +1,13 @@
+module qualified_size
+
+use mara.core
+render :: use grass
+
+// sooblivion's shape: a constant and a type of another module of the
+// program, both named through it, size and type an array.
+
+main :: fun() {
+	blades : [render.GRASS_PER_CELL]render.Placed_Grass
+	cells : [render.GRASS_PER_CELL * 2!]i64
+	print(blades.cap, cells.len)
+}

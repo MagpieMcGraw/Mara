@@ -290,6 +290,15 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
         if !names || !measured { return 0, false }
         return i64(type_size(st)), true
     case .Field:
+        // (A constant named through its module, `render.GRASS_PER_CELL`: its
+        // value, as its bare name's.)
+        if ref := k.rs.refs[n]; ref.kind == .Const {
+            kc := k.const_at[ref.decl] or_else nil
+            if !names || kc == nil || kc.visiting { return 0, false }
+            kc.visiting = true
+            defer kc.visiting = false
+            return tc_comptime_int(k, kc.value, names)
+        }
         // (An array's capacity is its type's; a fixed one's length too.)
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
