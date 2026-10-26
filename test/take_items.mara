@@ -15,8 +15,8 @@ use mara.core
 Token :: struct { offset: i64  len: i64  kind: u8 }
 
 // (A part of the caller's list, carved where it is.)
-part_of :: fun(all: ^[]i64, n: i64) -> []i64 {
-	return slice([:n]i64, all)
+part_of :: fun(items: ^[]i64, n: i64) -> []i64 {
+	return slice([:n]i64, items)
 }
 
 main :: fun() {

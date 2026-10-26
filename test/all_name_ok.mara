@@ -1,0 +1,21 @@
+module all_name_ok
+
+use mara.core
+
+//@ expect-output: broadcast: 4 7 7
+//@ expect-output: literal: 2 2
+//@ expect-output: field: true
+
+// `all` broadcasts, in a declaration and in a literal; a struct's field may
+// be named all, reached through its struct (all_name_neg: nothing else can).
+
+Flags :: struct { all: bool  some: bool }
+
+main :: fun() {
+	nums : [4]i64 = all 7
+	print("broadcast:", nums.len, nums[0], nums[3])
+	three : [3!]i64 = {all 2}
+	print("literal:", three[0], three[2])
+	f := Flags{all = true, some = false}
+	print("field:", f.all)
+}

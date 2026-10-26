@@ -1,0 +1,20 @@
+module all_name_neg
+
+//@ expect-fail: `all` is a keyword — `all v` gives v for every item (a broadcast) — so nothing can be named it
+
+// `all` broadcasts (`all 7`, `{all v}`), so nothing can be named it — said
+// where it's declared (sooblivion's param). It was let be a name, then
+// `if count < 25 or all {` read the body as what `all` broadcasts: errors
+// on the `print` line, nothing about `all`. A field can be (all_name_ok).
+
+use mara.core
+
+show :: fun(count: i64, all: bool) {
+	if count < 25 or all {
+		print("shown %", count)
+	}
+}
+
+main :: fun() {
+	show(3, true)
+}

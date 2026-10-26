@@ -26,6 +26,9 @@ Resolver :: struct {
     token_refs: map[Token_Id]Ref,   // ... a name written as a token: a dispatch's member, an overload's fun
     names:   [dynamic]Rs_Name,
     slots:   map[string]i32,  // a name → its slot in top (one hash a push and a lookup; none a pop)
+    // Each `all` declared — a local, a param, a definition (not a field):
+    // a keyword (a broadcast, `all v`), said by the checker (TYPE_ALL_KEYWORD).
+    all_named: map[Token_Id]bool,
     top:     [dynamic]i32,    // by slot: the name's innermost entry in names (-1: none)
     scopes:  [dynamic]Rs_Scope,
     modules: map[string]^Rs_Module,
@@ -145,6 +148,7 @@ rs_leave :: proc(r: ^Resolver) {
 @(private="file")
 rs_push :: proc(r: ^Resolver, name: string, ref: Ref, variable: bool) {
     if name == "" || name == "_" { return }
+    if name == "all" && ref.kind != .Field && ref.decl != 0 { r.all_named[ref.decl] = true }
     slot, ok := r.slots[name]
     if !ok {
         slot = i32(len(r.top))
@@ -347,6 +351,7 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
     t := r.t
     def :: proc(r: ^Resolver, into: ^map[string]Ref, name: string, ref: Ref) {
         if into != nil { into[name] = ref } else { rs_define(r, name, ref) }
+        if name == "all" && ref.kind != .Field && ref.decl != 0 { r.all_named[ref.decl] = true }
     }
     for s in rs_live(r, stmts) {
         #partial switch t.tag[s] {

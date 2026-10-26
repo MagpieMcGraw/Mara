@@ -2058,7 +2058,9 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
                 tp_expect(p, .Right_Paren)
                 result = tp_node(p, .Take, tok, start, u32(ty), u32(storage))
             }
-        case text == "all" && tp_is_broadcast_start(tp_kind(p)):
+        case text == "all" && tp_is_broadcast_start(tp_kind(p)) && !(p.no_struct_lit && tp_kind(p) == .Left_Brace):
+            // (In a condition a `{` opens the body: `if n < 25 or all {` read
+            // the body as what `all` broadcasts, the errors on its next line.)
             v := tp_expr(p)
             result = tp_node(p, .Broadcast, tok, start, u32(v))
         case tp_kind(p) == .Left_Paren:

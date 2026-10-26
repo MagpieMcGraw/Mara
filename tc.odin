@@ -454,6 +454,11 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     ir_types_forget()   // (a check of serve's, after another: its types are new)
     types_forget_shapes()
     k.rs = resolve_program(k)
+    // (`all` declared: a keyword — each said where it's declared, in order.)
+    all_named := make([dynamic]Token_Id, context.temp_allocator)
+    for tok in k.rs.all_named { append(&all_named, tok) }
+    slice.sort(all_named[:])
+    for tok in all_named { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
     k.bound = make([]u32, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
     k.annot = annot_new(t)

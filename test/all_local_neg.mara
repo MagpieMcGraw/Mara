@@ -1,0 +1,13 @@
+module all_local_neg
+
+//@ expect-fail: `all` is a keyword
+
+// A local named `all`, as a param (all_name_neg): `all - 1` would read as
+// a broadcast of -1, `all[0]` of an array.
+
+use mara.core
+
+main :: fun() {
+	all := 3
+	print(all - 1)
+}
