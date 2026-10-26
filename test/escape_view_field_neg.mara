@@ -1,0 +1,24 @@
+module escape_view_field_neg
+
+//@ expect-fail: would escape
+
+// The same reader over storage made inside the loop: the view it hands out
+// points into that storage, gone when the round ends, so keeping it in a
+// list from outside the loop is refused (escape_view_field: storage from
+// outside the loop may).
+
+use mara.core
+
+Reader :: struct { data: []byte }
+
+name_of :: fun(r: ^Reader) -> []byte { return r.data[0:2] }
+
+main :: fun() {
+	names : [4][]byte
+	for i in 0:2 {
+		storage : [64!]byte
+		r := Reader{data = storage[:]}
+		&names + name_of(&r)
+	}
+	print(names.len)
+}

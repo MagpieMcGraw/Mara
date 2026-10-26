@@ -828,14 +828,18 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
 esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8, state: []Esc_Roots) -> Esc_Roots {
     pt: Type = callee.params[i].type_ if i < len(callee.params) else nil
     r := esc_into(e, args[i], pt, state)
+    on: Esc_Roots
     switch level {
     case ESC_LEVEL_ONE: return r
     case ESC_LEVEL_TWO:
-        on: Esc_Roots
         esc_slice_data(e, &on, r, state)
         return on
     }
-    return esc_reach(e, r, state)
+    // (Deep is past what the argument points at — a summary's two and deep
+    // levels, the one apart: `r.data[0:2]` through `r: ^Reader` points where
+    // r's data does, not at r. From one step on, everything reachable.)
+    esc_slice_data(e, &on, r, state)
+    return esc_reach(e, on, state)
 }
 
 // --- roots ---------------------------------------------------------------------

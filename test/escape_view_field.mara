@@ -1,0 +1,26 @@
+module escape_view_field
+
+//@ expect-output: names: 2 2
+
+// A view read through a pointer to a struct holding one — `r.data[0:2]`,
+// `r: ^Reader` — points where that view does, not at the struct: a reader
+// made in a loop over storage from outside it hands out views that may
+// outlive the loop (they were taken for the reader's own, and "would
+// escape", once). escape_view_field_neg: storage inside the loop still
+// may not.
+
+use mara.core
+
+Reader :: struct { data: []byte }
+
+name_of :: fun(r: ^Reader) -> []byte { return r.data[0:2] }
+
+main :: fun() {
+	storage : [64!]byte
+	names : [4][]byte
+	for i in 0:2 {
+		r := Reader{data = storage[:]}
+		&names + name_of(&r)
+	}
+	print("names:", names.len, names[0].len)
+}
