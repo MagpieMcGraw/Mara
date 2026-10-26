@@ -33,7 +33,7 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     t, is_member, known, known_ok := lw_field_is(k, n)
     if known_ok {
         if want == .Place { return {} }
-        return {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
+        return {v = graph_const(b, w, span, t, field, Const_Value{int = known | lw_err_site(k, n)}), ok = true}
     }
     if fun, is_fun := t.(^Type_Scope); is_fun && !is_member && fun.kind == .Fun {
         if want == .Place { return {} }
@@ -77,7 +77,7 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want
     if ref.kind == .Variant {
         et, is_enum := distinct_base(t).(^Type_Enum)
         if !is_enum { lw_fail(k, n, "a module's member of no enum") }
-        return lw_enum_value(k, et, et.variants[field], field, span, want, w)
+        return lw_enum_value(k, et, et.variants[field], field, span, want, w, lw_err_site(k, n))
     }
     if ref.kind == .Const { return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w) }
     // (A fun of the module as a value, `gl_load(sdl.GL_GetProcAddress)`: its
@@ -95,17 +95,25 @@ lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want
 // A variant by itself (`.Circle`, `Shape.Circle`): a union's, constructed;
 // an enum's, its value.
 lw_variant_of :: proc(k: ^TC, t: Type, name: string, span: Span, want: Build_Want, w: Written,
-                      dest: Dest, temp: bool, temp_span: Span) -> Built {
+                      dest: Dest, temp: bool, temp_span: Span, site := i128(0)) -> Built {
     // (A named one's — `type U`, `distinct E` — as its base's.)
     tb := distinct_base(t)
     if ut, is_union := tb.(^Type_Union); is_union { return lw_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
-    return lw_enum_value(k, tb.(^Type_Enum), lw_variant_value(t, name), name, span, want, w)
+    return lw_enum_value(k, tb.(^Type_Enum), lw_variant_value(t, name), name, span, want, w, site)
 }
 
-// An enum's variant, as a value: its tag, known.
-lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written) -> Built {
+// An error's variant's site, where it makes an err (tc_note_err_site): its
+// atom + 1, above the kind's 32 bits. 0: none.
+lw_err_site :: proc(k: ^TC, n: Tree_Id) -> i128 {
+    if site, ok := k.annot.err_sites[tc_sid(k, n)]; ok { return i128(site) << 32 }
+    return 0
+}
+
+// An enum's variant, as a value: its tag, known (an error's, with where it
+// makes an err above it: `site`, lw_err_site).
+lw_enum_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span: Span, want: Build_Want, w: Written, site := i128(0)) -> Built {
     if want == .None || want == .Place { return {} }
-    return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
+    return {v = graph_const(k.gb, w, span, et, name, Const_Value{int = i128(value) | site}), ok = true}
 }
 
 // A union's variant as a value, `.Rect`: constructed where it goes — else in

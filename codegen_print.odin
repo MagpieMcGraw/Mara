@@ -483,7 +483,7 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         return
     }
     if _, ok := bt.(Type_Err); ok {
-        ir_call(g, {}, IR_VOID, ir_global("__mara_print_err"), {IR_I32, val, {}})
+        ir_call(g, {}, IR_VOID, ir_global("__mara_print_err"), {IR_I64, val, {}})
         return
     }
     if _, ok := bt.(Type_Atom); ok {   // (its text, looked up)

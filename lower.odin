@@ -1035,7 +1035,7 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_if_expr(k, n, want, w)
     case .Dot_Ident:
         if tc_sid(k, n) in k.annot.dot_bases { return lw_field(k, n, want, w, dest, temp, temp_span) }
-        return lw_variant_of(k, ty, tc_text(Token_Id(t.a[n])), span, want, w, dest, temp, temp_span)
+        return lw_variant_of(k, ty, tc_text(Token_Id(t.a[n])), span, want, w, dest, temp, temp_span, lw_err_site(k, n))
     case .Field:
         return lw_field(k, n, want, w, dest, temp, temp_span)
     case .Literal, .Broadcast:
@@ -1100,7 +1100,7 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     ref := tc_ref(k, n)
     switch {
     case ref.kind == .Variant:
-        return lw_variant_of(k, t, name, span, want, w, dest, temp, temp_span)
+        return lw_variant_of(k, t, name, span, want, w, dest, temp, temp_span, lw_err_site(k, n))
     case ref.kind == .Const:
         return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w)
     case name == "void":

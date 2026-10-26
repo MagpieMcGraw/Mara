@@ -1,0 +1,43 @@
+module err_where
+
+use mara.core
+
+//@ expect-output: failed: Parse_Error.Not_A_Digit err_where.mara:21:37 in digit
+//@ expect-output: compared: true true false failed
+//@ expect-output: ok: Ok [] fine
+//@ expect-output: made: err_where.mara:39:15 in main
+//@ expect-output: held: 8 err_where.mara:21:37 in digit true
+
+// An err remembers where it was made: `e.where()`, an atom — "file:line:col
+// in fun" — of the place an error's variant became the err (a return, an
+// err param, `e : err = Lost`). `?` passes it on as it is, so a caller up
+// the chain still sees where it began. It compares, prints and gives its
+// text by its kind alone; Ok is made nowhere (where() is ""). An err is 8
+// bytes: its kind low, its site's atom above it.
+
+Parse_Error :: error { Empty, Not_A_Digit }
+
+digit :: fun(c: utf8) -> i64, err {
+	if c < '0' or c > '9' do return 0, Not_A_Digit
+	return i64(c - '0'), Ok
+}
+
+twice :: fun(c: utf8) -> i64, err {
+	d := digit(c)?
+	return d * 2, Ok
+}
+
+Held :: struct { e: err, n: i64 }
+
+main :: fun() {
+	_, e := twice('x')
+	print("failed:", e, e.where())
+	print("compared:", e == Not_A_Digit, e != Ok, e == Empty, if e do "failed" else "fine")
+	_, ok := twice('4')
+	none : []utf8 = ok.where()
+	print("ok:", ok, if none.len == 0 do "[]" else none, if ok do "failed" else "fine")
+	lost : err = Empty
+	print("made:", lost.where())
+	h := Held{e = e, n = 3}
+	print("held:", size_of(err), h.e.where(), h.e == Not_A_Digit)
+}

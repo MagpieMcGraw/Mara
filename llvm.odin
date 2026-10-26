@@ -1424,6 +1424,10 @@ llvm_compare :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     r, rok := llvm_operand(e, ops[1], t)
     if !lok || !rok { return false }
     ir := llvm_type_from_checker(t)
+    // (Errs compare by kind: where each was made is no part of it.)
+    if err_kinded(t) || err_kinded(graph_type(pg, ops[1].op)) {
+        l, r = llvm_err_kind(e, l, ir), llvm_err_kind(e, r, ir)
+    }
     name := graph_name(pg, op)
     tmp := fresh_tmp(g)
     if is_ir_float(ir) {
@@ -2483,10 +2487,12 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     if !llvm_scalar(t) { return false }
     value := llvm_operand(e, ops[0], t) or_return
     ir := llvm_type_from_checker(t)
+    if err_kinded(t) { value = llvm_err_kind(e, value, ir) }   // (by kind, as a compare)
     last := fresh_label(g, "match.fail") if fail else target(e, op, len(cases))
     if len(cases) == 0 { emit_br(g, last) }
     for c, i in cases {
         v := llvm_operand(e, c, t) or_return
+        if err_kinded(t) { v = llvm_err_kind(e, v, ir) }
         next := last
         if i < len(cases) - 1 { next = fresh_label(g, "match.next") }
         cmp := fresh_tmp(g)
@@ -2595,7 +2601,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
         if fn, is_from_number := callee.origin.(Origin_From_Number); is_from_number { return llvm_from_number(e, op, ops, callee, fn.enum_) }
-        if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_) }
+        if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_, vt.where_) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn(g, callee.name)
     }
@@ -2762,12 +2768,15 @@ llvm_from_number :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
 // atoms were made as the program was checked (tc_text_fun,
 // atoms_for_err_text): found here, none made.
 @(private="file")
-llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
+llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum, where_ := false) -> bool {
     g := e.g
     if len(ops) != 1 { e.note = "text()'s value"; return false }
     pt := fn_param(callee, 0).type_
     v := llvm_operand(e, ops[0], pt) or_return
     ty, atom_ty := llvm_type_from_checker(pt), llvm_type_from_checker(fn_result(callee, 0))
+    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
+    if where_ { return llvm_err_where(e, op, v, ty, atom_ty, atom(g, "")) }
+    if err_kinded(pt) { v = llvm_err_kind(e, v, ty) }   // (its name is its kind's)
     Case :: struct { value: int, text: string }
     cases := make([dynamic]Case, 0, 16, context.temp_allocator)
     if et != nil {
@@ -2782,7 +2791,6 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     // (By value, then name: one case a value — two variants of one value,
     // the first's name — the same code each build.)
     slice.sort_by(cases[:], proc(a, b: Case) -> bool { return a.value < b.value || a.value == b.value && a.text < b.text })
-    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
     if v.kind == .Int {
         text := "?"
         for c in cases { if i128(c.value) == v.n { text = c.text; break } }
@@ -2808,6 +2816,46 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     emit_label(g, done)
     r := fresh_tmp(g)
     ir_load(g, r, atom_ty, at)
+    e.value[op] = r
+    return true
+}
+
+// Whether values of t are errs, or an error set's kinds, compared by kind:
+// an err's high 32 bits are where it was made (tc_note_err_site).
+err_kinded :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case Type_Err:    return true
+    case ^Type_Enum:  return v.is_error_kind
+    }
+    return false
+}
+
+// An err's kind: its low 32 bits, where it was made cleared (a constant's
+// at once).
+@(private="file")
+llvm_err_kind :: proc(e: ^Llvm, v: Val, ty: Ir_Type) -> Val {
+    if v.kind == .Int { return ir_int128(v.n & 0xFFFF_FFFF) }
+    kind := fresh_tmp(e.g)
+    ir_bin(e.g, kind, .And, ty, v, ir_int(0xFFFF_FFFF))
+    return kind
+}
+
+// `e.where()`: where the err was made, its high 32 bits — the site's atom
+// + 1 (tc_note_err_site) — as the atom; none (Ok): `none`, the "" atom.
+@(private="file")
+llvm_err_where :: proc(e: ^Llvm, op: Node_Id, v: Val, ty, atom_ty: Ir_Type, none: Val) -> bool {
+    g := e.g
+    if v.kind == .Int {
+        site := v.n >> 32
+        e.value[op] = ir_int128(site - 1) if site != 0 else none
+        return true
+    }
+    high, site, has, id, r := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+    ir_bin(g, high, .Lshr, ty, v, ir_int(32))
+    ir_cast(g, site, .Trunc, ty, high, atom_ty)
+    ir_icmp(g, has, .Ne, atom_ty, site, ir_int(0))
+    ir_bin(g, id, .Sub, atom_ty, site, ir_int(1))
+    ir_select(g, r, has, atom_ty, id, none)
     e.value[op] = r
     return true
 }

@@ -952,7 +952,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
             for p, i in f.params { fmt.sbprintf(&b, "%s%s %%%s", ", " if i > 0 else "", ir_type_text(p.ty), p.name) }
             strings.write_string(&b, ")\n")
         }
-        strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_err(i64)\n")
     }
     strings.write_byte(&b, '\n')
 

@@ -30,7 +30,8 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
     h: TC_Union_Header
     variants: [dynamic]TC_Variant
     if is_error {
-        h.tag_type = "u32"
+        // (An err's width: its kind low, where it was made high — tc_note_err_site.)
+        h.tag_type = "u64"
         for tok in tree_token_list(t, t.a[node]) {
             append(&variants, TC_Variant{name = tc_text(tok), span = Span{at = tok, tok = tok, end = tok + 1}})
         }

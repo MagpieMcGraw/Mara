@@ -505,7 +505,7 @@ cv_err :: proc(cv: ^Cv_Module) -> u32 {
             append(&values, i64(value))
         }
     }
-    return cv_enumeration(cv, "err", "err", 0x75, names[:], values[:])
+    return cv_enumeration(cv, "err", "err", 0x77, names[:], values[:])   // (T_UINT8: its kind low, where it was made high)
 }
 
 // An enum's records: its names and values, by value, then it.

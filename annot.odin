@@ -105,6 +105,7 @@ Annotations :: struct {
     overrides:  map[Syntax_Id]bool,          // a literal statement that writes into the variable it names (`v{x = 1}`)
     receivers:  map[Syntax_Id]bool,          // a method call whose receiver is built as a value first
     call_names: map[Syntax_Id]string,        // a method call's name, as its qualifier resolved it
+    err_sites:  map[Syntax_Id]u32,           // an error's variant made an err there: its site's atom + 1 (tc_note_err_site)
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
     known:      map[Syntax_Id]Known_Value,   // a field whose value the checker knows: an enum's variant, an array's length, a text constant's; a generic's size param named as a value

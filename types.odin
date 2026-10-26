@@ -735,6 +735,7 @@ Origin_From_Number :: struct {
 
 Origin_Variant_Text :: struct {
     enum_: ^Type_Enum,                 // whose variants' names it gives; nil: an err's, of every error set
+    where_: bool,                      // e.where(): an err's site, its high 32 bits, instead
 }
 
 // The text `x.text()` gives for a variant of an enum: its own name, as

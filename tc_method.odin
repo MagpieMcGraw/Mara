@@ -124,9 +124,10 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 args, failed = tc_self_args(k, n, fn, st, qt, arg, args)
             }
         }
-        // (`m.text()`, `e.text()`: an enum's or an err's name.)
-        if !resolved && name == "text" && len(args) == 0 {
-            if ft := tc_text_fun(k, qt); ft != nil {
+        // (`m.text()`, `e.text()`: an enum's or an err's name; `e.where()`,
+        // where an err was made.)
+        if !resolved && (name == "text" || name == "where") && len(args) == 0 {
+            if ft := tc_text_fun(k, qt, name == "where"); ft != nil {
                 qual, resolved = ft, true
                 k.annot.call_names[tc_sid(k, n)] = ft.name
                 args = tc_with_receiver(arg, args)
@@ -236,12 +237,14 @@ tc_from_number_fun :: proc(qt: Type, et: ^Type_Enum, pt: Type) -> ^Type_Scope {
 // are made now, in a fixed order, so their ids are the same each build: an
 // enum's here, an open err's — any error set's — once all are checked
 // (atoms_for_err_text). nil: x is neither.
-tc_text_fun :: proc(k: ^TC, qt: Type) -> ^Type_Scope {
+tc_text_fun :: proc(k: ^TC, qt: Type, where_ := false) -> ^Type_Scope {
     et, is_enum := distinct_base(qt).(^Type_Enum)
     _, is_err := distinct_base(qt).(Type_Err)
-    if !is_enum && !is_err { return nil }
+    if !is_enum && !is_err || where_ && !is_err { return nil }
     checked_atom(k.checked, "?")
-    if is_err {
+    if where_ {
+        checked_atom(k.checked, "")   // (an err made nowhere: Ok)
+    } else if is_err {
         k.checked.err_text = true
     } else {
         names := make([dynamic]string, 0, len(et.variants), context.temp_allocator)
@@ -252,11 +255,11 @@ tc_text_fun :: proc(k: ^TC, qt: Type) -> ^Type_Scope {
     ft := new(Type_Scope)
     ft.kind = .Fun
     ft.home_package = et.home_package if is_enum else k.pkg
-    ft.name = strings.concatenate({type_name(qt), ".text"})
-    ft.source_name = "text"
+    ft.name = strings.concatenate({type_name(qt), ".where" if where_ else ".text"})
+    ft.source_name = "where" if where_ else "text"
     append(&ft.params, Struct_Type_Field{name = "value", type_ = qt})
     append(&ft.return_types, Type_Atom{})
-    ft.origin = Origin_Variant_Text{enum_ = et if is_enum else nil}
+    ft.origin = Origin_Variant_Text{enum_ = et if is_enum else nil, where_ = where_}
     return ft
 }
 

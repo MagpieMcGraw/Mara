@@ -523,7 +523,7 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     case Type_Void:         return IR_EMPTY  // zero-sized struct — LLVM coalesces
     case Type_Error:
         panic("llvm_type_from_checker: Type_Error reached codegen — codegen runs only on a clean check")
-    case Type_Err:          return IR_I32 // open error type — u32 (set_id<<16 | tag)
+    case Type_Err:          return IR_I64 // open error type: its kind (set_id<<16 | tag) low, where it was made high (err_kind)
     case Type_Atom:         return IR_I32 // its place in the program's table
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
@@ -645,7 +645,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
         code := [?][]Ir{g.code[:]}
         codegen_function(g, {name = f.name, ret = IR_VOID, params = params}, code[:], entry = false)
     }
-    // print_err: prints the qualified name of a u32 error value (set_id<<16 |
+    // print_err: prints the qualified name of an error value's kind (set_id<<16 |
     // tag). One switch case per (set_id, tag) pair across all error_kinds
     // in the program; the 0 case is the universal `.Ok` and the default falls
     // back to "?(<val>)" for stray bits / out-of-range tags. Open-`err`-typed
@@ -680,7 +680,10 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     }
 
     g.code = {}
-    val := ir_local("val")
+    whole := ir_local("val")
+    // (Its kind, the low 32 bits: where it was made is above them.)
+    val := fresh_tmp(g)
+    ir_cast(g, val, .Trunc, IR_I64, whole, IR_I32)
     ok, unknown := ir_label(g, "ok"), ir_label(g, "unknown")
     arms := make([]Ir_Arg, len(cases) + 1)
     arms[0] = {IR_I32, ir_int(0), ok}
@@ -696,7 +699,7 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     say(g, unknown, fmt_unknown, {IR_I32, val, {}})
     code := [?][]Ir{g.code[:]}
     params := make([]Ir_Arg, 1)
-    params[0] = {ty = IR_I32, v = val}
+    params[0] = {ty = IR_I64, v = whole}
     codegen_function(g, {name = "__mara_print_err", ret = IR_VOID, params = params}, code[:], gap = false)
 }
 

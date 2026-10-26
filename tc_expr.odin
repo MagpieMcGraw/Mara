@@ -13,9 +13,34 @@ import "core:slice"
 tc_check :: proc(k: ^TC, n: Tree_Id) -> Type {
     if n == 0 { return Type_Error{} }
     assert(!k.lowering, "the checker's tc_check, called while lowering")
+    hint := k.hint
     t := tc_expr_impl(k, n)
     tc_set_type(k, n, t)
+    tc_note_err_site(k, n, t, hint)
     return t
+}
+
+// An error's variant where an err is made of it — where an err goes: a
+// return's, an err param's, `e : err = Lost` (k.hint) — noted with where
+// it is, an atom ("errors.mara:12:20 in digit"), for lowering to put in
+// the err's high 32 bits (lw_err_site): `e.where()` gives it back, and `?`
+// passes it on as it is. Ok is no failure: none, its err 0.
+tc_note_err_site :: proc(k: ^TC, n: Tree_Id, t: Type, hint: Type) {
+    if _, to_err := distinct_base(hint).(Type_Err); !to_err { return }
+    et, is_enum := distinct_base(t).(^Type_Enum)
+    if !is_enum || !et.is_error_kind { return }
+    tr := k.t
+    name: string
+    #partial switch tr.tag[n] {
+    case .Ident:     name = tc_name(k, n)
+    case .Dot_Ident: name = tc_text(Token_Id(tr.a[n]))
+    case .Field:     name = tc_text(Token_Id(tr.b[n]))
+    case:            return
+    }
+    if value, has := et.variants[name]; !has || value == 0 { return }
+    place := span_location(tree_span(tr, n))
+    text := fmt.tprintf("%s in %s", place, scope_display_name(k.body)) if k.body != nil else place
+    k.annot.err_sites[tc_sid(k, n)] = checked_atom(k.checked, text) + 1
 }
 
 // An expression checked, used at `t` (tc_settle).
