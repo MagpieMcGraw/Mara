@@ -267,6 +267,21 @@ rs_keep_miss :: proc(r: ^Resolver, n: Tree_Id) {
     if r.miss.hidden != "" || len(r.miss.owners) > 0 { r.misses[n] = r.miss }
 }
 
+// A param's name, a named result's (tok), run into a fun's, a type's or a
+// module's in sight: it would hide it, as a variable would (rs_clash's
+// hides). Reported where the checker binds it (tc_bind).
+@(private="file")
+rs_signature_clash :: proc(r: ^Resolver, tok: Token_Id) {
+    name := rs_text(tok)
+    if name == "_" { return }
+    ref, ok := rs_lookup(r, name)
+    r.miss = {}
+    if !ok { return }
+    #partial switch ref.kind {
+    case .Fun, .Type, .Module: r.clashes[tok] = {hides = ref}
+    }
+}
+
 // What declaring `name` here runs into (rs_stmt's `x := …`).
 @(private="file")
 rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
@@ -902,13 +917,19 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
             for name in pv.names { rs_type_param(r, name) }
             continue
         }
-        for name in pv.names { rs_declare(r, rs_text(name), {name, .Param}) }
+        for name in pv.names {
+            rs_signature_clash(r, name)
+            rs_declare(r, rs_text(name), {name, .Param})
+        }
     }
     for x in v.returns {
         if t.tag[x] == .Param_Group {
             pv := params_view(t, x)
             rs_node(r, pv.type_)
-            for name in pv.names { rs_declare(r, rs_text(name), {name, .Result}) }
+            for name in pv.names {
+                rs_signature_clash(r, name)
+                rs_declare(r, rs_text(name), {name, .Result})
+            }
         } else {
             rs_node(r, x)
         }

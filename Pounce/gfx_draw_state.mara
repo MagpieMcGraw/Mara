@@ -137,7 +137,7 @@ draw_state_append :: fun(
 	state: ^DrawState,
 	objects: []Object,
 	visuals: []Visual,
-	camera: Camera)
+	cam: Camera)
 {
 	if objects.len == 0 do return
 	if visuals.len == 0 do return
@@ -157,7 +157,7 @@ draw_state_append :: fun(
 			obj.pos,
 			obj.dir,
 			obj.scale,
-			camera.view, camera.proj,
+			cam.view, cam.proj,
 		)
 		instance := Instance{
 			mvp_matrix = mvp,
@@ -173,7 +173,7 @@ append_one :: fun(
 	state: ^DrawState,
 	obj: Object,
 	vis: Visual,
-	camera: Camera)
+	cam: Camera)
 {
 	if not obj.exists do return
 
@@ -187,7 +187,7 @@ append_one :: fun(
 		obj.pos,
 		obj.dir,
 		obj.scale,
-		camera.view, camera.proj,
+		cam.view, cam.proj,
 	)
 	instance := Instance{
 		mvp_matrix = mvp,

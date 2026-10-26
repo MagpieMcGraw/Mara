@@ -34,7 +34,7 @@ Color :: struct {
 }
 
 // The font's glyphs, `pixels` high (its em), in a texture of the renderer's.
-text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err {
+text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -> err {
 	t.chars.len = 0
 	for c in 32:127 {
 		&t.chars + u32(c)
@@ -48,7 +48,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font: []utf8, pixels: f32) -> err
 		at += n
 	}
 	atlas : [ATLAS * ATLAS]byte
-	load_coverage_chars(font, pixels, t.chars[:], &t.glyphs, &t.metrics, &atlas, ATLAS)?
+	load_coverage_chars(font_path, pixels, t.chars[:], &t.glyphs, &t.metrics, &atlas, ATLAS)?
 	// (Each texel white, its alpha the coverage.)
 	rgba : [ATLAS * ATLAS * 4]byte
 	rgba.len = rgba.cap

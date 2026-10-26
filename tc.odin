@@ -267,6 +267,17 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
     case .Local, .Param, .Result:
         if ref.decl != 0 && name != "_" { tc_variant_named(k, name, ref) }
     }
+    // (A param, a named result, named as a fun, a type or a module in sight:
+    // refused, as a variable is — tc_declarable's — the resolver's clash.)
+    #partial switch ref.kind {
+    case .Param, .Result:
+        if c, has := k.rs.clashes[ref.decl]; has && c.hides.kind != .None && name != "_" {
+            word := "fun" if c.hides.kind == .Fun else "type" if c.hides.kind == .Type else "module"
+            at := c.hides.decl
+            tc_error(k, Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}, TYPE_SIGNATURE_HIDES_DEFINITION,
+                     "param" if ref.kind == .Param else "result", name, word, name, span_loc(Span{at = at, tok = at, end = at + 1}))
+        }
+    }
     tc_bound_set(k, ref.decl, t)
     #partial switch ref.kind {
     case .Local, .Param, .Result:

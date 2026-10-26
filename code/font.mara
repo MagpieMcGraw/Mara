@@ -1610,22 +1610,22 @@ cmap_pick :: fun(bytes: ^[]byte, cmap: i64, cmap_len: i64) -> i64 {
 	}
 	// Whether the subtable at `sub` is in a format char_glyph reads and its
 	// arrays end by `end` (the cmap table's end).
-	cmap_readable :: fun(bytes: ^[]byte, sub: i64, end: i64) -> bool {
-		if sub + 4 > end do return false
-		format := read_u16be(bytes[sub])
-		if format == 0 do return sub + 262 <= end
+	cmap_readable :: fun(bytes: ^[]byte, sub_table: i64, end: i64) -> bool {
+		if sub_table + 4 > end do return false
+		format := read_u16be(bytes[sub_table])
+		if format == 0 do return sub_table + 262 <= end
 		if format == 4 {
-			if sub + 14 > end do return false
-			seg_x2 := i64(read_u16be(bytes[sub + 6]))
-			return seg_x2 % 2 == 0 and sub + 16 + 4 * seg_x2 <= end
+			if sub_table + 14 > end do return false
+			seg_x2 := i64(read_u16be(bytes[sub_table + 6]))
+			return seg_x2 % 2 == 0 and sub_table + 16 + 4 * seg_x2 <= end
 		}
 		if format == 6 {
-			if sub + 10 > end do return false
-			return sub + 10 + 2 * i64(read_u16be(bytes[sub + 8])) <= end
+			if sub_table + 10 > end do return false
+			return sub_table + 10 + 2 * i64(read_u16be(bytes[sub_table + 8])) <= end
 		}
 		if format == 12 {
-			if sub + 16 > end do return false
-			return sub + 16 + 12 * i64(read_u32be(bytes[sub + 12])) <= end
+			if sub_table + 16 > end do return false
+			return sub_table + 16 + 12 * i64(read_u32be(bytes[sub_table + 12])) <= end
 		}
 		return false
 	}

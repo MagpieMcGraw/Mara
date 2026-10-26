@@ -20,8 +20,8 @@ Big :: struct {
 	pad: [256!]i64
 }
 
-step :: fun(memory: ^[]byte) -> i64 {
-	s := let(Big, &memory[0])
+step :: fun(memory_bytes: ^[]byte) -> i64 {
+	s := let(Big, &memory_bytes[0])
 	was := s.n
 	if not s.initialized {
 		s.initialized = true

@@ -204,7 +204,7 @@ above (calls)   (0 functions)
 Camera — struct  camera.mara:10   (module camera)
 
 below (calls)   (12 functions)
-  fun    append_one             gfx_draw_state.mara:172   (param camera : Camera)
+  fun    append_one             gfx_draw_state.mara:172   (param cam : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
   fun    camera_move            camera.mara:48   (param camera : ^Camera)
@@ -212,8 +212,8 @@ below (calls)   (12 functions)
   fun    camera_turn_walking    camera.mara:117   (param camera : ^Camera)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
-  fun    draw_marker            Pounce.mara:234   (param camera : Camera)
-  fun    draw_state_append      gfx_draw_state.mara:136   (param camera : Camera)
+  fun    draw_marker            Pounce.mara:234   (param cam : Camera)
+  fun    draw_state_append      gfx_draw_state.mara:136   (param cam : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
 === Pounce | Camera flow above 2
@@ -697,9 +697,9 @@ gfx_mesh_generation.mara:66:11  token '0'
 Pounce.mara:112:13  token 'VAO_State'
 refers to: type VAO_State  gfx_vao.mara:37
 
-  Define                   [421,871)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
-  Fun_Def                  [423,871)  fun(game: ^Megastruct, memory: ^[]byte) { …
-      → Fun game_init, Param game, Param memory, Return
+  Define                   [421,871)  game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) { …
+  Fun_Def                  [423,871)  fun(game: ^Megastruct, memory_bytes: ^[]byte) { …
+      → Fun game_init, Param game, Param memory_bytes, Return
   Assign                   [553,560)  game.vao = VAO_State()
       → Write
   Call                     [557,560)  VAO_State()   : VAO_State

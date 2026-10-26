@@ -1,0 +1,14 @@
+module hide_param_module_neg
+
+//@ expect-fail: param 'string' would hide the module 'string'
+
+// A param named as a module its file uses: `string.` in the body would be
+// the param.
+
+use mara.string
+
+count :: fun(string: []utf8) -> i64 { return string.len }
+
+main :: fun() {
+	print(count("hey"))
+}

@@ -55,11 +55,11 @@ example_module :: fun() {
 // Uses go at the top, after the `module` line. Nearly every file uses
 // mara.core: text buffers, `&list + x`, comparing texts.
 //
-// A variable can't take the name of a fun, a type, a module or a variant
-// in sight — its module's or one it uses: `next := 3` beside mara.core's
-// next is an error, since the fun would be out of reach below it; so is a
-// param named as a variant. A struct's field can (it's reached through its
-// struct, `h.next`).
+// A variable or a param can't take the name of a fun, a type, a module or
+// a variant in sight — its module's or one it uses: `next := 3` beside
+// mara.core's next is an error, since the fun would be out of reach below
+// it, and so is `fun(lower: []utf8)` beside mara.string's lower. A struct's
+// field can (it's reached through its struct, `h.next`).
 example_use :: fun() {
 	// At the top of a file:
 	//

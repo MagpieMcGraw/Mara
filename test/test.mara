@@ -911,11 +911,11 @@ Pair :: struct {
 	b: i64
 }
 
-run_take_basic :: fun(memory: ^[]byte) {
-	p : Pair = let(Pair, memory)
+run_take_basic :: fun(memory_bytes: ^[]byte) {
+	p : Pair = let(Pair, memory_bytes)
 	p.a = 7
 	p.b = 11
-	nums : [4!]i64 = let([4!]i64, memory)
+	nums : [4!]i64 = let([4!]i64, memory_bytes)
 	nums[0] = 100
 	nums[1] = 200
 	nums[2] = 300
@@ -924,7 +924,7 @@ run_take_basic :: fun(memory: ^[]byte) {
 	print(p.b)         // 11
 	print(nums[0])     // 100
 	print(nums[3])     // 400
-	print(memory.len)  // 48
+	print(memory_bytes.len)  // 48
 }
 
 test_take_basic :: fun() {
@@ -932,20 +932,20 @@ test_take_basic :: fun() {
 	run_take_basic(&buf)
 }
 
-run_take_alignment :: fun(memory: ^[]byte) {
-	flag : u8 = let(u8, memory)
+run_take_alignment :: fun(memory_bytes: ^[]byte) {
+	flag : u8 = let(u8, memory_bytes)
 	flag = 42
-	p : Pair = let(Pair, memory)
+	p : Pair = let(Pair, memory_bytes)
 	p.a = 100
 	p.b = 200
 	print(flag)        // 42
 	print(p.a)         // 100
-	print(memory.len)  // 24
-	nums : []i64 = slice([:3]i64, memory)
+	print(memory_bytes.len)  // 24
+	nums : []i64 = slice([:3]i64, memory_bytes)
 	nums[0] = 10
 	nums[2] = 30
 	print(nums[0])     // 10
-	print(memory.len)  // 48
+	print(memory_bytes.len)  // 48
 }
 
 test_take_alignment :: fun() {
@@ -963,8 +963,8 @@ write_one :: fun(g: ^Megastruct) {
 	g.y = 22
 }
 
-run_take_binding :: fun(memory: ^[]byte) {
-	game : Megastruct = let(Megastruct, memory)
+run_take_binding :: fun(memory_bytes: ^[]byte) {
+	game : Megastruct = let(Megastruct, memory_bytes)
 	write_one(&game)
 	game.x = 33
 }
@@ -977,8 +977,8 @@ test_take_binding :: fun() {
 	print(view.y)  // 22
 }
 
-roundtrip :: fun(memory: ^[]byte) -> Pair {
-	p : Pair = let(Pair, memory)
+roundtrip :: fun(memory_bytes: ^[]byte) -> Pair {
+	p : Pair = let(Pair, memory_bytes)
 	p.a = 100
 	p.b = 200
 	return p
@@ -1139,21 +1139,21 @@ take_payload :: fun(p: ^View_Payload) {
 	print(p.counter)
 }
 
-view_through_slice :: fun(memory: ^[]byte) {
-	p : ^View_Payload = &memory[0]
+view_through_slice :: fun(memory_bytes: ^[]byte) {
+	p : ^View_Payload = &memory_bytes[0]
 	p.counter = 99
 	print(p.counter)
-	q : ^View_Payload = &memory[100]
+	q : ^View_Payload = &memory_bytes[100]
 	q.counter = 7
 	print(q.counter)
-	q = &memory[200]
+	q = &memory_bytes[200]
 	q.counter = 17
 	print(q.counter)
-	take_payload(&memory[150])
+	take_payload(&memory_bytes[150])
 }
 
-return_view :: fun(memory: ^[]byte) -> ^View_Payload {
-	return &memory[50]
+return_view :: fun(memory_bytes: ^[]byte) -> ^View_Payload {
+	return &memory_bytes[50]
 }
 
 test_byte_view :: fun() {

@@ -1,0 +1,15 @@
+module hide_param_neg
+
+//@ expect-fail: param 'lower' would hide the fun 'lower'
+
+// A param can't take the name of a fun, a type or a module in sight, as a
+// variable can't (hide_fun_neg): mara.string's lower would be out of reach
+// in the body. A named result likewise.
+
+use mara.string
+
+shout :: fun(lower: []utf8) -> i64 { return lower.len }
+
+main :: fun() {
+	print(shout("hey"))
+}
