@@ -38,6 +38,8 @@ typedef char          GLchar;
 // it directly avoids needing <stddef.h> for ptrdiff_t.
 typedef long long     GLsizeiptr;
 typedef long long     GLintptr;
+typedef unsigned long long GLuint64;   // a bindless texture's handle
+typedef unsigned char GLubyte;
 
 // Function pointer types
 typedef GLuint (*PFN_glCreateShader)(GLenum type);
@@ -75,6 +77,11 @@ typedef void   (*PFN_glCompressedTexSubImage3D)(GLenum target, GLint level, GLin
 typedef void   (*PFN_glTexStorage2D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
 typedef void   (*PFN_glTexStorage3D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
 typedef void   (*PFN_glBindBufferBase)(GLenum target, GLuint index, GLuint buffer);
+typedef const GLubyte *(*PFN_glGetStringi)(GLenum name, GLuint index);
+typedef GLuint64 (*PFN_glGetTextureHandleARB)(GLuint texture);
+typedef void   (*PFN_glMakeTextureHandleResidentARB)(GLuint64 handle);
+typedef void   (*PFN_glMakeTextureHandleNonResidentARB)(GLuint64 handle);
+typedef void   (*PFN_glUniformHandleui64ARB)(GLint location, GLuint64 value);
 typedef void   (*PFN_glGetShaderiv)(GLuint shader, GLenum pname, GLint *params);
 typedef void   (*PFN_glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 typedef void   (*PFN_glGetProgramiv)(GLuint program, GLenum pname, GLint *params);
@@ -122,6 +129,11 @@ static PFN_glCompressedTexSubImage3D  _glCompressedTexSubImage3D;
 static PFN_glTexStorage2D             _glTexStorage2D;
 static PFN_glTexStorage3D             _glTexStorage3D;
 static PFN_glBindBufferBase           _glBindBufferBase;
+static PFN_glGetStringi               _glGetStringi;
+static PFN_glGetTextureHandleARB      _glGetTextureHandleARB;
+static PFN_glMakeTextureHandleResidentARB    _glMakeTextureHandleResidentARB;
+static PFN_glMakeTextureHandleNonResidentARB _glMakeTextureHandleNonResidentARB;
+static PFN_glUniformHandleui64ARB    _glUniformHandleui64ARB;
 static PFN_glGetShaderiv              _glGetShaderiv;
 static PFN_glGetShaderInfoLog         _glGetShaderInfoLog;
 static PFN_glGetProgramiv             _glGetProgramiv;
@@ -174,6 +186,12 @@ void gl_load(GetProcAddressFn SDL_GL_GetProcAddress) {
     _glTexStorage2D            = (PFN_glTexStorage2D)SDL_GL_GetProcAddress("glTexStorage2D");
     _glTexStorage3D            = (PFN_glTexStorage3D)SDL_GL_GetProcAddress("glTexStorage3D");
     _glBindBufferBase          = (PFN_glBindBufferBase)SDL_GL_GetProcAddress("glBindBufferBase");
+    _glGetStringi              = (PFN_glGetStringi)SDL_GL_GetProcAddress("glGetStringi");
+    // (ARB_bindless_texture: NULL where the driver hasn't it — gl_has_extension says.)
+    _glGetTextureHandleARB     = (PFN_glGetTextureHandleARB)SDL_GL_GetProcAddress("glGetTextureHandleARB");
+    _glMakeTextureHandleResidentARB    = (PFN_glMakeTextureHandleResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleResidentARB");
+    _glMakeTextureHandleNonResidentARB = (PFN_glMakeTextureHandleNonResidentARB)SDL_GL_GetProcAddress("glMakeTextureHandleNonResidentARB");
+    _glUniformHandleui64ARB    = (PFN_glUniformHandleui64ARB)SDL_GL_GetProcAddress("glUniformHandleui64ARB");
     _glGetShaderiv             = (PFN_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     _glGetShaderInfoLog        = (PFN_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog");
     _glGetProgramiv            = (PFN_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
@@ -250,6 +268,12 @@ void   glDetachShader(GLuint program, GLuint shader)                            
 void   glDeleteVertexArrays(GLsizei n, const GLuint *arrays)                           { _glDeleteVertexArrays(n, arrays); }
 void   glDeleteBuffers(GLsizei n, const GLuint *buffers)                               { _glDeleteBuffers(n, buffers); }
 
+// Bindless textures (ARB_bindless_texture)
+GLuint64 glGetTextureHandleARB(GLuint texture)                                        { return _glGetTextureHandleARB(texture); }
+void   glMakeTextureHandleResidentARB(GLuint64 handle)                                { _glMakeTextureHandleResidentARB(handle); }
+void   glMakeTextureHandleNonResidentARB(GLuint64 handle)                             { _glMakeTextureHandleNonResidentARB(handle); }
+void   glUniformHandleui64ARB(GLint location, GLuint64 value)                         { _glUniformHandleui64ARB(location, value); }
+
 // Multi-draw indirect
 void   glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride) { _glMultiDrawElementsIndirect(mode, type, indirect, drawcount, stride); }
 
@@ -264,6 +288,27 @@ void   glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *indirec
 
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS    0x8B82
+#define GL_EXTENSIONS     0x1F03
+#define GL_NUM_EXTENSIONS 0x821D
+
+extern void glGetIntegerv(GLenum pname, GLint *data);   // GL 1.1, opengl32
+
+// 1 when the context's driver has the extension `name`
+// ("GL_ARB_bindless_texture"), else 0: its functions are there to call only
+// then. Asks GL for its extensions one at a time (GL 3.0).
+GLboolean gl_has_extension(const char *name) {
+    if (!_glGetStringi) return 0;
+    GLint count = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+    for (GLint i = 0; i < count; i++) {
+        const GLubyte *ext = _glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        if (!ext) continue;
+        int k = 0;
+        while (name[k] && (GLubyte)name[k] == ext[k]) k++;
+        if (!name[k] && !ext[k]) return 1;
+    }
+    return 0;
+}
 
 GLuint gl_compile_shader(GLenum type, const char *src) {
     GLuint shader = _glCreateShader(type);

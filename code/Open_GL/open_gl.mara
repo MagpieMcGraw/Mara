@@ -259,6 +259,9 @@ foreign static_lib "open_gl" {
     // Convenience: link vertex+fragment shaders into a program.
     // Returns program id on success, 0 on failure (error printed to stdout).
     fun gl_link_program(vs: u32, fs: u32) -> u32
+    // 1 when the driver has the extension `name`, else 0:
+    // `gl.gl_has_extension("GL_ARB_bindless_texture")`. Asked after gl_load.
+    fun gl_has_extension(name: cstring) -> u8
 }
 
 foreign static_lib "open_gl" prefix gl {
@@ -333,6 +336,17 @@ foreign static_lib "open_gl" prefix gl {
     // Cleanup
     fun DeleteVertexArrays(n: i32, arrays: ^u32)                        // const GLuint* arrays
     fun DeleteBuffers(n: i32, buffers: ^u32)                            // const GLuint* buffers
+
+    // Bindless textures (ARB_bindless_texture, where gl_has_extension says
+    // so). A texture's handle, made resident, is read by any shader without
+    // binding it to a unit: handles go in a buffer or a uniform, and a
+    // shader with `#extension GL_ARB_bindless_texture : require` samples
+    // through them. A handle's texture can't change after (its parameters,
+    // its storage); make it non-resident before deleting the texture.
+    fun GetTextureHandleARB(texture: u32) -> u64
+    fun MakeTextureHandleResidentARB(handle: u64)
+    fun MakeTextureHandleNonResidentARB(handle: u64)
+    fun UniformHandleui64ARB(location: i32, value: u64)
 
     // Multi-draw indirect
     fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: ^byte, drawcount: i32, stride: i32)   // const void* indirect

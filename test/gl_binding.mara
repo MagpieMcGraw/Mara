@@ -27,6 +27,12 @@ uses :: fun() {
 	block : [16!]byte
 	gl.CompressedTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 4, 4, 1, gl.RGBA_S3TC_DXT5, 16, &block[0])
 	gl.CompressedTexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA_S3TC_DXT5, 4, 4, 1, 0, 16, &block[0])
+	if gl.gl_has_extension("GL_ARB_bindless_texture") == 1 {
+		handle := gl.GetTextureHandleARB(1)
+		gl.MakeTextureHandleResidentARB(handle)
+		gl.UniformHandleui64ARB(0, handle)
+		gl.MakeTextureHandleNonResidentARB(handle)
+	}
 }
 
 main :: fun(args: [][]utf8) {
