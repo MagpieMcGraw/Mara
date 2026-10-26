@@ -2595,6 +2595,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
         if fn, is_from_number := callee.origin.(Origin_From_Number); is_from_number { return llvm_from_number(e, op, ops, callee, fn.enum_) }
+        if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
         name = mara_fn(g, callee.name)
     }
@@ -2752,6 +2753,62 @@ llvm_from_number :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
         ir_cast(g, t, .Trunc, IR_I64, wide, tag)
         e.value[op] = t
     }
+    return true
+}
+
+// `x.text()` (Origin_Variant_Text), where it's called: x's name as an atom
+// — a constant's as it is; else x switched on over the values of its
+// enum's variants (an err's: every error set's, and Ok), "?" for none. The
+// atoms were made as the program was checked (tc_text_fun,
+// atoms_for_err_text): found here, none made.
+@(private="file")
+llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
+    g := e.g
+    if len(ops) != 1 { e.note = "text()'s value"; return false }
+    pt := fn_param(callee, 0).type_
+    v := llvm_operand(e, ops[0], pt) or_return
+    ty, atom_ty := llvm_type_from_checker(pt), llvm_type_from_checker(fn_result(callee, 0))
+    Case :: struct { value: int, text: string }
+    cases := make([dynamic]Case, 0, 16, context.temp_allocator)
+    if et != nil {
+        for name, value in et.variants { append(&cases, Case{value, variant_text(et, name)}) }
+    } else {
+        append(&cases, Case{0, "Ok"})
+        for _, set in g.checked.table.enums {
+            if !set.is_error_kind { continue }
+            for name, value in set.variants { if value != 0 { append(&cases, Case{value, variant_text(set, name)}) } }
+        }
+    }
+    // (By value, then name: one case a value — two variants of one value,
+    // the first's name — the same code each build.)
+    slice.sort_by(cases[:], proc(a, b: Case) -> bool { return a.value < b.value || a.value == b.value && a.text < b.text })
+    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
+    if v.kind == .Int {
+        text := "?"
+        for c in cases { if i128(c.value) == v.n { text = c.text; break } }
+        e.value[op] = atom(g, text)
+        return true
+    }
+    at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
+    ir_store(g, atom_ty, atom(g, "?"), at)
+    done := fresh_label(g, "text.done")
+    arms := make([dynamic]Ir_Arg, 0, len(cases), context.temp_allocator)
+    texts := make([dynamic]string, 0, len(cases), context.temp_allocator)
+    for c, i in cases {
+        if i > 0 && c.value == cases[i - 1].value { continue }
+        append(&arms, Ir_Arg{ty, ir_int(c.value), fresh_label(g, "text.case")})
+        append(&texts, c.text)
+    }
+    ir_switch(g, ty, v, done, arms[:])
+    for arm, i in arms {
+        emit_label(g, arm.l)
+        ir_store(g, atom_ty, atom(g, texts[i]), at)
+        emit_br(g, done)
+    }
+    emit_label(g, done)
+    r := fresh_tmp(g)
+    ir_load(g, r, atom_ty, at)
+    e.value[op] = r
     return true
 }
 

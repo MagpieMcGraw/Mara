@@ -882,7 +882,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     }
     // (No source, and called: a foreign fun, an enum's from_text.)
     _, from_text := ft.origin.(Origin_From_Text)
-    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text {
+    _, variant_text := ft.origin.(Origin_Variant_Text)
+    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }

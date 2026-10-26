@@ -701,6 +701,7 @@ Target_OS :: enum {
 //               the text with E's variants' names where it is
 //   From_Number → `E(n)`: likewise — each call finds the variant whose
 //               value n is where it is (a constant's, when it's checked)
+//   Variant_Text → `x.text()`: likewise — x's name as an atom, by its value
 //
 // Foreign-only metadata (library, link_name) lives in the Foreign variant, so
 // source funs don't carry empty fields they never use.
@@ -710,6 +711,7 @@ Function_Origin :: union {
     Origin_Foreign,
     Origin_From_Text,
     Origin_From_Number,
+    Origin_Variant_Text,
 }
 
 Origin_Source :: struct {}
@@ -729,6 +731,18 @@ Origin_From_Text :: struct {
 
 Origin_From_Number :: struct {
     enum_: ^Type_Enum,                 // whose variants' values the number is compared with
+}
+
+Origin_Variant_Text :: struct {
+    enum_: ^Type_Enum,                 // whose variants' names it gives; nil: an err's, of every error set
+}
+
+// The text `x.text()` gives for a variant of an enum: its own name, as
+// `E.from_text` takes it back; an error set's with its set's
+// (`Parse_Error.Not_A_Digit`), as print shows an err.
+variant_text :: proc(et: ^Type_Enum, name: string) -> string {
+    if et.is_error_kind && name != "Ok" { return strings.concatenate({et.source_name, ".", name}, context.temp_allocator) }
+    return name
 }
 
 // Build a mangled name for a generic instantiation: "Array" + [int] -> "Array__int"

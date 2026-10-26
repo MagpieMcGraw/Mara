@@ -372,7 +372,8 @@ example_struct :: fun() {
 // (the highest value + 1 of them), indexed by them — `seen[Green]`.
 //
 // A number gives the variant whose value it is: `Light(2)` is Green, and
-// `i64(Green)` is 2 again. A constant that's no variant's value is an error;
+// `i64(Green)` is 2 again. `l.text()` is a variant's name, "Green" (an
+// atom: text from the program's table), as `Light.from_text` takes it. A constant that's no variant's value is an error;
 // a number known only when the program runs is checked then, and the
 // program stops on one that's none.
 example_union :: fun() {
@@ -386,6 +387,7 @@ example_union :: fun() {
 	seen[go] = true
 	print(seen.len, seen[Green])           // 3 true
 	print(Light(2), i64(Light.Red))        // Light.Green 0
+	print(go.text())                       // Green
 }
 
 
@@ -395,7 +397,8 @@ example_union :: fun() {
 // that can fail returns an `err` last: `-> i64, err`. `return 0, Empty`
 // fails; reaching its end or `return n` succeeds (the err is Ok). The caller
 // must look at the err — `if e`, true when it failed — or pass it on with
-// `?`. See errors.mara.
+// `?`. `e.text()` is its name as text, `Parse_Error.Not_A_Digit`: an atom,
+// to go in a file or a window's title. See errors.mara.
 example_error :: fun() {
 	Parse_Error :: error { Empty, Not_A_Digit }
 	digit :: fun(c: utf8) -> i64, err {

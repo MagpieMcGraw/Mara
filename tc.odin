@@ -508,6 +508,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
 
+    if checked.err_text { atoms_for_err_text(checked) }
     // (lower false: the annotations are all that's wanted — mara lsp's.)
     fns := flow_functions(checked)   // (in name order, once)
     mid: Middle
@@ -1116,6 +1117,21 @@ checked_atom :: proc(checked: ^Checked_Program, text: string) -> u32 {
     return id
 }
 
+// An err's text(), asked for somewhere: every error set's variants' names
+// (and Ok) made atoms now that all are checked — in their values' order,
+// the same each build — for codegen to find (llvm_variant_text).
+atoms_for_err_text :: proc(checked: ^Checked_Program) {
+    checked_atom(checked, "Ok")
+    Named :: struct { value: int, text: string }
+    all := make([dynamic]Named, context.temp_allocator)
+    for _, et in checked.table.enums {
+        if !et.is_error_kind { continue }
+        for name, value in et.variants { if value != 0 { append(&all, Named{value, variant_text(et, name)}) } }
+    }
+    slice.sort_by(all[:], proc(a, b: Named) -> bool { return a.value < b.value || a.value == b.value && a.text < b.text })
+    for x in all { checked_atom(checked, x.text) }
+}
+
 // The atoms the program's own arena allocations name — a big local's name
 // and where it is, a big temporary's ("temp") — each given its place now, in
 // the codes' written order, when the arena's alloc takes them (Arena_Debug's
@@ -1199,6 +1215,7 @@ Checked_Program :: struct {
     atoms:          [dynamic]string,
     atom_ids:       map[string]u32,
     atoms_lock:     sync.Mutex,
+    err_text:       bool,   // an err's text() asked for: every error set's names made atoms (atoms_for_err_text)
 
     // Its names (design/name_resolution.md): the resolver's, and what each
     // declaration meant once the check was done (checked_binding) — mara

@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // `x.f(args)`, resolved by its qualifier: a function of the type, module or
@@ -123,6 +124,14 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 args, failed = tc_self_args(k, n, fn, st, qt, arg, args)
             }
         }
+        // (`m.text()`, `e.text()`: an enum's or an err's name.)
+        if !resolved && name == "text" && len(args) == 0 {
+            if ft := tc_text_fun(k, qt); ft != nil {
+                qual, resolved = ft, true
+                k.annot.call_names[tc_sid(k, n)] = ft.name
+                args = tc_with_receiver(arg, args)
+            }
+        }
         if !resolved { args = tc_with_receiver(arg, args) }
     }
     if failed { return Type_Error{} }
@@ -218,6 +227,36 @@ tc_from_number_fun :: proc(qt: Type, et: ^Type_Enum, pt: Type) -> ^Type_Scope {
     append(&ft.return_types, qt)
     ft.origin = Origin_From_Number{enum_ = et}
     ft.body_span = et.span
+    return ft
+}
+
+// `x.text()`, x an enum or an err: its fun — made at each call, its body
+// generated where it's called (Origin_Variant_Text) — giving x's name as
+// an atom (variant_text; "?" for a value no variant has). The names' atoms
+// are made now, in a fixed order, so their ids are the same each build: an
+// enum's here, an open err's — any error set's — once all are checked
+// (atoms_for_err_text). nil: x is neither.
+tc_text_fun :: proc(k: ^TC, qt: Type) -> ^Type_Scope {
+    et, is_enum := distinct_base(qt).(^Type_Enum)
+    _, is_err := distinct_base(qt).(Type_Err)
+    if !is_enum && !is_err { return nil }
+    checked_atom(k.checked, "?")
+    if is_err {
+        k.checked.err_text = true
+    } else {
+        names := make([dynamic]string, 0, len(et.variants), context.temp_allocator)
+        for name in et.variants { append(&names, variant_text(et, name)) }
+        slice.sort(names[:])
+        for name in names { checked_atom(k.checked, name) }
+    }
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.home_package = et.home_package if is_enum else k.pkg
+    ft.name = strings.concatenate({type_name(qt), ".text"})
+    ft.source_name = "text"
+    append(&ft.params, Struct_Type_Field{name = "value", type_ = qt})
+    append(&ft.return_types, Type_Atom{})
+    ft.origin = Origin_Variant_Text{enum_ = et if is_enum else nil}
     return ft
 }
 

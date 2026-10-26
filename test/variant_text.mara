@@ -1,0 +1,42 @@
+module variant_text
+
+use mara.core
+
+//@ expect-output: enum: Slow Fast Mode.Slow
+//@ expect-output: err: Parse_Error.Not_A_Digit Ok 23
+//@ expect-output: open: Other_Error.Lost
+//@ expect-output: kept: failed: Parse_Error.Not_A_Digit
+//@ expect-output: constant: Parse_Error.Empty
+
+// `x.text()`: an enum's or an err's name, as an atom — constant text from
+// the program's table, nothing copied, usable wherever text goes (a []utf8,
+// an append into a buffer: a log file's line, a window's title). An enum's
+// is its variant's own name (Mode.from_text takes it back); an err's has
+// its set's, as print shows it. An err could only be printed before
+// (sooblivion's journal).
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+Parse_Error :: error { Empty, Not_A_Digit }
+Other_Error :: error { Lost }
+
+digit :: fun(c: utf8) -> i64, err {
+	if c < '0' or c > '9' do return 0, Not_A_Digit
+	return i64(c - '0'), Ok
+}
+
+main :: fun(args: [][]utf8) {
+	m := Mode.Slow
+	if args.len > 5 do m = .Fast
+	print("enum:", m.text(), Mode.Fast.text(), Mode.from_text(m.text()))
+	_, e := digit('x')
+	_, ok := digit('3')
+	name : []utf8 = e.text()
+	print("err:", name, ok.text(), name.len)
+	lost : err = Lost
+	print("open:", lost.text())
+	buf : str64
+	&buf + "failed: "
+	&buf + e.text()
+	print("kept:", buf)
+	print("constant:", Parse_Error.Empty.text())
+}
