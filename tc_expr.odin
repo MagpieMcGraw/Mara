@@ -143,6 +143,10 @@ tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
     case .Array:
         if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array {
             for e in tree_list(tr, tr.a[n]) { tc_settle(k, e, fa.elem) }
+        } else if pa, is_list := distinct_base(t).(^Type_Partial_Array); is_list {
+            // (Into a list, `[8]u8 = [1, 2, 3]`: its items at the list's
+            // element type, as a fixed array's are.)
+            for e in tree_list(tr, tr.a[n]) { tc_settle(k, e, pa.elem) }
         }
     case .Slice:
         tc_settle(k, Tree_Id(tr.a[n]), t)   // (`[1, 2, 3][:]`: the array it views, of the slice's elements)
@@ -158,6 +162,13 @@ tc_open :: proc(t: Type) -> bool {
     return is_infer(t) && infer_cell_of(t) == nil
 }
 
+// An element type no use has decided yet: a width's, or an array's of
+// such (`[[1, 2], [3, 4]]`, its items' arrays of open numbers).
+tc_open_elems :: proc(t: Type) -> bool {
+    if fa, is_array := t.(^Type_Fixed_Array); is_array { return tc_open_elems(fa.elem) }
+    return tc_open(t)
+}
+
 // Whether a node's type is its use's to decide: a number's, a constant's,
 // an operation's of such (an open width), an untyped `void`, an array
 // literal's of open elements, an if's of either.
@@ -169,7 +180,7 @@ tc_open_node :: proc(k: ^TC, n: Tree_Id) -> bool {
     case .Ident:
         return tc_open(t) || is_any(t) && tc_name(k, n) == "void"
     case .Array, .If_Expr:
-        if fa, is_array := t.(^Type_Fixed_Array); is_array { return tc_open(fa.elem) }
+        if fa, is_array := t.(^Type_Fixed_Array); is_array { return tc_open_elems(fa.elem) }
         return k.t.tag[n] == .If_Expr && tc_open(t)
     case .Slice:
         sl, is_slice := t.(^Type_Slice)

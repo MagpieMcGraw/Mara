@@ -1,0 +1,13 @@
+module list_literal_overflow_neg
+
+//@ expect-fail: constant 300 overflows u8 (range 0..255)
+
+// An array literal's items take a list's element type (list_literal_items):
+// past its range, an error, as into a fixed array.
+
+use mara.core
+
+main :: fun() {
+	u8s : [8]u8 = [1, 300]
+	print(u8s.len)
+}

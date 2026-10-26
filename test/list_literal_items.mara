@@ -1,0 +1,51 @@
+module list_literal_items
+
+use mara.core
+
+//@ expect-output: u8: 3 3
+//@ expect-output: f32: 2 2.5
+//@ expect-output: assign: 2 5
+//@ expect-output: grid: 3 4
+//@ expect-output: floats: 1.5 4
+//@ expect-output: lists: 2 1 3
+//@ expect-output: arg: 3 255
+//@ expect-output: field: 2 7
+//@ expect-output: return: 2 0.5
+
+// An array literal's items take the type of where it goes: a list's
+// element type (`[8]u8 = [1, 2, 3]`), and inside a literal of literals the
+// inner arrays' (`[2!][2!]u8 = [[1, 2], [3, 4]]`). They stayed i64 and f64,
+// and failed to lower: "its write '' (the value's type)". Past the
+// element type's range is an error (list_literal_overflow_neg).
+
+Pixel :: struct {
+	rgb: [4]u8,
+}
+
+last :: fun(list: [8]u8) -> u8 {
+	return list[list.len - 1]
+}
+
+halves :: fun() -> [4]f32 {
+	return [0.25, 0.5]
+}
+
+main :: fun() {
+	u8s : [8]u8 = [1, 2, 3]
+	print("u8:", u8s.len, u8s[2])
+	f32s : [8]f32 = [1.5, 2.5]
+	print("f32:", f32s.len, f32s[1])
+	u8s = [4, 5]
+	print("assign:", u8s.len, u8s[1])
+	grid : [2!][2!]u8 = [[1, 2], [3, 4]]
+	print("grid:", grid[1][0], grid[1][1])
+	floats : [2!][2!]f32 = [[1.5, 2], [3, 4]]
+	print("floats:", floats[0][0], floats[1][1])
+	lists : [2][4]u8 = [[1, 2], [3]]
+	print("lists:", lists.len, lists[1].len, lists[1][0])
+	print("arg:", 3, last([1, 2, 255]))
+	p := Pixel{rgb = [6, 7]}
+	print("field:", p.rgb.len, p.rgb[1])
+	h := halves()
+	print("return:", h.len, h[1])
+}
