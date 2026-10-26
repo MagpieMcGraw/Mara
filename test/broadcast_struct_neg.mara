@@ -1,0 +1,17 @@
+module broadcast_struct_neg
+
+//@ expect-fail: `all v` gives every item of an array v, and Pair is a struct: give it its fields, `Pair{a = …, b = …}`
+
+// `{all v}` fills an array's items; a struct's fields are named, each its
+// own type (broadcast_struct_ok: a struct broadcast into an array). It
+// crashed the compiler, no word said (exit 127): the broadcast, checked as
+// a field, was the struct again, round and round.
+
+use mara.core
+
+Pair :: struct { a: i64  b: i64 }
+
+main :: fun() {
+	p : Pair = {all 2}
+	print(p.a)
+}

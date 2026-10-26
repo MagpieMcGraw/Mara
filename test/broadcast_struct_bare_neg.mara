@@ -1,0 +1,14 @@
+module broadcast_struct_bare_neg
+
+//@ expect-fail: and Pair is a struct: give it its fields
+
+// `all v` bare, where a struct goes: as `{all v}` (broadcast_struct_neg).
+
+use mara.core
+
+Pair :: struct { a: i64  b: i64 }
+
+main :: fun() {
+	p : Pair = all 2
+	print(p.a)
+}

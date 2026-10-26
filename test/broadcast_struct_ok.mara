@@ -1,0 +1,19 @@
+module broadcast_struct_ok
+
+use mara.core
+
+//@ expect-output: pairs: 1 2 1 2
+//@ expect-output: zero: 0 0
+
+// A struct broadcast into an array — every item the struct — and a
+// struct's `{0}`, all its fields zero; `{all v}` into a struct itself is an
+// error (broadcast_struct_neg).
+
+Pair :: struct { a: i64  b: i64 }
+
+main :: fun() {
+	pairs : [2!]Pair = {all Pair{a = 1, b = 2}}
+	print("pairs:", pairs[0].a, pairs[0].b, pairs[1].a, pairs[1].b)
+	z : Pair = {0}
+	print("zero:", z.a, z.b)
+}

@@ -415,6 +415,22 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[n]), t, name)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name)
+    } else if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {
+        // (`all v` gives an array's items v; a struct's fields are named.
+        // Checked as one of its fields, the broadcast was the struct again,
+        // round and round: the compiler's stack ran out, no word said.)
+        fields := make([dynamic]string, context.temp_allocator)
+        for f, i in sd.fields[first_user_field(sd):] {
+            if i == 3 {
+                append(&fields, "…")
+                break
+            }
+            append(&fields, fmt.tprintf("%s = …", f.name))
+        }
+        // (Its braces as arguments: fmt reads them in a format.)
+        written := strings.concatenate({type_name(t), "{", strings.join(fields[:], ", ", context.temp_allocator), "}"}, context.temp_allocator)
+        tc_error(k, span, TYPE_BROADCAST_INTO_STRUCT, type_name(t), written, "{0}")
+        return Type_Error{}
     } else if !zero && !empty {
         tc_literal_fields(k, n, entries, sd)
     }

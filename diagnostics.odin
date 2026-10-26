@@ -318,6 +318,7 @@ TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"
 TYPE_FOREIGN_FUN_PRIVATE :: "'%s' is a C function %s declares, seen only in the file that declares it (a foreign block lends its names to its own scope): call a Mara function that wraps it"
+TYPE_BROADCAST_INTO_STRUCT :: "`all v` gives every item of an array v, and %s is a struct: give it its fields, `%s` (`%s`: all zero)"
 TYPE_ALL_KEYWORD :: "`all` is a keyword — `all v` gives v for every item (a broadcast) — so nothing can be named it: call it something else"
 TYPE_ENUM_NUMBER_INTEGER :: "%s(n) takes an integer, the value of one of its variants: %s is none"
 TYPE_ENUM_NO_SUCH_VALUE :: "%d is no %s variant's value — its variants are %s"
