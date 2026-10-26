@@ -1,0 +1,11 @@
+module empty_array_untyped_neg
+
+//@ expect-fail: `[]` has nothing to say what it holds
+
+// `[]` holds nothing, so nothing in it says what it would hold: it needs
+// a place that does (empty_array_literal). It was taken as anything once.
+
+main :: fun() {
+	xs := []
+	print(xs)
+}

@@ -1,0 +1,31 @@
+module empty_array_literal
+
+//@ expect-output: field: 0 1
+//@ expect-output: declared: 0
+//@ expect-output: assigned: 0
+//@ expect-output: an argument: 0
+//@ expect-output: a list: 0 4
+
+// `[]`, an array literal of nothing: the zero of where it goes — an empty
+// view in a slice's place, an empty list in a list's. It built nothing
+// once, and lowering failed ("a Array lowering builds nothing for").
+
+use mara.core
+
+Texture :: struct { mips: []i64  width: i64 }
+
+count :: fun(xs: []i64) -> i64 { return xs.len }
+
+main :: fun() {
+	t := Texture{mips = [], width = 1}
+	print("field:", t.mips.len, t.width)
+	none : []i64 = []
+	print("declared:", none.len)
+	backing : [3!]i64 = [7, 8, 9]
+	view : []i64 = backing[:]
+	view = []
+	print("assigned:", view.len)
+	print("an argument:", count([]))
+	list : [4]i64 = []
+	print("a list:", list.len, list.cap)
+}

@@ -126,7 +126,17 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
-    if len(elems) == 0 { return Type_Error{} }
+    if len(elems) == 0 {
+        // (`[]`: none, of the element type its place takes — a view of
+        // nothing, an empty list. With no place saying, said so.)
+        #partial switch v in distinct_base(k.hint) {
+        case ^Type_Slice:         return type_fixed_array(0, v.elem)
+        case ^Type_Partial_Array: return type_fixed_array(0, v.elem)
+        case ^Type_Fixed_Array:   return type_fixed_array(0, v.elem)
+        }
+        if _, failed := k.hint.(Type_Error); !failed { tc_error(k, span, TYPE_EMPTY_ARRAY_NO_TYPE) }
+        return Type_Error{}
+    }
     et := tc_check(k, elems[0])
     for e, i in elems[1:] {
         // (A pointee's width not yet decided, either side: decided by the other.)

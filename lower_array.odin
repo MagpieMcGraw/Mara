@@ -67,14 +67,16 @@ lw_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, tt: Typ
 }
 
 // `[a, b, c]` (tc_array_literal): zero where it goes (else in a temporary),
-// then each element into its slot.
+// then each element into its slot. `[]`, no elements: the zero alone — an
+// empty view, an empty list.
 lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
     tr := k.t
     b := k.gb
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
-    if len(elems) == 0 { return {} }
-    in_temp := want != .Into || temp
+    // (A temporary is for a literal reading where it goes, `a = [a[1], a[0]]`:
+    // `[]` reads nothing, its zero written where it goes.)
+    in_temp := (want != .Into || temp) && !(len(elems) == 0 && want == .Into)
     placed := want != .Into && temp_span != {}
     at := temp_span if temp || placed else span
     d := dest
@@ -88,7 +90,9 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
         d = graph_build_temp(b, at, tt)
     }
     ga := graph_build_array(b, span, d)
-    if ga.elem_t == nil {
+    if len(elems) == 0 {
+        // (Nothing to store: what it is, its zero.)
+    } else if ga.elem_t == nil {
         r := lw_expr(k, elems[0], .Either)
         et := tc_node_type(k, elems[0])
         lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
@@ -96,7 +100,9 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     } else {
         lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, nil, nil), span)
     }
-    for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
+    if len(elems) > 1 {
+        for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
+    }
     t := tc_node_type(k, n)
     if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, t) }
     return lw_built(k, want, in_temp, temp, d, t, at, placed)

@@ -544,8 +544,11 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 
 tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, positional := false, probed: Type = nil) {
     // (An anonymous literal takes its shape from the field; a `.Variant`, its
-    // enum or union — a distinct one's too.)
-    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) || k.t.tag[v] == .Dot_Ident { k.hint = f.type_ }
+    // enum or union — a distinct one's too; `[]`, what it holds.)
+    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) || k.t.tag[v] == .Dot_Ident ||
+       k.t.tag[v] == .Array && k.t.a[v] == 0 {
+        k.hint = f.type_
+    }
     vt := probed if probed != nil else tc_check(k, value)   // (a spread that wasn't: checked as one)
     if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) {
         if positional {
