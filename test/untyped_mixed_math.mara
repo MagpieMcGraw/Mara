@@ -1,0 +1,34 @@
+module untyped_mixed_math
+
+use mara.core
+
+//@ expect-output: printed: 0.75 1.33333 2.5 -2.5
+//@ expect-output: declared: 1.33333 1
+//@ expect-output: casts: 1 3 18446744073709551615 0 2 0.25 2
+//@ expect-output: uses: 3
+
+// Untyped numbers in an operation take one width: a float if either is one,
+// whichever side (`2 / 1.5` was the int 2, the float truncated). Printed,
+// at their default (`print(1.5 / 2)` failed to lower: each literal took its
+// own width). In a cast, the cast's type when it's of their kind, else
+// their default: `f32(3 / 2)` divides ints, `u64(0xFFFF…)` fits. A
+// variable of no width written is its uses' to decide, printed or not.
+
+main :: fun() {
+	print("printed:", 1.5 / 2, 2 / 1.5, 3 - 0.5, -2 * 1.25)
+	x := 2 / 1.5
+	y := 3 / 2
+	print("declared:", x, y)
+	a := f32(3 / 2)
+	b := i64(7 / 2)
+	c := u64(0xFFFF_FFFF_FFFF_FFFF)
+	d := f64(1 / 2)
+	e := i32(2.9)
+	f := f32(1 / 4.0)
+	g := i64(5 / 2.0)
+	print("casts:", a, b, c, d, e, f, g)
+	n := 3
+	print(n)
+	small : u8 = n
+	print("uses:", small)
+}

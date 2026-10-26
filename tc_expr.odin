@@ -1088,6 +1088,10 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
     case "print":
         each(k, args, &types)
         for a, i in args { tc_is_value(k, a, types[i], tree_span(k.t, a), printed = true) }
+        // (Untyped numbers printed at their default width, an operation of
+        // them all at one: `print(1.5 / 2)` an f64 division — each left to
+        // its own, 2 was an i64 and the division had no width.)
+        for a, i in args { tc_settle_untyped(k, a, types[i], nil) }
         tc_print_format(k, args, span)
         return Type_Error{}, true
     case "crash":
@@ -1113,6 +1117,7 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
         return Type_Error{}, true
     }
     each(k, args, &types)
+    tc_settle_untyped(k, args[0], types[0], target)
     // (A known float made an int it doesn't fit: said so now.)
     if nt, to_int := target.(Type_Numeric); to_int && nt.kind != .Float && nt.bits > 0 {
         _, from_kind, from_num := numeric_info(types[0])
@@ -1131,6 +1136,22 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
         check_warning(k.c, span, WARN_REDUNDANT_CAST, name, operand, name)
     }
     return target, true
+}
+
+// An untyped number (or an operation of them), checked as `t`, given its
+// width where nothing else gives one — print's arguments, a cast's: the
+// cast's own type when it's of the number's kind (`u64(0xFFFF…)`,
+// `f32(1.5 / 2)`), else the number's default (`f32(3 / 2)` divides ints).
+// A variable of no width written is its uses' to decide: left as it is.
+tc_settle_untyped :: proc(k: ^TC, n: Tree_Id, t: Type, target: Type) {
+    if !is_infer(t) || infer_cell_of(t) != nil { return }
+    at := solidify_type(t)
+    _, open_float := resolve_infer(t).(Type_Infer_Float)
+    #partial switch v in target {
+    case Type_Numeric: if (v.kind == .Float) == open_float { at = target }
+    case Type_F64:     if open_float { at = target }
+    }
+    tc_settle(k, n, at)
 }
 
 // Whether `n`, checked as `t`, is a value where one goes with no type to

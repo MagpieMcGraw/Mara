@@ -2197,6 +2197,9 @@ promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
         if ca != nil && cb != nil { unify_infer_cells(c, ca, cb, span) }
         if ca != nil { return a }   // carry a binding cell so the result still defers
         if cb != nil { return b }
+        // (Two literals, an int and a float — `2 / 1.5` — a float, whichever
+        // side it's on: the left's kind made `x := 2 / 1.5` the int 2.)
+        if _, float := rb.(Type_Infer_Float); float { return rb }
         return ra
     }
     if a_open {
