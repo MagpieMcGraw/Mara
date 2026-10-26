@@ -1,0 +1,26 @@
+module loop_item_too_big_neg
+
+//@ expect-fail: 'layer', a Layer, is 1032 bytes, too big to copy onto the stack each round: take each item where it is, `for &layer in layers`
+
+// A loop's item of 1 KB or more would be copied into its name each round,
+// and a loop's name has no room on the arena: the loop takes each item
+// where it is instead (loop_item_big_ref). It stopped codegen with "can't
+// lower 'main' from the program graph: its local 'layer'" (sooblivion).
+
+use mara.core
+include mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+Layer :: struct {
+	pixels: [1024!]byte,
+	id: i64,
+}
+
+main :: fun() {
+	layers : [4]Layer
+	next(&layers).id = 7
+	for layer in layers {
+		print(layer.id)
+	}
+}

@@ -1,0 +1,30 @@
+module loop_item_big_ref
+
+use mara.core
+include mara.memory
+
+//@ expect-output: 7
+//@ expect-output: 9
+//@ expect-output: sum: 16
+
+// A loop over items of 1 KB or more takes each where it is, `for &layer in
+// layers`: a pointer to it, nothing copied (loop_item_too_big_neg).
+
+#allocator Arena_Basic(16 * MB)
+
+Layer :: struct {
+	pixels: [1024!]byte,
+	id: i64,
+}
+
+main :: fun() {
+	layers : [4]Layer
+	next(&layers).id = 7
+	next(&layers).id = 9
+	sum := 0
+	for &layer, i in layers {
+		print(layer.id)
+		sum += layer.id
+	}
+	print("sum:", sum)
+}

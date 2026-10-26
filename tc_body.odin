@@ -813,6 +813,13 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         }
         if v.type_ != 0 { elem = tc_type(k, v.type_, span) }
         if v.by_ref != 0 { elem = tc_ref_loop(k, v, ct, elem, span) }
+        // (An item too big for the stack — a 1 KB struct — would be copied
+        // into the loop's name each round, and no loop name lives on the
+        // arena: taken where it is instead, `for &item in xs`.)
+        if v.by_ref == 0 && v.elem != 0 && tc_text(v.elem) != "_" && elem != nil && routes_to_arena(elem) {
+            name := tc_text(v.elem)
+            tc_error(k, span, TYPE_LOOP_ITEM_TOO_BIG, name, type_name(elem), type_size(elem), name, tc_written(k, v.collection))
+        }
         // (A loop variable named `_` is none: nothing the body can name.)
         if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
         if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }

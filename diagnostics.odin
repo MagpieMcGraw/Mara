@@ -317,6 +317,7 @@ TYPE_VARIABLE_HIDES_VARIANT :: "%s '%s' would hide the variant %s.%s, %s: give i
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %s"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"
+TYPE_LOOP_ITEM_TOO_BIG :: "'%s', a %s, is %d bytes, too big to copy onto the stack each round: take each item where it is, `for &%s in %s` (a pointer to it, nothing copied)"
 TYPE_VALUE_TOO_LARGE_STACK_BYTES :: "value '%s' is too large for the stack (%d bytes). Route big values through the program's arena — add `include mara.memory`, then at the module's top:\n\n    #allocator Arena_Basic(64 * MB)"
 TYPE_SIZE_EXPRESSION_INTEGER :: "size expression must be an integer, got %s"
 TYPE_SLICE_COUNT_SPELLING :: "'%s(n)' is no type: n of %s are written `[:n]%s` (a slice of n)"
