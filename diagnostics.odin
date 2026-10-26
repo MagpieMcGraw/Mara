@@ -422,6 +422,7 @@ TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY :: "swizzle '%s' has component out of ran
 TYPE_LAST_ARM_MATCH :: "'else' must be the last arm in a match"
 TYPE_ENUM_VARIANT :: "enum '%s' has no variant '%s'"
 TYPE_UNION_VARIANT :: "union '%s' has no variant '%s'"
+TYPE_UNION_VARIANT_FIELD :: "'%s' is a field of %s's variant %s, and '%s' is a %s, which may hold another variant: reach the field in a match arm for it — `match %s`, then `%s`, where %s is the %s"
 TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING :: "dot shorthand '.%s' can only be used when matching on an enum or union"
 TYPE_MATCH_MISSING_VARIANT_ADD_ARM :: "match on '%s' is missing variant '%s' (add an arm, or `else` to opt out)"
 TYPE_MATCH_ERR_REQUIRES_ELSE :: "match on `err` requires an `else` arm — the error universe is open, so exhaustive matching is impossible"

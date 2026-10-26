@@ -1,0 +1,25 @@
+module union_variant_field_neg
+
+//@ expect-fail: 'height' is a field of Shape's variant Box, and 'box' is a Shape, which may hold another variant
+
+// A variant built with `:=` is its union's value, which may hold another
+// variant later: its fields are reached in a match arm for it
+// (union_variant_field_match). Writing one passed the checker, then
+// stopped lowering: "a write to an unknown field" (sooblivion); reading
+// one said "union 'Shape' has no variant 'height'".
+
+use mara.core
+
+Shape :: union {
+	Other = 0
+	Box {
+		width: f32
+		height: f32
+	}
+}
+
+main :: fun() {
+	box := Box{width = 1, height = 2}
+	box.height = 3
+	print(box)
+}

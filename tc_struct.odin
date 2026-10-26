@@ -102,7 +102,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             tc_unsupported(k, n, "a union's variant as a value")
             return Type_Error{}, false, 0, false
         }
-        tc_error(k, span, TYPE_UNION_VARIANT, type_name(v), field)
+        tc_union_field_error(k, span, v, Tree_Id(k.t.a[n]), field)
         return Type_Error{}, false, 0, false
     }
 
@@ -165,6 +165,22 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
 
 // `x.f = v`: the field the struct has, the value at its type.
 // (`op_tok`: a compound assignment's operator — the value is `target op value`.)
+// A union value's field named (`box.height`, box a Shape): a variant's
+// field, reached in a match arm for it, where the value is that variant —
+// said so; else no variant of it by that name.
+tc_union_field_error :: proc(k: ^TC, span: Span, ut: ^Type_Union, base: Tree_Id, field: string) {
+    for variant in ut.variants {
+        st := ut.variant_structs[variant] or_else nil
+        if st == nil { continue }
+        if sd := as_scope_body(st); sd != nil && resolve_struct_field(sd, field) != nil {
+            written := tc_written(k, base)
+            tc_error(k, span, TYPE_UNION_VARIANT_FIELD, field, type_name(ut), variant, written, type_name(ut), written, variant, written, variant)
+            return
+        }
+    }
+    tc_error(k, span, TYPE_UNION_VARIANT, type_name(ut), field)
+}
+
 tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0) {
     diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
     tr := k.t
@@ -179,6 +195,16 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         if pt, is_ptr := bt.(^Type_Ptr); is_ptr {
             if psd := as_scope_body(pt.elem); psd != nil && len(psd.fields) > 0 { sd = psd }
         }
+    }
+    // (A union's: a variant's field is written where a match knows it's
+    // that variant — `box.height = 3`, box a Shape, passed the checker and
+    // stopped lowering.)
+    ub := bt
+    if pt, is_ptr := bt.(^Type_Ptr); is_ptr { ub = pt.elem }
+    if ut, is_union := distinct_base(ub).(^Type_Union); is_union && sd == nil && field != "tag" && field != "pad" {
+        tc_union_field_error(k, span, ut, base, field)
+        tc_check(k, value)
+        return
     }
     if sd == nil {
         tc_header_assign(k, s, target, value, bt, field, op_tok)

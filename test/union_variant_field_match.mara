@@ -1,0 +1,40 @@
+module union_variant_field_match
+
+use mara.core
+
+//@ expect-output: written: 3
+//@ expect-output: other: other
+
+// A union's variant's fields, written and read in a match arm for it, where
+// the subject is that variant (union_variant_field_neg: outside one).
+
+Shape :: union {
+	Other = 0
+	Box {
+		width: f32
+		height: f32
+	}
+}
+
+main :: fun() {
+	box := Box{width = 1, height = 2}
+	match box {
+	Box
+		box.height = 3
+	else
+		print("not a box")
+	}
+	match box {
+	Box b
+		print("written:", b.height)
+	else
+		print("not a box")
+	}
+	other : Shape = .Other
+	match other {
+	Box
+		print("a box")
+	else
+		print("other:", "other")
+	}
+}
