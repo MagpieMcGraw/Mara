@@ -8,8 +8,10 @@
 // add into where it is — `next(&list) + file`.
 // Without the `&`, `name + "more"` joins: a new buffer of name's own type,
 // name as it was. Joins chain — `file := dir + "/" + name` (built once, in
-// place). A view, `s[a:b]`, has no room to join onto: make a buffer of it
-// first, `str64(view) + "more"` (Path(view), any `[N]utf8`). A fun that
+// place). A join on a line of its own is an error: its new buffer would go
+// nowhere, so `&name + c` is the one meant. A view, `s[a:b]`, has no room
+// to join onto: make a buffer of it first, `str64(view) + "more"`
+// (Path(view), any `[N]utf8`). A fun that
 // gives text back says how much room it gets, `-> str64`: what it returns
 // is copied into the caller's (a literal too — never a view of it).
 // `s[a:b]` is part of a text, without a copy.

@@ -1,0 +1,21 @@
+module dropped_join_ok
+
+use mara.core
+
+//@ expect-output: append: 3 abc
+//@ expect-output: join: 4 abcd 3
+//@ expect-output: discarded: 3
+
+// `&clean + c` appends to clean; `clean + c` joins, a new list, clean left
+// as it was. A join's value kept or discarded with `_ =` is fine; dropped,
+// it's an error (dropped_join_neg).
+
+main :: fun() {
+	clean : [16]utf8
+	for c in "abc" do &clean + c
+	print("append:", clean.len, clean)
+	joined := clean + 'd'
+	print("join:", joined.len, joined, clean.len)
+	_ = clean + 'e'
+	print("discarded:", clean.len)
+}

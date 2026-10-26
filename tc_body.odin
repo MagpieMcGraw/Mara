@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
@@ -105,6 +106,8 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
             _, is_void := rt.(Type_Void)
             _, is_error := rt.(Type_Error)
             if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_name(k, e)) }
+        } else if op := tc_unparen(k, e); (t.tag[op] == .Binary || t.tag[op] == .Unary) && rt != nil {
+            tc_dropped_value(k, op, rt, span)
         }
     case .Decl:
         tc_decl(k, s)
@@ -142,6 +145,29 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
+
+// An operator's value on a line of its own, `clean + c`: an error, as a
+// call's dropped value is. A join (mara.core's) makes a new list and leaves
+// its left one as it was, so the message points to the append, `&clean + c`.
+tc_dropped_value :: proc(k: ^TC, n: Tree_Id, rt: Type, span: Span) {
+    _, is_void := rt.(Type_Void)
+    _, is_error := rt.(Type_Error)
+    if is_void || is_error { return }
+    t := k.t
+    // (A chain's outer join is built in place, an append: tc_note_join_in_place.)
+    callee := tc_callee(k, n)
+    if t.tag[n] == .Binary && (is_core_join(callee) || is_core_append(callee)) {
+        first := tc_unparen(k, Tree_Id(t.a[n]))
+        for t.tag[first] == .Binary { first = tc_unparen(k, Tree_Id(t.a[first])) }
+        list := tc_written(k, first)
+        // (`&a + b + c` would append b and then join c onto nothing: for a
+        // chain, the first append only.)
+        hint := fmt.tprintf("&%s", tc_written(k, n)) if first == tc_unparen(k, Tree_Id(t.a[n])) else fmt.tprintf("&%s + ...", list)
+        tc_error(k, span, TYPE_DROPPED_JOIN, tc_written(k, n), list, hint)
+        return
+    }
+    tc_error(k, span, TYPE_DROPPED_VALUE, tc_written(k, n))
+}
 
 // `defer?`: only where a failure ends the code — a function that returns an
 // err, as `?` needs — and not in a defer's block, which ends no function.

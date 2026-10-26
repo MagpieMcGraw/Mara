@@ -1,0 +1,14 @@
+module dropped_value_neg
+
+//@ expect-fail: the value of 'n + 1' is dropped
+
+// An operator's value on a line of its own is an error, as a call's is
+// (TYPE_DISCARDED_RETURN): `n + 1` changes nothing.
+
+use mara.core
+
+main :: fun() {
+	n := 3
+	n + 1
+	print(n)
+}

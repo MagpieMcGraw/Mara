@@ -1,0 +1,16 @@
+module dropped_join_chain_neg
+
+//@ expect-fail: To append to it, write `&dir + ...`
+
+// A chain of joins dropped: `&dir + "/" + file` would append "/" and then
+// join file onto nothing, so the message names the first append only.
+
+use mara.core
+
+main :: fun() {
+	dir : str64
+	&dir + "code"
+	file := "main.mara"
+	dir + "/" + file
+	print(dir)
+}

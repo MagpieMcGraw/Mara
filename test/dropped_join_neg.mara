@@ -1,0 +1,15 @@
+module dropped_join_neg
+
+//@ expect-fail: 'clean + c' makes a new list, which is dropped here, and leaves 'clean' as it was. To append to it, write `&clean + c`
+
+// `clean + c` is a join: a new list, clean left as it was. On a line of its
+// own the new list goes nowhere, so the loop built nothing (sooblivion).
+// `&clean + c` appends: an operator changes an operand marked with `&`.
+
+use mara.core
+
+main :: fun() {
+	clean : [16]utf8
+	for c in "abc" do clean + c
+	print(clean.len)
+}
