@@ -97,6 +97,15 @@ GL_Tex_Format :: union(tag u32) {
     R8    = 33321
 }
 
+// Block-compressed texture formats, S3TC (DXT): what DDS textures hold.
+// Uploaded with CompressedTexImage2D, a mip level at a time.
+GL_Compressed_Format :: union(tag u32) {
+    RGB_S3TC_DXT1  = 33776   // 0x83F0
+    RGBA_S3TC_DXT1 = 33777   // 0x83F1
+    RGBA_S3TC_DXT3 = 33778   // 0x83F2
+    RGBA_S3TC_DXT5 = 33779   // 0x83F3
+}
+
 GL_Shader_Type :: union(tag u32) {
     FRAGMENT_SHADER = 35632
     VERTEX_SHADER   = 35633
@@ -167,9 +176,10 @@ foreign static_lib "opengl32" prefix gl {
 // ---------------------------------------------------------------------------
 // Modern GL functions (3.0+) — loaded at runtime via open_gl.c.
 // open_gl.c keeps function pointers populated by gl_load() and exposes
-// thin wrappers under the standard `gl*` symbol names. Compiled from
-// source on every build (rather than a prebuilt open_gl.lib) so changes
-// to the C side don't need a manual rebuild step.
+// thin wrappers under the standard `gl*` symbol names. Compiled into
+// open_gl.lib the first time a build needs it, and that lib is used from
+// then on: after a change to open_gl.c, delete open_gl.lib so the next
+// build compiles it again.
 // gl_load takes the platform's proc-address function as a parameter, so
 // open_gl.c has no link-time dependency on a specific windowing lib.
 // ---------------------------------------------------------------------------
@@ -231,6 +241,9 @@ foreign static_lib "open_gl" prefix gl {
     fun TexImage3D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, depth: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
     fun TexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
     fun GenerateMipmap(target: GL_Texture_Target)
+    // A block-compressed image as it is in the file: `size` bytes of `data`
+    // for one mip level of width x height.
+    fun CompressedTexImage2D(target: GL_Texture_Target, level: i32, internalformat: GL_Compressed_Format, width: i32, height: i32, border: i32, size: i32, data: ^byte)
 
     // Shader info
     fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^i32)           // GLint* params

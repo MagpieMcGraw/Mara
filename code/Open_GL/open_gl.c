@@ -69,6 +69,7 @@ typedef void   (*PFN_glActiveTexture)(GLenum texture);
 typedef void   (*PFN_glTexImage3D)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels);
 typedef void   (*PFN_glTexSubImage3D)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels);
 typedef void   (*PFN_glGenerateMipmap)(GLenum target);
+typedef void   (*PFN_glCompressedTexImage2D)(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data);
 typedef void   (*PFN_glGetShaderiv)(GLuint shader, GLenum pname, GLint *params);
 typedef void   (*PFN_glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 typedef void   (*PFN_glGetProgramiv)(GLuint program, GLenum pname, GLint *params);
@@ -110,6 +111,7 @@ static PFN_glActiveTexture            _glActiveTexture;
 static PFN_glTexImage3D               _glTexImage3D;
 static PFN_glTexSubImage3D            _glTexSubImage3D;
 static PFN_glGenerateMipmap           _glGenerateMipmap;
+static PFN_glCompressedTexImage2D     _glCompressedTexImage2D;
 static PFN_glGetShaderiv              _glGetShaderiv;
 static PFN_glGetShaderInfoLog         _glGetShaderInfoLog;
 static PFN_glGetProgramiv             _glGetProgramiv;
@@ -156,6 +158,7 @@ void gl_load(GetProcAddressFn SDL_GL_GetProcAddress) {
     _glTexImage3D              = (PFN_glTexImage3D)SDL_GL_GetProcAddress("glTexImage3D");
     _glTexSubImage3D           = (PFN_glTexSubImage3D)SDL_GL_GetProcAddress("glTexSubImage3D");
     _glGenerateMipmap          = (PFN_glGenerateMipmap)SDL_GL_GetProcAddress("glGenerateMipmap");
+    _glCompressedTexImage2D    = (PFN_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
     _glGetShaderiv             = (PFN_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     _glGetShaderInfoLog        = (PFN_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog");
     _glGetProgramiv            = (PFN_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
@@ -212,6 +215,7 @@ void   glActiveTexture(GLenum texture)                                          
 void   glTexImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels) { _glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixels); }
 void   glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels) { _glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
 void   glGenerateMipmap(GLenum target)                                                { _glGenerateMipmap(target); }
+void   glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) { _glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data); }
 
 // Shader info
 void   glGetShaderiv(GLuint shader, GLenum pname, GLint *params)                      { _glGetShaderiv(shader, pname, params); }
