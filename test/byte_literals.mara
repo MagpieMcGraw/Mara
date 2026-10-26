@@ -5,7 +5,7 @@ use mara.core
 //@ expect-output: decl: 4 true true true true
 //@ expect-output: u32: 285147137
 //@ expect-output: assign: true true true true
-//@ expect-output: list: 8 true true
+//@ expect-output: list: 3 8 true true
 //@ expect-output: arg: 4 72
 //@ expect-output: field: true 4
 //@ expect-output: mixed: true true true
@@ -44,7 +44,7 @@ main :: fun() {
 	data = [7, 8, 9, 10]
 	print("assign:", data[0] == 7, data[1] == 8, data[2] == 9, data[3] == 10)
 	list : [8]byte = [1, 2, 3]
-	print("list:", list.cap, list[1] == 2, list[2] == 3)
+	print("list:", list.len, list.cap, list[1] == 2, list[2] == 3)
 	print("arg:", 4, sum([72, 0, 0, 0]))
 	h := Header{magic = [82, 73, 70, 70], size = 4}
 	print("field:", h.magic[0] == 82, h.size)

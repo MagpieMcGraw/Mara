@@ -954,6 +954,13 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
 tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     tc_flow_use(k, vt, t, span)
     if is_infer(vt) { tc_literal_overflow(k, n, t, span) }
+    // (A fixed array into a list, `ints : [2]i64 = [1, 2, 3]`: its items
+    // must fit in the list's room, known now.)
+    if pa, to_list := distinct_base(t).(^Type_Partial_Array); to_list && pa.text == 0 {
+        if fa, from_fixed := distinct_base(vt).(^Type_Fixed_Array); from_fixed && fa.size > pa.size {
+            tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), pa.size)
+        }
+    }
     tc_settle(k, n, t)
 }
 

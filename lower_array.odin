@@ -103,6 +103,7 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     if len(elems) > 1 {
         for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
     }
+    graph_build_array_len(b, ga, len(elems), span)   // (into a list: as many as it holds)
     t := tc_node_type(k, n)
     if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, t) }
     return lw_built(k, want, in_temp, temp, d, t, at, placed)

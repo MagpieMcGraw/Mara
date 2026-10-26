@@ -3448,6 +3448,16 @@ graph_build_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, firs
     return Dest{kind = .Index, index = i, type_ = ga.elem_t, parent = &ga.d}
 }
 
+// A list its literal built, `ints : [8]i64 = [1, 2, 3]`: its len, the
+// literal's count, written after its items (each at its index, past the
+// zero len the list had).
+graph_build_array_len :: proc(b: ^Graph_Builder, ga: ^Graph_Array, count: int, span: Span) {
+    if _, is_list := distinct_base(ga.d.type_).(^Type_Partial_Array); !is_list || count == 0 { return }
+    t := slice_header_width_type
+    field := graph_op_value(b, .Field, .Synthetic, span, t, "len", graph_dest_place(b, ga.d, span))
+    graph_op(b, .Write, .Synthetic, span, nil, "", field, graph_const(b, .Synthetic, span, t, "len", Const_Value{int = i128(count)}))
+}
+
 // A variant built at d: the union zeroed, its tag written — a call's
 // (`construct`), then its struct's body, the constructor, run on `args`: its
 // fields' defaults; a literal's, no body: its fields are its entries.
