@@ -1,0 +1,35 @@
+module sdl_audio
+
+use mara.core
+sdl :: use mara.sdl
+
+//@ expect-output: formats: 33056 32784 8 12
+//@ expect-output: started: true
+//@ expect-output: opened: true
+//@ expect-output: queued: 512
+//@ expect-output: gain: true
+//@ expect-output: cleared: 0
+
+// mara.sdl's audio (SDL3's streams): a stream opened on the default device
+// takes samples, queues them, plays them. Run on SDL's dummy driver — no
+// sound, no device — so it runs anywhere. sooblivion bound these itself
+// (its audio.mara), C's NULLs as u64 0s.
+
+main :: fun() {
+	print("formats:", u32(sdl.F32), u32(sdl.S16), u32(sdl.U8), size_of(sdl.AudioSpec))
+	_ = sdl.SetHint("SDL_AUDIO_DRIVER", "dummy")
+	print("started:", sdl.InitSubSystem(sdl.Audio))
+	spec := sdl.AudioSpec{format = sdl.F32, channels = 2, freq = 44100}
+	stream := sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, spec)
+	print("opened:", stream != void)
+	// (64 stereo frames of silence: 128 f32s, 512 bytes, queued while the
+	// stream is paused.)
+	frames : [128!]f32
+	_ = sdl.PutAudioStreamData(stream, frames)
+	print("queued:", sdl.GetAudioStreamQueued(stream))
+	print("gain:", sdl.SetAudioStreamGain(stream, 0.5))
+	_ = sdl.ClearAudioStream(stream)
+	print("cleared:", sdl.GetAudioStreamQueued(stream))
+	sdl.DestroyAudioStream(stream)
+	sdl.QuitSubSystem(sdl.Audio)
+}

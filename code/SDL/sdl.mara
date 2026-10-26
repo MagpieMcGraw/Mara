@@ -1229,6 +1229,17 @@ foreign static_lib "SDL3" {
     fun SDL_RenamePath(oldpath: cstring, newpath: cstring) -> bool
     fun SDL_CopyFile(oldpath: cstring, newpath: cstring) -> bool
     fun SDL_GetPathInfo(path: cstring, info: ^PathInfo) -> bool
+    fun SDL_InitSubSystem(flags: Init_Flags) -> bool
+    fun SDL_QuitSubSystem(flags: Init_Flags)
+    fun SDL_OpenAudioDeviceStream(device: u32, spec: ^AudioSpec, callback: ^byte, userdata: ^byte) -> AudioStream
+    fun SDL_ResumeAudioStreamDevice(stream: AudioStream) -> bool
+    fun SDL_PauseAudioStreamDevice(stream: AudioStream) -> bool
+    fun SDL_PutAudioStreamData(stream: AudioStream, buf: ^byte, len: i32) -> bool
+    fun SDL_GetAudioStreamQueued(stream: AudioStream) -> i32
+    fun SDL_ClearAudioStream(stream: AudioStream) -> bool
+    fun SDL_FlushAudioStream(stream: AudioStream) -> bool
+    fun SDL_SetAudioStreamGain(stream: AudioStream, gain: f32) -> bool
+    fun SDL_DestroyAudioStream(stream: AudioStream)
 }
 
 Init :: fun(flags: Init_Flags) -> bool { return SDL_Init(flags) }
@@ -1365,4 +1376,72 @@ CreateDirectory :: fun(path: []utf8) -> bool { return SDL_CreateDirectory(cstrin
 RemovePath :: fun(path: []utf8) -> bool { return SDL_RemovePath(cstring(path)) }
 RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
 CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
-GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }
+GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }
+
+// Audio — a stream to play through: opened on a device, given samples
+// (PutAudioStreamData), it plays them, converting to the device's format
+// on the way. It starts paused: ResumeAudioStreamDevice. The subsystem
+// first: InitSubSystem(Audio) (or Init with it).
+
+// The device SDL picks: the system's default output (or input).
+AUDIO_DEVICE_DEFAULT_PLAYBACK  :: u32(0xFFFFFFFF)
+AUDIO_DEVICE_DEFAULT_RECORDING :: u32(0xFFFFFFFE)
+
+// An audio stream: what's put into it is played (OpenAudioDeviceStream).
+AudioStream :: distinct ^byte
+
+// A sample's format (SDL_AudioFormat): its bits, signed or not, a float or
+// not, its bytes' order. S16, S32 and F32 are this machine's order (little-
+// endian: x86, ARM).
+AudioFormat :: union(tag u32) {
+    U8    = 0x0008
+    S8    = 0x8008
+    S16LE = 0x8010
+    S16BE = 0x9010
+    S32LE = 0x8020
+    S32BE = 0x9020
+    F32LE = 0x8120
+    F32BE = 0x9120
+    S16   = 0x8010
+    S32   = 0x8020
+    F32   = 0x8120
+}
+
+// What a stream's samples are: their format, how many channels (2:
+// stereo, each frame a left sample and a right), how many frames a second.
+AudioSpec :: struct {
+    format: AudioFormat
+    channels: i32
+    freq: i32
+}
+
+// Starts or stops some of SDL (Audio, say) apart from Init.
+InitSubSystem :: fun(flags: Init_Flags) -> bool { return SDL_InitSubSystem(flags) }
+QuitSubSystem :: fun(flags: Init_Flags) { SDL_QuitSubSystem(flags) }
+
+// A stream onto `device` (AUDIO_DEVICE_DEFAULT_PLAYBACK) taking samples of
+// `spec`, paused: void failing (GetError says why). What's played is what's
+// put into it — no callback.
+OpenAudioDeviceStream :: fun(device: u32, spec: AudioSpec) -> AudioStream {
+    s := spec
+    return SDL_OpenAudioDeviceStream(device, &s, void, void)
+}
+// The stream's device playing, or paused.
+ResumeAudioStreamDevice :: fun(stream: AudioStream) -> bool { return SDL_ResumeAudioStreamDevice(stream) }
+PauseAudioStreamDevice :: fun(stream: AudioStream) -> bool { return SDL_PauseAudioStreamDevice(stream) }
+// Samples to play after what's queued: `data` (f32s for AudioFormat.F32),
+// its channels' samples one after another.
+PutAudioStreamData :: fun(stream: AudioStream, data: []$T) -> bool {
+    return SDL_PutAudioStreamData(stream, data.ptr, i32(data.len * size_of(T)))
+}
+// How many bytes are queued, not played yet: what to keep ahead of.
+GetAudioStreamQueued :: fun(stream: AudioStream) -> i32 { return SDL_GetAudioStreamQueued(stream) }
+// What's queued dropped, unplayed.
+ClearAudioStream :: fun(stream: AudioStream) -> bool { return SDL_ClearAudioStream(stream) }
+// What's queued played through, though it doesn't fill a whole chunk: put
+// at the end.
+FlushAudioStream :: fun(stream: AudioStream) -> bool { return SDL_FlushAudioStream(stream) }
+// The stream's volume: 1 as it is, 0 silent.
+SetAudioStreamGain :: fun(stream: AudioStream, gain: f32) -> bool { return SDL_SetAudioStreamGain(stream, gain) }
+// The stream closed, and its device with it (one opened for it).
+DestroyAudioStream :: fun(stream: AudioStream) { SDL_DestroyAudioStream(stream) }
