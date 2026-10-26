@@ -1,0 +1,15 @@
+module byte_not_number_neg
+
+//@ expect-fail: a byte isn't a number, so 'b' can't take '+': for arithmetic, convert it, `u8(b)`
+
+// A byte is memory, not a number: an operator other than a comparison
+// takes its value converted, `u8(b) + 1` (byte_literals). It said "did
+// you forget to import the module that defines the overload?".
+
+use mara.core
+
+main :: fun() {
+	data : [2!]byte = [41, 0]
+	b := data[0]
+	print(b + 1)
+}

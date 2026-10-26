@@ -519,6 +519,7 @@ TYPE_RIGHT_OPERAND_BOOL :: "right operand of '%s' must be bool (or an error), go
 TYPE_CANNOT_COMPARE_USING :: "cannot compare %s with %s using '%s'"
 TYPE_LEFT_OPERAND_COMPARISON_NUMERIC :: "left operand of comparison must be numeric, got %s"
 TYPE_RIGHT_OPERAND_COMPARISON_NUMERIC :: "right operand of comparison must be numeric, got %s"
+TYPE_BYTE_NOT_NUMBER :: "a byte isn't a number, so '%s' can't take '%s': for arithmetic, convert it, `u8(%s)`"
 TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT :: "mismatched types for '+': %s and %s - did you forget to import the module that defines the overload?"
 TYPE_APPEND_CHAIN :: "`%s` appends, and an append gives nothing back, so there's nothing to add %s to: put each append on a line of its own"
 TYPE_APPEND_VIEW_TO_LISTS :: "`%s + %s` would make a view an item, and an item is a %s, not a view: append to an item, `&%s[i] + %s`, or to a new one, `next(%s) + %s`"

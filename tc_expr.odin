@@ -557,6 +557,17 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             return fn_primary_return(callee)
         }
     }
+    // (A byte is memory, not a number: arithmetic and bitwise operators
+    // take its value converted, `u8(b) + 1`. Comparisons take it as it is.)
+    if !and_or && !is_comparison_op(op) && in_range == nil {
+        for side, i in ([2]Tree_Id{left, right}) {
+            if _, is_byte := distinct_base(lt if i == 0 else rt).(Type_Byte); is_byte {
+                written := tc_written(k, side)
+                tc_error(k, span, TYPE_BYTE_NOT_NUMBER, written, op_str(op), written)
+                return Type_Error{}
+            }
+        }
+    }
     #partial switch op {
     case .And, .Or:
         word := "and" if op == .And else "or"

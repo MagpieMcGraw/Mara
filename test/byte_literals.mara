@@ -11,6 +11,7 @@ use mara.core
 //@ expect-output: mixed: true true true
 //@ expect-output: named: true true
 //@ expect-output: return: true true
+//@ expect-output: convert: 8
 
 // Int literals go into an array of bytes, one byte each, from 0 to 255
 // (byte_literal_range_neg past that), as a comparison with a byte takes
@@ -55,4 +56,6 @@ main :: fun() {
 	print("named:", named[0] == 5, named[1] == 6)
 	r := riff()
 	print("return:", r[0] == 82, r[3] == 70)
+	// (Arithmetic takes a byte's value converted: byte_not_number_neg.)
+	print("convert:", u8(data[0]) + 1)
 }
