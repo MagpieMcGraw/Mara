@@ -182,39 +182,84 @@ compare_folded :: fun(a: []utf8, b: []utf8) -> i64 {
 }
 
 // The number a text spells — digits, maybe a point and more digits, maybe a
-// '-' first — and whether it is one: false when anything else is in it, or
-// it has no digit. ("12", "-0.5", "3." and ".5" are; "1e3" and "+1" aren't.)
+// '-' first, maybe an exponent last ("e-8", "E+3") — and whether it is one:
+// false when anything else is in it, or it has no digit before its exponent
+// or none in it. ("12", "-0.5", "3.", ".5" and "-6.24607e-008" are; "1e",
+// "e3" and "+1" aren't.) Up to 15 digits and a power of ten to 22 come out
+// the nearest f64; more, near it.
 parse_number :: fun(s: []utf8) -> f64, bool {
-	v : f64 = 0
-	digits := 0
 	i : i64 = 0
 	negative := false
-	if s.len > 0 {
-		if s[0] == '-' {
-			negative = true
-			i = 1
-		}
+	if s.len > 0 and s[0] == '-' {
+		negative = true
+		i = 1
 	}
+	// (The digits as one whole number, its first 18 that count; the point's
+	// place, and digits before it past those 18, move the power of ten.)
+	whole : i64 = 0
+	kept := 0
+	digits := 0
+	power : i64 = 0
+	point := false
 	for i < s.len {
+		if s[i] == '.' and not point {
+			point = true
+			i += 1
+			continue
+		}
 		d := i64(s[i]) - i64('0')
 		if d < 0 or d > 9 do break
-		v = v * 10.0 + f64(d)
+		if kept < 18 {
+			whole = whole * 10 + d
+			if whole > 0 do kept += 1
+			if point do power -= 1
+		elif not point
+			power += 1
+		}
 		digits += 1
 		i += 1
 	}
-	if i < s.len {
-		if s[i] == '.' {
+	if digits > 0 and i < s.len and (s[i] == 'e' or s[i] == 'E') {
+		i += 1
+		minus := false
+		if i < s.len and (s[i] == '-' or s[i] == '+') {
+			minus = s[i] == '-'
 			i += 1
-			place : f64 = 0.1
-			for i < s.len {
-				d := i64(s[i]) - i64('0')
-				if d < 0 or d > 9 do break
-				v += f64(d) * place
-				place *= 0.1
-				digits += 1
-				i += 1
-			}
 		}
+		e : i64 = 0
+		e_digits := 0
+		for i < s.len {
+			d := i64(s[i]) - i64('0')
+			if d < 0 or d > 9 do break
+			if e < 100000 do e = e * 10 + d
+			e_digits += 1
+			i += 1
+		}
+		if e_digits == 0 do return 0, false
+		if minus do e = -e
+		power += e
+	}
+	// (Scaled by 10^22 at a time, the most f64 holds exactly, then by the
+	// rest at once: one multiply or divide by an exact power, rounded once.)
+	v := f64(whole)
+	for power > 22 and v != 0 {
+		v *= 1e22
+		power -= 22
+	}
+	for power < -22 and v != 0 {
+		v /= 1e22
+		power += 22
+	}
+	ten : f64 = 1
+	steps := power
+	if steps < 0 do steps = -steps
+	for k in 0:steps {
+		ten *= 10.0
+	}
+	if power < 0 {
+		v /= ten
+	else
+		v *= ten
 	}
 	if negative do v = -v
 	return v, digits > 0 and i == s.len

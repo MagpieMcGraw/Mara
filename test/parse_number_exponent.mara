@@ -1,0 +1,39 @@
+module parse_number_exponent
+
+//@ expect-output: exponents: true true true true true
+//@ expect-output: nearest: true true true
+//@ expect-output: far: true true
+//@ expect-output: not numbers: false false false false false
+
+// parse_number reads an exponent, "e-8" or "E+3", as SpeedTree's curves
+// write them (`%g`, sooblivion): "-6.24607e-008" was refused. The digits
+// are read as one whole number, scaled by an exact power of ten, so up to
+// 15 of them come out the nearest f64, as the compiler reads a literal.
+
+use mara.core
+use mara.string
+
+main :: fun() {
+	a, ok_a := parse_number("-6.24607e-008")
+	b, ok_b := parse_number("1.5E3")
+	c, ok_c := parse_number("2e+2")
+	d, ok_d := parse_number("-0.5e1")
+	e, ok_e := parse_number(".5e1")
+	print("exponents:", ok_a and a == -6.24607e-8, ok_b and b == 1500.0, ok_c and c == 200.0, ok_d and d == -5.0, ok_e and e == 5.0)
+
+	f, _ := parse_number("0.1")
+	g, _ := parse_number("123456789.125")
+	h, _ := parse_number("12.5e-1")
+	print("nearest:", f == 0.1, g == 123456789.125, h == 1.25)
+
+	big, ok_big := parse_number("1e300")
+	small, ok_small := parse_number("1e-300")
+	print("far:", ok_big and big > 0.99999e300 and big < 1.00001e300, ok_small and small > 0.99999e-300 and small < 1.00001e-300)
+
+	_, x1 := parse_number("1e")
+	_, x2 := parse_number("e3")
+	_, x3 := parse_number("1e-")
+	_, x4 := parse_number("1.2.3")
+	_, x5 := parse_number("+1")
+	print("not numbers:", x1, x2, x3, x4, x5)
+}

@@ -18,7 +18,7 @@ use mara.os
 //@ expect-output: chars: 97 1 8212 3
 //@ expect-output: compare: -1 0 1 -1 -1
 //@ expect-output: folded compare: 0 1 -1
-//@ expect-output: numbers: true true true true false false false true true
+//@ expect-output: numbers: true true true true true false false true true
 //@ expect-output: ints: 0 7 -42 9223372036854775807 -9223372036854775808
 //@ expect-output: paths: [c.mara] [name] [dir] [c] []
 //@ expect-output: same: true true false
@@ -57,11 +57,11 @@ main :: fun() {
 
 	a, ok_a := parse_number("12")
 	b, ok_b := parse_number("-0.5")
-	_, ok_c := parse_number("1e3")
+	thousand, ok_c := parse_number("1e3")
 	_, ok_d := parse_number("-")
 	_, ok_e := parse_number("")
 	c, ok_f := parse_number("3.")
-	print("numbers:", a == 12.0, ok_a, b == -0.5, ok_b, ok_c, ok_d, ok_e, c == 3.0, ok_f)
+	print("numbers:", a == 12.0, ok_a, b == -0.5, ok_b, thousand == 1000.0 and ok_c, ok_d, ok_e, c == 3.0, ok_f)
 
 	big : i64 = 9223372036854775807
 	print("ints:", int_text(0), int_text(7), int_text(-42), int_text(big), int_text(-big - 1))
