@@ -137,7 +137,10 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     if len(elems) == 0 {
         // (`[]`: none, of the element type its place takes — a view of
-        // nothing, an empty list. With no place saying, said so.)
+        // nothing, an empty list. Where a slice goes, the empty slice
+        // itself: it views nothing, so it can be given back (`return []`)
+        // or kept anywhere. With no place saying, said so.)
+        if _, to_slice := distinct_base(k.hint).(^Type_Slice); to_slice { return k.hint }
         if place != nil { return type_fixed_array(0, place) }
         if _, failed := k.hint.(Type_Error); !failed { tc_error(k, span, TYPE_EMPTY_ARRAY_NO_TYPE) }
         return Type_Error{}

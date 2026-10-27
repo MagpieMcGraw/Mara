@@ -1557,10 +1557,14 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     then_n, else_n := tree_pair(tr, n)
+    hint := k.hint   // (where the expression goes, where each branch goes: `return if c do [] else s`)
     ct := tc_check(k, Tree_Id(tr.a[n]))
     if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_EXPRESSION_CONDITION_BOOL, type_name(ct)) }
     types: [2]Type
-    for branch, i in ([2]Tree_Id{then_n, else_n}) { types[i] = tc_check(k, branch) }
+    for branch, i in ([2]Tree_Id{then_n, else_n}) {
+        k.hint = hint
+        types[i] = tc_check(k, branch)
+    }
     t := types[0]
     switch {
     case is_untyped(types[0]) || is_infer(types[0]): t = types[1]

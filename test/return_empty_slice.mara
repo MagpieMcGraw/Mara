@@ -1,0 +1,60 @@
+module return_empty_slice
+
+//@ expect-output: returned: 0 0 Ok Fail.Bad
+//@ expect-output: kept: 0 0 0
+//@ expect-output: chosen: 0 1
+//@ expect-output: list: [3]
+
+// `[]` where a slice goes is the empty slice itself: it views nothing, so a
+// fun can give it back. It was typed an empty array, `[0!]utf8`, which an
+// array's rule for returns refused ("an array doesn't turn into a view when
+// it's given back"): sooblivion gave back `storage[0:0]` instead. In an
+// if-expression each branch takes where the expression goes, so `[]` there
+// is the result's slice too. Into a list, `[]` is still no items.
+
+use mara.core
+
+Fail :: error {
+	Bad
+}
+
+Holder :: struct {
+	xs : []i64
+}
+
+none :: fun() -> []utf8 {
+	return []
+}
+
+none_or_fail :: fun(fail: bool) -> []i64, err {
+	if fail do return [], Bad
+	return []
+}
+
+either :: fun(c: bool, s: []i64) -> []i64 {
+	return if c do [] else s
+}
+
+count :: fun(xs: []i64) -> i64 {
+	return xs.len
+}
+
+main :: fun() {
+	a := none()
+	b, e := none_or_fail(false)
+	_, e2 := none_or_fail(true)
+	print("returned:", a.len, b.len, e, e2)
+	d : []i64 = []
+	d = []
+	h := Holder{[]}
+	h.xs = []
+	print("kept:", d.len + h.xs.len, count([]), count(d))
+	nums : [3]i64
+	&nums + 9
+	print("chosen:", either(true, nums).len, either(false, nums).len)
+	list : [4]i64
+	&list + 1
+	list = []
+	&list + 3
+	print("list:", list)
+}
