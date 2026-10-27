@@ -139,10 +139,10 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
     defer file_close(id)
 
     head := toc[0 : cache_toc_bytes(count)]
-    _ = file_write(id, &head)?
+    _ = file_write(id, head)?
     for i in 0:count {
         px := blobs[i].pixels
-        _ = file_write(id, &px)?
+        _ = file_write(id, px)?
     }
 }
 
@@ -179,9 +179,9 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
     defer file_close(id)
 
     head := toc[0 : cache_toc_bytes(count)]
-    _ = file_write(id, &head)?
+    _ = file_write(id, head)?
     payload := data[0 : dcur]
-    _ = file_write(id, &payload)?
+    _ = file_write(id, payload)?
 }
 
 // ---------------------------------------------------------------------------
