@@ -74,6 +74,20 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     b := k.gb
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
+    // (Into a slice's place — `g : []i16 = [300, 400]`, `h.xs = [1, 2]` — the
+    // literal held as an array of its own in the block, as `[300, 400][:]`
+    // is, the place given a view of it: a slice's header holds no elements,
+    // and they were written past its len 0. Into a range, `a[1:3] = [9, 9]`,
+    // they are copied in, below.)
+    if sl, to_slice := distinct_base(dest.type_).(^Type_Slice); to_slice && want == .Into && len(elems) > 0 && !lw_range_dest(b, dest) {
+        held_t := new_clone(Type_Fixed_Array{size = len(elems), elem = sl.elem})
+        slot := graph_slot(b, "temp", nil, span)
+        lw_array_literal(k, n, .Into, w, graph_dest_var(slot, held_t), false, {})
+        graph_build_typed(b, slot, held_t)
+        view := graph_op_value(b, .Slice, .Implied, span, dest.type_, "", graph_var(b, slot, held_t, span))
+        graph_build_write_at(b, graph_dest_place(b, dest, span), view, span)
+        return {into = true, ok = true}
+    }
     // (A temporary is for a literal reading where it goes, `a = [a[1], a[0]]`:
     // `[]` reads nothing, its zero written where it goes.)
     in_temp := (want != .Into || temp) && !(len(elems) == 0 && want == .Into)
@@ -114,6 +128,12 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     t := tc_node_type(k, n)
     if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, t) }
     return lw_built(k, want, in_temp, temp, d, t, at, placed)
+}
+
+// Whether a destination is a range of a collection's items (`a[1:3] = …`,
+// lw_slice_assign): written into, not re-pointed.
+lw_range_dest :: proc(b: ^Graph_Builder, d: Dest) -> bool {
+    return d.kind == .At && d.at.op != NO_NODE && graph_op_of(b.g, d.at.op) == .Slice
 }
 
 // `a[lo:hi]` (tc_slice): its bounds, then its collection's place — a plain

@@ -1,0 +1,38 @@
+module array_literal_slice
+
+//@ expect-output: declared: [300, 400] 700
+//@ expect-output: assigned: [1, 2, 3] 3
+//@ expect-output: in a literal: [5, 6]
+//@ expect-output: into a field: [7, 8, 9]
+//@ expect-output: bytes: 3 255
+//@ expect-output: range written: [0, 9, 9, 0]
+
+// An array literal where a slice goes — declared, assigned, a field's — is
+// held as an array of its own in the block, as `[300, 400][:]` is, and the
+// slice views it. It was built into the slice's header, which holds no
+// elements: `g : []i16 = [300, 400]` stopped the program ("index 0 out of
+// bounds [0, 0)"), and an assignment didn't build. Into a range,
+// `a[1:3] = [9, 9]`, the elements are still copied in.
+
+use mara.core
+
+Holder :: struct {
+	xs : []i64
+}
+
+main :: fun() {
+	g : []i16 = [300, 400]
+	print("declared:", g, g[0] + g[1])
+	s : []i64 = []
+	s = [1, 2, 3]
+	print("assigned:", s, s.len)
+	h := Holder{[5, 6]}
+	print("in a literal:", h.xs)
+	h.xs = [7, 8, 9]
+	print("into a field:", h.xs)
+	b : []byte = [1, 2, 255]
+	print("bytes:", b.len, b[2])
+	a : [4!]i64 = [0, 0, 0, 0]
+	a[1:3] = [9, 9]
+	print("range written:", a)
+}

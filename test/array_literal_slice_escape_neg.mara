@@ -1,0 +1,18 @@
+module array_literal_slice_escape_neg
+
+//@ expect-fail: reference to a temporary would escape into `g`, which outlives it
+
+// An array literal a slice views is held in the block it is written in, so
+// a slice declared outside the block can't keep it: the array is gone when
+// the block ends.
+
+use mara.core
+
+main :: fun() {
+	g : []i64 = []
+	n := 1
+	if n == 1 {
+		g = [1, 2]
+	}
+	print(g)
+}
