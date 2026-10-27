@@ -1299,10 +1299,19 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
                 continue
             }
         }
+        if tr.tag[tc_unparen(k, side)] == .Array {
+            // (An array literal an overload's param takes, `&views + [1, 2,
+            // 3]`: built in a temporary and given as a call's argument is, a
+            // view of it where the param is a slice.)
+            if callee == nil || i >= len(callee.params) { lw_fail(k, side, "an array literal as an operand") }
+            r := lw_expr(k, side, .Either, w, temp_span = tree_span(tr, side))
+            types[i] = tc_node_type(k, side)
+            sides[i] = lw_value_as(k, side, types[i], r, callee.params[i].type_, span, {sig = callee, param = i})
+            continue
+        }
         r := lw_expr(k, side, .Either, w)
         st := tc_node_type(k, side)
         types[i] = st
-        if tr.tag[tc_unparen(k, side)] == .Array { lw_fail(k, side, "an array literal as an operand") }
         _, is_array := distinct_base(st).(^Type_Fixed_Array)
         arrays[i] = is_array && !r.place
         as := Graph_Widen{work = work, binary = true}
