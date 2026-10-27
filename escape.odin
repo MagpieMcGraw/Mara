@@ -45,6 +45,12 @@ import "core:strings"
 // joins back in there. A `let` view and a match arm's binding have no storage
 // of their own: they name the storage they view.
 //
+// FIELDS. A struct local's storage is a cell for each field (Esc_Cell), so
+// what one field is given isn't taken to be in the others: `x.f`, of the
+// whole variable, is f's cell. Through a parameter, `p.f` is field f of what
+// p points at (Esc_PF), and a summary keeps the field: a result read out of
+// `work.numbers` holds what the caller's work.numbers does, not all of work.
+//
 // SUMMARIES. Inside a callee all caller memory is depth 1, so a callee can't
 // tell a long-lived argument from a short-lived one. Instead each function's
 // summary records which parameters its result may point into, and which
@@ -73,11 +79,22 @@ Esc_Roots :: struct {
     deep:   Esc_Param_Set,   // caller memory reachable further through them
     global: bool,
     temp:   int,             // deepest block holding a value it views in place; 0 = none
-    vars:   Esc_Vars,        // variables' own storage, by index in the fun's
+    vars:   Esc_Vars,        // variables' own storage: their cells, by index in the fun's
+    pf:     [dynamic]Esc_PF, // a field of the caller memory a parameter points at
+    twof:   [dynamic]Esc_PF, // ... what that field holds, one step on
 }
 
-// Variables, by index in the fun's: a value's are mostly none or one — two
-// kept in place, and past two, all in a list.
+// Field `field` of a struct of type `type_` that parameter `param` points at
+// (Esc_Roots.pf), or what that field holds (Esc_Roots.twof, and a summary's
+// ret_field and field-qualified stores).
+Esc_PF :: struct {
+    param: int,
+    field: int,
+    type_: ^Type_Scope,
+}
+
+// Cells, by index in the fun's: a value's are mostly none or one — two kept
+// in place, and past two, all in a list.
 Esc_Vars :: struct {
     n:    i32,
     one:  [2]i32,
@@ -117,6 +134,8 @@ Esc_Store :: struct {
     dst_level: u8,
     src:       int,
     src_level: u8,
+    src_field: int,          // with src_type: what that field of src's struct holds (level two)
+    src_type:  ^Type_Scope,
 }
 
 ESC_LEVEL_ONE  :: 1
@@ -124,9 +143,10 @@ ESC_LEVEL_TWO  :: 2
 ESC_LEVEL_DEEP :: 3
 
 Esc_Summary :: struct {
-    ret:      Esc_Param_Set, // the result may point at what these arguments point at
-    ret_deep: Esc_Param_Set, // ... or at anything reachable through them
-    stores:   [dynamic]Esc_Store,
+    ret:       Esc_Param_Set,     // the result may point at what these arguments point at
+    ret_deep:  Esc_Param_Set,     // ... or at anything reachable through them
+    ret_field: [dynamic]Esc_PF,   // ... or at anything reachable from what a field of their struct holds
+    stores:    [dynamic]Esc_Store,
 }
 
 // A variable of the fun or struct being checked: a param, a named result, a
@@ -139,9 +159,23 @@ Esc_Var :: struct {
     depth: int,
     param: int,       // its position when a param; -1 otherwise
     slot:  int,       // its entry in a state; -1 when it can hold no reference
+                      // or is split into fields (its cells' slots)
     view:  bool,      // a `let` view or a match arm's binding: its slot holds
                       // the storage it names, not what it holds
     init:  Node_Id,   // a `let` view: the write declaring it
+    cell0: i32,       // its cells: one, or a struct local's, one per field
+    cells: i32,
+    split: ^Type_Scope, // the struct its cells are the fields of; nil when one cell
+}
+
+// A part of a variable's storage roots name: the whole variable, or one
+// field of a struct local (esc_scan splits them).
+@(private="file")
+Esc_Cell :: struct {
+    var:   i32,
+    field: int,       // -1: the whole variable
+    type_: Type,
+    slot:  int,       // its entry in a state; -1 when it can hold no reference
 }
 
 // Where a store lands, for its diagnostic.
@@ -168,6 +202,7 @@ Esc :: struct {
     ft:     ^Type_Scope,
     ctor:   bool,                // a struct's code: `Self` is its fields
     vars:   [dynamic]Esc_Var,
+    cells:  [dynamic]Esc_Cell,
     var_of: []i32,               // a declaration → its variable + 1, by id; 0 for none
     run_of: []i32,               // an operation → its run's position in `runs` + 1, by id; 0 for none
     slots:  int,
@@ -282,6 +317,9 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
     changed := false
     if !(s.ret <= cur.ret)           { cur.ret += s.ret; changed = true }
     if !(s.ret_deep <= cur.ret_deep) { cur.ret_deep += s.ret_deep; changed = true }
+    for pf in s.ret_field {
+        if !slice.contains(cur.ret_field[:], pf) { append(&cur.ret_field, pf); changed = true }
+    }
     for st in s.stores {
         if !slice.contains(cur.stores[:], st) { append(&cur.stores, st); changed = true }
     }
@@ -401,12 +439,41 @@ esc_scan :: proc(e: ^Esc) {
             }
         }
     }
-    for &v in e.vars {
-        if v.view || esc_has_refs(v.type_) {
-            v.slot = e.slots
-            e.slots += 1
+    // Each variable's cells: a struct local's fields apart, anything else one.
+    for &v, k in e.vars {
+        v.cell0 = i32(len(e.cells))
+        if sd := esc_split_struct(e, v); sd != nil {
+            v.split = sd
+            for &f, i in as_struct_body(sd).fields {
+                c := Esc_Cell{var = i32(k), field = i, type_ = f.type_, slot = -1}
+                if esc_has_refs(f.type_) {
+                    c.slot = e.slots
+                    e.slots += 1
+                }
+                append(&e.cells, c)
+            }
+        } else {
+            if v.view || esc_has_refs(v.type_) {
+                v.slot = e.slots
+                e.slots += 1
+            }
+            append(&e.cells, Esc_Cell{var = i32(k), field = -1, type_ = v.type_, slot = v.slot})
         }
+        v.cells = i32(len(e.cells)) - v.cell0
     }
+}
+
+// The struct a variable's cells split into, one per field: a local's (not a
+// param's, a result's, a view's), of a struct with fields that can hold a
+// reference. Else nil: one cell.
+@(private="file")
+esc_split_struct :: proc(e: ^Esc, v: Esc_Var) -> ^Type_Scope {
+    if v.view || graph_kind_of(e.g, v.node) != .Local { return nil }
+    ts, is_scope := distinct_base(v.type_).(^Type_Scope)
+    if !is_scope { return nil }
+    sd := as_struct_body(ts)
+    if sd == nil || len(sd.fields) < 2 || !esc_has_refs(ts) { return nil }
+    return ts
 }
 
 // --- the fixpoint --------------------------------------------------------------
@@ -464,7 +531,15 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     #partial switch graph_op_of(g, op) {
     case .Global:
         r.global = true
-    case .Field, .Swizzle:
+    case .Field:
+        // (Of a struct, that field: a split local's cell, a param's Esc_PF.)
+        base := esc_at(e, ops[0])
+        if ts, f := esc_field_of(e, op, ops[0]); ts != nil {
+            esc_join(r, esc_narrow(e, base, f, ts))
+        } else {
+            esc_join(r, base)
+        }
+    case .Swizzle:
         esc_join(r, esc_at(e, ops[0]))
     case .Variant:
         esc_join(r, esc_at(e, ops[0]))
@@ -553,15 +628,73 @@ esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
         if v.view {
             esc_join(r, state[v.slot])
         } else {
-            esc_vars_push(&r.vars, i32(k))
+            for c in v.cell0 ..< v.cell0 + v.cells { esc_vars_push(&r.vars, c) }
         }
         return
     }
     if e.ctor && d == 0 {
-        for v, k in e.vars { if graph_kind_of(e.g, v.node) == .Field { esc_vars_push(&r.vars, i32(k)) } }
+        for v in e.vars {
+            if graph_kind_of(e.g, v.node) != .Field { continue }
+            for c in v.cell0 ..< v.cell0 + v.cells { esc_vars_push(&r.vars, c) }
+        }
         return
     }
     r.global = true   // a constant, a function, the program's globals
+}
+
+// The struct and field index a Field operation takes of its place, when the
+// place is a struct's (not a slice's len, a pointer's).
+@(private="file")
+esc_field_of :: proc(e: ^Esc, op: Node_Id, place: Operand) -> (^Type_Scope, int) {
+    if place.op == NO_NODE { return nil, -1 }
+    ts, is_scope := distinct_base(graph_type(e.g, place.op)).(^Type_Scope)
+    if !is_scope { return nil, -1 }
+    sd := as_struct_body(ts)
+    if sd == nil { return nil, -1 }
+    name := graph_name(e.g, op)
+    for &f, i in sd.fields { if f.name == name { return ts, i } }
+    return nil, -1
+}
+
+// The part of `r` that is field f of a `ts`: of a split local of that type
+// named whole, its field's cell; of what a param points at, that field of it
+// (Esc_PF); the rest as it is.
+@(private="file")
+esc_narrow :: proc(e: ^Esc, r: Esc_Roots, f: int, ts: ^Type_Scope) -> Esc_Roots {
+    out: Esc_Roots
+    out.two, out.deep, out.global, out.temp = r.two, r.deep, r.global, r.temp
+    for pf in r.pf { esc_pf_push(&out.pf, pf) }
+    for tf in r.twof { esc_pf_push(&out.twof, tf) }
+    for i in r.params { esc_pf_push(&out.pf, Esc_PF{param = i, field = f, type_ = ts}) }
+    for vi in 0 ..< esc_var_count(r.vars) {
+        c := esc_var_at(r.vars, vi)
+        cell := e.cells[c]
+        v := e.vars[cell.var]
+        if v.split == ts && esc_whole(r.vars, v) {
+            if cell.field == f { esc_vars_push(&out.vars, c) }
+        } else {
+            esc_vars_push(&out.vars, c)
+        }
+    }
+    return out
+}
+
+// Whether every cell of a variable is among `cells`: the variable, whole.
+@(private="file")
+esc_whole :: proc(cells: Esc_Vars, v: Esc_Var) -> bool {
+    n: i32 = 0
+    for i in 0 ..< esc_var_count(cells) {
+        c := esc_var_at(cells, i)
+        if c >= v.cell0 && c < v.cell0 + v.cells { n += 1 }
+    }
+    return n == v.cells
+}
+
+@(private="file")
+esc_pf_push :: proc(list: ^[dynamic]Esc_PF, pf: Esc_PF) -> bool {
+    if slice.contains(list[:], pf) { return false }
+    append(list, pf)
+    return true
 }
 
 // The variable a declaration is, or -1: its own subtree's only.
@@ -640,20 +773,23 @@ esc_write :: proc(e: ^Esc, op: Node_Id, dest: Operand, val: Esc_Roots, state: []
     dst := esc_at(e, dest)
     if k := esc_var_named(e, dest); k >= 0 && !e.vars[k].view {
         esc_check(e, Esc_Site{op = op, place = dest}, dst, val)
-        if s := e.vars[k].slot; s >= 0 { esc_copy(&state[s], val) }
+        v := e.vars[k]
+        for c in v.cell0 ..< v.cell0 + v.cells {   // (a struct copied whole: each field may hold what it does)
+            if s := e.cells[c].slot; s >= 0 { esc_copy(&state[s], val) }
+        }
         return
     }
     esc_store(e, Esc_Site{op = op, place = dest}, dst, val, state)
 }
 
-// Check the rule, then record that the variables in `dst` may now hold what
+// Check the rule, then record that the cells in `dst` may now hold what
 // `val` points into.
 @(private="file")
 esc_store :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots, state: []Esc_Roots) {
     esc_check(e, site, dst, val)
     for vi in 0 ..< esc_var_count(dst.vars) {
-        k := esc_var_at(dst.vars, vi)
-        if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(&state[s], val) }
+        c := esc_var_at(dst.vars, vi)
+        if s := e.cells[c].slot; s >= 0 && !e.vars[e.cells[c].var].view { esc_join(&state[s], val) }
     }
 }
 
@@ -664,28 +800,40 @@ esc_check :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots) {
     if esc_deepest_local(e, val) > esc_shallowest(e, dst) && e.report {
         esc_report_store(e, site, val)
     }
-    if val.params == {} && val.two == {} && val.deep == {} { return }
+    if val.params == {} && val.two == {} && val.deep == {} && len(val.pf) == 0 && len(val.twof) == 0 { return }
     // Caller memory into caller memory can't be judged in here — every parameter
-    // is depth 1 to the callee. Summarize it; call sites check it.
+    // is depth 1 to the callee. Summarize it; call sites check it. (Into a
+    // field of a param's struct: into that struct, its field not kept.)
     for i in dst.params { esc_record_stores(e, i, ESC_LEVEL_ONE, val) }
+    for pf in dst.pf    { esc_record_stores(e, pf.param, ESC_LEVEL_ONE, val) }
     for i in dst.two    { esc_record_stores(e, i, ESC_LEVEL_TWO, val) }
+    for tf in dst.twof  { esc_record_stores(e, tf.param, ESC_LEVEL_TWO, val) }
     for i in dst.deep   { esc_record_stores(e, i, ESC_LEVEL_DEEP, val) }
     if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, ESC_LEVEL_ONE, val) }
     // A constructor's field is part of the constructed result.
     for vi in 0 ..< esc_var_count(dst.vars) {
-        k := esc_var_at(dst.vars, vi)
-        if e.vars[k].depth == ESC_CALLER {
-            e.sum.ret += val.params
-            e.sum.ret_deep += val.two + val.deep
-        }
+        if e.vars[e.cells[esc_var_at(dst.vars, vi)].var].depth == ESC_CALLER { esc_sum_ret(e, val) }
     }
+}
+
+// The result may point into what `val` does (a return, a constructor's field).
+@(private="file")
+esc_sum_ret :: proc(e: ^Esc, val: Esc_Roots) {
+    e.sum.ret += val.params
+    for pf in val.pf { e.sum.ret += {pf.param} }
+    e.sum.ret_deep += val.two + val.deep
+    for tf in val.twof { esc_pf_push(&e.sum.ret_field, tf) }
 }
 
 @(private="file")
 esc_record_stores :: proc(e: ^Esc, dst: int, dst_level: u8, val: Esc_Roots) {
-    for j in val.params { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_ONE}) }
-    for j in val.two    { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_TWO}) }
-    for j in val.deep   { esc_record(e, Esc_Store{dst, dst_level, j, ESC_LEVEL_DEEP}) }
+    for j in val.params { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_ONE}) }
+    for pf in val.pf    { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = pf.param, src_level = ESC_LEVEL_ONE}) }
+    for j in val.two    { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_TWO}) }
+    for tf in val.twof {
+        esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = tf.param, src_level = ESC_LEVEL_TWO, src_field = tf.field, src_type = tf.type_})
+    }
+    for j in val.deep   { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_DEEP}) }
 }
 
 @(private="file")
@@ -705,8 +853,7 @@ esc_return_op :: proc(e: ^Esc, ri: int, op: Node_Id, ops: []Operand, state: []Es
 
 @(private="file")
 esc_return :: proc(e: ^Esc, ri: int, op: Node_Id, val: Esc_Roots, o: Operand, state: []Esc_Roots) {
-    e.sum.ret += val.params
-    e.sum.ret_deep += val.two + val.deep
+    esc_sum_ret(e, val)
     if esc_deepest_local(e, val) <= ESC_CALLER || !e.report { return }
     if o.op != NO_NODE && esc_report_call_return(e, ri, op, o, state) { return }
     esc_diag(e, graph_origin(e.g, op), TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
@@ -809,9 +956,12 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
     }
     for i in sum.ret      { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) } }
     for i in sum.ret_deep { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) } }
+    for pf in sum.ret_field {
+        if pf.param < len(args) { esc_join(r, esc_arg(e, callee, args, pf.param, ESC_LEVEL_DEEP, state, pf)) }
+    }
     for st in sum.stores {
         if st.src >= len(args) || st.dst >= len(args) { continue }
-        val := esc_arg(e, callee, args, st.src, st.src_level, state)
+        val := esc_arg(e, callee, args, st.src, st.src_level, state, Esc_PF{param = st.src, field = st.src_field, type_ = st.src_type})
         dst: Esc_Roots
         if st.dst == ESC_STORE_GLOBAL {
             dst.global = true
@@ -823,11 +973,13 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
 }
 
 // Argument `i` as the callee's parameter `i` sees it (decay included), at a
-// level: what it points at; one step on from there; anything reachable.
+// level: what it points at; one step on from there; anything reachable. With
+// a field (its type_ set), of what it points at only that field.
 @(private="file")
-esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8, state: []Esc_Roots) -> Esc_Roots {
+esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8, state: []Esc_Roots, field := Esc_PF{}) -> Esc_Roots {
     pt: Type = callee.params[i].type_ if i < len(callee.params) else nil
     r := esc_into(e, args[i], pt, state)
+    if field.type_ != nil { r = esc_narrow(e, r, field.field, field.type_) }
     on: Esc_Roots
     switch level {
     case ESC_LEVEL_ONE: return r
@@ -849,6 +1001,8 @@ esc_clear :: proc(r: ^Esc_Roots) {
     r.params, r.two, r.deep, r.global, r.temp = {}, {}, {}, false, 0
     r.vars.n = 0
     clear(&r.vars.more)
+    clear(&r.pf)
+    clear(&r.twof)
 }
 
 @(private="file")
@@ -861,6 +1015,8 @@ esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
     for i in 0 ..< esc_var_count(src.vars) {
         if k := esc_var_at(src.vars, i); !esc_vars_has(dst.vars, k) { esc_vars_push(&dst.vars, k); changed = true }
     }
+    for pf in src.pf   { if esc_pf_push(&dst.pf, pf) { changed = true } }
+    for tf in src.twof { if esc_pf_push(&dst.twof, tf) { changed = true } }
     return
 }
 
@@ -875,6 +1031,9 @@ esc_equal :: proc(a, b: Esc_Roots) -> bool {
     if a.params != b.params || a.two != b.two || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
     if esc_var_count(a.vars) != esc_var_count(b.vars) { return false }
     for i in 0 ..< esc_var_count(a.vars) { if !esc_vars_has(b.vars, esc_var_at(a.vars, i)) { return false } }
+    if len(a.pf) != len(b.pf) || len(a.twof) != len(b.twof) { return false }
+    for pf in a.pf   { if !slice.contains(b.pf[:], pf) { return false } }
+    for tf in a.twof { if !slice.contains(b.twof[:], tf) { return false } }
     return true
 }
 
@@ -897,11 +1056,13 @@ esc_merge :: proc(dst, src: []Esc_Roots) -> (changed: bool) {
 esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
     dst.two += r.params
     dst.deep += r.two + r.deep
+    for pf in r.pf { esc_pf_push(&dst.twof, pf) }   // (what a field of a param's struct holds)
+    for tf in r.twof { dst.deep += {tf.param} }
     if r.global { dst.global = true }
     dst.temp = max(dst.temp, r.temp)
     for vi in 0 ..< esc_var_count(r.vars) {
-        k := esc_var_at(r.vars, vi)
-        if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(dst, state[s]) }
+        c := esc_var_at(r.vars, vi)
+        if s := e.cells[c].slot; s >= 0 && !e.vars[e.cells[c].var].view { esc_join(dst, state[s]) }
     }
 }
 
@@ -911,8 +1072,8 @@ esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
 esc_slice_data :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
     esc_deref(e, dst, r, state)
     for i in 0 ..< esc_var_count(r.vars) {
-        k := esc_var_at(r.vars, i)
-        if esc_self_pointing(e.vars[k].type_) && !esc_vars_has(dst.vars, k) { esc_vars_push(&dst.vars, k) }
+        c := esc_var_at(r.vars, i)
+        if esc_self_pointing(e.cells[c].type_) && !esc_vars_has(dst.vars, c) { esc_vars_push(&dst.vars, c) }
     }
 }
 
@@ -934,7 +1095,7 @@ esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
     d := -1
     if r.global { d = ESC_GLOBAL }
     if r.temp > 0 { d = max(d, r.temp) }
-    for vi in 0 ..< esc_var_count(r.vars) { d = max(d, e.vars[esc_var_at(r.vars, vi)].depth) }
+    for vi in 0 ..< esc_var_count(r.vars) { d = max(d, e.vars[e.cells[esc_var_at(r.vars, vi)].var].depth) }
     return d
 }
 
@@ -943,9 +1104,9 @@ esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
 esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
     d := max(int)
     if r.global { d = ESC_GLOBAL }
-    if r.params != {} || r.two != {} || r.deep != {} { d = min(d, ESC_CALLER) }
+    if r.params != {} || r.two != {} || r.deep != {} || len(r.pf) > 0 || len(r.twof) > 0 { d = min(d, ESC_CALLER) }
     if r.temp > 0 { d = min(d, r.temp) }
-    for vi in 0 ..< esc_var_count(r.vars) { d = min(d, e.vars[esc_var_at(r.vars, vi)].depth) }
+    for vi in 0 ..< esc_var_count(r.vars) { d = min(d, e.vars[e.cells[esc_var_at(r.vars, vi)].var].depth) }
     return d
 }
 
@@ -1068,6 +1229,9 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
         local := false
         if i in sum.ret      && esc_deepest_local(e, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) > ESC_CALLER { local = true }
         if i in sum.ret_deep && esc_deepest_local(e, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) > ESC_CALLER { local = true }
+        for pf in sum.ret_field {
+            if pf.param == i && esc_deepest_local(e, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state, pf)) > ESC_CALLER { local = true }
+        }
         if !local { continue }
         if n > 0 { strings.write_string(&sb, ", ") }
         fmt.sbprintf(&sb, "parameter `%s`", esc_param_name(callee, i))
@@ -1106,7 +1270,7 @@ esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
     g := e.g
     worst := -1
     for vi in 0 ..< esc_var_count(r.vars) {
-        k := esc_var_at(r.vars, vi)
+        k := e.cells[esc_var_at(r.vars, vi)].var
         v := e.vars[k]
         if worst < 0 { worst = int(k); continue }
         w := e.vars[worst]

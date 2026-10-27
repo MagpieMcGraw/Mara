@@ -1,0 +1,46 @@
+module escape_fields_neg
+
+//@ expect-fail: `fill(...)` stores its `settings` argument into its `storage` argument
+
+// Kept apart, a struct's fields still carry what they hold: a struct made
+// of work.settings, kept in the storage, keeps a pointer to the caller's
+// local settings there, which outlives it.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Settings :: struct {
+	count: i64
+}
+
+Work :: struct {
+	settings: ^Settings
+	numbers: []i64
+}
+
+Kept :: struct {
+	settings: ^Settings
+}
+
+kept_of :: fun(work: ^Work) -> Kept {
+	return Kept{settings = work.settings}
+}
+
+fill :: fun(settings: ^Settings, storage: ^[]byte) -> i64 {
+	work := Work{settings = settings, numbers = slice([:16]i64, storage)}
+	kept := slice([:2]Kept, storage)
+	&kept + kept_of(&work)
+	return kept.len
+}
+
+run :: fun(storage: ^[]byte) -> i64 {
+	settings := Settings{count = 4}
+	return fill(&settings, storage)
+}
+
+main :: fun() {
+	buf : [1024]byte
+	print(run(&buf))
+}

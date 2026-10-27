@@ -1,0 +1,72 @@
+module escape_fields
+
+//@ expect-output: summaries: 1 4
+//@ expect-output: far kept: 1 3
+
+// The escape check keeps a struct's fields apart. A struct made from a
+// pointer to a local struct holds what it takes of its fields, not every
+// pointer the local holds: summary_of takes work.numbers, a take from the
+// storage, so a Summary kept in the storage is fine, though work also
+// holds a pointer to the caller's local settings (sooblivion's Speed_Tree
+// beside its Growth). And of a local struct, one field's slice can be kept
+// though another field points at a local.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Settings :: struct {
+	count: i64
+}
+
+Work :: struct {
+	settings: ^Settings
+	numbers: []i64
+}
+
+Summary :: struct {
+	numbers: []i64
+}
+
+summary_of :: fun(work: ^Work) -> Summary {
+	return Summary{numbers = work.numbers}
+}
+
+fill :: fun(settings: ^Settings, storage: ^[]byte) -> Summary {
+	work := Work{settings = settings, numbers = slice([:16]i64, storage)}
+	for k in 0:work.settings.count do &work.numbers + k
+	summaries := slice([:2]Summary, storage)
+	&summaries + summary_of(&work)
+	print("summaries:", summaries.len, summaries[0].numbers.len)
+	return summaries[0]
+}
+
+run :: fun(storage: ^[]byte) -> i64 {
+	settings := Settings{count = 4}
+	return fill(&settings, storage).numbers.len
+}
+
+Pair :: struct {
+	near: ^i64
+	far: []i64
+}
+
+keep_far :: fun(storage: ^[]byte) -> i64 {
+	n : i64 = 5
+	pair := Pair{near = &n, far = slice([:4]i64, storage)}
+	&pair.far + 1
+	&pair.far + 2
+	three := pair.near^ - 2
+	&pair.far + three
+	views := slice([:2][]i64, storage)
+	&views + pair.far
+	return views.len * 10 + views[0].len
+}
+
+main :: fun() {
+	buf : [4096]byte
+	_ = run(&buf)
+	kept := keep_far(&buf)
+	print("far kept:", kept / 10, kept % 10)
+}
