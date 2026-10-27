@@ -444,6 +444,7 @@ foreign static_lib "open_gl" {
     fun glUniform1i(location: i32, v0: i32)
     fun glUniform2f(location: i32, v0: f32, v1: f32)
     fun glUniform3f(location: i32, v0: f32, v1: f32, v2: f32)
+    fun glUniform4f(location: i32, v0: f32, v1: f32, v2: f32, v3: f32)
     fun glUniformMatrix4fv(location: i32, count: i32, transpose: u8, value: ^f32)   // GLboolean transpose, const GLfloat* value
     fun glGenVertexArrays(n: i32, arrays: ^u32)                          // GLuint* arrays
     fun glBindVertexArray(array: u32)
@@ -516,6 +517,7 @@ Uniform1f :: fun(location: i32, v0: f32) { glUniform1f(location, v0) }
 Uniform1i :: fun(location: i32, v0: i32) { glUniform1i(location, v0) }
 Uniform2f :: fun(location: i32, v0: f32, v1: f32) { glUniform2f(location, v0, v1) }
 Uniform3f :: fun(location: i32, v0: f32, v1: f32, v2: f32) { glUniform3f(location, v0, v1, v2) }
+Uniform4f :: fun(location: i32, v0: f32, v1: f32, v2: f32, v3: f32) { glUniform4f(location, v0, v1, v2, v3) }
 UniformMatrix4fv :: fun(location: i32, count: i32, transpose: u8, value: ^f32) { glUniformMatrix4fv(location, count, transpose, value) }
 
 // VAOs

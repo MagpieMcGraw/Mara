@@ -56,6 +56,7 @@ typedef void   (*PFN_glUniform1f)(GLint location, GLfloat v0);
 typedef void   (*PFN_glUniform1i)(GLint location, GLint v0);
 typedef void   (*PFN_glUniform2f)(GLint location, GLfloat v0, GLfloat v1);
 typedef void   (*PFN_glUniform3f)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
+typedef void   (*PFN_glUniform4f)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
 typedef void   (*PFN_glUniformMatrix4fv)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 typedef void   (*PFN_glGenVertexArrays)(GLsizei n, GLuint *arrays);
 typedef void   (*PFN_glBindVertexArray)(GLuint array);
@@ -121,6 +122,7 @@ static PFN_glUniform1f                _glUniform1f;
 static PFN_glUniform1i                _glUniform1i;
 static PFN_glUniform2f                _glUniform2f;
 static PFN_glUniform3f                _glUniform3f;
+static PFN_glUniform4f                _glUniform4f;
 static PFN_glUniformMatrix4fv         _glUniformMatrix4fv;
 static PFN_glGenVertexArrays          _glGenVertexArrays;
 static PFN_glBindVertexArray          _glBindVertexArray;
@@ -196,6 +198,7 @@ static Gl_Proc gl_procs[] = {
     {"glUniform1i",                       (void **)&_glUniform1i},
     {"glUniform2f",                       (void **)&_glUniform2f},
     {"glUniform3f",                       (void **)&_glUniform3f},
+    {"glUniform4f",                       (void **)&_glUniform4f},
     {"glUniformMatrix4fv",                (void **)&_glUniformMatrix4fv},
     {"glGenVertexArrays",                 (void **)&_glGenVertexArrays},
     {"glBindVertexArray",                 (void **)&_glBindVertexArray},
@@ -271,6 +274,7 @@ GLint  glGetUniformLocation(GLuint program, const GLchar *name)                 
 void   glUniform1f(GLint location, GLfloat v0)                                        { _glUniform1f(location, v0); }
 void   glUniform2f(GLint location, GLfloat v0, GLfloat v1)                            { _glUniform2f(location, v0, v1); }
 void   glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2)                { _glUniform3f(location, v0, v1, v2); }
+void   glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)    { _glUniform4f(location, v0, v1, v2, v3); }
 void   glUniform1i(GLint location, GLint v0)                                          { _glUniform1i(location, v0); }
 void   glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { _glUniformMatrix4fv(location, count, transpose, value); }
 
