@@ -98,7 +98,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 		if asked[0 : 6] == "-docs " {
 			no_docs := "the stand-in window has no docs\n-- end of answer: failed --\n"
 			no_docs_bytes : []byte = no_docs[:]
-			file_write(c, &no_docs_bytes)?
+			file_write(c, no_docs_bytes)?
 			return
 		}
 	}
@@ -114,11 +114,11 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	if asked.len >= 8 {
 		if asked[0 : 8] == "-cursor " do bytes = line[8 : line.len]
 	}
-	_, we := file_write(s.process.input, &bytes)
+	_, we := file_write(s.process.input, bytes)
 	if bool(we) {
 		server_down(s, log)
 		server_up(s, log)?
-		file_write(s.process.input, &bytes)?
+		file_write(s.process.input, bytes)?
 	}
 
 	current : [100]utf8   // the line coming, to know the end line
@@ -134,7 +134,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 			if not passed and not resent {
 				resent = true
 				server_up(s, log)?
-				file_write(s.process.input, &bytes)?
+				file_write(s.process.input, bytes)?
 				continue
 			}
 			// (Serve ended answering it — maybe for it: not asked again. No
@@ -144,7 +144,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 		}
 		passed = true
 		piece : []byte = chunk[:]
-		file_write(c, &piece)?
+		file_write(c, piece)?
 		for ch in chunk[:] {
 			letter := utf8(ch)
 			if letter == '\n' {
@@ -164,6 +164,6 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 // Text written to the log.
 note :: fun(log: File_Id, text: []utf8) {
 	bytes : []byte = text[:]
-	_, we := file_write(log, &bytes)
+	_, we := file_write(log, bytes)
 	if bool(we) do print("the log couldn't be written:", we)
 }

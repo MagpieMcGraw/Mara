@@ -1,0 +1,23 @@
+module slice_copy_loop_neg
+
+//@ expect-fail: `row` is a copy of the immutable param `rows`
+
+// A loop's item is a copy of an item of what it loops over: each row of an
+// immutable param is immutable.
+
+use mara.core
+
+clear_rows :: fun(rows: [][]i64) {
+	for row in rows {
+		row[0] = 0
+	}
+}
+
+main :: fun() {
+	a : [2]i64
+	&a + 1
+	rows : [1][]i64
+	&rows + a
+	clear_rows(rows)
+	print(a[0])
+}

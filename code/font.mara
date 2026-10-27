@@ -38,12 +38,14 @@ Font_Error :: error {
 
 MSDF_ATLAS :: 1024   // an MSDF atlas's side, in pixels (3 bytes each)
 
-Atlas :: struct (bytes: []byte, u_per_em: u16) {
+// The atlas's cells: the bytes they're written into (bytes, a mutable
+// slice of them), how big a glyph's em is in them.
+Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
 	size := MSDF_ATLAS
 	pixels := 32 // used to scale em to pixels
 	pad : f32 = 4
 	px_scale := f32(pixels) / f32(u_per_em)
-	data := bytes
+	data := bytes^
 }
 
 // A font's glyphs as multi-channel signed distance fields (MSDF), for text
@@ -71,7 +73,7 @@ load_glyphs_and_metrics :: fun(
 	for i in 0:atlas.len {
 		atlas[i] = u8(0)
 	}
-	cells := Atlas(atlas^, ttf.head.units_per_em)
+	cells := Atlas(atlas, ttf.head.units_per_em)
 	sky := Skyline(cells.size, cells.size)
 
 	metrics.ascent   = f32(ttf.hhea.ascent)   * cells.px_scale

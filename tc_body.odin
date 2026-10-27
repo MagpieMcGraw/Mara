@@ -239,6 +239,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     if fields_of == nil && ann_node != 0 && ck_decl_fits(k, ann, value) {   // (the lean core's: ck.odin)
         ck_decl(k, s, target, value, name, ann, ref)
+        tc_mut_store(k, ref.decl, value)
         return
     }
     form, cap_n, bindings := tc_decl_form(k, value, ann_node, ann)
@@ -320,6 +321,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     } else if existing, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); shadowed {
         // (Reported as a shadow: checked as the write it reads as.)
         tc_check_write(k, value, vt, existing, name, span)
+        tc_mut_store(k, ref.decl, value)
         return
     } else if is_infer(vt) {
         // Its width is the one its uses give it (unify_infer_concrete): all the same.
@@ -342,6 +344,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     tc_set_type(k, target, final)   // (the name declared: its type)
     tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
+    tc_mut_store(k, ref.decl, value)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
 }
 
@@ -501,6 +504,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     case .Field, .Index, .Slice, .Deref:
         // (Into a constant: its storage is read-only.)
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+        tc_mut_store_place(k, target, value)
         return
     case .Ident:
     case:
@@ -534,6 +538,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
         return
     }
     tc_check_write(k, value, vt, existing, name, span)
+    tc_mut_store(k, ref.decl, value)
 }
 
 // A write to a bare name, checked: the name is declared, no constant, and no
@@ -600,6 +605,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
             lone = tc_check(k, values[0])
             k.several_ok = 0
             if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
+                tc_mut_return(k, values[0])
                 if len(returns) > expected || len(returns) < least {
                     tc_error(k, span, TYPE_RETURN_SEVERAL_COUNT, len(returns), expected, tc_call_name(k, call))
                     return
@@ -635,6 +641,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
         want := rts[i]
         k.hint = want
         vt := lone if i == 0 && lone != nil else tc_check(k, val)
+        tc_mut_return(k, val)
         // (An err passed on by hand, `return 0, e`: its trace's next site.)
         if _, to_err := distinct_base(want).(Type_Err); to_err {
             if _, of_err := distinct_base(vt).(Type_Err); of_err { tc_note_err_pass(k, val, returned = true) }
@@ -790,6 +797,11 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if tc_is_call(k, call) { k.several_ok = call }
         ct := tc_check(k, v.collection)
         k.several_ok = 0
+        // (Its item a copy of an item of the collection; `&item`, a write into it.)
+        tc_mut_store(k, v.elem, v.collection, index_elem_type(ct))
+        if v.by_ref != 0 {
+            if _, immutable := tc_write_root_param(k, v.collection); !immutable { tc_note_slice_write(k, v.collection, false) }
+        }
         if returns := tc_call_returns(k, v.collection); len(returns) > 1 {
             if v.by_ref != 0 { tc_error(k, span, TYPE_REF_LOOP_OVER_CALL) }
             tc_for_call(k, s, v, ct, returns)

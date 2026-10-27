@@ -1,0 +1,77 @@
+module slice_copy_ok
+
+//@ expect-output: take: 2 7 8
+//@ expect-output: local: 5 5
+//@ expect-output: mutable param: 9 3
+//@ expect-output: read: 14 3
+//@ expect-output: byte: 4
+
+// What the copy rule lets be: writes through slices that come from
+// something mutable (a take, a mutable local, a mutable param), however
+// they're copied; and an immutable param's copy read and re-pointed (its
+// own header), never written through.
+
+use mara.core
+
+// A take is the code's to fill, through a struct's field too.
+Bag :: struct {
+	items: []i64
+}
+
+bag_of :: fun(storage: ^[]byte) -> Bag {
+	bag := Bag{items = slice([:4]i64, storage)}
+	&bag.items + 7
+	&bag.items + 8
+	return bag
+}
+
+// A mutable param's slice, copied, is written through.
+set_first :: fun(dst: ^[]i64, v: i64) {
+	view := dst[0 : dst.len]
+	view[0] = v
+}
+
+// An immutable param's copy, read and re-pointed.
+sum :: fun(items: []i64) -> i64 {
+	rest := items
+	total : i64 = 0
+	for rest.len > 0 {
+		total += rest[0]
+		rest = rest[1 : rest.len]
+	}
+	return total
+}
+
+// A value copied out of an immutable param that holds no slice (a byte)
+// carries no mutability: written into a mutable slice's item (sooblivion's
+// DDS decoding, which a first version refused).
+copy_first :: fun(from: []byte, out: ^[]byte) {
+	dst := out[0 : out.len]
+	dst[0] = from[0]
+}
+
+main :: fun() {
+	storage : [256]byte
+	bag := bag_of(&storage)
+	print("take:", bag.items.len, bag.items[0], bag.items[1])
+
+	list : [8]i64
+	&list + 1
+	&list + 2
+	view := list[0 : 2]   // (a slice of a mutable local)
+	view[0] = 5
+	print("local:", list[0], view[0])
+
+	&list + 3
+	set_first(&list, 9)
+	print("mutable param:", list[0], list.len)
+
+	print("read:", sum(list), list.len)
+
+	src : [2]byte
+	&src + u8(4)
+	dst : [2]byte
+	&dst + u8(0)
+	copy_first(src, &dst)
+	print("byte:", dst[0])
+}

@@ -262,7 +262,7 @@ write_cache :: fun(path: []utf8, toc: ^[]byte, tocsize: i64, data: ^[]byte, data
     id := file_open_write(path)?
     defer file_close(id)
     head := toc[0 : tocsize]
-    _ = file_write(id, &head)?
+    _ = file_write(id, head)?
     payload := data[0 : datasize]
-    _ = file_write(id, &payload)?
+    _ = file_write(id, payload)?
 }

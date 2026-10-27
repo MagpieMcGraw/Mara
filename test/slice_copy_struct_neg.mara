@@ -1,0 +1,24 @@
+module slice_copy_struct_neg
+
+//@ expect-fail: `held.items` is a copy of the immutable param `items`
+
+// A struct's field given an immutable param is a copy of it, written
+// through the struct.
+
+use mara.core
+
+Held :: struct {
+	items: []i64
+}
+
+clear_first :: fun(items: []i64) {
+	held := Held{items = items}
+	held.items[0] = 0
+}
+
+main :: fun() {
+	list : [4]i64
+	&list + 5
+	clear_first(list)
+	print(list[0])
+}

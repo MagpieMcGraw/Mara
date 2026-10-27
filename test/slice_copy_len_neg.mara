@@ -1,0 +1,21 @@
+module slice_copy_len_neg
+
+//@ expect-fail: `tail` is a copy of the immutable param `items`
+
+// A copy's len is part of what can't be set: raised, it would reach into
+// the caller's room past its len. (Re-pointing the copy, `tail = tail[1:]`,
+// is fine: slice_copy_ok.)
+
+use mara.core
+
+widen :: fun(items: []i64) -> i64 {
+	tail := items
+	tail.len = 3
+	return tail[2]
+}
+
+main :: fun() {
+	list : [4]i64
+	&list + 1
+	print(widen(list))
+}

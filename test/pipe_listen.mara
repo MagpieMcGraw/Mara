@@ -24,7 +24,7 @@ client :: fun(word: []utf8) -> i64 {
 	id, e := pipe_connect(NAME)
 	if bool(e) do return 1
 	question : []byte = word[:]
-	_, we := file_write(id, &question)
+	_, we := file_write(id, question)
 	if bool(we) do return 2
 	reply : [64]byte
 	re := file_read(id, &reply)
@@ -50,7 +50,7 @@ answer :: fun(c: File_Id) -> err {
 	question : [64]byte
 	file_read(c, &question)?
 	bytes : []byte = question[:]
-	file_write(c, &bytes)?
+	file_write(c, bytes)?
 	file_close(c)
 }
 

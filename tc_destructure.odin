@@ -85,7 +85,9 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             }
             // (A struct's field: its value its slot of the call's.)
             if fields_of != nil { tc_add_field(fields_of, name, k.t.main[tg], rt, value, i) }
+            tc_mut_store(k, tc_decl_ref(k, tg, fields_of).decl if is_decl else k.rs.refs[tg].decl, value)
         } else {
+            tc_mut_store_place(k, tg, value)
             if pname, immutable := tc_write_root_param(k, tg); immutable {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
             }

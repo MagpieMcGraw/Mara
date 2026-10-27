@@ -403,7 +403,7 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	h.answered = true
 	if not h.gone {
 		piece : []byte = chunk[:]
-		_, we := file_write(h.asked.id, &piece)
+		_, we := file_write(h.asked.id, piece)
 		if we do h.gone = true
 	}
 	text : []utf8 = chunk[:]

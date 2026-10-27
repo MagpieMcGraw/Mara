@@ -28,7 +28,8 @@ main :: fun() -> i64 {
 	outline.points[3] = Glyph_Point{-100, 100, false}
 
 	storage : [3 * MB!]byte
-	atlas := Atlas(storage[:], 256)
+	cells : []byte = storage[:]
+	atlas := Atlas(&cells, 256)
 
 	glyph : Glyph
 	if bool(rasterize_msdf(&outline, &glyph, &atlas)) {

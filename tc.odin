@@ -87,6 +87,7 @@ TC :: struct {
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
+    mut:           Slice_Mut,           // what's put where, and the writes through slices: copies of immutable ones found once all is checked (tc_slice_mut.odin)
 }
 
 // A binding's before: what the token meant, if anything.
@@ -511,6 +512,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     tc_validate_allocator(k)
     tc_validate_withs(k)
+    tc_slice_mut_check(k)
     tc_validate_main(k, main)
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
