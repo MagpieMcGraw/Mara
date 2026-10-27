@@ -1352,7 +1352,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (T
             return t, true
         }
         at := tc_arg(k, args[0])
-        if !is_array_type(at) && !is_any(at) {
+        if !is_array_type(at) && !is_partial_array(at) && !is_any(at) {
             tc_error(k, span, TYPE_LEN_REQUIRES_ARRAY_SLICE if name == "len" else TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(at))
         }
         return t, true

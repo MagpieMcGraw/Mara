@@ -666,7 +666,7 @@ example_assert :: fun() {
 //
 // `xs.len` is how many items there are; `xs.cap` how many fit — for a list
 // (`[8]i64`) that's 8, however many it has. A fixed array's are both its
-// size. `len(xs)` and `cap(xs)` say the same of a fixed array or a slice.
+// size. `len(xs)` and `cap(xs)` say the same of a list, a fixed array or a slice.
 example_len :: fun() {
 	list : [8]i64
 	&list + 3

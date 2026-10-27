@@ -1,0 +1,34 @@
+module len_of_list
+
+//@ expect-output: list: 2 8
+//@ expect-output: named list: 5 64
+//@ expect-output: field: 3 16
+//@ expect-output: fixed: 3 3
+//@ expect-output: slice: 2 2
+
+// len() and cap() take a list, named (str64) or not: its len, and its room,
+// the N of its type. They took only fixed arrays and slices ("len() requires
+// array or slice, got str64"), so a list's len was written `len(s[:])`.
+
+use mara.core
+
+Holder :: struct {
+	name : [16]utf8
+	count : i64
+}
+
+main :: fun() {
+	l : [8]i32
+	&l + 4
+	&l + 5
+	print("list:", len(l), cap(l))
+	s : str64
+	&s + "hello"
+	print("named list:", len(s), cap(s))
+	h : Holder
+	&h.name + "ann"
+	print("field:", len(h.name), cap(h.name))
+	f : [3!]i32 = [1, 2, 3]
+	print("fixed:", len(f), cap(f))
+	print("slice:", len(s[1:3]), cap(s[1:3]))
+}
