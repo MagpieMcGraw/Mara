@@ -355,7 +355,6 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         }
         // (An address of an immutable param's storage, of a constant's: what
         // it would let be written can't be.)
-        if _, immutable := tc_write_root_param(k, operand); !immutable { tc_note_slice_write(k, operand, false) }
         if pname, immutable := tc_write_root_param(k, operand); immutable {
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
         } else if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.rs.refs[p].kind == .Param {

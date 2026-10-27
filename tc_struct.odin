@@ -225,8 +225,6 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     }
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
-    } else {
-        tc_note_slice_write(k, target, true)
     }
     tc_no_literal_slice(k, ft, value, span)
     // (Bytes read as the field's type: no conversion to check.)
@@ -595,7 +593,6 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
         k.hint = f.type_
     }
     vt := probed if probed != nil else tc_check(k, value)   // (a spread that wasn't: checked as one)
-    tc_mut_store(k, f.decl, value)
     if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) {
         if positional {
             tc_error(k, span, TYPE_FIELD_POSITION_EXPECTED, f.name, i, type_name(f.type_), type_name(vt))
@@ -637,8 +634,6 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
         }
         if pname, immutable := tc_write_root_param(k, target); immutable {
             tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
-        } else {
-            tc_note_slice_write(k, target, true)
         }
         if len(field) == 1 {
             tc_set_type(k, target, v.elem)
@@ -664,8 +659,6 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     // (A param's header is its caller's: `^[]T` moves a cursor.)
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
-    } else {
-        tc_note_slice_write(k, target, true)
     }
     ft: Type
     switch field {

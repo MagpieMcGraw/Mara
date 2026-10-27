@@ -1,0 +1,98 @@
+module slice_copy_per_value
+
+//@ expect-output: filled: 1 7
+//@ expect-output: held: 2
+//@ expect-output: lexed: 4 2 ab
+//@ expect-output: decoder: 3 9 ok
+
+// The copy rule follows values, not field declarations. A struct field
+// given an immutable param's slice makes that value's field read-only, not
+// the field of every value of the struct: fill's holder, carved from
+// mutable storage, takes appends though hold puts a param in a Holder
+// (sooblivion's tree parts). Of structs in a list, one field read-only
+// leaves the others writable (mara3's File: its data from a param, its
+// lines and tokens the caller's). And a param stored into a struct's field
+// by the fun it's given to, start, leaves the struct's other fields to be
+// written (sooblivion's MP3 decoder).
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Holder :: struct {
+	numbers: []i64
+}
+
+hold :: fun(numbers: []i64) -> Holder {
+	return Holder{numbers = numbers}
+}
+
+fill :: fun(storage: ^[]byte) -> Holder {
+	holder := Holder{numbers = slice([:4]i64, storage)}
+	&holder.numbers + 7
+	return holder
+}
+
+File :: class (
+	file_data: []utf8,
+	line_slice: ^[]i64)
+{
+	pos: i64
+	data := file_data
+	lines := line_slice
+}
+
+lex :: fun(file: ^File) {
+	file.lines + file.pos
+	file.lines + file.data.len
+	file.pos += 1
+}
+
+Decoder :: struct {
+	data: []byte
+	at: i64
+	values: [8]i64
+}
+
+start :: fun(decoder: ^Decoder, data: []byte) {
+	decoder.data = data
+	decoder.at = 0
+}
+
+step :: fun(decoder: ^Decoder) {
+	&decoder.values + i64(decoder.data[decoder.at])
+	decoder.at += 1
+}
+
+main :: fun() {
+	buf : [256]byte
+	filled := fill(&buf)
+	print("filled:", filled.numbers.len, filled.numbers[0])
+	nums : [4]i64
+	&nums + 1
+	&nums + 2
+	print("held:", hold(nums).numbers.len)
+
+	texts : [2][8]utf8
+	&texts + "ab"
+	&texts + "c"
+	lines : [16]i64
+	line_slice := lines[0:lines.cap]
+	line_slice.len = 0
+	files : [2]File
+	for i in 0:2 {
+		files[i] = File(texts[i], &line_slice)
+		lex(&files[i])
+	}
+	print("lexed:", line_slice.len, line_slice[1], files[0].data)
+
+	bytes : [4]byte
+	&bytes + 3
+	&bytes + 9
+	decoder : Decoder
+	start(&decoder, bytes)
+	step(&decoder)
+	step(&decoder)
+	print("decoder:", decoder.values[0], decoder.values[1], if decoder.at == 2 do "ok" else "no")
+}

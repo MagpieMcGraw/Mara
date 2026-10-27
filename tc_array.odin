@@ -76,8 +76,6 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     }
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
-    } else {
-        tc_note_slice_write(k, target, true)
     }
     size := -1   // (a fixed array's, for its diagnostic)
     #partial switch v in tt {
@@ -266,8 +264,6 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
-    } else {
-        tc_note_slice_write(k, target, true)
     }
     if is_byte_buffer(tt) {
         // (Into bytes, a value's bytes — an array's too, not its elements:

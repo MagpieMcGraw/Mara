@@ -77,8 +77,6 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, it: Type, op_tok: Token
     }
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
-    } else {
-        tc_note_slice_write(k, target, true)
     }
     // (An untyped number has no width to write: cast it — a binding no use
     // has given one yet, too.)

@@ -1,0 +1,27 @@
+module slice_copy_list_field_neg
+
+//@ expect-fail: `files.data` is a copy of the immutable param `file_data`
+
+// Of structs kept in a list, the field a param went into stays read-only
+// though the others aren't: a fun given an item writes its data, a copy of
+// the param the item was made from (said where it's given the item).
+
+use mara.core
+
+File :: class (file_data: []utf8) {
+	pos: i64
+	data := file_data
+}
+
+poke :: fun(file: ^File) {
+	file.data[0] = 'z'
+}
+
+main :: fun() {
+	text : [8]utf8
+	&text + "ab"
+	files : [2]File
+	files[0] = File(text)
+	poke(&files[0])
+	print(text)
+}

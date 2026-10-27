@@ -51,6 +51,15 @@ import "core:strings"
 // p points at (Esc_PF), and a summary keeps the field: a result read out of
 // `work.numbers` holds what the caller's work.numbers does, not all of work.
 //
+// THE COPY RULE. A slice param that isn't `^` is immutable, and so is every
+// copy of it: roots carry `ro`, from the param's value on, through copies,
+// fields (a struct value's own, ro_fields), returns and stores, but not past
+// a pointer read out of it. Nothing is written into memory a read-only
+// slice views — an item, an append — nor its len set; re-pointing a copy is
+// fine. A summary says which params' memory a fun writes (Esc_Write), and
+// each call checks its arguments against it, so `lex(&lexer)` writing
+// `lexer.tokens` is refused where lexer's tokens came from a param.
+//
 // SUMMARIES. Inside a callee all caller memory is depth 1, so a callee can't
 // tell a long-lived argument from a short-lived one. Instead each function's
 // summary records which parameters its result may point into, and which
@@ -82,6 +91,17 @@ Esc_Roots :: struct {
     vars:   Esc_Vars,        // variables' own storage: their cells, by index in the fun's
     pf:     [dynamic]Esc_PF, // a field of the caller memory a parameter points at
     twof:   [dynamic]Esc_PF, // ... what that field holds, one step on
+    deepf:  [dynamic]Esc_PF, // ... anything reachable from there
+    // A place narrowed to a field its cells couldn't be (a list's items of a
+    // struct type, esc_narrow): what they hold is read-only as that field of
+    // it is (ro_fields). Field+1 (0: none) of ntype.
+    nfield: int,
+    ntype:  ^Type_Scope,
+    // The copy rule: a slice that is (a copy of) an immutable param's is
+    // read-only, and so is the memory it views (Esc_Roots of a place).
+    ro:        bool,
+    ro_fields: u64,          // of a struct value, the fields that hold one (a field past 63: ro)
+    ro_from:   Token_Id,     // the immutable param's, for the diagnostic
 }
 
 // Field `field` of a struct of type `type_` that parameter `param` points at
@@ -136,6 +156,19 @@ Esc_Store :: struct {
     src_level: u8,
     src_field: int,          // with src_type: what that field of src's struct holds (level two)
     src_type:  ^Type_Scope,
+    dst_field: int,          // with dst_type: into that field of dst's struct
+    dst_type:  ^Type_Scope,
+    ro:        bool,         // what's stored is read-only: an immutable param's copy
+    ro_from:   Token_Id,
+}
+
+// A write into memory `level` steps from a parameter (with type_, into that
+// field of its struct): what the copy rule checks at each call.
+Esc_Write :: struct {
+    param: int,
+    level: u8,
+    field: int,
+    type_: ^Type_Scope,
 }
 
 ESC_LEVEL_ONE  :: 1
@@ -147,6 +180,11 @@ Esc_Summary :: struct {
     ret_deep:  Esc_Param_Set,     // ... or at anything reachable through them
     ret_field: [dynamic]Esc_PF,   // ... or at anything reachable from what a field of their struct holds
     stores:    [dynamic]Esc_Store,
+    writes:    [dynamic]Esc_Write,
+    // The result is read-only (an immutable param's copy), or these fields of it.
+    ret_ro:        bool,
+    ret_ro_fields: u64,
+    ret_ro_from:   Token_Id,
 }
 
 // A variable of the fun or struct being checked: a param, a named result, a
@@ -264,6 +302,7 @@ escape_thread_begin :: proc(code: ^Program_Code) {
     // new each run, as its types are: `mara serve` checks again.)
     g_esc_refs_cache = make(map[^Type_Scope]bool, 64)
     g_esc_self_cache = make(map[^Type_Scope]bool, 64)
+    g_esc_slice_cache = make(map[^Type_Scope]bool, 64)
 }
 
 // ... and ends: what it found, handed back.
@@ -271,6 +310,7 @@ escape_thread_end :: proc() -> [dynamic]Esc_Diag {
     virtual.arena_destroy(&g_esc.walk)
     delete(g_esc_refs_cache)
     delete(g_esc_self_cache)
+    delete(g_esc_slice_cache)
     diags := g_esc.diags
     g_esc = {}
     return diags
@@ -323,6 +363,12 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
     for st in s.stores {
         if !slice.contains(cur.stores[:], st) { append(&cur.stores, st); changed = true }
     }
+    for w in s.writes {
+        if !slice.contains(cur.writes[:], w) { append(&cur.writes, w); changed = true }
+    }
+    if s.ret_ro && !cur.ret_ro { cur.ret_ro = true; changed = true }
+    if s.ret_ro_fields & ~cur.ret_ro_fields != 0 { cur.ret_ro_fields |= s.ret_ro_fields; changed = true }
+    if cur.ret_ro_from == 0 { cur.ret_ro_from = s.ret_ro_from }
     return changed // monotone: summaries only grow toward the fixpoint
 }
 
@@ -481,10 +527,17 @@ esc_split_struct :: proc(e: ^Esc, v: Esc_Var) -> ^Type_Scope {
 @(private="file")
 esc_fixpoint :: proc(e: ^Esc) {
     e.flow = run_flow_make(e.g, e.runs[:], e.slots, esc_state_copy, esc_merge)
-    // The entry: each param holds the caller memory it points at.
+    // The entry: each param holds the caller memory it points at; an
+    // immutable one's slices, read-only.
     entry := make([]Esc_Roots, e.slots)
     for v in e.vars {
-        if v.param >= 0 && v.slot >= 0 && !v.view { entry[v.slot].params = {v.param} }
+        if v.param >= 0 && v.slot >= 0 && !v.view {
+            entry[v.slot].params = {v.param}
+            if esc_holds_slice(v.type_) {
+                entry[v.slot].ro = true
+                if v.param < len(e.ft.params) { entry[v.slot].ro_from = e.ft.params[v.param].decl }
+            }
+        }
     }
     run_flow_solve(&e.flow, entry, e, esc_op)
 }
@@ -535,7 +588,8 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         // (Of a struct, that field: a split local's cell, a param's Esc_PF.)
         base := esc_at(e, ops[0])
         if ts, f := esc_field_of(e, op, ops[0]); ts != nil {
-            esc_join(r, esc_narrow(e, base, f, ts))
+            narrowed, _ := esc_narrow(e, base, f, ts)
+            esc_join(r, narrowed)
         } else {
             esc_join(r, base)
         }
@@ -555,7 +609,11 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     case .Deref:
         esc_deref(e, r, esc_at(e, ops[0]), state)
     case .Read:
-        if esc_has_refs(graph_type(g, op)) { esc_deref(e, r, esc_at(e, ops[0]), state) }
+        if t := graph_type(g, op); esc_has_refs(t) {
+            ts, is_scope := distinct_base(t).(^Type_Scope)
+            esc_deref(e, r, esc_at(e, ops[0]), state, whole = is_scope && as_struct_body(ts) != nil)
+            esc_ro_only_slices(r, t)
+        }
     case .Address:
         esc_join(r, esc_at(e, ops[0]))
     case .Arith, .Compare, .Unary, .Cast:
@@ -577,6 +635,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
             esc_join(r, mem)
         } else if esc_has_refs(graph_type(g, op)) {
             esc_deref(e, r, mem, state)
+            esc_ro_only_slices(r, graph_type(g, op))
         }
     case .Call:
         if callee := graph_called(e.g, op); callee != nil {
@@ -607,6 +666,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
             mem: Esc_Roots
             esc_mem(e, &mem, ops[1], state)
             esc_deref(e, &val, mem, state)
+            esc_ro_only_slices(&val, graph_type(g, ops[0].op))
         }
         esc_write(e, op, ops[0], val, state)
     case .Return:
@@ -658,14 +718,19 @@ esc_field_of :: proc(e: ^Esc, op: Node_Id, place: Operand) -> (^Type_Scope, int)
 
 // The part of `r` that is field f of a `ts`: of a split local of that type
 // named whole, its field's cell; of what a param points at, that field of it
-// (Esc_PF); the rest as it is.
+// (Esc_PF); the rest as it is, seen through field f (Esc_Roots.ntype).
+// Exact when all of it is one of the first two.
 @(private="file")
-esc_narrow :: proc(e: ^Esc, r: Esc_Roots, f: int, ts: ^Type_Scope) -> Esc_Roots {
-    out: Esc_Roots
+esc_narrow :: proc(e: ^Esc, r: Esc_Roots, f: int, ts: ^Type_Scope) -> (out: Esc_Roots, exact: bool) {
     out.two, out.deep, out.global, out.temp = r.two, r.deep, r.global, r.temp
-    for pf in r.pf { esc_pf_push(&out.pf, pf) }
-    for tf in r.twof { esc_pf_push(&out.twof, tf) }
+    out.ro, out.ro_fields, out.ro_from = r.ro, r.ro_fields, r.ro_from
+    out.nfield, out.ntype = r.nfield, r.ntype
+    for pf in r.pf    { esc_pf_push(&out.pf, pf) }
+    for tf in r.twof  { esc_pf_push(&out.twof, tf) }
+    for df in r.deepf { esc_pf_push(&out.deepf, df) }
     for i in r.params { esc_pf_push(&out.pf, Esc_PF{param = i, field = f, type_ = ts}) }
+    exact = r.two == {} && r.deep == {} && !r.global && r.temp == 0 && len(r.pf) == 0 && len(r.twof) == 0 && len(r.deepf) == 0
+    loose := false
     for vi in 0 ..< esc_var_count(r.vars) {
         c := esc_var_at(r.vars, vi)
         cell := e.cells[c]
@@ -674,9 +739,15 @@ esc_narrow :: proc(e: ^Esc, r: Esc_Roots, f: int, ts: ^Type_Scope) -> Esc_Roots 
             if cell.field == f { esc_vars_push(&out.vars, c) }
         } else {
             esc_vars_push(&out.vars, c)
+            loose = true
         }
     }
-    return out
+    // (Cells it couldn't narrow — a list's items, a struct not split — seen
+    // through field f: what they hold is read-only as that field of it is.
+    // Through a field of a field, still the first.)
+    if loose && out.ntype == nil { out.nfield, out.ntype = f + 1, ts }
+    exact = exact && !loose
+    return
 }
 
 // Whether every cell of a variable is among `cells`: the variable, whole.
@@ -760,8 +831,20 @@ esc_write_op :: proc(e: ^Esc, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
     if graph_op_of(e.g, dest.op) == .Slice {
         // `dst[lo:hi] = src`: src's elements copied into the ones the slice views.
         elems := esc_elems(e, val, index_elem_type(graph_type(e.g, dest.op)), state)
-        esc_store(e, Esc_Site{op = op, place = dest}, esc_at(e, dest), elems, state)
+        at := esc_at(e, dest)
+        esc_written(e, op, dest, at)
+        esc_store(e, Esc_Site{op = op, place = dest}, at, elems, state)
         return
+    }
+    // A slice's len set (`tail.len = 3`) is part of its header: refused for a
+    // read-only one, as a write through it is.
+    if e.final && graph_op_of(e.g, dest.op) == .Field && graph_name(e.g, dest.op) == "len" {
+        base := graph_operands(e.g, dest.op)[0]
+        if is_slice_type(graph_type(e.g, base.op)) {
+            held: Esc_Roots
+            esc_deref(e, &held, esc_at(e, base), state)
+            if held.ro { esc_report_ro(e, op, esc_copy_name(e.g, base), held.ro_from) }
+        }
     }
     esc_write(e, op, dest, esc_into(e, val, graph_type(e.g, dest.op), state), state)
 }
@@ -775,11 +858,46 @@ esc_write :: proc(e: ^Esc, op: Node_Id, dest: Operand, val: Esc_Roots, state: []
         esc_check(e, Esc_Site{op = op, place = dest}, dst, val)
         v := e.vars[k]
         for c in v.cell0 ..< v.cell0 + v.cells {   // (a struct copied whole: each field may hold what it does)
-            if s := e.cells[c].slot; s >= 0 { esc_copy(&state[s], val) }
+            s := e.cells[c].slot
+            if s < 0 { continue }
+            esc_copy(&state[s], val)
+            if f := e.cells[c].field; f >= 0 {   // (read-only as that field of the value is)
+                ro := val.ro || (val.ro_fields & (u64(1) << u64(f)) != 0 if f < 64 else val.ro_fields != 0)
+                state[s].ro, state[s].ro_fields = ro, 0
+                if !ro { state[s].ro_from = 0 }
+            }
         }
         return
     }
+    esc_written(e, op, dest, dst)
     esc_store(e, Esc_Site{op = op, place = dest}, dst, val, state)
+}
+
+// A write into the memory at `dst` (the copy rule): refused where it is
+// read-only; into a param's memory, a write its summary says.
+@(private="file")
+esc_written :: proc(e: ^Esc, op: Node_Id, place: Operand, dst: Esc_Roots) {
+    if !e.final { return }
+    if dst.ro || dst.ro_fields != 0 {
+        esc_report_ro(e, op, esc_copy_name(e.g, place), dst.ro_from)
+        return   // (refused here: no write for callers to answer for)
+    }
+    esc_record_writes(e, dst)
+}
+
+@(private="file")
+esc_record_writes :: proc(e: ^Esc, dst: Esc_Roots) {
+    for i in dst.params { esc_record_write(e, Esc_Write{param = i, level = ESC_LEVEL_ONE, field = -1}) }
+    for pf in dst.pf    { esc_record_write(e, Esc_Write{param = pf.param, level = ESC_LEVEL_ONE, field = pf.field, type_ = pf.type_}) }
+    for i in dst.two    { esc_record_write(e, Esc_Write{param = i, level = ESC_LEVEL_TWO, field = -1}) }
+    for tf in dst.twof  { esc_record_write(e, Esc_Write{param = tf.param, level = ESC_LEVEL_TWO, field = tf.field, type_ = tf.type_}) }
+    for i in dst.deep   { esc_record_write(e, Esc_Write{param = i, level = ESC_LEVEL_DEEP, field = -1}) }
+    for df in dst.deepf { esc_record_write(e, Esc_Write{param = df.param, level = ESC_LEVEL_DEEP, field = df.field, type_ = df.type_}) }
+}
+
+@(private="file")
+esc_record_write :: proc(e: ^Esc, w: Esc_Write) {
+    if !slice.contains(e.sum.writes[:], w) { append(&e.sum.writes, w) }
 }
 
 // Check the rule, then record that the cells in `dst` may now hold what
@@ -787,9 +905,19 @@ esc_write :: proc(e: ^Esc, op: Node_Id, dest: Operand, val: Esc_Roots, state: []
 @(private="file")
 esc_store :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots, state: []Esc_Roots) {
     esc_check(e, site, dst, val)
+    // (Through a field into cells holding struct values — a list's items —
+    // read-only is that field's of them, not theirs.)
+    v := val
+    if dst.ntype != nil && val.ro {
+        f := dst.nfield - 1
+        if f < 64 {
+            v.ro = false
+            v.ro_fields |= u64(1) << u64(f)
+        }
+    }
     for vi in 0 ..< esc_var_count(dst.vars) {
         c := esc_var_at(dst.vars, vi)
-        if s := e.cells[c].slot; s >= 0 && !e.vars[e.cells[c].var].view { esc_join(&state[s], val) }
+        if s := e.cells[c].slot; s >= 0 && !e.vars[e.cells[c].var].view { esc_join(&state[s], v) }
     }
 }
 
@@ -800,40 +928,75 @@ esc_check :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots) {
     if esc_deepest_local(e, val) > esc_shallowest(e, dst) && e.report {
         esc_report_store(e, site, val)
     }
-    if val.params == {} && val.two == {} && val.deep == {} && len(val.pf) == 0 && len(val.twof) == 0 { return }
+    if val.params == {} && val.two == {} && val.deep == {} && len(val.pf) == 0 && len(val.twof) == 0 && len(val.deepf) == 0 { return }
     // Caller memory into caller memory can't be judged in here — every parameter
     // is depth 1 to the callee. Summarize it; call sites check it. (Into a
-    // field of a param's struct: into that struct, its field not kept.)
+    // field of a param's struct: that field kept, for the copy rule.)
     for i in dst.params { esc_record_stores(e, i, ESC_LEVEL_ONE, val) }
-    for pf in dst.pf    { esc_record_stores(e, pf.param, ESC_LEVEL_ONE, val) }
+    for pf in dst.pf    { esc_record_stores(e, pf.param, ESC_LEVEL_ONE, val, pf) }
     for i in dst.two    { esc_record_stores(e, i, ESC_LEVEL_TWO, val) }
     for tf in dst.twof  { esc_record_stores(e, tf.param, ESC_LEVEL_TWO, val) }
     for i in dst.deep   { esc_record_stores(e, i, ESC_LEVEL_DEEP, val) }
+    for df in dst.deepf { esc_record_stores(e, df.param, ESC_LEVEL_DEEP, val) }
     if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, ESC_LEVEL_ONE, val) }
-    // A constructor's field is part of the constructed result.
+    // A constructor's field is part of the constructed result (that field of it).
     for vi in 0 ..< esc_var_count(dst.vars) {
-        if e.vars[e.cells[esc_var_at(dst.vars, vi)].var].depth == ESC_CALLER { esc_sum_ret(e, val) }
+        v := e.vars[e.cells[esc_var_at(dst.vars, vi)].var]
+        if v.depth != ESC_CALLER { continue }
+        field := esc_field_index(e.ft, v.name) if graph_kind_of(e.g, v.node) == .Field else -1
+        esc_sum_ret(e, val, field)
     }
 }
 
-// The result may point into what `val` does (a return, a constructor's field).
+// The result may point into what `val` does (a return; a constructor's
+// field, `field` of it), and is read-only where val is.
 @(private="file")
-esc_sum_ret :: proc(e: ^Esc, val: Esc_Roots) {
+esc_sum_ret :: proc(e: ^Esc, val: Esc_Roots, field := -1) {
     e.sum.ret += val.params
     for pf in val.pf { e.sum.ret += {pf.param} }
     e.sum.ret_deep += val.two + val.deep
-    for tf in val.twof { esc_pf_push(&e.sum.ret_field, tf) }
+    for tf in val.twof  { esc_pf_push(&e.sum.ret_field, tf) }
+    for df in val.deepf { esc_pf_push(&e.sum.ret_field, df) }
+    if !val.ro && val.ro_fields == 0 { return }
+    switch {
+    case field >= 64: e.sum.ret_ro = true
+    case field >= 0:  e.sum.ret_ro_fields |= u64(1) << u64(field)
+    case:
+        if val.ro { e.sum.ret_ro = true }
+        e.sum.ret_ro_fields |= val.ro_fields
+    }
+    if e.sum.ret_ro_from == 0 { e.sum.ret_ro_from = val.ro_from }
 }
 
+// A field's position in a struct, by name; -1 when it has none so named.
 @(private="file")
-esc_record_stores :: proc(e: ^Esc, dst: int, dst_level: u8, val: Esc_Roots) {
-    for j in val.params { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_ONE}) }
-    for pf in val.pf    { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = pf.param, src_level = ESC_LEVEL_ONE}) }
-    for j in val.two    { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_TWO}) }
-    for tf in val.twof {
-        esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = tf.param, src_level = ESC_LEVEL_TWO, src_field = tf.field, src_type = tf.type_})
+esc_field_index :: proc(ts: ^Type_Scope, name: string) -> int {
+    sd := as_struct_body(ts) if ts != nil else nil
+    if sd == nil { return -1 }
+    for &f, i in sd.fields { if f.name == name { return i } }
+    return -1
+}
+
+// (Read-only stays with what's stored into a param's struct's field or
+// slice header — `l.tokens = toks` — not with what's put among a slice's
+// items: an append keeps the caller's own value.)
+@(private="file")
+esc_record_stores :: proc(e: ^Esc, dst: int, dst_level: u8, val: Esc_Roots, into := Esc_PF{}) {
+    base := Esc_Store{dst = dst, dst_level = dst_level, dst_field = into.field, dst_type = into.type_}
+    base.ro = (val.ro || val.ro_fields != 0) && dst_level == ESC_LEVEL_ONE && dst != ESC_STORE_GLOBAL
+    base.ro_from = val.ro_from if base.ro else 0
+    one :: proc(e: ^Esc, base: Esc_Store, src: int, level: u8, from := Esc_PF{}) {
+        st := base
+        st.src, st.src_level = src, level
+        st.src_field, st.src_type = from.field, from.type_
+        esc_record(e, st)
     }
-    for j in val.deep   { esc_record(e, Esc_Store{dst = dst, dst_level = dst_level, src = j, src_level = ESC_LEVEL_DEEP}) }
+    for j in val.params { one(e, base, j, ESC_LEVEL_ONE) }
+    for pf in val.pf    { one(e, base, pf.param, ESC_LEVEL_ONE) }
+    for j in val.two    { one(e, base, j, ESC_LEVEL_TWO) }
+    for tf in val.twof  { one(e, base, tf.param, ESC_LEVEL_TWO, tf) }
+    for j in val.deep   { one(e, base, j, ESC_LEVEL_DEEP) }
+    for df in val.deepf { one(e, base, df.param, ESC_LEVEL_DEEP, df) }
 }
 
 @(private="file")
@@ -959,15 +1122,51 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
     for pf in sum.ret_field {
         if pf.param < len(args) { esc_join(r, esc_arg(e, callee, args, pf.param, ESC_LEVEL_DEEP, state, pf)) }
     }
+    if sum.ret_ro { esc_ro_mark(r, sum.ret_ro_from) }
+    if sum.ret_ro_fields != 0 {
+        r.ro_fields |= sum.ret_ro_fields
+        if r.ro_from == 0 { r.ro_from = sum.ret_ro_from }
+    }
+    // The copy rule: what the callee writes of its params' memory, this
+    // caller's arguments' — refused where read-only, and a write of this
+    // fun's own params' memory where it's theirs.
+    said := false
+    for w in sum.writes {
+        if w.param >= len(args) { continue }
+        at := esc_arg(e, callee, args, w.param, w.level, state, Esc_PF{param = w.param, field = w.field, type_ = w.type_})
+        if !e.final { continue }
+        esc_record_writes(e, at)
+        ro, from := at.ro || at.ro_fields != 0, at.ro_from
+        if !ro && w.level == ESC_LEVEL_ONE && esc_ptr_to_slice(callee, w.param) {
+            // (The header of a `^[]T`'s slice — its len, an append's — the slice's own.)
+            held: Esc_Roots
+            esc_deref(e, &held, at, state)
+            ro, from = held.ro, held.ro_from
+        }
+        if ro && !said {
+            what := esc_copy_name(e.g, args[w.param])
+            if w.type_ != nil && what != "" { what = fmt.tprintf("%s.%s", what, as_struct_body(w.type_).fields[w.field].name) }
+            esc_report_ro(e, op, what, from)
+            said = true
+        }
+    }
     for st in sum.stores {
         if st.src >= len(args) || st.dst >= len(args) { continue }
         val := esc_arg(e, callee, args, st.src, st.src_level, state, Esc_PF{param = st.src, field = st.src_field, type_ = st.src_type})
         dst: Esc_Roots
+        exact := true
         if st.dst == ESC_STORE_GLOBAL {
             dst.global = true
+        } else if st.dst_type != nil {
+            dst, exact = esc_narrow(e, esc_arg(e, callee, args, st.dst, st.dst_level, state), st.dst_field, st.dst_type)
         } else {
             dst = esc_arg(e, callee, args, st.dst, st.dst_level, state)
         }
+        // (An immutable param's copy stored into the argument's struct stays
+        // read-only where that field is exactly a cell of this fun's, or its
+        // param's: past a field it can't tell apart, it would make the rest
+        // read-only too.)
+        if st.ro && exact { esc_ro_mark(&val, st.ro_from) }
         esc_store(e, Esc_Site{op = op, callee = callee, st = st}, dst, val, state)
     }
 }
@@ -979,7 +1178,7 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
 esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8, state: []Esc_Roots, field := Esc_PF{}) -> Esc_Roots {
     pt: Type = callee.params[i].type_ if i < len(callee.params) else nil
     r := esc_into(e, args[i], pt, state)
-    if field.type_ != nil { r = esc_narrow(e, r, field.field, field.type_) }
+    if field.type_ != nil { r, _ = esc_narrow(e, r, field.field, field.type_) }
     on: Esc_Roots
     switch level {
     case ESC_LEVEL_ONE: return r
@@ -1003,10 +1202,23 @@ esc_clear :: proc(r: ^Esc_Roots) {
     clear(&r.vars.more)
     clear(&r.pf)
     clear(&r.twof)
+    clear(&r.deepf)
+    r.ro, r.ro_fields, r.ro_from = false, 0, 0
+    r.nfield, r.ntype = 0, nil
 }
 
 @(private="file")
 esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
+    // (A field filter holds for the cells it came with: joined with others,
+    // none — taken by an empty dst.)
+    if esc_var_count(src.vars) > 0 && (src.nfield != dst.nfield || src.ntype != dst.ntype) {
+        if esc_var_count(dst.vars) == 0 && dst.ntype == nil {
+            dst.nfield, dst.ntype = src.nfield, src.ntype
+        } else if dst.ntype != nil {
+            dst.nfield, dst.ntype = 0, nil
+            changed = true
+        }
+    }
     if !(src.params <= dst.params) { dst.params += src.params; changed = true }
     if !(src.two <= dst.two)       { dst.two += src.two; changed = true }
     if !(src.deep <= dst.deep)     { dst.deep += src.deep; changed = true }
@@ -1015,9 +1227,36 @@ esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
     for i in 0 ..< esc_var_count(src.vars) {
         if k := esc_var_at(src.vars, i); !esc_vars_has(dst.vars, k) { esc_vars_push(&dst.vars, k); changed = true }
     }
-    for pf in src.pf   { if esc_pf_push(&dst.pf, pf) { changed = true } }
-    for tf in src.twof { if esc_pf_push(&dst.twof, tf) { changed = true } }
+    for pf in src.pf    { if esc_pf_push(&dst.pf, pf) { changed = true } }
+    for tf in src.twof  { if esc_pf_push(&dst.twof, tf) { changed = true } }
+    for df in src.deepf { if esc_pf_push(&dst.deepf, df) { changed = true } }
+    if src.ro && !dst.ro { dst.ro = true; changed = true }
+    if src.ro_fields & ~dst.ro_fields != 0 { dst.ro_fields |= src.ro_fields; changed = true }
+    if dst.ro_from == 0 && (src.ro || src.ro_fields != 0) { dst.ro_from = src.ro_from }
     return
+}
+
+// Whether field f's bit is set in a struct value's ro_fields (past 63, any).
+@(private="file")
+esc_ro_bit :: proc(fields: u64, f: int) -> bool {
+    if f < 0 { return fields != 0 }
+    return fields & (u64(1) << u64(f)) != 0 if f < 64 else fields != 0
+}
+
+// Read-only from here: memory an immutable param's copy views, or the copy.
+@(private="file")
+esc_ro_mark :: proc(r: ^Esc_Roots, from: Token_Id) {
+    r.ro = true
+    if r.ro_from == 0 { r.ro_from = from }
+}
+
+// A value of type t read out of read-only memory: read-only only if it holds
+// a slice itself — a pointer read out of it points at memory no param said
+// anything of.
+@(private="file")
+esc_ro_only_slices :: proc(r: ^Esc_Roots, t: Type) {
+    if esc_holds_slice(t) { return }
+    r.ro, r.ro_fields, r.ro_from = false, 0, 0
 }
 
 @(private="file")
@@ -1031,9 +1270,11 @@ esc_equal :: proc(a, b: Esc_Roots) -> bool {
     if a.params != b.params || a.two != b.two || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
     if esc_var_count(a.vars) != esc_var_count(b.vars) { return false }
     for i in 0 ..< esc_var_count(a.vars) { if !esc_vars_has(b.vars, esc_var_at(a.vars, i)) { return false } }
-    if len(a.pf) != len(b.pf) || len(a.twof) != len(b.twof) { return false }
-    for pf in a.pf   { if !slice.contains(b.pf[:], pf) { return false } }
-    for tf in a.twof { if !slice.contains(b.twof[:], tf) { return false } }
+    if a.ro != b.ro || a.ro_fields != b.ro_fields || a.nfield != b.nfield || a.ntype != b.ntype { return false }
+    if len(a.pf) != len(b.pf) || len(a.twof) != len(b.twof) || len(a.deepf) != len(b.deepf) { return false }
+    for pf in a.pf    { if !slice.contains(b.pf[:], pf) { return false } }
+    for tf in a.twof  { if !slice.contains(b.twof[:], tf) { return false } }
+    for df in a.deepf { if !slice.contains(b.deepf[:], df) { return false } }
     return true
 }
 
@@ -1052,18 +1293,45 @@ esc_merge :: proc(dst, src: []Esc_Roots) -> (changed: bool) {
 // never holds references to anything shorter-lived than itself (that's the
 // rule), so a temporary or global holds nothing deeper than itself, and a
 // parameter's memory holds more of the caller's memory.
+//
+// Read-only memory holds read-only values. Read `whole` (a struct value),
+// a split local's fields say which of them are (ro_fields); else a field's
+// read-only is the value's.
 @(private="file")
-esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
+esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots, whole := false) {
     dst.two += r.params
     dst.deep += r.two + r.deep
     for pf in r.pf { esc_pf_push(&dst.twof, pf) }   // (what a field of a param's struct holds)
-    for tf in r.twof { dst.deep += {tf.param} }
+    for tf in r.twof { esc_pf_push(&dst.deepf, tf) }   // (... and on from there, that field's still)
+    for df in r.deepf { esc_pf_push(&dst.deepf, df) }
     if r.global { dst.global = true }
     dst.temp = max(dst.temp, r.temp)
+    if r.ro || (r.ro_fields != 0 && (r.ntype == nil || esc_ro_bit(r.ro_fields, r.nfield - 1))) { esc_ro_mark(dst, r.ro_from) }
     for vi in 0 ..< esc_var_count(r.vars) {
         c := esc_var_at(r.vars, vi)
-        if s := e.cells[c].slot; s >= 0 && !e.vars[e.cells[c].var].view { esc_join(dst, state[s]) }
+        s := e.cells[c].slot
+        if s < 0 || e.vars[e.cells[c].var].view { continue }
+        held := state[s]
+        if f := e.cells[c].field; whole && f >= 0 && (held.ro || held.ro_fields != 0) {
+            plain := held
+            plain.ro, plain.ro_fields = false, 0
+            esc_join(dst, plain)
+            if f < 64 { dst.ro_fields |= u64(1) << u64(f) } else { dst.ro = true }
+            if dst.ro_from == 0 { dst.ro_from = held.ro_from }
+        } else if !whole && held.ro_fields != 0 {
+            // (Struct values some fields of which are read-only, looked into:
+            // through one field of them, that field's; else only what's
+            // read-only whole — a field's own is that field's to say.)
+            h := held
+            h.ro = held.ro || (r.ntype != nil && esc_ro_bit(held.ro_fields, r.nfield - 1))
+            h.ro_fields = 0
+            if !h.ro { h.ro_from = 0 }
+            esc_join(dst, h)
+        } else {
+            esc_join(dst, held)
+        }
     }
+    if !whole { dst.ro_fields = 0 }
 }
 
 // The data a slice header at `r` points into. A partial array's header points
@@ -1079,13 +1347,24 @@ esc_slice_data :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Root
 
 // Everything reachable from `r`, at any depth of indirection (r included).
 @(private="file")
+//
+// Outward from `r`, each cell looked through once, as it was first reached
+// (narrowed to a field, its filter kept: esc_narrow).
 esc_reach :: proc(e: ^Esc, r: Esc_Roots, state: []Esc_Roots) -> Esc_Roots {
     out: Esc_Roots
     esc_join(&out, r)
+    frontier := r
     for {
         more: Esc_Roots
-        esc_slice_data(e, &more, out, state)
+        esc_slice_data(e, &more, frontier, state)
+        next: Esc_Roots
+        esc_join(&next, more)
+        next.vars = {}
+        for i in 0 ..< esc_var_count(more.vars) {
+            if c := esc_var_at(more.vars, i); !esc_vars_has(out.vars, c) { esc_vars_push(&next.vars, c) }
+        }
         if !esc_join(&out, more) { return out }
+        frontier = next
     }
 }
 
@@ -1104,7 +1383,7 @@ esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
 esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
     d := max(int)
     if r.global { d = ESC_GLOBAL }
-    if r.params != {} || r.two != {} || r.deep != {} || len(r.pf) > 0 || len(r.twof) > 0 { d = min(d, ESC_CALLER) }
+    if r.params != {} || r.two != {} || r.deep != {} || len(r.pf) > 0 || len(r.twof) > 0 || len(r.deepf) > 0 { d = min(d, ESC_CALLER) }
     if r.temp > 0 { d = min(d, r.temp) }
     for vi in 0 ..< esc_var_count(r.vars) { d = min(d, e.vars[e.cells[esc_var_at(r.vars, vi)].var].depth) }
     return d
@@ -1125,6 +1404,7 @@ esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
 
 @(private="file", thread_local) g_esc_refs_cache: map[^Type_Scope]bool
 @(private="file", thread_local) g_esc_self_cache: map[^Type_Scope]bool
+@(private="file", thread_local) g_esc_slice_cache: map[^Type_Scope]bool
 
 // Can a value of this type hold a reference? (Unknown: assume it can.)
 esc_has_refs :: proc(t: Type) -> bool {
@@ -1153,6 +1433,45 @@ esc_has_refs :: proc(t: Type) -> bool {
         return has
     }
     return false
+}
+
+// Does a value of this type hold a slice by value — itself, or in its
+// fields, items or variants, not behind a pointer? (The copy rule: such a
+// param is immutable, and what it views read-only.)
+esc_holds_slice :: proc(t: Type) -> bool {
+    if t == nil { return false }
+    #partial switch bt in distinct_base(t) {
+    case ^Type_Slice:
+        return true
+    case ^Type_Fixed_Array:
+        return esc_holds_slice(bt.elem)
+    case ^Type_Partial_Array:
+        return esc_holds_slice(bt.elem)
+    case ^Type_Union:
+        for _, st in bt.variant_structs {
+            if esc_holds_slice(st) { return true }
+        }
+    case ^Type_Scope:
+        sd := as_struct_body(bt)
+        if sd == nil { return false }
+        if cached, ok := g_esc_slice_cache[bt]; ok { return cached }
+        g_esc_slice_cache[bt] = false
+        has := false
+        for &f in sd.fields {
+            if esc_holds_slice(f.type_) { has = true; break }
+        }
+        g_esc_slice_cache[bt] = has
+        return has
+    }
+    return false
+}
+
+// Whether a callee's param i is a pointer to a slice (`^[]T`).
+@(private="file")
+esc_ptr_to_slice :: proc(callee: ^Type_Scope, i: int) -> bool {
+    if i >= len(callee.params) { return false }
+    pt, is_ptr := distinct_base(callee.params[i].type_).(^Type_Ptr)
+    return is_ptr && is_slice_type(pt.elem)
 }
 
 // Does a value of this type hold a partial array inline (whose header points
@@ -1208,6 +1527,49 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
     } else {
         esc_diag(e, span, TYPE_ESCAPE_STORE_ANON, what)
     }
+}
+
+// A write the copy rule refuses: through `what`, a copy of the immutable
+// param declared at `from` (said once at a place).
+@(private="file")
+esc_report_ro :: proc(e: ^Esc, op: Node_Id, what: string, from: Token_Id) {
+    if !e.final || !e.report { return }
+    name, at := "?", "?"
+    if from != 0 {
+        name = token_text(build_tokens[from])
+        at = span_location(Span{at = from, tok = from, end = from + 1})
+    }
+    span := graph_origin(e.g, op)
+    msg := fmt.tprintf(TYPE_SLICE_COPY_IMMUTABLE, what if what != "" else "this slice", name, at, name)
+    for d in e.diags { if d.span == span && d.msg == msg { return } }
+    esc_diag(e, span, "%s", msg)
+}
+
+// The slice a write goes through, by name: the collection an item is of, the
+// slice whose len is set, a struct's slice field; past an address or a read.
+@(private="file")
+esc_copy_name :: proc(g: ^Program_Graph, o: Operand) -> string {
+    cur := o
+    for cur.op != NO_NODE && !graph_is_leaf(cur.op) && !graph_is_const(cur.op) {
+        ops := graph_operands(g, cur.op)
+        if len(ops) == 0 { break }
+        #partial switch graph_op_of(g, cur.op) {
+        case .Address, .Read, .Cast, .Deref:
+            cur = ops[0]
+            continue
+        case .Index, .Slice, .View:
+            if is_slice_type(graph_type(g, ops[0].op)) { return graph_place_name(g, ops[0]) }
+            cur = ops[0]
+            continue
+        case .Field:
+            if is_slice_type(graph_type(g, ops[0].op)) { return graph_place_name(g, ops[0]) }   // its len
+            if is_slice_type(graph_type(g, cur.op)) { return graph_place_name(g, cur) }
+            cur = ops[0]
+            continue
+        }
+        break
+    }
+    return graph_place_name(g, cur)
 }
 
 // Name the argument(s) that bring local memory into a returned call result.
