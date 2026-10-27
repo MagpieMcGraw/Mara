@@ -27,7 +27,7 @@ Process_Error :: error {
 
 // What reading an environment variable can fail with.
 Env_Error :: error {
-    Not_Found   // no variable of that name is set
+    Not_Set   // no variable of that name is set
 }
 
 // What listening on a name, or connecting to one, can fail with.
@@ -540,10 +540,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
-	// Path, a 0 after it. Not_Found when no variable of that name is set;
+	// Path, a 0 after it. Not_Set when no variable of that name is set;
 	// Too_Large when the value is longer than a Path holds (511 characters).
 	// (GetEnvironmentVariableA: in the system's code page, as the paths here
-	// are. A value set empty reads as empty, not as Not_Found.)
+	// are. A value set empty reads as empty, not as Not_Set.)
 	env :: fun(name: []utf8) -> Path, err {
 		value : Path
 		c := c_path(name)
@@ -551,7 +551,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// than value has; 0 for none, or for an empty one: the error says.)
 		SetLastError(0)
 		n := i64(GetEnvironmentVariableA(cstring(c), &value[0], u32(value.cap)))
-		if n == 0 and GetLastError() == ERROR_ENVVAR_NOT_FOUND do return value, Not_Found
+		if n == 0 and GetLastError() == ERROR_ENVVAR_NOT_FOUND do return value, Not_Set
 		if n >= value.cap do return value, Too_Large
 		value.len = n
 		return value
@@ -1321,13 +1321,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
-	// Path, a 0 after it. Not_Found when no variable of that name is set;
+	// Path, a 0 after it. Not_Set when no variable of that name is set;
 	// Too_Large when the value is longer than a Path holds (511 characters).
 	env :: fun(name: []utf8) -> Path, err {
 		value : Path
 		c := c_path(name)
 		p := getenv(cstring(c))
-		if p == void do return value, Not_Found
+		if p == void do return value, Not_Set
 		text := read_cstring(value.cap, p)
 		// (As long as the room: no 0 found in it, no room for one.)
 		if text.len == value.cap do return value, Too_Large
