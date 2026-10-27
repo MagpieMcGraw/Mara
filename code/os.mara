@@ -25,6 +25,11 @@ Process_Error :: error {
     Wait_Failed
 }
 
+// What reading an environment variable can fail with.
+Env_Error :: error {
+    Not_Found   // no variable of that name is set
+}
+
 // What listening on a name, or connecting to one, can fail with.
 Pipe_Error :: error {
     Listen_Failed
@@ -534,6 +539,24 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return real_path(path[:])
 	}
 
+	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
+	// Path, a 0 after it. Not_Found when no variable of that name is set;
+	// Too_Large when the value is longer than a Path holds (511 characters).
+	// (GetEnvironmentVariableA: in the system's code page, as the paths here
+	// are. A value set empty reads as empty, not as Not_Found.)
+	env :: fun(name: []utf8) -> Path, err {
+		value : Path
+		c := c_path(name)
+		// (Its length; the room it wants, its 0 counted, when that's more
+		// than value has; 0 for none, or for an empty one: the error says.)
+		SetLastError(0)
+		n := i64(GetEnvironmentVariableA(cstring(c), &value[0], u32(value.cap)))
+		if n == 0 and GetLastError() == ERROR_ENVVAR_NOT_FOUND do return value, Not_Found
+		if n >= value.cap do return value, Too_Large
+		value.len = n
+		return value
+	}
+
 	// The files and directories in a directory, to look through what's there:
 	// each one's name, whether it leads to a directory, and whether it's a
 	// link (Dir_Entry) — not "." or "..", in no order to count on — into
@@ -814,6 +837,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	STD_INPUT_HANDLE     :: 0xFFFFFFF6   // (DWORD)-10
 	STD_OUTPUT_HANDLE    :: 0xFFFFFFF5   // (DWORD)-11
 	ERROR_BROKEN_PIPE    :: 109
+	ERROR_ENVVAR_NOT_FOUND :: 203
 	CREATE_WAITABLE_TIMER_HIGH_RESOLUTION :: 0x00000002
 	SYNCHRONIZE          :: 0x00100000
 	TIMER_MODIFY_STATE   :: 0x00000002
@@ -1055,6 +1079,8 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun GetExitCodeProcess(h: File_Id, code: ^u32) -> i32
 		fun GetStdHandle(which: u32) -> File_Id
 		fun GetLastError() -> u32
+		fun SetLastError(code: u32)
+		fun GetEnvironmentVariableA(name: cstring, value: ^utf8, size: u32) -> u32
 		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
 		fun Sleep(ms: u32)
 
@@ -1292,6 +1318,21 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if n >= path.cap do return path, Too_Large
 		path.len = n
 		return path
+	}
+
+	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
+	// Path, a 0 after it. Not_Found when no variable of that name is set;
+	// Too_Large when the value is longer than a Path holds (511 characters).
+	env :: fun(name: []utf8) -> Path, err {
+		value : Path
+		c := c_path(name)
+		p := getenv(cstring(c))
+		if p == void do return value, Not_Found
+		text := read_cstring(value.cap, p)
+		// (As long as the room: no 0 found in it, no room for one.)
+		if text.len == value.cap do return value, Too_Large
+		&value + text
+		return value
 	}
 
 	// The files and directories in a directory, to look through what's there:

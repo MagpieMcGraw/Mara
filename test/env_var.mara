@@ -1,0 +1,28 @@
+module env_var
+
+//@ expect-output: set: true true
+//@ expect-output: unset: true 0
+//@ expect-output: empty name: true
+
+// env(name) reads an environment variable into a Path. One the system
+// always sets (SystemRoot on Windows, HOME on Linux) has a value; one
+// nobody sets is Not_Found, and so is a name with no letters.
+
+use mara.core
+use mara.os
+
+#if #windows {
+	ALWAYS_SET :: "SystemRoot"
+}
+#if #linux {
+	ALWAYS_SET :: "HOME"
+}
+
+main :: fun() {
+	value, e := env(ALWAYS_SET)
+	print("set:", e == Ok, value.len > 0)
+	none, missing := env("MARA_ENV_TEST_NEVER_SET")
+	print("unset:", missing == Not_Found, none.len)
+	_, blank := env("")
+	print("empty name:", blank == Not_Found)
+}
