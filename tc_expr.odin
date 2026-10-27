@@ -1567,6 +1567,15 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     case is_untyped(types[1]) || is_infer(types[1]):
     case types_incompatible(types[0], types[1]):
         tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
+    case:
+        // (A slice and an array, a list, text: the slice, the other a view
+        // of its items. The array's room was the expression's whichever came
+        // first — `if c do "none" else line[:]` a list of a literal's room,
+        // too small for the line.)
+        _, slice_1 := distinct_base(types[1]).(^Type_Slice)
+        #partial switch _ in distinct_base(types[0]) {
+        case ^Type_Fixed_Array, ^Type_Partial_Array: if slice_1 { t = types[1] }
+        }
     }
     // (Neither branch of a width: a binding's carries its own — its width
     // the expression's, as an operation's is; two bindings', one width. A

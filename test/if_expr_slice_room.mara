@@ -1,0 +1,46 @@
+module if_expr_slice_room
+
+//@ expect-output: literal first: one two three four five six seven eight nine ten eleven twelve thirteen
+//@ expect-output: slice first: one two three four five six seven eight nine ten eleven twelve thirteen
+//@ expect-output: empty: none
+//@ expect-output: list: [1] 1
+//@ expect-output: kept: a b
+//@ expect-output: returned: none hi
+
+// An if-expression of an array (a text literal, a list) and a slice is the
+// slice, whichever branch comes first: the array side is a view of its
+// items. It was the first branch's type, so `if … do "none" else line[:]`
+// was a list of the literal's room (64), and a longer line stopped the
+// program (sooblivion's sky command).
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+// (Given back as a view, the literal first, as if_expr_view's is second.)
+or_none :: fun(view: []utf8) -> []utf8 {
+	return if view.len == 0 do "none" else view
+}
+
+main :: fun() {
+	line : str1024
+	&line + "one two three four five six seven eight nine ten eleven twelve thirteen"
+	print("literal first:", if line.len == 0 do "none" else line[:])
+	print("slice first:", if line.len != 0 do line[:] else "none")
+	line.len = 0
+	print("empty:", if line.len == 0 do "none" else line[:])
+
+	short : [2]i64
+	&short + 1
+	long : [8]i64
+	for i in 1..5 do &long + i
+	view := long[0 : 5]
+	picked := if long.len > 2 do short else view
+	print("list:", picked, picked.len)
+
+	// (Two literals: the expression's text, as before.)
+	a := if line.len == 0 do "a" else "bb"
+	print("kept:", a, if a.len == 1 do "b" else "cc")
+	print("returned:", or_none(line[:]), or_none("hi"))
+}
