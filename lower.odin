@@ -1380,9 +1380,17 @@ lw_if_expr :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
             types[i] = t
             continue
         }
-        r := lw_expr(k, branch, .Into, dest = graph_dest_var(slot, nil))
+        // (An array literal into a list: told so, it writes the list's len.)
+        into_t: Type = t if tr.tag[tc_unparen(k, branch)] == .Array && is_partial_array(t) else nil
+        r := lw_expr(k, branch, .Into, dest = graph_dest_var(slot, into_t))
         if r.into { continue }
         if lw_builds_into(k, branch) || tc_byte_index(k, branch) { lw_fail(k, branch, "an if's branch built in place, or of bytes") }
+        // (A fixed array into a list, `if c do three else list`: its items,
+        // as lw_store writes them, the list's len their count.)
+        if elem, into_list := lw_fixed_into_list(t, types[i]); into_list {
+            graph_build_write_at(b, graph_var(b, slot, nil, span), lw_items_of_fixed(k, branch, r, types[i], elem, span), span)
+            continue
+        }
         val := graph_build_widen(b, lw_value(k, r, branch, types[i]), span, {to = t})
         graph_build_write_at(b, graph_var(b, slot, nil, span), val, span)
     }

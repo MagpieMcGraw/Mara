@@ -1,0 +1,54 @@
+module if_expr_array_kinds
+
+//@ expect-output: text then list: a longer line than the literal 30
+//@ expect-output: text chosen: short 5
+//@ expect-output: list then text: short 5
+//@ expect-output: fixed then list: [4, 5] 2
+//@ expect-output: fixed chosen: [1, 2, 3] 3
+//@ expect-output: list then fixed: [1, 2, 3] 3
+//@ expect-output: array literal then list: [7, 8] 2
+//@ expect-output: list then array literal: [7, 8, 9] 3
+//@ expect-output: array literal then fixed: [7, 8, 9] 3
+
+// An if-expression of two kinds of array is the kind the other goes into,
+// whichever branch comes first: a list over a fixed array over a text
+// literal. It was the first branch's, so `if c do "none" else line` was a
+// list of the literal's room, and the line's items couldn't be lowered into
+// it (sooblivion's sky command, once its `line[:]` was taken out). An array
+// literal into a list sets the list's len, and beside a fixed array it takes
+// that array's element type.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	n := 1
+	line : str1024
+	&line + "a longer line than the literal"
+	a := if n == 0 do "short" else line
+	print("text then list:", a, a.len)
+	b := if n != 0 do "short" else line
+	print("text chosen:", b, b.len)
+	c := if n == 0 do line else "short"
+	print("list then text:", c, c.len)
+
+	three : [3!]i32 = [1, 2, 3]
+	list : [8]i32
+	&list + 4
+	&list + 5
+	d := if n == 0 do three else list
+	print("fixed then list:", d, d.len)
+	e := if n != 0 do three else list
+	print("fixed chosen:", e, e.len)
+	f := if n == 0 do list else three
+	print("list then fixed:", f, f.len)
+
+	g := if n != 0 do [7, 8] else list
+	print("array literal then list:", g, g.len)
+	h := if n == 0 do list else [7, 8, 9]
+	print("list then array literal:", h, h.len)
+	i := if n != 0 do [7, 8, 9] else three
+	print("array literal then fixed:", i, i.len)
+}

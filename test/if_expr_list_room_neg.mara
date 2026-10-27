@@ -1,0 +1,16 @@
+module if_expr_list_room_neg
+
+//@ expect-fail: if-expression branches have incompatible types: [3!]i32 vs [2]i32
+
+// A fixed array beside a list goes into the list, so its items must fit in
+// the list's room, as in `pair : [2]i32 = three`.
+
+use mara.core
+
+main :: fun() {
+	n := 1
+	three : [3!]i32 = [1, 2, 3]
+	pair : [2]i32
+	v := if n == 0 do three else pair
+	print(v)
+}

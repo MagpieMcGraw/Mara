@@ -1568,13 +1568,20 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     case types_incompatible(types[0], types[1]):
         tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
     case:
-        // (A slice and an array, a list, text: the slice, the other a view
-        // of its items. The array's room was the expression's whichever came
-        // first — `if c do "none" else line[:]` a list of a literal's room,
-        // too small for the line.)
-        _, slice_1 := distinct_base(types[1]).(^Type_Slice)
-        #partial switch _ in distinct_base(types[0]) {
-        case ^Type_Fixed_Array, ^Type_Partial_Array: if slice_1 { t = types[1] }
+        // (Two arrays, or an array and a slice: the branch the other goes
+        // into, whichever came first — a slice over a list over a fixed array
+        // over a text literal, the other a view or a copy of its items. It
+        // was the first branch's: `if c do "none" else line[:]` a list of the
+        // literal's room, too small for the line, and `if c do "none" else
+        // line` a list the line's items couldn't be lowered into. Of one
+        // kind, the one whose elements are typed: `if c do [1, 2] else pair`
+        // the pair's.)
+        r0, r1 := tc_array_rank(types[0]), tc_array_rank(types[1])
+        if r0 > 0 && (r1 > r0 || r1 == r0 && tc_open_elems(types[0]) && !tc_open_elems(types[1])) { t = types[1] }
+        // (Arrays of one element pass types_incompatible whatever their
+        // sizes: each branch fits in the expression's, as in a declaration.)
+        if r0 > 0 && r1 > 0 && (!tc_array_fits(types[0], t) || !tc_array_fits(types[1], t)) {
+            tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
         }
     }
     // (Neither branch of a width: a binding's carries its own — its width
@@ -1590,6 +1597,38 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     tc_settle(k, then_n, t)
     tc_settle(k, else_n, t)
     return t
+}
+
+// An if-expression branch's kind of array (tc_if_expr), ranked by which goes
+// into which: 1 a text literal, 2 a fixed array, 3 a list, 4 a slice; 0 none.
+tc_array_rank :: proc(t: Type) -> int {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Partial_Array: return 1 if v.text != 0 else 3
+    case ^Type_Fixed_Array: return 2
+    case ^Type_Slice: return 4
+    }
+    return 0
+}
+
+// Whether an if-expression's branch fits in the expression's array type
+// (tc_if_expr): a fixed array in one of its own size, a fixed array or a
+// literal in a list with room for its items, a literal in a fixed array at
+// least as long (the rest zeros, as `f : [5!]utf8 = "abc"`).
+tc_array_fits :: proc(from, into: Type) -> bool {
+    n := 0   // (the items from has)
+    fixed := false
+    #partial switch f in distinct_base(from) {
+    case ^Type_Fixed_Array: n, fixed = f.size, true
+    case ^Type_Partial_Array:
+        if f.text == 0 { return true }   // (a list: types_equal compared its room)
+        n = f.text - 1
+    case: return true
+    }
+    #partial switch to in distinct_base(into) {
+    case ^Type_Fixed_Array: return n == to.size if fixed else n <= to.size
+    case ^Type_Partial_Array: return to.text != 0 || n <= to.size
+    }
+    return true
 }
 
 // The expression an access path (`x.f[i].g`) is rooted at.

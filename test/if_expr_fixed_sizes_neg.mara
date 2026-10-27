@@ -1,0 +1,16 @@
+module if_expr_fixed_sizes_neg
+
+//@ expect-fail: if-expression branches have incompatible types: [3!]i32 vs [5!]i32
+
+// Two fixed arrays of different sizes are no one type, as two lists of
+// different rooms aren't: the if-expression's value would have to be both.
+
+use mara.core
+
+main :: fun() {
+	n := 1
+	three : [3!]i32 = [1, 2, 3]
+	five : [5!]i32 = [4, 5, 6, 7, 8]
+	v := if n == 0 do three else five
+	print(v)
+}
