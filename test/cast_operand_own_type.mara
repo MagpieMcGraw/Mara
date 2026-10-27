@@ -1,0 +1,42 @@
+module cast_operand_own_type
+
+//@ expect-output: item: 0.991445
+//@ expect-output: field: 0.991445
+//@ expect-output: declared: 0.991445
+//@ expect-output: returned: 0.991445
+//@ expect-output: literal: 2 3
+
+// A cast's operand is typed on its own: where the cast goes (an f32 item,
+// field, declaration, result) isn't its type. It was, so `PI / 72` became
+// an f32 against `f64(i)` and `cos` couldn't choose (sooblivion's MP3
+// tables). Untyped numbers still settle to the cast's type.
+
+use mara.core
+use mara.math
+
+Point :: struct {
+	x: f32
+}
+
+angle :: fun(i: i64) -> f32 {
+	return f32(cos(PI / 72 * f64(i)))
+}
+
+main :: fun() {
+	table : [4!]f32
+	for i in 0:4 do table[i] = f32(cos(PI / 72 * f64(i)))
+	print("item:", table[3])
+
+	p : Point
+	p.x = f32(cos(PI / 72 * f64(3)))
+	print("field:", p.x)
+
+	d : f32 = f32(cos(PI / 72 * f64(3)))
+	print("declared:", d)
+
+	print("returned:", angle(3))
+
+	n : i32 = i32(2.0)
+	m : u8 = u8(1 + 2)
+	print("literal:", n, m)
+}

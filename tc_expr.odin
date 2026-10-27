@@ -1157,6 +1157,9 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
         return Type_Error{}, true
     }
+    // (What's cast is typed on its own: the place the cast goes to, an f32
+    // item's, isn't its type. Its untyped numbers settle to the cast's.)
+    k.hint = nil
     each(k, args, &types)
     tc_settle_untyped(k, args[0], types[0], target)
     // (A known float made an int it doesn't fit: said so now.)
