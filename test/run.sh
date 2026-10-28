@@ -15,6 +15,8 @@
 # A compiling fixture may also carry `//@ expect-output: text` lines (any
 # number): it is then RUN, and must exit 0 with each text in its output. That's
 # how a miscompile that still compiles — printing nothing, say — gets caught.
+# One that isn't run is built up to the link only (MARA_NO_LINK): no program
+# is made of it, so there's no exe for antimalware to scan.
 # A `//@ expect-exit: N` line makes N the exit it must give instead: a program
 # a run-time check stops (1), its message among the expected output.
 # A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
@@ -70,9 +72,19 @@ check_file() {  # f
   [ "$exp" = skip ] && { verdict "$name" skip; return; }
 
   flags=$(sed -nE 's#.*//@ build-flags:[[:space:]]*(.+)#\1#p' "$f" | head -1 | tr -d '\r')
-  out=$("$MARA" build "$name" $flags 2>&1)
-  if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
-  comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
+  # A test that's run is linked; one that only has to compile is built up to
+  # the link (MARA_NO_LINK: exit 0, or 1 failing), no program made — none for
+  # antimalware to scan. (A negative test is built whole: some fail only at
+  # the link.)
+  if [ "$exp" = pass ] && ! grep -qE '//@ expect-(output|exit):' "$f"; then
+    out=$(MARA_NO_LINK=1 "$MARA" build "$name" $flags 2>&1); rc=$?
+    if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
+    comp=no; [ $rc -eq 0 ] && comp=yes
+  else
+    out=$("$MARA" build "$name" $flags 2>&1)
+    if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
+    comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
+  fi
 
   if [ "$exp" = pass ]; then
     if [ "$comp" != yes ]; then verdict "$name" bad "REGRESSION (want pass, failed): $name"; return; fi
@@ -112,8 +124,15 @@ check_dir() {  # d
     exp=fail
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1 | tr -d '\r')
   fi
-  out=$(cd "$d" && "$MARA" build "$d" $flags 2>&1)
-  comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
+  # (Nothing here is run: one that has to compile is built up to the link
+  # only, as check_file builds its.)
+  if [ "$exp" = pass ]; then
+    out=$(cd "$d" && MARA_NO_LINK=1 "$MARA" build "$d" $flags 2>&1); rc=$?
+    comp=no; [ $rc -eq 0 ] && comp=yes
+  else
+    out=$(cd "$d" && "$MARA" build "$d" $flags 2>&1)
+    comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
+  fi
   if [ "$exp" = pass ]; then
     if [ "$comp" = yes ]; then verdict "$key" pass; else verdict "$key" bad "REGRESSION (multi-file subdir, want pass): $d"; fi
   else
