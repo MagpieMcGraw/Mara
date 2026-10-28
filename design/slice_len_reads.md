@@ -1,0 +1,589 @@
+# sooblivion: every `.len` read of a slice (574), 2026-10-28
+
+Each `.len` read of a slice in sooblivion's own files, by what the slice is: a view made once and never grown (A: its len is its size, as its cap would be), or a room being filled (B: its len counts what's been put in). Rooms and what they feed are traced through copies, struct fields (any value of the struct), and params (any caller).
+
+## A. The view's size (a slicing, a list seen as a slice, or a param given only views): `.cap` would say the same: 328
+
+- `animation.mara:79:22` (comparison; field:Block_Sequence.blocks): `if sequence.blocks.len < (b + 1) * CONTROLLED_BLOCK_SIZE or not fits(tracks.len + 1, tracks.cap) do return`
+- `animation.mara:111:24` (comparison; field:Block_String_Palette.text): `for at < palette.text.len {`
+- `animation.mara:280:37` (comparison; field:Spline_Points.shorts): `if (at + c + 1) * 2 > data.shorts.len do continue`
+- `animation.mara:284:37` (comparison; field:Spline_Points.floats): `if (at + c + 1) * 4 > data.floats.len do continue`
+- `animation.mara:298:21` (comparison; angles): `if at + 4 > angles.len do return`
+- `animation.mara:308:25` (comparison; angles): `if at + size > angles.len do return`
+- `audio.mara:130:9` (comparison; data): `if data.len < 12 do return clip, Not_Wave`
+- `audio.mara:136:20` (comparison; data): `for at + 8 <= data.len {`
+- `audio.mara:140:36` (argument; data): `end := min(body + i64(size), data.len)`
+- `audio.mara:156:28` (arithmetic /; field:Clip.samples): `clip.frames = clip.samples.len / (2 * clip.channels)`
+- `audio.mara:167:79` (arithmetic -; folder_path): `if ends_with(folder_path, "\\") do folder_path = folder_path[0 : folder_path.len - 1]`
+- `bsa.mara:95:16` (comparison; view): `for got < view.len {`
+- `bsa.mara:96:26` (slice bound; view): `rest := view[got : view.len]`
+- `bsa.mara:192:11` (stored; stem): `n := stem.len`
+- `bsa.mara:201:14` (empty check; extension): `if extension.len == 0 do return hash`
+- `bsa.mara:215:13` (stored; name): `dot := name.len`
+- `bsa.mara:216:17` (range end; name): `for i in 0:name.len {`
+- `bsa.mara:219:49` (slice bound; name): `return name_hash(name[0 : dot], name[dot : name.len])`
+- `bsa.mara:288:15` (stored; files): `high := files.len`
+- `bsa.mara:294:16` (comparison; files): `if low < files.len and files[low].hash == hash do return low, true`
+- `bsa.mara:322:25` (slice bound; packed): `unzip(packed[4 : packed.len], &output)?`
+- `collision.mara:301:22` (empty check; field:Geometry.vertices): `if geometry.vertices.len == 0 do return`
+- `collision.mara:302:23` (empty check; field:Geometry.triangles): `if geometry.triangles.len != 0 {`
+- `dds.mara:109:9` (comparison; data): `if data.len < 128 do return texture, Not_A_Texture`
+- `dds.mara:131:34` (slice bound; data): `texture.pixels = data[128 : data.len]`
+- `dds.mara:142:32` (comparison; field:Texture.pixels): `if at + size > texture.pixels.len do break`
+- `esm.mara:79:25` (comparison; data): `if fields.at + 6 > data.len {`
+- `esm.mara:80:23` (comparison; data): `if fields.at != data.len do fields.broken = true`
+- `esm.mara:87:53` (comparison; data): `if kind == "XXXX" and size == 4 and at + 10 <= data.len {`
+- `esm.mara:93:21` (comparison; data): `if at + size > data.len {`
+- `esm.mara:105:9` (comparison; body): `if body.len < 4 do return body[0:0], Truncated`
+- `esm.mara:108:21` (slice bound; body): `unzip(body[4 : body.len], scratch)?`
+- `esm.mara:145:15` (comparison; data): `for at < data.len {`
+- `esm.mara:146:29` (comparison; data): `if at + HEADER_SIZE > data.len do return Truncated`
+- `esm.mara:156:16` (comparison; data): `if end > data.len do return Truncated`
+- `esm.mara:162:22` (stored; body): `entry.bytes += body.len`
+- `facegen.mara:52:9` (comparison; data): `if data.len < 64 or data[0:8] != "FREGM002" do return none, Not_A_Morph_File`
+- `facegen.mara:57:77` (comparison; data): `if 64 + (morphs.symmetric + morphs.asymmetric) * morph_size(&morphs) > data.len do return none, Cut_Short`
+- `facegen.mara:107:9` (comparison; data): `if data.len < 64 or data[0:8] != "FREGT003" do return none, Not_A_Morph_File`
+- `facegen.mara:112:74` (comparison; data): `if 64 + morphs.symmetric * (4 + 3 * morphs.rows * morphs.columns) > data.len do return none, Cut_Short`
+- `game_files.mara:47:9` (empty check; text): `if text.len > 0 {`
+- `game_files.mara:58:19` (range end; text): `for at in 0..text.len {`
+- `game_files.mara:59:15` (comparison; text): `if at < text.len and text[at] != '\n' do continue`
+- `game_files.mara:62:10` (empty check; line): `if line.len == 0 or line[0] == '#' do continue`
+- `game_files.mara:86:72` (argument; name): `if not fits(order.plugins.len + 1, order.plugins.cap) or not fits(name.len, 64) do return`
+- `game_files.mara:120:24` (arithmetic -; name): `stem := name[0 : name.len - 4]   // (without ".esp")`
+- `game_files.mara:132:10` (empty check; name): `if name.len > 0 do open_one_archive(archives, name, storage)?`
+- `game_files.mara:147:9` (comparison; name): `if name.len <= stem.len or compare_folded(name[0 : stem.len], stem) != 0 do return false`
+- `game_files.mara:147:21` (comparison; stem): `if name.len <= stem.len or compare_folded(name[0 : stem.len], stem) != 0 do return false`
+- `game_files.mara:147:57` (slice bound; stem): `if name.len <= stem.len or compare_folded(name[0 : stem.len], stem) != 0 do return false`
+- `game_files.mara:148:29` (arithmetic -; name): `if compare_folded(name[name.len - 4 : name.len], ".bsa") != 0 do return false`
+- `game_files.mara:148:44` (slice bound; name): `if compare_folded(name[name.len - 4 : name.len], ".bsa") != 0 do return false`
+- `game_files.mara:149:19` (slice bound; stem): `rest := name[stem.len : name.len]`
+- `game_files.mara:149:30` (slice bound; name): `rest := name[stem.len : name.len]`
+- `game_files.mara:150:13` (comparison; rest): `return rest.len == 4 or (rest.len > 3 and rest[0:3] == " - ")`
+- `game_files.mara:150:31` (comparison; rest): `return rest.len == 4 or (rest.len > 3 and rest[0:3] == " - ")`
+- `grass.mara:75:48` (comparison; data): `if look.model.len == 0 or not has_data or data.len < 29 do return look, false`
+- `hud.mara:158:9` (comparison; data): `if data.len < 296 + 256 * 56 do return File_Error.Read_Failed`
+- `hud.mara:184:12` (comparison; picture): `if picture.len < 8 do return File_Error.Read_Failed`
+- `hud.mara:187:12` (comparison; picture): `if picture.len < 8 + i64(width) * i64(height) * 4 do return File_Error.Read_Failed`
+- `hud.mara:188:87` (slice bound; picture): `font.texture = render.texture_from_pixels(renderer, picture_path, picture[8 : picture.len], i64(width), i64(height))`
+- `inflate.mara:65:30` (comparison; field:Bits.input): `if bits.at + 8 <= bits.input.len {`
+- `inflate.mara:76:26` (comparison; field:Bits.input): `if bits.at < bits.input.len {`
+- `inflate.mara:100:26` (arithmetic *; field:Bits.input): `return used > bits.input.len * 8`
+- `inflate.mara:274:34` (comparison; field:Bits.input): `if bits.at + length > bits.input.len do return Input_Ended`
+- `inflate.mara:335:15` (comparison; data): `for at < data.len {`
+- `inflate.mara:338:16` (comparison; data): `if end > data.len do end = data.len`
+- `inflate.mara:338:34` (stored; data): `if end > data.len do end = data.len`
+- `inflate.mara:355:10` (comparison; input): `if input.len < 6 do return Input_Ended`
+- `inflate.mara:367:38` (slice bound; input): `bits := Bits{input = input[2 : input.len], at = 0, held = 0, count = 0, padding = 0}`
+- `inflate.mara:385:20` (comparison; input): `if end + 4 > input.len do return Input_Ended`
+- `land.mara:67:30` (comparison; bytes): `if kind == "VHGT" and bytes.len >= 4 + 1089 {`
+- `land.mara:69:32` (comparison; bytes): `elif kind == "VNML" and bytes.len >= 1089 * 3`
+- `land.mara:76:32` (comparison; bytes): `elif kind == "VCLR" and bytes.len >= 1089 * 3`
+- `land.mara:78:32` (comparison; bytes): `elif kind == "BTXT" and bytes.len >= 8`
+- `land.mara:82:32` (comparison; bytes): `elif kind == "ATXT" and bytes.len >= 8`
+- `land.mara:97:20` (arithmetic /; bytes): `for k in 0:bytes.len / 8 {`
+- `logging.mara:57:10` (empty check; place): `if place.len == 0 do return`
+- `logging.mara:168:16` (arithmetic +; text): `if size + text.len > most do return`
+- `model.mara:418:36` (empty check; field:Geometry.vertices): `if count == 0 or geometry.vertices.len == 0 do return`
+- `model.mara:440:22` (empty check; field:Geometry.normals): `if geometry.normals.len != 0 {`
+- `model.mara:446:21` (empty check; field:Geometry.colors): `if geometry.colors.len != 0 do vertex.color = geometry.colors[i * 16]`
+- `model.mara:462:23` (empty check; field:Geometry.triangles): `if geometry.triangles.len != 0 {`
+- `model.mara:494:30` (empty check; field:Geometry.colors): `no_colors := geometry.colors.len == 0 and part.texture.len == 0`
+- `model.mara:571:58` (argument; field:Av_Object.name): `&bone.name + node.object.name[0 : min(node.object.name.len, 64)]`
+- `model.mara:731:28` (arithmetic /; field:Skin_Bone.weights): `for w in 0:bone.weights.len / 6 {`
+- `model.mara:845:27` (arithmetic /; field:Skin_Bone.weights): `for w in 0:bone.weights.len / 6 {`
+- `model.mara:854:24` (empty check; field:Geometry.normals): `if geometry.normals.len != 0 {`
+- `model.mara:865:23` (empty check; field:Geometry.normals): `if geometry.normals.len != 0 do vertices[k].normal = vec3_normalize(turned[k] + vertices[k].normal * rest)`
+- `model.mara:951:24` (comparison; field:Block_Sequence.blocks): `if sequence.blocks.len < (k + 1) * CONTROLLED_BLOCK_SIZE do break`
+- `model.mara:1064:50` (comparison; field:Block_Binary_Extra.data): `if binary.name != TANGENT_SPACE or binary.data.len < count * 24 do continue`
+- `model.mara:1126:16` (arithmetic /; strip): `count := strip.len / 2`
+- `mp3.mara:199:9` (comparison; data): `if data.len >= 10 and data[0] == 0x49 and data[1] == 0x44 and data[2] == 0x33 {`
+- `mp3.mara:209:24` (comparison; data): `if main_at + 4 <= data.len {`
+- `mp3.mara:328:20` (comparison; data): `for at + 4 <= data.len {`
+- `mp3.mara:388:29` (comparison; field:Mp3_Decoder.data): `if frame_end > decoder.data.len do return false   // (a frame cut off: the end)`
+- `mp3.mara:484:33` (arithmetic +; data): `if decoder.main_data.len + data.len > decoder.main_data.cap {`
+- `mp3.mara:501:26` (comparison; field:Bit_Reader.data): `if byte_at < reader.data.len do bit = (i64(reader.data[byte_at]) >> (7 - (reader.at & 7))) & 1`
+- `nif.mara:65:33` (comparison; field:Nif_Reader.data): `if reader.at + n <= reader.data.len do return true`
+- `nif.mara:67:25` (stored; field:Nif_Reader.data): `reader.at = reader.data.len`
+- `nif.mara:215:22` (comparison; text): `for title_end < text.len and title_end < 128 {`
+- `nif.mara:219:22` (comparison; text): `if title_end >= text.len or title_end >= 128 do return Nif_Header{0}, Not_A_Nif`
+- `nif_animation.mara:347:11` (comparison; blocks): `if blocks.len != block_count * CONTROLLED_BLOCK_SIZE do blocks = reader.data[0:0]`
+- `nif_model.mara:667:31` (arithmetic -; field:Nif_Reader.data): `trailing_bytes = reader.data.len - reader.at}`
+- `nif_scene.mara:500:18` (comparison; keys): `if at + 8 > keys.len do return 0, keys[0:0], keys.len`
+- `nif_scene.mara:500:51` (returned; keys): `if at + 8 > keys.len do return 0, keys[0:0], keys.len`
+- `nif_scene.mara:503:44` (argument; keys): `end := min(at + 8 + i64(text_length), keys.len)`
+- `npc.mara:169:41` (comparison; field:Field.data): `if field.kind == "ACBS" and field.data.len >= 4 {`
+- `npc.mara:174:43` (comparison; field:Field.data): `elif field.kind == "RNAM" and field.data.len >= 4`
+- `npc.mara:177:43` (comparison; field:Field.data): `elif field.kind == "HNAM" and field.data.len >= 4`
+- `npc.mara:180:43` (comparison; field:Field.data): `elif field.kind == "ENAM" and field.data.len >= 4`
+- `npc.mara:183:43` (comparison; field:Field.data): `elif field.kind == "HCLR" and field.data.len >= 3`
+- `npc.mara:185:43` (comparison; field:Field.data): `elif field.kind == "FGGS" and field.data.len >= 4 * FACE_SYMMETRIC`
+- `npc.mara:191:43` (comparison; field:Field.data): `elif field.kind == "FGGA" and field.data.len >= 4 * FACE_ASYMMETRIC`
+- `npc.mara:196:43` (comparison; field:Field.data): `elif field.kind == "FGTS" and field.data.len >= 4 * FACE_TEXTURE`
+- `npc.mara:201:43` (comparison; field:Field.data): `elif field.kind == "CNTO" and field.data.len >= 4 and fits(carried.len + 1, carried.cap)`
+- `npc.mara:217:34` (comparison; slots_field): `if not has_slots or slots_field.len < 2 do continue`
+- `npc.mara:265:37` (comparison; field:Field.data): `elif kind == "INDX" and field.data.len >= 4`
+- `npc.mara:278:37` (comparison; field:Field.data): `elif kind == "DATA" and field.data.len >= 24 and section == 0`
+- `npc.mara:334:9` (empty check; mesh): `if mesh.len == 0 or not fits(look.parts.len + 1, look.parts.cap) do return`
+- `npc.mara:344:12` (empty check; texture): `if texture.len > 0 do archive_path_under("textures\\", texture, &part.texture)`
+- `npc.mara:352:9` (empty check; name): `if name.len == 0 do return`
+- `npc.mara:382:41` (comparison; field:Field.data): `if field.kind == "LVLF" and field.data.len >= 1 do flags = field.data[0]`
+- `npc.mara:383:41` (comparison; field:Field.data): `if field.kind == "LVLD" and field.data.len >= 1 do chance_none = field.data[0]`
+- `npc.mara:389:40` (comparison; field:Field.data): `if field.kind != "LVLO" or field.data.len < 8 do continue`
+- `npc.mara:408:40` (comparison; field:Field.data): `if field.kind != "LVLO" or field.data.len < 8 do continue`
+- `npc.mara:609:11` (empty check; bone): `if bone.len == 0 do bone = hanging_bone(&mesh)`
+- `npc.mara:610:11` (empty check; bone): `if bone.len > 0 {`
+- `npc.mara:712:14` (comparison; mesh_path): `if mesh_path.len < 4 do return`
+- `npc.mara:714:39` (arithmetic -; mesh_path): `&morph_path + mesh_path[0 : mesh_path.len - 4]`
+- `npc.mara:731:14` (comparison; mesh_path): `if mesh_path.len < 4 or base_path.len == 0 do return 0, 0`
+- `npc.mara:736:13` (empty check; map_path): `if map_path.len > 0 and has_made {`
+- `npc.mara:748:40` (arithmetic -; mesh_path): `&morph_path + mesh_path[0 : mesh_path.len - 4]`
+- `png.mara:14:17` (range end; data): `for k in 0:data.len {`
+- `png.mara:46:27` (argument; data): `add_u32_big(out, u32(data.len))`
+- `png.mara:97:15` (comparison; rows): `for at < rows.len or at == 0 {`
+- `png.mara:98:15` (arithmetic -; rows): `size := rows.len - at`
+- `png.mara:100:28` (comparison; rows): `last := at + size == rows.len`
+- `render.mara:2214:19` (range end; waters): `for k in 0:waters.len {`
+- `render.mara:2489:10` (empty check; trees): `if trees.len == 0 do return placed`
+- `render.mara:2494:18` (range end; trees): `for k in 0:trees.len {`
+- `render.mara:2505:30` (slice bound; trees): `for tree in trees[k : trees.len] {`
+- `render.mara:3229:16` (stored; lights): `last := lights.len`
+- `render.mara:3315:12` (comparison; texture): `if texture.len <= 4 or not ends_with(texture, ".dds") do return renderer.flat_normal_texture`
+- `render.mara:3317:29` (arithmetic -; texture): `&path + texture[0 : texture.len - 4]`
+- `render.mara:3491:44` (stored; instances): `stats := Frame_Stats{instances = instances.len, visible = 0, drawn_parts = 0, draw_calls = 0, land_cells = 0}`
+- `render.mara:3529:23` (empty check; distant_instances): `if distant_instances.len > 0 {`
+- `render.mara:3533:16` (empty check; tree_cells): `if tree_cells.len > 0 do draw_trees(renderer, tree_cells, &near_cells, false, &far_planes, far_view_projection, lighting, sun, camera, &stats)`
+- `render.mara:3535:23` (empty check; distant_instances): `if distant_instances.len > 0 do draw_mesh_runs(renderer, far_view_projection, lighting, sun, camera, true, false, &stats)`
+- `render.mara:3539:12` (empty check; grounds): `if grounds.len > 0 do draw_land(renderer, grounds, &planes, view_projection, lighting, sun, camera, &stats)`
+- `render.mara:3543:32` (empty check; tree_cells): `if look.outside and tree_cells.len > 0 do draw_trees(renderer, tree_cells, &near_cells, true, &planes, view_projection, lighting, sun, camera, &stats)`
+- `render.mara:3544:33` (empty check; grass_cells): `if look.outside and grass_cells.len > 0 {`
+- `render.mara:3548:11` (empty check; waters): `if waters.len > 0 do draw_water(renderer, waters, &planes, look, view_projection, lighting, camera, &stats)`
+- `render.mara:3554:9` (empty check; held): `if held.len > 0 {`
+- `render.mara:3705:19` (range end; waters): `for k in 0:waters.len {`
+- `render.mara:4216:13` (arithmetic /; keys): `gap := keys.len / 2`
+- `render.mara:4218:20` (range end; keys): `for i in gap:keys.len {`
+- `scene.mara:470:12` (comparison; text): `if text.len < 6 or compare_folded(text[0:6], "sound:") != 0 do continue`
+- `scene.mara:471:26` (slice bound; text): `name := text[6 : text.len]`
+- `scene.mara:472:13` (empty check; name): `for name.len > 0 and name[0] == ' ' do name = name[1 : name.len]`
+- `scene.mara:472:64` (slice bound; name): `for name.len > 0 and name[0] == ' ' do name = name[1 : name.len]`
+- `scene.mara:1569:41` (comparison; field:Field.data): `if field.kind != "GNAM" or field.data.len < 4 or count == GRASSES_PER_TEXTURE do continue`
+- `shader_package.mara:25:22` (comparison; data): `for at + 260 <= data.len and fits(shaders.len + 1, shaders.cap) {`
+- `shader_package.mara:31:16` (comparison; data): `if end > data.len do break`
+- `shader_package.mara:49:9` (comparison; data): `if data.len < 28 do return`
+- `shader_package.mara:54:20` (comparison; data): `if at + 20 > data.len or not fits(constants.len + 1, constants.cap) do return`
+- `shader_package.mara:54:46` (arithmetic +; constants): `if at + 20 > data.len or not fits(constants.len + 1, constants.cap) do return`
+- `shader_package.mara:60:15` (comparison; data): `for c < data.len and text[c] != utf8(0) and fits(constant.name.len + 1, constant.name.cap) {`
+- `shader_package.mara:246:9` (comparison; code): `if code.len < 4 do return`
+- `shader_package.mara:258:16` (arithmetic /; code): `tokens := code.len / 4`
+- `shader_package.mara:260:31` (arithmetic +; lines): `for k < tokens and fits(lines.len + 1, lines.cap) {`
+- `shader_package.mara:267:46` (comparison; code): `if length >= 1 and (k + 1) * 4 + 4 <= code.len {`
+- `sky.mara:159:27` (empty check; flags): `if not has_flags or flags.len == 0 or (u8(flags[0]) & 0x80) == 0 do return false, 0`
+- `sky.mara:177:26` (comparison; timing): `if has_timing and timing.len >= 6 {`
+- `sky.mara:183:26` (comparison; timing): `if has_timing and timing.len >= 4 {`
+- `sky.mara:206:18` (arithmetic /; pairs): `for k in 0:pairs.len / 8 {`
+- `sky.mara:226:20` (arithmetic /; regions): `for k in 0:regions.len / 4 {`
+- `sky.mara:251:40` (comparison; field:Field.data): `if field.kind != "RDAT" or field.data.len < 6 do continue`
+- `sky.mara:281:20` (arithmetic /; regions): `for k in 0:regions.len / 4 {`
+- `sky.mara:289:23` (arithmetic /; field:Field.data): `count := field.data.len / 12`
+- `sky.mara:304:9` (empty check; name): `if name.len == 0 do return`
+- `sky.mara:324:24` (arithmetic -; chances): `return chances[chances.len - 1].weather`
+- `sky.mara:363:9` (empty check; name): `if name.len == 0 do return`
+- `sky.mara:380:26` (comparison; colors): `if has_colors and colors.len >= WEATHER_COLORS * 16 {`
+- `sky.mara:386:20` (comparison; fog): `if has_fog and fog.len >= 16 {`
+- `sky.mara:403:22` (comparison; data): `if has_data and data.len >= 3 {`
+- `sky.mara:411:22` (comparison; data): `if has_data and data.len >= 15 {`
+- `sky.mara:430:40` (comparison; field:Field.data): `if field.kind != "SNAM" or field.data.len < 8 or not fits(weather.sounds.len + 1, weather.sounds.cap) do continue`
+- `sooblivion.mara:80:33` (arithmetic /; data): `print("read % MB in % ms", data.len / MB, elapsed_ms(start))`
+- `sooblivion.mara:112:9` (empty check; what): `if what.len == 0 {`
+- `sooblivion.mara:137:17` (stored; data): `total += data.len`
+- `sooblivion.mara:162:31` (slice bound; packed): `stream := packed[4 : packed.len]`
+- `sooblivion.mara:166:41` (arithmetic *; stream): `cut_error := unzip(stream[0 : stream.len * quarter / 4], &output)`
+- `sooblivion.mara:203:51` (argument; data): `else do print("wrote % (% bytes)", out_name, data.len)`
+- `sooblivion.mara:668:23` (arithmetic +; data): `span.end = at + data.len`
+- `sooblivion.mara:1014:32` (comparison; flags_field): `if has_flags and flags_field.len >= 1 do flags = flags_field[0]`
+- `sooblivion.mara:1016:34` (comparison; height_field): `if has_height and height_field.len >= 4 do height = height_field[0]`
+- `sooblivion.mara:1301:24` (empty check; field:Geometry.triangles): `if geometry.triangles.len != 0 {`
+- `sooblivion.mara:1306:23` (comparison; field:Geometry.strips): `elif geometry.strips.len >= 6`
+- `sooblivion.mara:1325:15` (argument; field:Block_Binary_Extra.data): `binary.data.len, count, first, dot(first, along_u), dot(first, along_v), second, dot(second, along_u),`
+- `sooblivion.mara:1405:23` (comparison; field:Block_Sequence.blocks): `if sequence.blocks.len < (k + 1) * CONTROLLED_BLOCK_SIZE do break`
+- `sooblivion.mara:1510:20` (arithmetic +; counts): `if not fits(counts.len + 1, counts.cap) do return`
+- `sooblivion.mara:1585:81` (arithmetic -; folder_path): `if ends_with(folder_path, "\\") do folder_path = folder_path[0 : folder_path.len - 1]`
+- `sooblivion.mara:1658:97` (argument; field:Record.data): `print("% % (form id %), % bytes", record.header.kind, name, record.header.form_id, record.data.len)`
+- `sooblivion.mara:1665:31` (argument; field:Field.data): `&line + int_text(field.data.len)`
+- `sooblivion.mara:1668:27` (empty check; field:Field.data): `printable := field.data.len > 0`
+- `sooblivion.mara:1669:25` (range end; field:Field.data): `for b in 0:field.data.len {`
+- `sooblivion.mara:1671:63` (arithmetic -; field:Field.data): `if (c < 32 or c > 126) and not (c == 0 and b == field.data.len - 1) do printable = false`
+- `sooblivion.mara:1676:24` (arithmetic /; field:Field.data): `shown := field.data.len / 4`
+- `sooblivion.mara:1689:18` (arithmetic %; field:Field.data): `if field.data.len % 4 != 0 {`
+- `sooblivion.mara:1691:27` (range end; field:Field.data): `for b in 0:field.data.len {`
+- `sooblivion.mara:2140:37` (comparison; field:Block_Strips_Shape.filters): `layer := if strips_shape.filters.len >= (s + 1) * 4 do i64(u8(strips_shape.filters[s * 4])) else -1`
+- `sooblivion.mara:2203:42` (comparison; field:Field.data): `if field.kind != "GNAM" or field.data.len < 4 or count == GRASSES_PER_TEXTURE do continue`
+- `sooblivion.mara:2486:9` (empty check; name): `if name.len == 0 {`
+- `sooblivion.mara:2489:29` (arithmetic +; field:Packaged_Shader.name): `if line.len + shader.name.len + 2 > line.cap {`
+- `sooblivion.mara:2505:48` (argument; field:Packaged_Shader.code): `print("% (% bytes)", shader.name, shader.code.len)`
+- `sooblivion.mara:2562:23` (slice bound; args): `view := args[1 : args.len]`
+- `sooblivion.mara:2563:9` (comparison; view): `if view.len >= 4 and view[view.len - 3] == "held" {`
+- `sooblivion.mara:2563:32` (arithmetic -; view): `if view.len >= 4 and view[view.len - 3] == "held" {`
+- `sooblivion.mara:2564:21` (arithmetic -; view): `which := view[view.len - 2]`
+- `sooblivion.mara:2568:47` (arithmetic -; view): `seconds, is_number := parse_number(view[view.len - 1])`
+- `sooblivion.mara:2574:23` (arithmetic -; view): `view = view[0 : view.len - 3]`
+- `sooblivion.mara:2576:9` (comparison; view): `if view.len >= 7 and view[view.len - 6] == "at" {`
+- `sooblivion.mara:2576:32` (arithmetic -; view): `if view.len >= 7 and view[view.len - 6] == "at" {`
+- `sooblivion.mara:2579:47` (arithmetic -; view): `number, is_number := parse_number(view[view.len - 5 + k])`
+- `sooblivion.mara:2590:23` (arithmetic -; view): `view = view[0 : view.len - 6]`
+- `sooblivion.mara:2592:31` (comparison; view): `if view[0] == "view" and view.len > 1 {`
+- `sooblivion.mara:2594:38` (comparison; view): `elif view[0] == "view-cell" and view.len > 1`
+- `sooblivion.mara:2596:39` (comparison; view): `elif view[0] == "view-world" and view.len > 3`
+- `sooblivion.mara:2638:14` (empty check; raw_path): `if raw_path.len == 0 do continue`
+- `sooblivion.mara:2650:13` (empty check; raw_path): `if raw_path.len == 0 do return`
+- `sooblivion.mara:2943:14` (empty check; seed_text): `if seed_text.len > 0 {`
+- `sooblivion.mara:3206:14` (empty check; raw_path): `if raw_path.len == 0 do continue`
+- `sooblivion.mara:3219:13` (empty check; raw_path): `if raw_path.len == 0 do return`
+- `sooblivion.mara:3237:9` (comparison; args): `if args.len < 2 {`
+- `sooblivion.mara:3247:22` (comparison; args): `command_esm(if args.len > 2 do args[2] else "Oblivion.esm")`
+- `sooblivion.mara:3248:33` (comparison; args): `elif command == "view" and args.len > 2`
+- `sooblivion.mara:3250:36` (comparison; args): `elif command == "texture" and args.len > 2`
+- `sooblivion.mara:3251:35` (comparison; args): `command_texture(args[2], if args.len > 3 do args[3] else "Oblivion - Textures - Compressed.bsa")`
+- `sooblivion.mara:3252:34` (comparison; args): `elif command == "model" and args.len > 2`
+- `sooblivion.mara:3253:33` (comparison; args): `command_model(args[2], if args.len > 3 do args[3] else "Oblivion - Meshes.bsa")`
+- `sooblivion.mara:3255:24` (comparison; args): `command_cells(if args.len > 2 do args[2] else "")`
+- `sooblivion.mara:3256:38` (comparison; args): `elif command == "view-cell" and args.len > 2`
+- `sooblivion.mara:3258:33` (comparison; args): `elif command == "area" and args.len > 4`
+- `sooblivion.mara:3263:33` (comparison; args): `elif command == "walk" and args.len > 5`
+- `sooblivion.mara:3270:10` (comparison; args): `if args.len > 4 {`
+- `sooblivion.mara:3275:12` (comparison; args): `elif args.len > 2`
+- `sooblivion.mara:3280:36` (comparison; args): `elif command == "picture" and args.len > 3`
+- `sooblivion.mara:3281:32` (slice bound; args): `command_picture(args[2 : args.len])`
+- `sooblivion.mara:3283:22` (comparison; args): `command_map(if args.len > 2 do args[2] else "Tamriel")`
+- `sooblivion.mara:3285:22` (comparison; args): `command_sky(if args.len > 2 do args[2] else "Tamriel")`
+- `sooblivion.mara:3288:33` (comparison; args): `elif command == "find" and args.len > 2`
+- `sooblivion.mara:3290:33` (comparison; args): `elif command == "door" and args.len > 2`
+- `sooblivion.mara:3292:33` (comparison; args): `elif command == "anim" and args.len > 2`
+- `sooblivion.mara:3294:38` (comparison; args): `elif command == "collision" and args.len > 5`
+- `sooblivion.mara:3300:38` (comparison; args): `elif command == "collision" and args.len > 2`
+- `sooblivion.mara:3302:34` (comparison; args): `elif command == "grass" and args.len > 4`
+- `sooblivion.mara:3307:32` (comparison; args): `elif command == "lod" and args.len > 4`
+- `sooblivion.mara:3314:10` (comparison; args): `if args.len > 2 do name = args[2]`
+- `sooblivion.mara:3315:31` (comparison; args): `command_shader(name, if args.len > 3 do args[3] else "shaderpackage019.sdp")`
+- `sooblivion.mara:3316:36` (comparison; args): `elif command == "records" and args.len > 2`
+- `sooblivion.mara:3318:35` (comparison; args): `elif command == "record" and args.len > 2`
+- `sooblivion.mara:3320:33` (comparison; args): `elif command == "cell" and args.len > 2`
+- `sooblivion.mara:3321:29` (comparison; args): `command_cell(args[2], args.len > 3 and args[3] == "-all")`
+- `sooblivion.mara:3323:27` (comparison; args): `command_textures(if args.len > 2 do args[2] else "Oblivion - Textures - Compressed.bsa")`
+- `sooblivion.mara:3328:33` (comparison; args): `elif command == "tree" and args.len > 2`
+- `sooblivion.mara:3329:32` (comparison; args): `command_tree(args[2], if args.len > 3 do args[3] else "")`
+- `sooblivion.mara:3330:41` (comparison; args): `elif command == "tree-picture" and args.len > 3`
+- `sooblivion.mara:3331:49` (comparison; args): `command_tree_picture(args[2], args[3], if args.len > 4 do args[4] else "")`
+- `sooblivion.mara:3332:37` (comparison; args): `elif command == "overlaps" and args.len > 5`
+- `sooblivion.mara:3336:44` (comparison; args): `radius, radius_ok := parse_number(if args.len > 6 do args[6] else "500")`
+- `sooblivion.mara:3339:32` (comparison; args): `elif command == "npc" and args.len > 2`
+- `sooblivion.mara:3341:40` (comparison; args): `elif command == "npc-picture" and args.len > 3`
+- `sooblivion.mara:3343:33` (comparison; args): `elif command == "skin" and args.len > 2`
+- `sooblivion.mara:3344:32` (comparison; args): `command_skin(args[2], if args.len > 3 do args[3] else "meshes/characters/_male/idle.kf")`
+- `sooblivion.mara:3345:34` (comparison; args): `elif command == "music" and args.len > 2`
+- `sooblivion.mara:3346:33` (comparison; args): `command_music(args[2], if args.len > 3 do args[3] else "")`
+- `sooblivion.mara:3347:32` (comparison; args): `elif command == "mp3" and args.len > 2`
+- `sooblivion.mara:3348:31` (comparison; args): `command_mp3(args[2], if args.len > 3 do args[3] else "")`
+- `sooblivion.mara:3349:34` (comparison; args): `elif command == "sound" and args.len > 2`
+- `sooblivion.mara:3352:23` (comparison; args): `command_nifs(if args.len > 2 do args[2] else "Oblivion - Meshes.bsa")`
+- `sooblivion.mara:3353:32` (comparison; args): `elif command == "bsa" and args.len > 2`
+- `sooblivion.mara:3354:31` (comparison; args): `command_bsa(args[2], if args.len > 3 do args[3] else "")`
+- `speedtree.mara:165:15` (comparison; data): `for at < data.len {`
+- `speedtree.mara:166:19` (comparison; data): `if at + 4 > data.len do return Cut_Short`
+- `speedtree.mara:170:22` (comparison; data): `if at + size > data.len do return Cut_Short`
+- `speedtree.mara:213:32` (comparison; value): `if 4 + 32 * (k + 1) > value.len do break`
+- `speedtree.mara:244:38` (comparison; value): `if tag < 6008 or tag > 6014 or value.len < 4 do return`
+- `speedtree.mara:263:19` (comparison; data): `if at + 4 > data.len do return 0, Cut_Short`
+- `speedtree.mara:269:19` (comparison; data): `if at + 4 > data.len do return 0, Cut_Short`
+- `speedtree.mara:294:10` (comparison; value): `if value.len < 4 do return value[0:0]`
+- `speedtree.mara:295:24` (slice bound; value): `return value[4 : value.len]`
+- `speedtree.mara:304:13` (stored; path): `end := path.len`
+- `speedtree.mara:308:21` (range end; path): `for k in start:path.len {`
+- `speedtree.mara:341:16` (comparison; text): `for at^ < text.len and (text[at^] == ' ' or text[at^] == '\t' or text[at^] == '\n' or text[at^] == '\r') do at^ += 1`
+- `speedtree.mara:343:16` (comparison; text): `for at^ < text.len and not (text[at^] == ' ' or text[at^] == '\t' or text[at^] == '\n' or text[at^] == '\r') do at^ += 1`
+- `speedtree.mara:360:23` (arithmetic -; points): `last := points[points.len - 1]`
+- `speedtree.mara:362:19` (range end; points): `for k in 1:points.len {`
+- `speedtree.mara:621:19` (arithmetic -; spine): `segments := spine.len - 1`
+- `speedtree.mara:635:16` (arithmetic -; spine): `along := spine.len - 1`
+- `tree_picture.mara:86:14` (empty check; seed_text): `if seed_text.len > 0 {`
+- `viewer.mara:674:25` (comparison; base): `if not has_base or base.len < 4 do return name`
+- `world.mara:210:26` (comparison; grid): `elif has_grid and grid.len >= 8`
+- `world.mara:407:35` (comparison; field:Field.data): `if kind == "NAME" and field.data.len >= 4 {`
+- `world.mara:410:37` (comparison; field:Field.data): `elif kind == "DATA" and field.data.len >= 24`
+- `world.mara:413:37` (comparison; field:Field.data): `elif kind == "XSCL" and field.data.len >= 4`
+- `world.mara:427:9` (empty check; name): `if name.len == 0 do return path`
+- `world.mara:499:23` (comparison; field): `if not found or field.len < 36 do return DAYLIGHT`
+- `world.mara:556:23` (comparison; field): `if not found or field.len < 16 do return none, false`
+- `world.mara:608:9` (empty check; name): `if name.len == 0 do return kind, false`
+- `world.mara:618:22` (comparison; data): `if has_data and data.len >= 8 {`
+- `world.mara:627:10` (comparison; data): `if data.len >= 12 {`
+- `world.mara:651:24` (empty check; flags): `return found and flags.len > 0 and (u8(flags[0]) & 0x01) != 0`
+- `world.mara:663:21` (empty check; own): `if has_own and own.len > 0 and own[0] != 0 do return i64(own[0])`
+- `world.mara:666:23` (arithmetic /; region_ids): `count := region_ids.len / 4`
+- `world.mara:678:36` (comparison; world_music): `if has_world_music and world_music.len >= 4 {`
+- `world.mara:686:21` (comparison; field): `if found and field.len >= 4 {`
+- `world.mara:698:23` (comparison; field): `if not found or field.len < 4 do return 0, false`
+- `world.mara:716:23` (comparison; field): `if not found or field.len < 28 do return none, false`
+- `world.mara:789:33` (comparison; flags_field): `if not has_flags or flags_field.len < 1 do return 0, false`
+- `world.mara:793:32` (comparison; height_field): `if has_height and height_field.len >= 4 {`
+- `world.mara:824:33` (comparison; water_field): `if not has_water or water_field.len < 4 do return water`
+- `world.mara:828:25` (comparison; data): `if not has_data or data.len < 56 do return water`
+- `world.mara:863:42` (comparison; size): `if not has_model or not has_size or size.len < 8 do return look, false`
+- `world.mara:869:13` (stored; name): `end := name.len`
+- `world.mara:873:21` (range end; name): `for k in start:name.len {`
+- `world.mara:880:21` (range end; name): `for k in start:name.len do &look.model + lower(name[k])`
+- `world.mara:888:19` (arithmetic /; seeds): `for k in 0:seeds.len / 4 {`
+
+## A. The view's size, of a slice a call gave back (taken as a view): 0
+
+
+## B. A count of what's been filled: the room itself, its len moved here (appended to, set, a take, carved from): 143
+
+- `animation.mara:35:18` (arithmetic +; room): `if not fits(room.len + count * 4 + 16, room.cap) do return slice([:0]f32, room)`
+- `animation.mara:40:18` (arithmetic +; room): `if not fits(room.len + count * 16 + 16, room.cap) do return slice([:0][4!]f32, room)`
+- `animation.mara:45:18` (arithmetic +; room): `if not fits(room.len + count * 12 + 16, room.cap) do return slice([:0]Vec3, room)`
+- `animation.mara:79:79` (arithmetic +; tracks): `if sequence.blocks.len < (b + 1) * CONTROLLED_BLOCK_SIZE or not fits(tracks.len + 1, tracks.cap) do return`
+- `animation.mara:150:33` (arithmetic +; field:Track.rotations): `if not fits(track.rotations.len + 1, track.rotations.cap) do break`
+- `animation.mara:159:36` (arithmetic +; field:Track.translations): `if not fits(track.translations.len + 1, track.translations.cap) do break`
+- `animation.mara:168:21` (empty check; field:Track.rotations): `if track.rotations.len == 0 and track.rotations.cap > 0 and track.angles[0].len + track.angles[1].len + track.angles[2].len == 0 and abs_f32(interpolator.rotation[0]) < UNSET_BEYOND {`
+- `animation.mara:168:78` (arithmetic +; item:field:Track.angles): `if track.rotations.len == 0 and track.rotations.cap > 0 and track.angles[0].len + track.angles[1].len + track.angles[2].len == 0 and abs_f32(interpolator.rotation[0]) < UNSET_BEYOND {`
+- `animation.mara:168:100` (arithmetic +; item:field:Track.angles): `if track.rotations.len == 0 and track.rotations.cap > 0 and track.angles[0].len + track.angles[1].len + track.angles[2].len == 0 and abs_f32(interpolator.rotation[0]) < UNSET_BEYOND {`
+- `animation.mara:168:122` (arithmetic +; item:field:Track.angles): `if track.rotations.len == 0 and track.rotations.cap > 0 and track.angles[0].len + track.angles[1].len + track.angles[2].len == 0 and abs_f32(interpolator.rotation[0]) < UNSET_BEYOND {`
+- `animation.mara:172:24` (empty check; field:Track.translations): `if track.translations.len == 0 and track.translations.cap > 0 and abs_f32(interpolator.translation.x) < UNSET_BEYOND {`
+- `animation.mara:225:39` (arithmetic +; field:Track.rotations): `if rotating and fits(track.rotations.len + 1, track.rotations.cap) {`
+- `animation.mara:234:42` (arithmetic +; field:Track.translations): `if shifting and fits(track.translations.len + 1, track.translations.cap) {`
+- `animation.mara:311:30` (arithmetic +; item:field:Track.angles): `if fits(track.angles[axis].len + 1, track.angles[axis].cap) {`
+- `animation.mara:323:28` (range end; field:Track.rotations): `for k in 1:track.rotations.len {`
+- `animation.mara:328:31` (range end; field:Track.translations): `for k in 1:track.translations.len {`
+- `animation.mara:332:32` (range end; item:field:Track.angles): `for k in 1:track.angles[axis].len {`
+- `animation.mara:345:20` (empty check; field:Track.rotations): `if track.rotations.len > 0 {`
+- `animation.mara:348:22` (arithmetic +; item:field:Track.angles): `elif track.angles[0].len + track.angles[1].len + track.angles[2].len > 0`
+- `animation.mara:348:44` (arithmetic +; item:field:Track.angles): `elif track.angles[0].len + track.angles[1].len + track.angles[2].len > 0`
+- `animation.mara:348:66` (arithmetic +; item:field:Track.angles): `elif track.angles[0].len + track.angles[1].len + track.angles[2].len > 0`
+- `animation.mara:361:23` (empty check; field:Track.translations): `if track.translations.len > 0 {`
+- `audio.mara:186:80` (arithmetic -; field:Mixer.clip_room): `if archived_size(archives, sound_file) > audio.clip_room.cap - audio.clip_room.len do return -1, No_Room_For_Sound`
+- `bsa.mara:98:10` (empty check; rest): `if rest.len == 0 do return Read_Failed`
+- `bsa.mara:99:14` (stored; rest): `got += rest.len`
+- `bsa.mara:120:12` (arithmetic +; storage): `if storage.len + directory_size > storage.cap do return Archive{0}, No_Room`
+- `bsa.mara:122:18` (stored; storage): `start := storage.len`
+- `bsa.mara:147:22` (stored; files): `first_file = files.len,`
+- `bsa.mara:302:18` (stored; storage): `start := storage.len`
+- `bsa.mara:323:30` (arithmetic +; output): `storage.len = start + output.len`
+- `bsa.mara:324:39` (arithmetic +; output): `return storage[start : start + output.len]`
+- `collision.mara:186:11` (comparison; points): `if points.len == points.cap do return`
+- `collision.mara:193:20` (arithmetic +; points): `if not fits(points.len + 3, points.cap) do return`
+- `dds.mara:165:14` (stored; out): `start := out.len`
+- `distant.mara:96:26` (range end; field:Model.parts): `for k in 0:built.parts.len {`
+- `esm.mara:109:12` (comparison; scratch): `if scratch.len != i64(unpacked_size) do return body[0:0], Bad_Packed_Size`
+- `esm.mara:110:28` (slice bound; scratch): `return scratch[0 : scratch.len]`
+- `facegen.mara:71:19` (arithmetic +; moves): `if not fits(moves.len + count, moves.cap) do count = moves.cap`
+- `facegen.mara:153:17` (arithmetic +; out): `if not fits(out.len + map_width * map_height * 4, out.cap) or map.len < map_width * map_height * 4 do return`
+- `grass.mara:192:22` (arithmetic +; blades): `if not fits(blades.len + 1, blades.cap) do return`
+- `inflate.mara:266:11` (arithmetic +; output): `if output.len + length > output.cap do return Output_Full`
+- `inflate.mara:270:16` (index; output): `output[output.len] = u8(take(bits, 8))`
+- `inflate.mara:278:15` (slice bound; output): `output[output.len : output.len + length] = bits.input[bits.at : bits.at + length]`
+- `inflate.mara:278:28` (arithmetic +; output): `output[output.len : output.len + length] = bits.input[bits.at : bits.at + length]`
+- `inflate.mara:293:13` (comparison; output): `if output.len == output.cap do return Output_Full`
+- `inflate.mara:294:17` (index; output): `output[output.len] = u8(symbol)`
+- `inflate.mara:306:23` (comparison; output): `if distance > output.len do return Bad_Distance`
+- `inflate.mara:307:12` (arithmetic +; output): `if output.len + length > output.cap do return Output_Full`
+- `inflate.mara:310:17` (arithmetic -; output): `from := output.len - distance`
+- `inflate.mara:311:37` (arithmetic +; output): `for i in 0:length do output[output.len + i] = output[from + i]`
+- `inflate.mara:364:17` (stored; output): `start := output.len`
+- `inflate.mara:391:26` (slice bound; room): `if adler32(room[0 : room.len]) != expected do return Bad_Checksum`
+- `inflate.mara:393:27` (arithmetic +; room): `output.len = start + room.len`
+- `logging.mara:118:9` (arithmetic +; text): `if text.len + more.len <= text.cap {`
+- `logging.mara:122:26` (arithmetic +; text): `note_full(text.cap, text.len + more.len, site, caller)`
+- `logging.mara:123:33` (arithmetic -; text): `text + more[0 : text.cap - text.len]`
+- `model.mara:419:16` (comparison; field:Model.parts): `if model.parts.len == model.parts.cap do return Too_Many_Parts`
+- `model.mara:422:16` (empty check; field:Model.parts): `if model.parts.len == 0 and how.moves.len >= count do own_moves = how.moves`
+- `model.mara:483:50` (arithmetic -; field:Model.parts): `add_motions(mesh, properties, model, model.parts.len - 1)`
+- `model.mara:606:18` (arithmetic +; rig): `if not fits(rig.len + 1, rig.cap) do return`
+- `model.mara:616:13` (stored; rig): `own := rig.len`
+- `model.mara:724:74` (arithmetic +; field:Model.palette): `if not data.has_weights or b >= bones.count or not fits(model.palette.len + 1, model.palette.cap) do continue`
+- `model.mara:729:31` (argument; field:Model.palette): `entry := f32(model.palette.len)`
+- `model.mara:756:41` (arithmetic +; field:Model.palette): `if unmoved < 0 and fits(model.palette.len + 1, model.palette.cap) {`
+- `model.mara:757:28` (stored; field:Model.palette): `unmoved = model.palette.len`
+- `model.mara:781:27` (arithmetic +; field:Model.palette): `if not fits(model.palette.len + 1, model.palette.cap) do return`
+- `model.mara:782:24` (stored; field:Model.palette): `entry := model.palette.len`
+- `model.mara:924:39` (arithmetic +; field:Model.motions): `if what >= 0 and fits(model.motions.len + 1, model.motions.cap) do add_motion(mesh, at, made, what, model, part)`
+- `model.mara:1132:22` (arithmetic +; indices): `if not fits(indices.len + 3, indices.cap) do return`
+- `model.mara:1241:29` (arithmetic +; field:Model.particles): `if not fits(model.particles.len + 1, model.particles.cap) do return`
+- `model.mara:1475:27` (arithmetic +; field:Model.flips): `if not fits(model.flips.len + 1, model.flips.cap) do return -1`
+- `model.mara:1492:22` (arithmetic -; field:Model.flips): `return model.flips.len - 1`
+- `music.mara:233:10` (empty check; room): `if room.len == 0 do music.file_ended = true`
+- `music.mara:234:27` (stored; room): `music.buffer.len += room.len`
+- `nif_model.mara:650:25` (comparison; types): `if type_index >= types.len do return Nif{0}, Broken_Block`
+- `npc.mara:543:86` (arithmetic +; field:Model.palette): `if scene.npc_rigs.len == scene.npc_rigs.cap or scene.rig_entries.len + whole.palette.len > scene.rig_entries.cap {`
+- `npc.mara:547:67` (stored; field:Model.palette): `first_entry = scene.rig_entries.len, entry_count = whole.palette.len}`
+- `npc.mara:639:26` (stored; palette): `palette_base := palette.len`
+- `npc.mara:640:24` (arithmetic +; palette): `if rigged and palette.len + made.palette.len > palette.cap {`
+- `npc.mara:640:43` (arithmetic +; field:Model.palette): `if rigged and palette.len + made.palette.len > palette.cap {`
+- `npc.mara:646:21` (arithmetic +; built): `if not fits(built.len + 1, built.cap) do break`
+- `npc.mara:656:55` (arithmetic +; skins): `if look.has_face and made_index == 0 and fits(skins.len + 1, skins.cap) {`
+- `npc.mara:657:29` (stored; skin_storage): `taken_at := skin_storage.len`
+- `npc.mara:764:11` (empty check; pixels): `if pixels.len == 0 do return 0, 0`
+- `particles.mara:89:23` (arithmetic +; vertices): `if not fits(vertices.len + 4, vertices.cap) do break`
+- `particles.mara:255:13` (arithmetic +; vertices): `if vertices.len + 4 > vertices.cap do return`
+- `png.mara:47:14` (stored; out): `start := out.len`
+- `png.mara:50:37` (slice bound; out): `crc := crc32(table, out[start : out.len]) ~ 0xFFFFFFFF`
+- `png.mara:86:29` (slice bound; scratch): `rows := scratch[0 : scratch.len]`
+- `png.mara:90:18` (stored; out): `length_at := out.len`
+- `png.mara:92:16` (stored; out): `type_at := out.len`
+- `png.mara:111:20` (arithmetic -; out): `data_length := out.len - type_at - 4`
+- `png.mara:116:40` (slice bound; out): `crc := crc32(&table, out[type_at : out.len]) ~ 0xFFFFFFFF`
+- `render.mara:3047:37` (arithmetic +; field:Model.parts): `if renderer.parts.len + built.parts.len > renderer.parts.cap do return Gpu_Model{0}, No_Room_On_Card`
+- `render.mara:3048:42` (arithmetic +; field:Model.parts): `if renderer.billboards.len + built.parts.len > renderer.billboards.cap do return Gpu_Model{0}, No_Room_On_Card`
+- `render.mara:3049:50` (arithmetic +; field:Model.particles): `if renderer.particle_kinds.len + built.particles.len > renderer.particle_kinds.cap do return Gpu_Model{0}, No_Room_On_Card`
+- `render.mara:3050:41` (arithmetic +; field:Model.motions): `if renderer.motions.len + built.motions.len > renderer.motions.cap do return Gpu_Model{0}, No_Room_On_Card`
+- `render.mara:3053:37` (arithmetic +; field:Model.flips): `if renderer.flips.len + built.flips.len > renderer.flips.cap or renderer.flip_frames.len + frame_total > renderer.flip_frames.cap {`
+- `render.mara:3096:36` (stored; field:Model.particles): `particles_count = built.particles.len,`
+- `scene.mara:474:32` (arithmetic +; cues): `if sound >= 0 and fits(cues.len + 1, cues.cap) do cues + Door_Cue{time = seconds, sound = sound}`
+- `scene.mara:1469:27` (arithmetic +; noises): `if due and fits(noises.len + 1, noises.cap) do noises + Door_Noise{sound = cue.sound, position = place}`
+- `scene.mara:1473:33` (arithmetic +; noises): `if sound >= 0 and fits(noises.len + 1, noises.cap) do noises + Door_Noise{sound = sound, position = place}`
+- `scene.mara:1549:38` (arithmetic +; textures): `if texture == 0 or not fits(textures.len + 1, textures.cap) do return`
+- `shader_package.mara:25:43` (arithmetic +; shaders): `for at + 260 <= data.len and fits(shaders.len + 1, shaders.cap) {`
+- `sky.mara:207:22` (arithmetic +; chances): `if not fits(chances.len + 1, chances.cap) do return`
+- `sky.mara:290:22` (arithmetic +; sounds): `if not fits(sounds.len + count, sounds.cap) do count = sounds.cap - sounds.len`
+- `sky.mara:290:78` (arithmetic -; sounds): `if not fits(sounds.len + count, sounds.cap) do count = sounds.cap - sounds.len`
+- `sooblivion.mara:326:33` (stored; field:Model.motions): `motion_total += built.motions.len`
+- `sooblivion.mara:327:50` (argument; field:Model.motions): `most_motions = max(most_motions, built.motions.len)`
+- `sooblivion.mara:328:29` (stored; field:Model.flips): `flip_total += built.flips.len`
+- `sooblivion.mara:519:70` (argument; field:Model.parts): `print("% blocks, % parts, from % to %", mesh.blocks.len, built.parts.len, built.bounds_min, built.bounds_max)`
+- `sooblivion.mara:660:23` (stored; data_storage): `first := data_storage.len`
+- `sooblivion.mara:662:21` (arithmetic -; data_storage): `at := data_storage.len - first`
+- `sooblivion.mara:672:49` (slice bound; data_storage): `plugin.data = data_storage[first : data_storage.len]`
+- `sooblivion.mara:815:17` (comparison; field:Model.parts): `if built.parts.len > 64 do print("  % has % parts: more than the renderer keeps", path, built.parts.len)`
+- `sooblivion.mara:815:102` (argument; field:Model.parts): `if built.parts.len > 64 do print("  % has % parts: more than the renderer keeps", path, built.parts.len)`
+- `sooblivion.mara:1472:114` (argument; field:Track.translations): `print("moves % (% translation keys, % rotation keys, % % % angle keys): %", track.node_name, track.translations.len,`
+- `sooblivion.mara:1473:19` (argument; field:Track.rotations): `track.rotations.len, track.angles[0].len, track.angles[1].len, track.angles[2].len, line)`
+- `sooblivion.mara:1473:40` (argument; item:field:Track.angles): `track.rotations.len, track.angles[0].len, track.angles[1].len, track.angles[2].len, line)`
+- `sooblivion.mara:1473:61` (argument; item:field:Track.angles): `track.rotations.len, track.angles[0].len, track.angles[1].len, track.angles[2].len, line)`
+- `sooblivion.mara:1473:82` (argument; item:field:Track.angles): `track.rotations.len, track.angles[0].len, track.angles[1].len, track.angles[2].len, line)`
+- `sooblivion.mara:1918:20` (argument; field:Track.rotations): `track.rotations.len, track.translations.len,`
+- `sooblivion.mara:1918:44` (argument; field:Track.translations): `track.rotations.len, track.translations.len,`
+- `sooblivion.mara:1927:86` (argument; field:Model.parts): `if not frame_error do print("the frame: % parts, % collision triangles", frame.parts.len, points.len / 3)`
+- `sooblivion.mara:1933:118` (argument; field:Model.parts): `if not piece_error do print("block %: % parts, % collision triangles; its parent at % (found %)", node, piece.parts.len,`
+- `sooblivion.mara:2781:81` (argument; field:Model.parts): `print("% shapes, from % to %, put together in % ms (% skins made)", whole.parts.len, whole.bounds_min, whole.bounds_max, elapsed_ms(started), skins.len)`
+- `sooblivion.mara:2822:23` (argument; field:Model.palette): `rigged_model.palette.len, compared, placed.len, farthest)`
+- `sooblivion.mara:2953:46` (argument; field:Model.parts): `report.leaves, report.left_out, grown.parts.len, grown.bounds_min, grown.bounds_max)`
+- `speedtree.mara:499:24` (empty check; field:Growth.bark_indices): `if growth.bark_indices.len > 0 do &parts + tree_part(&growth, false, bark_texture)`
+- `speedtree.mara:500:24` (empty check; field:Growth.leaf_indices): `if growth.leaf_indices.len > 0 do &parts + tree_part(&growth, true, leaf_texture)`
+- `speedtree.mara:540:25` (arithmetic +; field:Growth.bark_vertices): `if growth.bark_vertices.len + ring_count * (around + 1) > growth.bark_vertices.cap {`
+- `speedtree.mara:636:38` (stored; field:Growth.bark_vertices): `first_vertex := growth.bark_vertices.len`
+- `speedtree.mara:692:25` (arithmetic +; field:Growth.leaf_vertices): `if growth.leaf_vertices.len + 4 > growth.leaf_vertices.cap {`
+- `speedtree.mara:702:38` (stored; field:Growth.leaf_vertices): `first_vertex := growth.leaf_vertices.len`
+- `speedtree.mara:776:25` (empty check; field:Growth.leaf_vertices): `if growth.leaf_vertices.len == 0 do return`
+- `speedtree.mara:779:49` (argument; field:Growth.leaf_vertices): `middle = middle * (1 / f32(growth.leaf_vertices.len))`
+- `viewer.mara:947:39` (arithmetic +; sounds): `if kind_index < 0 or not fits(sounds.len + 1, sounds.cap) do continue`
+- `viewer.mara:1021:16` (empty check; field:Model.parts): `if built.parts.len > 0 do look.stars = texture_for(&viewer.renderer, &viewer.archives, built.parts[0].texture, &room.texture)`
+- `viewer.mara:1022:16` (comparison; field:Model.parts): `if built.parts.len > 1 do look.nebula = texture_for(&viewer.renderer, &viewer.archives, built.parts[1].texture, &room.texture)`
+- `viewer.mara:1220:21` (arithmetic +; layers): `if not fits(layers.len + 1, layers.cap) do break`
+- `walking.mara:108:21` (arithmetic +; nearby): `if not fits(nearby.len + 1, nearby.cap) do return`
+- `world.mara:347:33` (arithmetic +; references): `if placed and fits(references.len + 1, references.cap) and winning_copy(plugin, file, header, at) {`
+- `world.mara:383:50` (arithmetic +; references): `if header.kind == "REFR" and fits(references.len + 1, references.cap) and winning_copy(plugin, file, header, place) {`
+
+## B. A count of what's been filled, read elsewhere: a room's slice copied or passed in: 103
+
+- `animation.mara:107:33` (comparison; field:Nif.blocks): `if palette_index >= mesh.blocks.len do return`
+- `animation.mara:125:38` (comparison; field:Nif.blocks): `if interpolator_index >= mesh.blocks.len do return`
+- `animation.mara:132:64` (comparison; field:Nif.blocks): `if interpolator.data >= 0 and interpolator.data < mesh.blocks.len {`
+- `animation.mara:145:64` (comparison; field:Nif.blocks): `if interpolator.data >= 0 and interpolator.data < mesh.blocks.len {`
+- `animation.mara:190:63` (comparison; field:Nif.blocks): `if spline.basis_data >= 0 and spline.basis_data < mesh.blocks.len {`
+- `animation.mara:197:65` (comparison; field:Nif.blocks): `if spline.spline_data >= 0 and spline.spline_data < mesh.blocks.len {`
+- `animation.mara:373:10` (comparison; times): `if times.len == 1 or time <= times[0] do return 0, 0`
+- `animation.mara:374:15` (arithmetic -; times): `last := times.len - 1`
+- `animation.mara:414:11` (empty check; angles): `if angles.len == 0 do return 0`
+- `bsa.mara:276:17` (stored; folders): `high := folders.len`
+- `bsa.mara:282:18` (comparison; folders): `if low < folders.len and folders[low].hash == hash do return low, true`
+- `facegen.mara:153:67` (comparison; map): `if not fits(out.len + map_width * map_height * 4, out.cap) or map.len < map_width * map_height * 4 do return`
+- `hud.mara:112:16` (empty check; weapon_icon): `if weapon_icon.len > 0 {`
+- `logging.mara:44:9` (comparison; text): `if text.len <= room do &journal.line + text`
+- `logging.mara:118:20` (arithmetic +; more): `if text.len + more.len <= text.cap {`
+- `logging.mara:122:37` (arithmetic +; more): `note_full(text.cap, text.len + more.len, site, caller)`
+- `model.mara:420:35` (empty check; field:Build_Options.pose): `skinned := skin >= 0 and how.pose.len > 0`
+- `model.mara:422:39` (comparison; field:Build_Options.moves): `if model.parts.len == 0 and how.moves.len >= count do own_moves = how.moves`
+- `model.mara:432:15` (empty check; own_moves): `if own_moves.len > 0 do local_position = local_position + own_moves[i]`
+- `model.mara:559:20` (range end; tracks): `for k in 0:tracks.len {`
+- `model.mara:568:15` (arithmetic +; pose): `if fits(pose.len + 1, pose.cap) {`
+- `model.mara:609:20` (range end; tracks): `for k in 0:tracks.len {`
+- `model.mara:645:22` (argument; first): `for k in 0:min(first.len, second.len) {`
+- `model.mara:645:34` (argument; second): `for k in 0:min(first.len, second.len) {`
+- `model.mara:705:19` (stored; vertices): `count := vertices.len`
+- `model.mara:826:20` (stored; vertices): `count := vertices.len`
+- `model.mara:851:13` (empty check; moves): `if moves.len > 0 do raw = raw + moves[v]`
+- `model.mara:895:34` (comparison; field:Nif.blocks): `for at >= 0 and at < mesh.blocks.len {`
+- `model.mara:913:34` (comparison; field:Nif.blocks): `for at >= 0 and at < mesh.blocks.len {`
+- `model.mara:967:52` (comparison; field:Nif.blocks): `if interpolator < 0 or interpolator >= mesh.blocks.len do return`
+- `model.mara:989:36` (comparison; field:Nif.blocks): `if data < 0 or data >= mesh.blocks.len do return`
+- `model.mara:1058:19` (stored; vertices): `count := vertices.len`
+- `model.mara:1061:39` (comparison; field:Nif.blocks): `if extra < 0 or extra >= mesh.blocks.len do continue`
+- `model.mara:1085:20` (arithmetic /; indices): `for t in 0:indices.len / 3 {`
+- `model.mara:1244:33` (comparison; field:Nif.blocks): `if at < 0 or at >= mesh.blocks.len do continue`
+- `model.mara:1266:49` (comparison; field:Nif.blocks): `if data_block >= 0 and data_block < mesh.blocks.len {`
+- `model.mara:1290:33` (comparison; field:Nif.blocks): `if at < 0 or at >= mesh.blocks.len do continue`
+- `model.mara:1339:34` (comparison; field:Nif.blocks): `for at >= 0 and at < mesh.blocks.len {`
+- `model.mara:1388:36` (comparison; field:Nif.blocks): `if data < 0 or data >= mesh.blocks.len do return`
+- `model.mara:1407:52` (comparison; field:Nif.blocks): `if interpolator < 0 or interpolator >= mesh.blocks.len do return`
+- `model.mara:1411:75` (comparison; field:Nif.blocks): `if float_interpolator.data < 0 or float_interpolator.data >= mesh.blocks.len do return`
+- `model.mara:1431:52` (comparison; field:Nif.blocks): `if interpolator < 0 or interpolator >= mesh.blocks.len do return`
+- `model.mara:1434:73` (comparison; field:Nif.blocks): `if bool_interpolator.data < 0 or bool_interpolator.data >= mesh.blocks.len {`
+- `model.mara:1464:34` (comparison; field:Nif.blocks): `for at >= 0 and at < mesh.blocks.len {`
+- `model.mara:1502:52` (comparison; field:Nif.blocks): `if interpolator < 0 or interpolator >= mesh.blocks.len do return`
+- `model.mara:1505:75` (comparison; field:Nif.blocks): `if float_interpolator.data < 0 or float_interpolator.data >= mesh.blocks.len do return`
+- `nif_model.mara:643:36` (other:Type_Slice; field:Nif_Header.type_names): `types := slice([:header.type_names.len]Block_Type, storage)`
+- `npc.mara:731:35` (empty check; base_path): `if mesh_path.len < 4 or base_path.len == 0 do return 0, 0`
+- `npc_picture.mara:141:25` (arithmetic /; field:Model_Part.indices): `for t in 0:part.indices.len / 3 {`
+- `player.mara:208:44` (comparison; field:Nif.blocks): `if text_keys < 0 or text_keys >= kf.blocks.len do return`
+- `render.mara:2413:31` (stored; field:Model_Part.vertices): `vertex_count := part.vertices.len`
+- `render.mara:2414:29` (stored; field:Model_Part.indices): `index_count := part.indices.len`
+- `render.mara:2621:11` (empty check; blades): `if blades.len == 0 do return placed`
+- `render.mara:2625:19` (range end; blades): `for k in 0:blades.len {`
+- `render.mara:2646:35` (slice bound; blades): `for &blade in blades[k : blades.len] {`
+- `render.mara:2903:9` (empty check; path): `if path.len == 0 do return 0`
+- `render.mara:2941:73` (comparison; pixels): `if not fits(renderer.textures.len + 1, renderer.textures.cap) or pixels.len < width * height * 4 do return 0`
+- `render.mara:3039:32` (stored; field:Model_Part.vertices): `vertex_total += part.vertices.len`
+- `render.mara:3040:30` (stored; field:Model_Part.indices): `index_total += part.indices.len`
+- `render.mara:3041:37` (stored; field:Model_Part.influences): `influence_total += part.influences.len`
+- `render.mara:3101:18` (empty check; field:Model_Part.indices): `if part.indices.len == 0 or part.vertices.len == 0 do continue`
+- `render.mara:3101:44` (empty check; field:Model_Part.vertices): `if part.indices.len == 0 or part.vertices.len == 0 do continue`
+- `render.mara:3107:28` (empty check; field:Model_Part.influences): `rigged := part.influences.len > 0 and part.influences.len == part.vertices.len`
+- `render.mara:3107:56` (comparison; field:Model_Part.influences): `rigged := part.influences.len > 0 and part.influences.len == part.vertices.len`
+- `render.mara:3107:77` (comparison; field:Model_Part.vertices): `rigged := part.influences.len > 0 and part.influences.len == part.vertices.len`
+- `render.mara:3112:47` (stored; field:Model_Part.influences): `renderer.influences_used += part.influences.len`
+- `render.mara:3139:34` (argument; field:Model_Part.indices): `index_count = u32(part.indices.len),`
+- `render.mara:3159:42` (stored; field:Model_Part.vertices): `renderer.vertices_used += part.vertices.len`
+- `render.mara:3160:40` (stored; field:Model_Part.indices): `renderer.indices_used += part.indices.len`
+- `scene.mara:463:61` (comparison; field:Nif.blocks): `if played.text_keys < 0 or played.text_keys >= mesh.blocks.len do return`
+- `sooblivion.mara:114:19` (argument; field:Archive.folders): `archive.folders.len, archive.files.len, archive.header.flags, count_bad_hashes(&archive))`
+- `sooblivion.mara:114:38` (argument; field:Archive.files): `archive.folders.len, archive.files.len, archive.header.flags, count_bad_hashes(&archive))`
+- `sooblivion.mara:140:17` (argument; field:Archive.files): `archive.files.len, failed, total / MB, elapsed_ms(start))`
+- `sooblivion.mara:211:10` (empty check; rest): `for rest.len > 0 {`
+- `sooblivion.mara:214:29` (slice bound; rest): `rest = rest[written : rest.len]`
+- `sooblivion.mara:281:30` (stored; field:Nif.blocks): `block_total += mesh.blocks.len`
+- `sooblivion.mara:282:26` (range end; field:Nif.blocks): `for b in 0:mesh.blocks.len {`
+- `sooblivion.mara:323:35` (arithmetic /; field:Model_Part.indices): `triangle_total += part.indices.len / 3`
+- `sooblivion.mara:519:53` (argument; field:Nif.blocks): `print("% blocks, % parts, from % to %", mesh.blocks.len, built.parts.len, built.bounds_min, built.bounds_max)`
+- `sooblivion.mara:522:24` (range end; field:Nif.blocks): `for b in 0:mesh.blocks.len {`
+- `sooblivion.mara:581:19` (empty check; field:Model_Part.vertices): `if part.vertices.len > 0 do print("  texture coordinates from % to %; first vertex %", low_uv, high_uv, part.vertices[0])`
+- `sooblivion.mara:591:18` (comparison; field:Model_Part.indices): `if part.indices.len >= 3 {`
+- `sooblivion.mara:599:17` (argument; field:Model_Part.vertices): `part.vertices.len, part.indices.len / 3, part.texture, part.clamp_mode,`
+- `sooblivion.mara:599:35` (arithmetic /; field:Model_Part.indices): `part.vertices.len, part.indices.len / 3, part.texture, part.clamp_mode,`
+- `sooblivion.mara:1387:67` (comparison; field:Nif.blocks): `if sequence.text_keys >= 0 and sequence.text_keys < mesh.blocks.len {`
+- `sooblivion.mara:1421:61` (comparison; field:Nif.blocks): `if interpolator >= 0 and i64(interpolator) < mesh.blocks.len {`
+- `sooblivion.mara:1887:63` (comparison; field:Nif.blocks): `if played.text_keys >= 0 and played.text_keys < mesh.blocks.len {`
+- `sooblivion.mara:2106:28` (arithmetic /; field:Model_Part.indices): `for t in 0:part.indices.len / 3 {`
+- `sooblivion.mara:2412:30` (stored; field:Model_Part.vertices): `vertices += part.vertices.len`
+- `sooblivion.mara:2413:30` (arithmetic /; field:Model_Part.indices): `triangles += part.indices.len / 3`
+- `sooblivion.mara:2815:27` (comparison; field:Model_Part.influences): `if v >= part.influences.len do break`
+- `sooblivion.mara:2828:27` (comparison; field:Model_Part.influences): `if v >= part.influences.len do break`
+- `sooblivion.mara:2954:81` (argument; field:Model_Part.vertices): `for &part in grown.parts do print("  % vertices, % triangles, %", part.vertices.len, part.indices.len / 3, part.texture)`
+- `sooblivion.mara:2954:99` (arithmetic /; field:Model_Part.indices): `for &part in grown.parts do print("  % vertices, % triangles, %", part.vertices.len, part.indices.len / 3, part.texture)`
+- `sooblivion.mara:3049:29` (arithmetic /; field:Model_Part.indices): `for t in 0:part.indices.len / 3 {`
+- `sooblivion.mara:3178:78` (argument; field:Archive.files): `for &archive in archives.list do print("  % files, % folders", archive.files.len, archive.folders.len)`
+- `sooblivion.mara:3178:99` (argument; field:Archive.folders): `for &archive in archives.list do print("  % files, % folders", archive.files.len, archive.folders.len)`
+- `speedtree.mara:765:17` (arithmetic /; pixels): `count := pixels.len / 4`
+- `tree_picture.mara:179:25` (arithmetic /; field:Model_Part.indices): `for t in 0:part.indices.len / 3 {`
+- `world.mara:51:33` (arithmetic -; field:Key_Index.keys): `return i64(mixed) & (index.keys.len - 1)`
+- `world.mara:55:39` (comparison; field:Key_Index.keys): `if (index.count + 1) * 2 > index.keys.len do return Index_Full`
+- `world.mara:58:34` (arithmetic -; field:Key_Index.keys): `slot = (slot + 1) & (index.keys.len - 1)`
+- `world.mara:71:34` (arithmetic -; field:Key_Index.keys): `slot = (slot + 1) & (index.keys.len - 1)`
