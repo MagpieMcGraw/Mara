@@ -725,7 +725,9 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             from := NO_NODE
             if r := ops[1].op; graph_op_of(pg, r) == .Read { from = graph_operands(pg, r)[0].op }
             if val != llvm_val(e, place) {
-                if from != NO_NODE && graph_op_of(pg, from) == .View {
+                // (Into bytes, or from them: as they are — no list there for
+                // -profile memory to watch.)
+                if graph_op_of(pg, place) == .View || from != NO_NODE && graph_op_of(pg, from) == .View {
                     emit_memcpy(g, llvm_val(e, place), val, type_size(t))
                 } else {
                     llvm_copy(e, llvm_val(e, place), val, t)
@@ -1826,14 +1828,16 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     // A positional slice carve takes its own run of the bytes (llvm_carve).
     if u := e.st.user[graph_ix(e.pg, op)]; u >= 0 && graph_op_of(pg, u) == .Carve && graph_name(pg, u) == "slice" { return true }
     // A partial array in the bytes: bound by a `let`, it is the memory
-    // itself; copied out whole into a place (`h : T = bytes[0]`), its header
-    // comes with the bytes, as they are — what fills it next restamps it
-    // (a view read any other way: later).
+    // itself; copied out whole into a place (`h : T = bytes[0]`), or a value
+    // written whole into the bytes (`bytes[k] = h`), its len and its room come
+    // with the bytes, as they are — a list is its len and its items, nothing
+    // pointing elsewhere (a view read any other way: later).
     u := e.st.user[graph_ix(e.pg, op)]
     bound_here := u >= 0 && graph_op_of(pg, u) == .Carve && graph_name(pg, u) == "let"
     copied := u >= 0 && graph_op_of(pg, u) == .Read && e.st.user[graph_ix(e.pg, u)] >= 0 && graph_op_of(pg, e.st.user[graph_ix(e.pg, u)]) == .Write &&
               graph_operands(pg, e.st.user[graph_ix(e.pg, u)])[1].op == u
-    if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied) { return false }
+    written := u >= 0 && graph_op_of(pg, u) == .Write && graph_operands(pg, u)[0].op == op
+    if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied && !written) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
     data, bound := llvm_bytes(e, base) or_return
     emit_byte_size_bounds_check(g, bound, off, type_size(t), "view", span)
