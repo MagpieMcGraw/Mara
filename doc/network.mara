@@ -3,7 +3,9 @@
 // An address says where: a machine's IP address and a port on it, a number
 // from 1 to 65535 that picks one program on that machine. net_lookup(name,
 // port) turns a name like "example.com", or an address written out like
-// "192.168.1.20", into a Net_Address. net_text writes one back as text.
+// "192.168.1.20", into a Net_Address. A name with both an IPv4 address and
+// an IPv6 one gives the IPv4 one, which reaches more servers. net_text
+// writes an address back as text.
 //
 // UDP sends packets. Each packet arrives whole or not at all, and packets
 // can arrive out of order. Nothing is resent, so nothing waits for a lost

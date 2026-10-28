@@ -1314,7 +1314,8 @@ Sockaddr :: struct {
 	// The address of a machine by its name — "example.com", or an IP
 	// address's text, "192.168.1.20" or "::1" — and the port given. A name
 	// is asked of the network's name servers: it may take a second or more.
-	// Fails with Lookup_Failed when the name has no address.
+	// A name with an IPv4 address and an IPv6 one gives the IPv4 one. Fails
+	// with Lookup_Failed when the name has no address.
 	net_lookup :: fun(name: []utf8, port: u16) -> Net_Address, err {
 		a := net_any(port)
 		if not net_start() do return a, Socket_Failed
@@ -1326,21 +1327,34 @@ Sockaddr :: struct {
 		found: ^Addrinfo = void
 		if getaddrinfo(cstring(text), void, &hints, &found) != 0 do return a, Lookup_Failed
 		defer freeaddrinfo(found)
-		// (The first IPv4 or IPv6 one: the system puts the one to try first.)
+		pick := net_pick(found)
+		if pick == void do return a, Lookup_Failed
+		at := Sockaddr()
+		size := pick.size
+		if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
+		RtlMoveMemory(&at, pick.at, size)
+		a = address_of(&at)
+		a.port = port
+		return a
+	}
+
+	// Of getaddrinfo's answers, the one to use: the first IPv4 address
+	// when the name has one, else the first IPv6 one (void when neither).
+	// IPv4 reaches a server at net_local and at net_any alike, where the
+	// system's first pick may not: "localhost" is ::1 first, and nobody
+	// listening at 127.0.0.1 hears it.
+	net_pick :: fun(found: ^Addrinfo) -> ^Addrinfo {
 		each := found
 		for each != void {
-			if each.family == AF_INET or each.family == AF_INET6 {
-				at := Sockaddr()
-				size := each.size
-				if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
-				RtlMoveMemory(&at, each.at, size)
-				a = address_of(&at)
-				a.port = port
-				return a
-			}
+			if each.family == AF_INET do return each
 			each = each.next
 		}
-		return a, Lookup_Failed
+		each = found
+		for each != void {
+			if each.family == AF_INET6 do break
+			each = each.next
+		}
+		return each   // (void when neither: the list's end)
 	}
 
 	// A UDP socket at `at` — net_any(port) for every address of this
@@ -1541,23 +1555,39 @@ Sockaddr :: struct {
 
 	// A socket of the kind given at `at`, listening there if TCP; whether
 	// it's IPv4 into v4, the port it has into port. At net_any an IPv6
-	// socket takes IPv4 too — or, on a machine without IPv6, an IPv4 one
-	// takes it all.
+	// socket takes IPv4 too. Where that fails — no IPv6 on the machine, or
+	// an IPv6 socket that won't take IPv4 — an IPv4 one takes it all. (Not
+	// when the port is taken: IPv4's may be free, but the port is someone
+	// else's.)
 	net_bind :: fun(at: Net_Address, kind: i32, v4: ^bool, port: ^u16) -> File_Id, err {
 		if not net_start() do return NO_SOCKET, Socket_Failed
 		v4^ = net_is_ip4(at)
-		id := net_socket(v4^, kind)
-		if id == NO_SOCKET and not v4^ and net_is_any(at) {
+		id, e := net_bind_as(at, kind, v4^, port)
+		if e and e != Port_Taken and not v4^ and net_is_any(at) {
 			v4^ = true
-			id = net_socket(true, kind)
+			id4, e4 := net_bind_as(at, kind, true, port)
+			id = id4
+			e = e4
 		}
+		if e do return NO_SOCKET, e
+		return id
+	}
+
+	// net_bind's socket, IPv4 (v4) or IPv6: made, bound to `at`, listening
+	// if TCP, the port it has into port. At net_any an IPv6 one takes IPv4
+	// too, or fails.
+	net_bind_as :: fun(at: Net_Address, kind: i32, v4: bool, port: ^u16) -> File_Id, err {
+		id := net_socket(v4, kind)
 		if id == NO_SOCKET do return NO_SOCKET, Socket_Failed
-		if not v4^ {
+		if not v4 and net_is_any(at) {
 			off: u32 = 0   // (IPv4 too, as ::ffff:a.b.c.d)
-			_ = setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4)
+			if setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4) != 0 {
+				_ = closesocket(id)
+				return NO_SOCKET, Socket_Failed
+			}
 		}
 		sa := Sockaddr()
-		size := sockaddr_of(at, v4^, &sa)
+		size := sockaddr_of(at, v4, &sa)
 		if bind(id, &sa, i32(size)) != 0 {
 			taken := WSAGetLastError() == WSAEADDRINUSE
 			_ = closesocket(id)
@@ -2663,7 +2693,8 @@ Sockaddr :: struct {
 	// The address of a machine by its name — "example.com", or an IP
 	// address's text, "192.168.1.20" or "::1" — and the port given. A name
 	// is asked of the network's name servers: it may take a second or more.
-	// Fails with Lookup_Failed when the name has no address.
+	// A name with an IPv4 address and an IPv6 one gives the IPv4 one. Fails
+	// with Lookup_Failed when the name has no address.
 	net_lookup :: fun(name: []utf8, port: u16) -> Net_Address, err {
 		a := net_any(port)
 		if name.len > 255 do return a, Lookup_Failed
@@ -2674,21 +2705,34 @@ Sockaddr :: struct {
 		found: ^Addrinfo = void
 		if getaddrinfo(cstring(text), void, &hints, &found) != 0 do return a, Lookup_Failed
 		defer freeaddrinfo(found)
-		// (The first IPv4 or IPv6 one: the system puts the one to try first.)
+		pick := net_pick(found)
+		if pick == void do return a, Lookup_Failed
+		at := Sockaddr()
+		size := usize(pick.size)
+		if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
+		_ = memcpy(&at, pick.at, size)
+		a = address_of(&at)
+		a.port = port
+		return a
+	}
+
+	// Of getaddrinfo's answers, the one to use: the first IPv4 address
+	// when the name has one, else the first IPv6 one (void when neither).
+	// IPv4 reaches a server at net_local and at net_any alike, where the
+	// system's first pick may not: "localhost" is ::1 first, and nobody
+	// listening at 127.0.0.1 hears it.
+	net_pick :: fun(found: ^Addrinfo) -> ^Addrinfo {
 		each := found
 		for each != void {
-			if each.family == AF_INET or each.family == AF_INET6 {
-				at := Sockaddr()
-				size := usize(each.size)
-				if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
-				_ = memcpy(&at, each.at, size)
-				a = address_of(&at)
-				a.port = port
-				return a
-			}
+			if each.family == AF_INET do return each
 			each = each.next
 		}
-		return a, Lookup_Failed
+		each = found
+		for each != void {
+			if each.family == AF_INET6 do break
+			each = each.next
+		}
+		return each   // (void when neither: the list's end)
 	}
 
 	// A UDP socket at `at` — net_any(port) for every address of this
@@ -2872,24 +2916,42 @@ Sockaddr :: struct {
 
 	// A socket of the kind given at `at`, listening there if TCP; whether
 	// it's IPv4 into v4, the port it has into port. At net_any an IPv6
-	// socket takes IPv4 too — or, on a machine without IPv6, an IPv4 one
-	// takes it all.
+	// socket takes IPv4 too. Where that fails — no IPv6 on the machine, or
+	// an IPv6 socket that won't take IPv4 — an IPv4 one takes it all. (Not
+	// when the port is taken: IPv4's may be free, but the port is someone
+	// else's.)
 	net_bind :: fun(at: Net_Address, kind: i32, v4: ^bool, port: ^u16) -> File_Id, err {
 		v4^ = net_is_ip4(at)
-		id := net_socket(v4^, kind)
-		if id == NO_SOCKET and not v4^ and net_is_any(at) {
+		id, e := net_bind_as(at, kind, v4^, port)
+		if e and e != Port_Taken and not v4^ and net_is_any(at) {
 			v4^ = true
-			id = net_socket(true, kind)
+			id4, e4 := net_bind_as(at, kind, true, port)
+			id = id4
+			e = e4
 		}
+		if e do return NO_SOCKET, e
+		return id
+	}
+
+	// net_bind's socket, IPv4 (v4) or IPv6: made, bound to `at`, listening
+	// if TCP, the port it has into port. At net_any an IPv6 one takes IPv4
+	// too, or fails.
+	net_bind_as :: fun(at: Net_Address, kind: i32, v4: bool, port: ^u16) -> File_Id, err {
+		id := net_socket(v4, kind)
 		if id == NO_SOCKET do return NO_SOCKET, Socket_Failed
+		if not v4 and net_is_any(at) {
+			off: i32 = 0   // (IPv4 too, as ::ffff:a.b.c.d)
+			if setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4) != 0 {
+				_ = close(id)
+				return NO_SOCKET, Socket_Failed
+			}
+		}
 		on: i32 = 1
-		off: i32 = 0
-		if not v4^ do _ = setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4)   // (IPv4 too, as ::ffff:a.b.c.d)
 		// (A port a listener just let go is free at once, not after the
 		// minutes its old connections' ends linger.)
 		if kind == SOCK_STREAM do _ = setsockopt(id, SOL_SOCKET, SO_REUSEADDR, &on, 4)
 		sa := Sockaddr()
-		size := sockaddr_of(at, v4^, &sa)
+		size := sockaddr_of(at, v4, &sa)
 		if bind(id, &sa, size) != 0 {
 			taken := __errno_location()^ == EADDRINUSE
 			_ = close(id)

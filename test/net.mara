@@ -11,6 +11,8 @@ module net
 //@ expect-output: tcp ended: true
 //@ expect-output: tcp ipv6: Ok true
 //@ expect-output: nobody listening: Net_Error.Unreachable
+//@ expect-output: localhost: 127.0.0.1:0 Ok
+//@ expect-output: tcp to localhost: Ok
 
 // Sockets over this machine's own addresses, 127.0.0.1 and ::1 (none
 // another machine reaches, so no firewall asks): UDP packets both ways, a
@@ -159,4 +161,15 @@ main :: fun() {
 	// Nobody listens on the port the listener had: no answer.
 	_, e10 := tcp_connect(net_local(port), 300)
 	print("nobody listening:", e10)
+
+	// A name with an IPv4 address and an IPv6 one gives the IPv4 one, which
+	// a host at net_local hears: "localhost" is ::1 first on Windows.
+	home, he := net_lookup("localhost", 0)
+	print("localhost:", net_text(home), he)
+	l4, _ := tcp_listen(net_local(0))
+	home.port = l4.port
+	conn4, e11 := tcp_connect(home, 1000)
+	print("tcp to localhost:", e11)
+	tcp_close(&conn4)
+	tcp_listen_stop(&l4)
 }
