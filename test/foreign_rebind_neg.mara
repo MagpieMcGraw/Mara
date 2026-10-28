@@ -1,0 +1,24 @@
+module foreign_rebind_neg
+
+//@ expect-fail: is already bound with another C signature
+
+// A C function bound again must be bound as it was: one symbol, one C
+// signature. mara.os binds CreateFileA (on Linux, open); bound here with a
+// param less, it's refused.
+
+use mara.core
+use mara.os
+
+#if #windows {
+	foreign static_lib "kernel32" {
+		fun CreateFileA(name: cstring, access: u32, share: u32, security: ^byte, disposition: u32, flags: u32) -> File_Id
+	}
+else
+	foreign static_lib "c" {
+		fun open(path: cstring, flags: i32) -> File_Id
+	}
+}
+
+main :: fun() {
+	print("bound")
+}

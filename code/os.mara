@@ -361,6 +361,17 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return id
 	}
 
+	// Open a file to add to its end, creating it if missing: each write goes
+	// after what the file has then. Others can read it while it's open (a log).
+	// (0x4: FILE_APPEND_DATA, writes only at the end. Written as a number,
+	// not a constant here: a program may name its own so.)
+	file_open_append :: fun(path: []utf8) -> File_Id, err {
+		c := c_path(path)
+		id := CreateFileA(cstring(c), 0x4, FILE_SHARE_READ, void, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
+		return id
+	}
+
 	// Closes the file. NO_FILE is ignored, so `defer file_close(id)` right
 	// after an open is safe even when the open failed.
 	file_close :: fun(id: File_Id) {
@@ -1170,6 +1181,17 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	file_open_write :: fun(path: []utf8) -> File_Id, err {
 		c := c_path(path)
 		id := open(cstring(c), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DEFAULT_MODE)
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
+	}
+
+	// Open a file to add to its end, creating it if missing: each write goes
+	// after what the file has then. Others can read it while it's open (a log).
+	// (0x400: O_APPEND. Written as a number, not a constant here: a program
+	// may name its own so.)
+	file_open_append :: fun(path: []utf8) -> File_Id, err {
+		c := c_path(path)
+		id := open(cstring(c), O_WRONLY | O_CREAT | 0x400 | O_CLOEXEC, DEFAULT_MODE)
 		if id == NO_FILE do return NO_FILE, Open_Failed
 		return id
 	}

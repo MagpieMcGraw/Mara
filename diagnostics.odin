@@ -442,7 +442,7 @@ TYPE_RETURN_IN_DEFER :: "`return` can't be used in a defer's block — the block
 TYPE_LOOP_EXIT_OUTSIDE_LOOP :: "`%s` outside any loop"
 TYPE_LOOP_EXIT_IN_DEFER :: "`%s` in a defer's block can only leave a loop inside the block — the block can't break or continue a loop around it"
 TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED :: "circular include: module '%s' is already being checked"
-TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY :: "foreign symbol '%s' is already declared in library '%s' (first declaration at %s); each external symbol may be bound by at most one foreign block"
+TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY :: "foreign symbol '%s' is already bound with another C signature (in library '%s', at %s): a C function has one, so bind it again only with the same params and result"
 TYPE_PROGRAM_GLOBAL_REQUIRES_ALLOCATOR_TYPE :: "#allocator names an arena: `#allocator Arena_Basic(16 * MB)`"
 TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE :: "#allocator %s: no such arena type"
 TYPE_PROGRAM_SCOPE_ALLOCATOR_MISSING_REQUIRED :: "#allocator %s: an arena has mark, alloc and reset — it has no %s"

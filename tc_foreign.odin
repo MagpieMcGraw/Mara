@@ -46,10 +46,17 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         if !is_scope { continue }
         span := tree_span(t, ff)
         link := strings.concatenate({prefix, name}) if prefix != "" else name
+        // (A foreign block is its file's own, so another file may bind a C
+        // function another has: as that one does — a symbol has one C
+        // signature, its one `declare`. Its Mara types may differ, a
+        // distinct File_Id for an i64, the C ones not.)
         for _, existing in k.checked.functions {
             fo, is_foreign := existing.origin.(Origin_Foreign)
             if !is_foreign || fo.link_name != link { continue }
-            tc_error(k, span, TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY, link, fo.library, span_loc(existing.body_span))
+            os := k.checked.target_os
+            if build_c_declare(existing, link, os) != build_c_declare(ft, link, os) {
+                tc_error(k, span, TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY, link, fo.library, span_loc(existing.body_span))
+            }
             break
         }
         ft.origin = Origin_Foreign{library = library, link_name = link}

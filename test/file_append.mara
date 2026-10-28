@@ -1,0 +1,83 @@
+module file_append
+
+//@ expect-output: appended: [one|two|three|]
+//@ expect-output: created: [new|]
+//@ expect-output: bound again: true false
+//@ expect-output: errors: Ok Ok Ok Ok
+
+// file_open_append opens a file to add to its end, creating it if missing
+// (sooblivion's full log). And a C function mara.os binds can be bound
+// again in another file, with the same C signature: a foreign block is its
+// file's own, and the symbol has one signature (CreateFileA here; on Linux,
+// open). sooblivion bound CreateFileW instead, CreateFileA refused.
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+#if #windows {
+	foreign static_lib "kernel32" {
+		fun CreateFileA(name: cstring, access: u32, share: u32, security: ^byte, disposition: u32, flags: u32, template: File_Id) -> File_Id
+	}
+	// (GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING: only if it's there.)
+	opens :: fun(path: []utf8) -> bool {
+		c := c_path(path)
+		id := CreateFileA(cstring(c), 0x80000000, 1, void, 3, 0x80, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return false
+		file_close(id)
+		return true
+	}
+else
+	foreign static_lib "c" {
+		fun open(path: cstring, flags: i32, mode: u32) -> File_Id
+	}
+	opens :: fun(path: []utf8) -> bool {
+		c := c_path(path)
+		id := open(cstring(c), 0, 0)
+		if id == NO_FILE do return false
+		file_close(id)
+		return true
+	}
+}
+
+fresh :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_write(path)?
+	defer file_close(id)
+	file_write_text(id, text)?
+}
+
+add_to :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_append(path)?
+	defer file_close(id)
+	file_write_text(id, text)?
+}
+
+// The file's text, as text.
+text_of :: fun(path: []utf8) -> str256 {
+	storage : [4096]byte
+	out : str256
+	data, e := read_entire_file(path, &storage)
+	if e do return out
+	for b in data do &out + utf8(b)
+	return out
+}
+
+main :: fun() {
+	old : str64
+	&old + "file_append_test.txt"
+	new : str64
+	&new + "file_append_new.txt"
+	_ = file_delete(new)
+	e1 := fresh(old, "one|")
+	e2 := add_to(old, "two|")
+	e3 := add_to(old, "three|")
+	print("appended: [%]", text_of(old))
+	e4 := add_to(new, "new|")
+	print("created: [%]", text_of(new))
+	print("bound again:", opens(old), opens("file_append_missing.txt"))
+	print("errors:", e1, e2, e3, e4)
+	_ = file_delete(old)
+	_ = file_delete(new)
+}

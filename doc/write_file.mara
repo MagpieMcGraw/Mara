@@ -1,6 +1,8 @@
 // How to write a file, and delete one.
 //
 // file_open_write creates the file, or empties it if it's already there.
+// file_open_append keeps what's there and writes after it (a log's way),
+// creating the file if it's missing.
 // file_write_text writes text into it, all of it. file_write writes bytes —
 // text becomes bytes with `bytes : []byte = text[:]`, the same memory seen
 // as bytes — and may write only part of them: it says how many it wrote.
@@ -19,12 +21,21 @@ save :: fun(path: []utf8, text: []utf8) -> err {
 	file_write_text(id, text)?
 }
 
+// Adds text to the end of the file at path.
+add_line :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_append(path)?
+	defer file_close(id)
+	file_write_text(id, text)?
+}
+
 main :: fun() {
 	err := save("write_file_demo.txt", "one line\nanother line\n")
 	if err {
 		print("couldn't write it:", err)
 		return
 	}
+	added := add_line("write_file_demo.txt", "a third, added\n")
+	if added do print("couldn't add to it:", added)
 
 	// Read it back to see it arrived (see read_file.mara).
 	storage : [1 * KB]byte
