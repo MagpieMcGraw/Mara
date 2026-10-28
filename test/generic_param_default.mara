@@ -1,0 +1,55 @@
+module generic_param_default
+
+//@ expect-output: room: true
+//@ expect-output: full at generic_param_default.mara:44:7
+//@ expect-output: room: false
+//@ expect-output: given: full at here
+//@ expect-output: counted: 3 30 12 9
+//@ expect-output: named: main
+//@ expect-output: full at generic_param_default.mara:54:6
+
+// A generic fun's params take defaults as a plain fun's do, `#caller_span`
+// and `#caller_name` the call site's: a check can say where it was called
+// from, taking the list itself (sooblivion's room check took the numbers,
+// `fits(list.len + 1, list.cap)`, for want of it). A default is left off at
+// the end, or with `_`; a given value replaces it.
+
+use mara.core
+
+room_for :: fun(list: ^[]$T, site: atom = #caller_span) -> bool {
+	if list.len < list.cap do return true
+	print("full at %", site)
+	return false
+}
+
+told :: fun(list: ^[]$T, site: []utf8) -> bool {
+	if list.len < list.cap do return true
+	print("given: full at %", site)
+	return false
+}
+
+count :: fun(items: []$T, scale: i64 = 1, extra := 0) -> i64 {
+	return items.len * scale + extra
+}
+
+who :: fun(x: $T, caller: atom = #caller_name) -> atom {
+	return caller
+}
+
+main :: fun() {
+	list : [2]i64
+	&list + 1
+	print("room:", room_for(&list))
+	&list + 2
+	r := room_for(&list)
+	print("room:", r)
+	_ = told(&list, "here")
+
+	three : [3!]i64 = [1, 2, 3]
+	print("counted:", count(three), count(three, 10), count(three, _, 9), count(list, 1, 5) + 2)
+	print("named:", who(5))
+
+	texts : [1]str64
+	&texts + "a"
+	_ = room_for(&texts)
+}

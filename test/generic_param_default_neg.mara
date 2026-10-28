@@ -1,0 +1,19 @@
+module generic_param_default_neg
+
+//@ expect-fail: 'told' expects 2 argument(s), got 1
+
+// A generic fun's param with no default must be given, as a plain fun's:
+// left off, it's an error, not a zero.
+
+use mara.core
+
+told :: fun(list: ^[]$T, site: []utf8) -> bool {
+	if list.len < list.cap do return true
+	print("full at %", site)
+	return false
+}
+
+main :: fun() {
+	list : [2]i64
+	print(told(&list))
+}

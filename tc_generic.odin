@@ -190,8 +190,13 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         m := tc_unparen(k, a)
         return k.t.tag[m] == .Array && k.t.a[m] == 0
     }
+    // (`_`: its param's default, as for a plain fun — nothing inferred from it.)
+    left_off :: proc(k: ^TC, a: Tree_Id) -> bool {
+        m := tc_unparen(k, a)
+        return k.t.tag[m] == .Ident && tc_name(k, m) == "_"
+    }
     arg_types := make([dynamic]Type, len(args), context.temp_allocator)
-    for a, i in args { if !empty(k, a) { arg_types[i] = tc_arg(k, a) } }
+    for a, i in args { if !empty(k, a) && !left_off(k, a) { arg_types[i] = tc_arg(k, a) } }
     params := tc_generic_params(k, tmpl.node)
     subst: TC_Bindings
     for p in params { subst[p] = nil }
@@ -202,14 +207,14 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         for _ in pv.names { append(&param_types, pv.type_) }
     }
     for pt, i in param_types {
-        if i < len(arg_types) && arg_types[i] != nil {
+        if i < len(arg_types) && arg_types[i] != nil && pt != 0 {
             k.infer_at = tree_span(tr, args[i])
             tc_infer(k, &subst, pt, arg_types[i])
             k.infer_at = {}
         }
     }
     for a, i in args {
-        if arg_types[i] != nil { continue }
+        if arg_types[i] != nil || left_off(k, a) { continue }
         saved := k.hint
         if i < len(param_types) && tr.tag[param_types[i]] == .Type_Slice {
             if decl := tc_type_param_named(k, Tree_Id(tr.b[param_types[i]])); decl != 0 && decl in subst {
@@ -218,7 +223,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         }
         arg_types[i] = tc_arg(k, a)
         k.hint = saved
-        if i < len(param_types) {
+        if i < len(param_types) && param_types[i] != 0 {
             k.infer_at = tree_span(tr, a)
             tc_infer(k, &subst, param_types[i], arg_types[i])
             k.infer_at = {}
@@ -251,20 +256,49 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     mangled := mangle_generic_name(name, type_args[:])
     ft := k.instances[mangled] or_else nil
     if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
-    if len(args) != len(ft.params) {
+    if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT, name, len(ft.params), len(args))
     }
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
     k.annot.forms[tc_sid(k, n)] = .Generic
-    received := make([]Arg, len(args), context.temp_allocator)
-    for a, i in args { received[i] = {a, .Receiver if a == k.recv.node else .Written, -1} }
-    tc_set_args(k, n, received)
+    // (What each param receives: what's written, else its default, run at
+    // the call — `#caller_span`, `#caller_name`, the call site's.)
+    received := make([dynamic]Arg, 0, len(ft.params), context.temp_allocator)
+    for i in 0 ..< len(ft.params) {
+        p := ft.params[i]
+        if i < len(args) && !left_off(k, args[i]) {
+            append(&received, Arg{args[i], .Receiver if args[i] == k.recv.node else .Written, -1})
+            continue
+        }
+        if p.default_node == 0 {
+            if i < len(args) { tc_error(k, span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER, i + 1, name, p.name) }
+            break
+        }
+        k.hint = p.type_
+        at: Type
+        if tr.tag[p.default_node] == .Hash_Name {
+            append(&received, Arg{p.default_node, .Call_Site, -1})
+            at = tc_hash_name(k, p.default_node)
+        } else if slot, is_slot := p.default_slot.?; is_slot {
+            append(&received, Arg{p.default_node, .Default, i32(slot)})
+            at = tc_tuple_default(k, p.default_node, slot, span)
+        } else {
+            append(&received, Arg{p.default_node, .Default, -1})
+            at = tc_check(k, p.default_node)
+        }
+        if !coerce_deferred(k.c, at, p.type_, span) && arg_incompatible(p.type_, at) {
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, fmt.tprintf(" (`%s`'s default)", p.name), name, p.name, type_name(p.type_), type_name(at), "")
+        }
+        if p.default_slot == nil { tc_settle(k, p.default_node, p.type_) }
+    }
+    tc_set_args(k, n, received[:])
     // (Each argument fits its param, the bindings in: `x: T` given another
     // type, a fun given for `fun(T) -> $K` taking something else — as a
     // call of a plain fun is checked.)
     for a, i in args {
         if i >= len(ft.params) { break }
+        if left_off(k, a) { continue }
         pt, at := ft.params[i].type_, arg_types[i]
         own := a == k.recv.node && a != 0 && tc_own_receiver(at, pt)
         if own || coerce_deferred(k.c, at, pt, span) || !arg_incompatible(pt, at) { continue }
@@ -278,7 +312,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         }
         tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), got, "")
     }
-    for a, i in args { if i < len(ft.params) { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
+    for a, i in args { if i < len(ft.params) && !left_off(k, a) { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
     return fn_primary_return(ft)
 }
 
@@ -301,12 +335,15 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     v := scope_view(tr, tmpl.node)
     for g in v.params {
         pv := params_view(tr, g)
-        if pv.type_ == 0 || len(pv.values) > 0 {
-            tc_unsupported(k, g, "a generic's param with a default")
-            continue
+        // (A default as a plain fun's: run at the call, `#caller_span` the
+        // call site's — tc_signature.)
+        for pn, i in pv.names {
+            def := pv.values[i] if i < len(pv.values) else 0
+            slot: Maybe(int)
+            if len(pv.values) == 1 && len(pv.names) > 1 { def, slot = pv.values[0], i }
+            pt := tc_param_type(k, tc_text(pn), pv.type_, def, span, slot)
+            append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt, default_node = def, default_slot = slot})
         }
-        pt := tc_type(k, pv.type_, span)
-        for pn in pv.names { append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt}) }
     }
     for r in v.returns {
         if tr.tag[r] == .Param_Group {
