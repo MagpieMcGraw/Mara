@@ -21,8 +21,9 @@
 //
 // Arenas (mara.memory, under #profile_memory) tell it themselves, after
 // their cursor moves:
-//   __mara_mem_arena(kind, base)  base's len the bytes in use, its cap the
-//                                 arena's size; base's elements say which
+//   __mara_mem_arena(kind, base)  base, a mutable slice of the arena's bytes
+//                                 (`&a.base`): its len the bytes in use, its
+//                                 cap the arena's size, its elements which
 //
 // What's at a list's address later may be something else: the instance there
 // ended (its frame left, its storage reused) — told by a new one laid down
@@ -77,6 +78,14 @@ typedef struct Mara_Header {
 typedef struct Mara_List {
     int64_t len;
 } Mara_List;
+// A mutable slice, `^[]T`, as Mara hands one over (codegen_array.odin,
+// slice_ref_to): where its len is, its cap, its elements' address. Taken by
+// value: a C function's struct param, each ABI's way.
+typedef struct Mara_Slice_Ref {
+    int64_t* len_at;
+    int64_t  cap;
+    void*    data;
+} Mara_Slice_Ref;
 
 typedef struct Mara_Mem_Rec {
     const char* name;
@@ -279,11 +288,12 @@ void __mara_mem_len(const Mara_List* hdr) {
     if (hdr->len > s->peak) s->peak = hdr->len;
 }
 
-void __mara_mem_arena(const char* kind, const Mara_Header* base) {
+void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {
+    int64_t len = *base.len_at;
     for (size_t i = 0; i < mem.narenas; i++) {
         Mara_Mem_Arena* a = &mem.arenas[i];
-        if (a->data == base->data) {
-            if (base->len > a->peak) a->peak = base->len;
+        if (a->data == base.data) {
+            if (len > a->peak) a->peak = len;
             return;
         }
     }
@@ -294,9 +304,9 @@ void __mara_mem_arena(const char* kind, const Mara_Header* base) {
     }
     Mara_Mem_Arena* a = &mem.arenas[mem.narenas++];
     a->kind = kind ? kind : "arena";
-    a->data = base->data;
-    a->size = base->cap;
-    a->peak = base->len;
+    a->data = base.data;
+    a->size = base.cap;
+    a->peak = len;
 }
 
 static int64_t mem_unused(const Mara_Mem_Rec* r) {
