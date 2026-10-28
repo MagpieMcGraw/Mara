@@ -1,0 +1,39 @@
+// How to read a big file without copying it: map it into memory.
+//
+// file_map(path) gives the file's bytes as a []byte, read straight from the
+// file. The system loads each page of it the first time it's touched, so
+// mapping a 2 GB archive costs nothing until it's read, and then only the
+// parts read. The slice is read only. Its len and cap are both the file's
+// size. An empty file gives an empty slice. file_unmap gives the memory
+// back: pass it the slice file_map gave, the whole of it.
+//
+// read_entire_file (see read_file.mara) copies a file into storage you
+// declare instead. That suits a small file, or one you will change.
+module map_file
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	id, e := file_open_write("map_file_example.txt")
+	if e {
+		print("couldn't write the file:", e)
+		return
+	}
+	_ = file_write_text(id, "one\ntwo\nthree\n")
+	file_close(id)
+
+	data, me := file_map("map_file_example.txt")
+	if me {
+		print("couldn't map the file:", me)
+		return
+	}
+	text : []utf8 = data   // (the same bytes, seen as text)
+	lines := 0
+	for c in text do if c == '\n' do lines += 1
+	print("% bytes, % lines", data.len, lines)
+	print("it starts with:", text[0:3])
+	file_unmap(data)
+
+	_ = file_delete("map_file_example.txt")
+}

@@ -12,8 +12,9 @@
 // A trace past MARA_ERR_SITES keeps its first sites and its last.
 //
 // The compiler calls these where errs are made and passed on (llvm.odin,
-// llvm_err_runtime); nothing else does. One ring for the program: Mara runs
-// one thread.
+// llvm_err_runtime); nothing else does. Each thread has a ring of its own
+// (thread_start's threads); the ids are the program's, so an err another
+// thread made finds another's trace in its slot here, and says it's gone.
 
 #include <stdint.h>
 #include <string.h>
@@ -27,8 +28,8 @@ typedef struct {
     uint32_t sites[MARA_ERR_SITES];   // where it was made, then each pass
 } Mara_Err_Trace;
 
-static Mara_Err_Trace traces[MARA_ERR_TRACES];
-static uint32_t last_id;
+static _Thread_local Mara_Err_Trace traces[MARA_ERR_TRACES];
+static uint32_t last_id;   // (counted by every thread: atomic)
 
 // The trace an err's id names, while its slot still holds it; else none.
 static Mara_Err_Trace *trace_of(uint64_t e) {
@@ -41,8 +42,8 @@ static Mara_Err_Trace *trace_of(uint64_t e) {
 // An err of kind `kind` made at `site`: a new trace, the err its kind with
 // the trace's id above it.
 uint64_t __mara_err_made(uint64_t kind, uint32_t site) {
-    uint32_t id = ++last_id;
-    if (id == 0) id = ++last_id;   // (0 is no trace)
+    uint32_t id = __atomic_add_fetch(&last_id, 1, __ATOMIC_RELAXED);
+    if (id == 0) id = __atomic_add_fetch(&last_id, 1, __ATOMIC_RELAXED);   // (0 is no trace)
     Mara_Err_Trace *t = &traces[id % MARA_ERR_TRACES];
     t->id = id;
     t->len = 1;

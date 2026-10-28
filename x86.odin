@@ -37,13 +37,13 @@ X86_Type :: struct {
     offsets: []int,
 }
 
-// The object's sections, in its section table's order: the debug info's
-// last, left out when empty (codeview.odin).
+// The object's sections, in its section table's order: the thread-local
+// data's and the debug info's last, left out when empty (codeview.odin).
 @(private="file")
-X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Debug_S, Debug_T, Raddbg }
+X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Tls, Debug_S, Debug_T, Raddbg }
 
 @(private="file") X86_SEC_NAME := [X86_Sec]string{.Text = ".text", .Data = ".data", .Bss = ".bss", .Rdata = ".rdata", .Pdata = ".pdata", .Xdata = ".xdata", .Drectve = ".drectve",
-                                                    .Debug_S = ".debug$S", .Debug_T = ".debug$T", .Raddbg = ".raddbg"}
+                                                    .Tls = ".tls$", .Debug_S = ".debug$S", .Debug_T = ".debug$T", .Raddbg = ".raddbg"}
 @(private="file") X86_SEC_FLAGS := [X86_Sec]u32{
     .Text    = 0x60500020,   // code, 16-aligned, execute, read
     .Data    = 0xC0500040,   // initialized data, 16-aligned, read, write
@@ -52,6 +52,7 @@ X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Debug_S, Deb
     .Pdata   = 0x40300040,   // ... 4-aligned
     .Xdata   = 0x40300040,
     .Drectve = 0x00100A00,   // linker directives, removed from the image
+    .Tls     = 0xC0400040,   // initialized data, 8-aligned, read, write: each thread's copy (the CRT's TLS directory)
     .Debug_S = 0x42100040,   // ... 1-aligned, read, discarded from the image (the PDB's)
     .Debug_T = 0x42100040,
     .Raddbg  = 0xC0100040,   // ... read, write: raddbg's type views
@@ -62,6 +63,9 @@ X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Debug_S, Deb
 @(private="file") X86_ADDR64   :: 1
 @(private="file") X86_ADDR32NB :: 3
 @(private="file") X86_REL32    :: 4
+// ... an offset from the start of its section: a thread-local's, in a
+// thread's block.
+@(private="file") X86_SECREL   :: 0xB
 
 @(private="file")
 X86_Reloc :: struct {
@@ -99,6 +103,7 @@ X86_Module :: struct {
     sym_of:  map[string]u32,
     exports: [dynamic]string,        // dllexport functions
     cv:      ^Cv_Module,             // its debug info (codeview.odin); nil, none
+    threads: bool,                   // the arena slot thread-local (Checked_Program.threads)
 }
 
 // A value: a local — a temporary (an instruction's result) by its number, a
@@ -208,9 +213,9 @@ x86_program :: proc() -> ^X86_Program {
 // A module's object, begun: its functions (x86_function) and globals
 // (x86_global) go in as they're made; x86_finish writes it. With the
 // program, its debug info too.
-x86_begin :: proc(p: ^X86_Program, debug: ^Checked_Program = nil, name := "") -> ^X86_Module {
+x86_begin :: proc(p: ^X86_Program, debug: ^Checked_Program = nil, name := "", threads := false) -> ^X86_Module {
     m := new(X86_Module)
-    m.p, m.keep = p, context.allocator
+    m.p, m.keep, m.threads = p, context.allocator, threads
     if debug != nil { m.cv = cv_begin(debug, name) }
     m.sym_of = make(map[string]u32)
     m.exports = make([dynamic]string)
@@ -803,6 +808,10 @@ x86_get :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) {
         s := x86_slot(f, v, 8, 8)
         if s.memory { x86_lea(f, r, x86_mem(f, s, 0)) } else { x86_load(f, r, x86_mem(f, s, 0), 8) }
     case .Global:
+        if x86_thread_local(f, v) {
+            x86_thread_address(f, v, r)
+            return
+        }
         x86_lea(f, r, {base = X86_RIP, sym = x86_symbol(f.m, x86_sym(v.name))})
     case .Zero:
         x86_imm(f, r, 0)
@@ -819,10 +828,38 @@ x86_ptr :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) -> X86_Mem {
     case .Temp, .Local:
         if s := x86_slot(f, v, 8, 8); s.memory { return x86_mem(f, s, 0) }
     case .Global:
-        return {base = X86_RIP, sym = x86_symbol(f.m, x86_sym(v.name))}
+        if !x86_thread_local(f, v) { return {base = X86_RIP, sym = x86_symbol(f.m, x86_sym(v.name))} }
     }
     x86_get(f, v, r)
     return {base = u8(r)}
+}
+
+// Whether a global is each thread's own: the arena slot, in a program that
+// starts threads.
+@(private="file")
+x86_thread_local :: proc(f: ^X86_Fn, v: X86_Val) -> bool {
+    return f.m.threads && v.name == "__mara_arena"
+}
+
+// A thread-local's address, this thread's, into r: the thread's TLS array
+// (gs:[0x58]), this image's block in it (by _tls_index, the CRT's), the
+// variable's offset in the block. (r10: scratch, no value's register.)
+@(private="file")
+x86_thread_address :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) {
+    reg := u8(r)
+    // mov r, gs:[0x58]
+    append(&f.code, 0x65, 0x48 | (0x04 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0x25)
+    x86_u32(&f.code, 0x58)
+    // mov r10d, [rip + _tls_index]
+    x86_load(f, .R10, {base = X86_RIP, sym = x86_symbol(f.m, "_tls_index")}, 4)
+    // mov r, [r + r10*8]   (r is never rbp or r13: no displacement needed)
+    append(&f.code, 0x4A | (0x04 if reg >= 8 else 0) | (0x01 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0xC0 | 2 << 3 | (reg & 7))
+    // lea r, [r + offset]   (the offset: a section-relative relocation)
+    x86_enc_rr(f, 0, true, {0x8D}, reg, reg)
+    f.code[len(f.code) - 1] = 0x80 | (reg & 7) << 3 | (reg & 7)   // (mod 10: [r + disp32])
+    if reg & 7 == 4 { append(&f.code, 0x24) }
+    append(&f.relocs, X86_Reloc{u32(len(f.code)), x86_symbol(f.m, x86_sym(v.name)), X86_SECREL})
+    x86_u32(&f.code, 0)
 }
 
 // The result, in rax, into its slot.
@@ -1449,6 +1486,12 @@ x86_global :: proc(m: ^X86_Module, gl: Ir_Global) {
     t := x86_layout(m.p, gl.ty)
     align := max(t.align, int(gl.align))
     sym := x86_sym(gl.name)
+    if gl.thread {   // each thread's copy made from these bytes
+        x86_pad(&m.sec[.Tls], max(align, 1))
+        x86_define(m, sym, .Tls, len(m.sec[.Tls]), !local, false)
+        x86_data(m, .Tls, t, gl.init)
+        return
+    }
     if ir_const_zero(gl.init) && !gl.constant {   // .bss: its room, no bytes
         m.bss = x86_align(m.bss, max(align, 1))
         x86_define(m, sym, .Bss, m.bss, !local, false)

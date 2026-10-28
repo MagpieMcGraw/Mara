@@ -1,0 +1,122 @@
+module threads
+
+//@ expect-output: started 8 threads
+//@ expect-output: sums: 7812562500 23437562500 39062562500 54687562500 70312562500 85937562500 101562562500 117187562500
+//@ expect-output: their total: 500000500000
+//@ expect-output: under the lock: 500000500000 in 1000000 adds
+//@ expect-output: big temps: 16769025 on each
+//@ expect-output: errs: Piece_Error.Second_Piece at threads.mara:48:10 in piece_check, Ok
+//@ expect-output: arenas: each thread its own
+//@ expect-output: cpus: true
+
+// thread_start runs a fun on a new thread, with its data; thread_wait waits
+// for it. Each thread puts its big values on an arena of its own (the
+// squares here, 32 KB), made when it starts. Eight threads each sum their
+// piece of one array, and add every number into one total under a Mutex.
+// An err made on a thread has its trace there (the err trace ring is each
+// thread's own).
+
+use mara.core
+use mara.os
+use mara.memory
+use mara.string
+
+#allocator Arena_Basic(64 * MB)
+
+Piece_Error :: error {
+	Second_Piece
+}
+
+Total :: struct {
+	lock: Mutex
+	sum:  i64 = 0
+	adds: i64 = 0
+}
+
+Job :: struct {
+	numbers: []i64
+	total:   ^Total
+	sum:     i64 = 0
+	last:    i64 = 0   // the big temporary's last square
+	failed:  err = Ok
+	where:   atom = #caller_name
+	arena:   ^byte     // its arena slot, as the thread saw it
+}
+
+piece_check :: fun(job: ^Job) -> err {
+	if job.numbers[0] == 125001 {
+		return Second_Piece
+	}
+}
+
+work :: fun(job: ^Job) {
+	// 32 KB: too big for the stack, on this thread's own arena.
+	squares : [4096!]i64
+	for k in 0:4096 do squares[k] = k * k
+	job.last = squares[4095]
+	s := 0
+	for x in job.numbers do s += x
+	job.sum = s
+	for x in job.numbers {
+		mutex_lock(&job.total.lock)
+		job.total.sum += x
+		job.total.adds += 1
+		mutex_unlock(&job.total.lock)
+	}
+	e := piece_check(job)
+	job.failed = e
+	job.where = e.where()
+	// (The slot read: swapped out and straight back, nothing made between.)
+	job.arena = arena_swap(&job.sum)
+	_ = arena_swap(job.arena)
+}
+
+main :: () {
+	numbers : [1000000]i64
+	for k in 1..1000000 do &numbers + k
+	total := Total()
+	jobs : [8]Job
+	per := 125000
+	for k in 0:8 {
+		job := Job()
+		job.numbers = numbers[k * per : (k + 1) * per]
+		job.total = &total
+		job.arena = &total   // (the thread's own, once it's run)
+		&jobs + job
+	}
+	threads : [8]Thread
+	for k in 0:8 {
+		t, e := thread_start(work, &jobs[k])
+		if e {
+			print("thread_start failed:", e)
+			return
+		}
+		&threads + t
+	}
+	print("started % threads", threads.len)
+	for k in 0:8 do thread_wait(&threads[k])
+
+	sums : str256
+	grand := 0
+	same := true
+	for k in 0:8 {
+		if k > 0 do &sums + " "
+		&sums + int_text(jobs[k].sum)
+		grand += jobs[k].sum
+		if jobs[k].last != 16769025 do same = false
+	}
+	print("sums: %", sums)
+	print("their total: %", grand)
+	print("under the lock: % in % adds", total.sum, total.adds)
+	if same do print("big temps: 16769025 on each")
+	print("errs: % at %, %", jobs[1].failed, jobs[1].where, jobs[0].failed)
+	mine := arena_swap(&total)
+	_ = arena_swap(mine)
+	apart := true
+	for k in 0:8 {
+		if jobs[k].arena == mine do apart = false
+		for j in 0:k do if jobs[j].arena == jobs[k].arena do apart = false
+	}
+	if apart do print("arenas: each thread its own")
+	print("cpus:", cpu_count() >= 1)
+}

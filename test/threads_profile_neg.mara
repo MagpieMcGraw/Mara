@@ -1,0 +1,28 @@
+module threads_profile_neg
+//@ build-flags: -profile time
+//@ expect-fail: profile doesn't follow threads yet
+
+// The profilers keep one record for the whole program: a program that starts
+// threads can't be profiled yet, and says so rather than mixing them up.
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Count :: struct {
+	n: i64 = 0
+}
+
+work :: fun(c: ^Count) {
+	c.n += 1
+}
+
+main :: () {
+	c := Count()
+	t, e := thread_start(work, &c)
+	if e do return
+	thread_wait(&t)
+	print(c.n)
+}

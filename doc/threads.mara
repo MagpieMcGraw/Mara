@@ -1,0 +1,77 @@
+// How to run work on several threads at once: split it into pieces, start a
+// thread for each piece, then wait for them all.
+//
+// thread_start(work, &data) runs work(&data) on a new thread and returns at
+// once, with a Thread. thread_wait(&t) waits until that thread is done. Wait
+// for every thread before its data goes away, and before main returns: the
+// program ends when main does, and its threads end with it.
+//
+// Each thread has an arena of its own, of the program's kind (the one
+// #allocator names), 16 MB unless thread_start is given another size as a
+// third argument. The thread's big values go there. The arena is made when
+// the thread starts and freed when it ends, so what a thread makes for the
+// program goes into its data. Here each thread sums its own piece of one
+// array and writes the sum into its job.
+//
+// Threads that write the same memory must take turns: a Mutex makes them.
+// mutex_lock waits until no other thread holds the lock, and mutex_unlock
+// lets it go. cpu_count() says how many threads the machine runs at once.
+module threads
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+// What every thread adds to: how many pieces are done.
+Progress :: struct {
+	lock: Mutex
+	pieces_done: i64 = 0
+}
+
+// One thread's work: its piece of the numbers, and the sum it finds.
+Job :: struct {
+	numbers: []i64
+	progress: ^Progress
+	sum: i64 = 0
+}
+
+sum_piece :: fun(job: ^Job) {
+	for x in job.numbers do job.sum += x
+	mutex_lock(&job.progress.lock)
+	job.progress.pieces_done += 1
+	mutex_unlock(&job.progress.lock)
+}
+
+main :: fun() {
+	numbers : [100000]i64
+	for k in 1..100000 do &numbers + k
+	progress := Progress()
+
+	// Four pieces of 25,000 numbers each.
+	jobs : [4]Job
+	for k in 0:4 {
+		job := Job()
+		job.numbers = numbers[k * 25000 : (k + 1) * 25000]
+		job.progress = &progress
+		&jobs + job
+	}
+
+	threads : [4]Thread
+	for k in 0:4 {
+		t, e := thread_start(sum_piece, &jobs[k])
+		if e {
+			print("couldn't start a thread:", e)
+			return
+		}
+		&threads + t
+	}
+	for k in 0:4 do thread_wait(&threads[k])
+
+	total := 0
+	for job in jobs do total += job.sum
+	print("the sum of 1 to 100000:", total)
+	print("pieces done:", progress.pieces_done)
+	print("this machine runs % threads at once", cpu_count())
+}

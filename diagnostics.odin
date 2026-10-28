@@ -594,6 +594,7 @@ CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested b
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
 CODE_GRAPH_UNLOWERED :: "can't lower '%s' from the program graph: its %s '%s'%s"
+CODE_PROFILE_THREADS :: "-profile doesn't follow threads yet: this program starts threads (thread_start), and the profiler keeps one record for the whole program — profile it without them"
 TYPE_RESULT_READS_DEST :: "'%s' is handed &%s while its result is written into %s: it would read what it overwrites. Build it under a name of its own (`r := %s(…)`), then assign it to %s"
 CODE_TEMPORARY_NO_ARENA :: "a %s (%d bytes) is held in a temporary here, too large for the stack: it lives on the program's arena, and there is none — name one at the module's top (`#allocator Arena_Basic(16 * MB)`)"
 CODE_TEMPORARY_UNLISTED :: "a %s (%d bytes) is held in a temporary here, and isn't one of its fun's big temporaries (a compiler bug: storage_calls missed it)"

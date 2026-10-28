@@ -111,7 +111,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     local: Codegen
     init_worker_codegen(&local, task)
-    if task.use_x86 { local.x86 = x86_begin(x86_program(), task.checked if task.debug else nil, task.module_name) }
+    if task.use_x86 { local.x86 = x86_begin(x86_program(), task.checked if task.debug else nil, task.module_name, task.checked.threads) }
 
     // Emit this module's functions. switch_to_module + flush handle the
     // g.out buffer swap so emit_target routes correctly. Each function's
@@ -334,6 +334,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.profile_memory = profile_memory != ""
     g.mem_build = profile_memory
     g.mem_sites = make(map[string]string)
+    checked.threads = program_starts_threads(checked)
+    if checked.threads && (profile != "" || profile_memory != "") {
+        codegen_fatal(&g, {}, CODE_PROFILE_THREADS)
+    }
 
 
     // g.out is now a swap target driven by switch_to_module; each per-module
@@ -496,7 +500,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     x86_main: ^X86_Module
     if x86 {
         for t in tasks { if t.module_name == checked.main_package { x86_main = t.x86 } }
-        if x86_main == nil { x86_main = x86_begin(x86_types, checked if debug else nil, checked.main_package) }
+        if x86_main == nil { x86_main = x86_begin(x86_types, checked if debug else nil, checked.main_package, checked.threads) }
         g.x86 = x86_main
     }
 
@@ -590,7 +594,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
         for module_name in g.module_order {
             if module_name in named { continue }
-            m := x86_main if module_name == checked.main_package else x86_begin(x86_types)
+            m := x86_main if module_name == checked.main_package else x86_begin(x86_types, threads = checked.threads)
             path := x86_write_module(&g, m, build_dir, module_name, nil) or_else ""
             if path == "" { return nil, false }
             append(&g.module_ll_paths, path)
@@ -1048,7 +1052,9 @@ module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
 program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
     gls := make([dynamic]Ir_Global)
     linkage: Ir_Linkage = .Default if own else .External
-    append(&gls, Ir_Global{name = "__mara_arena", linkage = linkage, ty = IR_PTR, init = {v = IR_NULL}})
+    // (Each thread its own, in a program that starts threads: a thread's
+    // arena is its own — thread_run.)
+    append(&gls, Ir_Global{name = "__mara_arena", linkage = linkage, thread = checked.threads, ty = IR_PTR, init = {v = IR_NULL}})
     // The program's atoms (checked_atom): each one's text, a 0 after it, the
     // table of them (its address, its length) and their count — in the module
     // that owns the program's globals, written once every code is made; the
@@ -1207,4 +1213,13 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             emit_header_set(g, view, SLICE.cap, ir_int(ARGS_CAP))
         }
     }
+}
+
+// Whether the program starts threads: an instance of mara.os's thread_start
+// (generic: one is made only where it's called).
+program_starts_threads :: proc(checked: ^Checked_Program) -> bool {
+    for name, ft in checked.functions {
+        if ft != nil && ft.home_package == "mara.os" && strings.has_prefix(name, "mara_os_thread_start__") { return true }
+    }
+    return false
 }

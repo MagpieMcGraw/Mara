@@ -197,6 +197,7 @@ Ir_Global :: struct {
     linkage:  Ir_Linkage,
     unnamed:  bool,       // unnamed_addr: its address means nothing
     constant: bool,       // read only
+    thread:   bool,       // thread_local: each thread its own
     ty:       Ir_Type,
     init:     Ir_Const,
     align:    i32,
@@ -699,6 +700,7 @@ ir_print_global :: proc(b: ^strings.Builder, gl: Ir_Global) {
     case .Internal: w(b, "internal ")
     case .External: w(b, "external ")
     }
+    if gl.thread { w(b, "thread_local ") }
     if gl.unnamed { w(b, "unnamed_addr ") }
     w(b, "constant " if gl.constant else "global ")
     w(b, ir_type_text(gl.ty))

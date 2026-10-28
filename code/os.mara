@@ -17,6 +17,7 @@ File_Error :: error {
     Copy_Failed
     Too_Large
     Seek_Failed
+    Map_Failed
 }
 
 // What starting or waiting for a process can fail with.
@@ -24,6 +25,24 @@ Process_Error :: error {
     Start_Failed
     Wait_Failed
 }
+
+// What starting a thread can fail with.
+Thread_Error :: error {
+    Thread_Start_Failed
+}
+
+// What thread_start hands a new thread: the fun to run, its data, and its
+// arena's size. (In the process's heap: the thread frees it once read.)
+Thread_Start :: struct {
+	work:       fun(^byte)
+	data:       ^byte
+	arena_size: i64
+}
+
+// Runs work(data) on an arena of the program's kind, size bytes, made for
+// it, and gives back the arena's memory, to release (void, in a program with
+// no arena). A new thread's: only thread_entry calls it.
+thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mara_thread_run.ptr }
 
 // What reading an environment variable can fail with.
 Env_Error :: error {
@@ -297,7 +316,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	// flProtect
 	PAGE_NOACCESS  :: 0x01
+	PAGE_READONLY  :: 0x02
 	PAGE_READWRITE :: 0x04
+
+	// MapViewOfFile's access: a view to read.
+	FILE_MAP_READ :: 0x0004
 
 	// ---------------------------------------------------------------------------
 	// Virtual memory
@@ -319,9 +342,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// Release a reserved (and possibly committed) range. `base` must be
-	// exactly the pointer returned by vm_reserve; partial releases are
-	// not supported.
-	vm_release :: fun(base: ^byte) {
+	// exactly the pointer returned by vm_reserve, and size the size reserved
+	// (Windows remembers it; Linux doesn't). Partial releases are not
+	// supported.
+	vm_release :: fun(base: ^byte, size: i64) {
 		_ = VirtualFree(base, usize(0), MEM_RELEASE)
 	}
 
@@ -456,6 +480,31 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		lo : i64 = i64(data.last_write_low)
 		hi : i64 = i64(data.last_write_high) << 32
 		return lo | hi
+	}
+
+	// The file's bytes, mapped into memory: read where they lie, nothing
+	// copied. The system reads each page from the file the first time it's
+	// touched, so a big file costs only what's read of it. Read only. An empty
+	// file gives an empty slice. Give the slice back to file_unmap when done,
+	// the whole of it, not a piece.
+	file_map :: fun(path: []utf8) -> []byte, err {
+		id := file_open_read(path)?
+		defer file_close(id)
+		size := file_size(id)?
+		if size == 0 do return []   // (Windows maps no empty file)
+		// (The view keeps the file and the mapping open: both closed here.)
+		mapping := CreateFileMappingA(id, void, PAGE_READONLY, 0, 0, void)
+		if mapping == NO_FILE do return [], Map_Failed
+		defer file_close(mapping)
+		view := MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, usize(0))
+		if view == void do return [], Map_Failed
+		return slice_from_ptr(view, size)
+	}
+
+	// Unmaps a file file_map mapped. An empty slice is ignored.
+	file_unmap :: fun(data: []byte) {
+		if data.len == 0 do return
+		_ = UnmapViewOfFile(data.ptr)
 	}
 
 	// Memory layout matches WIN32_FILE_ATTRIBUTE_DATA exactly: DWORD attributes
@@ -803,6 +852,79 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return GetStdHandle(STD_OUTPUT_HANDLE)
 	}
 
+	// ---------------------------------------------------------------------------
+	// Threads
+	// ---------------------------------------------------------------------------
+
+	// A thread thread_start started, to wait for with thread_wait. `id` is
+	// its Win32 thread handle.
+	Thread :: struct {
+		id: File_Id
+	}
+
+	// A lock one thread holds at a time: mutex_lock waits until it's free.
+	// Zero is unlocked: declare one and use it. (Win32's SRWLOCK, a
+	// pointer's size.)
+	Mutex :: struct {
+		lock: u64 = 0
+	}
+
+	// Runs work(data) on a new thread and returns at once. The thread puts
+	// its big values on an arena of its own, of the program's kind and
+	// arena_size bytes, made when it starts and released when it ends: what
+	// it makes for the program goes into data. Wait for every thread
+	// (thread_wait) before data goes, and before main returns: the program
+	// ends when main does, its threads with it.
+	thread_start :: fun(work: fun(^$T), data: ^T, arena_size: i64 = 16 << 20) -> Thread, err {
+		start: ^Thread_Start = HeapAlloc(GetProcessHeap(), 0, usize(size_of(Thread_Start)))
+		if start == void do return Thread{NO_FILE}, Thread_Start_Failed
+		// (Copied in by the system: the escape check can't see a thread's
+		// life, so it would refuse data in memory that outlives this call.
+		// That data outlives the thread is the caller's: thread_wait.)
+		given := Thread_Start{work = work, data = data, arena_size = arena_size}
+		RtlMoveMemory(start, &given, usize(size_of(Thread_Start)))
+		id := CreateThread(void, usize(0), thread_entry, start, 0, void)
+		if id == NO_FILE {
+			_ = HeapFree(GetProcessHeap(), 0, start)
+			return Thread{NO_FILE}, Thread_Start_Failed
+		}
+		return Thread{id = id}
+	}
+
+	// A new thread's first fun, as Windows calls it: its start read and freed,
+	// its work run on an arena of its own, the arena released after.
+	thread_entry :: fun(start: ^Thread_Start) -> u32 {
+		s := start^
+		_ = HeapFree(GetProcessHeap(), 0, start)
+		base := thread_run(s.work, s.data, s.arena_size)
+		if base != void do vm_release(base, s.arena_size)
+		return 0
+	}
+
+	// Waits for the thread to end. A thread waited for, or one that never
+	// started, is ignored.
+	thread_wait :: fun(t: ^Thread) {
+		if t.id == NO_FILE do return
+		_ = WaitForSingleObject(t.id, INFINITE)
+		file_close(t.id)
+		t.id = NO_FILE
+	}
+
+	// Takes the lock, waiting while another thread holds it.
+	mutex_lock :: fun(m: ^Mutex) {
+		AcquireSRWLockExclusive(m)
+	}
+
+	// Lets the lock go, for the next thread waiting for it.
+	mutex_unlock :: fun(m: ^Mutex) {
+		ReleaseSRWLockExclusive(m)
+	}
+
+	// How many threads the machine runs at once: its logical processors.
+	cpu_count :: fun() -> i64 {
+		return i64(GetActiveProcessorCount(0xFFFF))   // (0xFFFF: every processor group)
+	}
+
 	// CreatePipe's handles, inheritable or not.
 	SECURITY_ATTRIBUTES :: struct {
 		length:         u32
@@ -1072,6 +1194,22 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			size:      usize,         // 0 with MEM_RELEASE
 			free_type: u32) -> i32
 
+		// A file mapped into memory: the mapping (sizes 0: the whole file;
+		// void, failing), then a view of it (size 0: all of it).
+		fun CreateFileMappingA(file: File_Id, attributes: ^byte, protect: u32, size_high: u32, size_low: u32, name: ^byte) -> File_Id
+		fun MapViewOfFile(mapping: File_Id, access: u32, offset_high: u32, offset_low: u32, size: usize) -> ^byte
+		fun UnmapViewOfFile(base: ^byte) -> i32
+
+		// Threads
+		fun CreateThread(attributes: ^byte, stack: usize, entry: fun(^byte) -> u32, start: ^byte, flags: u32, id: ^u32) -> File_Id
+		fun GetProcessHeap() -> ^byte
+		fun HeapAlloc(heap: ^byte, flags: u32, size: usize) -> ^byte
+		fun HeapFree(heap: ^byte, flags: u32, p: ^byte) -> i32
+		fun RtlMoveMemory(to: ^byte, from: ^byte, size: usize)
+		fun AcquireSRWLockExclusive(lock: ^Mutex)
+		fun ReleaseSRWLockExclusive(lock: ^Mutex)
+		fun GetActiveProcessorCount(group: u16) -> u32
+
 		// Processes and pipes
 		fun CreatePipe(read: ^File_Id, write: ^File_Id, attributes: ^SECURITY_ATTRIBUTES, size: u32) -> i32
 		fun SetHandleInformation(h: File_Id, mask: u32, flags: u32) -> i32
@@ -1248,6 +1386,30 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	file_delete :: fun(path: []utf8) -> err {
 		c := c_path(path)
 		if unlink(cstring(c)) != 0 do return Delete_Failed
+	}
+
+	// The file's bytes, mapped into memory: read where they lie, nothing
+	// copied. The system reads each page from the file the first time it's
+	// touched, so a big file costs only what's read of it. Read only. An empty
+	// file gives an empty slice. Give the slice back to file_unmap when done,
+	// the whole of it, not a piece.
+	file_map :: fun(path: []utf8) -> []byte, err {
+		id := file_open_read(path)?
+		defer file_close(id)   // (the mapping keeps the file open)
+		size := file_size(id)?
+		if size == 0 do return []
+		// (Failing, mmap gives (void*)-1, not void, and sets errno: that's
+		// what's tested. Succeeding, it leaves errno alone.)
+		__errno_location()^ = 0
+		view := mmap(void, usize(size), PROT_READ, MAP_PRIVATE, i32(id), 0)
+		if __errno_location()^ != 0 do return [], Map_Failed
+		return slice_from_ptr(view, size)
+	}
+
+	// Unmaps a file file_map mapped. An empty slice is ignored.
+	file_unmap :: fun(data: []byte) {
+		if data.len == 0 do return
+		_ = munmap(data.ptr, usize(data.len))
 	}
 
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Reads and writes it
@@ -1508,12 +1670,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return 1
 	}
 
-	// No-op for now. munmap requires (addr, length) and we don't track length
-	// at the vm_reserve boundary (Windows VirtualFree with MEM_RELEASE didn't
-	// either — the kernel remembered). Arenas live until process exit; the OS
-	// reclaims everything then. Revisit when arena dynamic resize / pool reuse
-	// needs real release.
-	vm_release :: fun(base: ^byte) {
+	// Release a reserved (and possibly committed) range: `base` exactly the
+	// pointer vm_reserve returned, size the size reserved.
+	vm_release :: fun(base: ^byte, size: i64) {
+		_ = munmap(base, usize(size))
 	}
 
 	// ---------------------------------------------------------------------------
@@ -1660,6 +1820,82 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// there too, through a buffer of its own: mixing the two can reorder.)
 	standard_output :: fun() -> File_Id {
 		return File_Id(1)
+	}
+
+	// ---------------------------------------------------------------------------
+	// Threads
+	// ---------------------------------------------------------------------------
+
+	// A thread thread_start started, to wait for with thread_wait. `id` is
+	// its pthread_t; `started` whether it's there to wait for.
+	Thread :: struct {
+		id:      u64
+		started: bool
+	}
+
+	// A lock one thread holds at a time: mutex_lock waits until it's free.
+	// Zero is unlocked: declare one and use it. (glibc's pthread_mutex_t,
+	// 40 bytes on x86_64; all zero is PTHREAD_MUTEX_INITIALIZER.)
+	Mutex :: struct {
+		state: [5!]i64 = {0, 0, 0, 0, 0}
+	}
+
+	// Runs work(data) on a new thread and returns at once. The thread puts
+	// its big values on an arena of its own, of the program's kind and
+	// arena_size bytes, made when it starts and released when it ends: what
+	// it makes for the program goes into data. Wait for every thread
+	// (thread_wait) before data goes, and before main returns: the program
+	// ends when main does, its threads with it.
+	thread_start :: fun(work: fun(^$T), data: ^T, arena_size: i64 = 16 << 20) -> Thread, err {
+		none := Thread{id = 0, started = false}
+		start: ^Thread_Start = malloc(usize(size_of(Thread_Start)))
+		if start == void do return none, Thread_Start_Failed
+		// (Copied in by the system: the escape check can't see a thread's
+		// life, so it would refuse data in memory that outlives this call.
+		// That data outlives the thread is the caller's: thread_wait.)
+		given := Thread_Start{work = work, data = data, arena_size = arena_size}
+		_ = memcpy(start, &given, usize(size_of(Thread_Start)))
+		t := none
+		if pthread_create(&t.id, void, thread_entry, start) != 0 {
+			free(start)
+			return none, Thread_Start_Failed
+		}
+		t.started = true
+		return t
+	}
+
+	// A new thread's first fun, as pthreads calls it: its start read and
+	// freed, its work run on an arena of its own, the arena released after.
+	// (Its result, 0: pthreads' void* result, nothing.)
+	thread_entry :: fun(start: ^Thread_Start) -> u64 {
+		s := start^
+		free(start)
+		base := thread_run(s.work, s.data, s.arena_size)
+		if base != void do vm_release(base, s.arena_size)
+		return 0
+	}
+
+	// Waits for the thread to end. A thread waited for, or one that never
+	// started, is ignored.
+	thread_wait :: fun(t: ^Thread) {
+		if not t.started do return
+		_ = pthread_join(t.id, void)
+		t.started = false
+	}
+
+	// Takes the lock, waiting while another thread holds it.
+	mutex_lock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_lock(m)
+	}
+
+	// Lets the lock go, for the next thread waiting for it.
+	mutex_unlock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_unlock(m)
+	}
+
+	// How many threads the machine runs at once: its logical processors.
+	cpu_count :: fun() -> i64 {
+		return sysconf(84)   // (_SC_NPROCESSORS_ONLN)
 	}
 
 	// poll's question about a file: are there bytes to read (POLLIN)?
@@ -1868,7 +2104,16 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		// A path whole, links followed, 0-ended: in room it makes (resolved
 		// void) — free it — or void failing.
 		fun realpath(path: cstring, resolved: ^byte) -> ^byte
+		fun malloc(size: usize) -> ^byte
 		fun free(p: ^byte)
+		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
+
+		// Threads (in libc since glibc 2.34)
+		fun pthread_create(thread: ^u64, attributes: ^byte, entry: fun(^byte) -> u64, start: ^byte) -> i32
+		fun pthread_join(thread: u64, result: ^byte) -> i32
+		fun pthread_mutex_lock(m: ^Mutex) -> i32
+		fun pthread_mutex_unlock(m: ^Mutex) -> i32
+		fun sysconf(name: i32) -> i64
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte

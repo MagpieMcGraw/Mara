@@ -1,0 +1,66 @@
+module file_map
+
+//@ expect-output: mapped 26 bytes: [abcdefghijklmnopqrstuvwxyz]
+//@ expect-output: m at 12: m
+//@ expect-output: a big file: 3000000 bytes, last byte 9, sum 13500000
+//@ expect-output: empty: 0 Ok
+//@ expect-output: missing: 0 File_Error.Open_Failed
+
+// file_map maps a file's bytes into memory, read where they lie (the
+// system reads a page when it's first touched); file_unmap gives them back.
+// An empty file maps to an empty slice; a missing one fails to open.
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+fresh :: fun(path: []utf8, data: []byte) -> err {
+	id := file_open_write(path)?
+	defer file_close(id)
+	_ = file_write(id, data)?
+}
+
+main :: fun() {
+	letters : [26]byte
+	for k in 0:26 do &letters + u8(97 + k)
+	_ = fresh("file_map_letters.txt", letters)
+	data, e := file_map("file_map_letters.txt")
+	if e {
+		print("map failed:", e)
+		return
+	}
+	text : str64
+	for b in data do &text + utf8(b)
+	print("mapped % bytes: [%]", data.len, text)
+	print("m at 12:", utf8(data[12]))
+	file_unmap(data)
+
+	// More than a page or two: 3,000,000 bytes, each its index mod 10.
+	big : [3000000]byte
+	for k in 0:3000000 do &big + u8(k % 10)
+	_ = fresh("file_map_big.bin", big)
+	mapped, e2 := file_map("file_map_big.bin")
+	if e2 {
+		print("map failed:", e2)
+		return
+	}
+	sum := 0
+	for b in mapped do sum += i64(b)
+	print("a big file: % bytes, last byte %, sum %", mapped.len, mapped[mapped.len - 1], sum)
+	file_unmap(mapped)
+
+	_ = fresh("file_map_empty.txt", [])
+	empty, e3 := file_map("file_map_empty.txt")
+	print("empty:", empty.len, e3)
+	file_unmap(empty)
+
+	_ = file_delete("file_map_missing.txt")
+	missing, e4 := file_map("file_map_missing.txt")
+	print("missing:", missing.len, e4)
+
+	_ = file_delete("file_map_letters.txt")
+	_ = file_delete("file_map_big.bin")
+	_ = file_delete("file_map_empty.txt")
+}

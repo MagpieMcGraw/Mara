@@ -32,6 +32,10 @@ LLVM_Type_Rule :: enum {
     Arena_Swap,                // `@llvm.mara_arena_swap.ptr` (mara.memory's arena_swap): a pointer in, a
                                // pointer out — the arena slot set, the one it held given back; no LLVM
                                // intrinsic, a load and a store of @__mara_arena (`with`'s).
+    Thread_Run,                // `@llvm.mara_thread_run.ptr` (mara.os's thread_run): a fun, the pointer it's
+                               // given, an arena's size in; a pointer out — on a new thread, an arena of the
+                               // program's kind made, the slot set to it, the fun run, the arena's memory
+                               // given back to release. No LLVM intrinsic: those calls, inline.
 }
 
 LLVM_Intrinsic_Spec :: struct {
@@ -62,6 +66,7 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"fshr",   3, .Match_Any_Int_Suffix},
     {"bitcast", 1, .Bit_Cast},
     {"mara_arena_swap", 1, .Arena_Swap},
+    {"mara_thread_run", 3, .Thread_Run},
 }
 
 find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
@@ -180,6 +185,20 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
         return true
     }
 
+    if spec.rule == .Thread_Run {
+        // (A fun of one pointer, a pointer, a size in; a pointer out.)
+        work, fun_in := unwrap_alias(ft.params[0].type_).(^Type_Scope)
+        _, ptr_in := unwrap_alias(ft.params[1].type_).(^Type_Ptr)
+        _, size_in := unwrap_alias(ft.params[2].type_).(Type_Numeric)
+        ptr_out := false
+        if len(ft.return_types) == 1 { _, ptr_out = unwrap_alias(fn_primary_return(ft)).(^Type_Ptr) }
+        if !fun_in || work.kind != .Fun || len(work.params) != 1 || !ptr_in || !size_in || !ptr_out {
+            check_error(c, span, "intrinsic `@%s` takes a fun of one pointer, a pointer and a size, and returns a pointer", name)
+            return false
+        }
+        return true
+    }
+
     expected_type, suffix_ok := type_from_llvm_suffix(suffix)
     if !suffix_ok {
         check_error(c, span, "intrinsic `@%s` has unrecognised type suffix `%s`", name, suffix)
@@ -244,7 +263,7 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
             return false
         }
         return true
-    case .Arena_Swap:
+    case .Arena_Swap, .Thread_Run:
         return true   // (checked above, before its suffix)
     case .Bit_Cast:
         // f32/f64: the param that float, the return an integer as wide; iN:

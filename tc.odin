@@ -1249,6 +1249,10 @@ Checked_Program :: struct {
 
     errors:         int,
 
+    // Whether the program starts threads (mara.os's thread_start, called):
+    // the arena slot each thread's own then (program_starts_threads).
+    threads:        bool,
+
     // Functions — source, foreign, and intrinsic all live here, distinguished
     // by their origin. Codegen iterates this map and dispatches on the
     // origin variant when emitting bodies, declares, and the dynamic loader.

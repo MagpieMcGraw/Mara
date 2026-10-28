@@ -3033,6 +3033,9 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.value[op] = was
         return true
     }
+    if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "mara_thread_run" {
+        return llvm_thread_run(e, op, ops, callee)
+    }
     if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "bitcast" {
         // (Not a call: LLVM's `bitcast` — the same bits, another type.)
         p := fn_param(callee, 0)
@@ -3346,10 +3349,15 @@ llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
 llvm_same_type :: proc(a, b: Type) -> bool {
     if a == nil || b == nil || is_infer(a) || is_infer(b) { return false }
     // Pointers lower alike; what they point to must match too (a byte
-    // address taken as a pointer to T is a view of bytes: later).
+    // address taken as a pointer to T is a view of bytes: later) — but a
+    // ^byte, any memory, takes any pointer, as the checker lets it.
     pa, a_ptr := distinct_base(a).(^Type_Ptr)
     pb, b_ptr := distinct_base(b).(^Type_Ptr)
-    if a_ptr && b_ptr { return llvm_same_type(pa.elem, pb.elem) }
+    if a_ptr && b_ptr {
+        #partial switch _ in pa.elem { case Type_Byte, Type_Any: return true }
+        #partial switch _ in pb.elem { case Type_Byte, Type_Any: return true }
+        return llvm_same_type(pa.elem, pb.elem)
+    }
     return llvm_type_from_checker(a) == llvm_type_from_checker(b)
 }
 
@@ -3379,4 +3387,35 @@ llvm_unsigned :: proc(t: Type) -> bool {
     case Type_Byte, Type_Utf8, Type_Bool: return true
     }
     return false
+}
+
+// mara.os's thread_run, on a new thread: an arena of the program's kind made
+// in the thread's first frame (the size given), the thread's arena slot set
+// to it, the fun called with its pointer, and the arena's memory — its
+// base's — the value, for the caller to release. A program with no arena
+// runs the fun on none: void.
+@(private="file")
+llvm_thread_run :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope) -> bool {
+    g := e.g
+    work := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    data := llvm_operand(e, ops[1], fn_param(callee, 1).type_) or_return
+    size := llvm_operand(e, ops[2], fn_param(callee, 2).type_) or_return
+    ty, has := arena_ir_type(g.checked)
+    if !has || !g.context_enabled {
+        ir_call(g, {}, IR_VOID, work, {IR_PTR, data, {}})
+        e.value[op] = IR_NULL
+        return true
+    }
+    arena := fresh_tmp(g)
+    emit_alloca(g, arena, ty)
+    ir_call(g, {}, IR_VOID, mara_fn(g, g.arena_new_name), {IR_I64, size, {}}, {IR_PTR, arena, {}})
+    ir_store(g, IR_PTR, arena, ir_global("__mara_arena"))
+    ir_call(g, {}, IR_VOID, work, {IR_PTR, data, {}})
+    base_at := struct_field_index(&g.checked.table.scope_allocator_type.sd, "base")
+    if base_at < 0 { e.note = "the arena's base"; return false }
+    at, base := fresh_tmp(g), fresh_tmp(g)
+    ir_gep_inbounds(g, at, ty, arena, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(base_at), {}}, {IR_I32, ir_int(SLICE.ptr), {}})
+    ir_load(g, base, IR_PTR, at)
+    e.value[op] = base
+    return true
 }
