@@ -1,0 +1,119 @@
+// How to talk to programs on other machines: sockets, UDP and TCP.
+//
+// An address says where: a machine's IP address and a port on it, a number
+// from 1 to 65535 that picks one program on that machine. net_lookup(name,
+// port) turns a name like "example.com", or an address written out like
+// "192.168.1.20", into a Net_Address. net_text writes one back as text.
+//
+// UDP sends packets. Each packet arrives whole or not at all, and packets
+// can arrive out of order. Nothing is resent, so nothing waits for a lost
+// one. That suits a game's moment-to-moment state: when a position is lost,
+// a newer one is already on its way. udp_open makes a socket on a port,
+// udp_send sends one packet to an address, and udp_receive takes the next
+// packet that has arrived, along with its sender's address. Keep packets
+// under about 1200 bytes, so they cross any network whole.
+//
+// TCP is a connection: a stream of bytes each way, arriving all and in
+// order. A lost piece is sent again, and what came after it waits. That
+// suits what must all arrive: joining a game, chat, a file. One side
+// listens on a port (tcp_listen) and takes each connection that comes
+// (tcp_accept); the other connects to it (tcp_connect). Then both use
+// tcp_send and tcp_receive. TCP doesn't keep the sizes of the sends: two
+// sends can arrive as one receive, or one as two. So say how long each
+// message is before it.
+//
+// Nothing here waits for something to arrive. udp_receive, tcp_accept and
+// tcp_receive each answer at once, so a game can call them once a frame.
+// tcp_send and tcp_connect do wait: tcp_send while the system has no room
+// for more, tcp_connect until the other side answers (5 seconds at most,
+// unless given another wait).
+//
+// Where to listen: net_any(port) listens on every address this machine
+// has, so other machines can reach it. Windows asks the user, the first
+// time, whether to let the program through its firewall. net_local(port)
+// listens on 127.0.0.1, which only programs on this machine reach. Port 0
+// lets the system pick a free port; the socket's `port` field says which.
+//
+// This example runs both sides on this machine, one after the other.
+module network
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	// UDP: one socket for the server, one for the client.
+	server, e := udp_open(net_local(0))
+	if e {
+		print("couldn't open a socket:", e)
+		return
+	}
+	defer udp_close(&server)
+	client, e2 := udp_open(net_local(0))
+	if e2 {
+		print("couldn't open a socket:", e2)
+		return
+	}
+	defer udp_close(&client)
+
+	hello : [32]byte
+	&hello + "hello"
+	_ = udp_send(&client, net_local(server.port), hello)
+
+	// Look for a packet each millisecond, as a game would each frame.
+	packet : [1200]byte
+	from := Net_Address()
+	for _ in 0:1000 {
+		came, re := udp_receive(&server, &packet, &from)
+		if re {
+			print("couldn't receive:", re)
+			return
+		}
+		if came {
+			print("the server got % bytes from %", packet.len, net_text(from))
+			break
+		}
+		sleep_ms(1)
+	}
+
+	// TCP: a listener, a connection to it, and the connection it accepts.
+	listener, le := tcp_listen(net_local(0))
+	if le {
+		print("couldn't listen:", le)
+		return
+	}
+	defer tcp_listen_stop(&listener)
+	conn, ce := tcp_connect(net_local(listener.port))
+	if ce {
+		print("couldn't connect:", ce)
+		return
+	}
+	defer tcp_close(&conn)
+	accepted := Tcp_Connection{id = NO_SOCKET, v4 = false, peer = net_any(0)}
+	for _ in 0:1000 {
+		took, ae := tcp_accept(&listener, &accepted)
+		if ae {
+			print("couldn't accept:", ae)
+			return
+		}
+		if took do break
+		sleep_ms(1)
+	}
+	defer tcp_close(&accepted)
+
+	message : [32]byte
+	&message + "a message, all of it"
+	_ = tcp_send(&conn, message)
+	room : [1200]byte
+	got := 0
+	for _ in 0:1000 {
+		open, te := tcp_receive(&accepted, &room)
+		if te or not open do break
+		got += room.len
+		if got == message.len do break
+		sleep_ms(1)
+	}
+	print("the connection carried % bytes", got)
+}

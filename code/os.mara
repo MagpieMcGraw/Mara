@@ -57,6 +57,17 @@ Pipe_Error :: error {
     Connect_Failed   // nobody listens on the name
 }
 
+// What talking to other machines (sockets) can fail with.
+Net_Error :: error {
+    Lookup_Failed      // no address found for the name
+    Socket_Failed      // the system made no socket, or couldn't set it up
+    Port_Taken         // another socket has the port
+    Unreachable        // nobody answered there: no program listens, no such machine, or the wait ran out
+    Send_Failed        // the connection has ended, or the packet can't go
+    Receive_Failed
+    Packet_Too_Large   // a packet bigger than the room given for it: it's lost
+}
+
 // A path, as current_dir and exe_path give one back: up to 512
 // characters (Windows' paths here end at 260), its room past them there to
 // add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
@@ -230,6 +241,188 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 	#if #web {
 		return slice_from_ptr(malloc(usize(cap)), cap)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sockets: talking to other machines
+// ---------------------------------------------------------------------------
+
+// Where on the network: a machine's IP address and a port on it. An IPv4
+// address is kept the way IPv6 writes one: ::ffff:a.b.c.d. net_lookup finds
+// one by name, net_text writes one.
+Net_Address :: struct {
+	ip:    [16!]u8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	port:  u16 = 0
+	scope: u32 = 0   // (an IPv6 link-local address's network: which of the machine's)
+}
+
+// Every address of this machine, port `port`: to listen at (udp_open,
+// tcp_listen) for other machines to reach, by IPv6 or IPv4.
+net_any :: fun(port: u16) -> Net_Address {
+	a := Net_Address()
+	a.port = port
+	return a
+}
+
+// This machine, port `port`: 127.0.0.1. Listened at, only programs on this
+// machine reach it.
+net_local :: fun(port: u16) -> Net_Address {
+	a := net_any(port)
+	a.ip[10] = 0xFF
+	a.ip[11] = 0xFF
+	a.ip[12] = 127
+	a.ip[15] = 1
+	return a
+}
+
+// Whether the address is an IPv4 one (::ffff:a.b.c.d).
+net_is_ip4 :: fun(a: Net_Address) -> bool {
+	for k in 0:10 {
+		if a.ip[k] != 0 do return false
+	}
+	return a.ip[10] == 0xFF and a.ip[11] == 0xFF
+}
+
+// Whether the two are the same address and port.
+net_same :: fun(a: Net_Address, b: Net_Address) -> bool {
+	for k in 0:16 {
+		if a.ip[k] != b.ip[k] do return false
+	}
+	return a.port == b.port and a.scope == b.scope
+}
+
+// The address as text: "192.168.1.20:7777", or for IPv6
+// "[2001:db8::1]:7777".
+net_text :: fun(a: Net_Address) -> str64 {
+	t : str64
+	if net_is_ip4(a) {
+		for k in 12:16 {
+			if k > 12 do &t + "."
+			&t + int_text(i64(a.ip[k]))
+		}
+		&t + ":"
+		&t + int_text(i64(a.port))
+		return t
+	}
+	// (Eight groups of 16 bits in hex, the longest run of 0 groups — two or
+	// more — written as "::".)
+	best: i64 = -1
+	best_len: i64 = 0
+	k: i64 = 0
+	for k < 8 {
+		if net_group(a, k) != 0 {
+			k += 1
+			continue
+		}
+		run := k
+		for run < 8 and net_group(a, run) == 0 do run += 1
+		if run - k >= 2 and run - k > best_len {
+			best = k
+			best_len = run - k
+		}
+		k = run
+	}
+	&t + "["
+	k = 0
+	for k < 8 {
+		if k == best {
+			&t + "::"
+			k += best_len
+			continue
+		}
+		if k > 0 and k != best + best_len do &t + ":"
+		g := net_group(a, k)
+		shift: u32 = 16
+		written := false
+		for _ in 0:4 {
+			shift -= 4
+			d := (g >> shift) & 0xF
+			if d != 0 or written or shift == 0 {
+				if d < 10 do &t + utf8(48 + d)
+				if d >= 10 do &t + utf8(87 + d)
+				written = true
+			}
+		}
+		k += 1
+	}
+	&t + "]:"
+	&t + int_text(i64(a.port))
+	return t
+}
+
+// The address's 16-bit group k of 8, as IPv6 writes them.
+net_group :: fun(a: Net_Address, k: i64) -> u32 {
+	return (u32(a.ip[2 * k]) << 8) | u32(a.ip[2 * k + 1])
+}
+
+// A socket address as the system takes one: an IPv4 one (16 bytes: the
+// family, the port, the 4 address bytes, 8 zeros) or an IPv6 one (28 bytes:
+// the family, the port, 4 bytes of flow, the 16 address bytes, the scope).
+// The port is big end first, as the network has it.
+Sockaddr :: struct {
+	family: u16 = 0
+	port:   u16 = 0
+	rest:   [24!]u8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+}
+
+#if #native {
+	// A UDP socket (udp_open): packets sent from it and received at it.
+	// `port` is the port it has.
+	Udp_Socket :: struct {
+		id:   File_Id
+		v4:   bool   // (IPv4 only; otherwise IPv6, taking IPv4 too)
+		port: u16
+	}
+
+	// A port a program listens on for TCP connections (tcp_listen). `port`
+	// is the port it has.
+	Tcp_Listener :: struct {
+		id:   File_Id
+		v4:   bool
+		port: u16
+	}
+
+	// A TCP connection (tcp_connect, tcp_accept): bytes both ways, each
+	// side's arriving all and in order. `peer` is the other side's address.
+	Tcp_Connection :: struct {
+		id:   File_Id
+		v4:   bool
+		peer: Net_Address
+	}
+
+	// No socket: what a socket's id is once closed, or when it failed to
+	// open.
+	NO_SOCKET :: File_Id(-1)
+
+	// The address as the system takes it, into `at`, IPv4 (v4) or IPv6:
+	// its size.
+	sockaddr_of :: fun(a: Net_Address, v4: bool, at: ^Sockaddr) -> u32 {
+		at.port = (a.port >> 8) | ((a.port & 0xFF) << 8)
+		if v4 {
+			at.family = AF_INET
+			for k in 0:4 do at.rest[k] = a.ip[12 + k]
+			return 16
+		}
+		at.family = AF_INET6
+		for k in 0:16 do at.rest[4 + k] = a.ip[k]
+		for k in 0:4 do at.rest[20 + k] = u8((a.scope >> u32(8 * k)) & 0xFF)
+		return 28
+	}
+
+	// The address the system gave, in `at`.
+	address_of :: fun(at: ^Sockaddr) -> Net_Address {
+		a := Net_Address()
+		a.port = (at.port >> 8) | ((at.port & 0xFF) << 8)
+		if at.family == AF_INET {
+			a.ip[10] = 0xFF
+			a.ip[11] = 0xFF
+			for k in 0:4 do a.ip[12 + k] = at.rest[k]
+			return a
+		}
+		for k in 0:16 do a.ip[k] = at.rest[4 + k]
+		for k in 0:4 do a.scope = a.scope | (u32(at.rest[20 + k]) << u32(8 * k))
+		return a
 	}
 }
 
@@ -1115,6 +1308,375 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	ERROR_PIPE_LISTENING          :: 536
 
 	// ---------------------------------------------------------------------------
+	// Sockets: talking to other machines (Winsock)
+	// ---------------------------------------------------------------------------
+
+	// The address of a machine by its name — "example.com", or an IP
+	// address's text, "192.168.1.20" or "::1" — and the port given. A name
+	// is asked of the network's name servers: it may take a second or more.
+	// Fails with Lookup_Failed when the name has no address.
+	net_lookup :: fun(name: []utf8, port: u16) -> Net_Address, err {
+		a := net_any(port)
+		if not net_start() do return a, Socket_Failed
+		if name.len > 255 do return a, Lookup_Failed
+		text : [256]utf8
+		&text + name
+		hints := Addrinfo_Hints()
+		hints.kind = SOCK_DGRAM   // (each address once, not once a kind)
+		found: ^Addrinfo = void
+		if getaddrinfo(cstring(text), void, &hints, &found) != 0 do return a, Lookup_Failed
+		defer freeaddrinfo(found)
+		// (The first IPv4 or IPv6 one: the system puts the one to try first.)
+		each := found
+		for each != void {
+			if each.family == AF_INET or each.family == AF_INET6 {
+				at := Sockaddr()
+				size := each.size
+				if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
+				RtlMoveMemory(&at, each.at, size)
+				a = address_of(&at)
+				a.port = port
+				return a
+			}
+			each = each.next
+		}
+		return a, Lookup_Failed
+	}
+
+	// A UDP socket at `at` — net_any(port) for every address of this
+	// machine, net_local(port) for this machine only — to send packets from
+	// and receive packets at. Port 0: one the system picks, the socket's
+	// `port` saying which. Fails with Port_Taken when another socket has
+	// the port.
+	udp_open :: fun(at: Net_Address) -> Udp_Socket, err {
+		s := Udp_Socket{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_DGRAM, &s.v4, &s.port)
+		if e do return s, e
+		s.id = id
+		return s
+	}
+
+	// Sends data, one packet, to `to`. It may never arrive, or arrive after
+	// one sent later: UDP doesn't check. (Nor does it here: a packet the
+	// system has no room for at the moment is lost too.) Packets up to
+	// about 1200 bytes go whole across any network.
+	udp_send :: fun(s: ^Udp_Socket, to: Net_Address, data: []byte) -> err {
+		if s.v4 and not net_is_ip4(to) do return Unreachable   // (an IPv4 socket reaches no IPv6 address)
+		at := Sockaddr()
+		size := sockaddr_of(to, s.v4, &at)
+		if sendto(s.id, data.ptr, i32(data.len), 0, &at, i32(size)) >= 0 do return
+		if WSAGetLastError() == WSAEWOULDBLOCK do return
+		return Send_Failed
+	}
+
+	// Takes the next packet that has arrived, without waiting: true, the
+	// packet in data (data.len its size) and its sender in `from`; false
+	// when none has. data's room is the biggest packet it takes: a bigger
+	// one is lost, failing with Packet_Too_Large.
+	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return false, Packet_Too_Large
+		for true {
+			at := Sockaddr()
+			size: i32 = i32(size_of(Sockaddr))
+			n := recvfrom(s.id, &data[0], i32(data.cap), 0, &at, &size)
+			if n >= 0 {
+				data.len = i64(n)
+				from^ = address_of(&at)
+				return true
+			}
+			e := WSAGetLastError()
+			if e == WSAEWOULDBLOCK do return false
+			if e == WSAEMSGSIZE do return false, Packet_Too_Large
+			// (Word from the network that an earlier packet found nobody
+			// there: no packet. Windows tells it here; take the next.)
+			if e != WSAECONNRESET and e != WSAENETRESET do return false, Receive_Failed
+		}
+		return false
+	}
+
+	// Closes the socket.
+	udp_close :: fun(s: ^Udp_Socket) {
+		if s.id == NO_SOCKET do return
+		_ = closesocket(s.id)
+		s.id = NO_SOCKET
+	}
+
+	// Listens at `at` — net_any(port) or net_local(port), as udp_open —
+	// for TCP connections, tcp_accept taking each. Port 0: one the system
+	// picks, the listener's `port` saying which. Fails with Port_Taken
+	// when another socket has the port.
+	tcp_listen :: fun(at: Net_Address) -> Tcp_Listener, err {
+		l := Tcp_Listener{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_STREAM, &l.v4, &l.port)
+		if e do return l, e
+		l.id = id
+		return l
+	}
+
+	// The next connection to the listener, when one has come: true, and
+	// `c` it. False when none has: it doesn't wait, so a game can look each
+	// frame.
+	tcp_accept :: fun(l: ^Tcp_Listener, c: ^Tcp_Connection) -> bool, err {
+		at := Sockaddr()
+		size: i32 = i32(size_of(Sockaddr))
+		id := accept(l.id, &at, &size)
+		if id == NO_SOCKET {
+			e := WSAGetLastError()
+			if e == WSAEWOULDBLOCK or e == WSAECONNRESET do return false   // (none, or one that came and went)
+			return false, Socket_Failed
+		}
+		// (Not waiting, as the listener; not handed to programs this one
+		// starts.)
+		on: u32 = 1
+		_ = ioctlsocket(id, FIONBIO, &on)
+		_ = SetHandleInformation(id, HANDLE_FLAG_INHERIT, 0)
+		net_no_delay(id)
+		c.id = id
+		c.v4 = l.v4
+		c.peer = address_of(&at)
+		return true
+	}
+
+	// Stops listening: the port free for another. Connections taken stay
+	// open until closed.
+	tcp_listen_stop :: fun(l: ^Tcp_Listener) {
+		if l.id == NO_SOCKET do return
+		_ = closesocket(l.id)
+		l.id = NO_SOCKET
+	}
+
+	// Connects to a program listening at `to` (tcp_listen), waiting up to
+	// wait_ms milliseconds for it to answer. Fails with Unreachable when
+	// nobody answered.
+	tcp_connect :: fun(to: Net_Address, wait_ms: i64 = 5000) -> Tcp_Connection, err {
+		c := Tcp_Connection{id = NO_SOCKET, v4 = net_is_ip4(to), peer = to}
+		if not net_start() do return c, Socket_Failed
+		id := net_socket(c.v4, SOCK_STREAM)
+		if id == NO_SOCKET do return c, Socket_Failed
+		at := Sockaddr()
+		size := sockaddr_of(to, c.v4, &at)
+		if connect(id, &at, i32(size)) != 0 {
+			// (Under way: wait for it.)
+			if WSAGetLastError() != WSAEWOULDBLOCK or not net_connected(id, wait_ms) {
+				_ = closesocket(id)
+				return c, Unreachable
+			}
+		}
+		net_no_delay(id)
+		c.id = id
+		return c
+	}
+
+	// Sends all of data on the connection, waiting while the system has no
+	// room for more. Fails with Send_Failed once the connection has ended.
+	tcp_send :: fun(c: ^Tcp_Connection, data: []byte) -> err {
+		rest := data
+		for rest.len > 0 {
+			want := rest.len
+			if want > 1 << 30 do want = 1 << 30
+			n := send(c.id, rest.ptr, i32(want), 0)
+			if n > 0 {
+				rest = rest[i64(n):]
+				continue
+			}
+			if WSAGetLastError() != WSAEWOULDBLOCK do return Send_Failed
+			if net_wait(c.id, true, -1) < 0 do return Send_Failed
+		}
+	}
+
+	// Takes what has arrived on the connection, without waiting for more:
+	// data.len becomes the number of bytes, 0 when none has. Returns false
+	// once the connection has ended: the other side closed it (and all it
+	// sent is read), or it broke.
+	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return true
+		want := data.cap
+		if want > 1 << 30 do want = 1 << 30
+		n := recv(c.id, &data[0], i32(want), 0)
+		if n > 0 {
+			data.len = i64(n)
+			return true
+		}
+		if n == 0 do return false
+		e := WSAGetLastError()
+		if e == WSAEWOULDBLOCK do return true
+		if e == WSAECONNRESET or e == WSAECONNABORTED do return false
+		return false, Receive_Failed
+	}
+
+	// Closes the connection: the other side's tcp_receive returns false once
+	// it has read all this side sent.
+	tcp_close :: fun(c: ^Tcp_Connection) {
+		if c.id == NO_SOCKET do return
+		_ = closesocket(c.id)
+		c.id = NO_SOCKET
+	}
+
+	// Winsock started, as each socket fun needs it first: true. (Counted,
+	// so started again by each; the program's end stops it.)
+	net_start :: fun() -> bool {
+		data : [512!]byte   // (WSADATA, 408 bytes)
+		return WSAStartup(0x0202, &data) == 0
+	}
+
+	// A new socket, IPv4 (v4) or IPv6, TCP (SOCK_STREAM) or UDP
+	// (SOCK_DGRAM): not waiting — its reads and writes answer at once — and
+	// not handed to programs this one starts. NO_SOCKET failing.
+	net_socket :: fun(v4: bool, kind: i32) -> File_Id {
+		family: i32 = AF_INET6
+		if v4 do family = AF_INET
+		protocol: i32 = IPPROTO_TCP
+		if kind == SOCK_DGRAM do protocol = IPPROTO_UDP
+		id := WSASocketA(family, kind, protocol, void, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT)
+		if id == NO_SOCKET do return NO_SOCKET
+		on: u32 = 1
+		if ioctlsocket(id, FIONBIO, &on) != 0 {
+			_ = closesocket(id)
+			return NO_SOCKET
+		}
+		return id
+	}
+
+	// A socket of the kind given at `at`, listening there if TCP; whether
+	// it's IPv4 into v4, the port it has into port. At net_any an IPv6
+	// socket takes IPv4 too — or, on a machine without IPv6, an IPv4 one
+	// takes it all.
+	net_bind :: fun(at: Net_Address, kind: i32, v4: ^bool, port: ^u16) -> File_Id, err {
+		if not net_start() do return NO_SOCKET, Socket_Failed
+		v4^ = net_is_ip4(at)
+		id := net_socket(v4^, kind)
+		if id == NO_SOCKET and not v4^ and net_is_any(at) {
+			v4^ = true
+			id = net_socket(true, kind)
+		}
+		if id == NO_SOCKET do return NO_SOCKET, Socket_Failed
+		if not v4^ {
+			off: u32 = 0   // (IPv4 too, as ::ffff:a.b.c.d)
+			_ = setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4)
+		}
+		sa := Sockaddr()
+		size := sockaddr_of(at, v4^, &sa)
+		if bind(id, &sa, i32(size)) != 0 {
+			taken := WSAGetLastError() == WSAEADDRINUSE
+			_ = closesocket(id)
+			if taken do return NO_SOCKET, Port_Taken
+			return NO_SOCKET, Socket_Failed
+		}
+		if kind == SOCK_STREAM and listen(id, SOMAXCONN) != 0 {
+			_ = closesocket(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		mine := Sockaddr()
+		mine_size: i32 = i32(size_of(Sockaddr))
+		if getsockname(id, &mine, &mine_size) != 0 {
+			_ = closesocket(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		port^ = address_of(&mine).port
+		return id
+	}
+
+	// Waits up to `ms` milliseconds for the connect under way: true once
+	// connected.
+	net_connected :: fun(id: File_Id, ms: i64) -> bool {
+		if net_wait(id, true, ms) <= 0 do return false
+		problem: i32 = 0
+		size: i32 = 4
+		if getsockopt(id, SOL_SOCKET, SO_ERROR, &problem, &size) != 0 do return false
+		return problem == 0
+	}
+
+	// Waits until the socket can be written to (`writing`) or read from, or
+	// has failed, at most `ms` milliseconds — -1, as long as it takes: above
+	// 0 then, 0 when the time ran out, below 0 failing.
+	net_wait :: fun(id: File_Id, writing: bool, ms: i64) -> i32 {
+		ready := Fd_Set{count = 1, socket = id}
+		failed := Fd_Set{count = 1, socket = id}   // (a connect that failed shows here)
+		if ms < 0 {
+			if writing do return select(0, void, &ready, &failed, void)
+			return select(0, &ready, void, &failed, void)
+		}
+		time := Timeval{seconds = i32(ms / 1000), microseconds = i32(ms % 1000 * 1000)}
+		if writing do return select(0, void, &ready, &failed, &time)
+		return select(0, &ready, void, &failed, &time)
+	}
+
+	// Sends what's written at once, not holding small writes back to join
+	// them (Nagle's wait): a game's messages are small, and late is worse.
+	net_no_delay :: fun(id: File_Id) {
+		on: u32 = 1
+		_ = setsockopt(id, IPPROTO_TCP, TCP_NODELAY, &on, 4)
+	}
+
+	// Whether the address is net_any's: every address of this machine.
+	net_is_any :: fun(a: Net_Address) -> bool {
+		for k in 0:16 {
+			if a.ip[k] != 0 do return false
+		}
+		return true
+	}
+
+	// getaddrinfo's answers, a list: each an address the name has. (hints:
+	// which are wanted.)
+	Addrinfo :: struct {
+		flags:    i32
+		family:   i32
+		kind:     i32
+		protocol: i32
+		size:     usize      // at's
+		name:     ^byte      // (the canonical name, asked for)
+		at:       ^Sockaddr
+		next:     ^Addrinfo
+	}
+
+	// getaddrinfo's question, Addrinfo's layout: which answers are wanted,
+	// its pointers 0.
+	Addrinfo_Hints :: struct {
+		flags:    i32 = 0
+		family:   i32 = 0   // (0: any)
+		kind:     i32 = 0
+		protocol: i32 = 0
+		size:     usize = 0
+		pointers: [3!]u64 = {0, 0, 0}
+	}
+
+	// select's sockets, room for one: how many, then the sockets.
+	Fd_Set :: struct {
+		count:  u32
+		socket: File_Id
+	}
+
+	// select's longest wait.
+	Timeval :: struct {
+		seconds:      i32
+		microseconds: i32
+	}
+
+	AF_INET                    :: 2
+	AF_INET6                   :: 23
+	SOCK_STREAM                :: 1
+	SOCK_DGRAM                 :: 2
+	IPPROTO_TCP                :: 6
+	IPPROTO_UDP                :: 17
+	IPPROTO_IPV6               :: 41
+	IPV6_V6ONLY                :: 27
+	TCP_NODELAY                :: 1
+	SOL_SOCKET                 :: 0xFFFF
+	SO_ERROR                   :: 0x1007
+	SOMAXCONN                  :: 0x7FFFFFFF   // (the longest queue the system allows)
+	FIONBIO                    :: 0x8004667E   // (ioctlsocket: not waiting)
+	WSA_FLAG_OVERLAPPED        :: 0x01
+	WSA_FLAG_NO_HANDLE_INHERIT :: 0x80
+	WSAEWOULDBLOCK             :: 10035
+	WSAEMSGSIZE                :: 10040
+	WSAEADDRINUSE              :: 10048
+	WSAENETRESET               :: 10052
+	WSAECONNABORTED            :: 10053
+	WSAECONNRESET              :: 10054
+
+	// ---------------------------------------------------------------------------
 	// kernel32 bindings
 	// ---------------------------------------------------------------------------
 	// Static-linked: clang resolves the symbols against kernel32.lib at link
@@ -1253,6 +1815,31 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun DisconnectNamedPipe(pipe: File_Id) -> i32
 		fun SetNamedPipeHandleState(pipe: File_Id, mode: ^u32, max_collection: ^u32, timeout: ^u32) -> i32
 		fun WaitNamedPipeA(name: cstring, timeout: u32) -> i32
+	}
+
+	// Winsock (ws2_32.dll). A SOCKET is pointer-sized, bound as File_Id:
+	// INVALID_SOCKET is NO_SOCKET, -1. Sizes are i32 (int); a fun failing
+	// returns -1 (SOCKET_ERROR), WSAGetLastError saying why.
+	foreign static_lib "ws2_32" {
+		fun WSAStartup(version: u16, data: ^byte) -> i32
+		fun WSAGetLastError() -> i32
+		fun WSASocketA(family: i32, kind: i32, protocol: i32, info: ^byte, group: u32, flags: u32) -> File_Id
+		fun closesocket(s: File_Id) -> i32
+		fun ioctlsocket(s: File_Id, command: u32, arg: ^u32) -> i32
+		fun setsockopt(s: File_Id, level: i32, name: i32, value: ^byte, size: i32) -> i32
+		fun getsockopt(s: File_Id, level: i32, name: i32, value: ^byte, size: ^i32) -> i32
+		fun bind(s: File_Id, at: ^Sockaddr, size: i32) -> i32
+		fun listen(s: File_Id, backlog: i32) -> i32
+		fun accept(s: File_Id, at: ^Sockaddr, size: ^i32) -> File_Id
+		fun connect(s: File_Id, at: ^Sockaddr, size: i32) -> i32
+		fun getsockname(s: File_Id, at: ^Sockaddr, size: ^i32) -> i32
+		fun send(s: File_Id, data: ^byte, size: i32, flags: i32) -> i32
+		fun recv(s: File_Id, data: ^byte, size: i32, flags: i32) -> i32
+		fun sendto(s: File_Id, data: ^byte, size: i32, flags: i32, to: ^Sockaddr, to_size: i32) -> i32
+		fun recvfrom(s: File_Id, data: ^byte, size: i32, flags: i32, from: ^Sockaddr, from_size: ^i32) -> i32
+		fun select(ignored: i32, read: ^Fd_Set, write: ^Fd_Set, failed: ^Fd_Set, wait: ^Timeval) -> i32
+		fun getaddrinfo(name: cstring, service: ^byte, hints: ^Addrinfo_Hints, found: ^^Addrinfo) -> i32
+		fun freeaddrinfo(found: ^Addrinfo)
 	}
 }
 
@@ -2070,6 +2657,339 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	CLOCK_MONOTONIC  :: 1   // (clock_gettime: a clock that only goes forward)
 
 	// ---------------------------------------------------------------------------
+	// Sockets: talking to other machines
+	// ---------------------------------------------------------------------------
+
+	// The address of a machine by its name — "example.com", or an IP
+	// address's text, "192.168.1.20" or "::1" — and the port given. A name
+	// is asked of the network's name servers: it may take a second or more.
+	// Fails with Lookup_Failed when the name has no address.
+	net_lookup :: fun(name: []utf8, port: u16) -> Net_Address, err {
+		a := net_any(port)
+		if name.len > 255 do return a, Lookup_Failed
+		text : [256]utf8
+		&text + name
+		hints := Addrinfo_Hints()
+		hints.kind = SOCK_DGRAM   // (each address once, not once a kind)
+		found: ^Addrinfo = void
+		if getaddrinfo(cstring(text), void, &hints, &found) != 0 do return a, Lookup_Failed
+		defer freeaddrinfo(found)
+		// (The first IPv4 or IPv6 one: the system puts the one to try first.)
+		each := found
+		for each != void {
+			if each.family == AF_INET or each.family == AF_INET6 {
+				at := Sockaddr()
+				size := usize(each.size)
+				if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
+				_ = memcpy(&at, each.at, size)
+				a = address_of(&at)
+				a.port = port
+				return a
+			}
+			each = each.next
+		}
+		return a, Lookup_Failed
+	}
+
+	// A UDP socket at `at` — net_any(port) for every address of this
+	// machine, net_local(port) for this machine only — to send packets from
+	// and receive packets at. Port 0: one the system picks, the socket's
+	// `port` saying which. Fails with Port_Taken when another socket has
+	// the port.
+	udp_open :: fun(at: Net_Address) -> Udp_Socket, err {
+		s := Udp_Socket{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_DGRAM, &s.v4, &s.port)
+		if e do return s, e
+		s.id = id
+		return s
+	}
+
+	// Sends data, one packet, to `to`. It may never arrive, or arrive after
+	// one sent later: UDP doesn't check. (Nor does it here: a packet the
+	// system has no room for at the moment is lost too.) Packets up to
+	// about 1200 bytes go whole across any network.
+	udp_send :: fun(s: ^Udp_Socket, to: Net_Address, data: []byte) -> err {
+		if s.v4 and not net_is_ip4(to) do return Unreachable   // (an IPv4 socket reaches no IPv6 address)
+		at := Sockaddr()
+		size := sockaddr_of(to, s.v4, &at)
+		for true {
+			if sendto(s.id, data.ptr, usize(data.len), MSG_NOSIGNAL, &at, size) >= 0 do return
+			e := __errno_location()^
+			if e == EAGAIN do return
+			if e != EINTR do return Send_Failed
+		}
+	}
+
+	// Takes the next packet that has arrived, without waiting: true, the
+	// packet in data (data.len its size) and its sender in `from`; false
+	// when none has. data's room is the biggest packet it takes: a bigger
+	// one is lost, failing with Packet_Too_Large.
+	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return false, Packet_Too_Large
+		for true {
+			at := Sockaddr()
+			size: u32 = u32(size_of(Sockaddr))
+			// (MSG_TRUNC: the packet's whole size, though bigger than the room.)
+			n := recvfrom(s.id, &data[0], usize(data.cap), MSG_TRUNC, &at, &size)
+			if n > data.cap do return false, Packet_Too_Large
+			if n >= 0 {
+				data.len = n
+				from^ = address_of(&at)
+				return true
+			}
+			e := __errno_location()^
+			if e == EAGAIN do return false
+			// (Word from the network that an earlier packet found nobody
+			// there: no packet. Take the next.)
+			if e != EINTR and e != ECONNREFUSED do return false, Receive_Failed
+		}
+		return false
+	}
+
+	// Closes the socket.
+	udp_close :: fun(s: ^Udp_Socket) {
+		if s.id == NO_SOCKET do return
+		_ = close(s.id)
+		s.id = NO_SOCKET
+	}
+
+	// Listens at `at` — net_any(port) or net_local(port), as udp_open —
+	// for TCP connections, tcp_accept taking each. Port 0: one the system
+	// picks, the listener's `port` saying which. Fails with Port_Taken
+	// when another socket has the port.
+	tcp_listen :: fun(at: Net_Address) -> Tcp_Listener, err {
+		l := Tcp_Listener{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_STREAM, &l.v4, &l.port)
+		if e do return l, e
+		l.id = id
+		return l
+	}
+
+	// The next connection to the listener, when one has come: true, and
+	// `c` it. False when none has: it doesn't wait, so a game can look each
+	// frame.
+	tcp_accept :: fun(l: ^Tcp_Listener, c: ^Tcp_Connection) -> bool, err {
+		at := Sockaddr()
+		size: u32 = u32(size_of(Sockaddr))
+		id := accept4(l.id, &at, &size, SOCK_NONBLOCK | SOCK_CLOEXEC)
+		if id == NO_SOCKET {
+			e := __errno_location()^
+			// (Nobody yet; one that came and went; a signal.)
+			if e == EAGAIN or e == ECONNABORTED or e == EINTR do return false
+			return false, Socket_Failed
+		}
+		net_no_delay(id)
+		c.id = id
+		c.v4 = l.v4
+		c.peer = address_of(&at)
+		return true
+	}
+
+	// Stops listening: the port free for another. Connections taken stay
+	// open until closed.
+	tcp_listen_stop :: fun(l: ^Tcp_Listener) {
+		if l.id == NO_SOCKET do return
+		_ = close(l.id)
+		l.id = NO_SOCKET
+	}
+
+	// Connects to a program listening at `to` (tcp_listen), waiting up to
+	// wait_ms milliseconds for it to answer. Fails with Unreachable when
+	// nobody answered.
+	tcp_connect :: fun(to: Net_Address, wait_ms: i64 = 5000) -> Tcp_Connection, err {
+		c := Tcp_Connection{id = NO_SOCKET, v4 = net_is_ip4(to), peer = to}
+		id := net_socket(c.v4, SOCK_STREAM)
+		if id == NO_SOCKET do return c, Socket_Failed
+		at := Sockaddr()
+		size := sockaddr_of(to, c.v4, &at)
+		if connect(id, &at, size) != 0 {
+			// (Under way: wait for it.)
+			if __errno_location()^ != EINPROGRESS or not net_connected(id, wait_ms) {
+				_ = close(id)
+				return c, Unreachable
+			}
+		}
+		net_no_delay(id)
+		c.id = id
+		return c
+	}
+
+	// Sends all of data on the connection, waiting while the system has no
+	// room for more. Fails with Send_Failed once the connection has ended.
+	tcp_send :: fun(c: ^Tcp_Connection, data: []byte) -> err {
+		rest := data
+		for rest.len > 0 {
+			// (MSG_NOSIGNAL: a connection ended fails, not SIGPIPE ending
+			// the program.)
+			n := send(c.id, rest.ptr, usize(rest.len), MSG_NOSIGNAL)
+			if n > 0 {
+				rest = rest[n:]
+				continue
+			}
+			e := __errno_location()^
+			if e == EINTR do continue
+			if e != EAGAIN do return Send_Failed
+			if net_wait(c.id, true, -1) < 0 do return Send_Failed
+		}
+	}
+
+	// Takes what has arrived on the connection, without waiting for more:
+	// data.len becomes the number of bytes, 0 when none has. Returns false
+	// once the connection has ended: the other side closed it (and all it
+	// sent is read), or it broke.
+	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return true
+		n := recv(c.id, &data[0], usize(data.cap), 0)
+		if n > 0 {
+			data.len = n
+			return true
+		}
+		if n == 0 do return false
+		e := __errno_location()^
+		if e == EAGAIN or e == EINTR do return true
+		if e == ECONNRESET do return false
+		return false, Receive_Failed
+	}
+
+	// Closes the connection: the other side's tcp_receive returns false once
+	// it has read all this side sent.
+	tcp_close :: fun(c: ^Tcp_Connection) {
+		if c.id == NO_SOCKET do return
+		_ = close(c.id)
+		c.id = NO_SOCKET
+	}
+
+	// A new socket, IPv4 (v4) or IPv6, TCP (SOCK_STREAM) or UDP
+	// (SOCK_DGRAM): not waiting — its reads and writes answer at once — and
+	// not handed to programs this one starts. NO_SOCKET failing.
+	net_socket :: fun(v4: bool, kind: i32) -> File_Id {
+		family: i32 = AF_INET6
+		if v4 do family = AF_INET
+		return socket(family, kind | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)
+	}
+
+	// A socket of the kind given at `at`, listening there if TCP; whether
+	// it's IPv4 into v4, the port it has into port. At net_any an IPv6
+	// socket takes IPv4 too — or, on a machine without IPv6, an IPv4 one
+	// takes it all.
+	net_bind :: fun(at: Net_Address, kind: i32, v4: ^bool, port: ^u16) -> File_Id, err {
+		v4^ = net_is_ip4(at)
+		id := net_socket(v4^, kind)
+		if id == NO_SOCKET and not v4^ and net_is_any(at) {
+			v4^ = true
+			id = net_socket(true, kind)
+		}
+		if id == NO_SOCKET do return NO_SOCKET, Socket_Failed
+		on: i32 = 1
+		off: i32 = 0
+		if not v4^ do _ = setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4)   // (IPv4 too, as ::ffff:a.b.c.d)
+		// (A port a listener just let go is free at once, not after the
+		// minutes its old connections' ends linger.)
+		if kind == SOCK_STREAM do _ = setsockopt(id, SOL_SOCKET, SO_REUSEADDR, &on, 4)
+		sa := Sockaddr()
+		size := sockaddr_of(at, v4^, &sa)
+		if bind(id, &sa, size) != 0 {
+			taken := __errno_location()^ == EADDRINUSE
+			_ = close(id)
+			if taken do return NO_SOCKET, Port_Taken
+			return NO_SOCKET, Socket_Failed
+		}
+		if kind == SOCK_STREAM and listen(id, SOMAXCONN) != 0 {
+			_ = close(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		mine := Sockaddr()
+		mine_size: u32 = u32(size_of(Sockaddr))
+		if getsockname(id, &mine, &mine_size) != 0 {
+			_ = close(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		port^ = address_of(&mine).port
+		return id
+	}
+
+	// Waits up to `ms` milliseconds for the connect under way: true once
+	// connected.
+	net_connected :: fun(id: File_Id, ms: i64) -> bool {
+		if net_wait(id, true, ms) <= 0 do return false
+		problem: i32 = 0
+		size: u32 = 4
+		if getsockopt(id, SOL_SOCKET, SO_ERROR, &problem, &size) != 0 do return false
+		return problem == 0
+	}
+
+	// Waits until the socket can be written to (`writing`) or read from, or
+	// has failed, at most `ms` milliseconds — -1, as long as it takes: above
+	// 0 then, 0 when the time ran out, below 0 failing.
+	net_wait :: fun(id: File_Id, writing: bool, ms: i64) -> i32 {
+		ready := Poll_Fd{fd = id, events = POLLIN}
+		if writing do ready.events = POLLOUT
+		for true {
+			n := poll(&ready, 1, i32(ms))
+			if n >= 0 or __errno_location()^ != EINTR do return n
+		}
+		return -1
+	}
+
+	// Sends what's written at once, not holding small writes back to join
+	// them (Nagle's wait): a game's messages are small, and late is worse.
+	net_no_delay :: fun(id: File_Id) {
+		on: i32 = 1
+		_ = setsockopt(id, IPPROTO_TCP, TCP_NODELAY, &on, 4)
+	}
+
+	// Whether the address is net_any's: every address of this machine.
+	net_is_any :: fun(a: Net_Address) -> bool {
+		for k in 0:16 {
+			if a.ip[k] != 0 do return false
+		}
+		return true
+	}
+
+	// getaddrinfo's answers, a list: each an address the name has.
+	Addrinfo :: struct {
+		flags:    i32
+		family:   i32
+		kind:     i32
+		protocol: i32
+		size:     u32        // at's
+		at:       ^Sockaddr
+		name:     ^byte      // (the canonical name, asked for)
+		next:     ^Addrinfo
+	}
+
+	// getaddrinfo's question, Addrinfo's layout: which answers are wanted,
+	// its pointers 0.
+	Addrinfo_Hints :: struct {
+		flags:    i32 = 0
+		family:   i32 = 0   // (0: any)
+		kind:     i32 = 0
+		protocol: i32 = 0
+		size:     u32 = 0
+		pointers: [3!]u64 = {0, 0, 0}
+	}
+
+	AF_INET         :: 2
+	AF_INET6        :: 10
+	SOCK_DGRAM      :: 2
+	IPPROTO_TCP     :: 6
+	IPPROTO_IPV6    :: 41
+	IPV6_V6ONLY     :: 26
+	TCP_NODELAY     :: 1
+	SOL_SOCKET      :: 1
+	SO_REUSEADDR    :: 2
+	SO_ERROR        :: 4
+	SOMAXCONN       :: 4096
+	MSG_TRUNC       :: 0x20
+	MSG_NOSIGNAL    :: 0x4000
+	POLLOUT         :: 0x0004
+	ECONNREFUSED    :: 111
+	ECONNRESET      :: 104
+	EINPROGRESS     :: 115
+
+	// ---------------------------------------------------------------------------
 	// libc bindings
 	// ---------------------------------------------------------------------------
 	// Static-linked: clang resolves against libc at link time. ssize_t is i64
@@ -2136,12 +3056,22 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun nanosleep(want: ^Timespec, left: ^Timespec) -> i32
 		fun clock_gettime(clock: i32, now: ^Timespec) -> i32
 
-		// Named pipes: Unix sockets
+		// Sockets: named pipes' (Unix sockets) and the network's. An address
+		// is any of the families' (^byte): Sockaddr_Un, Sockaddr.
 		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id
-		fun bind(fd: File_Id, at: ^Sockaddr_Un, size: u32) -> i32
+		fun bind(fd: File_Id, at: ^byte, size: u32) -> i32
 		fun listen(fd: File_Id, backlog: i32) -> i32
 		fun accept4(fd: File_Id, at: ^byte, size: ^u32, flags: i32) -> File_Id
-		fun connect(fd: File_Id, at: ^Sockaddr_Un, size: u32) -> i32
+		fun connect(fd: File_Id, at: ^byte, size: u32) -> i32
+		fun getsockname(fd: File_Id, at: ^byte, size: ^u32) -> i32
+		fun setsockopt(fd: File_Id, level: i32, name: i32, value: ^byte, size: u32) -> i32
+		fun getsockopt(fd: File_Id, level: i32, name: i32, value: ^byte, size: ^u32) -> i32
+		fun send(fd: File_Id, data: ^byte, size: usize, flags: i32) -> i64
+		fun recv(fd: File_Id, data: ^byte, size: usize, flags: i32) -> i64
+		fun sendto(fd: File_Id, data: ^byte, size: usize, flags: i32, to: ^byte, to_size: u32) -> i64
+		fun recvfrom(fd: File_Id, data: ^byte, size: usize, flags: i32, from: ^byte, from_size: ^u32) -> i64
+		fun getaddrinfo(name: cstring, service: ^byte, hints: ^Addrinfo_Hints, found: ^^Addrinfo) -> i32
+		fun freeaddrinfo(found: ^Addrinfo)
 		fun getuid() -> u32
 		fun getenv(name: cstring) -> ^byte
 		fun signal(sig: i32, handler: usize) -> usize

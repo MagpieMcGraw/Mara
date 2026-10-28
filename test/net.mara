@@ -1,0 +1,162 @@
+module net
+
+//@ expect-output: text: 127.0.0.1:80 [::1]:7 [2001:db8::1]:443 [fe80:0:0:1::5]:1 [::]:10
+//@ expect-output: udp: Ok Ok - port picked: true - again: Net_Error.Port_Taken
+//@ expect-output: udp packet: true Ok 5 [hello] from the client true
+//@ expect-output: udp reply: true [back]
+//@ expect-output: too small: Net_Error.Packet_Too_Large
+//@ expect-output: udp ipv6: true [v6] from the client true
+//@ expect-output: tcp: Ok Ok - peer: true - accepted: true Ok
+//@ expect-output: tcp bytes: 4194304 - wrong: 0 - sent: true
+//@ expect-output: tcp ended: true
+//@ expect-output: tcp ipv6: Ok true
+//@ expect-output: nobody listening: Net_Error.Unreachable
+
+// Sockets over this machine's own addresses, 127.0.0.1 and ::1 (none
+// another machine reaches, so no firewall asks): UDP packets both ways, a
+// TCP connection carrying 4 MB from a thread, its end seen, and the errors.
+
+use mara.core
+use mara.os
+use mara.memory
+
+#allocator Arena_Basic(16 * MB)
+
+BLOCK :: 65536
+
+// The connection a thread sends on, and whether all of it went.
+Sender :: struct {
+	conn: ^Tcp_Connection
+	sent: bool = false
+}
+
+// Sends 64 blocks, 4 MB, byte k being k % 251: more than the system holds
+// at once, so tcp_send has to wait for the reader.
+send_lots :: fun(s: ^Sender) {
+	block : [65536]byte
+	for b in 0:64 {
+		block.len = 0
+		for k in 0:BLOCK do &block + u8((b * BLOCK + k) % 251)
+		if tcp_send(s.conn, block) do return
+	}
+	s.sent = true
+}
+
+// The next packet at s, waiting up to a second for one.
+wait_packet :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
+	for _ in 0:1000 {
+		if udp_receive(s, data, from)? do return true
+		sleep_ms(1)
+	}
+	return false
+}
+
+// The next connection to l, waiting up to a second for one.
+wait_accept :: fun(l: ^Tcp_Listener, c: ^Tcp_Connection) -> bool, err {
+	for _ in 0:1000 {
+		if tcp_accept(l, c)? do return true
+		sleep_ms(1)
+	}
+	return false
+}
+
+main :: fun() {
+	// Addresses as text, IPv4 and IPv6, the longest run of 0 groups as "::".
+	a, _ := net_lookup("127.0.0.1", 80)
+	b, _ := net_lookup("::1", 7)
+	c, _ := net_lookup("2001:db8::1", 443)
+	d, _ := net_lookup("fe80:0:0:1:0:0:0:5", 1)
+	print("text:", net_text(a), net_text(b), net_text(c), net_text(d), net_text(net_any(10)))
+
+	// UDP: a packet each way, and a packet too big for the room given.
+	server, e := udp_open(net_local(0))
+	client, e2 := udp_open(net_local(0))
+	_, taken := udp_open(net_local(server.port))
+	print("udp:", e, e2, "- port picked:", server.port != 0, "- again:", taken)
+	hello : [16]byte
+	&hello + "hello"
+	_ = udp_send(&client, net_local(server.port), hello)
+	got : [1500]byte
+	from := Net_Address()
+	came, e3 := wait_packet(&server, &got, &from)
+	print("udp packet:", came, e3, got.len, "[" + got + "]", "from the client", net_same(from, net_local(client.port)))
+	back : [16]byte
+	&back + "back"
+	_ = udp_send(&server, from, back)
+	came2, _ := wait_packet(&client, &got, &from)
+	print("udp reply:", came2, "[" + got + "]")
+	small : [2]byte
+	_ = udp_send(&client, net_local(server.port), hello)
+	_, e4 := wait_packet(&server, &small, &from)
+	print("too small:", e4)
+	udp_close(&server)
+	udp_close(&client)
+
+	here, _ := net_lookup("::1", 0)
+	server6, _ := udp_open(here)
+	client6, _ := udp_open(here)
+	to := here
+	to.port = server6.port
+	v6 : [8]byte
+	&v6 + "v6"
+	_ = udp_send(&client6, to, v6)
+	came6, _ := wait_packet(&server6, &got, &from)
+	print("udp ipv6:", came6, "[" + got + "]", "from the client", from.port == client6.port)
+	udp_close(&server6)
+	udp_close(&client6)
+
+	// TCP: connect, accept, 4 MB from a thread, then the end.
+	l, e5 := tcp_listen(net_local(0))
+	conn, e6 := tcp_connect(net_local(l.port))
+	accepted := Tcp_Connection{id = NO_SOCKET, v4 = false, peer = net_any(0)}
+	took, e7 := wait_accept(&l, &accepted)
+	print("tcp:", e5, e6, "- peer:", net_same(conn.peer, net_local(l.port)), "- accepted:", took, e7)
+
+	sender := Sender()
+	sender.conn = &accepted
+	t, _ := thread_start(send_lots, &sender)
+	room : [65536]byte
+	total := 0
+	wrong := 0
+	for total < 64 * BLOCK {
+		open, e8 := tcp_receive(&conn, &room)
+		if e8 or not open do break
+		if room.len == 0 {
+			sleep_ms(1)
+			continue
+		}
+		for k in 0:room.len {
+			if i64(room[k]) != (total + k) % 251 do wrong += 1
+		}
+		total += room.len
+	}
+	thread_wait(&t)
+	print("tcp bytes:", total, "- wrong:", wrong, "- sent:", sender.sent)
+
+	tcp_close(&accepted)
+	ended := false
+	for _ in 0:1000 {
+		open, _ := tcp_receive(&conn, &room)
+		if not open {
+			ended = true
+			break
+		}
+		sleep_ms(1)
+	}
+	print("tcp ended:", ended)
+	tcp_close(&conn)
+	port := l.port
+	tcp_listen_stop(&l)
+
+	l6, _ := tcp_listen(here)
+	at := here
+	at.port = l6.port
+	conn6, e9 := tcp_connect(at)
+	print("tcp ipv6:", e9, net_same(conn6.peer, at))
+	tcp_close(&conn6)
+	tcp_listen_stop(&l6)
+
+	// Nobody listens on the port the listener had: no answer.
+	_, e10 := tcp_connect(net_local(port), 300)
+	print("nobody listening:", e10)
+}
