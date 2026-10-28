@@ -1,0 +1,38 @@
+module slice_copy_list_items
+
+//@ expect-output: words: 3 [b]
+//@ expect-output: kept: 2 a b
+
+// Views of an immutable param kept in a local list are the list's items:
+// appending more to the list writes the list's own storage, not the
+// param's memory those views point at. (The copy rule took a list's items
+// to be what they point at too, and refused the second append: `out` "a
+// copy of the immutable param".) Writing through one of the views is still
+// refused: slice_copy_loop_neg.
+
+use mara.core
+
+words :: fun(line: []utf8) -> [8][]utf8 {
+	out : [8][]utf8
+	start : i64 = 0
+	for k in 0:line.len + 1 {
+		if k == line.len or line[k] == ' ' {
+			&out + line[start : k]
+			start = k + 1
+		}
+	}
+	return out
+}
+
+keep :: fun(texts: []utf8, into: ^[][]utf8) {
+	into + texts[0 : 1]
+	into + texts[1 : 2]
+}
+
+main :: fun() {
+	w := words("a b c")
+	print("words: % [%]", w.len, w[1])
+	kept : [4][]utf8
+	keep("ab", &kept)
+	print("kept:", kept.len, kept[0], kept[1])
+}

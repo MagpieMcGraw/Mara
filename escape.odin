@@ -1135,14 +1135,16 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
         if w.param >= len(args) { continue }
         at := esc_arg(e, callee, args, w.param, w.level, state, Esc_PF{param = w.param, field = w.field, type_ = w.type_})
         if !e.final { continue }
-        esc_record_writes(e, at)
         ro, from := at.ro || at.ro_fields != 0, at.ro_from
         if !ro && w.level == ESC_LEVEL_ONE && esc_ptr_to_slice(callee, w.param) {
-            // (The header of a `^[]T`'s slice — its len, an append's — the slice's own.)
+            // (The header of a `^[]T`'s slice — its len, an append's — the
+            // slice's own; a list's len is its own storage's.)
+            headers, _ := esc_lists_apart(e, at)
             held: Esc_Roots
-            esc_deref(e, &held, at, state)
+            esc_deref(e, &held, headers, state)
             ro, from = held.ro, held.ro_from
         }
+        if !ro { esc_record_writes(e, at) }   // (refused here: none for callers to answer for)
         if ro && !said {
             what := esc_copy_name(e.g, args[w.param])
             if w.type_ != nil && what != "" { what = fmt.tprintf("%s.%s", what, as_struct_body(w.type_).fields[w.field].name) }
@@ -1183,7 +1185,7 @@ esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, level: u8
     switch level {
     case ESC_LEVEL_ONE: return r
     case ESC_LEVEL_TWO:
-        esc_slice_data(e, &on, r, state)
+        esc_items_of(e, &on, r, state)
         return on
     }
     // (Deep is past what the argument points at — a summary's two and deep
@@ -1343,6 +1345,38 @@ esc_slice_data :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Root
         c := esc_var_at(r.vars, i)
         if esc_self_pointing(e.cells[c].type_) && !esc_vars_has(dst.vars, c) { esc_vars_push(&dst.vars, c) }
     }
+}
+
+// The memory the items are in of what `r` is (a summary's level two, an
+// append's): a slice's, the data it views; a list's, its own storage — not
+// what its items point at, a step further (a list of views of an immutable
+// param isn't that param's memory).
+@(private="file")
+esc_items_of :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
+    // (Narrowed to a field of the struct items a list holds: that field's,
+    // through the filter — not the list's own.)
+    if r.ntype != nil {
+        esc_slice_data(e, dst, r, state)
+        return
+    }
+    rest, lists := esc_lists_apart(e, r)
+    esc_slice_data(e, dst, rest, state)
+    for i in 0 ..< esc_var_count(lists) {
+        if c := esc_var_at(lists, i); !esc_vars_has(dst.vars, c) { esc_vars_push(&dst.vars, c) }
+    }
+}
+
+// `r` without its lists' cells, and those cells: a list's len and items are
+// its own storage, not a header's that views other memory.
+@(private="file")
+esc_lists_apart :: proc(e: ^Esc, r: Esc_Roots) -> (rest: Esc_Roots, lists: Esc_Vars) {
+    rest = r
+    rest.vars = {}
+    for i in 0 ..< esc_var_count(r.vars) {
+        c := esc_var_at(r.vars, i)
+        if is_partial_array(e.cells[c].type_) { esc_vars_push(&lists, c) } else { esc_vars_push(&rest.vars, c) }
+    }
+    return
 }
 
 // Everything reachable from `r`, at any depth of indirection (r included).
