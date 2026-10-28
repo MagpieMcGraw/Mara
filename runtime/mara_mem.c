@@ -12,7 +12,11 @@
 //                               new one (no site: none)
 //   __mara_mem_len(hdr)         a len written — `.len =`, an append, a take, a
 //                               copy of elements in: the instance there, if
-//                               any, sees it
+//                               any, sees it (a len past its cap: not it — it
+//                               ended, something else is there)
+//   __mara_mem_slot(hdr, site)  one in a slot handed out as it was, next()'s:
+//                               a new instance, the len there not counted
+//                               (what was there before)
 // A site is where an N is written — a local's declaration, a struct's field:
 // a global the compiler writes per site in each module it's used in (its
 // name, where it's written, its cap, its element's size, and this file's
@@ -285,7 +289,17 @@ void __mara_mem_len(const Mara_List* hdr) {
     mem.len_probes++;
     Mara_Mem_Inst* s = mem_find(hdr);
     if (!s) return;
+    // (Past its cap, it isn't this one: its storage holds something else
+    // now, laid down unseen. The instance ends at the peak it had.)
+    if (hdr->len > s->cap) { mem_end(s); return; }
     if (hdr->len > s->peak) s->peak = hdr->len;
+}
+
+void __mara_mem_slot(const Mara_List* hdr, Mara_Mem_Site* site) {
+    if (!site) return;
+    mem_begin(hdr, site);
+    Mara_Mem_Inst* s = mem_find(hdr);
+    if (s) s->peak = 0;
 }
 
 void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {

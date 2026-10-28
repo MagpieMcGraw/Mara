@@ -12,6 +12,8 @@ use mara.memory
 //@ expect-output: carved: 2 true
 //@ expect-output: child: 0
 //@ expect-output: arena: Arena_Basic, its peak within its size: true
+//@ expect-output: Bytes.data: peak 50000 of 100000
+//@ expect-output: Part.texture: peak 14 of 160
 
 // A -profile memory build runs as a plain one does: its locals, a struct's
 // fields copied into a partial array, a file read through a ^[]byte param,
@@ -21,7 +23,10 @@ use mara.memory
 //
 // Then it runs itself again, the child writing its own memory.txt, and reads
 // what that says (sooblivion's, MARA_ISSUES.md): an arena's peak is the most
-// of it in use (it read a `^[]byte`'s len's address).
+// of it in use (it read a `^[]byte`'s len's address); a list in an item
+// next() hands out is watched (Bytes.data wasn't), and its lens aren't put
+// down to the list watched there before (Part.texture, the storage's last
+// use, took them).
 
 Item :: struct {
 	name: [64]utf8
@@ -122,6 +127,10 @@ report :: fun(exe: []utf8) -> err {
 	arena := row(text, 3, "Arena_Basic")
 	size, peak := number(arena[0]), number(arena[1])
 	print("arena: Arena_Basic, its peak within its size:", peak > 0 and peak <= size)
+	for name in ([2!][]utf8{"Bytes.data", "Part.texture"}) {
+		site := row(text, 7, name)
+		print("%: peak % of %", name, number(site[2]), number(site[4]))
+	}
 }
 
 main :: fun(args: [][]utf8) -> i64 {
@@ -140,7 +149,7 @@ main :: fun(args: [][]utf8) -> i64 {
 		it.count = k
 		&items + it
 	}
-	storage : [4096]byte
+	storage : [16 * KB]byte
 	_, e := read_entire_file("memory_profile.mara", &storage)
 	print(total, items.len, e)
 	pair := slice([:2]i64, &storage)

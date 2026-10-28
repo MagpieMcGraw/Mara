@@ -884,6 +884,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_mem_new(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_mem_into(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_mem_len(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_mem_slot(ptr, ptr)\n")
     }
     if g.web {
         strings.write_string(&b, "declare i32 @strlen(ptr)\n")

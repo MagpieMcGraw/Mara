@@ -29,6 +29,41 @@ mem_probe_into :: proc(g: ^Codegen, hdr: Val, pa: ^Type_Partial_Array) {
     ir_call(g, {}, IR_VOID, ir_global("__mara_mem_into"), {IR_PTR, hdr, {}}, {IR_PTR, site, {}})
 }
 
+// A value of type t handed out at ptr as it was, not laid down — next()'s
+// slot (llvm_call): each list in it, through struct fields and fixed arrays'
+// elements, a new instance of its site, its len there not counted (what was
+// in the slot before). Nothing is written: the program sees what it would.
+mem_probe_slot :: proc(g: ^Codegen, ptr: Val, t: Type) {
+    if !g.profile_memory || !value_has_partial_array(g, t) { return }
+    each :: proc(g: ^Codegen, ptr: Val, t: Type, _: []Ir_Arg) { mem_probe_slot(g, ptr, t) }
+    base := distinct_base(t)
+    if pa, is_pa := base.(^Type_Partial_Array); is_pa {
+        if g.mem_name != "" {
+            ir_call(g, {}, IR_VOID, ir_global("__mara_mem_slot"), {IR_PTR, ptr, {}}, {IR_PTR, ir_global(mem_site(g, pa)), {}})
+        }
+        return
+    }
+    if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
+        if fa.size > 0 {
+            was := mem_elements(g)
+            emit_each_element(g, ptr, fa.elem, fa.size, each)
+            mem_restore(g, was)
+        }
+        return
+    }
+    sd := as_struct_body(base)
+    if sd == nil { return }
+    llvm_name := ir_class_type(sd)
+    for &f, i in sd.fields {
+        if !value_has_partial_array(g, f.type_) { continue }
+        gep := fresh_tmp(g)
+        emit_field_gep_into(g, gep, llvm_name, ptr, i)
+        was := mem_field(g, sd, &f)
+        mem_probe_slot(g, gep, f.type_)
+        mem_restore(g, was)
+    }
+}
+
 // A len written at hdr: the instance there sees it.
 mem_probe_len :: proc(g: ^Codegen, hdr: Val) {
     if !g.profile_memory { return }

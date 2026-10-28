@@ -2662,6 +2662,11 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     tmp := fresh_tmp(g)
     ir_call(g, tmp, ret, name, ..args[:])
     e.value[op] = tmp
+    // (-profile memory: mara.core's next() hands out its list's next slot as
+    // it is, not laid down — the lists in it new instances from here.)
+    if g.profile_memory && strings.has_prefix(callee.name, "mara_core_next__") {
+        if pt, is_ptr := distinct_base(result).(^Type_Ptr); is_ptr { mem_probe_slot(g, tmp, pt.elem) }
+    }
     return true
 }
 
