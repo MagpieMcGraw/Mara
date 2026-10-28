@@ -17,6 +17,11 @@
 //   __mara_mem_slot(hdr, site)  one in a slot handed out as it was, next()'s:
 //                               a new instance, the len there not counted
 //                               (what was there before)
+//   __mara_mem_take(hdr, site)  a take, `slice([:n]T, storage)`, kept at hdr:
+//                               a slice's header, its len first, its data the
+//                               storage's — a new instance, its cap the
+//                               header's; a len written through the header
+//                               once it views other data isn't it
 // A site is where an N is written — a local's declaration, a struct's field:
 // a global the compiler writes per site in each module it's used in (its
 // name, where it's written, its cap, its element's size, and this file's
@@ -118,6 +123,7 @@ typedef struct Mara_Mem_Inst {
     int64_t       cap;
     Mara_Mem_Rec* rec;
     int64_t       peak;
+    int           take;       // a take's slice header, not a list: its data where it points
 } Mara_Mem_Inst;
 
 #define TOMB ((const Mara_List*)1)
@@ -268,6 +274,7 @@ static void mem_begin(const Mara_List* hdr, Mara_Mem_Site* site) {
     s->cap = site->cap;
     s->rec = mem_rec(site);
     s->peak = hdr->len;
+    s->take = 0;
     mem.live++;
 }
 
@@ -290,9 +297,23 @@ void __mara_mem_len(const Mara_List* hdr) {
     Mara_Mem_Inst* s = mem_find(hdr);
     if (!s) return;
     // (Past its cap, it isn't this one: its storage holds something else
-    // now, laid down unseen. The instance ends at the peak it had.)
-    if (hdr->len > s->cap) { mem_end(s); return; }
+    // now, laid down unseen; a take's header viewing other data, re-pointed.
+    // The instance ends at the peak it had.)
+    if (hdr->len > s->cap || (s->take && ((const Mara_Header*)hdr)->data != s->data)) { mem_end(s); return; }
     if (hdr->len > s->peak) s->peak = hdr->len;
+}
+
+void __mara_mem_take(const Mara_List* hdr, Mara_Mem_Site* site) {
+    if (!site) return;
+    const Mara_Header* h = (const Mara_Header*)hdr;
+    mem_begin(hdr, site);
+    Mara_Mem_Inst* s = mem_find(hdr);
+    if (!s) return;
+    s->data = h->data;
+    s->cap = h->cap;
+    s->take = 1;
+    s->peak = h->len;
+    if (s->rec->cap == 0) s->rec->cap = h->cap;   // (n not a number written: the first one's)
 }
 
 void __mara_mem_slot(const Mara_List* hdr, Mara_Mem_Site* site) {
@@ -373,7 +394,7 @@ static void mem_dump(void) {
     char exe[MARA_PATH_CAP];
     mem_exe_name(exe, sizeof exe);
     fprintf(out, "Mara memory profile: %s, %s, %s\n", exe, mem.build ? mem.build : "build unknown", stamp);
-    fprintf(out, "Each partial array, by where its N is written (a local, a struct's field): how full any instance got.\n");
+    fprintf(out, "Each partial array, and each take (slice([:n]T, storage)), by where its N is written (a local, a struct's field): how full any instance got.\n");
     fprintf(out, "Unused B: what each instance would save with N its peak. Median: of the instances' peaks, within about 3%%.\n");
     fprintf(out, "%llu len writes looked at.\n", (unsigned long long)mem.len_probes);
     fprintf(out, "\n");

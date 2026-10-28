@@ -734,6 +734,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if from != NO_NODE && graph_op_of(pg, from) == .View && graph_name(pg, from) == "#big_endian" {
                 emit_bswap_in_place(g, llvm_val(e, place), llvm_type_from_checker(t), t)
             }
+            if g.profile_memory { llvm_mem_take(e, place, ops[1].op) }
             return true
         }
         if !llvm_scalar(t) { return false }
@@ -3309,6 +3310,21 @@ llvm_mem_place :: proc(e: ^Llvm, place: Node_Id) -> Mem_Context {
         }
     }
     return mem_none(g)
+}
+
+// -profile memory: a take, `slice([:n]T, storage)`, kept in a place — a
+// local, a struct's field: its header there an instance of the place's site
+// (llvm_mem_place's), n its cap when it's a number written.
+llvm_mem_take :: proc(e: ^Llvm, place: Node_Id, value: Node_Id) {
+    g, pg := e.g, e.pg
+    if value == NO_NODE || graph_is_leaf(value) || graph_op_of(pg, value) != .Carve || graph_name(pg, value) != "slice" { return }
+    sl := llvm_slice(graph_type(pg, value))
+    if sl == nil { return }
+    n := 0
+    if ops := graph_operands(pg, value); len(ops) > 1 && graph_is_const(ops[1].op) {
+        if v, known := graph_value(pg, ops[1].op); known { n = int(v.int) }
+    }
+    mem_probe_take(g, llvm_val(e, place), n, sl.elem)
 }
 
 llvm_struct :: proc(t: Type) -> ^Scope_Body {

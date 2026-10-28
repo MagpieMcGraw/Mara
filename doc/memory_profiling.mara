@@ -1,11 +1,13 @@
 // How to size your memory: build with -profile memory, run, read memory.txt.
 //
-// A partial array, `[N]T`, always holds room for N; an arena, its whole
-// size. `mara build memory_profiling -profile memory` makes a program that
+// A partial array, `[N]T`, always holds room for N; a take from storage,
+// `slice([:N]T, storage)`, takes room for N; an arena, its whole size.
+// `mara build memory_profiling -profile memory` makes a program that
 // watches how full each one gets. When it exits (main's end, an assert, a
 // crash) it writes memory.txt next to the exe: one line per place an N is
-// written — a local's declaration, a struct's field — the most room it
-// could give back first, then one line per arena.
+// written — a local's declaration, a struct's field, the local or field a
+// take is kept in — the most room it could give back first, then one line
+// per arena.
 //
 // The columns:
 //
@@ -64,4 +66,11 @@ main :: fun() {
 	}
 
 	print(total, items.len)    // main.items: peak 3 of 100
+
+	storage : [4 * KB]byte
+	counts := slice([:32]i64, &storage)
+	for k in 0:5 {
+		&counts + k            // main.counts: peak 5 of 32
+	}
+	print(counts.len)
 }

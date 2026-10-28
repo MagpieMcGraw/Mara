@@ -70,11 +70,24 @@ mem_probe_len :: proc(g: ^Codegen, hdr: Val) {
     ir_call(g, {}, IR_VOID, ir_global("__mara_mem_len"), {IR_PTR, hdr, {}})
 }
 
+// A take, `slice([:n]T, storage)`, kept at hdr — a slice's header, its len
+// first, its data where the storage is: a new instance of the site in
+// context (a local, a struct's field), n its cap (0: the header's).
+mem_probe_take :: proc(g: ^Codegen, hdr: Val, n: int, elem: Type) {
+    if !g.profile_memory || g.mem_name == "" { return }
+    ir_call(g, {}, IR_VOID, ir_global("__mara_mem_take"), {IR_PTR, hdr, {}}, {IR_PTR, ir_global(mem_site_sized(g, n, type_size(elem))), {}})
+}
+
 // The site in context's global for a partial array of type pa: its name,
 // where it's written, its cap, its element's size, and the profiler's record
 // (filled on first use). One per site per module.
 mem_site :: proc(g: ^Codegen, pa: ^Type_Partial_Array) -> string {
-    key := fmt.tprintf("%s %s %d", g.mem_name, g.mem_where, pa.size)
+    return mem_site_sized(g, pa.size, type_size(pa.elem))
+}
+
+// ... of `cap` elements of `elem_size` bytes (a take's too).
+mem_site_sized :: proc(g: ^Codegen, cap: int, elem_size: int) -> string {
+    key := fmt.tprintf("%s %s %d", g.mem_name, g.mem_where, cap)
     if sym, ok := g.mem_sites[key]; ok { return sym }
     keep := codegen_keep(g)
     // (Named by its site, with the emitter's prefix, as a string literal is:
@@ -83,8 +96,8 @@ mem_site :: proc(g: ^Codegen, pa: ^Type_Partial_Array) -> string {
     parts := make([]Ir_Const, 5, keep)
     parts[0] = ir_const(IR_PTR, get_string_literal(g, g.mem_name))
     parts[1] = ir_const(IR_PTR, get_string_literal(g, g.mem_where))
-    parts[2] = ir_const(IR_I64, ir_int(pa.size))
-    parts[3] = ir_const(IR_I64, ir_int(type_size(pa.elem)))
+    parts[2] = ir_const(IR_I64, ir_int(cap))
+    parts[3] = ir_const(IR_I64, ir_int(elem_size))
     parts[4] = ir_const(IR_PTR, IR_NULL)
     tys := [5]Ir_Type{IR_PTR, IR_PTR, IR_I64, IR_I64, IR_PTR}
     append(&g.globals, Ir_Global{name = sym, linkage = .Internal, ty = ir_struct_type(tys[:]), init = {kind = .Struct, parts = parts}})
