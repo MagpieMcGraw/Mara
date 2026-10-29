@@ -20,7 +20,7 @@ Obj :: struct { dir: Quat, pos: Vec3 }
 Vis :: struct { color: [3!]f32 }
 Shp :: struct { obj: Obj, visual: Vis }
 
-fill :: fun(out: ^[]Vec3, n: i64) {
+fill :: fun(out: ^[$N]Vec3, n: i64) {
 	out.len = 0
 	for i in 0:(n) {
 		x := f32(i)

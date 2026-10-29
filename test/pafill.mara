@@ -5,7 +5,7 @@ module pafill
 // header. A fresh [N]T has len 0, but indexing is cap-bounded, so the
 // callee can write buf[i] up to cap and then set len to mark it full.
 
-fill :: fun(buf: ^[]i32) {
+fill :: fun(buf: ^[$N]i32) {
 	buf.len = buf.cap
 	for i in 0:i32(buf.len) {
 		buf[i] = i * 10

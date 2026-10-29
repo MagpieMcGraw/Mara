@@ -40,10 +40,10 @@ through_value_field :: fun(h: Holder) -> i64 {
 	return h.s[0] + h.s.cap                           // 1+4 = 5
 }
 
-// header writes through the pointer: .len, and replacing the whole slice
+// header writes through the pointer: a shorter view, and replacing the whole slice
 header_writes :: fun(p: ^[]i64, other: []i64) -> i64 {
 	s := p
-	s.len = 2
+	s^ = s^[0:2]
 	n := s.len
 	s^ = other
 	return n + s.len                                  // 2+3 = 5

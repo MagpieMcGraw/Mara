@@ -11,7 +11,7 @@ SHolder :: struct { sl: []i64 }
 Big :: struct { a: i64, b: i64 }
 
 // pass storage DOWN, return a view UP
-view_of :: fun(storage: ^[]byte) -> SHolder {
+view_of :: fun(storage: ^[$N]byte) -> SHolder {
 	return SHolder{slice([:3]i64, storage)}
 }
 

@@ -5,7 +5,7 @@ module esc_via_reassign_neg
 // its summary still ties the result to param 0. `outer` passes a local buffer
 // and returns the result.
 
-leaf :: fun(storage: ^[]byte) -> []i64 {
+leaf :: fun(storage: ^[$N]byte) -> []i64 {
 	out := slice([:3]i64, storage)
 	out = slice([:3]i64, storage)
 	return out

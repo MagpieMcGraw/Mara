@@ -1,9 +1,11 @@
 package mara
 
+import "core:fmt"
+
 // A take: `let(T, s)` a value of T carved from storage, `slice([:n]T, s)`
-// room for n of them as a slice (empty from a cursor: to fill; n of them at
+// n of them as a slice (a view of them from a cursor: written by index; at
 // a byte's place: to read), `slice(s)` a slice of the type its use expects. The
-// storage: `&bytes` (a cursor, advanced: ^[]byte) or `&bytes[i]` (at a
+// storage: `&bytes` (a cursor, advanced: a list of bytes) or `&bytes[i]` (at a
 // place: ^byte). A slice's storage may be a list of what it takes, too:
 // `slice([:n]Token, &tokens)` carves n of its items (a cursor, advanced by n)
 // — no bytes read as another type.
@@ -60,8 +62,10 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
     if pt, is_ptr := distinct_base(st).(^Type_Ptr); is_ptr {
         #partial switch elem in distinct_base(pt.elem) {
         case ^Type_Slice:
-            _, cursor = elem.elem.(Type_Byte)
-            cursor ||= of_items(elem.elem, items)
+            // (A slice has no len to move: only lists grow.)
+            name := tc_diag_name(k, storage)
+            tc_error(k, span, TYPE_TAKE_FROM_SLICE, fmt.tprintf("`%s`", name) if name != "" else "it")
+            return taken
         case ^Type_Partial_Array:
             _, cursor = elem.elem.(Type_Byte)
             cursor ||= of_items(elem.elem, items)

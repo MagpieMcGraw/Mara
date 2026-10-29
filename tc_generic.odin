@@ -254,7 +254,9 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
                             return Type_Error{}
                         }
                         if is_slice_type(ap.elem) {
-                            arg := tc_diag_name(k, args[i])
+                            m := tc_unparen(k, args[i])
+                            if tr.tag[m] == .Unary && build_tokens[tr.main[m]].kind == .Ampersand { m = Tree_Id(tr.a[m]) }
+                            arg := tc_diag_name(k, m)
                             tc_error(k, span, TYPE_SLICE_CANT_GROW, fmt.tprintf("`%s`", arg) if arg != "" else "it")
                             return Type_Error{}
                         }

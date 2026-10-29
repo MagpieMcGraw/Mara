@@ -26,7 +26,7 @@ fill :: fun(buf: ^[]byte) {
 }
 
 // n Vs read out of buf into the caller's room.
-get :: fun(buf: []byte, n: i64, dst: ^[]V) -> []V {
+get :: fun(buf: []byte, n: i64, dst: ^[$N]V) -> []V {
 	dst[0:n] = buf[0 : n * size_of(V)]
 	dst.len = n   // (written into its room: its len says how much)
 	return dst[0:n]

@@ -1545,8 +1545,7 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
     g := e.g
     what := esc_describe(e, val)
     if site.callee != nil {
-        name := graph_name(g, site.op)
-        if site.callee.source_name == "" && site.callee.decl != 0 { name = tc_text(site.callee.decl) }   // (a generic's instance: as written)
+        name := esc_callee_name(g, site.op, site.callee)
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
             esc_diag(e, graph_origin(g, site.op), TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
@@ -1636,7 +1635,7 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
     }
     if n == 0 { return false }
     esc_diag(e, graph_origin(g, ret), TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
-        graph_name(g, call), strings.to_string(sb), "argument" if n == 1 else "arguments")
+        esc_callee_name(g, call, callee), strings.to_string(sb), "argument" if n == 1 else "arguments")
     return true
 }
 
@@ -1687,4 +1686,11 @@ esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
     }
     if r.temp > 0 { return "a temporary" }
     return "local memory"
+}
+
+// A called fun's name for a message: as written — a generic's instance
+// without its arguments (`leaf`, not `leaf__const_512`).
+esc_callee_name :: proc(g: ^Program_Graph, call: Node_Id, callee: ^Type_Scope) -> string {
+    if callee != nil && callee.source_name == "" && callee.decl != 0 { return tc_text(callee.decl) }
+    return graph_name(g, call)
 }
