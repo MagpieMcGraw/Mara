@@ -63,12 +63,13 @@ module build
 
 use mara.build
 
-game :: Build{dirs = ["../engine"], flags = [.release]}
-tools :: Build{module_name = "game_tools", dirs = ["../engine"]}
+game :: Build(){dirs = ["../engine"], release = true}
+tools :: Build(){module_name = "game_tools", dirs = ["../engine"]}
 ```
 
 `mara build` then builds the one named as the folder (or the only one), and
-`mara build tools` the other. Its fields are in `code/build.mara`.
+`mara build tools` the other. `Build()` starts from the defaults; its fields
+are in `code/build.mara`.
 
 ## Project layout
 

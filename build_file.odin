@@ -11,11 +11,13 @@ import "core:strings"
 //     module build
 //     use mara.build
 //
-//     game :: Build{dirs = ["../engine"], flags = [.release]}
+//     game :: Build(){dirs = ["../engine"], release = true}
 //
-// Read as written, not checked or run: each field's value is text in quotes,
-// or a list in square brackets — of text, or of Build_Flag's variants. A build.mara that isn't
-// `module build` is a module's file like any other.
+// (`Build()` its defaults, then the fields written: Mara's construct and
+// override. `Build{...}`, a literal, is read the same.) Read as written, not
+// checked or run: each field's value is text in quotes, true or false, or a
+// list of text in square brackets. A build.mara that isn't `module build` is
+// a module's file like any other.
 
 // One build build.mara declares.
 Build_Spec :: struct {
@@ -30,11 +32,10 @@ Build_Spec :: struct {
 // What Build's fields hold (code/build.mara): their rooms, checked here as
 // the checker would.
 BUILD_NAME_ROOM :: 64    // module_name, out: str64
-BUILD_DIRS_MAX  :: 8     // dirs: [8][120]utf8
-BUILD_DIR_ROOM  :: 120
-BUILD_FLAGS_MAX :: 4     // flags: [4]Build_Flag
+BUILD_DIRS_MAX  :: 8     // dirs: [8][96]utf8 (a whole Build under the stack's 1 KB)
+BUILD_DIR_ROOM  :: 96
 
-BUILD_FIELDS :: "module_name, dirs, out, flags"
+BUILD_FIELDS :: "module_name, dirs, out, release, llvm"
 
 // The builds the build.mara in `dir` declares. found: there is one, `module
 // build`. problem: what's wrong in it, said where.
@@ -83,14 +84,17 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
             for toks[i].kind != .Newline && toks[i].kind != .EOF { i += 1 }
             continue
         }
-        if t.kind != .Identifier || toks[i + 1].kind != .Double_Colon || toks[i + 2].kind != .Identifier || toks[i + 2].text != "Build" || toks[i + 3].kind != .Left_Brace {
-            return specs, found, say(path, source, t, "build.mara holds builds, each `name :: Build{...}`: not `%s` here.", t.text)
+        // (`Build(){...}` — constructed, then the fields written — or `Build{...}`.)
+        constructed := toks[i + 3].kind == .Left_Paren && toks[i + 4].kind == .Right_Paren
+        brace := i + 5 if constructed else i + 3
+        if t.kind != .Identifier || toks[i + 1].kind != .Double_Colon || toks[i + 2].kind != .Identifier || toks[i + 2].text != "Build" || toks[brace].kind != .Left_Brace {
+            return specs, found, say(path, source, t, "build.mara holds builds, each `name :: Build(){...}`: not `%s` here.", t.text)
         }
         spec := Build_Spec{name = t.text}
         for s in specs {
             if s.name == spec.name { return specs, found, say(path, source, t, "a second build named `%s`.", spec.name) }
         }
-        i += 4
+        i = brace + 1
         // Its fields, `name = value`, a comma or a line between.
         for {
             for toks[i].kind == .Newline || toks[i].kind == .Comma { i += 1 }
@@ -110,24 +114,10 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
                 if !ok { return specs, found, say(path, source, v, "`%s` is text of up to %d bytes, in quotes.", f.text, BUILD_NAME_ROOM) }
                 if f.text == "out" { spec.out = s } else { spec.module = s }
                 i += 1
-            case "flags":
-                if v.kind != .Left_Bracket { return specs, found, say(path, source, v, "`flags` is a list in square brackets: `flags = [.release]`.") }
+            case "release", "llvm":
+                if v.kind != .True && v.kind != .False { return specs, found, say(path, source, v, "`%s` is true or false.", f.text) }
+                if f.text == "release" { spec.release = v.kind == .True } else { spec.llvm = v.kind == .True }
                 i += 1
-                n := 0
-                for {
-                    for toks[i].kind == .Newline || toks[i].kind == .Comma { i += 1 }
-                    if toks[i].kind == .Right_Bracket { i += 1; break }
-                    if toks[i].kind == .Dot { i += 1 }   // (`.release`, or `release`)
-                    flag := toks[i]
-                    if n == BUILD_FLAGS_MAX { return specs, found, say(path, source, flag, "`flags` has room for %d.", BUILD_FLAGS_MAX) }
-                    switch {
-                    case flag.kind == .Identifier && flag.text == "release": spec.release = true
-                    case flag.kind == .Identifier && flag.text == "llvm":    spec.llvm = true
-                    case: return specs, found, say(path, source, flag, "Build_Flag has no `%s`: its flags are release, llvm.", flag.text)
-                    }
-                    n += 1
-                    i += 1
-                }
             case "dirs":
                 if v.kind != .Left_Bracket { return specs, found, say(path, source, v, "`dirs` is a list of folders in square brackets: `dirs = [\"../engine\"]`.") }
                 i += 1

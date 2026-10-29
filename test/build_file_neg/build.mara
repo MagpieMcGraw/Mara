@@ -5,4 +5,4 @@ module build
 
 use mara.build
 
-build_file_neg :: Build{module_name = "bf_neg", relese = true}
+build_file_neg :: Build(){module_name = "bf_neg", relese = true}

@@ -6,10 +6,10 @@ use mara.build
 // module bf_game, its `use bf_engine` found in engine/, a folder build.mara
 // names. A second build beside it, not built here.
 
-build_file :: Build{
+build_file :: Build(){
 	module_name = "bf_game"
 	dirs = ["engine"]
-	flags = [.llvm]
+	llvm = true
 }
 
-other :: Build{module_name = "bf_other", out = "other"}
+other :: Build(){module_name = "bf_other", out = "other"}
