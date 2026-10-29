@@ -65,10 +65,11 @@ main :: fun() {
 	_ = udp_send(&client, net_local(server.port), hello)
 
 	// Look for a packet each millisecond, as a game would each frame.
-	packet : [1200]byte
+	room : [1200!]byte
+	window := room[:]
 	from := Net_Address()
 	for _ in 0:1000 {
-		came, re := udp_receive(&server, &packet, &from)
+		packet, came, re := udp_receive(&server, &window, &from)
 		if re {
 			print("couldn't receive:", re)
 			return
@@ -108,12 +109,13 @@ main :: fun() {
 	message : [32]byte
 	&message + "a message, all of it"
 	_ = tcp_send(&conn, message)
-	room : [1200]byte
+	buf : [1200!]byte
+	into := buf[:]
 	got := 0
 	for _ in 0:1000 {
-		open, te := tcp_receive(&accepted, &room)
+		piece, open, te := tcp_receive(&accepted, &into)
 		if te or not open do break
-		got += room.len
+		got += piece.len
 		if got == message.len do break
 		sleep_ms(1)
 	}

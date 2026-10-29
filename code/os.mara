@@ -18,6 +18,7 @@ File_Error :: error {
     Too_Large
     Seek_Failed
     Map_Failed
+    No_Room       // a read given no room to read into
 }
 
 // What starting or waiting for a process can fail with.
@@ -210,10 +211,10 @@ read_entire_file :: fun(path: []utf8, storage: ^[$N]byte) -> []byte, err {
 	got : i64 = 0
 	for got < size {
 		rest := storage[start + got : start + size]
-		re := file_read(id, &rest)
+		piece, re := file_read(id, &rest)
 		if re do return none, re
-		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
-		got += rest.len
+		if piece.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
+		got += piece.len
 	}
 	storage.len = start + got
 	return storage[start : start + got]
@@ -603,26 +604,25 @@ Sockaddr :: struct {
 		return size
 	}
 
-	// Reads the next piece of a file, a pipe or a program's output into data:
-	// one read, up to data's capacity — less when less has come, or when the
-	// system reads less at a time. data.len becomes the number of bytes read
-	// (0 at the end of the file, or of a pipe whose writer closed — or with
-	// no room to read into). For all of a file, read_entire_file.
-	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
-		if data.cap == 0 {
-			data.len = 0
-			return
-		}
+	// Reads the next piece of a file, a pipe or a program's output into data,
+	// a window of memory: one read, up to data's len — less when less has come,
+	// or when the system reads less at a time. Gives back the part of data that
+	// was filled: empty at the end of the file, or of a pipe whose writer
+	// closed. A list's room is `buf[:.cap]`; with no room at all it fails with
+	// No_Room. For all of a file, read_entire_file.
+	file_read :: fun(id: File_Id, data: ^[]byte) -> []byte, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, File_Error.No_Room
 		read: u32 = 0
 		// (ReadFile counts in a u32: at most 1 GB a call, so a room of 4 GB
 		// or more doesn't wrap to a small count — 4 GB to none.)
-		want := data.cap
+		want := data.len
 		if want > 1 << 30 do want = 1 << 30
 		if not bool(ReadFile(id, &data[0], u32(want), &read, void)) {
 			// (A pipe whose writer closed: its end, as a file's is — 0 bytes.)
-			if GetLastError() != ERROR_BROKEN_PIPE do return Read_Failed
+			if GetLastError() != ERROR_BROKEN_PIPE do return none, Read_Failed
 		}
-		data.len = i64(read)
+		return data^[0 : i64(read)]
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. Win32
@@ -1002,20 +1002,19 @@ Sockaddr :: struct {
 	}
 
 	// Reads from a pipe what has arrived, without waiting for more — for a
-	// program that can't wait, as a window between its frames: data.len
-	// becomes the number of bytes read, 0 when none has. Returns false once
-	// the pipe has ended: its writer closed and all it wrote read.
-	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
-		data.len = 0
+	// program that can't wait, as a window between its frames: the part of data
+	// filled, empty when none has, and whether the pipe is still open (false
+	// once its writer closed and all it wrote is read).
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> []byte, bool, err {
+		none := data^[0 : 0]
 		waiting: u32 = 0
 		if not bool(PeekNamedPipe(id, void, 0, void, &waiting, void)) {
-			if GetLastError() == ERROR_BROKEN_PIPE do return false
-			return false, Read_Failed
+			if GetLastError() == ERROR_BROKEN_PIPE do return none, false
+			return none, false, Read_Failed
 		}
-		if waiting > 0 {
-			file_read(id, data)?   // (what has arrived: it doesn't wait)
-		}
-		return true
+		if waiting == 0 do return none, true
+		got := file_read(id, data)?   // (what has arrived: it doesn't wait)
+		return got, true
 	}
 
 	// Waits for the process to end and returns its exit code — its input and
@@ -1383,30 +1382,29 @@ Sockaddr :: struct {
 		return Send_Failed
 	}
 
-	// Takes the next packet that has arrived, without waiting: true, the
-	// packet in data (data.len its size) and its sender in `from`; false
-	// when none has. data's room is the biggest packet it takes: a bigger
-	// one is lost, failing with Packet_Too_Large.
-	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
-		data.len = 0
-		if data.cap == 0 do return false, Packet_Too_Large
+	// Takes the next packet that has arrived, without waiting: the packet, the
+	// part of data it filled, true, and its sender in `from`; false when none
+	// has. data's len is the biggest packet it takes: a bigger one is lost,
+	// failing with Packet_Too_Large.
+	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> []byte, bool, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, false, Packet_Too_Large
 		for true {
 			at := Sockaddr()
 			size: i32 = i32(size_of(Sockaddr))
-			n := recvfrom(s.id, &data[0], i32(data.cap), 0, &at, &size)
+			n := recvfrom(s.id, &data[0], i32(data.len), 0, &at, &size)
 			if n >= 0 {
-				data.len = i64(n)
 				from^ = address_of(&at)
-				return true
+				return data^[0 : i64(n)], true
 			}
 			e := WSAGetLastError()
-			if e == WSAEWOULDBLOCK do return false
-			if e == WSAEMSGSIZE do return false, Packet_Too_Large
+			if e == WSAEWOULDBLOCK do return none, false
+			if e == WSAEMSGSIZE do return none, false, Packet_Too_Large
 			// (Word from the network that an earlier packet found nobody
 			// there: no packet. Windows tells it here; take the next.)
-			if e != WSAECONNRESET and e != WSAENETRESET do return false, Receive_Failed
+			if e != WSAECONNRESET and e != WSAENETRESET do return none, false, Receive_Failed
 		}
-		return false
+		return none, false
 	}
 
 	// Closes the socket.
@@ -1499,25 +1497,22 @@ Sockaddr :: struct {
 		}
 	}
 
-	// Takes what has arrived on the connection, without waiting for more:
-	// data.len becomes the number of bytes, 0 when none has. Returns false
-	// once the connection has ended: the other side closed it (and all it
-	// sent is read), or it broke.
-	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
-		data.len = 0
-		if data.cap == 0 do return true
-		want := data.cap
+	// Takes what has arrived on the connection, without waiting for more: the
+	// part of data filled, empty when none has, and whether the connection is
+	// still open (false once the other side closed it, and all it sent is read,
+	// or it broke). With no room in data at all it fails with No_Room.
+	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> []byte, bool, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, true, File_Error.No_Room
+		want := data.len
 		if want > 1 << 30 do want = 1 << 30
 		n := recv(c.id, &data[0], i32(want), 0)
-		if n > 0 {
-			data.len = i64(n)
-			return true
-		}
-		if n == 0 do return false
+		if n > 0 do return data^[0 : i64(n)], true
+		if n == 0 do return none, false
 		e := WSAGetLastError()
-		if e == WSAEWOULDBLOCK do return true
-		if e == WSAECONNRESET or e == WSAECONNABORTED do return false
-		return false, Receive_Failed
+		if e == WSAEWOULDBLOCK do return none, true
+		if e == WSAECONNRESET or e == WSAECONNABORTED do return none, false
+		return none, false, Receive_Failed
 	}
 
 	// Closes the connection: the other side's tcp_receive returns false once
@@ -1965,19 +1960,18 @@ Sockaddr :: struct {
 		return st.size
 	}
 
-	// Reads the next piece of a file, a pipe or a program's output into data:
-	// one read, up to data's capacity — less when less has come, or when the
-	// system reads less at a time. data.len becomes the number of bytes read
-	// (0 at the end of the file, or of a pipe whose writer closed — or with
-	// no room to read into). For all of a file, read_entire_file.
-	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
-		if data.cap == 0 {
-			data.len = 0
-			return
-		}
-		n := read(id, &data[0], usize(data.cap))
-		if n < 0 do return Read_Failed
-		data.len = n
+	// Reads the next piece of a file, a pipe or a program's output into data,
+	// a window of memory: one read, up to data's len — less when less has come,
+	// or when the system reads less at a time. Gives back the part of data that
+	// was filled: empty at the end of the file, or of a pipe whose writer
+	// closed. A list's room is `buf[:.cap]`; with no room at all it fails with
+	// No_Room. For all of a file, read_entire_file.
+	file_read :: fun(id: File_Id, data: ^[]byte) -> []byte, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, File_Error.No_Room
+		n := read(id, &data[0], usize(data.len))
+		if n < 0 do return none, Read_Failed
+		return data^[0 : n]
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. POSIX
@@ -2042,11 +2036,12 @@ Sockaddr :: struct {
 		defer file_close(from)
 		to := file_open_write(dst)?
 		defer file_close(to)
-		buf : [512]byte
+		buf : [512!]byte
+		room := buf[:]
 		for true {
-			file_read(from, &buf)?
-			if buf.len == 0 do return   // the end of the file
-			file_write(to, buf)?
+			piece := file_read(from, &room)?
+			if piece.len == 0 do return   // the end of the file
+			file_write(to, piece)?
 		}
 	}
 
@@ -2399,18 +2394,18 @@ Sockaddr :: struct {
 	}
 
 	// Reads from a pipe what has arrived, without waiting for more — for a
-	// program that can't wait, as a window between its frames: data.len
-	// becomes the number of bytes read, 0 when none has. Returns false once
-	// the pipe has ended: its writer closed and all it wrote read.
-	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
-		data.len = 0
+	// program that can't wait, as a window between its frames: the part of data
+	// filled, empty when none has, and whether the pipe is still open (false
+	// once its writer closed and all it wrote is read).
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> []byte, bool, err {
+		none := data^[0 : 0]
 		ready := Poll_Fd{fd = id, events = POLLIN}
 		n := poll(&ready, 1, 0)   // (0 ms: answers at once)
-		if n < 0 do return false, Read_Failed
-		if n == 0 do return true
+		if n < 0 do return none, false, Read_Failed
+		if n == 0 do return none, true
 		// (Readable: what has arrived, or its end — 0 bytes.)
-		file_read(id, data)?
-		return data.len > 0
+		got := file_read(id, data)?
+		return got, got.len > 0
 	}
 
 	// Waits for the process to end and returns its exit code — its input and
@@ -2764,31 +2759,30 @@ Sockaddr :: struct {
 		}
 	}
 
-	// Takes the next packet that has arrived, without waiting: true, the
-	// packet in data (data.len its size) and its sender in `from`; false
-	// when none has. data's room is the biggest packet it takes: a bigger
-	// one is lost, failing with Packet_Too_Large.
-	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
-		data.len = 0
-		if data.cap == 0 do return false, Packet_Too_Large
+	// Takes the next packet that has arrived, without waiting: the packet, the
+	// part of data it filled, true, and its sender in `from`; false when none
+	// has. data's len is the biggest packet it takes: a bigger one is lost,
+	// failing with Packet_Too_Large.
+	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> []byte, bool, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, false, Packet_Too_Large
 		for true {
 			at := Sockaddr()
 			size: u32 = u32(size_of(Sockaddr))
 			// (MSG_TRUNC: the packet's whole size, though bigger than the room.)
-			n := recvfrom(s.id, &data[0], usize(data.cap), MSG_TRUNC, &at, &size)
-			if n > data.cap do return false, Packet_Too_Large
+			n := recvfrom(s.id, &data[0], usize(data.len), MSG_TRUNC, &at, &size)
+			if n > data.len do return none, false, Packet_Too_Large
 			if n >= 0 {
-				data.len = n
 				from^ = address_of(&at)
-				return true
+				return data^[0 : n], true
 			}
 			e := __errno_location()^
-			if e == EAGAIN do return false
+			if e == EAGAIN do return none, false
 			// (Word from the network that an earlier packet found nobody
 			// there: no packet. Take the next.)
-			if e != EINTR and e != ECONNREFUSED do return false, Receive_Failed
+			if e != EINTR and e != ECONNREFUSED do return none, false, Receive_Failed
 		}
-		return false
+		return none, false
 	}
 
 	// Closes the socket.
@@ -2878,23 +2872,20 @@ Sockaddr :: struct {
 		}
 	}
 
-	// Takes what has arrived on the connection, without waiting for more:
-	// data.len becomes the number of bytes, 0 when none has. Returns false
-	// once the connection has ended: the other side closed it (and all it
-	// sent is read), or it broke.
-	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
-		data.len = 0
-		if data.cap == 0 do return true
-		n := recv(c.id, &data[0], usize(data.cap), 0)
-		if n > 0 {
-			data.len = n
-			return true
-		}
-		if n == 0 do return false
+	// Takes what has arrived on the connection, without waiting for more: the
+	// part of data filled, empty when none has, and whether the connection is
+	// still open (false once the other side closed it, and all it sent is read,
+	// or it broke). With no room in data at all it fails with No_Room.
+	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> []byte, bool, err {
+		none := data^[0 : 0]
+		if data.len == 0 do return none, true, File_Error.No_Room
+		n := recv(c.id, &data[0], usize(data.len), 0)
+		if n > 0 do return data^[0 : n], true
+		if n == 0 do return none, false
 		e := __errno_location()^
-		if e == EAGAIN or e == EINTR do return true
-		if e == ECONNRESET do return false
-		return false, Receive_Failed
+		if e == EAGAIN or e == EINTR do return none, true
+		if e == ECONNRESET do return none, false
+		return none, false, Receive_Failed
 	}
 
 	// Closes the connection: the other side's tcp_receive returns false once

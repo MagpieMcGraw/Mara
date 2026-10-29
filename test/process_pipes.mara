@@ -15,11 +15,12 @@ main :: fun(args: [][]utf8) -> i64 {
 	if args.len > 1 {
 		// The child: its whole input, then an answer.
 		got : [200]byte
-		chunk : [64]byte
+		chunk : [64!]byte
+		room := chunk[:]
 		for true {
-			e := file_read(standard_input(), &chunk)
-			if bool(e) or chunk.len == 0 do break
-			&got + chunk
+			piece, e := file_read(standard_input(), &room)
+			if bool(e) or piece.len == 0 do break
+			&got + piece
 		}
 		text : []utf8 = got
 		print("child got:", text)
@@ -43,15 +44,16 @@ main :: fun(args: [][]utf8) -> i64 {
 	}
 	process_close_input(&p)
 	out : [400]byte
-	chunk : [64]byte
+	chunk : [64!]byte
+	room := chunk[:]
 	for true {
-		re := file_read(p.output, &chunk)
+		piece, re := file_read(p.output, &room)
 		if bool(re) {
 			print("read failed:", re)
 			return 1
 		}
-		if chunk.len == 0 do break
-		&out + chunk
+		if piece.len == 0 do break
+		&out + piece
 	}
 	text : []utf8 = out
 	print(text)

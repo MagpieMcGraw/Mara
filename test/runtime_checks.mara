@@ -195,11 +195,12 @@ run_case :: (exe: []utf8, name: []utf8) {
 	}
 	process_close_input(&p)
 	out : [4000]byte
-	chunk : [64]byte
+	chunk : [64!]byte
+	room := chunk[:]
 	for true {
-		re := file_read(p.output, &chunk)
-		if re or chunk.len == 0 do break
-		&out + chunk
+		piece, re := file_read(p.output, &room)
+		if re or piece.len == 0 do break
+		&out + piece
 	}
 	code, _ := process_wait(&p)
 	text : []utf8 = out
