@@ -58,9 +58,9 @@ Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
 // is sharper.)
 load_glyphs_and_metrics :: fun(
 	font: []utf8,
-	glyphs: ^[]Glyph,
+	glyphs: ^[$G]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
+	atlas: ^[$A]byte,
 	first: u32 = 0) -> err
 {
 	if atlas.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
@@ -125,9 +125,9 @@ COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
 load_coverage_glyphs :: fun(
 	font: []utf8,
 	pixels: f32,
-	glyphs: ^[]Glyph,
+	glyphs: ^[$G]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
+	atlas: ^[$A]byte,
 	size: i64,
 	first: u32 = 32) -> err
 {
@@ -147,9 +147,9 @@ load_coverage_chars :: fun(
 	font: []utf8,
 	pixels: f32,
 	chars: []u32,
-	glyphs: ^[]Glyph,
+	glyphs: ^[$G]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
+	atlas: ^[$A]byte,
 	size: i64) -> err
 {
 	if chars.len > glyphs.cap do return Too_Many_Chars
@@ -215,7 +215,7 @@ load_coverage_chars :: fun(
 // covers to the cells of the rows it crosses; a running sum along a row is
 // its coverage.)
 rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y: f32,
-                          w: i64, h: i64, acc: ^[]f32, out: ^[]byte) {
+                          w: i64, h: i64, acc: ^[$A]f32, out: ^[$B]byte) {
 	stride := w + 2
 	acc.len = stride * h
 	for i in 0:acc.len {

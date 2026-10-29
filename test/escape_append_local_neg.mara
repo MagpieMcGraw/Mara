@@ -2,14 +2,14 @@ module escape_append_local_neg
 
 //@ expect-fail: reference to local `text` would escape
 
-// Appending through a `^[]T` lands in the list's elements: a view of the
+// Appending through a `^[$N]T` lands in the list's elements: a view of the
 // appending fun's own text into its caller's list outlives the text — an
 // error, though an item that's only the caller's (or text the items point
 // at) appends fine (test/filter.mara).
 
 use mara.core
 
-add_local :: fun(list: ^[][]utf8) {
+add_local :: fun(list: ^[$N][]utf8) {
 	text : str64
 	&text + "gone when this returns"
 	list + text

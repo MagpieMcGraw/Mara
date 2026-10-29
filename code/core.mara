@@ -23,13 +23,15 @@ overload != not_equal
 // Whether two texts' characters differ: `a != b`.
 not_equal :: dispatch{ utf8_not_equal }
 
-// Appends text to dst; it must fit in dst's capacity.
+// Appends text to dst, a list; it must fit in its room.
 // (We write 0 after it, so dst stays a valid C string.)
-utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
-	assert(dst.len + src.len <= dst.cap)
-	dst[dst.len:] = src
-	dst.len += src.len
-	if dst.len < dst.cap do dst[dst.len] = 0
+utf8_add :: fun(dst: ^[$N]utf8, src: []utf8) {
+	n := dst.len
+	assert(n + src.len <= dst.cap)
+	dst[n:] = src
+	end := n + src.len
+	dst.len = end
+	if end < dst.cap do dst[end] = 0
 }
 
 // Whether a and b hold the same characters.
@@ -46,26 +48,30 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 	return not utf8_equal(a, b)
 }
 
-// Appends one character to dst; it must fit in dst's capacity.
-utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
-	assert(dst.len < dst.cap)
-	dst[dst.len] = src
-	dst.len += 1
-	if dst.len < dst.cap do dst[dst.len] = 0
+// Appends one character to dst, a list; it must fit in its room.
+utf8_add_item :: fun(dst: ^[$N]utf8, src: utf8) {
+	n := dst.len
+	assert(n < dst.cap)
+	dst[n] = src
+	dst.len = n + 1
+	if n + 1 < dst.cap do dst[n + 1] = 0
 }
 
-// Appends items to dst; they must fit in dst's capacity.
-slice_add :: fun(dst: ^[]$T, src: []$T) {
-	assert(dst.len + src.len <= dst.cap)
-	dst[dst.len:] = src
-	dst.len += src.len
+// Appends items to dst, a list; they must fit in its room. (Only lists
+// grow: a slice is a view, its items written by index.)
+slice_add :: fun(dst: ^[$N]$T, src: []T) {
+	n := dst.len
+	assert(n + src.len <= dst.cap)
+	dst[n:] = src
+	dst.len = n + src.len
 }
 
-// Appends one item to dst; it must fit in dst's capacity.
-slice_add_item :: fun(dst: ^[]$T, src: $T) {
-	assert(dst.len < dst.cap)
-	dst[dst.len] = src
-	dst.len += 1
+// Appends one item to dst, a list; it must fit in its room.
+slice_add_item :: fun(dst: ^[$N]$T, src: T) {
+	n := dst.len
+	assert(n < dst.cap)
+	dst[n] = src
+	dst.len = n + 1
 }
 
 // A new list: a's items, then b's — of a's own type, its room (a Path
@@ -90,14 +96,15 @@ join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 // it, whole (a view, a struct). The item as it is, as an append's dst
 // is: empty in a list only grown (each item starts so); in one shrunk and
 // filled again, what it held. It must fit in the list's capacity.
-next :: fun(list: ^[]$T) -> ^T {
+next :: fun(list: ^[$N]$T) -> ^T {
 	/*
 	we could zero the slot that's about to get written
 	array append could be written as next(&list)^ = x
 	*/
-	assert(list.len < list.cap)
-	list.len += 1
-	return &list[list.len - 1]
+	n := list.len
+	assert(n < list.cap)
+	list.len = n + 1
+	return &list[n]
 }
 
 // `x in xs`: whether some item of xs is x — includes(xs, x) — and `x not in
@@ -120,24 +127,37 @@ includes :: fun(items: []$T, x: $U) -> bool {
 // The items `keep` says yes to, in their order, into storage after what's
 // there: a view of them. keep is any function taking an item and giving a
 // bool — `filter(entries, is_mara, &storage)`. Room for every item is taken
-// from storage, its len moved past it all, kept or not; the view's room is
-// that much (more appends to it fit). Short of room, the program stops (as
-// slice() does).
-filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
+// from storage, its len moved past it all, kept or not. Short of room, the
+// program stops (as slice() does).
+filter :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T {
 	new := slice([:items.len]T, storage)
-	for item in items {if keep(item) do &new + item}
-	return new
+	k := 0
+	for item in items {
+		if keep(item) {
+			new[k] = item
+			k += 1
+		}
+	}
+	return new[0:k]
 }
 
-filter2 :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T, []T {
+filter2 :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T, []T {
 	one := slice([:items.len]T, storage)
 	two := slice([:items.len]T, storage)
+	a := 0
+	b := 0
 	for item in items {
 		y1, y2 := keep(item)
-		if y1 do &one + item
-		if y2 do &two + item
+		if y1 {
+			one[a] = item
+			a += 1
+		}
+		if y2 {
+			two[b] = item
+			b += 1
+		}
 	}
-	return one, two
+	return one[0:a], two[0:b]
 }
 
 // Each item into the list for its kind, in their order: one list for each
@@ -145,9 +165,9 @@ filter2 :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T, []T {
 // kind is any function taking an item and giving a value of an enum:
 // `group(entries, kind_of, &storage)`. Each kind is counted first, then
 // room for its items carved from storage (its len moved past them all),
-// then the items appended. Short of room, the program stops (as slice()
+// then the items written in. Short of room, the program stops (as slice()
 // does).
-group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
+group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[$N]byte) -> [K][]T {
 	counts : [K]i64
 	for item in items {
 		counts[kind(item)] += 1
@@ -156,8 +176,11 @@ group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
 	for c, i in counts {
 		lists[i] = slice([:c]T, storage)
 	}
+	at : [K]i64
 	for item in items {
-		&lists[kind(item)] + item
+		k := kind(item)
+		lists[k][at[k]] = item
+		at[k] += 1
 	}
 	return lists
 }

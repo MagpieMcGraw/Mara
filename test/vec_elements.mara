@@ -28,7 +28,7 @@ fill :: fun(out: ^[]Vec3, n: i64) {
 		out.len = i + 1
 	}
 }
-push_pt :: fun(arr: ^[]Vec3, v: Vec3) {
+push_pt :: fun(arr: ^[$N]Vec3, v: Vec3) {
 	arr + v
 }
 

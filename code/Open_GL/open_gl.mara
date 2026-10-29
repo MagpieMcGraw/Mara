@@ -300,7 +300,7 @@ GL_Get_Param :: union(tag u32) {
 // room holds (p void: none). A buffer keeps a 0 after its text, so it's C
 // text again — a view of C's memory wouldn't be: its len is its cap, and
 // cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[]utf8) {
+c_text :: fun(p: ^byte, out: ^[$N]utf8) {
     if p == void do return
     view : []utf8 = slice_from_ptr(p, 1 << 20)
     for ch in view {
@@ -598,7 +598,7 @@ TexStorage3D :: fun(target: GL_Texture_Target, levels: i32, internalformat: u32,
 GetShaderiv :: fun(shader: u32, pname: GL_Shader_Param, params: ^i32) { glGetShaderiv(shader, pname, params) }
 // The shader's log (its compile's, its link's) into `log`, as much as its
 // room holds; log.len its length.
-GetShaderInfoLog :: fun(shader: u32, log: ^[]utf8) {
+GetShaderInfoLog :: fun(shader: u32, log: ^[$N]utf8) {
     n : i32 = 0
     glGetShaderInfoLog(shader, i32(log.cap), &n, &log[0])
     log.len = i64(n)
@@ -606,7 +606,7 @@ GetShaderInfoLog :: fun(shader: u32, log: ^[]utf8) {
 GetProgramiv :: fun(program: u32, pname: GL_Shader_Param, params: ^i32) { glGetProgramiv(program, pname, params) }
 // The program's log (its compile's, its link's) into `log`, as much as its
 // room holds; log.len its length.
-GetProgramInfoLog :: fun(program: u32, log: ^[]utf8) {
+GetProgramInfoLog :: fun(program: u32, log: ^[$N]utf8) {
     n : i32 = 0
     glGetProgramInfoLog(program, i32(log.cap), &n, &log[0])
     log.len = i64(n)

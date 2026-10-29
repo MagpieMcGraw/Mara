@@ -19,7 +19,7 @@ use mara.memory
 Name :: alias [500]utf8
 
 // The list one longer, the new name appended into where it is.
-add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
+add_in_place :: fun(names: ^[$N]Name, dir: []utf8, file: []utf8) {
 	names.len += 1
 	last := &names[names.len - 1]
 	last.len = 0
@@ -29,7 +29,7 @@ add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 }
 
 // A name built apart, then copied onto the list's end.
-add_copy :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
+add_copy :: fun(names: ^[$N]Name, dir: []utf8, file: []utf8) {
 	full : Name
 	&full + dir
 	&full + "/"

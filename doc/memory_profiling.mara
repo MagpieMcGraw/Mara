@@ -1,7 +1,8 @@
 // How to size your memory: build with -profile memory, run, read memory.txt.
 //
-// A partial array, `[N]T`, always holds room for N; a take from storage,
-// `slice([:N]T, storage)`, takes room for N; an arena, its whole size.
+// A partial array, `[N]T`, always holds room for N; an arena, its whole
+// size. A take from storage, `slice([:N]T, storage)`, is a view of N, all
+// its own: its storage, a list, is what fills.
 // `mara build memory_profiling -profile memory` makes a program that
 // watches how full each one gets. When it exits (main's end, an assert, a
 // crash) it writes memory.txt next to the exe: one line per place an N is
@@ -68,9 +69,9 @@ main :: fun() {
 	print(total, items.len)    // main.items: peak 3 of 100
 
 	storage : [4 * KB]byte
-	counts := slice([:32]i64, &storage)
+	counts := slice([:32]i64, &storage)   // main.storage: peak 256 of 4096
 	for k in 0:5 {
-		&counts + k            // main.counts: peak 5 of 32
+		counts[k] = k
 	}
 	print(counts.len)
 }

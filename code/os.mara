@@ -198,7 +198,7 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 // Opens a file and reads its data into the provided buffer. Then closes the
 // file. Returns a slice of the buffer containing the read data. Slice .len
 // and .cap are both set to the size of the file in bytes.
-read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
+read_entire_file :: fun(path: []utf8, storage: ^[$N]byte) -> []byte, err {
 	start := storage.len
 	none := storage[start : start]
 	id, oe := file_open_read(path)
@@ -819,7 +819,7 @@ Sockaddr :: struct {
 	// (storage untouched). The path is copied: any slice of one will do
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
-	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+	dir_read :: fun(path: []utf8, storage: ^[$N]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
@@ -2145,7 +2145,7 @@ Sockaddr :: struct {
 	// (storage untouched). The path is copied: any slice of one will do
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
-	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+	dir_read :: fun(path: []utf8, storage: ^[$N]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start

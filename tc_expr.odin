@@ -432,7 +432,10 @@ is_core_append :: proc(f: ^Type_Scope) -> bool {
     case "utf8_add", "utf8_add_item", "slice_add", "slice_add_item": return true
     }
     // (A generic one's instance: by its name, as is_core_join.)
-    return strings.has_prefix(f.name, "mara_core_slice_add__") || strings.has_prefix(f.name, "mara_core_slice_add_item__")
+    for prefix in ([]string{"mara_core_slice_add__", "mara_core_slice_add_item__", "mara_core_utf8_add__", "mara_core_utf8_add_item__"}) {
+        if strings.has_prefix(f.name, prefix) { return true }
+    }
+    return false
 }
 
 // Whether a fun is an instance of mara.core's join or join_item.
@@ -664,6 +667,13 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
                 } else {
                     tc_error(k, span, TYPE_APPEND_CHAIN, tc_written(k, l), tc_written(k, right))
                 }
+                return Type_Error{}
+            }
+            // (`&view + x`: a slice can't grow; only a list does.)
+            if lp, is_ptr := lt.(^Type_Ptr); is_ptr && lp.elem != nil && is_slice_type(lp.elem) {
+                name := tc_diag_name(k, tc_unparen(k, left))
+                if t := tc_unparen(k, left); tr.tag[t] == .Unary && build_tokens[tr.main[t]].kind == .Ampersand { name = tc_diag_name(k, Tree_Id(tr.a[t])) }
+                tc_error(k, span, TYPE_SLICE_CANT_GROW, fmt.tprintf("`%s`", name) if name != "" else "it")
                 return Type_Error{}
             }
             // (A view joined: it has no room to make the new one of.)

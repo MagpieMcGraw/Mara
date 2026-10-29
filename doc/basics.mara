@@ -756,23 +756,22 @@ example_size_of :: fun() {
 
 // `slice`, `let`: values carved out of a byte buffer — memory a caller handed you.
 //
-// `slice([:n]T, mem)` takes room for n Ts from mem, a `^[]byte`, after its
-// len, and moves the len past them: the next take comes after. What it gives
-// back is empty — its len 0, its cap n — for you to fill: append to it. mem
-// can be a list of Ts too, `&tokens`: then its items are carved, one part
-// after another, nothing read as another type (a list of anything else is
-// refused). `let(T,
+// `slice([:n]T, mem)` takes room for n Ts from mem, a list of bytes
+// (`&storage`), after its len, and moves the len past them: the next take
+// comes after. What it gives back is a view of the n of them, to write by
+// index (only lists grow). mem can be a list of Ts too, `&tokens`: then its
+// items are carved, one part after another, nothing read as another type (a
+// list of anything else is refused). `let(T,
 // &mem[k])` names a T living in the bytes at k — not a slice: one there would
 // be only its header (n Ts there are `slice([:n]T, &mem[k])`). For a count known only when
 // the program runs, slice a fixed array instead: `room : [100!]i64`, then
 // `xs := room[0:n]`.
 example_slice :: fun() {
 	storage : [64]byte
-	mem : []byte = storage
-	xs := slice([:3]i64, &mem)             // room for 3, empty
-	&xs + 5
-	&xs + 7
-	print(xs.len, xs.cap, xs[1], mem.len)  // 2 3 7 24
+	xs := slice([:3]i64, &storage)         // a view of 3
+	xs[0] = 5
+	xs[1] = 7
+	print(xs.len, xs[1], storage.len)      // 3 7 24
 
 	n := let(i64, &storage[32])
 	n = 9                                  // into storage's bytes

@@ -18,10 +18,10 @@ Bag :: struct {
 	items: []i64
 }
 
-bag_of :: fun(storage: ^[]byte) -> Bag {
-	bag := Bag{items = slice([:4]i64, storage)}
-	&bag.items + 7
-	&bag.items + 8
+bag_of :: fun(storage: ^[$N]byte) -> Bag {
+	bag := Bag{items = slice([:2]i64, storage)}
+	bag.items[0] = 7
+	bag.items[1] = 8
 	return bag
 }
 

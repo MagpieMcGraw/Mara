@@ -4,7 +4,7 @@ module slice_copy_store_neg
 
 // An immutable param stored into a struct by the fun it's given to stays
 // read-only there: lexer.tokens, set by init from its param, can't be
-// appended to, as it couldn't be through tokens_in itself.
+// written into, as it couldn't be through tokens_in itself.
 
 use mara.core
 
@@ -22,6 +22,6 @@ main :: fun() {
 	list : [8]i64
 	lexer : Lexer
 	init(&lexer, list)
-	&lexer.tokens + 7
+	lexer.tokens[0] = 7
 	print(list.len)
 }

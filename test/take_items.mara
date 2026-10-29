@@ -1,11 +1,11 @@
 module take_items
 
-//@ expect-output: parts: 1 3 2 4
+//@ expect-output: parts: 3 3 4 4
 //@ expect-output: cursor: 7 | in place: 1 5 4
 //@ expect-output: through a param: 2 2 | 30 31
 
-// `slice([:n]T, &list)`, a list of T: n of its items carved, empty to fill
-// (len 0, cap n), the list's cursor moved past them — each take the next
+// `slice([:n]T, &list)`, a list of T: n of its items carved, a view of
+// them (len n, written by index), the list's cursor moved past them — each take the next
 // part, as a take from bytes is. No bytes read as another type, so it takes
 // a list of exactly T (take_items_type_neg); its cap is checked as the
 // program runs.
@@ -15,7 +15,7 @@ use mara.core
 Token :: struct { offset: i64  len: i64  kind: u8 }
 
 // (A part of the caller's list, carved where it is.)
-part_of :: fun(items: ^[]i64, n: i64) -> []i64 {
+part_of :: fun(items: ^[$N]i64, n: i64) -> []i64 {
 	return slice([:n]i64, items)
 }
 
@@ -23,15 +23,15 @@ main :: fun() {
 	tokens : [8]Token
 	first := slice([:3]Token, &tokens)
 	second := slice([:4]Token, &tokens)
-	&first + Token{offset = 1, len = 2, kind = 7}
-	&second + Token{offset = 5, len = 1, kind = 9}
-	&second + Token{offset = 6, len = 3, kind = 4}
+	first[0] = Token{offset = 1, len = 2, kind = 7}
+	second[0] = Token{offset = 5, len = 1, kind = 9}
+	second[1] = Token{offset = 6, len = 3, kind = 4}
 	print("parts:", first.len, first.cap, second.len, second.cap)
 	print("cursor:", tokens.len, "| in place:", tokens[0].offset, tokens[3].offset, tokens[4].kind)
 
 	ints : [4]i64
 	a := part_of(&ints, 2)
-	&a + 30
-	&a + 31
+	a[0] = 30
+	a[1] = 31
 	print("through a param:", a.len, ints.len, "|", ints[0], ints[1])
 }

@@ -23,7 +23,7 @@ Name :: alias [500]utf8
 Pair :: struct { a: i64  b: i64 }
 
 // A list's next name, from its parts, through the list's pointer.
-add_name :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
+add_name :: fun(names: ^[$N]Name, dir: []utf8, file: []utf8) {
 	n := next(names)
 	n + dir
 	n + "/"

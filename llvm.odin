@@ -2231,8 +2231,8 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
 // address's, not the len's: storage may start anywhere), that address, the
 // cursor moved past it —
 // checked against storage's cap — and stored as its len. `let(T, s)` is that
-// memory; `slice([:n]T, s)` a header over room for n of them, empty (len 0,
-// cap n: room carved is room to write into), built where it goes when
+// memory; `slice([:n]T, s)` a view of the n of them (len n: written by
+// index; only lists grow), built where it goes when
 // that's fresh, as a call's result is. Positional (a view of bytes for
 // storage): `let` is the view; `slice`, n at its offset (len n: bytes that
 // are there, to read).
@@ -2358,7 +2358,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         e.value[op] = at
         return true
     }
-    llvm_carve_header(e, op, at, ir_int(0), count)
+    llvm_carve_header(e, op, at, count, count)
     return true
 }
 

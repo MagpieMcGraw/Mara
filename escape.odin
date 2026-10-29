@@ -1546,6 +1546,7 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
     what := esc_describe(e, val)
     if site.callee != nil {
         name := graph_name(g, site.op)
+        if site.callee.source_name == "" && site.callee.decl != 0 { name = tc_text(site.callee.decl) }   // (a generic's instance: as written)
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
             esc_diag(e, graph_origin(g, site.op), TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)

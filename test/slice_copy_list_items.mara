@@ -24,7 +24,7 @@ words :: fun(line: []utf8) -> [8][]utf8 {
 	return out
 }
 
-keep :: fun(texts: []utf8, into: ^[][]utf8) {
+keep :: fun(texts: []utf8, into: ^[$N][]utf8) {
 	into + texts[0 : 1]
 	into + texts[1 : 2]
 }

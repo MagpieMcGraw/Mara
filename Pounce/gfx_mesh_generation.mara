@@ -6,7 +6,7 @@ use mara.math
 // Sphere with given subdivisions, radius 0.5 centered at origin
 primitive_sphere :: fun(
 	subdivisions: i64,
-	storage: ^[]byte) -> Mesh_Data
+	storage: ^[$N]byte) -> Mesh_Data
 {
     rings := subdivisions
     sectors := subdivisions * 2
@@ -14,9 +14,11 @@ primitive_sphere :: fun(
     n_verts := (rings + 1) * (sectors + 1)
     n_inds  := rings * sectors * 6
 
-    // (Room for all of them, empty: each appended as it's made.)
+    // (Room for all of them: each written as it's made.)
     verts := slice([:n_verts]Vertex, storage)
     inds  := slice([:n_inds]u32, storage)
+    nv := 0
+    ni := 0
 
     for r in 0..rings {
         phi := PI * f32(r) / f32(rings)
@@ -36,7 +38,8 @@ primitive_sphere :: fun(
             u_coord := f32(s) / f32(sectors)
             v_coord := f32(r) / f32(rings)
 
-            &verts + Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
+            verts[nv] = Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
+            nv += 1
         }
     }
 
@@ -45,12 +48,13 @@ primitive_sphere :: fun(
             cur := u32(r * (sectors + 1) + s)
             below := cur + u32(sectors + 1)
 
-            &inds + cur
-            &inds + below
-            &inds + (cur + 1)
-            &inds + (cur + 1)
-            &inds + below
-            &inds + (below + 1)
+            inds[ni] = cur
+            inds[ni + 1] = below
+            inds[ni + 2] = cur + 1
+            inds[ni + 3] = cur + 1
+            inds[ni + 4] = below
+            inds[ni + 5] = below + 1
+            ni += 6
         }
     }
 

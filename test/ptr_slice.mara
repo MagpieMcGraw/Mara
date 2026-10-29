@@ -12,7 +12,7 @@ use mara.core
 
 Holder :: struct { s: ^[]i64 }
 Grid   :: struct { cells: ^[4!]i64 }
-Ctx    :: struct { out: ^[]utf8 }
+Ctx    :: struct { out: ^[32]utf8 }
 
 // read, write, address-of, .len/.cap, slicing — through a LOCAL ^[]i64
 through_local :: fun(p: ^[]i64) -> i64 {

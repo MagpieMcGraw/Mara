@@ -1139,7 +1139,7 @@ PathInfo :: struct {
 // room holds (p void: none). A buffer keeps a 0 after its text, so it's C
 // text again — a view of C's memory wouldn't be: its len is its cap, and
 // cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[]utf8) {
+c_text :: fun(p: ^byte, out: ^[$N]utf8) {
     if p == void do return
     view : []utf8 = slice_from_ptr(p, 1 << 20)
     for ch in view {
