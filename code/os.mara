@@ -18,7 +18,7 @@ File_Error :: error {
     Too_Large
     Seek_Failed
     Map_Failed
-    No_Room       // a read given no room to read into
+    Empty_Window  // a read given no room to read into
 }
 
 // What starting or waiting for a process can fail with.
@@ -609,10 +609,10 @@ Sockaddr :: struct {
 	// or when the system reads less at a time. Gives back the part of data that
 	// was filled: empty at the end of the file, or of a pipe whose writer
 	// closed. A list's room is `buf[:.cap]`; with no room at all it fails with
-	// No_Room. For all of a file, read_entire_file.
+	// Empty_Window. For all of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> []byte, err {
 		none := data^[0 : 0]
-		if data.len == 0 do return none, File_Error.No_Room
+		if data.len == 0 do return none, File_Error.Empty_Window
 		read: u32 = 0
 		// (ReadFile counts in a u32: at most 1 GB a call, so a room of 4 GB
 		// or more doesn't wrap to a small count — 4 GB to none.)
@@ -1500,10 +1500,10 @@ Sockaddr :: struct {
 	// Takes what has arrived on the connection, without waiting for more: the
 	// part of data filled, empty when none has, and whether the connection is
 	// still open (false once the other side closed it, and all it sent is read,
-	// or it broke). With no room in data at all it fails with No_Room.
+	// or it broke). With no room in data at all it fails with Empty_Window.
 	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> []byte, bool, err {
 		none := data^[0 : 0]
-		if data.len == 0 do return none, true, File_Error.No_Room
+		if data.len == 0 do return none, true, File_Error.Empty_Window
 		want := data.len
 		if want > 1 << 30 do want = 1 << 30
 		n := recv(c.id, &data[0], i32(want), 0)
@@ -1965,10 +1965,10 @@ Sockaddr :: struct {
 	// or when the system reads less at a time. Gives back the part of data that
 	// was filled: empty at the end of the file, or of a pipe whose writer
 	// closed. A list's room is `buf[:.cap]`; with no room at all it fails with
-	// No_Room. For all of a file, read_entire_file.
+	// Empty_Window. For all of a file, read_entire_file.
 	file_read :: fun(id: File_Id, data: ^[]byte) -> []byte, err {
 		none := data^[0 : 0]
-		if data.len == 0 do return none, File_Error.No_Room
+		if data.len == 0 do return none, File_Error.Empty_Window
 		n := read(id, &data[0], usize(data.len))
 		if n < 0 do return none, Read_Failed
 		return data^[0 : n]
@@ -2875,10 +2875,10 @@ Sockaddr :: struct {
 	// Takes what has arrived on the connection, without waiting for more: the
 	// part of data filled, empty when none has, and whether the connection is
 	// still open (false once the other side closed it, and all it sent is read,
-	// or it broke). With no room in data at all it fails with No_Room.
+	// or it broke). With no room in data at all it fails with Empty_Window.
 	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> []byte, bool, err {
 		none := data^[0 : 0]
-		if data.len == 0 do return none, true, File_Error.No_Room
+		if data.len == 0 do return none, true, File_Error.Empty_Window
 		n := recv(c.id, &data[0], usize(data.len), 0)
 		if n > 0 do return data^[0 : n], true
 		if n == 0 do return none, false
