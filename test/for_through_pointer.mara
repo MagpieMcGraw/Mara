@@ -40,7 +40,7 @@ indexed :: (xs: ^[]i64) {
 		&line + ':'
 		&line + int_text(x)
 	}
-	print(line[:])
+	print(line)
 }
 
 Bag :: struct {

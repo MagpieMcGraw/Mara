@@ -4,11 +4,13 @@
 // how many it has, its cap how many fit, and `&list + x` adds one.
 // `next(&list)` makes it one longer and points at the new item: `^` writes
 // it, `next(&list)^ = x` (or a field of it, `next(&list)^.name = …`). A slice
-// `[]i64` is a view of some of either, without a copy: `a[1:3]`, or `a[:]`
-// for all of it. A slice made so holds all of its items until you append
-// to it: then it fills from its start, as an empty one would (`room :=
-// buf[0:8]`, then `&room + x`). Functions usually take slices, so they work
-// on any of these. An array given back isn't a slice, though: a view of a fun's own
+// `[]i64` is a view of some of either, without a copy: `a[1:3]`, `a[1:]`
+// for the rest of its items, or `a[:]` for all of its room (a list's whole
+// cap). A slice made so holds all of its items until you append to it:
+// then it fills from its start, as an empty one would (`room := buf[:]`,
+// then `&room + x`). A list given where a slice goes is a view of its items
+// (`sum(list)`). Functions usually take slices, so they work on any of
+// these. An array given back isn't a slice, though: a view of a fun's own
 // array would outlive it — return the array itself (`-> [8]i64`; text,
 // `-> str64`). Reading
 // or writing past the end stops the program with a message.
@@ -32,7 +34,7 @@ main :: fun() {
 	list : [8]i64
 	&list + 10
 	&list + 20
-	print(list.len, list.cap, sum(list[:]))      // 2 8 30
+	print(list.len, list.cap, sum(list))      // 2 8 30
 	next(&list) = 30
 	print(list.len, list[2])                     // 3 30
 

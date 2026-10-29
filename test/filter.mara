@@ -63,6 +63,6 @@ main :: fun() {
 		&pairs + p
 	}
 	pair_room : [512]byte
-	kept := filter(pairs[:], is_even_pair, &pair_room)
-	print("structs: % % % % | %", kept[0].name[:], kept[0].n, kept[1].name[:], kept[1].n, kept.len)
+	kept := filter(pairs, is_even_pair, &pair_room)
+	print("structs: % % % % | %", kept[0].name, kept[0].n, kept[1].name, kept[1].n, kept.len)
 }

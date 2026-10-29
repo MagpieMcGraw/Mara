@@ -88,7 +88,7 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 		&p.problem + "profile.txt couldn't be read (or is over 8 MB)."
 		return
 	}
-	text : []utf8 = p.text[:]
+	text : []utf8 = p.text
 	at : i64 = 0
 	for at < text.len {
 		end := at

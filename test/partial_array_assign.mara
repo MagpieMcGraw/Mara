@@ -60,7 +60,7 @@ pick :: fun(kind: i64) -> [4]i64 {
 	src[0] = 1
 	src[1] = 2
 	src.len = 2
-	sl : []i64 = src[:]
+	sl : []i64 = src
 	h := H{}
 	h.f = src
 	p := &src

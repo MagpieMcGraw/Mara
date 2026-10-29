@@ -48,7 +48,7 @@ main :: fun() -> i64 {
 	}
 	for want in ["file.txt", "real", "to_real", "to_gone"] {
 		for entry in entries {
-			if entry.name[:] != want do continue
+			if entry.name != want do continue
 			if entry.link {
 				if entry.dir {
 					print("%: link to a directory", want)
@@ -75,7 +75,7 @@ main :: fun() -> i64 {
 	print("a link to a file:", file_link)
 
 	for entry in entries {
-		if entry.dir and not entry.link do print("walk into:", entry.name[:])
+		if entry.dir and not entry.link do print("walk into:", entry.name)
 	}
 
 	removed : i64 = -1

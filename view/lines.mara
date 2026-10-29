@@ -345,7 +345,7 @@ doc_code_at :: fun(s: []utf8, at: i64) -> bool {
 status_height :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> f32 {
 	if l.status.len == 0 do return 0
 	rows : [STATUS_ROWS]Line_Row
-	_ = wrap(ui, l.status[:], STYLE_TEXT, lines_width(r), 0, 0, &rows)
+	_ = wrap(ui, l.status, STYLE_TEXT, lines_width(r), 0, 0, &rows)
 	return f32(rows.len) * ui.text.line + 2.0 * ROW_PAD
 }
 
@@ -399,7 +399,7 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	if l.status.len > 0 {
 		h := status_height(ui, l, r)
 		fill(rd, r.x, r.y + r.h - h, r.w, h, ui.header)
-		_ = draw_wrapped(ui, l.status[:], l.status_style, r.x + PAD, r.y + r.h - h + ROW_PAD, w)
+		_ = draw_wrapped(ui, l.status, l.status_style, r.x + PAD, r.y + r.h - h + ROW_PAD, w)
 	}
 }
 

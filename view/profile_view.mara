@@ -103,7 +103,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	if p.problem.len > 0 {
 		color := ui.bad
 		if p.missing do color = ui.dim
-		_ = text_draw(&ui.text, rd, p.problem[:], r.x + PAD, r.y + PAD, color)
+		_ = text_draw(&ui.text, rd, p.problem, r.x + PAD, r.y + PAD, color)
 		return
 	}
 
@@ -197,7 +197,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		&status + ". Click it again for the other way."
 	}
 	fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
-	_ = text_draw(&ui.text, rd, status[:], r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.dim)
+	_ = text_draw(&ui.text, rd, status, r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.dim)
 }
 
 // An arrow beside a title, pointing down (largest first) or up, a line's

@@ -320,9 +320,9 @@ test_partial_array :: fun() {
 
 test_slice_view :: fun() {
 	data : [32]byte
-	text : []utf8 = data[:]
+	text : []utf8 = data
 	print("byte -> utf8 view len:", text.len, "cap:", text.cap)
-	bytes_back : []byte = text[:]
+	bytes_back : []byte = text
 	print("utf8 -> byte view len:", bytes_back.len, "cap:", bytes_back.cap)
 }
 
@@ -1103,7 +1103,7 @@ test_runtime_pa :: fun() {
 		buf[i*2]     = u8(0)
 		buf[i*2 + 1] = u8(i + 1)
 	}
-	fill_manual(5, buf[:])
+	fill_manual(5, buf)
 }
 
 Holder_Sized :: struct {
@@ -1216,7 +1216,7 @@ test_reassign_byteread :: fun() {
 		buf[i*2]     = u8(0)
 		buf[i*2 + 1] = u8(i + 1)
 	}
-	read_into(5, buf[:])
+	read_into(5, buf)
 }
 
 // ============================================================================

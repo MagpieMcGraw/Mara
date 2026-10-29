@@ -620,9 +620,9 @@ Place :: struct { x: f32  y: f32 }
 //
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and
 // checks a 0 is after them: a literal has one, and a buffer keeps one
-// after its text (appends write it). A slice has its len at its cap, so
-// `b[0:n]` or `b[:]` has no 0 after it, and cstring() stops the program:
-// give C the buffer itself, unsliced. Text C gives back is copied into a
+// after its text (appends write it). A slicing holds all of its room, so
+// `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
+// buffer itself, unsliced. Text C gives back is copied into a
 // buffer, so it's C text again (a binding returns `[512]utf8`, say).
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
@@ -804,7 +804,7 @@ example_slice :: fun() {
 //
 // `cstring(buf)` passes a text buffer to C as a pointer to its characters;
 // a 0 must follow the text in the buffer, or the program stops. Pass the
-// buffer itself, not `buf[:]`. `slice_from_ptr(p, n)` views n bytes at a
+// buffer itself, not a slicing of it. `slice_from_ptr(p, n)` views n bytes at a
 // pointer C gave back (n a constant, outside mara.os).
 example_cstring :: fun() {
 	// path : [260]utf8

@@ -86,10 +86,10 @@ main :: fun() {
 	s : str64
 	&s + "hello"
 	head := s[0:3]
-	whole := s[:]
+	whole : []utf8 = s
 	h0 := s[0]
 	s[0] = 'j'
-	print("str64:", head, whole, h0, s, s.len, s.cap, len(s[:]), s.starts_with("je"))
+	print("str64:", head, whole, h0, s, s.len, s.cap, len(s), s.starts_with("je"))
 	letters : str64
 	for c in s {
 		&letters + c

@@ -48,7 +48,7 @@ uses :: fun() {
 	log : [256]utf8
 	gl.GetShaderInfoLog(shader, &log)
 	gl.GetProgramInfoLog(1, &log)
-	if gl.GetUniformLocation(1, "model") < 0 do print(log[:])
+	if gl.GetUniformLocation(1, "model") < 0 do print(log)
 	gl.Uniform4f(0, 1.0, 0.5, 0.25, 1.0)
 	// (A framebuffer of a color texture and a depth texture — a
 	// reflection's, the scene's depth — and one of a depth renderbuffer.)

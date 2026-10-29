@@ -17,10 +17,10 @@ main :: fun() {
     h : Holder
     h.name = "hello"
     print(h.name)
-    h.name = src[:]
+    h.name = src[:.len]
     print(h.name)
     arr : [4]Holder
-    arr[.len].name = src[:]
+    arr[.len].name = src[:.len]
     arr[.len].id = 42
     arr.len += 1
     print(arr[0].name, arr[0].id)

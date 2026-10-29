@@ -154,7 +154,7 @@ main :: fun() {
 	show("selfarg", a2)
 	a4 : [4]i64
 	a4 = push(a4, 4)
-	a4 = appends(a4, a4[:])
+	a4 = appends(a4, a4)
 	show("slicearg", a4)
 	d : [4]i64
 	d = push(d, 3)

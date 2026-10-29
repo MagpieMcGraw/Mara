@@ -40,7 +40,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -
 		&t.chars + u32(c)
 	}
 	extra_text := EXTRA
-	extra : []utf8 = extra_text[:]
+	extra : []utf8 = extra_text
 	at : i64 = 0
 	for at < extra.len {
 		c, n := char_at(extra, at)
@@ -48,7 +48,7 @@ text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -
 		at += n
 	}
 	atlas : [ATLAS * ATLAS]byte
-	load_coverage_chars(font_path, pixels, t.chars[:], &t.glyphs, &t.metrics, &atlas, ATLAS)?
+	load_coverage_chars(font_path, pixels, t.chars, &t.glyphs, &t.metrics, &atlas, ATLAS)?
 	// (Each texel white, its alpha the coverage.)
 	rgba : [ATLAS * ATLAS * 4]byte
 	rgba.len = rgba.cap

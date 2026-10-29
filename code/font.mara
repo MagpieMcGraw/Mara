@@ -136,7 +136,7 @@ load_coverage_glyphs :: fun(
 	for i in 0:glyphs.cap {
 		&chars + (first + u32(i))
 	}
-	load_coverage_chars(font, pixels, chars[:], glyphs, metrics, atlas, size)?
+	load_coverage_chars(font, pixels, chars, glyphs, metrics, atlas, size)?
 }
 
 // A font's glyphs for the characters `chars` — code points, glyphs[i] for

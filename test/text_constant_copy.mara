@@ -15,7 +15,7 @@ DASH :: "—"
 
 main :: fun() -> i64 {
 	s := GREETING
-	whole : []utf8 = s[:]
+	whole : []utf8 = s
 	viewed : []utf8 = s
 	part := s[1:3]
 	print(whole, "|", viewed, "|", part, "|", u32(whole[0]))

@@ -13,7 +13,7 @@ main :: fun() {
     }
     wid, we := file_open_write("seektest.bin")
     if bool(we) { print("open-write failed"); return }
-    s := data[:]
+    s : []byte = data
     _, wwe := file_write(wid, s)
     file_close(wid)
     if bool(wwe) { print("write failed"); return }

@@ -21,7 +21,7 @@ main :: fun() {
 
 	// A tight slice: its room ends where the path does, no 0 after it.
 	data.len = 0
-	_, err2 := read_entire_file(path[:], &data)
+	_, err2 := read_entire_file(path, &data)
 	assert(not bool(err2))
 	print("tight slice ok")
 

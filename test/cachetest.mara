@@ -252,7 +252,7 @@ main :: fun() {
     // --- magic validation: corrupt header (in-RAM), expect Bad_Header ---
     bad : [64]byte
     bad.len = 16
-    badcount, berr := open_cache(bad[:])
+    badcount, berr := open_cache(bad)
     print("corrupt -> count=% err=% (expect 0 / Bad_Header)", badcount, berr)
 
     print("=== done ===")

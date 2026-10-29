@@ -647,7 +647,7 @@ layout_save :: fun(ui: ^Ui) {
 	&text + "\n"
 	if ui.own_crash_seen.len > 0 {
 		&text + "own_crash "
-		&text + ui.own_crash_seen[:]
+		&text + ui.own_crash_seen
 		&text + "\n"
 	}
 	for pn in ui.panels {
@@ -667,7 +667,7 @@ layout_save :: fun(ui: ^Ui) {
 	}
 	id, oe := file_open_write(ui.layout_path)
 	if oe do return
-	_ = file_write_text(id, text[:])
+	_ = file_write_text(id, text)
 	file_close(id)
 }
 

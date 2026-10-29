@@ -26,10 +26,10 @@ or_none :: fun(view: []utf8) -> []utf8 {
 main :: fun() {
 	line : str1024
 	&line + "one two three four five six seven eight nine ten eleven twelve thirteen"
-	print("literal first:", if line.len == 0 do "none" else line[:])
-	print("slice first:", if line.len != 0 do line[:] else "none")
+	print("literal first:", if line.len == 0 do "none" else line[:.len])
+	print("slice first:", if line.len != 0 do line[:.len] else "none")
 	line.len = 0
-	print("empty:", if line.len == 0 do "none" else line[:])
+	print("empty:", if line.len == 0 do "none" else line[:.len])
 
 	short : [2]i64
 	&short + 1
@@ -42,5 +42,5 @@ main :: fun() {
 	// (Two literals: the expression's text, as before.)
 	a := if line.len == 0 do "a" else "bb"
 	print("kept:", a, if a.len == 1 do "b" else "cc")
-	print("returned:", or_none(line[:]), or_none("hi"))
+	print("returned:", or_none(line), or_none("hi"))
 }

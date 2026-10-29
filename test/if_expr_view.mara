@@ -23,6 +23,6 @@ main :: fun() {
 	print("other way:", name, name.len)
 	letters : str64
 	&letters + "abc"
-	chosen := if given.len > 1 do letters[:] else given[0]
+	chosen := if given.len > 1 do letters[:.len] else given[0]
 	print("a list:", chosen)
 }

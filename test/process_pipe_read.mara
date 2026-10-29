@@ -20,9 +20,9 @@ main :: fun(args: [][]utf8) -> i64 {
 		for true {
 			e := file_read(standard_input(), &chunk)
 			if bool(e) or chunk.len == 0 do break
-			&got + chunk[:]
+			&got + chunk
 		}
-		text : []utf8 = got[:]
+		text : []utf8 = got
 		print("child got:", text)
 		return 5
 	}
@@ -44,7 +44,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	print("before:", chunk.len, "bytes, open", open)
 
 	message := "ping"
-	bytes : []byte = message[:]
+	bytes : []byte = message
 	_, we := file_write(p.input, bytes)
 	if bool(we) {
 		print("write failed:", we)
@@ -58,10 +58,10 @@ main :: fun(args: [][]utf8) -> i64 {
 			print("read failed:", re2)
 			return 1
 		}
-		&out + chunk[:]
+		&out + chunk
 		if not still do break
 	}
-	text : []utf8 = out[:]
+	text : []utf8 = out
 	print("got:", text)
 	code, xe := process_wait(&p)
 	if bool(xe) {

@@ -87,17 +87,17 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	for true {
 		file_read(c, &chunk)?
 		if chunk.len == 0 do break
-		&line + chunk[:]
-		text : []utf8 = line[:]
+		&line + chunk
+		text : []utf8 = line
 		if text[text.len - 1] == '\n' do break
 	}
-	asked : []utf8 = line[:]
+	asked : []utf8 = line
 	note(log, "asked: ")
 	note(log, asked)
 	if asked.len >= 6 {
 		if asked[0 : 6] == "-docs " {
 			no_docs := "the stand-in window has no docs\n-- end of answer: failed --\n"
-			no_docs_bytes : []byte = no_docs[:]
+			no_docs_bytes : []byte = no_docs
 			file_write(c, no_docs_bytes)?
 			return
 		}
@@ -107,7 +107,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	// query, found by the write failing, is started again and asked: it never
 	// saw it.)
 	server_up(s, log)?
-	bytes : []byte = line[:]
+	bytes : []byte = line
 	if asked.len >= 6 {
 		if asked[0 : 6] == "-show " do bytes = line[6 : line.len]
 	}
@@ -143,9 +143,9 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 			return Read_Failed
 		}
 		passed = true
-		piece : []byte = chunk[:]
+		piece : []byte = chunk
 		file_write(c, piece)?
-		for ch in chunk[:] {
+		for ch in chunk {
 			letter := utf8(ch)
 			if letter == '\n' {
 				if current.len >= 16 {
@@ -163,7 +163,7 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 
 // Text written to the log.
 note :: fun(log: File_Id, text: []utf8) {
-	bytes : []byte = text[:]
+	bytes : []byte = text
 	_, we := file_write(log, bytes)
 	if bool(we) do print("the log couldn't be written:", we)
 }

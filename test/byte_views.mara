@@ -31,13 +31,13 @@ main :: fun() {
 	print("decl=%", x)
 	y : []utf8 = bytes[a:b]
 	print("runtime=%", y)
-	z : []utf8 = bytes[:]
+	z : []utf8 = bytes
 	z = bytes[1:4]
 	print("reassign=%", z)
 	h : Holder
 	h.s = bytes[a:b]
 	print("field=%", h.s)
 	show("arg", bytes[1:4])
-	r := mid(bytes[:])
+	r := mid(bytes)
 	print("return=%", r)
 }

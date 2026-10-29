@@ -1724,7 +1724,8 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 }
 
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
-// hi the array's size or the slice's len when not given — as a new header,
+// hi the array's size or the slice's len when not given (a list's or slice's
+// `x[:]` is given its cap: lw_slice) — as a new header,
 // cap = hi - lo and no len (SLICE_NO_LEN: all hi - lo of them, until an
 // append starts it at 0). Bounds given are checked: 0 <= lo <= hi <= the
 // array's size, the header's cap. (A held view's len is its count.)

@@ -28,9 +28,9 @@ child :: fun() {
 	for true {
 		e := file_read(standard_input(), &chunk)
 		if e or chunk.len == 0 do break   // 0 bytes: the end
-		&got + chunk[:]
+		&got + chunk
 	}
-	text : []utf8 = got[:]
+	text : []utf8 = got
 	print("the child got:", text)
 }
 
@@ -68,9 +68,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	for true {
 		re := file_read(p.output, &chunk)
 		if re or chunk.len == 0 do break
-		&out + chunk[:]
+		&out + chunk
 	}
-	text : []utf8 = out[:]
+	text : []utf8 = out
 	print("it said:", text)
 
 	code, xe := process_wait(&p)

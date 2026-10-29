@@ -29,7 +29,7 @@ main :: fun() -> i64 {
 	}
 	dots := 0
 	for entry in entries {
-		name : []utf8 = entry.name[:]
+		name : []utf8 = entry.name
 		if name == "." or name == ".." do dots += 1
 		if name == "os.mara" or name == "SDL" {
 			kind := "file"

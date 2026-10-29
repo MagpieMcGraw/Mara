@@ -199,10 +199,10 @@ run_case :: (exe: []utf8, name: []utf8) {
 	for true {
 		re := file_read(p.output, &chunk)
 		if re or chunk.len == 0 do break
-		&out + chunk[:]
+		&out + chunk
 	}
 	code, _ := process_wait(&p)
-	text : []utf8 = out[:]
+	text : []utf8 = out
 	print(name, "exit", code)
 	print(text)
 }

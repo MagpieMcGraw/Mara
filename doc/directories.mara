@@ -36,7 +36,7 @@ use mara.memory
 
 // Whether an entry is a doc page: a .mara file.
 is_page :: fun(entry: Dir_Entry) -> bool {
-	return not entry.dir and ends_with(entry.name[:], ".mara")
+	return not entry.dir and ends_with(entry.name, ".mara")
 }
 
 main :: fun() {
@@ -56,7 +56,7 @@ main :: fun() {
 	stdlib, se := dir_read("../code", &storage)
 	if not se {
 		for entry in stdlib {
-			if entry.dir do print("a directory in code/:", entry.name[:])
+			if entry.dir do print("a directory in code/:", entry.name)
 		}
 	}
 

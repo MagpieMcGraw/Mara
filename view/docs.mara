@@ -135,7 +135,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 		&none + "Nothing to look up in \""
 		&none + shown_query
 		&none + "\": no word of two letters or more."
-		lines_status(l, none[:], STYLE_DIM)
+		lines_status(l, none, STYLE_DIM)
 		return
 	}
 	docs_read(ui, d, dir)
@@ -156,7 +156,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 		&status + ". "
 		if d.count == 0 {
 			&status + "Nothing more found."
-			lines_status(l, status[:], STYLE_DIM)
+			lines_status(l, status, STYLE_DIM)
 			return
 		}
 		&status + "And "
@@ -167,7 +167,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 		&status + "\""
 		where_looked(ui, dir, &status)
 		&status + "."
-		lines_status(l, status[:], STYLE_BAD)
+		lines_status(l, status, STYLE_BAD)
 		return
 	}
 	&status + int_text(d.count)
@@ -181,7 +181,7 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 		&status + " shown"
 	}
 	&status + "."
-	lines_status(l, status[:], STYLE_DIM)
+	lines_status(l, status, STYLE_DIM)
 }
 
 // A lookup kept, to be made again (docs_reload).
@@ -212,16 +212,16 @@ docs_reload :: fun(ui: ^Ui) {
 	}
 	// (Copies: the search keeps the query again, over these.)
 	dir, words, kind, name, path : [1000]utf8
-	&dir + q.dir[:]
-	&words + q.words[:]
-	&kind + q.kind[:]
-	&name + q.name[:]
-	&path + q.path[:]
+	&dir + q.dir
+	&words + q.words
+	&kind + q.kind
+	&name + q.name
+	&path + q.path
 	scroll := l.scroll
 	open : [16 * KB]utf8
 	docs_open_folds(l, &open)
 	docs_search(ui, dir, words, Exact{kind = kind, name = name, path = path, line = q.line, loose = true}, i)
-	docs_reopen_folds(l, open[:])
+	docs_reopen_folds(l, open)
 	l.scroll = scroll
 	// (Where it was found now: where the next reload looks.)
 	if ui.search.has_exact do q.line = ui.search.exact.line
@@ -258,7 +258,7 @@ docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
 			for end < open.len and open[end] != '\n' {
 				end += 1
 			}
-			if open[at : end] == key[:] {
+			if open[at : end] == key {
 				_ = lines_toggle(l, k)
 				break
 			}
@@ -334,7 +334,7 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	d.source.len = 0
 	d.files.len = 0
 	d.root.len = 0
-	&d.root + ui.compiler_dir[:]
+	&d.root + ui.compiler_dir
 	// (Unless it's the stdlib's own, or doc/: read below, once.)
 	if dir.len == 0 {
 		docs_read_dir(d, ".", ui.sep)
@@ -352,9 +352,9 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 		for entry in entries {
 			if not entry.dir do continue
 			sub_dir : [1000]utf8
-			&sub_dir + code[:]
+			&sub_dir + code
 			&sub_dir + ui.sep
-			&sub_dir + entry.name[:]
+			&sub_dir + entry.name
 			docs_read_dir(d, sub_dir, ui.sep)
 		}
 	}
@@ -385,7 +385,7 @@ docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 	entries, e := dir_read(dir, &room)
 	if e do return
 	for entry in entries {
-		name : []utf8 = entry.name[:]
+		name : []utf8 = entry.name
 		if entry.dir or name.len < 6 do continue
 		if name[name.len - 5 : name.len] != ".mara" do continue
 		if d.files.len == d.files.cap do return
@@ -802,7 +802,7 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	if ex.path.len == 0 {
 		lines_add(l, "At the cursor:", STYLE_DIM)
 		d.exact_shown = true
-		lines_add(l, title[:], STYLE_TITLE)
+		lines_add(l, title, STYLE_TITLE)
 		if ex.kind == "keyword" {
 			lines_add(l, "  A keyword: doc/basics.mara has no entry for it yet.", STYLE_TEXT)
 		else
@@ -819,8 +819,8 @@ docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	lines_add(l, "At the cursor:", STYLE_DIM)
 	d.exact_shown = true
 	here := Found{score = 0, file = f, line = ex.line, at = at, doc = comment_above(text, at), kind = DEF_LINE, name = Field{0}, owner = Field{0}}
-	lines_add(l, title[:], STYLE_TITLE)
-	lines_link(l, docs_link(d, here)[:])
+	lines_add(l, title, STYLE_TITLE)
+	lines_link(l, docs_link(d, here))
 	docs_show_body(d, l, here)
 }
 
@@ -909,8 +909,8 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8, word: []utf8) {
 			&title + kind
 		}
 	}
-	lines_add(l, title[:], STYLE_TITLE)
-	lines_link(l, docs_link(d, fd)[:])
+	lines_add(l, title, STYLE_TITLE)
+	lines_link(l, docs_link(d, fd))
 	docs_show_body(d, l, fd)
 }
 
@@ -933,7 +933,7 @@ example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
 // The place a definition opens, clicked: `<file>:<line>`.
 docs_link :: fun(d: ^Docs, fd: Found) -> [1100]utf8 {
 	link : [1100]utf8
-	&link + d.files[fd.file].path[:]
+	&link + d.files[fd.file].path
 	&link + ":"
 	&link + int_text(fd.line)
 	return link
@@ -944,9 +944,9 @@ docs_link :: fun(d: ^Docs, fd: Found) -> [1100]utf8 {
 // and its own — after an entry's names (an entry's first line's, `print`,
 // `print_int`: the words it's found by). Clicked, it opens there too.
 docs_footer :: fun(d: ^Docs, l: ^Lines, fd: Found, names: []utf8) {
-	path : []utf8 = d.files[fd.file].path[:]
+	path : []utf8 = d.files[fd.file].path
 	short := path
-	if d.root.len > 0 and path.len > d.root.len and same_path(path[0 : d.root.len], d.root[:]) {
+	if d.root.len > 0 and path.len > d.root.len and same_path(path[0 : d.root.len], d.root) {
 		short = path[d.root.len : path.len]
 	else
 		seps : i64 = 0
@@ -969,8 +969,8 @@ docs_footer :: fun(d: ^Docs, l: ^Lines, fd: Found, names: []utf8) {
 	&footer + short[0 : min_int(short.len, 1000)]
 	&footer + ":"
 	&footer + int_text(fd.line)
-	lines_add(l, footer[:], STYLE_DIM)
-	lines_link(l, docs_link(d, fd)[:])
+	lines_add(l, footer, STYLE_DIM)
+	lines_link(l, docs_link(d, fd))
 }
 
 // Where an entry's names end on its doc comment's first line — the words in
@@ -1073,7 +1073,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		// (An example's function a line below what's said of it.)
 		if said do lines_add(l, "", STYLE_TEXT)
 		docs_show_example(l, text, fd)
-		docs_footer(d, l, fd, names[:])
+		docs_footer(d, l, fd, names)
 		lines_add(l, "", STYLE_TEXT)
 		return
 	}
@@ -1085,7 +1085,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	indent, _ := indentation(text, fd.at, first_end)
 	if fd.kind == DEF_FUN {
 		docs_show_fun(l, text, fd.at, indent)
-		docs_footer(d, l, fd, names[:])
+		docs_footer(d, l, fd, names)
 		lines_add(l, "", STYLE_TEXT)
 		return
 	}
@@ -1125,14 +1125,14 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 			break
 		}
 	}
-	docs_footer(d, l, fd, names[:])
+	docs_footer(d, l, fd, names)
 	lines_add(l, "", STYLE_TEXT)
 }
 
 // The paragraph joined so far added as a line, and emptied; none, nothing.
 doc_paragraph :: fun(l: ^Lines, para: ^[8 * KB]utf8) {
 	if para.len == 0 do return
-	lines_add(l, para[:], STYLE_DOC)
+	lines_add(l, para^, STYLE_DOC)
 	para.len = 0
 }
 
@@ -1192,7 +1192,7 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 		&more + "  … "
 		&more + int_text(count - most)
 		&more + " more lines"
-		lines_add(l, more[:], STYLE_DIM)
+		lines_add(l, more, STYLE_DIM)
 	}
 	// (Its body hidden: as much of it as there was room for.)
 	added := l.lines.len - first
@@ -1314,7 +1314,7 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 	shown : [1200]utf8
 	&shown + "  "
 	&shown + code[k : min_int(end, k + 1000)]
-	lines_add(l, shown[:], STYLE_MARA)
+	lines_add(l, shown, STYLE_MARA)
 }
 
 // The line's indentation in columns (a tab, TAB_SPACES), and where its text

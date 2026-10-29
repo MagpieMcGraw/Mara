@@ -23,13 +23,13 @@ main :: fun() {
 	for c, i in src { bytes[i] = u8(c) }
 	bytes.len = src.len
 
-	view : []utf8 = bytes[:]
+	view : []utf8 = bytes
 	print("view=%", view)
 
 	d : Doc
 	for c, i in src { d.raw[i] = u8(c) }
 	d.raw.len = src.len
-	field : []utf8 = d.raw[:]
+	field : []utf8 = d.raw
 	print("field=%", field)
 
 	print("sub=%", view[1:4])

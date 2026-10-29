@@ -41,7 +41,7 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 		lines_add(&ui.crash, "mara view itself crashed the last time it ran. Its report, from view/crash.txt:", STYLE_TITLE)
 		&ui.crash_dir + get_dir(path)
 	}
-	text : []utf8 = ui.crash_text[:]
+	text : []utf8 = ui.crash_text
 	end := text.len
 	for end > 0 {
 		if text[end - 1] != '\n' and text[end - 1] != '\r' do break
@@ -79,11 +79,11 @@ own_crash_look :: fun(ui: ^Ui) {
 	stamp := file_mtime(ui.own_crash_path)
 	if stamp == 0 do return
 	now := int_text(stamp)
-	if ui.own_crash_seen.len > 0 and ui.own_crash_seen[:] != now[:] {
+	if ui.own_crash_seen.len > 0 and ui.own_crash_seen != now {
 		if crash_load(ui, ui.own_crash_path, true) do crash_show(ui)
 	}
 	ui.own_crash_seen.len = 0
-	&ui.own_crash_seen + now[:]
+	&ui.own_crash_seen + now
 	layout_save(ui)
 }
 
@@ -159,9 +159,9 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	// (The window's own calls: its sources, beside it — a path not already whole.)
 	full : [2000]utf8
 	whole := file.len > 1 and (file[1] == ':' or file[0] == '/' or file[0] == '\\')
-	if ui.crash_dir.len > 0 and not whole do &full + ui.crash_dir[:]
+	if ui.crash_dir.len > 0 and not whole do &full + ui.crash_dir
 	&full + file[0 : min_int(file.len, 1000)]
-	editor_open(ui, &ui.crash, full[:], line)
+	editor_open(ui, &ui.crash, full, line)
 }
 
 // A file opened in the editor at a line — `"<editor>" "<file>:<line>"`,
@@ -175,7 +175,7 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 	}
 	command : [3000]utf8
 	&command + "\""
-	&command + ui.editor[:]
+	&command + ui.editor
 	&command + "\" \""
 	&command + file
 	&command + ":"
@@ -212,7 +212,7 @@ editor_set :: fun(ui: ^Ui, program: []utf8) {
 	&ui.editor + program[0 : min_int(program.len, ui.editor.cap)]
 	id, oe := file_open_write(ui.editor_path)
 	if not oe {
-		_ = file_write_text(id, ui.editor[:])
+		_ = file_write_text(id, ui.editor)
 		file_close(id)
 	}
 	crash_status(ui)

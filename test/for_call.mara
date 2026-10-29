@@ -97,7 +97,7 @@ main :: () {
 		tokens += 1
 		rounds = i + 1
 	}
-	print("words:", words[:])
+	print("words:", words)
 	print("tokens:", tokens, "rounds:", rounds)
 
 	// (The bool first; two values, then the round after them.)

@@ -31,6 +31,6 @@ main :: () {
 	print("join % % % | chain % % | const join %", j, j.len, j.cap, c, c.cap, g)
 	tail : [64]utf8
 	&tail + "-0123456789"
-	b := "| indexed" + tail[:]
+	b := "| indexed" + tail
 	print("generic room % | onto a view % %", room("hi"), b, b.len)
 }

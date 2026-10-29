@@ -33,7 +33,7 @@ ask :: fun() {
 	answer : [64]byte
 	re := file_read(id, &answer)
 	if re do print("couldn't read the answer:", re)
-	text : []utf8 = answer[:]
+	text : []utf8 = answer
 	print("the answer:", text)
 }
 
@@ -72,7 +72,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	question : [64]byte
 	qe := file_read(c, &question)
 	if qe do print("couldn't read the question:", qe)
-	text : []utf8 = question[:]
+	text : []utf8 = question
 	print("asked:", text)
 	we := file_write_text(c, "42")
 	if we do print("couldn't answer:", we)
@@ -84,9 +84,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	for true {
 		oe := file_read(p.output, &chunk)
 		if oe or chunk.len == 0 do break
-		&out + chunk[:]
+		&out + chunk
 	}
-	said : []utf8 = out[:]
+	said : []utf8 = out
 	print("it printed:", said)
 	_, xe := process_wait(&p)
 	if xe do print("couldn't wait for it:", xe)

@@ -4,7 +4,7 @@
 // file_open_append keeps what's there and writes after it (a log's way),
 // creating the file if it's missing.
 // file_write_text writes text into it, all of it. file_write writes bytes —
-// text becomes bytes with `bytes : []byte = text[:]`, the same memory seen
+// text becomes bytes with `bytes : []byte = text`, the same memory seen
 // as bytes — and may write only part of them: it says how many it wrote.
 module write_file
 

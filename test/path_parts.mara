@@ -22,7 +22,7 @@ main :: () {
 		&out + part
 		&out + "]"
 	}
-	print(out[:])
+	print(out)
 
 	// (`\` separates a path on Windows only, as `/` does; elsewhere it's
 	// part of a name, so the whole path is the file's.)

@@ -165,7 +165,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-editor ") {
+		if h.waiting[i].whole and starts_with(h.waiting[i].line, "-editor ") {
 			line := line_of(&h.waiting[i])
 			editor_set(ui, line[8 : line.len])
 			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
@@ -173,7 +173,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-colors ") {
+		if h.waiting[i].whole and starts_with(h.waiting[i].line, "-colors ") {
 			line := line_of(&h.waiting[i])
 			colors_set(ui, line[8 : line.len])
 			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
@@ -181,20 +181,20 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and not h.waiting[i].docs and starts_with(h.waiting[i].line[:], "-raise") {
+		if h.waiting[i].whole and not h.waiting[i].docs and starts_with(h.waiting[i].line, "-raise") {
 			window_raise(ui)
 			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-docs ") {
+		if h.waiting[i].whole and starts_with(h.waiting[i].line, "-docs ") {
 			answer_docs(ui, &h.waiting[i])
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and starts_with(h.waiting[i].line[:], "-reload") {
+		if h.waiting[i].whole and starts_with(h.waiting[i].line, "-reload") {
 			// (`mara docs -reload`: what the Docs panel shows looked up again, as F5 does.)
 			docs_reload(ui)
 			answer_lines(&ui.docs[ui.docs_front], &h.waiting[i], ui.docs_query[ui.docs_front].made)
@@ -230,7 +230,7 @@ client_read :: fun(c: ^Client) -> bool {
 	chunk : [512]byte
 	open, e := pipe_read(c.id, &chunk)
 	if e or not open do return false
-	text : []utf8 = chunk[:]
+	text : []utf8 = chunk
 	for ch in text {
 		if c.line.len == c.line.cap do return false   // (no query is that long)
 		&c.line + ch
@@ -305,13 +305,13 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 // end line — failed when nothing was `found`.
 answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 	out : [64 * KB]utf8
-	&out + found.status[:]
+	&out + found.status
 	&out + "\n\n"
 	for k in 0:found.lines.len {
 		if found.lines[k].hidden do continue
 		text := line_text(found, k)
 		if out.len + text.len + 1 > out.cap {
-			if file_write_text(c.id, out[:]) do return
+			if file_write_text(c.id, out) do return
 			out.len = 0
 		}
 		&out + text[0 : min_int(text.len, out.cap - 1)]
@@ -323,7 +323,7 @@ answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 		&out + ANSWER_DONE
 	}
 	&out + "\n"
-	_ = file_write_text(c.id, out[:])
+	_ = file_write_text(c.id, out)
 }
 
 // The asked connection's query sent to serve — started if it isn't; one
@@ -343,7 +343,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 		heading : [2100]utf8
 		&heading + "mara ask "
 		&heading + query
-		lines_add(&ui.asked, heading[:], STYLE_QUERY)
+		lines_add(&ui.asked, heading, STYLE_QUERY)
 		lines_add(&ui.asked, "", STYLE_TEXT)
 		lines_status(&ui.asked, "Asking…", STYLE_DIM)
 		ui.dirty = true
@@ -356,13 +356,13 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	&h.sent + query
 	&h.sent + '\n'
 	if serve_up(h) {
-		if not file_write_text(h.serve.input, h.sent[:]) {
+		if not file_write_text(h.serve.input, h.sent) {
 			h.asking = true
 			return
 		}
 		serve_down(h)
 		if serve_up(h) {
-			if not file_write_text(h.serve.input, h.sent[:]) {
+			if not file_write_text(h.serve.input, h.sent) {
 				h.asking = true
 				return
 			}
@@ -387,7 +387,7 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 		if not h.answered and not h.resent {
 			h.resent = true
 			if serve_up(h) {
-				if not file_write_text(h.serve.input, h.sent[:]) do return
+				if not file_write_text(h.serve.input, h.sent) do return
 				serve_down(h)
 			}
 		}
@@ -402,17 +402,17 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	if chunk.len == 0 do return
 	h.answered = true
 	if not h.gone {
-		piece : []byte = chunk[:]
+		piece : []byte = chunk
 		_, we := file_write(h.asked.id, piece)
 		if we do h.gone = true
 	}
-	text : []utf8 = chunk[:]
+	text : []utf8 = chunk
 	for ch in text {
 		if ch != '\n' {
 			if h.current.len < h.current.cap do &h.current + ch
 			continue
 		}
-		line := trimmed(h.current[:])
+		line := trimmed(h.current)
 		if starts_with(line, "-- end of answer") {
 			file_close(h.asked.id)
 			h.asking = false
@@ -432,19 +432,19 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 			return
 		}
 		if h.shown {
-			lines_add(&ui.asked, h.current[:], STYLE_TEXT)
+			lines_add(&ui.asked, h.current, STYLE_TEXT)
 			ui.dirty = true
 		}
 		if h.cursor {
 			if not h.cursor_started {
 				lines_clear(&ui.at_cursor)
 				h.cursor_started = true
-				h.cursor_errors = is_diagnostic(h.current[:])
+				h.cursor_errors = is_diagnostic(h.current)
 				if h.cursor_errors do lines_add(&ui.at_cursor, CURSOR_NOT_CHECKED, STYLE_BAD)
 			}
-			style := cursor_style(ui.at_cursor.lines.len, h.current[:])
+			style := cursor_style(ui.at_cursor.lines.len, h.current)
 			if h.cursor_errors do style = STYLE_TEXT
-			lines_add(&ui.at_cursor, h.current[:], style)
+			lines_add(&ui.at_cursor, h.current, style)
 			ui.dirty = true
 		}
 		h.current.len = 0
