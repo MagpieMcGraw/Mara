@@ -4,7 +4,9 @@ Written 2026-10-29, after the user's call: "If you want appendable storage, get 
 Revised the same day twice:
 - a mutable list is `^[$N]T`, and a mutable slice `^[]T` is a writable view that can't grow;
 - a slice is a pointer and a count, 16 bytes, with no len field. cstring's rule stays: a
-  slice passes only when its 0 is inside it.
+  slice passes only when its 0 is inside it;
+- the user's decisions: a list loops and slices up to its len (`x[:]`, `x[lo:]` included),
+  and a read gives back a slice of what came.
 
 Not started. It replaces the no-len slices, `start_fill` and len inheritance built the same
 day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
@@ -67,7 +69,10 @@ day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
   a buffer, a sort in place, font's coverage buffer. `[]T` params are read-only (the copy
   rule). A mutable list given where a mutable slice goes (`sort(&list)`) points at a view of
   its items.
-- **A slicing `x[a:b]`** shows exactly its b - a items, whatever x's len.
+- **A slicing `x[a:b]`** shows exactly its b - a items, whatever x's len. With no hi,
+  `x[:]` and `x[lo:]` of a list end at its len: its items, as a loop over it does. (Of a
+  slice, at its count; of a fixed array, at its size.) To see a list's room past its items,
+  say so: `x[0 : x.cap]`.
 - **A list given where a slice goes** is a view of its items: its count is the list's len.
   The room past them isn't in the view.
 - **Indexing a slice** is checked against its count, as today. A list's indexing stays checked
@@ -92,18 +97,16 @@ day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 - **Nothing sized at run time is a list**, as now. Rooms carved with a count known only at run
   time are views, with a count kept beside them.
 
-## Decisions for you
+## Decided
 
-1. **Where `x[:]` and `x[lo:]` of a list end.**
-   - *(Recommended)* At its len: its items. A room is a list now, so a view of the unfilled
-     part has nothing to do. 483 of 485 `[:]` once wanted the items.
-   - Or at its room, N, as built today, which then needs `x[lo:.len]` for the items.
-2. **Reads that report how much came.**
-   - *(Recommended)* Take a mutable slice, the window to read into, and return the count:
-     `view := room[at : at + want]`, then `got := file_read(id, &view)?`. This reads into any
-     part of any memory, the middle of a big buffer included, as `read_entire_file` does.
-   - Or take a mutable list and set its len to what came. That's fewer changes, but you can
-     only read into a whole list.
+1. **`x[:]` and `x[lo:]` of a list end at its len** (the user, 2026-10-29: "list can loop and
+   slice up to len"). Today's cap bound in lw_slice goes.
+2. **A read gives back a slice of what came** (the user: "file_read could just return a
+   slice. Its len/cap would be the number of bytes read"). It takes the window to read into,
+   a mutable slice, and returns the part of it that was filled:
+   `got := file_read(id, &room)?`, `got.len` the bytes read. It reads into any part of any
+   memory: a window of a big buffer (`view := buf[at : at + want]`), or a list's room
+   (`view := list[0 : list.cap]`).
 
 ## The compiler
 
@@ -130,7 +133,7 @@ day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
   - a take from a slice (`slice([:n]T, &view)`, `let(T, &view)`), and `next(&view)`.
 - **Taken out:** the no-len bit (SLICE_NO_LEN, emit_no_len, emit_len_count and the masks on
   len reads), emit_window_len, the `start_fill` builtin and its Carve "fill", and the cap bound
-  lw_slice gives an open end (decision 1).
+  lw_slice gives an open end (decided: 1).
 - **cstring:** for a slice, the check is its last item (`s[count - 1] == 0`); for a list,
   `list[len]` within N, as today.
 - **Kept: the append speed.** 200M appends take 0.094 s now and took 0.38 s before. The gain
@@ -147,12 +150,13 @@ day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 - **Storage:** `read_entire_file`, `dir_read`, `filter`, `filter2` and `group` take
   `storage: ^[$N]byte`. Takes (`slice([:n]T, &storage)`, `let`) need a list or a mutable list
   as storage.
-- **Reads** (decision 2): `file_read`, `pipe_read`, `udp_receive` and `tcp_receive`, on Windows
-  and Linux, take `data: ^[]byte` and return the count beside what they return today. The exact
-  shapes are settled when they're built: several results only where several go, and no -1 for
-  "ended".
-- **`read_entire_file`** reads each piece into a window of storage past its len, adds the
-  counts, then moves storage's len once.
+- **Reads** (decided: 2): `file_read`, `pipe_read`, `udp_receive` and `tcp_receive`, on
+  Windows and Linux, take `data: ^[]byte`, the window to read into, and give back the slice of
+  it that was filled, beside what they give back today: `file_read(id, data: ^[]byte) ->
+  []byte, err`; `pipe_read` and `tcp_receive` keep their bool for "still open", `udp_receive`
+  its bool for "a packet came" and the sender.
+- **`read_entire_file`** reads each piece into a window of storage past its len, adds up what
+  came, then moves storage's len once.
 - **`dir_read`** writes its entries by index into the carved room and returns `entries[0:k]`,
   as before 6bbdec0.
 - **`filter`, `filter2`, `group`** carve their views, then write by index with a count. For
@@ -174,7 +178,7 @@ These lists come from the probe. The checker errors will give the exact sites.
     on, `load_room` keeps the four list pointers, and `room.file.len = 0` empties the list
     itself.
   - The 65 carved rooms are written by index with a count.
-  - The 16 reads take a window and the count returned.
+  - The 16 reads take a window and use the slice given back.
   - The 165 params that grow what they point at become `^[$N]T`.
   - Text it hands the bindings goes as lists. A slice or a literal given to them is now a
     type error, so the checker lists them.
@@ -191,7 +195,7 @@ These lists come from the probe. The checker errors will give the exact sites.
 
 ## Order of work
 
-1. You decide 1–2.
+1. Decided (see above).
 2. The checker errors are first a probe only, a list per code base from no-link builds:
    stdlib, tests, docs, view, Pounce, sooblivion and mara3.
 3. The stdlib changes: the appends and storage functions to `^[$N]T`, reads, arenas,
