@@ -218,10 +218,25 @@ path_word_at :: proc(s: string) -> string {
 //   1. <compiler_dir>/code/           — stdlib loose .mara files
 //   2. <compiler_dir>/code/*/         — binding subfolders (SDL/, Open_GL/, ...)
 //   3. <search_dir>                   — user project (overrides on conflict)
-discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs: []string = nil) -> map[string][dynamic]^Source_File {
-    result: map[string][dynamic]^Source_File
-
-    scan_dir :: proc(dir: string, out: ^map[string][dynamic]^Source_File) {
+//
+// A module's files are in one folder: one found in two — two of the
+// project's folders, or two of the compiler's — is an error (`problem`), not
+// a module of both folders' files. (A folder named twice is searched once.)
+discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs: []string = nil) -> (result: map[string][dynamic]^Source_File, problem: string) {
+    // Each module's folder, as found so far in one layer (the compiler's, the project's).
+    Found :: struct {
+        out:     ^map[string][dynamic]^Source_File,
+        folder:  map[string]string,
+        scanned: map[string]bool,   // (the folders searched, by their whole path)
+        problem: ^string,
+    }
+    scan_dir :: proc(dir: string, found: ^Found) {
+        key := dir
+        if whole, err := filepath.abs(dir, context.temp_allocator); err == nil { key = whole }
+        when ODIN_OS == .Windows { key = strings.to_lower(key, context.temp_allocator) }
+        if found.scanned[key] { return }
+        found.scanned[strings.clone(key)] = true
+        out := found.out
         for entry in list_dir(dir) {
             if entry.dir { continue }
             if !strings.has_suffix(entry.name, ".mara") { continue }
@@ -236,23 +251,35 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
             f.module  = pkg
             f.source  = source
             f.imports = extract_imports(source)
+            if other, seen := found.folder[pkg]; seen && other != dir {
+                if found.problem^ == "" {
+                    found.problem^ = fmt.aprintf("Error: module '%s' is in two folders, %s and %s: a module's files are in one folder. Rename one, or leave one folder out.\n", pkg, folder_name(other), folder_name(dir))
+                }
+                continue
+            }
+            found.folder[pkg] = dir
             if pkg not_in out^ { out^[pkg] = {} }
             append(&out^[pkg], f)
         }
     }
+    // (The project's own folder, said as such.)
+    folder_name :: proc(dir: string) -> string {
+        return "this folder" if dir == "." else dir
+    }
 
     if compiler_dir != "" {
-        for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &result) }
+        stdlib := Found{out = &result, problem = &problem}
+        for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &stdlib) }
     }
 
     // User project files shadow stdlib bare names on conflict — the
     // project's folder, and the folders its build.mara names (build_file.odin).
     user: map[string][dynamic]^Source_File
-    scan_dir(search_dir, &user)
-    for dir in extra_dirs { scan_dir(dir, &user) }
+    project := Found{out = &user, problem = &problem}
+    scan_dir(search_dir, &project)
+    for dir in extra_dirs { scan_dir(dir, &project) }
     for name, files in user { result[name] = files }
-
-    return result
+    return
 }
 
 // Is a file of this basename anywhere in the discovered set? An `ask ... in
@@ -1067,7 +1094,11 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
 // ask` on the pipe name (view.odin). One open on the module here already:
 // that one brought to the front ("-raise"), not another opened.
 run_view :: proc(args: CLI_Args) {
-    all_files := discover_all_files(args.compiler_dir, ".", args.search_dirs)
+    all_files, found_problem := discover_all_files(args.compiler_dir, ".", args.search_dirs)
+    if found_problem != "" {
+        fmt.print(found_problem)
+        os.exit(1)
+    }
     if args.pkg_name not_in all_files {
         fmt.print(module_missing(all_files, args.pkg_name))
         os.exit(1)
@@ -1730,7 +1761,11 @@ main :: proc() {
     perf.quiet = args.ask || args.edit   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
 
-    all_files := discover_all_files(args.compiler_dir, ".", args.search_dirs)   // (the project: the current directory, and its build's folders)
+    all_files, found_problem := discover_all_files(args.compiler_dir, ".", args.search_dirs)   // (the project: the current directory, and its build's folders)
+    if found_problem != "" {
+        fmt.print(found_problem)
+        os.exit(1)
+    }
 
     // No module here, but `ask … in <module>` names one: it's the root (as
     // ask_no_module_here says).

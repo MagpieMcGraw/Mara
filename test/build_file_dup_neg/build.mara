@@ -1,0 +1,9 @@
+module build
+//@ expect-fail: module 'bfd_engine' is in two folders
+
+// A module's files are in one folder: bfd_engine is in this folder and in
+// engine/, which build.mara names too — an error, not one module of both.
+
+use mara.build
+
+build_file_dup_neg :: Build(){module_name = "bfd_game", dirs = ["engine", "."]}

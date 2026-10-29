@@ -1,0 +1,5 @@
+module bfd_engine
+
+use mara.core
+
+greet :: () { print("here") }
