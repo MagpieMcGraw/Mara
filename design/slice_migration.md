@@ -8,7 +8,7 @@ last section.
 ## How to move each kind
 
 - **Grows a slice** (`&view + x`, `next(&view)`, an append through a `^[]T`):
-  - a param that grows what it points at: `^[]T` → `^[$N]T`, and its callers pass the list,
+  - a param that grows what it points at: `^[]T` → `^[_]T` (a list of any room), and its callers pass the list,
     `&list`;
   - a struct field that a loader fills: a pointer to the list it fills, `^[64 * MB]byte`, or
     keep it a slice and write it by index with a count;
@@ -18,21 +18,21 @@ last section.
   - a reset or a count: the thing is a list, or keeps a count of its own;
   - a shrink: reslice it, `view = view[0:n]`.
 - **Takes from a slice** (`slice([:n]T, storage)`, `let(T, storage)` with storage a `^[]byte` or a
-  slice field): storage is a list — a `^[$N]byte` param, a `^[64 * MB]byte` field, `&list`.
+  slice field): storage is a list — a `^[_]byte` param, a `^[64 * MB]byte` field, `&list`.
   `&bytes[k]`, at a place, still takes.
 - **Reads** (`file_read`, `pipe_read`, `udp_receive`, `tcp_receive`): they read into a window and
   give back the part they filled; nothing sets a len. `file_read(id, &chunk)` with chunk an empty
   list reads into its 0 items and fails with Empty_Window. Give the room:
   `w := chunk[:.cap]`, then `got := file_read(id, &w)?`, and use `got`.
 - **Text for C** (the SDL and OpenGL bindings, `process_start`, `load_library`): they take a list,
-  `[$N]utf8` — a str64, a Path, a literal. A slice there is an error: copy it into a list.
+  `[_]utf8` — a str64, a Path, a literal. A slice there is an error: copy it into a list.
 
 ## Changes no error points at
 
 - A list given as a slice is a view of its items: its cap is its len now, not the list's room.
 - A `^[]T` made from a list (`&list` where a `^[]T` is taken) bounds its indexing by the list's
   len, not its room: writing past its items through it stops the program. A fun that writes a
-  list's room takes `^[$N]T`.
+  list's room takes `^[_]T`.
 - `x[:]` and `x[lo:]` of a list end at its len again; `x[a:b]` shows exactly b - a items.
 - cstring() of a slice passes only with its 0 as its last item (`b[0 : n + 1]`); of a list, as
   before.

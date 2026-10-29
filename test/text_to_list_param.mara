@@ -20,7 +20,7 @@ copied :: (a: str64) str64 {
 	return out
 }
 
-room :: (a: [$N]$T) i64 { return a.cap }
+room :: (a: [_]$T) i64 { return a.cap }
 
 main :: () {
 	x : str64 = "abc"

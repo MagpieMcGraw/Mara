@@ -11,7 +11,7 @@ sum_pair :: fun(p: Pair) -> i32 {
 
 overload + push
 push :: dispatch{ pair_push }
-pair_push :: fun(dst: ^[$N]Pair, item: Pair) {
+pair_push :: fun(dst: ^[_]Pair, item: Pair) {
 	dst[dst.len] = item
 	dst.len += 1
 }

@@ -18,7 +18,7 @@ Bag :: struct {
 	items: []i64
 }
 
-bag_of :: fun(storage: ^[$N]byte) -> Bag {
+bag_of :: fun(storage: ^[_]byte) -> Bag {
 	bag := Bag{items = slice([:2]i64, storage)}
 	bag.items[0] = 7
 	bag.items[1] = 8

@@ -9,7 +9,7 @@ use mara.core
 
 Holder :: struct { sl: []i64 }
 
-safe :: fun(storage: ^[$N]byte) -> Holder {
+safe :: fun(storage: ^[_]byte) -> Holder {
 	return Holder{slice([:3]i64, storage)}
 }
 

@@ -300,7 +300,7 @@ GL_Get_Param :: union(tag u32) {
 // room holds (p void: none). A buffer keeps a 0 after its text, so it's C
 // text again — a view of C's memory wouldn't be: its len is its cap, and
 // cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[$N]utf8) {
+c_text :: fun(p: ^byte, out: ^[_]utf8) {
     if p == void do return
     view : []utf8 = slice_from_ptr(p, 1 << 20)
     for ch in view {
@@ -421,13 +421,13 @@ gl_load :: fun(get_proc: fun([64]utf8) -> ^byte) {
 }
 // Convenience: compile a shader from a single source string.
 // Returns shader id on success, 0 on failure (error printed to stdout).
-gl_compile_shader :: fun(type: GL_Shader_Type, src: [$N]utf8) -> u32 { return mara_gl_compile_shader(type, cstring(src)) }
+gl_compile_shader :: fun(type: GL_Shader_Type, src: [_]utf8) -> u32 { return mara_gl_compile_shader(type, cstring(src)) }
 // Convenience: link vertex+fragment shaders into a program.
 // Returns program id on success, 0 on failure (error printed to stdout).
 gl_link_program :: fun(vs: u32, fs: u32) -> u32 { return mara_gl_link_program(vs, fs) }
 // 1 when the driver has the extension `name`, else 0:
 // `gl.gl_has_extension("GL_ARB_bindless_texture")`. Asked after gl_load.
-gl_has_extension :: fun(name: [$N]utf8) -> u8 { return mara_gl_has_extension(cstring(name)) }
+gl_has_extension :: fun(name: [_]utf8) -> u8 { return mara_gl_has_extension(cstring(name)) }
 
 foreign static_lib "open_gl" {
     fun glCreateShader(type: GL_Shader_Type) -> u32
@@ -512,7 +512,7 @@ DeleteProgram :: fun(program: u32) { glDeleteProgram(program) }
 UseProgram :: fun(program: u32) { glUseProgram(program) }
 
 // Uniforms
-GetUniformLocation :: fun(program: u32, name: [$N]utf8) -> i32 { return glGetUniformLocation(program, cstring(name)) }
+GetUniformLocation :: fun(program: u32, name: [_]utf8) -> i32 { return glGetUniformLocation(program, cstring(name)) }
 Uniform1f :: fun(location: i32, v0: f32) { glUniform1f(location, v0) }
 Uniform1i :: fun(location: i32, v0: i32) { glUniform1i(location, v0) }
 Uniform2f :: fun(location: i32, v0: f32, v1: f32) { glUniform2f(location, v0, v1) }
@@ -598,7 +598,7 @@ TexStorage3D :: fun(target: GL_Texture_Target, levels: i32, internalformat: u32,
 GetShaderiv :: fun(shader: u32, pname: GL_Shader_Param, params: ^i32) { glGetShaderiv(shader, pname, params) }
 // The shader's log (its compile's, its link's) into `log`, as much as its
 // room holds; log.len its length.
-GetShaderInfoLog :: fun(shader: u32, log: ^[$N]utf8) {
+GetShaderInfoLog :: fun(shader: u32, log: ^[_]utf8) {
     n : i32 = 0
     glGetShaderInfoLog(shader, i32(log.cap), &n, &log[0])
     log.len = i64(n)
@@ -606,7 +606,7 @@ GetShaderInfoLog :: fun(shader: u32, log: ^[$N]utf8) {
 GetProgramiv :: fun(program: u32, pname: GL_Shader_Param, params: ^i32) { glGetProgramiv(program, pname, params) }
 // The program's log (its compile's, its link's) into `log`, as much as its
 // room holds; log.len its length.
-GetProgramInfoLog :: fun(program: u32, log: ^[$N]utf8) {
+GetProgramInfoLog :: fun(program: u32, log: ^[_]utf8) {
     n : i32 = 0
     glGetProgramInfoLog(program, i32(log.cap), &n, &log[0])
     log.len = i64(n)

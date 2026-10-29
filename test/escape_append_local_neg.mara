@@ -9,7 +9,7 @@ module escape_append_local_neg
 
 use mara.core
 
-add_local :: fun(list: ^[$N][]utf8) {
+add_local :: fun(list: ^[_][]utf8) {
 	text : str64
 	&text + "gone when this returns"
 	list + text

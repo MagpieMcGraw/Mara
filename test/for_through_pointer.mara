@@ -51,7 +51,7 @@ the_list :: (b: ^Bag) ^[]i64 { return &b.items }
 
 // Each item, kept and its double added after — the loop walks the items
 // there when it began.
-keep_doubled :: (xs: ^[$N]i64) {
+keep_doubled :: (xs: ^[_]i64) {
 	for x in xs {
 		if x < 3 do xs + x * 2
 	}

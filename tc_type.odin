@@ -200,6 +200,11 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) 
             if ci, is_int := ty.(Type_Const_Int); is_int { return ci.value, true }
         }
     }
+    // (`[_]T` with nothing to bind it: anywhere but a fun's param.)
+    if n != 0 && t.tag[n] == .Type_Dollar && tc_text(Token_Id(t.a[n])) == "_" {
+        tc_error(k, span, TYPE_ANY_ROOM_OUTSIDE_PARAM, type_name(elem))
+        return 0, false
+    }
     if t.tag[n] == .Ident {
         // (A constant, known: its value.)
         name := tc_name(k, n)

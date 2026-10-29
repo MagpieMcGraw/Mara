@@ -33,7 +33,7 @@ summary_of :: fun(work: ^Work) -> Summary {
 	return Summary{numbers = work.numbers}
 }
 
-fill :: fun(settings: ^Settings, storage: ^[$N]byte) -> Summary {
+fill :: fun(settings: ^Settings, storage: ^[_]byte) -> Summary {
 	work := Work{settings = settings, numbers = slice([:settings.count]i64, storage)}
 	for k in 0:work.settings.count do work.numbers[k] = k
 	summaries := slice([:1]Summary, storage)
@@ -42,7 +42,7 @@ fill :: fun(settings: ^Settings, storage: ^[$N]byte) -> Summary {
 	return summaries[0]
 }
 
-run :: fun(storage: ^[$N]byte) -> i64 {
+run :: fun(storage: ^[_]byte) -> i64 {
 	settings := Settings{count = 4}
 	return fill(&settings, storage).numbers.len
 }
@@ -52,7 +52,7 @@ Pair :: struct {
 	far: []i64
 }
 
-keep_far :: fun(storage: ^[$N]byte) -> i64 {
+keep_far :: fun(storage: ^[_]byte) -> i64 {
 	n : i64 = 5
 	pair := Pair{near = &n, far = slice([:3]i64, storage)}
 	pair.far[0] = 1

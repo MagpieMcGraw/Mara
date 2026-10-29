@@ -911,7 +911,7 @@ Pair :: struct {
 	b: i64
 }
 
-run_take_basic :: fun(memory_bytes: ^[$N]byte) {
+run_take_basic :: fun(memory_bytes: ^[_]byte) {
 	p : Pair = let(Pair, memory_bytes)
 	p.a = 7
 	p.b = 11
@@ -932,7 +932,7 @@ test_take_basic :: fun() {
 	run_take_basic(&buf)
 }
 
-run_take_alignment :: fun(memory_bytes: ^[$N]byte) {
+run_take_alignment :: fun(memory_bytes: ^[_]byte) {
 	flag : u8 = let(u8, memory_bytes)
 	flag = 42
 	p : Pair = let(Pair, memory_bytes)
@@ -963,7 +963,7 @@ write_one :: fun(g: ^Megastruct) {
 	g.y = 22
 }
 
-run_take_binding :: fun(memory_bytes: ^[$N]byte) {
+run_take_binding :: fun(memory_bytes: ^[_]byte) {
 	game : Megastruct = let(Megastruct, memory_bytes)
 	write_one(&game)
 	game.x = 33
@@ -977,7 +977,7 @@ test_take_binding :: fun() {
 	print(view.y)  // 22
 }
 
-roundtrip :: fun(memory_bytes: ^[$N]byte) -> Pair {
+roundtrip :: fun(memory_bytes: ^[_]byte) -> Pair {
 	p : Pair = let(Pair, memory_bytes)
 	p.a = 100
 	p.b = 200
@@ -998,7 +998,7 @@ fill :: fun(pairs: ^[]Pair, base: i64) {
 	}
 }
 
-run_take_runtime :: fun(storage: ^[$N]byte, n: i32) {
+run_take_runtime :: fun(storage: ^[_]byte, n: i32) {
 	fixed : []Pair = slice([:2]Pair, storage)
 	fill(&fixed, 100)
 	runtime : []Pair = slice([:n]Pair, storage)
@@ -1016,7 +1016,7 @@ test_take_runtime :: fun() {
 	run_take_runtime(&storage, 3)
 }
 
-run_slice_positional :: fun(bytes: ^[$N]byte) {
+run_slice_positional :: fun(bytes: ^[_]byte) {
 	view : []byte = slice([:4]byte, &bytes[0])
 	print("len:", i64(view.len))
 	print("cap:", i64(view.cap))
@@ -1032,7 +1032,7 @@ Entry :: struct {
 	b: i32
 }
 
-run_pa_byte_read :: fun(bytes: ^[$N]byte) {
+run_pa_byte_read :: fun(bytes: ^[_]byte) {
 	dst : [8]Entry = bytes[0 : 16]
 	print("len:", i64(dst.len))   // 2
 	print("cap:", i64(dst.cap))   // 8
@@ -1139,7 +1139,7 @@ take_payload :: fun(p: ^View_Payload) {
 	print(p.counter)
 }
 
-view_through_slice :: fun(memory_bytes: ^[$N]byte) {
+view_through_slice :: fun(memory_bytes: ^[_]byte) {
 	p : ^View_Payload = &memory_bytes[0]
 	p.counter = 99
 	print(p.counter)
@@ -1152,7 +1152,7 @@ view_through_slice :: fun(memory_bytes: ^[$N]byte) {
 	take_payload(&memory_bytes[150])
 }
 
-return_view :: fun(memory_bytes: ^[$N]byte) -> ^View_Payload {
+return_view :: fun(memory_bytes: ^[_]byte) -> ^View_Payload {
 	return &memory_bytes[50]
 }
 
@@ -1262,7 +1262,7 @@ mod_a :: fun() -> RvoPair {
 	return p
 }
 
-sl_c :: fun(storage: ^[$N]byte) -> []i64 {
+sl_c :: fun(storage: ^[_]byte) -> []i64 {
 	out := slice([:3]i64, storage)
 	out[0] = 100
 	out[1] = 200
@@ -1270,15 +1270,15 @@ sl_c :: fun(storage: ^[$N]byte) -> []i64 {
 	return out
 }
 
-sl_b :: fun(storage: ^[$N]byte) -> []i64 {
+sl_b :: fun(storage: ^[_]byte) -> []i64 {
 	return sl_c(storage)
 }
 
-sl_a :: fun(storage: ^[$N]byte) -> []i64 {
+sl_a :: fun(storage: ^[_]byte) -> []i64 {
 	return sl_b(storage)
 }
 
-sl_mod_c :: fun(storage: ^[$N]byte) -> []i64 {
+sl_mod_c :: fun(storage: ^[_]byte) -> []i64 {
 	out := slice([:3]i64, storage)
 	out[0] = 1
 	out[1] = 2
@@ -1286,13 +1286,13 @@ sl_mod_c :: fun(storage: ^[$N]byte) -> []i64 {
 	return out
 }
 
-sl_mod_b :: fun(storage: ^[$N]byte) -> []i64 {
+sl_mod_b :: fun(storage: ^[_]byte) -> []i64 {
 	s := sl_mod_c(storage)
 	s[0] += 10
 	return s
 }
 
-sl_mod_a :: fun(storage: ^[$N]byte) -> []i64 {
+sl_mod_a :: fun(storage: ^[_]byte) -> []i64 {
 	s := sl_mod_b(storage)
 	s[2] *= 100
 	return s

@@ -16,12 +16,12 @@ use mara.core
 	foreign static_lib "kernel32" {
 		fun lstrlenA(s: cstring) -> i32
 	}
-	c_len :: fun(s: [$N]utf8) -> i64 { return i64(lstrlenA(cstring(s))) }
+	c_len :: fun(s: [_]utf8) -> i64 { return i64(lstrlenA(cstring(s))) }
 else
 	foreign static_lib "c" {
 		fun strlen(s: cstring) -> usize
 	}
-	c_len :: fun(s: [$N]utf8) -> i64 { return i64(strlen(cstring(s))) }
+	c_len :: fun(s: [_]utf8) -> i64 { return i64(strlen(cstring(s))) }
 }
 
 main :: fun() {

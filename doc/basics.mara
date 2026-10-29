@@ -98,8 +98,9 @@ example_use :: fun() {
 // takes any fun of that shape, K what it gives back (several results, in
 // parens: `fun(T) (i64, err)`). A size can be one too: `xs: [$N!]T` (or a
 // list's, `[$N]T`) binds N to the size passed, a constant
-// in the body — a size of its types, or a value. `method` is another
-// spelling of `fun`.
+// in the body — a size of its types, or a value. A list of any room whose
+// size goes unnamed is `[_]T`: `names: ^[_]Name` takes a pointer to any list
+// of Name (each `_` its own). `method` is another spelling of `fun`.
 example_fun :: fun() {
 	sum :: fun(a, b: i64) -> i64 {
 		return a + b
@@ -614,7 +615,7 @@ Place :: struct { x: f32  y: f32 }
 // module's top, its file — and no further: another file, or a module that
 // uses it, sees none of them, so a variable elsewhere may take one's name.
 // A module gives what C does as Mara functions that call it, taking Mara's
-// types: text C reads as a list, `[$N]utf8` (any room: a str64, a Path, a
+// types: text C reads as a list, `[_]utf8` (any room: a str64, a Path, a
 // literal), data as a slice (`[]` for none, where C takes NULL). The
 // standard library's os.mara and the SDL and OpenGL bindings in code/ are
 // made so.
@@ -635,7 +636,7 @@ example_foreign :: fun() {
 	//     }
 	//
 	//     Delay :: fun(ms: u32) { SDL_Delay(ms) }
-	//     SetWindowTitle :: fun(window: Window, title: [$N]utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+	//     SetWindowTitle :: fun(window: Window, title: [_]utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
 }
 
 // ---- built-ins ------------------------------------------------------------------

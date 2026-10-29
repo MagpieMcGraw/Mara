@@ -28,7 +28,7 @@ hold :: fun(numbers: []i64) -> Holder {
 	return Holder{numbers = numbers}
 }
 
-fill :: fun(storage: ^[$N]byte) -> Holder {
+fill :: fun(storage: ^[_]byte) -> Holder {
 	holder := Holder{numbers = slice([:1]i64, storage)}
 	holder.numbers[0] = 7
 	return holder

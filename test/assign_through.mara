@@ -19,7 +19,7 @@ Pair :: struct {
 	b: i64
 }
 
-load :: fun(names: [][]utf8, buf: ^[$N]byte) -> [4][]byte, err {
+load :: fun(names: [][]utf8, buf: ^[_]byte) -> [4][]byte, err {
 	views : [4][]byte
 	for name in names
 	{next(&views)^ = read_entire_file(name, buf)?}

@@ -1032,6 +1032,7 @@ rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
         if r.generic not_in r.type_params_of { r.type_params_of[r.generic] = {} }
         append(&r.type_params_of[r.generic], tok)
     }
+    if rs_text(tok) == "_" { return }   // (no name to be seen by: `[_]`'s)
     rs_define(r, rs_text(tok), {tok, .Type})
 }
 
@@ -1043,7 +1044,8 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
     #partial switch t.tag[n] {
     case .Type_Dollar:
         tok := Token_Id(t.a[n])
-        if !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
+        // (`_`, a room of any size: a param of its own each time.)
+        if rs_text(tok) == "_" || !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
     case .Type_Pointer, .Type_Paren:
         rs_dollars(r, Tree_Id(t.a[n]))
     case .Type_Slice:
@@ -1142,7 +1144,11 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
         r.refs[n] = {kind = .Builtin}
         return
     case .Type_Dollar:
-        // (`$T` again: the first's — what declared it.)
+        // (`$T` again: the first's — what declared it. `_`: its own.)
+        if tok := Token_Id(t.a[n]); rs_text(tok) == "_" {
+            if tok in r.type_params { r.refs[n] = {tok, .Type} }
+            return
+        }
         if ref, ok := rs_lookup(r, rs_text(Token_Id(t.a[n]))); ok { r.refs[n] = ref }
         return
     case .Type_Generic, .Type_Of:

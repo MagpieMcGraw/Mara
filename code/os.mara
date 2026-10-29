@@ -199,7 +199,7 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 // Opens a file and reads its data into the provided buffer. Then closes the
 // file. Returns a slice of the buffer containing the read data. Slice .len
 // and .cap are both set to the size of the file in bytes.
-read_entire_file :: fun(path: []utf8, storage: ^[$N]byte) -> []byte, err {
+read_entire_file :: fun(path: []utf8, storage: ^[_]byte) -> []byte, err {
 	start := storage.len
 	none := storage[start : start]
 	id, oe := file_open_read(path)
@@ -819,7 +819,7 @@ Sockaddr :: struct {
 	// (storage untouched). The path is copied: any slice of one will do
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
-	dir_read :: fun(path: []utf8, storage: ^[$N]byte) -> []Dir_Entry, err {
+	dir_read :: fun(path: []utf8, storage: ^[_]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
@@ -930,14 +930,14 @@ Sockaddr :: struct {
 
 	// Load a DLL by name. Returns void on failure. Win32's search order applies —
 	// pass a full path to bypass it. Caller must release with free_library.
-	load_library :: fun(name: [$N]utf8) -> ^byte {
+	load_library :: fun(name: [_]utf8) -> ^byte {
 		return LoadLibraryA(cstring(name))
 	}
 
 	// Look up a symbol in a loaded module. Returns void if the symbol does not
 	// exist. Cast the returned ^byte to the appropriate function pointer type
 	// at the call site.
-	find_symbol :: fun(mod: ^byte, name: [$N]utf8) -> ^byte {
+	find_symbol :: fun(mod: ^byte, name: [_]utf8) -> ^byte {
 		return GetProcAddress(mod, cstring(name))
 	}
 
@@ -962,7 +962,7 @@ Sockaddr :: struct {
 	// Runs a command line — a program and its arguments, as a terminal takes
 	// them — its input and output through pipes. Read its output while it
 	// runs: one that fills its output pipe waits until it is read.
-	process_start :: fun(command: [$N]utf8) -> Process, err {
+	process_start :: fun(command: [_]utf8) -> Process, err {
 		// (Each pipe's ends inheritable, then the parent's own ends made not:
 		// the child holds only its own, so closing ours ends its input.)
 		inherit := SECURITY_ATTRIBUTES{length = u32(size_of(SECURITY_ATTRIBUTES)), inherit_handle = 1}
@@ -2140,7 +2140,7 @@ Sockaddr :: struct {
 	// (storage untouched). The path is copied: any slice of one will do
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
-	dir_read :: fun(path: []utf8, storage: ^[$N]byte) -> []Dir_Entry, err {
+	dir_read :: fun(path: []utf8, storage: ^[_]byte) -> []Dir_Entry, err {
 		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
@@ -2300,13 +2300,13 @@ Sockaddr :: struct {
 
 	// Load a shared library by name. Returns void on failure. Caller must
 	// release with free_library.
-	load_library :: fun(name: [$N]utf8) -> ^byte {
+	load_library :: fun(name: [_]utf8) -> ^byte {
 		return dlopen(cstring(name), RTLD_NOW)
 	}
 
 	// Look up a symbol in a loaded library. Returns void if the symbol does not
 	// exist. Cast the returned ^byte to the function pointer type at the call site.
-	find_symbol :: fun(mod: ^byte, name: [$N]utf8) -> ^byte {
+	find_symbol :: fun(mod: ^byte, name: [_]utf8) -> ^byte {
 		return dlsym(mod, cstring(name))
 	}
 
@@ -2333,7 +2333,7 @@ Sockaddr :: struct {
 	// while it runs: one that fills its output pipe waits until it is read.
 	// The command ends in a 0, as cstring() takes it: a literal does, and so
 	// does a buffer appended to.
-	process_start :: fun(command: [$N]utf8) -> Process, err {
+	process_start :: fun(command: [_]utf8) -> Process, err {
 		whole : []utf8 = slice_from_ptr(command.ptr, command.cap)
 		end := command.len
 		if end == command.cap do end -= 1

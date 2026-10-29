@@ -25,7 +25,7 @@ not_equal :: dispatch{ utf8_not_equal }
 
 // Appends text to dst, a list; it must fit in its room.
 // (We write 0 after it, so dst stays a valid C string.)
-utf8_add :: fun(dst: ^[$N]utf8, src: []utf8) {
+utf8_add :: fun(dst: ^[_]utf8, src: []utf8) {
 	n := dst.len
 	assert(n + src.len <= dst.cap)
 	dst[n:] = src
@@ -49,7 +49,7 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 }
 
 // Appends one character to dst, a list; it must fit in its room.
-utf8_add_item :: fun(dst: ^[$N]utf8, src: utf8) {
+utf8_add_item :: fun(dst: ^[_]utf8, src: utf8) {
 	n := dst.len
 	assert(n < dst.cap)
 	dst[n] = src
@@ -59,7 +59,7 @@ utf8_add_item :: fun(dst: ^[$N]utf8, src: utf8) {
 
 // Appends items to dst, a list; they must fit in its room. (Only lists
 // grow: a slice is a view, its items written by index.)
-slice_add :: fun(dst: ^[$N]$T, src: []T) {
+slice_add :: fun(dst: ^[_]$T, src: []T) {
 	n := dst.len
 	assert(n + src.len <= dst.cap)
 	dst[n:] = src
@@ -67,7 +67,7 @@ slice_add :: fun(dst: ^[$N]$T, src: []T) {
 }
 
 // Appends one item to dst, a list; it must fit in its room.
-slice_add_item :: fun(dst: ^[$N]$T, src: T) {
+slice_add_item :: fun(dst: ^[_]$T, src: T) {
 	n := dst.len
 	assert(n < dst.cap)
 	dst[n] = src
@@ -96,7 +96,7 @@ join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 // it, whole (a view, a struct). The item as it is, as an append's dst
 // is: empty in a list only grown (each item starts so); in one shrunk and
 // filled again, what it held. It must fit in the list's capacity.
-next :: fun(list: ^[$N]$T) -> ^T {
+next :: fun(list: ^[_]$T) -> ^T {
 	/*
 	we could zero the slot that's about to get written
 	array append could be written as next(&list)^ = x
@@ -129,7 +129,7 @@ includes :: fun(items: []$T, x: $U) -> bool {
 // bool — `filter(entries, is_mara, &storage)`. Room for every item is taken
 // from storage, its len moved past it all, kept or not. Short of room, the
 // program stops (as slice() does).
-filter :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T {
+filter :: fun(items: []$T, keep: $P, storage: ^[_]byte) -> []T {
 	new := slice([:items.len]T, storage)
 	k := 0
 	for item in items {
@@ -141,7 +141,7 @@ filter :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T {
 	return new[0:k]
 }
 
-filter2 :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T, []T {
+filter2 :: fun(items: []$T, keep: $P, storage: ^[_]byte) -> []T, []T {
 	one := slice([:items.len]T, storage)
 	two := slice([:items.len]T, storage)
 	a := 0
@@ -167,7 +167,7 @@ filter2 :: fun(items: []$T, keep: $P, storage: ^[$N]byte) -> []T, []T {
 // room for its items carved from storage (its len moved past them all),
 // then the items written in. Short of room, the program stops (as slice()
 // does).
-group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[$N]byte) -> [K][]T {
+group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[_]byte) -> [K][]T {
 	counts : [K]i64
 	for item in items {
 		counts[kind(item)] += 1

@@ -41,7 +41,7 @@ value_of :: fun(n: Node) -> i64 {
 	return 0
 }
 
-push :: fun(pool: ^[$N]Node, n: Node) -> ^Node {
+push :: fun(pool: ^[_]Node, n: Node) -> ^Node {
 	pool + n
 	return &pool[pool.len - 1]
 }

@@ -28,14 +28,14 @@ kept_of :: fun(work: ^Work) -> Kept {
 	return Kept{settings = work.settings}
 }
 
-fill :: fun(settings: ^Settings, storage: ^[$N]byte) -> i64 {
+fill :: fun(settings: ^Settings, storage: ^[_]byte) -> i64 {
 	work := Work{settings = settings, numbers = slice([:16]i64, storage)}
 	kept := slice([:1]Kept, storage)
 	kept[0] = kept_of(&work)
 	return kept.len
 }
 
-run :: fun(storage: ^[$N]byte) -> i64 {
+run :: fun(storage: ^[_]byte) -> i64 {
 	settings := Settings{count = 4}
 	return fill(&settings, storage)
 }

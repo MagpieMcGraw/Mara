@@ -9,7 +9,7 @@ Holder :: struct {
 	sl: []i64
 }
 
-inner :: fun(storage: ^[$N]byte) -> Holder {
+inner :: fun(storage: ^[_]byte) -> Holder {
 	return Holder{slice([:3]i64, storage)}
 }
 

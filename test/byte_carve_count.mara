@@ -7,7 +7,7 @@ module byte_carve_count
 // cursor) / size, unsigned, before anything multiplies it. Ends at the
 // failure (the run differential compares it).
 
-carve :: fun(mem: ^[$N]byte, n: i64) -> i64 {
+carve :: fun(mem: ^[_]byte, n: i64) -> i64 {
 	s := slice([:n]i64, mem)
 	return s.len
 }

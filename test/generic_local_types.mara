@@ -10,12 +10,12 @@ use mara.core
 // though named alike — each call to a generic gets its own instance (its
 // name the type's flat one), not the other fun's.
 
-small_ones :: fun(items: []i64, storage: ^[$N]byte) -> []i64 {
+small_ones :: fun(items: []i64, storage: ^[_]byte) -> []i64 {
 	keep :: fun(n: i64) -> bool { return n < 4 }
 	return filter(items, keep, storage)
 }
 
-big_ones :: fun(items: []i64, storage: ^[$N]byte) -> []i64 {
+big_ones :: fun(items: []i64, storage: ^[_]byte) -> []i64 {
 	keep :: fun(n: i64) -> bool { return n > 6 }
 	return filter(items, keep, storage)
 }
