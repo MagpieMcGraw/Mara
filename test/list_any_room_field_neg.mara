@@ -1,0 +1,14 @@
+module list_any_room_field_neg
+//@ expect-fail: `[_]i64` is a list of any room, its room the one it's given: by value, only a fun's params take one
+
+// A struct holds a list of a room written, or points at one of any room
+// (`^[_]i64`): a list of any room by value has no size.
+
+use mara.core
+
+Holder :: struct { xs: [_]i64 }
+
+main :: fun() {
+	h : Holder
+	print(h.xs.len)
+}

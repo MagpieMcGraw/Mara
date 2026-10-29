@@ -38,6 +38,12 @@ slice_ref_ir_type :: proc() -> Ir_Type {
     return ir_struct_type(fields[:])
 }
 
+// A `^[_]T`'s IR type (list_ref_of): the list's address, then its room.
+list_ref_ir_type :: proc() -> Ir_Type {
+    fields := [2]Ir_Type{IR_PTR, IR_I64}
+    return ir_struct_type(fields[:])
+}
+
 // A `[N]T` list's IR type: its len, then its elements.
 partial_array_ir_type :: proc(elem_ir: Ir_Type, cap: int) -> Ir_Type {
     fields := [2]Ir_Type{SLICE_LEN_IR, ir_array_type(cap, elem_ir)}
@@ -492,6 +498,7 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     case Type_CString:      return IR_PTR
     case ^Type_Ptr:
         if slice_ref_of(v) != nil { return slice_ref_ir_type() }
+        if list_ref_of(v) != nil { return list_ref_ir_type() }
         return IR_PTR
     case ^Type_Scope:
         if v.kind == .Struct {

@@ -328,6 +328,17 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
             id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
             break
         }
+        if pa := list_ref_of(v); pa != nil {
+            // A `^[_]T`: the list's address, its room.
+            name := type_name(v)
+            fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
+            cv.made[key] = fwd
+            names := [2]string{"list", "room"}
+            types := [2]u32{cv_pointer(cv, cv_type(cv, pa)), 0x76}
+            offsets := [2]int{0, 8}
+            id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
+            break
+        }
         elem := cv_type(cv, v.elem)
         if elem < 0x1000 && elem & T_64PTR == 0 { return T_64PTR | elem }
         id = cv_pointer(cv, elem)

@@ -280,7 +280,7 @@ TYPE_GENERIC_PARAM_LIST_VALUE :: "could not infer type parameter '$%s' in call t
 TYPE_SLICE_LEN_WRITE :: "`%s` is a slice: its %s is its size, so it can't be written — reslice it instead (`s = s[0:n]`), or keep a count beside it"
 TYPE_LIST_CAP_WRITE :: "`%s` is a list: its cap is its room, %d, part of its type — it can't be written"
 TYPE_TAKE_FROM_SLICE :: "a take moves its storage's len, and %s is a slice, which has none to move: take from a list (`&storage`, or a `^[_]byte` param)"
-TYPE_ANY_ROOM_OUTSIDE_PARAM :: "`[_]%s` is a list of any room, its room the one it's given: only a fun's params take one — elsewhere write the room, `[64]...`"
+TYPE_ANY_ROOM_OUTSIDE_PARAM :: "`[_]%s` is a list of any room, its room the one it's given: by value, only a fun's params take one — elsewhere write the room, `[64]...`, or point at one, `^[_]...`"
 TYPE_ANY_ROOM_UNBOUND :: "a `[_]` in '%s' has no argument to take its room from — a result's room is written, `-> [64]T`"
 TYPE_SLICE_CANT_GROW :: "%s is a slice: a view, which can't grow — append to a list, or through a `^[_]T` pointing at one"
 TYPE_EXPECTS_ARGUMENT :: "'%s' expects %d argument(s), got %d"

@@ -10,8 +10,9 @@ last section.
 - **Grows a slice** (`&view + x`, `next(&view)`, an append through a `^[]T`):
   - a param that grows what it points at: `^[]T` → `^[_]T` (a list of any room), and its callers pass the list,
     `&list`;
-  - a struct field that a loader fills: a pointer to the list it fills, `^[64 * MB]byte`, or
-    keep it a slice and write it by index with a count;
+  - a struct field that a loader fills: a pointer to the list it fills, `^[_]byte` (any room:
+    the reference carries it) or `^[64 * MB]byte`, or keep it a slice and write it by index
+    with a count;
   - a take filled by appends: write it by index, a count beside it, and cut it to the count at
     the end (`parts = parts[0:k]`). A take is a view of all n of its items now.
 - **Writes a slice's len** (`view.len = 0`, `view.len += n`, `view.len = got`):

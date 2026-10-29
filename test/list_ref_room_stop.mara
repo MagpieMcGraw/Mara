@@ -1,0 +1,21 @@
+module list_ref_room_stop
+
+use mara.core
+
+//@ expect-exit: 1
+//@ expect-output: 3
+//@ expect-output: Expected n < dst.cap, but n was 3 and dst.cap was 3
+
+// A `^[_]T` carries its list's room: an append past it stops the program,
+// as one straight into the list does.
+
+Box :: struct (l: ^[_]i64) { items := l }
+
+main :: fun() {
+	small : [3]i64
+	b := Box(&small)
+	for i in 0:3 { b.items + i }
+	print(small.len)
+	b.items + 3
+	print("unreached")
+}

@@ -185,6 +185,17 @@ Esc_Summary :: struct {
     ret_ro:        bool,
     ret_ro_fields: u64,
     ret_ro_from:   Token_Id,
+    // Where the result holds what each param points at: only in these fields
+    // of it (a constructor's), or — ret_whole — anywhere. A read-only
+    // argument makes only those fields of the result read-only.
+    ret_in_fields: [dynamic]Esc_Ret_In,
+    ret_whole:     Esc_Param_Set,
+}
+
+// The fields of a call's result that hold what param `param` points at.
+Esc_Ret_In :: struct {
+    param:  int,
+    fields: u64,
 }
 
 // A variable of the fun or struct being checked: a param, a named result, a
@@ -365,6 +376,10 @@ esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
     }
     for w in s.writes {
         if !slice.contains(cur.writes[:], w) { append(&cur.writes, w); changed = true }
+    }
+    if s.ret_whole & ~cur.ret_whole != {} { cur.ret_whole += s.ret_whole; changed = true }
+    for ri in s.ret_in_fields {
+        if esc_ret_in(cur, ri.param, ri.fields) { changed = true }
     }
     if s.ret_ro && !cur.ret_ro { cur.ret_ro = true; changed = true }
     if s.ret_ro_fields & ~cur.ret_ro_fields != 0 { cur.ret_ro_fields |= s.ret_ro_fields; changed = true }
@@ -957,6 +972,16 @@ esc_sum_ret :: proc(e: ^Esc, val: Esc_Roots, field := -1) {
     e.sum.ret_deep += val.two + val.deep
     for tf in val.twof  { esc_pf_push(&e.sum.ret_field, tf) }
     for df in val.deepf { esc_pf_push(&e.sum.ret_field, df) }
+    // (Which params it holds where: in one field of it, or anywhere.)
+    held := val.params + val.two + val.deep
+    for pf in val.pf    { held += {pf.param} }
+    for tf in val.twof  { held += {tf.param} }
+    for df in val.deepf { held += {df.param} }
+    if field >= 0 && field < 64 {
+        for p in held { esc_ret_in(&e.sum, p, u64(1) << u64(field)) }
+    } else {
+        e.sum.ret_whole += held
+    }
     if !val.ro && val.ro_fields == 0 { return }
     switch {
     case field >= 64: e.sum.ret_ro = true
@@ -966,6 +991,35 @@ esc_sum_ret :: proc(e: ^Esc, val: Esc_Roots, field := -1) {
         e.sum.ret_ro_fields |= val.ro_fields
     }
     if e.sum.ret_ro_from == 0 { e.sum.ret_ro_from = val.ro_from }
+}
+
+// Param p's value held in these fields of the result too; whether that's new.
+@(private="file")
+esc_ret_in :: proc(sum: ^Esc_Summary, p: int, fields: u64) -> bool {
+    for &ri in sum.ret_in_fields {
+        if ri.param != p { continue }
+        if fields & ~ri.fields == 0 { return false }
+        ri.fields |= fields
+        return true
+    }
+    append(&sum.ret_in_fields, Esc_Ret_In{p, fields})
+    return true
+}
+
+// What argument i makes of a call's result: what it points at; read-only,
+// when it is, only in the fields of the result that hold it — where the
+// callee's summary says it's held only in fields (a constructor's).
+@(private="file")
+esc_ret_join :: proc(r: ^Esc_Roots, sum: ^Esc_Summary, i: int, a: Esc_Roots) {
+    if (!a.ro && a.ro_fields == 0) || i in sum.ret_whole { esc_join(r, a); return }
+    fields: u64
+    for ri in sum.ret_in_fields { if ri.param == i { fields = ri.fields } }
+    if fields == 0 { esc_join(r, a); return }
+    plain := a
+    plain.ro, plain.ro_fields, plain.ro_from = false, 0, 0
+    esc_join(r, plain)
+    r.ro_fields |= fields
+    if r.ro_from == 0 { r.ro_from = a.ro_from }
 }
 
 // A field's position in a struct, by name; -1 when it has none so named.
@@ -1117,10 +1171,10 @@ esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args:
         for a in args { esc_join(r, esc_at(e, a)) }   // unknown: the result may view any argument
         return
     }
-    for i in sum.ret      { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) } }
-    for i in sum.ret_deep { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) } }
+    for i in sum.ret      { if i < len(args) { esc_ret_join(r, sum, i, esc_arg(e, callee, args, i, ESC_LEVEL_ONE, state)) } }
+    for i in sum.ret_deep { if i < len(args) { esc_ret_join(r, sum, i, esc_arg(e, callee, args, i, ESC_LEVEL_DEEP, state)) } }
     for pf in sum.ret_field {
-        if pf.param < len(args) { esc_join(r, esc_arg(e, callee, args, pf.param, ESC_LEVEL_DEEP, state, pf)) }
+        if pf.param < len(args) { esc_ret_join(r, sum, pf.param, esc_arg(e, callee, args, pf.param, ESC_LEVEL_DEEP, state, pf)) }
     }
     if sum.ret_ro { esc_ro_mark(r, sum.ret_ro_from) }
     if sum.ret_ro_fields != 0 {

@@ -262,6 +262,18 @@ emit_slice_ref :: proc(g: ^Codegen, len_at, data: Val) -> Val {
     return ref
 }
 
+// A `^[_]T` made (list_ref_ir_type): the list's address, its room — in a
+// temporary of its own (an aggregate is where it is).
+emit_list_ref :: proc(g: ^Codegen, list_at, room: Val) -> Val {
+    ref := fresh_tmp(g)
+    emit_alloca(g, ref, list_ref_ir_type())
+    emit_store(g, IR_PTR, list_at, ref)
+    room_at := fresh_tmp(g)
+    ir_gep(g, room_at, IR_I8, ref, {IR_I64, ir_int(8), {}})
+    emit_store(g, IR_I64, room, room_at)
+    return ref
+}
+
 // A ^[]T to the header at `at` of type t — a list's or a slice's: its len's
 // address and its data, as they are now. (A slice repointed through the
 // reference updates it: llvm_write_through_ref.)

@@ -177,7 +177,19 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     case .Type_Paren:
         tc_infer(k, subst, Tree_Id(t.a[n]), actual)
     case .Type_Pointer:
-        if pt, ok := actual.(^Type_Ptr); ok { tc_infer(k, subst, Tree_Id(t.a[n]), pt.elem) }
+        // (A list of any room given for `^[_]T`: `_` bound to ANY_ROOM — the
+        // instance's param a reference carrying its room too. A `$N` it binds
+        // nothing: its size isn't known until the program runs.)
+        inner := Tree_Id(t.a[n])
+        if pa := list_ref_of(actual); pa != nil && inner != 0 && t.tag[inner] == .Type_Partial {
+            size := Tree_Id(t.a[inner])
+            if size != 0 && t.tag[size] == .Type_Dollar && tc_text(Token_Id(t.a[size])) == "_" {
+                if decl := tc_type_param_named(k, size); decl != 0 && decl in subst^ && subst[decl] == nil { subst[decl] = Type_Const_Int{value = ANY_ROOM} }
+            }
+            tc_infer(k, subst, Tree_Id(t.b[inner]), pa.elem)
+        } else if pt, ok := actual.(^Type_Ptr); ok {
+            tc_infer(k, subst, inner, pt.elem)
+        }
     case .Type_Array:
         if fa, ok := actual.(^Type_Fixed_Array); ok {
             tc_infer_size(k, subst, Tree_Id(tree_rec(t, t.a[n], 2)[0]), fa.size)
@@ -194,7 +206,7 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     case .Type_Partial:
         #partial switch a in actual {
         case ^Type_Partial_Array:
-            tc_infer_size(k, subst, Tree_Id(t.a[n]), a.size)
+            if !a.any_room { tc_infer_size(k, subst, Tree_Id(t.a[n]), a.size) }   // (by value: no room to bind)
             tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
         case ^Type_Fixed_Array:   // (`[Kind]$T`: an enum's array)
             if a.index_type != nil { tc_infer(k, subst, Tree_Id(t.b[n]), a.elem) }

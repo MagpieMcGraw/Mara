@@ -269,7 +269,7 @@ lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want:
         if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {   // (its size: nothing of it built)
             return {v = graph_const(b, w, span, t, name, Const_Value{int = i128(fa.size)}), ok = true}
         }
-        if pa, list := distinct_base(graph_pointee(at)).(^Type_Partial_Array); list && name == "cap" {   // (its room, its N; its len read as `.len` is)
+        if pa, list := distinct_base(graph_pointee(at)).(^Type_Partial_Array); list && !pa.any_room && name == "cap" {   // (its room, its N; its len read as `.len` is — and a list of any room's, its reference's)
             return {v = graph_const(b, w, span, t, name, Const_Value{int = i128(pa.size)}), ok = true}
         }
         r := lw_arg(k, args[0], .Place, w, temp_span = span)

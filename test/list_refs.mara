@@ -1,0 +1,82 @@
+module list_refs
+
+//@ expect-output: 4 5 4 16
+//@ expect-output: 40 2
+//@ expect-output: 0 1 2 3 4
+//@ expect-output: 4 4
+//@ expect-output: 5 10
+//@ expect-output: 5 99
+//@ expect-output: 2 3
+//@ expect-output: 6 3
+
+// `^[_]T` where nothing binds its room — a struct's param or field, a local:
+// a reference to a list of any room, its address and its room (16 bytes).
+// Appends through it are checked against that room. Given to a fun's
+// `^[_]T`, it is passed as it is.
+
+use mara.core
+
+Tok :: struct { kind: i64, at: i64 }
+
+Lexed :: struct (line_list: ^[_]i64, tok_list: ^[_]Tok) {
+	pos: i64
+	lines := line_list
+	tokens := tok_list
+}
+
+lex :: (file: ^Lexed) {
+	file.lines + 0
+	for i in 0:5 {
+		file.tokens + Tok{i, i * 10}
+		if i % 2 == 0 do file.lines + i
+	}
+}
+
+count :: (list: ^[_]$T) -> i64 { return list.len }
+
+// A struct holding an immutable param's copy beside a list reference: only
+// the copy's field is read-only, the reference written through.
+Src :: struct (text: []utf8, line_list: ^[_]i64) {
+	data := text
+	lines := line_list
+}
+
+note :: (s: ^Src) {
+	s.lines + s.data.len
+}
+
+copies :: (names: [][]utf8) -> [4][]utf8 {
+	out : [4][]utf8
+	for n in names { &out + n }
+	return out
+}
+
+main :: fun() {
+	lines : [16]i64
+	toks : [8]Tok
+	f := Lexed(&lines, &toks)
+	lex(&f)
+	print("% % % %", lines.len, toks.len, f.lines.len, f.lines.cap)
+	print("% %", toks[4].at, lines[2])
+	print("% % % % %", f.tokens[0].kind, f.tokens[1].kind, f.tokens[2].kind, f.tokens[3].kind, f.tokens[4].kind)
+	print("% %", count(f.lines), count(&lines))
+	s : []Tok = f.tokens^
+	print("% %", s.len, s[1].at)
+	r := f.lines
+	r + 99
+	print("% %", lines.len, lines[lines.len - 1])
+
+	names : [2!][]utf8 = {"ab", "cde"}
+	datas := copies(names[:])
+	counts : [4]i64
+	srcs : [4]Src
+	for d, i in datas {
+		srcs[i] = Src(datas[i], &counts)
+		note(&srcs[i])
+	}
+	print("% %", counts[0], counts[1])
+
+	sum := 0
+	for t in f.tokens { sum += t.kind }
+	print("% %", sum / 2 + 1, f.tokens[3].kind)
+}

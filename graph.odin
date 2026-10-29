@@ -1500,8 +1500,8 @@ graph_partial_of :: proc(t: Type) -> bool {
 }
 
 // How a use of a `from` as a `to` views it: a partial array (or a pointer to
-// one) as a slice's header — a cast; a fixed array as a slice — of its
-// place; or it doesn't.
+// one) as a slice's header — a cast, as a pointer to one is as a `^[_]T` (it
+// and its room); a fixed array as a slice — of its place; or it doesn't.
 View_Kind :: enum u8 { None, Header, Slice }
 
 view_kind :: proc(to, from: Type) -> View_Kind {
@@ -1509,6 +1509,7 @@ view_kind :: proc(to, from: Type) -> View_Kind {
     _, to_ptr := distinct_base(to).(^Type_Ptr)
     _, from_ptr := distinct_base(from).(^Type_Ptr)
     if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return .Header }
+    if list_ref_of(to) != nil && from_ptr && graph_partial_of(from) && list_ref_of(from) == nil { return .Header }
     if _, from_atom := distinct_base(from).(Type_Atom); from_atom && !to_ptr && graph_header_of(to) { return .Header }   // (its text, looked up)
     _, to_slice := distinct_base(to).(^Type_Slice)
     _, from_array := distinct_base(from).(^Type_Fixed_Array)

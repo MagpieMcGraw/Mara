@@ -385,7 +385,7 @@ fold_struct :: proc(v: ^Fold) -> ^Scope_Body {
 fold_array_len :: proc(t: Type) -> int {
     #partial switch a in distinct_base(t) {
     case ^Type_Fixed_Array:   return a.size
-    case ^Type_Partial_Array: return a.size
+    case ^Type_Partial_Array: return -1 if a.any_room else a.size   // (a list of any room: never a constant's)
     }
     return -1
 }

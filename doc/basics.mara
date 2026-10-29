@@ -100,7 +100,10 @@ example_use :: fun() {
 // list's, `[$N]T`) binds N to the size passed, a constant
 // in the body — a size of its types, or a value. A list of any room whose
 // size goes unnamed is `[_]T`: `names: ^[_]Name` takes a pointer to any list
-// of Name (each `_` its own). `method` is another spelling of `fun`.
+// of Name (each `_` its own). Where no call gives the room — a struct's
+// field, a local — `^[_]T` holds the list's address and its room, 16 bytes:
+// appends through it are checked against that room. `method` is another
+// spelling of `fun`.
 example_fun :: fun() {
 	sum :: fun(a, b: i64) -> i64 {
 		return a + b

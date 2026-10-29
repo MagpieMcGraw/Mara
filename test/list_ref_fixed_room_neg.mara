@@ -1,0 +1,13 @@
+module list_ref_fixed_room_neg
+//@ expect-fail: cannot assign ^[_]i64 to variable 'p' of type ^[8]i64
+
+// A `^[_]T`'s room is known only when the program runs: it is no `^[8]T`.
+
+use mara.core
+
+main :: fun() {
+	l : [8]i64
+	r : ^[_]i64 = &l
+	p : ^[8]i64 = r
+	print(p.len)
+}

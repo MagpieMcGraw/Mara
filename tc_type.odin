@@ -87,7 +87,12 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     case .Type_Of:
         return tc_fun_type_of(k, n, span)
     case .Type_Pointer:
-        return type_ptr(tc_type(k, Tree_Id(t.a[n]), span))
+        // (`^[_]T` where nothing binds its room — a field, a local, a
+        // struct's param — or a generic's `_` bound to one: a reference to a
+        // list of any room, carrying its room.)
+        inner := Tree_Id(t.a[n])
+        if tc_any_room(k, inner) { return type_ptr(type_any_room_list(tc_type(k, Tree_Id(t.b[inner]), span))) }
+        return type_ptr(tc_type(k, inner, span))
     case .Type_Paren:
         return tc_type(k, Tree_Id(t.a[n]), span)
     case .Type_Slice:
@@ -192,12 +197,27 @@ tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
     return ty, hi + 1
 }
 
+// Whether a type as written is `[_]T` with nothing to bind its room — or a
+// generic's `_` bound to a list of any room (ANY_ROOM): behind a pointer, a
+// list of any room.
+tc_any_room :: proc(k: ^TC, n: Tree_Id) -> bool {
+    t := k.t
+    if n == 0 || t.tag[n] != .Type_Partial { return false }
+    size := Tree_Id(t.a[n])
+    if size == 0 || t.tag[size] != .Type_Dollar || tc_text(Token_Id(t.a[size])) != "_" { return false }
+    if ty, bound := tc_ref_type(k, k.rs.refs[size], ""); bound {
+        ci, is_int := ty.(Type_Const_Int)
+        return is_int && ci.value == ANY_ROOM
+    }
+    return true
+}
+
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
     // (A generic's size param, `$N` or `N`, in an instance: what it's bound to.)
     if n != 0 && (t.tag[n] == .Type_Dollar || t.tag[n] == .Ident && k.rs.refs[n].kind == .Type) {
         if ty, ok := tc_ref_type(k, k.rs.refs[n], ""); ok {
-            if ci, is_int := ty.(Type_Const_Int); is_int { return ci.value, true }
+            if ci, is_int := ty.(Type_Const_Int); is_int && ci.value != ANY_ROOM { return ci.value, true }
         }
     }
     // (`[_]T` with nothing to bind it: anywhere but a fun's param.)
