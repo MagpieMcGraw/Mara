@@ -1,9 +1,13 @@
-# Slices without a fill len: plan
+# Slices without a len: plan
 
 Written 2026-10-29, after the user's call: "If you want appendable storage, get a list."
-Revised the same day: a mutable list is `^[$N]T`, and a mutable slice `^[]T` is a writable
-view that can't grow. Not started. It replaces the no-len slices, `start_fill` and len
-inheritance built the same day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
+Revised the same day twice:
+- a mutable list is `^[$N]T`, and a mutable slice `^[]T` is a writable view that can't grow;
+- a slice is a pointer and a count, 16 bytes, with no len field. cstring's rule stays: a
+  slice passes only when its 0 is inside it.
+
+Not started. It replaces the no-len slices, `start_fill` and len inheritance built the same
+day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 
 ## Why
 
@@ -43,33 +47,40 @@ inheritance built the same day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 
 ## The model
 
-| Type | What it is | Grows? |
-|---|---|---|
-| `[N]T` | a list: its items, its len how many, its room N | yes |
-| `^[N]T`, `^[$N]T` | a mutable list: a pointer to a list, of that room or of any | yes |
-| `[]T` | a slice: a view, read-only as a param | no |
-| `^[]T` | a mutable slice: a writable view | no |
+| Type | What it is | Size | Grows? |
+|---|---|---:|---|
+| `[N]T` | a list: its len (how many items), then its room of N | 8 + N items | yes |
+| `^[N]T`, `^[$N]T` | a mutable list: a pointer to a list, of that room or of any | 8 | yes |
+| `[]T` | a slice: a pointer and a count, a view; read-only as a param | 16 | no |
+| `^[]T` | a mutable slice: a pointer to a slice, a writable view | 8 | no |
 
 - **Only lists grow.** Appends, `next`, takes from storage and `.len =` writes take a list or
   a mutable list. The stdlib's appends take `dst: ^[$N]$T`, so `&view + x` has nothing to
   call.
-- **A slice's len is set when it's made and never moves after that.** For a smaller view,
+- **A slice has one count**, how many items it shows. `.len` and `.cap` both read it: for a
+  view they're the same number, and the reads of `.len` everywhere (574 in sooblivion, and
+  every `for k in 0:xs.len`) stay as they are. Neither can be written. For a smaller view,
   reslice it: `s = s[0:n]`.
 - **A mutable slice `^[]T`** can write the items of the view it points at, and can replace that
   view whole: `rest^ = rest^[n:]`, a cursor the callee moves along. It can't grow it. It is
   what a function takes to write into part of a caller's memory: a file read into a window of
   a buffer, a sort in place, font's coverage buffer. `[]T` params are read-only (the copy
-  rule).
-- **A slicing `x[a:b]`** shows exactly its b - a items: len = cap = b - a, whatever x's len.
-  This is the rule before 2026-10-29, with no no-len bit and no inherited len.
-- **A list given where a slice goes** is a view of its items: len = its len, cap = its room,
-  as today. A mutable list given where a mutable slice goes is a writable view of its items
-  (`sort(&list)`).
-- **Reads go to the len**, everywhere: loops, print, `==`, appends from it, copies.
-- **Indexing a slice is checked against its len**, its size, as Go does; the cap only bounds a
-  reslicing and cstring's look for a 0. (Today it's checked against the cap, because the len
-  was a fill count.) A list's indexing stays checked against its room, N: its room is memory
-  you can write by index.
+  rule). A mutable list given where a mutable slice goes (`sort(&list)`) points at a view of
+  its items.
+- **A slicing `x[a:b]`** shows exactly its b - a items, whatever x's len.
+- **A list given where a slice goes** is a view of its items: its count is the list's len.
+  The room past them isn't in the view.
+- **Indexing a slice** is checked against its count, as today. A list's indexing stays checked
+  against its room, N: its room is memory you can write by index.
+- **cstring doesn't change:** it never copies, and it checks for a 0. A list passes when its
+  0 is in its room, at `list[len]`, as today. A slice passes when its 0 is its last item: slice
+  it with the 0 at the end (`buf[0 : buf.len + 1]`; a list's appends write a 0 after its
+  text). A text literal or a list given where a slice goes no longer has its 0 in the view,
+  so `cstring` of it stops the program.
+  - **Bindings that hand text to C take a list of known room** (`str256`, `Path`), not
+    `[]utf8`: its 0 is in reach and nothing is copied. A literal fits any list it fits in.
+    The SDL bindings have 16 cstring calls, the OpenGL ones 4. os.mara's paths already go
+    through `c_path`, which copies.
 
 ## What `^[$N]T` costs
 
@@ -86,47 +97,48 @@ inheritance built the same day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 1. **Where `x[:]` and `x[lo:]` of a list end.**
    - *(Recommended)* At its len: its items. A room is a list now, so a view of the unfilled
      part has nothing to do. 483 of 485 `[:]` once wanted the items.
-   - Or at its cap, as built today, which then needs `x[lo:.len]` for the items.
-2. **Whether slices keep a cap.**
-   - *(Recommended)* Keep the three-word header {len, cap, ptr}. cstring needs the cap to know
-     a 0 after the text is still inside the memory. That's how the bindings take `[]utf8` and
-     hand C a pointer without copying.
-   - Or shrink to {ptr, len}. That's a smaller value, but cstring of a slice could no longer
-     be checked, and the layout touches the ABI, debug info, the const tables and mara_mem.c.
-3. **Reads that report how much came.**
+   - Or at its room, N, as built today, which then needs `x[lo:.len]` for the items.
+2. **Reads that report how much came.**
    - *(Recommended)* Take a mutable slice, the window to read into, and return the count:
      `view := room[at : at + want]`, then `got := file_read(id, &view)?`. This reads into any
      part of any memory, the middle of a big buffer included, as `read_entire_file` does.
    - Or take a mutable list and set its len to what came. That's fewer changes, but you can
      only read into a whole list.
-4. **Writing a slice's len.**
-   - *(Recommended)* Refused, with an error that says to reslice.
-   - Or allowed only to shrink (`view.len = got` with got ≤ len), which keeps some code as it
-     is but blurs "a slice's len never moves".
 
 ## The compiler
 
+- **The slice layout:** a slice is {ptr, count}, 16 bytes; a mutable slice is a pointer to
+  one, 8 bytes, not today's 24-byte reference {where the len is, the cap, the data}. A list's
+  layout, {len, [N]T}, doesn't change. The places that know the layout:
+  - layout.odin (`slice_header_fields`, `slice_ref_layout`) and the IR types (`SLICE_IR_TYPE`,
+    `slice_ref_ir_type`; codegen.odin's `SLICE` field numbers);
+  - the emitter: every header it builds or reads (`emit_build_temp_slice`,
+    `emit_slice_header_at`, the held views, `slice_ref_to`, `llvm_write_through_ref`, the list
+    and atom views made in `.Cast`, takes, byte views, `llvm_copy_into`, `llvm_elements_into`,
+    from_text, cstring, print);
+  - the C ABI (abi.odin classes a slice as memory, "exceeds an eightbyte": at 16 bytes it's
+    two);
+  - debug info (codeview.odin's slice record and its raddbg view, `array(ptr, len)`);
+  - the runtime (mara_mem.c's `Mara_Header` and `Mara_Slice_Ref`);
+  - the constant tables (codegen_const.odin) and `main`'s args (codegen_module.odin builds
+    them as {len, cap, ptr}).
 - **Checker errors**, each at the place it happens:
   - an append into a slice, or through a mutable slice: "a slice can't grow: append to a
     list, or a `^[$N]T` pointing at one". The dispatch finds no add for it, so the error is
     worded for that case.
-  - a `.len =` write on a slice or through a mutable slice (decision 4);
+  - a `.len =` or `.cap =` write on a slice: "a slice's count is its size: reslice it";
   - a take from a slice (`slice([:n]T, &view)`, `let(T, &view)`), and `next(&view)`.
-- **A mutable slice is a view.** `^[]T` stays a reference {where the len is, the cap, the data}
-  for writing items and replacing the view. The paths that move its len through it go: the
-  appends no longer take it. Whether its layout can shrink to a pointer to the slice is for
-  later.
-- **A slice's index check** uses its len, not its cap.
 - **Taken out:** the no-len bit (SLICE_NO_LEN, emit_no_len, emit_len_count and the masks on
   len reads), emit_window_len, the `start_fill` builtin and its Carve "fill", and the cap bound
-  lw_slice gives an open end (decision 1). A slicing's len is back to its window's size.
+  lw_slice gives an open end (decision 1).
+- **cstring:** for a slice, the check is its last item (`s[count - 1] == 0`); for a list,
+  `list[len]` within N, as today.
 - **Kept: the append speed.** 200M appends take 0.094 s now and took 0.38 s before. The gain
   came from LLVM knowing the len it appends at isn't negative, which `start_fill`'s value told
   it. With `^[$N]T`, each copy knows its N, so the room check is against a constant. The len's
   non-negativity can come from range information on a list's len loads (0 ..= N). Measure it
   with the scratchpad bench (`bench_nolen.mara`) before and after.
-- **The slice layout stays** the same (decision 2), and so do the x86 backend, debug info
-  and the runtime.
+- **Gained:** a slice fits in two registers when it's passed.
 
 ## The stdlib
 
@@ -135,7 +147,7 @@ inheritance built the same day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 - **Storage:** `read_entire_file`, `dir_read`, `filter`, `filter2` and `group` take
   `storage: ^[$N]byte`. Takes (`slice([:n]T, &storage)`, `let`) need a list or a mutable list
   as storage.
-- **Reads** (decision 3): `file_read`, `pipe_read`, `udp_receive` and `tcp_receive`, on Windows
+- **Reads** (decision 2): `file_read`, `pipe_read`, `udp_receive` and `tcp_receive`, on Windows
   and Linux, take `data: ^[]byte` and return the count beside what they return today. The exact
   shapes are settled when they're built: several results only where several go, and no -1 for
   "ended".
@@ -151,6 +163,7 @@ inheritance built the same day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 - **font.mara** sets lens through `^[]T` params (`atlas.len`, `glyphs.len`, `acc.len`,
   `out.len`, an outline's points). Where a function fills a caller's list, it takes `^[$N]T`.
   Where it writes into a view, it keeps `^[]T` and doesn't set the len.
+- **The SDL and OpenGL bindings** take text for C as lists of known room (see cstring above).
 
 ## Code outside the compiler
 
@@ -163,9 +176,11 @@ These lists come from the probe. The checker errors will give the exact sites.
   - The 65 carved rooms are written by index with a count.
   - The 16 reads take a window and the count returned.
   - The 165 params that grow what they point at become `^[$N]T`.
+  - Text it hands the bindings goes as lists. A slice or a literal given to them is now a
+    type error, so the checker lists them.
   - sooblivion takes releases, so the release waits until it has moved.
 - **Pounce (11):** 4 `file_read` calls in cache.mara (223, 253, 267, 286) and 7 appends in
-  gfx_mesh_generation.mara (39–53).
+  gfx_mesh_generation.mara (39–53). Its shader text goes to OpenGL's binding.
 - **mara3:** `File`'s `lines` and `tokens` point at `line_slice := lines[:.cap]` and
   `token_slice := tokens[:.cap]` (compiler.mara:86–90), and lex appends through them. They
   would be `^[MB]i64` and `^[MB]Token`, pointing at `&lines` and `&tokens`. The user's code:
@@ -176,12 +191,14 @@ These lists come from the probe. The checker errors will give the exact sites.
 
 ## Order of work
 
-1. You decide 1–4.
+1. You decide 1–2.
 2. The checker errors are first a probe only, a list per code base from no-link builds:
    stdlib, tests, docs, view, Pounce, sooblivion and mara3.
 3. The stdlib changes: the appends and storage functions to `^[$N]T`, reads, arenas,
-   `filter`/`group`, `dir_read`.
-4. The compiler: errors on, the no-len machinery out, slicing back to its window, slice
-   indexing against the len, the append speed kept and measured.
-5. Tests, docs, view and Pounce moved. Then the no-link sweep, and the suite once.
-6. sooblivion's and mara3's lists go to you. Release when sooblivion has moved.
+   `filter`/`group`, `dir_read`, the bindings' text as lists.
+4. The compiler, on today's layout first: errors on, the no-len machinery out, slicing back to
+   its window, cstring's check for slices, the append speed kept and measured.
+5. Then the layout: a slice to {ptr, count}, a mutable slice to a pointer. The suite checks
+   the two steps apart.
+6. Tests, docs, view and Pounce moved. Then the no-link sweep, and the suite once per step.
+7. sooblivion's and mara3's lists go to you. Release when sooblivion has moved.
