@@ -5,9 +5,9 @@ use mara.os
 #if #profile_memory {
 	// The memory profiler (runtime/mara_mem.c, linked into a `mara build
 	// -profile memory` build): an arena's use, told after its cursor moves
-	// on — its memory, its size, and how much of it is in use.
+	// on — base's len what's in use, its cap the arena's size.
 	foreign static_lib "mara_runtime" {
-		fun __mara_mem_arena(kind: cstring, data: ^byte, size: i64, used: i64)
+		fun __mara_mem_arena(kind: cstring, base: ^[]byte)
 	}
 }
 
@@ -54,26 +54,27 @@ oom_string :: "
 Arena_Basic :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
-	// The bump cursor: the bytes of base handed out (base stays the whole
-	// reservation). No per-alloc header — pure bump.
-	used: i64 = 0
 	current_mark: i64 = -1
+
+	// sys_alloc hands back len == cap; reset len to 0 so base.len IS the bump
+	// cursor (cap stays the reservation). No per-alloc header — pure bump.
+	base.len = 0
 
 	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
 		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
 		// and subsequent allocs need a 16-aligned base for typed views.
-		off := (a.used + 15) & -16
+		off := (a.base.len + 15) & -16
 
 		a.base[off] = prev
 		a.current_mark = off
 		// Advance past the 16-aligned backlink slot so the next alloc can't
 		// clobber it before reset reads it back. (The old offset-field version
 		// set the cursor back to `off` here — a latent corruption bug.)
-		a.used = off + 16
+		a.base.len = off + 16
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Basic", &a.base[0], a.capacity, a.used)
+			__mara_mem_arena("Arena_Basic", &a.base)
 		}
 	}
 
@@ -85,7 +86,7 @@ Arena_Basic :: class(cap: i64) {
 		name: atom = #caller_name,
 		span: atom = #caller_span) -> []byte
 	{
-		off := (a.used + 15) & -16
+		off := (a.base.len + 15) & -16
 		end := off + size
 
 		if end > a.capacity {
@@ -94,9 +95,9 @@ Arena_Basic :: class(cap: i64) {
 		}
 
 		result := a.base[off : end]
-		a.used = end
+		a.base.len = end
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Basic", &a.base[0], a.capacity, a.used)
+			__mara_mem_arena("Arena_Basic", &a.base)
 		}
 		return result
 	}
@@ -108,7 +109,7 @@ Arena_Basic :: class(cap: i64) {
 
 		prev : i64 = a.base[cm]
 
-		a.used = cm
+		a.base.len = cm
 		a.current_mark = prev
 	}
 
@@ -120,7 +121,7 @@ Arena_Basic :: class(cap: i64) {
 		failed_span: atom)
 	{
 		print(oom_string,
-			a.capacity, a.used, a.capacity - a.used,
+			a.capacity, a.base.len, a.capacity - a.base.len,
 			failed_name, failed_size, failed_span)
 	}
 }
@@ -131,25 +132,27 @@ Arena_Basic :: class(cap: i64) {
 Arena_Debug :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
-	// The bump cursor: the bytes of base handed out (base stays the whole
-	// reservation). Every base[off] access is a sized byte read/write, which
-	// bounds-checks against capacity.
-	used: i64 = 0
 	current_mark: i64 = -1
 	last_alloc: i64 = -1
+
+	// sys_alloc hands back len == cap; reset len to 0 so base.len IS the bump
+	// cursor (cap stays the reservation). Every base[off] access is a sized
+	// byte read/write, which bounds-checks against capacity, so carving ahead
+	// of len is fine — no separate offset field needed.
+	base.len = 0
 
 	// Remembers where the arena is now; reset frees what came after.
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
-		off := (a.used + 15) & -16
+		off := (a.base.len + 15) & -16
 
 		a.base[off] = prev
 		a.base[off + size_of(prev)] = a.last_alloc
 
 		a.current_mark = off
-		a.used = off + 16
+		a.base.len = off + 16
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Debug", &a.base[0], a.capacity, a.used)
+			__mara_mem_arena("Arena_Debug", &a.base)
 		}
 	}
 
@@ -171,7 +174,7 @@ Arena_Debug :: class(cap: i64) {
 		name: atom = #caller_name,
 		span: atom = #caller_span) -> []byte
 	{
-		off := (a.used + 15) & -16
+		off := (a.base.len + 15) & -16
 		cap := a.capacity
 		end := off + HEADER_SIZE + size
 
@@ -190,9 +193,9 @@ Arena_Debug :: class(cap: i64) {
 		data_off := off + HEADER_SIZE
 		result := a.base[data_off : data_off+size]
 		a.last_alloc = off
-		a.used = end
+		a.base.len = end
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Debug", &a.base[0], a.capacity, a.used)
+			__mara_mem_arena("Arena_Debug", &a.base)
 		}
 		return result
 	}
@@ -205,7 +208,7 @@ Arena_Debug :: class(cap: i64) {
 		prev : i64 = a.base[cm]
 		saved_last : i64 = a.base[cm + size_of(prev)]
 
-		a.used = cm
+		a.base.len = cm
 		a.last_alloc = saved_last
 		a.current_mark = prev
 	}
@@ -218,7 +221,7 @@ Arena_Debug :: class(cap: i64) {
 		failed_span: atom)
 	{
 		print(oom_string,
-			a.capacity, a.used, a.capacity - a.used,
+			a.capacity, a.base.len, a.capacity - a.base.len,
 			failed_name, failed_size, failed_span)
 
 		print("--- All allocations (most recent first) ---")

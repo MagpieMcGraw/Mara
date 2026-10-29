@@ -249,7 +249,7 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
-    emit_fail(g, fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (a list's at [len], in its room; a slice's its last item, [len-1]) — pass the list, or slice it with its 0, `b[0 : n + 1]`\n", loc))
+    emit_fail(g, fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc))
     emit_label(g, pass_lbl)
     return src_ptr
 }
@@ -642,7 +642,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: Val, ty: Type) {
     if elem := llvm_header_elem(bt); elem != nil {
         data := hdr_data_at(g, addr, bt)
         n := emit_header_field(g, addr, SLICE.len)
-        if pa, is_list := bt.(^Type_Partial_Array); is_list { emit_len_check(g, n, ir_int(pa.size), g.print_span) }
+        if pa, is_list := bt.(^Type_Partial_Array); is_list { emit_len_check(g, n, ir_int(pa.size), g.print_span) } else { n = emit_len_count(g, n) }
         if _, u := distinct_base(elem).(Type_Utf8); u {
             emit_print_text(g, data, n)
         } else {

@@ -1,0 +1,167 @@
+module slice_no_len
+
+//@ expect-output: view: 4 [3, 4, 5, 6] 3 - loop: 4 18
+//@ expect-output: window: 4 1 [8] - past the len: 0 4
+//@ expect-output: open: 6 14 - to the len: 6 6
+//@ expect-output: whole: 8 16 - appended: 9 9 8
+//@ expect-output: fixed: 4 4 - room: 1 [5] - under it: 5 2
+//@ expect-output: never filled: 3
+//@ expect-output: of a no-len slice: 2 2
+//@ expect-output: from a slicing: 2 - from an empty list: 2
+//@ expect-output: len set: 0 2
+//@ expect-output: through a ^[]T: 1 [9] - read through one: 4
+//@ expect-output: start_fill: 0 0 - a list: 3 3
+//@ expect-output: text: north true
+//@ expect-output: take: 32 0
+//@ expect-output: field: 0 1
+//@ expect-output: into a list: 3 [1, 2, 3]
+//@ expect-output: copied through a ^[]T: 1 [7]
+//@ expect-output: param: 3
+//@ expect-output: args: 0 64
+
+// A slicing of a list or a slice keeps as much of its len as falls in it:
+// `xs[2:6]` of 8 items has all 4, of 3 items only 1, its cap 4 either way.
+// One with no hi, `xs[:]` or `xs[lo:]`, runs to the cap. A slicing of a
+// fixed array, or of a slice with no len, has no len: it reads as all of its
+// room, and an append into it starts at 0. Reads (len, loops, print) go to
+// the len; with no len, to the cap.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Holder :: struct {
+	view: []i64 = []
+}
+
+fill_one :: fun(room: ^[]i64) {
+	room + 9
+}
+
+count_through :: fun(p: ^[]i64) -> i64 {
+	return p.len
+}
+
+copy_and_add :: fun(p: ^[]i64) -> []i64 {
+	w := p^
+	&w + 7
+	return w
+}
+
+count_param :: fun(xs: []i64) -> i64 {
+	return xs.len
+}
+
+main :: fun(args: [][]utf8) {
+	xs : [16]i64
+	for k in 1..8 do &xs + k
+
+	// A window inside the len: all of it.
+	v := xs[2:6]
+	sum := 0
+	n := 0
+	for x in v {
+		sum += x
+		n += 1
+	}
+	print("view:", v.len, v, v[0], "- loop:", n, sum)
+
+	// A window past the len: its cap, and as much of the len as is in it.
+	w := xs[7:11]
+	past := xs[10:14]
+	print("window:", w.cap, w.len, w, "- past the len:", past.len, past.cap)
+
+	// No hi: to the cap; to the len, `.len`.
+	open := xs[2:]
+	to_len := xs[2:.len]
+	print("open:", open.len, open.cap, "- to the len:", to_len.len, to_len.cap)
+
+	// `[:]`: the whole room, its items in it; an append goes after them.
+	whole := xs[:]
+	before := whole.len
+	&whole + 9
+	print("whole:", before, whole.cap, "- appended:", whole.len, xs[8], xs.len)
+
+	// A fixed array's slicing has no len: all of it, until an append starts
+	// it at 0.
+	buf : [8!]i64
+	for k in 0:8 do buf[k] = 2
+	full := buf[2:6]
+	room := buf[0:8]
+	&room + 5
+	print("fixed:", full.len, full.cap, "- room:", room.len, room, "- under it:", buf[0], buf[1])
+
+	// Nothing appended: still all of its room.
+	r := buf[0:3]
+	print("never filled:", r.len)
+
+	// A slicing of a slice with no len has none either.
+	inner := r[1:3]
+	print("of a no-len slice:", inner.len, inner.cap)
+
+	// As a source: a slicing gives its items; an empty list gives nothing.
+	dst : [8]i64
+	&dst + xs[0:2]
+	first := dst.len
+	empty : [8]i64
+	&empty + 4
+	empty.len = 0
+	&dst + empty
+	print("from a slicing:", first, "- from an empty list:", dst.len)
+
+	// A len set is the len.
+	s := xs[0:4]
+	s.len = 0
+	z := s.len
+	s.len = 2
+	print("len set:", z, s.len)
+
+	// Through a mutable slice: an append goes after the len; a read is the
+	// len. (Past xs's len: a window with len 0.)
+	t := xs[12:16]
+	u := xs[4:8]
+	fill_one(&t)
+	print("through a ^[]T:", t.len, t, "- read through one:", count_through(&u))
+
+	// start_fill: no len becomes 0; a list's len stays. It gives the len.
+	nolen := buf[0:5]
+	at := start_fill(&nolen)
+	three : [4]i64
+	for k in 0:3 do &three + k
+	at3 := start_fill(&three)
+	print("start_fill:", at, nolen.len, "- a list:", at3, three.len)
+
+	// Text: a slicing reads as its characters.
+	name : str64
+	&name + "north gate"
+	print("text:", name[0:5], name[0:5] == "north")
+
+	// A take from a slicing of an empty list: from its start.
+	store : [256]byte
+	bytes := store[0:64]
+	taken := slice([:4]i64, &bytes)
+	print("take:", bytes.len, taken.len)
+
+	// In a field: the same.
+	h := Holder()
+	h.view = xs[13:16]
+	before_fill := h.view.len
+	fill_one(&h.view)
+	print("field:", before_fill, h.view.len)
+
+	// Into a list: its items.
+	l : [8]i64 = xs[0:3]
+	print("into a list:", l.len, l)
+
+	// Copied out through a ^[]T: its len comes with it.
+	c := buf[4:8]
+	copied := copy_and_add(&c)
+	print("copied through a ^[]T:", copied.len, copied)
+
+	print("param:", count_param(xs[1:4]))
+
+	// main's args: past the ones given, none, in a room of 64.
+	rest := args[5:]
+	print("args:", rest.len, rest.cap + 5)
+}

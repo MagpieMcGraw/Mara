@@ -250,7 +250,7 @@ IR_HALF   :: Ir_Type(8)
 IR_FLOAT  :: Ir_Type(9)
 IR_DOUBLE :: Ir_Type(10)
 IR_PTR    :: Ir_Type(11)
-IR_SLICE  :: Ir_Type(12)   // a slice's header, { i64, ptr }: its len, its data
+IR_SLICE  :: Ir_Type(12)   // a slice's header, { i64, i64, ptr }
 IR_EMPTY  :: Ir_Type(13)   // {}, a value with nothing in it
 IR_PRINTF :: Ir_Type(14)   // (ptr, ...), printf's signature
 
@@ -312,8 +312,8 @@ ir_types_init :: proc "contextless" () {
     basic(IR_FLOAT,  {kind = .Float, text = "float"})
     basic(IR_DOUBLE, {kind = .Double, text = "double"})
     basic(IR_PTR,    {kind = .Ptr, text = "ptr"})
-    slice_fields := [2]Ir_Type{IR_I64, IR_PTR}
-    basic(IR_SLICE,  {kind = .Struct, fields = slice_fields[:], text = "{ i64, ptr }"})
+    slice_fields := [3]Ir_Type{IR_I64, IR_I64, IR_PTR}
+    basic(IR_SLICE,  {kind = .Struct, fields = slice_fields[:], text = "{ i64, i64, ptr }"})
     basic(IR_EMPTY,  {kind = .Struct, text = "{}"})
     basic(IR_PRINTF, {kind = .Sig, text = "(ptr, ...)"})
 }

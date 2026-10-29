@@ -28,19 +28,19 @@ hold :: fun(numbers: []i64) -> Holder {
 	return Holder{numbers = numbers}
 }
 
-fill :: fun(storage: ^[_]byte) -> Holder {
-	holder := Holder{numbers = slice([:1]i64, storage)}
-	holder.numbers[0] = 7
+fill :: fun(storage: ^[]byte) -> Holder {
+	holder := Holder{numbers = slice([:4]i64, storage)}
+	&holder.numbers + 7
 	return holder
 }
 
 File :: class (
 	file_data: []utf8,
-	line_list: ^[16]i64)
+	line_slice: ^[]i64)
 {
 	pos: i64
 	data := file_data
-	lines := line_list
+	lines := line_slice
 }
 
 lex :: fun(file: ^File) {
@@ -78,12 +78,14 @@ main :: fun() {
 	&texts + "ab"
 	&texts + "c"
 	lines : [16]i64
+	line_slice := lines[0:lines.cap]
+	line_slice.len = 0
 	files : [2]File
 	for i in 0:2 {
-		files[i] = File(texts[i], &lines)
+		files[i] = File(texts[i], &line_slice)
 		lex(&files[i])
 	}
-	print("lexed:", lines.len, lines[1], files[0].data)
+	print("lexed:", line_slice.len, line_slice[1], files[0].data)
 
 	bytes : [4]byte
 	&bytes + 3

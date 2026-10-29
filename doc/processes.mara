@@ -24,12 +24,11 @@ use mara.os
 // The program talked to: reads its input to the end, then answers.
 child :: fun() {
 	got : [200]byte
-	chunk : [64!]byte
-	room := chunk[:]
+	chunk : [64]byte
 	for true {
-		piece, e := file_read(standard_input(), &room)
-		if e or piece.len == 0 do break   // 0 bytes: the end
-		&got + piece
+		e := file_read(standard_input(), &chunk)
+		if e or chunk.len == 0 do break   // 0 bytes: the end
+		&got + chunk
 	}
 	text : []utf8 = got
 	print("the child got:", text)
@@ -53,11 +52,10 @@ main :: fun(args: [][]utf8) -> i64 {
 
 	// Without waiting: nothing has arrived yet (the child is waiting for its
 	// input to end), and its output is still open.
-	early : [64!]byte
-	window := early[:]
-	so_far, open, pe := pipe_read(p.output, &window)
+	early : [64]byte
+	open, pe := pipe_read(p.output, &early)
 	if pe do print("couldn't read from it:", pe)
-	print("so far:", so_far.len, "bytes; still open:", open)
+	print("so far:", early.len, "bytes; still open:", open)
 
 	// Write to its input, then close it: the child reads to its end.
 	we := file_write_text(p.input, "hello")
@@ -66,12 +64,11 @@ main :: fun(args: [][]utf8) -> i64 {
 
 	// Read what it writes, until its output ends: it has exited.
 	out : [400]byte
-	chunk : [64!]byte
-	room := chunk[:]
+	chunk : [64]byte
 	for true {
-		piece, re := file_read(p.output, &room)
-		if re or piece.len == 0 do break
-		&out + piece
+		re := file_read(p.output, &chunk)
+		if re or chunk.len == 0 do break
+		&out + chunk
 	}
 	text : []utf8 = out
 	print("it said:", text)

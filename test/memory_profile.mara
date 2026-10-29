@@ -15,6 +15,7 @@ use mara.memory
 //@ expect-output: Bytes.data: peak 50000 of 100000
 //@ expect-output: Part.texture: peak 14 of 160
 //@ expect-output: make_parts.parts: peak 4 of 4
+//@ expect-output: make_bytes.holders: peak 1 of 1
 
 // A -profile memory build runs as a plain one does: its locals, a struct's
 // fields copied into a partial array, a file read through a ^[]byte param,
@@ -28,8 +29,7 @@ use mara.memory
 // next() hands out is watched (Bytes.data wasn't), and its lens aren't put
 // down to the list watched there before (Part.texture, the storage's last
 // use, took them); a take, `slice([:n]T, storage)`, is watched as a list is,
-// by the local or field it's kept in. (The item next() hands out is in a
-// list `let` names in the storage.)
+// by the local or field it's kept in.
 
 Item :: struct {
 	name: [64]utf8
@@ -53,18 +53,17 @@ Bytes :: struct {
 	data: [100000]u8
 }
 
-make_parts :: fun(storage: ^[300000]byte) -> i64 {
+make_parts :: fun(storage: ^[]byte) -> i64 {
 	parts := slice([:4]Part, storage)
 	for k in 0:4 {
-		parts[k] = Part{texture = [], count = k}
+		&parts + Part{texture = [], count = k}
 		&parts[k].texture + "textures/a.dds"
 	}
 	return parts.len
 }
 
-make_bytes :: fun(storage: ^[300000]byte) -> i64 {
-	holders := let([1]Bytes, storage)
-	holders.len = 0
+make_bytes :: fun(storage: ^[]byte) -> i64 {
+	holders := slice([:1]Bytes, storage)
 	holder := next(&holders)
 	holder.data.len = 0
 	for k in 0:50000 do &holder.data + u8(k)
@@ -131,7 +130,7 @@ report :: fun(exe: []utf8) -> err {
 	arena := row(text, 3, "Arena_Basic")
 	size, peak := number(arena[0]), number(arena[1])
 	print("arena: Arena_Basic, its peak within its size:", peak > 0 and peak <= size)
-	for name in ([3!][]utf8{"Bytes.data", "Part.texture", "make_parts.parts"}) {
+	for name in ([4!][]utf8{"Bytes.data", "Part.texture", "make_parts.parts", "make_bytes.holders"}) {
 		site := row(text, 7, name)
 		print("%: peak % of %", name, number(site[2]), number(site[4]))
 	}

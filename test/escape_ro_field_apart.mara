@@ -1,0 +1,40 @@
+module escape_ro_field_apart
+
+//@ expect-output: 2 3
+//@ expect-output: 5
+
+// A struct built from an immutable param's copy is read-only only in the
+// field that holds the copy: written through its other fields — in a local,
+// in an array of them.
+
+use mara.core
+
+Src :: struct (text: []utf8, line_list: ^[16]i64) {
+	data := text
+	lines := line_list
+}
+
+note :: (s: ^Src) {
+	s.lines + s.data.len
+}
+
+copies :: (names: [][]utf8) -> [4][]utf8 {
+	out : [4][]utf8
+	for n in names { &out + n }
+	return out
+}
+
+main :: fun() {
+	names : [2!][]utf8 = {"ab", "cde"}
+	datas := copies(names[:])
+	counts : [16]i64
+	srcs : [4]Src
+	for d, i in datas {
+		srcs[i] = Src(datas[i], &counts)
+		note(&srcs[i])
+	}
+	print("% %", counts[0], counts[1])
+	one := Src(datas[0], &counts)
+	note(&one)
+	print("%", counts[0] + counts[2] + 1)
+}

@@ -625,19 +625,8 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     obj = distinct_base(obj)
     elem: Type
     #partial switch v in obj {
-    case ^Type_Slice:
-        // (A slice is a view: its count is its size. Only lists grow.)
-        if field == "len" || field == "cap" {
-            tc_error(k, span, TYPE_SLICE_LEN_WRITE, tc_diag_name(k, Tree_Id(k.t.a[target])), field)
-            return
-        }
-        elem = v.elem
-    case ^Type_Partial_Array:
-        if field == "cap" {
-            tc_error(k, span, TYPE_LIST_CAP_WRITE, tc_diag_name(k, Tree_Id(k.t.a[target])), v.size)
-            return
-        }
-        elem = v.elem
+    case ^Type_Slice:         elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
     case ^Type_Fixed_Array:
         if !is_swizzle_field(field, v.size) {
             if is_all_swizzle_chars(field) { tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size) }

@@ -17,8 +17,8 @@ emit_slice_alloca :: proc(g: ^Codegen, result: Val) {
     emit_alloca(g, result, SLICE_IR_TYPE)
 }
 
-// A field of the slice header (or partial array) at `header` — SLICE.len
-// (at SLICE_LEN_IR) or SLICE.ptr — loaded.
+// A field of the slice header (or partial array) at `header` — SLICE.len,
+// .cap (at SLICE_LEN_IR) or .ptr — loaded.
 emit_header_field :: proc(g: ^Codegen, header: Val, field: int) -> Val {
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, header, field)
@@ -221,12 +221,12 @@ value_has_partial_array :: proc(g: ^Codegen, t: Type) -> bool {
     return false
 }
 
-// Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len into its
-// fields. Returns the alloca ptr. Callers load from it to get the slice value.
-emit_build_temp_slice :: proc(g: ^Codegen, data_ptr, len_val: Val) -> Val {
+// Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len / cap into
+// its fields. Returns the alloca ptr. Callers load from it to get the slice value.
+emit_build_temp_slice :: proc(g: ^Codegen, data_ptr, len_val, cap_val: Val) -> Val {
     slice_alloca := fresh_tmp(g)
     emit_slice_alloca(g, slice_alloca)
-    emit_slice_header_at(g, slice_alloca, data_ptr, len_val)
+    emit_slice_header_at(g, slice_alloca, data_ptr, len_val, cap_val)
     return slice_alloca
 }
 
@@ -237,12 +237,11 @@ list_len_checked :: proc(g: ^Codegen, at: Val, pa: ^Type_Partial_Array, span: Sp
     return n
 }
 
-// A header's cap and data where it is, by its type: a slice's cap is its
-// len, its data in its header; a list's are its type's N and its own
-// elements.
+// A header's cap and data where it is, by its type: a slice's header holds
+// them; a list's are its type's N and its own elements.
 hdr_cap_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
     if pa, is_list := distinct_base(t).(^Type_Partial_Array); is_list { return ir_int(pa.size) }
-    return emit_header_field(g, at, SLICE.len)
+    return emit_header_field(g, at, SLICE.cap)
 }
 
 hdr_data_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
@@ -250,37 +249,26 @@ hdr_data_at :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
     return emit_header_field(g, at, SLICE.ptr)
 }
 
-// A ^[]T made (slice_ref_ir_type): where the len is, the data — in a
-// temporary of its own (an aggregate is where it is).
-emit_slice_ref :: proc(g: ^Codegen, len_at, data: Val) -> Val {
+// A ^[]T made (slice_ref_ir_type): where the len is, the cap, the data — in
+// a temporary of its own (an aggregate is where it is).
+emit_slice_ref :: proc(g: ^Codegen, len_at, cap, data: Val) -> Val {
     ref := fresh_tmp(g)
     emit_alloca(g, ref, slice_ref_ir_type())
     at := fresh_tmp(g)
     emit_slice_gep(g, at, ref, SLICE.len)
     emit_store(g, IR_PTR, len_at, at)
+    emit_header_set(g, ref, SLICE.cap, cap)
     emit_header_set(g, ref, SLICE.ptr, data)
     return ref
 }
 
-// A `^[_]T` made (list_ref_ir_type): the list's address, its room — in a
-// temporary of its own (an aggregate is where it is).
-emit_list_ref :: proc(g: ^Codegen, list_at, room: Val) -> Val {
-    ref := fresh_tmp(g)
-    emit_alloca(g, ref, list_ref_ir_type())
-    emit_store(g, IR_PTR, list_at, ref)
-    room_at := fresh_tmp(g)
-    ir_gep(g, room_at, IR_I8, ref, {IR_I64, ir_int(8), {}})
-    emit_store(g, IR_I64, room, room_at)
-    return ref
-}
-
 // A ^[]T to the header at `at` of type t — a list's or a slice's: its len's
-// address and its data, as they are now. (A slice repointed through the
-// reference updates it: llvm_write_through_ref.)
+// address, its cap and its data, as they are now. (A slice repointed through
+// the reference updates it: llvm_write_through_ref.)
 slice_ref_to :: proc(g: ^Codegen, at: Val, t: Type) -> Val {
     len_at := fresh_tmp(g)
     emit_slice_gep(g, len_at, at, SLICE.len)
-    return emit_slice_ref(g, len_at, hdr_data_at(g, at, t))
+    return emit_slice_ref(g, len_at, hdr_cap_at(g, at, t), hdr_data_at(g, at, t))
 }
 
 // Where a list's elements start past its len, for elements of type elem: the
@@ -290,10 +278,11 @@ list_elements_offset :: proc(elem: Type) -> int {
     return 8 if a <= 8 else a
 }
 
-// A slice header's fields stored at `at`: ptr, len.
-emit_slice_header_at :: proc(g: ^Codegen, at, data_ptr, len_val: Val) {
+// A slice header's fields stored at `at`: ptr, len, cap.
+emit_slice_header_at :: proc(g: ^Codegen, at, data_ptr, len_val, cap_val: Val) {
     emit_header_set(g, at, SLICE.ptr, data_ptr)
     emit_header_set(g, at, SLICE.len, len_val)
+    emit_header_set(g, at, SLICE.cap, cap_val)
 }
 
 // ---------------------------------------------------------------------------

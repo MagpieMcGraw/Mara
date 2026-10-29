@@ -220,8 +220,8 @@ cache_open :: fun(c: ^Cache, path: []utf8) -> err {
 
     hbuf : [HEADER_SIZE!]byte = void
     head := hbuf[0 : HEADER_SIZE]
-    got, rerr := file_read(id, &head)
-    if bool(rerr) or got.len < HEADER_SIZE {
+    rerr := file_read(id, &head)
+    if bool(rerr) or head.len < HEADER_SIZE {
         file_close(id)
         return Bad_Header
     }
@@ -250,21 +250,22 @@ cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
     file_seek(c.file, HEADER_SIZE + index * ENTRY_SIZE, SEEK_SET)?
     ebuf : [ENTRY_SIZE!]byte = void
     es := ebuf[0 : ENTRY_SIZE]
-    _ = file_read(c.file, &es)?
+    file_read(c.file, &es)?
     e : Cache_Entry = es[0]
     return e
 }
 
 // Stream an entry's raw payload into `dst`'s backing and return a view of it
 // (texture pixels). `dst` must have capacity for e.data_size bytes. One seek +
-// one read — `dst[0:size]` is size bytes, so file_read reads exactly this
+// one read — `dst[0:size]` has len = cap = size, so file_read reads exactly this
 // entry and never spills into the next. The returned slice views `dst`, which the
 // caller owns, so it stays valid past cache_close.
 cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> []byte, err {
     size := i64(e.data_size)
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
     buf := dst[0 : size]
-    return file_read(c.file, &buf)
+    file_read(c.file, &buf)?
+    return buf
 }
 
 // Stream a mesh entry: read its payload into `scratch`, then its bytes into the
@@ -281,8 +282,8 @@ cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Ve
     if size != vbytes + icount * size_of(u32) do return Mesh_Data{0}, Bad_Header
 
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
-    window := scratch[0 : size]
-    buf := file_read(c.file, &window)?
+    buf := scratch[0 : size]
+    file_read(c.file, &buf)?
     if buf.len != size do return Mesh_Data{0}, Bad_Header
 
     verts[0 : vcount] = buf[0 : vbytes]

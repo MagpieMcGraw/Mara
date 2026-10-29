@@ -26,12 +26,11 @@ client :: fun(word: []utf8) -> i64 {
 	question : []byte = word
 	_, we := file_write(id, question)
 	if bool(we) do return 2
-	reply : [64!]byte
-	room := reply[:]
-	got, re := file_read(id, &room)
+	reply : [64]byte
+	re := file_read(id, &reply)
 	file_close(id)
 	if bool(re) do return 3
-	text : []utf8 = got
+	text : []utf8 = reply
 	if text == word do return 7
 	return 4
 }
@@ -48,10 +47,10 @@ start_client :: fun(exe: []utf8, word: []utf8) -> Process, err {
 
 // Its word back, on one connection.
 answer :: fun(c: File_Id) -> err {
-	question : [64!]byte
-	room := question[:]
-	asked := file_read(c, &room)?
-	file_write(c, asked)?
+	question : [64]byte
+	file_read(c, &question)?
+	bytes : []byte = question
+	file_write(c, bytes)?
 	file_close(c)
 }
 

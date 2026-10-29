@@ -1032,7 +1032,6 @@ rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
         if r.generic not_in r.type_params_of { r.type_params_of[r.generic] = {} }
         append(&r.type_params_of[r.generic], tok)
     }
-    if rs_text(tok) == "_" { return }   // (no name to be seen by: `[_]`'s)
     rs_define(r, rs_text(tok), {tok, .Type})
 }
 
@@ -1044,8 +1043,7 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
     #partial switch t.tag[n] {
     case .Type_Dollar:
         tok := Token_Id(t.a[n])
-        // (`_`, a room of any size: a param of its own each time.)
-        if rs_text(tok) == "_" || !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
+        if !rs_declared_here(r, rs_text(tok)) { rs_type_param(r, tok) }
     case .Type_Pointer, .Type_Paren:
         rs_dollars(r, Tree_Id(t.a[n]))
     case .Type_Slice:
@@ -1144,11 +1142,7 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
         r.refs[n] = {kind = .Builtin}
         return
     case .Type_Dollar:
-        // (`$T` again: the first's — what declared it. `_`: its own.)
-        if tok := Token_Id(t.a[n]); rs_text(tok) == "_" {
-            if tok in r.type_params { r.refs[n] = {tok, .Type} }
-            return
-        }
+        // (`$T` again: the first's — what declared it.)
         if ref, ok := rs_lookup(r, rs_text(Token_Id(t.a[n]))); ok { r.refs[n] = ref }
         return
     case .Type_Generic, .Type_Of:
@@ -1185,7 +1179,7 @@ rs_self :: proc(r: ^Resolver) -> (Ref, bool) {
 @(private="file")
 rs_builtin_call :: proc(name: string) -> bool {
     switch name {
-    case "print", "crash", "int", "uint", "print_cstr", "print_int", "print_float", "len", "cap", "slice_from_ptr", "cstring",
+    case "print", "crash", "int", "uint", "print_cstr", "print_int", "print_float", "len", "cap", "slice_from_ptr", "cstring", "start_fill",
          "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f16", "f32", "f64", "utf8", "bool":
         return true
     }

@@ -20,15 +20,14 @@ use mara.memory
 #allocator Arena_Basic(16 * MB)
 
 // Step by step: open, size, read, close — each can fail, and `?` passes the
-// failure on to whoever called (see errors.mara). file_read fills data, a
-// window of memory, from its start, as much as it holds, and gives back the
-// part it filled.
-read_first_bytes :: fun(path: []utf8, data: ^[]byte) -> []byte, err {
+// failure on to whoever called (see errors.mara). file_read fills data from
+// its start, as much as it holds: its len becomes the number read.
+read_first_bytes :: fun(path: []utf8, data: ^[]byte) -> err {
 	id := file_open_read(path)?
 	defer file_close(id)   // runs when the function ends, whichever way
 	size := file_size(id)?
 	print("the file has % bytes", size)
-	return file_read(id, data)
+	file_read(id, data)?
 }
 
 main :: fun() {
@@ -47,11 +46,10 @@ main :: fun() {
 	again, _ := read_entire_file("read_file.mara", &storage)
 	print("storage holds both:", storage.len == data.len + again.len)
 
-	small : [64!]byte
-	room := small[:]
-	first, err2 := read_first_bytes("read_file.mara", &room)
+	small : [64]byte
+	err2 := read_first_bytes("read_file.mara", &small)
 	if err2 do print("couldn't read it:", err2)
-	print("read the first % bytes", first.len)
+	print("read the first % bytes", small.len)
 
 	// A file that isn't there fails with File_Error.Open_Failed.
 	_, missing := read_entire_file("no_such_file.txt", &storage)

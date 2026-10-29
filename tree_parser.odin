@@ -1750,8 +1750,7 @@ tp_size_dollar :: proc(p: ^Tree_Parser) -> Tree_Id {
 // `[]T` a view, `[:N]T` a sized view, `[N]T` a list (up to N), `[N!]T`
 // exactly N, `[K]T` one for each value of an enum (the checker's to tell
 // from a list by a constant's name), `[N I]T` — N a generic's `$N` too, its
-// size bound by what's passed (`[$N]T`), or `_`: a list of any room, a `$N`
-// of its own with no name (`[_]T`).
+// size bound by what's passed (`[$N]T`).
 tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     br := tp_advance(p)
@@ -1793,10 +1792,6 @@ tp_bracket_type :: proc(p: ^Tree_Parser) -> Tree_Id {
         size = tp_size_dollar(p)
     } else if tp_kind(p) == .Number && terminates {
         size = tp_leaf(p, .Number, tp_advance(p))
-    } else if tp_kind(p) == .Identifier && terminates && token_text(tp_tok(p)) == "_" {
-        // (`[_]T`: a size param each `_` its own, named by its token.)
-        under := tp_advance(p)
-        size = tp_node(p, .Type_Dollar, under, p.pos - 1, u32(under))
     } else if tp_kind(p) == .Identifier && terminates {
         size = tp_leaf(p, .Ident, tp_advance(p))
     } else {

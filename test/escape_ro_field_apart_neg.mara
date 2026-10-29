@@ -1,0 +1,32 @@
+module escape_ro_field_apart_neg
+//@ expect-fail: `srcs.data` is a copy of the immutable param `names`
+
+// The field that holds an immutable param's copy stays read-only, the
+// struct's other fields apart (escape_ro_field_apart).
+
+use mara.core
+
+Src :: struct (text: []utf8, line_list: ^[16]i64) {
+	data := text
+	lines := line_list
+}
+
+touch :: (s: ^Src) {
+	s.data[0] = 120
+}
+
+copies :: (names: [][]utf8) -> [4][]utf8 {
+	out : [4][]utf8
+	for n in names { &out + n }
+	return out
+}
+
+main :: fun() {
+	names : [2!][]utf8 = {"ab", "cde"}
+	datas := copies(names[:])
+	counts : [16]i64
+	srcs : [4]Src
+	srcs[0] = Src(datas[0], &counts)
+	touch(&srcs[0])
+	print(counts.len)
+}

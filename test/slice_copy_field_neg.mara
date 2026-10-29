@@ -2,9 +2,10 @@ module slice_copy_field_neg
 
 //@ expect-fail: `lexer.tokens` is a copy of the immutable param `tokens_in`
 
-// A class keeps its immutable param in a field, and another fun writes into
-// the field (mara3's lexer, 2026-10-27, appended to it): the field is a copy
-// of the param, so it's immutable too.
+// A class keeps its immutable param in a field, and another fun appends to
+// the field (mara3's lexer, 2026-10-27): the field is a copy of the param,
+// so it's immutable too. The appends went past the caller's len, each
+// lexer's over the last one's, and the caller's list stayed empty.
 
 use mara.core
 
@@ -13,7 +14,7 @@ Lexer :: class (tokens_in: []i64) {
 }
 
 lex :: fun(lexer: ^Lexer) {
-	lexer.tokens[0] = 7
+	&lexer.tokens + 7
 }
 
 main :: fun() {

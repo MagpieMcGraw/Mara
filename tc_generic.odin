@@ -68,7 +68,7 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
     is_struct := t.tag[node] == .Struct_Def
     for g in v.params {
         pt := params_view(t, g).type_
-        if tc_type_has_dollar(k, pt, rooms = !is_struct) { return true }   // (a struct's `[_]`: none, tc_type_size)
+        if tc_type_has_dollar(k, pt) { return true }
         if is_struct && pt != 0 && t.tag[pt] == .Type_Tilde { return true }
     }
     for r in v.returns {
@@ -76,12 +76,11 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
         if tc_type_has_dollar(k, rt) { return true }
     }
     if !is_struct { return false }
-    // A struct's params its fields' types use; `$T` in them. (`[_]` in a
-    // field makes no template: its room is said there, tc_type_size.)
+    // A struct's params its fields' types use; `$T` in them.
     for s in v.body {
         if t.tag[s] != .Decl { continue }
         ft := decl_view(t, s).type_
-        if tc_type_has_dollar(k, ft, rooms = false) { return true }
+        if tc_type_has_dollar(k, ft) { return true }
         for g in v.params {
             pv := params_view(t, g)
             if pv.type_ == 0 || (t.tag[pv.type_] != .Type_Name && t.tag[pv.type_] != .Type_Keyword) { continue }
@@ -93,22 +92,21 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
     return false
 }
 
-// Whether a type as written names a type it is given: `$T` — or, `rooms`,
-// a list of any room, `[_]T`.
-tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id, rooms := true) -> bool {
+// Whether a type as written names a type it is given: `$T`.
+tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
     if n == 0 { return false }
     t := k.t
     #partial switch t.tag[n] {
-    case .Type_Dollar: return rooms || tc_text(Token_Id(t.a[n])) != "_"
-    case .Type_Pointer, .Type_Paren: return tc_type_has_dollar(k, Tree_Id(t.a[n]), rooms)
-    case .Type_Slice: return tc_type_has_dollar(k, Tree_Id(t.b[n]), rooms)
-    case .Type_Partial: return tc_type_has_dollar(k, Tree_Id(t.a[n]), rooms) || tc_type_has_dollar(k, Tree_Id(t.b[n]), rooms)
-    case .Type_Array: return tc_type_has_dollar(k, Tree_Id(tree_rec(t, t.a[n], 2)[0]), rooms) || tc_type_has_dollar(k, Tree_Id(t.b[n]), rooms)
+    case .Type_Dollar: return true
+    case .Type_Pointer, .Type_Paren: return tc_type_has_dollar(k, Tree_Id(t.a[n]))
+    case .Type_Slice: return tc_type_has_dollar(k, Tree_Id(t.b[n]))
+    case .Type_Partial: return tc_type_has_dollar(k, Tree_Id(t.a[n])) || tc_type_has_dollar(k, Tree_Id(t.b[n]))
+    case .Type_Array: return tc_type_has_dollar(k, Tree_Id(tree_rec(t, t.a[n], 2)[0])) || tc_type_has_dollar(k, Tree_Id(t.b[n]))
     case .Type_Generic:
-        for a in tree_list(t, t.a[n]) { if tc_type_has_dollar(k, a, rooms) { return true } }
+        for a in tree_list(t, t.a[n]) { if tc_type_has_dollar(k, a) { return true } }
     case .Type_Fun:
-        for a in tree_list(t, t.a[n]) { if tc_type_has_dollar(k, a, rooms) { return true } }
-        for a in tree_list(t, t.b[n]) { if tc_type_has_dollar(k, a, rooms) { return true } }
+        for a in tree_list(t, t.a[n]) { if tc_type_has_dollar(k, a) { return true } }
+        for a in tree_list(t, t.b[n]) { if tc_type_has_dollar(k, a) { return true } }
     }
     return false
 }
@@ -177,19 +175,7 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     case .Type_Paren:
         tc_infer(k, subst, Tree_Id(t.a[n]), actual)
     case .Type_Pointer:
-        // (A list of any room given for `^[_]T`: `_` bound to ANY_ROOM — the
-        // instance's param a reference carrying its room too. A `$N` it binds
-        // nothing: its size isn't known until the program runs.)
-        inner := Tree_Id(t.a[n])
-        if pa := list_ref_of(actual); pa != nil && inner != 0 && t.tag[inner] == .Type_Partial {
-            size := Tree_Id(t.a[inner])
-            if size != 0 && t.tag[size] == .Type_Dollar && tc_text(Token_Id(t.a[size])) == "_" {
-                if decl := tc_type_param_named(k, size); decl != 0 && decl in subst^ && subst[decl] == nil { subst[decl] = Type_Const_Int{value = ANY_ROOM} }
-            }
-            tc_infer(k, subst, Tree_Id(t.b[inner]), pa.elem)
-        } else if pt, ok := actual.(^Type_Ptr); ok {
-            tc_infer(k, subst, inner, pt.elem)
-        }
+        if pt, ok := actual.(^Type_Ptr); ok { tc_infer(k, subst, Tree_Id(t.a[n]), pt.elem) }
     case .Type_Array:
         if fa, ok := actual.(^Type_Fixed_Array); ok {
             tc_infer_size(k, subst, Tree_Id(tree_rec(t, t.a[n], 2)[0]), fa.size)
@@ -206,7 +192,7 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     case .Type_Partial:
         #partial switch a in actual {
         case ^Type_Partial_Array:
-            if !a.any_room { tc_infer_size(k, subst, Tree_Id(t.a[n]), a.size) }   // (by value: no room to bind)
+            tc_infer_size(k, subst, Tree_Id(t.a[n]), a.size)
             tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
         case ^Type_Fixed_Array:   // (`[Kind]$T`: an enum's array)
             if a.index_type != nil { tc_infer(k, subst, Tree_Id(t.b[n]), a.elem) }
@@ -311,28 +297,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
                 pv := params_view(tr, g)
                 for pname in pv.names {
                     defer i += 1
-                    // (A list, `[$N]T`, given a slice: a view has no room
-                    // of its own — text for C, no 0 after it.)
-                    if i < len(arg_types) && tr.tag[pv.type_] == .Type_Partial && tc_type_has_dollar(k, pv.type_) && is_slice_type(arg_types[i]) {
-                        tc_error(k, span, TYPE_GENERIC_PARAM_LIST_VALUE, tc_text(p), name, tc_text(pname), tc_source_desc(k, args[i], arg_types[i]))
-                        return Type_Error{}
-                    }
                     if i >= len(arg_types) || tr.tag[pv.type_] != .Type_Pointer || !tc_type_has_dollar(k, pv.type_) { continue }
-                    // (A list to grow, `^[$N]T`, given a fixed array or a
-                    // slice: neither has a len to move.)
-                    if ap, is_ptr := distinct_base(arg_types[i]).(^Type_Ptr); is_ptr && ap.elem != nil {
-                        if hint := tc_partial_hint(k, args[i], arg_types[i]); hint != "" {
-                            tc_error(k, span, TYPE_GENERIC_PARAM_LIST, tc_text(p), name, tc_text(pname), tc_source_desc(k, args[i], arg_types[i]), hint)
-                            return Type_Error{}
-                        }
-                        if is_slice_type(ap.elem) {
-                            m := tc_unparen(k, args[i])
-                            if tr.tag[m] == .Unary && build_tokens[tr.main[m]].kind == .Ampersand { m = Tree_Id(tr.a[m]) }
-                            arg := tc_diag_name(k, m)
-                            tc_error(k, span, TYPE_SLICE_CANT_GROW, fmt.tprintf("`%s`", arg) if arg != "" else "it")
-                            return Type_Error{}
-                        }
-                    }
                     if _, is_ptr := distinct_base(arg_types[i]).(^Type_Ptr); is_ptr || is_any(arg_types[i]) { continue }
                     arg := tc_diag_name(k, args[i])
                     hint := fmt.tprintf("`&%s`", arg) if arg != "" else "`&` before it"
@@ -340,11 +305,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
                     return Type_Error{}
                 }
             }
-            if tc_text(p) == "_" {
-                tc_error(k, span, TYPE_ANY_ROOM_UNBOUND, name)
-            } else {
-                tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
-            }
+            tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
             return Type_Error{}
         }
     }

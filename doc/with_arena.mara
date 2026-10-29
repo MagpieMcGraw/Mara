@@ -27,7 +27,7 @@ use mara.memory
 load_level :: fun(level: ^Arena_Basic) {
 	tiles : [64 * KB]byte
 	tiles[0] = u8(1)
-	print("loading: the level's arena holds", level.used, "bytes")
+	print("loading: the level's arena holds", level.base.len, "bytes")
 }
 
 main :: fun() {
@@ -36,5 +36,5 @@ main :: fun() {
 	// Run on the level's arena, load_level's buffer goes there — and is gone
 	// when load_level ends.
 	with &level do load_level(&level)
-	print("after: the level's arena holds", level.used, "bytes")   // 0
+	print("after: the level's arena holds", level.base.len, "bytes")   // 0
 }

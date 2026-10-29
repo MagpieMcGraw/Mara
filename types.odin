@@ -184,11 +184,6 @@ type_partial_array :: proc(size: int, elem: Type) -> ^Type_Partial_Array {
     return type_shape(Type_Partial_Array, 13, size, elem, nil, Type_Partial_Array{size = size, elem = elem})
 }
 
-// A list of any room, `[_]T` behind a pointer (Type_Partial_Array.any_room).
-type_any_room_list :: proc(elem: Type) -> ^Type_Partial_Array {
-    return type_shape(Type_Partial_Array, 15, 0, elem, nil, Type_Partial_Array{elem = elem, any_room = true})
-}
-
 // A text literal's type: a list of its quantized room (string_literal_cap)
 // where nothing else decides, but its room is its use's — any list it fits
 // in. Bound by `:=`, a list of that room (solidify_type).
@@ -270,21 +265,11 @@ Type_Slice :: struct {
 // memory). A ^[]T to one carries its len's address, N and its elements
 // (slice_ref_ir_type), so lists flow through `^[]T` without monomorphization.
 // Copied, it is whole as it is.
-//
-// `[_]T` behind a pointer, where nothing binds its room (a field, a local, a
-// struct's param — a fun's param is generic, each call its own room): a
-// list of any room, `any_room`, size 0. It is never held by value: a
-// `^[_]T` to it carries its room beside its address (list_ref_of).
 Type_Partial_Array :: struct {
     size:         int,
     elem:         Type,
     text:         int,   // a text literal's: its bytes + 1 — its room is its use's, any list it fits in (types_equal); 0: a list
-    any_room:     bool,  // `[_]T` behind a pointer: its room the reference's, known when the program runs
 }
-
-// What a generic's `_` is bound to when a list of any room is passed for it:
-// the instance's param is then a `^[_]T` that carries its room too.
-ANY_ROOM :: -1
 
 Struct_Type_Field :: struct {
     name:          string,
@@ -1036,7 +1021,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // importantly `fa : [N!]utf8 = "lit"` after the literal-type
         // change made literals partial.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            return !pa.any_room && buffer_elem_compatible(va.elem, pa.elem)
+            return buffer_elem_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
@@ -1066,14 +1051,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if !ok { return false }
         return buffer_elem_compatible(va.elem, vb.elem)
     case ^Type_Partial_Array:
-        // (A list of any room takes any list — not a slice, which can't grow;
-        // a list of a room written takes none of any room: its room isn't
-        // known until the program runs.)
-        if pb, is_list := b.(^Type_Partial_Array); is_list && pb.any_room && !va.any_room { return false }
-        if va.any_room {
-            pb, is_list := b.(^Type_Partial_Array)
-            return is_list && pb.text == 0 && buffer_elem_compatible(va.elem, pb.elem)
-        }
         // Partial arrays coerce to [:]T (slice view) and to [N!]T (fixed array)
         // by element type. The first 24 bytes of a partial array's layout
         // match a slice header, so `^[N]T` flows safely into `^[:]T` param
@@ -1235,13 +1212,12 @@ type_name :: proc(t: Type) -> string {
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
         if v.text != 0 { return fmt.tprintf("text (%d bytes)", v.text - 1) }
-        if v.any_room { return fmt.tprintf("[_]%s", type_name(v.elem)) }
         return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
     case ^Type_Enum:        return v.source_name if v.source_name != "" else v.name
     case ^Type_Union:       return v.source_name if v.source_name != "" else v.name
     case ^Type_Distinct:
         return v.source_name if v.source_name != "" else v.name
-    case Type_Const_Int:    return "const_any_room" if v.value == ANY_ROOM else fmt.tprintf("const_%d", v.value)
+    case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
 
     case Type_Any:          return "any"
     case Type_Void:         return "void"

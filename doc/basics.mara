@@ -98,11 +98,7 @@ example_use :: fun() {
 // takes any fun of that shape, K what it gives back (several results, in
 // parens: `fun(T) (i64, err)`). A size can be one too: `xs: [$N!]T` (or a
 // list's, `[$N]T`) binds N to the size passed, a constant
-// in the body — a size of its types, or a value. A list of any room whose
-// size goes unnamed is `[_]T`: `names: ^[_]Name` takes a pointer to any list
-// of Name (each `_` its own). Where no call gives the room — a struct's
-// field, a local — `^[_]T` holds the list's address and its room, 16 bytes:
-// appends through it are checked against that room. `method` is another
+// in the body — a size of its types, or a value. `method` is another
 // spelling of `fun`.
 example_fun :: fun() {
 	sum :: fun(a, b: i64) -> i64 {
@@ -616,18 +612,16 @@ Place :: struct { x: f32  y: f32 }
 // module's top, its file — and no further: another file, or a module that
 // uses it, sees none of them, so a variable elsewhere may take one's name.
 // A module gives what C does as Mara functions that call it, taking Mara's
-// types: text C reads as a list, `[_]utf8` (any room: a str64, a Path, a
-// literal), data as a slice (`[]` for none, where C takes NULL). The
-// standard library's os.mara and the SDL and OpenGL bindings in code/ are
-// made so.
+// types: text as []utf8, data as a slice (`[]` for none, where C takes
+// NULL). The standard library's os.mara and the SDL and OpenGL bindings in
+// code/ are made so.
 //
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and
-// checks a 0 is after them: a literal has one, and a list keeps one after
-// its text, in its room (appends write it). A slice is only its items, so
+// checks a 0 is after them: a literal has one, and a buffer keeps one
+// after its text (appends write it). A slicing holds all of its room, so
 // `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
-// list itself, or a slice with the 0 in it, `b[0 : n + 1]`. Text C gives
-// back is copied into a list, so it's C text again (a binding returns
-// `[512]utf8`, say).
+// buffer itself, unsliced. Text C gives back is copied into a
+// buffer, so it's C text again (a binding returns `[512]utf8`, say).
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
 	//
@@ -637,7 +631,7 @@ example_foreign :: fun() {
 	//     }
 	//
 	//     Delay :: fun(ms: u32) { SDL_Delay(ms) }
-	//     SetWindowTitle :: fun(window: Window, title: [_]utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+	//     SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
 }
 
 // ---- built-ins ------------------------------------------------------------------
@@ -680,6 +674,27 @@ example_len :: fun() {
 	print(word.len)                        // 5
 	primes : [4!]i64 = [2, 3, 5, 7]
 	print(len(primes), cap(primes))        // 4 4
+}
+
+// `start_fill`: where appends into a slice start.
+//
+// A slice of a fixed array, `buf[0:4]`, has no len: it holds all of its
+// room, so loops and prints see every item. An append into it starts at
+// its start instead, as into an empty one, and its len counts from there. A
+// list, a slice of one (as much of the list's len as falls in it), or a
+// slice that has been appended to or had its len set, keeps its len.
+// `start_fill(&s)` is that first step on its own: it gives the len the next
+// item goes at (0 for a slice with no len, whose len becomes 0). Appends
+// call it. Call it in code that fills a slice by hand.
+example_start_fill :: fun() {
+	buf : [8!]i64
+	room := buf[0:4]
+	print(room.len)                        // 4
+	&room + 9
+	print(room.len, buf[0])                // 1 9
+	other := buf[4:8]
+	at := start_fill(&other)
+	print(at, other.len)                   // 0 0
 }
 
 // `i64`, `i32`, `i16`, `i8`, `u64`, `u32`, `u16`, `u8`, `isize`, `usize`, `int`, `uint`: whole numbers (integers), and turning a value into one.
@@ -760,22 +775,23 @@ example_size_of :: fun() {
 
 // `slice`, `let`: values carved out of a byte buffer — memory a caller handed you.
 //
-// `slice([:n]T, mem)` takes room for n Ts from mem, a list of bytes
-// (`&storage`), after its len, and moves the len past them: the next take
-// comes after. What it gives back is a view of the n of them, to write by
-// index (only lists grow). mem can be a list of Ts too, `&tokens`: then its
-// items are carved, one part after another, nothing read as another type (a
-// list of anything else is refused). `let(T,
+// `slice([:n]T, mem)` takes room for n Ts from mem, a `^[]byte`, after its
+// len, and moves the len past them: the next take comes after. What it gives
+// back is empty — its len 0, its cap n — for you to fill: append to it. mem
+// can be a list of Ts too, `&tokens`: then its items are carved, one part
+// after another, nothing read as another type (a list of anything else is
+// refused). `let(T,
 // &mem[k])` names a T living in the bytes at k — not a slice: one there would
 // be only its header (n Ts there are `slice([:n]T, &mem[k])`). For a count known only when
 // the program runs, slice a fixed array instead: `room : [100!]i64`, then
 // `xs := room[0:n]`.
 example_slice :: fun() {
 	storage : [64]byte
-	xs := slice([:3]i64, &storage)         // a view of 3
-	xs[0] = 5
-	xs[1] = 7
-	print(xs.len, xs[1], storage.len)      // 3 7 24
+	mem : []byte = storage
+	xs := slice([:3]i64, &mem)             // room for 3, empty
+	&xs + 5
+	&xs + 7
+	print(xs.len, xs.cap, xs[1], mem.len)  // 2 3 7 24
 
 	n := let(i64, &storage[32])
 	n = 9                                  // into storage's bytes
@@ -787,7 +803,7 @@ example_slice :: fun() {
 //
 // `cstring(buf)` passes a text buffer to C as a pointer to its characters;
 // a 0 must follow the text in the buffer, or the program stops. Pass the
-// buffer itself, not `buf[:]`. `slice_from_ptr(p, n)` views n bytes at a
+// buffer itself, not a slicing of it. `slice_from_ptr(p, n)` views n bytes at a
 // pointer C gave back (n a constant, outside mara.os).
 example_cstring :: fun() {
 	// path : [260]utf8
@@ -882,6 +898,7 @@ main :: fun() {
 	example_print()
 	example_assert()
 	example_len()
+	example_start_fill()
 	example_i64()
 	example_f64()
 	example_utf8()

@@ -237,7 +237,7 @@ lines_rows :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
 // line's part of s — from base + its start in s — the rows after the first
 // as far in as s's own indent (half the width at most). Whether there was
 // room for them all. (Each character measured in its font: line_char.)
-wrap :: fun(ui: ^Ui, s: []utf8, style: i64, w: f32, line: i64, base: i64, rows: ^[_]Line_Row) -> bool {
+wrap :: fun(ui: ^Ui, s: []utf8, style: i64, w: f32, line: i64, base: i64, rows: ^[]Line_Row) -> bool {
 	lead : i64 = 0
 	for lead < s.len {
 		if s[lead] != ' ' do break

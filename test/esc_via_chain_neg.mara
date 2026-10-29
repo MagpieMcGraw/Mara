@@ -5,11 +5,11 @@ module esc_via_chain_neg
 // `middle` returns leaf's result for its own param, so middle's summary carries
 // param 0 too. `outer` hands middle a local buffer and returns the result.
 
-leaf :: fun(storage: ^[_]byte) -> []i64 {
+leaf :: fun(storage: ^[]byte) -> []i64 {
 	return slice([:3]i64, storage)
 }
 
-middle :: fun(storage: ^[_]byte) -> []i64 {
+middle :: fun(storage: ^[]byte) -> []i64 {
 	return leaf(storage)
 }
 

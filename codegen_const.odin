@@ -243,8 +243,8 @@ const_partial_with :: proc(cx: ^Const_Ctx, pa: ^Type_Partial_Array, n: int, elem
     return {kind = .Struct, parts = parts}
 }
 
-// A slice field: a view of a string (its bytes in a private global, a 0
-// after them; len the byte count).
+// A slice field: a view of a string (its bytes in a private global, len =
+// byte count and cap one more, like a string passed as a slice).
 @(private="file")
 const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
     s, is_text := const_text(v)
@@ -253,9 +253,10 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
     name := fmt.tprintf("%s.s%d", cx.global, cx.n_extra)
     append(&cx.extras, Ir_Global{name = name, linkage = .Private, unnamed = true, constant = true,
         ty = ir_array_type(len(s) + 1, IR_I8), init = const_bytes(cx, s, len(s) + 1)})
-    parts := make([]Ir_Const, 2)
+    parts := make([]Ir_Const, 3)
     parts[0] = ir_const(SLICE_LEN_IR, ir_int(len(s)))
-    parts[1] = ir_const(IR_PTR, ir_global(name))
+    parts[1] = ir_const(SLICE_LEN_IR, ir_int(len(s) + 1))
+    parts[2] = ir_const(IR_PTR, ir_global(name))
     return {kind = .Struct, parts = parts}
 }
 

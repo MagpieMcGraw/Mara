@@ -15,32 +15,93 @@ import "core:os"
 // codegen_module.odin assembles the .ll files.
 // ---------------------------------------------------------------------------
 
-// A slice's header, `{ len, ptr }`: its count of items, an i64 on every
-// target, then its data. A view: its len is its size, and its cap the same
-// (only lists grow). A partial array is its len, then its elements.
+// A slice's header, `{ len, cap, ptr }`, its length and capacity i64s on
+// every target; a partial array is the header with its elements after.
 SLICE_IR_TYPE :: IR_SLICE
-SLICE_LEN_IR  :: IR_I64   // a header's len's IR type
+SLICE_LEN_IR  :: IR_I64   // a header's len's and cap's IR type
 
 // Slice header field positions. A list ([N]T) is its len — at SLICE.len, as
 // a slice's is — then its elements, at PARTIAL_ELEMENTS_FIELD: its cap is
 // its type's N and its data its own elements (hdr_cap_at, hdr_data_at), so
-// nothing in it can say otherwise. A slice's cap is its len (hdr_cap_at).
-Slice_Fields :: struct { len, ptr: int }
-SLICE :: Slice_Fields{len = 0, ptr = 1}
+// nothing in it can say otherwise.
+Slice_Fields :: struct { len, cap, ptr: int }
+SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 1
 
-// A ^[]T's IR type (slice_ref_layout): where the len is, then the data — the
-// data at a slice header's SLICE.ptr, the len's address at SLICE.len. A
-// list's never change; a slice's are its header's as the reference was made
-// (a whole slice written through it updates them).
-slice_ref_ir_type :: proc() -> Ir_Type {
-    fields := [2]Ir_Type{IR_PTR, IR_PTR}
-    return ir_struct_type(fields[:])
+// A slice with no len: a slicing's (`x[a:b]`, `x[:]`), every item of its
+// room in it. Its len word holds its count with the top bit set. What reads
+// the len reads the count (emit_len_count); what appends into it starts at
+// 0 (emit_len_fill, `start_fill`). A list's len never has the bit.
+SLICE_NO_LEN   :: min(i64)
+SLICE_LEN_MASK :: max(i64)
+
+// A count as a no-len slice's len word: the top bit set.
+emit_no_len :: proc(g: ^Codegen, n: Val) -> Val {
+    if n.kind == .Int { return ir_int128(n.n | i128(SLICE_NO_LEN)) }
+    out := fresh_tmp(g)
+    ir_bin(g, out, .Or, SLICE_LEN_IR, n, ir_int(int(SLICE_NO_LEN)))
+    return out
 }
 
-// A `^[_]T`'s IR type (list_ref_of): the list's address, then its room.
-list_ref_ir_type :: proc() -> Ir_Type {
-    fields := [2]Ir_Type{IR_PTR, IR_I64}
+// A slice's len word read as its count: a no-len slice's, its room's.
+emit_len_count :: proc(g: ^Codegen, raw: Val) -> Val {
+    if raw.kind == .Int { return ir_int128(raw.n & i128(SLICE_LEN_MASK)) }
+    out := fresh_tmp(g)
+    ir_bin(g, out, .And, SLICE_LEN_IR, raw, ir_int(int(SLICE_LEN_MASK)))
+    return out
+}
+
+// A slicing's len from its source's len word: as much of the source's len
+// as falls in the window from lo, n long — clamp(len - lo, 0, n). A source
+// with no len gives none (a list's always has one). Its len word, and its
+// count.
+emit_window_len :: proc(g: ^Codegen, src: Val, list: bool, lo, n: Val) -> (word, count: Val) {
+    w := SLICE_LEN_IR
+    if src.kind == .Int && (lo.kind == .None || lo.kind == .Int) && n.kind == .Int {
+        if src.n < 0 { return emit_no_len(g, n), n }
+        d := src.n - (lo.n if lo.kind == .Int else 0)
+        inh := ir_int128(max(i128(0), min(d, n.n)))
+        return inh, inh
+    }
+    d := src
+    if lo.kind != .None {
+        d = fresh_tmp(g)
+        ir_bin(g, d, .Sub, w, src, lo)
+    }
+    neg := fresh_tmp(g)
+    ir_icmp(g, neg, .Slt, w, d, ir_int(0))
+    d0 := fresh_tmp(g)
+    ir_select(g, d0, neg, w, ir_int(0), d)
+    over := fresh_tmp(g)
+    ir_icmp(g, over, .Sgt, w, d0, n)
+    inh := fresh_tmp(g)
+    ir_select(g, inh, over, w, n, d0)
+    if list { return inh, inh }
+    none := fresh_tmp(g)
+    ir_icmp(g, none, .Slt, w, src, ir_int(0))
+    word = fresh_tmp(g)
+    ir_select(g, word, none, w, emit_no_len(g, n), inh)
+    count = fresh_tmp(g)
+    ir_select(g, count, none, w, n, inh)
+    return
+}
+
+// A slice's len word read as where an append goes: a no-len slice's, 0.
+emit_len_fill :: proc(g: ^Codegen, raw: Val) -> Val {
+    if raw.kind == .Int { return ir_int(0) if raw.n < 0 else raw }
+    neg := fresh_tmp(g)
+    ir_icmp(g, neg, .Slt, SLICE_LEN_IR, raw, ir_int(0))
+    out := fresh_tmp(g)
+    ir_select(g, out, neg, SLICE_LEN_IR, ir_int(0), raw)
+    return out
+}
+
+// A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
+// the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
+// address at SLICE.len. A list's never change; a slice's are its header's as
+// the reference was made (a whole slice written through it updates them).
+slice_ref_ir_type :: proc() -> Ir_Type {
+    fields := [3]Ir_Type{IR_PTR, SLICE_LEN_IR, IR_PTR}
     return ir_struct_type(fields[:])
 }
 
@@ -498,7 +559,6 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
     case Type_CString:      return IR_PTR
     case ^Type_Ptr:
         if slice_ref_of(v) != nil { return slice_ref_ir_type() }
-        if list_ref_of(v) != nil { return list_ref_ir_type() }
         return IR_PTR
     case ^Type_Scope:
         if v.kind == .Struct {

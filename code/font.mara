@@ -58,9 +58,9 @@ Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
 // is sharper.)
 load_glyphs_and_metrics :: fun(
 	font: []utf8,
-	glyphs: ^[_]Glyph,
+	glyphs: ^[]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[_]byte,
+	atlas: ^[]byte,
 	first: u32 = 0) -> err
 {
 	if atlas.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
@@ -125,9 +125,9 @@ COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
 load_coverage_glyphs :: fun(
 	font: []utf8,
 	pixels: f32,
-	glyphs: ^[_]Glyph,
+	glyphs: ^[]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[_]byte,
+	atlas: ^[]byte,
 	size: i64,
 	first: u32 = 32) -> err
 {
@@ -136,7 +136,7 @@ load_coverage_glyphs :: fun(
 	for i in 0:glyphs.cap {
 		&chars + (first + u32(i))
 	}
-	load_coverage_chars(font, pixels, chars[:], glyphs, metrics, atlas, size)?
+	load_coverage_chars(font, pixels, chars, glyphs, metrics, atlas, size)?
 }
 
 // A font's glyphs for the characters `chars` — code points, glyphs[i] for
@@ -147,9 +147,9 @@ load_coverage_chars :: fun(
 	font: []utf8,
 	pixels: f32,
 	chars: []u32,
-	glyphs: ^[_]Glyph,
+	glyphs: ^[]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[_]byte,
+	atlas: ^[]byte,
 	size: i64) -> err
 {
 	if chars.len > glyphs.cap do return Too_Many_Chars
@@ -215,7 +215,7 @@ load_coverage_chars :: fun(
 // covers to the cells of the rows it crosses; a running sum along a row is
 // its coverage.)
 rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y: f32,
-                          w: i64, h: i64, acc: ^[_]f32, out: ^[_]byte) {
+                          w: i64, h: i64, acc: ^[]f32, out: ^[]byte) {
 	stride := w + 2
 	acc.len = stride * h
 	for i in 0:acc.len {
@@ -1454,9 +1454,9 @@ TTF :: struct (bytes: ^[]byte) {
 	head : Head = #big_endian bytes[head_loc]
 	maxp : Maxp = #big_endian bytes[maxp_loc]
 	cmap := read_cmap(bytes, cmap_loc)
-	loca := read_loca(head, maxp, bytes[loca_loc:])
+	loca := read_loca(head, maxp, bytes[loca_loc:.len])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx := read_hmtx(hhea, bytes[hmtx_loc:])
+	hmtx := read_hmtx(hhea, bytes[hmtx_loc:.len])
 	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_loc + glyf_table_len]}
 
 	// The character map characters go through (cmap_pick): its record, its

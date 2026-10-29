@@ -16,13 +16,13 @@ module generic_param_default
 
 use mara.core
 
-room_for :: fun(list: ^[_]$T, site: atom = #caller_span) -> bool {
+room_for :: fun(list: ^[]$T, site: atom = #caller_span) -> bool {
 	if list.len < list.cap do return true
 	print("full at %", site)
 	return false
 }
 
-told :: fun(list: ^[_]$T, site: []utf8) -> bool {
+told :: fun(list: ^[]$T, site: []utf8) -> bool {
 	if list.len < list.cap do return true
 	print("given: full at %", site)
 	return false

@@ -7,9 +7,6 @@ probes are gone, and the numbers are as of 105c8a4 and sooblivion on 2026-10-28.
 
 ## What was built (2026-10-29): slices with no len
 
-Undone the same day: the plan in slices_without_len.md replaced it. The compiler and the
-stdlib went back to before 6748dfd; a slicing shows its window again (test/slice_window.mara).
-
 The user's call, after the idea below: a slicing has *no len* until something appends to it.
 
 - A slicing (`x[a:b]`, `x[:]`) is made with no len: its len word holds its count with the top

@@ -45,13 +45,12 @@ send_lots :: fun(s: ^Sender) {
 }
 
 // The next packet at s, waiting up to a second for one.
-wait_packet :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> []byte, bool, err {
+wait_packet :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
 	for _ in 0:1000 {
-		packet, came := udp_receive(s, data, from)?
-		if came do return packet, true
+		if udp_receive(s, data, from)? do return true
 		sleep_ms(1)
 	}
-	return data^[0 : 0], false
+	return false
 }
 
 // The next connection to l, waiting up to a second for one.
@@ -79,20 +78,18 @@ main :: fun() {
 	hello : [16]byte
 	&hello + "hello"
 	_ = udp_send(&client, net_local(server.port), hello)
-	got : [1500!]byte
-	window := got[:]
+	got : [1500]byte
 	from := Net_Address()
-	packet, came, e3 := wait_packet(&server, &window, &from)
-	print("udp packet:", came, e3, packet.len, "[" + packet + "]", "from the client", net_same(from, net_local(client.port)))
+	came, e3 := wait_packet(&server, &got, &from)
+	print("udp packet:", came, e3, got.len, "[" + got + "]", "from the client", net_same(from, net_local(client.port)))
 	back : [16]byte
 	&back + "back"
 	_ = udp_send(&server, from, back)
-	reply, came2, _ := wait_packet(&client, &window, &from)
-	print("udp reply:", came2, "[" + reply + "]")
-	small : [2!]byte
-	tiny := small[:]
+	came2, _ := wait_packet(&client, &got, &from)
+	print("udp reply:", came2, "[" + got + "]")
+	small : [2]byte
 	_ = udp_send(&client, net_local(server.port), hello)
-	_, _, e4 := wait_packet(&server, &tiny, &from)
+	_, e4 := wait_packet(&server, &small, &from)
 	print("too small:", e4)
 	udp_close(&server)
 	udp_close(&client)
@@ -105,8 +102,8 @@ main :: fun() {
 	v6 : [8]byte
 	&v6 + "v6"
 	_ = udp_send(&client6, to, v6)
-	packet6, came6, _ := wait_packet(&server6, &window, &from)
-	print("udp ipv6:", came6, "[" + packet6 + "]", "from the client", from.port == client6.port)
+	came6, _ := wait_packet(&server6, &got, &from)
+	print("udp ipv6:", came6, "[" + got + "]", "from the client", from.port == client6.port)
 	udp_close(&server6)
 	udp_close(&client6)
 
@@ -120,21 +117,20 @@ main :: fun() {
 	sender := Sender()
 	sender.conn = &accepted
 	t, _ := thread_start(send_lots, &sender)
-	room : [65536!]byte
-	into := room[:]
+	room : [65536]byte
 	total := 0
 	wrong := 0
 	for total < 64 * BLOCK {
-		piece, open, e8 := tcp_receive(&conn, &into)
+		open, e8 := tcp_receive(&conn, &room)
 		if e8 or not open do break
-		if piece.len == 0 {
+		if room.len == 0 {
 			sleep_ms(1)
 			continue
 		}
-		for k in 0:piece.len {
-			if i64(piece[k]) != (total + k) % 251 do wrong += 1
+		for k in 0:room.len {
+			if i64(room[k]) != (total + k) % 251 do wrong += 1
 		}
-		total += piece.len
+		total += room.len
 	}
 	thread_wait(&t)
 	print("tcp bytes:", total, "- wrong:", wrong, "- sent:", sender.sent)
@@ -142,7 +138,7 @@ main :: fun() {
 	tcp_close(&accepted)
 	ended := false
 	for _ in 0:1000 {
-		_, open, _ := tcp_receive(&conn, &into)
+		open, _ := tcp_receive(&conn, &room)
 		if not open {
 			ended = true
 			break

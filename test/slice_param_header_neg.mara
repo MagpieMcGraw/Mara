@@ -1,9 +1,8 @@
 module slice_param_header_neg
-//@ expect-fail: `s` is a slice: its len is its size
+//@ expect-fail: cannot write to field 'len' of immutable parameter 's'
 
 // A slice param's header is the caller's (passed by address): writing it
-// shortened the caller's slice. A slice's len is its size: never written;
-// reslice it, or take a list (`^[$N]T`) to move a len.
+// shortened the caller's slice. Read-only; take ^[]T to move a cursor.
 
 trim :: fun(s: []i64) { s.len = 1 }
 

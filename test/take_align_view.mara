@@ -2,46 +2,48 @@ module take_align_view
 
 use mara.core
 
-//@ expect-output: i64 at len 5: aligned true, len 24
-//@ expect-output: let i64 after: aligned true, len 32
-//@ expect-output: u32 at len 5: aligned true, len 12
-//@ expect-output: u16 at len 5: aligned true, len 8
-//@ expect-output: bytes at len 5: len 8
+//@ expect-output: i64 from offset 5: aligned true, len 19
+//@ expect-output: let i64 after: aligned true, len 27
+//@ expect-output: u32 from offset 5: aligned true, len 7
+//@ expect-output: u16 from offset 5: aligned true, len 3
+//@ expect-output: bytes from offset 5: len 3
 //@ expect-output: partial array, len 3: aligned true, len 24
 
 // slice()/let() align the address they carve at, not the storage's len
-// alone: a cursor at 5 skips to the next boundary for what's taken (8 for
-// an i64), the skip counted in the storage's len and against its cap. (A
-// take's storage is a list: a slice has no len to move.)
+// alone: storage that starts at an odd address — a view from offset 5 —
+// skips to the next boundary (5 + 3 for an i64), the skip counted in its
+// len and against its cap.
 
 // Whether p is a multiple of n.
 on :: fun(p: usize, n: usize) -> bool { return p % n == 0 }
 
 main :: fun() {
-	w : [120]byte
-	w.len = 5
+	storage : [200]byte
+	whole : []byte = storage[0 : 120]
+
+	w : []byte = whole[5 : 120]
+	w.len = 0
 	a := slice([:2]i64, &w)
-	print("i64 at len 5: aligned %, len %", on(usize(&a[0]), 8), w.len)
+	print("i64 from offset 5: aligned %, len %", on(usize(&a[0]), 8), w.len)
 	n := let(i64, &w)
 	n = 1
 	print("let i64 after: aligned %, len %", on(usize(&n), 8), w.len)
 
-	x : [120]byte
-	x.len = 5
+	x : []byte = whole[5 : 120]
+	x.len = 0
 	b := slice([:1]u32, &x)
-	print("u32 at len 5: aligned %, len %", on(usize(&b[0]), 4), x.len)
+	print("u32 from offset 5: aligned %, len %", on(usize(&b[0]), 4), x.len)
 
-	y : [120]byte
-	y.len = 5
+	y : []byte = whole[5 : 120]
+	y.len = 0
 	c := slice([:1]u16, &y)
-	print("u16 at len 5: aligned %, len %", on(usize(&c[0]), 2), y.len)
+	print("u16 from offset 5: aligned %, len %", on(usize(&c[0]), 2), y.len)
 
-	z : [120]byte
-	z.len = 5
+	z : []byte = whole[5 : 120]
+	z.len = 0
 	d := slice([:3]byte, &z)
-	print("bytes at len 5: len %", z.len)
+	print("bytes from offset 5: len %", z.len)
 
-	storage : [200]byte
 	storage.len = 3
 	e := slice([:2]i64, &storage)
 	print("partial array, len 3: aligned %, len %", on(usize(&e[0]), 8), storage.len)

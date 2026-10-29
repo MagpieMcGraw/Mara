@@ -33,7 +33,6 @@ type_layout :: proc(t: Type) -> Layout {
         return {0, 1}   // `{}`
     case ^Type_Ptr:
         if slice_ref_of(v) != nil { return slice_ref_layout() }
-        if list_ref_of(v) != nil { return slice_ref_layout() }   // (`{ ptr, i64 }`: the same two words)
         return {word_bytes(), word_bytes()}
     case Type_CString:
         return {word_bytes(), word_bytes()}
@@ -67,22 +66,14 @@ type_layout :: proc(t: Type) -> Layout {
 }
 
 // A ^[]T — a reference to a slice's or a list's elements, by value: where
-// its len is, its data (`{ ptr, ptr }`: its data where a slice header's is).
+// its len is, its cap, its data (`{ ptr, i64, ptr }`: its cap and data where
+// a slice header's are).
 slice_ref_layout :: proc() -> Layout {
     l := Layout{0, 1}
     layout_field(&l, {word_bytes(), word_bytes()})
+    layout_field(&l, {8, 8})
     layout_field(&l, {word_bytes(), word_bytes()})
     return layout_close(l)
-}
-
-// The list a `^[_]T` refers to, a list of any room (nil: t is no such
-// reference). By value, `{ ptr, i64 }`: the list's address, then its room.
-list_ref_of :: proc(t: Type) -> ^Type_Partial_Array {
-    pt, is_ptr := distinct_base(t).(^Type_Ptr)
-    if !is_ptr || pt.elem == nil { return nil }
-    pa, is_list := distinct_base(pt.elem).(^Type_Partial_Array)
-    if !is_list || !pa.any_room { return nil }
-    return pa
 }
 
 // The slice a ^[]T refers to (nil: t is no ^[]T).
@@ -136,10 +127,11 @@ round_up :: proc(n, align: int) -> int {
     return (n + align - 1) / align * align
 }
 
-// A slice's header, `{ len, ptr }`: its count of items and its data (a view:
-// its len is its size; only lists grow). Its fields, still open.
+// A slice's header, `{ len, cap, ptr }`: its fields, still open (a partial
+// array's elements follow them).
 slice_header_fields :: proc() -> Layout {
     l := Layout{0, 1}
+    layout_field(&l, {8, 8})
     layout_field(&l, {8, 8})
     layout_field(&l, {word_bytes(), word_bytes()})
     return l

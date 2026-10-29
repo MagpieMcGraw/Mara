@@ -19,14 +19,14 @@ V :: struct {
 }
 
 // Three Vs' bytes into buf.
-fill :: fun(buf: ^[_]byte) {
+fill :: fun(buf: ^[]byte) {
 	src : [3!]V
 	for k in 0:3 { src[k] = V{a = u32(k + 1), b = u32(10 * (k + 1))} }
 	buf[0:24] = src
 }
 
 // n Vs read out of buf into the caller's room.
-get :: fun(buf: []byte, n: i64, dst: ^[_]V) -> []V {
+get :: fun(buf: []byte, n: i64, dst: ^[]V) -> []V {
 	dst[0:n] = buf[0 : n * size_of(V)]
 	dst.len = n   // (written into its room: its len says how much)
 	return dst[0:n]

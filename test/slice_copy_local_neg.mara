@@ -2,14 +2,15 @@ module slice_copy_local_neg
 
 //@ expect-fail: `out` is a copy of the immutable param `items`
 
-// A copy of an immutable param's slice is immutable too: writing an item
-// through it would write the caller's, which the param promised not to.
+// A copy of an immutable param's slice is immutable too. Appending to it
+// would write into the room past the caller's len, which the caller's list
+// never sees (its len doesn't move), and its next append writes over.
 
 use mara.core
 
 grow :: fun(items: []i64) -> i64 {
 	out := items
-	out[0] = 1
+	&out + 1
 	return out.len
 }
 

@@ -6,7 +6,7 @@ use mara.core
 //@ expect-output: before
 //@ expect-output: no terminating 0 in the slice
 
-// A slice over a buffer, `b[0:2]`, is only its items: no 0 in it,
+// A slice over a buffer, `b[0:2]`, has its len at its cap: no 0 after it,
 // so cstring() stops the program rather than hand C bytes that run on
 // (cstring_buffers). Pass the buffer itself.
 

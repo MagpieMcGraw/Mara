@@ -19,19 +19,19 @@ Wide :: struct {
 	b: i64
 }
 
-carve :: fun(memory: ^[_]byte, n: i64) -> i64 {
+carve :: fun(memory: ^[]byte, n: i64) -> i64 {
 	xs : []Cell = slice([:n]Cell, memory)
 	xs[n - 1].v = 9
 	return xs.cap
 }
 
-carve_twice :: fun(memory: ^[_]byte) -> i64 {
+carve_twice :: fun(memory: ^[]byte) -> i64 {
 	a : []Cell = slice([:2]Cell, memory)
 	b : []Cell = slice([:2 + 1]Cell, memory)
 	return a.cap * 10 + b.cap
 }
 
-carve_generic :: fun($T: type, proto: T, memory: ^[_]byte, n: i64) -> i64 {
+carve_generic :: fun($T: type, proto: T, memory: ^[]byte, n: i64) -> i64 {
 	xs : []T = slice([:n]T, memory)
 	return xs.cap
 }

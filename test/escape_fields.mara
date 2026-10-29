@@ -33,16 +33,16 @@ summary_of :: fun(work: ^Work) -> Summary {
 	return Summary{numbers = work.numbers}
 }
 
-fill :: fun(settings: ^Settings, storage: ^[_]byte) -> Summary {
-	work := Work{settings = settings, numbers = slice([:settings.count]i64, storage)}
-	for k in 0:work.settings.count do work.numbers[k] = k
-	summaries := slice([:1]Summary, storage)
-	summaries[0] = summary_of(&work)
+fill :: fun(settings: ^Settings, storage: ^[]byte) -> Summary {
+	work := Work{settings = settings, numbers = slice([:16]i64, storage)}
+	for k in 0:work.settings.count do &work.numbers + k
+	summaries := slice([:2]Summary, storage)
+	&summaries + summary_of(&work)
 	print("summaries:", summaries.len, summaries[0].numbers.len)
 	return summaries[0]
 }
 
-run :: fun(storage: ^[_]byte) -> i64 {
+run :: fun(storage: ^[]byte) -> i64 {
 	settings := Settings{count = 4}
 	return fill(&settings, storage).numbers.len
 }
@@ -52,15 +52,15 @@ Pair :: struct {
 	far: []i64
 }
 
-keep_far :: fun(storage: ^[_]byte) -> i64 {
+keep_far :: fun(storage: ^[]byte) -> i64 {
 	n : i64 = 5
-	pair := Pair{near = &n, far = slice([:3]i64, storage)}
-	pair.far[0] = 1
-	pair.far[1] = 2
+	pair := Pair{near = &n, far = slice([:4]i64, storage)}
+	&pair.far + 1
+	&pair.far + 2
 	three := pair.near^ - 2
-	pair.far[2] = three
-	views := slice([:1][]i64, storage)
-	views[0] = pair.far
+	&pair.far + three
+	views := slice([:2][]i64, storage)
+	&views + pair.far
 	return views.len * 10 + views[0].len
 }
 

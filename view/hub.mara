@@ -227,11 +227,10 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 // Client c's line read, what has arrived of it: false when its connection
 // ended first.
 client_read :: fun(c: ^Client) -> bool {
-	chunk : [512!]byte
-	room := chunk[:]
-	got, open, e := pipe_read(c.id, &room)
+	chunk : [512]byte
+	open, e := pipe_read(c.id, &chunk)
 	if e or not open do return false
-	text : []utf8 = got
+	text : []utf8 = chunk
 	for ch in text {
 		if c.line.len == c.line.cap do return false   // (no query is that long)
 		&c.line + ch
@@ -379,9 +378,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 // its lines to the Ask panel when it's shown; at its end line, the
 // connection closed.
 read_answer :: fun(ui: ^Ui, h: ^Hub) {
-	chunk : [16 * KB!]byte
-	room := chunk[:]
-	got, open, e := pipe_read(h.serve.output, &room)
+	chunk : [16 * KB]byte
+	open, e := pipe_read(h.serve.output, &chunk)
 	if e or not open {
 		serve_down(h)
 		// (Serve ended before any of its answer — as one does when Mara was
@@ -401,13 +399,14 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 		ui.dirty = true
 		return
 	}
-	if got.len == 0 do return
+	if chunk.len == 0 do return
 	h.answered = true
 	if not h.gone {
-		_, we := file_write(h.asked.id, got)
+		piece : []byte = chunk
+		_, we := file_write(h.asked.id, piece)
 		if we do h.gone = true
 	}
-	text : []utf8 = got
+	text : []utf8 = chunk
 	for ch in text {
 		if ch != '\n' {
 			if h.current.len < h.current.cap do &h.current + ch

@@ -1,5 +1,12 @@
 # Slices without a len: plan
 
+**Reverted 2026-10-29.** Built in 4be1308..d1e2ce8, then undone, back to 6bbdec0's slices
+(a len, inherited by slicings; the user's call: "the last good version of the language").
+What it cost in the end: a migration of sooblivion (333 errors) and mara3, `[_]T` params,
+and a 16-byte `^[_]T` reference wherever a struct held a list of unknown room. Kept from
+that stretch: generic definitions, unions with fields and dispatch groups in a body, and
+escape's read-only-by-field fix. Kept here as the record of the plan.
+
 Written 2026-10-29, after the user's call: "If you want appendable storage, get a list."
 Revised the same day twice:
 - a mutable list is `^[$N]T`, and a mutable slice `^[]T` is a writable view that can't grow;

@@ -83,12 +83,11 @@ server_down :: fun(s: ^Server, log: File_Id) {
 // it comes, to its end line.
 answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	line : [500]byte
-	chunk : [200!]byte
-	room := chunk[:]
+	chunk : [200]byte
 	for true {
-		piece := file_read(c, &room)?
-		if piece.len == 0 do break
-		&line + piece
+		file_read(c, &chunk)?
+		if chunk.len == 0 do break
+		&line + chunk
 		text : []utf8 = line
 		if text[text.len - 1] == '\n' do break
 	}
@@ -127,8 +126,8 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 	passed := false   // any of the answer passed on
 	resent := false
 	for not done {
-		piece := file_read(s.process.output, &room)?
-		if piece.len == 0 {
+		file_read(s.process.output, &chunk)?
+		if chunk.len == 0 {
 			server_down(s, log)
 			// (Ended before any of its answer — as serve does when Mara was
 			// rebuilt: a new one started and asked again, once.)
@@ -144,8 +143,9 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 			return Read_Failed
 		}
 		passed = true
+		piece : []byte = chunk
 		file_write(c, piece)?
-		for ch in piece {
+		for ch in chunk {
 			letter := utf8(ch)
 			if letter == '\n' {
 				if current.len >= 16 {

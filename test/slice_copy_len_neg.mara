@@ -1,10 +1,10 @@
 module slice_copy_len_neg
 
-//@ expect-fail: `tail` is a slice: its len is its size
+//@ expect-fail: `tail` is a copy of the immutable param `items`
 
-// A slice's len is its size: it can't be set, a copy's either — raised, it
-// would reach past the view. (Re-pointing the copy, `tail = tail[1:]`, is
-// fine: slice_copy_ok.)
+// A copy's len is part of what can't be set: raised, it would reach into
+// the caller's room past its len. (Re-pointing the copy, `tail = tail[1:]`,
+// is fine: slice_copy_ok.)
 
 use mara.core
 

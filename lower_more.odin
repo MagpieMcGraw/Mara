@@ -252,11 +252,24 @@ lw_variant_struct :: proc(ut: ^Type_Union, name: string) -> Type {
 
 // The rest of the builtins (tc_builtin_more): print_cstr / print_int /
 // print_float, len and cap (a fixed array's, its size), slice_from_ptr,
-// cstring.
+// cstring, start_fill (a carve of nothing: its len where appends go, and
+// that len).
 lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Build_Want, w: Written) -> Built {
     b := k.gb
     span := tree_span(k.t, n)
     switch name {
+    case "start_fill":
+        // (As a take's storage: `&x`, x's place; a pointer, what it points at.)
+        if want == .Place { lw_fail(k, n, "a builtin's place") }
+        t := k.t
+        su := tc_unparen(k, args[0])
+        from: Operand
+        if t.tag[su] == .Unary && build_tokens[t.main[su]].kind == .Ampersand && tc_callee(k, su) == nil {
+            from = lw_expr(k, Tree_Id(t.a[su]), .Place, temp_span = tree_span(t, su)).v
+        } else {
+            from = graph_base_of(b, lw_expr(k, args[0], .Place).v, lw_arg_type(k, args[0]), span)
+        }
+        return {v = graph_op_value(b, .Carve, w, span, slice_header_width_type, "fill", from), ok = true}
     case "print_cstr", "print_int", "print_float":
         r := lw_arg(k, args[0], .Value, w, temp_span = span)
         if want == .Place { lw_fail(k, n, "a builtin's place") }
@@ -269,7 +282,7 @@ lw_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want:
         if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {   // (its size: nothing of it built)
             return {v = graph_const(b, w, span, t, name, Const_Value{int = i128(fa.size)}), ok = true}
         }
-        if pa, list := distinct_base(graph_pointee(at)).(^Type_Partial_Array); list && !pa.any_room && name == "cap" {   // (its room, its N; its len read as `.len` is — and a list of any room's, its reference's)
+        if pa, list := distinct_base(graph_pointee(at)).(^Type_Partial_Array); list && name == "cap" {   // (its room, its N; its len read as `.len` is)
             return {v = graph_const(b, w, span, t, name, Const_Value{int = i128(pa.size)}), ok = true}
         }
         r := lw_arg(k, args[0], .Place, w, temp_span = span)

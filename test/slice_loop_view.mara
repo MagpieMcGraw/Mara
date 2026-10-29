@@ -17,7 +17,7 @@ main :: fun() {
 	for x in s {
 		n += 1
 		t += x
-		s = s[0:1]
+		s.len = 1
 	}
 	print(n, t)
 
