@@ -23,16 +23,13 @@ overload != not_equal
 // Whether two texts' characters differ: `a != b`.
 not_equal :: dispatch{ utf8_not_equal }
 
-// Appends text to dst; it must fit in dst's capacity. A slice with no len
-// yet (a fresh slicing) is filled from its start.
+// Appends text to dst; it must fit in dst's capacity.
 // (We write 0 after it, so dst stays a valid C string.)
 utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
-	n := start_fill(dst)
-	assert(n + src.len <= dst.cap)
-	dst[n:] = src
-	end := n + src.len
-	dst.len = end
-	if end < dst.cap do dst[end] = 0
+	assert(dst.len + src.len <= dst.cap)
+	dst[dst.len:] = src
+	dst.len += src.len
+	if dst.len < dst.cap do dst[dst.len] = 0
 }
 
 // Whether a and b hold the same characters.
@@ -51,28 +48,24 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 
 // Appends one character to dst; it must fit in dst's capacity.
 utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
-	n := start_fill(dst)
-	assert(n < dst.cap)
-	dst[n] = src
-	dst.len = n + 1
-	if n + 1 < dst.cap do dst[n + 1] = 0
+	assert(dst.len < dst.cap)
+	dst[dst.len] = src
+	dst.len += 1
+	if dst.len < dst.cap do dst[dst.len] = 0
 }
 
-// Appends items to dst; they must fit in dst's capacity. A slice with no len
-// yet (a fresh slicing) is filled from its start.
+// Appends items to dst; they must fit in dst's capacity.
 slice_add :: fun(dst: ^[]$T, src: []$T) {
-	n := start_fill(dst)
-	assert(n + src.len <= dst.cap)
-	dst[n:] = src
-	dst.len = n + src.len
+	assert(dst.len + src.len <= dst.cap)
+	dst[dst.len:] = src
+	dst.len += src.len
 }
 
 // Appends one item to dst; it must fit in dst's capacity.
 slice_add_item :: fun(dst: ^[]$T, src: $T) {
-	n := start_fill(dst)
-	assert(n < dst.cap)
-	dst[n] = src
-	dst.len = n + 1
+	assert(dst.len < dst.cap)
+	dst[dst.len] = src
+	dst.len += 1
 }
 
 // A new list: a's items, then b's — of a's own type, its room (a Path
@@ -102,10 +95,9 @@ next :: fun(list: ^[]$T) -> ^T {
 	we could zero the slot that's about to get written
 	array append could be written as next(&list)^ = x
 	*/
-	n := start_fill(list)
-	assert(n < list.cap)
-	list.len = n + 1
-	return &list[n]
+	assert(list.len < list.cap)
+	list.len += 1
+	return &list[list.len - 1]
 }
 
 // `x in xs`: whether some item of xs is x — includes(xs, x) — and `x not in

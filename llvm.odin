@@ -620,7 +620,7 @@ llvm_read :: proc(e: ^Llvm, op, place: Node_Id) -> (Val, bool) {
         return llvm_direct_value(e, place), true
     case llvm_slice(t) != nil && llvm_ref_place(e, place):
         // What a ^[]T refers to, read whole: a slice of it, its header made.
-        return emit_build_temp_slice(g, llvm_hdr_data(e, place), llvm_hdr_len(e, place, raw = true), llvm_hdr_cap(e, place)), true
+        return emit_build_temp_slice(g, llvm_hdr_data(e, place), llvm_hdr_len(e, place), llvm_hdr_cap(e, place)), true
     case llvm_aggregate(t):
         // A big-endian view's bytes are swapped as they're copied: only
         // a write of them can.
@@ -638,21 +638,9 @@ llvm_read :: proc(e: ^Llvm, op, place: Node_Id) -> (Val, bool) {
     case llvm_scalar(t):
         tmp := fresh_tmp(g)
         emit_load_into(g, tmp, llvm_type_from_checker(t), llvm_val(e, place))
-        if llvm_slice_len_place(e, place) { return emit_len_count(g, tmp), true }
         return tmp, true
     }
     return {}, false
-}
-
-// Whether a place is a slice's len — a slice header's, or what a ^[]T refers
-// to — whose word may say no len (SLICE_NO_LEN). A list's never does.
-@(private="file")
-llvm_slice_len_place :: proc(e: ^Llvm, place: Node_Id) -> bool {
-    pg := e.pg
-    if graph_op_of(pg, place) != .Field || graph_name(pg, place) != "len" { return false }
-    hdr := graph_operands(pg, place)[0].op
-    t := graph_type(pg, hdr)
-    return llvm_header_elem(t) != nil && llvm_partial(t) == nil
 }
 
 @(private="file")
@@ -1724,13 +1712,9 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 }
 
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
-// hi the array's size or the slice's len when not given (a list's or slice's
-// slicing written with no hi is given its cap: lw_slice) — as a new header,
-// cap = hi - lo. Its len: a list's or a slice's, as much of the source's as
-// falls in it (emit_window_len); a fixed array's or text's, or a no-len
-// slice's, none (SLICE_NO_LEN: all hi - lo of them, until an append starts
-// it at 0). Bounds given are checked: 0 <= lo <= hi <= the array's size, the
-// header's cap. (A held view's len is its count.)
+// hi the array's size or the slice's len when not given — as a new header,
+// len = cap = hi - lo. Bounds given are checked: 0 <= lo <= hi <= the
+// array's size, the header's cap.
 @(private="file")
 llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
@@ -1766,7 +1750,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
         if dest != NO_NODE && llvm_slice(graph_type(pg, dest)) != nil && !llvm_direct(e, dest) && !llvm_ref_place(e, dest) && llvm_ahead(e, dest) {
             at := llvm_place(e, dest)
             n := ir_int(llvm_array(graph_type(pg, ops[0].op)).size)
-            emit_slice_header_at(g, at, llvm_val(e, ops[0].op), emit_no_len(g, n), n)
+            emit_slice_header_at(g, at, llvm_val(e, ops[0].op), n, n)
             e.value[op] = at
             return true
         }
@@ -1780,8 +1764,6 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
     at := llvm_val(e, base)
     data, bound: Val
     given := lo.kind != .None || hi.kind != .None
-    src_len: Val   // (a list's or slice's len word: the window's comes from it)
-    src_list := false
     if text, is_text := llvm_text(e, base); is_text {
         // Text in its global (a constant's, a literal's): its bytes' address,
         // its length known — no header there to read.
@@ -1803,10 +1785,8 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
     } else if elem := llvm_header_elem(bt); elem != nil {
         data = llvm_hdr_data(e, base)
         if given { bound = llvm_hdr_cap(e, base) }
-        src_list = llvm_partial(bt) != nil
-        src_len = llvm_hdr_len(e, base, raw = true)
         if hi.kind == .None {
-            hi = src_len if src_list else emit_len_count(g, src_len)
+            hi = llvm_hdr_len(e, base)
         }
         if lo.kind != .None {
             from := data
@@ -1825,20 +1805,14 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
         n = fresh_tmp(g)
         ir_bin(g, n, .Sub, SLICE_LEN_IR, hi, lo)
     }
-    word, count: Val
-    if src_len.kind != .None {
-        word, count = emit_window_len(g, src_len, src_list, lo, n)
-    } else {
-        word, count = emit_no_len(g, n), n
-    }
     // Written to a held view: its values, no header in memory.
     if u := e.st.user[graph_ix(e.pg, op)]; u >= 0 && graph_op_of(pg, u) == .Write {
         if d := graph_leaf_decl(pg, graph_operands(pg, u)[0].op); d != NO_NODE && d in e.hdr {
-            e.hdr[d] = {data, count, n}
+            e.hdr[d] = {data, n, n}
             return true
         }
     }
-    e.value[op] = emit_build_temp_slice(g, data, word, n)
+    e.value[op] = emit_build_temp_slice(g, data, n, n)
     return true
 }
 
@@ -2157,9 +2131,8 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id, held := false) -> (data, bound: Val,
 // its len their count. The index form `bytes[off]` is an array's worth of
 // memory from off, clipped at the source's cap: as many whole elements as
 // fit there, up to the array's cap (off past the source's cap: an error).
-// A span `bytes[lo:hi]` is those bytes, hi within the source's cap (one
-// written open, `bytes[lo:]`, is given the cap: lw_slice; the compiler's
-// own, open, end at the len: only the bytes it holds).
+// A span `bytes[lo:hi]` is those bytes, hi within the source's cap — open,
+// its len, as an open slice ends (`bytes[lo:]`: only the bytes it holds).
 // (Into a struct or an array: later.)
 @(private="file")
 llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
@@ -2268,31 +2241,6 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
     storage := ops[0].op
     if storage == NO_NODE || llvm_direct(e, storage) { return false }
-    if graph_name(pg, op) == "fill" {
-        // `start_fill(&s)`: a slice with no len gets len 0, where appends
-        // start; a len it has stays. Its value is that len. (A list's
-        // always has one.)
-        if llvm_header_elem(graph_type(pg, storage)) == nil { return false }
-        len_at := llvm_hdr_len_at(e, storage)
-        raw := fresh_tmp(g)
-        emit_load_into(g, raw, SLICE_LEN_IR, len_at)
-        if llvm_partial(graph_type(pg, storage)) != nil {
-            e.value[op] = raw
-            return true
-        }
-        // (Stored only when it has none: an append into a list or a slice
-        // being filled stores nothing more.)
-        none := fresh_tmp(g)
-        ir_icmp(g, none, .Slt, SLICE_LEN_IR, raw, ir_int(0))
-        set, done := fresh_label(g, "fill.start"), fresh_label(g, "fill.done")
-        emit_cond_br(g, none, set, done)
-        emit_label(g, set)
-        emit_store(g, SLICE_LEN_IR, ir_int(0), len_at)
-        emit_br(g, done)
-        emit_label(g, done)
-        e.value[op] = emit_len_fill(g, raw)
-        return true
-    }
     let := graph_name(pg, op) == "let"
     if graph_op_of(pg, storage) == .View {
         if let {
@@ -2332,7 +2280,6 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     data := llvm_hdr_data(e, storage)
     cursor := fresh_tmp(g)
     emit_load_into(g, cursor, w, len_at)
-    if llvm_partial(graph_type(pg, storage)) == nil { cursor = emit_len_fill(g, cursor) }   // (a slice with no len: taken from its start)
     // (Storage of the items taken, not bytes — `slice([:n]T, &list)`, a list
     // of T: its len and cap count items. Scaled to bytes here, as a byte
     // cursor's are, and the cursor stored back as items.)
@@ -2750,7 +2697,7 @@ llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
     }
     header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
     data := emit_header_field(g, header, SLICE.ptr)
-    n := emit_len_count(g, emit_header_field(g, header, SLICE.len))
+    n := emit_header_field(g, header, SLICE.len)
     at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
     ir_store(g, tag, ir_int(0), at)
     done := fresh_label(g, "from_text.done")
@@ -3285,18 +3232,14 @@ llvm_hdr_len_at :: proc(e: ^Llvm, base: Node_Id) -> Val {
 }
 
 // (A list's, or what a ^[]T refers to, checked within its cap: emit_len_check.)
-// A slice's is its count (emit_len_count); `raw`, its len word as it is, for
-// a copy of the slice (no len stays no len).
 @(private="file")
-llvm_hdr_len :: proc(e: ^Llvm, base: Node_Id, raw := false) -> Val {
+llvm_hdr_len :: proc(e: ^Llvm, base: Node_Id) -> Val {
     v := fresh_tmp(e.g)
     emit_load_into(e.g, v, SLICE_LEN_IR, llvm_hdr_len_at(e, base))
-    list := llvm_partial(graph_type(e.pg, base)) != nil
-    n := v if list else emit_len_count(e.g, v)
-    if list || llvm_ref_place(e, base) {
-        emit_len_check(e.g, n, llvm_hdr_cap(e, base), graph_origin(e.pg, base))
+    if llvm_partial(graph_type(e.pg, base)) != nil || llvm_ref_place(e, base) {
+        emit_len_check(e.g, v, llvm_hdr_cap(e, base), graph_origin(e.pg, base))
     }
-    return v if raw else n
+    return v
 }
 
 // (What a ^[]T refers to: the reference holds its cap and data, as a slice

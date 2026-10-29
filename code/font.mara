@@ -136,7 +136,7 @@ load_coverage_glyphs :: fun(
 	for i in 0:glyphs.cap {
 		&chars + (first + u32(i))
 	}
-	load_coverage_chars(font, pixels, chars, glyphs, metrics, atlas, size)?
+	load_coverage_chars(font, pixels, chars[:], glyphs, metrics, atlas, size)?
 }
 
 // A font's glyphs for the characters `chars` — code points, glyphs[i] for
@@ -1454,9 +1454,9 @@ TTF :: struct (bytes: ^[]byte) {
 	head : Head = #big_endian bytes[head_loc]
 	maxp : Maxp = #big_endian bytes[maxp_loc]
 	cmap := read_cmap(bytes, cmap_loc)
-	loca := read_loca(head, maxp, bytes[loca_loc:.len])
+	loca := read_loca(head, maxp, bytes[loca_loc:])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx := read_hmtx(hhea, bytes[hmtx_loc:.len])
+	hmtx := read_hmtx(hhea, bytes[hmtx_loc:])
 	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_loc + glyf_table_len]}
 
 	// The character map characters go through (cmap_pick): its record, its

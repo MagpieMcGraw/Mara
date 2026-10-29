@@ -1179,7 +1179,7 @@ rs_self :: proc(r: ^Resolver) -> (Ref, bool) {
 @(private="file")
 rs_builtin_call :: proc(name: string) -> bool {
     switch name {
-    case "print", "crash", "int", "uint", "print_cstr", "print_int", "print_float", "len", "cap", "slice_from_ptr", "cstring", "start_fill",
+    case "print", "crash", "int", "uint", "print_cstr", "print_int", "print_float", "len", "cap", "slice_from_ptr", "cstring",
          "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f16", "f32", "f64", "utf8", "bool":
         return true
     }

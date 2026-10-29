@@ -628,9 +628,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
             }
         }
     case .Carve:
-        // let(T, s) reads a T out of s's memory; slice(..., s) views it;
-        // start_fill(s) gives a number, viewing nothing.
-        if graph_name(g, op) == "fill" { break }
+        // let(T, s) reads a T out of s's memory; slice(..., s) views it.
         mem: Esc_Roots
         esc_mem(e, &mem, ops[0], state)
         if graph_name(g, op) != "let" {

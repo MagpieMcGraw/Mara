@@ -187,7 +187,7 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 // many writes as that takes (file_write may take only part). Write_Failed
 // when a write fails: the other end gone, say.
 file_write_text :: fun(id: File_Id, text: []utf8) -> err {
-	bytes : []byte = text
+	bytes : []byte = text[:]
 	for bytes.len > 0 {
 		n := file_write(id, bytes)?
 		if n <= 0 do return Write_Failed   // (nothing went: more tries won't either)
@@ -199,7 +199,7 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 // file. Returns a slice of the buffer containing the read data. Slice .len
 // and .cap are both set to the size of the file in bytes.
 read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
-	start := start_fill(storage)
+	start := storage.len
 	none := storage[start : start]
 	id, oe := file_open_read(path)
 	if oe do return none, oe
@@ -754,7 +754,7 @@ Sockaddr :: struct {
 		if n == 0 do return out, Read_Failed
 		if n >= full.cap do return out, Too_Large
 		full.len = n
-		name : []utf8 = full
+		name : []utf8 = full[:]
 		unc := false
 		if starts_with(name, "\\\\?\\UNC\\") {
 			name = name[8 : name.len]
@@ -789,7 +789,7 @@ Sockaddr :: struct {
 		// (As long as the room, it was cut off: no room for its 0.)
 		if n >= path.cap do return path, Too_Large
 		path.len = n
-		return real_path(path)
+		return real_path(path[:])
 	}
 
 	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
@@ -820,7 +820,7 @@ Sockaddr :: struct {
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
-		start := start_fill(storage)
+		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
 		if path.len > 500 do return none, Open_Failed   // (its pattern on the stack, under 1 KB)
@@ -859,13 +859,13 @@ Sockaddr :: struct {
 					entry.link = true
 					entry.dir = link_leads_to_dir(path, name)
 				}
-				&entries + entry
+				entries[k] = entry
 				k += 1
 			}
 			if not bool(FindNextFileA(search, &found)) do break
 		}
 		_ = FindClose(search)
-		return entries   // (fewer when it lost some since it counted)
+		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
 	FILE_ATTRIBUTE_DIRECTORY     :: 0x10
@@ -1491,7 +1491,7 @@ Sockaddr :: struct {
 			if want > 1 << 30 do want = 1 << 30
 			n := send(c.id, rest.ptr, i32(want), 0)
 			if n > 0 {
-				rest = rest[i64(n):.len]
+				rest = rest[i64(n):]
 				continue
 			}
 			if WSAGetLastError() != WSAEWOULDBLOCK do return Send_Failed
@@ -1922,8 +1922,8 @@ Sockaddr :: struct {
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
 	// The path goes to Linux as it is, not copied (cstring): a 0 must
 	// follow it in its storage — so pass a literal, or the buffer it was
-	// appended to, not a slicing of the buffer (`buf[0:n]`: its room ends
-	// where the path does). So for every path this module takes but dir_read's,
+	// appended to, not a `[:]` of the buffer (that slice's room ends where
+	// the path does). So for every path this module takes but dir_read's,
 	// which copies its own.
 	file_open_read :: fun(path: []utf8) -> File_Id, err {
 		c := c_path(path)
@@ -2146,7 +2146,7 @@ Sockaddr :: struct {
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
-		start := start_fill(storage)
+		start := storage.len
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
 		// (A copy of the path, a 0 after it: any slice of a path will do, as
@@ -2182,11 +2182,11 @@ Sockaddr :: struct {
 			if d.kind == DT_LNK or d.kind == DT_UNKNOWN {
 				entry.link, entry.dir = dir_entry_kind(path, name)
 			}
-			&entries + entry
+			entries[k] = entry
 			k += 1
 		}
 		_ = closedir(dir)
-		return entries   // (fewer when it lost some since it counted)
+		return entries[0 : k]   // (fewer when it lost some since it counted)
 	}
 
 	// A directory's entry, asked of the system — not opened (a named pipe
@@ -2868,7 +2868,7 @@ Sockaddr :: struct {
 			// the program.)
 			n := send(c.id, rest.ptr, usize(rest.len), MSG_NOSIGNAL)
 			if n > 0 {
-				rest = rest[n:.len]
+				rest = rest[n:]
 				continue
 			}
 			e := __errno_location()^
