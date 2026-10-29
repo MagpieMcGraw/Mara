@@ -210,6 +210,7 @@ TYPE_VOID_INIT_REQUIRES_EXPLICIT  :: "`%s := void` has no type to infer — anno
 TYPE_CSTRING_FOREIGN_ONLY         :: "`cstring` is the C boundary type — only `foreign` signatures may declare it. Take `[]utf8` and convert at the C call with `cstring(s)`"
 TYPE_CSTRING_ARG_EXPLICIT         :: "a runtime string doesn't convert to `cstring` implicitly — wrap the argument: `cstring(s)` hands C its bytes as they are, checked to have a 0 after them (a buffer keeps one after its text; a slice over one doesn't). String literals pass free"
 TYPE_CSTRING_CTOR_ARGUMENT        :: "cstring() takes a utf8/byte string (slice, partial array, or literal), got %s"
+TYPE_START_FILL_ARGUMENT          :: "start_fill() takes a slice or a list to fill, by pointer: `start_fill(&room)`, or a `^[]T` — got %s"
 TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL :: "cannot take the address of a string literal — its bytes are read-only. Bind it first (`s := \"...\"`) for a mutable copy"
 TYPE_SLICE_CANNOT_BIND_STRING_LITERAL :: "a string literal is `[N]utf8` storage, not a `[]utf8` view — a slice here would alias read-only bytes. Use `s := \"...\"` for a mutable copy, or `s : [N]utf8 = \"...\"` for one with room to grow"
 PARSE_BIG_ENDIAN_NEEDS_BYTE_READ  :: "`#big_endian` must precede a byte-buffer read — `buf[off]` or `buf[lo:hi]`"

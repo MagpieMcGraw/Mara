@@ -348,7 +348,8 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
     case ^Type_Fixed_Array:
         id = cv_array(cv, cv_type(cv, v.elem), type_size(v))
     case ^Type_Slice:
-        // Its header, {len, cap, ptr}: its len elements, as raddbg shows it.
+        // Its header, {len, cap, ptr}: its len elements, as raddbg shows it
+        // (no len, a negative word: all its cap's, SLICE_NO_LEN).
         name := type_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd
@@ -357,7 +358,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         types := [3]u32{0x76, 0x76, ptr}
         offsets := [3]int{0, 8, 16}
         id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
-        cv_view(cv, name, "array(ptr, len)")
+        cv_view(cv, name, "array(ptr, len < 0 ? cap : len)")
     case ^Type_Partial_Array:
         // Its len, then its elements: its len of them, as raddbg shows it.
         if v.text != 0 { return cv_type(cv, type_partial_array(v.size, v.elem)) }   // (text: the list it is)

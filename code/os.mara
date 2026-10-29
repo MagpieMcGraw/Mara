@@ -199,7 +199,7 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 // file. Returns a slice of the buffer containing the read data. Slice .len
 // and .cap are both set to the size of the file in bytes.
 read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
-	start := storage.len
+	start := start_fill(storage)
 	none := storage[start : start]
 	id, oe := file_open_read(path)
 	if oe do return none, oe
@@ -820,7 +820,7 @@ Sockaddr :: struct {
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
-		start := storage.len
+		start := start_fill(storage)
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
 		if path.len > 500 do return none, Open_Failed   // (its pattern on the stack, under 1 KB)
@@ -2146,7 +2146,7 @@ Sockaddr :: struct {
 	// (cstring's 0 needn't follow it). (Counted first, then each written:
 	// listed twice.)
 	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
-		start := storage.len
+		start := start_fill(storage)
 		none := slice([:0]Dir_Entry, storage)
 		storage.len = start
 		// (A copy of the path, a 0 after it: any slice of a path will do, as

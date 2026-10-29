@@ -5,6 +5,31 @@ with room to their cap, and loops that run to cap. Parked here to get back to. T
 were temporary probes in the checker, logging every slice use while the code checked; the
 probes are gone, and the numbers are as of 105c8a4 and sooblivion on 2026-10-28.
 
+## What was built (2026-10-29): slices with no len
+
+The user's call, after the idea below: a slicing has *no len* until something appends to it.
+
+- A slicing (`x[a:b]`, `x[:]`) is made with no len: its len word holds its count with the top
+  bit set (`SLICE_NO_LEN`, codegen.odin). Its count is its cap.
+- Every read of a slice's len reads the count (`.len`, loops, print, `==`, copies into a list,
+  cstring, from_text): the word with the top bit cleared, one `and`. So a slicing reads as all
+  of its room, as it did when it was made with len = cap. Indexing and slicing are checked
+  against the cap, so they don't change.
+- An append into a slice with no len starts at 0. `start_fill(&s)` (a builtin, a Carve named
+  "fill" in the graph) sets a no-len slice's len to 0 and gives the len where the next item
+  goes; the stdlib's appends (`slice_add`, `slice_add_item`, `utf8_add`, `utf8_add_item`,
+  `next`) and its storage fills (`read_entire_file`, `dir_read`) call it, and takes
+  (`slice([:n]T, &s)`) start at 0 too.
+- A list's len never has the bit, so an empty list appended as a source adds nothing. A
+  copy of a slice keeps its len word as it is (`w := p^` through a `^[]T`: still no len).
+- What stays: a slicing nothing is ever appended to reads as full. Rooms that may get no
+  items keep their `.len = 0`.
+- Cost, measured (200M operations, scratchpad bench): release appends went from 0.38 s to
+  0.094 s, through a `^[]T` from 0.32 s to 0.093 s: the stdlib's appends now read
+  `start_fill`'s value once, which LLVM knows isn't negative. Len reads and loops are
+  unchanged (0.046 s). Debug builds (the x86 backend): appends 2-13% slower, len reads 4%.
+- Test: test/slice_no_len.mara. Doc: doc/basics.mara (`start_fill`), doc/arrays.mara.
+
 ## The idea, and the rule floated so far
 
 - A slice made by slicing (`x[a:b]`, `x[:]`) is empty: len 0, cap the size of the slicing.

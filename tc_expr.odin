@@ -1330,10 +1330,23 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope) {
 
 // The rest of the builtins: print_cstr / print_int / print_float (as print),
 // len and cap (of a place — a fixed array's, its size), slice_from_ptr,
-// cstring.
+// cstring, start_fill (of a slice or list pointed at: where its next item
+// goes).
 tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, bool) {
     span := tree_span(k.t, n)
     switch name {
+    case "start_fill":
+        t := slice_header_width_type
+        if len(args) != 1 {
+            tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+            return t, true
+        }
+        at := tc_arg(k, args[0])
+        pt, is_ptr := distinct_base(at).(^Type_Ptr)
+        if !is_any(at) && (!is_ptr || pt.elem == nil || !is_slice_type(pt.elem) && !is_partial_array(pt.elem)) {
+            tc_error(k, span, TYPE_START_FILL_ARGUMENT, type_name(at))
+        }
+        return t, true
     case "print_cstr", "print_int", "print_float":
         msg := TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE
         if name == "print_int" { msg = TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT }

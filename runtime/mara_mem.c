@@ -292,6 +292,12 @@ void __mara_mem_into(const Mara_List* hdr, Mara_Mem_Site* site) {
     if (s) mem_end(s);   // (something else is there now)
 }
 
+// A len word as its count: a slice with no len (a slicing's) has its top bit
+// set, its count below it (codegen.odin, SLICE_NO_LEN). A list's is as it is.
+static int64_t mem_count(int64_t len) {
+    return len & INT64_MAX;
+}
+
 void __mara_mem_len(const Mara_List* hdr) {
     mem.len_probes++;
     Mara_Mem_Inst* s = mem_find(hdr);
@@ -299,8 +305,9 @@ void __mara_mem_len(const Mara_List* hdr) {
     // (Past its cap, it isn't this one: its storage holds something else
     // now, laid down unseen; a take's header viewing other data, re-pointed.
     // The instance ends at the peak it had.)
-    if (hdr->len > s->cap || (s->take && ((const Mara_Header*)hdr)->data != s->data)) { mem_end(s); return; }
-    if (hdr->len > s->peak) s->peak = hdr->len;
+    int64_t n = mem_count(hdr->len);
+    if (n > s->cap || (s->take && ((const Mara_Header*)hdr)->data != s->data)) { mem_end(s); return; }
+    if (n > s->peak) s->peak = n;
 }
 
 void __mara_mem_take(const Mara_List* hdr, Mara_Mem_Site* site) {
@@ -312,7 +319,7 @@ void __mara_mem_take(const Mara_List* hdr, Mara_Mem_Site* site) {
     s->data = h->data;
     s->cap = h->cap;
     s->take = 1;
-    s->peak = h->len;
+    s->peak = mem_count(h->len);
     if (s->rec->cap == 0) s->rec->cap = h->cap;   // (n not a number written: the first one's)
 }
 

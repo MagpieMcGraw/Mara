@@ -28,6 +28,39 @@ Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 1
 
+// A slice with no len: a slicing's (`x[a:b]`, `x[:]`), every item of its
+// room in it. Its len word holds its count with the top bit set. What reads
+// the len reads the count (emit_len_count); what appends into it starts at
+// 0 (emit_len_fill, `start_fill`). A list's len never has the bit.
+SLICE_NO_LEN   :: min(i64)
+SLICE_LEN_MASK :: max(i64)
+
+// A count as a no-len slice's len word: the top bit set.
+emit_no_len :: proc(g: ^Codegen, n: Val) -> Val {
+    if n.kind == .Int { return ir_int128(n.n | i128(SLICE_NO_LEN)) }
+    out := fresh_tmp(g)
+    ir_bin(g, out, .Or, SLICE_LEN_IR, n, ir_int(int(SLICE_NO_LEN)))
+    return out
+}
+
+// A slice's len word read as its count: a no-len slice's, its room's.
+emit_len_count :: proc(g: ^Codegen, raw: Val) -> Val {
+    if raw.kind == .Int { return ir_int128(raw.n & i128(SLICE_LEN_MASK)) }
+    out := fresh_tmp(g)
+    ir_bin(g, out, .And, SLICE_LEN_IR, raw, ir_int(int(SLICE_LEN_MASK)))
+    return out
+}
+
+// A slice's len word read as where an append goes: a no-len slice's, 0.
+emit_len_fill :: proc(g: ^Codegen, raw: Val) -> Val {
+    if raw.kind == .Int { return ir_int(0) if raw.n < 0 else raw }
+    neg := fresh_tmp(g)
+    ir_icmp(g, neg, .Slt, SLICE_LEN_IR, raw, ir_int(0))
+    out := fresh_tmp(g)
+    ir_select(g, out, neg, SLICE_LEN_IR, ir_int(0), raw)
+    return out
+}
+
 // A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
 // the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
 // address at SLICE.len. A list's never change; a slice's are its header's as

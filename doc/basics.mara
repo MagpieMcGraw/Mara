@@ -678,6 +678,26 @@ example_len :: fun() {
 	print(len(primes), cap(primes))        // 4 4
 }
 
+// `start_fill`: where appends into a slice start.
+//
+// A slice made by slicing, `buf[0:4]`, holds all of its room: its len is
+// its cap, and loops and prints see every item. An append into it starts at
+// its start instead, as into an empty one, and its len counts from there. A
+// list, or a slice that has been appended to or had its len set, keeps its
+// len. `start_fill(&s)` is that first step on its own: it gives the len
+// the next item goes at (0 for a fresh slicing, whose len becomes 0).
+// Appends call it. Call it in code that fills a slice by hand.
+example_start_fill :: fun() {
+	buf : [8!]i64
+	room := buf[0:4]
+	print(room.len)                        // 4
+	&room + 9
+	print(room.len, buf[0])                // 1 9
+	other := buf[4:8]
+	at := start_fill(&other)
+	print(at, other.len)                   // 0 0
+}
+
 // `i64`, `i32`, `i16`, `i8`, `u64`, `u32`, `u16`, `u8`, `isize`, `usize`, `int`, `uint`: whole numbers (integers), and turning a value into one.
 //
 // iN holds signed numbers of N bits, uN unsigned. `n := 0` is an i64 unless
@@ -879,6 +899,7 @@ main :: fun() {
 	example_print()
 	example_assert()
 	example_len()
+	example_start_fill()
 	example_i64()
 	example_f64()
 	example_utf8()

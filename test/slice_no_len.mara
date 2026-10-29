@@ -1,0 +1,131 @@
+module slice_no_len
+
+//@ expect-output: view: 4 [3, 4, 5, 6] 3 - loop: 4 18
+//@ expect-output: room: 1 [5] - under it: 5 2
+//@ expect-output: never filled: 3
+//@ expect-output: from a slicing: 2 - from an empty list: 2
+//@ expect-output: len set: 0 2
+//@ expect-output: through a ^[]T: 1 [9] - read through one: 4
+//@ expect-output: start_fill: 0 0 - a list: 3 3
+//@ expect-output: text: north true
+//@ expect-output: take: 32 0
+//@ expect-output: field: 3 1
+//@ expect-output: into a list: 3 [1, 2, 3]
+//@ expect-output: copied through a ^[]T: 1 [7]
+//@ expect-output: param: 3
+
+// A slicing has no len: it reads as all of its room, and an append into it
+// starts at 0. A list keeps its len, 0 too.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+Holder :: struct {
+	view: []i64 = []
+}
+
+fill_one :: fun(room: ^[]i64) {
+	room + 9
+}
+
+count_through :: fun(p: ^[]i64) -> i64 {
+	return p.len
+}
+
+copy_and_add :: fun(p: ^[]i64) -> []i64 {
+	w := p^
+	&w + 7
+	return w
+}
+
+count_param :: fun(xs: []i64) -> i64 {
+	return xs.len
+}
+
+main :: fun() {
+	xs : [16]i64
+	for k in 1..8 do &xs + k
+
+	// A view: all of it, wherever it's read.
+	v := xs[2:6]
+	sum := 0
+	n := 0
+	for x in v {
+		sum += x
+		n += 1
+	}
+	print("view:", v.len, v, v[0], "- loop:", n, sum)
+
+	// An append into a fresh slicing starts at its start.
+	buf : [8]i64
+	for k in 0:8 do &buf + 2
+	room := buf[0:8]
+	&room + 5
+	print("room:", room.len, room, "- under it:", buf[0], buf[1])
+
+	// Nothing appended: still all of its room.
+	r := buf[0:3]
+	print("never filled:", r.len)
+
+	// As a source: a slicing gives all of it; an empty list gives nothing.
+	dst : [8]i64
+	&dst + xs[0:2]
+	first := dst.len
+	empty : [8]i64
+	&empty + 4
+	empty.len = 0
+	&dst + empty
+	print("from a slicing:", first, "- from an empty list:", dst.len)
+
+	// A len set is the len.
+	s := xs[0:4]
+	s.len = 0
+	z := s.len
+	s.len = 2
+	print("len set:", z, s.len)
+
+	// Through a mutable slice: the append starts at 0; a read is the count.
+	t := xs[4:8]
+	u := xs[4:8]
+	fill_one(&t)
+	print("through a ^[]T:", t.len, t, "- read through one:", count_through(&u))
+
+	// start_fill itself: no len becomes 0; a list's stays. It gives the len.
+	w := xs[0:5]
+	at := start_fill(&w)
+	three : [4]i64
+	for k in 0:3 do &three + k
+	at3 := start_fill(&three)
+	print("start_fill:", at, w.len, "- a list:", at3, three.len)
+
+	// Text: a slicing reads as its characters.
+	name : str64
+	&name + "north gate"
+	print("text:", name[0:5], name[0:5] == "north")
+
+	// A take from a fresh slicing: from its start.
+	store : [256]byte
+	bytes := store[0:64]
+	taken := slice([:4]i64, &bytes)
+	print("take:", bytes.len, taken.len)
+
+	// In a field: the same.
+	h := Holder()
+	h.view = xs[12:15]
+	before := h.view.len
+	fill_one(&h.view)
+	print("field:", before, h.view.len)
+
+	// Into a list: its items.
+	l : [8]i64 = xs[0:3]
+	print("into a list:", l.len, l)
+
+	// Copied out through a ^[]T: still no len, so the copy's append starts at 0.
+	c := xs[8:12]
+	copied := copy_and_add(&c)
+	print("copied through a ^[]T:", copied.len, copied)
+
+	print("param:", count_param(xs[1:4]))
+}
