@@ -51,6 +51,41 @@ emit_len_count :: proc(g: ^Codegen, raw: Val) -> Val {
     return out
 }
 
+// A slicing's len from its source's len word: as much of the source's len
+// as falls in the window from lo, n long — clamp(len - lo, 0, n). A source
+// with no len gives none (a list's always has one). Its len word, and its
+// count.
+emit_window_len :: proc(g: ^Codegen, src: Val, list: bool, lo, n: Val) -> (word, count: Val) {
+    w := SLICE_LEN_IR
+    if src.kind == .Int && (lo.kind == .None || lo.kind == .Int) && n.kind == .Int {
+        if src.n < 0 { return emit_no_len(g, n), n }
+        d := src.n - (lo.n if lo.kind == .Int else 0)
+        inh := ir_int128(max(i128(0), min(d, n.n)))
+        return inh, inh
+    }
+    d := src
+    if lo.kind != .None {
+        d = fresh_tmp(g)
+        ir_bin(g, d, .Sub, w, src, lo)
+    }
+    neg := fresh_tmp(g)
+    ir_icmp(g, neg, .Slt, w, d, ir_int(0))
+    d0 := fresh_tmp(g)
+    ir_select(g, d0, neg, w, ir_int(0), d)
+    over := fresh_tmp(g)
+    ir_icmp(g, over, .Sgt, w, d0, n)
+    inh := fresh_tmp(g)
+    ir_select(g, inh, over, w, n, d0)
+    if list { return inh, inh }
+    none := fresh_tmp(g)
+    ir_icmp(g, none, .Slt, w, src, ir_int(0))
+    word = fresh_tmp(g)
+    ir_select(g, word, none, w, emit_no_len(g, n), inh)
+    count = fresh_tmp(g)
+    ir_select(g, count, none, w, n, inh)
+    return
+}
+
 // A slice's len word read as where an append goes: a no-len slice's, 0.
 emit_len_fill :: proc(g: ^Codegen, raw: Val) -> Val {
     if raw.kind == .Int { return ir_int(0) if raw.n < 0 else raw }

@@ -33,7 +33,14 @@ The user's call, after the idea below: a slicing has *no len* until something ap
   bound, `x[:]` or `x[lo:]`, runs to its cap: all of its room. To stop at the len, say so:
   `x[lo:.len]`. lw_slice gives such a slicing its cap as the high bound; the compiler's own
   slicings (a list given as a slice) still end at the len, and a write into `dst[lo:]` still
-  copies all of the source. A fixed array's `[:]` is its size either way; a text literal's, its
+  copies all of the source.
+- Then (the user's call, the same day): a slicing of a list or of a slice with a len keeps
+  as much of that len as falls in its window: `clamp(len - lo, 0, hi - lo)`
+  (emit_window_len). Its cap is the window. `xs[2:6]` of 8 items has len 4; of 3 items, len
+  1 and cap 4; `args[2:]` of 5 args, len 3 in a room of 62. A slicing of a fixed array, of
+  text, or of a slice with no len has no len. Reads stay as they were: to the len, and to the
+  cap only with no len (the user: to loop to the cap over a slice with a len, say so). So
+  `list[:]` reads the list's items again, with its room behind them. A fixed array's `[:]` is its size either way; a text literal's, its
   text. The `[:]` in the stdlib, tests, docs and the view that wanted the items were
   rewritten: dropped where a list converts (an argument, `v : []T = x`, a print, an append's
   source), `v := x[:]` to `v : []T = x`, and `x[:.len]` where a slicing is still needed (an

@@ -1726,9 +1726,11 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
 // hi the array's size or the slice's len when not given (a list's or slice's
 // slicing written with no hi is given its cap: lw_slice) — as a new header,
-// cap = hi - lo and no len (SLICE_NO_LEN: all hi - lo of them, until an
-// append starts it at 0). Bounds given are checked: 0 <= lo <= hi <= the
-// array's size, the header's cap. (A held view's len is its count.)
+// cap = hi - lo. Its len: a list's or a slice's, as much of the source's as
+// falls in it (emit_window_len); a fixed array's or text's, or a no-len
+// slice's, none (SLICE_NO_LEN: all hi - lo of them, until an append starts
+// it at 0). Bounds given are checked: 0 <= lo <= hi <= the array's size, the
+// header's cap. (A held view's len is its count.)
 @(private="file")
 llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
@@ -1778,6 +1780,8 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
     at := llvm_val(e, base)
     data, bound: Val
     given := lo.kind != .None || hi.kind != .None
+    src_len: Val   // (a list's or slice's len word: the window's comes from it)
+    src_list := false
     if text, is_text := llvm_text(e, base); is_text {
         // Text in its global (a constant's, a literal's): its bytes' address,
         // its length known — no header there to read.
@@ -1799,8 +1803,10 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
     } else if elem := llvm_header_elem(bt); elem != nil {
         data = llvm_hdr_data(e, base)
         if given { bound = llvm_hdr_cap(e, base) }
+        src_list = llvm_partial(bt) != nil
+        src_len = llvm_hdr_len(e, base, raw = true)
         if hi.kind == .None {
-            hi = llvm_hdr_len(e, base)
+            hi = src_len if src_list else emit_len_count(g, src_len)
         }
         if lo.kind != .None {
             from := data
@@ -1819,14 +1825,20 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool
         n = fresh_tmp(g)
         ir_bin(g, n, .Sub, SLICE_LEN_IR, hi, lo)
     }
+    word, count: Val
+    if src_len.kind != .None {
+        word, count = emit_window_len(g, src_len, src_list, lo, n)
+    } else {
+        word, count = emit_no_len(g, n), n
+    }
     // Written to a held view: its values, no header in memory.
     if u := e.st.user[graph_ix(e.pg, op)]; u >= 0 && graph_op_of(pg, u) == .Write {
         if d := graph_leaf_decl(pg, graph_operands(pg, u)[0].op); d != NO_NODE && d in e.hdr {
-            e.hdr[d] = {data, n, n}
+            e.hdr[d] = {data, count, n}
             return true
         }
     }
-    e.value[op] = emit_build_temp_slice(g, data, emit_no_len(g, n), n)
+    e.value[op] = emit_build_temp_slice(g, data, word, n)
     return true
 }
 

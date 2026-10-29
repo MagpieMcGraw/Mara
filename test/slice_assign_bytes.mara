@@ -20,14 +20,14 @@ at :: fun(bytes: []byte, i: i64) -> u8 {
 
 main :: fun() {
 	bits : Bits
-	for i in 0:8 do bits.input[i] = u8(i + 1)
+	for i in 0:8 do &bits.input + u8(i + 1)
 	output : [16]byte
 	for i in 0:8 do output[i] = u8(0)
 	output[0:4] = bits.input[2:6]
 	print("from a field:", at(output[0:16], 0), at(output[0:16], 1), at(output[0:16], 2), at(output[0:16], 3), "|", at(output[0:16], 4))
 	nines : [2]byte
-	nines[0] = u8(9)
-	nines[1] = u8(9)
+	&nines + u8(9)
+	&nines + u8(9)
 	output[4:6] = nines[0:2]
 	print("from a local:", at(output[0:16], 4), at(output[0:16], 5))
 	n : u8 = 7

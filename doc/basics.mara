@@ -680,13 +680,14 @@ example_len :: fun() {
 
 // `start_fill`: where appends into a slice start.
 //
-// A slice made by slicing, `buf[0:4]`, holds all of its room: its len is
-// its cap, and loops and prints see every item. An append into it starts at
+// A slice of a fixed array, `buf[0:4]`, has no len: it holds all of its
+// room, so loops and prints see every item. An append into it starts at
 // its start instead, as into an empty one, and its len counts from there. A
-// list, or a slice that has been appended to or had its len set, keeps its
-// len. `start_fill(&s)` is that first step on its own: it gives the len
-// the next item goes at (0 for a fresh slicing, whose len becomes 0).
-// Appends call it. Call it in code that fills a slice by hand.
+// list, a slice of one (as much of the list's len as falls in it), or a
+// slice that has been appended to or had its len set, keeps its len.
+// `start_fill(&s)` is that first step on its own: it gives the len the next
+// item goes at (0 for a slice with no len, whose len becomes 0). Appends
+// call it. Call it in code that fills a slice by hand.
 example_start_fill :: fun() {
 	buf : [8!]i64
 	room := buf[0:4]

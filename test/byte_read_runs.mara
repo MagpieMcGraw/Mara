@@ -28,6 +28,7 @@ fill :: fun(buf: ^[]byte) {
 // n Vs read out of buf into the caller's room.
 get :: fun(buf: []byte, n: i64, dst: ^[]V) -> []V {
 	dst[0:n] = buf[0 : n * size_of(V)]
+	dst.len = n   // (written into its room: its len says how much)
 	return dst[0:n]
 }
 
@@ -35,7 +36,8 @@ main :: fun() {
 	buf : [64]byte
 	fill(&buf)
 	room : [8]V
-	got := get(buf[0:24], 3, &room)   // (the run fill wrote: buf's len, a cursor, didn't move)
+	buf.len = 24   // (fill wrote into its room, its len not moved: a slicing sees only the len)
+	got := get(buf[0:24], 3, &room)
 	print("through a pointer:", got.len, got[2].a, got[2].b)
 	open : [8]V
 	open[0:] = buf[0:24]

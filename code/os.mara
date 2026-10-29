@@ -859,13 +859,13 @@ Sockaddr :: struct {
 					entry.link = true
 					entry.dir = link_leads_to_dir(path, name)
 				}
-				entries[k] = entry
+				&entries + entry
 				k += 1
 			}
 			if not bool(FindNextFileA(search, &found)) do break
 		}
 		_ = FindClose(search)
-		return entries[0 : k]   // (fewer when it lost some since it counted)
+		return entries   // (fewer when it lost some since it counted)
 	}
 
 	FILE_ATTRIBUTE_DIRECTORY     :: 0x10
@@ -2182,11 +2182,11 @@ Sockaddr :: struct {
 			if d.kind == DT_LNK or d.kind == DT_UNKNOWN {
 				entry.link, entry.dir = dir_entry_kind(path, name)
 			}
-			entries[k] = entry
+			&entries + entry
 			k += 1
 		}
 		_ = closedir(dir)
-		return entries[0 : k]   // (fewer when it lost some since it counted)
+		return entries   // (fewer when it lost some since it counted)
 	}
 
 	// A directory's entry, asked of the system — not opened (a named pipe
