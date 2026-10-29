@@ -1491,7 +1491,7 @@ Sockaddr :: struct {
 			if want > 1 << 30 do want = 1 << 30
 			n := send(c.id, rest.ptr, i32(want), 0)
 			if n > 0 {
-				rest = rest[i64(n):]
+				rest = rest[i64(n):.len]
 				continue
 			}
 			if WSAGetLastError() != WSAEWOULDBLOCK do return Send_Failed
@@ -2868,7 +2868,7 @@ Sockaddr :: struct {
 			// the program.)
 			n := send(c.id, rest.ptr, usize(rest.len), MSG_NOSIGNAL)
 			if n > 0 {
-				rest = rest[n:]
+				rest = rest[n:.len]
 				continue
 			}
 			e := __errno_location()^

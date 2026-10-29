@@ -9,7 +9,7 @@ include mara.memory
 // file read move; its cap, the room it has. A value at an offset, read or
 // written (`x : T = bytes[k]`, `bytes[k] = x`), is memory, as indexing is:
 // checked against the cap, the len not moved. For only the bytes it holds,
-// slice to the len: `bytes[k:]`, `bytes[k:len]`. A `let` names memory to
+// slice to the len: `bytes[k:.len]`. A `let` names memory to
 // fill. (Past the cap: byte_view_union_bounds, byte_fill_past_cap.)
 
 //@ expect-output: wrote into an empty buffer: len 0
@@ -35,7 +35,7 @@ main :: fun() {
 	part := buf[8:20]
 	print("read back past the len:", a, b, u32_at_8(&part))
 	buf.len = 20
-	tail := buf[8:]
+	tail := buf[8:.len]
 	print("an open slice ends at the len:", tail.len)
 
 	mem : [64]byte

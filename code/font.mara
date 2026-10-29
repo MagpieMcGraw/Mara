@@ -1454,9 +1454,9 @@ TTF :: struct (bytes: ^[]byte) {
 	head : Head = #big_endian bytes[head_loc]
 	maxp : Maxp = #big_endian bytes[maxp_loc]
 	cmap := read_cmap(bytes, cmap_loc)
-	loca := read_loca(head, maxp, bytes[loca_loc:])
+	loca := read_loca(head, maxp, bytes[loca_loc:.len])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx := read_hmtx(hhea, bytes[hmtx_loc:])
+	hmtx := read_hmtx(hhea, bytes[hmtx_loc:.len])
 	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_loc + glyf_table_len]}
 
 	// The character map characters go through (cmap_pick): its record, its

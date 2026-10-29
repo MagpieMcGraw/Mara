@@ -9,7 +9,7 @@ use mara.core
 // array's view — the slice repointed, and the reference with it (its header
 // built where the slice is, never over the reference).
 
-give :: (s: []i64) -> []i64 { return s[1:] }
+give :: (s: []i64) -> []i64 { return s[1:.len] }
 
 main :: () {
 	three : [3!]i64 = [7, 8, 9]

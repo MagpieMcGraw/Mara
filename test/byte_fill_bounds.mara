@@ -3,9 +3,9 @@ module byte_fill_bounds
 // A partial array filled from bytes, `pa : [N]T = bytes[off]`, is an
 // array's worth of memory from off: N elements' bytes, clipped at the
 // source's cap — as many whole elements as fit there, its len their count.
-// A span `bytes[lo:hi]` is those bytes (hi within the cap); open,
-// `bytes[lo:]`, it ends at the source's len, as an open slice does — only
-// the bytes it holds. (It once never checked: a [4096]u16 filled from a
+// A span `bytes[lo:hi]` is those bytes (hi within the cap); to the
+// source's len, `bytes[lo:.len]` — only the bytes it holds (open,
+// `bytes[lo:]`, it runs to the cap, as an open slice does). (It once never checked: a [4096]u16 filled from a
 // 16-byte buffer copied 8 KB past it. Then it trapped when the source ran
 // short: mara.font's crash on small fonts.) Past the cap: byte_fill_past_cap.
 
@@ -25,7 +25,7 @@ main :: fun() {
 	print("clipped at the cap:", clipped.len)
 	none : [8]u16 = bytes[16]
 	print("at the cap:", none.len)
-	held : [8]u16 = #big_endian bytes[0:]   // (the 4 bytes it holds)
+	held : [8]u16 = #big_endian bytes[0:.len]   // (the 4 bytes it holds)
 	print("to the len:", held.len, held[0])
 	span : [8]u16 = bytes[0:12]
 	print("a span past the len:", span.len)

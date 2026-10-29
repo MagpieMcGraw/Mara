@@ -29,10 +29,11 @@ The user's call, after the idea below: a slicing has *no len* until something ap
   `start_fill`'s value once, which LLVM knows isn't negative. Len reads and loops are
   unchanged (0.046 s). Debug builds (the x86 backend): appends 2-13% slower, len reads 4%.
 - Test: test/slice_no_len.mara. Doc: doc/basics.mara (`start_fill`), doc/arrays.mara.
-- Then (the user's call, the same day): `x[:]` of a list or a slice is all of its room, up to
-  its cap; `x[lo:]` is still the rest of its items, up to its len. lw_slice gives a written
-  `x[:]` its cap as the high bound; the compiler's own slicings (a list given as a slice)
-  still end at the len. A fixed array's `[:]` is its size either way; a text literal's, its
+- Then (the user's call, the same day): a list's or a slice's slicing written with no high
+  bound, `x[:]` or `x[lo:]`, runs to its cap: all of its room. To stop at the len, say so:
+  `x[lo:.len]`. lw_slice gives such a slicing its cap as the high bound; the compiler's own
+  slicings (a list given as a slice) still end at the len, and a write into `dst[lo:]` still
+  copies all of the source. A fixed array's `[:]` is its size either way; a text literal's, its
   text. The `[:]` in the stdlib, tests, docs and the view that wanted the items were
   rewritten: dropped where a list converts (an argument, `v : []T = x`, a print, an append's
   source), `v := x[:]` to `v : []T = x`, and `x[:.len]` where a slicing is still needed (an

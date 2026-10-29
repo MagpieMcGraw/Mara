@@ -1725,7 +1725,7 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
 // hi the array's size or the slice's len when not given (a list's or slice's
-// `x[:]` is given its cap: lw_slice) — as a new header,
+// slicing written with no hi is given its cap: lw_slice) — as a new header,
 // cap = hi - lo and no len (SLICE_NO_LEN: all hi - lo of them, until an
 // append starts it at 0). Bounds given are checked: 0 <= lo <= hi <= the
 // array's size, the header's cap. (A held view's len is its count.)
@@ -2145,8 +2145,9 @@ llvm_bytes :: proc(e: ^Llvm, base: Node_Id, held := false) -> (data, bound: Val,
 // its len their count. The index form `bytes[off]` is an array's worth of
 // memory from off, clipped at the source's cap: as many whole elements as
 // fit there, up to the array's cap (off past the source's cap: an error).
-// A span `bytes[lo:hi]` is those bytes, hi within the source's cap — open,
-// its len, as an open slice ends (`bytes[lo:]`: only the bytes it holds).
+// A span `bytes[lo:hi]` is those bytes, hi within the source's cap (one
+// written open, `bytes[lo:]`, is given the cap: lw_slice; the compiler's
+// own, open, end at the len: only the bytes it holds).
 // (Into a struct or an array: later.)
 @(private="file")
 llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {

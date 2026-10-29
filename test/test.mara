@@ -1605,7 +1605,7 @@ test_sized_read :: fun() {
 	}
 	buf8[3] = u8(5)
 	buf8[7] = u8(6)
-	whole : Sized_Rec = #big_endian buf8[0:]
+	whole : Sized_Rec = #big_endian buf8[0:.len]
 	assert(whole.a == 5)
 	assert(whole.b == 6)
 	assert(whole.c == 0)

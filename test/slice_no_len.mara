@@ -13,7 +13,7 @@ module slice_no_len
 //@ expect-output: into a list: 3 [1, 2, 3]
 //@ expect-output: copied through a ^[]T: 1 [7]
 //@ expect-output: param: 3
-//@ expect-output: whole room: 8 1 - filled: 1 7 2
+//@ expect-output: whole room: 8 7 1 - filled: 1 7 2
 
 // A slicing has no len: it reads as all of its room, and an append into it
 // starts at 0. A list keeps its len, 0 too. `x[:]` is all of x's room.
@@ -130,12 +130,12 @@ main :: fun() {
 
 	print("param:", count_param(xs[1:4]))
 
-	// `[:]`: all of a list's room; `[lo:]`: the rest of its items.
+	// `[:]`, `[lo:]`: all of a list's room; `[lo:.len]`: the rest of its items.
 	part : [8]i64
 	&part + 1
 	&part + 2
 	whole := part[:]
 	room_len := whole.len
 	&whole + 7
-	print("whole room:", room_len, part[1:].len, "- filled:", whole.len, part[0], part.len)
+	print("whole room:", room_len, part[1:].len, part[1:.len].len, "- filled:", whole.len, part[0], part.len)
 }

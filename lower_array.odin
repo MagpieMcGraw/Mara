@@ -159,14 +159,15 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
         }
     }
     elem: Type
-    // `x[:]` of a list or a slice: all of its room, up to its cap (a fixed
-    // array's is its size; a text literal's, its text). The compiler's own
+    // A list's or a slice's slicing with no hi — `x[:]`, `x[lo:]` — runs to
+    // its cap: all of its room (to its len: `x[lo:.len]`). A fixed array's
+    // runs to its size; a text literal's, its text. The compiler's own
     // slicings — a list given as a slice — end at the len.
-    whole_room := false
+    to_cap := false
     #partial switch v in target {
     case ^Type_Fixed_Array:   elem = v.elem
-    case ^Type_Slice:         elem = v.elem; whole_room = lo_n == 0 && hi_n == 0
-    case ^Type_Partial_Array: elem = v.elem; whole_room = lo_n == 0 && hi_n == 0 && v.text == 0
+    case ^Type_Slice:         elem = v.elem; to_cap = hi_n == 0
+    case ^Type_Partial_Array: elem = v.elem; to_cap = hi_n == 0 && v.text == 0
     }
     room :: proc(b: ^Graph_Builder, base: Operand, span: Span) -> Operand {
         cap := graph_op_value(b, .Field, .Implied, span, slice_header_width_type, "cap", base)
@@ -187,7 +188,7 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     if hi_n != 0 && !scalar { hi = lw_bound(k, hi_n, w, span, raw = reads) }
     t := tc_node_type(k, n)
     if reads {
-        if whole_room && !scalar { hi = room(b, base, span) }
+        if to_cap && !scalar { hi = room(b, base, span) }
         v := graph_op_value(b, .Slice, w, span, t, "", base, lo, hi)
         k.lower.span_read = {v.op, scalar}
         return {v = v, ok = true}
@@ -204,7 +205,7 @@ lw_slice :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest) -
     } else {
         base = graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, span, is_self)
     }
-    if whole_room && base != NO_VALUE { hi = room(b, base, span) }
+    if to_cap && base != NO_VALUE { hi = room(b, base, span) }
     return {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
 
