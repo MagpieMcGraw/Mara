@@ -105,7 +105,7 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
 
     perf := Performance_Timer{quiet = true}
     perf_timer_begin(&perf, "discover")
-    all_files := discover_all_files(args.compiler_dir, ".")
+    all_files := discover_all_files(args.compiler_dir, ".", args.search_dirs)
     if overlays != nil { serve_overlay(all_files, overlays^) }
     if args.pkg_name not_in all_files {
         c.failure = module_missing(all_files, args.pkg_name)

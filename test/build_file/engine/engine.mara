@@ -1,0 +1,8 @@
+module bf_engine
+
+use mara.core
+
+// Found only through build.mara's dirs.
+greet :: (who: []utf8) {
+	print("hello from the engine,", who)
+}

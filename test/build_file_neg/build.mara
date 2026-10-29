@@ -1,0 +1,8 @@
+module build
+//@ expect-fail: Build error: Build has no field `relese`
+
+// A field Build doesn't have: said where, with the fields it has.
+
+use mara.build
+
+build_file_neg :: Build{module_name = "bf_neg", relese = true}

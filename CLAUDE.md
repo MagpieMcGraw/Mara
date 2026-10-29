@@ -15,6 +15,7 @@ odin build . -debug -out:mara_dev.exe
 Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`
 mara build         	# build the module in the current directory (of several, the one named as the directory; else it asks which)
+mara build tools   	# with a build.mara here (`module build`, constants of code/build.mara's Build): the build named tools — its module, extra search dirs, out name, flags
 
 ## Workflow
 

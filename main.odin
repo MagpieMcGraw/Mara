@@ -218,7 +218,7 @@ path_word_at :: proc(s: string) -> string {
 //   1. <compiler_dir>/code/           — stdlib loose .mara files
 //   2. <compiler_dir>/code/*/         — binding subfolders (SDL/, Open_GL/, ...)
 //   3. <search_dir>                   — user project (overrides on conflict)
-discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[string][dynamic]^Source_File {
+discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs: []string = nil) -> map[string][dynamic]^Source_File {
     result: map[string][dynamic]^Source_File
 
     scan_dir :: proc(dir: string, out: ^map[string][dynamic]^Source_File) {
@@ -245,9 +245,11 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
         for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &result) }
     }
 
-    // User project files shadow stdlib bare names on conflict.
+    // User project files shadow stdlib bare names on conflict — the
+    // project's folder, and the folders its build.mara names (build_file.odin).
     user: map[string][dynamic]^Source_File
     scan_dir(search_dir, &user)
+    for dir in extra_dirs { scan_dir(dir, &user) }
     for name, files in user { result[name] = files }
 
     return result
@@ -1005,9 +1007,14 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
 // say — `command` names it there (build, serve, view).
 module_here :: proc(command: string, dir: string) -> (name: string, problem: string) {
     folder := filepath.base(dir)
+    // (A build.mara's build: the one named as the folder, or its only one.
+    // build.mara itself, `module build`, is no module of the project's.)
+    specs, has_build, _ := build_file_read(dir)
+    if spec, picked, _ := build_pick(specs[:], "", folder, command); picked { return spec.module, "" }
     names: [dynamic]string
     for entry in list_dir(dir) {
         if entry.dir || !strings.has_suffix(entry.name, ".mara") { continue }
+        if has_build && entry.name == "build.mara" { continue }
         path, _ := filepath.join({dir, entry.name})
         m := file_module(path)
         if m == "" { continue }
@@ -1060,7 +1067,7 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
 // ask` on the pipe name (view.odin). One open on the module here already:
 // that one brought to the front ("-raise"), not another opened.
 run_view :: proc(args: CLI_Args) {
-    all_files := discover_all_files(args.compiler_dir, ".")
+    all_files := discover_all_files(args.compiler_dir, ".", args.search_dirs)
     if args.pkg_name not_in all_files {
         fmt.print(module_missing(all_files, args.pkg_name))
         os.exit(1)
@@ -1169,6 +1176,12 @@ CLI_Args :: struct {
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
 
+    // build.mara here (build_file.odin): the folders searched for modules
+    // beside the project's — its build's, or every build's for the tools —
+    // and the program's name ("": the module's).
+    search_dirs:  []string,
+    out:          string,
+
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
     // Runs the front half of the pipeline and stops after the check.
     ask:          bool,
@@ -1207,7 +1220,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp"
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1527,6 +1540,7 @@ parse_args :: proc() -> CLI_Args {
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = module_or_folder(cwd)
+        if !build_dirs_here(&args, cwd) { return args }
         args.ok = true
         return args
     }
@@ -1538,6 +1552,8 @@ parse_args :: proc() -> CLI_Args {
             os.exit(0)
         }
         args.lsp = true
+        cwd, _ := os.get_working_directory(context.allocator)
+        if !build_dirs_here(&args, cwd) { return args }
         args.ok = true
         return args
     }
@@ -1580,6 +1596,7 @@ parse_args :: proc() -> CLI_Args {
         args.docs_words = rest
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = module_or_folder(cwd)
+        if !build_dirs_here(&args, cwd) { return args }
         args.ok = true
         return args
     }
@@ -1595,20 +1612,58 @@ parse_args :: proc() -> CLI_Args {
     args.serve = subcmd == "serve"
     args.view = subcmd == "view"
 
-    if len(positional) >= 3 {
+    // (A build build.mara here declares, named or the one meant: its module,
+    // its folders, its program's name and how it's made — flags written here
+    // added to its own.)
+    cwd, _ := os.get_working_directory(context.allocator)
+    specs, _, build_problem := build_file_read(cwd)
+    if build_problem != "" {
+        fmt.println(build_problem)
+        return args
+    }
+    spec, picked, pick_problem := build_pick(specs[:], positional[2] if len(positional) >= 3 else "", filepath.base(cwd), subcmd)
+    if pick_problem != "" {
+        fmt.println(pick_problem)
+        return args
+    }
+    if picked {
+        args.pkg_name, args.search_dirs, args.out = spec.module, spec.dirs[:], spec.out
+        args.release ||= spec.release
+        args.llvm ||= spec.llvm
+    } else if len(positional) >= 3 {
         args.pkg_name = positional[2]
+        args.search_dirs = build_all_dirs(specs[:])
     } else {
         // (None named: the one here — module_here.)
-        cwd, _ := os.get_working_directory(context.allocator)
         name, problem := module_here(subcmd, cwd)
         if problem != "" {
             fmt.println(problem)
             return args
         }
         args.pkg_name = name
+        args.search_dirs = build_all_dirs(specs[:])
     }
     args.ok = true
     return args
+}
+
+// The folders build.mara in `dir` names, for a command that means no one
+// build (ask, docs, the language server): its module's build's, else every
+// build's. False: build.mara is wrong — said.
+build_dirs_here :: proc(args: ^CLI_Args, dir: string) -> bool {
+    specs, _, problem := build_file_read(dir)
+    if problem != "" {
+        fmt.println(problem)
+        return false
+    }
+    for s in specs {
+        if s.module == args.pkg_name && args.pkg_name != "" {
+            args.search_dirs = s.dirs[:]
+            return true
+        }
+    }
+    args.search_dirs = build_all_dirs(specs[:])
+    return true
 }
 
 // The module in directory `dir` for what can't be told one (ask, docs, the
@@ -1675,7 +1730,7 @@ main :: proc() {
     perf.quiet = args.ask || args.edit   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
 
-    all_files := discover_all_files(args.compiler_dir, ".")   // (the project: the current directory)
+    all_files := discover_all_files(args.compiler_dir, ".", args.search_dirs)   // (the project: the current directory, and its build's folders)
 
     // No module here, but `ask … in <module>` names one: it's the root (as
     // ask_no_module_here says).
@@ -1786,7 +1841,7 @@ main :: proc() {
     case pkg_shared:                                  out_ext = ".so"  // Linux / Mac
     case:                                             out_ext = NATIVE_EXE_EXT
     }
-    out_name := strings.concatenate({args.pkg_name, out_ext})
+    out_name := strings.concatenate({args.out if args.out != "" else args.pkg_name, out_ext})
 
     perf_timer_mark(&perf, "clang")
     if args.web {

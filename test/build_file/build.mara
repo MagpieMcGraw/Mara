@@ -1,0 +1,15 @@
+module build
+
+use mara.build
+
+// build.mara (code/build.mara): `mara build build_file` here builds the
+// module bf_game, its `use bf_engine` found in engine/, a folder build.mara
+// names. A second build beside it, not built here.
+
+build_file :: Build{
+	module_name = "bf_game"
+	dirs = ["engine"]
+	flags = [.llvm]
+}
+
+other :: Build{module_name = "bf_other", out = "other"}

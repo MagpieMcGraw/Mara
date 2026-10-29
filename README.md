@@ -55,6 +55,21 @@ cd C:\Code\Mara\Pounce
 mara build
 ```
 
+A folder can also have a `build.mara`, saying what to build and where else
+to look for modules:
+
+```
+module build
+
+use mara.build
+
+game :: Build{dirs = ["../engine"], flags = [.release]}
+tools :: Build{module_name = "game_tools", dirs = ["../engine"]}
+```
+
+`mara build` then builds the one named as the folder (or the only one), and
+`mara build tools` the other. Its fields are in `code/build.mara`.
+
 ## Project layout
 
 Mara std lib is in the code folder. We don't have much at the moment. We do have some partial SDL bindings.

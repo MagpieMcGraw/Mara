@@ -1,0 +1,44 @@
+module mara.build
+
+use mara.core
+
+// What `mara build` builds in a folder that has a build.mara: each constant
+// of type Build there is one build, named by the constant.
+//
+//     module build
+//     use mara.build
+//
+//     game :: Build{dirs = ["../engine"], flags = [.release]}
+//     tools :: Build{dirs = ["../engine"]}
+//
+// `mara build` builds the one named as the folder, or the only one; `mara
+// build tools` builds the one named tools. Flags written after it add to the
+// build's own (`mara build tools -release`). The folders it names are
+// searched by `mara ask`, `serve`, `view` and the language server too.
+//
+// The compiler reads the constants as they're written (text in quotes, a
+// list in square brackets): build.mara is never run. A field left out is
+// empty: "", no folders, no flags.
+
+// How a build is made, beside the usual: a Build's flags.
+Build_Flag :: union {
+	// Optimized by LLVM, as `-release` does.
+	release
+	// By LLVM, not the x86 backend, as `-llvm` does.
+	llvm
+}
+
+// One build: a module, where its modules are found, how it's made.
+Build :: struct {
+	// The module it builds, up to 64 bytes; "": the constant's name.
+	module_name: str64
+	// More folders searched for modules, as the project's own folder is: up
+	// to 8, each a path of up to 120 bytes, relative to build.mara's folder
+	// or whole.
+	dirs: [8][120]utf8
+	// The program's name, its extension left off, up to 64 bytes; "": the
+	// module's.
+	out: str64
+	// How it's made, beside the usual: `[.release]`, up to 4.
+	flags: [4]Build_Flag
+}

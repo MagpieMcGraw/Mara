@@ -1,0 +1,8 @@
+module bf_game
+
+use mara.core
+use bf_engine
+
+main :: fun() {
+	greet("game")
+}
