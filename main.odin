@@ -792,7 +792,7 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     return o_path, true
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -969,6 +969,20 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
             strings.write_byte(&b, '"')
         }
     }
+    // Its icon (build.mara's): the resources icon_resource made of it, in a
+    // .res file beside the program while it's linked. lld-link takes a .res
+    // as it is, the manifest's resource beside it.
+    res_path: string
+    when ODIN_OS == .Windows {
+        if len(icon) > 0 {
+            res_path = strings.concatenate({exe_name[:len(exe_name) - len(filepath.ext(exe_name))], ".res"}, context.temp_allocator)
+            if os.write_entire_file(res_path, icon) != nil {
+                fmt.printf("Couldn't write the program's icon to %s\n", res_path)
+                return false
+            }
+            strings.write_string(&b, ` "`); strings.write_string(&b, res_path); strings.write_byte(&b, '"')
+        }
+    }
     for path in lf.native_search {
         strings.write_string(&b, ` "-L`); strings.write_string(&b, path); strings.write_byte(&b, '"')
     }
@@ -993,6 +1007,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
 
     cmd_cstr := strings.clone_to_cstring(cmd)
     ret := libc.system(cmd_cstr)
+    if res_path != "" { os.remove(res_path) }
     if ret != 0 {
         fmt.printf("clang failed (exit code %d)\n", ret)
         return false
@@ -1212,6 +1227,7 @@ CLI_Args :: struct {
     // and the program's name ("": the module's).
     search_dirs:  []string,
     out:          string,
+    icon:         []u8,   // `mara build`'s: the program's icon, as Windows resources (icon_resource)
 
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
     // Runs the front half of the pipeline and stops after the check.
@@ -1661,6 +1677,16 @@ parse_args :: proc() -> CLI_Args {
         args.pkg_name, args.search_dirs, args.out = spec.module, spec.dirs[:], spec.out
         args.release ||= spec.release
         args.llvm ||= spec.llvm
+        // (Its icon: read now, a wrong one said before the build, not after.)
+        if spec.icon != "" && subcmd == "build" {
+            ico, err := os.read_entire_file_from_path(spec.icon, context.allocator)
+            problem := "it can't be read" if err != nil else ""
+            if problem == "" { args.icon, problem = icon_resource(ico) }
+            if problem != "" {
+                fmt.printf("build.mara's icon %s isn't an icon file: %s.\n", spec.icon, problem)
+                return args
+            }
+        }
     } else if len(positional) >= 3 {
         args.pkg_name = positional[2]
         args.search_dirs = build_all_dirs(specs[:])
@@ -1882,7 +1908,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug, args.profile_memory) { os.exit(1) }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug, args.profile_memory, args.icon) { os.exit(1) }
     }
 
     perf_timer_end(&perf)

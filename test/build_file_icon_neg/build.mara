@@ -1,0 +1,8 @@
+module build
+//@ expect-fail: isn't an icon file: it doesn't start as an icon file does
+
+// An icon that isn't an .ico file inside: said before the build.
+
+use mara.build
+
+build_file_icon_neg :: Build(){module_name = "bfi_neg", icon = "bad.ico"}

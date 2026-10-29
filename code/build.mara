@@ -8,7 +8,7 @@ use mara.core
 //     module build
 //     use mara.build
 //
-//     game :: Build(){dirs = ["../engine"], release = true}
+//     game :: Build(){dirs = ["../engine"], icon = "game.ico", release = true}
 //     tools :: Build(){dirs = ["../engine"]}
 //
 // `Build()` is a build with every field its default; the braces after it
@@ -26,12 +26,16 @@ Build :: struct {
 	// The module it builds, up to 64 bytes; "": the constant's name.
 	module_name: str64 = ""
 	// More folders searched for modules, as the project's own folder is: up
-	// to 8, each a path of up to 96 bytes, relative to build.mara's folder
+	// to 6, each a path of up to 96 bytes, relative to build.mara's folder
 	// or whole.
-	dirs: [8][96]utf8
+	dirs: [6][96]utf8
 	// The program's name, its extension left off, up to 64 bytes; "": the
 	// module's.
 	out: str64 = ""
+	// The program's icon on Windows, an .ico file's path of up to 96 bytes,
+	// relative to build.mara's folder or whole; none: Windows' plain one.
+	// Explorer shows it, and SDL gives it to the program's windows.
+	icon: [96]utf8
 	// Built optimized by LLVM, as `-release` does.
 	release: bool = false
 	// Built by LLVM, not the x86 backend, as `-llvm` does.

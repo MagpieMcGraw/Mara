@@ -11,7 +11,7 @@ import "core:strings"
 //     module build
 //     use mara.build
 //
-//     game :: Build(){dirs = ["../engine"], release = true}
+//     game :: Build(){dirs = ["../engine"], icon = "game.ico", release = true}
 //
 // (`Build()` its defaults, then the fields written: Mara's construct and
 // override. `Build{...}`, a literal, is read the same.) Read as written, not
@@ -25,6 +25,7 @@ Build_Spec :: struct {
     module:  string,            // what it builds: its module_name, else its name
     dirs:    [dynamic]string,   // more folders searched for modules (relative: to build.mara's folder)
     out:     string,            // the program's name, its extension left off; "": the module's
+    icon:    string,            // its icon on Windows, an .ico file (the path as dirs'); "": none
     release: bool,
     llvm:    bool,
 }
@@ -32,10 +33,10 @@ Build_Spec :: struct {
 // What Build's fields hold (code/build.mara): their rooms, checked here as
 // the checker would.
 BUILD_NAME_ROOM :: 64    // module_name, out: str64
-BUILD_DIRS_MAX  :: 8     // dirs: [8][96]utf8 (a whole Build under the stack's 1 KB)
-BUILD_DIR_ROOM  :: 96
+BUILD_DIRS_MAX  :: 6     // dirs: [6][96]utf8, icon: [96]utf8 (a whole Build under the stack's 1 KB)
+BUILD_PATH_ROOM :: 96
 
-BUILD_FIELDS :: "module_name, dirs, out, release, llvm"
+BUILD_FIELDS :: "module_name, dirs, out, icon, release, llvm"
 
 // The builds the build.mara in `dir` declares. found: there is one, `module
 // build`. problem: what's wrong in it, said where.
@@ -125,8 +126,8 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
                     for toks[i].kind == .Newline || toks[i].kind == .Comma { i += 1 }
                     d := toks[i]
                     if d.kind == .Right_Bracket { i += 1; break }
-                    s, ok := text(d, BUILD_DIR_ROOM)
-                    if !ok { return specs, found, say(path, source, d, "each of `dirs` is a folder's path of up to %d bytes, in quotes.", BUILD_DIR_ROOM) }
+                    s, ok := text(d, BUILD_PATH_ROOM)
+                    if !ok { return specs, found, say(path, source, d, "each of `dirs` is a folder's path of up to %d bytes, in quotes.", BUILD_PATH_ROOM) }
                     if len(spec.dirs) == BUILD_DIRS_MAX { return specs, found, say(path, source, d, "`dirs` has room for %d folders.", BUILD_DIRS_MAX) }
                     full := s
                     if !filepath.is_abs(s) { full, _ = filepath.join({dir, s}) }
@@ -134,6 +135,17 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
                     append(&spec.dirs, full)
                     i += 1
                 }
+            case "icon":
+                s, ok := text(v, BUILD_PATH_ROOM)
+                if !ok { return specs, found, say(path, source, v, "`icon` is an .ico file's path of up to %d bytes, in quotes.", BUILD_PATH_ROOM) }
+                if s != "" {
+                    if !strings.equal_fold(filepath.ext(s), ".ico") { return specs, found, say(path, source, v, "`icon` is an .ico file: not `%s`.", s) }
+                    full := s
+                    if !filepath.is_abs(s) { full, _ = filepath.join({dir, s}) }
+                    if !os.is_file(full) { return specs, found, say(path, source, v, "no file `%s` (from build.mara's folder).", s) }
+                    spec.icon = full
+                }
+                i += 1
             case:
                 return specs, found, say(path, source, f, "Build has no field `%s`: its fields are %s.", f.text, BUILD_FIELDS)
             }
@@ -161,6 +173,68 @@ build_pick :: proc(specs: []Build_Spec, name, folder, command: string) -> (spec:
     for s in specs { fmt.sbprintf(&b, "  %s\n", s.name) }
     fmt.sbprintf(&b, "Name it: mara %s <build>", command)
     return {}, false, strings.to_string(b)
+}
+
+// The Windows resources that make an .ico file a program's icon, as a .res
+// file (the linker takes it as it is): each of the icon's images an RT_ICON,
+// numbered from 1, and an RT_GROUP_ICON, 1, that lists them. A program's
+// first group icon is the one Explorer shows, and the one SDL gives its
+// windows. problem: why `ico` isn't an icon file.
+icon_resource :: proc(ico: []u8) -> (res: []u8, problem: string) {
+    get16 :: proc(b: []u8, at: int) -> int { return int(b[at]) | int(b[at + 1]) << 8 }
+    get32 :: proc(b: []u8, at: int) -> int { return get16(b, at) | get16(b, at + 2) << 16 }
+    put16 :: proc(out: ^[dynamic]u8, v: int) { append(out, u8(v), u8(v >> 8)) }
+    put32 :: proc(out: ^[dynamic]u8, v: int) { put16(out, v); put16(out, v >> 16) }
+    // One resource: its header (its type and name numbers, 32 bytes), its
+    // data, then zeros to a multiple of 4.
+    resource :: proc(out: ^[dynamic]u8, type, name, flags, language: int, data: []u8) {
+        put32(out, len(data)); put32(out, 32)
+        put16(out, 0xFFFF); put16(out, type)
+        put16(out, 0xFFFF); put16(out, name)
+        put32(out, 0)                  // data version
+        put16(out, flags); put16(out, language)
+        put32(out, 0); put32(out, 0)   // version, characteristics
+        append(out, ..data)
+        for len(out) % 4 != 0 { append(out, 0) }
+    }
+    RT_ICON       :: 3
+    RT_GROUP_ICON :: 14
+    EN_US         :: 0x0409   // (rc's language when none is said)
+
+    // The .ico: 0, 1 (an icon), how many images; then 16 bytes on each —
+    // width, height, colours, 0, planes, bits per pixel, size, where.
+    if len(ico) < 6 || get16(ico, 0) != 0 || get16(ico, 2) != 1 { return nil, "it doesn't start as an icon file does" }
+    n := get16(ico, 4)
+    if n == 0 { return nil, "it holds no images" }
+    if len(ico) < 6 + 16 * n { return nil, "it ends inside its list of images" }
+
+    out := make([dynamic]u8)
+    resource(&out, 0, 0, 0, 0, nil)   // (a .res file starts with an empty one)
+    group := make([dynamic]u8, context.temp_allocator)
+    put16(&group, 0); put16(&group, 1); put16(&group, n)
+    for k in 0..<n {
+        e := 6 + 16 * k
+        size, at := get32(ico, e + 8), get32(ico, e + 12)
+        if size == 0 || at + size > len(ico) { return nil, fmt.tprintf("its image %d is outside the file", k + 1) }
+        image := ico[at:][:size]
+        resource(&out, RT_ICON, k + 1, 0x1010, EN_US, image)   // (moveable, discardable)
+        // Its line in the group, as the .ico's, with its number for where:
+        // planes and bits read from the image where the .ico leaves them 0
+        // (Windows picks the image to show by them).
+        planes, bits := get16(ico, e + 4), get16(ico, e + 6)
+        if planes == 0 || bits == 0 {
+            if size >= 16 && get32(image, 0) == 40 {   // (a bitmap's header)
+                planes, bits = get16(image, 12), get16(image, 14)
+            } else {                                  // (a PNG's: 32 bits)
+                planes, bits = 1, 32
+            }
+        }
+        append(&group, ..ico[e:][:4])
+        put16(&group, planes); put16(&group, bits)
+        put32(&group, size); put16(&group, k + 1)
+    }
+    resource(&out, RT_GROUP_ICON, 1, 0x1030, EN_US, group[:])   // (moveable, pure, discardable)
+    return out[:], ""
 }
 
 // Every folder any build here searches: where the tools (ask, serve, view)
