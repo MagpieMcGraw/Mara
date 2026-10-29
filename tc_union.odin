@@ -18,11 +18,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
     name := tc_name(k, def)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
-        if owner != nil {
-            tc_unsupported(k, def, "a generic definition in a body")
-            return
-        }
-        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg}
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg, owner = owner}
         return
     }
     span := tree_span(t, def)
@@ -43,10 +39,6 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
     has_data := false
     for v in variants { if v.fields { has_data = true } }
     flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
-    if has_data && owner != nil {
-        tc_unsupported(k, def, "a union with fields, in a body,")
-        return
-    }
     if !has_data {
         if flat in k.table.enums {
             tc_error(k, span, TYPE_ENUM_ALREADY_DEFINED, name)
@@ -78,9 +70,9 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
         tc_error(k, span, TYPE_UNION_ALREADY_DEFINED, name)
         return
     }
-    ut := tc_make_union(k, k.pkg, name, span, h, variants[:])
+    ut := tc_make_union(k, k.pkg, name, span, h, variants[:], owner = owner)
     ut.tag_enum.span.at = t.main[node]   // (its tag's enum: declared by its `union`)
-    register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name)
+    if owner == nil { register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name) }   // (a body's: found in it alone, tc_sees_enum)
     tc_bound_set(k, k.t.main[def], ut)
     // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
     // enum's variant is — declared where the union is, by its `union`; unless
@@ -161,15 +153,22 @@ tc_union_same_tags :: proc(k: ^TC, variants: []TC_Variant) {
 
 // A union's type, made: `name` in module `pkg` (an instance's, its mangled
 // name), its tag an enum of its own (`Name_Tag`), each variant a struct
-// (tc_variant_struct). (`subst`: an instance's params, bound.)
+// (tc_variant_struct). (`subst`: an instance's params, bound. `owner`: the
+// body defining it — named for it, as a nested struct is, and seen only
+// there.)
 tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header, variants: []TC_Variant,
-                      subst: TC_Bindings = nil) -> ^Type_Union {
+                      subst: TC_Bindings = nil, owner: ^Type_Scope = nil) -> ^Type_Union {
+    // (Its flat names' prefix: its module's, a body's owner's.)
+    flat :: proc(pkg: string, owner: ^Type_Scope, name: string) -> string {
+        return make_flat_name(pkg, name) if owner == nil else strings.concatenate({owner.name, "_", name})
+    }
     ut := new(Type_Union)
-    ut.name, ut.source_name, ut.home_package, ut.span = make_flat_name(pkg, name), name, pkg, span
+    ut.name, ut.source_name, ut.home_package, ut.span = flat(pkg, owner, name), name, pkg, span
     ut.tag_type, ut.min_size = h.tag_type, h.min_size
     tag_et := new(Type_Enum)
     tag_et.source_name = strings.concatenate({name, "_Tag"})
-    tag_et.name = make_flat_name(pkg, tag_et.source_name)
+    tag_et.name = flat(pkg, owner, tag_et.source_name)
+    tag_et.owner = owner
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     tag_et.zero_name = tc_zero_name(variants)
@@ -178,7 +177,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     for v in variants {
         append(&ut.variants, v.name)
         ut.tag_map[v.name] = v.tag
-        vst := tc_variant_struct(k, pkg, name, v, subst)
+        vst := tc_variant_struct(k, pkg, name, v, subst, owner)
         vst.variant_of = ut
         ut.variant_structs[v.name] = vst
         tc_bound_set(k, vst.decl, vst)   // (a variant named, `Shape.Rect`: its struct)
@@ -217,15 +216,15 @@ tc_variant :: proc(k: ^TC, vn: Tree_Id, tag: int) -> TC_Variant {
 // struct's: registered as one — its params, its declarations its fields
 // (both once every name is known: tc_union_resolve) — run as its constructor
 // when it is built. (`subst`: a generic union's instance's bindings.)
-tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, subst: TC_Bindings = nil) -> ^Type_Scope {
+tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, subst: TC_Bindings = nil, owner: ^Type_Scope = nil) -> ^Type_Scope {
     vst := new(Type_Scope)
     vst.source_name = strings.concatenate({union_name, "_", v.name})
-    vst.name = make_flat_name(pkg, vst.source_name)
+    vst.name = make_flat_name(pkg, vst.source_name) if owner == nil else strings.concatenate({owner.name, "_", vst.source_name})
     vst.home_package, vst.kind, vst.body_span = pkg, .Struct, v.span
     vst.decl = v.span.at
     k.table.structs[vst.name] = vst
     if v.fields {
-        vst.node, vst.parent_scope = v.body, k.module_scopes[pkg] or_else nil
+        vst.node, vst.parent_scope = v.body, owner if owner != nil else k.module_scopes[pkg] or_else nil
         k.scope_of[vst] = len(k.scopes)
         append(&k.variant_scopes, len(k.scopes))
         append(&k.scopes, new_clone(TC_Scope{ts = vst, def = v.node, node = v.body, subst = subst, synthetic = subst != nil}))
@@ -392,6 +391,8 @@ tc_union_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
 tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
+    tmpl := tmpl
+    tmpl.owner = tc_template_owner(k, tmpl)
     h := tc_union_header(k, tmpl.node)
     targs := make([dynamic]Type, context.temp_allocator)
     for a in tree_list(t, t.a[n]) { append(&targs, tc_type(k, a, span)) }
@@ -399,19 +400,24 @@ tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> 
         tc_error(k, span, TYPE_EXPECTS_TYPE_ARGUMENT, name, len(h.params), len(targs))
         return Type_Error{}
     }
+    // (A body's: cached by its owner's name too, made named as a body's
+    // union is — tc_make_union.)
     mangled := mangle_generic_name(name, targs[:])
-    if ut, made := k.table.mono_union_cache[mangled]; made { return ut }
+    key := tc_instance_name(k, tmpl, name, targs[:])
+    if ut, made := k.table.mono_union_cache[key]; made { return ut }
     subst := make(TC_Bindings)
     for p, i in h.params { subst[p] = targs[i] }
     saved_pkg := k.pkg
     k.pkg = tmpl.pkg
     defer k.pkg = saved_pkg
+    outer := tc_type_params_bind(k, tc_owner_bindings(k, tmpl.owner))   // (as a fun's, tc_instantiate_fun)
+    defer tc_type_params_restore(k, outer)
     // (Its variants' bodies are its template's, checked again with its params
     // bound: their nodes its own — tc_sid.)
     saved_inst := tc_instance_begin(k, tmpl, nil, subst)
     defer tc_instance_end(k, saved_inst)
-    ut := tc_make_union(k, tmpl.pkg, mangled, tree_span(t, tmpl.def), h, tc_union_variants(k, tmpl.node)[:], subst)
-    k.table.mono_union_cache[mangled] = ut
+    ut := tc_make_union(k, tmpl.pkg, mangled, tree_span(t, tmpl.def), h, tc_union_variants(k, tmpl.node)[:], subst, tmpl.owner)
+    k.table.mono_union_cache[key] = ut
     tc_bound_set(k, ut.span.at, ut)   // (its template's name, in it: it)
     tc_union_resolve(k, ut, h.pad, span)
     return ut

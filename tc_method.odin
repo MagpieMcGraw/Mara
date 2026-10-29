@@ -55,7 +55,9 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
                 } else if tmpl, is_template := tc_template(k, mref); mref.kind == .Fun && is_template && k.t.tag[tmpl.node] == .Fun_Def {
-                    return tc_generic_call(k, n, name, tmpl, args)   // (`gl.BufferData(…, data)`: a generic fun a module has)
+                    // (`gl.BufferData(…, data)`: a generic fun a module has;
+                    // `Box.add(&b, 1)`, a struct's, made for the struct named.)
+                    return tc_generic_call(k, n, name, tmpl, args, owner = sd_type_scope(qsd) if tmpl.owner != nil else nil)
                 } else if et := tc_held_enum(mt); has && mref.kind == .Type && et != nil {
                     return tc_enum_number(k, n, name, et, args)   // (`gl.GL_Tex_Param(n)`)
                 } else if has && mref.kind == .Type {
@@ -122,6 +124,12 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 qual, resolved = fn, true
                 k.annot.call_names[tc_sid(k, n)] = fn.name
                 args, failed = tc_self_args(k, n, fn, st, qt, arg, args)
+            } else if methods := k.generic_methods[sd_type_scope(st)]; name in methods {
+                // (A generic one, made for the value's struct: the value
+                // first when it takes the struct.)
+                owner := sd_type_scope(st)
+                tmpl := k.templates[methods[name]]
+                return tc_generic_call(k, n, name, tmpl, tc_with_receiver(arg, args) if tc_template_takes_self(k, tmpl, owner) else args, owner = owner)
             }
         }
         // (`m.text()`, `e.text()`: an enum's or an err's name; `e.where()`,

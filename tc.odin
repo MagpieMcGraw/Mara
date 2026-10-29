@@ -57,6 +57,7 @@ TC :: struct {
     instance_count: u64,
     infer_at:      Span,              // the argument a generic's type param is bound from (tc_generic_call)
     templates:     map[Token_Id]TC_Template, // the generic definitions (a union's too), by the token that declares them
+    generic_methods: map[^Type_Scope]map[string]Token_Id,   // the generic funs each struct defines, by name
     consts:        map[string]^TC_Const,     // the constants, by their symbols (a module's flat name, a body's owner-named)
     scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
     const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
@@ -504,8 +505,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     for mangled in k.instance_order {
         ft := k.instances[mangled]
         sc := k.scopes[k.scope_of[ft]]
-        key := make_flat_name(ft.home_package, mangled)
-        ft.name, ft.body_span = key, tree_span(k.t, sc.def)
+        key := ft.name   // (its module's prefix in it: tc_instantiate_fun)
+        ft.body_span = tree_span(k.t, sc.def)
         ft.origin = Origin_Source{}
         checked.functions[key] = ft
     }

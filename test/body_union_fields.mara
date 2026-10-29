@@ -1,0 +1,19 @@
+module body_union_fields
+//@ expect-output: Dot {}
+//@ expect-output: Rect { w: 3 }
+
+// A union whose variants hold fields, defined in a body as an enum is
+// (body_types): its variants' constructors built there.
+
+use mara.core
+
+main :: fun() {
+	Shape :: union {
+		Rect { w: i64 }
+		Dot
+	}
+	s : Shape = .Dot
+	print(s)
+	s = Rect{w = 3}
+	print(s)
+}

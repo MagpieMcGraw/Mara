@@ -17,6 +17,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     owner := sc.ts
     owner_i := k.scope_of[owner]
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
+    unions := make([dynamic]Tree_Id, context.temp_allocator)
     for s in tc_live(k, scope_view(t, sc.node).body) {
         if t.tag[s] != .Define { continue }
         value := Tree_Id(t.b[s])
@@ -28,6 +29,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             #partial switch t.tag[value] {
             case .Union_Def, .Error_Def:
                 tc_register_union(k, s, value, owner)
+                append(&unions, s)
                 continue
             case .Alias_Def, .Distinct_Def:
                 tc_register_distinct(k, s, value, owner)
@@ -48,6 +50,8 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     }
     // (A distinct type's base, once every name here is declared.)
     for s in distincts { tc_resolve_distinct(k, s, Tree_Id(t.b[s])) }
+    // (A union's variants' fields, as a module's: tc_resolve_union.)
+    for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }
 }
 
@@ -58,7 +62,14 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
-        tc_unsupported(k, def, "a generic definition in a body")
+        // (A template, as a module's: checked as each instance, named for its
+        // owner — tc_instance_name.)
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(t, node), pkg = k.pkg, owner = owner}
+        // (A struct's: found by a value's method call, as its plain funs are.)
+        if owner.kind == .Struct && !is_struct {
+            if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
+            (&k.generic_methods[owner])[name] = t.main[def]
+        }
         return
     }
     if is_struct && len(v.returns) > 0 && len(v.params) == 0 {

@@ -13,6 +13,52 @@ TC_Template :: struct {
     def, node: Tree_Id,
     lo:        Tree_Id,   // its body's lowest node (its nodes: [lo, node])
     pkg:       string,
+    owner:     ^Type_Scope,   // a body's: the fun or struct defining it (its last instance, a generic one's; at a call, the call's)
+}
+
+// The body a template in a body is made for at a call: the one the call is
+// in (a generic owner's instance, its own), else the one that registered it.
+// nil for a module's.
+tc_template_owner :: proc(k: ^TC, tmpl: TC_Template) -> ^Type_Scope {
+    if tmpl.owner == nil { return nil }
+    for b := k.body; b != nil; b = b.parent_scope {
+        if b.node == tmpl.owner.node { return b }
+    }
+    return tmpl.owner
+}
+
+// A generic's instance name: its name and the types it's made at. A body's
+// is named for its owner too (`main_twice__i64`), as its plain funs are.
+tc_instance_name :: proc(k: ^TC, tmpl: TC_Template, name: string, type_args: []Type) -> string {
+    if tmpl.owner != nil {
+        return mangle_generic_name(fmt.tprintf("%s_%s", tmpl.owner.name, tc_name(k, tmpl.def)), type_args)
+    }
+    return mangle_generic_name(name, type_args)
+}
+
+// What a body's generic sees its owners' type params bound to: each
+// generic instance's around it, the nearest's last.
+tc_owner_bindings :: proc(k: ^TC, owner: ^Type_Scope) -> TC_Bindings {
+    chain := make([dynamic]^Type_Scope, context.temp_allocator)
+    for b := owner; b != nil && !b.is_module; b = b.parent_scope { append(&chain, b) }
+    out := make(TC_Bindings, allocator = context.temp_allocator)
+    #reverse for b in chain {
+        i, known := k.scope_of[b]
+        if !known { continue }
+        for tok, bound in k.scopes[i].subst { out[tok] = bound }
+    }
+    return out
+}
+
+// Whether a struct's generic method takes the struct (or a pointer to it)
+// first: a value's method call passes the value.
+tc_template_takes_self :: proc(k: ^TC, tmpl: TC_Template, st: ^Type_Scope) -> bool {
+    t := k.t
+    v := scope_view(t, tmpl.node)
+    if len(v.params) == 0 { return false }
+    pt := params_view(t, v.params[0]).type_
+    if pt != 0 && t.tag[pt] == .Type_Pointer { pt = Tree_Id(t.a[pt]) }
+    return pt != 0 && k.rs.refs[pt].decl == st.decl
 }
 
 tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
@@ -159,7 +205,16 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
             for r, i in tree_list(t, t.b[n]) { if i < len(ft.return_types) { tc_infer(k, subst, r, ft.return_types[i]) } }
         }
     case .Type_Generic:
-        tc_unsupported(k, n, "a generic instance's type param inferred")
+        // (Its own type params in it: not inferred yet. Another's — a generic
+        // struct's method taking `^Holder(T)` — bound already.)
+        for a in tree_list(t, t.a[n]) {
+            own := tc_type_has_dollar(k, a)
+            for p in subst { own ||= tc_type_uses(k, a, p) }
+            if own {
+                tc_unsupported(k, n, "a generic instance's type param inferred")
+                break
+            }
+        }
     }
     // (An untyped argument binds its settled type, as a declaration would; a
     // binding no use has given a width yet, its default — from here on.)
@@ -178,9 +233,12 @@ tc_infer_size :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, size: int) {
 
 // A call of a generic fun: each argument checked, the type params bound from
 // them, the instance made once per bindings, then the call.
-tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id) -> Type {
+tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id, owner: ^Type_Scope = nil) -> Type {
     tr := k.t
     span := tree_span(tr, n)
+    // (A body's: the body it's made for — `owner`, a receiver's struct.)
+    tmpl := tmpl
+    tmpl.owner = owner if owner != nil else tc_template_owner(k, tmpl)
     if tr.tag[tmpl.node] != .Fun_Def {
         tc_unsupported(k, n, "a generic struct's construction")
         return Type_Error{}
@@ -280,7 +338,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }
-    mangled := mangle_generic_name(name, type_args[:])
+    mangled := tc_instance_name(k, tmpl, name, type_args[:])
     ft := k.instances[mangled] or_else nil
     if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
     if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
@@ -351,10 +409,17 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     ft.kind = .Fun
     ft.home_package = tmpl.pkg
     ft.node = tmpl.node
-    ft.name = make_flat_name(tmpl.pkg, mangled)   // (no source name: named by its flat one)
+    // (No source name: named by its flat one. A body's is its owner's already.)
+    owner := tmpl.owner
+    ft.name = mangled if owner != nil else make_flat_name(tmpl.pkg, mangled)
     saved_pkg := k.pkg
     k.pkg = tmpl.pkg
     defer k.pkg = saved_pkg
+    // (A body's sees its owners' type params — a generic struct's T, its
+    // method made from outside it: bound as that instance binds them, and
+    // given back after.)
+    outer := tc_type_params_bind(k, tc_owner_bindings(k, owner))
+    defer tc_type_params_restore(k, outer)
     // (Its body's nodes its own: tc_sid.)
     saved_inst := tc_instance_begin(k, tmpl, ft, subst)
     defer tc_instance_end(k, saved_inst)
@@ -383,7 +448,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     tc_bound_set(k, ft.decl, ft)   // (its template's name, in it: it)
     k.instances[mangled] = ft
     append(&k.instance_order, mangled)
-    ft.parent_scope = k.module_scopes[tmpl.pkg] or_else nil
+    ft.parent_scope = owner if owner != nil else k.module_scopes[tmpl.pkg] or_else nil
     k.scope_of[ft] = len(k.scopes)
     sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true})
     append(&k.scopes, sc)
@@ -466,6 +531,8 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
 tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
+    tmpl := tmpl
+    tmpl.owner = tc_template_owner(k, tmpl)
     if t.tag[tmpl.node] != .Struct_Def {
         tc_unsupported(k, n, "a generic fun named as a type")
         return Type_Error{}
@@ -527,7 +594,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
         tc_error(k, span, TYPE_EXPECTS_TYPE_ARGUMENT, name, len(gps), len(args))
         return Type_Error{}
     }
-    mangled := mangle_generic_name(name, targs[:])
+    mangled := tc_instance_name(k, tmpl, name, targs[:])
     if st, made := k.table.mono_cache[mangled]; made { return st }
     // (A shape's argument has what its constraint has: checked once.)
     for gp, i in gps {
@@ -550,11 +617,14 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, tar
     v := scope_view(tr, tmpl.node)
     span := tree_span(tr, tmpl.def)
     st := new(Type_Scope)
+    // (A body's: named for its owner, as its plain structs are; said as written.)
+    owner := tmpl.owner
     st.name, st.source_name, st.home_package = make_flat_name(tmpl.pkg, mangled), mangled, tmpl.pkg
+    if owner != nil { st.name, st.source_name = mangled, mangle_generic_name(tc_name(k, tmpl.def), targs) }
     st.kind, st.node = .Struct, tmpl.node
     st.generic_base = tc_name(k, tmpl.def)
     append(&st.generic_args, ..targs)
-    st.parent_scope = k.module_scopes[tmpl.pkg] or_else nil
+    st.parent_scope = owner if owner != nil else k.module_scopes[tmpl.pkg] or_else nil
     st.has_parens = build_tokens[tr.main[tmpl.node] + 1].kind == .Left_Paren
     st.is_packed = v.packed != 0
     k.table.mono_cache[mangled] = st
@@ -564,6 +634,8 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, tar
     saved_pkg := k.pkg
     k.pkg = tmpl.pkg
     defer k.pkg = saved_pkg
+    outer := tc_type_params_bind(k, tc_owner_bindings(k, owner))   // (a body's: as a fun's, tc_instantiate_fun)
+    defer tc_type_params_restore(k, outer)
     saved_inst := tc_instance_begin(k, tmpl, st, subst)
     defer tc_instance_end(k, saved_inst)
     tc_bound_set(k, st.decl, st)   // (its template's name, in it: it)

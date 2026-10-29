@@ -137,7 +137,7 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
 // (What runs nothing — a variable, which no function sees, an import, a
 // type, a dispatch group, a foreign fun, a constant nothing uses — is no
 // code.)
-lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl) {
+lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scope = nil) {
     b := k.gb
     if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
     if c, built := b.prog.consts[d.id]; built {
@@ -148,7 +148,7 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl) {
     case .Scope:
         // (Each scope the checker made of it — one; a generic's, each
         // instance's — lowered and put in place.)
-        list := lw_decl_scopes(k, d)
+        list := lw_decl_scopes(k, d, owner)
         if len(list) == 0 {
             if d.generic { return }   // a generic nothing instantiates: syntax only
             graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
@@ -161,7 +161,9 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl) {
 
 // The scopes a definition is — one; a generic's, each instance's (by name:
 // ids stable) — as the checker recorded them by its node (Annotations.decls).
-lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl) -> []^Type_Scope {
+// A body's generic (`owner` its body's scope): the instances made for that
+// body, not another instance of a generic owner's.
+lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl, owner: ^Type_Scope = nil) -> []^Type_Scope {
     a := k.annot
     out := make([dynamic]^Type_Scope, context.temp_allocator)
     if ts := a.decls[d.node] or_else nil; ts != nil { append(&out, ts) }   // (a generic's too: the compiler's Program, one scope)
@@ -169,7 +171,9 @@ lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl) -> []^Type_Scope {
     _, n := annot_split(d.node)
     for _, i in a.instances {   // (its body as each instance checked it: a generic's, a generic union's variant's)
         ts := a.decls[annot_key(Instance_Id(i), n)] or_else nil
-        if ts != nil && !ts.is_module && !slice.contains(out[:], ts) { append(&out, ts) }
+        if ts == nil || ts.is_module || slice.contains(out[:], ts) { continue }
+        if owner != nil && ts.parent_scope != owner { continue }
+        append(&out, ts)
     }
     slice.sort_by(out[:], proc(x, y: ^Type_Scope) -> bool { return ask_type_name(x) < ask_type_name(y) })
     return out[:]
@@ -183,7 +187,7 @@ lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, 
     c, built := b.prog.bodies[ts]
     if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
     graph_place_scope(b.prog, c, ts, name, written)
-    for d in c.defs { lw_place_decl(k, codes, d) }
+    for d in c.defs { lw_place_decl(k, codes, d, ts) }
 }
 
 // The declaration of the variable a name refers to: in the code being built,
@@ -422,7 +426,13 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
     stmts := tc_live(k, stmts)
     for s in stmts {
         if t.tag[s] == .Define {
-            if top { graph_build_def(b, tc_graph_decl(k, s)) }
+            if top {
+                graph_build_def(b, tc_graph_decl(k, s))
+                // (A union's variants with bodies: placed as a module's are.)
+                variants := make([dynamic]Graph_Decl, context.temp_allocator)
+                tc_variant_graph_decls(k, s, &variants)
+                for d in variants { graph_build_def(b, d) }
+            }
             continue
         }
         span := tree_span(t, s)

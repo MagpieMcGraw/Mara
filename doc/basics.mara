@@ -94,7 +94,7 @@ example_use :: fun() {
 // `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
 // another is seen only there. A `$T` in a param's type makes the fun
-// generic: T is whatever type the call passes. A param `kind: fun(T) -> $K`
+// generic, wherever it's defined: T is whatever type the call passes. A param `kind: fun(T) -> $K`
 // takes any fun of that shape, K what it gives back (several results, in
 // parens: `fun(T) (i64, err)`). A size can be one too: `xs: [$N!]T` (or a
 // list's, `[$N]T`) binds N to the size passed, a constant
@@ -130,16 +130,14 @@ example_fun :: fun() {
 	print(count)                           // 2
 	print(count.sum(10))                   // 12: sum(count, 10)
 
+	first :: fun(xs: []$T) -> T {          // generic: T is the items' type
+		return xs[0]
+	}
+	last :: fun(xs: [$N!]$T) -> T {        // N: the array's size
+		return xs[N - 1]
+	}
 	print(first("xyz"), first([7, 8]))     // x 7
 	print(last([7, 8, 9]))                 // 9
-}
-
-first :: fun(xs: []$T) -> T {   // generic: T is the items' type
-	return xs[0]
-}
-
-last :: fun(xs: [$N!]$T) -> T {   // N: the array's size
-	return xs[N - 1]
 }
 
 // `return`: leave a function now, giving back what it returns.

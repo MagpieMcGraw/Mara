@@ -159,6 +159,8 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -
 // them, take them.
 tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Type) -> ^Type_Scope {
     tr := k.t
+    tmpl := tmpl
+    tmpl.owner = tc_template_owner(k, tmpl)
     v := scope_view(tr, tmpl.node)
     ptypes := make([dynamic]Tree_Id, context.temp_allocator)
     for g in v.params {
@@ -181,7 +183,7 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
     if arg_incompatible(p0, lt) || arg_incompatible(p1, rt) { return nil }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }
-    mangled := mangle_generic_name(name, type_args[:])
+    mangled := tc_instance_name(k, tmpl, name, type_args[:])
     ft := k.instances[mangled] or_else nil
     if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled) }
     if len(ft.params) != 2 || arg_incompatible(ft.params[0].type_, lt) || arg_incompatible(ft.params[1].type_, rt) { return nil }

@@ -1,0 +1,203 @@
+module nested_generics
+
+//@ expect-output: 6 3 4 3 6
+//@ expect-output: 5 3
+//@ expect-output: 8 2
+//@ expect-output: 2 20
+//@ expect-output: 3 3 1 7
+//@ expect-output: 3 8 0.5
+//@ expect-output: 6 1
+//@ expect-output: 4 3 0.5
+//@ expect-output: 3 0.75
+//@ expect-output: 1 15 100
+//@ expect-output: Line { len: 7 }
+//@ expect-output: 0.5
+//@ expect-output: 18 8 10 3
+
+// Generic definitions in a body behave as a module's: a fun's own generic
+// funs, a struct's generic methods, a generic struct or union defined in a
+// fun, a union with fields there. Each instance is named for its owner, so
+// two bodies' same-named generics are two.
+
+use mara.core
+
+MAX :: 4
+
+// A generic fun's own generic: it sees its owner's T and its own types.
+outer :: (x: $T) -> T {
+	Pair :: struct { a: i64, b: i64 }
+	plain :: (p: Pair) -> i64 { return p.a + p.b }
+	scale :: (y: $U, by: T) -> T { return by + by }
+	p : Pair = {1, 2}
+	return scale(plain(p), x) + scale(1, x)
+}
+
+// Two bodies' `helper`s: two funs.
+first :: () -> i64 {
+	helper :: (x: $T) -> i64 { return 1 }
+	return helper(5) + helper(2.0)
+}
+
+second :: () -> i64 {
+	helper :: (x: $T) -> i64 { return 10 }
+	return helper(5) + helper(2.0)
+}
+
+// Generic methods: through a value, a pointer, the type.
+Box :: struct {
+	v: i64
+	add :: (b: ^Box, x: $T) { b.v += 1 }
+	twice :: (x: $T) -> T { return x + x }
+}
+
+// A generic struct's generic methods: T its instance's.
+Holder :: struct($T: type) {
+	v: T
+	both :: (h: ^Holder(T), x: $U) -> T { return h.v + h.v }
+	pair :: (h: Holder(T), x: $U) -> U { return x + x }
+}
+
+// A generic struct defined in a fun, its name the module's too.
+Cell :: struct($T: type) { v: T }
+
+cells :: () -> i64 {
+	Cell :: struct($T: type) {
+		v: T
+		w: T
+		sum :: (c: Cell(T)) -> T { return c.v + c.w }
+	}
+	a : Cell(i64) = {v = 1, w = 2}
+	c : Cell(f64) = {v = 0.5, w = 0.25}
+	print("% %", a.sum(), c.sum())
+	return a.v
+}
+
+more_cells :: () -> i64 {
+	Cell :: struct($T: type) { v: T, extra: i64 }
+	a : Cell(i64) = {v = 10, extra = 5}
+	return a.v + a.extra
+}
+
+// A union with fields in a fun, its name the module's too.
+Shape :: union { Circle(r: i64) { rad := r } }
+
+shapes :: () -> i64 {
+	Shape :: union {
+		Dot
+		Line(n: i64) {
+			len := n
+			twice :: fun(l: Self) -> i64 { return l.len * 2 }
+		}
+		Label { text: str64 = "none" }
+	}
+	size :: (s: Shape) -> i64 {
+		match s {
+		Dot
+			return 1
+		Line l
+			return l.twice()
+		Label b
+			return b.text.len
+		}
+		return 0
+	}
+	a : Shape = .Dot
+	b : Shape = Shape.Line(7)
+	c : Shape = Label{text = "hey"}
+	print(b)
+	return size(a) + size(b) + size(c)
+}
+
+// A generic union in a fun; a union in a generic fun, holding its T.
+options :: () -> i64 {
+	Opt :: union($T: type) {
+		Nothing
+		Just(v: T) {
+			got := v
+			twice :: fun(j: Self) -> T { return j.got + j.got }
+		}
+	}
+	get :: (o: Opt(i64)) -> i64 {
+		match o {
+		Nothing
+			return 0
+		Just j
+			return j.twice()
+		}
+		return 0
+	}
+	getf :: (o: Opt(f64)) -> f64 {
+		match o {
+		Nothing
+			return 0
+		Just j
+			return j.twice()
+		}
+		return 0
+	}
+	a : Opt(i64) = Just(4)
+	n : Opt(i64) = .Nothing
+	f : Opt(f64) = Just(0.25)
+	print("%", getf(f))
+	return get(a) + get(n)
+}
+
+wrap :: (x: $T) -> T {
+	Holds :: union { Empty, Full(v: T) { item := v } }
+	b : Holds = Holds.Full(x)
+	match b {
+	Empty
+		return x
+	Full f
+		return f.item + f.item
+	}
+	return x
+}
+
+main :: fun() {
+	twice :: (x: $T) -> T { return x + x }
+	fill :: (list: ^[_]i64, n: i64) {
+		for i in 0:n { list + i }
+	}
+	sum :: (xs: [$N!]i64) -> i64 {
+		s := 0
+		for x in xs { s += x }
+		return s
+	}
+	count :: (n: $T) -> T {
+		if n <= 0 { return 0 }
+		return 1 + count(n - 1)
+	}
+	read_data :: (files: []i64, buf: ^[_]byte) -> [MAX]i64, err {
+		result : [MAX]i64
+		for f in files { &result + f }
+		buf + 7
+		return result
+	}
+	l : [8]i64
+	fill(&l, 4)
+	a : [3!]i64 = {1, 2, 3}
+	print("% % % % %", twice(3), twice(1.5), l.len, l[3], sum(a))
+	print("% %", count(5), count(3.0))
+	print("% %", outer(2), outer(0.5))
+	print("% %", first(), second())
+	buf : [16]byte
+	r, _ := read_data(a[:], &buf)
+	print("% % % %", r.len, r[2], buf.len, buf[0])
+
+	b : Box
+	&b.add(3)
+	&b.add(2.5)
+	Box.add(&b, 1)
+	print("% % %", b.v, Box.twice(4), Box.twice(0.25))
+
+	h : Holder(i64) = {v = 3}
+	g : Holder(f64) = {v = 0.5}
+	print("% %", &h.both(1), &g.both(1))
+	print("% % %", h.pair(2), g.pair(1.5), h.pair(0.25))
+
+	top : Cell(i64) = {v = 100}
+	print("% % %", cells(), more_cells(), top.v)
+
+	print("% % % %", shapes(), options(), wrap(5), wrap(1.5))
+}
