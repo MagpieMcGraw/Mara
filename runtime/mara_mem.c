@@ -30,7 +30,7 @@
 //
 // Arenas (mara.memory, under #profile_memory) tell it themselves, after
 // their cursor moves:
-//   __mara_mem_arena(kind, base)  base, a mutable slice of the arena's bytes
+//   __mara_mem_arena(kind, data, size, used)  an arena: its memory, its size, the bytes in use
 //                                 (`&a.base`): its len the bytes in use, its
 //                                 cap the arena's size, its elements which
 //
@@ -323,12 +323,11 @@ void __mara_mem_slot(const Mara_List* hdr, Mara_Mem_Site* site) {
     if (s) s->peak = 0;
 }
 
-void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {
-    int64_t len = *base.len_at;
+void __mara_mem_arena(const char* kind, void* data, int64_t size, int64_t used) {
     for (size_t i = 0; i < mem.narenas; i++) {
         Mara_Mem_Arena* a = &mem.arenas[i];
-        if (a->data == base.data) {
-            if (len > a->peak) a->peak = len;
+        if (a->data == data) {
+            if (used > a->peak) a->peak = used;
             return;
         }
     }
@@ -339,9 +338,9 @@ void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {
     }
     Mara_Mem_Arena* a = &mem.arenas[mem.narenas++];
     a->kind = kind ? kind : "arena";
-    a->data = base.data;
-    a->size = base.cap;
-    a->peak = len;
+    a->data = data;
+    a->size = size;
+    a->peak = used;
 }
 
 static int64_t mem_unused(const Mara_Mem_Rec* r) {

@@ -614,16 +614,18 @@ Place :: struct { x: f32  y: f32 }
 // module's top, its file — and no further: another file, or a module that
 // uses it, sees none of them, so a variable elsewhere may take one's name.
 // A module gives what C does as Mara functions that call it, taking Mara's
-// types: text as []utf8, data as a slice (`[]` for none, where C takes
-// NULL). The standard library's os.mara and the SDL and OpenGL bindings in
-// code/ are made so.
+// types: text C reads as a list, `[$N]utf8` (any room: a str64, a Path, a
+// literal), data as a slice (`[]` for none, where C takes NULL). The
+// standard library's os.mara and the SDL and OpenGL bindings in code/ are
+// made so.
 //
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and
-// checks a 0 is after them: a literal has one, and a buffer keeps one
-// after its text (appends write it). A slice has its len at its cap, so
-// `b[0:n]` or `b[:]` has no 0 after it, and cstring() stops the program:
-// give C the buffer itself, unsliced. Text C gives back is copied into a
-// buffer, so it's C text again (a binding returns `[512]utf8`, say).
+// checks a 0 is after them: a literal has one, and a list keeps one after
+// its text, in its room (appends write it). A slice is only its items, so
+// `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
+// list itself, or a slice with the 0 in it, `b[0 : n + 1]`. Text C gives
+// back is copied into a list, so it's C text again (a binding returns
+// `[512]utf8`, say).
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
 	//
@@ -633,7 +635,7 @@ example_foreign :: fun() {
 	//     }
 	//
 	//     Delay :: fun(ms: u32) { SDL_Delay(ms) }
-	//     SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+	//     SetWindowTitle :: fun(window: Window, title: [$N]utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
 }
 
 // ---- built-ins ------------------------------------------------------------------

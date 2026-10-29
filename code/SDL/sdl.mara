@@ -1243,8 +1243,8 @@ foreign static_lib "SDL3" {
 }
 
 Init :: fun(flags: Init_Flags) -> bool { return SDL_Init(flags) }
-SetHint :: fun(name: []utf8, value: []utf8) -> bool { return SDL_SetHint(cstring(name), cstring(value)) }
-CreateWindow :: fun(title: []utf8, w: i32, h: i32, flags: WindowFlags) -> Window { return SDL_CreateWindow(cstring(title), w, h, flags) }
+SetHint :: fun(name: [$N]utf8, value: [$M]utf8) -> bool { return SDL_SetHint(cstring(name), cstring(value)) }
+CreateWindow :: fun(title: [$N]utf8, w: i32, h: i32, flags: WindowFlags) -> Window { return SDL_CreateWindow(cstring(title), w, h, flags) }
 DestroyWindow :: fun(window: Window) { SDL_DestroyWindow(window) }
 GetWindowSize :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSize(window, w, h) }
 GetWindowSizeInPixels :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSizeInPixels(window, w, h) }
@@ -1254,7 +1254,7 @@ PollEvent :: fun(event: ^Event) -> bool { return SDL_PollEvent(event) }
 Delay :: fun(ms: u32) { SDL_Delay(ms) }
 Quit :: fun() { SDL_Quit() }
 // name: a driver's ("opengl", "direct3d11", …).
-CreateRenderer :: fun(window: Window, name: []utf8) -> Renderer { return SDL_CreateRenderer(window, cstring(name)) }
+CreateRenderer :: fun(window: Window, name: [$N]utf8) -> Renderer { return SDL_CreateRenderer(window, cstring(name)) }
 DestroyRenderer :: fun(renderer: Renderer) { SDL_DestroyRenderer(renderer) }
 SetRenderDrawColor :: fun(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool { return SDL_SetRenderDrawColor(renderer, r, g, b, a) }
 RenderClear :: fun(renderer: Renderer) -> bool { return SDL_RenderClear(renderer) }
@@ -1283,7 +1283,7 @@ SetTextureScaleMode :: fun(texture: Texture, mode: i32) -> bool { return SDL_Set
 DestroyTexture :: fun(texture: Texture) { SDL_DestroyTexture(texture) }
 // The next event, waiting for it up to ms milliseconds: false when none came.
 WaitEventTimeout :: fun(event: ^Event, ms: i32) -> bool { return SDL_WaitEventTimeout(event, ms) }
-SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+SetWindowTitle :: fun(window: Window, title: [$N]utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
 SetWindowSize :: fun(window: Window, w: i32, h: i32) -> bool { return SDL_SetWindowSize(window, w, h) }
 // The display the window is on, and the part of it windows can use
 // (the taskbar's left out).
@@ -1294,7 +1294,7 @@ GetCurrentDisplayMode :: fun(display: u32) -> ^Display_Mode { return SDL_GetCurr
 // The modifier keys held now: KMOD_SHIFT, ...
 GetModState :: fun() -> u16 { return SDL_GetModState() }
 // Text put on the system's clipboard, for pasting anywhere.
-SetClipboardText :: fun(text: []utf8) -> bool { return SDL_SetClipboardText(cstring(text)) }
+SetClipboardText :: fun(text: [$N]utf8) -> bool { return SDL_SetClipboardText(cstring(text)) }
 // Where the cursor is on the screen (and the buttons held).
 GetGlobalMouseState :: fun(x: ^f32, y: ^f32) -> u32 { return SDL_GetGlobalMouseState(x, y) }
 // Where the window's inside is on the screen.
@@ -1315,7 +1315,7 @@ GL_MakeCurrent :: fun(window: Window, context: GLContext) -> bool { return SDL_G
 GL_DestroyContext :: fun(context: GLContext) -> bool { return SDL_GL_DestroyContext(context) }
 GL_SetSwapInterval :: fun(interval: i32) -> bool { return SDL_GL_SetSwapInterval(interval) }
 GL_SwapWindow :: fun(window: Window) -> bool { return SDL_GL_SwapWindow(window) }
-GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
+GL_GetProcAddress :: fun(name: [64]utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
 GetTicks :: fun() -> u32 { return SDL_GetTicks() }
 GetTicksNS :: fun() -> u64 { return SDL_GetTicksNS() }
 GetPerformanceCounter :: fun() -> u64 { return SDL_GetPerformanceCounter() }
@@ -1333,7 +1333,7 @@ GetError :: fun() -> [256]utf8 {
 malloc :: fun(size: usize) -> ^byte { return SDL_malloc(size) }
 
 // Filesystem — IOStream
-IOFromFile :: fun(file: []utf8, mode: []utf8) -> IOStream { return SDL_IOFromFile(cstring(file), cstring(mode)) }
+IOFromFile :: fun(file: [$N]utf8, mode: [$M]utf8) -> IOStream { return SDL_IOFromFile(cstring(file), cstring(mode)) }
 CloseIO :: fun(context: IOStream) -> bool { return SDL_CloseIO(context) }
 // As much as `into` holds read into it from the stream: how many bytes
 // came (fewer at its end; 0, failing).
@@ -1344,9 +1344,9 @@ SeekIO :: fun(context: IOStream, offset: i64, whence: IOWhence) -> i64 { return 
 TellIO :: fun(context: IOStream) -> i64 { return SDL_TellIO(context) }
 GetIOSize :: fun(context: IOStream) -> i64 { return SDL_GetIOSize(context) }
 FlushIO :: fun(context: IOStream) -> bool { return SDL_FlushIO(context) }
-LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(cstring(file), datasize) }
+LoadFile :: fun(file: [$N]utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(cstring(file), datasize) }
 // `data` written to the file `file`, made new or over what it held.
-SaveFile :: fun(file: []utf8, data: []$T) -> bool { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
+SaveFile :: fun(file: [$N]utf8, data: []$T) -> bool { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
 
 // Filesystem — paths & metadata
 // The directory the program runs from, '/'-ended (SDL's to keep).
@@ -1357,7 +1357,7 @@ GetBasePath :: fun() -> [512]utf8 {
 }
 // The directory for the program's own files, made if it isn't there
 // (SDL's memory, freed once copied).
-GetPrefPath :: fun(org: []utf8, app: []utf8) -> [512]utf8 {
+GetPrefPath :: fun(org: [$N]utf8, app: [$M]utf8) -> [512]utf8 {
     out : [512]utf8
     p := SDL_GetPrefPath(cstring(org), cstring(app))
     c_text(p, &out)
@@ -1372,11 +1372,11 @@ GetCurrentDirectory :: fun() -> [512]utf8 {
     if p != void do SDL_free(p)
     return out
 }
-CreateDirectory :: fun(path: []utf8) -> bool { return SDL_CreateDirectory(cstring(path)) }
-RemovePath :: fun(path: []utf8) -> bool { return SDL_RemovePath(cstring(path)) }
-RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
-CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
-GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }
+CreateDirectory :: fun(path: [$N]utf8) -> bool { return SDL_CreateDirectory(cstring(path)) }
+RemovePath :: fun(path: [$N]utf8) -> bool { return SDL_RemovePath(cstring(path)) }
+RenamePath :: fun(oldpath: [$N]utf8, newpath: [$M]utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
+CopyFile :: fun(oldpath: [$N]utf8, newpath: [$M]utf8) -> bool { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
+GetPathInfo :: fun(path: [$N]utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }
 
 // Audio — a stream to play through: opened on a device, given samples
 // (PutAudioStreamData), it plays them, converting to the device's format

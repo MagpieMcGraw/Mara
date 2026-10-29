@@ -27,7 +27,7 @@ Oops :: error {
 work :: fun(lib: ^Arena_Basic) -> i64 {
 	big : [16 * KB]byte
 	big[0] = u8(1)
-	return lib.base.len
+	return lib.used
 }
 
 early :: fun(lib: ^Arena_Basic) -> i64 {
@@ -47,20 +47,20 @@ through :: fun(lib: ^Arena_Basic) -> err {
 half_mb :: fun(a: ^Arena_Basic) -> i64 {
 	room : [512 * KB]byte
 	room[0] = u8(1)
-	return a.base.len
+	return a.used
 }
 
 main :: () {
 	lib := Arena_Basic(1 * MB)
 
-	print("lib before:", lib.base.len)
+	print("lib before:", lib.used)
 	print("work outside with, lib:", work(&lib))
 	with &lib do print("work inside with, lib:", work(&lib))
-	print("lib after:", lib.base.len)
+	print("lib after:", lib.used)
 
-	print("a return from inside: %, after %", early(&lib), lib.base.len)
+	print("a return from inside: %, after %", early(&lib), lib.used)
 	e := through(&lib)
-	print("an error out: %, after %", e, lib.base.len)
+	print("an error out: %, after %", e, lib.used)
 
 	seen : i64 = -1
 	rounds := 0
@@ -71,7 +71,7 @@ main :: () {
 			seen = work(&lib)
 		}
 		rounds += 1
-		print("loop: % then %, % times", seen, lib.base.len, rounds)
+		print("loop: % then %, % times", seen, lib.used, rounds)
 	}
 
 	// (b's 64 KB couldn't hold half a megabyte: back in a, a has.)
@@ -81,5 +81,5 @@ main :: () {
 		with &b do _ = work(&b)
 		print("nested: a 1 MB, b 64 KB, back in a:", half_mb(&a))
 	}
-	print("a after:", a.base.len)
+	print("a after:", a.used)
 }

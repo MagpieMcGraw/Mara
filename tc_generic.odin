@@ -239,6 +239,12 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
                 pv := params_view(tr, g)
                 for pname in pv.names {
                     defer i += 1
+                    // (A list, `[$N]T`, given a slice: a view has no room
+                    // of its own — text for C, no 0 after it.)
+                    if i < len(arg_types) && tr.tag[pv.type_] == .Type_Partial && tc_type_has_dollar(k, pv.type_) && is_slice_type(arg_types[i]) {
+                        tc_error(k, span, TYPE_GENERIC_PARAM_LIST_VALUE, tc_text(p), name, tc_text(pname), tc_source_desc(k, args[i], arg_types[i]))
+                        return Type_Error{}
+                    }
                     if i >= len(arg_types) || tr.tag[pv.type_] != .Type_Pointer || !tc_type_has_dollar(k, pv.type_) { continue }
                     // (A list to grow, `^[$N]T`, given a fixed array or a
                     // slice: neither has a len to move.)

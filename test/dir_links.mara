@@ -23,7 +23,7 @@ use mara.memory
 
 // The system's shell runs a command line, what it says dropped: its exit
 // code.
-shell :: fun(command: []utf8) -> i64 {
+shell :: fun(command: [$N]utf8) -> i64 {
 	p, e := process_start(command)
 	if e do return -1
 	code, _ := process_wait(&p)
