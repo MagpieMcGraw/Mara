@@ -1185,15 +1185,11 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         } else {
             ir_call(g, str_len, IR_I64, ir_global("strlen"), {IR_PTR, argv_i, {}})
         }
-        // elements[i] is a slice — write len, cap, ptr. cap counts argv's
-        // terminating 0 (as a string literal's does), so cstring(arg) finds it
-        // at [len] — passing an argument to a file open or any C call works.
+        // elements[i] is a slice — write len, ptr: a view of argv's text (its
+        // 0 just past the view; mara.os's paths copy it, c_path).
         elem_ptr := fresh_tmp(g)
         ir_gep(g, elem_ptr, ir_array_type(64, SLICE_IR_TYPE), elements_ptr, {IR_I32, ir_int(0), {}}, {IR_I32, cur_i, {}})
         emit_header_set(g, elem_ptr, SLICE.len, str_len)
-        str_cap := fresh_tmp(g)
-        ir_bin(g, str_cap, .Add, SLICE_LEN_IR, str_len, ir_int(1))
-        emit_header_set(g, elem_ptr, SLICE.cap, str_cap)
         emit_header_set(g, elem_ptr, SLICE.ptr, argv_i)
         // i++
         next_i := fresh_tmp(g)
@@ -1210,7 +1206,6 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             emit_alloca(g, view, SLICE_IR_TYPE)
             emit_header_set(g, view, SLICE.ptr, elements_ptr)
             emit_header_set(g, view, SLICE.len, len_store_val)
-            emit_header_set(g, view, SLICE.cap, ir_int(ARGS_CAP))
         }
     }
 }

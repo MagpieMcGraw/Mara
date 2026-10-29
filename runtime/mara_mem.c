@@ -75,11 +75,10 @@
 #define HIST_SUB      (1 << HIST_SUB_BITS)
 #define HIST_BUCKETS  (HIST_LINEAR + (64 - HIST_SUB_BITS) * HIST_SUB)
 
-// A slice's header, as Mara lays it out (codegen.odin, SLICE): its len, its
-// cap, its elements' address — an arena's base.
+// A slice's header, as Mara lays it out (codegen.odin, SLICE): its len (a
+// view's size), its elements' address — a take's.
 typedef struct Mara_Header {
     int64_t len;
-    int64_t cap;
     void*   data;
 } Mara_Header;
 // A partial array: its len, its elements after it (its cap, its type's: the
@@ -87,14 +86,6 @@ typedef struct Mara_Header {
 typedef struct Mara_List {
     int64_t len;
 } Mara_List;
-// A mutable slice, `^[]T`, as Mara hands one over (codegen_array.odin,
-// slice_ref_to): where its len is, its cap, its elements' address. Taken by
-// value: a C function's struct param, each ABI's way.
-typedef struct Mara_Slice_Ref {
-    int64_t* len_at;
-    int64_t  cap;
-    void*    data;
-} Mara_Slice_Ref;
 
 typedef struct Mara_Mem_Rec {
     const char* name;
@@ -310,10 +301,10 @@ void __mara_mem_take(const Mara_List* hdr, Mara_Mem_Site* site) {
     Mara_Mem_Inst* s = mem_find(hdr);
     if (!s) return;
     s->data = h->data;
-    s->cap = h->cap;
+    s->cap = h->len;
     s->take = 1;
     s->peak = h->len;
-    if (s->rec->cap == 0) s->rec->cap = h->cap;   // (n not a number written: the first one's)
+    if (s->rec->cap == 0) s->rec->cap = h->len;   // (n not a number written: the first one's)
 }
 
 void __mara_mem_slot(const Mara_List* hdr, Mara_Mem_Site* site) {

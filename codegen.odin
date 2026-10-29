@@ -15,25 +15,26 @@ import "core:os"
 // codegen_module.odin assembles the .ll files.
 // ---------------------------------------------------------------------------
 
-// A slice's header, `{ len, cap, ptr }`, its length and capacity i64s on
-// every target; a partial array is the header with its elements after.
+// A slice's header, `{ len, ptr }`: its count of items, an i64 on every
+// target, then its data. A view: its len is its size, and its cap the same
+// (only lists grow). A partial array is its len, then its elements.
 SLICE_IR_TYPE :: IR_SLICE
-SLICE_LEN_IR  :: IR_I64   // a header's len's and cap's IR type
+SLICE_LEN_IR  :: IR_I64   // a header's len's IR type
 
 // Slice header field positions. A list ([N]T) is its len — at SLICE.len, as
 // a slice's is — then its elements, at PARTIAL_ELEMENTS_FIELD: its cap is
 // its type's N and its data its own elements (hdr_cap_at, hdr_data_at), so
-// nothing in it can say otherwise.
-Slice_Fields :: struct { len, cap, ptr: int }
-SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
+// nothing in it can say otherwise. A slice's cap is its len (hdr_cap_at).
+Slice_Fields :: struct { len, ptr: int }
+SLICE :: Slice_Fields{len = 0, ptr = 1}
 PARTIAL_ELEMENTS_FIELD :: 1
 
-// A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
-// the cap and data at a slice header's SLICE.cap and SLICE.ptr, the len's
-// address at SLICE.len. A list's never change; a slice's are its header's as
-// the reference was made (a whole slice written through it updates them).
+// A ^[]T's IR type (slice_ref_layout): where the len is, then the data — the
+// data at a slice header's SLICE.ptr, the len's address at SLICE.len. A
+// list's never change; a slice's are its header's as the reference was made
+// (a whole slice written through it updates them).
 slice_ref_ir_type :: proc() -> Ir_Type {
-    fields := [3]Ir_Type{IR_PTR, SLICE_LEN_IR, IR_PTR}
+    fields := [2]Ir_Type{IR_PTR, IR_PTR}
     return ir_struct_type(fields[:])
 }
 

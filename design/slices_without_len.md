@@ -11,6 +11,18 @@ Revised the same day twice:
 Not started. It replaces the no-len slices, `start_fill` and len inheritance built the same
 day (6748dfd, 0afb7b6, 79522bc, 6bbdec0).
 
+## Status (2026-10-29)
+
+- 4be1308: the compiler and stdlib back to before the no-len work; a slicing shows its window.
+- e2a920b: only lists grow — appends, next and storage take `^[$N]T`; a take is a view of n.
+- de4dd15: the readers give back the slice they filled.
+- e705e8b: arenas keep a `used` cursor; the bindings take text for C as `[$N]utf8`.
+- 7aee70b: a slice's len and cap can't be written; nothing is taken from a slice.
+- The layout: a slice is {len, ptr}, 16 bytes; a `^[]T` is {where the len is, the data},
+  16 bytes too (a reference by value, not a pointer to a slice: `&list` as a `^[]T` needs no
+  temporary, and sees the list's live len). A list given as a slice is a view of its items.
+- Left: sooblivion and mara3 moved (their lists), then a release.
+
 ## Why
 
 - Most languages with slices give them no fill state. A Rust `&[T]`, a Zig `[]T` and an

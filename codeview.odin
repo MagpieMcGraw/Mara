@@ -318,13 +318,13 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         id = cv_err(cv)
     case ^Type_Ptr:
         if sl := slice_ref_of(v); sl != nil {
-            // A ^[]T: where its len is, its cap, its data.
+            // A ^[]T: where its len is, its data.
             name := type_name(v)
             fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
             cv.made[key] = fwd
-            names := [3]string{"len_at", "cap", "data"}
-            types := [3]u32{T_64PTR | 0x76, 0x76, cv_pointer(cv, cv_type(cv, sl.elem))}
-            offsets := [3]int{0, 8, 16}
+            names := [2]string{"len_at", "data"}
+            types := [2]u32{T_64PTR | 0x76, cv_pointer(cv, cv_type(cv, sl.elem))}
+            offsets := [2]int{0, 8}
             id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
             break
         }
@@ -348,14 +348,14 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
     case ^Type_Fixed_Array:
         id = cv_array(cv, cv_type(cv, v.elem), type_size(v))
     case ^Type_Slice:
-        // Its header, {len, cap, ptr}: its len elements, as raddbg shows it.
+        // Its header, {len, ptr}: its len elements, as raddbg shows it.
         name := type_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd
         ptr := cv_pointer(cv, cv_type(cv, v.elem))
-        names := [3]string{"len", "cap", "ptr"}
-        types := [3]u32{0x76, 0x76, ptr}
-        offsets := [3]int{0, 8, 16}
+        names := [2]string{"len", "ptr"}
+        types := [2]u32{0x76, ptr}
+        offsets := [2]int{0, 8}
         id = cv_record(cv, LF_STRUCTURE, name, cv_unique(v), type_size(v), names[:], types[:], offsets[:])
         cv_view(cv, name, "array(ptr, len)")
     case ^Type_Partial_Array:

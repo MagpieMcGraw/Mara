@@ -66,12 +66,10 @@ type_layout :: proc(t: Type) -> Layout {
 }
 
 // A ^[]T — a reference to a slice's or a list's elements, by value: where
-// its len is, its cap, its data (`{ ptr, i64, ptr }`: its cap and data where
-// a slice header's are).
+// its len is, its data (`{ ptr, ptr }`: its data where a slice header's is).
 slice_ref_layout :: proc() -> Layout {
     l := Layout{0, 1}
     layout_field(&l, {word_bytes(), word_bytes()})
-    layout_field(&l, {8, 8})
     layout_field(&l, {word_bytes(), word_bytes()})
     return layout_close(l)
 }
@@ -127,11 +125,10 @@ round_up :: proc(n, align: int) -> int {
     return (n + align - 1) / align * align
 }
 
-// A slice's header, `{ len, cap, ptr }`: its fields, still open (a partial
-// array's elements follow them).
+// A slice's header, `{ len, ptr }`: its count of items and its data (a view:
+// its len is its size; only lists grow). Its fields, still open.
 slice_header_fields :: proc() -> Layout {
     l := Layout{0, 1}
-    layout_field(&l, {8, 8})
     layout_field(&l, {8, 8})
     layout_field(&l, {word_bytes(), word_bytes()})
     return l

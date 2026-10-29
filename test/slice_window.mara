@@ -3,13 +3,14 @@ module slice_window
 //@ expect-output: inside the len: 4 4 [3, 4, 5, 6]
 //@ expect-output: past the len: 4 4 [8, 0, 0, 0]
 //@ expect-output: items: 8 8 - the rest: 6 6
-//@ expect-output: given as a slice: 8 16
+//@ expect-output: given as a slice: 8 8
 //@ expect-output: of a fixed array: 4 [2, 2, 2, 2]
 //@ expect-output: of a slice: 2 [4, 5]
 
 // A slicing shows its window: `xs[a:b]` is b - a items, whatever xs's len.
 // With no hi, `xs[:]` and `xs[lo:]` of a list end at its len: its items. A
-// list given where a slice goes is a view of its items, its room behind them.
+// list given where a slice goes is a view of its items: a slice's cap is its
+// len, its size.
 
 use mara.core
 
