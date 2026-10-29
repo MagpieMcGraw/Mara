@@ -876,7 +876,13 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             k.annot.forms[tc_sid(k, n)] = .Builtin
             return t
         }
-        if groups := resolve_dispatches(k.rs, tr.main[n], name); len(groups) > 0 {
+        groups := resolve_dispatches(k.rs, tr.main[n], name)
+        // (A body's group, the name its own: it alone — a body's name hides
+        // its module's.)
+        if ref := tc_callee_ref(k, n); ref.kind == .Fun && k.rs.dispatches[ref.decl] && !slice.contains(groups, ref.decl) {
+            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, {ref.decl}), args)
+        }
+        if len(groups) > 0 {
             return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {

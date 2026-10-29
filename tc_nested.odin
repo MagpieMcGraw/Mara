@@ -18,6 +18,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     owner_i := k.scope_of[owner]
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
+    dispatches := make([dynamic]Tree_Id, context.temp_allocator)
     for s in tc_live(k, scope_view(t, sc.node).body) {
         if t.tag[s] != .Define { continue }
         value := Tree_Id(t.b[s])
@@ -34,6 +35,9 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             case .Alias_Def, .Distinct_Def:
                 tc_register_distinct(k, s, value, owner)
                 append(&distincts, s)
+                continue
+            case .Dispatch_Def:
+                append(&dispatches, s)   // (the resolver's, as a module's: its members checked once declared)
                 continue
             }
         }
@@ -53,6 +57,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     // (A union's variants' fields, as a module's: tc_resolve_union.)
     for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }
+    for s in dispatches { tc_validate(k, s) }
 }
 
 tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_i: int) {

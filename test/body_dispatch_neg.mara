@@ -1,0 +1,14 @@
+module body_dispatch_neg
+//@ expect-fail: dispatch group 'bump': function 'nothing_here' not defined
+
+// A body's dispatch group is checked as a module's: each member a fun in
+// sight.
+
+use mara.core
+
+main :: fun() {
+	ai :: (x: i64) -> i64 { return x + 1 }
+	bump :: dispatch { ai, nothing_here }
+	n : i64 = 1
+	print("%", bump(n))
+}

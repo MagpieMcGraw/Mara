@@ -1,0 +1,32 @@
+module body_dispatch
+
+//@ expect-output: 5 3 101 8
+//@ expect-output: 100 200
+
+// A dispatch group defined in a body, as a module's: its members the body's
+// funs, seen only there. Its name hides a module's group of that name.
+
+use mara.core
+
+ti :: (x: i64) -> i64 { return 100 }
+tf :: (x: f64) -> f64 { return 200 }
+bump :: dispatch { ti, tf }
+
+// The module's group: none of main's.
+outside :: () -> i64, f64 {
+	i : i64 = 1
+	f : f64 = 1
+	return bump(i), bump(f)
+}
+
+main :: fun() {
+	ai :: (x: i64) -> i64 { return x + 1 }
+	af :: (x: f64) -> f64 { return x * 2 }
+	bump :: dispatch { ai, af }
+	n : i64 = 4
+	f : f64 = 1.5
+	big : i64 = 100
+	print("% % % %", bump(n), bump(f), big.bump(), bump(n) + 3)
+	a, b := outside()
+	print("% %", a, b)
+}
