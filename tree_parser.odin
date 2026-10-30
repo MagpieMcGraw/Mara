@@ -1999,6 +1999,38 @@ tp_is_typed_array_literal :: proc(p: ^Tree_Parser) -> bool {
     return false
 }
 
+// At a `[`: where a type written as a value ends (`nodes := [MB]Node`, the
+// `[` up to its line's end holding only a type, ending in its item type's
+// name); -1 when it's an array literal. (No separator is needed between
+// statements, so `[MB]` would be one and `Node` the next.)
+tp_type_as_value_end :: proc(p: ^Tree_Parser) -> int {
+    depth := 0
+    closed := false
+    last: Token_Kind
+    for pos := p.pos; pos < len(p.tokens); pos += 1 {
+        k := p.tokens[pos].kind
+        #partial switch k {
+        case .Newline, .Semicolon, .Right_Brace, .EOF:
+            if depth != 0 { return -1 }
+            if !closed || (last != .Identifier && !tp_is_type_keyword(last)) { return -1 }
+            return pos
+        case .Left_Bracket:
+            depth += 1
+        case .Right_Bracket:
+            depth -= 1
+            if depth < 0 { return -1 }
+            if depth == 0 { closed = true }
+        case .Number, .Colon, .Comma, .Bang, .Dot_Dot:
+            if depth == 0 { return -1 }
+        case .Identifier, .Dot, .Caret, .Dollar:
+        case:
+            if !tp_is_type_keyword(k) { return -1 }
+        }
+        last = k
+    }
+    return -1
+}
+
 // A call's arguments, its `(` consumed; its override literal after.
 tp_call_args :: proc(p: ^Tree_Parser) -> u32 {
     tp_skip_newlines(p)
@@ -2100,6 +2132,20 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
         if tp_is_typed_array_literal(p) {
             ty := tp_type(p)
             result = tp_literal(p, ty, start, Token_Id(start))
+        } else if end := tp_type_as_value_end(p); end >= 0 {
+            // (A type where a value goes: said, and the line's rest is it.
+            // After `name :=`, where its type goes instead.)
+            br := tp_here(p)
+            first, last := build_tokens[p.pos], build_tokens[end - 1]
+            text := build_files[first.file].source[first.offset:last.offset + last.len]
+            if p.pos >= 3 && p.tokens[p.pos - 1].kind == .Equals && p.tokens[p.pos - 2].kind == .Colon && p.tokens[p.pos - 3].kind == .Identifier {
+                name := token_text(build_tokens[p.pos - 3])
+                tp_error(p, br, PARSE_TYPE_AS_DECL_VALUE, text, name, text)
+            } else {
+                tp_error(p, br, PARSE_TYPE_AS_VALUE, text)
+            }
+            p.pos = end
+            result = tp_leaf(p, .Ident, br)
         } else {
             br := tp_advance(p)
             tp_skip_newlines(p)

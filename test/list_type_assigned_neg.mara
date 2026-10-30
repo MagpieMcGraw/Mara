@@ -1,0 +1,12 @@
+module list_type_assigned_neg
+//@ expect-fail: the type '[4!]i64' is no value
+
+use mara.core
+
+// A fixed array's type where an assignment's value goes.
+
+main :: fun() {
+	rows : [4!]i64
+	rows = [4!]i64
+	print("%", rows[0])
+}

@@ -1,0 +1,17 @@
+module array_literal_line_ends
+//@ expect-output: 3 2 7 1
+
+use mara.core
+
+// Array literals that end their line stay values: a type written as a value
+// is only `[...]` followed by a type up to the line's end.
+
+MB :: 2
+
+main :: fun() {
+	a := [1, 2, 3]
+	b := [a[1], a[2]]
+	d := [[4, 5], [6, 7]]
+	e : [MB]i64 = [1]
+	print("% % % %", a.len, b[0], d[1][1], e.len)
+}

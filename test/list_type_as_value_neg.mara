@@ -1,0 +1,16 @@
+module list_type_as_value_neg
+//@ expect-fail: '[MB]Node' is a type, not a value: a declaration's type goes after its `:`, `nodes : [MB]Node`
+
+use mara.core
+
+// A list's type where a declaration's value goes. No separator is needed
+// between statements, so it parsed as `nodes := [MB]` and then a statement
+// `Node`, which lowering crashed on ("a Ident lowering builds nothing").
+
+Node :: struct { kind: i64 }
+MB :: 1024
+
+main :: fun() {
+	nodes := [MB]Node
+	print("%", nodes.len)
+}

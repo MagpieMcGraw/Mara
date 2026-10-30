@@ -1,0 +1,14 @@
+module type_name_statement_neg
+//@ expect-fail: 'Node' is a type, not a value
+
+use mara.core
+
+// A statement that's only a type's name has nothing to run. It got past the
+// checker and crashed lowering ("a Ident lowering builds nothing").
+
+Node :: struct { kind: i64 }
+
+main :: fun() {
+	Node
+	print("done")
+}

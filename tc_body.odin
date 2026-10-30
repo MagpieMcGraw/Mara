@@ -108,6 +108,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
             if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_name(k, e)) }
         } else if op := tc_unparen(k, e); (t.tag[op] == .Binary || t.tag[op] == .Unary) && rt != nil {
             tc_dropped_value(k, op, rt, span)
+        } else if name := tc_diag_name(k, op); t.tag[op] == .Ident && rt != nil && tc_type_source_name(rt) == name {
+            // (A type's name alone: there's nothing to run.)
+            tc_error(k, span, TYPE_TYPE_NOT_VALUE, name)
         }
     case .Decl:
         tc_decl(k, s)
