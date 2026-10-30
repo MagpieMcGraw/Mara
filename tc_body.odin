@@ -1011,8 +1011,22 @@ tc_no_literal_slice :: proc(k: ^TC, target: Type, value: Tree_Id, span: Span) {
 
 // A value declared as a fixed array: its elements' type, and no more of
 // them than it holds (a shorter one leaves the rest zero; text counts its
-// bytes, not its tier).
+// bytes, not its tier). A literal's items are made as the array's; any
+// other value's are copied as they are, so they're laid out alike
+// (item_layout_mismatch: a `[2!][64]utf8` is no `[2!][]utf8`).
 tc_array_assign :: proc(k: ^TC, span: Span, name: string, fa: ^Type_Fixed_Array, vt: Type, value: Tree_Id) {
+    #partial switch k.t.tag[tc_unparen(k, value)] {
+    case .Array, .Literal, .Broadcast, .String:
+    case:
+        if v, is_buffer := vt.(^Type_Fixed_Array); is_buffer && item_layout_mismatch(fa.elem, v.elem) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
+            return
+        }
+        if v, is_buffer := vt.(^Type_Partial_Array); is_buffer && item_layout_mismatch(fa.elem, v.elem) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
+            return
+        }
+    }
     #partial switch v in vt {
     case ^Type_Fixed_Array:
         if types_incompatible(fa.elem, v.elem) {

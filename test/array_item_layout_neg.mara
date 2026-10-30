@@ -1,0 +1,18 @@
+module array_item_layout_neg
+//@ expect-fail: its items are lists, and a [][]utf8 holds slices: make it an array of them, `[2!][]utf8{...}`
+
+use mara.core
+
+// A constant array of text keeps its text as lists: handed whole to a
+// `[][]utf8` it was read as slices (throne's MARA_ISSUES, 2026-10-30: it
+// crashed at the bytes of "Mouse_Left" taken for a pointer). Refused.
+
+NAMES :: ["walk", "Mouse_Left"]
+
+first :: fun(names: [][]utf8) {
+	print("count % first %", names.len, names[0])
+}
+
+main :: fun() {
+	first(NAMES)
+}

@@ -59,6 +59,39 @@ tc_partial_hint :: proc(k: ^TC, n: Tree_Id, got: Type, want: Type = nil) -> stri
     return fmt.tprintf(" — %s is a fixed array, with no len to move: declare it a list, `[%d]%s`", what, fa.size, type_name(fa.elem))
 }
 
+// An array where a buffer of items laid out otherwise goes (text kept as
+// lists where slices go, `[2!][64]utf8` for a `[][]utf8`; rows of another
+// size): what its items are and what the param's are, as the error's last
+// clause ("" when it's not that).
+tc_items_hint :: proc(got, want: Type) -> string {
+    // (A buffer's item type, and its count when it's a fixed array.)
+    items :: proc(t: Type) -> (Type, int) {
+        #partial switch v in distinct_base(resolve_infer(t)) {
+        case ^Type_Slice:         return v.elem, -1
+        case ^Type_Partial_Array: return v.elem, -1
+        case ^Type_Fixed_Array:   return v.elem, v.size
+        }
+        return nil, -1
+    }
+    kind :: proc(t: Type) -> string {
+        #partial switch v in distinct_base(resolve_infer(t)) {
+        case ^Type_Slice:         return "slices"
+        case ^Type_Partial_Array: return "lists"
+        case ^Type_Fixed_Array:   return fmt.tprintf("fixed arrays of %d", v.size)
+        case Type_Atom:           return "atoms"
+        case Type_CString:        return "cstrings"
+        }
+        return type_name(t)
+    }
+    g, n := items(got)
+    w, _ := items(want)
+    if g == nil || w == nil || !item_layout_mismatch(w, g) { return "" }
+    if _, to_views := distinct_base(w).(^Type_Slice); to_views && n >= 0 {
+        return fmt.tprintf(" — its items are %s, and a %s holds %s: make it an array of them, `[%d!]%s%s`", kind(g), type_name(want), kind(w), n, type_name(w), "{...}")
+    }
+    return fmt.tprintf(" — its items are %s, and a %s holds %s", kind(g), type_name(want), kind(w))
+}
+
 // An expression as written: "y == 0".
 tc_written :: proc(k: ^TC, n: Tree_Id) -> string {
     return token_range_text(int(k.t.first[n]), int(k.t.end[n]))

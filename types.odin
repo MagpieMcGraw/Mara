@@ -1021,11 +1021,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // importantly `fa : [N!]utf8 = "lit"` after the literal-type
         // change made literals partial.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            return buffer_elem_compatible(va.elem, pa.elem)
+            return items_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
-        return buffer_elem_compatible(va.elem, vb.elem)
+        return items_compatible(va.elem, vb.elem)
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
@@ -1042,24 +1042,24 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // header to alias) — that gate is ptr_pointee_layout_mismatch above,
         // which short-circuits before this case is ever reached for ^[]T.
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            return buffer_elem_compatible(va.elem, fa.elem)
+            return items_compatible(va.elem, fa.elem)
         }
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            return buffer_elem_compatible(va.elem, pa.elem)
+            return items_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Slice)
         if !ok { return false }
-        return buffer_elem_compatible(va.elem, vb.elem)
+        return items_compatible(va.elem, vb.elem)
     case ^Type_Partial_Array:
         // Partial arrays coerce to [:]T (slice view) and to [N!]T (fixed array)
         // by element type. The first 24 bytes of a partial array's layout
         // match a slice header, so `^[N]T` flows safely into `^[:]T` param
         // slots — cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            return buffer_elem_compatible(va.elem, sl.elem)
+            return items_compatible(va.elem, sl.elem)
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            return buffer_elem_compatible(va.elem, fa.elem)
+            return items_compatible(va.elem, fa.elem)
         }
         if pa, ok := b.(^Type_Partial_Array); ok {
             // A list's room is part of its type (its cap is its N): lists
@@ -1071,7 +1071,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             case pa.text != 0: if va.size < pa.text - 1 { return false }
             case va.size > 0 && pa.size > 0 && va.size != pa.size: return false
             }
-            return buffer_elem_compatible(va.elem, pa.elem)
+            return items_compatible(va.elem, pa.elem)
         }
         return false
     case ^Type_Enum:
@@ -1275,6 +1275,36 @@ string_literal_cap :: proc(byte_len: int) -> int {
 buffer_elem_compatible :: proc(a, b: Type) -> bool {
     if types_equal(a, b) { return true }
     return is_byte_sized_memory_type(a) && is_byte_sized_memory_type(b)
+}
+
+// Whether one buffer's items (of type b) can be read as another's (of type
+// a): as buffer_elem_compatible, and laid out alike (item_layout_mismatch).
+items_compatible :: proc(a, b: Type) -> bool {
+    return !item_layout_mismatch(a, b) && buffer_elem_compatible(a, b)
+}
+
+// Whether items of types a and b are laid out differently, so a buffer of
+// one can't be read as a buffer of the other. A slice, a list, a fixed
+// array, an atom and a cstring each have their own layout, and fixed arrays
+// of different sizes differ too. A list or an array becomes a slice only as
+// a whole value, where the slice is made for it: never as an item inside
+// another buffer (`[2!][64]utf8` is no `[][]utf8`).
+item_layout_mismatch :: proc(a, b: Type) -> bool {
+    shape :: proc(t: Type) -> int {
+        #partial switch _ in distinct_base(resolve_infer(t)) {
+        case ^Type_Slice:         return 1
+        case ^Type_Partial_Array: return 2
+        case ^Type_Fixed_Array:   return 3
+        case Type_Atom:           return 4
+        case Type_CString:        return 5
+        }
+        return 0
+    }
+    sa, sb := shape(a), shape(b)
+    if sa == 3 && sb == 3 {
+        return distinct_base(resolve_infer(a)).(^Type_Fixed_Array).size != distinct_base(resolve_infer(b)).(^Type_Fixed_Array).size
+    }
+    return sa != 0 && sb != 0 && sa != sb
 }
 
 is_integer :: proc(t: Type) -> bool {

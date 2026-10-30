@@ -1006,7 +1006,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         if !reinterpret && !own && !coerce_deferred(k.c, at, pt, span) && arg_incompatible(pt, at) {
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
-            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at), tc_partial_hint(k, a, at, pt))
+            hint := tc_partial_hint(k, a, at, pt)
+            if hint == "" { hint = tc_items_hint(at, pt) }
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at), hint)
         }
         // (A runtime string into a `cstring` param: `cstring(s)`, written —
         // the copy and the terminator seen. A literal, or a constant one,

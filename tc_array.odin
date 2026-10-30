@@ -172,6 +172,21 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }
+    // (Items laid out otherwise than their place's are made as its items:
+    // where slices go, slices of them — `first(["walk", "run"])` hands over
+    // slices of the text; rows where longer fixed arrays go, the rest zero,
+    // or where lists with room for them go. With no place, text is kept as
+    // lists, and such an array is no slice of slices: item_layout_mismatch.)
+    if place != nil && item_layout_mismatch(place, et) && buffer_elem_compatible(place, et) {
+        _, as_place := distinct_base(place).(^Type_Slice)
+        if from, is_fixed := distinct_base(resolve_infer(et)).(^Type_Fixed_Array); is_fixed {
+            #partial switch to in distinct_base(place) {
+            case ^Type_Fixed_Array:   as_place = from.size <= to.size
+            case ^Type_Partial_Array: as_place = from.size <= to.size
+            }
+        }
+        if as_place { et = place }
+    }
     for e in elems { tc_settle(k, e, et) }   // (each written to its slot, at its type)
     return type_fixed_array(len(elems), et)
 }

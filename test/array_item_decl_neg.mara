@@ -1,0 +1,13 @@
+module array_item_decl_neg
+//@ expect-fail: cannot assign [2!]text (4 bytes) to variable 'views' of type [2!][]utf8
+
+use mara.core
+
+// An array of text lists declared as an array of slices: refused by the
+// check (it used to stop in codegen).
+
+main :: fun() {
+	names := ["walk", "Mouse_Left"]
+	views : [2!][]utf8 = names
+	print(views[0])
+}
