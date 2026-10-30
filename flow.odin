@@ -352,6 +352,7 @@ Init :: struct {
     user:    []Node_Id,        // an operation → the one that takes its output (0: none)
     words:   int,
     found:   ^[dynamic]Flow_Finding,   // the reads found unset
+    runs:    []i32,            // the fun's runs (where a read found unset was assigned: flow_set_hint)
     in_ctor: bool,             // a struct's own code: its fields its variables
     scratch: mem.Allocator,    // a place's path, worked out: the walk's
 }
@@ -377,7 +378,7 @@ flow_init_fun :: proc(fp: ^Flow_Pass, g: ^Program_Graph, found: ^[dynamic]Flow_F
     if len(runs) == 0 { return }
 
     size := int(g.end) + 1
-    s := Init{g = g, fp = fp, found = found, in_ctor = in_ctor, scratch = context.allocator}
+    s := Init{g = g, fp = fp, found = found, runs = runs[:], in_ctor = in_ctor, scratch = context.allocator}
     s.own = make([]i32, size)
     s.fields = make([][2]i32, size)
 
@@ -776,17 +777,21 @@ flow_reads :: proc(g: ^Program_Graph, u: Node_Id, k: int) -> bool {
 @(private="file")
 flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     g := s.g
-    report :: proc(s: ^Init, span: Span, msg: string, args: ..any) {
-        append(s.found, Flow_Finding{.Init, span, fmt.aprintf(msg, ..args)})
+    // (Said with where it is assigned, when somewhere is: v's field at
+    // `field`, "": v.)
+    report :: proc(s: ^Init, span: Span, v: Node_Id, field: string, msg: string, args: ..any) {
+        text := fmt.aprintf(msg, ..args)
+        if hint := flow_set_hint(s, v, field); hint != "" { text = strings.concatenate({text, hint}) }
+        append(s.found, Flow_Finding{.Init, span, text})
     }
     if reporting {   // (its variables read, as they are when it runs: one whole, any field unset)
         for o, k in graph_operands(g, op) {
             if !graph_is_leaf(o.op) || !flow_reads(g, op, k) { continue }
             v := graph_refers(g, o.op)
             if flow_is_unset(state, flow_var_bit(s, v)) {
-                report(s, graph_origin(g, o.op), TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
+                report(s, graph_origin(g, o.op), v, "", TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, graph_name(g, o.op))
             } else if field, unset := flow_first_unset(s, state, v, ""); unset {
-                report(s, graph_origin(g, o.op), TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, o.op))
+                report(s, graph_origin(g, o.op), v, field, TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, o.op))
             }
         }
     }
@@ -804,9 +809,9 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
         field, unset := flow_first_unset(s, state, v, path)
         if !unset { break }
         if via != NO_NODE {
-            report(s, graph_origin(g, op), TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
+            report(s, graph_origin(g, op), v, field, TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, graph_name(g, v), graph_name(g, via))
         } else {
-            report(s, graph_origin(g, op), TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
+            report(s, graph_origin(g, op), v, field, TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, graph_name(g, v))
         }
     case .Address:
         // An address taken may be written through — but an alias's, which
@@ -869,6 +874,51 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     case .Call:
         flow_init_out_params(s, op, state)
     }
+}
+
+// Where a read found unset is assigned (v, or its field at `field`): the
+// lines of the code's writes to it, said after the error ("": none, the error
+// alone). Its bare declaration and `void` aren't assignments.
+@(private="file")
+flow_set_hint :: proc(s: ^Init, v: Node_Id, field: string) -> string {
+    g := s.g
+    touches :: proc(s: ^Init, d: Node_Id, v: Node_Id, field: string) -> bool {
+        if d == NO_NODE { return false }
+        if graph_is_leaf(d) { return graph_refers(s.g, d) == v }
+        if graph_kind_of(s.g, d) != .Op { return false }
+        w, path, _, ok := flow_place_path(s, d)
+        return ok && w == v && (field == "" || flow_paths_meet(field, path))
+    }
+    lines := make([dynamic]int, s.scratch)
+    for r in s.runs {
+        for op in graph_run(g, int(r)) {
+            hit := false
+            #partial switch graph_op_of(g, op) {
+            case .Write, .Fill, .Byte_Read, .Construct:
+                ops := graph_operands(g, op)
+                if len(ops) == 0 { break }
+                if graph_op_of(g, op) == .Write && len(ops) > 1 {
+                    val := ops[1].op
+                    if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" { break }
+                }
+                hit = touches(s, ops[0].op, v, field)
+            case .Address:
+                hit = touches(s, graph_operands(g, op)[0].op, v, field)
+            }
+            if !hit { continue }
+            line := span_line(graph_origin(g, op))
+            if line > 0 && !slice.contains(lines[:], line) { append(&lines, line) }
+        }
+    }
+    if len(lines) == 0 { return "" }
+    slice.sort(lines[:])
+    b := strings.builder_make(s.scratch)
+    strings.write_string(&b, "line " if len(lines) == 1 else "lines ")
+    for line, i in lines {
+        if i > 0 { strings.write_string(&b, " and " if i == len(lines) - 1 else ", ") }
+        strings.write_int(&b, line)
+    }
+    return fmt.aprintf(TYPE_ASSIGNED_ONLY_AT, strings.to_string(b))
 }
 
 // A call's arguments that hand it a variable's address: from the call on, it

@@ -1,0 +1,21 @@
+module unset_assigned_in_loop_neg
+//@ expect-fail: field 'tokens' of 'found' is used before being assigned a value: it's only assigned at line 17, which may not run before this
+
+use mara.core
+
+// A variable given a value only inside an if in a loop: the loop may find
+// nothing. The error says where it is assigned, so why it may be unset.
+
+File :: struct { name: i64, tokens: ^i64 }
+
+main :: fun(args: [][]utf8) {
+	t := 7
+	files : [2!]File = [File{1, &t}, File{2, &t}]
+	found : File
+	for f in files {
+		if f.name == args.len {
+			found = f
+		}
+	}
+	print("%", found.tokens^)
+}

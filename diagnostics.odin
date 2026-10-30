@@ -498,6 +498,7 @@ TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS :: "if-expression branches have i
 TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE :: "tuple-destructure index %d out of range for %d-tuple"
 TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT :: "#self is only legal directly in a constructor body (a method or nested helper must take an explicit ^Self)"
 TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE :: "field '%s' of '%s' is used before being assigned a value"
+TYPE_ASSIGNED_ONLY_AT :: ": it's only assigned at %s, which may not run before this"
 TYPE_LITERAL_LEAVES_UNSET :: "%s has %d %s but %s. %s %s not set."
 TYPE_FIELD_ALIASED_VIA_USED_BEFORE :: "field '%s' of '%s' (aliased via '%s') is used before being assigned a value"
 TYPE_UNION_TAG_ENUM_INTERNAL_ERROR :: "union '%s' has no tag enum (internal error)"
