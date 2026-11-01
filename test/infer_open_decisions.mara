@@ -1,5 +1,6 @@
 module infer_open_decisions
 
+use mara.core
 use mara.math
 include mara.memory
 

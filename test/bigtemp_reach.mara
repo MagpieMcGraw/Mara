@@ -9,6 +9,7 @@ module bigtemp_reach
 // overwrites), round after round of a loop. (Handed `&h.big.a[0]` itself —
 // surely its result's place — it's an error: result_reads_dest_neg.)
 
+use mara.core
 use mara.memory
 
 #allocator Arena_Basic(16 * MB)

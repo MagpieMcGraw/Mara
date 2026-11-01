@@ -11,6 +11,7 @@ module test_fail
 //
 // As shipped (every negative commented/uncalled) this builds and runs clean.
 
+use mara.core
 use mara.memory
 
 #allocator Arena_Debug(1 * MB)

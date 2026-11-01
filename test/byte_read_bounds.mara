@@ -1,5 +1,6 @@
 module byte_read_bounds
 
+use mara.core
 use mara.endian
 include mara.memory
 

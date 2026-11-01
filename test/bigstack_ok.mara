@@ -1,4 +1,5 @@
 module bigstack_ok
+include mara.core
 include mara.memory
 
 #allocator Arena_Basic(16 * MB)

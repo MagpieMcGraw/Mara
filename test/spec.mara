@@ -19,7 +19,8 @@ module spec
 //   - Every section is a `fun` called from main, in reading order.
 // =============================================================================
 
-use mara.memory   // Arena_Debug (#allocator), and the MB constant
+use mara.core
+use mara.memory   // Arena_Debug (#allocator)
 use mara.string
 
 #allocator Arena_Debug(1 * MB)

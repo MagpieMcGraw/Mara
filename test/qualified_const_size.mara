@@ -1,7 +1,6 @@
 module qualified_const_size
 
-use mara.core
-mem :: use mara.memory
+core :: use mara.core
 
 //@ expect-output: sizes: 64 8 128 16
 
@@ -11,9 +10,9 @@ mem :: use mara.memory
 // constant". (Another module of the program: qualified_size/.)
 
 main :: fun() {
-	a : [mem.KB / 16]byte
-	b : [mem.KB / 128!]u8
-	c : [2 * (mem.KB / 16)]u8
-	d : [mem.KB >> 6!]i32
+	a : [core.KB / 16]byte
+	b : [core.KB / 128!]u8
+	c : [2 * (core.KB / 16)]u8
+	d : [core.KB >> 6!]i32
 	print("sizes:", a.cap, b.len, c.cap, d.len)
 }

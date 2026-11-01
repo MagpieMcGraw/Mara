@@ -5,6 +5,7 @@ module esc_block_neg
 // allocator resets there, so a view of `big` read after the `if` is a
 // use-after-free (it read back 0 instead of 77 before this was an error).
 
+use mara.core
 use mara.memory
 
 #allocator Arena_Debug(1 * MB)

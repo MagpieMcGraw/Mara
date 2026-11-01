@@ -63,9 +63,9 @@ example_module :: fun() {
 example_use :: fun() {
 	// At the top of a file:
 	//
-	//     use mara.core
+	//     use mara.core             // KB, MB, str64
 	//     use mara.string           // trimmed(line)
-	//     use mara.memory           // KB, MB, Arena_Debug
+	//     use mara.memory           // Arena_Debug
 	//     os :: use mara.os         // os.read_entire_file(…)
 }
 

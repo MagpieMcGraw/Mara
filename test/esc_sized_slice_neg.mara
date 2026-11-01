@@ -5,6 +5,7 @@ module esc_sized_slice_neg
 // allocator resets when make_it returns): the second call would reuse it,
 // and `t[0]` read back 9.
 
+use mara.core
 use mara.memory
 
 #allocator Arena_Debug(1 * MB)

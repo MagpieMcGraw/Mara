@@ -5,6 +5,7 @@ module test_arena_alignment
 // Without alignment a 1-byte alloc would leave offset=1 and the next alloc
 // would start at offset=1 (returning an unaligned ptr).
 
+use mara.core
 use mara.memory
 
 test_arena_alignment :: fun() {

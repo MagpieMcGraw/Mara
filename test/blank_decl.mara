@@ -1,5 +1,6 @@
 module blank_decl
 
+include mara.core
 include mara.memory
 
 #allocator Arena_Basic(1 * MB)

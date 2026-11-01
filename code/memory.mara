@@ -11,13 +11,6 @@ use mara.os
 	}
 }
 
-// 1024 bytes.
-KB :: 1 << 10
-// 1024 KB, in bytes: `16 * MB`.
-MB :: 1 << 20
-// 1024 MB, in bytes.
-GB :: 1 << 30
-
 // Dynamic arena idea rejected
 
 // The arena the code after it puts its big values on — set to a (an arena

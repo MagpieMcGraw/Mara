@@ -1,6 +1,6 @@
 module unimported_const_size_fail
 
-use mara.memory
+use mara.core
 use helper
 
 main :: fun() -> i64 {
