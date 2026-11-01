@@ -1,0 +1,13 @@
+module slice_ptr_to_list_decl_neg
+//@ expect-fail: cannot assign ^[]i64 to variable 'p' of type ^[64]i64
+
+use mara.core
+
+// The same in a declaration: a ^[]T has no list for a ^[N]T to point at.
+
+main :: fun() {
+	store : [64]i64
+	s := store[:]
+	p : ^[64]i64 = &s
+	print("%", p.len)
+}

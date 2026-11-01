@@ -1,0 +1,19 @@
+module slice_ptr_to_list_param_neg
+//@ expect-fail: `line_slice` is a slice, and a ^[64]i64 points at a list: pass the list itself, or make the param ^[]i64, which takes both
+
+use mara.core
+
+// A slice's address where a list's goes. A list's items are inline after its
+// len, a slice points at them, so there's no list for the param to point at.
+// The checker let it through and codegen failed ("its construct 'File'").
+
+File :: class (data: []utf8, line_arr: ^[64]i64) {
+	lines := slice([:data.len]i64, line_arr)
+}
+
+main :: fun() {
+	lines : [64]i64
+	line_slice := lines[:]
+	f := File("abc", &line_slice)
+	print("%", f.lines.cap)
+}

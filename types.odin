@@ -983,6 +983,12 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // No array→slice decay through a pointer: ^[N!]T must not satisfy
         // ^[]T / ^[M]T (a fixed array has no slice header to alias).
         if ptr_pointee_layout_mismatch(va.elem, vb.elem) { return false }
+        // A list keeps its items inline after its len, a slice points at
+        // them. `&list` goes where a ^[]T does (the reference is made from
+        // the list), but a ^[]T has no list for a ^[N]T to point at.
+        if pa, to_list := distinct_base(va.elem).(^Type_Partial_Array); to_list && pa.text == 0 {
+            if _, from_slice := distinct_base(resolve_infer(vb.elem)).(^Type_Slice); from_slice { return false }
+        }
         // (A pointee whose width isn't decided yet matches no decided one —
         // what's written through the pointer is the pointee's width:
         // coerce_deferred decides it first, exactly.)
@@ -1052,9 +1058,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return items_compatible(va.elem, vb.elem)
     case ^Type_Partial_Array:
         // Partial arrays coerce to [:]T (slice view) and to [N!]T (fixed array)
-        // by element type. The first 24 bytes of a partial array's layout
-        // match a slice header, so `^[N]T` flows safely into `^[:]T` param
-        // slots — cursor mutations propagate back through the aliased memory.
+        // by element type. (Through a pointer only one way: see ^Type_Ptr.)
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return items_compatible(va.elem, sl.elem)
         }

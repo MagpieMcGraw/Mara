@@ -34,10 +34,25 @@ tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
 // A fixed array's address where a buffer that keeps a len goes — `&buf` of a
 // `[N!]T` into a `^[]T` (or `^[M]T`) param, `&buf + x`: the fix, a partial
 // array of the same room, as the error's last clause ("" when it's not
-// that). `want` nil: any buffer (an append's).
+// that). `want` nil: any buffer (an append's). A slice's address where a
+// list's goes gets its fix too.
 tc_partial_hint :: proc(k: ^TC, n: Tree_Id, got: Type, want: Type = nil) -> string {
     gp, g_ptr := got.(^Type_Ptr)
     if !g_ptr { return "" }
+    // (Its name, seen through the `&`.)
+    what :: proc(k: ^TC, n: Tree_Id) -> string {
+        m := tc_unparen(k, n)
+        if k.t.tag[m] == .Unary && build_tokens[k.t.main[m]].kind == .Ampersand { m = Tree_Id(k.t.a[m]) }
+        name := tc_diag_name(k, m)
+        return fmt.tprintf("`%s`", name) if name != "" else "it"
+    }
+    if wp, w_ptr := want.(^Type_Ptr); w_ptr {
+        if wl, to_list := distinct_base(wp.elem).(^Type_Partial_Array); to_list && wl.text == 0 {
+            if _, from_slice := distinct_base(resolve_infer(gp.elem)).(^Type_Slice); from_slice {
+                return fmt.tprintf(" — %s is a slice, and a %s points at a list: pass the list itself, or make the param ^[]%s, which takes both", what(k, n), type_name(want), type_name(wl.elem))
+            }
+        }
+    }
     fa, g_fixed := distinct_base(gp.elem).(^Type_Fixed_Array)
     if !g_fixed { return "" }
     if want != nil {
@@ -51,12 +66,7 @@ tc_partial_hint :: proc(k: ^TC, n: Tree_Id, got: Type, want: Type = nil) -> stri
         }
         if types_incompatible(elem, fa.elem) { return "" }
     }
-    // (Its name, seen through the `&`.)
-    m := tc_unparen(k, n)
-    if k.t.tag[m] == .Unary && build_tokens[k.t.main[m]].kind == .Ampersand { m = Tree_Id(k.t.a[m]) }
-    name := tc_diag_name(k, m)
-    what := fmt.tprintf("`%s`", name) if name != "" else "it"
-    return fmt.tprintf(" — %s is a fixed array, with no len to move: declare it a list, `[%d]%s`", what, fa.size, type_name(fa.elem))
+    return fmt.tprintf(" — %s is a fixed array, with no len to move: declare it a list, `[%d]%s`", what(k, n), fa.size, type_name(fa.elem))
 }
 
 // An array where a buffer of items laid out otherwise goes (text kept as
