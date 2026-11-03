@@ -40,6 +40,7 @@ typedef long long     GLsizeiptr;
 typedef long long     GLintptr;
 typedef unsigned long long GLuint64;   // a bindless texture's handle
 typedef unsigned char GLubyte;
+typedef struct __GLsync *GLsync;       // a fence: FenceSync's
 
 // Function pointer types
 typedef GLuint (*PFN_glCreateShader)(GLenum type);
@@ -104,6 +105,16 @@ typedef void   (*PFN_glMultiDrawElementsIndirect)(GLenum mode, GLenum type, cons
 typedef void   (*PFN_glDetachShader)(GLuint program, GLuint shader);
 typedef void   (*PFN_glDeleteVertexArrays)(GLsizei n, const GLuint *arrays);
 typedef void   (*PFN_glDeleteBuffers)(GLsizei n, const GLuint *buffers);
+typedef GLsync (*PFN_glFenceSync)(GLenum condition, GLbitfield flags);
+typedef GLenum (*PFN_glClientWaitSync)(GLsync sync, GLbitfield flags, GLuint64 timeout);
+typedef void   (*PFN_glDeleteSync)(GLsync sync);
+typedef void   (*PFN_glGenQueries)(GLsizei n, GLuint *ids);
+typedef void   (*PFN_glDeleteQueries)(GLsizei n, const GLuint *ids);
+typedef void   (*PFN_glQueryCounter)(GLuint id, GLenum target);
+typedef void   (*PFN_glBeginQuery)(GLenum target, GLuint id);
+typedef void   (*PFN_glEndQuery)(GLenum target);
+typedef void   (*PFN_glGetQueryObjectiv)(GLuint id, GLenum pname, GLint *params);
+typedef void   (*PFN_glGetQueryObjectui64v)(GLuint id, GLenum pname, GLuint64 *params);
 
 // ---------------------------------------------------------------------------
 // Internal function pointers
@@ -170,6 +181,16 @@ static PFN_glMultiDrawElementsIndirect _glMultiDrawElementsIndirect;
 static PFN_glDetachShader              _glDetachShader;
 static PFN_glDeleteVertexArrays        _glDeleteVertexArrays;
 static PFN_glDeleteBuffers             _glDeleteBuffers;
+static PFN_glFenceSync                 _glFenceSync;
+static PFN_glClientWaitSync            _glClientWaitSync;
+static PFN_glDeleteSync                _glDeleteSync;
+static PFN_glGenQueries                _glGenQueries;
+static PFN_glDeleteQueries             _glDeleteQueries;
+static PFN_glQueryCounter              _glQueryCounter;
+static PFN_glBeginQuery                _glBeginQuery;
+static PFN_glEndQuery                  _glEndQuery;
+static PFN_glGetQueryObjectiv          _glGetQueryObjectiv;
+static PFN_glGetQueryObjectui64v       _glGetQueryObjectui64v;
 
 // ---------------------------------------------------------------------------
 // Loader — call after creating a GL context. Caller passes the platform's
@@ -246,6 +267,16 @@ static Gl_Proc gl_procs[] = {
     {"glDetachShader",                    (void **)&_glDetachShader},
     {"glDeleteVertexArrays",              (void **)&_glDeleteVertexArrays},
     {"glDeleteBuffers",                   (void **)&_glDeleteBuffers},
+    {"glFenceSync",                       (void **)&_glFenceSync},
+    {"glClientWaitSync",                  (void **)&_glClientWaitSync},
+    {"glDeleteSync",                      (void **)&_glDeleteSync},
+    {"glGenQueries",                      (void **)&_glGenQueries},
+    {"glDeleteQueries",                   (void **)&_glDeleteQueries},
+    {"glQueryCounter",                    (void **)&_glQueryCounter},
+    {"glBeginQuery",                      (void **)&_glBeginQuery},
+    {"glEndQuery",                        (void **)&_glEndQuery},
+    {"glGetQueryObjectiv",                (void **)&_glGetQueryObjectiv},
+    {"glGetQueryObjectui64v",             (void **)&_glGetQueryObjectui64v},
 };
 
 int         mara_gl_proc_count(void)              { return (int)(sizeof(gl_procs) / sizeof(gl_procs[0])); }
@@ -342,6 +373,20 @@ void   glUniformHandleui64ARB(GLint location, GLuint64 value)                   
 
 // Multi-draw indirect
 void   glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride) { _glMultiDrawElementsIndirect(mode, type, indirect, drawcount, stride); }
+
+// Fences (GL 3.2)
+GLsync glFenceSync(GLenum condition, GLbitfield flags)                                { return _glFenceSync(condition, flags); }
+GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)              { return _glClientWaitSync(sync, flags, timeout); }
+void   glDeleteSync(GLsync sync)                                                      { _glDeleteSync(sync); }
+
+// Queries: timers (GL 3.3) and samples passed
+void   glGenQueries(GLsizei n, GLuint *ids)                                           { _glGenQueries(n, ids); }
+void   glDeleteQueries(GLsizei n, const GLuint *ids)                                  { _glDeleteQueries(n, ids); }
+void   glQueryCounter(GLuint id, GLenum target)                                       { _glQueryCounter(id, target); }
+void   glBeginQuery(GLenum target, GLuint id)                                         { _glBeginQuery(target, id); }
+void   glEndQuery(GLenum target)                                                      { _glEndQuery(target); }
+void   glGetQueryObjectiv(GLuint id, GLenum pname, GLint *params)                     { _glGetQueryObjectiv(id, pname, params); }
+void   glGetQueryObjectui64v(GLuint id, GLenum pname, GLuint64 *params)               { _glGetQueryObjectui64v(id, pname, params); }
 
 // ---------------------------------------------------------------------------
 // Shader/program convenience helpers — Mara's binding layer can't easily pass

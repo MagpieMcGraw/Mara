@@ -14,6 +14,7 @@ gl :: use mara.open_gl
 //@ expect-output: hdr: 34842 35898 5131
 //@ expect-output: cube: 34067 34069 34074 12288
 //@ expect-output: names: Clear
+//@ expect-output: sync: 37148 36392 35007 34919
 
 // mara.open_gl's values, as GL numbers them, and its functions linked: a
 // call to each is built (not run — that needs a GL context) so a name
@@ -85,6 +86,23 @@ uses :: fun() {
 		gl.UniformHandleui64ARB(0, handle)
 		gl.MakeTextureHandleNonResidentARB(handle)
 	}
+	// (A fence waited on; a timer read once it's ready; the card sent its
+	// commands, then waited for.)
+	fence := gl.FenceSync()
+	if gl.ClientWaitSync(fence, 1000000) == u32(gl.TIMEOUT_EXPIRED) do print("late")
+	gl.DeleteSync(fence)
+	queries : [2!]u32
+	gl.GenQueries(2, &queries[0])
+	gl.QueryCounter(queries[0], gl.TIMESTAMP)
+	gl.BeginQuery(gl.TIME_ELAPSED, queries[1])
+	gl.EndQuery(gl.TIME_ELAPSED)
+	ready : i32 = 0
+	gl.GetQueryObjectiv(queries[1], gl.QUERY_RESULT_AVAILABLE, &ready)
+	took : u64 = 0
+	if ready == 1 do gl.GetQueryObjectui64v(queries[1], gl.QUERY_RESULT, &took)
+	gl.DeleteQueries(2, &queries[0])
+	gl.Flush()
+	gl.Finish()
 }
 
 main :: fun(args: [][]utf8) {
@@ -104,5 +122,6 @@ main :: fun(args: [][]utf8) {
 	// (A local may take a C fun's name: it's open_gl.mara's alone.)
 	glClear := "Clear"
 	print("names:", glClear)
+	print("sync:", u32(gl.CONDITION_SATISFIED), u32(gl.TIMESTAMP), u32(gl.TIME_ELAPSED), u32(gl.QUERY_RESULT_AVAILABLE))
 	if args.len > 100 do uses()
 }

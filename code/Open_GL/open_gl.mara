@@ -292,6 +292,43 @@ GL_Get_Param :: union(tag u32) {
     MAX_DRAW_BUFFERS                 = 34852   // 0x8824
 }
 
+// A fence: FenceSync makes one, ClientWaitSync waits on it, DeleteSync
+// frees it.
+GL_Sync :: ^byte
+
+// What ClientWaitSync says, as a number: compare it with
+// `u32(gl.CONDITION_SATISFIED)` and the rest. ALREADY_SIGNALED: the card
+// had already passed the fence. CONDITION_SATISFIED: it passed the fence
+// while we waited. TIMEOUT_EXPIRED: the time ran out first. WAIT_FAILED:
+// the call itself failed.
+GL_Wait_Result :: union(tag u32) {
+    ALREADY_SIGNALED    = 37146   // 0x911A
+    TIMEOUT_EXPIRED     = 37147   // 0x911B
+    CONDITION_SATISFIED = 37148   // 0x911C
+    WAIT_FAILED         = 37149   // 0x911D
+}
+
+// What a query measures. TIMESTAMP is the card's clock when it reaches
+// the query (QueryCounter). TIME_ELAPSED is how long the card took over the
+// commands between BeginQuery and EndQuery. Both are in nanoseconds.
+// SAMPLES_PASSED counts the pixels that passed the depth test between Begin
+// and End, and ANY_SAMPLES_PASSED is 1 if any did, else 0: occlusion
+// queries.
+GL_Query_Target :: union(tag u32) {
+    SAMPLES_PASSED     = 35092   // 0x8914
+    ANY_SAMPLES_PASSED = 35887   // 0x8C2F
+    TIME_ELAPSED       = 35007   // 0x88BF
+    TIMESTAMP          = 36392   // 0x8E28
+}
+
+// What GetQueryObject reads. QUERY_RESULT_AVAILABLE is 1 once the card has
+// the result, else 0. QUERY_RESULT is the result, and reading it before
+// it's available waits for the card.
+GL_Query_Param :: union(tag u32) {
+    QUERY_RESULT           = 34918   // 0x8866
+    QUERY_RESULT_AVAILABLE = 34919   // 0x8867
+}
+
 // ---------------------------------------------------------------------------
 // GL 1.1 functions — available directly from opengl32.lib (Windows)
 // ---------------------------------------------------------------------------
@@ -340,6 +377,8 @@ foreign static_lib "opengl32" {
     fun glColorMask(r: u8, g: u8, b: u8, a: u8)                          // GLboolean each: which color channels draws write
     fun glDrawBuffer(buf: GL_Attachment)                                 // the bound framebuffer's one color output, or NONE
     fun glReadBuffer(src: GL_Attachment)                                 // what reads and blits take from it
+    fun glFinish()
+    fun glFlush()
 }
 
 Enable :: fun(cap: GL_Capability) { glEnable(cap) }
@@ -381,6 +420,12 @@ ClearDepth :: fun(depth: f64) { glClearDepth(depth) }
 ColorMask :: fun(r: u8, g: u8, b: u8, a: u8) { glColorMask(r, g, b, a) }
 DrawBuffer :: fun(buf: GL_Attachment) { glDrawBuffer(buf) }
 ReadBuffer :: fun(src: GL_Attachment) { glReadBuffer(src) }
+// Waits until the card has finished every command sent so far, a swap
+// included.
+Finish :: fun() { glFinish() }
+// Sends the commands given so far to the card without waiting for them.
+// The card starts on them while the CPU carries on.
+Flush :: fun() { glFlush() }
 
 // ---------------------------------------------------------------------------
 // Modern GL functions (3.0+) — loaded at runtime via open_gl.c.
@@ -491,6 +536,16 @@ foreign static_lib "open_gl" {
     fun glMakeTextureHandleNonResidentARB(handle: u64)
     fun glUniformHandleui64ARB(location: i32, value: u64)
     fun glMultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32)
+    fun glFenceSync(condition: u32, flags: u32) -> GL_Sync
+    fun glClientWaitSync(sync: GL_Sync, flags: u32, timeout: u64) -> u32   // a GL_Wait_Result's value
+    fun glDeleteSync(sync: GL_Sync)
+    fun glGenQueries(n: i32, ids: ^u32)                                  // GLuint* ids
+    fun glDeleteQueries(n: i32, ids: ^u32)                               // const GLuint* ids
+    fun glQueryCounter(id: u32, target: GL_Query_Target)
+    fun glBeginQuery(target: GL_Query_Target, id: u32)
+    fun glEndQuery(target: GL_Query_Target)
+    fun glGetQueryObjectiv(id: u32, pname: GL_Query_Param, params: ^i32)
+    fun glGetQueryObjectui64v(id: u32, pname: GL_Query_Param, params: ^u64)
 }
 
 // Shaders
@@ -662,3 +717,47 @@ UniformHandleui64ARB :: fun(location: i32, value: u64) { glUniformHandleui64ARB(
 // in bytes (GL's `const void*`, an offset), so one buffer holds every
 // group's commands.
 MultiDrawElementsIndirect :: fun(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32) { glMultiDrawElementsIndirect(mode, type, indirect, drawcount, stride) }
+
+// Fences (GL 3.2). A fence is a marker put among the commands sent to the
+// card. Waiting on it waits until the card has done every command before
+// it, without waiting for the ones after, as Finish would. Put one after
+// each frame's swap, and wait on an older frame's before starting a new
+// frame: the card can then be a frame behind the CPU, but no more.
+
+// A new fence after the commands given so far.
+FenceSync :: fun() -> GL_Sync {
+    gpu_commands_complete : u32 = 0x9117   // GL_SYNC_GPU_COMMANDS_COMPLETE, the only kind
+    return glFenceSync(gpu_commands_complete, 0)
+}
+// Waits until the card passes the fence, or until `timeout` nanoseconds
+// have gone by; 0 just asks without waiting. It sends waiting commands to
+// the card first (GL's SYNC_FLUSH_COMMANDS_BIT), so it can't wait forever
+// on a fence the card was never sent. Says what happened as a
+// GL_Wait_Result's value.
+ClientWaitSync :: fun(sync: GL_Sync, timeout: u64) -> u32 {
+    flush_commands : u32 = 1   // GL_SYNC_FLUSH_COMMANDS_BIT
+    return glClientWaitSync(sync, flush_commands, timeout)
+}
+// Frees a fence. Waiting on it after is an error.
+DeleteSync :: fun(sync: GL_Sync) { glDeleteSync(sync) }
+
+// Queries (timers GL 3.3). The card fills in a query's result when it gets
+// to it, usually a frame or two after the CPU asked. Check
+// QUERY_RESULT_AVAILABLE before reading QUERY_RESULT, or keep a few queries
+// per frame in turn, so reading never waits. To time the card's work in a
+// frame, QueryCounter(id, TIMESTAMP) at its start and end, and subtract.
+GenQueries :: fun(n: i32, ids: ^u32) { glGenQueries(n, ids) }
+DeleteQueries :: fun(n: i32, ids: ^u32) { glDeleteQueries(n, ids) }
+// Records the card's clock in query `id` when the card reaches this
+// point. `target` is TIMESTAMP, the only one allowed here.
+QueryCounter :: fun(id: u32, target: GL_Query_Target) { glQueryCounter(id, target) }
+// The commands between BeginQuery and EndQuery are measured by query `id`
+// (TIME_ELAPSED, SAMPLES_PASSED, ANY_SAMPLES_PASSED). One query of each
+// target can run at a time.
+BeginQuery :: fun(target: GL_Query_Target, id: u32) { glBeginQuery(target, id) }
+EndQuery :: fun(target: GL_Query_Target) { glEndQuery(target) }
+// A query's result or whether it's available yet, as an i32 (a count, or
+// 1 or 0).
+GetQueryObjectiv :: fun(id: u32, pname: GL_Query_Param, params: ^i32) { glGetQueryObjectiv(id, pname, params) }
+// A query's result as a u64: times in nanoseconds won't fit an i32.
+GetQueryObjectui64v :: fun(id: u32, pname: GL_Query_Param, params: ^u64) { glGetQueryObjectui64v(id, pname, params) }
