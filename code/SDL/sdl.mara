@@ -1242,79 +1242,109 @@ foreign static_lib "SDL3" {
     fun SDL_DestroyAudioStream(stream: AudioStream)
 }
 
-Init :: fun(flags: Init_Flags) -> bool { return SDL_Init(flags) }
-SetHint :: fun(name: []utf8, value: []utf8) -> bool { return SDL_SetHint(cstring(name), cstring(value)) }
-CreateWindow :: fun(title: []utf8, w: i32, h: i32, flags: WindowFlags) -> Window { return SDL_CreateWindow(cstring(title), w, h, flags) }
+// What SDL's functions fail with. A wrapper below returns Failed when
+// SDL's own function says it failed: it gave back false, or no handle.
+// SDL's reason is in GetError() then, until another SDL call fails, and
+// the err's where() names the wrapper, so which call it was.
+Sdl_Error :: error { Failed }
+
+Init :: fun(flags: Init_Flags) -> err { if not SDL_Init(flags) do return Failed }
+SetHint :: fun(name: []utf8, value: []utf8) -> err { if not SDL_SetHint(cstring(name), cstring(value)) do return Failed }
+CreateWindow :: fun(title: []utf8, w: i32, h: i32, flags: WindowFlags) -> Window, err {
+    made := SDL_CreateWindow(cstring(title), w, h, flags)
+    if made == void do return made, Failed
+    return made
+}
 DestroyWindow :: fun(window: Window) { SDL_DestroyWindow(window) }
-GetWindowSize :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSize(window, w, h) }
-GetWindowSizeInPixels :: fun(window: Window, w: ^i32, h: ^i32) -> bool { return SDL_GetWindowSizeInPixels(window, w, h) }
+GetWindowSize :: fun(window: Window, w: ^i32, h: ^i32) -> err { if not SDL_GetWindowSize(window, w, h) do return Failed }
+GetWindowSizeInPixels :: fun(window: Window, w: ^i32, h: ^i32) -> err { if not SDL_GetWindowSizeInPixels(window, w, h) do return Failed }
 // Locks the cursor to the window, hides it, and feeds relative motion.
-SetWindowRelativeMouseMode :: fun(window: Window, enabled: bool) -> bool { return SDL_SetWindowRelativeMouseMode(window, enabled) }
+SetWindowRelativeMouseMode :: fun(window: Window, enabled: bool) -> err { if not SDL_SetWindowRelativeMouseMode(window, enabled) do return Failed }
 PollEvent :: fun(event: ^Event) -> bool { return SDL_PollEvent(event) }
 Delay :: fun(ms: u32) { SDL_Delay(ms) }
 Quit :: fun() { SDL_Quit() }
 // name: a driver's ("opengl", "direct3d11", …).
-CreateRenderer :: fun(window: Window, name: []utf8) -> Renderer { return SDL_CreateRenderer(window, cstring(name)) }
+CreateRenderer :: fun(window: Window, name: []utf8) -> Renderer, err {
+    made := SDL_CreateRenderer(window, cstring(name))
+    if made == void do return made, Failed
+    return made
+}
 DestroyRenderer :: fun(renderer: Renderer) { SDL_DestroyRenderer(renderer) }
-SetRenderDrawColor :: fun(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool { return SDL_SetRenderDrawColor(renderer, r, g, b, a) }
-RenderClear :: fun(renderer: Renderer) -> bool { return SDL_RenderClear(renderer) }
-RenderFillRect :: fun(renderer: Renderer, rect: ^SDL_FRect) -> bool { return SDL_RenderFillRect(renderer, rect) }
-RenderPresent :: fun(renderer: Renderer) -> bool { return SDL_RenderPresent(renderer) }
-SetRenderDrawBlendMode :: fun(renderer: Renderer, mode: u32) -> bool { return SDL_SetRenderDrawBlendMode(renderer, mode) }
-SetRenderVSync :: fun(renderer: Renderer, vsync: i32) -> bool { return SDL_SetRenderVSync(renderer, vsync) }
+SetRenderDrawColor :: fun(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> err { if not SDL_SetRenderDrawColor(renderer, r, g, b, a) do return Failed }
+RenderClear :: fun(renderer: Renderer) -> err { if not SDL_RenderClear(renderer) do return Failed }
+RenderFillRect :: fun(renderer: Renderer, rect: ^SDL_FRect) -> err { if not SDL_RenderFillRect(renderer, rect) do return Failed }
+RenderPresent :: fun(renderer: Renderer) -> err { if not SDL_RenderPresent(renderer) do return Failed }
+SetRenderDrawBlendMode :: fun(renderer: Renderer, mode: u32) -> err { if not SDL_SetRenderDrawBlendMode(renderer, mode) do return Failed }
+SetRenderVSync :: fun(renderer: Renderer, vsync: i32) -> err { if not SDL_SetRenderVSync(renderer, vsync) do return Failed }
 // The renderer's size in pixels (a window's on a high-density display
 // has more than its size says).
-GetRenderOutputSize :: fun(renderer: Renderer, w: ^i32, h: ^i32) -> bool { return SDL_GetRenderOutputSize(renderer, w, h) }
+GetRenderOutputSize :: fun(renderer: Renderer, w: ^i32, h: ^i32) -> err { if not SDL_GetRenderOutputSize(renderer, w, h) do return Failed }
 // Drawing kept inside rect (ClearRenderClipRect: everywhere again).
-SetRenderClipRect :: fun(renderer: Renderer, rect: ^SDL_Rect) -> bool { return SDL_SetRenderClipRect(renderer, rect) }
+SetRenderClipRect :: fun(renderer: Renderer, rect: ^SDL_Rect) -> err { if not SDL_SetRenderClipRect(renderer, rect) do return Failed }
 // Drawing everywhere again: no clip rect.
-ClearRenderClipRect :: fun(renderer: Renderer) -> bool { return SDL_SetRenderClipRect(renderer, void) }
-CreateTexture :: fun(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture { return SDL_CreateTexture(renderer, format, access, w, h) }
+ClearRenderClipRect :: fun(renderer: Renderer) -> err { if not SDL_SetRenderClipRect(renderer, void) do return Failed }
+CreateTexture :: fun(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture, err {
+    made := SDL_CreateTexture(renderer, format, access, w, h)
+    if made == void do return made, Failed
+    return made
+}
 // The pixels of the texture's rect, `pitch` bytes from a row to the next
 // (UpdateWholeTexture: all of it).
-UpdateTexture :: fun(texture: Texture, rect: ^SDL_Rect, pixels: []$T, pitch: i32) -> bool { return SDL_UpdateTexture(texture, rect, pixels.ptr, pitch) }
+UpdateTexture :: fun(texture: Texture, rect: ^SDL_Rect, pixels: []$T, pitch: i32) -> err { if not SDL_UpdateTexture(texture, rect, pixels.ptr, pitch) do return Failed }
 // The whole texture's pixels, as UpdateTexture writes a rect's.
-UpdateWholeTexture :: fun(texture: Texture, pixels: []$T, pitch: i32) -> bool { return SDL_UpdateTexture(texture, void, pixels.ptr, pitch) }
-RenderTexture :: fun(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> bool { return SDL_RenderTexture(renderer, texture, src, dst) }
-SetTextureBlendMode :: fun(texture: Texture, mode: u32) -> bool { return SDL_SetTextureBlendMode(texture, mode) }
+UpdateWholeTexture :: fun(texture: Texture, pixels: []$T, pitch: i32) -> err { if not SDL_UpdateTexture(texture, void, pixels.ptr, pitch) do return Failed }
+RenderTexture :: fun(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> err { if not SDL_RenderTexture(renderer, texture, src, dst) do return Failed }
+SetTextureBlendMode :: fun(texture: Texture, mode: u32) -> err { if not SDL_SetTextureBlendMode(texture, mode) do return Failed }
 // Each texel's color multiplied by this: white texels drawn in it.
-SetTextureColorMod :: fun(texture: Texture, r: u8, g: u8, b: u8) -> bool { return SDL_SetTextureColorMod(texture, r, g, b) }
-SetTextureScaleMode :: fun(texture: Texture, mode: i32) -> bool { return SDL_SetTextureScaleMode(texture, mode) }
+SetTextureColorMod :: fun(texture: Texture, r: u8, g: u8, b: u8) -> err { if not SDL_SetTextureColorMod(texture, r, g, b) do return Failed }
+SetTextureScaleMode :: fun(texture: Texture, mode: i32) -> err { if not SDL_SetTextureScaleMode(texture, mode) do return Failed }
 DestroyTexture :: fun(texture: Texture) { SDL_DestroyTexture(texture) }
 // The next event, waiting for it up to ms milliseconds: false when none came.
 WaitEventTimeout :: fun(event: ^Event, ms: i32) -> bool { return SDL_WaitEventTimeout(event, ms) }
-SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
-SetWindowSize :: fun(window: Window, w: i32, h: i32) -> bool { return SDL_SetWindowSize(window, w, h) }
+SetWindowTitle :: fun(window: Window, title: []utf8) -> err { if not SDL_SetWindowTitle(window, cstring(title)) do return Failed }
+SetWindowSize :: fun(window: Window, w: i32, h: i32) -> err { if not SDL_SetWindowSize(window, w, h) do return Failed }
 // The display the window is on, and the part of it windows can use
 // (the taskbar's left out).
 GetDisplayForWindow :: fun(window: Window) -> u32 { return SDL_GetDisplayForWindow(window) }
-GetDisplayUsableBounds :: fun(display: u32, rect: ^SDL_Rect) -> bool { return SDL_GetDisplayUsableBounds(display, rect) }
-// The display's mode now: its refresh rate among it. (void: none.)
-GetCurrentDisplayMode :: fun(display: u32) -> ^Display_Mode { return SDL_GetCurrentDisplayMode(display) }
+GetDisplayUsableBounds :: fun(display: u32, rect: ^SDL_Rect) -> err { if not SDL_GetDisplayUsableBounds(display, rect) do return Failed }
+// The display's mode now: its refresh rate among it.
+GetCurrentDisplayMode :: fun(display: u32) -> ^Display_Mode, err {
+    made := SDL_GetCurrentDisplayMode(display)
+    if made == void do return made, Failed
+    return made
+}
 // The modifier keys held now: KMOD_SHIFT, ...
 GetModState :: fun() -> u16 { return SDL_GetModState() }
 // Text put on the system's clipboard, for pasting anywhere.
-SetClipboardText :: fun(text: []utf8) -> bool { return SDL_SetClipboardText(cstring(text)) }
+SetClipboardText :: fun(text: []utf8) -> err { if not SDL_SetClipboardText(cstring(text)) do return Failed }
 // Where the cursor is on the screen (and the buttons held).
 GetGlobalMouseState :: fun(x: ^f32, y: ^f32) -> u32 { return SDL_GetGlobalMouseState(x, y) }
 // Where the window's inside is on the screen.
-GetWindowPosition :: fun(window: Window, x: ^i32, y: ^i32) -> bool { return SDL_GetWindowPosition(window, x, y) }
+GetWindowPosition :: fun(window: Window, x: ^i32, y: ^i32) -> err { if not SDL_GetWindowPosition(window, x, y) do return Failed }
 // The window's state, WindowFlags' bits: Minimized, InputFocus, ...
 GetWindowFlags :: fun(window: Window) -> u64 { return SDL_GetWindowFlags(window) }
 // A minimized (or maximized) window back to its size and place.
-RestoreWindow :: fun(window: Window) -> bool { return SDL_RestoreWindow(window) }
-MaximizeWindow :: fun(window: Window) -> bool { return SDL_MaximizeWindow(window) }
+RestoreWindow :: fun(window: Window) -> err { if not SDL_RestoreWindow(window) do return Failed }
+MaximizeWindow :: fun(window: Window) -> err { if not SDL_MaximizeWindow(window) do return Failed }
 // The window in front of the others, given the keyboard.
-RaiseWindow :: fun(window: Window) -> bool { return SDL_RaiseWindow(window) }
-CreateSystemCursor :: fun(id: i32) -> Cursor { return SDL_CreateSystemCursor(id) }
+RaiseWindow :: fun(window: Window) -> err { if not SDL_RaiseWindow(window) do return Failed }
+CreateSystemCursor :: fun(id: i32) -> Cursor, err {
+    made := SDL_CreateSystemCursor(id)
+    if made == void do return made, Failed
+    return made
+}
 // The mouse cursor's look, over the windows of this program.
-SetCursor :: fun(cursor: Cursor) -> bool { return SDL_SetCursor(cursor) }
-GL_SetAttribute :: fun(attr: GLattr, value: i32) -> bool { return SDL_GL_SetAttribute(attr, value) }
-GL_CreateContext :: fun(window: Window) -> GLContext { return SDL_GL_CreateContext(window) }
-GL_MakeCurrent :: fun(window: Window, context: GLContext) -> bool { return SDL_GL_MakeCurrent(window, context) }
-GL_DestroyContext :: fun(context: GLContext) -> bool { return SDL_GL_DestroyContext(context) }
-GL_SetSwapInterval :: fun(interval: i32) -> bool { return SDL_GL_SetSwapInterval(interval) }
-GL_SwapWindow :: fun(window: Window) -> bool { return SDL_GL_SwapWindow(window) }
+SetCursor :: fun(cursor: Cursor) -> err { if not SDL_SetCursor(cursor) do return Failed }
+GL_SetAttribute :: fun(attr: GLattr, value: i32) -> err { if not SDL_GL_SetAttribute(attr, value) do return Failed }
+GL_CreateContext :: fun(window: Window) -> GLContext, err {
+    made := SDL_GL_CreateContext(window)
+    if made == void do return made, Failed
+    return made
+}
+GL_MakeCurrent :: fun(window: Window, context: GLContext) -> err { if not SDL_GL_MakeCurrent(window, context) do return Failed }
+GL_DestroyContext :: fun(context: GLContext) -> err { if not SDL_GL_DestroyContext(context) do return Failed }
+GL_SetSwapInterval :: fun(interval: i32) -> err { if not SDL_GL_SetSwapInterval(interval) do return Failed }
+GL_SwapWindow :: fun(window: Window) -> err { if not SDL_GL_SwapWindow(window) do return Failed }
 GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
 GetTicks :: fun() -> u32 { return SDL_GetTicks() }
 GetTicksNS :: fun() -> u64 { return SDL_GetTicksNS() }
@@ -1333,8 +1363,12 @@ GetError :: fun() -> [256]utf8 {
 malloc :: fun(size: usize) -> ^byte { return SDL_malloc(size) }
 
 // Filesystem — IOStream
-IOFromFile :: fun(file: []utf8, mode: []utf8) -> IOStream { return SDL_IOFromFile(cstring(file), cstring(mode)) }
-CloseIO :: fun(context: IOStream) -> bool { return SDL_CloseIO(context) }
+IOFromFile :: fun(file: []utf8, mode: []utf8) -> IOStream, err {
+    made := SDL_IOFromFile(cstring(file), cstring(mode))
+    if made == void do return made, Failed
+    return made
+}
+CloseIO :: fun(context: IOStream) -> err { if not SDL_CloseIO(context) do return Failed }
 // As much as `into` holds read into it from the stream: how many bytes
 // came (fewer at its end; 0, failing).
 ReadIO :: fun(context: IOStream, into: []$T) -> usize { return SDL_ReadIO(context, into.ptr, usize(into.len * size_of(T))) }
@@ -1343,10 +1377,14 @@ WriteIO :: fun(context: IOStream, data: []$T) -> usize { return SDL_WriteIO(cont
 SeekIO :: fun(context: IOStream, offset: i64, whence: IOWhence) -> i64 { return SDL_SeekIO(context, offset, whence) }
 TellIO :: fun(context: IOStream) -> i64 { return SDL_TellIO(context) }
 GetIOSize :: fun(context: IOStream) -> i64 { return SDL_GetIOSize(context) }
-FlushIO :: fun(context: IOStream) -> bool { return SDL_FlushIO(context) }
-LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(cstring(file), datasize) }
+FlushIO :: fun(context: IOStream) -> err { if not SDL_FlushIO(context) do return Failed }
+LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte, err {
+    made := SDL_LoadFile(cstring(file), datasize)
+    if made == void do return made, Failed
+    return made
+}
 // `data` written to the file `file`, made new or over what it held.
-SaveFile :: fun(file: []utf8, data: []$T) -> bool { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
+SaveFile :: fun(file: []utf8, data: []$T) -> err { if not SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) do return Failed }
 
 // Filesystem — paths & metadata
 // The directory the program runs from, '/'-ended (SDL's to keep).
@@ -1372,11 +1410,11 @@ GetCurrentDirectory :: fun() -> [512]utf8 {
     if p != void do SDL_free(p)
     return out
 }
-CreateDirectory :: fun(path: []utf8) -> bool { return SDL_CreateDirectory(cstring(path)) }
-RemovePath :: fun(path: []utf8) -> bool { return SDL_RemovePath(cstring(path)) }
-RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
-CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> bool { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
-GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> bool { return SDL_GetPathInfo(cstring(path), info) }
+CreateDirectory :: fun(path: []utf8) -> err { if not SDL_CreateDirectory(cstring(path)) do return Failed }
+RemovePath :: fun(path: []utf8) -> err { if not SDL_RemovePath(cstring(path)) do return Failed }
+RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> err { if not SDL_RenamePath(cstring(oldpath), cstring(newpath)) do return Failed }
+CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> err { if not SDL_CopyFile(cstring(oldpath), cstring(newpath)) do return Failed }
+GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> err { if not SDL_GetPathInfo(cstring(path), info) do return Failed }
 
 // Audio — a stream to play through: opened on a device, given samples
 // (PutAudioStreamData), it plays them, converting to the device's format
@@ -1416,32 +1454,33 @@ AudioSpec :: struct {
 }
 
 // Starts or stops some of SDL (Audio, say) apart from Init.
-InitSubSystem :: fun(flags: Init_Flags) -> bool { return SDL_InitSubSystem(flags) }
+InitSubSystem :: fun(flags: Init_Flags) -> err { if not SDL_InitSubSystem(flags) do return Failed }
 QuitSubSystem :: fun(flags: Init_Flags) { SDL_QuitSubSystem(flags) }
 
 // A stream onto `device` (AUDIO_DEVICE_DEFAULT_PLAYBACK) taking samples of
-// `spec`, paused: void failing (GetError says why). What's played is what's
-// put into it — no callback.
-OpenAudioDeviceStream :: fun(device: u32, spec: AudioSpec) -> AudioStream {
+// `spec`, paused. What's played is what's put into it — no callback.
+OpenAudioDeviceStream :: fun(device: u32, spec: AudioSpec) -> AudioStream, err {
     s := spec
-    return SDL_OpenAudioDeviceStream(device, &s, void, void)
+    stream := SDL_OpenAudioDeviceStream(device, &s, void, void)
+    if stream == void do return stream, Failed
+    return stream
 }
 // The stream's device playing, or paused.
-ResumeAudioStreamDevice :: fun(stream: AudioStream) -> bool { return SDL_ResumeAudioStreamDevice(stream) }
-PauseAudioStreamDevice :: fun(stream: AudioStream) -> bool { return SDL_PauseAudioStreamDevice(stream) }
+ResumeAudioStreamDevice :: fun(stream: AudioStream) -> err { if not SDL_ResumeAudioStreamDevice(stream) do return Failed }
+PauseAudioStreamDevice :: fun(stream: AudioStream) -> err { if not SDL_PauseAudioStreamDevice(stream) do return Failed }
 // Samples to play after what's queued: `data` (f32s for AudioFormat.F32),
 // its channels' samples one after another.
-PutAudioStreamData :: fun(stream: AudioStream, data: []$T) -> bool {
-    return SDL_PutAudioStreamData(stream, data.ptr, i32(data.len * size_of(T)))
+PutAudioStreamData :: fun(stream: AudioStream, data: []$T) -> err {
+    if not SDL_PutAudioStreamData(stream, data.ptr, i32(data.len * size_of(T))) do return Failed
 }
 // How many bytes are queued, not played yet: what to keep ahead of.
 GetAudioStreamQueued :: fun(stream: AudioStream) -> i32 { return SDL_GetAudioStreamQueued(stream) }
 // What's queued dropped, unplayed.
-ClearAudioStream :: fun(stream: AudioStream) -> bool { return SDL_ClearAudioStream(stream) }
+ClearAudioStream :: fun(stream: AudioStream) -> err { if not SDL_ClearAudioStream(stream) do return Failed }
 // What's queued played through, though it doesn't fill a whole chunk: put
 // at the end.
-FlushAudioStream :: fun(stream: AudioStream) -> bool { return SDL_FlushAudioStream(stream) }
+FlushAudioStream :: fun(stream: AudioStream) -> err { if not SDL_FlushAudioStream(stream) do return Failed }
 // The stream's volume: 1 as it is, 0 silent.
-SetAudioStreamGain :: fun(stream: AudioStream, gain: f32) -> bool { return SDL_SetAudioStreamGain(stream, gain) }
+SetAudioStreamGain :: fun(stream: AudioStream, gain: f32) -> err { if not SDL_SetAudioStreamGain(stream, gain) do return Failed }
 // The stream closed, and its device with it (one opened for it).
 DestroyAudioStream :: fun(stream: AudioStream) { SDL_DestroyAudioStream(stream) }

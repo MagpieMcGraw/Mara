@@ -4,10 +4,10 @@ use mara.core
 sdl :: use mara.sdl
 
 //@ expect-output: formats: 33056 32784 8 12
-//@ expect-output: started: true
-//@ expect-output: opened: true
+//@ expect-output: started: Ok
+//@ expect-output: opened: Ok
 //@ expect-output: queued: 512
-//@ expect-output: gain: true
+//@ expect-output: gain: Ok
 //@ expect-output: cleared: 0
 
 // mara.sdl's audio (SDL3's streams): a stream opened on the default device
@@ -20,8 +20,8 @@ main :: fun() {
 	_ = sdl.SetHint("SDL_AUDIO_DRIVER", "dummy")
 	print("started:", sdl.InitSubSystem(sdl.Audio))
 	spec := sdl.AudioSpec{format = sdl.F32, channels = 2, freq = 44100}
-	stream := sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, spec)
-	print("opened:", stream != void)
+	stream, opened := sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, spec)
+	print("opened:", opened)
 	// (64 stereo frames of silence: 128 f32s, 512 bytes, queued while the
 	// stream is paused.)
 	frames : [128!]f32

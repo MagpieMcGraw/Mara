@@ -7,21 +7,30 @@ gl :: use mara.open_gl
 //@ expect-output: loaded: true
 //@ expect-output: error said: true
 //@ expect-output: base: true
-//@ expect-output: back to C: true
+//@ expect-output: back to C: Ok
+//@ expect-output: opened: Sdl_Error.Failed
+//@ expect-output: IOFromFile
+//@ expect-output: reason given: true
 
 // Text between Mara and C through the bindings. gl_load asks get_proc for
 // each GL function by name, copied out of open_gl.c's table into a buffer
 // (a view of C's memory has no 0 after it for cstring(): it stopped the
 // program). SDL's text comes back as buffers, C text again: the base path
 // handed back to SDL works. Nothing is opened: SDL isn't started, so each
-// GL address is none and SDL says why.
+// GL address is none and SDL says why. A file that isn't there can't be
+// opened: an err, where() naming the wrapper, GetError() SDL's reason.
 
 main :: fun() {
 	gl.gl_load(sdl.GL_GetProcAddress)
 	print("loaded:", true)
-	err := sdl.GetError()
-	print("error said:", err.len > 0)
+	said := sdl.GetError()
+	print("error said:", said.len > 0)
 	base := sdl.GetBasePath()
 	print("base:", base.len > 0)
 	print("back to C:", sdl.SetHint("MARA_TEST_BASE", base))
+	_, e := sdl.IOFromFile("no such file.bin", "rb")
+	print("opened:", e)
+	print("where:", e.where())
+	reason := sdl.GetError()
+	print("reason given:", reason.len > 0)
 }
