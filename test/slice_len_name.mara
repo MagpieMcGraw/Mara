@@ -1,0 +1,18 @@
+module slice_len_name
+
+//@ expect-exit: 1
+//@ expect-output: not in [0, 4] (cap) for 'h.items'
+// A len set past the room stops the program, the message naming the list or
+// slice as the source writes it: here a field, `h.items`.
+
+use mara.core
+
+Holder :: struct {
+	items: [4]i64
+}
+
+main :: fun() {
+	h : Holder
+	h.items.len = 9
+	print("set", h.items.len)
+}

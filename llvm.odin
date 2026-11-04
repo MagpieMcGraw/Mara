@@ -760,8 +760,12 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
         // A slice's len stays within 0 ..= its cap.
         if graph_op_of(pg, place) == .Field && graph_name(pg, place) == "len" {
-            hdr := graph_operands(pg, place)[0].op
-            if llvm_header_elem(graph_type(pg, hdr)) != nil { emit_slice_len_check(g, llvm_hdr_cap(e, hdr), val, span) }
+            of := graph_operands(pg, place)[0]
+            hdr := of.op
+            if llvm_header_elem(graph_type(pg, hdr)) != nil {
+                name := graph_place_name(pg, of)
+                emit_slice_len_check(g, llvm_hdr_cap(e, hdr), val, name if name != "" else "slice", span)
+            }
         }
         if graph_op_of(pg, place) == .View {   // into bytes at any address
             ir_store(g, llvm_type_from_checker(t), val, llvm_val(e, place), 1)

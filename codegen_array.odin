@@ -697,8 +697,8 @@ emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: Val) {
 
 
 // A new `.len` for a header is within 0 ..= its cap (cap_val), or the
-// program stops.
-emit_slice_len_check :: proc(g: ^Codegen, cap_val, val: Val, span: Span) {
+// program stops. `name` is the list's or slice's, for the message.
+emit_slice_len_check :: proc(g: ^Codegen, cap_val, val: Val, name: string, span: Span) {
 
     w := SLICE_LEN_IR
     ok_label   := fresh_label(g, "slice_len.ok")
@@ -715,7 +715,7 @@ emit_slice_len_check :: proc(g: ^Codegen, cap_val, val: Val, span: Span) {
     emit_label(g, fail_label)
     loc := span_location(span)
     loc_global := get_string_literal(g, loc)
-    name_global := get_string_literal(g, "slice")
+    name_global := get_string_literal(g, name)
     ir_call(g, {}, IR_VOID, ir_global(__MARA_SLICE_LEN_FAIL), {IR_PTR, loc_global, {}}, {w, val, {}}, {w, cap_val, {}}, {IR_PTR, name_global, {}})
     ir_unreachable(g)
 
