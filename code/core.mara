@@ -91,7 +91,7 @@ join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 	return out
 }
 
-// returns a pointer to the current item in a container
+// returns a pointer to the next empty item in the list
 // and increments the .len by 1
 next :: fun(list: ^[]$T) -> ^T {
 	/*
