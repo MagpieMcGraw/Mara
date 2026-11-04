@@ -1,0 +1,30 @@
+module main_returns_err
+
+//@ expect-exit: 1
+//@ expect-output: (main's defer? ran)
+//@ expect-output: main failed: Start_Error.No_Context
+//@ expect-output: in open_context
+//@ expect-output: in open_window
+//@ expect-output: in main
+
+// main returning an err: a failure passed out of it with `?` is said — its
+// name, then each place of its trace, the deepest first — main's `defer?`
+// runs, and the exit code is 1. (Ok exits with 0: main_returns_err_ok.)
+
+use mara.core
+
+Start_Error :: error { No_Window, No_Context }
+
+open_context :: fun() -> err {
+	return No_Context
+}
+
+open_window :: fun() -> err {
+	open_context()?
+}
+
+main :: fun() -> err {
+	defer? print("(main's defer? ran)")
+	open_window()?
+	print("not reached")
+}

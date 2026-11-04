@@ -955,6 +955,14 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
         if len(rts) == 1 {
             if vn, is_num := rts[0].(Type_Numeric); is_num && vn.kind == .Signed && vn.bits == 64 { ok = true }
             if is_any(rts[0]) { ok = true }
+            // (An err: a failure it returns is said, by its name and trace,
+            // and the program exits 1 — llvm_main_err. Its name needs every
+            // error set's names as atoms.)
+            if _, is_err := rts[0].(Type_Err); is_err {
+                ok = true
+                k.checked.err_text = true
+                checked_atom(k.checked, "?")   // (an err of no set's: its name)
+            }
         }
         if !ok { tc_error(k, span, TYPE_FUN_MAIN_RETURN_INT_RETURN) }
         // (None, or the command line: `args: [][]utf8` — main's setup makes it.)

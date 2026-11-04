@@ -1,0 +1,19 @@
+module main_returns_err_ok
+
+//@ expect-output: opened: Ok
+//@ expect-output: fell off the end
+
+// main returning an err that's Ok: the exit code is 0 — at a bare return, or
+// falling off the end, as here — and nothing more is said. (A failure:
+// main_returns_err.)
+
+use mara.core
+
+open_window :: fun() -> err {
+}
+
+main :: fun(args: [][]utf8) -> err {
+	print("opened:", open_window())
+	if args.len > 5 do return
+	print("fell off the end")
+}

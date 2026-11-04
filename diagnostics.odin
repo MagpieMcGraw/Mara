@@ -456,7 +456,7 @@ TYPE_ALLOCATOR_TWICE :: "the program's arena is named once: an #allocator came b
 TYPE_ALLOCATOR_NEEDS_SIZE :: "#allocator %s needs its size: `#allocator %s(16 * MB)` (a DLL's names the kind alone: its host's arena runs)"
 TYPE_ALLOCATOR_AT_TOP :: "#allocator goes at a module's top, or among main's own statements: not in another fun, or in a block"
 TYPE_THIS_PROGRAM_GONE :: "'%s' is gone: the program's arena is named at the module's top or main's — `#allocator Arena_Basic(16 * MB)` — another arena is a value (`a := Arena_Basic(1 * MB)`) a block runs on with `with &a`, and the command line is main's parameter: `main :: (args: [][]utf8)`"
-TYPE_FUN_MAIN_RETURN_INT_RETURN :: "fun main() must return int or have no return type"
+TYPE_FUN_MAIN_RETURN_INT_RETURN :: "fun main() returns nothing, an i64 (the exit code), or an err (a failure is said and the exit code is 1)"
 TYPE_FUN_MAIN_TAKE_PARAMETERS :: "main takes no parameters, or the command line: `main :: (args: [][]utf8)`"
 TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER :: "#expose function '%s' takes its host's arena first: `^%s`, the kind #allocator names"
 TYPE_VISIBLE_ENUM_UNION_VARIANT :: "no visible enum or union has variant '.%s'"

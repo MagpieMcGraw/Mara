@@ -1050,6 +1050,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             llvm_ret(e, IR_VOID)
             return true
         }
+        // main's err (`main :: fun() -> err`): the exit code, a failure said
+        // first (llvm_main_err).
+        if e.main && len(ops) == 1 && err_kinded(fn_result(e.ft, 0)) {
+            v := llvm_operand(e, ops[0], fn_result(e.ft, 0)) or_return
+            llvm_ret(e, IR_I64, llvm_main_err(e, v))
+            return true
+        }
         if len(ops) == 0 {
             if e.main {   // the C entry point: 0, the program went well
                 llvm_ret(e, IR_I64, ir_int(0))
@@ -2860,6 +2867,57 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     ir_load(g, r, atom_ty, at)
     e.value[op] = r
     return true
+}
+
+// main's err as the program's exit code: 0 for Ok; for a failure, 1, the
+// runtime saying it first (runtime/mara_err.c, __mara_main_err) — its name,
+// e.text()'s (its kind switched on over every error set's variants, as
+// llvm_variant_text does; atoms_for_err_text made them), then its trace. On
+// the web, with no runtime: 1 or 0, nothing said.
+@(private="file")
+llvm_main_err :: proc(e: ^Llvm, v: Val) -> Val {
+    g := e.g
+    kind := llvm_err_kind(e, v, IR_I64)
+    if g.web {
+        failed, code := fresh_tmp(g), fresh_tmp(g)
+        ir_icmp(g, failed, .Ne, IR_I64, kind, ir_int(0))
+        ir_cast(g, code, .Zext, IR_I1, failed, IR_I64)
+        return code
+    }
+    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
+    Case :: struct { value: int, text: string }
+    cases := make([dynamic]Case, 0, 16, context.temp_allocator)
+    for _, set in g.checked.table.enums {
+        if !set.is_error_kind { continue }
+        for name, value in set.variants { if value != 0 { append(&cases, Case{value, variant_text(set, name)}) } }
+    }
+    // (By value, then name: the same code each build.)
+    slice.sort_by(cases[:], proc(a, b: Case) -> bool { return a.value < b.value || a.value == b.value && a.text < b.text })
+    at := fresh_tmp(g)
+    emit_alloca(g, at, IR_I32)
+    ir_store(g, IR_I32, atom(g, "?"), at)
+    done := fresh_label(g, "main_err.done")
+    arms := make([dynamic]Ir_Arg, 0, len(cases), context.temp_allocator)
+    texts := make([dynamic]string, 0, len(cases), context.temp_allocator)
+    for c, i in cases {
+        if i > 0 && c.value == cases[i - 1].value { continue }
+        append(&arms, Ir_Arg{IR_I64, ir_int(c.value), fresh_label(g, "main_err.case")})
+        append(&texts, c.text)
+    }
+    ir_switch(g, IR_I64, kind, done, arms[:])
+    for arm, i in arms {
+        emit_label(g, arm.l)
+        ir_store(g, IR_I32, atom(g, texts[i]), at)
+        emit_br(g, done)
+    }
+    emit_label(g, done)
+    id := fresh_tmp(g)
+    ir_load(g, id, IR_I32, at)
+    name, _ := emit_atom_text(g, id)
+    count, code := fresh_tmp(g), fresh_tmp(g)
+    emit_load_into(g, count, IR_I64, ir_global("__mara_atom_count"))
+    ir_call(g, code, IR_I64, ir_global("__mara_main_err"), {IR_I64, v, {}}, {IR_PTR, name, {}}, {IR_PTR, ir_global("__mara_atoms"), {}}, {IR_I64, count, {}})
+    return code
 }
 
 // Whether values of t are errs, or an error set's kinds, compared by kind:

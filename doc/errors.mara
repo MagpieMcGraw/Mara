@@ -18,6 +18,10 @@
 //
 // Your own errors are an `error` set, like Parse_Error below. The standard
 // library's file functions fail with File_Error (see read_file.mara).
+//
+// main can return an err too, `main :: fun() -> err`: a failure passed out
+// of it with `?` is said — "main failed: Parse_Error.Empty", then each place
+// of its trace — and the program exits with 1. Ok exits with 0.
 module errors
 
 use mara.core

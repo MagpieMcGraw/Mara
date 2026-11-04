@@ -17,6 +17,7 @@
 // thread made finds another's trace in its slot here, and says it's gone.
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define MARA_ERR_TRACES 64
@@ -82,4 +83,31 @@ int64_t __mara_err_trace(uint64_t e, uint32_t *out) {
     if (t == NULL) return 0;
     memcpy(out, t->sites, t->len * sizeof(uint32_t));
     return t->len;
+}
+
+// An entry of the program's table of text (__mara_atoms): an atom's bytes, a
+// 0 after them, and how many. Handed in by the caller, so this file names no
+// symbol a build might not have.
+typedef struct {
+    const char *data;
+    int64_t len;
+} Mara_Atom;
+
+// main's err, as main returns it (llvm_main_err): Ok gives the exit code 0.
+// A failure is said — "main failed:", its name (`name`, its text()), then
+// each site of its trace, looked up in `atoms` (`count` of them) — and gives
+// the exit code 1.
+int64_t __mara_main_err(uint64_t e, const char *name, const Mara_Atom *atoms, int64_t count) {
+    if ((e & 0xFFFFFFFFu) == 0) return 0;
+    printf("main failed: %s\n", name);
+    Mara_Err_Trace *t = trace_of(e);
+    if (t == NULL) {
+        if ((uint32_t)(e >> 32) != 0) printf("  (its trace is gone: newer errs took its place)\n");
+        return 1;
+    }
+    for (uint32_t i = 0; i < t->len; i++) {
+        uint32_t site = t->sites[i];
+        printf("  at %s\n", (int64_t)site < count ? atoms[site].data : "?");
+    }
+    return 1;
 }
