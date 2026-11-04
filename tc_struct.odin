@@ -310,10 +310,20 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, type_name(ut))
             return Type_Error{}
         }
-        // (`all v` into a list, as a field's default goes: its every element.)
-        _, list_fill := distinct_base(hint).(^Type_Partial_Array)
-        list_fill = list_fill && tr.tag[n] == .Broadcast
-        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint) && !list_fill) {
+        // (`all v` into a list, as a field's default goes: its every element.
+        // `{}` or `{0}` into one: its zero, len 0, as `[N]T{}` is.)
+        _, into_list := distinct_base(hint).(^Type_Partial_Array)
+        list_fill := into_list && tr.tag[n] == .Broadcast
+        if into_list && !list_fill {
+            zero_entry := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
+            if len(entries) > 0 && !zero_entry {
+                // (Its braces as arguments: fmt reads them in a format.)
+                tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(hint), "{}", "{0}")
+                return Type_Error{}
+            }
+            empty = true
+        }
+        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint) && !list_fill && !empty) {
             tc_unsupported(k, n, "a literal typed by its use")
             return Type_Error{}
         }

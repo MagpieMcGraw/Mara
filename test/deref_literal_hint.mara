@@ -1,0 +1,35 @@
+module deref_literal_hint
+
+//@ expect-output: through pointers: 0 0 0
+
+// A literal stored through a pointer is typed by what it points at, as one
+// stored into a field is: `p^ = {0}` for a struct, a fixed array, a list.
+
+use mara.core
+
+Point :: struct {
+	x: i64
+	y: i64
+}
+
+reset :: fun(p: ^Point) {
+	p^ = {0}
+}
+
+reset_fixed :: fun(p: ^[4!]i64) {
+	p^ = {0}
+}
+
+reset_list :: fun(p: ^[4]i64) {
+	p^ = {}
+}
+
+main :: fun() {
+	pt := Point{x = 1, y = 2}
+	reset(&pt)
+	f : [4!]i64 = [1, 2, 3, 4]
+	reset_fixed(&f)
+	l : [4]i64 = [5, 6]
+	reset_list(&l)
+	print("through pointers:", pt.x, f[0], l.len)
+}

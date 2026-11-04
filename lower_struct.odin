@@ -217,7 +217,8 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     variant := name if ty != 0 && tr.tag[ty] == .Ident && tc_ref(k, ty).kind == .Variant else ""
-    empty := fd == nil && ty != 0 && tr.tag[ty] != .Ident && tr.tag[ty] != .Field && is_partial_array(t)
+    // (A list's zero: `[N]T{}`, or `{}` / `{0}` typed by where it goes.)
+    empty := fd == nil && tr.tag[n] != .Broadcast && is_partial_array(t) && (ty == 0 || tr.tag[ty] != .Ident && tr.tag[ty] != .Field)
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)

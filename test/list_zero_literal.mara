@@ -1,0 +1,62 @@
+module list_zero_literal
+
+//@ expect-output: assigned: 0 false false
+//@ expect-output: declared: 0 0 6
+//@ expect-output: default: 0 6
+//@ expect-output: returned: 0 4
+//@ expect-output: argument: 0
+//@ expect-output: through a pointer: 0 0
+//@ expect-output: items: 2 [1, 2]
+
+// `{}` and `{0}` into a list, typed by where they go: the list's zero, len
+// 0 and every item zero, as `[N]T{}` is. (Items go in as `[a, b]`; a `{…}`
+// with items into a list is an error: list_literal_items_neg.)
+
+use mara.core
+
+Mouse :: struct {
+	pressed: [6]bool = {}
+	held:    [6]bool
+}
+
+empty_four :: fun() -> [4]i64 {
+	return {}
+}
+
+count :: fun(xs: [4]i64) -> i64 {
+	return xs.len
+}
+
+clear :: fun(p: ^[4]i64) {
+	p^ = {0}
+}
+
+main :: fun() {
+	m := Mouse()
+	&m.pressed + true
+	&m.pressed + true
+	m.pressed[4] = true
+	m.pressed = {}
+	print("assigned:", m.pressed.len, m.pressed[0], m.pressed[4])
+
+	a : [4]i64 = {}
+	b : [4]i64 = {0}
+	print("declared:", a.len, b.len, m.held.cap)
+
+	fresh := Mouse()
+	print("default:", fresh.pressed.len, fresh.pressed.cap)
+
+	r := empty_four()
+	print("returned:", r.len, r.cap)
+
+	print("argument:", count({}))
+
+	nums : [4]i64
+	&nums + 7
+	&nums + 8
+	clear(&nums)
+	print("through a pointer:", nums.len, nums[0])
+
+	two : [4]i64 = [1, 2]
+	print("items:", two.len, two)
+}

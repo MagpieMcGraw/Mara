@@ -1061,6 +1061,9 @@ tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     unwritten := tr.b[target] == 0
     _, gives_ptr := distinct_base(pt).(^Type_Ptr)
     if !unwritten || gives_ptr || is_any(pt) {
+        // (What it points at types the value, as a field's type does: `p^ = {0}`.)
+        k.hint = nil
+        if p, is_ptr := distinct_base(pt).(^Type_Ptr); is_ptr { k.hint = p.elem }
         vt := tc_store_at(k, value, op_tok, target, s)
         if p, is_ptr := distinct_base(pt).(^Type_Ptr); is_ptr {
             tc_set_type(k, target, p.elem)

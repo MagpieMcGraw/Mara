@@ -1,0 +1,13 @@
+module list_literal_items_neg
+
+//@ expect-fail: gives its zero only: `{}` or `{0}`, len 0. A list of items is written `[a, b, …]`
+
+// A `{…}` with items, typed by a list it goes into: only a list's zero is
+// written that way; items are `[1, 2]`.
+
+use mara.core
+
+main :: fun() {
+	xs : [4]i64 = {1, 2}
+	print(xs.len)
+}

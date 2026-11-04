@@ -487,6 +487,7 @@ TYPE_CANNOT_TAKE_ADDRESS_CONSTANT ::"cannot take address of constant '%s' — co
 TYPE_SLICE_CANNOT_BIND_CONSTANT :: "a slice here would be a writable view of constant '%s', which is read-only — copy it into a variable first (`x := %s`) and slice that"
 TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE :: "cannot dereference non-pointer type %s"
 TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED :: "typed array literal: type %s is not a fixed-size array"
+TYPE_LIST_LITERAL_ITEMS :: "a `%s` into a list (%s) gives its zero only: `%s` or `%s`, len 0. A list of items is written `[a, b, …]`"
 TYPE_SIZE_UNKNOWN_TYPE :: "size_of: unknown type"
 TYPE_TAKE_UNKNOWN_TYPE :: "let/slice: unknown type"
 TYPE_LET_SLICE :: "let can't take a slice (%s): it names a value living in the storage, and a slice there would be only its header — for a slice over the storage, `slice([:n]T, &bytes[i])` (n already there) or `slice([:n]T, &storage)` (room for n)"
