@@ -37,7 +37,7 @@ pick :: fun(a: Named, b: Named, first: bool) -> Named {
 }
 wrap :: fun(x: Named) -> Tagged { return Named1{who = x} }
 mk :: fun(s: []utf8) -> Named {
-	n := Named{0}
+	n := Named{all 0}
 	n.name = s
 	return n
 }
@@ -65,7 +65,7 @@ main :: fun() {
 	sr[2].name = "zzz"
 	print("swapremove=% %", sr[1].name, sr[2].name)
 
-	t := Team{}
+	t : Team
 	t.lead = ents[2]
 	ents[2].name[0] = 'Q'
 	print("field=%", t.lead.name)

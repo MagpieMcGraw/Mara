@@ -203,7 +203,7 @@ lw_self :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
 
 // --- literals -------------------------------------------------------------------
 
-// `Foo{…}`, `Foo{0}`, `{…}`, `[3!]f32{…}`, `{all v}` (tc_literal): its
+// `Foo{…}`, `Foo{all 0}`, `{…}`, `[3!]f32{…}`, `{all v}` (tc_literal): its
 // construction where it goes (else in a temporary), then each entry stored.
 lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, temp: bool, temp_span: Span) -> Built {
     tr := k.t
@@ -217,8 +217,6 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     variant := name if ty != 0 && tr.tag[ty] == .Ident && tc_ref(k, ty).kind == .Variant else ""
-    // (A list's zero: `[N]T{}` or `[N]T{0}`, or `{}` / `{0}` typed by where it goes.)
-    empty := fd == nil && !tc_is_broadcast(k, n) && is_partial_array(t) && (ty == 0 || tr.tag[ty] != .Ident && tr.tag[ty] != .Field)
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)
@@ -227,11 +225,12 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     ts, _ := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
-    zero := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
+    // (A struct's or a variant's `{all 0}`: every field zero, tc_literal's.)
+    zero := fa == nil && fd == nil && !list_fill && tc_all_zero(k, entries)
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !list_fill && !empty {
+    } else if fa == nil && fd == nil && !list_fill {
         sd = &ts.sd
     }
     d := dest
@@ -244,8 +243,6 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
     if fa != nil || fd != nil || list_fill {
         if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
-    } else if empty {
-        gl = graph_build_literal(b, span, name, zero, t, d)
     } else {
         // (A literal runs no constructor: its zero, then its entries.)
         gl = graph_build_literal(b, span, name, zero, t, d)
@@ -255,7 +252,7 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         lw_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, d)
     } else if fa != nil {
         lw_array_entries(k, n, entries, t, gl, d, broadcast)
-    } else if !zero && !empty {
+    } else if !zero {
         lw_literal_fields(k, n, entries, sd, gl)
         lw_literal_gaps(k, n, entries, sd, d, vst, name)
     }
@@ -299,6 +296,10 @@ lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body,
 
 // `all v` into an array (tc_broadcast_fill): v, then the fill.
 lw_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, d: Dest) {
+    if tc_zero_fill(k, value, graph_elem_type(lit_t)) {   // (`all 0` into structs or arrays: one zeroing)
+        graph_build_zero_fill(k.gb, tree_span(k.t, n), lit_t, d)
+        return
+    }
     r := lw_expr(k, value)
     graph_build_fill(k.gb, tree_span(k.t, n), lit_t, d, r.v)
 }

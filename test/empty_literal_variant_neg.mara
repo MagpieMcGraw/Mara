@@ -1,0 +1,15 @@
+module empty_literal_variant_neg
+
+//@ expect-fail: `None{}`: the variant with its defaults is written `.None`, and with every field zero `None{all 0}`
+
+// A variant's `{}`: its bare name is it with its defaults, `.None`.
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	v : Maybe(i64) = None{}
+	print("built")
+}

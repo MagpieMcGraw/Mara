@@ -52,8 +52,8 @@ main :: fun() {
 	g.b.data[0] = 22
 	swap_in(&g)
 	print("through a pointer:", g.a.tag, g.a.data[0], g.b.tag, g.b.data[262143])
-	x := Huge{0}
-	y := Huge{0}
+	x := Huge{all 0}
+	y := Huge{all 0}
 	x.tag = 3
 	y.tag = 4
 	x, y = y, x
@@ -69,8 +69,8 @@ main :: fun() {
 	swap_at(&xs, 1, 1)
 	swap_at(&xs, 0, 2)
 	print("run-time indices:", xs[0].tag, xs[1].tag, xs[2].tag)
-	p := Pa{0}
-	q := Pa{0}
+	p := Pa{all 0}
+	q := Pa{all 0}
 	&p.items + 1
 	&q.items + 2
 	&q.items + 3

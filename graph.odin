@@ -3025,6 +3025,17 @@ graph_build_fill :: proc(b: ^Graph_Builder, span: Span, t: Type, d: Dest, val: O
     graph_op(b, .Fill, .Explicit, span, t, "", graph_dest_place(b, d, span), x)
 }
 
+// `all 0` into an array of structs or arrays (tc_zero_fill), built into d:
+// all of it zeroed at once — a list's len then its room, as a fill's is.
+graph_build_zero_fill :: proc(b: ^Graph_Builder, span: Span, t: Type, d: Dest) {
+    graph_op(b, .Zero, .Explicit, span, t, "", graph_dest_place(b, d, span))
+    if pa, is_list := distinct_base(t).(^Type_Partial_Array); is_list {
+        lt := slice_header_width_type
+        field := graph_op_value(b, .Field, .Synthetic, span, lt, "len", graph_dest_place(b, d, span))
+        graph_op(b, .Write, .Synthetic, span, nil, "", field, graph_const(b, .Synthetic, span, lt, "len", Const_Value{int = i128(pa.size)}))
+    }
+}
+
 // `void` written: the uninitialized value (graph_void).
 graph_build_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_void(b, t, span)
@@ -3348,7 +3359,7 @@ graph_build_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
 }
 
 // A struct literal built into d, before its fields are
-// checked: its construction — zero for `Foo{0}`, else its constructor on
+// checked: its construction — zero for `Foo{all 0}`, else its constructor on
 // its params' defaults (a union's variant: its tag, then the field defaults
 // the literal doesn't give) — and where its fields are. Nil when t is no
 // aggregate the literal builds.
@@ -3359,7 +3370,7 @@ Graph_Literal :: struct {
 }
 
 // A literal's start at d: its zero — a struct's every field unset until the
-// literal's entries write theirs (`{}`; `{0}` zero, all of it), no
+// literal's entries write theirs (`{all 0}` zero, all of it), no
 // constructor run; a variant zeroed and tagged, no body run; an array zeroed.
 // A call's construction (`construct`: `Rect(5)`) runs the constructor on
 // `args` (its params' defaults, the checker's).

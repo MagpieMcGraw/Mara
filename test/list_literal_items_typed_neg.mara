@@ -1,9 +1,9 @@
 module list_literal_items_typed_neg
 
-//@ expect-fail: gives its zero, `{}` or `{0}` (len 0), or every item one value, `{all v}`. A list of items is written `[a, b, …]`
+//@ expect-fail: takes no items: an empty list is written `[]`, every item one value `{all v}`, and a list of items `[a, b, …]`
 
-// A typed list literal with items: only its zero or its fill is written with
-// braces; items are `[1, 2]`.
+// A typed list literal with items: only its fill is written with braces
+// (`[N]T{all v}`); items are `[1, 2]`, and an empty list `[]`.
 
 use mara.core
 

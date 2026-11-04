@@ -1,0 +1,15 @@
+module empty_literal_struct_neg
+
+//@ expect-fail: `Point{}` gives none of Point's fields. For every field zero, write `Point{all 0}`. For its fields unset, to write before reading them, write `void`, or declare it bare: `name : Point`
+
+// `{}` is gone: every field zero is `{all 0}`, fields unset `void` or a bare declaration.
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	q := Point{}
+	print("built")
+}

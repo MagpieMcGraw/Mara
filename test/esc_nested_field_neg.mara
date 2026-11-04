@@ -12,7 +12,7 @@ stash :: fun(o: ^Outer) {
 }
 
 main :: fun() {
-	o := Outer{}
+	o : Outer
 	stash(&o)
 	print(o.inner.p^)
 }

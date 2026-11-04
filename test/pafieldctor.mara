@@ -29,8 +29,8 @@ main :: fun() {
 	assert(c.greet[4] == 'o')
 	assert(c.n == 0)
 
-	// Union variant: string field DEFAULT (Text{} uses body := "hi").
-	m1: Msg = Text{}
+	// Union variant: string field DEFAULT (.Text uses body := "hi").
+	m1: Msg = .Text
 	match m1 {
 	Text t
 		assert(t.body.len == 2)

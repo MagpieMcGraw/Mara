@@ -46,7 +46,7 @@ next :: fun(l: ^Lexer) -> bool, Tok {
 		l.pos += 1
 		return true, Tok{start, 1, 3}
 	}
-	return false, Tok{0}
+	return false, Tok{all 0}
 }
 
 // (mara edit's <fun>.do: the first chain written with do; a branch of two

@@ -252,9 +252,9 @@ test_len_cap :: fun() {
 }
 
 test_struct_arr_minimal :: fun() {
-	f := Foo{0}
+	f := Foo{all 0}
 	print(f.x)
-	b := Bar{0}
+	b := Bar{all 0}
 	print(b.xs[0])
 }
 
@@ -571,13 +571,13 @@ mb_deref_or_neg :: fun(m: Maybe(^Maybe_Box)) -> i64 {
 
 test_maybe :: fun() {
 	a : Maybe(i64) = Some{value = 42}
-	b : Maybe(i64) = None{}
+	b : Maybe(i64) = .None
 	print(mb_unwrap_or_zero(a))
 	print(mb_unwrap_or_zero(b))
 	box : Maybe_Box
 	box.x = 7
 	p : Maybe(^Maybe_Box) = Some{value = &box}
-	q : Maybe(^Maybe_Box) = None{}
+	q : Maybe(^Maybe_Box) = .None
 	print(mb_deref_or_neg(p))
 	print(mb_deref_or_neg(q))
 }
@@ -1052,7 +1052,7 @@ Container :: struct {
 
 test_pa_literal :: fun() {
 	c : Container
-	c.items = [8]Item{}
+	c.items = []
 	print("after literal: len:", c.items.len, "cap:", c.items.cap)
 	storage : [256]byte
 	storage.len = 64
@@ -1116,7 +1116,7 @@ test_sized_slice_field :: fun() {
 	&s + "world"
 	print(s)
 	print(s.len)
-	h := Holder_Sized{0}
+	h := Holder_Sized{all 0}
 	h.count = 42
 	&h.name + "hello"
 	print(h.name)

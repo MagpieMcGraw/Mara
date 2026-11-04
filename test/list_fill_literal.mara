@@ -3,14 +3,14 @@ module list_fill_literal
 //@ expect-output: declared: 4 [0, 0, 0, 0]
 //@ expect-output: assigned: 4 [7, 7, 7, 7]
 //@ expect-output: bare: 4 [2, 2, 2, 2]
-//@ expect-output: typed: 4 [3, 3, 3, 3] - typed zero: 0
+//@ expect-output: typed: 4 [3, 3, 3, 3]
 //@ expect-output: default: 6 true
 //@ expect-output: returned: 4 [1, 1, 1, 1]
 
 // `{all v}` into a list fills every item with v, its len its room — wherever
 // it goes, as a field default's `all v` always did: a declaration, an
-// assignment, bare `all v`, typed `[N]T{all v}`, a return. (`{}` and `{0}`
-// give its zero instead: list_zero_literal.)
+// assignment, bare `all v`, typed `[N]T{all v}`, a return. (An empty list
+// is `[]`: list_zero_literal.)
 
 use mara.core
 
@@ -33,8 +33,7 @@ main :: fun() {
 	print("bare:", a.len, a)
 
 	b := [4]i64{all 3}
-	z := [4]i64{0}
-	print("typed:", b.len, b, "- typed zero:", z.len)
+	print("typed:", b.len, b)
 
 	m := Mouse()
 	print("default:", m.held.len, m.held[5])

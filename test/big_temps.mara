@@ -27,7 +27,7 @@ U :: union {
 }
 
 plain_big :: fun(n: i64) -> Big {
-	b := Big{0}
+	b := Big{all 0}
 	b.n = n
 	return b
 }

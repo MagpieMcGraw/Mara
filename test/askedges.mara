@@ -69,7 +69,7 @@ main :: fun() {
 	r *= double(c)        // call arg in a compound assign, scalar target
 
 	f: f32 = 13
-	h := Holder{}
+	h : Holder
 	h.val = 1
 	bump(&h, f)
 

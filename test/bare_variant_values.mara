@@ -6,7 +6,7 @@ module bare_variant_values
 //@ expect-output: maybe=false true false false
 
 // A bare variant name used as a union value — `Shape.Rect`, `.Rect` — is that
-// variant with its defaults, the same value as `Rect{}`. It used to produce
+// variant with its defaults (`Rect{}`, which said the same, is gone). It used to produce
 // invalid IR (the tag number used as a pointer) or "undefined variable".
 
 use mara.core

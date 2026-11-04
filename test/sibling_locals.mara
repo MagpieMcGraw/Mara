@@ -78,7 +78,7 @@ redeclared :: fun() {
 		arr[1] += 2
 	}
 	for k in 0:2 {
-		v := Small{0}
+		v := Small{all 0}
 		n : i64
 		arr : [4!]i64
 		print("fresh", v.a, n, arr[1])

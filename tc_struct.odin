@@ -276,9 +276,10 @@ tc_write_root_param :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
 
 // --- a struct's literal ---------------------------------------------------
 
-// `Foo{…}`, `Foo{0}`, `{…}` (typed by its use): its type, what it constructs
-// (its constructor's defaults, a variant's), each field given checked at its
-// field's type.
+// `Foo{…}`, `Foo{all 0}`, `{…}` (typed by its use): its type, what it
+// constructs (its constructor's defaults, a variant's), each field given
+// checked at its field's type. `{}` and `{0}` are gone: each says what to
+// write instead (tc_old_zero_literal).
 tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
@@ -294,7 +295,6 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // partial; said at the struct when it is none.)
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
-    empty := false   // (`[N]T{}`: its zero — len 0, where it goes)
     switch {
     case fd != nil:
         #partial switch _ in distinct_base(fd.t) {
@@ -310,20 +310,15 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, type_name(ut))
             return Type_Error{}
         }
-        // (`all v` or `{all v}` into a list: its every element. `{}` or `{0}`
-        // into one: its zero, len 0, as `[N]T{}` is.)
+        // (`all v` or `{all v}` into a list: its every element. An empty list
+        // is `[]`; items are `[a, b]`.)
         _, into_list := distinct_base(hint).(^Type_Partial_Array)
         list_fill := into_list && tc_is_broadcast(k, n)
         if into_list && !list_fill {
-            zero_entry := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
-            if len(entries) > 0 && !zero_entry {
-                // (Its braces as arguments: fmt reads them in a format.)
-                tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(hint), "{}", "{0}", "{all v}")
-                return Type_Error{}
-            }
-            empty = true
+            tc_list_literal_error(k, n, hint, entries)
+            return Type_Error{}
         }
-        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint) && !list_fill && !empty) {
+        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint) && !list_fill) {
             tc_unsupported(k, n, "a literal typed by its use")
             return Type_Error{}
         }
@@ -366,23 +361,22 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         t = qt
     case:
-        // (A typed array's: `[3!]f32{…}`; a list's zero, `[N]T{}` or
-        // `[N]T{0}`, or its fill, `[N]T{all v}`.)
+        // (A typed array's: `[3!]f32{…}`; a list's fill, `[N]T{all v}`.)
         t = tc_type(k, ty, span)
         if is_partial_array(t) {
-            zero_entry := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
             if !tc_is_broadcast(k, n) {
-                if len(entries) > 0 && !zero_entry {
-                    // (Its braces as arguments: fmt reads them in a format.)
-                    tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(t), "{}", "{0}", "{all v}")
-                    return Type_Error{}
-                }
-                empty = true
+                tc_list_literal_error(k, n, t, entries)
+                return Type_Error{}
             }
         } else if !tc_is_fixed_array(t) || tc_is_distinct(t) {
             tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
             return Type_Error{}
         }
+    }
+    // (`{}` and `{0}`: gone, each told what to write instead.)
+    if fd == nil && !tc_is_broadcast(k, n) && (len(entries) == 0 || tc_zero_entry(k, entries)) {
+        tc_old_zero_literal(k, n, t, variant, len(entries) == 0)
+        return Type_Error{}
     }
     // (The type it is written with, a name — `Foo`, `mod.T`, a variant's:
     // what it names.)
@@ -406,15 +400,16 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
-    if fa == nil && vst == nil && fd == nil && !list_fill && !empty && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
+    if fa == nil && vst == nil && fd == nil && !list_fill && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
     }
-    zero := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
+    // (A struct's or a variant's `{all 0}`: every field zero, all of them set.)
+    zero := fa == nil && fd == nil && !list_fill && tc_all_zero(k, entries)
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !list_fill && !empty {
+    } else if fa == nil && fd == nil && !list_fill {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
     }
@@ -430,6 +425,8 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name)   // (entries[0] the broadcast: n itself when bare)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name)
+    } else if zero {
+        // (Every field zero: nothing of it to check.)
     } else if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {
         // (`all v` gives an array's items v; a struct's fields are named.
         // Checked as one of its fields, the broadcast was the struct again,
@@ -444,12 +441,86 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         // (Its braces as arguments: fmt reads them in a format.)
         written := strings.concatenate({type_name(t), "{", strings.join(fields[:], ", ", context.temp_allocator), "}"}, context.temp_allocator)
-        tc_error(k, span, TYPE_BROADCAST_INTO_STRUCT, type_name(t), written, "{0}")
+        tc_error(k, span, TYPE_BROADCAST_INTO_STRUCT, type_name(t), written, strings.concatenate({type_name(t), "{all 0}"}, context.temp_allocator))
         return Type_Error{}
-    } else if !zero && !empty {
+    } else {
         tc_literal_fields(k, n, entries, sd)
     }
     return t
+}
+
+// A literal's one entry a bare 0: `{0}`, gone (tc_old_zero_literal).
+tc_zero_entry :: proc(k: ^TC, entries: []Tree_Id) -> bool {
+    tr := k.t
+    return len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
+}
+
+// A literal's one entry `all 0`: `{all 0}`, every field (or item) zero.
+tc_all_zero :: proc(k: ^TC, entries: []Tree_Id) -> bool {
+    tr := k.t
+    if len(entries) != 1 || tr.tag[entries[0]] != .Broadcast { return false }
+    v := tc_unparen(k, Tree_Id(tr.a[entries[0]]))
+    return tr.tag[v] == .Number && tc_text(tr.main[v]) == "0"
+}
+
+// `all 0` into an array whose items are structs or arrays: every item zero,
+// though 0 is none of them (tc_broadcast_fill; lowered as one zeroing,
+// lw_broadcast_fill).
+tc_zero_fill :: proc(k: ^TC, value: Tree_Id, elem: Type) -> bool {
+    tr := k.t
+    v := tc_unparen(k, value)
+    if tr.tag[v] != .Number || tc_text(tr.main[v]) != "0" { return false }
+    #partial switch e in distinct_base(elem) {
+    case ^Type_Fixed_Array, ^Type_Partial_Array:
+        return true
+    case ^Type_Scope:
+        return e.kind == .Struct && !e.is_module
+    }
+    return false
+}
+
+// `{}` or `{0}` (`empty`: `{}`), said with what to write instead: a struct's
+// zero is `{all 0}`, its fields unset `void`; a variant with its defaults
+// its bare name; an array's zero `{all 0}`.
+tc_old_zero_literal :: proc(k: ^TC, n: Tree_Id, t: Type, variant: string, empty: bool) {
+    tr := k.t
+    span := tree_span(tr, n)
+    written := tc_written(k, n)
+    // (The type as written before its braces, `Point`, `Shape.Dot`,
+    // `[3!]f32`; none when typed by where it goes.)
+    ty := Tree_Id(tr.a[n])
+    named := ""
+    if ty != 0 {
+        if brace := strings.index_byte(written, '{'); brace > 0 { named = strings.trim_space(written[:brace]) }
+    }
+    zero_form := strings.concatenate({named, "{all 0}"}, context.temp_allocator)
+    ts, is_scope := distinct_base(t).(^Type_Scope)
+    switch {
+    case variant != "" || is_scope && ts.is_union_variant:
+        // (A bare variant name is it with its defaults: `.Dot`, `Shape.Dot`.)
+        bare := named if strings.contains_rune(named, '.') else strings.concatenate({".", variant if variant != "" else named}, context.temp_allocator)
+        tc_error(k, span, TYPE_EMPTY_LITERAL_VARIANT, written, bare, zero_form)
+    case is_scope && ts.kind == .Struct:
+        if empty {
+            tc_error(k, span, TYPE_EMPTY_LITERAL_STRUCT, written, type_name(t), zero_form, type_name(t))
+        } else {
+            tc_error(k, span, TYPE_ZERO_LITERAL_STRUCT, written, zero_form)
+        }
+    case:
+        tc_error(k, span, TYPE_ZERO_LITERAL_ARRAY, written, zero_form)
+    }
+}
+
+// A `{…}` into a list that's no fill: an empty one is `[]` (said for `{}` and
+// `{0}`), items `[a, b]`.
+tc_list_literal_error :: proc(k: ^TC, n: Tree_Id, t: Type, entries: []Tree_Id) {
+    span := tree_span(k.t, n)
+    if len(entries) == 0 || tc_zero_entry(k, entries) {
+        tc_error(k, span, TYPE_EMPTY_LITERAL_LIST, tc_written(k, n), type_name(t))
+        return
+    }
+    // (Its braces as arguments: fmt reads them in a format.)
+    tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(t), "{all v}")
 }
 
 // A dotted name's parts (`a.b.c`): false when it is no plain name's.
@@ -484,6 +555,7 @@ tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, 
     case ^Type_Fixed_Array:   elem = v.elem
     case ^Type_Partial_Array: elem = v.elem
     }
+    if tc_zero_fill(k, value, elem) { return }   // (`all 0` into structs or arrays: every item zero)
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 { k.hint = elem }
     vt := tc_check(k, value)
     if fd != nil {

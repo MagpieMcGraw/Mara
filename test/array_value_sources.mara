@@ -39,7 +39,7 @@ main :: fun() {
 	sv("deref", c)
 	sv("derefarg", p^)
 
-	camera := Cam{}
+	camera : Cam
 	camera.obj.pos = Vec3{9, 8, 7}
 	cam := &camera
 	x := cam.obj.pos

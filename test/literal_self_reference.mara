@@ -60,7 +60,7 @@ main :: fun() {
 	q = P{x = 0, y = q.x}
 	print("partial=% %", q.x, q.y)
 
-	h := H{0}
+	h := H{all 0}
 	h.p = P{x = 3, y = 4}
 	h.p = P{x = h.p.y, y = h.p.x}
 	print("field=% %", h.p.x, h.p.y)
@@ -75,18 +75,18 @@ main :: fun() {
 	rp^ = P{x = r.y, y = r.x}
 	print("deref=% %", r.x, r.y)
 
-	h2 := H{0}
+	h2 := H{all 0}
 	h2.p = P{x = 9, y = 10}
 	hp := &h2
 	hp.p = P{x = h2.p.y, y = h2.p.x}
 	print("viaptr=% %", h2.p.x, h2.p.y)
 
-	h3 := H{0}
+	h3 := H{all 0}
 	h3.p = P{x = 11, y = 12}
 	h3 = H{p = P{x = h3.p.y, y = h3.p.x}, arr = [0, 0]}
 	print("nested=% %", h3.p.x, h3.p.y)
 
-	h4 := H{0}
+	h4 := H{all 0}
 	h4.arr = [13, 14]
 	h4.arr = [h4.arr[1], h4.arr[0]]
 	print("arrayfield=% %", h4.arr[0], h4.arr[1])
@@ -118,7 +118,7 @@ main :: fun() {
 		print("still one")
 	}
 
-	hs := Holder{}
+	hs : Holder
 	hs.s = One{n = 23, m = 24}
 	match hs.s {
 	One one

@@ -45,7 +45,7 @@ next_token :: fun(l: ^Lexer) -> Token, bool {
 	for l.pos < l.text.len and l.text[l.pos] == ' ' {
 		l.pos += 1
 	}
-	if l.pos >= l.text.len do return Token{0}, false
+	if l.pos >= l.text.len do return Token{all 0}, false
 	start := l.pos
 	for l.pos < l.text.len and l.text[l.pos] != ' ' {
 		l.pos += 1

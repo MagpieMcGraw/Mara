@@ -47,7 +47,7 @@ main :: fun() {
 	more[i].yz = [7, 8]
 	print("swizzle=% % % / % % %", more[1].x, more[1].y, more[1].z, more[0].x, more[0].y, more[0].z)
 
-	s := Shp{}
+	s : Shp
 	s.obj.dir = QUAT_IDENTITY
 	s.visual.color = RED
 	print("quat=% % % %", s.obj.dir[0], s.obj.dir[1], s.obj.dir[2], s.obj.dir[3])

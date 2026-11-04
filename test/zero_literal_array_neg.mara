@@ -1,0 +1,15 @@
+module zero_literal_array_neg
+
+//@ expect-fail: `[3!]i64{0}`: every item zero is written `[3!]i64{all 0}`
+
+// A fixed array's `{0}`: every item zero is `{all 0}`.
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	f := [3!]i64{0}
+	print("built")
+}

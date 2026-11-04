@@ -320,10 +320,11 @@ Shape :: union {
 // Point()` (its body run: every field its default), `Point(){x = 2}` (then
 // the fields given written over theirs), a literal `Point{x = 2, y = 3}` or
 // `Point{2, 3}` (in order) — a literal runs no body: it gives every field, or
-// those it leaves are unset — `Point{0}` (every field zero). `p : Point`
+// those it leaves are unset — `Point{all 0}` (every field zero). `p : Point`
 // declares one without running its body — every field unset, to be written
 // before it's read (reading one first, or the whole, is an error); its memory
-// is zero all the same. `p.x` reads or writes a field.
+// is zero all the same. `p = void` makes its fields unset again, writing
+// nothing. `p.x` reads or writes a field.
 //
 // Params, `Grid :: struct(w: i64) { … }`, are what it's built from:
 // `Grid(4)`. Its body runs to build it, so a field can be worked out from
@@ -853,10 +854,18 @@ example_void :: fun() {
 
 // `all`: every item of an array set to one value.
 //
-// `cams : [6]Camera = all Camera(1280, 720)` builds each of the six.
+// `cams : [6]Camera = all Camera(1280, 720)` builds each of the six. Into a
+// list it fills all of its room, its len too. `{all 0}` is zero for anything:
+// a struct's every field, an array of structs' every item. An empty list is
+// `[]`.
 example_all :: fun() {
 	ones : [4!]i64 = all 1
 	print(ones)                            // [1, 1, 1, 1]
+	Point :: struct { x: i64  y: i64 }
+	p := Point{all 0}
+	print(p.x, p.y)                        // 0 0
+	full : [3]i64 = {all 5}
+	print(full.len, full)                  // 3 [5, 5, 5]
 }
 
 // Every entry's example, run.

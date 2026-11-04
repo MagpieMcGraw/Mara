@@ -1,0 +1,15 @@
+module zero_literal_struct_neg
+
+//@ expect-fail: `Point{0}`: every field zero is written `Point{all 0}`
+
+// `{0}` is gone: every field zero is `{all 0}`.
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	q := Point{0}
+	print("built")
+}

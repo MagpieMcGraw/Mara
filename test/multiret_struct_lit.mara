@@ -5,7 +5,6 @@ module multiret_struct_lit
 // default-filling); it now uses the ONE construction primitive gen_store_struct_into
 // — the same path a `Pt{...}` decl and `Pt(){...}` take — so `Pt{x=5}` here zero-
 // inits, runs Pt's init function for defaults, then applies the explicit field.
-// `Pt{}` is sugar for `Pt(){}`: same construction, in every position.
 
 Pt :: struct {
 	x : i32 = 1

@@ -1,0 +1,15 @@
+module empty_literal_list_neg
+
+//@ expect-fail: `{}` into a list ([4]i64): an empty list is written `[]`
+
+// A list's `{}`: an empty list is `[]`.
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 }
+
+main :: fun() {
+	l : [4]i64 = {}
+	print("built")
+}

@@ -42,7 +42,7 @@ with_else :: fun(m: Maybe(^i64)) -> i64 {
 
 main :: fun() {
 	x := 5
-	a : Maybe(^i64) = None{}
+	a : Maybe(^i64) = .None
 	b : Maybe(^i64) = Some{value = &x}
 	print("dot", dot(a), dot(b))
 	print("named", named(a), named(b))

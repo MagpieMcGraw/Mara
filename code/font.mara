@@ -93,7 +93,7 @@ load_glyphs_and_metrics :: fun(
 		w, h := msdf_cell(&outline, &cells)
 		px, py, ok := pack_rect(&sky, i64(w), i64(h))
 		if not ok do return Atlas_Full
-		glyphs[i] = Glyph{0}
+		glyphs[i] = Glyph{all 0}
 		glyphs[i].x = i32(px)
 		glyphs[i].y = i32(py)
 
@@ -177,7 +177,7 @@ load_coverage_chars :: fun(
 		glyph_index := char_glyph(&ttf, chars[i])
 		parse_glyph(&ttf, glyph_index, &outline)?
 		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
-		glyphs[i] = Glyph{0}
+		glyphs[i] = Glyph{all 0}
 		glyphs[i].advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
 		if outline.contour_end_pts.len == 0 do continue   // (a space: nothing drawn)
 
@@ -1020,7 +1020,7 @@ Glyph_Point :: struct {
 // components are fetched by index. (depth: how deep in components of
 // components.)
 parse_glyph :: fun(t: ^TTF, glyph_index: u16, outline: ^Outline, depth: i64 = 0) -> err {
-	outline.header = TTF.Glyph_Header{0}
+	outline.header = TTF.Glyph_Header{all 0}
 	outline.contour_end_pts.len = 0
 	outline.points.len = 0
 	if i64(glyph_index) >= i64(t.maxp.num_glyphs) do return Bad_Glyph

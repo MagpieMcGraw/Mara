@@ -40,7 +40,7 @@ main :: fun() {
 	print(b)
 	r := Shape.Rect
 	print(r)
-	d := Shape.Dot{}
+	d := Shape.Dot
 	print(d)
 	a := Padded.A
 	print(a)

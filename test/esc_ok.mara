@@ -72,7 +72,7 @@ main :: fun() {
 	sum += v.sl[0]                       // 5
 
 	y : i64 = 10
-	h := Holder{}
+	h : Holder
 	store(&h, &y)
 	sum += h.p^                          // 15
 
@@ -111,11 +111,11 @@ main :: fun() {
 
 	// a local struct holding a local ref, used locally
 	x : i64 = 8
-	lh := Holder{}
+	lh : Holder
 	lh.p = &x
 	sum += lh.p^                         // 310
 
-	fh := Holder{}
+	fh : Holder
 	forward_store(&fh, &z)
 	sum += fh.p^                         // 330
 

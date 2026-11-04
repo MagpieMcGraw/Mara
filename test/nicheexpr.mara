@@ -16,7 +16,7 @@ find :: fun(x: ^i64, want: bool) -> Opt {
 	if want {
 		return Yep{p = x}              // niche variant literal in return position
 	}
-	return Nope{}
+	return .Nope
 }
 
 deref_or :: fun(o: Opt, fallback: i64) -> i64 {
@@ -33,7 +33,7 @@ some_node :: fun(z: ^i64, yes: bool) -> Maybe(^i64) {
 	if yes {
 		return Some{value = z}
 	}
-	return None{}
+	return .None
 }
 
 main :: fun() {
@@ -44,7 +44,7 @@ main :: fun() {
 	assert(deref_or(b, -1) == -1)
 
 	assert(deref_or(Yep{p = &x}, 0) == 7)   // niche variant literal as argument
-	assert(deref_or(Nope{}, 99) == 99)
+	assert(deref_or(.Nope, 99) == 99)
 
 	z := 42
 	m := some_node(&z, true)              // generic Maybe(^T) returned + matched

@@ -1,0 +1,45 @@
+module all_zero_literal
+
+//@ expect-output: struct: 0 0 0 0 0 0
+//@ expect-output: nested: 0 0
+//@ expect-output: variant: 0
+//@ expect-output: arrays: 0 4 0 0
+//@ expect-output: assigned: 0 0
+
+// `{all 0}`: every field (or item) zero, all of it set — a struct's, typed
+// by where it goes or by its name, bare `all 0` too; a variant's; an array's
+// whose items are structs or arrays, zeroed at once (a list's len its room).
+// A literal runs no body, so a field's default isn't used: y is 0, not 7.
+// (`{}` and `{0}` are gone: empty_literal_*_neg, zero_literal_*_neg.)
+
+use mara.core
+use mara.maybe
+
+Point :: struct { x: i64  y: i64 = 7 }
+Box :: struct { at: Point  tags: [3]i64 }
+
+show :: fun(p: Point) -> i64 { return p.x + p.y }
+zp :: fun() -> Point { return {all 0} }
+
+main :: fun() {
+	a := Point{all 0}
+	b : Point = {all 0}
+	c : Point = all 0
+	print("struct:", a.x, a.y, b.y, c.y, show({all 0}), zp().y)
+	bx := Box{all 0}
+	print("nested:", bx.at.y, bx.tags.len)
+	m : Maybe(i64) = Some{all 0}
+	match m {
+	Some s
+		print("variant:", s.value)
+	None
+		print("none")
+	}
+	pts : [3!]Point = {all 0}
+	list : [4]Point = {all 0}
+	grid : [2!][3!]i64 = {all 0}
+	print("arrays:", pts[2].y, list.len, list[3].y, grid[1][2])
+	p := Point{x = 1, y = 2}
+	p = {all 0}
+	print("assigned:", p.x, p.y)
+}

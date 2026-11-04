@@ -37,7 +37,7 @@ Holder :: struct {
 main :: fun() {
 	a : Shape = Rect{w = 4, h = 3}
 	print(a)
-	b : Shape = Dot{}
+	b : Shape = .Dot
 	print(b)
 	c : Coded = Square{s = 6}
 	print("coded=%", c)
@@ -51,8 +51,8 @@ main :: fun() {
 	print(arr)
 	m : Maybe(i64) = Some{value = 42}
 	print(m)
-	z : Maybe(i64) = None{}
+	z : Maybe(i64) = .None
 	print(z)
-	q : Maybe(^i64) = None{}
+	q : Maybe(^i64) = .None
 	print("niche", q)
 }

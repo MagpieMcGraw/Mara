@@ -3,7 +3,8 @@ module deref_literal_hint
 //@ expect-output: through pointers: 0 0 0
 
 // A literal stored through a pointer is typed by what it points at, as one
-// stored into a field is: `p^ = {0}` for a struct, a fixed array, a list.
+// stored into a field is: `p^ = {all 0}` for a struct and a fixed array,
+// `p^ = []` for a list.
 
 use mara.core
 
@@ -13,15 +14,15 @@ Point :: struct {
 }
 
 reset :: fun(p: ^Point) {
-	p^ = {0}
+	p^ = {all 0}
 }
 
 reset_fixed :: fun(p: ^[4!]i64) {
-	p^ = {0}
+	p^ = {all 0}
 }
 
 reset_list :: fun(p: ^[4]i64) {
-	p^ = {}
+	p^ = []
 }
 
 main :: fun() {

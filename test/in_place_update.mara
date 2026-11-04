@@ -113,7 +113,7 @@ main :: fun() {
 	buf = push(buf, 6)
 	show("var", buf)
 	show("built", built())
-	h := H{}
+	h : H
 	h.f = push(h.f, 7)
 	h.f = push(h.f, 8)
 	show("field", h.f)
@@ -130,7 +130,7 @@ main :: fun() {
 	a3 : [4]i64
 	a3 = append2(a3, o)
 	show("otherarg", a3)
-	s := S{0}
+	s := S{all 0}
 	s.x = 1
 	s = step(s, 10)
 	s = step(s, 5)

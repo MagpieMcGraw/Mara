@@ -60,7 +60,7 @@ main :: fun() -> i64 {
 	assert(m2.x == 1)
 
 	// 8. zero init
-	h.m = {0}
+	h.m = {all 0}
 	assert(h.m.x == 0)
 
 	// 9. bare literal in return position
