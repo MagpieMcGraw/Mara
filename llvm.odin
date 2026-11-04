@@ -1728,8 +1728,8 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
 // slicing written with no hi is given its cap: lw_slice) — as a new header,
 // cap = hi - lo. Its len: a list's or a slice's, as much of the source's as
 // falls in it (emit_window_len); a fixed array's or text's, or a no-len
-// slice's, none (SLICE_NO_LEN: all hi - lo of them, until an append starts
-// it at 0). Bounds given are checked: 0 <= lo <= hi <= the array's size, the
+// slice's, none (SLICE_NO_LEN: all hi - lo of them, full until its len is
+// set). Bounds given are checked: 0 <= lo <= hi <= the array's size, the
 // header's cap. (A held view's len is its count.)
 @(private="file")
 llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
@@ -2268,31 +2268,6 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
     storage := ops[0].op
     if storage == NO_NODE || llvm_direct(e, storage) { return false }
-    if graph_name(pg, op) == "fill" {
-        // `start_fill(&s)`: a slice with no len gets len 0, where appends
-        // start; a len it has stays. Its value is that len. (A list's
-        // always has one.)
-        if llvm_header_elem(graph_type(pg, storage)) == nil { return false }
-        len_at := llvm_hdr_len_at(e, storage)
-        raw := fresh_tmp(g)
-        emit_load_into(g, raw, SLICE_LEN_IR, len_at)
-        if llvm_partial(graph_type(pg, storage)) != nil {
-            e.value[op] = raw
-            return true
-        }
-        // (Stored only when it has none: an append into a list or a slice
-        // being filled stores nothing more.)
-        none := fresh_tmp(g)
-        ir_icmp(g, none, .Slt, SLICE_LEN_IR, raw, ir_int(0))
-        set, done := fresh_label(g, "fill.start"), fresh_label(g, "fill.done")
-        emit_cond_br(g, none, set, done)
-        emit_label(g, set)
-        emit_store(g, SLICE_LEN_IR, ir_int(0), len_at)
-        emit_br(g, done)
-        emit_label(g, done)
-        e.value[op] = emit_len_fill(g, raw)
-        return true
-    }
     let := graph_name(pg, op) == "let"
     if graph_op_of(pg, storage) == .View {
         if let {
@@ -2332,7 +2307,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     data := llvm_hdr_data(e, storage)
     cursor := fresh_tmp(g)
     emit_load_into(g, cursor, w, len_at)
-    if llvm_partial(graph_type(pg, storage)) == nil { cursor = emit_len_fill(g, cursor) }   // (a slice with no len: taken from its start)
+    if llvm_partial(graph_type(pg, storage)) == nil { cursor = emit_len_count(g, cursor) }   // (a slice with no len is full: no room left in it)
     // (Storage of the items taken, not bytes — `slice([:n]T, &list)`, a list
     // of T: its len and cap count items. Scaled to bytes here, as a byte
     // cursor's are, and the cursor stored back as items.)

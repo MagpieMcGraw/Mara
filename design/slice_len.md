@@ -45,6 +45,15 @@ The user's call, after the idea below: a slicing has *no len* until something ap
   rewritten: dropped where a list converts (an argument, `v : []T = x`, a print, an append's
   source), `v := x[:]` to `v : []T = x`, and `x[:.len]` where a slicing is still needed (an
   if-expression's arm, a list copied into a list of another room).
+- Then (the user's call, 2026-11-04): a slice with no len is *full* for appends and takes
+  too, not empty. One meaning instead of two: it reads as all of its room, and an append or
+  a take finds no room left (core's appends stop on their room check; a take on its cap
+  check). To fill one, set its len: `room.len = 0`. The `start_fill` builtin and its Carve
+  "fill" are gone (emit_len_fill too): the stdlib's appends, `next` and `mara.os`'s storage
+  fills read `.len`, the count, which LLVM knows isn't negative (the `and` clears the top
+  bit), and takes start at the count. Code that appended into a fresh slicing of a fixed
+  array now stops loudly at that append. Tests: test/slice_no_len.mara,
+  slice_no_len_full_append.mara, slice_no_len_full_take.mara.
 
 ## The idea, and the rule floated so far
 

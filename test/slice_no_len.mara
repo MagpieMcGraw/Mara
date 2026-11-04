@@ -10,7 +10,7 @@ module slice_no_len
 //@ expect-output: from a slicing: 2 - from an empty list: 2
 //@ expect-output: len set: 0 2
 //@ expect-output: through a ^[]T: 1 [9] - read through one: 4
-//@ expect-output: start_fill: 0 0 - a list: 3 3
+//@ expect-output: full: 5 5 5
 //@ expect-output: text: north true
 //@ expect-output: take: 32 0
 //@ expect-output: field: 0 1
@@ -23,8 +23,9 @@ module slice_no_len
 // `xs[2:6]` of 8 items has all 4, of 3 items only 1, its cap 4 either way.
 // One with no hi, `xs[:]` or `xs[lo:]`, runs to the cap. A slicing of a
 // fixed array, or of a slice with no len, has no len: it reads as all of its
-// room, and an append into it starts at 0. Reads (len, loops, print) go to
-// the len; with no len, to the cap.
+// room, and it's full: an append into it, or a take, finds no room
+// (slice_no_len_full_*). Setting its len gives it one: `.len = 0` to fill it.
+// Reads (len, loops, print) go to the len; with no len, to the cap.
 
 use mara.core
 use mara.memory
@@ -41,6 +42,11 @@ fill_one :: fun(room: ^[]i64) {
 
 count_through :: fun(p: ^[]i64) -> i64 {
 	return p.len
+}
+
+count_copy :: fun(p: ^[]i64) -> i64 {
+	w := p^
+	return w.len
 }
 
 copy_and_add :: fun(p: ^[]i64) -> []i64 {
@@ -83,12 +89,13 @@ main :: fun(args: [][]utf8) {
 	&whole + 9
 	print("whole:", before, whole.cap, "- appended:", whole.len, xs[8], xs.len)
 
-	// A fixed array's slicing has no len: all of it, until an append starts
-	// it at 0.
+	// A fixed array's slicing has no len: all of it, full. To fill one, its
+	// len is set to 0 first.
 	buf : [8!]i64
 	for k in 0:8 do buf[k] = 2
 	full := buf[2:6]
 	room := buf[0:8]
+	room.len = 0
 	&room + 5
 	print("fixed:", full.len, full.cap, "- room:", room.len, room, "- under it:", buf[0], buf[1])
 
@@ -124,13 +131,9 @@ main :: fun(args: [][]utf8) {
 	fill_one(&t)
 	print("through a ^[]T:", t.len, t, "- read through one:", count_through(&u))
 
-	// start_fill: no len becomes 0; a list's len stays. It gives the len.
+	// No len: full, read here, through a ^[]T, and in a copy made through one.
 	nolen := buf[0:5]
-	at := start_fill(&nolen)
-	three : [4]i64
-	for k in 0:3 do &three + k
-	at3 := start_fill(&three)
-	print("start_fill:", at, nolen.len, "- a list:", at3, three.len)
+	print("full:", nolen.len, count_through(&nolen), count_copy(&nolen))
 
 	// Text: a slicing reads as its characters.
 	name : str64
@@ -154,8 +157,10 @@ main :: fun(args: [][]utf8) {
 	l : [8]i64 = xs[0:3]
 	print("into a list:", l.len, l)
 
-	// Copied out through a ^[]T: its len comes with it.
+	// Copied out through a ^[]T: its len comes with it (set to 0 here: with
+	// none, the copy is full too).
 	c := buf[4:8]
+	c.len = 0
 	copied := copy_and_add(&c)
 	print("copied through a ^[]T:", copied.len, copied)
 

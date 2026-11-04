@@ -1,0 +1,15 @@
+module slice_no_len_full_append
+
+//@ expect-exit: 1
+//@ expect-output: Expected n < dst.cap, but n was 4 and dst.cap was 4
+// A slicing of a fixed array has no len and is full: an append into it finds
+// no room and stops the program (set its len to 0 first to fill it).
+
+use mara.core
+
+main :: fun() {
+	buf : [4!]i64
+	room := buf[0:4]
+	&room + 5
+	print("appended", room.len)
+}

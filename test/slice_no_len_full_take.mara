@@ -1,0 +1,16 @@
+module slice_no_len_full_take
+
+//@ expect-exit: 1
+//@ expect-output: take overflows storage: 2 of 8 bytes at 64 exceed cap 64
+// A take from a slicing of a fixed array: it has no len and is full, so the
+// take finds no room and stops the program (set its len to 0 first to carve
+// from its start).
+
+use mara.core
+
+main :: fun() {
+	bytes : [64!]byte
+	store := bytes[0:64]
+	taken := slice([:2]i64, &store)
+	print("taken", taken.cap, store.len)
+}

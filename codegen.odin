@@ -30,8 +30,9 @@ PARTIAL_ELEMENTS_FIELD :: 1
 
 // A slice with no len: a slicing's (`x[a:b]`, `x[:]`), every item of its
 // room in it. Its len word holds its count with the top bit set. What reads
-// the len reads the count (emit_len_count); what appends into it starts at
-// 0 (emit_len_fill, `start_fill`). A list's len never has the bit.
+// the len reads the count (emit_len_count), appends and takes too: it's
+// full, and gets a len only when one is set (`.len = 0` to fill it). A
+// list's len never has the bit.
 SLICE_NO_LEN   :: min(i64)
 SLICE_LEN_MASK :: max(i64)
 
@@ -84,16 +85,6 @@ emit_window_len :: proc(g: ^Codegen, src: Val, list: bool, lo, n: Val) -> (word,
     count = fresh_tmp(g)
     ir_select(g, count, none, w, n, inh)
     return
-}
-
-// A slice's len word read as where an append goes: a no-len slice's, 0.
-emit_len_fill :: proc(g: ^Codegen, raw: Val) -> Val {
-    if raw.kind == .Int { return ir_int(0) if raw.n < 0 else raw }
-    neg := fresh_tmp(g)
-    ir_icmp(g, neg, .Slt, SLICE_LEN_IR, raw, ir_int(0))
-    out := fresh_tmp(g)
-    ir_select(g, out, neg, SLICE_LEN_IR, ir_int(0), raw)
-    return out
 }
 
 // A ^[]T's IR type (slice_ref_layout): where the len is, the cap, the data —
