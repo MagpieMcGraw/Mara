@@ -217,12 +217,12 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     fd: ^TC_Field_Default
     if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     variant := name if ty != 0 && tr.tag[ty] == .Ident && tc_ref(k, ty).kind == .Variant else ""
-    // (A list's zero: `[N]T{}`, or `{}` / `{0}` typed by where it goes.)
-    empty := fd == nil && tr.tag[n] != .Broadcast && is_partial_array(t) && (ty == 0 || tr.tag[ty] != .Ident && tr.tag[ty] != .Field)
+    // (A list's zero: `[N]T{}` or `[N]T{0}`, or `{}` / `{0}` typed by where it goes.)
+    empty := fd == nil && !tc_is_broadcast(k, n) && is_partial_array(t) && (ty == 0 || tr.tag[ty] != .Ident && tr.tag[ty] != .Field)
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)
-    list_fill := fd == nil && to_list && tr.tag[n] == .Broadcast   // (`all v` into a list where it goes: tc_literal)
+    list_fill := fd == nil && to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes: tc_literal)
     // (A named struct or union — `type P`, `distinct U` — built as its base.)
     ts, _ := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope

@@ -310,15 +310,15 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, type_name(ut))
             return Type_Error{}
         }
-        // (`all v` into a list, as a field's default goes: its every element.
-        // `{}` or `{0}` into one: its zero, len 0, as `[N]T{}` is.)
+        // (`all v` or `{all v}` into a list: its every element. `{}` or `{0}`
+        // into one: its zero, len 0, as `[N]T{}` is.)
         _, into_list := distinct_base(hint).(^Type_Partial_Array)
-        list_fill := into_list && tr.tag[n] == .Broadcast
+        list_fill := into_list && tc_is_broadcast(k, n)
         if into_list && !list_fill {
             zero_entry := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
             if len(entries) > 0 && !zero_entry {
                 // (Its braces as arguments: fmt reads them in a format.)
-                tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(hint), "{}", "{0}")
+                tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(hint), "{}", "{0}", "{all v}")
                 return Type_Error{}
             }
             empty = true
@@ -366,14 +366,19 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         t = qt
     case:
-        // (A typed array's: `[3!]f32{…}`, an empty `[N]T{}`.)
+        // (A typed array's: `[3!]f32{…}`; a list's zero, `[N]T{}` or
+        // `[N]T{0}`, or its fill, `[N]T{all v}`.)
         t = tc_type(k, ty, span)
         if is_partial_array(t) {
-            if len(entries) > 0 {
-                tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
-                return Type_Error{}
+            zero_entry := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
+            if !tc_is_broadcast(k, n) {
+                if len(entries) > 0 && !zero_entry {
+                    // (Its braces as arguments: fmt reads them in a format.)
+                    tc_error(k, span, TYPE_LIST_LITERAL_ITEMS, "{…}", type_name(t), "{}", "{0}", "{all v}")
+                    return Type_Error{}
+                }
+                empty = true
             }
-            empty = true
         } else if !tc_is_fixed_array(t) || tc_is_distinct(t) {
             tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
             return Type_Error{}
@@ -396,7 +401,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)
-    list_fill := fd == nil && to_list && tr.tag[n] == .Broadcast   // (`all v` into a list where it goes)
+    list_fill := fd == nil && to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes)
     // (A named struct or union — `type P`, `distinct P` — built as its base.)
     ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
@@ -422,7 +427,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     if fd != nil {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, fd)
     } else if list_fill {
-        tc_broadcast_fill(k, n, Tree_Id(tr.a[n]), t, name)
+        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name)   // (entries[0] the broadcast: n itself when bare)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name)
     } else if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {

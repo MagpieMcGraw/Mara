@@ -1,0 +1,13 @@
+module list_literal_items_typed_neg
+
+//@ expect-fail: gives its zero, `{}` or `{0}` (len 0), or every item one value, `{all v}`. A list of items is written `[a, b, …]`
+
+// A typed list literal with items: only its zero or its fill is written with
+// braces; items are `[1, 2]`.
+
+use mara.core
+
+main :: fun() {
+	xs := [4]i64{1, 2}
+	print(xs.len)
+}

@@ -1,6 +1,6 @@
 module list_literal_items_neg
 
-//@ expect-fail: gives its zero only: `{}` or `{0}`, len 0. A list of items is written `[a, b, …]`
+//@ expect-fail: gives its zero, `{}` or `{0}` (len 0), or every item one value, `{all v}`. A list of items is written `[a, b, …]`
 
 // A `{…}` with items, typed by a list it goes into: only a list's zero is
 // written that way; items are `[1, 2]`.
