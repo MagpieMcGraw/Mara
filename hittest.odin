@@ -27,7 +27,8 @@ import "core:path/filepath"
 // its declaration's kind, name and file:line — `mara docs` shows that one
 // first. `mara ask what at <point>` says the same to read (ask_what_at_point):
 // a variable or a field's types along its path, where it's declared, and where
-// it's written and read; of anything else that's named, what it is, its type
+// it's written and read, a field's on that value (place.odin) unless it's the
+// field's declaration; of anything else that's named, what it is, its type
 // and where it's declared; of what isn't, the expressions around it. A hover
 // asks for what it is alone.
 // ---------------------------------------------------------------------------
@@ -507,18 +508,19 @@ Use_Kind :: enum { Written, Pointer, Read }
 // A place a name is used, or a field is written without being named: the token
 // it's at, its node, and what it does there.
 Hit_Use :: struct {
-    tok:  Token_Id,
-    node: Tree_Id,
-    kind: Use_Kind,
-    path: string,   // its file's
-    here: bool,     // in the file the question's about
+    tok:   Token_Id,
+    node:  Tree_Id,
+    kind:  Use_Kind,
+    path:  string,   // its file's
+    here:  bool,     // in the file the question's about
+    maybe: bool,     // it can't be told whether it's on the value asked about
 }
 
 // A use added: `here` the file the question's about.
 @(private="file")
-hit_add_use :: proc(uses: ^[dynamic]Hit_Use, tok: Token_Id, n: Tree_Id, kind: Use_Kind, here: u16) {
+hit_add_use :: proc(uses: ^[dynamic]Hit_Use, tok: Token_Id, n: Tree_Id, kind: Use_Kind, here: u16, maybe := false) {
     token := build_tokens[tok]
-    append(uses, Hit_Use{tok, n, kind, span_file(token_span(token)), token.file == here})
+    append(uses, Hit_Use{tok, n, kind, span_file(token_span(token)), token.file == here, maybe})
 }
 
 // What the name at node n does to what it names: climbs from it while it's
@@ -587,10 +589,16 @@ hit_holds_field :: proc(ty: Type, decl: Token_Id, known: ^map[^Type_Scope]bool) 
 }
 
 // Where the field declared at `decl` is written without being named: a value
-// that holds it assigned whole, a literal's entry by position.
+// that holds it assigned whole, a literal's entry by position. Only those on
+// the places asked about (none: every value of its struct).
 @(private="file")
-hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dynamic]Hit_Use, here: u16) {
+hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dynamic]Hit_Use, here: u16, f: ^Place_Finder, asked: []Place) {
     known := make(map[^Type_Scope]bool, allocator = context.temp_allocator)
+    entry := proc(uses: ^[dynamic]Hit_Use, t: ^Tree, f: ^Place_Finder, asked: []Place, decl: Token_Id, lit, at: Tree_Id, i: Instance_Id, here: u16) {
+        m := Place_Match.Yes
+        if asked != nil { m = place_match(asked, place_of_entry(f, lit, decl, i)) }
+        if m != .No { hit_add_use(uses, t.first[at], at, .Written, here, m == .Maybe) }
+    }
     for inst, i in a.instances {
         for k in 0 ..< len(a.types[i]) {
             n := inst.lo + Tree_Id(k)
@@ -598,7 +606,9 @@ hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dyna
             case .Assign:
                 for target in tree_list(t, t.a[n]) {
                     if hit_holds_field(annot_type(a, Instance_Id(i), target), decl, &known) {
-                        hit_add_use(uses, t.first[target], target, .Written, here)
+                        m := Place_Match.Yes
+                        if asked != nil { m = place_holds(asked, place_of(f, target, Instance_Id(i))) }
+                        if m != .No { hit_add_use(uses, t.first[target], target, .Written, here, m == .Maybe) }
                     }
                 }
             case .Literal:
@@ -610,13 +620,13 @@ hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dyna
                 if len(entries) == 1 && len(user) > 1 {
                     // (`Token{0}`: its zero. `Foo{f()}`: every field f's.)
                     if t.tag[entries[0]] != .Call && t.tag[entries[0]] != .Method_Call { continue }
-                    for f in user {
-                        if f.decl == decl { hit_add_use(uses, t.first[n], n, .Written, here) }
+                    for field in user {
+                        if field.decl == decl { entry(uses, t, f, asked, decl, n, n, Instance_Id(i), here) }
                     }
                     continue
                 }
                 for e, at in entries {
-                    if at < len(user) && user[at].decl == decl { hit_add_use(uses, t.first[e], e, .Written, here) }
+                    if at < len(user) && user[at].decl == decl { entry(uses, t, f, asked, decl, n, e, Instance_Id(i), here) }
                 }
             }
         }
@@ -695,11 +705,33 @@ hit_path_types :: proc(t: ^Tree, a: ^Annotations, n: Tree_Id) -> string {
     return strings.join(parts[:], ".", context.temp_allocator)
 }
 
+// The places a use of a field is on: a literal's named entry's are where the
+// literal goes.
+@(private="file")
+hit_use_places :: proc(f: ^Place_Finder, t: ^Tree, n: Tree_Id, decl: Token_Id, i: Instance_Id) -> []Place {
+    if t.tag[n] == .Named_Entry { return place_of_entry(f, t.parent[n], decl, i) }
+    return place_of(f, n, i)
+}
+
+// The places a field asked about at node n is on, in every instance n's checked
+// in; nil for its declaration, which is about every value of its struct.
+@(private="file")
+hit_asked_places :: proc(f: ^Place_Finder, t: ^Tree, a: ^Annotations, n: Tree_Id, decl: Token_Id) -> []Place {
+    if t.tag[n] != .Field && t.tag[n] != .Named_Entry && !(t.tag[n] == .Ident && t.main[n] != decl) { return nil }
+    out := make([dynamic]Place, context.temp_allocator)
+    for inst, i in a.instances {
+        if n < inst.lo || n > inst.hi || annot_ref(a, Instance_Id(i), n).decl != decl { continue }
+        append(&out, ..hit_use_places(f, t, n, decl, Instance_Id(i)))
+    }
+    return out[:] if len(out) > 0 else nil
+}
+
 // A variable's or a field's answer: the path to it as written and the types
 // along it, where it's declared, then where it's written, where a pointer to it
 // is taken and where it's read: the file asked about first, a line once in
-// each. A field's written and read wherever a value of its struct is, in this
-// module and the modules it uses.
+// each. A field reached through a value is about that value, followed through
+// locals and params (place.odin); where that can't be told, a use is listed
+// apart as a maybe. A field's declaration is about every value of its struct.
 @(private="file")
 hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id) -> string {
     if len(t.parent) != len(t.tag) { tree_parents(t) }
@@ -708,14 +740,23 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
     seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
     seen[r.decl] = true
     uses := make([dynamic]Hit_Use, context.temp_allocator)
+    finder: ^Place_Finder
+    asked: []Place
+    if r.kind == .Field {
+        finder = place_finder_make(t, a)
+        asked = hit_asked_places(finder, t, a, named_at, r.decl)
+    }
     for inst, i in a.instances {
         for ref, k in a.refs[i] {
             if ref.decl != r.decl { continue }
             n := inst.lo + Tree_Id(k)
             tok, named := ref_name_token(t, n, name)
             if !named || seen[tok] { continue }
+            m := Place_Match.Yes
+            if asked != nil && int(tok) != p.at { m = place_match(asked, hit_use_places(finder, t, n, r.decl, Instance_Id(i))) }
+            if m == .No { continue }
             seen[tok] = true
-            hit_add_use(&uses, tok, n, hit_use_kind(t, a, Instance_Id(i), n), here)
+            hit_add_use(&uses, tok, n, hit_use_kind(t, a, Instance_Id(i), n), here, m == .Maybe)
         }
     }
 
@@ -725,7 +766,7 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         if types != "" { break }
         types = hit_type(a, u.node)
     }
-    if r.kind == .Field { hit_field_writes(t, a, r.decl, &uses, here) }
+    if r.kind == .Field { hit_field_writes(t, a, r.decl, &uses, here, finder, asked) }
     slice.sort_by(uses[:], proc(x, y: Hit_Use) -> bool {
         if x.here != y.here { return x.here }
         if x.path != y.path { return x.path < y.path }
@@ -737,20 +778,22 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
     if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
     fmt.sbprint(&sb, "\ndeclared\n")
     hit_write_place(&sb, t, r.decl, hit_node_at(t, r.decl))
-    for kind in Use_Kind {
-        rows := make([dynamic]Hit_Use, context.temp_allocator)
-        last_tok: Token
-        for u in uses {
-            if u.kind != kind { continue }
-            tok := build_tokens[u.tok]
-            if len(rows) > 0 && tok.file == last_tok.file && token_line(tok) == token_line(last_tok) { continue }
-            append(&rows, u)
-            last_tok = tok
+    for maybe in ([2]bool{false, true}) {
+        for kind in Use_Kind {
+            rows := make([dynamic]Hit_Use, context.temp_allocator)
+            last_tok: Token
+            for u in uses {
+                if u.kind != kind || u.maybe != maybe { continue }
+                tok := build_tokens[u.tok]
+                if len(rows) > 0 && tok.file == last_tok.file && token_line(tok) == token_line(last_tok) { continue }
+                append(&rows, u)
+                last_tok = tok
+            }
+            if (maybe || kind == .Pointer) && len(rows) == 0 { continue }
+            word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
+            fmt.sbprintf(&sb, "%s%s %d\n", "maybe " if maybe else "", word, len(rows))
+            for u in rows { hit_write_place(&sb, t, u.tok, u.node) }
         }
-        if kind == .Pointer && len(rows) == 0 { continue }
-        word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
-        fmt.sbprintf(&sb, "%s %d\n", word, len(rows))
-        for u in rows { hit_write_place(&sb, t, u.tok, u.node) }
     }
     return strings.to_string(sb)
 }

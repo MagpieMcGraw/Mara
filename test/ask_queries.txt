@@ -63,6 +63,24 @@ test/askuses.mara | what at askuses.mara:22:14
 test/askuses.mara | what at askuses.mara:41:2
 test/askuses.mara | what at askuses.mara:36:18
 
+# A field through a value: that value's uses, followed through locals and params,
+# what can't be followed as a maybe; at its declaration, every value's.
+test/askplaces.mara | what at askplaces.mara:72:16
+test/askplaces.mara | what at askplaces.mara:73:10
+test/askplaces.mara | what at askplaces.mara:74:10
+test/askplaces.mara | what at askplaces.mara:75:6
+test/askplaces.mara | what at askplaces.mara:76:9
+test/askplaces.mara | what at askplaces.mara:81:7
+test/askplaces.mara | what at askplaces.mara:39:4
+test/askplaces.mara | what at askplaces.mara:9:2
+test/askplaces.mara | what at askplaces.mara:60:4
+test/askplaces.mara | what at askplaces.mara:99:16
+test/askplaces.mara | what at askplaces.mara:100:11
+test/askplaces.mara | what at askplaces.mara:95:7
+test/askplaces.mara | what at askplaces.mara:91:18
+test/askplaces.mara | what at askplaces.mara:88:11
+test/askplaces.mara | what at askplaces.mara:104:16
+
 # Calls in operator form are call-graph edges.
 test/operator_calls.mara | sum
 test/operator_calls.mara | sum call above

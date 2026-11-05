@@ -1441,9 +1441,12 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask at camera.mara:176      slice whatever is defined on that line
     mara ask what at camera.mara:52:46   what is at that point. A variable or a field:
                                      the types along its path, where it's declared, where
-                                     it's written and read. Anything else named: what it
-                                     is, its type, where it's declared. What's no name:
-                                     the expressions around it, innermost first
+                                     it's written and read. A field reached through a value
+                                     is about that value, followed through locals and
+                                     params; where that can't be told, a use is listed as
+                                     maybe. At a field's declaration: every value's. Anything
+                                     else named: what it is, its type, where it's declared.
+                                     What's no name: the expressions around it, innermost first
 
   The window (mara view), when one is open, answers 'mara ask' from wherever
   it's run. -show: it shows the query and its answer in its Ask panel too (an

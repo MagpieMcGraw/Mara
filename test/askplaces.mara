@@ -1,0 +1,107 @@
+module askplaces
+
+use mara.core
+
+// Fixture for `mara ask what at` on a field through a value (place.odin): which
+// value each use is on. Queried by test/ask_queries.txt.
+
+Clock :: struct {
+	ticks: i64 = 1
+	name: [8]utf8
+}
+
+Clocks :: struct {
+	work  := Clock()
+	frame := Clock()
+	list: [2]Clock
+	held: ^Clock
+}
+
+Shared :: struct {
+	using clocks := Clocks()
+	spare := Clock()
+}
+
+Counter :: struct {
+	count: i64 = 0
+	half: i64 = 0
+
+	count = 5
+	halve(#self)
+
+	halve :: fun(c: ^Self) {
+		c.half = c.count / 2
+	}
+}
+
+// Writes through a pointer: a call decides which clock.
+tick :: fun(c: ^Clock) {
+	c.ticks += 1
+}
+
+// Reads a copy: the call's value.
+show :: fun(c: Clock) {
+	print(c.ticks)
+}
+
+// Calls itself, passing on what it's given.
+twice :: fun(c: ^Clock, times: i64) {
+	if times > 0 do twice(c, times - 1)
+	c.ticks = times
+}
+
+// Gives back who knows which.
+pick :: fun(s: ^Shared) -> ^Clock {
+	return &s.spare
+}
+
+// Used as a value, so anything may call it.
+called_later :: fun(c: ^Clock) {
+	c.ticks = 99
+}
+
+run_later :: fun(f: fun(^Clock), c: ^Clock) {
+	f(c)
+}
+
+main :: fun() {
+	s := Shared()
+	own := Clock()
+	copied := s.clocks.work
+
+	s.clocks.work.ticks = 2
+	s.frame.ticks = 3
+	s.spare.ticks = 4
+	own.ticks = 5
+	copied.ticks = 6
+
+	clocks := &s.clocks
+	clocks.work.ticks = 7
+	work := &clocks.work
+	work.ticks = 8
+
+	tick(&s.clocks.frame)
+	tick(&own)
+	show(s.clocks.work)
+	twice(&s.spare, 2)
+
+	s.clocks.frame = Clock()
+	s.clocks.frame = Clock{ticks = 9}
+	own = Clock{10, ""}
+	s.spare = Clock{ticks = 11}
+
+	s.clocks.list[0].ticks = 12
+	for &one in s.clocks.list {
+		one.ticks = 13
+	}
+
+	s.clocks.held = &own
+	s.clocks.held.ticks = 14
+	pick(&s).ticks = 15
+	run_later(called_later, &s.spare)
+
+	counter := Counter()
+	print(counter.half)
+
+	print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+}

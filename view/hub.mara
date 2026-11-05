@@ -506,7 +506,7 @@ is_diagnostic :: fun(line: []utf8) -> bool {
 // the path — as Mara code.
 cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 	if n == 0 do return STYLE_TITLE
-	if n > 1 and (line == "declared" or starts_with(line, "written ") or starts_with(line, "read ") or starts_with(line, "pointer taken ")) do return STYLE_TITLE
+	if n > 1 and (line == "declared" or starts_with(line, "written ") or starts_with(line, "read ") or starts_with(line, "pointer taken ") or starts_with(line, "maybe ")) do return STYLE_TITLE
 	if starts_with(line, "  declared") or starts_with(line, "  built into") do return STYLE_DIM
 	return STYLE_MARA
 }

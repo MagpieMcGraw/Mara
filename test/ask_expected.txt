@@ -783,7 +783,7 @@ Outer.Inner.i64
 declared
   askuses.mara:10  Inner
     value: i64 = 5
-written 9
+written 5
   askuses.mara:27  set_value
     i.value = 1
   askuses.mara:36  main
@@ -794,22 +794,12 @@ written 9
     o.inner.other, o.inner.value = 4, 5
   askuses.mara:42  main
     o.inner = Inner()
-  askuses.mara:43  main
-    a := Inner{value = 7, other = 8}
-  askuses.mara:44  main
-    b := Inner{9, 10}
-  askuses.mara:45  main
-    c := Inner{make_inner()}
-  askuses.mara:46  main
-    d := Inner() {value = 11}
 pointer taken 1
   askuses.mara:40  main
     touch(&o.inner.value)
-read 2
+read 1
   askuses.mara:39  main
     print(o.inner.value)
-  askuses.mara:47  main
-    print(a.value + b.value + c.value + d.value)
 === test/askuses.mara | what at askuses.mara:36:4
 o.inner
 Outer.Inner
@@ -843,31 +833,10 @@ i64
 declared
   askuses.mara:10  Inner
     value: i64 = 5
-written 9
-  askuses.mara:27  set_value
-    i.value = 1
-  askuses.mara:36  main
-    o.inner.value = 2
-  askuses.mara:37  main
-    o.inner.value += 3
-  askuses.mara:38  main
-    o.inner.other, o.inner.value = 4, 5
-  askuses.mara:42  main
-    o.inner = Inner()
+written 1
   askuses.mara:43  main
     a := Inner{value = 7, other = 8}
-  askuses.mara:44  main
-    b := Inner{9, 10}
-  askuses.mara:45  main
-    c := Inner{make_inner()}
-  askuses.mara:46  main
-    d := Inner() {value = 11}
-pointer taken 1
-  askuses.mara:40  main
-    touch(&o.inner.value)
-read 2
-  askuses.mara:39  main
-    print(o.inner.value)
+read 1
   askuses.mara:47  main
     print(a.value + b.value + c.value + d.value)
 === test/askuses.mara | what at askuses.mara:11:2
@@ -985,6 +954,461 @@ set_value — fun
 2 : i64
 
   o.inner.value = 2
+=== test/askplaces.mara | what at askplaces.mara:72:16
+s.clocks.work.ticks
+Shared.Clocks.Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 3
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:73:10
+s.frame.ticks
+Shared.Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 4
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:74:10
+s.spare.ticks
+Shared.Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 3
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:75:6
+own.ticks
+Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 3
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:76:9
+copied.ticks
+Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 1
+  askplaces.mara:76  main
+    copied.ticks = 6
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:81:7
+work.ticks
+^Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 3
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:39:4
+c.ticks
+^Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 6
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:9:2
+ticks
+i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 18
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:76  main
+    copied.ticks = 6
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+  askplaces.mara:93  main
+    s.clocks.list[0].ticks = 12
+  askplaces.mara:95  main
+    one.ticks = 13
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+=== test/askplaces.mara | what at askplaces.mara:60:4
+c.ticks
+^Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 1
+  askplaces.mara:60  called_later
+    c.ticks = 99
+read 0
+maybe written 17
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:76  main
+    copied.ticks = 6
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+  askplaces.mara:93  main
+    s.clocks.list[0].ticks = 12
+  askplaces.mara:95  main
+    one.ticks = 13
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+maybe read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+=== test/askplaces.mara | what at askplaces.mara:99:16
+s.clocks.held.ticks
+Shared.Clocks.^Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 1
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+read 0
+maybe written 17
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:76  main
+    copied.ticks = 6
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+  askplaces.mara:93  main
+    s.clocks.list[0].ticks = 12
+  askplaces.mara:95  main
+    one.ticks = 13
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+maybe read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+=== test/askplaces.mara | what at askplaces.mara:100:11
+pick(&s).ticks
+Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 1
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+read 0
+maybe written 17
+  askplaces.mara:39  tick
+    c.ticks += 1
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:72  main
+    s.clocks.work.ticks = 2
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:75  main
+    own.ticks = 5
+  askplaces.mara:76  main
+    copied.ticks = 6
+  askplaces.mara:79  main
+    clocks.work.ticks = 7
+  askplaces.mara:81  main
+    work.ticks = 8
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+  askplaces.mara:90  main
+    own = Clock{10, ""}
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+  askplaces.mara:93  main
+    s.clocks.list[0].ticks = 12
+  askplaces.mara:95  main
+    one.ticks = 13
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+maybe read 2
+  askplaces.mara:44  show
+    print(c.ticks)
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+=== test/askplaces.mara | what at askplaces.mara:95:7
+one.ticks
+^Clock.i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 2
+  askplaces.mara:93  main
+    s.clocks.list[0].ticks = 12
+  askplaces.mara:95  main
+    one.ticks = 13
+read 0
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:91:18
+ticks
+i64
+
+declared
+  askplaces.mara:9  Clock
+    ticks: i64 = 1
+written 3
+  askplaces.mara:50  twice
+    c.ticks = times
+  askplaces.mara:74  main
+    s.spare.ticks = 4
+  askplaces.mara:91  main
+    s.spare = Clock{ticks = 11}
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+maybe written 3
+  askplaces.mara:60  called_later
+    c.ticks = 99
+  askplaces.mara:99  main
+    s.clocks.held.ticks = 14
+  askplaces.mara:100  main
+    pick(&s).ticks = 15
+=== test/askplaces.mara | what at askplaces.mara:88:11
+s.clocks.frame
+Shared.Clocks.Clock
+
+declared
+  askplaces.mara:15  Clocks
+    frame := Clock()
+written 3
+  askplaces.mara:73  main
+    s.frame.ticks = 3
+  askplaces.mara:88  main
+    s.clocks.frame = Clock()
+  askplaces.mara:89  main
+    s.clocks.frame = Clock{ticks = 9}
+pointer taken 1
+  askplaces.mara:83  main
+    tick(&s.clocks.frame)
+read 1
+  askplaces.mara:106  main
+    print(s.clocks.work.ticks, s.frame.ticks, s.spare.ticks, own.ticks, copied.ticks)
+=== test/askplaces.mara | what at askplaces.mara:104:16
+counter.half
+Counter.i64
+
+declared
+  askplaces.mara:27  Counter
+    half: i64 = 0
+written 1
+  askplaces.mara:33  halve
+    c.half = c.count / 2
+read 1
+  askplaces.mara:104  main
+    print(counter.half)
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
