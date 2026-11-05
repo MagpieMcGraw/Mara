@@ -44,7 +44,7 @@ one_step :: fun(fixed : ^Fixed_Timer) -> bool {
 }
 
 // The seconds since `last` (a clock_ns), and now.
-time_since :: fun(last: i64) -> (f64, i64) {
+time_since :: fun(last: i64) -> f64, i64 {
 	now := clock_ns()
 	return f64(now - last) / 1000000000.0, now
 }
@@ -56,9 +56,9 @@ tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
 
 // Waits out the rest of a frame at `fps` frames a second, the frame's work
 // timed from `work`.
-sleep :: fun(work: Timer, fps: f64) {
-	work_seconds, _ := time_since(work.counter)
-	sleep_time := 1.0 / fps - work_seconds
+sleep :: fun(work: ^Timer, fps: f64) {
+	work.seconds, _ := time_since(work.counter)
+	sleep_time := 1.0 / fps - work.seconds
 	if sleep_time > 0 do sleep_ns(seconds_to_ns(sleep_time))
 }
 
