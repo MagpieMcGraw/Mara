@@ -270,8 +270,8 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             filt.append(str(depth))
 
         mara = _settings().get("mara_path", "mara")
-        # -show: a `mara view` window open on the module shows the query and its
-        # answer in its Ask panel (it answers too; no window, a plain ask).
+        # -show: a `mara view` window shows the query and its answer in its Ask
+        # panel (it answers too; no window, a plain ask).
         ask = [mara, "ask"] + (["-show"] if _settings().get("show_in_window", True) else [])
         name_args = ask + [word] + filt
 
@@ -358,12 +358,12 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 #
 # When the cursor rests (delay_ms), and only when where it is changed, a window
 # is told two things, for reading after an alt-tab:
-#   Docs (mara docs): a window open anywhere looks the words up — what the name
-#     at the cursor refers to first, the compiler's answer, then the text
-#     matches in the file's directory, the stdlib and doc/.
-#   Ask (mara ask -cursor what at <point>): the window open on the file's
-#     module shows what's at the cursor at the top of its Ask panel — what the
-#     name is, its type, where it's declared, the expressions around it.
+#   Docs (mara docs): the window looks the words up — what the name at the
+#     cursor refers to first, the compiler's answer, then the text matches in
+#     the file's directory, the stdlib and doc/.
+#   Ask (mara ask -cursor what at <point>): the window moves to the file's
+#     module and shows what's at the cursor at the top of its Ask panel — what
+#     the name is, its type, where it's declared, the expressions around it.
 # The words: what's highlighted, when something is (one line; a whole fun isn't
 # words); else the name under the cursor; else, in a call's parentheses, the fun
 # being called (signature help). The point: the cursor — with a highlight, its
@@ -670,7 +670,7 @@ def _allow_foreground():
 
 class MaraViewCommand(sublime_plugin.TextCommand):
     # The window (`mara view`) on the module this file is in — opened, or
-    # brought to the front when one's open on it already — and what was
+    # brought to the front and moved here when it's open already — and what was
     # right-clicked looked up there, as a rest on it would: its Docs, and
     # what's there at the top of its Ask panel. In the right-click menu and
     # the command palette (there: what's at the cursor), for .mara files.

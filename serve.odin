@@ -13,6 +13,9 @@ import "core:time"
 // as `mara ask <line>` would answer it, then ASK_DONE — against the module as
 // it is on disk, checked again when a .mara file changes. A window starts it
 // once and talks to it through pipes; it ends when its input does.
+// A line can start `-in "<folder>" <module>`: serve goes to that folder and
+// checks that module, then answers the rest of the line. So one serve can
+// answer for any module, which is how a window follows an editor around.
 // ---------------------------------------------------------------------------
 
 // Each answer ends in one of these lines: a client reading them knows where
@@ -31,10 +34,21 @@ Serve_Check :: struct {
     diagnostics: [dynamic]Diagnostic,   // its errors and warnings, each at its place
 }
 
+// Where serve answers from: the folder it runs in and the module it checks
+// there. A line's `-in` changes them. The strings in here, and the folders
+// build.mara names, live in the arena, which each change replaces.
+Serve_Here :: struct {
+    arena: virtual.Arena,
+    dir:   string,
+    args:  CLI_Args,
+}
+
 serve :: proc(args: CLI_Args) {
     compiler := compiler_file()
+    here := Serve_Here{args = args}
+    here.dir, _ = os.get_working_directory(context.allocator)
     check: Serve_Check
-    serve_check(&check, args, serve_stamp(args.compiler_dir))
+    serve_check(&check, args, serve_stamp(args.compiler_dir, args.search_dirs))
     r: bufio.Reader
     bufio.reader_init(&r, os.to_stream(os.stdin))
     defer bufio.reader_destroy(&r)
@@ -46,15 +60,50 @@ serve :: proc(args: CLI_Args) {
         // the window with its answers, a word of it an answer begun.)
         if compiler_rebuilt(compiler) { os.exit(COMPILER_REBUILT_EXIT) }
         // (A blank line is a query too: `mara ask` alone, the module map.)
-        if stamp := serve_stamp(args.compiler_dir); stamp != check.stamp {
-            serve_check(&check, args, stamp)
+        words := ask_words(line)
+        dir, module := "", ""
+        if len(words) >= 3 && words[0] == "-in" {
+            dir, module = words[1], words[2]
+            words = words[3:]
         }
-        answer, ok := serve_answer(&check, ask_words(line))
+        answer, ok := serve_ready(&check, &here, dir, module), false
+        if answer == "" { answer, ok = serve_answer(&check, words) }
         fmt.print(answer)
         fmt.println(ASK_DONE if ok else ASK_FAILED)
         free_all(context.temp_allocator)
         if rerr != nil { break }
     }
+}
+
+// Gets the kept check ready for a query. `dir` and `module` are the query's
+// `-in`; both are empty when it has none. The module is checked again when
+// the query moves serve or a file has changed. Returns what to answer instead
+// when serve can't get there, "" when it's ready.
+serve_ready :: proc(check: ^Serve_Check, here: ^Serve_Here, dir, module: string) -> string {
+    moved := dir != "" && (path_key(dir) != path_key(here.dir) || module != here.args.pkg_name)
+    if moved && os.change_directory(dir) != nil {
+        return fmt.tprintf("mara serve: can't go to the folder %s\n", dir)
+    }
+    stamp := serve_stamp(here.args.compiler_dir, here.args.search_dirs)
+    if !moved && stamp == check.stamp { return "" }
+    if dir != "" {
+        // (build.mara read again: this is another folder, or it may have changed.)
+        virtual.arena_destroy(&here.arena)
+        if err := virtual.arena_init_growing(&here.arena); err != nil {
+            fmt.panicf("mara serve: no arena for a module (%v)", err)
+        }
+        context.allocator = virtual.arena_allocator(&here.arena)
+        here.dir, here.args.pkg_name = strings.clone(dir), strings.clone(module)
+        here.args.search_dirs = nil
+        if problem := build_dirs_in(&here.args, here.dir); problem != "" {
+            // (The next query tries again. The check kept was of what's gone.)
+            here.dir, check.stamp = "", ""
+            return strings.concatenate({problem, "\n"}, context.temp_allocator)
+        }
+        stamp = serve_stamp(here.args.compiler_dir, here.args.search_dirs)
+    }
+    serve_check(check, here.args, stamp)
+    return ""
 }
 
 // The compiler a server runs — serve, lsp — as its file was when it
@@ -166,15 +215,16 @@ serve_answer :: proc(c: ^Serve_Check, words: []string) -> (answer: string, ok: b
 }
 
 // The sources a check reads, as one text: each .mara file's path, size and
-// time written, the stdlib's and the project's. Another stamp: a file
-// changed, came or went.
-serve_stamp :: proc(compiler_dir: string) -> string {
+// time written: the stdlib's, the project's and the folders its build names.
+// Another stamp: a file changed, came or went.
+serve_stamp :: proc(compiler_dir: string, search_dirs: []string = nil) -> string {
     context.allocator = context.temp_allocator
     b := strings.builder_make()
     if compiler_dir != "" {
         for dir in code_search_dirs(compiler_dir) { serve_stamp_dir(&b, dir) }
     }
     serve_stamp_dir(&b, ".")
+    for dir in search_dirs { serve_stamp_dir(&b, dir) }
     return strings.to_string(b)
 }
 

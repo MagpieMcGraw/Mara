@@ -219,11 +219,20 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
         return p, fmt.tprintf("mara ask: `at %s` — line and column must be positive integers\n", spec), false
     }
 
+    // (A file's name alone can be several files, in the stdlib or ours: the
+    // one at that path from here if there is one, else one in this build.)
     want := filepath.base(parts[0])
+    named := path_key(parts[0])
     src_file: ^Source_File
-    for _, files in all_files {
-        for f in files { if filepath.base(f.path) == want { src_file = f; break } }
-        if src_file != nil { break }
+    search: for _, files in all_files {
+        for f in files {
+            if filepath.base(f.path) != want { continue }
+            if path_key(f.path) == named {
+                src_file = f
+                break search
+            }
+            if src_file == nil || (src_file.end_token <= src_file.first_token && f.end_token > f.first_token) { src_file = f }
+        }
     }
     if src_file == nil {
         return p, fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false

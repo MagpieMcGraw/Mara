@@ -1,0 +1,35 @@
+module set_current_dir
+
+use mara.core
+use mara.os
+
+//@ expect-output: moved: true
+//@ expect-output: back: true
+//@ expect-output: no such folder: File_Error.Open_Failed
+//@ expect-output: stayed: true
+
+// set_current_dir: where the program runs changes, and comes back; a folder
+// that isn't there fails, and the program stays where it was.
+
+main :: fun() {
+	start, e := current_dir()
+	if e {
+		print("couldn't tell:", e)
+		return
+	}
+	if set_current_dir("..") {
+		print("couldn't go up")
+		return
+	}
+	up, _ := current_dir()
+	print("moved:", not same_path(up, start))
+	if set_current_dir(start) {
+		print("couldn't go back")
+		return
+	}
+	back, _ := current_dir()
+	print("back:", same_path(back, start))
+	print("no such folder:", set_current_dir("no_such_folder_here"))
+	stayed, _ := current_dir()
+	print("stayed:", same_path(stayed, start))
+}

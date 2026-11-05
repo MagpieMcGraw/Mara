@@ -8,22 +8,23 @@ import "core:strings"
 import "core:time"
 
 // ---------------------------------------------------------------------------
-// The window (`mara view`) as `mara ask`'s answerer. A window open on a
-// module listens on its pipe name (view_pipe_name, given it by `mara view`);
-// each connection sends one line, a query as `mara ask` takes it, and gets
-// what the window's `mara serve` answers, its end line too; then the window
-// closes the connection. A line "-show <query>" is a query the window shows
-// too (`mara ask -show`); "-cursor <query>", one it shows as what's at the
-// editor's cursor (`mara ask -cursor`). Docs aren't a module's: every window also listens
-// on one name for this compiler (docs_pipe_name) — the first opened answers
-// there, the others take it over when it closes — for "-docs <dir>\t<words>":
-// words looked up in that directory's .mara files and the stdlib's, shown in
-// its Docs panel and answered with what it found (`mara docs`). Four more
-// fields, "\t<kind>\t<name>\t<path>\t<line>", are what the name at the
-// editor's point refers to (`mara docs at`): shown first, the rest below.
-// There too, "-editor <program>": the editor a window opens a file in, at
-// a line (`mara editor`); "-colors <name>=#rrggbb ...", an editor's colors,
-// the windows' Sublime theme's (`mara colors`).
+// The window (`mara view`) as `mara ask`'s answerer. A compiler has one
+// window, wherever it's asked from. It listens on one pipe name
+// (view_pipe_name, given it by `mara view`); each connection sends one line
+// and gets its answer, with an end line; then the window closes the connection.
+// A query says where it's asked from, `-in "<folder>" <module> <query>`: the
+// window's `mara serve` goes there and answers it as `mara ask <query>` would.
+// "-show " before that: the window shows the query too (`mara ask -show`), and
+// moves to that module. "-cursor " before it: it shows the answer as what's at
+// the editor's cursor (`mara ask -cursor`), and moves too. "-raise" and where
+// from: comes to the front and moves (`mara view`).
+// Docs: "-docs <dir>\t<words>": words looked up in that directory's .mara
+// files and the stdlib's, shown in its Docs panel and answered with what it
+// found (`mara docs`). Four more fields, "\t<kind>\t<name>\t<path>\t<line>",
+// are what the name at the editor's point refers to (`mara docs at`): shown
+// first, the rest below. Also "-editor <program>": the editor it opens a file
+// in, at a line (`mara editor`); "-colors <name>=#rrggbb ...", an editor's
+// colors, for its Sublime theme (`mara colors`).
 // ---------------------------------------------------------------------------
 
 // How long `mara ask` waits for a window's next byte before it checks here
@@ -37,44 +38,42 @@ View_Exchange :: enum {
     Broken,      // one did, then stopped answering
 }
 
-// The pipe name a window on `module`, opened here by this compiler, listens
-// on: the module, then a hash of the directory and the compiler's path (on
-// Windows case folded: one path however it's spelled) — so windows on two
-// checkouts, or opened by two compilers, never meet.
-view_pipe_name :: proc(module: string) -> string {
-    cwd, _ := os.get_working_directory(context.temp_allocator)
-    key := strings.concatenate({cwd, "\x00", get_compiler_exe()}, context.temp_allocator)
-    when ODIN_OS == .Windows { key = strings.to_lower(key, context.temp_allocator) }
-    return fmt.aprintf("mara-view-%s-%016x", module, hash.fnv64a(transmute([]byte)key))
-}
-
-// The pipe name the windows this compiler opened answer docs on, wherever
-// they were opened: a hash of the compiler's path alone (case folded on
-// Windows, as view_pipe_name's).
-docs_pipe_name :: proc() -> string {
+// The pipe name this compiler's window listens on: a hash of the compiler's
+// path (on Windows case folded: one path however it's spelled), so windows
+// opened by two compilers never meet.
+view_pipe_name :: proc() -> string {
     key := get_compiler_exe()
     when ODIN_OS == .Windows { key = strings.to_lower(key, context.temp_allocator) }
-    return fmt.aprintf("mara-view-docs-%016x", hash.fnv64a(transmute([]byte)key))
+    return fmt.aprintf("mara-view-%016x", hash.fnv64a(transmute([]byte)key))
 }
 
-// `mara ask`'s query asked of the window open here on its module, when one
-// is: the answer, and whether it failed. ok false when no window answers —
-// none open, or one that stopped answering or cut its answer off: the check
-// here answers then.
+// Where a line to the window is asked from: this folder and `module`.
+view_write_here :: proc(b: ^strings.Builder, module: string) {
+    cwd, _ := os.get_working_directory(context.temp_allocator)
+    fmt.sbprintf(b, `-in "%s" %s`, cwd, module)
+}
+
+// `mara ask`'s query asked of the window, when one is open: the answer, and
+// whether it failed. ok false when no window answers — none open, or one that
+// stopped answering or cut its answer off — or when no module here is the one
+// asked about, which only the check here knows what to say about.
 ask_via_view :: proc(args: CLI_Args) -> (answer: string, failed: bool, ok: bool) {
+    if !module_is_in(".", args.pkg_name) { return }
     b := strings.builder_make(context.temp_allocator)
     if args.show { strings.write_string(&b, "-show ") }
     if args.cursor { strings.write_string(&b, "-cursor ") }
+    view_write_here(&b, args.pkg_name)
+    strings.write_byte(&b, ' ')
     for w, i in args.ask_words {
         if i > 0 { strings.write_byte(&b, ' ') }
         // (A word with a space in it, quoted: still one word to ask_words.)
         if strings.index_any(w, " \t") >= 0 { fmt.sbprintf(&b, `"%s"`, w) } else { strings.write_string(&b, w) }
     }
-    reply, said_failed, how := view_request(view_pipe_name(args.pkg_name), strings.to_string(b))
+    reply, said_failed, how := view_request(view_pipe_name(), strings.to_string(b))
     if how == .Answered { return reply, said_failed, true }
     // (A window that stopped answering, or cut its answer off: said, then
     // the check here answers.)
-    if how == .Broken && !args.cursor { fmt.eprintln("mara ask: the window open here didn't answer; checking here instead") }
+    if how == .Broken && !args.cursor { fmt.eprintln("mara ask: the window didn't answer; checking here instead") }
     return "", false, false
 }
 
@@ -93,13 +92,13 @@ docs_via_view :: proc(args: CLI_Args) {
     }
     request := strings.concatenate({"-docs ", cwd, "\t", words, exact}, context.temp_allocator)
     if words == "-reload" && exact == "" { request = "-reload" }
-    answer, failed, how := view_request(docs_pipe_name(), request)
+    answer, failed, how := view_request(view_pipe_name(), request)
     switch how {
     case .No_Window:
         fmt.eprintln("mara docs: no window is open — 'mara view' opens one")
         os.exit(1)
     case .Broken:
-        fmt.eprintln("mara docs: the window open here didn't answer")
+        fmt.eprintln("mara docs: the window didn't answer")
         os.exit(1)
     case .Answered:
         fmt.print(answer)
@@ -107,11 +106,10 @@ docs_via_view :: proc(args: CLI_Args) {
     }
 }
 
-// `mara editor <program>`: the window answering docs keeps the editor —
-// every window's after it — that opens a crash's calls. Exits 1 when no
-// window answers.
+// `mara editor <program>`: the window keeps the editor that opens a crash's
+// calls. Exits 1 when no window answers.
 editor_via_view :: proc(args: CLI_Args) {
-    _, failed, how := view_request(docs_pipe_name(), strings.concatenate({"-editor ", args.editor}, context.temp_allocator))
+    _, failed, how := view_request(view_pipe_name(), strings.concatenate({"-editor ", args.editor}, context.temp_allocator))
     switch how {
     case .No_Window:
         fmt.eprintln("mara editor: no window is open — 'mara view' opens one")
@@ -124,11 +122,10 @@ editor_via_view :: proc(args: CLI_Args) {
     }
 }
 
-// `mara colors <name>=#rrggbb ...`: the window answering docs keeps
-// Sublime's colors — every window's after it — for the Sublime theme. Exits 1
-// when no window answers.
+// `mara colors <name>=#rrggbb ...`: the window keeps Sublime's colors, for its
+// Sublime theme. Exits 1 when no window answers.
 colors_via_view :: proc(args: CLI_Args) {
-    _, failed, how := view_request(docs_pipe_name(), strings.concatenate({"-colors ", args.colors}, context.temp_allocator))
+    _, failed, how := view_request(view_pipe_name(), strings.concatenate({"-colors ", args.colors}, context.temp_allocator))
     switch how {
     case .No_Window:
         fmt.eprintln("mara colors: no window is open — 'mara view' opens one")
@@ -181,16 +178,23 @@ docs_exact :: proc(args: CLI_Args, cwd, words: string) -> (exact, name: string) 
     return fmt.tprintf("\t%s\t%s\t%s\t%s", kind, name, path, line), name
 }
 
-// `mara ask at <point>`'s answer: the window's open here on the module, when
-// one is, else from a check made here. "" when it failed.
+// `mara ask at <point>`'s answer: the window's, when one is open and there's
+// a module here for it to ask about, else from a check made here. "" when it
+// failed.
 docs_point_answer :: proc(args: CLI_Args) -> string {
     query := []string{"at", args.docs_at}
-    answer, failed, how := view_request(view_pipe_name(args.pkg_name), strings.join(query, " ", context.temp_allocator))
-    if how == .Answered { return "" if failed else answer }
+    if module_is_in(".", args.pkg_name) {
+        b := strings.builder_make(context.temp_allocator)
+        view_write_here(&b, args.pkg_name)
+        strings.write_byte(&b, ' ')
+        strings.write_string(&b, strings.join(query, " ", context.temp_allocator))
+        answer, failed, how := view_request(view_pipe_name(), strings.to_string(b))
+        if how == .Answered { return "" if failed else answer }
+    }
     here := args
     here.serve = true   // (a check for analysis: no code)
     check: Serve_Check
-    serve_check(&check, here, serve_stamp(args.compiler_dir))
+    serve_check(&check, here, serve_stamp(args.compiler_dir, args.search_dirs))
     local, ok := serve_answer(&check, query)
     return local if ok else ""
 }

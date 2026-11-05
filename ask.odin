@@ -1453,7 +1453,7 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
 
 // --- no analyzable module in the cwd ---------------------------------------
 
-// `mara ask` runs against the module in the current directory (module_or_folder:
+// `mara ask` runs against the module in the current directory (module_at:
 // the one its files declare; of several, the folder's name). When that names no
 // discovered module, the generic
 // build error ("no files found for module X") buries the real problem and never

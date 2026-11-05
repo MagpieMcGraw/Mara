@@ -32,16 +32,18 @@ appears in an output panel with every `file:line` clickable.
   open file. So `flow above`/`below` is also a visual map, not just a list. Cleared on
   the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
-- **The window** — with `mara view` open on the module, each query also shows in
-  the window's **Ask** panel (`mara ask -show`). And when the **cursor rests** in
-  a `.mara` file, a window is told where it is, for reading after an alt-tab:
-  - its **Docs** panel (a window open anywhere, `mara docs`) looks the words up:
-    what the name at the cursor refers to first — the compiler's answer, a
-    local's or a param's too — then the text matches in the file's directory,
-    the stdlib and doc/, with doc comments and signatures;
-  - its **Ask** panel (the window open on the module, `mara ask -cursor what at
-    <file>:<line>:<col>`) shows what's at the cursor at its top: what the name
-    is, its type, where it's declared, what it's in, the expressions around it.
+- **The window** — with `mara view` open, each query also shows in the window's
+  **Ask** panel (`mara ask -show`). And when the **cursor rests** in a `.mara`
+  file, the window is told where it is, for reading after an alt-tab. It follows
+  you: it moves to that file's module, and its title says which one. Reading in
+  the stdlib or doc/ doesn't move it.
+  - its **Docs** panel (`mara docs`) looks the words up: what the name at the
+    cursor refers to first — the compiler's answer, a local's or a param's too
+    — then the text matches in the file's directory, the stdlib and doc/, with
+    doc comments and signatures;
+  - its **Ask** panel (`mara ask -cursor what at <file>:<line>:<col>`) shows
+    what's at the cursor at its top: what the name is, its type, where it's
+    declared, what it's in, the expressions around it.
 
   The words: what's **highlighted**, when something is (one line — a highlight
   over lines isn't looked up); else the name under the cursor; else, in a
@@ -50,9 +52,9 @@ appears in an output panel with every `file:line` clickable.
   too. In an unsaved file the places may be stale: Docs shows the text matches
   alone, Ask waits for the save. The status bar says how many were found.
 
-  The windows are also told where this Sublime is (`mara editor`, once one is
-  open): a call in a window's **Crash** panel — the program's last crash, the
-  calls that were running — opens here at its line, clicked. And its colors
+  The window is also told where this Sublime is (`mara editor`, once it's
+  open): a call in its **Crash** panel — the program's last crash, the calls
+  that were running — opens here at its line, clicked. And its colors
   (`mara colors`, again when they change): the window's **Theme → Sublime**
   colors its panels with your color scheme, and code as Sublime does.
 
@@ -63,7 +65,7 @@ appears in an output panel with every `file:line` clickable.
 | `mara_ask` | `Ctrl+K Ctrl+A` | ask about the subject under the cursor (natural kind) |
 | `mara_ask_pick` | `Ctrl+K Ctrl+D` | choose a matrix cell (types/call/flow × above/below) |
 | `mara_ask_clear_highlights` | `Ctrl+K Ctrl+C` | clear the in-code flow highlight |
-| `mara_view` | right-click → Open mara view | the window (`mara view`) on the file's module — brought to the front when one's open on it already — with what was right-clicked looked up there (its Docs, and Ask's what's-at-the-cursor), as a rest on it would |
+| `mara_view` | right-click → Open mara view | the window (`mara view`) on the file's module — brought to the front and moved here when it's open already — with what was right-clicked looked up there (its Docs, and Ask's what's-at-the-cursor), as a rest on it would |
 
 All cells are also in the command palette (`Mara Ask: …`; the window: `Mara:
 open mara view`). Rebind in `Default (Windows).sublime-keymap`.

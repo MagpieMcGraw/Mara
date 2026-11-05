@@ -9,9 +9,9 @@ module view
 // or, opened after one, the window's own — its calls opened in the editor
 // (crash.mara); the keys. Panels are
 // moved, resized, shown and hidden; the layout and the theme, dark or
-// light, are kept. It answers `mara ask` here from a `mara serve` of its
-// own (hub.mara).
-//   view <compiler> <module> <pipe name> <docs pipe name>   (as `mara view` starts it)
+// light, are kept. It answers `mara ask` from a `mara serve` of its own, and
+// moves to the module an editor is in (hub.mara).
+//   view <compiler> <module> <pipe name>   (as `mara view` starts it)
 // Its fonts, Inter (OFL.txt) and for code JetBrains Mono
 // (OFL-JetBrainsMono.txt), and SDL3.dll are beside it, and its layout,
 // layout.txt. Built here: `mara build view` — with the window closed
@@ -26,6 +26,7 @@ use mara.memory
 #allocator Arena_Basic(256 * MB)
 
 PROFILE   :: "profile.txt"   // in the directory it runs in: the module's
+TITLE     :: "mara view"
 FONT_SIZE :: 15.0            // the text's em, pixels on a display at 100%
 MONO_SCALE :: 0.9            // code's em, of the text's: its monospace font runs bigger
 PAD       :: 12.0            // room around text: a panel's margin, a column's
@@ -159,11 +160,8 @@ main :: fun(args: [][]utf8) -> i64 {
 	}
 
 	title : str256
-	if args.len > 2 {
-		&title + args[2]
-		&title + " - "
-	}
-	&title + "mara view"
+	&title + TITLE
+	if args.len > 2 do title = window_title(args[2])
 
 	// (A click that brings the window forward is a click too: on Windows SDL
 	// would drop it.)
@@ -258,6 +256,15 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 			}
 		}
 		hub_poll(ui, hub)
+		// (Moved to another folder: its files shown. An old crash there is
+		// shown too, but not brought to the front: that's for a new one.)
+		if hub.moved {
+			hub.moved = false
+			profile_read(p, PROFILE)
+			measure_columns(ui, p)
+			_ = crash_read(ui)
+			ui.dirty = true
+		}
 		if GetTicks() - looked >= 500 {
 			looked = GetTicks()
 			if file_mtime(PROFILE) != p.stamp {
@@ -492,6 +499,15 @@ fit_window :: fun(ui: ^Ui, p: ^Profile) {
 		_ = SetWindowSize(ui.window, i32(want), units_h)
 		measure(ui)
 	}
+}
+
+// The window's title: the module it's on.
+window_title :: fun(name: []utf8) -> str256 {
+	title : str256
+	&title + name
+	&title + " - "
+	&title + TITLE
+	return title
 }
 
 // The window in front of the others (`mara view` again, with this one

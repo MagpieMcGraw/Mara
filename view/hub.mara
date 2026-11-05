@@ -9,33 +9,31 @@ use mara.sdl
 
 // The window's side of `mara ask` and `mara docs` (the compiler's
 // view.odin): it listens on the pipe name `mara view` gives it and keeps a
-// `mara serve` of its own running. Each connection sends a line, answered
-// with an end line after (serve's: "-- end of answer --", or "...: failed
-// --"), then closed:
-//   <query>          what serve answers it — as `mara ask <query>` would
-//   -show <query>    the same, shown in the Ask panel (an editor's queries)
-//   -cursor <query>  the same, shown at the Ask panel's top: what's at the
-//                    editor's cursor (`mara ask -cursor what at <point>`)
-//   -raise           the window brought to the front: `mara view` with it
-//                    open already
-// Docs aren't the module's: every window the compiler opens listens for
-// them on one name, the docs pipe name it's given too — the first window
-// opened answers there, the others try again every few seconds, so one
-// takes over when it closes. Its line:
+// `mara serve` of its own running. A compiler has one window, whatever module
+// it's asked about. Each connection sends a line, answered with an end line
+// after (serve's: "-- end of answer --", or "...: failed --"), then closed.
+// A query says where it's asked from, and serve goes there to answer it:
+//   -in "<folder>" <module> <query>     what serve answers, as `mara ask
+//                       <query>` would there
+//   -show -in ...       the same, shown in the Ask panel (an editor's queries)
+//   -cursor -in ...     the same, shown at the Ask panel's top: what's at the
+//                       editor's cursor (`mara ask -cursor what at <point>`)
+//   -raise -in "<folder>" <module>      the window brought to the front:
+//                       `mara view` with it open already
+// -show, -cursor and -raise also move the window to that module (hub_follow).
+// The others:
 //   -docs <directory><tab><words>[<tab><kind><tab><name><tab><path><tab><line>]
-// what the Docs panel finds for the words, in that directory's .mara files
-// and the stdlib's, shown there — the four more fields what the name at
-// the editor's cursor refers to: shown first. There too:
-//   -editor <program>  the editor a call in the Crash panel opens in, kept
-//                      for every window (`mara editor`; crash.mara)
-//   -colors <name>=#rrggbb ...  Sublime's colors, the Sublime theme's, kept
-//                      for every window (`mara colors`; theme.mara)
-// Never waiting: looked at between frames
-// (hub_poll). Queries go to serve one at a time, in the order their lines
-// came; docs are answered at once. Serve, ended — a compiler bug stops it —
-// is started again for the next query.
-
-DOCS_RETRY :: 2000   // ms between tries to take the docs pipe name
+//                       what the Docs panel finds for the words, in that
+//                       directory's .mara files and the stdlib's, shown there.
+//                       The four more fields say what the name at the editor's
+//                       cursor refers to: shown first.
+//   -editor <program>   the editor a call in the Crash panel opens in
+//                       (`mara editor`; crash.mara)
+//   -colors <name>=#rrggbb ...  Sublime's colors, for the Sublime theme
+//                       (`mara colors`; theme.mara)
+// Never waiting: looked at between frames (hub_poll). Queries go to serve one
+// at a time, in the order their lines came; docs are answered at once. Serve,
+// ended — a compiler bug stops it — is started again for the next query.
 
 ANSWER_DONE   :: "-- end of answer --"
 ANSWER_FAILED :: "-- end of answer: failed --"
@@ -45,13 +43,16 @@ Client :: struct {
 	id:    File_Id
 	line:  [2000]utf8   // as it comes; whole once it ends in '\n'
 	whole: bool
-	docs:  bool           // it came on the docs pipe: docs are all it's answered
 }
 
 Hub :: struct {
 	listening: bool
 	listener:  Pipe_Listener
+	compiler:  [1000]utf8   // the compiler's path
 	command:   [2000]utf8   // "<compiler>" serve <module>
+	dir:       [1000]utf8   // the folder the window runs in
+	module_name: [300]utf8  // the module it's on there
+	moved:     bool           // it's gone to another folder: its files to read (run)
 	serve:     Process
 	serving:   bool           // serve started, not ended
 	waiting:   [16]Client   // connected, their lines coming or waiting for serve
@@ -66,29 +67,21 @@ Hub :: struct {
 	answered:  bool           // ... any of the answer come
 	resent:    bool           // ... sent again, to a serve started anew
 	current:   [4000]utf8   // serve's answer's line coming
-
-	docs_name:      [300]utf8   // the docs pipe name; none: `mara view` gave none
-	docs_listening: bool
-	docs_listener:  Pipe_Listener
-	docs_tried:     u32           // when listening there was last tried (GetTicks)
 }
 
 // Listening on the pipe name, serve started — when `mara view` gave a name
 // (the view's command line, main's args).
 hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
-	if args.len > 4 {
-		&h.docs_name + args[4]
-		docs_listen(h)
-	}
 	if args.len < 4 do return
-	&h.command + "\""
-	&h.command + args[1]
-	&h.command + "\" serve "
-	&h.command + args[2]
+	&h.compiler + args[1]
+	&h.module_name + args[2]
+	here, no_dir := current_dir()
+	if not no_dir do &h.dir + here
+	serve_command(h)
 	l, e := pipe_listen(args[3])
 	if e {
 		if e == .Name_Taken {
-			lines_status(&ui.asked, "Another window open on this module answers mara ask.", STYLE_DIM)
+			lines_status(&ui.asked, "Another window answers mara ask.", STYLE_DIM)
 		else
 			lines_status(&ui.asked, "mara ask can't reach this window: listening on its pipe failed.", STYLE_BAD)
 		}
@@ -100,12 +93,66 @@ hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 	_ = serve_up(h)
 }
 
+// The command that starts serve: on the module the window's on, in the folder
+// the window runs in.
+serve_command :: fun(h: ^Hub) {
+	h.command.len = 0
+	&h.command + "\""
+	&h.command + h.compiler
+	&h.command + "\" serve "
+	&h.command + h.module_name
+}
+
+// Where a line says it's asked from, `-in "<folder>" <module>` at its start:
+// the folder, the module, and what's after them. When it doesn't say: both
+// empty, and the whole line.
+line_place :: fun(line: []utf8) -> ([]utf8, []utf8, []utf8) {
+	if not starts_with(line, "-in \"") do return line[0 : 0], line[0 : 0], line
+	start : i64 = 5
+	end := start
+	for end < line.len {
+		if line[end] == '"' do break
+		end += 1
+	}
+	dir := line[start : end]
+	start = min_int(end + 2, line.len)
+	end = start
+	for end < line.len {
+		if line[end] == ' ' do break
+		end += 1
+	}
+	return dir, line[start : end], line[min_int(end + 1, line.len) : line.len]
+}
+
+// The window moved to where an editor is: the module named, in its folder. The
+// title says which module. The window now runs in that folder, so its Profile
+// and Crash panels show that folder's files (run reads them: h.moved). Reading
+// in the stdlib's folders or doc/ doesn't move it: you're still on your
+// program.
+hub_follow :: fun(ui: ^Ui, h: ^Hub, dir: []utf8, name: []utf8) {
+	if dir.len == 0 or stdlib_dir(ui, dir) do return
+	same_dir := same_path(dir, h.dir)
+	on : []utf8 = h.module_name
+	if same_dir and name == on do return
+	if not same_dir {
+		if set_current_dir(dir) {
+			lines_status(&ui.asked, "The window couldn't go to that module's folder.", STYLE_BAD)
+			return
+		}
+		h.dir.len = 0
+		&h.dir + dir
+		h.moved = true
+	}
+	h.module_name.len = 0
+	&h.module_name + name
+	serve_command(h)
+	title := window_title(name)
+	_ = SetWindowTitle(ui.window, title)
+	ui.dirty = true
+}
+
 // Listening stopped, the connections closed, serve ended.
 hub_stop :: fun(h: ^Hub) {
-	if h.docs_listening {
-		pipe_listen_stop(&h.docs_listener)
-		h.docs_listening = false
-	}
 	for i in 0:h.waiting.len {
 		file_close(h.waiting[i].id)
 	}
@@ -117,21 +164,10 @@ hub_stop :: fun(h: ^Hub) {
 	h.listening = false
 }
 
-// Listening on the docs pipe name, unless another window does: tried again
-// DOCS_RETRY later (hub_poll).
-docs_listen :: fun(h: ^Hub) {
-	h.docs_tried = GetTicks()
-	l, e := pipe_listen(h.docs_name)
-	if e do return
-	h.docs_listener = l
-	h.docs_listening = true
-}
-
-// The connections that have come to a listener, into the waiting list:
-// `docs`, the docs pipe's.
-take_connections :: fun(h: ^Hub, l: ^Pipe_Listener, docs: bool) {
+// The connections that have come, into the waiting list.
+take_connections :: fun(h: ^Hub) {
 	for h.waiting.len < h.waiting.cap {
-		c, e := pipe_accept(l)
+		c, e := pipe_accept(&h.listener)
 		if e or c == NO_FILE do break
 		// (Its place filled where it is: a Client is too big to build aside.)
 		h.waiting.len += 1
@@ -139,14 +175,13 @@ take_connections :: fun(h: ^Hub, l: ^Pipe_Listener, docs: bool) {
 		fresh.id = c
 		fresh.line.len = 0
 		fresh.whole = false
-		fresh.docs = docs
 	}
 }
 
 // How long the window may wait for an event before looking again, ms:
 // soon while connections are coming or a query is with serve.
 hub_wait :: fun(h: ^Hub) -> i32 {
-	if not h.listening and not h.docs_listening do return 250
+	if not h.listening do return 250
 	if h.asking or h.waiting.len > 0 do return 2
 	return 25
 }
@@ -154,9 +189,7 @@ hub_wait :: fun(h: ^Hub) -> i32 {
 // What's arrived since the last look: connections taken, their lines read,
 // docs answered, the next query sent to serve, serve's answer passed on.
 hub_poll :: fun(ui: ^Ui, h: ^Hub) {
-	if not h.docs_listening and h.docs_name.len > 0 and GetTicks() - h.docs_tried >= DOCS_RETRY do docs_listen(h)
-	if h.docs_listening do take_connections(h, &h.docs_listener, true)
-	if h.listening do take_connections(h, &h.listener, false)
+	if h.listening do take_connections(h)
 	i : i64 = 0
 	for i < h.waiting.len {
 		if not h.waiting[i].whole and not client_read(&h.waiting[i]) {
@@ -181,7 +214,12 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			drop_waiting(h, i)
 			continue
 		}
-		if h.waiting[i].whole and not h.waiting[i].docs and starts_with(h.waiting[i].line, "-raise") {
+		if h.waiting[i].whole and starts_with(h.waiting[i].line, "-raise") {
+			line := line_of(&h.waiting[i])
+			if line.len > 7 {
+				dir, name, _ := line_place(line[7 : line.len])
+				hub_follow(ui, h, dir, name)
+			}
 			window_raise(ui)
 			_ = file_write_text(h.waiting[i].id, "-- end of answer --\n")
 			file_close(h.waiting[i].id)
@@ -198,13 +236,6 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 			// (`mara docs -reload`: what the Docs panel shows looked up again, as F5 does.)
 			docs_reload(ui)
 			answer_lines(&ui.docs[ui.docs_front], &h.waiting[i], ui.docs_query[ui.docs_front].made)
-			file_close(h.waiting[i].id)
-			drop_waiting(h, i)
-			continue
-		}
-		if h.waiting[i].whole and h.waiting[i].docs {
-			// (A query on the docs pipe: not this window's to answer.)
-			_ = file_write_text(h.waiting[i].id, "the docs pipe answers -docs lines only\n-- end of answer: failed --\n")
 			file_close(h.waiting[i].id)
 			drop_waiting(h, i)
 			continue
@@ -328,7 +359,9 @@ answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 
 // The asked connection's query sent to serve — started if it isn't; one
 // that ended since the last, found by the write failing, started again.
-// A "-show " query is shown in the Ask panel as it's answered.
+// A "-show " query is shown in the Ask panel as it's answered. That and a
+// "-cursor " one come from an editor: the window moves to where it is. A
+// query from anywhere else, a terminal say, is answered without moving it.
 ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	line := line_of(&h.asked)
 	h.shown = starts_with(line, "-show ")
@@ -338,11 +371,13 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	query := line
 	if h.shown do query = line[6 : line.len]
 	if h.cursor do query = line[8 : line.len]
+	dir, name, asked := line_place(query)
+	if h.shown or h.cursor do hub_follow(ui, h, dir, name)
 	if h.shown {
 		lines_clear(&ui.asked)
 		heading : [2100]utf8
 		&heading + "mara ask "
-		&heading + query
+		&heading + asked
 		lines_add(&ui.asked, heading, STYLE_QUERY)
 		lines_add(&ui.asked, "", STYLE_TEXT)
 		lines_status(&ui.asked, "Asking…", STYLE_DIM)

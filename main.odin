@@ -1106,8 +1106,8 @@ module_missing :: proc(all_files: map[string][dynamic]^Source_File, pkg: string)
 // view/view(.exe) beside the compiler, run in the current directory as
 // `view <this compiler> <module> <pipe name>`: it starts that compiler's
 // `serve` for what it shows, so the two always agree, and answers `mara
-// ask` on the pipe name (view.odin). One open on the module here already:
-// that one brought to the front ("-raise"), not another opened.
+// ask` on the pipe name (view.odin). One open already: that one brought to the
+// front and moved to this module ("-raise"), not another opened.
 run_view :: proc(args: CLI_Args) {
     all_files, found_problem := discover_all_files(args.compiler_dir, ".", args.search_dirs)
     if found_problem != "" {
@@ -1118,7 +1118,10 @@ run_view :: proc(args: CLI_Args) {
         fmt.print(module_missing(all_files, args.pkg_name))
         os.exit(1)
     }
-    if _, _, how := view_request(view_pipe_name(args.pkg_name), "-raise"); how == .Answered { return }
+    raise := strings.builder_make(context.temp_allocator)
+    strings.write_string(&raise, "-raise ")
+    view_write_here(&raise, args.pkg_name)
+    if _, _, how := view_request(view_pipe_name(), strings.to_string(raise)); how == .Answered { return }
     view_dir, _ := filepath.join({args.compiler_dir, "view"})
     view_exe, _ := filepath.join({view_dir, "view" + NATIVE_EXE_EXT})
     // (MARA_VIEW names another: a window being written, or a test's stand-in.)
@@ -1127,7 +1130,7 @@ run_view :: proc(args: CLI_Args) {
         fmt.printf(VIEW_NOT_BUILT, view_exe, view_dir)
         os.exit(1)
     }
-    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name, view_pipe_name(args.pkg_name), docs_pipe_name()}) {
+    if !start_detached(view_exe, {get_compiler_exe(), args.pkg_name, view_pipe_name()}) {
         fmt.printf(VIEW_NOT_STARTED, view_exe)
         os.exit(1)
     }
@@ -1320,8 +1323,8 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
 
-  Asks a window this compiler opened (mara view — anywhere, on any module)
-  to look the words up in the docs: this directory's .mara files, the
+  Asks the window this compiler opened (mara view) to look the words up in
+  the docs: this directory's .mara files, the
   stdlib's, the doc/ pages. Each definition whose name or doc comment has
   them, its doc comment and its signature (a struct's fields too), best
   first. The window shows them in its Docs panel; they're printed here too.
@@ -1364,23 +1367,29 @@ SERVE_USAGE :: `Usage: mara serve [module]
   line stdin sends as 'mara ask <line>' would, then a line
   '-- end of answer --'. Before each answer, a .mara file changed since the
   check — the module's or the stdlib's — checks it again; one that doesn't
-  check answers with its errors. Ends when stdin closes.`
+  check answers with its errors. Ends when stdin closes.
+
+  A line can start with where it's about: -in "<folder>" <module> <query>.
+  Serve goes to that folder and checks that module, then answers the query.`
 VIEW_USAGE :: `Usage: mara view [module]
 
   Opens the window on the module (by default the current directory's) and
   returns: the window runs on its own — closing the terminal leaves it open —
-  and starts a 'mara serve' of its own for what it shows. One open on the
-  module here already comes to the front instead ('-raise'). The window is
-  view/view(.exe) beside the compiler, run in the current directory as
-  'view <this compiler> <module> <pipe name> <docs pipe name>'. It listens
-  on the pipe name
-  (mara.os's pipe_listen): each connection sends one line, a query as
-  'mara ask' takes it, and gets what its 'mara serve' answers, the end line
-  too; then it closes the connection. 'mara ask' here asks it first. A line
-  '-show <query>' is a query its Ask panel shows (mara ask -show). The docs
-  pipe name is one for every window this compiler opens: the first to open
-  listens there, for '-docs <directory><tab><words>' — words its Docs panel
-  looks up in that directory and the stdlib (mara docs).`
+  and starts a 'mara serve' of its own for what it shows. A compiler has one
+  window. With it open already, this brings it to the front and moves it to
+  this module. It also moves when an editor asks it something from another
+  module (mara ask -show, mara ask -cursor): its title says which module, and
+  its Profile and Crash panels show that folder's files. Reading in the
+  stdlib or doc/ doesn't move it.
+
+  The window is view/view(.exe) beside the compiler, run in the current
+  directory as 'view <this compiler> <module> <pipe name>'. It listens on the
+  pipe name (mara.os's pipe_listen): each connection sends one line and gets
+  its answer, the end line too; then it closes the connection. 'mara ask' asks
+  it first, wherever it's run: -in "<folder>" <module> <query>. '-show ' before
+  that is a query its Ask panel shows (mara ask -show). '-docs
+  <directory><tab><words>': words its Docs panel looks up in that directory
+  and the stdlib (mara docs).`
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
@@ -1434,11 +1443,11 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                                      its type, where it's declared, what it's in, and
                                      the expressions around it, innermost first
 
-  A window open here on the module (mara view) answers 'mara ask' when it
-  can, from a check already made. -show: it shows the query and its answer
-  in its Ask panel too (an editor's queries, say). -cursor: it shows the
-  answer at the top of its Ask panel, as what's at the editor's cursor —
-  only a window answers; with none open, nothing is checked here.
+  The window (mara view), when one is open, answers 'mara ask' from wherever
+  it's run. -show: it shows the query and its answer in its Ask panel too (an
+  editor's queries, say). -cursor: it shows the answer at the top of its Ask
+  panel, as what's at the editor's cursor — only a window answers; with none
+  open, nothing is checked here. Both move the window to this module.
 
   Many queries, checked again as the files change:
     mara serve [module]              each line stdin sends is a query, answered
@@ -1586,7 +1595,7 @@ parse_args :: proc() -> CLI_Args {
         args.ask_words = rest
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = module_or_folder(cwd)
+        args.pkg_name = module_at(cwd, q.at)
         if !build_dirs_here(&args, cwd) { return args }
         args.ok = true
         return args
@@ -1642,7 +1651,7 @@ parse_args :: proc() -> CLI_Args {
         }
         args.docs_words = rest
         cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = module_or_folder(cwd)
+        args.pkg_name = module_at(cwd, args.docs_at)
         if !build_dirs_here(&args, cwd) { return args }
         args.ok = true
         return args
@@ -1708,28 +1717,50 @@ parse_args :: proc() -> CLI_Args {
 // build (ask, docs, the language server): its module's build's, else every
 // build's. False: build.mara is wrong — said.
 build_dirs_here :: proc(args: ^CLI_Args, dir: string) -> bool {
-    specs, _, problem := build_file_read(dir)
-    if problem != "" {
-        fmt.println(problem)
-        return false
-    }
+    problem := build_dirs_in(args, dir)
+    if problem != "" { fmt.println(problem) }
+    return problem == ""
+}
+
+// The same, what's wrong with build.mara returned, not said.
+build_dirs_in :: proc(args: ^CLI_Args, dir: string) -> (problem: string) {
+    specs, _, wrong := build_file_read(dir)
+    if wrong != "" { return wrong }
     for s in specs {
         if s.module == args.pkg_name && args.pkg_name != "" {
             args.search_dirs = s.dirs[:]
-            return true
+            return ""
         }
     }
     args.search_dirs = build_all_dirs(specs[:])
-    return true
+    return ""
 }
 
-// The module in directory `dir` for what can't be told one (ask, docs, the
-// language server): as module_here finds it — when it can't tell, the
-// folder's name, as these always took.
-module_or_folder :: proc(dir: string) -> string {
+// The module a query is about, in directory `dir` (ask, docs). As module_here
+// finds it, usually. When the directory has several and can't say which, as
+// the stdlib's does: when the query is `at` a place in a file, that file's;
+// else the folder's name, as these always took.
+module_at :: proc(dir, at: string) -> string {
     name, problem := module_here("", dir)
     if problem == "" { return name }
+    if colon := strings.index_byte(at, ':'); colon > 0 {
+        path, _ := filepath.join({dir, at[:colon]})
+        if m := file_module(path); m != "" { return m }
+    }
     return filepath.base(dir)
+}
+
+// Whether `module` is one in directory `dir`: a build's in its build.mara, or
+// declared by one of its .mara files.
+module_is_in :: proc(dir, module: string) -> bool {
+    specs, _, _ := build_file_read(dir)
+    for s in specs { if s.module == module { return true } }
+    for entry in list_dir(dir) {
+        if entry.dir || !strings.has_suffix(entry.name, ".mara") { continue }
+        path, _ := filepath.join({dir, entry.name})
+        if file_module(path) == module { return true }
+    }
+    return false
 }
 
 main :: proc() {
@@ -1803,7 +1834,7 @@ main :: proc() {
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise. `ask` defaults
-    // its root to the module here (module_or_folder), so a miss there is usually
+    // its root to the module here (module_at), so a miss there is usually
     // "you ran this outside a module dir", not "module not found" — give it
     // query-shaped help.
     if args.pkg_name not_in all_files {

@@ -5,7 +5,9 @@
 #   test/ask.sh      compare (prints the diff and exits 1 on any change); then
 #                    the same queries through `mara serve`, which must answer
 #                    each as `mara ask` did, and the fixtures' through a
-#                    window (the stand-in test/view_hub): `mara ask` asks it
+#                    window (the stand-in test/view_hub): `mara ask` asks it.
+#                    Then one serve moved between modules, one window asked
+#                    from several, and files that share a name
 #   test/ask.sh -u   re-record ask_expected.txt
 #
 # A query line is `<target> | <args>`. The target is a directory relative to
@@ -126,6 +128,83 @@ if ! diff -u "$WORK/route_expected.txt" "$routed" > "$WORK/route.diff" || [ -n "
   route_ok=no
 fi
 
+# One `mara serve` moved between the fixtures' modules by its queries' -in, twice
+# round: the same answers again, each from its own folder.
+native() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
+moved=$WORK/moved.txt
+moved_lines=$WORK/moved_lines.txt
+: > "$moved"
+: > "$moved_lines"
+moved_heads=()
+for pass in 1 2; do
+  for ((k = 0; k < ${#targets[@]}; k++)); do
+    [[ ${targets[$k]} == *.mara ]] || continue
+    printf -- '-in "%s" %s %s\n' "$(native "${dirs[$k]}")" "$(basename "${targets[$k]}" .mara)" "${argss[$k]}" >> "$moved_lines"
+    moved_heads+=("=== ${targets[$k]} | ${argss[$k]}")
+  done
+done
+k=0
+echo "${moved_heads[0]}" >> "$moved"
+while IFS= read -r l; do
+  if [ "${l#-- end of answer}" != "$l" ]; then
+    [ "$l" = "-- end of answer: failed --" ] && echo "[exit 1]" >> "$moved"
+    k=$((k+1))
+    [ $k -lt ${#moved_heads[@]} ] && echo "${moved_heads[$k]}" >> "$moved"
+  else
+    echo "$l" >> "$moved"
+  fi
+done < <( ( cd "$WORK" && "$MARA" serve < "$moved_lines" 2>&1 ) | tr -d '\r' | norm_paths)
+cat "$WORK/route_expected.txt" "$WORK/route_expected.txt" > "$WORK/moved_expected.txt"
+moved_ok=yes
+diff -u "$WORK/moved_expected.txt" "$moved" > "$WORK/moved.diff" || moved_ok=no
+
+# One window, opened on one module, asked from another and back: each gets its
+# own module's answer, from the one serve. A folder with no module isn't asked
+# of it. `mara view` again, from the other module, doesn't open a second.
+follow_problems=""
+first=""; second=""
+for ((k = 0; k < ${#targets[@]}; k++)); do
+  [[ ${targets[$k]} == *.mara ]] || continue
+  if [ -z "$first" ]; then first=$k
+  elif [ "${targets[$k]}" != "${targets[$first]}" ]; then second=$k; break
+  fi
+done
+d1=${dirs[$first]}; d2=${dirs[$second]}
+want1=$(cd "$d1" && "$MARA" ask ${argss[$first]} 2>&1)
+want2=$(cd "$d2" && "$MARA" ask ${argss[$second]} 2>&1)
+rm -f "$d1/view_hub.log"
+( cd "$d1" && MARA_VIEW="$HUB" "$MARA" view ) || follow_problems+="no window opened; "
+for t in $(seq 1 100); do [ -f "$d1/view_hub.log" ] && break; sleep 0.1; done
+got=$(cd "$d2" && "$MARA" ask -show ${argss[$second]} 2>&1)
+[ "$got" = "$want2" ] || follow_problems+="asked from another module, it didn't answer for that module; "
+got=$(cd "$d1" && "$MARA" ask -cursor ${argss[$first]} 2>&1)
+[ "$got" = "$want1" ] || follow_problems+="asked back from the first module, it didn't answer for it; "
+no_module=$WORK/no_module_here
+mkdir -p "$no_module"
+got=$(cd "$no_module" && "$MARA" ask anything 2>&1)
+case $got in *"no Mara module"*) ;; *) follow_problems+="a folder with no module didn't get ask's own answer: $got; " ;; esac
+( cd "$d2" && MARA_VIEW="$HUB" "$MARA" view ) || follow_problems+="mara view with one open failed; "
+for t in $(seq 1 100); do grep -qs '^ended' "$d1/view_hub.log" && break; sleep 0.1; done
+asked=$(grep -cs '^asked: ' "$d1/view_hub.log")
+[ "$asked" = 3 ] || follow_problems+="the window was asked $asked times, not 3; "
+started=$(grep -cs '^serve started' "$d1/view_hub.log")
+[ "$started" = 1 ] || follow_problems+="the window started serve $started times, not 1; "
+
+# A file's name alone can be several files: `at` means the one here. Our own
+# time.mara over the stdlib's two, and each of the stdlib's from its own
+# folder, where the folder can't say which module (code/) or can (code/os/).
+clash=$WORK/clash
+mkdir -p "$clash"
+printf 'module clash\n\nmain :: fun() {\n\tmine := 1\n\tprint(mine)\n}\n' > "$clash/time.mara"
+got=$(cd "$clash" && "$MARA" ask what at time.mara:4:2 2>&1)
+case $got in "mine — local"*) ;; *) follow_problems+="at time.mara in a module with its own wasn't that one: $got; " ;; esac
+line=$(grep -n '^clock_ns ::' "$ROOT/code/time.mara" | cut -d: -f1 | head -1)
+got=$(cd "$ROOT/code" && "$MARA" ask what at time.mara:$line:1 2>&1)
+case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/ didn't find it: $got; " ;; esac
+line=$(grep -n '^[[:space:]]*clock_ns ::' "$ROOT/code/os/time.mara" | cut -d: -f1 | head -1)
+got=$(cd "$ROOT/code/os" && "$MARA" ask what at time.mara:$line:2 2>&1)
+case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/os/ didn't find it: $got; " ;; esac
+
 serve_ok=yes
 if ! diff -u "$actual" "$served" > "$WORK/serve.diff"; then
   serve_ok=no
@@ -148,4 +227,14 @@ if [ $route_ok = yes ]; then
   echo "ROUTE: the same answers, through a window"
 else
   cat "$WORK/route.diff"; echo "$route_problems"; echo "ROUTE: DIFFERENT (ask's above, the window's below)"; exit 1
+fi
+if [ $moved_ok = yes ]; then
+  echo "MOVED: the same answers, one serve going between modules"
+else
+  cat "$WORK/moved.diff"; echo "MOVED: DIFFERENT (ask's above, the moved serve's below)"; exit 1
+fi
+if [ -z "$follow_problems" ]; then
+  echo "FOLLOW: one window answers for each module"
+else
+  echo "FOLLOW: $follow_problems"; exit 1
 fi

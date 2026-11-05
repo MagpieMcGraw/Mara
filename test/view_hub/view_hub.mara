@@ -9,8 +9,9 @@ use mara.os
 // keeps the compiler's `serve` running, and answers each connection's line
 // with what serve answers, its end line too; then closes the connection. A
 // "-show <query>" or "-cursor <query>" line is a query the window would
-// show: here, answered as any; a "-docs <words>" line, docs it has none of:
-// answered as failed.
+// show: here, answered as any; a "-raise" line, `mara view` with it open:
+// answered, with nothing to bring forward; a "-docs <words>" line, docs it has
+// none of: answered as failed. A query's -in goes to serve with it.
 // Each line goes in view_hub.log, in the directory it runs in, as does serve
 // starting and ending, and "ended" when it ends: once no one has connected
 // for a second or so.
@@ -99,6 +100,12 @@ answer :: fun(c: File_Id, s: ^Server, log: File_Id) -> err {
 			no_docs := "the stand-in window has no docs\n-- end of answer: failed --\n"
 			no_docs_bytes : []byte = no_docs
 			file_write(c, no_docs_bytes)?
+			return
+		}
+		if asked[0 : 6] == "-raise" {
+			raised := "-- end of answer --\n"
+			raised_bytes : []byte = raised
+			file_write(c, raised_bytes)?
 			return
 		}
 	}

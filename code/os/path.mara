@@ -131,6 +131,14 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 		return dir
 	}
 
+	// Makes `path` the directory the program runs in: a path not whole starts
+	// there from now on. Open_Failed when it can't go there: no such directory,
+	// say.
+	set_current_dir :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if SetCurrentDirectoryA(cstring(c)) == 0 do return Open_Failed
+	}
+
 	// A path as the system has it, whole — a file's or a folder's: its
 	// letters' case as on disk, its links (symlinks, junctions) followed to
 	// where they lead, a mapped drive's folder its server's
@@ -299,6 +307,8 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 			disposition: u32,
 			flags: u32,
 			template: File_Id) -> File_Id  // HANDLE hTemplateFile / return — pass File_Id(0) for none
+		// The directory the program runs in, changed: 0 failing.
+		fun SetCurrentDirectoryA(path: cstring) -> i32
 		// A directory's entries: the first, and each next (false: no more).
 		fun FindFirstFileA(pattern: cstring, found: ^WIN32_FIND_DATAA) -> File_Id
 		fun FindNextFileA(search: File_Id, found: ^WIN32_FIND_DATAA) -> i32
@@ -332,6 +342,14 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 		}
 		dir.len = n
 		return dir
+	}
+
+	// Makes `path` the directory the program runs in: a path not whole starts
+	// there from now on. Open_Failed when it can't go there: no such directory,
+	// say.
+	set_current_dir :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if chdir(cstring(c)) != 0 do return Open_Failed
 	}
 
 	// A path as the system has it, whole — a file's or a folder's: its links
@@ -473,6 +491,7 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 		// The directory the program runs in, 0-ended, into buf: buf; void failing
 		// (too long for buf among the ways).
 		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
+		fun chdir(path: cstring) -> i32
 		// A path whole, links followed, 0-ended: in room it makes (resolved
 		// void) — free it — or void failing.
 		fun realpath(path: cstring, resolved: ^byte) -> ^byte
