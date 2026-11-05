@@ -16,7 +16,7 @@ import "core:strings"
 // as `mara build` takes one there — where that can't tell, the one it
 // declares (lsp_module) — the editor's open files as they are in the editor,
 // saved or not, laid over the files on disk (serve_overlay). It answers
-//   hover             what's at the point (`ask what at`), and the doc
+//   hover             what's at the point, what it is and its type, and the doc
 //                     comment of what the name there refers to
 //   definition        where the name at the point is declared
 //   references        every name referring to the same declaration
@@ -325,8 +325,8 @@ lsp_publish :: proc(s: ^Lsp) {
 
 // --- answers ----------------------------------------------------------------
 
-// Hover: what's at the point, as `mara ask what at` says it; then the doc
-// comment of what the name there refers to.
+// Hover: what's at the point (ask_what_at_point, without its uses); then the
+// doc comment of what the name there refers to.
 lsp_hover :: proc(s: ^Lsp, params: json.Value) -> string {
     if !s.hover { return "null" }
     spec, ok := lsp_point(s, params)

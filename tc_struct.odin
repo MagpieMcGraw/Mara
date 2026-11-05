@@ -667,6 +667,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
             tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), name)
             continue
         }
+        tc_set_ref(k, e, {sd.fields[idx].decl, .Field})
         tc_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, name, span)
     }
 }

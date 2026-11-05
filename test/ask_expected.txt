@@ -766,7 +766,6 @@ askat.mara:18:19  token '.'
       → Field y, Read
 === test/askat.mara | what at askat.mara:18:19
 .
-  in        main  askat.mara:13
 
   v.y   : f32
   pick(f, v.y)   : f32
@@ -775,6 +774,215 @@ askat.mara:18:19  token '.'
 mara ask: no type or function named 'no_such_name_here' in askat
   (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
 [exit 1]
+=== test/askuses.mara | what at askuses.mara:36:10
+o.inner.value
+Outer.Inner.i64
+
+declared
+  askuses.mara:10  Inner
+    value: i64 = 5
+written 9
+  askuses.mara:27  set_value
+    i.value = 1
+  askuses.mara:36  main
+    o.inner.value = 2
+  askuses.mara:37  main
+    o.inner.value += 3
+  askuses.mara:38  main
+    o.inner.other, o.inner.value = 4, 5
+  askuses.mara:42  main
+    o.inner = Inner()
+  askuses.mara:43  main
+    a := Inner{value = 7, other = 8}
+  askuses.mara:44  main
+    b := Inner{9, 10}
+  askuses.mara:45  main
+    c := Inner{make_inner()}
+  askuses.mara:46  main
+    d := Inner() {value = 11}
+pointer taken 1
+  askuses.mara:40  main
+    touch(&o.inner.value)
+read 2
+  askuses.mara:39  main
+    print(o.inner.value)
+  askuses.mara:47  main
+    print(a.value + b.value + c.value + d.value)
+=== test/askuses.mara | what at askuses.mara:36:4
+o.inner
+Outer.Inner
+
+declared
+  askuses.mara:15  Outer
+    inner := Inner()
+written 4
+  askuses.mara:36  main
+    o.inner.value = 2
+  askuses.mara:37  main
+    o.inner.value += 3
+  askuses.mara:38  main
+    o.inner.other, o.inner.value = 4, 5
+  askuses.mara:42  main
+    o.inner = Inner()
+pointer taken 3
+  askuses.mara:40  main
+    touch(&o.inner.value)
+  askuses.mara:41  main
+    set_value(&o.inner)
+  askuses.mara:56  main
+    o.point = &o.inner
+read 1
+  askuses.mara:39  main
+    print(o.inner.value)
+=== test/askuses.mara | what at askuses.mara:43:13
+value
+i64
+
+declared
+  askuses.mara:10  Inner
+    value: i64 = 5
+written 9
+  askuses.mara:27  set_value
+    i.value = 1
+  askuses.mara:36  main
+    o.inner.value = 2
+  askuses.mara:37  main
+    o.inner.value += 3
+  askuses.mara:38  main
+    o.inner.other, o.inner.value = 4, 5
+  askuses.mara:42  main
+    o.inner = Inner()
+  askuses.mara:43  main
+    a := Inner{value = 7, other = 8}
+  askuses.mara:44  main
+    b := Inner{9, 10}
+  askuses.mara:45  main
+    c := Inner{make_inner()}
+  askuses.mara:46  main
+    d := Inner() {value = 11}
+pointer taken 1
+  askuses.mara:40  main
+    touch(&o.inner.value)
+read 2
+  askuses.mara:39  main
+    print(o.inner.value)
+  askuses.mara:47  main
+    print(a.value + b.value + c.value + d.value)
+=== test/askuses.mara | what at askuses.mara:11:2
+other
+i64
+
+declared
+  askuses.mara:11  Inner
+    other: i64
+written 6
+  askuses.mara:38  main
+    o.inner.other, o.inner.value = 4, 5
+  askuses.mara:42  main
+    o.inner = Inner()
+  askuses.mara:43  main
+    a := Inner{value = 7, other = 8}
+  askuses.mara:44  main
+    b := Inner{9, 10}
+  askuses.mara:45  main
+    c := Inner{make_inner()}
+  askuses.mara:57  main
+    o.point.other = 12
+read 1
+  askuses.mara:58  main
+    print(o.point.other)
+=== test/askuses.mara | what at askuses.mara:49:5
+o.list
+Outer.[4]i64
+
+declared
+  askuses.mara:16  Outer
+    list: [4]i64
+written 3
+  askuses.mara:48  main
+    o.list = [1, 2, 3, 4]
+  askuses.mara:49  main
+    &o.list + 5
+  askuses.mara:50  main
+    o.list[0] = 6
+read 1
+  askuses.mara:51  main
+    print(o.list[1])
+=== test/askuses.mara | what at askuses.mara:54:4
+o.items
+Outer.[]i64
+
+declared
+  askuses.mara:17  Outer
+    items: []i64
+written 1
+  askuses.mara:53  main
+    o.items = storage
+read 2
+  askuses.mara:54  main
+    o.items[0] = 1
+  askuses.mara:55  main
+    print(o.items[0])
+=== test/askuses.mara | what at askuses.mara:57:4
+o.point
+Outer.^Inner
+
+declared
+  askuses.mara:18  Outer
+    point: ^Inner
+written 1
+  askuses.mara:56  main
+    o.point = &o.inner
+read 2
+  askuses.mara:57  main
+    o.point.other = 12
+  askuses.mara:58  main
+    print(o.point.other)
+=== test/askuses.mara | what at askuses.mara:59:5
+o.name
+Outer.[8]utf8
+
+declared
+  askuses.mara:19  Outer
+    name: [8]utf8
+written 1
+  askuses.mara:59  main
+    &o.name + "x"
+read 0
+=== test/askuses.mara | what at askuses.mara:61:2
+mine
+i64
+
+declared
+  askuses.mara:60  main
+    mine := 1
+written 2
+  askuses.mara:61  main
+    mine = 2
+  askuses.mara:62  main
+    mine += 1
+read 1
+  askuses.mara:63  main
+    print(mine)
+=== test/askuses.mara | what at askuses.mara:22:14
+p
+^i64
+
+declared
+  askuses.mara:22  touch
+    touch :: fun(p: ^i64) {
+written 0
+read 1
+  askuses.mara:23  touch
+    p^ = 9
+=== test/askuses.mara | what at askuses.mara:41:2
+set_value — fun
+  declared  askuses.mara:26
+  set_value :: fun(i: ^Inner)
+=== test/askuses.mara | what at askuses.mara:36:18
+2 : i64
+
+  o.inner.value = 2
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
@@ -800,7 +1008,7 @@ flip — fun  operator_calls.mara:30   (module operator_calls)
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_neg
 === test/sibling_locals.mara | redeclared call above
-redeclared — fun  sibling_locals.mara:70   (module sibling_locals)
+redeclared — fun  sibling_locals.mara:71   (module sibling_locals)
 
 above (calls)   (0 direct callees, full closure (depth ∞))
   (calls nothing directly; indirect calls via fn-typed params aren't tracked)

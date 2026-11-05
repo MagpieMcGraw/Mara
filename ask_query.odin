@@ -188,7 +188,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
         if q.target != "" || strings.count(q.at, ":") != 2 {
             return "mara ask: `what` is about a point — `mara ask what at <file>:<line>:<col>`\n", false
         }
-        return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at)
+        return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true)
     }
     if q.target == "" && strings.count(q.at, ":") == 2 {
         return ask_at_point(&build_tree, s.all_files, s.checked.annot, &s.checked.code, q.at)

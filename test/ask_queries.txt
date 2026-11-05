@@ -46,6 +46,22 @@ test/askat.mara | at askat.mara:18:19
 test/askat.mara | what at askat.mara:18:19
 test/askat.mara | no_such_name_here
 
+# A variable's or a field's uses: written (by name, part of it, `+=`, whole, a
+# literal's entry, by position, `&x + v`), a pointer taken, read; through a slice
+# or a pointer it's only read. A fun, and what's no name, say what they said.
+test/askuses.mara | what at askuses.mara:36:10
+test/askuses.mara | what at askuses.mara:36:4
+test/askuses.mara | what at askuses.mara:43:13
+test/askuses.mara | what at askuses.mara:11:2
+test/askuses.mara | what at askuses.mara:49:5
+test/askuses.mara | what at askuses.mara:54:4
+test/askuses.mara | what at askuses.mara:57:4
+test/askuses.mara | what at askuses.mara:59:5
+test/askuses.mara | what at askuses.mara:61:2
+test/askuses.mara | what at askuses.mara:22:14
+test/askuses.mara | what at askuses.mara:41:2
+test/askuses.mara | what at askuses.mara:36:18
+
 # Calls in operator form are call-graph edges.
 test/operator_calls.mara | sum
 test/operator_calls.mara | sum call above

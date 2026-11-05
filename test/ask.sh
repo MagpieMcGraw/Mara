@@ -197,7 +197,7 @@ clash=$WORK/clash
 mkdir -p "$clash"
 printf 'module clash\n\nmain :: fun() {\n\tmine := 1\n\tprint(mine)\n}\n' > "$clash/time.mara"
 got=$(cd "$clash" && "$MARA" ask what at time.mara:4:2 2>&1)
-case $got in "mine — local"*) ;; *) follow_problems+="at time.mara in a module with its own wasn't that one: $got; " ;; esac
+case $got in mine$'\n'*) ;; *) follow_problems+="at time.mara in a module with its own wasn't that one: $got; " ;; esac
 line=$(grep -n '^clock_ns ::' "$ROOT/code/time.mara" | cut -d: -f1 | head -1)
 got=$(cd "$ROOT/code" && "$MARA" ask what at time.mara:$line:1 2>&1)
 case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/ didn't find it: $got; " ;; esac

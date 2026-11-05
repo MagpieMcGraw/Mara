@@ -362,8 +362,9 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 #     cursor refers to first, the compiler's answer, then the text matches in
 #     the file's directory, the stdlib and doc/.
 #   Ask (mara ask -cursor what at <point>): the window moves to the file's
-#     module and shows what's at the cursor at the top of its Ask panel — what
-#     the name is, its type, where it's declared, the expressions around it.
+#     module and shows what's at the cursor at the top of its Ask panel: a
+#     variable's or a field's types along its path, where it's declared, written
+#     and read; anything else named, what it is, its type, where it's declared.
 # The words: what's highlighted, when something is (one line; a whole fun isn't
 # words); else the name under the cursor; else, in a call's parentheses, the fun
 # being called (signature help). The point: the cursor — with a highlight, its

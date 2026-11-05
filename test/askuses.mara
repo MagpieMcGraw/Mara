@@ -1,0 +1,64 @@
+module askuses
+
+// Fixture for `mara ask what at <file>:<line>:<col>` on a variable or a field
+// (hittest.odin): the types along its path, where it's declared, where it's
+// written and read. Queried by test/ask_queries.txt.
+
+use mara.core
+
+Inner :: struct {
+	value: i64 = 5
+	other: i64
+}
+
+Outer :: struct {
+	inner := Inner()
+	list: [4]i64
+	items: []i64
+	point: ^Inner
+	name: [8]utf8
+}
+
+touch :: fun(p: ^i64) {
+	p^ = 9
+}
+
+set_value :: fun(i: ^Inner) {
+	i.value = 1
+}
+
+make_inner :: fun() -> i64, i64 {
+	return 1, 2
+}
+
+main :: fun() {
+	o := Outer()
+	o.inner.value = 2
+	o.inner.value += 3
+	o.inner.other, o.inner.value = 4, 5
+	print(o.inner.value)
+	touch(&o.inner.value)
+	set_value(&o.inner)
+	o.inner = Inner()
+	a := Inner{value = 7, other = 8}
+	b := Inner{9, 10}
+	c := Inner{make_inner()}
+	d := Inner() {value = 11}
+	print(a.value + b.value + c.value + d.value)
+	o.list = [1, 2, 3, 4]
+	&o.list + 5
+	o.list[0] = 6
+	print(o.list[1])
+	storage : [2!]i64
+	o.items = storage
+	o.items[0] = 1
+	print(o.items[0])
+	o.point = &o.inner
+	o.point.other = 12
+	print(o.point.other)
+	&o.name + "x"
+	mine := 1
+	mine = 2
+	mine += 1
+	print(mine)
+}

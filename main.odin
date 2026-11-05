@@ -1439,8 +1439,10 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line
-    mara ask what at camera.mara:52:46   what is at that point: what the name there is,
-                                     its type, where it's declared, what it's in, and
+    mara ask what at camera.mara:52:46   what is at that point. A variable or a field:
+                                     the types along its path, where it's declared, where
+                                     it's written and read. Anything else named: what it
+                                     is, its type, where it's declared. What's no name:
                                      the expressions around it, innermost first
 
   The window (mara view), when one is open, answers 'mara ask' from wherever

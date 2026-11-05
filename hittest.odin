@@ -26,15 +26,17 @@ import "core:path/filepath"
 // The innermost name holding the point says what it refers to (hit_refers):
 // its declaration's kind, name and file:line — `mara docs` shows that one
 // first. `mara ask what at <point>` says the same to read (ask_what_at_point):
-// what the name is, its type, where it's declared, what it's in, and the
-// expressions around it, innermost first.
+// a variable or a field's types along its path, where it's declared, and where
+// it's written and read; of anything else that's named, what it is, its type
+// and where it's declared; of what isn't, the expressions around it. A hover
+// asks for what it is alone.
 // ---------------------------------------------------------------------------
 
 // Whether a node is one a cursor names.
 @(private="file")
 hit_listed :: proc(tag: Tree_Tag) -> bool {
     #partial switch tag {
-    case .File, .Param_Group, .Generic_Param, .Union_Tag, .Union_Pad, .Union_Size, .Named_Entry:
+    case .File, .Param_Group, .Generic_Param, .Union_Tag, .Union_Pad, .Union_Size:
         return false
     }
     return tag < .Type_Name || tag > .Type_Paren
@@ -120,17 +122,17 @@ hit_label :: proc(t: Type) -> string {
 // something else. "" when nothing there refers to anything.
 @(private="file")
 hit_refers :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> string {
-    r, found := hit_ref(t, a, hits, at, name)
+    r, _, found := hit_ref(t, a, hits, at, name)
     if !found { return "" }
     if r.decl == 0 { return fmt.tprintf("refers to: %s %s\n", ref_kind_word(r.kind), name) }
     tok := build_tokens[r.decl]
     return fmt.tprintf("refers to: %s %s  %s\n", ref_kind_word(r.kind), token_text(tok), ask_loc(token_span(tok)))
 }
 
-// hit_refers's reference: the innermost about the point's name; found false
-// for none.
+// hit_refers's reference: the innermost about the point's name, and the node
+// that makes it; found false for none.
 @(private="file")
-hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> (Ref, bool) {
+hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> (Ref, Tree_Id, bool) {
     #reverse for n in hits {
         for inst, i in a.instances {
             if n < inst.lo || n > inst.hi || int(n - inst.lo) >= len(a.refs[i]) { continue }
@@ -139,18 +141,31 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
             if r.decl == 0 {
                 // (A builtin: only a node its name begins — the name, a call of it.)
                 if int(t.first[n]) != at { continue }
-                return r, true
+                return r, n, true
             }
             if token_text(build_tokens[r.decl]) != name { continue }
-            return r, true
+            return r, n, true
         }
     }
     // (A definition's own name refers to nothing — it's what's declared
-    // there: itself, then.)
+    // there: itself, then. A param's, the same.)
     for n in hits {
-        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = hit_define_kind(t, n)}, true }
+        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = hit_define_kind(t, n)}, n, true }
     }
-    return {}, false
+    if g := hit_param_group(t, at); g != 0 { return Ref{decl = Token_Id(at), kind = .Param}, g, true }
+    return {}, 0, false
+}
+
+// The param group that declares a name, its token `at`; 0 for none.
+@(private="file")
+hit_param_group :: proc(t: ^Tree, at: int) -> Tree_Id {
+    for i in 1 ..< len(t.tag) {
+        if t.tag[i] != .Param_Group || int(t.first[i]) > at || at >= int(t.end[i]) { continue }
+        for name in tree_token_list(t, t.a[i]) {
+            if int(name) == at { return Tree_Id(i) }
+        }
+    }
+    return 0
 }
 
 // What a definition defines, as a reference's kind: a fun, a type (a
@@ -282,7 +297,7 @@ point_reference :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a
     p, _, found := hit_point(t, all_files, spec)
     if !found { return }
     name = token_text(p.tokens[p.tok_i])
-    r, ok = hit_ref(t, a, p.hits[:], p.at, name)
+    r, _, ok = hit_ref(t, a, p.hits[:], p.at, name)
     return
 }
 
@@ -292,6 +307,15 @@ point_hits :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: 
     p, _, found := hit_point(t, all_files, spec)
     if !found { return }
     return p.hits[:], Token_Id(p.at), true
+}
+
+// The token that is a name among the tokens of the node that refers by it: a
+// field's is its last; false for neither.
+@(private="file")
+ref_name_token :: proc(t: ^Tree, n: Tree_Id, name: string) -> (Token_Id, bool) {
+    if token_text(build_tokens[t.end[n] - 1]) == name { return t.end[n] - 1, true }
+    if token_text(build_tokens[t.first[n]]) == name { return t.first[n], true }
+    return 0, false
 }
 
 // Every reference in the program, by the declaration it names (its name's
@@ -304,14 +328,8 @@ references_by_declaration :: proc(t: ^Tree, a: ^Annotations) -> map[Token_Id][dy
         for r, k in a.refs[i] {
             if r.decl == 0 { continue }
             n := inst.lo + Tree_Id(k)
-            name := token_text(build_tokens[r.decl])
-            tok: Token_Id
-            switch {
-            case token_text(build_tokens[t.end[n] - 1]) == name: tok = t.end[n] - 1
-            case token_text(build_tokens[t.first[n]]) == name:   tok = t.first[n]
-            case: continue
-            }
-            if tok == r.decl || seen[tok] { continue }
+            tok, named := ref_name_token(t, n, token_text(build_tokens[r.decl]))
+            if !named || tok == r.decl || seen[tok] { continue }
             seen[tok] = true
             uses := out[r.decl]
             append(&uses, tok)
@@ -332,14 +350,8 @@ references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {
     for inst, i in a.instances {
         for r, k in a.refs[i] {
             if r.decl != decl { continue }
-            n := inst.lo + Tree_Id(k)
-            // (The name among its node's tokens: a field's is its last.)
-            tok: Token_Id
-            switch {
-            case token_text(build_tokens[t.end[n] - 1]) == name: tok = t.end[n] - 1
-            case token_text(build_tokens[t.first[n]]) == name:   tok = t.first[n]
-            case: continue
-            }
+            tok, named := ref_name_token(t, inst.lo + Tree_Id(k), name)
+            if !named { continue }
             if !seen[tok] {
                 seen[tok] = true
                 append(&out, tok)
@@ -364,6 +376,7 @@ ask_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     fmt.sbprint(&sb, "\n")
     prev: Span
     for n in hits {
+        if t.tag[n] == .Named_Entry { continue }   // (the literal's part: the literal said)
         span := tree_span(t, n)
         if span.tok == prev.tok && span.end == prev.end { continue }   // (a node and the one it wraps)
         prev = span
@@ -411,25 +424,32 @@ hit_ops :: proc(pc: ^Program_Code, a: ^Annotations, n: Tree_Id) -> string {
     return strings.join(lists[:], " | ", context.temp_allocator)
 }
 
-// `mara ask what at <file>:<line>:<col>`: what is at the point, to read —
-// the name there, what it is and its type, where it's declared, the
-// definition it's in; then the expressions around it, innermost first, to
-// its statement, each with its type. (`ask at` lists every node, for the
-// tree's sake.)
+// `mara ask what at <file>:<line>:<col>`: what is at the point, to read. With
+// `uses`, a variable's or a field's types along its path, where it's declared,
+// and where it's written and read (hit_uses_answer). Else the name there, what
+// it is and its type, and where it's declared; what's no name, the expressions
+// around it, innermost first, to its statement, each with its type. (`ask at`
+// lists every node, for the tree's sake.)
 ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
-                          a: ^Annotations, spec: string) -> (string, bool) {
+                          a: ^Annotations, spec: string, uses := false) -> (string, bool) {
     p, msg, ok := hit_point(t, all_files, spec)
     if !ok { return msg, false }
     hits := p.hits[:]
     name := token_text(p.tokens[p.tok_i])
     inner := hits[len(hits) - 1]
+    r, named_at, refers := hit_ref(t, a, hits, p.at, name)
+    if uses && refers && r.decl != 0 {
+        #partial switch r.kind {
+        case .Local, .Param, .Result, .Field, .Global:
+            return hit_uses_answer(t, a, &p, r, named_at), true
+        }
+    }
     // (The point's own node: the innermost, when it ends at the point — a
     // name, a field's name. Its type, the name's.)
     own := int(t.end[inner]) - 1 == p.at && t.tag[inner] >= .Number
     own_type := hit_type(a, inner) if own else ""
 
     sb := strings.builder_make()
-    r, refers := hit_ref(t, a, hits, p.at, name)
     // (As written: a string with its quotes.)
     written := span_text(p.src.source, token_span(p.tokens[p.tok_i]))
     fmt.sbprint(&sb, written)
@@ -448,15 +468,7 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
                 fmt.sbprintf(&sb, "  %s\n", first)
             }
         }
-    }
-    // (The definition it's in: the innermost Define holding it.)
-    #reverse for n in hits {
-        if t.tag[n] != .Define || int(t.first[n]) == p.at { continue }   // (its own definition: said above)
-        text := span_text(p.src.source, tree_span(t, n))
-        if colons := strings.index(text, "::"); colons > 0 {
-            fmt.sbprintf(&sb, "  in        %s  %s\n", strings.trim_space(text[:colons]), ask_loc(tree_span(t, n)))
-        }
-        break
+        return strings.to_string(sb), true
     }
 
     // The expressions around it, innermost first: each one line, to the
@@ -486,6 +498,261 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
         if shown == 8 { break }
     }
     return strings.to_string(sb), true
+}
+
+// What a use of a name does to what it names. A pointer taken may be either:
+// what's done with it is elsewhere.
+Use_Kind :: enum { Written, Pointer, Read }
+
+// A place a name is used, or a field is written without being named: the token
+// it's at, its node, and what it does there.
+Hit_Use :: struct {
+    tok:  Token_Id,
+    node: Tree_Id,
+    kind: Use_Kind,
+    path: string,   // its file's
+    here: bool,     // in the file the question's about
+}
+
+// A use added: `here` the file the question's about.
+@(private="file")
+hit_add_use :: proc(uses: ^[dynamic]Hit_Use, tok: Token_Id, n: Tree_Id, kind: Use_Kind, here: u16) {
+    token := build_tokens[tok]
+    append(uses, Hit_Use{tok, n, kind, span_file(token_span(token)), token.file == here})
+}
+
+// What the name at node n does to what it names: climbs from it while it's
+// part of what an assignment's target, or a `&`, is about. `x.f.g = v` writes
+// part of x.f. Through a pointer it doesn't (`p.g = v`: p is only read, what it
+// points at is written), nor through a slice to its items; a slice's own `len`
+// is the slice's.
+@(private="file")
+hit_use_kind :: proc(t: ^Tree, a: ^Annotations, i: Instance_Id, n: Tree_Id) -> Use_Kind {
+    if t.tag[n] == .Named_Entry { return .Written }   // (`Foo{x = v}`)
+    in_list :: proc(t: ^Tree, list: u32, n: Tree_Id) -> bool {
+        for c in tree_list(t, list) {
+            if c == n { return true }
+        }
+        return false
+    }
+    cur := n
+    for {
+        p := t.parent[cur]
+        if p == 0 { return .Read }
+        #partial switch t.tag[p] {
+        case .Paren:
+        case .Field, .Index, .Slice:
+            if Tree_Id(t.a[p]) != cur { return .Read }
+            #partial switch _ in distinct_base(annot_type(a, i, cur)) {
+            case ^Type_Ptr:   return .Read
+            case ^Type_Slice: if t.tag[p] != .Field { return .Read }
+            }
+        case .Assign, .Decl:
+            return .Written if in_list(t, t.a[p], cur) else .Read
+        case .Compound:
+            return .Written if Tree_Id(t.a[p]) == cur else .Read
+        case .Unary:
+            if token_text(build_tokens[t.main[p]]) != "&" { return .Read }
+            // (`&x + v` adds to x.)
+            up := t.parent[p]
+            if t.tag[up] == .Binary && Tree_Id(t.a[up]) == p && token_text(build_tokens[t.main[up]]) == "+" { return .Written }
+            return .Pointer
+        case:
+            return .Read
+        }
+        cur = p
+    }
+}
+
+// Whether a value of a type holds the field declared at `decl`, itself or in a
+// struct or array it holds. (Each struct's answer kept.)
+@(private="file")
+hit_holds_field :: proc(ty: Type, decl: Token_Id, known: ^map[^Type_Scope]bool) -> bool {
+    base := distinct_base(ty)
+    #partial switch v in base {
+    case ^Type_Fixed_Array:   return hit_holds_field(v.elem, decl, known)
+    case ^Type_Partial_Array: return hit_holds_field(v.elem, decl, known)
+    }
+    ts, is_scope := base.(^Type_Scope)
+    if !is_scope || ts.kind != .Struct { return false }
+    if held, was := known[ts]; was { return held }
+    known[ts] = false
+    for f in ts.fields {
+        if f.decl == decl || hit_holds_field(f.type_, decl, known) {
+            known[ts] = true
+            return true
+        }
+    }
+    return false
+}
+
+// Where the field declared at `decl` is written without being named: a value
+// that holds it assigned whole, a literal's entry by position.
+@(private="file")
+hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dynamic]Hit_Use, here: u16) {
+    known := make(map[^Type_Scope]bool, allocator = context.temp_allocator)
+    for inst, i in a.instances {
+        for k in 0 ..< len(a.types[i]) {
+            n := inst.lo + Tree_Id(k)
+            #partial switch t.tag[n] {
+            case .Assign:
+                for target in tree_list(t, t.a[n]) {
+                    if hit_holds_field(annot_type(a, Instance_Id(i), target), decl, &known) {
+                        hit_add_use(uses, t.first[target], target, .Written, here)
+                    }
+                }
+            case .Literal:
+                ts, is_scope := distinct_base(annot_type(a, Instance_Id(i), n)).(^Type_Scope)
+                if !is_scope { continue }
+                entries := tree_list(t, t.b[n])
+                if len(entries) == 0 || t.tag[entries[0]] == .Named_Entry || t.tag[entries[0]] == .Broadcast { continue }
+                user := ts.fields[first_user_field(&ts.sd):]
+                if len(entries) == 1 && len(user) > 1 {
+                    // (`Token{0}`: its zero. `Foo{f()}`: every field f's.)
+                    if t.tag[entries[0]] != .Call && t.tag[entries[0]] != .Method_Call { continue }
+                    for f in user {
+                        if f.decl == decl { hit_add_use(uses, t.first[n], n, .Written, here) }
+                    }
+                    continue
+                }
+                for e, at in entries {
+                    if at < len(user) && user[at].decl == decl { hit_add_use(uses, t.first[e], e, .Written, here) }
+                }
+            }
+        }
+    }
+}
+
+// The name of the definition holding a node, the innermost: the fun a use is
+// in, the struct a field is; "" for none.
+@(private="file")
+hit_holder_name :: proc(t: ^Tree, n: Tree_Id) -> string {
+    for c := n; c != 0; c = t.parent[c] {
+        if t.tag[c] == .Define && c != n { return token_text(build_tokens[t.main[c]]) }
+    }
+    return ""
+}
+
+// The innermost node holding a token. (Children come before their parents, so
+// the first found.)
+@(private="file")
+hit_node_at :: proc(t: ^Tree, tok: Token_Id) -> Tree_Id {
+    for i in 1 ..< len(t.tag) {
+        if t.first[i] <= tok && tok < t.end[i] { return Tree_Id(i) }
+    }
+    return 0
+}
+
+// The line of source a token's on, trimmed: tabs between its words one space.
+@(private="file")
+hit_source_line :: proc(tok: Token) -> string {
+    src := source_of(tok)
+    lo, hi := int(tok.offset), int(tok.offset)
+    for lo > 0 && src[lo - 1] != '\n' { lo -= 1 }
+    for hi < len(src) && src[hi] != '\n' { hi += 1 }
+    sb := strings.builder_make(context.temp_allocator)
+    tabbed := false
+    for i in 0 ..< hi - lo {
+        ch := src[lo + i]
+        if ch != '\t' {
+            if tabbed { strings.write_byte(&sb, ' ') }
+            strings.write_byte(&sb, ch)
+        }
+        tabbed = ch == '\t'
+    }
+    return strings.trim_space(strings.to_string(sb))
+}
+
+// A place, as the answer lists it: `  <file>:<line>  <what it's in>`, its line
+// of source under it.
+@(private="file")
+hit_write_place :: proc(sb: ^strings.Builder, t: ^Tree, tok: Token_Id, n: Tree_Id) {
+    fmt.sbprintf(sb, "  %s", ask_loc(token_span(build_tokens[tok])))
+    if holder := hit_holder_name(t, n); holder != "" { fmt.sbprintf(sb, "  %s", holder) }
+    fmt.sbprintf(sb, "\n    %s\n", hit_source_line(build_tokens[tok]))
+}
+
+// The types along a path, as it's written: `game.timers.work` is
+// `^State.Timers.Timer`. Each part's type is all of the part's, `b[i]` the
+// item's. "" when the checker typed none of it.
+@(private="file")
+hit_path_types :: proc(t: ^Tree, a: ^Annotations, n: Tree_Id) -> string {
+    parts := make([dynamic]string, context.temp_allocator)
+    cur := n
+    for {
+        label := hit_type(a, cur)
+        if label != "" { inject_at(&parts, 0, label) }
+        c := cur
+        down: for {
+            #partial switch t.tag[c] {
+            case .Index, .Slice, .Deref, .Paren, .Try: c = Tree_Id(t.a[c])
+            case: break down
+            }
+        }
+        if t.tag[c] != .Field { break }
+        cur = Tree_Id(t.a[c])
+    }
+    return strings.join(parts[:], ".", context.temp_allocator)
+}
+
+// A variable's or a field's answer: the path to it as written and the types
+// along it, where it's declared, then where it's written, where a pointer to it
+// is taken and where it's read: the file asked about first, a line once in
+// each. A field's written and read wherever a value of its struct is, in this
+// module and the modules it uses.
+@(private="file")
+hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id) -> string {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    name := token_text(build_tokens[r.decl])
+    here := p.tokens[p.tok_i].file
+    seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    seen[r.decl] = true
+    uses := make([dynamic]Hit_Use, context.temp_allocator)
+    for inst, i in a.instances {
+        for ref, k in a.refs[i] {
+            if ref.decl != r.decl { continue }
+            n := inst.lo + Tree_Id(k)
+            tok, named := ref_name_token(t, n, name)
+            if !named || seen[tok] { continue }
+            seen[tok] = true
+            hit_add_use(&uses, tok, n, hit_use_kind(t, a, Instance_Id(i), n), here)
+        }
+    }
+
+    // (A declaration, a literal's entry, have no type of their own: their uses' does.)
+    types := hit_path_types(t, a, named_at)
+    for u in uses {
+        if types != "" { break }
+        types = hit_type(a, u.node)
+    }
+    if r.kind == .Field { hit_field_writes(t, a, r.decl, &uses, here) }
+    slice.sort_by(uses[:], proc(x, y: Hit_Use) -> bool {
+        if x.here != y.here { return x.here }
+        if x.path != y.path { return x.path < y.path }
+        return x.tok < y.tok
+    })
+
+    sb := strings.builder_make()
+    fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
+    if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
+    fmt.sbprint(&sb, "\ndeclared\n")
+    hit_write_place(&sb, t, r.decl, hit_node_at(t, r.decl))
+    for kind in Use_Kind {
+        rows := make([dynamic]Hit_Use, context.temp_allocator)
+        last_tok: Token
+        for u in uses {
+            if u.kind != kind { continue }
+            tok := build_tokens[u.tok]
+            if len(rows) > 0 && tok.file == last_tok.file && token_line(tok) == token_line(last_tok) { continue }
+            append(&rows, u)
+            last_tok = tok
+        }
+        if kind == .Pointer && len(rows) == 0 { continue }
+        word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
+        fmt.sbprintf(&sb, "%s %d\n", word, len(rows))
+        for u in rows { hit_write_place(&sb, t, u.tok, u.node) }
+    }
+    return strings.to_string(sb)
 }
 
 // The Define whose name is the token `decl` — a fun's, a struct's, a

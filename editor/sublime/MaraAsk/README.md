@@ -42,8 +42,10 @@ appears in an output panel with every `file:line` clickable.
     — then the text matches in the file's directory, the stdlib and doc/, with
     doc comments and signatures;
   - its **Ask** panel (`mara ask -cursor what at <file>:<line>:<col>`) shows
-    what's at the cursor at its top: what the name is, its type, where it's
-    declared, what it's in, the expressions around it.
+    what's at the cursor at its top: for a variable or a field, the types along
+    its path, where it's declared, and every place it's written and read in the
+    module and the modules it uses, each opening in the editor when clicked; for
+    anything else named, what it is, its type and where it's declared.
 
   The words: what's **highlighted**, when something is (one line — a highlight
   over lines isn't looked up); else the name under the cursor; else, in a

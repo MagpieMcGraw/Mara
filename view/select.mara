@@ -290,6 +290,7 @@ select_end :: fun(ui: ^Ui) {
 	c := content_rect(ui, ui.panels[i])
 	if ui.drag_kind == DOCS_PANEL do docs_click(ui, c, ui.drag_x, ui.drag_y)
 	if ui.drag_kind == CRASH_PANEL do crash_click(ui, c, ui.drag_x, ui.drag_y)
+	if ui.drag_kind == ASK_PANEL and ui.sel == &ui.at_cursor do cursor_click(ui, select_rect(ui), ui.drag_x, ui.drag_y)
 }
 
 // Ctrl+C: what's selected copied, for pasting anywhere.

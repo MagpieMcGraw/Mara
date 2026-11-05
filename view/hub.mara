@@ -477,9 +477,11 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 				h.cursor_errors = is_diagnostic(h.current)
 				if h.cursor_errors do lines_add(&ui.at_cursor, CURSOR_NOT_CHECKED, STYLE_BAD)
 			}
-			style := cursor_style(ui.at_cursor.lines.len, h.current)
-			if h.cursor_errors do style = STYLE_TEXT
-			lines_add(&ui.at_cursor, h.current, style)
+			if h.cursor_errors {
+				lines_add(&ui.at_cursor, h.current, STYLE_TEXT)
+			else
+				cursor_add(&ui.at_cursor, h, h.current)
+			}
 			ui.dirty = true
 		}
 		h.current.len = 0
@@ -499,12 +501,72 @@ is_diagnostic :: fun(line: []utf8) -> bool {
 }
 
 // How a line of `mara ask what at`'s answer is shown, the n-th: the first
-// (what the name is) a title; where it's declared, what it's in, dim; the
-// code — a signature, the expressions around it — as Mara code.
+// (the name, its path) a title, and each list's heading; where a name is
+// declared, dim; the code — a signature, a line a place shows, the types along
+// the path — as Mara code.
 cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 	if n == 0 do return STYLE_TITLE
-	if starts_with(line, "  declared") or starts_with(line, "  in ") or starts_with(line, "  built into") do return STYLE_DIM
+	if n > 1 and (line == "declared" or starts_with(line, "written ") or starts_with(line, "read ") or starts_with(line, "pointer taken ")) do return STYLE_TITLE
+	if starts_with(line, "  declared") or starts_with(line, "  built into") do return STYLE_DIM
 	return STYLE_MARA
+}
+
+// Where a place's `<file>:<line>` ends in a line of the answer —
+// `  <file>:<line>  <what it's in>`; 0 for a line that's no place.
+place_end :: fun(line: []utf8) -> i64 {
+	if line.len < 3 or line[0] != ' ' or line[1] != ' ' or line[2] == ' ' do return 0
+	end := 2
+	for end < line.len {
+		if line[end] == ' ' and end + 1 < line.len and line[end + 1] == ' ' do break
+		end += 1
+	}
+	colon := end - 1
+	for colon > 2 {
+		if line[colon] < '0' or line[colon] > '9' do break
+		colon -= 1
+	}
+	if colon + 1 == end or colon < 7 or line[colon] != ':' do return 0
+	if line[colon - 5 : colon] != ".mara" do return 0
+	return end
+}
+
+// A line of the answer added, in its style. A place shows its file's name alone,
+// and opens where it says, clicked: its folder's kept, from this window's folder
+// when it's not whole.
+cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
+	end := place_end(line)
+	if end == 0 {
+		lines_add(l, line, cursor_style(l.lines.len, line))
+		return
+	}
+	name := end
+	for name > 2 {
+		if line[name - 1] == '\\' or line[name - 1] == '/' do break
+		name -= 1
+	}
+	shown : [1000]utf8
+	&shown + "  "
+	&shown + line[name : min_int(line.len, name + 900)]
+	lines_add(l, shown, STYLE_DIM)
+	link : [2000]utf8
+	whole := line[2] == '/' or line[2] == '\\' or line[3] == ':'
+	if not whole {
+		&link + h.dir
+		&link + "/"
+	}
+	&link + line[2 : min_int(end, 900)]
+	lines_link(l, link)
+}
+
+// A press on what's at the cursor: a place, or the line of source under it,
+// opened in the editor there.
+cursor_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
+	l := &ui.at_cursor
+	k := lines_line_at(ui, l, r, x, y)
+	file, line, place := docs_place(l, k)
+	if not place do file, line, place = docs_place(l, k - 1)
+	if not place do return
+	editor_open(ui, l, file, line)
 }
 
 // Serve running: started unless it is. False when it can't be.
