@@ -616,7 +616,7 @@ Place :: struct { x: f32  y: f32 }
 // uses it, sees none of them, so a variable elsewhere may take one's name.
 // A module gives what C does as Mara functions that call it, taking Mara's
 // types: text as []utf8, data as a slice (`[]` for none, where C takes
-// NULL). The standard library's os.mara and the SDL and OpenGL bindings in
+// NULL). The standard library's mara.os and the SDL and OpenGL bindings in
 // code/ are made so.
 //
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and

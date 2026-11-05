@@ -888,7 +888,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         // (A fun two modules it uses have: ambiguous.)
         if qual == nil && ref.kind == .None {
             if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
-                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
+                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
                 for a in args { tc_check(k, a) }
                 return Type_Error{}
             }
@@ -920,7 +920,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     // (A fun two modules it uses have: ambiguous.)
     if qual == nil && ft.name != "" {
         if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
-            tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
+            tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
             return Type_Error{}
         }
     }

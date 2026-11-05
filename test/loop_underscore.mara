@@ -4,7 +4,7 @@ use mara.core
 
 // A loop variable named `_` is none: the loop counts, or walks, for no one.
 // It compiled before, but the graph made `_` a variable the checker hadn't,
-// and `mara ask` lost answers about every program using one (os.mara's
+// and `mara ask` lost answers about every program using one (mara.os's
 // pipe_connect had one). A range counted, a collection walked, an element
 // or an index left out.
 

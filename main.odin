@@ -1374,7 +1374,7 @@ VIEW_USAGE :: `Usage: mara view [module]
   view/view(.exe) beside the compiler, run in the current directory as
   'view <this compiler> <module> <pipe name> <docs pipe name>'. It listens
   on the pipe name
-  (os.mara's pipe_listen): each connection sends one line, a query as
+  (mara.os's pipe_listen): each connection sends one line, a query as
   'mara ask' takes it, and gets what its 'mara serve' answers, the end line
   too; then it closes the connection. 'mara ask' here asks it first. A line
   '-show <query>' is a query its Ask panel shows (mara ask -show). The docs

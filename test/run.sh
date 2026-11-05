@@ -156,16 +156,30 @@ check_doc() {  # f
   rm -rf "$ROOT/doc/$name$EXE" "$ROOT/doc/$name.pdb" "$ROOT/doc/${name}_build"
   if [ $rc -ne 0 ]; then verdict "$key" bad "DOC FAILS WHEN RUN: doc/$f (exit $rc)"; else verdict "$key" pass; fi
 }
-export -f in_list skip_reason verdict check_file check_dir check_doc
+
+# The programs the compiler ships (view/): `mara view` runs the exe already
+# built from it, so nothing else notices when its source stops building. Built
+# up to the link only, so a window that's open, its exe locked, doesn't matter.
+check_app() {  # name
+  local name=$1 key="app.$1" out rc
+  out=$(cd "$ROOT/$name" && MARA_NO_LINK=1 "$MARA" build "$name" 2>&1); rc=$?
+  if [ $rc -ne 0 ]; then
+    verdict "$key" bad "APP DOESN'T BUILD: $name/: $(echo "$out" | grep -m1 -E 'rror')"
+  else
+    verdict "$key" pass
+  fi
+}
+export -f in_list skip_reason verdict check_file check_dir check_doc check_app
 
 dirs=()
 for d in */; do d="${d%/}"; [ -f "$d/.multifile" ] && dirs+=("$d"); done
 docs=($(cd ../doc && ls *.mara))
-{ printf 'file %s\n' *.mara; printf 'dir %s\n' "${dirs[@]}"; printf 'doc %s\n' "${docs[@]}"; } \
+apps=(view)
+{ printf 'file %s\n' *.mara; printf 'dir %s\n' "${dirs[@]}"; printf 'doc %s\n' "${docs[@]}"; printf 'app %s\n' "${apps[@]}"; } \
   | xargs -P "$JOBS" -L 1 bash -c 'check_$0 "$1"'
 
 pass=0; xfail=0; skip=0; bad=0
-for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${dirs[@]}") $(printf 'doc.%s\n' "${docs[@]}" | sed 's/\.mara$//'); do
+for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${dirs[@]}") $(printf 'doc.%s\n' "${docs[@]}" | sed 's/\.mara$//') $(printf 'app.%s\n' "${apps[@]}"); do
   { read -r kind; read -r msg; } < "$RES/$key.res"
   case $kind in
     pass)  pass=$((pass+1)) ;;

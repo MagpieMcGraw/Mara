@@ -1,0 +1,15 @@
+module ambiguous_call_hint_neg
+
+//@ expect-fail: Use a qualified call (e.g. `os.clock_ns(...)`)
+
+// Two modules in sight have clock_ns, so a bare call is ambiguous. The hint
+// names what compiles: a module's last part, `os.clock_ns()`, not
+// `mara.os.clock_ns()`.
+
+use mara.core
+use mara.os
+use mara.time
+
+main :: fun() {
+	print(clock_ns() > 0)
+}

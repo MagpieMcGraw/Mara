@@ -1,0 +1,357 @@
+module mara.os
+
+use mara.core
+use mara.string
+
+// Other programs and this one's surroundings: starting a process and talking
+// to it through pipes, standard input and output, environment variables.
+
+// What starting or waiting for a process can fail with.
+Process_Error :: error {
+    Start_Failed
+    Wait_Failed
+}
+
+// What reading an environment variable can fail with.
+Env_Error :: error {
+    Not_Set   // no variable of that name is set
+}
+
+#if #windows {
+	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
+	// Path, a 0 after it. Not_Set when no variable of that name is set;
+	// Too_Large when the value is longer than a Path holds (511 characters).
+	// (GetEnvironmentVariableA: in the system's code page, as the paths here
+	// are. A value set empty reads as empty, not as Not_Set.)
+	env :: fun(name: []utf8) -> Path, err {
+		value : Path
+		c := c_path(name)
+		// (Its length; the room it wants, its 0 counted, when that's more
+		// than value has; 0 for none, or for an empty one: the error says.)
+		SetLastError(0)
+		n := i64(GetEnvironmentVariableA(cstring(c), &value[0], u32(value.cap)))
+		if n == 0 and GetLastError() == ERROR_ENVVAR_NOT_FOUND do return value, Not_Set
+		if n >= value.cap do return value, Too_Large
+		value.len = n
+		return value
+	}
+
+	// ---------------------------------------------------------------------------
+	// Processes: a program run with its input and output through pipes
+	// ---------------------------------------------------------------------------
+
+	// A program process_start started: its input, to write to with
+	// file_write; its output, to read from with file_read, or pipe_read not
+	// to wait (its error output comes there too). `id` is its Win32 process handle.
+	Process :: struct {
+		id:     File_Id
+		input:  File_Id
+		output: File_Id
+	}
+
+	// Runs a command line — a program and its arguments, as a terminal takes
+	// them — its input and output through pipes. Read its output while it
+	// runs: one that fills its output pipe waits until it is read.
+	process_start :: fun(command: []utf8) -> Process, err {
+		// (Each pipe's ends inheritable, then the parent's own ends made not:
+		// the child holds only its own, so closing ours ends its input.)
+		inherit := SECURITY_ATTRIBUTES{length = u32(size_of(SECURITY_ATTRIBUTES)), inherit_handle = 1}
+		child_in := NO_FILE
+		to_child := NO_FILE
+		if not bool(CreatePipe(&child_in, &to_child, &inherit, 0)) do return Process{all 0}, Start_Failed
+		from_child := NO_FILE
+		child_out := NO_FILE
+		if not bool(CreatePipe(&from_child, &child_out, &inherit, 0)) {
+			file_close(child_in)
+			file_close(to_child)
+			return Process{all 0}, Start_Failed
+		}
+		_ = SetHandleInformation(to_child, HANDLE_FLAG_INHERIT, 0)
+		_ = SetHandleInformation(from_child, HANDLE_FLAG_INHERIT, 0)
+		start := STARTUPINFOA{size = u32(size_of(STARTUPINFOA)), flags = STARTF_USESTDHANDLES,
+		                      std_input = child_in, std_output = child_out, std_error = child_out}
+		info : PROCESS_INFORMATION
+		started := CreateProcessA(void, cstring(command), void, void, 1, CREATE_NO_WINDOW, void, void, &start, &info)
+		// (The child's ends are its own now: ours closed, started or not.)
+		file_close(child_in)
+		file_close(child_out)
+		if not bool(started) {
+			file_close(to_child)
+			file_close(from_child)
+			return Process{all 0}, Start_Failed
+		}
+		file_close(info.thread)
+		return Process{id = info.process, input = to_child, output = from_child}
+	}
+
+	// Closes the process's input: it reads to its end. (A server its window
+	// started exits there.)
+	process_close_input :: fun(p: ^Process) {
+		file_close(p.input)
+		p.input = NO_FILE
+	}
+
+	// Reads from a pipe what has arrived, without waiting for more — for a
+	// program that can't wait, as a window between its frames: data.len
+	// becomes the number of bytes read, 0 when none has. Returns false once
+	// the pipe has ended: its writer closed and all it wrote read.
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
+		data.len = 0
+		waiting: u32 = 0
+		if not bool(PeekNamedPipe(id, void, 0, void, &waiting, void)) {
+			if GetLastError() == ERROR_BROKEN_PIPE do return false
+			return false, Read_Failed
+		}
+		if waiting > 0 {
+			file_read(id, data)?   // (what has arrived: it doesn't wait)
+		}
+		return true
+	}
+
+	// Waits for the process to end and returns its exit code — its input and
+	// output closed first, so one still writing stops rather than waiting
+	// for a reader. Read what it writes before.
+	process_wait :: fun(p: ^Process) -> i64, err {
+		process_close_input(p)
+		file_close(p.output)
+		p.output = NO_FILE
+		code: u32 = 0
+		waited := WaitForSingleObject(p.id, INFINITE) != WAIT_FAILED and bool(GetExitCodeProcess(p.id, &code))
+		file_close(p.id)
+		p.id = NO_FILE
+		if not waited do return 0, Wait_Failed
+		return i64(code)
+	}
+
+	// The program's own input: what a terminal types, or what the program
+	// that started it writes (process_start). Read it with file_read.
+	standard_input :: fun() -> File_Id {
+		return GetStdHandle(STD_INPUT_HANDLE)
+	}
+
+	// The program's own output, written to with file_write. (print writes
+	// there too, through a buffer of its own: mixing the two can reorder.)
+	standard_output :: fun() -> File_Id {
+		return GetStdHandle(STD_OUTPUT_HANDLE)
+	}
+
+	// CreatePipe's handles, inheritable or not.
+	SECURITY_ATTRIBUTES :: struct {
+		length:         u32
+		descriptor:     ^byte
+		inherit_handle: i32
+	}
+
+	// CreateProcessA's start: which handles are the child's input and output.
+	STARTUPINFOA :: struct {
+		size:           u32
+		reserved:       ^byte
+		desktop:        ^byte
+		title:          ^byte
+		x:              u32
+		y:              u32
+		x_size:         u32
+		y_size:         u32
+		x_chars:        u32
+		y_chars:        u32
+		fill_attribute: u32
+		flags:          u32
+		show_window:    u16
+		reserved2_size: u16
+		reserved2:      ^byte
+		std_input:      File_Id
+		std_output:     File_Id
+		std_error:      File_Id
+	}
+
+	// What CreateProcessA started: its process and its first thread.
+	PROCESS_INFORMATION :: struct {
+		process:    File_Id
+		thread:     File_Id
+		process_id: u32
+		thread_id:  u32
+	}
+
+	STARTF_USESTDHANDLES :: 0x00000100
+	HANDLE_FLAG_INHERIT  :: 0x00000001
+	CREATE_NO_WINDOW     :: 0x08000000   // no console window of its own
+	INFINITE             :: 0xFFFFFFFF
+	WAIT_FAILED          :: 0xFFFFFFFF
+	STD_INPUT_HANDLE     :: 0xFFFFFFF6   // (DWORD)-10
+	STD_OUTPUT_HANDLE    :: 0xFFFFFFF5   // (DWORD)-11
+	ERROR_BROKEN_PIPE    :: 109
+	ERROR_ENVVAR_NOT_FOUND :: 203
+
+	foreign static_lib "kernel32" {
+		// Processes and pipes
+		fun CreatePipe(read: ^File_Id, write: ^File_Id, attributes: ^SECURITY_ATTRIBUTES, size: u32) -> i32
+		fun SetHandleInformation(h: File_Id, mask: u32, flags: u32) -> i32
+		fun CreateProcessA(
+			application:        ^byte,    // void: the command line names the program
+			command_line:       cstring,
+			process_attributes: ^byte,
+			thread_attributes:  ^byte,
+			inherit_handles:    i32,
+			creation_flags:     u32,
+			environment:        ^byte,
+			current_directory:  ^byte,
+			startup:            ^STARTUPINFOA,
+			info:               ^PROCESS_INFORMATION) -> i32
+		fun WaitForSingleObject(h: File_Id, milliseconds: u32) -> u32
+		fun GetExitCodeProcess(h: File_Id, code: ^u32) -> i32
+		fun GetStdHandle(which: u32) -> File_Id
+		fun GetLastError() -> u32
+		fun SetLastError(code: u32)
+		fun GetEnvironmentVariableA(name: cstring, value: ^utf8, size: u32) -> u32
+		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
+	}
+}
+
+#if #linux {
+	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
+	// Path, a 0 after it. Not_Set when no variable of that name is set;
+	// Too_Large when the value is longer than a Path holds (511 characters).
+	env :: fun(name: []utf8) -> Path, err {
+		value : Path
+		c := c_path(name)
+		p := getenv(cstring(c))
+		if p == void do return value, Not_Set
+		text := read_cstring(value.cap, p)
+		// (As long as the room: no 0 found in it, no room for one.)
+		if text.len == value.cap do return value, Too_Large
+		&value + text
+		return value
+	}
+
+	// ---------------------------------------------------------------------------
+	// Processes: a program run with its input and output through pipes
+	// ---------------------------------------------------------------------------
+
+	// A program process_start started: its input, to write to with
+	// file_write; its output, to read from with file_read, or pipe_read not
+	// to wait (its error output comes there too). `id` is its pid.
+	Process :: struct {
+		id:     i32
+		input:  File_Id
+		output: File_Id
+	}
+
+	// Runs a command line — a program and its arguments, as a terminal takes
+	// them (`sh -c`) — its input and output through pipes. Read its output
+	// while it runs: one that fills its output pipe waits until it is read.
+	// The command ends in a 0, as cstring() takes it: a literal does, and so
+	// does a buffer appended to.
+	process_start :: fun(command: []utf8) -> Process, err {
+		whole : []utf8 = slice_from_ptr(command.ptr, command.cap)
+		end := command.len
+		if end == command.cap do end -= 1
+		if end < 0 or whole[end] != 0 do return Process{all 0}, Start_Failed
+		ignore_broken_pipes()
+		// (The words sh runs with, each ending in a 0; then the end of them.)
+		sh := "/bin/sh"
+		dash_c := "-c"
+		words : [4!]^utf8
+		words[0] = sh.ptr
+		words[1] = dash_c.ptr
+		words[2] = command.ptr
+		to_child : [2!]i32
+		from_child : [2!]i32
+		// (Close-on-exec, all four ends: a program started later inherits
+		// none, so this one's input ends when ours closes. The child gets its
+		// two as its input and output — dup2's copies, without the flag.)
+		if pipe2(&to_child[0], O_CLOEXEC) != 0 do return Process{all 0}, Start_Failed
+		made := pipe2(&from_child[0], O_CLOEXEC) == 0
+		// (A child's end numbered 0 to 2 — this program's own input or output
+		// closed — would stay itself in the child, flag and all, and close as
+		// it runs the command: an error instead.)
+		if not made or to_child[0] < 3 or from_child[1] < 3 {
+			_ = close(File_Id(to_child[0]))
+			_ = close(File_Id(to_child[1]))
+			if made {
+				_ = close(File_Id(from_child[0]))
+				_ = close(File_Id(from_child[1]))
+			}
+			return Process{all 0}, Start_Failed
+		}
+		pid := fork()
+		if pid == 0 {
+			// The child: the pipes its input and output, then the command.
+			// (The four ends close as it runs it: close-on-exec.)
+			_ = dup2(to_child[0], 0)
+			_ = dup2(from_child[1], 1)
+			_ = dup2(from_child[1], 2)
+			_ = execv(sh.ptr, &words[0])
+			_exit(127)   // (no shell to run it)
+		}
+		// (The child's ends are its own now: ours closed, started or not.)
+		_ = close(File_Id(to_child[0]))
+		_ = close(File_Id(from_child[1]))
+		if pid < 0 {
+			_ = close(File_Id(to_child[1]))
+			_ = close(File_Id(from_child[0]))
+			return Process{all 0}, Start_Failed
+		}
+		return Process{id = pid, input = File_Id(to_child[1]), output = File_Id(from_child[0])}
+	}
+
+	// Closes the process's input: it reads to its end. (A server its window
+	// started exits there.)
+	process_close_input :: fun(p: ^Process) {
+		file_close(p.input)
+		p.input = NO_FILE
+	}
+
+	// Reads from a pipe what has arrived, without waiting for more — for a
+	// program that can't wait, as a window between its frames: data.len
+	// becomes the number of bytes read, 0 when none has. Returns false once
+	// the pipe has ended: its writer closed and all it wrote read.
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
+		data.len = 0
+		ready := Poll_Fd{fd = id, events = POLLIN}
+		n := poll(&ready, 1, 0)   // (0 ms: answers at once)
+		if n < 0 do return false, Read_Failed
+		if n == 0 do return true
+		// (Readable: what has arrived, or its end — 0 bytes.)
+		file_read(id, data)?
+		return data.len > 0
+	}
+
+	// Waits for the process to end and returns its exit code — its input and
+	// output closed first, so one still writing stops rather than waiting
+	// for a reader. Read what it writes before.
+	process_wait :: fun(p: ^Process) -> i64, err {
+		process_close_input(p)
+		file_close(p.output)
+		p.output = NO_FILE
+		status: i32 = 0
+		waited := waitpid(p.id, &status, 0) >= 0
+		p.id = -1
+		if not waited do return 0, Wait_Failed
+		return i64((status >> 8) & 0xff)
+	}
+
+	// The program's own input: what a terminal types, or what the program
+	// that started it writes (process_start). Read it with file_read.
+	standard_input :: fun() -> File_Id {
+		return File_Id(0)
+	}
+
+	// The program's own output, written to with file_write. (print writes
+	// there too, through a buffer of its own: mixing the two can reorder.)
+	standard_output :: fun() -> File_Id {
+		return File_Id(1)
+	}
+
+	foreign static_lib "c" {
+		fun close(fd: File_Id) -> i32
+		// Processes and pipes
+		fun pipe2(fds: ^i32, flags: i32) -> i32
+		fun fork() -> i32
+		fun dup2(old: i32, new: i32) -> i32
+		fun execv(path: ^utf8, words: ^^utf8) -> i32
+		fun _exit(code: i32)
+		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
+		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
+		fun getenv(name: cstring) -> ^byte
+	}
+}

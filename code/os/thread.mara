@@ -1,0 +1,202 @@
+module mara.os
+
+use mara.core
+use mara.string
+
+// Threads and mutexes.
+
+// What starting a thread can fail with.
+Thread_Error :: error {
+    Thread_Start_Failed
+}
+
+// What thread_start hands a new thread: the fun to run, its data, and its
+// arena's size. (In the process's heap: the thread frees it once read.)
+Thread_Start :: struct {
+	work:       fun(^byte)
+	data:       ^byte
+	arena_size: i64
+}
+
+// Runs work(data) on an arena of the program's kind, size bytes, made for
+// it, and gives back the arena's memory, to release (void, in a program with
+// no arena). A new thread's: only thread_entry calls it.
+thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mara_thread_run.ptr }
+
+#if #windows {
+	// ---------------------------------------------------------------------------
+	// Threads
+	// ---------------------------------------------------------------------------
+
+	// A thread thread_start started, to wait for with thread_wait. `id` is
+	// its Win32 thread handle.
+	Thread :: struct {
+		id: File_Id
+	}
+
+	// A lock one thread holds at a time: mutex_lock waits until it's free.
+	// Zero is unlocked: declare one and use it. (Win32's SRWLOCK, a
+	// pointer's size.)
+	Mutex :: struct {
+		lock: u64 = 0
+	}
+
+	// Runs work(data) on a new thread and returns at once. The thread puts
+	// its big values on an arena of its own, of the program's kind and
+	// arena_size bytes, made when it starts and released when it ends: what
+	// it makes for the program goes into data. Wait for every thread
+	// (thread_wait) before data goes, and before main returns: the program
+	// ends when main does, its threads with it.
+	thread_start :: fun(work: fun(^$T), data: ^T, arena_size: i64 = 16 << 20) -> Thread, err {
+		start: ^Thread_Start = HeapAlloc(GetProcessHeap(), 0, usize(size_of(Thread_Start)))
+		if start == void do return Thread{NO_FILE}, Thread_Start_Failed
+		// (Copied in by the system: the escape check can't see a thread's
+		// life, so it would refuse data in memory that outlives this call.
+		// That data outlives the thread is the caller's: thread_wait.)
+		given := Thread_Start{work = work, data = data, arena_size = arena_size}
+		RtlMoveMemory(start, &given, usize(size_of(Thread_Start)))
+		id := CreateThread(void, usize(0), thread_entry, start, 0, void)
+		if id == NO_FILE {
+			_ = HeapFree(GetProcessHeap(), 0, start)
+			return Thread{NO_FILE}, Thread_Start_Failed
+		}
+		return Thread{id = id}
+	}
+
+	// A new thread's first fun, as Windows calls it: its start read and freed,
+	// its work run on an arena of its own, the arena released after.
+	thread_entry :: fun(start: ^Thread_Start) -> u32 {
+		s := start^
+		_ = HeapFree(GetProcessHeap(), 0, start)
+		base := thread_run(s.work, s.data, s.arena_size)
+		if base != void do vm_release(base, s.arena_size)
+		return 0
+	}
+
+	// Waits for the thread to end. A thread waited for, or one that never
+	// started, is ignored.
+	thread_wait :: fun(t: ^Thread) {
+		if t.id == NO_FILE do return
+		_ = WaitForSingleObject(t.id, INFINITE)
+		file_close(t.id)
+		t.id = NO_FILE
+	}
+
+	// Takes the lock, waiting while another thread holds it.
+	mutex_lock :: fun(m: ^Mutex) {
+		AcquireSRWLockExclusive(m)
+	}
+
+	// Lets the lock go, for the next thread waiting for it.
+	mutex_unlock :: fun(m: ^Mutex) {
+		ReleaseSRWLockExclusive(m)
+	}
+
+	// How many threads the machine runs at once: its logical processors.
+	cpu_count :: fun() -> i64 {
+		return i64(GetActiveProcessorCount(0xFFFF))   // (0xFFFF: every processor group)
+	}
+
+	foreign static_lib "kernel32" {
+		// Threads
+		fun CreateThread(attributes: ^byte, stack: usize, entry: fun(^byte) -> u32, start: ^byte, flags: u32, id: ^u32) -> File_Id
+		fun GetProcessHeap() -> ^byte
+		fun HeapAlloc(heap: ^byte, flags: u32, size: usize) -> ^byte
+		fun HeapFree(heap: ^byte, flags: u32, p: ^byte) -> i32
+		fun RtlMoveMemory(to: ^byte, from: ^byte, size: usize)
+		fun AcquireSRWLockExclusive(lock: ^Mutex)
+		fun ReleaseSRWLockExclusive(lock: ^Mutex)
+		fun GetActiveProcessorCount(group: u16) -> u32
+		fun WaitForSingleObject(h: File_Id, milliseconds: u32) -> u32
+	}
+}
+
+#if #linux {
+	// ---------------------------------------------------------------------------
+	// Threads
+	// ---------------------------------------------------------------------------
+
+	// A thread thread_start started, to wait for with thread_wait. `id` is
+	// its pthread_t; `started` whether it's there to wait for.
+	Thread :: struct {
+		id:      u64
+		started: bool
+	}
+
+	// A lock one thread holds at a time: mutex_lock waits until it's free.
+	// Zero is unlocked: declare one and use it. (glibc's pthread_mutex_t,
+	// 40 bytes on x86_64; all zero is PTHREAD_MUTEX_INITIALIZER.)
+	Mutex :: struct {
+		state: [5!]i64 = {0, 0, 0, 0, 0}
+	}
+
+	// Runs work(data) on a new thread and returns at once. The thread puts
+	// its big values on an arena of its own, of the program's kind and
+	// arena_size bytes, made when it starts and released when it ends: what
+	// it makes for the program goes into data. Wait for every thread
+	// (thread_wait) before data goes, and before main returns: the program
+	// ends when main does, its threads with it.
+	thread_start :: fun(work: fun(^$T), data: ^T, arena_size: i64 = 16 << 20) -> Thread, err {
+		none := Thread{id = 0, started = false}
+		start: ^Thread_Start = malloc(usize(size_of(Thread_Start)))
+		if start == void do return none, Thread_Start_Failed
+		// (Copied in by the system: the escape check can't see a thread's
+		// life, so it would refuse data in memory that outlives this call.
+		// That data outlives the thread is the caller's: thread_wait.)
+		given := Thread_Start{work = work, data = data, arena_size = arena_size}
+		_ = memcpy(start, &given, usize(size_of(Thread_Start)))
+		t := none
+		if pthread_create(&t.id, void, thread_entry, start) != 0 {
+			free(start)
+			return none, Thread_Start_Failed
+		}
+		t.started = true
+		return t
+	}
+
+	// A new thread's first fun, as pthreads calls it: its start read and
+	// freed, its work run on an arena of its own, the arena released after.
+	// (Its result, 0: pthreads' void* result, nothing.)
+	thread_entry :: fun(start: ^Thread_Start) -> u64 {
+		s := start^
+		free(start)
+		base := thread_run(s.work, s.data, s.arena_size)
+		if base != void do vm_release(base, s.arena_size)
+		return 0
+	}
+
+	// Waits for the thread to end. A thread waited for, or one that never
+	// started, is ignored.
+	thread_wait :: fun(t: ^Thread) {
+		if not t.started do return
+		_ = pthread_join(t.id, void)
+		t.started = false
+	}
+
+	// Takes the lock, waiting while another thread holds it.
+	mutex_lock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_lock(m)
+	}
+
+	// Lets the lock go, for the next thread waiting for it.
+	mutex_unlock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_unlock(m)
+	}
+
+	// How many threads the machine runs at once: its logical processors.
+	cpu_count :: fun() -> i64 {
+		return sysconf(84)   // (_SC_NPROCESSORS_ONLN)
+	}
+
+	foreign static_lib "c" {
+		fun malloc(size: usize) -> ^byte
+		fun free(p: ^byte)
+		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
+		// Threads (in libc since glibc 2.34)
+		fun pthread_create(thread: ^u64, attributes: ^byte, entry: fun(^byte) -> u64, start: ^byte) -> i32
+		fun pthread_join(thread: u64, result: ^byte) -> i32
+		fun pthread_mutex_lock(m: ^Mutex) -> i32
+		fun pthread_mutex_unlock(m: ^Mutex) -> i32
+		fun sysconf(name: i32) -> i64
+	}
+}

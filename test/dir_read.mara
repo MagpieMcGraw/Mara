@@ -7,12 +7,12 @@ use mara.memory
 #allocator Arena_Basic(4 * MB)
 
 // dir_read: a directory's names, each a file or a directory, into storage
-// after what's there. The stdlib's directory, beside test/ — its os.mara a
+// after what's there. The stdlib's directory, beside test/ — its core.mara a
 // file, its SDL a directory, no "." or ".." among them; a storage too small
 // for them (Too_Large, storage untouched); a directory that isn't there
 // (Open_Failed); two listings in one storage, side by side.
 
-//@ expect-output: os.mara: file
+//@ expect-output: core.mara: file
 //@ expect-output: SDL: directory
 //@ expect-output: dots: 0
 //@ expect-output: moved past them: true
@@ -31,7 +31,7 @@ main :: fun() -> i64 {
 	for entry in entries {
 		name : []utf8 = entry.name
 		if name == "." or name == ".." do dots += 1
-		if name == "os.mara" or name == "SDL" {
+		if name == "core.mara" or name == "SDL" {
 			kind := "file"
 			if entry.dir do kind = "directory"
 			print("%: %", name, kind)

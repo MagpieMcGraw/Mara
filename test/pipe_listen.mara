@@ -3,7 +3,7 @@ module pipe_listen
 use mara.core
 use mara.os
 
-// Named pipes (os.mara): a program listens on a name and starts two of
+// Named pipes (mara.os): a program listens on a name and starts two of
 // itself as clients that connect at once; it holds both connections, then
 // answers each on its own — the second first. Accepting doesn't wait while
 // nobody connects. A second listener on the name is turned away, a name

@@ -45,7 +45,7 @@ start_detached :: proc(exe: string, args: []string) -> bool {
 }
 
 // A request line sent to the window listening on `name` (a Unix socket,
-// where os.mara's pipe_listen puts it), and its reply, to the end it closes
+// where mara.os's pipe_listen puts it), and its reply, to the end it closes
 // the connection at — or No_Window, or Broken when one stops answering
 // (VIEW_QUIET without a byte).
 view_exchange :: proc(name, request: string) -> (reply: string, how: View_Exchange) {

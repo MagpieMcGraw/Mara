@@ -1,14 +1,15 @@
 module mara.time
 
-use mara.os
 use mara.math
+os :: use mara.os
 
-// A game loop's timing: a Timer, how long a frame took; a Fixed_Timer, the
-// game's time in fixed steps out of that. Its clock is mara.os's clock_ns —
-// a counter here is its nanoseconds, as a u64.
+// Time: the clock and waiting, which mara.os does for each platform, and a game
+// loop's timing over them. A Timer says how long a frame took; a Fixed_Timer
+// turns that into the game's time in fixed steps. A moment here is what
+// clock_ns gives: nanoseconds, as an i64.
 
 Timer :: struct {
-	counter: u64 = time_now()
+	counter: i64 = clock_ns()
 	seconds: f64 = 0.016
 }
 
@@ -16,6 +17,22 @@ Fixed_Timer :: struct {
 	tally: 		f64 = 0
 	step: 		f64 = 0.01
 	limit: 		f64 = 0.25
+}
+
+// Now, on a clock that only goes forward: nanoseconds since some point, the
+// system's start, not a date. How long something took is the difference of two.
+clock_ns :: fun() -> i64 {
+	return os.clock_ns()
+}
+
+// Waits: the program does nothing for `ns` nanoseconds, at least.
+sleep_ns :: fun(ns: i64) {
+	os.sleep_ns(ns)
+}
+
+// Waits: the program does nothing for `ms` milliseconds, at least.
+sleep_ms :: fun(ms: u32) {
+	os.sleep_ms(ms)
 }
 
 one_step :: fun(fixed : ^Fixed_Timer) -> bool {
@@ -26,14 +43,9 @@ one_step :: fun(fixed : ^Fixed_Timer) -> bool {
 	return false
 }
 
-// Now: nanoseconds on a clock that only goes forward (clock_ns).
-time_now :: fun() -> u64 {
-	return u64(clock_ns())
-}
-
-// The seconds since `last` (a time_now), and now.
-time_since :: fun(last: u64) -> (f64, u64) {
-	now := time_now()
+// The seconds since `last` (a clock_ns), and now.
+time_since :: fun(last: i64) -> (f64, i64) {
+	now := clock_ns()
 	return f64(now - last) / 1000000000.0, now
 }
 
@@ -47,13 +59,9 @@ tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
 sleep :: fun(work: Timer, fps: f64) {
 	work_seconds, _ := time_since(work.counter)
 	sleep_time := 1.0 / fps - work_seconds
-	if sleep_time > 0 do delay_ns(seconds_to_ns(sleep_time))
+	if sleep_time > 0 do sleep_ns(seconds_to_ns(sleep_time))
 }
 
-seconds_to_ns :: fun (seconds: f64) -> u64 {
-	return u64(seconds * 1000000000)
-}
-
-delay_ns :: fun(nanoseconds: u64) {
-	sleep_ns(i64(nanoseconds))
+seconds_to_ns :: fun (seconds: f64) -> i64 {
+	return i64(seconds * 1000000000)
 }

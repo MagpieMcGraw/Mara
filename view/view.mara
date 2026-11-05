@@ -168,22 +168,32 @@ main :: fun(args: [][]utf8) -> i64 {
 	// (A click that brings the window forward is a click too: on Windows SDL
 	// would drop it.)
 	_ = SetHint("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
-	if not Init(Video) {
-		print("mara view: SDL didn't start")
+	if Init(Video) {
+		print("mara view: SDL didn't start:", GetError())
 		return 1
 	}
 	defer Quit()
-	ui.window = CreateWindow(title, 1100, 700, Resizable | HighPixelDensity)
+	window, no_window := CreateWindow(title, 1100, 700, Resizable | HighPixelDensity)
+	if no_window {
+		print("mara view: no window:", GetError())
+		return 1
+	}
+	ui.window = window
 	// (SDL's OpenGL renderer: Direct3D 11's, its default on Windows, showed a
 	// frame late now and then — a dragged panel moved on after its release,
 	// again when the mouse came over it. OpenGL's, as Pounce draws, didn't.)
-	ui.renderer = CreateRenderer(ui.window, "opengl")
+	renderer, no_renderer := CreateRenderer(ui.window, "opengl")
+	if no_renderer {
+		print("mara view: no renderer:", GetError())
+		return 1
+	}
+	ui.renderer = renderer
 	// (Vsync, and frames no oftener than the display shows them (run): sent
 	// faster, they'd queue to be shown, behind the mouse — a click's, a
 	// dragged panel's.)
 	_ = SetRenderVSync(ui.renderer, 1)
 	for id in 0:12 {
-		ui.cursors[id] = CreateSystemCursor(i32(id))
+		ui.cursors[id], _ = CreateSystemCursor(i32(id))   // (one it hasn't: the default's look)
 	}
 	measure(&ui)
 	e := fonts_load(&ui)
@@ -452,8 +462,8 @@ measure :: fun(ui: ^Ui) {
 	if units_w > 0 do ui.density = f32(w) / f32(units_w)
 	// (The display's refresh: 60 a second when it doesn't say.)
 	hz : f32 = 60.0
-	mode := GetCurrentDisplayMode(GetDisplayForWindow(ui.window))
-	if mode != void {
+	mode, no_mode := GetCurrentDisplayMode(GetDisplayForWindow(ui.window))
+	if not no_mode {
 		if mode.refresh_rate > 1.0 do hz = mode.refresh_rate
 	}
 	ui.frame_ns = u64(1000000000.0 / hz)
@@ -462,8 +472,8 @@ measure :: fun(ui: ^Ui) {
 // The room the window's display has for it, window units: the display's
 // usable part (the taskbar left out), a little less.
 display_room :: fun(ui: ^Ui) -> f32, f32 {
-	room := SDL_Rect{}
-	if not GetDisplayUsableBounds(GetDisplayForWindow(ui.window), &room) do return 100000.0, 100000.0
+	room := SDL_Rect{all 0}
+	if GetDisplayUsableBounds(GetDisplayForWindow(ui.window), &room) do return 100000.0, 100000.0
 	return f32(room.w) - 40.0, f32(room.h) - 40.0
 }
 

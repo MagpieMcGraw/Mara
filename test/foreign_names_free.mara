@@ -7,7 +7,7 @@ use mara.os
 
 // A foreign block lends its funs to its own scope, as a `use` does a
 // module's: mara.os's C funs are its file's alone. So a local may take
-// one's name — `open` on Linux, where os.mara declares libc's open, failed
+// one's name — `open` on Linux, where mara.os declares libc's open, failed
 // to build ("a variable can't take the name of a fun") while Windows built
 // it. (Calling one: foreign_private_neg.)
 

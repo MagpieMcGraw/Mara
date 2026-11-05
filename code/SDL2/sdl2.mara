@@ -21,7 +21,7 @@ module mara.sdl2
 //     bool. We declare it `i64` so callers compare against 0.
 //   - SDL_RWops replaces SDL_IOStream; SDL2 lacks several SDL3 path APIs
 //     (GetPathInfo, CreateDirectory, RenamePath, CopyFile). Filesystem-using
-//     stdlib modules (os.mara) need SDL3 today.
+//     stdlib modules (mara.os) need SDL3 today.
 
 Init_Flags :: union(tag u32) {
     Timer          = 1

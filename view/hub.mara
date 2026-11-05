@@ -287,7 +287,7 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 		dir = fields[0]
 		words = fields[1]
 	}
-	ex := Exact{0}
+	ex := Exact{all 0}
 	if n >= 6 {
 		at_line, _ := parse_number(fields[5])
 		ex = Exact{kind = fields[2], name = fields[3], path = fields[4], line = i64(at_line), loose = false}

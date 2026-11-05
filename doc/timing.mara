@@ -21,7 +21,6 @@
 module timing
 
 use mara.core
-use mara.os
 use mara.time
 
 main :: fun() {
@@ -46,7 +45,7 @@ main :: fun() {
 
 	// The same with mara.time's Timer: its counter set when the work starts.
 	work := Timer()
-	work.counter = time_now()
+	work.counter = clock_ns()
 	sleep(work, 60.0)
 	seconds, _ := time_since(work.counter)
 	print("mara.time's frame:", seconds, "seconds")

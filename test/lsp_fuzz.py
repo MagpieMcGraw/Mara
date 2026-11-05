@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MARA = os.environ.get("MARA_EXE") or os.path.join(ROOT, "mara_dev.exe" if os.name == "nt" else "mara_dev")   # (the debug build)
 FILES = [os.path.join(ROOT, "Pounce", "camera.mara"), os.path.join(ROOT, "Pounce", "Pounce.mara"),
          os.path.join(ROOT, "view", "hub.mara"), os.path.join(ROOT, "view", "docs.mara"),
-         os.path.join(ROOT, "code", "os.mara")]
+         os.path.join(ROOT, "code", "os", "file.mara")]
 CRASHES = os.path.join(ROOT, "test", "lsp_crashes")
 TIMEOUT = 20
 
