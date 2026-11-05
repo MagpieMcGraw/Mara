@@ -774,6 +774,8 @@ askat.mara:18:19  token '.'
 mara ask: no type or function named 'no_such_name_here' in askat
   (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
 [exit 1]
+=== test/askat.mara | #unsaved
+Unsaved line: Ask answers from the saved file, and this line isn't in it yet.
 === test/askuses.mara | what at askuses.mara:36:10
 o.inner.value
 Outer.Inner.i64

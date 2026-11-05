@@ -180,6 +180,9 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
         return ask_module_map(s.checked, s.all_files, s.compiler_dir, s.pkg), true
     }
     if q.target == "#tokens" { return ask_tokens(s, q, in_) }
+    // `#unsaved`: what an editor has shown for a line that isn't in the file on
+    // disk, which is what every answer here comes from.
+    if q.target == "#unsaved" { return "Unsaved line: Ask answers from the saved file, and this line isn't in it yet.\n", true }
     // `at <file>:<line>:<col>` with no name — the position query. A point in
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.

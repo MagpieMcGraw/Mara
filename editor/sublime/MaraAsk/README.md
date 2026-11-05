@@ -51,8 +51,11 @@ appears in an output panel with every `file:line` clickable.
   over lines isn't looked up); else the name under the cursor; else, in a
   call's parentheses, the fun being called (signature help). The point: the
   cursor — with a highlight, its cursor end, so what's under the cursor shows
-  too. In an unsaved file the places may be stale: Docs shows the text matches
-  alone, Ask waits for the save. The status bar says how many were found.
+  too. In an unsaved file the places may be stale, so Docs shows the text matches
+  alone. Ask answers from the saved file: it finds the line you're on there, so
+  the line numbers it lists are the saved file's, and a line that isn't saved yet
+  it says so. Saving asks again at the cursor. The status bar says how many were
+  found.
 
   The window is also told where this Sublime is (`mara editor`, once it's
   open): a call in its **Crash** panel — the program's last crash, the calls

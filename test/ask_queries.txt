@@ -45,6 +45,7 @@ test/askat.mara | at askat.mara:11:49
 test/askat.mara | at askat.mara:18:19
 test/askat.mara | what at askat.mara:18:19
 test/askat.mara | no_such_name_here
+test/askat.mara | #unsaved
 
 # A variable's or a field's uses: written (by name, part of it, `+=`, whole, a
 # literal's entry, by position, `&x + v`), a pointer taken, read; through a slice
