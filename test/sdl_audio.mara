@@ -25,7 +25,7 @@ main :: fun() {
 	// (64 stereo frames of silence: 128 f32s, 512 bytes, queued while the
 	// stream is paused.)
 	frames : [128!]f32
-	_ = sdl.PutAudioStreamData(stream, frames)
+	_ = sdl.PutAudioStreamData(stream, frames[:].ptr, i32(frames.len * size_of(f32)))
 	print("queued:", sdl.GetAudioStreamQueued(stream))
 	print("gain:", sdl.SetAudioStreamGain(stream, 0.5))
 	_ = sdl.ClearAudioStream(stream)

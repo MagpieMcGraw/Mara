@@ -23,14 +23,17 @@ gl :: use mara.open_gl
 main :: fun() {
 	gl.gl_load(sdl.GL_GetProcAddress)
 	print("loaded:", true)
-	said := sdl.GetError()
+	said : [256]utf8
+	sdl.c_text(sdl.GetError(), &said)
 	print("error said:", said.len > 0)
-	base := sdl.GetBasePath()
+	base : [512]utf8
+	sdl.c_text(sdl.GetBasePath(), &base)
 	print("base:", base.len > 0)
 	print("back to C:", sdl.SetHint("MARA_TEST_BASE", cstring(base)))
 	_, e := sdl.IOFromFile("no such file.bin", "rb")
 	print("opened:", e)
 	print("where:", e.where())
-	reason := sdl.GetError()
+	reason : [256]utf8
+	sdl.c_text(sdl.GetError(), &reason)
 	print("reason given:", reason.len > 0)
 }

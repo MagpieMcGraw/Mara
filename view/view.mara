@@ -122,6 +122,13 @@ Ui :: struct {
 	selected:   Color   // text selected, behind it
 }
 
+// Says what failed, and SDL's reason.
+sdl_failed :: fun(what: []utf8) {
+	reason : [256]utf8
+	c_text(GetError(), &reason)
+	print("mara view: %: %", what, reason)
+}
+
 main :: fun(args: [][]utf8) -> i64 {
 	ui := Ui()
 	p := Profile()
@@ -167,13 +174,13 @@ main :: fun(args: [][]utf8) -> i64 {
 	// would drop it.)
 	_ = SetHint("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 	if Init(Video) {
-		print("mara view: SDL didn't start:", GetError())
+		sdl_failed("SDL didn't start")
 		return 1
 	}
 	defer Quit()
 	window, no_window := CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
 	if no_window {
-		print("mara view: no window:", GetError())
+		sdl_failed("no window")
 		return 1
 	}
 	ui.window = window
@@ -182,7 +189,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	// again when the mouse came over it. OpenGL's, as Pounce draws, didn't.)
 	renderer, no_renderer := CreateRenderer(ui.window, "opengl")
 	if no_renderer {
-		print("mara view: no renderer:", GetError())
+		sdl_failed("no renderer")
 		return 1
 	}
 	ui.renderer = renderer
