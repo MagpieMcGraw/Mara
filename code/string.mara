@@ -185,8 +185,9 @@ compare_folded :: fun(a: []utf8, b: []utf8) -> i64 {
 // '-' first, maybe an exponent last ("e-8", "E+3") — and whether it is one:
 // false when anything else is in it, or it has no digit before its exponent
 // or none in it. ("12", "-0.5", "3.", ".5" and "-6.24607e-008" are; "1e",
-// "e3" and "+1" aren't.) Up to 15 digits and a power of ten to 22 come out
-// the nearest f64; more, near it.
+// "e3" and "+1" aren't.) It's always the nearest f64, an exact tie going to the even
+// one, however many digits there are: too big gives infinity, too small 0. Up to 15
+// digits and a power of ten to 22 are quick, and more take a few microseconds.
 parse_number :: fun(s: []utf8) -> f64, bool {
 	i : i64 = 0
 	negative := false
@@ -194,6 +195,7 @@ parse_number :: fun(s: []utf8) -> f64, bool {
 		negative = true
 		i = 1
 	}
+	first_digit := i
 	// (The digits as one whole number, its first 18 that count; the point's
 	// place, and digits before it past those 18, move the power of ten.)
 	whole : i64 = 0
@@ -219,6 +221,8 @@ parse_number :: fun(s: []utf8) -> f64, bool {
 		digits += 1
 		i += 1
 	}
+	last_digit := i
+	written : i64 = 0
 	if digits > 0 and i < s.len and (s[i] == 'e' or s[i] == 'E') {
 		i += 1
 		minus := false
@@ -238,31 +242,190 @@ parse_number :: fun(s: []utf8) -> f64, bool {
 		if e_digits == 0 do return 0, false
 		if minus do e = -e
 		power += e
+		written = e
 	}
-	// (Scaled by 10^22 at a time, the most f64 holds exactly, then by the
-	// rest at once: one multiply or divide by an exact power, rounded once.)
-	v := f64(whole)
-	for power > 22 and v != 0 {
-		v *= 1e22
-		power -= 22
-	}
-	for power < -22 and v != 0 {
-		v /= 1e22
-		power += 22
-	}
-	ten : f64 = 1
-	steps := power
-	if steps < 0 do steps = -steps
-	for k in 0:steps {
-		ten *= 10.0
-	}
-	if power < 0 {
-		v /= ten
-	else
-		v *= ten
+	v : f64 = 0
+	if kept <= 15 and power >= -22 and power <= 22 {
+		// (Up to 15 digits are exactly an f64, and so is a power of ten to 22: one multiply
+		// or divide of exact numbers, rounded once, is the nearest.)
+		ten : f64 = 1
+		steps := power
+		if steps < 0 do steps = -steps
+		for k in 0:steps {
+			ten *= 10.0
+		}
+		v = f64(whole)
+		if power < 0 {
+			v /= ten
+		else
+			v *= ten
+		}
+	elif digits > 0
+		v = parse_number_exact(s[first_digit:last_digit], written)
 	}
 	if negative do v = -v
 	return v, digits > 0 and i == s.len
+}
+
+// The f64 nearest to digits (with maybe a point among them) times 10^exponent, worked out
+// in whole numbers so nothing rounds along the way. Past 768 digits nothing can change the
+// answer but whether any of them isn't 0.
+parse_number_exact :: fun(digits: []utf8, exponent: i64) -> f64 {
+	from_bits :: fun(bits: u64) -> f64 { @llvm.bitcast.i64 }
+	INFINITE : u64 = 0x7FF0000000000000
+
+	// (A whole number in pieces of 32 bits, smallest first. The largest needed is a 768-digit
+	// value's division by 10^1113, shifted to keep 66 bits: about 3,764 bits.)
+	big : [128!]u32
+	used : i64 = 0
+
+	// big = big * by + extra.
+	times :: fun(big: ^[128!]u32, used: ^i64, by: u64, extra: u64) {
+		carry := extra
+		for k in 0:used^ {
+			n := u64(big[k]) * by + carry
+			big[k] = u32(n & 0xFFFFFFFF)
+			carry = n >> 32
+		}
+		if carry != 0 {
+			big[used^] = u32(carry)
+			used^ += 1
+		}
+	}
+
+	// The digits into big: the 768 that count, nine at a time.
+	kept : i64 = 0
+	power := exponent
+	chunk : u64 = 0
+	chunk_size : u64 = 1
+	past_point := false
+	rest_nonzero := false
+	for c in digits {
+		if c == '.' {
+			past_point = true
+			continue
+		}
+		d := u64(i64(c) - i64('0'))
+		if kept == 0 and d == 0 {
+			if past_point do power -= 1
+			continue
+		}
+		if kept == 768 {
+			if d != 0 do rest_nonzero = true
+			if not past_point do power += 1
+			continue
+		}
+		kept += 1
+		if past_point do power -= 1
+		chunk = chunk * 10 + d
+		chunk_size *= 10
+		if chunk_size == 1000000000 {
+			times(&big, &used, chunk_size, chunk)
+			chunk = 0
+			chunk_size = 1
+		}
+	}
+	if chunk_size > 1 do times(&big, &used, chunk_size, chunk)
+	if kept == 0 do return 0
+
+	// (The value is under 10^(kept + power) and at least a tenth of that.)
+	if kept + power > 310 do return from_bits(INFINITE)
+	if kept + power < -345 do return 0
+
+	// Multiplied by 10^power, or divided by 10^-power with enough bits shifted in first to
+	// keep 66 of the answer. shift says how many: the value is big / 2^shift.
+	shift : i64 = 0
+	if power > 0 {
+		left := power
+		for left > 0 {
+			step : i64 = 9
+			if left < step do step = left
+			by : u64 = 1
+			for k in 0:step do by *= 10
+			times(&big, &used, by, 0)
+			left -= step
+		}
+	elif power < 0
+		// (10^q has about q * 3.322 bits.)
+		q := -power
+		bits_now := (used - 1) * 32
+		for top := big[used - 1]; top != 0; top = top >> 1 do bits_now += 1
+		want := q * 3322 / 1000 + 2 + 66
+		if want > bits_now do shift = want - bits_now
+		whole_limbs := shift / 32
+		part := u64(shift % 32)
+		if part != 0 do times(&big, &used, u64(1) << part, 0)
+		if whole_limbs > 0 {
+			k := used - 1
+			for k >= 0 {
+				big[k + whole_limbs] = big[k]
+				k -= 1
+			}
+			for j in 0:whole_limbs do big[j] = 0
+			used += whole_limbs
+		}
+		left := q
+		for left > 0 {
+			step : i64 = 9
+			if left < step do step = left
+			by : u64 = 1
+			for k in 0:step do by *= 10
+			remainder : u64 = 0
+			k := used - 1
+			for k >= 0 {
+				n := (remainder << 32) | u64(big[k])
+				big[k] = u32(n / by)
+				remainder = n % by
+				k -= 1
+			}
+			if remainder != 0 do rest_nonzero = true
+			for used > 0 and big[used - 1] == 0 do used -= 1
+			left -= step
+		}
+	}
+
+	// Its bits: how many, and so where the value is between powers of two.
+	if used == 0 do return 0
+	length := (used - 1) * 32
+	for top := big[used - 1]; top != 0; top = top >> 1 do length += 1
+	binary := length - 1 - shift
+	if binary > 1023 do return from_bits(INFINITE)
+
+	// An f64 keeps 53 bits, and fewer once it's too small for an exponent of its own.
+	keep : i64 = 53
+	if binary < -1022 do keep = 53 - (-1022 - binary)
+	if keep < 0 do return 0
+
+	bit_at :: fun(big: ^[128!]u32, at: i64) -> u64 {
+		return (u64(big[at / 32]) >> u64(at % 32)) & 1
+	}
+	mantissa : u64 = 0
+	cut := length - keep
+	k := length - 1
+	for k >= 0 and k >= cut {
+		mantissa = (mantissa << 1) | bit_at(&big, k)
+		k -= 1
+	}
+	if cut < 0 do mantissa = mantissa << u64(-cut)
+	if cut > 0 {
+		// (Rounded to the nearest, a tie to the even one: the bit just below decides, and
+		// then whether anything at all is below that.)
+		below := rest_nonzero
+		for j in 0:cut - 1 {
+			if bit_at(&big, j) != 0 do below = true
+		}
+		if bit_at(&big, cut - 1) != 0 and (below or mantissa & 1 != 0) do mantissa += 1
+	}
+	if binary < -1022 {
+		// (No exponent: a carry out of the top makes it the smallest with one, by itself.)
+		return from_bits(mantissa)
+	}
+	if mantissa == u64(1) << 53 {
+		mantissa = mantissa >> 1
+		binary += 1
+		if binary > 1023 do return from_bits(INFINITE)
+	}
+	return from_bits((u64(binary + 1023) << 52) | (mantissa & 0xFFFFFFFFFFFFF))
 }
 
 // A whole number as text: its digits, a '-' first when it's below 0.
