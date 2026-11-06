@@ -15,6 +15,7 @@ use mara.json
 //@ expect-output: decoded: a"b\c/d	e
 //@ expect-output: unicode: é € 😀
 //@ expect-output: bad surrogate: Json_Error.Bad_Json
+//@ expect-output: exact room: é€😀 Ok Ok Ok
 //@ expect-output: all valid read: true
 //@ expect-output: all invalid refused: true
 //@ expect-output: too long: Json_Error.Json_Too_Long Json_Error.Json_Too_Long
@@ -108,6 +109,22 @@ main :: fun() {
 	failed = json_parse("\"\\uD83D\"", &values)
 	out.len = 0
 	print("bad surrogate:", json_text(values, 0, &out))
+
+	// (A character takes only its own size in room: 2, 3 and 4 bytes here, each in exactly that.)
+	failed = json_parse("\"\\u00e9\"", &values)
+	room2 : [2]utf8
+	e_2 := json_text(values, 0, &room2)
+	failed = json_parse("\"\\u20AC\"", &values)
+	room3 : [3]utf8
+	e_3 := json_text(values, 0, &room3)
+	failed = json_parse("\"\\uD83D\\uDE00\"", &values)
+	room4 : [4]utf8
+	e_4 := json_text(values, 0, &room4)
+	joined : [16]utf8
+	&joined + room2
+	&joined + room3
+	&joined + room4
+	print("exact room:", joined, e_2, e_3, e_4)
 
 	all_valid := true
 	for v in VALID {

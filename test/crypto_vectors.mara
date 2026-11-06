@@ -13,6 +13,8 @@ use mara.encoding
 //@ expect-output: hmac256: b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7
 //@ expect-output: hmac1: de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9
 //@ expect-output: pbkdf2: 55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc
+//@ expect-output: pbkdf2 many: c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a
+//@ expect-output: pbkdf2 two blocks: ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43
 //@ expect-output: long key: a3536a9bb1f998bf7a6b90300889dca237636f19e0d6cfba670fa4b41b6fd4c4
 //@ expect-output: same_secret: true false false
 //@ expect-output: base64: aGVsbG8= aGVsbG8 aGk= YQ==
@@ -87,6 +89,12 @@ main :: fun() {
 	pbkdf2_sha256("passwd", "salt", 1, &out)
 	// (RFC 7914 gives 64 bytes; these are its first 32.)
 	print("pbkdf2:", hex(out))
+	many : [32]byte
+	pbkdf2_sha256("password", "salt", 4096, &many)
+	print("pbkdf2 many:", hex(many))
+	two : [64]byte
+	pbkdf2_sha256("password", "salt", 2, &two)
+	print("pbkdf2 two blocks:", hex(two[0:32]))
 	long_key : [100]byte
 	for k in 0:100 do &long_key + u8(0xAA)
 	print("long key:", hex(hmac_sha256(long_key, "abc")))

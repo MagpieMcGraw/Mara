@@ -200,9 +200,10 @@ date_digits :: fun(out: ^[]utf8, n: i64, count: i64) {
 }
 
 // Reads a date: 2026-11-06, then if there's more, a 'T' or a space and 14:57:03,
-// then maybe a fraction of a second, then maybe 'Z', or an offset like +02:00, which
-// is taken away to give UTC. Rails's and SQLite's dates read this way. Bad_Date
-// for anything else, or for a date that doesn't exist, like February 30.
+// then maybe a fraction of a second, then maybe a space, then maybe 'Z' or "UTC", or an
+// offset like +02:00 or +0200, which is taken away to give UTC. Rails's, SQLite's and
+// Ruby's dates read this way. Bad_Date for anything else, or for a date that doesn't
+// exist, like February 30.
 date_parse :: fun(text: []utf8) -> Date, err {
 	bad := date_from_unix(0)
 	at : i64 = 0
@@ -238,16 +239,25 @@ date_parse :: fun(text: []utf8) -> Date, err {
 			}
 			if at == first do return bad, Bad_Date
 		}
+		// (Ruby's Time#to_s puts a space before the zone. A space with nothing after it is
+		// still wrong: at is past it, and nothing below moves it to the end.)
+		if at + 1 < text.len and text[at] == ' ' do at += 1
 		if at < text.len and text[at] == 'Z' {
 			at += 1
+		elif at + 3 <= text.len and text[at:at + 3] == "UTC"
+			at += 3
 		elif at < text.len and (text[at] == '+' or text[at] == '-')
 			sign : i64 = 1
 			if text[at] == '-' do sign = -1
 			off_hour, ok_off_hour := date_read_digits(text, at + 1, 2)
-			off_minute, ok_off_minute := date_read_digits(text, at + 4, 2)
-			if not ok_off_hour or not ok_off_minute or not date_char(text, at + 3, ':') do return bad, Bad_Date
+			if not ok_off_hour do return bad, Bad_Date
+			// (+02:00 or +0200.)
+			minute_at := at + 3
+			if date_char(text, minute_at, ':') do minute_at += 1
+			off_minute, ok_off_minute := date_read_digits(text, minute_at, 2)
+			if not ok_off_minute do return bad, Bad_Date
 			offset = sign * (off_hour * 3600 + off_minute * 60)
-			at += 6
+			at = minute_at + 2
 		}
 		if at != text.len do return bad, Bad_Date
 	}

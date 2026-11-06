@@ -312,7 +312,11 @@ json_unescape :: fun(text: []utf8, out: ^[]utf8) -> err {
 			}
 			// (A surrogate left alone is no character.)
 			if code >= 0xD800 and code < 0xE000 do return Bad_Json
-			if out.len + 4 > out.cap do return Json_Too_Long
+			size : i64 = 4
+			if code < 0x10000 do size = 3
+			if code < 0x800 do size = 2
+			if code < 0x80 do size = 1
+			if out.len + size > out.cap do return Json_Too_Long
 			json_add_code(code, out)
 			continue
 		}

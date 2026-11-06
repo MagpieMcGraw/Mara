@@ -14,7 +14,8 @@ use mara.time
 //@ expect-output: date only: 2026-11-06T00:00:00Z
 //@ expect-output: with T and Z: 2026-11-06T14:57:03Z
 //@ expect-output: offset: 2026-11-06T12:57:03Z 2026-11-06T17:27:03Z
-//@ expect-output: bad: true true true true true true true
+//@ expect-output: bad: true true true true true true true true
+//@ expect-output: ruby: 2026-11-06T12:57:03Z 2026-11-06T17:27:03Z 2026-11-06T14:57:03Z 2026-11-06T12:57:03Z
 
 // Dates by the calendar, in UTC: from seconds since 1970 and back, as text and from
 // it. The HTTP example is RFC 7231's. Compared with Python's datetime over 5,000 years
@@ -56,5 +57,10 @@ main :: fun() {
 	g, _ := date_parse("2026-11-06T14:57:03+02:00")
 	h, _ := date_parse("2026-11-06 14:57:03-02:30")
 	print("offset:", date_text(g), date_text(h))
-	print("bad:", is_bad("nope"), is_bad("2026-13-01"), is_bad("2026-02-29"), is_bad("2026-01-01T25:00:00"), is_bad("2026-01-01 10:00"), is_bad("2026-01-01T10:00:00.Z"), is_bad("2026-01-01T10:00:00Zjunk"))
+	print("bad:", is_bad("nope"), is_bad("2026-13-01"), is_bad("2026-02-29"), is_bad("2026-01-01T25:00:00"), is_bad("2026-01-01 10:00"), is_bad("2026-01-01T10:00:00.Z"), is_bad("2026-01-01T10:00:00Zjunk"), is_bad("2026-11-06 14:57:03 "))
+	r1, _ := date_parse("2026-11-06 14:57:03 +0200")
+	r2, _ := date_parse("2026-11-06 14:57:03 -0230")
+	r3, _ := date_parse("2026-11-06 14:57:03 UTC")
+	r4, _ := date_parse("2026-11-06T14:57:03+0200")
+	print("ruby:", date_text(r1), date_text(r2), date_text(r3), date_text(r4))
 }

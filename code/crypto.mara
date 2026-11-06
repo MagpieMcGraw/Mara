@@ -405,24 +405,9 @@ md5_block :: fun(s: ^Md5, block: []byte) {
 
 // A keyed SHA-256 of message: only someone with the key can make it.
 hmac_sha256 :: fun(key: []byte, message: []byte) -> [32!]byte {
-	block : [64!]u8
-	for k in 0:64 do block[k] = 0
-	if key.len > 64 {
-		digest := sha256(key)
-		for k in 0:32 do block[k] = u8(digest[k])
-	else
-		for k in 0:key.len do block[k] = u8(key[k])
-	}
-	for k in 0:64 do block[k] = block[k] ~ 0x36
-	inner := sha256_start()
-	sha256_add(&inner, block)
-	sha256_add(&inner, message)
-	inner_digest := sha256_finish(&inner)
-	for k in 0:64 do block[k] = block[k] ~ 0x36 ~ 0x5C
-	outer := sha256_start()
-	sha256_add(&outer, block)
-	sha256_add(&outer, inner_digest)
-	return sha256_finish(&outer)
+	h := hmac_sha256_start(key)
+	sha256_add(&h.inner, message)
+	return hmac_sha256_finish(&h)
 }
 
 // A keyed SHA-1 of message. For formats that ask for it.
@@ -451,6 +436,9 @@ hmac_sha1 :: fun(key: []byte, message: []byte) -> [20!]byte {
 // over HMAC-SHA-256. More iterations make guessing the password slower.
 pbkdf2_sha256 :: fun(password: []byte, salt: []byte, iterations: i64, out: ^[]byte) {
 	out.len = 0
+	// (The password's two blocks are hashed once here and copied for each iteration: an
+	// attacker's own code does the same, so doing it over would only slow us down.)
+	keyed := hmac_sha256_start(password)
 	block : u32 = 1
 	for out.len < out.cap {
 		// (U1 is the HMAC of the salt and the block's number, each next U the
@@ -460,13 +448,15 @@ pbkdf2_sha256 :: fun(password: []byte, salt: []byte, iterations: i64, out: ^[]by
 		number[1] = u8((block >> 16) & 255)
 		number[2] = u8((block >> 8) & 255)
 		number[3] = u8(block & 255)
-		first := hmac_sha256_start(password)
+		first := keyed
 		sha256_add(&first.inner, salt)
 		sha256_add(&first.inner, number)
 		u := hmac_sha256_finish(&first)
 		total := u
 		for k in 1:iterations {
-			u = hmac_sha256(password, u)
+			next_hmac := keyed
+			sha256_add(&next_hmac.inner, u)
+			u = hmac_sha256_finish(&next_hmac)
 			for j in 0:32 do total[j] = u8(total[j]) ~ u8(u[j])
 		}
 		for j in 0:32 {
@@ -476,7 +466,7 @@ pbkdf2_sha256 :: fun(password: []byte, salt: []byte, iterations: i64, out: ^[]by
 	}
 }
 
-// (An HMAC-SHA-256 taken in pieces: pbkdf2's first step has two.)
+// An HMAC-SHA-256 taken in pieces, and copied to use its key again.
 Hmac_Sha256 :: struct {
 	inner: Sha256
 	outer: Sha256
