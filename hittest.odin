@@ -253,6 +253,12 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
     if src_file == nil {
         return p, fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false
     }
+    return hit_point_in(t, src_file, want, line, col)
+}
+
+// The point at a line and a column of a file, `want` the file's name.
+@(private="file")
+hit_point_in :: proc(t: ^Tree, src_file: ^Source_File, want: string, line, col: int) -> (p: Hit_Point, msg: string, ok: bool) {
     if src_file.end_token <= src_file.first_token {
         return p, fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
     }
@@ -435,6 +441,20 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
                           a: ^Annotations, spec: string, uses := false) -> (string, bool) {
     p, msg, ok := hit_point(t, all_files, spec)
     if !ok { return msg, false }
+    return hit_what(t, a, &p, uses, "")
+}
+
+// What `what at` says at a declaration's name, with its uses. `title` is its first line.
+ask_what_at_token :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string) -> (string, bool) {
+    tok := build_tokens[decl]
+    src := build_files[tok.file]
+    p, msg, ok := hit_point_in(t, src, filepath.base(src.path), token_line(tok), token_col(tok))
+    if !ok { return msg, false }
+    return hit_what(t, a, &p, true, title)
+}
+
+@(private="file")
+hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: string) -> (string, bool) {
     hits := p.hits[:]
     name := token_text(p.tokens[p.tok_i])
     inner := hits[len(hits) - 1]
@@ -442,7 +462,7 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     if uses && refers && r.decl != 0 {
         #partial switch r.kind {
         case .Local, .Param, .Result, .Field, .Global:
-            return hit_uses_answer(t, a, &p, r, named_at), true
+            return hit_uses_answer(t, a, p, r, named_at, title), true
         }
     }
     // (The point's own node: the innermost, when it ends at the point — a
@@ -654,7 +674,6 @@ hit_node_at :: proc(t: ^Tree, tok: Token_Id) -> Tree_Id {
 }
 
 // The line of source a token's on, trimmed: tabs between its words one space.
-@(private="file")
 hit_source_line :: proc(tok: Token) -> string {
     src := source_of(tok)
     lo, hi := int(tok.offset), int(tok.offset)
@@ -733,7 +752,7 @@ hit_asked_places :: proc(f: ^Place_Finder, t: ^Tree, a: ^Annotations, n: Tree_Id
 // locals and params (place.odin); where that can't be told, a use is listed
 // apart as a maybe. A field's declaration is about every value of its struct.
 @(private="file")
-hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id) -> string {
+hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id, title: string) -> string {
     if len(t.parent) != len(t.tag) { tree_parents(t) }
     name := token_text(build_tokens[r.decl])
     here := p.tokens[p.tok_i].file
@@ -774,7 +793,11 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
     })
 
     sb := strings.builder_make()
-    fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
+    if title != "" {
+        fmt.sbprintf(&sb, "%s\n", title)
+    } else {
+        fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
+    }
     if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
     fmt.sbprint(&sb, "\ndeclared\n")
     hit_write_place(&sb, t, r.decl, hit_node_at(t, r.decl))

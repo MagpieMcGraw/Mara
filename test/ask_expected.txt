@@ -1409,34 +1409,267 @@ written 1
 read 1
   askplaces.mara:104  main
     print(counter.half)
+=== test/askcalls.mara | middle
+middle — fun  askcalls.mara:29   (module askcalls)
+
+  middle :: fun(n: i64) -> i64
+
+  Calls leaf twice on one line and once on another.
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:24  askcalls.leaf
+    at askcalls.mara:30  a := leaf(n) + leaf(n + 1)
+    at askcalls.mara:31  return a + leaf(2)
+
+below (calls)   (2 direct callers, depth 1)
+  askcalls.mara:37  askcalls.long_signature
+    at askcalls.mara:41  return middle(first) + second
+  askcalls.mara:44  askcalls.other_top
+    at askcalls.mara:45  return middle(7)
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | middle call above
+middle — fun  askcalls.mara:29   (module askcalls)
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:24  askcalls.leaf
+    at askcalls.mara:30  a := leaf(n) + leaf(n + 1)
+    at askcalls.mara:31  return a + leaf(2)
+=== test/askcalls.mara | long_signature
+long_signature — fun  askcalls.mara:37   (module askcalls)
+
+  long_signature :: fun(first: i64, second: i64) -> i64
+
+  Written over lines, with no doc comment's blank line kept:
+
+  it has two paragraphs.
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:29  askcalls.middle
+    at askcalls.mara:41  return middle(first) + second
+  (1 more: add a depth, or 'all')
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:69  askcalls.main
+    at askcalls.mara:74  print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | long_signature call above 2
+long_signature — fun  askcalls.mara:37   (module askcalls)
+
+above (calls)   (1 direct callee, depth 2)
+  askcalls.mara:29  askcalls.middle
+    at askcalls.mara:41  return middle(first) + second
+    askcalls.mara:24  askcalls.leaf
+=== test/askcalls.mara | long_signature call above all
+long_signature — fun  askcalls.mara:37   (module askcalls)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  askcalls.mara:29  askcalls.middle
+    at askcalls.mara:41  return middle(first) + second
+    askcalls.mara:24  askcalls.leaf
+=== test/askcalls.mara | middle call above 0
+middle — fun  askcalls.mara:29   (module askcalls)
+
+above (calls)   (1 direct callee, depth 0)
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | leaf call below all
+leaf — fun  askcalls.mara:24   (module askcalls)
+
+below (calls)   (1 direct caller, full closure (depth ∞))
+  askcalls.mara:29  askcalls.middle
+    at askcalls.mara:30  a := leaf(n) + leaf(n + 1)
+    at askcalls.mara:31  return a + leaf(2)
+    askcalls.mara:37  askcalls.long_signature
+      askcalls.mara:69  askcalls.main
+    askcalls.mara:44  askcalls.other_top
+      askcalls.mara:69  askcalls.main  (shown above)
+=== test/askcalls.mara | default_value call below
+default_value — fun  askcalls.mara:49   (module askcalls)
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:69  askcalls.main
+    (from a default argument)
+=== test/askcalls.mara | askcalls.middle
+middle — fun  askcalls.mara:29   (module askcalls)
+
+  middle :: fun(n: i64) -> i64
+
+  Calls leaf twice on one line and once on another.
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:24  askcalls.leaf
+    at askcalls.mara:30  a := leaf(n) + leaf(n + 1)
+    at askcalls.mara:31  return a + leaf(2)
+
+below (calls)   (2 direct callers, depth 1)
+  askcalls.mara:37  askcalls.long_signature
+    at askcalls.mara:41  return middle(first) + second
+  askcalls.mara:44  askcalls.other_top
+    at askcalls.mara:45  return middle(7)
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | Box
+Box — struct  askcalls.mara:8   (module askcalls)
+
+  A box, with a size that changes.
+
+above (types)   (basic types only, full closure (depth ∞))
+  size : i64
+  count : i64
+  left_only : i64
+
+below (types)   (0 users, 0 use-sites, full closure (depth ∞))
+  (no users)
+=== test/askcalls.mara | pick
+pick — fun  askcalls.mara:57   (module askcalls)
+
+  pick :: fun($T: type, a: T, b: T) -> T
+
+above (calls)   (0 direct callees, depth 1)
+  (calls nothing directly; indirect calls via fn-typed params aren't tracked)
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:61  askcalls.no_doc
+    at askcalls.mara:62  return pick(1, 2) + i64(pick(f32(1), f32(2)))
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | pick types
+pick — fun  askcalls.mara:57   (module askcalls) [generic: as pick__f32]
+
+above (types)   (basic types only, full closure (depth ∞))
+  param a : f32
+  param b : f32
+
+below (types)   (basic types only, full closure (depth ∞))
+  return : f32
+=== test/askcalls.mara | Pair
+Pair — struct  askcalls.mara:18   (module askcalls) [generic: as Pair__i64]
+
+  Pair :: struct($T: type)
+
+above (types)   (basic types only, full closure (depth ∞))
+  first : i64
+  second : i64
+
+below (types)   (0 users, 0 use-sites, full closure (depth ∞))
+  (no users)
+=== test/askcalls.mara | Box.size
+Box.size — field  askcalls.mara:9   (module askcalls)
+i64
+
+declared
+  askcalls.mara:9  Box
+    size: i64
+written 2
+  askcalls.mara:66  grow
+    box.size += 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | size in Box
+Box.size — field  askcalls.mara:9   (module askcalls)
+i64
+
+declared
+  askcalls.mara:9  Box
+    size: i64
+written 2
+  askcalls.mara:66  grow
+    box.size += 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | left_only
+Box.left_only — field  askcalls.mara:11   (module askcalls)
+i64
+
+declared
+  askcalls.mara:11  Box
+    left_only: i64
+written 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | askcalls.Box.left_only
+Box.left_only — field  askcalls.mara:11   (module askcalls)
+i64
+
+declared
+  askcalls.mara:11  Box
+    left_only: i64
+written 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | Pair.first
+Pair.first — field  askcalls.mara:19   (module askcalls)
+i64
+
+declared
+  askcalls.mara:19  Pair
+    first: T
+written 1
+  askcalls.mara:73  main
+    pair : Pair(i64) = {first = 5, second = 6}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | count
+mara ask: 'count' is a field of 2 structs — name one with `<struct>.count`:
+    Box.count  askcalls.mara:10
+    Bag.count  askcalls.mara:15
+[exit 1]
+=== test/askcalls.mara | Box.nope
+mara ask: struct Box has no field 'nope' — its fields: size, count, left_only
+[exit 1]
+=== test/askcalls.mara | nope in Box
+mara ask: struct Box has no field 'nope' — its fields: size, count, left_only
+[exit 1]
+=== test/askcalls.mara | Nope.size
+mara ask: no struct or module named 'Nope' in askcalls
+[exit 1]
+=== test/askcalls.mara | Box.size flow
+mara ask: Box.size is a field: the answer is where it's written and read, with no types, call or flow, above or below, or depth
+[exit 1]
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
-above (calls)   (1 direct callee, full closure (depth ∞))
-  operator_calls.v2_add
+  sum :: fun(a: V2, b: V2) -> V2
 
-below (calls)   (1 direct caller, full closure (depth ∞))
-  operator_calls.main
+above (calls)   (1 direct callee, depth 1)
+  operator_calls.mara:15  operator_calls.v2_add
+    at operator_calls.mara:27  return a + b
+
+below (calls)   (1 direct caller, depth 1)
+  operator_calls.mara:34  operator_calls.main
+    at operator_calls.mara:35  s := sum(V2{x = 1, y = 0}, V2{x = 0, y = 2})
 === test/operator_calls.mara | sum call above
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
-above (calls)   (1 direct callee, full closure (depth ∞))
-  operator_calls.v2_add
+above (calls)   (1 direct callee, depth 1)
+  operator_calls.mara:15  operator_calls.v2_add
+    at operator_calls.mara:27  return a + b
 === test/operator_calls.mara | v2_add call below
 v2_add — fun  operator_calls.mara:15   (module operator_calls)
 
-below (calls)   (1 direct caller, full closure (depth ∞))
-  operator_calls.sum
-    operator_calls.main
+below (calls)   (1 direct caller, depth 1)
+  operator_calls.mara:26  operator_calls.sum
+    at operator_calls.mara:27  return a + b
+  (1 more: add a depth, or 'all')
 === test/operator_calls.mara | flip call above
 flip — fun  operator_calls.mara:30   (module operator_calls)
 
-above (calls)   (1 direct callee, full closure (depth ∞))
-  operator_calls.v2_neg
+above (calls)   (1 direct callee, depth 1)
+  operator_calls.mara:19  operator_calls.v2_neg
+    at operator_calls.mara:31  return -a
 === test/sibling_locals.mara | redeclared call above
 redeclared — fun  sibling_locals.mara:71   (module sibling_locals)
 
-above (calls)   (0 direct callees, full closure (depth ∞))
+above (calls)   (0 direct callees, depth 1)
   (calls nothing directly; indirect calls via fn-typed params aren't tracked)
 === Pounce | cache_put_header call above
 cache_put_header — fun  cache.mara:105   (module cache)

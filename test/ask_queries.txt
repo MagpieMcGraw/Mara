@@ -81,6 +81,38 @@ test/askplaces.mara | what at askplaces.mara:91:18
 test/askplaces.mara | what at askplaces.mara:88:11
 test/askplaces.mara | what at askplaces.mara:104:16
 
+# A fun asked about says what it is, a signature over lines joined. A call tree goes
+# one level unless asked, says how many more there are, and its rows say where each
+# fun is defined and, on the first level, where each call is written; a line once.
+test/askcalls.mara | middle
+test/askcalls.mara | middle call above
+test/askcalls.mara | long_signature
+test/askcalls.mara | long_signature call above 2
+test/askcalls.mara | long_signature call above all
+test/askcalls.mara | middle call above 0
+test/askcalls.mara | leaf call below all
+test/askcalls.mara | default_value call below
+test/askcalls.mara | askcalls.middle
+test/askcalls.mara | Box
+
+# A generic is found by the name it's written with: a call tree is every instance's,
+# and other views say which one they're of.
+test/askcalls.mara | pick
+test/askcalls.mara | pick types
+test/askcalls.mara | Pair
+
+# A field by name: its uses, as `what at` gives them at its declaration.
+test/askcalls.mara | Box.size
+test/askcalls.mara | size in Box
+test/askcalls.mara | left_only
+test/askcalls.mara | askcalls.Box.left_only
+test/askcalls.mara | Pair.first
+test/askcalls.mara | count
+test/askcalls.mara | Box.nope
+test/askcalls.mara | nope in Box
+test/askcalls.mara | Nope.size
+test/askcalls.mara | Box.size flow
+
 # Calls in operator form are call-graph edges.
 test/operator_calls.mara | sum
 test/operator_calls.mara | sum call above

@@ -1,0 +1,75 @@
+module askcalls
+
+// Fixture for what `mara ask` says of a fun or a field by name: a fun's signature
+// and doc comment, call trees one level unless asked, each row where it's defined
+// and each first-level call where it's written. Queried by test/ask_queries.txt.
+
+// A box, with a size that changes.
+Box :: struct {
+	size: i64
+	count: i64
+	left_only: i64
+}
+
+Bag :: struct {
+	count: i64
+}
+
+Pair :: struct($T: type) {
+	first: T
+	second: T
+}
+
+// The bottom of the tree.
+leaf :: fun(n: i64) -> i64 {
+	return n + 1
+}
+
+// Calls leaf twice on one line and once on another.
+middle :: fun(n: i64) -> i64 {
+	a := leaf(n) + leaf(n + 1)
+	return a + leaf(2)
+}
+
+// Written over lines, with no doc comment's blank line kept:
+//
+// it has two paragraphs.
+long_signature :: fun(
+	first: i64,
+	second: i64,   // (a comment beside it)
+) -> i64 {
+	return middle(first) + second
+}
+
+other_top :: fun() -> i64 {
+	return middle(7)
+}
+
+// Called only through a default argument of with_default.
+default_value :: fun() -> i64 {
+	return 3
+}
+
+with_default :: fun(n: i64 = default_value()) -> i64 {
+	return n
+}
+
+pick :: fun($T: type, a: T, b: T) -> T {
+	return a
+}
+
+no_doc :: fun() -> i64 {
+	return pick(1, 2) + i64(pick(f32(1), f32(2)))
+}
+
+grow :: fun(box: ^Box) {
+	box.size += 1
+}
+
+main :: fun() {
+	box := Box{size = 1, count = 2, left_only = 3}
+	bag := Bag{count = 4}
+	grow(&box)
+	pair : Pair(i64) = {first = 5, second = 6}
+	print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+}

@@ -10,7 +10,8 @@ package mara
 //   flow    a value's slice: what feeds it (above), what it feeds (below) —
 //           def-use over the program graph (defuse.odin, slice.odin,
 //           lineage.odin); `control` adds the branches that decide it.
-// A depth caps the hops; `in`/`at` narrow where the subject resolves
+// A depth caps the hops (a call tree's is one unless asked: ASK_DEPTH_OMITTED);
+// `in`/`at` narrow where the subject resolves
 // (ask_query.odin parses a query). Output is deterministic text, sorted for
 // stable diffs — AI-readable, greppable, golden-tested (test/ask.sh). It
 // runs after the check: no codegen.
@@ -20,6 +21,12 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 import "core:path/filepath"
+
+// A query with no depth, and one with `all`. Below zero is every hop to the types
+// and flow views, so there the two are the same. A call tree with none goes one
+// level: the whole of one is most of the program (render_fn_calls).
+ASK_DEPTH_OMITTED :: -1
+ASK_DEPTH_ALL     :: -2
 
 Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
 
@@ -89,6 +96,16 @@ ask_label :: proc(t: Type) -> string {
     return n.source_name if n.source_name != "" else ask_demangle(n.name, n.home_package)
 }
 
+// A name as it's written: a generic's instance, whose name is made up from it
+// (`pick__i64`), under its generic's. A definition's first token is its name.
+ask_written_name :: proc(t: Type) -> string {
+    label := ask_label(t)
+    first := ask_span(t).tok
+    if first == 0 { return label }
+    written := token_text(build_tokens[first])
+    return written if strings.has_prefix(label, strings.concatenate({written, "__"}, context.temp_allocator)) else label
+}
+
 // A flat name is `<flattened home_package>_<bare>` (the module path's dots become
 // underscores in the mangle, e.g. home "mara.math" -> name "mara_math_Vec3").
 // Recover the bare name for display when no source_name was recorded (cross-module
@@ -105,11 +122,11 @@ ask_demangle :: proc(name: string, home_package: string) -> string {
 
 // Module-qualified display name — `gfx.shader.compile`, or the bare name when the
 // type has no home package. Used by the call-tree rows so a name read in isolation
-// still says which module it lives in.
+// still says which module it lives in, and so it can be asked about as it reads.
 ask_qualified_label :: proc(t: Type) -> string {
     home := ask_home_package(t)
-    if home == "" { return ask_label(t) }
-    return fmt.tprintf("%s.%s", home, ask_label(t))
+    if home == "" { return ask_written_name(t) }
+    return fmt.tprintf("%s.%s", home, ask_written_name(t))
 }
 
 // The node's category, and whether it is a NAMED type worth a node at all
@@ -254,13 +271,15 @@ Ask_Match :: struct {
 // share one source span (the union decl) — span alone would shadow one with the
 // other; same kind + same span is the actual "same definition" signal.
 // `scope_file` (a bare filename) restricts to definitions declared in that file —
-// the disambiguation lever behind `in <file>`.
+// the disambiguation lever behind `in <file>`. A generic is found by the name it's
+// written with; the instance that stands for it is the one that sorts first, so the
+// answer is the same each run.
 Ask_Dedup_Key :: struct { span: Span, sub: string }
 
 ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
-    seen: map[Ask_Dedup_Key]bool
-    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string, scope_module: string) {
+    seen: map[Ask_Dedup_Key]int
+    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]int, t: Type, scope_file: string, scope_module: string) {
         // A module's backing namespace is a `.Struct`-kind Type_Scope with
         // is_module set — a compiler-generated scope holding the module's defs,
         // not a data type. It has no fields, no span, and no users, yet ask_sub
@@ -283,9 +302,13 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
         if scope_module != "" && ask_home_package(t) != scope_module { return }
         sub, _ := ask_sub(t)
         key := Ask_Dedup_Key{ span = sp, sub = sub }
-        if seen[key] { return }
-        seen[key] = true
-        append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp, mark = ask_mark(t) })
+        m := Ask_Match{ type_ = t, label = ask_written_name(t), flat = ask_type_name(t), sub = sub, span = sp, mark = ask_mark(t) }
+        if at, known := seen[key]; known {
+            if m.flat < matches[at].flat { matches[at] = m }
+            return
+        }
+        seen[key] = len(matches)
+        append(matches, m)
     }
     for _, s in table.structs        { consider(&matches, &seen, s, scope_file, scope_module) }
     for _, f in table.funs           { consider(&matches, &seen, f, scope_file, scope_module) }
@@ -294,7 +317,11 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
     for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file, scope_module) }
     // FFI functions are absent from table.funs — surface the foreign ones from
     // checked.functions so resolution, fuzzy, and the module views all see them.
-    for _, f in funcs { if ask_is_foreign(f) { consider(&matches, &seen, f, scope_file, scope_module) } }
+    // So are a generic's instances: they're how it's found.
+    for _, f in funcs {
+        if ask_is_foreign(f) || ask_written_name(f) != ask_label(f) { consider(&matches, &seen, f, scope_file, scope_module) }
+    }
+    for _, m in table.mono_cache { consider(&matches, &seen, m, scope_file, scope_module) }
     return matches
 }
 
@@ -720,9 +747,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     if scope != "" {
         vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg, scope_module, depth)
         if handled { return vout, vok }
-        // Not a function. A struct is a named scope too, but its members are fields
-        // (not sliceable) and methods (queryable by name), so point there instead.
+        // Not a function. A struct's a named scope too: `x in S` is `S.x`.
         if tmatches := ask_resolve_all(checked.table, scope, "", checked.functions, scope_module); len(tmatches) > 0 {
+            if tmatches[0].sub == "struct" {
+                return ask_member(checked, scope, target, kind, dir, pkg, depth, scope_file, scope_module)
+            }
             return fmt.tprintf("mara ask: '%s' is a %s, not a function — `in` scopes to a function's variables; query the %s directly with `mara ask %s`.\n", scope, tmatches[0].sub, tmatches[0].sub, scope), false
         }
         return fmt.tprintf("mara ask: '%s' is not a known module, file, or function in %s\n", scope, pkg), false
@@ -744,6 +773,18 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         if surface, is_mod := ask_module_surface(checked, target, kind); is_mod {
             return surface, true
         }
+        // A name with a dot: a definition of that module, as a call tree's rows write
+        // it (`scene.read_actor_look`), or a struct's field.
+        if dot := strings.last_index_byte(target, '.'); dot > 0 {
+            matches = ask_resolve_all(checked.table, target[dot + 1:], scope_file, checked.functions, target[:dot])
+            if len(matches) == 0 {
+                return ask_member(checked, target[:dot], target[dot + 1:], kind, dir, pkg, depth, scope_file, scope_module)
+            }
+        } else if fields := ask_find_fields(checked.table, target, scope_file, scope_module, {}); len(fields) > 0 {
+            return ask_field_answer(checked, fields[:], target, kind, dir, depth, pkg)
+        }
+    }
+    if len(matches) == 0 {
         // Before guessing: if the name is a known variant, say so — it's the
         // single most likely reason a real-looking name fails to resolve.
         if owner, kind, is_variant := ask_find_variant(checked.table, target, scope_module); is_variant {
@@ -794,6 +835,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // mirrors how the variable view already picks flow for a bare query.
     eff_kind := kind
     if eff_kind == "" { eff_kind = "call" if is_fn else "types" }
+    // (A call tree is every instance's. The other views are of the instance standing
+    // for the generic, with its types.)
+    if eff_kind != "call" && ask_label(subject.type_) != subject.label {
+        subject.mark = fmt.tprintf("generic: as %s", ask_label(subject.type_))
+    }
     show_types := eff_kind == "types"
     show_call  := eff_kind == "call"
     show_flow  := eff_kind == "flow"
@@ -805,6 +851,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     home_pkg := ask_home_package(subject.type_)
     if home_pkg == "" { home_pkg = pkg }
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), home_pkg, ask_mark_suffix(subject.mark))
+    if kind == "" && dir == "" { ask_write_what_it_is(&b, subject) }
     header_len := len(strings.to_string(b))
 
     // Flow is the "outside" view, and for both a type (every value of it) and a
@@ -839,7 +886,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         render_ask_deps(&b, &res, depth, "above")
     }
     if show_above && show_call {
-        if is_fn { render_fn_callees(&b, checked, ft, depth) }
+        if is_fn { render_fn_calls(&b, checked, ft, depth, forward = true) }
         else     { render_struct_calls(&b, checked, subject.type_, .Returns, "above") }
     }
     if show_above && show_flow {
@@ -863,7 +910,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
     }
     if show_below && show_call {
-        if is_fn { render_fn_users(&b, checked, ft, depth) }   // callers, from the call graph
+        if is_fn { render_fn_calls(&b, checked, ft, depth, forward = false) }
         else     { render_struct_calls(&b, checked, subject.type_, .Takes, "below") }
     }
     if show_below && show_flow {
@@ -884,6 +931,178 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     }
 
     return strings.to_string(b), true
+}
+
+// What a name asked about on its own is: a fun's signature (a struct's, if it takes
+// params) and its doc comment. The two views under it say how it connects.
+@(private="file")
+ask_write_what_it_is :: proc(b: ^strings.Builder, subject: Ask_Match) {
+    first := subject.span.tok
+    if first == 0 { return }
+    if ts, is_scope := subject.type_.(^Type_Scope); is_scope && (ts.kind == .Fun || ts.has_parens) {
+        if signature := ask_signature(first); signature != "" { fmt.sbprintf(b, "\n  %s\n", signature) }
+    }
+    doc := doc_comment_above(build_tokens[first])
+    if doc == "" { return }
+    strings.write_byte(b, '\n')
+    for line in strings.split_lines(doc, context.temp_allocator) {
+        if line == "" { strings.write_byte(b, '\n') } else { fmt.sbprintf(b, "  %s\n", line) }
+    }
+}
+
+// A definition as written up to its body, on one line: a fun's name, params and
+// results, whatever lines they're written on.
+@(private="file")
+ask_signature :: proc(first: Token_Id) -> string {
+    f := build_files[build_tokens[first].file]
+    sb := strings.builder_make(context.temp_allocator)
+    open := 0   // brackets open
+    after := -1   // where the token before ended
+    walk: for id := first; id < f.end_token; id += 1 {
+        tok := build_tokens[id]
+        #partial switch tok.kind {
+        case .Left_Paren, .Left_Bracket:
+            open += 1
+        case .Right_Paren, .Right_Bracket, .Right_Brace:
+            open -= 1
+        case .Left_Brace:
+            if open == 0 { break walk }
+            open += 1
+        case .Newline, .Do, .EOF:
+            if open == 0 { break walk }
+            if tok.kind == .Newline { continue walk }
+        }
+        if after >= 0 {
+            gap := f.source[after:tok.offset]
+            if !strings.contains(gap, "\n") {
+                strings.write_string(&sb, gap)
+            } else if tok.kind != .Right_Paren && !strings.has_suffix(strings.to_string(sb), "(") {
+                strings.write_byte(&sb, ' ')
+            }
+        }
+        strings.write_string(&sb, f.source[tok.offset:][:tok.len])
+        after = int(tok.offset + tok.len)
+    }
+    // (A comma ending a last line of params is nothing to read here.)
+    joined, _ := strings.replace_all(strings.to_string(sb), ",)", ")", context.temp_allocator)
+    return joined
+}
+
+// --- a field asked for by name -----------------------------------------------
+
+// A field a name can be: one per declaration, a generic's instances declaring
+// theirs once.
+Ask_Field :: struct {
+    owner: string,     // its struct's name, as written
+    home:  string,     // its struct's module
+    decl:  Token_Id,   // where it's declared
+}
+
+// Every struct of the program. A generic's are its instances, each with its own copy
+// of its fields; a constructor's table holds a struct too.
+@(private="file")
+ask_all_structs :: proc(table: ^SymbolTable) -> [dynamic]^Type_Scope {
+    out := make([dynamic]^Type_Scope, context.temp_allocator)
+    seen := make(map[^Type_Scope]bool, allocator = context.temp_allocator)
+    add :: proc(out: ^[dynamic]^Type_Scope, seen: ^map[^Type_Scope]bool, ts: ^Type_Scope) {
+        if ts == nil || ts.kind != .Struct || ts.is_module || seen[ts] { return }
+        seen[ts] = true
+        append(out, ts)
+    }
+    for _, ts in table.structs { add(&out, &seen, ts) }
+    for _, ts in table.funs { add(&out, &seen, ts) }
+    for _, ts in table.mono_cache { add(&out, &seen, ts) }
+    return out
+}
+
+// The fields called `name`, of the struct at `owner` (or of any, with none), in
+// source order. The `in` scopes narrow them as they do any name.
+@(private="file")
+ask_find_fields :: proc(table: ^SymbolTable, name, scope_file, scope_module: string, owner: Span) -> [dynamic]Ask_Field {
+    out: [dynamic]Ask_Field
+    for ts in ask_all_structs(table) {
+        if owner.at != 0 && ts.body_span.at != owner.at { continue }
+        if owner.at == 0 {
+            if scope_file != "" && filepath.base(span_file(ts.body_span)) != scope_file { continue }
+            if scope_module != "" && ts.home_package != scope_module { continue }
+        }
+        for field in ts.fields {
+            if field.name != name || field.decl == 0 { continue }
+            already := false
+            for f in out { already ||= f.decl == field.decl }
+            if already { continue }
+            written := token_text(build_tokens[ts.body_span.tok]) if ts.body_span.tok != 0 else ask_label(ts)
+            append(&out, Ask_Field{owner = written, home = ts.home_package, decl = field.decl})
+        }
+    }
+    slice.sort_by(out[:], proc(a, b: Ask_Field) -> bool { return a.decl < b.decl })
+    return out
+}
+
+// The answer for fields found by name: `what at` at the declaration of the one,
+// and with several, which they are. A field has no graphs to choose from.
+@(private="file")
+ask_field_answer :: proc(checked: ^Checked_Program, fields: []Ask_Field, name, kind, dir: string, depth: int, pkg: string) -> (out: string, ok: bool) {
+    if len(fields) > 1 {
+        sb := strings.builder_make()
+        fmt.sbprintf(&sb, "mara ask: '%s' is a field of %d structs — name one with `<struct>.%s`:\n", name, len(fields), name)
+        for f in fields {
+            fmt.sbprintf(&sb, "    %s.%s  %s\n", f.owner, name, ask_loc(token_span(build_tokens[f.decl])))
+        }
+        return strings.to_string(sb), false
+    }
+    if kind != "" || dir != "" || depth != ASK_DEPTH_OMITTED {
+        return fmt.tprintf("mara ask: %s.%s is a field: the answer is where it's written and read, with no types, call or flow, above or below, or depth\n", fields[0].owner, name), false
+    }
+    f := fields[0]
+    home := f.home if f.home != "" else pkg
+    title := fmt.tprintf("%s.%s — field  %s   (module %s)", f.owner, name, ask_loc(token_span(build_tokens[f.decl])), home)
+    return ask_what_at_token(&build_tree, checked.annot, f.decl, title)
+}
+
+// `<struct>.<member>`, or `<member> in <struct>`: the field's answer, or the fun's
+// when that's what's named (`module.struct.member` narrows to that module). A miss
+// says what there is.
+@(private="file")
+ask_member :: proc(checked: ^Checked_Program, owner_text, member, kind, dir, pkg: string, depth: int, scope_file, scope_module: string) -> (out: string, ok: bool) {
+    owner, module := owner_text, scope_module
+    if dot := strings.last_index_byte(owner_text, '.'); dot > 0 {
+        owner, module = owner_text[dot + 1:], owner_text[:dot]
+    }
+    owners: [dynamic]Ask_Match
+    defer delete(owners)
+    for m in ask_resolve_all(checked.table, owner, scope_file, checked.functions, module) {
+        if m.sub == "struct" { append(&owners, m) }
+    }
+    sb := strings.builder_make()
+    if len(owners) == 0 {
+        fmt.sbprintf(&sb, "mara ask: no struct or module named '%s' in %s\n", owner_text, pkg)
+        for m in ask_fuzzy(checked.table, owner, scope_file, ASK_FUZZY_LIMIT, checked.functions, module) {
+            fmt.sbprintf(&sb, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
+        }
+        return strings.to_string(sb), false
+    }
+    if len(owners) > 1 {
+        slice.sort_by(owners[:], proc(a, b: Ask_Match) -> bool { return span_before(a.span, b.span) })
+        fmt.sbprintf(&sb, "mara ask: '%s' is %d structs — narrow with `in <module>`:\n", owner, len(owners))
+        for m in owners { fmt.sbprintf(&sb, "    %s  %s\n", m.label, ask_loc(m.span)) }
+        return strings.to_string(sb), false
+    }
+    fields := ask_find_fields(checked.table, member, "", "", owners[0].span)
+    defer delete(fields)
+    if len(fields) > 0 { return ask_field_answer(checked, fields[:], member, kind, dir, depth, pkg) }
+    // (Not a field: one of its funs, or nothing it has.)
+    names := make([dynamic]string, context.temp_allocator)
+    for ts in ask_all_structs(checked.table) {
+        if ts.body_span.at != owners[0].span.at { continue }
+        for field in ts.fields {
+            if !slice.contains(names[:], field.name) { append(&names, field.name) }
+        }
+    }
+    fmt.sbprintf(&sb, "mara ask: struct %s has no field '%s'", owner, member)
+    if len(names) > 0 { fmt.sbprintf(&sb, " — its fields: %s", strings.join(names[:], ", ", context.temp_allocator)) }
+    strings.write_byte(&sb, '\n')
+    return strings.to_string(sb), false
 }
 
 // Variable criterion: `mara ask <name> in <fn>`. `scope` named a thing that was
@@ -1061,109 +1280,193 @@ ask_depth_label :: proc(depth: int) -> string {
     return "full closure (depth ∞)" if depth < 0 else fmt.tprintf("depth %d", depth)
 }
 
-// Deduped count of a node's neighbours in `adj` (drops self-recursion and duplicate
-// call sites) — the "direct" count for a call-tree header.
-ask_direct_call_count :: proc(adj: [][dynamic]int, node: int) -> int {
-    local: map[int]bool
-    defer delete(local)
-    n := 0
-    for k in adj[node] {
-        if k == node || local[k] { continue }
-        local[k] = true
-        n += 1
-    }
-    return n
+// One function in a call tree: every instance of it, a generic's being one fun as
+// written.
+@(private="file")
+Ask_Call_Fun :: struct {
+    nodes: [dynamic]int,
+    key:   Ask_Call_Key,
+    order: int,      // its first call's line, for callees
+    label: string,
+    span:  Span,
 }
 
-// Print one level of a call tree (node's neighbours in `adj`) in CALL ORDER — by the
-// first call-site line recorded on each edge (cg.edge_line) — then recurse into each.
-// `forward` selects callees (out-edges) vs callers (a reverse index); it only flips
-// which end of the pair is the caller for the order lookup. A GLOBAL `seen` expands
-// each function at most once — cycles (recursion) and diamonds collapse to
-// "(shown above)", so the walk always terminates and a utility called everywhere
-// doesn't blow up the output. `remaining` is the depth cap left (~1e9 unbounded).
-ask_walk_calls :: proc(b: ^strings.Builder, cg: ^Call_Graph, adj: [][dynamic]int,
-                       node, indent, remaining: int, seen: ^map[int]bool, forward: bool) {
-    if remaining <= 0 { return }
+// What makes two nodes one function: where it's defined. The funs the compiler makes
+// for an enum (from_text, `E(n)`) all say the enum's, so they're told apart by name;
+// one with no place of its own, by its node.
+@(private="file")
+Ask_Call_Key :: struct {
+    span: Span,
+    name: string,
+    node: int,
+}
 
-    Kid :: struct { id, key: int, label: string }
-    kids: [dynamic]Kid
-    defer delete(kids)
-    local: map[int]bool
-    defer delete(local)
-    for k in adj[node] {
-        if k == node || local[k] { continue }   // skip self-recursion + duplicate call sites
-        local[k] = true
-        caller_s := cg.nodes[node] if forward else cg.nodes[k]
-        callee_s := cg.nodes[k]    if forward else cg.nodes[node]
-        key := cg.edge_line[Call_Edge{ from = caller_s, to = callee_s }] or_else (1 << 30)
-        append(&kids, Kid{ k, key, ask_qualified_label(cg.nodes[k]) })
-    }
-    slice.sort_by(kids[:], proc(x, y: Kid) -> bool {
-        if x.key   != y.key   { return x.key < y.key }     // call order (first call-site line)
-        if x.label != y.label { return x.label < y.label }
-        return x.id < y.id
-    })
+@(private="file")
+ask_call_key :: proc(cg: ^Call_Graph, node: int) -> Ask_Call_Key {
+    s := cg.nodes[node]
+    span := ask_span(s)
+    if span.at == 0 { return {node = node} }
+    if _, written := s.origin.(Origin_Source); written { return {span = span} }
+    return {span = span, name = s.source_name if s.source_name != "" else s.name}
+}
 
-    for kid in kids {
-        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
-        if seen[kid.id] {
-            fmt.sbprintf(b, "%s  (shown above)\n", kid.label)
-            continue
+// A walk over a call tree.
+@(private="file")
+Ask_Call_Walk :: struct {
+    cg:      ^Call_Graph,
+    adj:     [][dynamic]int,                   // callees, or callers
+    forward: bool,                             // callees
+    sites:   map[Call_Edge][dynamic]Tree_Id,   // every call written (cg_call_sites)
+    seen:    map[Ask_Call_Key]bool,
+}
+
+// The functions next to `nodes` in the tree, duplicate call sites and self-recursion
+// dropped: callees in call order, callers where they're defined.
+@(private="file")
+ask_call_funs :: proc(w: ^Ask_Call_Walk, nodes: []int) -> [dynamic]Ask_Call_Fun {
+    funs: [dynamic]Ask_Call_Fun
+    at := make(map[Ask_Call_Key]int, allocator = context.temp_allocator)
+    for node in nodes {
+        for k in w.adj[node] {
+            if slice.contains(nodes, k) { continue }
+            caller, callee := w.cg.nodes[node], w.cg.nodes[k]
+            if !w.forward { caller, callee = callee, caller }
+            line := w.cg.edge_line[Call_Edge{from = caller, to = callee}] or_else (1 << 30)
+            key := ask_call_key(w.cg, k)
+            if i, known := at[key]; known {
+                f := &funs[i]
+                if !slice.contains(f.nodes[:], k) { append(&f.nodes, k) }
+                f.order = min(f.order, line)
+                continue
+            }
+            at[key] = len(funs)
+            f := Ask_Call_Fun{key = key, order = line, label = ask_qualified_label(w.cg.nodes[k]), span = ask_span(w.cg.nodes[k])}
+            append(&f.nodes, k)
+            append(&funs, f)
         }
-        seen[kid.id] = true
-        sub, _ := ask_sub(cg.nodes[kid.id])
-        tag := "" if sub == "fun" else fmt.tprintf("  (%s)", sub)
-        fmt.sbprintf(b, "%s%s\n", kid.label, tag)
-        ask_walk_calls(b, cg, adj, kid.id, indent + 1, remaining - 1, seen, forward)
+    }
+    context.user_ptr = w
+    slice.sort_by(funs[:], proc(x, y: Ask_Call_Fun) -> bool {
+        w := cast(^Ask_Call_Walk)context.user_ptr
+        if w.forward && x.order != y.order { return x.order < y.order }
+        if x.span != y.span { return span_before(x.span, y.span) }
+        return x.label < y.label
+    })
+    return funs
+}
+
+// Print a level of a call tree and the levels under it, `remaining` deep. A row is a
+// function, where it's defined. Under a first level's are its calls, each a line of its
+// own: where it's written, and what's written. A function shows once: a cycle or a
+// utility called everywhere says "(shown above)" after that.
+@(private="file")
+ask_walk_calls :: proc(w: ^Ask_Call_Walk, b: ^strings.Builder, nodes: []int, indent, remaining: int) {
+    if remaining <= 0 { return }
+    for fun in ask_call_funs(w, nodes) {
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        fmt.sbprintf(b, "%s  %s", ask_loc(fun.span), fun.label)
+        shown := fun.key in w.seen
+        if shown {
+            strings.write_string(b, "  (shown above)")
+        } else {
+            sub, _ := ask_sub(w.cg.nodes[fun.nodes[0]])
+            if sub != "fun" { fmt.sbprintf(b, "  (%s)", sub) }
+        }
+        strings.write_byte(b, '\n')
+        if indent == 1 { ask_write_calls(w, b, nodes, fun, indent + 1) }
+        if shown { continue }
+        w.seen[fun.key] = true
+        ask_walk_calls(w, b, fun.nodes[:], indent + 1, remaining - 1)
     }
 }
 
-// users: the reverse references, grouped by hop distance from the subject. Header
-// separates distinct users from use-sites so neither count is misread. When the
-// view reaches past one hop, rows are bucketed under "N hops" subheaders and each
-// names the closer-to-root type it references (not the subject), so a chain like
-// Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
-// users on a FUNCTION = its callers, read off the materialized call graph
-// (Checked_Program.call_graph — resolved direct calls collected during checking).
-// Indirect calls through fn-typed params are not edges, so a function reached only
-// that way reads as having no callers.
-render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int) {
-    cg := &checked.call_graph
-    // (Its callers, walked as a tree up toward the program's entry points.)
-    nf, ok := cg.index_of[ft]
-    direct := ask_direct_call_count(cg.in_edges[:], nf) if ok else 0
-    fmt.sbprintf(b, "\nbelow (calls)   (%s, %s)\n", ask_plural(direct, "direct caller"), ask_depth_label(depth))
-    if direct == 0 {
-        fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
-        return
+// The calls between `nodes` and a function next to them: a line once. None is written
+// where only a default argument makes the call.
+@(private="file")
+ask_write_calls :: proc(w: ^Ask_Call_Walk, b: ^strings.Builder, nodes: []int, fun: Ask_Call_Fun, indent: int) {
+    toks := make([dynamic]Token_Id, context.temp_allocator)
+    for node in nodes {
+        for k in fun.nodes {
+            caller, callee := w.cg.nodes[node], w.cg.nodes[k]
+            if !w.forward { caller, callee = callee, caller }
+            if sites, called := w.sites[Call_Edge{from = caller, to = callee}]; called {
+                for n in sites { append(&toks, build_tree.first[n]) }
+            }
+        }
     }
-    seen: map[int]bool
-    defer delete(seen)
-    seen[nf] = true
-    budget := depth if depth >= 0 else (1 << 30)
-    ask_walk_calls(b, cg, cg.in_edges[:], nf, 1, budget, &seen, false)
+    slice.sort(toks[:])
+    last: Token
+    any := false
+    for id in toks {
+        tok := build_tokens[id]
+        if any && tok.file == last.file && token_line(tok) == token_line(last) { continue }
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        fmt.sbprintf(b, "at %s  %s\n", ask_loc(token_span(tok)), hit_source_line(tok))
+        last, any = tok, true
+    }
+    if !any {
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        strings.write_string(b, "(from a default argument)\n")
+    }
 }
 
-// callees of a function — `fun call above`, the mirror of render_fn_users, read off
-// the materialized call graph's out-edges (resolved direct calls + construction
-// edges this function makes). A constructor edge surfaces as the built struct
-// (sub "struct"); a plain call as `fun`. Indirect calls via fn-typed params aren't
-// edges, so a function that only dispatches dynamically reads as calling nothing.
-render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int) {
+// How many functions the tree reaches that `w.seen` hasn't shown.
+@(private="file")
+ask_calls_unshown :: proc(w: ^Ask_Call_Walk, roots: []int) -> int {
+    visited := make(map[int]bool, allocator = context.temp_allocator)
+    counted := make(map[Ask_Call_Key]bool, allocator = context.temp_allocator)
+    stack := make([dynamic]int, context.temp_allocator)
+    for r in roots { visited[r] = true; append(&stack, r) }
+    more := 0
+    for len(stack) > 0 {
+        node := pop(&stack)
+        key := ask_call_key(w.cg, node)
+        if key not_in w.seen && key not_in counted {
+            counted[key] = true
+            more += 1
+        }
+        for k in w.adj[node] {
+            if !visited[k] { visited[k] = true; append(&stack, k) }
+        }
+    }
+    return more
+}
+
+// A fun's call tree: its callees (above, `forward`) or its callers (below), read off
+// the call graph, which has every resolved direct call and construction; a generic's
+// are every instance's. Indirect calls through fn-typed values aren't edges, so a fun
+// reached only that way has no callers. It goes one level unless asked for more: all
+// of one is often most of the program.
+@(private="file")
+render_fn_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int, forward: bool) {
     cg := &checked.call_graph
-    nf, ok := cg.index_of[ft]
-    direct := ask_direct_call_count(cg.out_edges[:], nf) if ok else 0
-    fmt.sbprintf(b, "\nabove (calls)   (%s, %s)\n", ask_plural(direct, "direct callee"), ask_depth_label(depth))
+    hops := 1 if depth == ASK_DEPTH_OMITTED else depth
+    sites := cg_call_sites(checked)
+    w := Ask_Call_Walk{cg = cg, adj = cg.out_edges[:] if forward else cg.in_edges[:], forward = forward, sites = sites}
+    roots := make([dynamic]int, context.temp_allocator)
+    if nf, ok := cg.index_of[ft]; ok {
+        key := ask_call_key(cg, nf)
+        for _, i in cg.nodes {
+            if ask_call_key(cg, i) == key { append(&roots, i) }
+        }
+    }
+    direct := len(ask_call_funs(&w, roots[:]))
+    dir_word, row_word := "above", "direct callee"
+    if !forward { dir_word, row_word = "below", "direct caller" }
+    fmt.sbprintf(b, "\n%s (calls)   (%s, %s)\n", dir_word, ask_plural(direct, row_word), ask_depth_label(hops))
     if direct == 0 {
-        fmt.sbprint(b, "  (calls nothing directly; indirect calls via fn-typed params aren't tracked)\n")
+        if forward {
+            fmt.sbprint(b, "  (calls nothing directly; indirect calls via fn-typed params aren't tracked)\n")
+        } else {
+            fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
+        }
         return
     }
-    seen: map[int]bool
-    defer delete(seen)
-    seen[nf] = true
-    budget := depth if depth >= 0 else (1 << 30)
-    ask_walk_calls(b, cg, cg.out_edges[:], nf, 1, budget, &seen, true)
+    for r in roots { w.seen[ask_call_key(cg, r)] = true }
+    ask_walk_calls(&w, b, roots[:], 1, hops if hops >= 0 else (1 << 30))
+    if more := ask_calls_unshown(&w, roots[:]); more > 0 {
+        fmt.sbprintf(b, "  (%d more: add a depth, or 'all')\n", more)
+    }
 }
 
 // struct/type `call` — the functions whose SIGNATURE mentions this type, read off
@@ -1213,6 +1516,11 @@ render_struct_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, targ
     }
 }
 
+// users: the reverse references, grouped by hop distance from the subject. Header
+// separates distinct users from use-sites so neither count is misread. When the
+// view reaches past one hop, rows are bucketed under "N hops" subheaders and each
+// names the closer-to-root type it references (not the subject), so a chain like
+// Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
 render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     fmt.sbprintf(b, "\nbelow (types)   (%s, %s, %s)\n",
                  ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(depth))

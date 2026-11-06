@@ -1495,22 +1495,30 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                    sizes and elements made exact: [64]utf8, [N]Filename, ^[3!]f32
                    (quote it in bash: '[N!]T'); your modules, or 'in <module>'
     <name>         the subject's natural view, both directions — a type's structure,
-                   a function's calls, a variable's flow (add types|call|flow to switch)
+                   a function's calls, a variable's flow (add types|call|flow to switch).
+                   A function or a type says what it is first: its signature, its doc
+                   comment. <module>.<name> finds it in that module, as a call tree writes it
+    <struct>.<field>  where the field is written and read, in every value: 'what at' at
+                   its declaration. Also <field> in <struct>, or <field> if no type or
+                   function has the name and one struct has the field
     above (bfor)   only the sources — what <name> is built from / what feeds it
     below (aftr)   only the consumers — what depends on <name> / what it feeds
     types          only the type graph — a struct's fields/embeds; a function's
                    parameter types (above) and return types (below)
     call           only the call graph — a function's callees (above) / callers
-                   (below); a type's producers (above) / takers (below)
+                   (below); a type's producers (above) / takers (below). A function's
+                   rows say where each is defined, and under each, each call: where
+                   it's written and what's written
     flow           only the data-flow slice. For a variable, 'flow above' is the
                    LINEAGE producer tree: what builds it, following every input
                    into the calls that make it (address a var: <var> in <fn>, at F:L)
     control        also show CONTROL dependence — the branches/loops a value drives
                    (or that guard what feeds it). Off by default: it needs the
                    post-dominator pass, the analyzer's one slow step. Data is hot.
-    depth          hops to expand. TYPES: 0 = direct edges, omitted = full closure.
-                   FLOW (forward): call hops to follow into callees — omitted = 1,
-                   0 = none (count only), N = N hops.
+    depth          hops to expand. CALL: 1 = direct, omitted = 1, 'all' = full closure;
+                   a line says how many more there are. TYPES: 0 = direct edges,
+                   omitted = full closure. FLOW (forward): call hops to follow into
+                   callees — omitted = every hop, 0 = none (count only), N = N hops.
     in <module>    resolve <name> within that module's namespace (disambiguation)
     in <file>      resolve <name> within one file
     in <fn>        slice the local/parameter <name> inside that function

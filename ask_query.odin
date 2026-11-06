@@ -19,7 +19,7 @@ Ask_Query :: struct {
     scope:   string,  // an `in <module|file|fn>`; "" = the cwd's program
     scope2:  string,  // a second `in` — the two compose (`<var> in <fn> in <module>`)
     at:      string,  // `at <file>:<line>`: a variable precisely; with a column, a point
-    depth:   int,     // the hop budget; -1 = unbounded
+    depth:   int,     // the hop budget; ASK_DEPTH_OMITTED, or ASK_DEPTH_ALL for `all`
     control: bool,    // `control`: add control dependence (post-dominators) to a flow slice
     help:    bool,    // `--help`: the usage, not a lookup
 }
@@ -27,7 +27,7 @@ Ask_Query :: struct {
 // A query from its words — the command line's after `ask`, or one stdin line.
 // On a mistake, the query so far and what to say about it.
 ask_parse_query :: proc(words: []string) -> (q: Ask_Query, err: string) {
-    q.depth = -1
+    q.depth = ASK_DEPTH_OMITTED
     // A shell-quoted whole query (`mara ask "v in fn flow below"`) arrives as
     // ONE word — split every word on whitespace so both forms parse
     // identically. The value after a standalone `at` is kept intact: a quoted
@@ -75,8 +75,14 @@ ask_parse_query :: proc(words: []string) -> (q: Ask_Query, err: string) {
         remove_range(&rest, i, i + 2)
         break
     }
-    // An optional depth — the first bare integer anywhere in the words.
+    // An optional depth — the first bare integer anywhere in the words, or `all`
+    // (a keyword, so no name's).
     for w, i in rest {
+        if w == "all" {
+            q.depth = ASK_DEPTH_ALL
+            ordered_remove(&rest, i)
+            break
+        }
         if d, ok := ask_parse_depth(w); ok {
             q.depth = d
             ordered_remove(&rest, i)
@@ -222,7 +228,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
 // first; the ones not used at the end.
 @(private="file")
 ask_tokens :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string, found: bool) {
-    if q.kind != "" || q.dir != "" || q.at != "" || q.depth >= 0 || q.control {
+    if q.kind != "" || q.dir != "" || q.at != "" || q.depth != ASK_DEPTH_OMITTED || q.control {
         return "mara ask: #tokens takes only `in <module>` or `in <file>`\n", false
     }
     if in_.fn != "" { return fmt.tprintf("mara ask: #tokens counts a module or a file — '%s' is neither\n", in_.fn), false }

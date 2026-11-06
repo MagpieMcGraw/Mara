@@ -132,6 +132,30 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     return g
 }
 
+// Where each fun calls each other, for what's asked (ask.odin): the node of every
+// call written in the caller. A default argument's call is written in the callee,
+// so it gives none, as with edge_line.
+cg_call_sites :: proc(checked: ^Checked_Program) -> map[Call_Edge][dynamic]Tree_Id {
+    sites: map[Call_Edge][dynamic]Tree_Id
+    rc := cg_runs_make(checked.annot, &build_tree)
+    defer cg_runs_free(&rc)
+    a := checked.annot
+    for key, callee in a.callees {
+        if a.forms[key] == .Value { continue }
+        callers, implied := cg_runs_in(&rc, key)
+        if implied { continue }
+        _, n := annot_split(key)
+        for caller in callers {
+            edge := Call_Edge{from = caller, to = callee}
+            if edge not_in sites { sites[edge] = make([dynamic]Tree_Id) }
+            list := sites[edge]
+            append(&list, n)
+            sites[edge] = list
+        }
+    }
+    return sites
+}
+
 // Whether a builtin call prints: `print`, `print_cstr`, `print_int`,
 // `print_float`.
 @(private="file")
