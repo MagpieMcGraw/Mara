@@ -611,13 +611,12 @@ Place :: struct { x: f32  y: f32 }
 // A `foreign static_lib "<library>" { … }` block lists C's functions with
 // Mara types; calls to them go straight to the library. `prefix SDL_` after
 // the library's name lets the functions go without it: `Init` for SDL_Init.
-// Like a `use`, the block lends its names to the scope it's in — at a
-// module's top, its file — and no further: another file, or a module that
-// uses it, sees none of them, so a variable elsewhere may take one's name.
-// A module gives what C does as Mara functions that call it, taking Mara's
-// types: text as []utf8, data as a slice (`[]` for none, where C takes
-// NULL). The standard library's mara.os and the SDL and OpenGL bindings in
-// code/ are made so.
+// They're definitions like any other: the module's other files see them, and so
+// does a module that uses it. A variable may still take one's name, since C's
+// names differ by platform, and a Mara function goes before a C function of the
+// same name from another module. A module can also give what C does as a Mara
+// function that calls it, taking Mara's types: text as []utf8, data as a slice
+// (`[]` for none, where C takes NULL).
 //
 // Many C libraries report success, not failure: a function returns true when it
 // worked, or a pointer that's NULL when it didn't. `fails Failed` after the

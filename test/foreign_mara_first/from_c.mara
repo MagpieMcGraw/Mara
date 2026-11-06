@@ -1,0 +1,5 @@
+module from_c
+
+foreign static_lib "c" {
+	fun both() -> i64
+}

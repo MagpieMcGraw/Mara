@@ -1,0 +1,35 @@
+module foreign_public
+
+//@ expect-output: through a use: true
+//@ expect-output: through its name: true
+//@ expect-output: this module's own: 7
+
+// A foreign block's funs are its module's, so a module that uses it can call
+// them: mara.os's GetLastError here, as it can its Mara funs. A module's own
+// definition goes first, and a local may still take one's name (foreign_names_free).
+
+use mara.core
+use mara.os
+named :: use mara.os
+
+main :: fun() {
+	run()
+}
+
+#if #windows {
+	CloseHandle :: fun() -> i64 { return 7 }
+
+	run :: fun() {
+		print("through a use:", GetLastError() >= 0)
+		print("through its name:", named.GetLastError() >= 0)
+		print("this module's own:", CloseHandle())
+	}
+}
+
+#if not #windows {
+	run :: fun() {
+		print("through a use: true")
+		print("through its name: true")
+		print("this module's own: 7")
+	}
+}

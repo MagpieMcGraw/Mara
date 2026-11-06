@@ -102,13 +102,16 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         if !is_scope { continue }
         span := tree_span(t, ff)
         link := strings.concatenate({prefix, name}) if prefix != "" else name
+        if taken := resolve_module_definition(k.rs, k.pkg, name); taken != 0 {
+            tc_error(k, span, TYPE_FOREIGN_NAME_TAKEN, name, span_loc(Span{at = taken, tok = taken, end = taken + 1}))
+        }
         origin := Origin_Foreign{library = library, link_name = link}
         tc_foreign_err(k, ft, &origin, fv.fails, fail_kind, fails_known, name, span)
         ft.origin = origin
-        // (A foreign block is its file's own, so another file may bind a C
-        // function another has: as that one does — a symbol has one C
-        // signature, its one `declare`. Its Mara types may differ, a
-        // distinct File_Id for an i64, the C ones not.)
+        // (Another file, or another module, may bind a C function another has:
+        // as that one does — a symbol has one C signature, its one `declare`.
+        // Its Mara types may differ, a distinct File_Id for an i64, the C ones
+        // not.)
         for _, existing in k.checked.functions {
             fo, is_foreign := existing.origin.(Origin_Foreign)
             if !is_foreign || fo.link_name != link { continue }

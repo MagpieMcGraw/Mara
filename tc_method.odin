@@ -64,11 +64,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                     qual, resolved = tc_held_type(k, n, mt), true
                     failed = qual == nil
                 } else if sd_is_module(qsd) {
-                    if resolve_module_foreign(k.rs, qsd.name, name) {
-                        tc_error(k, span, TYPE_FOREIGN_FUN_PRIVATE, name, scope_display_name(qsd))
-                    } else {
-                        tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
-                    }
+                    tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
                     return Type_Error{}
                 }
             } else if qsd := as_scope_body(qt); qsd != nil {

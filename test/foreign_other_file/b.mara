@@ -1,0 +1,9 @@
+module foreign_other_file
+
+use mara.core
+
+twice :: fun(x: i32) -> i32 { return abs(x) * 2 }
+
+main :: fun() {
+	print(twice(-2))
+}
