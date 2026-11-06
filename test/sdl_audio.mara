@@ -20,7 +20,7 @@ main :: fun() {
 	_ = sdl.SetHint("SDL_AUDIO_DRIVER", "dummy")
 	print("started:", sdl.InitSubSystem(sdl.Audio))
 	spec := sdl.AudioSpec{format = sdl.F32, channels = 2, freq = 44100}
-	stream, opened := sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, spec)
+	stream, opened := sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, void, void)
 	print("opened:", opened)
 	// (64 stereo frames of silence: 128 f32s, 512 bytes, queued while the
 	// stream is paused.)

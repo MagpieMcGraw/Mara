@@ -18,7 +18,7 @@ gl :: use mara.open_gl
 // program). SDL's text comes back as buffers, C text again: the base path
 // handed back to SDL works. Nothing is opened: SDL isn't started, so each
 // GL address is none and SDL says why. A file that isn't there can't be
-// opened: an err, where() naming the wrapper, GetError() SDL's reason.
+// opened: an err, where() naming the C function, GetError() SDL's reason.
 
 main :: fun() {
 	gl.gl_load(sdl.GL_GetProcAddress)
@@ -27,7 +27,7 @@ main :: fun() {
 	print("error said:", said.len > 0)
 	base := sdl.GetBasePath()
 	print("base:", base.len > 0)
-	print("back to C:", sdl.SetHint("MARA_TEST_BASE", base))
+	print("back to C:", sdl.SetHint("MARA_TEST_BASE", cstring(base)))
 	_, e := sdl.IOFromFile("no such file.bin", "rb")
 	print("opened:", e)
 	print("where:", e.where())

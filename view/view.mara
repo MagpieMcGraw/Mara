@@ -171,7 +171,7 @@ main :: fun(args: [][]utf8) -> i64 {
 		return 1
 	}
 	defer Quit()
-	window, no_window := CreateWindow(title, 1100, 700, Resizable | HighPixelDensity)
+	window, no_window := CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
 	if no_window {
 		print("mara view: no window:", GetError())
 		return 1

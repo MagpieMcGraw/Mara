@@ -147,7 +147,7 @@ hub_follow :: fun(ui: ^Ui, h: ^Hub, dir: []utf8, name: []utf8) {
 	&h.module_name + name
 	serve_command(h)
 	title := window_title(name)
-	_ = SetWindowTitle(ui.window, title)
+	_ = SetWindowTitle(ui.window, cstring(title))
 	ui.dirty = true
 }
 

@@ -639,13 +639,14 @@ Place :: struct { x: f32  y: f32 }
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
 	//
-	//     foreign static_lib "SDL3" {
-	//         fun SDL_Delay(ms: u32)
-	//         fun SDL_SetWindowTitle(window: Window, title: cstring) -> bool
+	//     foreign static_lib "SDL3" prefix SDL_ fails Failed {
+	//         fun Delay(ms: u32)
+	//         fun SetWindowTitle(window: Window, title: cstring) -> err
 	//     }
 	//
-	//     Delay :: fun(ms: u32) { SDL_Delay(ms) }
-	//     SetWindowTitle :: fun(window: Window, title: []utf8) -> bool { return SDL_SetWindowTitle(window, cstring(title)) }
+	//     Delay(16)
+	//     _ = SetWindowTitle(window, "Mara")             // a literal has its 0
+	//     _ = SetWindowTitle(window, cstring(title))     // a buffer says so
 }
 
 // ---- built-ins ------------------------------------------------------------------

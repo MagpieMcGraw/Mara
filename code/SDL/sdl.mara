@@ -1157,6 +1157,9 @@ c_text :: fun(p: ^byte, out: ^[]utf8) {
 // that gives no err is called as it is, so PollEvent's bool still means an event.
 foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun Init(flags: Init_Flags) -> err
+    fun SetHint(name: cstring, value: cstring) -> err
+    fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window, err
+    fun SetWindowTitle(window: Window, title: cstring) -> err
     fun DestroyWindow(window: Window)
     fun GetWindowSize(window: Window, w: ^i32, h: ^i32) -> err
     fun GetWindowSizeInPixels(window: Window, w: ^i32, h: ^i32) -> err
@@ -1165,6 +1168,8 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun PollEvent(event: ^Event) -> bool
     fun Delay(ms: u32)
     fun Quit()
+    // name: a driver's ("opengl", "direct3d11", …).
+    fun CreateRenderer(window: Window, name: cstring) -> Renderer, err
     fun DestroyRenderer(renderer: Renderer)
     fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> err
     fun RenderClear(renderer: Renderer) -> err
@@ -1175,7 +1180,7 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     // The renderer's size in pixels (a window's on a high-density display
     // has more than its size says).
     fun GetRenderOutputSize(renderer: Renderer, w: ^i32, h: ^i32) -> err
-    // Drawing kept inside rect (ClearRenderClipRect: everywhere again).
+    // Drawing kept inside rect (void: everywhere again).
     fun SetRenderClipRect(renderer: Renderer, rect: ^SDL_Rect) -> err
     fun CreateTexture(renderer: Renderer, format: u32, access: i32, w: i32, h: i32) -> Texture, err
     fun RenderTexture(renderer: Renderer, texture: Texture, src: ^SDL_FRect, dst: ^SDL_FRect) -> err
@@ -1209,6 +1214,8 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun CreateSystemCursor(id: i32) -> Cursor, err
     // The mouse cursor's look, over the windows of this program.
     fun SetCursor(cursor: Cursor) -> err
+    // Text put on the system's clipboard, for pasting anywhere.
+    fun SetClipboardText(text: cstring) -> err
     fun GL_SetAttribute(attr: GLattr, value: i32) -> err
     fun GL_CreateContext(window: Window) -> GLContext, err
     fun GL_MakeCurrent(window: Window, context: GLContext) -> err
@@ -1223,14 +1230,24 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun DelayPrecise(ns: u64)
     // Memory
     fun malloc(size: usize) -> ^byte
+    fun IOFromFile(file: cstring, mode: cstring) -> IOStream, err
     fun CloseIO(context: IOStream) -> err
     fun SeekIO(context: IOStream, offset: i64, whence: IOWhence) -> i64
     fun TellIO(context: IOStream) -> i64
     fun GetIOSize(context: IOStream) -> i64
     fun FlushIO(context: IOStream) -> err
+    fun LoadFile(file: cstring, datasize: ^usize) -> ^byte, err
+    fun CreateDirectory(path: cstring) -> err
+    fun RemovePath(path: cstring) -> err
+    fun RenamePath(oldpath: cstring, newpath: cstring) -> err
+    fun CopyFile(oldpath: cstring, newpath: cstring) -> err
+    fun GetPathInfo(path: cstring, info: ^PathInfo) -> err
     // Starts or stops some of SDL (Audio, say) apart from Init.
     fun InitSubSystem(flags: Init_Flags) -> err
     fun QuitSubSystem(flags: Init_Flags)
+    // A stream onto `device` (AUDIO_DEVICE_DEFAULT_PLAYBACK) taking samples of
+    // `spec`, paused. What's played is what's put into it: callback and userdata void.
+    fun OpenAudioDeviceStream(device: u32, spec: ^AudioSpec, callback: ^byte, userdata: ^byte) -> AudioStream, err
     // The stream's device playing, or paused.
     fun ResumeAudioStreamDevice(stream: AudioStream) -> err
     fun PauseAudioStreamDevice(stream: AudioStream) -> err
@@ -1247,32 +1264,19 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun DestroyAudioStream(stream: AudioStream)
 }
 
-// The same library, for the functions a Mara function below takes Mara's types
-// for: text as []utf8, data as a slice, a NULL as a function of its own.
+// The same library, for what a Mara function below does more for: text copied
+// back from C, data given as a slice, and gl_load's get_proc.
 foreign static_lib "SDL3" fails Failed {
-    fun SDL_SetHint(name: cstring, value: cstring) -> err
-    fun SDL_CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window, err
-    fun SDL_CreateRenderer(window: Window, name: cstring) -> Renderer, err
     fun SDL_UpdateTexture(texture: Texture, rect: ^SDL_Rect, pixels: ^byte, pitch: i32) -> err
-    fun SDL_SetWindowTitle(window: Window, title: cstring) -> err
-    fun SDL_SetClipboardText(text: cstring) -> err
     fun SDL_GL_GetProcAddress(name: cstring) -> ^byte
     fun SDL_GetError() -> ^byte
     fun SDL_free(mem: ^byte)
-    fun SDL_IOFromFile(file: cstring, mode: cstring) -> IOStream, err
     fun SDL_ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
     fun SDL_WriteIO(context: IOStream, ptr: ^byte, size: usize) -> usize
-    fun SDL_LoadFile(file: cstring, datasize: ^usize) -> ^byte, err
     fun SDL_SaveFile(file: cstring, data: ^byte, datasize: usize) -> err
     fun SDL_GetBasePath() -> ^byte
     fun SDL_GetPrefPath(org: cstring, app: cstring) -> ^byte
     fun SDL_GetCurrentDirectory() -> ^byte
-    fun SDL_CreateDirectory(path: cstring) -> err
-    fun SDL_RemovePath(path: cstring) -> err
-    fun SDL_RenamePath(oldpath: cstring, newpath: cstring) -> err
-    fun SDL_CopyFile(oldpath: cstring, newpath: cstring) -> err
-    fun SDL_GetPathInfo(path: cstring, info: ^PathInfo) -> err
-    fun SDL_OpenAudioDeviceStream(device: u32, spec: ^AudioSpec, callback: ^byte, userdata: ^byte) -> AudioStream, err
     fun SDL_PutAudioStreamData(stream: AudioStream, buf: ^byte, len: i32) -> err
 }
 
@@ -1281,20 +1285,11 @@ foreign static_lib "SDL3" fails Failed {
 // where() names the C function that failed.
 Sdl_Error :: error { Failed }
 
-SetHint :: fun(name: []utf8, value: []utf8) -> err { return SDL_SetHint(cstring(name), cstring(value)) }
-CreateWindow :: fun(title: []utf8, w: i32, h: i32, flags: WindowFlags) -> Window, err { return SDL_CreateWindow(cstring(title), w, h, flags) }
-// name: a driver's ("opengl", "direct3d11", …).
-CreateRenderer :: fun(window: Window, name: []utf8) -> Renderer, err { return SDL_CreateRenderer(window, cstring(name)) }
-// Drawing everywhere again: no clip rect.
-ClearRenderClipRect :: fun(renderer: Renderer) -> err { return SetRenderClipRect(renderer, void) }
 // The pixels of the texture's rect, `pitch` bytes from a row to the next
 // (UpdateWholeTexture: all of it).
 UpdateTexture :: fun(texture: Texture, rect: ^SDL_Rect, pixels: []$T, pitch: i32) -> err { return SDL_UpdateTexture(texture, rect, pixels.ptr, pitch) }
 // The whole texture's pixels, as UpdateTexture writes a rect's.
 UpdateWholeTexture :: fun(texture: Texture, pixels: []$T, pitch: i32) -> err { return SDL_UpdateTexture(texture, void, pixels.ptr, pitch) }
-SetWindowTitle :: fun(window: Window, title: []utf8) -> err { return SDL_SetWindowTitle(window, cstring(title)) }
-// Text put on the system's clipboard, for pasting anywhere.
-SetClipboardText :: fun(text: []utf8) -> err { return SDL_SetClipboardText(cstring(text)) }
 GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(cstring(name)) }
 // What failed last, as SDL says it.
 GetError :: fun() -> [256]utf8 {
@@ -1304,13 +1299,11 @@ GetError :: fun() -> [256]utf8 {
 }
 
 // Filesystem — IOStream
-IOFromFile :: fun(file: []utf8, mode: []utf8) -> IOStream, err { return SDL_IOFromFile(cstring(file), cstring(mode)) }
 // As much as `into` holds read into it from the stream: how many bytes
 // came (fewer at its end; 0, failing).
 ReadIO :: fun(context: IOStream, into: []$T) -> usize { return SDL_ReadIO(context, into.ptr, usize(into.len * size_of(T))) }
 // `data` written to the stream: how many bytes went.
 WriteIO :: fun(context: IOStream, data: []$T) -> usize { return SDL_WriteIO(context, data.ptr, usize(data.len * size_of(T))) }
-LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte, err { return SDL_LoadFile(cstring(file), datasize) }
 // `data` written to the file `file`, made new or over what it held.
 SaveFile :: fun(file: []utf8, data: []$T) -> err { return SDL_SaveFile(cstring(file), data.ptr, usize(data.len * size_of(T))) }
 
@@ -1338,11 +1331,6 @@ GetCurrentDirectory :: fun() -> [512]utf8 {
     if p != void do SDL_free(p)
     return out
 }
-CreateDirectory :: fun(path: []utf8) -> err { return SDL_CreateDirectory(cstring(path)) }
-RemovePath :: fun(path: []utf8) -> err { return SDL_RemovePath(cstring(path)) }
-RenamePath :: fun(oldpath: []utf8, newpath: []utf8) -> err { return SDL_RenamePath(cstring(oldpath), cstring(newpath)) }
-CopyFile :: fun(oldpath: []utf8, newpath: []utf8) -> err { return SDL_CopyFile(cstring(oldpath), cstring(newpath)) }
-GetPathInfo :: fun(path: []utf8, info: ^PathInfo) -> err { return SDL_GetPathInfo(cstring(path), info) }
 
 // Audio — a stream to play through: opened on a device, given samples
 // (PutAudioStreamData), it plays them, converting to the device's format
@@ -1381,12 +1369,6 @@ AudioSpec :: struct {
     freq: i32
 }
 
-// A stream onto `device` (AUDIO_DEVICE_DEFAULT_PLAYBACK) taking samples of
-// `spec`, paused. What's played is what's put into it — no callback.
-OpenAudioDeviceStream :: fun(device: u32, spec: AudioSpec) -> AudioStream, err {
-    s := spec
-    return SDL_OpenAudioDeviceStream(device, &s, void, void)
-}
 // Samples to play after what's queued: `data` (f32s for AudioFormat.F32),
 // its channels' samples one after another.
 PutAudioStreamData :: fun(stream: AudioStream, data: []$T) -> err {
