@@ -1,0 +1,241 @@
+module sqlite_basic
+
+use mara.core
+use mara.memory
+use mara.os
+use mara.string
+use mara.sqlite
+
+//@ expect-output: rows: 1 Ann 30 2 Bob 25
+//@ expect-output: ids: 3 changes: 3
+//@ expect-output: unicode: héllo € 😀
+//@ expect-output: empty is not null: false 0 and null: true 0
+//@ expect-output: float: 2.5 count: 2
+//@ expect-output: blob: 4 0 255
+//@ expect-output: reused: 5 6 7
+//@ expect-output: bad sql: Sqlite_Error.Sqlite_Bad_Sql no such table: nope
+//@ expect-output: unique: Sqlite_Error.Sqlite_Constraint
+//@ expect-output: rolled back: 3
+//@ expect-output: search: 2 first: the quick brown fox
+//@ expect-output: threads: 16000 rows read by 4 readers, right: true
+//@ expect-output: busy: Sqlite_Error.Sqlite_Busy
+
+// mara.sqlite: everything a port of a Rails app asks of it. Rows and binds, text with
+// non-ASCII in it, NULL against empty, statements used again, errors, transactions,
+// FTS5 search, and threads with a connection each on one file in WAL mode.
+
+#allocator Arena_Basic(16 * MB)
+
+DB_FILE :: "sqlite_basic_out.db"
+
+tables :: fun() -> err {
+	db := sqlite_open(":memory:")?
+	defer sqlite_close(&db)
+	sqlite_run(&db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT UNIQUE, age INTEGER, score REAL, data BLOB)")?
+
+	insert := sqlite_prepare(&db, "INSERT INTO users (name, age) VALUES (?, ?)")?
+	defer sqlite_finish(&insert)
+	sqlite_bind_text(&insert, 1, "Ann")?
+	sqlite_bind_i64(&insert, 2, 30)?
+	sqlite_step(&insert)?
+	sqlite_reset(&insert)?
+	sqlite_bind_text(&insert, 1, "Bob")?
+	sqlite_bind_i64(&insert, 2, 25)?
+	sqlite_step(&insert)?
+	sqlite_reset(&insert)?
+
+	query := sqlite_prepare(&db, "SELECT id, name, age FROM users ORDER BY id")?
+	defer sqlite_finish(&query)
+	line : [64]utf8
+	for sqlite_step(&query)? {
+		if line.len > 0 do &line + ' '
+		&line + int_text(sqlite_column_i64(&query, 0))
+		&line + ' '
+		&line + sqlite_column_text(&query, 1)
+		&line + ' '
+		&line + int_text(sqlite_column_i64(&query, 2))
+	}
+	print("rows:", line)
+
+	sqlite_bind_text(&insert, 1, "Cal")?
+	sqlite_bind_null(&insert, 2)?
+	sqlite_step(&insert)?
+	sqlite_reset(&insert)?
+	last := sqlite_last_id(&db)
+	update := sqlite_prepare(&db, "UPDATE users SET age = 1")?
+	defer sqlite_finish(&update)
+	sqlite_step(&update)?
+	print("ids:", last, "changes:", sqlite_changes(&db))
+
+	sqlite_bind_text(&insert, 1, "héllo € 😀")?
+	sqlite_bind_i64(&insert, 2, 1)?
+	sqlite_step(&insert)?
+	sqlite_reset(&insert)?
+	one := sqlite_prepare(&db, "SELECT name FROM users WHERE id = ?")?
+	defer sqlite_finish(&one)
+	sqlite_bind_i64(&one, 1, 4)?
+	if sqlite_step(&one)? do print("unicode:", sqlite_column_text(&one, 0))
+	sqlite_reset(&one)?
+
+	values := sqlite_prepare(&db, "SELECT ?, ?, ?, ?")?
+	defer sqlite_finish(&values)
+	sqlite_bind_text(&values, 1, "")?
+	sqlite_bind_null(&values, 2)?
+	sqlite_bind_f64(&values, 3, 2.5)?
+	sqlite_bind_i64(&values, 4, 2)?
+	if sqlite_step(&values)? {
+		print("empty is not null:", sqlite_column_is_null(&values, 0), sqlite_column_text(&values, 0).len, "and null:", sqlite_column_is_null(&values, 1), sqlite_column_text(&values, 1).len)
+		print("float:", sqlite_column_f64(&values, 2), "count:", sqlite_column_i64(&values, 3))
+	}
+
+	bytes : [4]byte
+	&bytes + u8(1)
+	&bytes + u8(0)
+	&bytes + u8(255)
+	&bytes + u8(7)
+	blob := sqlite_prepare(&db, "SELECT ?")?
+	defer sqlite_finish(&blob)
+	sqlite_bind_blob(&blob, 1, bytes)?
+	if sqlite_step(&blob)? {
+		got := sqlite_column_blob(&blob, 0)
+		print("blob:", got.len, u8(got[1]), u8(got[2]))
+	}
+
+	// (One statement used again, with a new bind each time.)
+	again := sqlite_prepare(&db, "SELECT ? + 1")?
+	defer sqlite_finish(&again)
+	seen : [32]utf8
+	for k in 4:7 {
+		sqlite_reset(&again)?
+		sqlite_bind_i64(&again, 1, k)?
+		if sqlite_step(&again)? {
+			if seen.len > 0 do &seen + ' '
+			&seen + int_text(sqlite_column_i64(&again, 0))
+		}
+	}
+	print("reused:", seen)
+
+	_, bad := sqlite_prepare(&db, "SELECT * FROM nope")
+	print("bad sql:", bad, sqlite_message(&db))
+
+	sqlite_bind_text(&insert, 1, "Ann")?
+	_, unique := sqlite_step(&insert)
+	print("unique:", unique)
+	_ = sqlite_reset(&insert)
+
+	sqlite_run(&db, "BEGIN")?
+	sqlite_run(&db, "DELETE FROM users")?
+	sqlite_run(&db, "ROLLBACK")?
+	count := sqlite_prepare(&db, "SELECT count(*) FROM users WHERE id < 4")?
+	defer sqlite_finish(&count)
+	if sqlite_step(&count)? do print("rolled back:", sqlite_column_i64(&count, 0))
+}
+
+search :: fun() -> err {
+	db := sqlite_open(":memory:")?
+	defer sqlite_close(&db)
+	sqlite_run(&db, "CREATE VIRTUAL TABLE docs USING fts5(body)")?
+	insert := sqlite_prepare(&db, "INSERT INTO docs (body) VALUES (?)")?
+	defer sqlite_finish(&insert)
+	lines := [3!][]utf8{"the quick brown fox", "lazy dogs sleep", "a quick fox and a quick dog"}
+	for t in lines {
+		sqlite_bind_text(&insert, 1, t)?
+		sqlite_step(&insert)?
+		sqlite_reset(&insert)?
+	}
+	q := sqlite_prepare(&db, "SELECT body, bm25(docs) FROM docs WHERE docs MATCH ? ORDER BY rowid")?
+	defer sqlite_finish(&q)
+	sqlite_bind_text(&q, 1, "fox")?
+	found := 0
+	first : [64]utf8
+	for sqlite_step(&q)? {
+		if found == 0 do &first + sqlite_column_text(&q, 0)
+		found += 1
+	}
+	print("search:", found, "first:", first)
+}
+
+// A thread reading the table over and over on its own connection.
+Reader :: struct {
+	rows: i64 = 0
+	right: bool = true
+}
+
+reader :: fun(me: ^Reader) {
+	e := read_rows(me)
+	if e do me.right = false
+}
+
+read_rows :: fun(me: ^Reader) -> err {
+	db := sqlite_open(DB_FILE)?
+	defer sqlite_close(&db)
+	sqlite_busy_wait(&db, 5000)
+	q := sqlite_prepare(&db, "SELECT id, n FROM items ORDER BY id")?
+	defer sqlite_finish(&q)
+	for round in 0:40 {
+		sqlite_reset(&q)?
+		for sqlite_step(&q)? {
+			if sqlite_column_i64(&q, 1) != sqlite_column_i64(&q, 0) * 2 do me.right = false
+			me.rows += 1
+		}
+	}
+}
+
+threads :: fun() -> err {
+	db := sqlite_open(DB_FILE)?
+	defer sqlite_close(&db)
+	sqlite_run(&db, "PRAGMA journal_mode=WAL")?
+	sqlite_run(&db, "CREATE TABLE items (id INTEGER PRIMARY KEY, n INTEGER)")?
+	sqlite_run(&db, "BEGIN")?
+	insert := sqlite_prepare(&db, "INSERT INTO items (id, n) VALUES (?, ?)")?
+	defer sqlite_finish(&insert)
+	for k in 1..100 {
+		sqlite_bind_i64(&insert, 1, k)?
+		sqlite_bind_i64(&insert, 2, k * 2)?
+		sqlite_step(&insert)?
+		sqlite_reset(&insert)?
+	}
+	sqlite_run(&db, "COMMIT")?
+
+	readers : [4!]Reader
+	running : [4!]Thread
+	for k in 0:4 {
+		readers[k] = Reader()
+		running[k] = thread_start(reader, &readers[k])?
+	}
+	for k in 0:4 do thread_wait(&running[k])
+	rows : i64 = 0
+	right := true
+	for k in 0:4 {
+		rows += readers[k].rows
+		if not readers[k].right do right = false
+	}
+	print("threads:", rows, "rows read by 4 readers, right:", right)
+
+	// (Two writers, the first holding its transaction, and the second not waiting.)
+	other := sqlite_open(DB_FILE)?
+	defer sqlite_close(&other)
+	sqlite_run(&db, "BEGIN IMMEDIATE")?
+	busy := sqlite_run(&other, "BEGIN IMMEDIATE")
+	print("busy:", busy)
+	sqlite_run(&db, "COMMIT")?
+}
+
+remove_file :: fun(path: []utf8) {
+	_ = file_delete(path)
+}
+
+main :: fun() {
+	remove_file(DB_FILE)
+	remove_file("sqlite_basic_out.db-wal")
+	remove_file("sqlite_basic_out.db-shm")
+	e1 := tables()
+	if e1 do print("tables failed:", e1)
+	e2 := search()
+	if e2 do print("search failed:", e2)
+	e3 := threads()
+	if e3 do print("threads failed:", e3)
+	remove_file(DB_FILE)
+	remove_file("sqlite_basic_out.db-wal")
+	remove_file("sqlite_basic_out.db-shm")
+}

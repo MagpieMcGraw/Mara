@@ -94,6 +94,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
 tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
+    k.hint = nil   // (What the last statement was checked as is nothing to this one.)
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])

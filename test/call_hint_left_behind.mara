@@ -1,0 +1,35 @@
+module call_hint_left_behind
+
+use mara.core
+
+//@ expect-output: after a call: 1000 3
+//@ expect-output: after a field of a call: 1000 3
+//@ expect-output: after a declaration: 1000
+//@ expect-output: inside a call: 7000
+//@ expect-output: in one expression: 1003
+
+// A call's arguments are checked as its params' types, and a declaration's value as its
+// type, and that stayed behind as the hint for whatever came next. So after `n := g(1)`,
+// with g taking an i32, `1000000 * 1000 / big` in a print was taken as i32: "mismatched
+// types in arithmetic: i32 and i64", on code with nothing wrong with it.
+
+g :: fun(at: i32) -> i64 { return 3 }
+text_of :: fun(a: []utf8, at: i32) -> []utf8 { return a }
+twice :: fun(a: i64, b: i32) -> i64 { return a * 2 }
+
+main :: fun() {
+	big : i64 = 1000000
+
+	n := g(1)
+	print("after a call:", 1000000 * 1000 / big, n)
+
+	m := text_of("abc", 1).len
+	print("after a field of a call:", 1000000 * 1000 / big, m)
+
+	x : i32 = 5
+	print("after a declaration:", 1000000 * 1000 / big)
+	if x != 5 do print("wrong")
+
+	print("inside a call:", twice(3500000 * 1000 / big, 1))
+	print("in one expression:", g(1) + 1000000 * 1000 / big)
+}

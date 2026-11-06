@@ -1,0 +1,56 @@
+// How to keep data in a database file, with mara.sqlite: SQLite, built into your
+// program. The first build compiles it, about 15 seconds, and later builds reuse that.
+//
+// sqlite_open opens the file, making it if needed; ":memory:" is a new database that's
+// gone when it's closed. sqlite_run runs SQL that gives back no rows.
+//
+// For anything else, sqlite_prepare gets a statement ready and sqlite_step runs it to
+// its next row: true if there's a row to read, false when it's done. Fill in its `?`s
+// with sqlite_bind_i64, sqlite_bind_f64, sqlite_bind_text, sqlite_bind_blob and
+// sqlite_bind_null, counting from 1. Read a row with sqlite_column_i64 and the others,
+// counting from 0. sqlite_column_text gives a view of SQLite's memory, good until the
+// next step, so copy it to keep it. Always bind values rather than joining them into
+// the SQL: that's what stops text from a user being run as SQL.
+//
+// sqlite_prepare is the slow part, so keep a statement and run it again: sqlite_reset,
+// new binds, sqlite_step.
+//
+// A connection is one thread's. Threads share a database by each opening their own, on
+// a file in `PRAGMA journal_mode=WAL`, so readers don't wait for a writer. Two writers
+// at once give Sqlite_Busy, unless sqlite_busy_wait says how long to wait. sqlite_message
+// says what went wrong in words.
+module sqlite
+
+use mara.core
+use mara.memory
+use mara.sqlite
+
+#allocator Arena_Basic(1 * MB)
+
+run :: fun() -> err {
+	db := sqlite_open(":memory:")?
+	defer sqlite_close(&db)
+	sqlite_run(&db, "CREATE TABLE fruit (id INTEGER PRIMARY KEY, name TEXT, count INTEGER)")?
+
+	insert := sqlite_prepare(&db, "INSERT INTO fruit (name, count) VALUES (?, ?)")?
+	defer sqlite_finish(&insert)
+	sqlite_bind_text(&insert, 1, "apples")?
+	sqlite_bind_i64(&insert, 2, 7)?
+	sqlite_step(&insert)?
+	sqlite_reset(&insert)?
+	sqlite_bind_text(&insert, 1, "plums")?
+	sqlite_bind_i64(&insert, 2, 2)?
+	sqlite_step(&insert)?
+
+	query := sqlite_prepare(&db, "SELECT name, count FROM fruit WHERE count > ? ORDER BY name")?
+	defer sqlite_finish(&query)
+	sqlite_bind_i64(&query, 1, 1)?
+	for sqlite_step(&query)? {
+		print(sqlite_column_text(&query, 0), sqlite_column_i64(&query, 1))   // apples 7, then plums 2
+	}
+}
+
+main :: fun() {
+	failed := run()
+	if failed do print(failed)
+}

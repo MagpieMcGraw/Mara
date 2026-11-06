@@ -989,6 +989,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         }
         tc_set_args(k, n, received)
     }
+    // (Each argument is checked as its param's type. What's checked next isn't.)
+    hint_before := k.hint
+    defer k.hint = hint_before
     for item, i in items {
         a := item.node
         pt := ft.params[i].type_
@@ -1390,7 +1393,8 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (T
         } else if !coerces_to_slice_width(st) {
             tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH, type_name(slice_header_width_type), type_name(st))
         }
-        if k.pkg != "os" && k.pkg != "mara.os" {
+        // (mara.sqlite's lengths come from SQLite, with the pointers they go with.)
+        if k.pkg != "os" && k.pkg != "mara.os" && k.pkg != "mara.sqlite" {
             if _, known := tc_comptime_int(k, args[1]); !known {
                 tc_error(k, span, TYPE_SLICE_PTR_OUTSIDE_OS_MODULE +
                     "(literal, '::' constant, or comptime arithmetic). Runtime-derived lengths " +

@@ -1,0 +1,259 @@
+module mara.sqlite
+
+use mara.core
+use mara.os
+
+// A database in a file: SQLite.
+//
+//     db := sqlite_open("app.db")?
+//     defer sqlite_close(&db)
+//     sqlite_run(&db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")?
+//
+//     insert := sqlite_prepare(&db, "INSERT INTO users (name) VALUES (?)")?
+//     defer sqlite_finish(&insert)
+//     sqlite_bind_text(&insert, 1, "Ann")?
+//     sqlite_step(&insert)?
+//     sqlite_reset(&insert)?
+//
+//     query := sqlite_prepare(&db, "SELECT id, name FROM users")?
+//     defer sqlite_finish(&query)
+//     for sqlite_step(&query)? {
+//         print(sqlite_column_i64(&query, 0), sqlite_column_text(&query, 1))
+//     }
+//
+// sqlite_prepare is the slow part, so keep a statement and use it again:
+// sqlite_reset, bind what's different, sqlite_step. Binds count from 1 and columns from
+// 0, as in SQLite.
+//
+// A connection is one thread's. Threads share a database by each opening their own
+// connection to it, with `PRAGMA journal_mode=WAL` so readers don't wait for a writer.
+// A writer that meets another writer gets Sqlite_Busy, unless sqlite_busy_wait says how
+// long it should wait.
+//
+// sqlite_run's copy of its SQL is big enough to go on the program's arena, so a program
+// using this needs an #allocator. The first build compiles SQLite, about 15 seconds.
+
+// What SQLite can fail with. sqlite_message says more.
+Sqlite_Error :: error {
+	Sqlite_Open_Failed
+	Sqlite_Bad_Sql        // the SQL wasn't understood, or names something that isn't there
+	Sqlite_Busy           // another connection is writing, and the wait ran out
+	Sqlite_Constraint     // a UNIQUE, NOT NULL or other constraint said no
+	Sqlite_Failed         // anything else
+}
+
+// An open database. (Its handle is sqlite3*, kept as a number: 0 once closed.)
+Sqlite :: struct {
+	handle: i64
+}
+
+// A statement ready to run. (Its handle is sqlite3_stmt*.)
+Sql_Statement :: struct {
+	handle: i64
+	db: i64
+}
+
+// Opens the database in the file at path, making it if it isn't there. ":memory:" is a
+// new one in memory, gone when it's closed.
+sqlite_open :: fun(path: []utf8) -> Sqlite, err {
+	c := c_path(path)
+	handle : i64 = 0
+	rc := sqlite3_open(cstring(c), &handle)
+	db := Sqlite{handle = handle}
+	if rc != 0 {
+		sqlite_close(&db)
+		return db, Sqlite_Open_Failed
+	}
+	return db
+}
+
+// Closes the database. Finish its statements first.
+sqlite_close :: fun(db: ^Sqlite) {
+	if db.handle == 0 do return
+	_ = sqlite3_close(db.handle)
+	db.handle = 0
+}
+
+// Runs SQL that gives back no rows, one statement or several: for creating tables,
+// PRAGMAs, BEGIN and COMMIT. Up to 8 KB of it: more is Sqlite_Bad_Sql.
+sqlite_run :: fun(db: ^Sqlite, sql: []utf8) -> err {
+	copy : [8 * KB]utf8
+	if sql.len >= copy.cap do return Sqlite_Bad_Sql
+	&copy + sql
+	sqlite_check(sqlite3_exec(db.handle, cstring(copy), 0, 0, 0))?
+}
+
+// Gets a statement ready. Its `?`s are bound with the sqlite_bind funs.
+sqlite_prepare :: fun(db: ^Sqlite, sql: []utf8) -> Sql_Statement, err {
+	handle : i64 = 0
+	rc := sqlite3_prepare_v2(db.handle, sql.ptr, i32(sql.len), &handle, 0)
+	s := Sql_Statement{handle = handle, db = db.handle}
+	if rc != 0 do return s, sqlite_error_of(rc)
+	return s
+}
+
+// Lets a statement go.
+sqlite_finish :: fun(s: ^Sql_Statement) {
+	if s.handle == 0 do return
+	_ = sqlite3_finalize(s.handle)
+	s.handle = 0
+}
+
+// Runs a statement to its next row: true if there's one to read with the sqlite_column
+// funs, false when it's done. A statement giving no rows is done at once.
+sqlite_step :: fun(s: ^Sql_Statement) -> bool, err {
+	rc := sqlite3_step(s.handle)
+	if rc == 100 do return true    // (SQLITE_ROW)
+	if rc == 101 do return false   // (SQLITE_DONE)
+	return false, sqlite_error_of(rc)
+}
+
+// Gets a statement ready to run again from its start. Its binds stay.
+sqlite_reset :: fun(s: ^Sql_Statement) -> err {
+	sqlite_check(sqlite3_reset(s.handle))?
+}
+
+// A whole number for the `?` at `at`, counting from 1.
+sqlite_bind_i64 :: fun(s: ^Sql_Statement, at: i32, value: i64) -> err {
+	sqlite_check(sqlite3_bind_int64(s.handle, at, value))?
+}
+
+// A float for the `?` at `at`.
+sqlite_bind_f64 :: fun(s: ^Sql_Statement, at: i32, value: f64) -> err {
+	sqlite_check(sqlite3_bind_double(s.handle, at, value))?
+}
+
+// Text for the `?` at `at`. It's copied, so it needn't last.
+sqlite_bind_text :: fun(s: ^Sql_Statement, at: i32, value: []utf8) -> err {
+	// (Given no pointer, SQLite would bind a NULL. Empty text isn't that.)
+	if value.len == 0 {
+		blank : [1]utf8
+		sqlite_check(sqlite3_bind_text(s.handle, at, &blank[0], 0, SQLITE_TRANSIENT))?
+		return
+	}
+	sqlite_check(sqlite3_bind_text(s.handle, at, value.ptr, i32(value.len), SQLITE_TRANSIENT))?
+}
+
+// Bytes for the `?` at `at`. They're copied, so they needn't last.
+sqlite_bind_blob :: fun(s: ^Sql_Statement, at: i32, value: []byte) -> err {
+	if value.len == 0 {
+		sqlite_check(sqlite3_bind_zeroblob(s.handle, at, 0))?
+		return
+	}
+	sqlite_check(sqlite3_bind_blob(s.handle, at, value.ptr, i32(value.len), SQLITE_TRANSIENT))?
+}
+
+// NULL for the `?` at `at`.
+sqlite_bind_null :: fun(s: ^Sql_Statement, at: i32) -> err {
+	sqlite_check(sqlite3_bind_null(s.handle, at))?
+}
+
+// A column of the row sqlite_step found, counting from 0, as a whole number. NULL is 0.
+sqlite_column_i64 :: fun(s: ^Sql_Statement, at: i32) -> i64 {
+	return sqlite3_column_int64(s.handle, at)
+}
+
+// A column as a float. NULL is 0.
+sqlite_column_f64 :: fun(s: ^Sql_Statement, at: i32) -> f64 {
+	return sqlite3_column_double(s.handle, at)
+}
+
+// A column as text, a view of SQLite's memory: good until the next sqlite_step,
+// sqlite_reset or sqlite_finish, so copy it to keep it. NULL is empty.
+sqlite_column_text :: fun(s: ^Sql_Statement, at: i32) -> []utf8 {
+	p := sqlite3_column_text(s.handle, at)
+	n := sqlite3_column_bytes(s.handle, at)
+	if n == 0 do return []
+	return slice_from_ptr(p, i64(n))
+}
+
+// A column as bytes, a view of SQLite's memory, like sqlite_column_text's.
+sqlite_column_blob :: fun(s: ^Sql_Statement, at: i32) -> []byte {
+	p := sqlite3_column_blob(s.handle, at)
+	n := sqlite3_column_bytes(s.handle, at)
+	if n == 0 do return []
+	return slice_from_ptr(p, i64(n))
+}
+
+// Whether a column is NULL.
+sqlite_column_is_null :: fun(s: ^Sql_Statement, at: i32) -> bool {
+	return sqlite3_column_type(s.handle, at) == 5   // (SQLITE_NULL)
+}
+
+// How many columns a statement's rows have.
+sqlite_column_count :: fun(s: ^Sql_Statement) -> i32 {
+	return sqlite3_column_count(s.handle)
+}
+
+// The id of the row the connection last inserted.
+sqlite_last_id :: fun(db: ^Sqlite) -> i64 {
+	return sqlite3_last_insert_rowid(db.handle)
+}
+
+// How many rows the connection's last INSERT, UPDATE or DELETE changed.
+sqlite_changes :: fun(db: ^Sqlite) -> i64 {
+	return sqlite3_changes64(db.handle)
+}
+
+// How long to wait for another connection's write, in milliseconds, before giving
+// Sqlite_Busy. It starts at 0: not at all.
+sqlite_busy_wait :: fun(db: ^Sqlite, ms: i32) {
+	_ = sqlite3_busy_timeout(db.handle, ms)
+}
+
+// What SQLite says about the connection's last failure.
+sqlite_message :: fun(db: ^Sqlite) -> str256 {
+	out : str256
+	&out + read_cstring(255, sqlite3_errmsg(db.handle))
+	return out
+}
+
+// A result code, as an err.
+sqlite_check :: fun(rc: i32) -> err {
+	if rc != 0 do return sqlite_error_of(rc)
+}
+
+sqlite_error_of :: fun(rc: i32) -> err {
+	// (The low byte is the primary code: an extended one has more above it.)
+	code := rc & 255
+	if code == 1 do return Sqlite_Bad_Sql
+	if code == 5 or code == 6 do return Sqlite_Busy
+	if code == 19 do return Sqlite_Constraint
+	return Sqlite_Failed
+}
+
+// (A destructor argument of -1: SQLite copies what it's given.)
+SQLITE_TRANSIENT :: -1
+
+#if #linux {
+	// (FTS5's ranking uses log() from the math library.)
+	foreign static_lib "m" {
+	}
+}
+
+foreign static_lib "sqlite_build" {
+	fun sqlite3_open(path: cstring, db: ^i64) -> i32
+	fun sqlite3_close(db: i64) -> i32
+	fun sqlite3_exec(db: i64, sql: cstring, callback: i64, argument: i64, message: i64) -> i32
+	fun sqlite3_prepare_v2(db: i64, sql: ^utf8, size: i32, statement: ^i64, tail: i64) -> i32
+	fun sqlite3_finalize(statement: i64) -> i32
+	fun sqlite3_step(statement: i64) -> i32
+	fun sqlite3_reset(statement: i64) -> i32
+	fun sqlite3_bind_int64(statement: i64, at: i32, value: i64) -> i32
+	fun sqlite3_bind_double(statement: i64, at: i32, value: f64) -> i32
+	fun sqlite3_bind_text(statement: i64, at: i32, value: ^utf8, size: i32, destructor: i64) -> i32
+	fun sqlite3_bind_blob(statement: i64, at: i32, value: ^byte, size: i32, destructor: i64) -> i32
+	fun sqlite3_bind_zeroblob(statement: i64, at: i32, size: i32) -> i32
+	fun sqlite3_bind_null(statement: i64, at: i32) -> i32
+	fun sqlite3_column_int64(statement: i64, at: i32) -> i64
+	fun sqlite3_column_double(statement: i64, at: i32) -> f64
+	fun sqlite3_column_text(statement: i64, at: i32) -> ^utf8
+	fun sqlite3_column_blob(statement: i64, at: i32) -> ^byte
+	fun sqlite3_column_bytes(statement: i64, at: i32) -> i32
+	fun sqlite3_column_type(statement: i64, at: i32) -> i32
+	fun sqlite3_column_count(statement: i64) -> i32
+	fun sqlite3_last_insert_rowid(db: i64) -> i64
+	fun sqlite3_changes64(db: i64) -> i64
+	fun sqlite3_busy_timeout(db: i64, ms: i32) -> i32
+	fun sqlite3_errmsg(db: i64) -> ^byte
+}
