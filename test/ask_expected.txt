@@ -1473,7 +1473,7 @@ above (calls)   (1 direct callee, depth 0)
 === test/askcalls.mara | leaf call below all
 leaf — fun  askcalls.mara:24   (module askcalls)
 
-below (calls)   (1 direct caller, full closure (depth ∞))
+below (calls)   (2 direct callers, full closure (depth ∞))
   askcalls.mara:29  askcalls.middle
     at askcalls.mara:30  a := leaf(n) + leaf(n + 1)
     at askcalls.mara:31  return a + leaf(2)
@@ -1481,6 +1481,9 @@ below (calls)   (1 direct caller, full closure (depth ∞))
       askcalls.mara:69  askcalls.main
     askcalls.mara:44  askcalls.other_top
       askcalls.mara:69  askcalls.main  (shown above)
+  askcalls.mara:129  askcalls.second_main
+    at askcalls.mara:133  print(given(leaf(1)), given(GIVEN_LIMIT), given(1 + 2, 5))
+    askcalls.mara:69  askcalls.main  (shown above)
 === test/askcalls.mara | default_value call below
 default_value — fun  askcalls.mara:49   (module askcalls)
 
@@ -1635,6 +1638,216 @@ mara ask: no struct or module named 'Nope' in askcalls
 === test/askcalls.mara | Box.size flow
 mara ask: Box.size is a field: the answer is where it's written and read, with no types, call or flow, above or below, or depth
 [exit 1]
+=== test/askcalls.mara | note_it
+note_it — dispatch  askcalls.mara:79   (module askcalls)
+
+  Says what it's given, by its kind.
+
+above (calls)   (2 members)
+  askcalls.mara:81  askcalls.note_text
+    note_text :: fun(text: []utf8) -> i64
+  askcalls.mara:85  askcalls.note_number
+    note_number :: fun(n: i64) -> i64
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:129  askcalls.second_main
+    at askcalls.mara:130  print(note_it("a"), note_it(1), decide(1, 2), never_used(3))
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | note_it call below
+note_it — dispatch  askcalls.mara:79   (module askcalls)
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:129  askcalls.second_main
+    at askcalls.mara:130  print(note_it("a"), note_it(1), decide(1, 2), never_used(3))
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | note_it call above
+note_it — dispatch  askcalls.mara:79   (module askcalls)
+
+above (calls)   (2 members)
+  askcalls.mara:81  askcalls.note_text
+    note_text :: fun(text: []utf8) -> i64
+  askcalls.mara:85  askcalls.note_number
+    note_number :: fun(n: i64) -> i64
+=== test/askcalls.mara | askcalls.note_it
+note_it — dispatch  askcalls.mara:79   (module askcalls)
+
+  Says what it's given, by its kind.
+
+above (calls)   (2 members)
+  askcalls.mara:81  askcalls.note_text
+    note_text :: fun(text: []utf8) -> i64
+  askcalls.mara:85  askcalls.note_number
+    note_number :: fun(n: i64) -> i64
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:129  askcalls.second_main
+    at askcalls.mara:130  print(note_it("a"), note_it(1), decide(1, 2), never_used(3))
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | note_it in askcalls
+note_it — dispatch  askcalls.mara:79   (module askcalls)
+
+  Says what it's given, by its kind.
+
+above (calls)   (2 members)
+  askcalls.mara:81  askcalls.note_text
+    note_text :: fun(text: []utf8) -> i64
+  askcalls.mara:85  askcalls.note_number
+    note_number :: fun(n: i64) -> i64
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:129  askcalls.second_main
+    at askcalls.mara:130  print(note_it("a"), note_it(1), decide(1, 2), never_used(3))
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | note_it flow
+mara ask: 'note_it' is a dispatch group: flow is its members', so ask one of them. `mara ask note_it` lists them.
+[exit 1]
+=== test/askcalls.mara | note_i
+mara ask: no exact match for 'note_i' in askcalls — did you mean:
+    dispatch note_it  askcalls.mara:79
+  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
+[exit 1]
+=== test/askcalls.mara | lef
+mara ask: no exact match for 'lef' in askcalls — did you mean:
+    field    Box.left_only  askcalls.mara:11
+    fun      leaf  askcalls.mara:24
+  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)
+[exit 1]
+=== test/askcalls.mara | budget in decide
+budget — param in decide  askcalls.mara:91   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  budget   (a param: what 1 call of decide passes)
+    askcalls.mara:130  second_main  1
+
+below (flow) — what this variable affects  (forward slice)
+
+  budget  ->  1 statement + 3 branches
+    decl    limit          askcalls.mara:92
+
+  decides (3)   (`control` adds what runs inside them)
+    if     askcalls.mara:93  if start > budget do return 1
+    if     askcalls.mara:95  if k > limit do break
+    if     askcalls.mara:97  if budget == 2 do return 2
+=== test/askcalls.mara | start in decide
+start — param in decide  askcalls.mara:91   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  start   (a param: what 1 call of decide passes)
+    askcalls.mara:130  second_main  2
+
+below (flow) — what this variable affects  (forward slice)
+
+  start  ->  1 branch
+
+  decides (1)   (`control` adds what runs inside them)
+    if     askcalls.mara:93  if start > budget do return 1
+=== test/askcalls.mara | shown in only_printed
+shown — param in only_printed  askcalls.mara:101   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  shown   (a param: what 1 call of only_printed passes)
+    askcalls.mara:131  second_main  4
+
+below (flow) — what this variable affects  (forward slice)
+
+  shown  ->  1 call
+
+  1 call not followed  (foreign / indirect / no body)
+=== test/askcalls.mara | idle in never_used
+idle — param in never_used  askcalls.mara:105   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  idle   (a param: what 1 call of never_used passes)
+    askcalls.mara:130  second_main  3
+
+below (flow) — what this variable affects  (forward slice)
+
+  idle  ->  nothing: it's never used
+=== test/askcalls.mara | kept in discarded
+kept — param in discarded  askcalls.mara:110   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  kept   (a param: what 1 call of discarded passes)
+    askcalls.mara:132  second_main  5
+
+below (flow) — what this variable affects  (forward slice)
+
+  kept  ->  nothing this view follows, but it's used in 1 place: `mara ask what at askcalls.mara:110:18` says where
+=== test/askcalls.mara | a in given
+a — param in given  askcalls.mara:115   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  a   (a param: what 3 calls of given pass)
+    askcalls.mara:133  second_main  leaf(1)
+    askcalls.mara:133  second_main  GIVEN_LIMIT
+    askcalls.mara:133  second_main  1 + 2
+
+below (flow) — what this variable affects  (forward slice)
+
+  a  ->  the return
+=== test/askcalls.mara | b in given
+b — param in given  askcalls.mara:115   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  b   (a param: what 3 calls of given pass)
+    askcalls.mara:133  second_main  (its default)
+    askcalls.mara:133  second_main  (its default)
+    askcalls.mara:133  second_main  5
+
+below (flow) — what this variable affects  (forward slice)
+
+  b  ->  the return
+=== test/askcalls.mara | by in bump
+by — param in bump  askcalls.mara:125   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  by   (a param: what 2 calls of bump pass)
+    askcalls.mara:135  second_main  2
+    askcalls.mara:136  second_main  3
+
+below (flow) — what this variable affects  (forward slice)
+
+  by  ->  the return
+=== test/askcalls.mara | counter in bump
+counter — param in bump  askcalls.mara:125   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  counter   (a param: what 2 calls of bump pass)
+    askcalls.mara:135  second_main  c
+    askcalls.mara:136  second_main  c
+
+below (flow) — what this variable affects  (forward slice)
+
+  counter  ->  the return
+=== test/askcalls.mara | budget in decide control
+budget — param in decide  askcalls.mara:91   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  budget   (a param: what 1 call of decide passes)
+    askcalls.mara:130  second_main  1
+
+below (flow) — what this variable affects  (forward slice)
+
+  budget  ->  1 statement + 3 branches
+    decl    limit          askcalls.mara:92
+
+  control — runs inside branches/loops it drives (1)
+    loop    k              askcalls.mara:94
+
+  decides (3)
+    if     askcalls.mara:93  if start > budget do return 1
+    if     askcalls.mara:95  if k > limit do break
+    if     askcalls.mara:97  if budget == 2 do return 2
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 

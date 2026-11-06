@@ -68,6 +68,8 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
     }
     if len(inputs) == 0 {
         switch {
+        case b.kind == .Param && (root == nil || root.kind == .Param):
+            ask_write_param_calls(bb, checked, b)
         case len(later) > 0 && (root == nil || !root.valued):
             fmt.sbprintf(bb, "  %s   (declared without a value — but written again below)\n", b.name)
         case len(later) > 0:

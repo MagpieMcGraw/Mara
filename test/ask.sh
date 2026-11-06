@@ -206,6 +206,48 @@ got=$(cd "$ROOT/code/os" && "$MARA" ask what at time.mara:$line:2 2>&1)
 case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/os/ didn't find it: $got; " ;; esac
 
 serve_ok=yes
+# A module in a folder a build.mara names is the project's, in the module map and to a
+# shape asked about, though its path is whole; the stdlib's still isn't. And a whole
+# path can say where to ask. (In the work folder: no build.mara goes in test/.)
+dirs_problems=""
+dirs_app=$WORK/dirs_check/app
+dirs_shared=$WORK/dirs_check/shared
+mkdir -p "$dirs_app" "$dirs_shared"
+cat > "$dirs_app/build.mara" <<'MARA'
+module build
+
+use mara.build
+
+app :: Build(){dirs = ["../shared"]}
+MARA
+cat > "$dirs_app/app.mara" <<'MARA'
+module app
+
+use mara.core
+use shared_part
+
+main :: fun() {
+	h := Holder()
+	print(h.items.len)
+}
+MARA
+cat > "$dirs_shared/shared_part.mara" <<'MARA'
+module shared_part
+
+Holder :: struct {
+	items: [16]i64
+}
+MARA
+dirs_map=$(cd "$dirs_app" && "$MARA" ask 2>&1 | tr -d '')
+dirs_group() { printf '%s
+' "$dirs_map" | awk -v m="$1" '/^  your code/{g="your code"} /^  stdlib/{g="stdlib"} $1==m{print g}'; }
+[ "$(dirs_group shared_part)" = "your code" ] || dirs_problems+="shared_part is '$(dirs_group shared_part)' in the map; "
+[ "$(dirs_group mara.core)" = "stdlib" ] || dirs_problems+="mara.core is '$(dirs_group mara.core)' in the map; "
+( cd "$dirs_app" && "$MARA" ask '[16]i64' 2>&1 ) | grep -q '1 declared' || dirs_problems+="the shape wasn't found; "
+dirs_whole=$dirs_shared/shared_part.mara
+command -v cygpath > /dev/null && dirs_whole=$(cygpath -w "$dirs_whole")
+( cd "$dirs_app" && "$MARA" ask what at "$dirs_whole:4:2" 2>&1 ) | head -1 | grep -q '^items' || dirs_problems+="a whole path wasn't a place to ask; "
+
 if ! diff -u "$actual" "$served" > "$WORK/serve.diff"; then
   serve_ok=no
 fi
@@ -237,4 +279,9 @@ if [ -z "$follow_problems" ]; then
   echo "FOLLOW: one window answers for each module"
 else
   echo "FOLLOW: $follow_problems"; exit 1
+fi
+if [ -z "$dirs_problems" ]; then
+  echo "DIRS: a folder build.mara names is the project's"
+else
+  echo "DIRS: $dirs_problems"; exit 1
 fi

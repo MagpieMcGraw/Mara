@@ -169,6 +169,18 @@ ask_scopes :: proc(q: Ask_Query, all_files, files: map[string][dynamic]^Source_F
     return in_, ""
 }
 
+// Whether an `at` says a column: it ends `<line>:<col>`, whatever colons the path
+// before them has (a whole path's drive).
+ask_at_has_column :: proc(at: string) -> bool {
+    col := strings.last_index_byte(at, ':')
+    if col <= 0 { return false }
+    line := strings.last_index_byte(at[:col], ':')
+    if line <= 0 { return false }
+    _, line_ok := ask_parse_depth(at[line + 1:col])
+    _, col_ok := ask_parse_depth(at[col + 1:])
+    return line_ok && col_ok
+}
+
 // What queries are answered against: the program, checked once.
 Ask_Session :: struct {
     checked:      ^Checked_Program,
@@ -183,7 +195,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // Bare `mara ask` — the module map (the project at a glance). `at`
     // identifies a variable without a name, so it is not the bare form.
     if q.target == "" && q.at == "" {
-        return ask_module_map(s.checked, s.all_files, s.compiler_dir, s.pkg), true
+        return ask_module_map(s.checked, s.all_files, s.pkg), true
     }
     if q.target == "#tokens" { return ask_tokens(s, q, in_) }
     // `#unsaved`: what an editor has shown for a line that isn't in the file on
@@ -194,12 +206,12 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // disambiguates a NAMED variable) it needs no target.
     // `what at <file>:<line>:<col>` — the same point, to read.
     if q.kind == "what" {
-        if q.target != "" || strings.count(q.at, ":") != 2 {
+        if q.target != "" || !ask_at_has_column(q.at) {
             return "mara ask: `what` is about a point — `mara ask what at <file>:<line>:<col>`\n", false
         }
         return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true)
     }
-    if q.target == "" && strings.count(q.at, ":") == 2 {
+    if q.target == "" && ask_at_has_column(q.at) {
         return ask_at_point(&build_tree, s.all_files, s.checked.annot, &s.checked.code, q.at)
     }
     // `[N!]T`, `^[]byte` — a shape: where it's written, what's declared of it
@@ -212,7 +224,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
             desc = fmt.tprintf("module %s", in_.module)
         } else {
             for name, files in s.files {
-                if len(files) > 0 && !ask_file_is_stdlib(files[0].path, s.compiler_dir) { modules[name] = true }
+                if !ask_is_stdlib(files[:]) { modules[name] = true }
             }
             desc = fmt.tprintf("%s's own modules — `in <module>` for one, the stdlib's too", s.pkg)
         }

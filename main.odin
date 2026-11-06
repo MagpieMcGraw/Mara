@@ -92,6 +92,7 @@ Source_File :: struct {
     first_token, end_token: Token_Id,   // its range of build_tokens (lex_file)
     lines:   [dynamic]u32,     // where each of its lines starts (lex_file)
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
+    stdlib:  bool,             // found beside the compiler, not in the project's folders
 }
 
 // Read just enough of `source` to know which `module <name>` it declares.
@@ -230,6 +231,7 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
         folder:  map[string]string,
         scanned: map[string]bool,   // (the folders searched, by their whole path)
         problem: ^string,
+        stdlib:  bool,
     }
     scan_dir :: proc(dir: string, found: ^Found) {
         key := dir
@@ -252,6 +254,7 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
             f.module  = pkg
             f.source  = source
             f.imports = extract_imports(source)
+            f.stdlib  = found.stdlib
             if other, seen := found.folder[pkg]; seen && other != dir {
                 if found.problem^ == "" {
                     found.problem^ = fmt.aprintf("Error: module '%s' is in two folders, %s and %s: a module's files are in one folder. Rename one, or leave one folder out.\n", pkg, folder_name(other), folder_name(dir))
@@ -269,7 +272,7 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
     }
 
     if compiler_dir != "" {
-        stdlib := Found{out = &result, problem = &problem}
+        stdlib := Found{out = &result, problem = &problem, stdlib = true}
         for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &stdlib) }
     }
 
@@ -1497,7 +1500,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     <name>         the subject's natural view, both directions — a type's structure,
                    a function's calls, a variable's flow (add types|call|flow to switch).
                    A function or a type says what it is first: its signature, its doc
-                   comment. <module>.<name> finds it in that module, as a call tree writes it
+                   comment. <module>.<name> finds it in that module, as a call tree writes it.
+                   A dispatch group: its members (above), every call of any of them (below)
     <struct>.<field>  where the field is written and read, in every value: 'what at' at
                    its declaration. Also <field> in <struct>, or <field> if no type or
                    function has the name and one struct has the field
@@ -1511,7 +1515,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                    it's written and what's written
     flow           only the data-flow slice. For a variable, 'flow above' is the
                    LINEAGE producer tree: what builds it, following every input
-                   into the calls that make it (address a var: <var> in <fn>, at F:L)
+                   into the calls that make it (address a var: <var> in <fn>, at F:L);
+                   a param's is what each call passes. 'flow below' is what it feeds
+                   and the branches it decides
     control        also show CONTROL dependence — the branches/loops a value drives
                    (or that guard what feeds it). Off by default: it needs the
                    post-dominator pass, the analyzer's one slow step. Data is hot.
@@ -1942,7 +1948,7 @@ main :: proc() {
     if args.pkg_name not_in all_files {
         if args.ask {
             q := args.ask_query
-            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, q.target, ask_filters_str(q.kind, q.dir)))
+            fmt.print(ask_no_module_here(all_files, args.pkg_name, q.target, ask_filters_str(q.kind, q.dir)))
         } else {
             fmt.print(module_missing(all_files, args.pkg_name))
         }

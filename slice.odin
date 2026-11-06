@@ -597,21 +597,61 @@ render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowe
 }
 
 // Render the "X -> ..." summary of a forward slice: a value can reach the return,
-// other statements (definitions), and/or calls it feeds (detailed below as param
-// landings) — joined, or "nothing" when it reaches none of the three.
+// other statements (definitions), calls it feeds (detailed below as param landings),
+// and/or the branches it decides — joined, or "" when it reaches none of them.
 @(private="file")
-flow_affects_tail :: proc(ret: bool, n_stmts, n_calls: int) -> string {
-    parts: [3]string
-    k := 0
-    if ret         { parts[k] = "the return";                  k += 1 }
-    if n_stmts > 0 { parts[k] = ask_plural(n_stmts, "statement"); k += 1 }
-    if n_calls > 0 { parts[k] = ask_plural(n_calls, "call");      k += 1 }
-    switch k {
-    case 0:  return "nothing"
-    case 1:  return parts[0]
-    case 2:  return fmt.tprintf("%s + %s", parts[0], parts[1])
-    case:    return fmt.tprintf("%s + %s + %s", parts[0], parts[1], parts[2])
+flow_affects_tail :: proc(ret: bool, n_stmts, n_calls, n_branches: int) -> string {
+    parts := make([dynamic]string, context.temp_allocator)
+    if ret            { append(&parts, "the return") }
+    if n_stmts > 0    { append(&parts, ask_plural(n_stmts, "statement")) }
+    if n_calls > 0    { append(&parts, ask_plural(n_calls, "call")) }
+    if n_branches > 0 { append(&parts, fmt.tprintf("%d branch%s", n_branches, "" if n_branches == 1 else "es")) }
+    return strings.join(parts[:], " + ", context.temp_allocator)
+}
+
+// The branches a value decides: every if, loop and match in a fun whose condition
+// reads one of `values`, once each. No post-dominators: what's guarded by them is the
+// slow part, and `control`'s. A `?` is no decision of the code's.
+@(private="file")
+slice_decides :: proc(checked: ^Checked_Program, ft: ^Type_Scope, values: map[^Def]bool) -> [dynamic]Guard {
+    out: [dynamic]Guard
+    f := du_fn(checked, ft)
+    if f == nil || f.g == nil { return out }
+    g := f.g
+    for r in f.runs {
+        ops := graph_run(g, int(r))
+        if len(ops) == 0 { continue }
+        last := ops[len(ops) - 1]
+        #partial switch graph_op_of(g, last) {
+        case .Branch, .Switch:
+        case:
+            continue
+        }
+        if graph_written(g, last) == .Implied { continue }
+        st := graph_stmt(g, last)
+        if st.node == 0 { continue }
+        kind: Guard_Kind
+        #partial switch st.kind {
+        case .If:    kind = .If
+        case .Loop:  kind = .For
+        case .Match: kind = .Match
+        case:        continue
+        }
+        uses: [dynamic]Du_Use
+        defer delete(uses)
+        for c in graph_operands(g, last) { du_value_uses(checked, f, c, true, &uses) }
+        reads := false
+        for u in uses {
+            reach, _ := u.fn.reaching[u.op]
+            for d in reach { reads ||= values[d] }
+        }
+        if !reads { continue }
+        known := false
+        for o in out { known ||= o.span == st.span }
+        if !known { append(&out, Guard{kind = kind, span = st.span}) }
     }
+    slice.sort_by(out[:], proc(a, b: Guard) -> bool { return span_before(a.span, b.span) })
+    return out
 }
 
 @(private="file")
@@ -983,11 +1023,31 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     landings, hop1_calls, unfollowed := flow_reach(checked, seeds, flow_max_hops(depth))
     defer delete(landings)
 
+    decides := slice_decides(checked, b.fn, reached)
+    defer delete(decides)
+
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
-    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), hop1_calls))
+    tail := flow_affects_tail(ret, len(stmts), hop1_calls, len(decides))
+    if tail != "" {
+        fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, tail)
+    } else if named := hit_name_count(&build_tree, checked.annot, b.tok); named > 0 {
+        // (Say "nothing" only of what's never used: a use this view doesn't follow is
+        // still a use.)
+        tok := build_tokens[b.tok]
+        fmt.sbprintf(bb, "\n  %s  ->  nothing this view follows, but it's used in %s: `mara ask what at %s:%d` says where\n",
+                     b.name, ask_plural(named, "place"), ask_loc(b.span), token_col(tok))
+    } else {
+        fmt.sbprintf(bb, "\n  %s  ->  nothing: it's never used\n", b.name)
+    }
     // (Its own definitions: its value evolving, not a downstream effect.)
     render_stmts(bb, "", stmts[:], false, own = b)
     render_stmts(bb, "control — runs inside branches/loops it drives", ctrl_stmts[:], false, own = b)
+    if len(decides) > 0 {
+        fmt.sbprintf(bb, "\n  decides (%d)%s\n", len(decides), "" if checked.du.want_control else "   (`control` adds what runs inside them)")
+        for d in decides {
+            fmt.sbprintf(bb, "    %-6s %s  %s\n", guard_word(d.kind), ask_loc(d.span), hit_source_line(build_tokens[d.span.tok]))
+        }
+    }
     render_landings(bb, landings[:], unfollowed)
 }
 

@@ -113,6 +113,30 @@ test/askcalls.mara | nope in Box
 test/askcalls.mara | Nope.size
 test/askcalls.mara | Box.size flow
 
+# A dispatch group: what it chooses among, every call of any of them, no other view;
+# by name or with its module. A suggestion can be a group or a field.
+test/askcalls.mara | note_it
+test/askcalls.mara | note_it call below
+test/askcalls.mara | note_it call above
+test/askcalls.mara | askcalls.note_it
+test/askcalls.mara | note_it in askcalls
+test/askcalls.mara | note_it flow
+test/askcalls.mara | note_i
+test/askcalls.mara | lef
+
+# A param's flow: what each call passes it, a default as such; the branches it decides,
+# through a local too; and "nothing" only of what's never used.
+test/askcalls.mara | budget in decide
+test/askcalls.mara | start in decide
+test/askcalls.mara | shown in only_printed
+test/askcalls.mara | idle in never_used
+test/askcalls.mara | kept in discarded
+test/askcalls.mara | a in given
+test/askcalls.mara | b in given
+test/askcalls.mara | by in bump
+test/askcalls.mara | counter in bump
+test/askcalls.mara | budget in decide control
+
 # Calls in operator form are call-graph edges.
 test/operator_calls.mara | sum
 test/operator_calls.mara | sum call above

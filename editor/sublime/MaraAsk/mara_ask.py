@@ -169,8 +169,8 @@ def _flow_highlights(out):
         if line.startswith(("above (flow)", "below (flow)")):
             in_landing = False
             continue
-        if "into calls" in line:          # landings follow until the next section
-            in_landing = True
+        if "into calls" in line or line.startswith("  decides ("):   # landings, and the
+            in_landing = True             # branches it decides: to the next section
             continue
         if subject is None:
             hm = _HEADER_RE.match(line)

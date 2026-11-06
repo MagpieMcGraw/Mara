@@ -72,4 +72,66 @@ main :: fun() {
 	grow(&box)
 	pair : Pair(i64) = {first = 5, second = 6}
 	print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+	second_main(&box)
+}
+
+// Says what it's given, by its kind.
+note_it :: dispatch { note_text, note_number }
+
+note_text :: fun(text: []utf8) -> i64 {
+	return text.len
+}
+
+note_number :: fun(n: i64) -> i64 {
+	return note_text("a number") + n
+}
+
+// Its budget only decides: three branches, through a local for one, and nothing
+// it computes.
+decide :: fun(budget: i64, start: i64) -> i64 {
+	limit := budget
+	if start > budget do return 1
+	for k in 0:3 {
+		if k > limit do break
+	}
+	if budget == 2 do return 2
+	return 3
+}
+
+only_printed :: fun(shown: i64) {
+	print(shown)
+}
+
+never_used :: fun(idle: i64) -> i64 {
+	return 1
+}
+
+// Read, into nothing.
+discarded :: fun(kept: i64) {
+	_ = kept
+}
+
+// A param given a call's result, a constant, an expression and its default.
+given :: fun(a: i64, b: i64 = 4) -> i64 {
+	return a + b
+}
+
+GIVEN_LIMIT :: 9
+
+Counter :: struct {
+	n: i64
+}
+
+bump :: fun(counter: Counter, by: i64) -> i64 {
+	return counter.n + by
+}
+
+second_main :: fun(box: ^Box) {
+	print(note_it("a"), note_it(1), decide(1, 2), never_used(3))
+	only_printed(4)
+	discarded(5)
+	print(given(leaf(1)), given(GIVEN_LIMIT), given(1 + 2, 5))
+	c := Counter{n = 1}
+	print(c.bump(2))
+	print(bump(c, 3))
 }

@@ -71,7 +71,6 @@ token_index_at :: proc(tokens: []Token, line, col: int) -> (int, bool) {
 // --- entry ------------------------------------------------------------------
 
 // The source text a span covers, trimmed to one line for display.
-@(private="file")
 span_text :: proc(src: string, s: Span) -> string {
     if s.end <= s.tok { return "" }
     first, last := build_tokens[s.tok], build_tokens[s.end - 1]
@@ -224,21 +223,23 @@ Hit_Point :: struct {
 // false.
 @(private="file")
 hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: string) -> (p: Hit_Point, msg: string, ok: bool) {
-    parts := strings.split(spec, ":")
-    defer delete(parts)
-    if len(parts) != 3 {
+    // (From the end: a whole path's drive has a colon too.)
+    col_at := strings.last_index_byte(spec, ':')
+    line_at := strings.last_index_byte(spec[:max(col_at, 0)], ':')
+    if col_at <= 0 || line_at <= 0 {
         return p, fmt.tprintf("mara ask: `at %s` — expected <file>:<line>:<col>\n", spec), false
     }
-    line, line_ok := strconv.parse_int(parts[1])
-    col,  col_ok  := strconv.parse_int(parts[2])
+    file := spec[:line_at]
+    line, line_ok := strconv.parse_int(spec[line_at + 1:col_at])
+    col,  col_ok  := strconv.parse_int(spec[col_at + 1:])
     if !line_ok || !col_ok || line < 1 || col < 1 {
         return p, fmt.tprintf("mara ask: `at %s` — line and column must be positive integers\n", spec), false
     }
 
     // (A file's name alone can be several files, in the stdlib or ours: the
     // one at that path from here if there is one, else one in this build.)
-    want := filepath.base(parts[0])
-    named := path_key(parts[0])
+    want := filepath.base(file)
+    named := path_key(file)
     src_file: ^Source_File
     search: for _, files in all_files {
         for f in files {
@@ -251,7 +252,7 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
         }
     }
     if src_file == nil {
-        return p, fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false
+        return p, fmt.tprintf("mara ask: no source file named '%s'\n", file), false
     }
     return hit_point_in(t, src_file, want, line, col)
 }
@@ -323,6 +324,19 @@ ref_name_token :: proc(t: ^Tree, n: Tree_Id, name: string) -> (Token_Id, bool) {
     if token_text(build_tokens[t.end[n] - 1]) == name { return t.end[n] - 1, true }
     if token_text(build_tokens[t.first[n]]) == name { return t.first[n], true }
     return 0, false
+}
+
+// How many places name a declaration, its own aside, a generic's instances once.
+hit_name_count :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> int {
+    name := token_text(build_tokens[decl])
+    seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    for inst, i in a.instances {
+        for ref, k in a.refs[i] {
+            if ref.decl != decl { continue }
+            if tok, named := ref_name_token(t, inst.lo + Tree_Id(k), name); named && tok != decl { seen[tok] = true }
+        }
+    }
+    return len(seen)
 }
 
 // Every reference in the program, by the declaration it names (its name's

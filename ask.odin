@@ -428,31 +428,58 @@ ask_keyword_hint :: proc(tok: string) -> (hint: string, ok: bool) {
     return "", false
 }
 
-// Top-N definitions by fuzzy score against `target`, ties broken by name for
-// determinism. Used only when exact resolution returns nothing.
-ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
+// Top-N of what can be asked about, by fuzzy score against `target`, ties broken by
+// name for determinism, and how many more there were. Used only when exact resolution
+// returns nothing.
+ask_fuzzy :: proc(checked: ^Checked_Program, target: string, scope_file: string, limit: int, scope_module := "") -> (out: [dynamic]Ask_Match, cut: int) {
     Scored :: struct { m: Ask_Match, score: int }
-    pool: [dynamic]Scored
-    for m in ask_all_definitions(table, scope_file, funcs, scope_module) {
+    pool := make([dynamic]Scored, context.temp_allocator)
+    for m in ask_all_definitions(checked.table, scope_file, checked.functions, scope_module) {
         if sc := ask_fuzzy_score(target, m.label); sc > 0 {
             append(&pool, Scored{ m = m, score = sc })
         }
     }
-    out: [dynamic]Ask_Match
-    n := len(pool)
-    k := min(limit, n)
-    for i in 0 ..< k {                       // partial selection of the top k
-        best := i
-        for j in i + 1 ..< n {
-            if pool[j].score > pool[best].score ||
-               (pool[j].score == pool[best].score && pool[j].m.label < pool[best].m.label) {
-                best = j
-            }
+    // (Dispatch groups and fields can be asked for by name too.)
+    for tok in checked.rs.dispatches {
+        t := build_tokens[tok]
+        f := build_files[t.file]
+        if scope_module != "" && f.module != scope_module { continue }
+        if scope_file != "" && filepath.base(f.path) != scope_file { continue }
+        if sc := ask_fuzzy_score(target, token_text(t)); sc > 0 {
+            append(&pool, Scored{ m = {label = token_text(t), sub = "dispatch", span = token_span(t)}, score = sc })
         }
-        pool[i], pool[best] = pool[best], pool[i]
-        append(&out, pool[i].m)
     }
-    return out
+    seen_fields := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    for ts in ask_all_structs(checked.table) {
+        if scope_file != "" && filepath.base(span_file(ts.body_span)) != scope_file { continue }
+        if scope_module != "" && ts.home_package != scope_module { continue }
+        for field in ts.fields {
+            if field.decl == 0 || seen_fields[field.decl] { continue }
+            sc := ask_fuzzy_score(target, field.name)
+            if sc == 0 { continue }
+            seen_fields[field.decl] = true
+            owner := token_text(build_tokens[ts.body_span.tok]) if ts.body_span.tok != 0 else ask_label(ts)
+            append(&pool, Scored{ m = {label = fmt.tprintf("%s.%s", owner, field.name), sub = "field", span = token_span(build_tokens[field.decl])}, score = sc })
+        }
+    }
+    slice.sort_by(pool[:], proc(x, y: Scored) -> bool {
+        if x.score != y.score { return x.score > y.score }
+        return x.m.label < y.m.label
+    })
+    for s, i in pool {
+        if i == limit { break }
+        append(&out, s.m)
+    }
+    return out, max(len(pool) - limit, 0)
+}
+
+// Suggestions as a list, saying how many didn't fit.
+@(private="file")
+ask_write_suggestions :: proc(b: ^strings.Builder, suggestions: []Ask_Match, cut: int) {
+    for m in suggestions {
+        fmt.sbprintf(b, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
+    }
+    if cut > 0 { fmt.sbprintf(b, "    (and %d more)\n", cut) }
 }
 
 // --- variant fallback: a variant name isn't a queryable type --------------
@@ -773,9 +800,16 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         if surface, is_mod := ask_module_surface(checked, target, kind); is_mod {
             return surface, true
         }
+        // A dispatch group: by name, or with its module as `logging.note`.
+        dot := strings.last_index_byte(target, '.')
+        group_name, group_module := target, scope_module
+        if dot > 0 { group_name, group_module = target[dot + 1:], target[:dot] }
+        if groups := ask_find_dispatches(checked, group_name, scope_file, group_module); len(groups) > 0 {
+            return ask_dispatch_answer(checked, groups[:], group_name, kind, dir, pkg, depth)
+        }
         // A name with a dot: a definition of that module, as a call tree's rows write
         // it (`scene.read_actor_look`), or a struct's field.
-        if dot := strings.last_index_byte(target, '.'); dot > 0 {
+        if dot > 0 {
             matches = ask_resolve_all(checked.table, target[dot + 1:], scope_file, checked.functions, target[:dot])
             if len(matches) == 0 {
                 return ask_member(checked, target[:dot], target[dot + 1:], kind, dir, pkg, depth, scope_file, scope_module)
@@ -793,12 +827,10 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
             return strings.to_string(b), false
         }
         // No exact hit — offer the closest names rather than a bare miss.
-        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT, checked.functions, scope_module)
+        suggestions, cut := ask_fuzzy(checked, target, scope_file, ASK_FUZZY_LIMIT, scope_module)
         if len(suggestions) > 0 {
             fmt.sbprintf(&b, "mara ask: no exact match for '%s' in %s — did you mean:\n", target, scope_desc)
-            for m in suggestions {
-                fmt.sbprintf(&b, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
-            }
+            ask_write_suggestions(&b, suggestions[:], cut)
         } else {
             fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
         }
@@ -1077,9 +1109,8 @@ ask_member :: proc(checked: ^Checked_Program, owner_text, member, kind, dir, pkg
     sb := strings.builder_make()
     if len(owners) == 0 {
         fmt.sbprintf(&sb, "mara ask: no struct or module named '%s' in %s\n", owner_text, pkg)
-        for m in ask_fuzzy(checked.table, owner, scope_file, ASK_FUZZY_LIMIT, checked.functions, module) {
-            fmt.sbprintf(&sb, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
-        }
+        suggestions, cut := ask_fuzzy(checked, owner, scope_file, ASK_FUZZY_LIMIT, module)
+        ask_write_suggestions(&sb, suggestions[:], cut)
         return strings.to_string(sb), false
     }
     if len(owners) > 1 {
@@ -1440,9 +1471,6 @@ ask_calls_unshown :: proc(w: ^Ask_Call_Walk, roots: []int) -> int {
 @(private="file")
 render_fn_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int, forward: bool) {
     cg := &checked.call_graph
-    hops := 1 if depth == ASK_DEPTH_OMITTED else depth
-    sites := cg_call_sites(checked)
-    w := Ask_Call_Walk{cg = cg, adj = cg.out_edges[:] if forward else cg.in_edges[:], forward = forward, sites = sites}
     roots := make([dynamic]int, context.temp_allocator)
     if nf, ok := cg.index_of[ft]; ok {
         key := ask_call_key(cg, nf)
@@ -1450,7 +1478,17 @@ render_fn_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
             if ask_call_key(cg, i) == key { append(&roots, i) }
         }
     }
-    direct := len(ask_call_funs(&w, roots[:]))
+    render_calls_of(b, checked, roots[:], depth, forward)
+}
+
+// The call tree of the funs at some nodes of the call graph, as one.
+@(private="file")
+render_calls_of :: proc(b: ^strings.Builder, checked: ^Checked_Program, roots: []int, depth: int, forward: bool) {
+    cg := &checked.call_graph
+    hops := 1 if depth == ASK_DEPTH_OMITTED else depth
+    sites := cg_call_sites(checked)
+    w := Ask_Call_Walk{cg = cg, adj = cg.out_edges[:] if forward else cg.in_edges[:], forward = forward, sites = sites}
+    direct := len(ask_call_funs(&w, roots))
     dir_word, row_word := "above", "direct callee"
     if !forward { dir_word, row_word = "below", "direct caller" }
     fmt.sbprintf(b, "\n%s (calls)   (%s, %s)\n", dir_word, ask_plural(direct, row_word), ask_depth_label(hops))
@@ -1463,10 +1501,169 @@ render_fn_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
         return
     }
     for r in roots { w.seen[ask_call_key(cg, r)] = true }
-    ask_walk_calls(&w, b, roots[:], 1, hops if hops >= 0 else (1 << 30))
-    if more := ask_calls_unshown(&w, roots[:]); more > 0 {
+    ask_walk_calls(&w, b, roots, 1, hops if hops >= 0 else (1 << 30))
+    if more := ask_calls_unshown(&w, roots); more > 0 {
         fmt.sbprintf(b, "  (%d more: add a depth, or 'all')\n", more)
     }
+}
+
+// --- a dispatch group --------------------------------------------------------
+
+// The dispatch groups called `name`, in source order, a body's too. The groups of one
+// name are one to a call that sees them, so they're asked about as one.
+@(private="file")
+ask_find_dispatches :: proc(checked: ^Checked_Program, name, scope_file, scope_module: string) -> [dynamic]Token_Id {
+    out: [dynamic]Token_Id
+    for tok in checked.rs.dispatches {
+        t := build_tokens[tok]
+        if token_text(t) != name { continue }
+        f := build_files[t.file]
+        if scope_module != "" && f.module != scope_module { continue }
+        if scope_file != "" && filepath.base(f.path) != scope_file { continue }
+        append(&out, tok)
+    }
+    slice.sort(out[:])
+    return out
+}
+
+// What groups choose among: the declarations of their funs, a group among them by its
+// own, each once.
+@(private="file")
+ask_dispatch_members :: proc(checked: ^Checked_Program, groups: []Token_Id) -> [dynamic]Token_Id {
+    out: [dynamic]Token_Id
+    visited := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    add :: proc(r: ^Resolver, group: Token_Id, out: ^[dynamic]Token_Id, visited: ^map[Token_Id]bool) {
+        if visited[group] { return }
+        visited[group] = true
+        def := r.defs[group] or_else 0
+        if def == 0 { return }
+        for tok in tree_token_list(&build_tree, build_tree.a[build_tree.b[def]]) {
+            ref := r.token_refs[tok] or_else {}
+            if ref.decl == 0 { continue }
+            if r.dispatches[ref.decl] {
+                add(r, ref.decl, out, visited)
+            } else if !slice.contains(out[:], ref.decl) {
+                append(out, ref.decl)
+            }
+        }
+    }
+    for g in groups { add(checked.rs, g, &out, &visited) }
+    return out
+}
+
+// A dispatch group asked about: what it chooses among (above), and every call of any
+// of them, by the group's name or a member's (below), a member's own calls of another
+// left out. It has no types or flow of its own: a call's are its member's.
+@(private="file")
+ask_dispatch_answer :: proc(checked: ^Checked_Program, groups: []Token_Id, name, kind, dir, pkg: string, depth: int) -> (out: string, ok: bool) {
+    if kind != "" && kind != "call" {
+        return fmt.tprintf("mara ask: '%s' is a dispatch group: %s is its members', so ask one of them. `mara ask %s` lists them.\n", name, kind, name), false
+    }
+    b := strings.builder_make()
+    for g in groups {
+        tok := build_tokens[g]
+        fmt.sbprintf(&b, "%s — dispatch  %s   (module %s)\n", name, ask_loc(token_span(tok)), build_files[tok.file].module)
+    }
+    if kind == "" && dir == "" {
+        for g in groups {
+            doc := doc_comment_above(build_tokens[g])
+            if doc == "" { continue }
+            strings.write_byte(&b, '\n')
+            for line in strings.split_lines(doc, context.temp_allocator) {
+                if line == "" { strings.write_byte(&b, '\n') } else { fmt.sbprintf(&b, "  %s\n", line) }
+            }
+        }
+    }
+    members := ask_dispatch_members(checked, groups)
+    defer delete(members)
+    if dir != "below" {
+        fmt.sbprintf(&b, "\nabove (calls)   (%s)\n", ask_plural(len(members), "member"))
+        for m in members {
+            tok := build_tokens[m]
+            fmt.sbprintf(&b, "  %s  %s.%s\n", ask_loc(token_span(tok)), build_files[tok.file].module, token_text(tok))
+            if signature := ask_signature(m); signature != "" { fmt.sbprintf(&b, "    %s\n", signature) }
+        }
+    }
+    if dir != "above" {
+        cg := &checked.call_graph
+        roots := make([dynamic]int, context.temp_allocator)
+        for s, i in cg.nodes {
+            span := ask_span(s)
+            for m in members {
+                // (A foreign fun's span starts at its `fun`, not its name.)
+                if span.tok == m || (ask_is_foreign(s) && span.tok <= m && m < span.end) {
+                    append(&roots, i)
+                    break
+                }
+            }
+        }
+        render_calls_of(&b, checked, roots[:], depth, forward = false)
+    }
+    return strings.to_string(b), true
+}
+
+// --- what a param's given ----------------------------------------------------
+
+// How many of a param's calls `flow above` lists: a utility's would be most of the
+// program, and `<fun> call below` has every one.
+ASK_PARAM_CALLS_SHOWN :: 20
+
+// What each call of a param's fun passes it: where the call's written, the fun it's
+// in, what's written for it. The lines a call tree gives, cut to what the param gets.
+ask_write_param_calls :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+    cg := &checked.call_graph
+    fn_name := ask_written_name(b.fn)
+    Row :: struct { node: Tree_Id, caller: ^Type_Scope }
+    rows := make([dynamic]Row, context.temp_allocator)
+    if nf, known := cg.index_of[b.fn]; known {
+        key := ask_call_key(cg, nf)
+        sites := cg_call_sites(checked)
+        for edge, nodes in sites {
+            to, has := cg.index_of[edge.to]
+            if !has || ask_call_key(cg, to) != key { continue }
+            for n in nodes { append(&rows, Row{n, edge.from}) }
+        }
+    }
+    slice.sort_by(rows[:], proc(x, y: Row) -> bool { return x.node < y.node })
+    uniq := make([dynamic]Row, context.temp_allocator)
+    for r in rows {
+        if len(uniq) == 0 || uniq[len(uniq) - 1].node != r.node { append(&uniq, r) }
+    }
+    if len(uniq) == 0 {
+        fmt.sbprintf(bb, "  %s   (a param: nothing calls %s directly)\n", b.name, fn_name)
+        return
+    }
+    fmt.sbprintf(bb, "  %s   (a param: what %s of %s pass%s)\n", b.name, ask_plural(len(uniq), "call"), fn_name, "es" if len(uniq) == 1 else "")
+    for r, i in uniq {
+        if i == ASK_PARAM_CALLS_SHOWN {
+            fmt.sbprintf(bb, "    (%d more: `mara ask %s call below` has every call)\n", len(uniq) - i, fn_name)
+            break
+        }
+        tok := build_tokens[build_tree.first[r.node]]
+        fmt.sbprintf(bb, "    %s  %s  %s\n", ask_loc(token_span(tok)), ask_written_name(r.caller), ask_call_arg_text(r.node, b.param_index, len(b.fn.params)))
+    }
+}
+
+// What a call passes the param at `index` of `params`, as written: its default, if it
+// passes none. A call by an operator, or that's a declaration, shows its line.
+@(private="file")
+ask_call_arg_text :: proc(n: Tree_Id, index, params: int) -> string {
+    t := &build_tree
+    args := make([dynamic]Tree_Id, context.temp_allocator)
+    #partial switch t.tag[n] {
+    case .Call:
+        append(&args, ..tree_list(t, t.a[n]))
+    case .Method_Call:
+        view := method_view(t, n)
+        append(&args, view.receiver)
+        append(&args, ..view.args)
+    case:
+        return hit_source_line(build_tokens[t.first[n]])
+    }
+    // (More than it has params: the type params it was given first.)
+    at := index + max(len(args) - params, 0)
+    if at >= len(args) { return "(its default)" }
+    return span_text(build_files[build_tokens[t.first[n]].file].source, tree_span(t, args[at]))
 }
 
 // struct/type `call` — the functions whose SIGNATURE mentions this type, read off
@@ -1613,10 +1810,8 @@ ask_plural :: proc(n: int, noun: string) -> string {
 // absolute path under `compiler_dir` and local files relative to the cwd, so a
 // prefix match (when compiler_dir is absolute) or, failing that, absoluteness
 // itself classifies it. "local" is the safe default.
-ask_file_is_stdlib :: proc(file, compiler_dir: string) -> bool {
-    if file == "" { return false }
-    if compiler_dir != "" && strings.has_prefix(file, compiler_dir) { return true }
-    return filepath.is_abs(file)
+ask_is_stdlib :: proc(files: []^Source_File) -> bool {
+    return len(files) > 0 && files[0].stdlib
 }
 
 // A type's distinct-user count — the reverse-edge in-degree, reusing the very
@@ -1770,12 +1965,12 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
 // the valid `in <module>` arguments), and teach the two ways forward — cd into a
 // module's directory, or pin one inline with `in <module>`. The local/stdlib
 // split classifies each module by a representative file, like the module map.
-ask_no_module_here :: proc(all_files: map[string][dynamic]^Source_File, compiler_dir, cwd_name, target, query: string) -> string {
+ask_no_module_here :: proc(all_files: map[string][dynamic]^Source_File, cwd_name, target, query: string) -> string {
     locals: [dynamic]string
     libs:   [dynamic]string
     for name, files in all_files {
         if len(files) == 0 { continue }
-        if ask_file_is_stdlib(files[0].path, compiler_dir) { append(&libs, name) }
+        if ask_is_stdlib(files[:]) { append(&libs, name) }
         else                                               { append(&locals, name) }
     }
     less := proc(a, b: string) -> bool { return a < b }
@@ -1831,12 +2026,11 @@ Ask_Module_Info :: struct {
 // counts, local modules first (a stranger's entry point), stdlib after. Modules
 // carrying a `main` are flagged: the cwd's entry points. The hint teaches the
 // next drill-down step.
-ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic]^Source_File, compiler_dir, root_pkg: string) -> string {
-    // One pass over the deduped definitions -> per-module (flat) counts + a
-    // representative file for the local/stdlib split. Tables hold every CHECKED
-    // module — local AND the stdlib modules actually pulled in — so this is the
-    // authoritative module set.
-    Counts :: struct { types, funs: int, file: string }
+ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic]^Source_File, root_pkg: string) -> string {
+    // One pass over the deduped definitions -> per-module (flat) counts. Tables hold
+    // every CHECKED module — local AND the stdlib modules actually pulled in — so this
+    // is the authoritative module set.
+    Counts :: struct { types, funs: int }
     by_home: map[string]Counts
     for m in ask_all_definitions(checked.table, "", checked.functions) {
         if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
@@ -1846,7 +2040,6 @@ ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic
         if hp == "" { continue }
         c := by_home[hp]
         if m.sub == "fun" { c.funs += 1 } else { c.types += 1 }
-        if c.file == "" { c.file = span_file(m.span) }
         by_home[hp] = c
     }
 
@@ -1855,12 +2048,13 @@ ask_module_map :: proc(checked: ^Checked_Program, all_files: map[string][dynamic
     // internal/synthetic package (skip it).
     infos: [dynamic]Ask_Module_Info
     for hp, c in by_home {
-        if hp not_in all_files { continue }
+        files, discovered := all_files[hp]
+        if !discovered { continue }
         has_main, _ := module_entries(hp)
         append(&infos, Ask_Module_Info{
             name = hp, types = c.types, funs = c.funs,
             has_main = has_main,
-            stdlib   = ask_file_is_stdlib(c.file, compiler_dir),
+            stdlib   = ask_is_stdlib(files[:]),
         })
     }
     slice.sort_by(infos[:], proc(a, b: Ask_Module_Info) -> bool {
