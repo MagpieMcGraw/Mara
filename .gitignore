@@ -5,7 +5,9 @@
 *.o
 *.ll
 *.lib
+*.lib.flags
 *.a
+*.a.flags
 *.dll
 *.so
 # Bundled toolchain — vendored, not build output

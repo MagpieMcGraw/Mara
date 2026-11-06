@@ -8,6 +8,7 @@ import "core:strings"
 import "core:c/libc"
 import "core:path/filepath"
 import "core:thread"
+import "core:time"
 import os_old "core:os/old"
 
 // get_compiler_dir lives in platform-suffixed files (compiler_dir_windows.odin,
@@ -424,23 +425,45 @@ emscripten_port_flag :: proc(lib: string) -> (flag: string, ok: bool) {
     }
 }
 
-// Compile a C source into a precompiled static lib next to it. Used by the
-// foreign-block resolver: a foreign `static_lib "foo"` block with no
-// existing `foo.lib` / `foo.a` but with a `foo.c` sibling triggers this to
-// produce the missing static lib once, after which subsequent builds use
-// the cached output directly.
-//
-// Returns true on success. Prints a diagnostic and returns false on failure;
-// the caller decides whether to abort or fall through.
+// What a bundled C library is compiled with. It's kept in a file beside the library,
+// `<lib>.flags`, so one built another way is rebuilt (bundled_lib_fresh).
+BUNDLED_C_FLAGS :: "-c -O2"
+
+// Whether the library at lib_path, built from c_path, can be used as it is: built with
+// BUNDLED_C_FLAGS, and newer than every .c and .h beside its source, since the source
+// may include them.
+bundled_lib_fresh :: proc(lib_path, c_path: string) -> bool {
+    lib_name := filepath.base(lib_path)
+    lib_written: i64 = 0
+    for entry in list_dir(filepath.dir(lib_path)) {
+        if entry.name == lib_name { lib_written = entry.written }
+    }
+    if lib_written == 0 { return false }
+    for entry in list_dir(filepath.dir(c_path)) {
+        if !strings.has_suffix(entry.name, ".c") && !strings.has_suffix(entry.name, ".h") { continue }
+        if entry.written > lib_written { return false }
+    }
+    flags, err := os.read_entire_file_from_path(strings.concatenate({lib_path, ".flags"}), context.allocator)
+    return err == nil && string(flags) == BUNDLED_C_FLAGS
+}
+
+// Compile a C source into a static lib at lib_path. Prints a diagnostic and returns
+// false on failure.
 //
 // Two steps regardless of OS:
-//   1. clang -c <c_path> -o <c_path>.o
+//   1. clang -c <c_path> -o <temporary>.o
 //   2. Wrap the object into a static lib:
-//        Windows: lld-link /lib /out:<lib_path> <obj_path>   (bundled lld-link)
-//        POSIX:   ar rcs <lib_path> <obj_path>               (system binutils)
-// The intermediate .o is deleted after the archive succeeds.
+//        Windows: lld-link /lib /out:<lib> <obj>   (bundled lld-link)
+//        POSIX:   ar rcs <lib> <obj>               (system binutils)
+//
+// Both go to temporary names with this process's id in them, and the library takes its
+// name last, in one step. So two builds at once can't mix their writes: whichever
+// finishes last wins, and they've made the same thing.
 compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool {
-    obj_path := strings.concatenate({c_path[:len(c_path)-2], ".o"})
+    pid := fmt.tprintf(".%d", os.get_pid())
+    obj_path := strings.concatenate({lib_path, pid, ".o"})
+    temp_lib := strings.concatenate({lib_path, pid, ".tmp", STATIC_LIB_EXT})
+    defer os.remove(obj_path)   // (harmless if it fails)
 
     // Pass -I <c_path's dir> so the source can `#include "neighbor.h"` against
     // headers sitting next to it. Quoted-form includes (`#include "x.h"`) already
@@ -453,10 +476,10 @@ compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool 
     compile_cmd: string
     when ODIN_OS == .Windows {
         clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
-        inner_c := strings.concatenate({`"`, clang_path, `" -c -O2 "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
+        inner_c := strings.concatenate({`"`, clang_path, `" `, BUNDLED_C_FLAGS, ` "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
         compile_cmd = strings.concatenate({`"`, inner_c, `"`})
     } else {
-        compile_cmd = strings.concatenate({CLANG_BIN, ` -c -O2 "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
+        compile_cmd = strings.concatenate({CLANG_BIN, ` `, BUNDLED_C_FLAGS, ` "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
     }
     if libc.system(strings.clone_to_cstring(compile_cmd)) != 0 {
         fmt.printf(BUILD_CLANG_FAILED, c_path)
@@ -467,19 +490,71 @@ compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool 
     archive_cmd: string
     when ODIN_OS == .Windows {
         lld_path, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
-        inner_a := strings.concatenate({`"`, lld_path, `" /lib /out:"`, lib_path, `" "`, obj_path, `"`})
+        inner_a := strings.concatenate({`"`, lld_path, `" /lib /out:"`, temp_lib, `" "`, obj_path, `"`})
         archive_cmd = strings.concatenate({`"`, inner_a, `"`})
     } else {
-        archive_cmd = strings.concatenate({`ar rcs "`, lib_path, `" "`, obj_path, `"`})
+        archive_cmd = strings.concatenate({`ar rcs "`, temp_lib, `" "`, obj_path, `"`})
     }
     if libc.system(strings.clone_to_cstring(archive_cmd)) != 0 {
-        fmt.printf(BUILD_ARCHIVE_FAILED, lib_path)
+        fmt.printf(BUILD_ARCHIVE_FAILED, temp_lib)
+        os.remove(temp_lib)
         return false
     }
 
-    // Best-effort cleanup of the intermediate object; harmless if it fails.
-    os.remove(obj_path)
+    // ---- Step 3: the flags, then the library under its name. Windows can't replace a
+    // file another build's linker has open: that one will finish soon, so try for a while.
+    flags_path := strings.concatenate({lib_path, ".flags"})
+    if os.write_entire_file(flags_path, transmute([]byte)string(BUNDLED_C_FLAGS)) != nil {
+        fmt.printf(BUILD_ARCHIVE_FAILED, flags_path)
+        os.remove(temp_lib)
+        return false
+    }
+    for tries := 0; ; tries += 1 {
+        if os.rename(temp_lib, lib_path) == nil { return true }
+        if tries == 100 { break }
+        time.sleep(100 * time.Millisecond)
+    }
+    fmt.printf(BUILD_ARCHIVE_FAILED, lib_path)
+    os.remove(temp_lib)
+    return false
+}
+
+// Whether a file can be made in a folder.
+folder_writable :: proc(dir: string) -> bool {
+    probe := fmt.tprintf("%s/.mara_write_check.%d", dir, os.get_pid())
+    if os.write_entire_file(probe, []byte{}) != nil { return false }
+    os.remove(probe)
     return true
+}
+
+// Where a library goes when the folder its source is in can't be written (an installed
+// compiler, say): in the system's temporary folder, under a name from the source's path.
+bundled_lib_elsewhere :: proc(c_path, lib_name: string) -> string {
+    temp, err := os.temp_directory(context.allocator)
+    if err != nil || temp == "" { return "" }
+    h: u64 = 14695981039346656037
+    for i := 0; i < len(c_path); i += 1 { h = (h ~ u64(c_path[i])) * 1099511628211 }
+    dir := fmt.tprintf("%s/mara_libs_%x", temp, h)
+    os.make_directory(dir)
+    return fmt.tprintf("%s/%s", dir, lib_name)
+}
+
+// The library for c_path, up to date: the one at lib_path, built there if it has to be.
+// If that folder can't be written, one in the system's temporary folder instead.
+// ("", false): it failed to build, and said why.
+bundled_lib_ready :: proc(c_path, lib_path, compiler_dir: string, always_build := false) -> (string, bool) {
+    if !always_build && bundled_lib_fresh(lib_path, c_path) { return lib_path, true }
+    target := lib_path
+    if !folder_writable(filepath.dir(lib_path)) {
+        target = bundled_lib_elsewhere(c_path, filepath.base(lib_path))
+        if target == "" {
+            fmt.printf(BUILD_ARCHIVE_FAILED, lib_path)
+            return "", false
+        }
+        if !always_build && bundled_lib_fresh(target, c_path) { return target, true }
+    }
+    if !compile_c_to_static_lib(c_path, target, compiler_dir) { return "", false }
+    return target, true
 }
 
 // Translate well-known cross-platform system-library names whose system
@@ -537,11 +612,12 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             c_path, _ := filepath.join({dir, c_file})
             if !os.exists(c_path) { return "", false }
             lib_path, _ := filepath.join({dir, lib_name})
-            if !compile_c_to_static_lib(c_path, lib_path, compiler_dir) {
+            built, ok := bundled_lib_ready(c_path, lib_path, compiler_dir, always_build = true)
+            if !ok {
                 fmt.printf(BUILD_FORCED_RECOMPILE_FAILED, c_path)
                 os.exit(1)
             }
-            return lib_path, true
+            return built, true
         }
 
         for dir in code_search_dirs(compiler_dir) {
@@ -556,30 +632,29 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     // code/*. Returns the path to a static lib usable as a linker input, or
     // ("", false) if no match exists (caller falls back to `-l<name>`).
     //
-    // Resolution per directory: if `<name><STATIC_LIB_EXT>` already exists,
-    // use it. Otherwise, if `<name>.c` exists, compile it into a static lib
-    // alongside (one-time cost; subsequent builds find the cached lib on the
-    // first branch). The `.c` -> `.lib`/`.a` compile uses bundled clang on
-    // Windows and system clang on Linux.
+    // Resolution per directory: if `<name>.c` exists, its static lib beside it,
+    // built if it isn't up to date (bundled_lib_ready). With no source, a
+    // `<name><STATIC_LIB_EXT>` that's there is used as it is. The `.c` -> `.lib`/`.a`
+    // compile uses bundled clang on Windows and system clang on Linux.
     try_resolve_bundled_lib :: proc(name: string, compiler_dir: string) -> (string, bool) {
         lib_name := strings.concatenate({name, STATIC_LIB_EXT})
         c_name   := strings.concatenate({name, ".c"})
 
-        // Per-directory check: returns the static-lib path if a `.lib`/`.a`
-        // is present, OR if a `.c` exists that can be compiled into one.
+        // Per-directory check: returns the static-lib path if a `.c` exists that
+        // can be compiled into one, OR if a `.lib`/`.a` is present on its own.
         check :: proc(dir: string, lib_name, c_name, compiler_dir: string) -> (string, bool) {
             lib_path, _ := filepath.join({dir, lib_name})
-            if os.exists(lib_path) { return lib_path, true }
             c_path, _ := filepath.join({dir, c_name})
             if os.exists(c_path) {
-                if compile_c_to_static_lib(c_path, lib_path, compiler_dir) {
-                    return lib_path, true
+                if built, ok := bundled_lib_ready(c_path, lib_path, compiler_dir); ok {
+                    return built, true
                 }
                 // Compile failed — abort. Falling through to `-l<name>` would
                 // hide the real error behind a confusing linker complaint.
                 fmt.printf(BUILD_STATIC_LIB_FAILED, c_path)
                 os.exit(1)
             }
+            if os.exists(lib_path) { return lib_path, true }
             return "", false
         }
 
@@ -1152,6 +1227,12 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
     when ODIN_OS == .Darwin { target_os = .Mac    }
+    // (mara.os's Linux structs, Stat, Mutex and Epoll_Event among them, are laid out as
+    // x86_64's are. Elsewhere they'd be wrong without saying so.)
+    when ODIN_OS == .Linux && ODIN_ARCH != .amd64 {
+        fmt.eprintln("Mara on Linux is x86_64 only for now: mara.os's system structs are laid out for it.")
+        os.exit(1)
+    }
 
     // Abort early on ANY parse errors — not just in the requested package.
     // Imported modules with broken parses produce partial trees that the
