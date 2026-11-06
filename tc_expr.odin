@@ -933,7 +933,11 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     _, from_text := ft.origin.(Origin_From_Text)
     _, variant_text := ft.origin.(Origin_Variant_Text)
     _, err_runtime := ft.origin.(Origin_Err_Runtime)
-    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime {
+    if ft.is_module {
+        tc_error(k, span, TYPE_CALL_OF_MODULE, name, name, name)
+        return Type_Error{}
+    }
+    if !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }

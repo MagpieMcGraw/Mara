@@ -1,0 +1,49 @@
+module generic_instance_infer
+
+use mara.core
+
+//@ expect-output: first: 7 and text: hi
+//@ expect-output: pair: 3 2.5
+//@ expect-output: a method's: 8
+//@ expect-output: in a list: 7
+
+// A param's type can name a generic struct with `$T`s in it: `^Holder($T)` given a
+// Holder(i64) binds T to i64, read off what the instance was made with. Given by
+// value, through a pointer, or inside a list. It said "not supported yet".
+
+Holder :: struct($T: type) {
+	first: T
+	again :: fun(h: ^Self, x: T) -> T { return first_of_any(h) }
+}
+
+Pair :: struct($A: type, $B: type) {
+	a: A
+	b: B
+}
+
+first_of :: fun(h: ^Holder($T)) -> T { return h.first }
+first_of_any :: fun(h: ^Holder($T)) -> T { return h.first }
+second_of :: fun(p: Pair($A, $B)) -> B { return p.b }
+first_of_pair :: fun(p: ^Pair($A, $B)) -> A { return p.a }
+holders_first :: fun(hs: []Holder($T)) -> T { return hs[0].first }
+
+main :: fun() {
+	a : Holder(i64)
+	a.first = 7
+	b : Holder(str64)
+	b.first = "hi"
+	print("first:", first_of(&a), "and text:", first_of(&b))
+
+	p : Pair(i64, f64)
+	p.a = 3
+	p.b = 2.5
+	print("pair:", first_of_pair(&p), second_of(p))
+
+	c : Holder(i64)
+	c.first = 8
+	print("a method's:", (&c).again(0))
+
+	hs : [2]Holder(i64)
+	&hs + a
+	print("in a list:", holders_first(hs))
+}

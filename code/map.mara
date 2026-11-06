@@ -1,0 +1,161 @@
+module mara.map
+
+use mara.core
+
+// A hash map: values found by a key. A key is text, or a whole number.
+//
+//     users : Map([]utf8, User)
+//     map_init(&users, 1000, &storage)      // room for 1000
+//     map_set(&users, "ann", ann)
+//     user, found := map_get(&users, "ann")
+//
+// It keeps its slots in storage you declare, like the other things that take
+// storage: read_entire_file, dir_read. It doesn't grow. Past its room the program
+// stops, as a list does past its cap, so check `m.count < m.room` where more can
+// come than it was made for.
+//
+// A text key is kept as it's given, a view: what it views has to last as long as
+// the map does. Each thread needs its own map, or a Mutex around one.
+
+// One place in a map. hash is 0 where it's empty: for s in m.slots, the rest hold
+// an entry each, in no order that means anything. (The last slot is always empty,
+// all zero: what a slot is emptied with, and what a missing key's value comes from.)
+Map_Slot :: struct($K: type, $V: type) {
+	hash: u64
+	key: K
+	value: V
+}
+
+// Values of type V found by keys of type K. map_init makes it ready. count is
+// how many entries it has, room how many it can.
+Map :: struct($K: type, $V: type) {
+	count: i64
+	room: i64
+	slots: []Map_Slot(K, V)
+}
+
+// Takes room for `room` entries from storage, after its len, and moves its len
+// past them. Short of storage, the program stops, as slice() does.
+map_init :: fun(m: ^Map($K, $V), room: i64, storage: ^[]byte) {
+	// (A quarter of the slots stay empty: a search stops at an empty one, and a
+	// fuller table searches further.)
+	n := room + room / 3 + 2
+	start := storage.len
+	m.slots = slice([:n]Map_Slot(K, V), storage)
+	m.slots.len = n
+	for k in start:storage.len {
+		storage[k] = u8(0)
+	}
+	m.count = 0
+	m.room = room
+}
+
+// Empties the map. Its room stays, ready to fill again.
+map_clear :: fun(m: ^Map($K, $V)) {
+	blank := m.slots[m.slots.len - 1]
+	for k in 0:m.slots.len {
+		m.slots[k] = blank
+	}
+	m.count = 0
+}
+
+// The value of key, and whether it's there. If it isn't, the value is all zero.
+map_get :: fun(m: ^Map($K, $V), key: K) -> V, bool {
+	at := map_find(m, key)
+	return m.slots[at].value, m.slots[at].hash != 0
+}
+
+// Whether key is there.
+map_has :: fun(m: ^Map($K, $V), key: K) -> bool {
+	return m.slots[map_find(m, key)].hash != 0
+}
+
+// Gives key the value, adding it if it isn't there.
+map_set :: fun(m: ^Map($K, $V), key: K, value: V) {
+	map_at(m, key)^ = value
+}
+
+// Where key's value is, to read or change in place: `map_at(&counts, word)^ += 1`.
+// If key isn't there, it's added, its value all zero. The place is good until
+// the next map_set, map_at or map_delete.
+map_at :: fun(m: ^Map($K, $V), key: K) -> ^V {
+	at := map_find(m, key)
+	if m.slots[at].hash == 0 {
+		assert(m.count < m.room)
+		m.slots[at].hash = map_hash(key)
+		m.slots[at].key = key
+		m.count += 1
+	}
+	return &m.slots[at].value
+}
+
+// Takes key out, and says whether it was there.
+map_delete :: fun(m: ^Map($K, $V), key: K) -> bool {
+	at := map_find(m, key)
+	if m.slots[at].hash == 0 do return false
+	m.count -= 1
+	// (A search stops at an empty slot, so the entries after this one that a
+	// search would now miss move back into the gap, and the gap moves on. An
+	// entry stays put if its home is between the gap and where it is.)
+	n := m.slots.len - 1
+	at_next := at
+	for true {
+		at_next += 1
+		if at_next == n do at_next = 0
+		if m.slots[at_next].hash == 0 do break
+		home := map_home(m.slots[at_next].hash, n)
+		stays := false
+		if at <= at_next {
+			stays = at < home and home <= at_next
+		else
+			stays = at < home or home <= at_next
+		}
+		if not stays {
+			m.slots[at] = m.slots[at_next]
+			at = at_next
+		}
+	}
+	m.slots[at] = m.slots[n]
+	return true
+}
+
+// The slot key is in, or the empty slot where it would go.
+map_find :: fun(m: ^Map($K, $V), key: K) -> i64 {
+	h := map_hash(key)
+	n := m.slots.len - 1
+	at := map_home(h, n)
+	for m.slots[at].hash != 0 {
+		if m.slots[at].hash == h and m.slots[at].key == key do return at
+		at += 1
+		if at == n do at = 0
+	}
+	return at
+}
+
+// The slot a hash starts its search at, of n slots.
+map_home :: fun(h: u64, n: i64) -> i64 {
+	return i64(((h >> 32) * u64(n)) >> 32)
+}
+
+// A key's hash, its top bit always set: 0 means an empty slot.
+map_hash :: dispatch { map_hash_text, map_hash_i64, map_hash_u64, map_hash_i32, map_hash_u32 }
+
+map_hash_text :: fun(key: []utf8) -> u64 {
+	// (FNV-1a, then a last mix, since the search starts from the top bits.)
+	h : u64 = 14695981039346656037
+	for c in key {
+		h = (h ~ u64(c)) *% 1099511628211
+	}
+	return map_hash_u64(h)
+}
+
+map_hash_u64 :: fun(key: u64) -> u64 {
+	h := key
+	h = (h ~ (h >> 33)) *% 0xFF51AFD7ED558CCD
+	h = (h ~ (h >> 33)) *% 0xC4CEB9FE1A85EC53
+	return (h ~ (h >> 33)) | (u64(1) << 63)
+}
+
+map_hash_i64 :: fun(key: i64) -> u64 { return map_hash_u64(u64(key)) }
+map_hash_i32 :: fun(key: i32) -> u64 { return map_hash_u64(u64(key)) }
+map_hash_u32 :: fun(key: u32) -> u64 { return map_hash_u64(u64(key)) }

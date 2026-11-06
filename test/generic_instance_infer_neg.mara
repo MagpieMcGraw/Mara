@@ -1,0 +1,18 @@
+module generic_instance_infer_neg
+//@ expect-fail: expects ^Holder__i64, got ^Other__i64
+
+use mara.core
+
+// Given an instance of another generic struct, a `^Holder($T)` param binds T from
+// it but the argument doesn't fit.
+
+Holder :: struct($T: type) { first: T }
+Other :: struct($T: type) { first: T }
+
+first_of :: fun(h: ^Holder($T)) -> T { return h.first }
+
+main :: fun() {
+	o : Other(i64)
+	o.first = 1
+	print(first_of(&o))
+}

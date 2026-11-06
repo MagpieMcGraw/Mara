@@ -203,14 +203,19 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
             for r, i in tree_list(t, t.b[n]) { if i < len(ft.return_types) { tc_infer(k, subst, r, ft.return_types[i]) } }
         }
     case .Type_Generic:
-        // (Its own type params in it: not inferred yet. Another's — a generic
-        // struct's method taking `^Holder(T)` — bound already.)
-        for a in tree_list(t, t.a[n]) {
-            own := tc_type_has_dollar(k, a)
-            for p in subst { own ||= tc_type_uses(k, a, p) }
-            if own {
-                tc_unsupported(k, n, "a generic instance's type param inferred")
-                break
+        // (`^Holder($T)` given a Holder(i64): T read off what the instance was
+        // made with. Given no instance of it, nothing's bound, and the argument
+        // doesn't fit: said at the call.)
+        if st, is_scope := actual.(^Type_Scope); is_scope {
+            for a, i in tree_list(t, t.a[n]) {
+                if i >= len(st.generic_args) { continue }
+                // (A type param bound to the argument as it was given: the
+                // instance is named for an alias it was made with.)
+                if d := tc_type_param_named(k, a); d != 0 && d in subst^ && subst[d] == nil {
+                    subst[d] = st.generic_args[i]
+                    continue
+                }
+                tc_infer(k, subst, a, st.generic_args[i])
             }
         }
     }

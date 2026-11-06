@@ -1,0 +1,42 @@
+// How to find values by a key, with a hash map from mara.map.
+//
+// Declare it with its key's type and its value's: `m : Map([]utf8, i64)`. A key
+// is text or a whole number. map_init(&m, room, &storage) makes it ready, taking
+// room for that many entries from storage you declare. It doesn't grow: past its
+// room the program stops, as a list does past its cap, so check `m.count < m.room`
+// where more can come than it was made for.
+//
+// map_set adds a key or gives it a new value. map_get gives the value and whether
+// the key is there, with an all-zero value if it isn't. map_at gives the place of
+// a key's value, adding it if needed, so a value can change in place: `map_at(&m,
+// word)^ += 1`. map_has says whether a key is there, map_delete takes one out, and
+// map_clear empties the map.
+//
+// A text key is kept as it's given, a view of its text, so that text has to last
+// as long as the map does. To go through a map, go through m.slots: a slot whose
+// hash isn't 0 holds an entry, and they come in no order that means anything.
+module maps
+
+use mara.core
+use mara.map
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	storage : [KB]byte
+	counts : Map([]utf8, i64)
+	map_init(&counts, 8, &storage)
+
+	map_set(&counts, "apples", 3)
+	map_at(&counts, "apples")^ += 1
+	map_at(&counts, "pears")^ += 1
+
+	apples, _ := map_get(&counts, "apples")
+	plums, found := map_get(&counts, "plums")
+	print(apples, plums, found, counts.count)      // 4 0 false 2
+
+	for s in counts.slots {
+		if s.hash != 0 do print(s.key, s.value)    // apples 4, pears 1, in some order
+	}
+}

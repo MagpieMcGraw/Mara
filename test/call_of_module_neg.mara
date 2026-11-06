@@ -1,0 +1,11 @@
+module call_of_module_neg
+//@ expect-fail: 'string' here is the module a `use` names, so it can't be called: a fun of that name is `string.string(...)`
+
+use mara.core
+use mara.string
+
+// A plain `use` defines the module's name, which hides a fun of that name in it.
+
+main :: fun() {
+	print(string("x"))
+}

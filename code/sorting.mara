@@ -1,0 +1,116 @@
+module mara.sorting
+
+use mara.core
+
+// Sorting a list or a slice in place.
+//
+//     sort(&numbers)                       // smallest first
+//     sort_by(&users, older)               // older(a, b): whether a goes before b
+//
+// It's not stable: items that compare equal can end up in any order. It takes
+// no extra memory but its own stack, and never more than n·log(n) steps.
+
+// Sorts items in place, smallest first, by `<`.
+sort :: fun(items: ^[]$T) {
+	smaller :: fun(a: T, b: T) -> bool { return a < b }
+	sort_by(items, smaller)
+}
+
+// Sorts items in place by `before`, a fun taking two items and saying whether the
+// first goes before the second. Two items that neither goes before are equal.
+sort_by :: fun(items: ^[]$T, before: $P) {
+	// (Quicksort, with insertion sort for short runs. Bad pivots can make it
+	// slow, so past a depth of about 2·log2(n) the run gets heapsort, which
+	// has no bad cases.)
+	depth := 0
+	for n := items.len; n > 1; n /= 2 do depth += 2
+	sort_run(items, before, 0, items.len, depth)
+}
+
+// Sorts items[lo:hi].
+sort_run :: fun(items: ^[]$T, before: $P, first: i64, stop: i64, first_depth: i64) {
+	lo := first
+	hi := stop
+	depth := first_depth
+	for hi - lo > 16 {
+		if depth == 0 {
+			sort_heap(items, before, lo, hi)
+			return
+		}
+		depth -= 1
+		// (Each pass sorts the shorter side by recursion and goes on with the
+		// longer: the stack stays at log2(n) however the pivots fall.)
+		at := sort_partition(items, before, lo, hi)
+		if at - lo < hi - at {
+			sort_run(items, before, lo, at, depth)
+			lo = at
+		else
+			sort_run(items, before, at, hi, depth)
+			hi = at
+		}
+	}
+	for k in lo + 1:hi {
+		item := items[k]
+		j := k
+		for j > lo and before(item, items[j - 1]) {
+			items[j] = items[j - 1]
+			j -= 1
+		}
+		items[j] = item
+	}
+}
+
+// Splits items[lo:hi] around the middle of three: gives back `at`, with every
+// item before it no later than every item from it on, and lo < at < hi.
+sort_partition :: fun(items: ^[]$T, before: $P, lo: i64, hi: i64) -> i64 {
+	mid := lo + (hi - lo) / 2
+	if before(items[mid], items[lo]) do sort_swap(items, mid, lo)
+	if before(items[hi - 1], items[lo]) do sort_swap(items, hi - 1, lo)
+	if before(items[hi - 1], items[mid]) do sort_swap(items, hi - 1, mid)
+	pivot := items[mid]
+	i := lo - 1
+	j := hi
+	for true {
+		i += 1
+		for before(items[i], pivot) do i += 1
+		j -= 1
+		for before(pivot, items[j]) do j -= 1
+		if i >= j do return j + 1
+		sort_swap(items, i, j)
+	}
+	return lo + 1
+}
+
+// Sorts items[lo:hi] by heapsort.
+sort_heap :: fun(items: ^[]$T, before: $P, lo: i64, hi: i64) {
+	n := hi - lo
+	start := n / 2
+	for start > 0 {
+		start -= 1
+		sort_sift(items, before, lo, start, n)
+	}
+	end := n
+	for end > 1 {
+		end -= 1
+		sort_swap(items, lo, lo + end)
+		sort_sift(items, before, lo, 0, end)
+	}
+}
+
+// Moves the item at `first` down the heap of n items at items[lo:] to its place.
+sort_sift :: fun(items: ^[]$T, before: $P, lo: i64, first: i64, n: i64) {
+	at := first
+	for at * 2 + 1 < n {
+		child := at * 2 + 1
+		if child + 1 < n and before(items[lo + child], items[lo + child + 1]) do child += 1
+		if not before(items[lo + at], items[lo + child]) do return
+		sort_swap(items, lo + at, lo + child)
+		at = child
+	}
+}
+
+sort_swap :: fun(items: ^[]$T, a: i64, b: i64) {
+	kept := items[a]
+	items[a] = items[b]
+	items[b] = kept
+}
