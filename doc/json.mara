@@ -1,0 +1,55 @@
+// How to read and write JSON, with mara.json.
+//
+// json_parse(text, &values) reads text into a list of values you declare, `[N]Json`.
+// The first is the whole text, and each array or object comes before what's in it.
+// A value is known by where it is in the list. Nothing's copied: values are views of
+// the text, so it has to last as long as they do.
+//
+// json_get(values, object, "key") finds a value in an object, and says whether it's
+// there. json_first and json_next go through an array or an object: json_first gives
+// 0 if it's empty, and json_next gives 0 after the last. A value's kind says what it
+// is. json_int and json_number read numbers, json_text reads a string with its
+// escapes into a buffer, and values[k].key is an object's key for that value.
+//
+// To write JSON, append to a text buffer. json_add_text writes a string with its
+// quotes and escapes, and int_text and float_text write numbers.
+//
+// It fails with Bad_Json if the text isn't JSON, Json_Too_Long if there are more
+// values than the list has room for, and Json_Too_Deep past 64 levels of nesting.
+module json
+
+use mara.core
+use mara.memory
+use mara.string
+use mara.json
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	text := "{\"name\": \"Ann\", \"tags\": [\"a\", \"b\"], \"age\": 30}"
+	values : [32]Json
+	failed := json_parse(text, &values)
+	if failed do print(failed)
+
+	name, found := json_get(values, 0, "name")
+	print(values[name].text, found)            // Ann true
+
+	age, _ := json_get(values, 0, "age")
+	years, _ := json_int(values, age)
+	print(years)                               // 30
+
+	tags, _ := json_get(values, 0, "tags")
+	tag := json_first(values, tags)
+	for tag != 0 {
+		print(values[tag].text)                // a, then b
+		tag = json_next(values, tags, tag)
+	}
+
+	out : [64]utf8
+	&out + "{\"name\":"
+	json_add_text("Bob \"B\"", &out)
+	&out + ",\"age\":"
+	&out + int_text(31)
+	&out + '}'
+	print(out)                                 // {"name":"Bob \"B\"","age":31}
+}

@@ -1,0 +1,378 @@
+module mara.json
+
+use mara.core
+use mara.string
+
+// Reading and writing JSON.
+//
+//     values : [1000]Json
+//     json_parse(text, &values)?
+//     name, found := json_get(values, 0, "name")    // the value at 0 is the whole text
+//     decoded : [256]utf8
+//     json_text(values, name, &decoded)?
+//
+// A parse makes a list of values, the first being the whole text, each array or
+// object followed by what's in it. A value is known by where it is in that list. The
+// text isn't copied: values are views of it, so it has to last as long as they do. A
+// string stays as it's written, with its escapes, until json_text reads it.
+//
+// To go through an array or an object:
+//
+//     item := json_first(values, list)
+//     for item != 0 {
+//         ...
+//         item = json_next(values, list, item)
+//     }
+//
+// An object's items are its values: json_key gives the key of one.
+//
+// To write JSON, append to a text buffer: numbers with int_text or float_text, and
+// strings with json_add_text, which writes the quotes and the escapes.
+
+// What reading JSON can fail with.
+Json_Error :: error {
+	Bad_Json          // it isn't JSON
+	Json_Too_Long     // more values than the list has room for, or a decoded string longer than its room
+	Json_Too_Deep     // arrays and objects nested past JSON_DEEPEST
+}
+
+// How deep arrays and objects can nest.
+JSON_DEEPEST :: 64
+
+// What kind of value a Json is.
+Json_Kind :: union {
+	Json_Null
+	Json_False
+	Json_True
+	Json_Number
+	Json_String
+	Json_Array
+	Json_Object
+}
+
+// One value in a parse.
+Json :: struct {
+	kind: Json_Kind
+	text: []utf8    // a number's or a string's text as written, without a string's quotes
+	key: []utf8     // in an object: its key, as written, without the quotes
+	span: i64       // how many values it takes in the list, itself and all that's in it
+}
+
+// Parses text into values, after clearing them. Bad_Json if it isn't JSON, with
+// nothing but spaces around the one value it should be.
+json_parse :: fun(text: []utf8, values: ^[]Json) -> err {
+	values.len = 0
+	at := json_skip(text, 0)
+	stack : [JSON_DEEPEST!]i64
+	depth : i64 = 0
+	for true {
+		// (A value here. In an object, its key before it.)
+		key := text[0:0]
+		if depth > 0 and values[stack[depth - 1]].kind == Json_Object {
+			if at >= text.len or text[at] != '"' do return Bad_Json
+			end := json_string_end(text, at)
+			if end < 0 do return Bad_Json
+			key = text[at + 1:end]
+			at = json_skip(text, end + 1)
+			if at >= text.len or text[at] != ':' do return Bad_Json
+			at = json_skip(text, at + 1)
+		}
+		if at >= text.len do return Bad_Json
+		if values.len == values.cap do return Json_Too_Long
+		c := text[at]
+		if c == '[' or c == '{' {
+			kind : Json_Kind = Json_Array
+			closer : utf8 = ']'
+			if c == '{' {
+				kind = Json_Object
+				closer = '}'
+			}
+			if depth == JSON_DEEPEST do return Json_Too_Deep
+			stack[depth] = values.len
+			depth += 1
+			values + Json{kind = kind, text = text[at:at], key = key, span = 1}
+			at = json_skip(text, at + 1)
+			// (Its first value next, unless it closes at once.)
+			if at >= text.len or text[at] != closer do continue
+			at += 1
+			depth -= 1
+		elif c == '"'
+			end := json_string_end(text, at)
+			if end < 0 do return Bad_Json
+			values + Json{kind = Json_String, text = text[at + 1:end], key = key, span = 1}
+			at = end + 1
+		elif c == '-' or (c >= '0' and c <= '9')
+			end := json_number_end(text, at)
+			if end < 0 do return Bad_Json
+			values + Json{kind = Json_Number, text = text[at:end], key = key, span = 1}
+			at = end
+		elif json_word_at(text, at, "true")
+			values + Json{kind = Json_True, text = text[at:at + 4], key = key, span = 1}
+			at += 4
+		elif json_word_at(text, at, "false")
+			values + Json{kind = Json_False, text = text[at:at + 5], key = key, span = 1}
+			at += 5
+		elif json_word_at(text, at, "null")
+			values + Json{kind = Json_Null, text = text[at:at + 4], key = key, span = 1}
+			at += 4
+		else
+			return Bad_Json
+		}
+		at = json_skip(text, at)
+		if depth == 0 do break
+		done, next_at := json_after(text, at, values, &stack, &depth)?
+		at = next_at
+		if done do break
+	}
+	if at != text.len do return Bad_Json
+}
+
+// After a value in an array or object: past its comma to the next, or out of every
+// list that closes here. Whether the whole text is done, and where things go on.
+json_after :: fun(text: []utf8, first_at: i64, values: ^[]Json, stack: ^[JSON_DEEPEST!]i64, depth: ^i64) -> bool, i64, err {
+	at := first_at
+	for true {
+		list := stack[depth^ - 1]
+		closer : utf8 = ']'
+		if values[list].kind == Json_Object do closer = '}'
+		if at >= text.len do return false, 0, Bad_Json
+		if text[at] == ',' {
+			at = json_skip(text, at + 1)
+			// (A comma right before the closer isn't JSON.)
+			if at < text.len and text[at] == closer do return false, 0, Bad_Json
+			return false, at
+		}
+		if text[at] != closer do return false, 0, Bad_Json
+		values[list].span = values.len - list
+		at = json_skip(text, at + 1)
+		depth^ -= 1
+		if depth^ == 0 do return true, at
+	}
+	return false, 0, Bad_Json
+}
+
+// Past JSON's spaces.
+json_skip :: fun(text: []utf8, first_at: i64) -> i64 {
+	at := first_at
+	for at < text.len {
+		c := text[at]
+		if c != ' ' and c != '\n' and c != '\r' and c != '\t' do return at
+		at += 1
+	}
+	return at
+}
+
+// Where the string starting at `at` has its closing quote, -1 if it's not a string:
+// a raw control character, or an escape JSON doesn't have.
+json_string_end :: fun(text: []utf8, first_at: i64) -> i64 {
+	at := first_at + 1
+	for at < text.len {
+		c := text[at]
+		if c == '"' do return at
+		if i64(c) < 32 do return -1
+		if c == '\\' {
+			at += 1
+			if at >= text.len do return -1
+			e := text[at]
+			if e == 'u' {
+				if at + 4 >= text.len do return -1
+				for k in 1..4 {
+					if json_hex(text[at + k]) < 0 do return -1
+				}
+				at += 4
+			elif e != '"' and e != '\\' and e != '/' and e != 'b' and e != 'f' and e != 'n' and e != 'r' and e != 't'
+				return -1
+			}
+		}
+		at += 1
+	}
+	return -1
+}
+
+// Where the number starting at `at` ends, -1 if it's not one as JSON has them: no
+// '+' in front, no zeros leading, digits on both sides of a point.
+json_number_end :: fun(text: []utf8, first_at: i64) -> i64 {
+	at := first_at
+	if at < text.len and text[at] == '-' do at += 1
+	if at >= text.len or text[at] < '0' or text[at] > '9' do return -1
+	if text[at] == '0' {
+		at += 1
+	else
+		for at < text.len and text[at] >= '0' and text[at] <= '9' do at += 1
+	}
+	if at < text.len and text[at] == '.' {
+		at += 1
+		if at >= text.len or text[at] < '0' or text[at] > '9' do return -1
+		for at < text.len and text[at] >= '0' and text[at] <= '9' do at += 1
+	}
+	if at < text.len and (text[at] == 'e' or text[at] == 'E') {
+		at += 1
+		if at < text.len and (text[at] == '+' or text[at] == '-') do at += 1
+		if at >= text.len or text[at] < '0' or text[at] > '9' do return -1
+		for at < text.len and text[at] >= '0' and text[at] <= '9' do at += 1
+	}
+	return at
+}
+
+json_word_at :: fun(text: []utf8, at: i64, word: []utf8) -> bool {
+	if at + word.len > text.len do return false
+	return text[at:at + word.len] == word
+}
+
+json_hex :: fun(c: utf8) -> i64 {
+	if c >= '0' and c <= '9' do return i64(c) - i64('0')
+	if c >= 'a' and c <= 'f' do return i64(c) - i64('a') + 10
+	if c >= 'A' and c <= 'F' do return i64(c) - i64('A') + 10
+	return -1
+}
+
+// The first value in an array or object, 0 if it's empty or not one.
+json_first :: fun(values: []Json, list: i64) -> i64 {
+	if values[list].span == 1 do return 0
+	return list + 1
+}
+
+// The value after `item` in the array or object `list`, 0 after the last.
+json_next :: fun(values: []Json, list: i64, item: i64) -> i64 {
+	next_item := item + values[item].span
+	if next_item >= list + values[list].span do return 0
+	return next_item
+}
+
+// An object's value with this key, and whether it's there. A key with escapes in it
+// is compared as written.
+json_get :: fun(values: []Json, object: i64, key: []utf8) -> i64, bool {
+	if values[object].kind != Json_Object do return 0, false
+	item := json_first(values, object)
+	for item != 0 {
+		if values[item].key == key do return item, true
+		item = json_next(values, object, item)
+	}
+	return 0, false
+}
+
+// A number value's number, and whether it is one.
+json_number :: fun(values: []Json, item: i64) -> f64, bool {
+	if values[item].kind != Json_Number do return 0, false
+	return parse_number(values[item].text)
+}
+
+// A whole number value, and whether it is one: no fraction or exponent.
+json_int :: fun(values: []Json, item: i64) -> i64, bool {
+	if values[item].kind != Json_Number do return 0, false
+	text := values[item].text
+	k : i64 = 0
+	negative := false
+	if text[0] == '-' {
+		negative = true
+		k = 1
+	}
+	if text.len - k > 18 do return 0, false
+	n : i64 = 0
+	for k < text.len {
+		c := text[k]
+		if c < '0' or c > '9' do return 0, false
+		n = n * 10 + i64(c) - i64('0')
+		k += 1
+	}
+	if negative do n = -n
+	return n, true
+}
+
+// Appends a string value's text to out, its escapes read. Json_Too_Long if out runs
+// out of room, Bad_Json if the value isn't a string.
+json_text :: fun(values: []Json, item: i64, out: ^[]utf8) -> err {
+	if values[item].kind != Json_String do return Bad_Json
+	json_unescape(values[item].text, out)?
+}
+
+// A string as it's written in JSON, to what it means.
+json_unescape :: fun(text: []utf8, out: ^[]utf8) -> err {
+	at : i64 = 0
+	for at < text.len {
+		c := text[at]
+		if c != '\\' {
+			if out.len == out.cap do return Json_Too_Long
+			out + c
+			at += 1
+			continue
+		}
+		e := text[at + 1]
+		at += 2
+		if e == 'u' {
+			code := json_four_hex(text, at)
+			at += 4
+			// (A pair of surrogates is one character past U+FFFF.)
+			if code >= 0xD800 and code < 0xDC00 and at + 6 <= text.len and text[at] == '\\' and text[at + 1] == 'u' {
+				low := json_four_hex(text, at + 2)
+				if low >= 0xDC00 and low < 0xE000 {
+					code = 0x10000 + (code - 0xD800) * 1024 + (low - 0xDC00)
+					at += 6
+				}
+			}
+			// (A surrogate left alone is no character.)
+			if code >= 0xD800 and code < 0xE000 do return Bad_Json
+			if out.len + 4 > out.cap do return Json_Too_Long
+			json_add_code(code, out)
+			continue
+		}
+		if out.len == out.cap do return Json_Too_Long
+		ch := e
+		if e == 'b' do ch = utf8(8)
+		if e == 'f' do ch = utf8(12)
+		if e == 'n' do ch = '\n'
+		if e == 'r' do ch = '\r'
+		if e == 't' do ch = '\t'
+		out + ch
+	}
+}
+
+json_four_hex :: fun(text: []utf8, at: i64) -> i64 {
+	return json_hex(text[at]) * 4096 + json_hex(text[at + 1]) * 256 + json_hex(text[at + 2]) * 16 + json_hex(text[at + 3])
+}
+
+// A character's code as utf8.
+json_add_code :: fun(code: i64, out: ^[]utf8) {
+	if code < 0x80 {
+		out + utf8(code)
+	elif code < 0x800
+		out + utf8(0xC0 + code / 64)
+		out + utf8(0x80 + code % 64)
+	elif code < 0x10000
+		out + utf8(0xE0 + code / 4096)
+		out + utf8(0x80 + code / 64 % 64)
+		out + utf8(0x80 + code % 64)
+	else
+		out + utf8(0xF0 + code / 262144)
+		out + utf8(0x80 + code / 4096 % 64)
+		out + utf8(0x80 + code / 64 % 64)
+		out + utf8(0x80 + code % 64)
+	}
+}
+
+// Appends text as a JSON string: its quotes, and escapes for what needs them.
+json_add_text :: fun(text: []utf8, out: ^[]utf8) {
+	out + '"'
+	for c in text {
+		n := i64(c)
+		if c == '"' {
+			out + "\\\""
+		elif c == '\\'
+			out + "\\\\"
+		elif c == '\n'
+			out + "\\n"
+		elif c == '\r'
+			out + "\\r"
+		elif c == '\t'
+			out + "\\t"
+		elif n >= 0 and n < 32
+			digits := "0123456789abcdef"
+			out + "\\u00"
+			out + digits[n / 16]
+			out + digits[n % 16]
+		else
+			out + c
+		}
+	}
+	out + '"'
+}

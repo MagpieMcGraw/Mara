@@ -1,0 +1,163 @@
+module json_values
+
+use mara.core
+use mara.memory
+use mara.string
+use mara.json
+
+//@ expect-output: object: 7 7 Ann 2.5 true false
+//@ expect-output: missing: false
+//@ expect-output: list: 3 items, 2 nested, next after last: 0
+//@ expect-output: empties: 1 1
+//@ expect-output: spans: 7 1 1
+//@ expect-output: scalars: Json_Kind.Json_Null Json_Kind.Json_True Json_Kind.Json_False -12.5e3
+//@ expect-output: ints: 42 true -7 true 0 false
+//@ expect-output: decoded: a"b\c/d	e
+//@ expect-output: unicode: é € 😀
+//@ expect-output: bad surrogate: Json_Error.Bad_Json
+//@ expect-output: all valid read: true
+//@ expect-output: all invalid refused: true
+//@ expect-output: too long: Json_Error.Json_Too_Long Json_Error.Json_Too_Long
+//@ expect-output: too deep: Json_Error.Json_Too_Deep , and 64 is fine: true
+//@ expect-output: written: "plain" "a\"b\\c\nd\te" "\u0001"
+//@ expect-output: round trip: true
+
+// mara.json: parsing into a flat list of values, finding things in it, reading
+// escapes, refusing what isn't JSON, and writing strings.
+
+#allocator Arena_Basic(4 * MB)
+
+VALID :: [17!][]utf8{
+	"0", "-0", "1.5", "-1.5e10", "1E+2", "\"\"", "true", "false", "null", "[]", "{}",
+	"  [ 1 , 2 ]  ", "{\"a\":{\"b\":[1,{\"c\":null}]},\"d\":\"\"}", "[[],[],{}]", "\"\\u00e9\\n\"",
+	"\n\t[\r\n]", "[0.5,\"x\",true,null,{}]",
+}
+
+INVALID :: [31!][]utf8{
+	"", " ", "01", "-", "1.", ".5", "1e", "+1", "tru", "truex", "nul", "[", "]", "{", "}",
+	"[1,]", "[,1]", "[1 2]", "{\"a\"}", "{\"a\":}", "{\"a\":1,}", "{a:1}", "{1:2}", "\"abc",
+	"\"\\x\"", "\"\\u12\"", "1 2", "[1]]", "{\"a\":1}}", "[1}", "\"a\nb\"",
+}
+
+main :: fun() {
+	values : [256]Json
+	text := "{\"id\": 7, \"name\": \"Ann\", \"score\": 2.5, \"on\": true, \"off\": false, \"none\": null}"
+	failed := json_parse(text, &values)
+	if failed do print("failed:", failed)
+	id, _ := json_get(values, 0, "id")
+	as_int, _ := json_int(values, id)
+	name, _ := json_get(values, 0, "name")
+	score, _ := json_get(values, 0, "score")
+	as_float, _ := json_number(values, score)
+	on, _ := json_get(values, 0, "on")
+	off, _ := json_get(values, 0, "off")
+	print("object:", values.len, as_int, values[name].text, as_float, values[on].kind == Json_True, values[off].kind == Json_True)
+	_, there := json_get(values, 0, "nope")
+	print("missing:", there)
+
+	failed = json_parse("[1, [2, 3], 4]", &values)
+	count := 0
+	nested := 0
+	item := json_first(values, 0)
+	last := item
+	for item != 0 {
+		count += 1
+		if values[item].kind == Json_Array {
+			inner := json_first(values, item)
+			for inner != 0 {
+				nested += 1
+				inner = json_next(values, item, inner)
+			}
+		}
+		last = item
+		item = json_next(values, 0, item)
+	}
+	print("list:", count, "items,", nested, "nested, next after last:", json_next(values, 0, last))
+
+	failed = json_parse("[]", &values)
+	empty_list := values[0].span
+	failed = json_parse("{}", &values)
+	print("empties:", empty_list, values[0].span)
+
+	failed = json_parse("{\"a\":{\"b\":[1,2]},\"c\":3,\"d\":4}", &values)
+	a, _ := json_get(values, 0, "a")
+	c, _ := json_get(values, 0, "c")
+	d, _ := json_get(values, 0, "d")
+	print("spans:", values[0].span, values[c].span, values[d].span)
+	if values[a].span != 4 do print("wrong span:", values[a].span)
+
+	failed = json_parse("[null, true, false, -12.5e3]", &values)
+	print("scalars:", values[1].kind, values[2].kind, values[3].kind, values[4].text)
+
+	failed = json_parse("[42, -7, 1.5]", &values)
+	i1, ok1 := json_int(values, 1)
+	i2, ok2 := json_int(values, 2)
+	i3, ok3 := json_int(values, 3)
+	print("ints:", i1, ok1, i2, ok2, i3, ok3)
+
+	failed = json_parse("\"a\\\"b\\\\c\\/d\\te\"", &values)
+	out : [64]utf8
+	failed = json_text(values, 0, &out)
+	print("decoded:", out)
+
+	failed = json_parse("\"\\u00e9 \\u20AC \\uD83D\\uDE00\"", &values)
+	out.len = 0
+	failed = json_text(values, 0, &out)
+	print("unicode:", out)
+
+	failed = json_parse("\"\\uD83D\"", &values)
+	out.len = 0
+	print("bad surrogate:", json_text(values, 0, &out))
+
+	all_valid := true
+	for v in VALID {
+		if json_parse(v, &values) {
+			all_valid = false
+			print("refused:", v)
+		}
+	}
+	print("all valid read:", all_valid)
+
+	all_invalid := true
+	for v in INVALID {
+		if not json_parse(v, &values) {
+			all_invalid = false
+			print("accepted:", v)
+		}
+	}
+	print("all invalid refused:", all_invalid)
+
+	few : [2]Json
+	long_values := json_parse("[1,2,3]", &few)
+	failed = json_parse("\"abcdef\"", &values)
+	tiny : [3]utf8
+	print("too long:", long_values, json_text(values, 0, &tiny))
+
+	deep : [200]utf8
+	for k in 0:65 do &deep + '['
+	for k in 0:65 do &deep + ']'
+	too_deep := json_parse(deep, &values)
+	deep.len = 0
+	for k in 0:64 do &deep + '['
+	for k in 0:64 do &deep + ']'
+	print("too deep:", too_deep, ", and 64 is fine:", not json_parse(deep, &values))
+
+	w1 : [32]utf8
+	w2 : [32]utf8
+	w3 : [32]utf8
+	json_add_text("plain", &w1)
+	json_add_text("a\"b\\c\nd\te", &w2)
+	bell : [1]utf8
+	&bell + utf8(1)
+	json_add_text(bell, &w3)
+	print("written:", w1, w2, w3)
+
+	// (Written, then read back: what came in comes out.)
+	original := "line\none \"q\" \\ \t é"
+	written : [64]utf8
+	json_add_text(original, &written)
+	failed = json_parse(written, &values)
+	read_back : [64]utf8
+	failed = json_text(values, 0, &read_back)
+	print("round trip:", read_back == original)
+}
