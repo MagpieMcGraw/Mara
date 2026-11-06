@@ -18,7 +18,9 @@ use mara.os
 //     query := sqlite_prepare(&db, "SELECT id, name FROM users")?
 //     defer sqlite_finish(&query)
 //     for sqlite_step(&query)? {
-//         print(sqlite_column_i64(&query, 0), sqlite_column_text(&query, 1))
+//         name : [64]utf8
+//         sqlite_column_text(&query, 1, &name)?
+//         print(sqlite_column_i64(&query, 0), name)
 //     }
 //
 // sqlite_prepare is the slow part, so keep a statement and use it again:
@@ -37,6 +39,9 @@ use mara.os
 Sqlite_Error :: error {
 	Sqlite_Open_Failed
 	Sqlite_Bad_Sql        // the SQL wasn't understood, or names something that isn't there
+	Sqlite_No_Statement   // sqlite_prepare was given only spaces and comments
+	Sqlite_Many_Statements  // sqlite_prepare was given more than one: use sqlite_run
+	Sqlite_Too_Long       // a column doesn't fit in the room it's being copied to
 	Sqlite_Busy           // another connection is writing, and the wait ran out
 	Sqlite_Constraint     // a UNIQUE, NOT NULL or other constraint said no
 	Sqlite_Failed         // anything else
@@ -67,10 +72,11 @@ sqlite_open :: fun(path: []utf8) -> Sqlite, err {
 	return db
 }
 
-// Closes the database. Finish its statements first.
+// Closes the database. If a statement of it is still open, the connection stays until
+// that statement is finished, so one left open can't leak it.
 sqlite_close :: fun(db: ^Sqlite) {
 	if db.handle == 0 do return
-	_ = sqlite3_close(db.handle)
+	_ = sqlite3_close_v2(db.handle)
 	db.handle = 0
 }
 
@@ -83,13 +89,42 @@ sqlite_run :: fun(db: ^Sqlite, sql: []utf8) -> err {
 	sqlite_check(sqlite3_exec(db.handle, cstring(copy), 0, 0, 0))?
 }
 
-// Gets a statement ready. Its `?`s are bound with the sqlite_bind funs.
+// Gets one statement ready. Its `?`s are bound with the sqlite_bind funs. SQL with no
+// statement in it is Sqlite_No_Statement, and more than one is Sqlite_Many_Statements:
+// SQLite would quietly ignore the rest. sqlite_run takes several.
 sqlite_prepare :: fun(db: ^Sqlite, sql: []utf8) -> Sql_Statement, err {
 	handle : i64 = 0
 	rc := sqlite3_prepare_v2(db.handle, sql.ptr, i32(sql.len), &handle, 0)
 	s := Sql_Statement{handle = handle, db = db.handle}
 	if rc != 0 do return s, sqlite_error_of(rc)
+	if handle == 0 do return s, Sqlite_No_Statement
+	// (A statement keeps the text it was made from, so its length says where it stopped.)
+	used := read_cstring(sql.len + 1, sqlite3_sql(handle)).len
+	if sqlite_more_sql(sql, used) {
+		sqlite_finish(&s)
+		return s, Sqlite_Many_Statements
+	}
 	return s
+}
+
+// Whether there's anything in sql after `at` but spaces, comments and semicolons.
+sqlite_more_sql :: fun(sql: []utf8, first_at: i64) -> bool {
+	at := first_at
+	for at < sql.len {
+		c := sql[at]
+		if c == ' ' or c == '\n' or c == '\r' or c == '\t' or c == ';' {
+			at += 1
+		elif c == '-' and at + 1 < sql.len and sql[at + 1] == '-'
+			for at < sql.len and sql[at] != '\n' do at += 1
+		elif c == '/' and at + 1 < sql.len and sql[at + 1] == '*'
+			at += 2
+			for at + 1 < sql.len and not (sql[at] == '*' and sql[at + 1] == '/') do at += 1
+			at += 2
+		else
+			return true
+		}
+	}
+	return false
 }
 
 // Lets a statement go.
@@ -158,17 +193,35 @@ sqlite_column_f64 :: fun(s: ^Sql_Statement, at: i32) -> f64 {
 	return sqlite3_column_double(s.handle, at)
 }
 
-// A column as text, a view of SQLite's memory: good until the next sqlite_step,
-// sqlite_reset or sqlite_finish, so copy it to keep it. NULL is empty.
-sqlite_column_text :: fun(s: ^Sql_Statement, at: i32) -> []utf8 {
+// Appends a column, as text, to out. NULL adds nothing. Sqlite_Too_Long if it doesn't fit,
+// with nothing added.
+sqlite_column_text :: fun(s: ^Sql_Statement, at: i32, out: ^[]utf8) -> err {
+	text := sqlite_column_text_view(s, at)
+	if out.len + text.len > out.cap do return Sqlite_Too_Long
+	out + text
+}
+
+// Appends a column, as bytes, to out. NULL adds nothing. Sqlite_Too_Long if it doesn't
+// fit, with nothing added.
+sqlite_column_blob :: fun(s: ^Sql_Statement, at: i32, out: ^[]byte) -> err {
+	bytes := sqlite_column_blob_view(s, at)
+	if out.len + bytes.len > out.cap do return Sqlite_Too_Long
+	out + bytes
+}
+
+// A column as text, with no copy: a view of SQLite's memory. It goes stale at the next
+// sqlite_step, sqlite_reset or sqlite_finish, and nothing checks that it isn't used after
+// that, so reach for sqlite_column_text unless the copy matters. NULL is empty.
+sqlite_column_text_view :: fun(s: ^Sql_Statement, at: i32) -> []utf8 {
 	p := sqlite3_column_text(s.handle, at)
 	n := sqlite3_column_bytes(s.handle, at)
 	if n == 0 do return []
 	return slice_from_ptr(p, i64(n))
 }
 
-// A column as bytes, a view of SQLite's memory, like sqlite_column_text's.
-sqlite_column_blob :: fun(s: ^Sql_Statement, at: i32) -> []byte {
+// A column as bytes, with no copy: a view of SQLite's memory, like
+// sqlite_column_text_view's.
+sqlite_column_blob_view :: fun(s: ^Sql_Statement, at: i32) -> []byte {
 	p := sqlite3_column_blob(s.handle, at)
 	n := sqlite3_column_bytes(s.handle, at)
 	if n == 0 do return []
@@ -233,7 +286,8 @@ SQLITE_TRANSIENT :: -1
 
 foreign static_lib "sqlite_build" {
 	fun sqlite3_open(path: cstring, db: ^i64) -> i32
-	fun sqlite3_close(db: i64) -> i32
+	fun sqlite3_close_v2(db: i64) -> i32
+	fun sqlite3_sql(statement: i64) -> ^byte
 	fun sqlite3_exec(db: i64, sql: cstring, callback: i64, argument: i64, message: i64) -> i32
 	fun sqlite3_prepare_v2(db: i64, sql: ^utf8, size: i32, statement: ^i64, tail: i64) -> i32
 	fun sqlite3_finalize(statement: i64) -> i32

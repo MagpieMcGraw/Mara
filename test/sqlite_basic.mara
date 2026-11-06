@@ -19,6 +19,11 @@ use mara.sqlite
 //@ expect-output: search: 2 first: the quick brown fox
 //@ expect-output: threads: 16000 rows read by 4 readers, right: true
 //@ expect-output: busy: Sqlite_Error.Sqlite_Busy
+//@ expect-output: two statements: Sqlite_Error.Sqlite_Many_Statements , and no row went in: 0
+//@ expect-output: no statement: Sqlite_Error.Sqlite_No_Statement Sqlite_Error.Sqlite_No_Statement Sqlite_Error.Sqlite_No_Statement
+//@ expect-output: one statement with extras: true true true
+//@ expect-output: too long: Sqlite_Error.Sqlite_Too_Long 0 Sqlite_Error.Sqlite_Too_Long 0 , and a copy lasts: hello
+//@ expect-output: closed with a statement open: 1
 
 // mara.sqlite: everything a port of a Rails app asks of it. Rows and binds, text with
 // non-ASCII in it, NULL against empty, statements used again, errors, transactions,
@@ -51,7 +56,7 @@ tables :: fun() -> err {
 		if line.len > 0 do &line + ' '
 		&line + int_text(sqlite_column_i64(&query, 0))
 		&line + ' '
-		&line + sqlite_column_text(&query, 1)
+		sqlite_column_text(&query, 1, &line)?
 		&line + ' '
 		&line + int_text(sqlite_column_i64(&query, 2))
 	}
@@ -74,7 +79,11 @@ tables :: fun() -> err {
 	one := sqlite_prepare(&db, "SELECT name FROM users WHERE id = ?")?
 	defer sqlite_finish(&one)
 	sqlite_bind_i64(&one, 1, 4)?
-	if sqlite_step(&one)? do print("unicode:", sqlite_column_text(&one, 0))
+	if sqlite_step(&one)? {
+		text : [64]utf8
+		sqlite_column_text(&one, 0, &text)?
+		print("unicode:", text)
+	}
 	sqlite_reset(&one)?
 
 	values := sqlite_prepare(&db, "SELECT ?, ?, ?, ?")?
@@ -84,7 +93,7 @@ tables :: fun() -> err {
 	sqlite_bind_f64(&values, 3, 2.5)?
 	sqlite_bind_i64(&values, 4, 2)?
 	if sqlite_step(&values)? {
-		print("empty is not null:", sqlite_column_is_null(&values, 0), sqlite_column_text(&values, 0).len, "and null:", sqlite_column_is_null(&values, 1), sqlite_column_text(&values, 1).len)
+		print("empty is not null:", sqlite_column_is_null(&values, 0), sqlite_column_text_view(&values, 0).len, "and null:", sqlite_column_is_null(&values, 1), sqlite_column_text_view(&values, 1).len)
 		print("float:", sqlite_column_f64(&values, 2), "count:", sqlite_column_i64(&values, 3))
 	}
 
@@ -97,7 +106,8 @@ tables :: fun() -> err {
 	defer sqlite_finish(&blob)
 	sqlite_bind_blob(&blob, 1, bytes)?
 	if sqlite_step(&blob)? {
-		got := sqlite_column_blob(&blob, 0)
+		got : [16]byte
+		sqlite_column_blob(&blob, 0, &got)?
 		print("blob:", got.len, u8(got[1]), u8(got[2]))
 	}
 
@@ -149,7 +159,7 @@ search :: fun() -> err {
 	found := 0
 	first : [64]utf8
 	for sqlite_step(&q)? {
-		if found == 0 do &first + sqlite_column_text(&q, 0)
+		if found == 0 do sqlite_column_text(&q, 0, &first)?
 		found += 1
 	}
 	print("search:", found, "first:", first)
@@ -221,6 +231,58 @@ threads :: fun() -> err {
 	sqlite_run(&db, "COMMIT")?
 }
 
+// What sqlite_prepare refuses, and what it takes.
+one_statement :: fun() -> err {
+	db := sqlite_open(":memory:")?
+	defer sqlite_close(&db)
+	sqlite_run(&db, "CREATE TABLE t (n INTEGER)")?
+
+	_, two := sqlite_prepare(&db, "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)")
+	count := sqlite_prepare(&db, "SELECT count(*) FROM t")?
+	defer sqlite_finish(&count)
+	rows : i64 = -1
+	if sqlite_step(&count)? do rows = sqlite_column_i64(&count, 0)
+	print("two statements:", two, ", and no row went in:", rows)
+
+	_, comment := sqlite_prepare(&db, "-- only a comment")
+	_, spaces := sqlite_prepare(&db, "   ")
+	_, block := sqlite_prepare(&db, "/* nothing */ ;")
+	print("no statement:", comment, spaces, block)
+
+	a, e1 := sqlite_prepare(&db, "SELECT 1;")
+	b, e2 := sqlite_prepare(&db, "  SELECT 1 ;  -- done\n  /* really */ ; ")
+	c, e3 := sqlite_prepare(&db, "/* first */ SELECT 1")
+	print("one statement with extras:", not e1, not e2, not e3)
+	sqlite_finish(&a)
+	sqlite_finish(&b)
+	sqlite_finish(&c)
+
+	// (A column too long for its room is an err, with nothing added. And a copy lasts past
+	// the next step, when a view wouldn't.)
+	q := sqlite_prepare(&db, "SELECT 'hello' UNION ALL SELECT 'world'")?
+	defer sqlite_finish(&q)
+	kept : [16]utf8
+	tiny : [3]utf8
+	tiny_bytes : [3]byte
+	sqlite_step(&q)?
+	sqlite_column_text(&q, 0, &kept)?
+	text_err := sqlite_column_text(&q, 0, &tiny)
+	blob_err := sqlite_column_blob(&q, 0, &tiny_bytes)
+	sqlite_step(&q)?
+	print("too long:", text_err, tiny.len, blob_err, tiny_bytes.len, ", and a copy lasts:", kept)
+}
+
+// sqlite_close with a statement open: the connection goes when the statement does, and the
+// statement still works until then.
+close_open :: fun() -> err {
+	db := sqlite_open(":memory:")?
+	q := sqlite_prepare(&db, "SELECT 1")?
+	sqlite_close(&db)
+	sqlite_step(&q)?
+	print("closed with a statement open:", sqlite_column_i64(&q, 0))
+	sqlite_finish(&q)
+}
+
 remove_file :: fun(path: []utf8) {
 	_ = file_delete(path)
 }
@@ -235,6 +297,10 @@ main :: fun() {
 	if e2 do print("search failed:", e2)
 	e3 := threads()
 	if e3 do print("threads failed:", e3)
+	e4 := one_statement()
+	if e4 do print("one_statement failed:", e4)
+	e5 := close_open()
+	if e5 do print("close_open failed:", e5)
 	remove_file(DB_FILE)
 	remove_file("sqlite_basic_out.db-wal")
 	remove_file("sqlite_basic_out.db-shm")
