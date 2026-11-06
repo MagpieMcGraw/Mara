@@ -33,6 +33,7 @@ File_Error :: error {
     Too_Large
     Seek_Failed
     Map_Failed
+    Rename_Failed
 }
 
 // Whence values for file_seek — identical numeric values on Win32
@@ -218,6 +219,15 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 		if not bool(DeleteFileA(cstring(c))) do return Delete_Failed
 	}
 
+	// Moves the file at `from` to `to`, as one step: whoever reads `to` finds
+	// the old file or the new one, never part of one. A file at `to` is replaced.
+	// Both must be on one drive, or it's Rename_Failed.
+	file_rename :: fun(from: []utf8, to: []utf8) -> err {
+		a := c_path(from)
+		b := c_path(to)
+		if not bool(MoveFileExA(cstring(a), cstring(b), 1)) do return Rename_Failed   // (1: MOVEFILE_REPLACE_EXISTING)
+	}
+
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Used by hot-reload
 	// loops to copy a freshly-built DLL into a uniquely-named file the host
 	// can LoadLibraryA — the original on disk stays unlocked so the build can
@@ -332,6 +342,7 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 		// FILE_BEGIN/CURRENT/END (== SEEK_SET/CUR/END).
 		fun SetFilePointerEx(h: File_Id, distance: i64, new_ptr_out: ^i64, move_method: u32) -> i32
 		fun DeleteFileA(name: cstring) -> i32
+		fun MoveFileExA(from: cstring, to: cstring, flags: u32) -> i32
 		fun CopyFileA(src: cstring, dst: cstring, fail_if_exists: i32) -> i32
 		// info_level: GetFileExInfoStandard = 0 (the only documented value).
 		// Fills the supplied WIN32_FILE_ATTRIBUTE_DATA with attributes +
@@ -469,6 +480,15 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 		if unlink(cstring(c)) != 0 do return Delete_Failed
 	}
 
+	// Moves the file at `from` to `to`, as one step: whoever reads `to` finds
+	// the old file or the new one, never part of one. A file at `to` is replaced.
+	// Both must be on one drive, or it's Rename_Failed.
+	file_rename :: fun(from: []utf8, to: []utf8) -> err {
+		a := c_path(from)
+		b := c_path(to)
+		if rename(cstring(a), cstring(b)) != 0 do return Rename_Failed
+	}
+
 	// The file's bytes, mapped into memory: read where they lie, nothing
 	// copied. The system reads each page from the file the first time it's
 	// touched, so a big file costs only what's read of it. Read only. An empty
@@ -562,6 +582,7 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 		fun read(fd: File_Id, buf: ^byte, n: usize) -> i64
 		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
 		fun unlink(path: cstring) -> i32
+		fun rename(from: cstring, to: cstring) -> i32
 		fun fstat(fd: File_Id, out: ^Stat) -> i32
 		fun lseek(fd: File_Id, offset: i64, whence: i32) -> i64
 		fun __errno_location() -> ^i32

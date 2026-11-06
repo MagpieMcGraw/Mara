@@ -16,6 +16,12 @@
 // Threads that write the same memory must take turns: a Mutex makes them.
 // mutex_lock waits until no other thread holds the lock, and mutex_unlock
 // lets it go. cpu_count() says how many threads the machine runs at once.
+//
+// A thread that has to wait for another to do something waits on a Condition,
+// holding the Mutex that guards what it's waiting for. condition_wait lets the
+// lock go while it waits and holds it again when it returns, and it can return
+// with nothing changed, so check in a loop: `for not ready do condition_wait(&c,
+// &m)`. The thread that changes it calls condition_wake_one or condition_wake_all.
 module threads
 
 use mara.core

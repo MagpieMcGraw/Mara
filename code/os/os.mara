@@ -4,10 +4,8 @@ module mara.os
 // in the standard library with platform code. Everything over it is portable.
 //
 // One file for each topic. Each has the same functions in an `#if` block for
-// each platform, its foreign calls with them: a file binds what it calls, and
-// the same C function can be bound in several files, with one signature.
-// Definitions are seen by all of the module's files; foreign calls only by
-// their own.
+// each platform, its foreign calls with them. A C function is bound once per
+// platform, by the first file to need it, and all the module's files see it.
 
 // Windows:
 // Win32 platform layer — file I/O, virtual memory, dynamic library loading.

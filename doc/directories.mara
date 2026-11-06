@@ -25,6 +25,10 @@
 //
 // An entry is about 270 bytes (its name up to 260), so storage for a few
 // hundred lives in the program's arena: set one first (see arenas.mara).
+//
+// dir_make makes a directory, and any leading to it that aren't there yet; one
+// that's there already is fine. dir_delete deletes an empty one. file_rename
+// moves a file as one step, replacing any file at the new name.
 module directories
 
 use mara.core

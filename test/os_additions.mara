@@ -1,0 +1,158 @@
+module os_additions
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ expect-output: dirs: made, and made again
+//@ expect-output: over a file: File_Error.Open_Failed
+//@ expect-output: renamed: moved text ; the old name gone: true
+//@ expect-output: replaced: new text
+//@ expect-output: not empty: File_Error.Delete_Failed
+//@ expect-output: cleaned up: true
+//@ expect-output: random: 32 of 32 , and two asks differ: true
+//@ expect-output: no room: 0
+//@ expect-output: clock: true
+//@ expect-output: queue: 5050 from 100 items, 3 takers done
+
+// What mara.os has for a server: directories made and deleted, a file moved as
+// one step, random bytes, the calendar's clock and a condition variable.
+
+#allocator Arena_Basic(16 * MB)
+
+ROOT :: "os_additions_out"
+
+at :: fun(name: []utf8) -> Path {
+	p : Path
+	&p + ROOT
+	&p + name
+	return p
+}
+
+read_text :: fun(path: []utf8) -> str64, err {
+	id := file_open_read(path)?
+	defer file_close(id)
+	room : [64]byte
+	file_read(id, &room)?
+	out : str64
+	for b in room do &out + utf8(b)
+	return out
+}
+
+write_text :: fun(path: []utf8, text: []utf8) -> err {
+	id := file_open_write(path)?
+	defer file_close(id)
+	file_write_text(id, text)?
+}
+
+files :: fun() -> err {
+	dir_make(at("/a/b/c"))?
+	dir_make(at("/a/b/c"))?
+	print("dirs: made, and made again")
+
+	// (A file where a directory is asked for.)
+	file := at("/file")
+	write_text(file, "moved text")?
+	over_file := dir_make(file)
+	if over_file do print("over a file:", over_file)
+
+	moved := at("/a/moved")
+	file_rename(file, moved)?
+	text := read_text(moved)?
+	_, gone := file_open_read(file)
+	print("renamed:", text, "; the old name gone:", gone == Open_Failed)
+
+	write_text(file, "new text")?
+	file_rename(file, moved)?
+	print("replaced:", read_text(moved)?)
+
+	not_empty := dir_delete(at("/a"))
+	if not_empty do print("not empty:", not_empty)
+	file_delete(moved)?
+	dir_delete(at("/a/b/c"))?
+	dir_delete(at("/a/b"))?
+	dir_delete(at("/a"))?
+	dir_delete(ROOT)?
+	dir_make(at("/again"))?
+	dir_delete(at("/again"))?
+	dir_delete(ROOT)?
+	print("cleaned up:", true)
+}
+
+random :: fun() -> err {
+	a : [32]byte
+	b : [32]byte
+	random_bytes(&a)?
+	random_bytes(&b)?
+	differ := false
+	for k in 0:32 {
+		if a[k] != b[k] do differ = true
+	}
+	print("random:", a.len, "of", a.cap, ", and two asks differ:", differ)
+	none : [0]byte
+	random_bytes(&none)?
+	print("no room:", none.len)
+}
+
+// A queue three threads take from, one thread filling it: each taker waits on
+// the condition while it's empty.
+Queue :: struct {
+	lock: Mutex
+	changed: Condition
+	items: [16]i64
+	first: i64 = 0
+	closed: bool = false
+	total: i64 = 0
+	takers_done: i64 = 0
+}
+
+taker :: fun(q: ^Queue) {
+	for true {
+		mutex_lock(&q.lock)
+		for q.items.len == q.first and not q.closed do condition_wait(&q.changed, &q.lock)
+		if q.items.len == q.first {
+			q.takers_done += 1
+			mutex_unlock(&q.lock)
+			return
+		}
+		q.total += q.items[q.first]
+		q.first += 1
+		if q.first == q.items.len {
+			q.items.len = 0
+			q.first = 0
+		}
+		condition_wake_all(&q.changed)
+		mutex_unlock(&q.lock)
+	}
+}
+
+queue :: fun() -> err {
+	q := Queue()
+	threads : [3!]Thread
+	for k in 0:3 do threads[k] = thread_start(taker, &q)?
+	for k in 1..100 {
+		mutex_lock(&q.lock)
+		for q.items.len == q.items.cap do condition_wait(&q.changed, &q.lock)
+		&q.items + k
+		condition_wake_one(&q.changed)
+		mutex_unlock(&q.lock)
+	}
+	mutex_lock(&q.lock)
+	q.closed = true
+	condition_wake_all(&q.changed)
+	mutex_unlock(&q.lock)
+	for k in 0:3 do thread_wait(&threads[k])
+	print("queue:", q.total, "from 100 items,", q.takers_done, "takers done")
+}
+
+main :: fun() {
+	file_err := files()
+	if file_err do print("files failed:", file_err)
+	random_err := random()
+	if random_err do print("random failed:", random_err)
+	// (After 2026, before 2100, in nanoseconds since 1970.)
+	now := clock_unix_ns()
+	print("clock:", now > 1767225600 * i64(1000000000) and now < 4102444800 * i64(1000000000))
+	queue_err := queue()
+	if queue_err do print("queue failed:", queue_err)
+}

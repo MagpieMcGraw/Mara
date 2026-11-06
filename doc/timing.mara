@@ -4,7 +4,7 @@
 // some point — the system's start, not a date. How long something took is
 // the difference of two: `start := clock_ns()`, the work, then
 // `clock_ns() - start`. (A date and a time of day are another clock, which
-// can be set back: not this one.)
+// can be set back: clock_unix_ns(), nanoseconds since 1970 began, in UTC.)
 //
 // sleep_ns(ns) waits: the program does nothing for that long — at least,
 // and a little more, as the system wakes it: a fraction of a millisecond.

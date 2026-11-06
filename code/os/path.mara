@@ -114,6 +114,18 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	return true
 }
 
+// Makes the directory at path, and any directories leading to it that aren't
+// there yet. One that's there already is fine. Open_Failed when it can't be made:
+// a file has that name, say, or the system won't allow it.
+dir_make :: fun(path: []utf8) -> err {
+	// (Each leading directory tried. One that fails, a drive's `C:` say, isn't
+	// the failure yet: the last one says.)
+	for k in 1:path.len {
+		if path_separator(path[k]) do _ = dir_make_one(path[0:k])
+	}
+	if not dir_make_one(path) do return Open_Failed
+}
+
 #if #windows {
 	// The directory the program runs in — where a path not whole starts —
 	// as the system has it (real_path's: its letters' case as on disk, links
@@ -137,6 +149,21 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	set_current_dir :: fun(path: []utf8) -> err {
 		c := c_path(path)
 		if SetCurrentDirectoryA(cstring(c)) == 0 do return Open_Failed
+	}
+
+	// One directory made, the one before it there already. Whether a directory
+	// is there now.
+	dir_make_one :: fun(path: []utf8) -> bool {
+		c := c_path(path)
+		if bool(CreateDirectoryA(cstring(c), void)) do return true
+		kind := GetFileAttributesA(cstring(c))
+		return kind != 0xFFFFFFFF and kind & 0x10 != 0   // (INVALID_FILE_ATTRIBUTES; FILE_ATTRIBUTE_DIRECTORY)
+	}
+
+	// Deletes the directory at path, which must be empty: Delete_Failed if not.
+	dir_delete :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if not bool(RemoveDirectoryA(cstring(c))) do return Delete_Failed
 	}
 
 	// A path as the system has it, whole — a file's or a folder's: its
@@ -298,6 +325,9 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	foreign static_lib "kernel32" {
 		// The directory the program runs in, changed: 0 failing.
 		fun SetCurrentDirectoryA(path: cstring) -> i32
+		fun CreateDirectoryA(path: cstring, attributes: ^byte) -> i32
+		fun RemoveDirectoryA(path: cstring) -> i32
+		fun GetFileAttributesA(path: cstring) -> u32
 		// A directory's entries: the first, and each next (false: no more).
 		fun FindFirstFileA(pattern: cstring, found: ^WIN32_FIND_DATAA) -> File_Id
 		fun FindNextFileA(search: File_Id, found: ^WIN32_FIND_DATAA) -> i32
@@ -339,6 +369,21 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	set_current_dir :: fun(path: []utf8) -> err {
 		c := c_path(path)
 		if chdir(cstring(c)) != 0 do return Open_Failed
+	}
+
+	// One directory made, the one before it there already. Whether a directory
+	// is there now.
+	dir_make_one :: fun(path: []utf8) -> bool {
+		c := c_path(path)
+		if mkdir(cstring(c), 511) == 0 do return true   // (511: 0o777, less the umask)
+		st : Stat
+		return stat(cstring(c), &st) == 0 and (st.mode & S_IFMT) == S_IFDIR
+	}
+
+	// Deletes the directory at path, which must be empty: Delete_Failed if not.
+	dir_delete :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if rmdir(cstring(c)) != 0 do return Delete_Failed
 	}
 
 	// A path as the system has it, whole — a file's or a folder's: its links
@@ -481,6 +526,8 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 		// (too long for buf among the ways).
 		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
 		fun chdir(path: cstring) -> i32
+		fun mkdir(path: cstring, mode: u32) -> i32
+		fun rmdir(path: cstring) -> i32
 		// A path whole, links followed, 0-ended: in room it makes (resolved
 		// void) — free it — or void failing.
 		fun realpath(path: cstring, resolved: ^byte) -> ^byte
