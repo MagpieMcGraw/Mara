@@ -63,7 +63,7 @@ above|bfor - the tree of variables that supply me, inlcuding across function cal
 below|aftr - the tree of variables that I supply, including across function calls
 
 Other arguments:
-mara ask name 2					# number - limit analysis depth, default infinite
+mara ask name 2					# number - limit analysis depth: a call tree defaults to 1 (`all` for every level), types and flow to infinite
 mara ask name in scope 			# limit analysis to scope
 mara ask name at scope or file 	# location of name
 UPDATE TOOL TO NEW VERSIONS OF in AND at
