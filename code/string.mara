@@ -285,3 +285,196 @@ int_text :: fun(n: i64) -> str64 {
 	}
 	return out
 }
+
+// A float as text. Without decimals it reads as print shows it: up to 6
+// significant digits, no zeros at the end, and an exponent for very big and
+// very small numbers ("16.6667", "0.5", "1e+06"). With decimals it has that
+// many digits after the point: 16.6667 with 2 is "16.67", 2.0 with 1 is "2.0".
+// A number too long for a str64 that way is written as print shows it. It
+// rounds to the nearest digit, and an exact half to the even one, as print
+// does: 2.5 with 0 is "2". A bare literal fits both kinds of float, so give
+// it one: `float_text(f64(2.5))`.
+float_text :: dispatch {
+	float_text_f32
+	float_text_f64
+}
+float_text_f32 :: fun(x: f32, decimals: i64 = -1) -> str64 { return float_text_f64(f64(x), decimals) }
+float_text_f64 :: fun(x: f64, decimals: i64 = -1) -> str64 {
+	bits_of :: fun(v: f64) -> u64 { @llvm.bitcast.f64 }
+	// (A digit of the number the limbs spell, 9 digits to a limb, biggest
+	// first. Off either end it's 0.)
+	digit :: fun(limbs: []u32, k: i64) -> i64 {
+		if k < 0 or k >= limbs.len * 9 do return 0
+		v := i64(limbs[k / 9])
+		for i in k % 9:8 {
+			v /= 10
+		}
+		return v % 10
+	}
+	// (The digits from `from` up to `cut`, rounded at cut, with one more digit
+	// first: '0', unless the rounding carried into it.)
+	rounded :: fun(limbs: []u32, from: i64, cut: i64) -> str64 {
+		kept : str64
+		&kept + '0'
+		for k in from:cut {
+			&kept + utf8(i64('0') + digit(limbs, k))
+		}
+		after := digit(limbs, cut)
+		up := after > 5
+		if after == 5 {
+			up = digit(limbs, cut - 1) % 2 == 1
+			for k in cut + 1:limbs.len * 9 {
+				if digit(limbs, k) != 0 do up = true
+			}
+		}
+		at := kept.len - 1
+		for up {
+			if kept[at] == '9' {
+				kept[at] = '0'
+				at -= 1
+			else
+				kept[at] = kept[at] + 1
+				up = false
+			}
+		}
+		return kept
+	}
+
+	out : str64
+	bits := bits_of(x)
+	power := i64((bits >> 52) & 0x7FF)
+	mantissa := bits & 0xFFFFFFFFFFFFF
+	if power == 0x7FF and mantissa != 0 {
+		&out + "nan"
+		return out
+	}
+	if bits >> 63 != 0 do &out + '-'
+	if power == 0x7FF {
+		&out + "inf"
+		return out
+	}
+	// (x is mantissa * 2^power.)
+	if power == 0 {
+		power = 1
+	else
+		mantissa = mantissa | (u64(1) << 52)
+	}
+	power -= 1075
+
+	// Its exact digits, 9 to a limb: limb UNITS ends at the point, those before
+	// it are bigger, those after it come after the point. The biggest f64 has
+	// 309 digits before the point, the smallest 1074 after it.
+	UNITS :: 36
+	limbs : [160!]u32
+	first := UNITS - 1
+	last := UNITS + 1
+	limbs[first] = u32(mantissa / 1000000000)
+	limbs[UNITS] = u32(mantissa % 1000000000)
+	for power > 0 {
+		step : i64 = 29
+		if power < step do step = power
+		carry : u64 = 0
+		i := last - 1
+		for i >= first {
+			v := (u64(limbs[i]) << u64(step)) + carry
+			limbs[i] = u32(v % 1000000000)
+			carry = v / 1000000000
+			i -= 1
+		}
+		if carry != 0 {
+			first -= 1
+			limbs[first] = u32(carry)
+		}
+		power -= step
+	}
+	for power < 0 {
+		step : i64 = 9
+		if -power < step do step = -power
+		// (1000000000 is 512 times a whole number, so halving it 9 times stays exact.)
+		part := u64(1000000000) >> u64(step)
+		carry : u64 = 0
+		for i in first:last {
+			v := u64(limbs[i])
+			limbs[i] = u32((v >> u64(step)) + carry)
+			carry = (v & ((u64(1) << u64(step)) - 1)) * part
+		}
+		if carry != 0 {
+			limbs[last] = u32(carry)
+			last += 1
+		}
+		for first < last - 1 and limbs[first] == 0 {
+			first += 1
+		}
+		power += step
+	}
+
+	// (digits[k] is limbs' k-th digit. `point` of them come before the point,
+	// and `lead` is the first that isn't 0; a 0's is its units digit.)
+	digits := limbs[first:last]
+	point := (UNITS + 1 - first) * 9
+	lead := 0
+	for lead < digits.len * 9 and digit(digits, lead) == 0 {
+		lead += 1
+	}
+	if lead == digits.len * 9 do lead = point - 1
+	exponent := point - 1 - lead
+
+	whole := 1
+	if exponent > 0 do whole = exponent + 1
+	if decimals >= 0 and whole + decimals + 3 <= out.cap {
+		from := lead
+		if point - 1 < from do from = point - 1
+		kept := rounded(digits, from, point + decimals)
+		start := 1
+		if kept[0] != '0' do start = 0
+		end := 1 + point - from
+		&out + kept[start:end]
+		if decimals > 0 {
+			&out + '.'
+			&out + kept[end:kept.len]
+		}
+		return out
+	}
+
+	kept := rounded(digits, lead, lead + 6)
+	start := 1
+	if kept[0] != '0' {
+		start = 0
+		exponent += 1
+	}
+	shown := kept[start:start + 6]
+	n := shown.len
+	for n > 1 and shown[n - 1] == '0' {
+		n -= 1
+	}
+	if exponent < -4 or exponent >= 6 {
+		&out + shown[0]
+		if n > 1 {
+			&out + '.'
+			&out + shown[1:n]
+		}
+		&out + 'e'
+		power_of_ten := exponent
+		if exponent < 0 {
+			&out + '-'
+			power_of_ten = -exponent
+		else
+			&out + '+'
+		}
+		if power_of_ten < 10 do &out + '0'
+		&out + int_text(power_of_ten)
+	elif exponent >= 0
+		&out + shown[0:exponent + 1]
+		if n > exponent + 1 {
+			&out + '.'
+			&out + shown[exponent + 1:n]
+		}
+	else
+		&out + "0."
+		for k in 0:-exponent - 1 {
+			&out + '0'
+		}
+		&out + shown[0:n]
+	}
+	return out
+}

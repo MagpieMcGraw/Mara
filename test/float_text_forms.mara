@@ -1,0 +1,60 @@
+module float_text_forms
+
+use mara.core
+use mara.string
+
+//@ expect-output: plain: 16.6667 0.5 100000 0 -0 -2.5
+//@ expect-output: exponent: 1e+06 1.5e-05 1e+100 1.79769e+308 4.94066e-324
+//@ expect-output: carried: 1e+06 1000 0.0001
+//@ expect-output: decimals: 16.67 17 2.0 0.00 -0.50
+//@ expect-output: halves: 2 2 4 0.12 0.38 100
+//@ expect-output: too long: 1e+70
+//@ expect-output: not numbers: inf -inf nan
+//@ expect-output: f32: 0.25 0.250
+
+// A float's text: without decimals what print shows, with them that many
+// after the point. Its digits are exact, so a half is a real half: 2.5 and
+// 0.125 are exact in binary and go to the even digit, 0.375 too. Compared
+// with Python's %g and %.Nf over the whole range when it was written.
+
+main :: fun() {
+	ms : f64 = 16.6667
+	half : f64 = 0.5
+	big : f64 = 100000
+	zero : f64 = 0
+	print("plain:", float_text(ms), float_text(half), float_text(big), float_text(zero), float_text(-zero), float_text(half * -5))
+
+	million : f64 = 1000000
+	tiny : f64 = 0.000015
+	huge : f64 = 1e100
+	most : f64 = 1.7976931348623157e308
+	least : f64 = 5e-324
+	print("exponent:", float_text(million), float_text(tiny), float_text(huge), float_text(most), float_text(least))
+
+	// (Rounding that carries past the first digit, and into another form.)
+	a : f64 = 999999.5
+	b : f64 = 999.9999
+	c : f64 = 0.00009999995
+	print("carried:", float_text(a), float_text(b), float_text(c))
+
+	two : f64 = 2
+	small : f64 = 0.001
+	print("decimals:", float_text(ms, 2), float_text(ms, 0), float_text(two, 1), float_text(small, 2), float_text(-half, 2))
+
+	x : f64 = 2.5
+	y : f64 = 1.5
+	z : f64 = 3.5
+	eighth : f64 = 0.125
+	three : f64 = 0.375
+	n : f64 = 99.5
+	print("halves:", float_text(x, 0), float_text(y, 0), float_text(z, 0), float_text(eighth, 2), float_text(three, 2), float_text(n, 0))
+
+	// (A str64 holds 64 characters: this has 71 digits before the point.)
+	long : f64 = 1e70
+	print("too long:", float_text(long, 2))
+
+	print("not numbers:", float_text(1.0 / zero), float_text(-1.0 / zero), float_text(zero / zero))
+
+	q : f32 = 0.25
+	print("f32:", float_text(q), float_text(q, 3))
+}

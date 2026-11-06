@@ -20,7 +20,7 @@
 // ends_with, contains, contains_folded (letters' case not minded). Taking a
 // text apart: trimmed, line_end, skip_spaces. Sorting: compare,
 // compare_folded. Case: lower, upper. A number to text and back: int_text,
-// parse_number.
+// float_text, parse_number.
 //
 // Two texts compare with `==` and `!=`, by their characters. Characters
 // order as their bytes do (`c >= 'a' and c <= 'z'`), but aren't numbers:
@@ -87,6 +87,8 @@ main :: fun() {
 	// A number to text, and back.
 	count := int_text(-42)
 	print(count, count.len)                  // -42 3
+	ms : f64 = 16.6667
+	print(float_text(ms), float_text(ms, 2)) // 16.6667 16.67
 	n, ok := parse_number("2.5")
 	print(n, ok)                             // 2.5 true
 }
