@@ -1,5 +1,6 @@
 module Pounce
 
+use mara.core
 use mara.memory
 
 #allocator Arena_Debug(192 * MB)
