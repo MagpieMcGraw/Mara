@@ -6,6 +6,10 @@
 // `clock_ns() - start`. (A date and a time of day are another clock, which
 // can be set back: clock_unix_ns(), nanoseconds since 1970 began, in UTC.)
 //
+// For dates, mara.time has date_now(), a Date in UTC with its year, month, day and
+// the rest. date_text and date_http_text write one, date_parse reads one, and
+// date_from_unix and date_to_unix go to and from seconds since 1970.
+//
 // sleep_ns(ns) waits: the program does nothing for that long — at least,
 // and a little more, as the system wakes it: a fraction of a millisecond.
 // sleep_ms(ms) is the same in milliseconds. (On Windows a high-resolution

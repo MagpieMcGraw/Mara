@@ -1,0 +1,60 @@
+module dates
+
+use mara.core
+use mara.time
+
+//@ expect-output: epoch: 1970-01-01T00:00:00Z 4
+//@ expect-output: billion: 2001-09-09T01:46:40Z 0
+//@ expect-output: before: 1969-12-31T23:59:59Z 3
+//@ expect-output: leap: 2024-02-29T12:00:00Z 2000-02-29T00:00:00Z 1900-03-01T00:00:00Z
+//@ expect-output: http: Sun, 06 Nov 1994 08:49:37 GMT
+//@ expect-output: round trip: true
+//@ expect-output: now: true
+//@ expect-output: parsed: 2026-10-05T14:57:03Z 123456000 1
+//@ expect-output: date only: 2026-11-06T00:00:00Z
+//@ expect-output: with T and Z: 2026-11-06T14:57:03Z
+//@ expect-output: offset: 2026-11-06T12:57:03Z 2026-11-06T17:27:03Z
+//@ expect-output: bad: true true true true true true true
+
+// Dates by the calendar, in UTC: from seconds since 1970 and back, as text and from
+// it. The HTTP example is RFC 7231's. Compared with Python's datetime over 5,000 years
+// when it was written.
+
+at :: fun(seconds: i64) -> str64 {
+	return date_text(date_from_unix(seconds))
+}
+
+is_bad :: fun(text: []utf8) -> bool {
+	_, failed := date_parse(text)
+	return failed == Bad_Date
+}
+
+main :: fun() {
+	print("epoch:", at(0), date_from_unix(0).weekday)
+	print("billion:", at(1000000000), date_from_unix(1000000000).weekday)
+	print("before:", at(-1), date_from_unix(-1).weekday)
+	print("leap:", at(1709208000), at(951782400), at(-2203891200))
+	print("http:", date_http_text(date_from_unix(784111777)))
+
+	right := true
+	for k in -2000000:2000000 {
+		seconds := k * 40009
+		if date_to_unix(date_from_unix(seconds)) != seconds do right = false
+	}
+	print("round trip:", right)
+
+	now := date_now()
+	print("now:", now.year >= 2026 and now.year < 2100 and now.month >= 1 and now.nanosecond < 1000000000)
+
+	d, failed := date_parse("2026-10-05 14:57:03.123456")
+	if failed do print("failed:", failed)
+	print("parsed:", date_text(d), d.nanosecond, d.weekday)
+	e, _ := date_parse("2026-11-06")
+	print("date only:", date_text(e))
+	f, _ := date_parse("2026-11-06T14:57:03Z")
+	print("with T and Z:", date_text(f))
+	g, _ := date_parse("2026-11-06T14:57:03+02:00")
+	h, _ := date_parse("2026-11-06 14:57:03-02:30")
+	print("offset:", date_text(g), date_text(h))
+	print("bad:", is_bad("nope"), is_bad("2026-13-01"), is_bad("2026-02-29"), is_bad("2026-01-01T25:00:00"), is_bad("2026-01-01 10:00"), is_bad("2026-01-01T10:00:00.Z"), is_bad("2026-01-01T10:00:00Zjunk"))
+}

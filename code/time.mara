@@ -1,12 +1,14 @@
 module mara.time
 
+use mara.core
 use mara.math
+use mara.string
 os :: use mara.os
 
-// Time: the clock and waiting, which mara.os does for each platform, and a game
-// loop's timing over them. A Timer says how long a frame took; a Fixed_Timer
-// turns that into the game's time in fixed steps. A moment here is what
-// clock_ns gives: nanoseconds, as an i64.
+// Time: the clock and waiting, which mara.os does for each platform, a game
+// loop's timing over them, and dates. A Timer says how long a frame took; a
+// Fixed_Timer turns that into the game's time in fixed steps. A moment there is
+// what clock_ns gives: nanoseconds, as an i64. A Date is a moment by the calendar.
 
 Timer :: struct {
 	counter: i64 = clock_ns()
@@ -64,4 +66,216 @@ sleep :: fun(work: Timer, fps: f64) {
 
 seconds_to_ns :: fun (seconds: f64) -> i64 {
 	return i64(seconds * 1000000000)
+}
+
+// ---------------------------------------------------------------------------
+// Dates
+// ---------------------------------------------------------------------------
+
+// What reading a date can fail with.
+Date_Error :: error {
+	Bad_Date
+}
+
+// A moment by the calendar, always in UTC.
+Date :: struct {
+	year: i64
+	month: i64        // 1 to 12
+	day: i64          // 1 to 31
+	hour: i64
+	minute: i64
+	second: i64
+	nanosecond: i64
+	weekday: i64      // 0 is Sunday
+}
+
+// Now, by the calendar.
+date_now :: fun() -> Date {
+	now := os.clock_unix_ns()
+	seconds := now / 1000000000
+	rest := now % 1000000000
+	if rest < 0 {
+		seconds -= 1
+		rest += 1000000000
+	}
+	return date_from_unix(seconds, rest)
+}
+
+// The date of a moment given in seconds since 1970 began.
+date_from_unix :: fun(seconds: i64, nanoseconds: i64 = 0) -> Date {
+	days := seconds / 86400
+	rest := seconds % 86400
+	if rest < 0 {
+		days -= 1
+		rest += 86400
+	}
+	// (Howard Hinnant's civil_from_days: years counted from 0000-03-01, so a leap
+	// day comes last in its year, in eras of 400 years, which all have 146097 days.)
+	z := days + 719468
+	era := z / 146097
+	if z < 0 do era = (z - 146096) / 146097
+	day_of_era := z - era * 146097
+	year_of_era := (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365
+	day_of_year := day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+	shifted_month := (5 * day_of_year + 2) / 153
+	month := shifted_month + 3
+	if shifted_month >= 10 do month = shifted_month - 9
+	year := year_of_era + era * 400
+	if month <= 2 do year += 1
+	weekday := (days + 4) % 7
+	if weekday < 0 do weekday += 7
+	return Date{
+		year = year
+		month = month
+		day = day_of_year - (153 * shifted_month + 2) / 5 + 1
+		hour = rest / 3600
+		minute = rest / 60 % 60
+		second = rest % 60
+		nanosecond = nanoseconds
+		weekday = weekday
+	}
+}
+
+// A date's moment, in seconds since 1970 began.
+date_to_unix :: fun(d: Date) -> i64 {
+	// (Howard Hinnant's days_from_civil: see date_from_unix.)
+	year := d.year
+	if d.month <= 2 do year -= 1
+	era := year / 400
+	if year < 0 do era = (year - 399) / 400
+	year_of_era := year - era * 400
+	shifted_month := d.month - 3
+	if d.month <= 2 do shifted_month = d.month + 9
+	day_of_year := (153 * shifted_month + 2) / 5 + d.day - 1
+	day_of_era := year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+	days := era * 146097 + day_of_era - 719468
+	return days * 86400 + d.hour * 3600 + d.minute * 60 + d.second
+}
+
+// A date as text, the way JSON and most formats want it: 2026-11-06T14:57:03Z.
+date_text :: fun(d: Date) -> str64 {
+	out : str64
+	date_digits(&out, d.year, 4)
+	&out + '-'
+	date_digits(&out, d.month, 2)
+	&out + '-'
+	date_digits(&out, d.day, 2)
+	&out + 'T'
+	date_digits(&out, d.hour, 2)
+	&out + ':'
+	date_digits(&out, d.minute, 2)
+	&out + ':'
+	date_digits(&out, d.second, 2)
+	&out + 'Z'
+	return out
+}
+
+// A date as text the way HTTP headers want it: Fri, 06 Nov 2026 14:57:03 GMT.
+date_http_text :: fun(d: Date) -> str64 {
+	days := [7!][]utf8{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	months := [12!][]utf8{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+	out : str64
+	&out + days[d.weekday]
+	&out + ", "
+	date_digits(&out, d.day, 2)
+	&out + ' '
+	&out + months[d.month - 1]
+	&out + ' '
+	date_digits(&out, d.year, 4)
+	&out + ' '
+	date_digits(&out, d.hour, 2)
+	&out + ':'
+	date_digits(&out, d.minute, 2)
+	&out + ':'
+	date_digits(&out, d.second, 2)
+	&out + " GMT"
+	return out
+}
+
+// A whole number as at least `count` digits, with zeros in front.
+date_digits :: fun(out: ^[]utf8, n: i64, count: i64) {
+	text := int_text(n)
+	for k in text.len:count do out + '0'
+	out + text
+}
+
+// Reads a date: 2026-11-06, then if there's more, a 'T' or a space and 14:57:03,
+// then maybe a fraction of a second, then maybe 'Z', or an offset like +02:00, which
+// is taken away to give UTC. Rails's and SQLite's dates read this way. Bad_Date
+// for anything else, or for a date that doesn't exist, like February 30.
+date_parse :: fun(text: []utf8) -> Date, err {
+	bad := date_from_unix(0)
+	at : i64 = 0
+	year, ok_year := date_read_digits(text, 0, 4)
+	if not ok_year or not date_char(text, 4, '-') do return bad, Bad_Date
+	month, ok_month := date_read_digits(text, 5, 2)
+	if not ok_month or not date_char(text, 7, '-') do return bad, Bad_Date
+	day, ok_day := date_read_digits(text, 8, 2)
+	if not ok_day or month < 1 or month > 12 or day < 1 or day > date_month_days(year, month) do return bad, Bad_Date
+	at = 10
+	hour : i64 = 0
+	minute : i64 = 0
+	second : i64 = 0
+	nanosecond : i64 = 0
+	offset : i64 = 0
+	if at < text.len {
+		if text[at] != 'T' and text[at] != ' ' do return bad, Bad_Date
+		ok_hour, ok_minute, ok_second := false, false, false
+		hour, ok_hour = date_read_digits(text, 11, 2)
+		minute, ok_minute = date_read_digits(text, 14, 2)
+		second, ok_second = date_read_digits(text, 17, 2)
+		if not ok_hour or not ok_minute or not ok_second or not date_char(text, 13, ':') or not date_char(text, 16, ':') do return bad, Bad_Date
+		if hour > 23 or minute > 59 or second > 59 do return bad, Bad_Date
+		at = 19
+		if at < text.len and text[at] == '.' {
+			at += 1
+			first := at
+			place : i64 = 100000000
+			for at < text.len and text[at] >= '0' and text[at] <= '9' {
+				nanosecond += (i64(text[at]) - i64('0')) * place
+				place /= 10
+				at += 1
+			}
+			if at == first do return bad, Bad_Date
+		}
+		if at < text.len and text[at] == 'Z' {
+			at += 1
+		elif at < text.len and (text[at] == '+' or text[at] == '-')
+			sign : i64 = 1
+			if text[at] == '-' do sign = -1
+			off_hour, ok_off_hour := date_read_digits(text, at + 1, 2)
+			off_minute, ok_off_minute := date_read_digits(text, at + 4, 2)
+			if not ok_off_hour or not ok_off_minute or not date_char(text, at + 3, ':') do return bad, Bad_Date
+			offset = sign * (off_hour * 3600 + off_minute * 60)
+			at += 6
+		}
+		if at != text.len do return bad, Bad_Date
+	}
+	plain := Date{year = year, month = month, day = day, hour = hour, minute = minute, second = second, nanosecond = nanosecond, weekday = 0}
+	return date_from_unix(date_to_unix(plain) - offset, nanosecond)
+}
+
+// `count` digits at `at` as a number, and whether they were all there.
+date_read_digits :: fun(text: []utf8, at: i64, count: i64) -> i64, bool {
+	if at + count > text.len do return 0, false
+	n : i64 = 0
+	for k in at:at + count {
+		if text[k] < '0' or text[k] > '9' do return 0, false
+		n = n * 10 + i64(text[k]) - i64('0')
+	}
+	return n, true
+}
+
+date_char :: fun(text: []utf8, at: i64, c: utf8) -> bool {
+	return at < text.len and text[at] == c
+}
+
+// How many days a month has, that year.
+date_month_days :: fun(year: i64, month: i64) -> i64 {
+	if month == 2 {
+		if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) do return 29
+		return 28
+	}
+	if month == 4 or month == 6 or month == 9 or month == 11 do return 30
+	return 31
 }
