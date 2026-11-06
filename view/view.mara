@@ -124,9 +124,7 @@ Ui :: struct {
 
 // Says what failed, and SDL's reason.
 sdl_failed :: fun(what: []utf8) {
-	reason : [256]utf8
-	c_text(GetError(), &reason)
-	print("mara view: %: %", what, reason)
+	print("mara view: %: %", what, read_cstring(256, GetError()))
 }
 
 main :: fun(args: [][]utf8) -> i64 {

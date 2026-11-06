@@ -1,6 +1,7 @@
 module sdl_text
 
 use mara.core
+use mara.os
 sdl :: use mara.sdl
 gl :: use mara.open_gl
 
@@ -15,25 +16,21 @@ gl :: use mara.open_gl
 // Text between Mara and C through the bindings. gl_load asks get_proc for
 // each GL function by name, copied out of open_gl.c's table into a buffer
 // (a view of C's memory has no 0 after it for cstring(): it stopped the
-// program). SDL's text comes back as buffers, C text again: the base path
-// handed back to SDL works. Nothing is opened: SDL isn't started, so each
+// program). SDL's text is read with read_cstring: the base path, copied into a
+// buffer, is C text again and works handed back to SDL. Nothing is opened: SDL isn't started, so each
 // GL address is none and SDL says why. A file that isn't there can't be
 // opened: an err, where() naming the C function, GetError() SDL's reason.
 
 main :: fun() {
 	gl.gl_load(sdl.GL_GetProcAddress)
 	print("loaded:", true)
-	said : [256]utf8
-	sdl.c_text(sdl.GetError(), &said)
-	print("error said:", said.len > 0)
+	print("error said:", read_cstring(256, sdl.GetError()).len > 0)
 	base : [512]utf8
-	sdl.c_text(sdl.GetBasePath(), &base)
+	&base + read_cstring(base.cap - 1, sdl.GetBasePath())
 	print("base:", base.len > 0)
 	print("back to C:", sdl.SetHint("MARA_TEST_BASE", cstring(base)))
 	_, e := sdl.IOFromFile("no such file.bin", "rb")
 	print("opened:", e)
 	print("where:", e.where())
-	reason : [256]utf8
-	sdl.c_text(sdl.GetError(), &reason)
-	print("reason given:", reason.len > 0)
+	print("reason given:", read_cstring(256, sdl.GetError()).len > 0)
 }

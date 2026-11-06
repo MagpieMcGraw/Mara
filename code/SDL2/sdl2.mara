@@ -1,5 +1,8 @@
 module mara.sdl2
 
+use mara.core
+use mara.os
+
 // SDL2 bindings for Mara — surface mirrors code/SDL/sdl.mara (SDL3) where
 // possible, with SDL2-specific API adjustments inline. Major differences:
 //
@@ -20,8 +23,7 @@ module mara.sdl2
 //   - SDL_PollEvent returns i64 (1 if event available, 0 if not); SDL3 returns
 //     bool. We declare it `i64` so callers compare against 0.
 //   - SDL_RWops replaces SDL_IOStream; SDL2 lacks several SDL3 path APIs
-//     (GetPathInfo, CreateDirectory, RenamePath, CopyFile). Filesystem-using
-//     stdlib modules (mara.os) need SDL3 today.
+//     (GetPathInfo, CreateDirectory, RenamePath, CopyFile).
 
 Init_Flags :: union(tag u32) {
     Timer          = 1
@@ -326,21 +328,6 @@ Texture   :: distinct ^byte
 // Foreign declarations
 // ---------------------------------------------------------------------------
 
-// C's text at p, 0-ended, appended into the buffer `out`, as much as its
-// room holds (p void: none). A buffer keeps a 0 after its text, so it's C
-// text again — a view of C's memory wouldn't be: its len is its cap, and
-// cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[]utf8) {
-    if p == void do return
-    view : []utf8 = slice_from_ptr(p, 1 << 20)
-    for ch in view {
-        if ch == 0 or out.len + 1 >= out.cap do break
-        out[out.len] = ch
-        out.len += 1
-    }
-    out[out.len] = 0
-}
-
 // MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
 foreign static_lib "SDL2" {
     fun SDL_Init(flags: Init_Flags) -> i32
@@ -396,13 +383,13 @@ SetHint :: fun(name: []utf8, value: []utf8) -> i32 { return SDL_SetHint(cstring(
 // What failed last, as SDL says it.
 GetError :: fun() -> [256]utf8 {
     out : [256]utf8
-    c_text(SDL_GetError(), &out)
+    &out + read_cstring(out.cap - 1, SDL_GetError())
     return out
 }
 // The SDL build's revision.
 GetRevision :: fun() -> [256]utf8 {
     out : [256]utf8
-    c_text(SDL_GetRevision(), &out)
+    &out + read_cstring(out.cap - 1, SDL_GetRevision())
     return out
 }
 
@@ -462,8 +449,10 @@ LoadFile :: fun(file: []utf8, datasize: ^usize) -> ^byte { return SDL_LoadFile(c
 GetBasePath :: fun() -> [512]utf8 {
     out : [512]utf8
     p := SDL_GetBasePath()
-    c_text(p, &out)
-    if p != void do SDL_free(p)
+    if p != void {
+        &out + read_cstring(out.cap - 1, p)
+        SDL_free(p)
+    }
     return out
 }
 // The directory for the program's own files, made if it isn't there
@@ -471,8 +460,10 @@ GetBasePath :: fun() -> [512]utf8 {
 GetPrefPath :: fun(org: []utf8, app: []utf8) -> [512]utf8 {
     out : [512]utf8
     p := SDL_GetPrefPath(cstring(org), cstring(app))
-    c_text(p, &out)
-    if p != void do SDL_free(p)
+    if p != void {
+        &out + read_cstring(out.cap - 1, p)
+        SDL_free(p)
+    }
     return out
 }
 

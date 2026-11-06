@@ -634,8 +634,9 @@ Place :: struct { x: f32  y: f32 }
 // checks a 0 is after them: a literal has one, and a buffer keeps one
 // after its text (appends write it). A slicing holds all of its room, so
 // `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
-// buffer itself, unsliced. Text C gives back is copied into a
-// buffer, so it's C text again (a binding returns `[512]utf8`, say).
+// buffer itself, unsliced. Text C gives back is read with
+// `read_cstring(n, p)` (mara.os), a view of at most n bytes, up to its 0. Appended
+// to a buffer, `&b + read_cstring(b.cap - 1, p)`, it's C text again.
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
 	//

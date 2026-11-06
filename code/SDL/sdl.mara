@@ -1135,21 +1135,6 @@ PathInfo :: struct {
     access_time: i64
 }
 
-// C's text at p, 0-ended, appended into the buffer `out`, as much as its
-// room holds (p void: none). A buffer keeps a 0 after its text, so it's C
-// text again — a view of C's memory wouldn't be: its len is its cap, and
-// cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[]utf8) {
-    if p == void do return
-    view : []utf8 = slice_from_ptr(p, 1 << 20)
-    for ch in view {
-        if ch == 0 or out.len + 1 >= out.cap do break
-        out[out.len] = ch
-        out.len += 1
-    }
-    out[out.len] = 0
-}
-
 // MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
 // SDL reports success, not failure: its functions return true when they worked,
 // and a handle is NULL when making it failed. `fails Failed` turns that around:
@@ -1157,7 +1142,7 @@ c_text :: fun(p: ^byte, out: ^[]utf8) {
 // that gives no err is called as it is, so PollEvent's bool still means an event.
 foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun Init(flags: Init_Flags) -> err
-    // What failed last, as SDL says it: C text, SDL's to keep (print_cstr, c_text).
+    // What failed last, as SDL says it: C text, SDL's to keep (print_cstr, read_cstring).
     fun GetError() -> ^byte
     fun SetHint(name: cstring, value: cstring) -> err
     fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window, err

@@ -1,5 +1,8 @@
 module mara.open_gl
 
+core :: use mara.core
+os :: use mara.os
+
 // ---------------------------------------------------------------------------
 // OpenGL constants — split into typed enums per semantic group
 // ---------------------------------------------------------------------------
@@ -333,21 +336,6 @@ GL_Query_Param :: union(tag u32) {
 // GL 1.1 functions — available directly from opengl32.lib (Windows)
 // ---------------------------------------------------------------------------
 
-// C's text at p, 0-ended, appended into the buffer `out`, as much as its
-// room holds (p void: none). A buffer keeps a 0 after its text, so it's C
-// text again — a view of C's memory wouldn't be: its len is its cap, and
-// cstring() finds no 0 after it.
-c_text :: fun(p: ^byte, out: ^[]utf8) {
-    if p == void do return
-    view : []utf8 = slice_from_ptr(p, 1 << 20)
-    for ch in view {
-        if ch == 0 or out.len + 1 >= out.cap do break
-        out[out.len] = ch
-        out.len += 1
-    }
-    out[out.len] = 0
-}
-
 foreign static_lib "opengl32" {
     fun glEnable(cap: GL_Capability)
     fun glDisable(cap: GL_Capability)
@@ -455,11 +443,11 @@ foreign static_lib "open_gl" {
 // void for one the driver hasn't (an extension's: gl_has_extension).
 gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
     // (Each name copied into a buffer: get_proc hands it to C, and a buffer
-    // keeps the 0 after its text that C needs — c_text.)
+    // keeps the 0 after its text that C needs.)
     name : [64]utf8
     for i in 0:mara_gl_proc_count() {
         name.len = 0
-        c_text(mara_gl_proc_name(i), &name)
+        &name + os.read_cstring(name.cap - 1, mara_gl_proc_name(i))
         mara_gl_proc_set(i, get_proc(name))
     }
 }
