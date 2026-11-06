@@ -200,7 +200,6 @@ Env_Error :: error {
 		fun WaitForSingleObject(h: File_Id, milliseconds: u32) -> u32
 		fun GetExitCodeProcess(h: File_Id, code: ^u32) -> i32
 		fun GetStdHandle(which: u32) -> File_Id
-		fun GetLastError() -> u32
 		fun SetLastError(code: u32)
 		fun GetEnvironmentVariableA(name: cstring, value: ^utf8, size: u32) -> u32
 		fun PeekNamedPipe(pipe: File_Id, buffer: ^byte, size: u32, read: ^u32, available: ^u32, message_left: ^u32) -> i32
@@ -343,7 +342,6 @@ Env_Error :: error {
 	}
 
 	foreign static_lib "c" {
-		fun close(fd: File_Id) -> i32
 		// Processes and pipes
 		fun pipe2(fds: ^i32, flags: i32) -> i32
 		fun fork() -> i32
@@ -351,7 +349,6 @@ Env_Error :: error {
 		fun execv(path: ^utf8, words: ^^utf8) -> i32
 		fun _exit(code: i32)
 		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
-		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
 		fun getenv(name: cstring) -> ^byte
 	}
 }

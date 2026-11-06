@@ -600,7 +600,6 @@ Sockaddr :: struct {
 
 	foreign static_lib "kernel32" {
 		fun RtlMoveMemory(to: ^byte, from: ^byte, size: usize)
-		fun SetHandleInformation(h: File_Id, mask: u32, flags: u32) -> i32
 	}
 
 	// Winsock (ws2_32.dll). A SOCKET is pointer-sized, bound as File_Id:
@@ -1010,7 +1009,6 @@ Sockaddr :: struct {
 	EINPROGRESS     :: 115
 
 	foreign static_lib "c" {
-		fun close(fd: File_Id) -> i32
 		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
 		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
 		// Sockets: named pipes' (Unix sockets) and the network's. An address
@@ -1029,6 +1027,5 @@ Sockaddr :: struct {
 		fun recvfrom(fd: File_Id, data: ^byte, size: usize, flags: i32, from: ^byte, from_size: ^u32) -> i64
 		fun getaddrinfo(name: cstring, service: ^byte, hints: ^Addrinfo_Hints, found: ^^Addrinfo) -> i32
 		fun freeaddrinfo(found: ^Addrinfo)
-		fun __errno_location() -> ^i32
 	}
 }

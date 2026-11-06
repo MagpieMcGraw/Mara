@@ -37,7 +37,6 @@ Resolver :: struct {
     owners:  map[Token_Id]Token_Id,     // ... a body's: the fun or struct whose body it's in, by its token
     owner:   Token_Id,                  // the fun or struct whose body is being resolved
     members: map[Token_Id]map[string]Ref,   // ... what a qualified name reaches in it (rs_members)
-    foreign_funs: map[Token_Id]bool,    // every foreign fun's name: what a variable may hide, and a Mara fun goes before
     dispatches: map[Token_Id]bool,      // the definitions that are dispatches (their member's the checker's)
     type_params: map[Token_Id]bool,     // the declarations that are type params (what they're bound to is the checker's)
     type_params_of: map[Tree_Id][dynamic]Token_Id,   // ... each generic's, by its node (an instance binds them)
@@ -194,17 +193,6 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
         }
         if n == 1 { return found, true }
         if n > 1 {
-            // (A Mara definition goes before a C function of that name: C's
-            // names aren't chosen here, and differ by platform.)
-            mara: Ref
-            kept := 0
-            for m in r.scopes[i].uses {
-                if ref, ok := m.defs[name]; ok && !r.foreign_funs[ref.decl] && (kept == 0 || ref != mara) {
-                    mara = ref
-                    kept += 1
-                }
-            }
-            if kept == 1 { return mara, true }
             // (Ambiguous: each module with one of them, the first for each.)
             owners := make([dynamic]string)
             seen := make([dynamic]Ref, context.temp_allocator)
@@ -292,7 +280,7 @@ rs_signature_clash :: proc(r: ^Resolver, tok: Token_Id) {
     if name == "_" { return }
     ref, ok := rs_lookup(r, name)
     r.miss = {}
-    if !ok || r.foreign_funs[ref.decl] { return }   // (a C function's name is free to take)
+    if !ok { return }
     #partial switch ref.kind {
     case .Fun, .Type, .Module: r.clashes[tok] = {hides = ref}
     }
@@ -322,11 +310,9 @@ rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
             break
         }
     }
-    if ref, ok := rs_lookup(r, name); ok && !r.foreign_funs[ref.decl] {
+    if ref, ok := rs_lookup(r, name); ok {
         // (A constant's name, a fun's, a type's, a module's in sight — its
-        // own module's or one it uses: a variable of that name would hide it.
-        // A C function's is free to take: C's names aren't chosen here, and
-        // differ by platform, so code that builds on one would fail on another.)
+        // own module's or one it uses: a variable of that name would hide it.)
         #partial switch ref.kind {
         case .Const:              c.constant = true
         case .Fun, .Type, .Module: c.hides = ref
@@ -386,18 +372,10 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
                 r.defs[t.main[value]] = s
             }
         case .Foreign:
-            // (A foreign block's funs are definitions like any other: its
-            // module's, seen by the modules that use it. Several of a module's
-            // files may bind one C function, each seeing its own binding, so
-            // the table takes the first — and a Mara definition of that name
-            // stays in it, which the checker reports: tc_extract_foreign.)
-            if into == nil {
-                rs_define_foreign(r, s)
-            } else {
-                for ff in foreign_view(t, s).funs {
-                    name := foreign_fun_view(t, ff).name
-                    if rs_text(name) not_in into^ { into[rs_text(name)] = {name, .Fun} }
-                }
+            // (A foreign block's funs are definitions like any other.)
+            for ff in foreign_view(t, s).funs {
+                name := foreign_fun_view(t, ff).name
+                def(r, into, rs_text(name), {name, .Fun})
             }
         case .Using:
             // (`using x :: …`: as written without it.)
@@ -438,16 +416,6 @@ rs_declare_loop :: proc(r: ^Resolver, tok: Token_Id) {
         if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[tok] = c }
     }
     rs_declare(r, name, {tok, .Local})
-}
-
-// A foreign block's funs, in sight in the current scope.
-@(private="file")
-rs_define_foreign :: proc(r: ^Resolver, s: Tree_Id) {
-    for ff in foreign_view(r.t, s).funs {
-        name := foreign_fun_view(r.t, ff).name
-        r.foreign_funs[name] = true
-        rs_define(r, rs_text(name), {name, .Fun})
-    }
 }
 
 // Whether a union's variants hold data (else it is an enum).
@@ -520,12 +488,6 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Rs_Module {
     r.modules[name] = m
     for f in m.files { rs_each_def(r, tree_list(r.t, r.t.a[f]), &m.defs) }
     t := r.t
-    for f in m.files {
-        for s in rs_live(r, tree_list(t, t.a[f])) {
-            if t.tag[s] != .Foreign { continue }
-            for ff in foreign_view(t, s).funs { r.foreign_funs[foreign_fun_view(t, ff).name] = true }
-        }
-    }
     // (Its dispatch groups and its operators' overloads: what a call, an
     // operation, in sight of it chooses among.)
     for f in m.files {
@@ -671,8 +633,6 @@ rs_program :: proc(r: ^Resolver) {
                 r.named[tok] = used
                 rs_define(r, rs_text(tok), {tok, .Module})
             }
-            // (Its foreign blocks' funs, its own: rs_each_def.)
-            for s in stmts { if t.tag[s] == .Foreign { rs_define_foreign(r, s) } }
             for s in stmts { rs_stmt(r, s) }
             // (What it sees of the groups: its module's, then what it uses —
             // each once.)
@@ -687,16 +647,6 @@ rs_program :: proc(r: ^Resolver) {
         }
         rs_leave(r)
     }
-}
-
-// A Mara definition of `name` in the module `module`, when it has one: what a
-// foreign fun of that name runs into. 0 for none.
-resolve_module_definition :: proc(r: ^Resolver, module: string, name: string) -> Token_Id {
-    m := r.modules[module] or_else nil
-    if m == nil { return 0 }
-    ref, has := m.defs[name]
-    if !has || r.foreign_funs[ref.decl] { return 0 }
-    return ref.decl
 }
 
 // The dispatch groups named `name` in sight where `at` is: its module's,
@@ -718,23 +668,18 @@ resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string) -> []Token_
 // The modules in sight where `at` is that each have a fun `name`, when its
 // own module has none — two or more: a bare call of it is ambiguous. (Every
 // module its file or its module uses, not only the nearest's: the checker's
-// rule for funs. A Mara fun goes before a C function of that name: rs_lookup.)
+// rule for funs.)
 resolve_fun_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string {
     sight, ok := r.sights[build_tokens[at].file]
     if !ok { return nil }
     if ref, own := sight.module.defs[name]; own && rs_plain_fun(r, ref) { return nil }
-    mara := make([dynamic]string, context.temp_allocator)
-    c := make([dynamic]string, context.temp_allocator)
+    out := make([dynamic]string, context.temp_allocator)
     for u in sight.uses {
         if u == sight.module { continue }
-        ref, has := u.defs[name]
-        if !has || !rs_plain_fun(r, ref) { continue }
-        list := &c if r.foreign_funs[ref.decl] else &mara
-        if !slice.contains(list[:], u.name) { append(list, u.name) }
+        if ref, has := u.defs[name]; has && rs_plain_fun(r, ref) && !slice.contains(out[:], u.name) { append(&out, u.name) }
     }
-    if len(mara) >= 2 { return mara[:] }
-    if len(mara) == 0 && len(c) >= 2 { return c[:] }
-    return nil
+    if len(out) < 2 { return nil }
+    return out[:]
 }
 
 // The modules in sight where `at` is that have a constant `name` — its own,

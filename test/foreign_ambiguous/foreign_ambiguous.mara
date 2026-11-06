@@ -1,0 +1,14 @@
+module foreign_ambiguous
+
+//@ expect-fail: 'both' is ambiguous
+
+use mara.core
+use from_mara
+use from_c
+
+// A C function is a definition like any other: two modules in use having `both`
+// is ambiguous, one of them C's or not. Naming the module reaches either.
+
+main :: fun() {
+	print(both())
+}

@@ -121,8 +121,8 @@ main :: fun() {
 	total := 0
 	wrong := 0
 	for total < 64 * BLOCK {
-		open, e8 := tcp_receive(&conn, &room)
-		if e8 or not open do break
+		still_open, e8 := tcp_receive(&conn, &room)
+		if e8 or not still_open do break
 		if room.len == 0 {
 			sleep_ms(1)
 			continue
@@ -138,8 +138,8 @@ main :: fun() {
 	tcp_close(&accepted)
 	ended := false
 	for _ in 0:1000 {
-		open, _ := tcp_receive(&conn, &room)
-		if not open {
+		still_open, _ := tcp_receive(&conn, &room)
+		if not still_open {
 			ended = true
 			break
 		}

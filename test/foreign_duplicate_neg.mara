@@ -1,0 +1,17 @@
+module foreign_duplicate_neg
+
+//@ expect-fail: function 'GetLastError' already defined
+
+// A C function is a definition like any other: its module defines the name once.
+
+use mara.core
+
+foreign static_lib "kernel32" {
+	fun GetLastError() -> u32
+}
+
+GetLastError :: fun() -> i64 { return 0 }
+
+main :: fun() {
+	print(GetLastError())
+}

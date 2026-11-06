@@ -318,7 +318,6 @@ TYPE_VARIABLE_HIDES_VARIANT :: "%s '%s' would hide the variant %s.%s, %s: give i
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %s"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"
-TYPE_FOREIGN_NAME_TAKEN :: "foreign fun '%s': its module already defines that name, at %s. Give the Mara one another name, or the C one a `prefix`"
 TYPE_FOREIGN_ERR_NEEDS_FAILS :: "foreign fun '%s' gives err, but its block doesn't say how the library reports failure: write `fails <error>` after the library's name (a C bool false, or a C pointer NULL, becomes that error)"
 TYPE_FOREIGN_ERR_RESULTS :: "foreign fun '%s': a C function can give `-> err` (C returns a bool, false when it failed) or `-> T, err` with T a pointer (C returns it, NULL when it failed)"
 TYPE_FOREIGN_FAILS_NOT_ERROR :: "`fails %s`: no error set in sight has that variant"

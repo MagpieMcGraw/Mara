@@ -102,16 +102,18 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         if !is_scope { continue }
         span := tree_span(t, ff)
         link := strings.concatenate({prefix, name}) if prefix != "" else name
-        if taken := resolve_module_definition(k.rs, k.pkg, name); taken != 0 {
-            tc_error(k, span, TYPE_FOREIGN_NAME_TAKEN, name, span_loc(Span{at = taken, tok = taken, end = taken + 1}))
+        // (A name a module defines once, as any definition's.)
+        flat := make_flat_name(module, name)
+        if _, bound := k.checked.functions[flat]; bound || flat in k.table.funs {
+            tc_error(k, span, TYPE_FUNCTION_ALREADY_DEFINED, name)
+            continue
         }
         origin := Origin_Foreign{library = library, link_name = link}
         tc_foreign_err(k, ft, &origin, fv.fails, fail_kind, fails_known, name, span)
         ft.origin = origin
-        // (Another file, or another module, may bind a C function another has:
-        // as that one does — a symbol has one C signature, its one `declare`.
-        // Its Mara types may differ, a distinct File_Id for an i64, the C ones
-        // not.)
+        // (Another module may bind a C function one has: as that one does — a
+        // symbol has one C signature, its one `declare`. Its Mara types may
+        // differ, a distinct File_Id for an i64, the C ones not.)
         for _, existing in k.checked.functions {
             fo, is_foreign := existing.origin.(Origin_Foreign)
             if !is_foreign || fo.link_name != link { continue }
@@ -124,6 +126,6 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         ft.body_span = span
         // (Its params: its variables, though it has no body to bind them.)
         for p in ft.params { annot_add_var(k.annot, ft, {p.decl, .Param, p.type_}) }
-        k.checked.functions[make_flat_name(module, name)] = ft
+        k.checked.functions[flat] = ft
     }
 }

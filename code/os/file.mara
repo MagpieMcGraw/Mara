@@ -564,9 +564,6 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 		fun unlink(path: cstring) -> i32
 		fun fstat(fd: File_Id, out: ^Stat) -> i32
 		fun lseek(fd: File_Id, offset: i64, whence: i32) -> i64
-		// Virtual memory
-		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte
-		fun munmap(addr: ^byte, len: usize) -> i32
 		fun __errno_location() -> ^i32
 	}
 }

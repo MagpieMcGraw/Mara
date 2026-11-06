@@ -1,0 +1,16 @@
+module foreign_hide_neg
+
+//@ expect-fail: variable 'abs' would hide the fun 'abs'
+
+// A C function is a definition like any other: a variable can't hide it.
+
+use mara.core
+
+foreign static_lib "c" {
+	fun abs(x: i32) -> i32
+}
+
+main :: fun() {
+	abs := 1
+	print(abs)
+}

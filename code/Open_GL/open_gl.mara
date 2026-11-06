@@ -435,9 +435,8 @@ Flush :: fun() { glFlush() }
 // then on: after a change to open_gl.c, delete open_gl.lib so the next
 // build compiles it again.
 // gl_load takes the platform's proc-address function as a parameter, so
-// open_gl.c has no link-time dependency on a specific windowing lib. Each
-// foreign block is this file's own: the module's names are the Mara funs
-// after it, which call it.
+// open_gl.c has no link-time dependency on a specific windowing lib. The Mara
+// funs after each foreign block call its C functions, taking Mara's types.
 // ---------------------------------------------------------------------------
 
 // open_gl.c's own: its table of the functions it loads (gl_load), and its

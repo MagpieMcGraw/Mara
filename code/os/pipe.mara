@@ -121,18 +121,6 @@ Pipe_Error :: error {
 	ERROR_PIPE_LISTENING          :: 536
 
 	foreign static_lib "kernel32" {
-		// HANDLE-typed slots are bound as File_Id directly — same bits at the
-		// ABI level (distinct lowers to its base i64 in IR), but the type
-		// checker keeps stray i64s and other handle kinds out of these slots.
-		fun CreateFileA(
-			name: cstring,
-			access: u32,
-			share: u32,
-			security: ^byte,            // LPSECURITY_ATTRIBUTES — actual pointer; pass void
-			disposition: u32,
-			flags: u32,
-			template: File_Id) -> File_Id  // HANDLE hTemplateFile / return — pass File_Id(0) for none
-		fun GetLastError() -> u32
 		// Named pipes
 		fun CreateNamedPipeA(
 			name:          cstring,
@@ -274,16 +262,7 @@ Pipe_Error :: error {
 	SIG_IGN          :: 1
 
 	foreign static_lib "c" {
-		fun close(fd: File_Id) -> i32
-		// Sockets: named pipes' (Unix sockets) and the network's. An address
-		// is any of the families' (^byte): Sockaddr_Un, Sockaddr.
-		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id
-		fun bind(fd: File_Id, at: ^byte, size: u32) -> i32
-		fun listen(fd: File_Id, backlog: i32) -> i32
-		fun accept4(fd: File_Id, at: ^byte, size: ^u32, flags: i32) -> File_Id
-		fun connect(fd: File_Id, at: ^byte, size: u32) -> i32
 		fun getuid() -> u32
 		fun signal(sig: i32, handler: usize) -> usize
-		fun __errno_location() -> ^i32
 	}
 }

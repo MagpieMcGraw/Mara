@@ -36,12 +36,12 @@ main :: fun(args: [][]utf8) -> i64 {
 		return 1
 	}
 	chunk : [64]byte
-	open, re := pipe_read(p.output, &chunk)
+	still_open, re := pipe_read(p.output, &chunk)
 	if bool(re) {
 		print("read failed:", re)
 		return 1
 	}
-	print("before:", chunk.len, "bytes, open", open)
+	print("before:", chunk.len, "bytes, open", still_open)
 
 	message := "ping"
 	bytes : []byte = message

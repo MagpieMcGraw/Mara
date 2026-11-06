@@ -111,8 +111,8 @@ main :: fun() {
 	room : [1200]byte
 	got := 0
 	for _ in 0:1000 {
-		open, te := tcp_receive(&accepted, &room)
-		if te or not open do break
+		still_open, te := tcp_receive(&accepted, &room)
+		if te or not still_open do break
 		got += room.len
 		if got == message.len do break
 		sleep_ms(1)

@@ -44,8 +44,6 @@ use mara.string
 	}
 
 	foreign static_lib "kernel32" {
-		fun CloseHandle(h: File_Id) -> i32
-		fun WaitForSingleObject(h: File_Id, milliseconds: u32) -> u32
 		fun Sleep(ms: u32)
 		// Clocks and timers
 		fun QueryPerformanceCounter(count: ^i64) -> i32
@@ -92,6 +90,5 @@ use mara.string
 	foreign static_lib "c" {
 		fun nanosleep(want: ^Timespec, left: ^Timespec) -> i32
 		fun clock_gettime(clock: i32, now: ^Timespec) -> i32
-		fun __errno_location() -> ^i32
 	}
 }

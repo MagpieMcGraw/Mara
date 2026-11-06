@@ -103,11 +103,9 @@ thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mar
 		fun GetProcessHeap() -> ^byte
 		fun HeapAlloc(heap: ^byte, flags: u32, size: usize) -> ^byte
 		fun HeapFree(heap: ^byte, flags: u32, p: ^byte) -> i32
-		fun RtlMoveMemory(to: ^byte, from: ^byte, size: usize)
 		fun AcquireSRWLockExclusive(lock: ^Mutex)
 		fun ReleaseSRWLockExclusive(lock: ^Mutex)
 		fun GetActiveProcessorCount(group: u16) -> u32
-		fun WaitForSingleObject(h: File_Id, milliseconds: u32) -> u32
 	}
 }
 
@@ -190,8 +188,6 @@ thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mar
 
 	foreign static_lib "c" {
 		fun malloc(size: usize) -> ^byte
-		fun free(p: ^byte)
-		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
 		// Threads (in libc since glibc 2.34)
 		fun pthread_create(thread: ^u64, attributes: ^byte, entry: fun(^byte) -> u64, start: ^byte) -> i32
 		fun pthread_join(thread: u64, result: ^byte) -> i32

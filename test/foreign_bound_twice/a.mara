@@ -1,0 +1,16 @@
+module foreign_bound_twice
+
+//@ expect-fail: function 'abs' already defined
+
+// A C function is a definition like any other: two files of a module can't each
+// bind it. (Two modules can, with one C signature: file_append.)
+
+use mara.core
+
+foreign static_lib "c" {
+	fun abs(x: i32) -> i32
+}
+
+main :: fun() {
+	print(abs(-1))
+}

@@ -7,9 +7,9 @@ module file_append
 
 // file_open_append opens a file to add to its end, creating it if missing
 // (sooblivion's full log). And a C function mara.os binds can be bound
-// again in another file, with the same C signature: a foreign block is its
-// file's own, and the symbol has one signature (CreateFileA here; on Linux,
-// open). sooblivion bound CreateFileW instead, CreateFileA refused.
+// again in another module, with the same C signature: the module's own definition
+// goes first, and the symbol has one signature (CreateFileA here; on Linux, open).
+// sooblivion bound CreateFileW instead, CreateFileA refused.
 
 use mara.core
 use mara.os

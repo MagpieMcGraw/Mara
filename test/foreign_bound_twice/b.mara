@@ -1,0 +1,5 @@
+module foreign_bound_twice
+
+foreign static_lib "c" {
+	fun abs(x: i32) -> i32
+}

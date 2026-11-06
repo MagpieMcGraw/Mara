@@ -103,9 +103,9 @@ close_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
 
 // The Docs panel's pin: in its title bar, left of its close box.
 pin_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
-	close := close_rect(ui, pn)
+	close_box := close_rect(ui, pn)
 	w := text_width(&ui.text, pin_label(ui)) + 2.0 * PAD
-	return Rect{x = close.x - w, y = close.y, w = w, h = close.h}
+	return Rect{x = close_box.x - w, y = close_box.y, w = w, h = close_box.h}
 }
 
 // The Docs panel's reload: left of its pin (docs_reload).
@@ -396,8 +396,8 @@ draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
 	title_color := ui.dim
 	if front do title_color = ui.ink
 	_ = text_draw(&ui.text, r, panel_title(pn.kind), b.x + PAD, b.y + ROW_PAD, title_color)
-	close := close_rect(ui, pn)
-	_ = text_draw(&ui.text, r, "x", close.x + floor_f32((close.w - text_width(&ui.text, "x")) * 0.5), b.y + ROW_PAD, ui.dim)
+	close_box := close_rect(ui, pn)
+	_ = text_draw(&ui.text, r, "x", close_box.x + floor_f32((close_box.w - text_width(&ui.text, "x")) * 0.5), b.y + ROW_PAD, ui.dim)
 	if pn.kind == DOCS_PANEL {
 		pin := pin_rect(ui, pn)
 		pin_color := ui.dim

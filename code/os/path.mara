@@ -296,17 +296,6 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	}
 
 	foreign static_lib "kernel32" {
-		// HANDLE-typed slots are bound as File_Id directly — same bits at the
-		// ABI level (distinct lowers to its base i64 in IR), but the type
-		// checker keeps stray i64s and other handle kinds out of these slots.
-		fun CreateFileA(
-			name: cstring,
-			access: u32,
-			share: u32,
-			security: ^byte,            // LPSECURITY_ATTRIBUTES — actual pointer; pass void
-			disposition: u32,
-			flags: u32,
-			template: File_Id) -> File_Id  // HANDLE hTemplateFile / return — pass File_Id(0) for none
 		// The directory the program runs in, changed: 0 failing.
 		fun SetCurrentDirectoryA(path: cstring) -> i32
 		// A directory's entries: the first, and each next (false: no more).

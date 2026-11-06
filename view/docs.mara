@@ -218,10 +218,10 @@ docs_reload :: fun(ui: ^Ui) {
 	&name + q.name
 	&path + q.path
 	scroll := l.scroll
-	open : [16 * KB]utf8
-	docs_open_folds(l, &open)
+	open_folds : [16 * KB]utf8
+	docs_open_folds(l, &open_folds)
 	docs_search(ui, dir, words, Exact{kind = kind, name = name, path = path, line = q.line, loose = true}, i)
-	docs_reopen_folds(l, open)
+	docs_reopen_folds(l, open_folds)
 	l.scroll = scroll
 	// (Where it was found now: where the next reload looks.)
 	if ui.search.has_exact do q.line = ui.search.exact.line
@@ -231,21 +231,21 @@ docs_reload :: fun(ui: ^Ui) {
 // The funs whose code l shows, a line each into `open`: how many funs above
 // it have the same signature's first line (two systems' file_read), a space,
 // that line. (As many as it holds.)
-docs_open_folds :: fun(l: ^Lines, open: ^[16 * KB]utf8) {
+docs_open_folds :: fun(l: ^Lines, folds: ^[16 * KB]utf8) {
 	for k in 0:l.lines.len {
 		if not lines_fold_head(l, k) or l.lines[l.lines[k].fold_at].hidden do continue
 		s := line_text(l, k)
-		if open.len + s.len + 30 > open.cap do return
-		open + int_text(fold_same_above(l, k))
-		open + ' '
-		open + s
-		open + '\n'
+		if folds.len + s.len + 30 > folds.cap do return
+		folds + int_text(fold_same_above(l, k))
+		folds + ' '
+		folds + s
+		folds + '\n'
 	}
 }
 
 // The funs in l that `open` has a line for (docs_open_folds: a reload's),
 // their code shown again.
-docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
+docs_reopen_folds :: fun(l: ^Lines, folds: []utf8) {
 	for k in 0:l.lines.len {
 		if not lines_fold_head(l, k) do continue
 		key : [1100]utf8
@@ -253,12 +253,12 @@ docs_reopen_folds :: fun(l: ^Lines, open: []utf8) {
 		&key + ' '
 		&key + line_text(l, k)[0 : min_int(line_text(l, k).len, 1000)]
 		at : i64 = 0
-		for at < open.len {
+		for at < folds.len {
 			end := at
-			for end < open.len and open[end] != '\n' {
+			for end < folds.len and folds[end] != '\n' {
 				end += 1
 			}
-			if open[at : end] == key {
+			if folds[at : end] == key {
 				_ = lines_toggle(l, k)
 				break
 			}
@@ -590,14 +590,14 @@ entry_name_of :: fun(text: []utf8, fd: Found, word: []utf8) -> []utf8 {
 			continue
 		}
 		if first[at] != '`' do return none
-		close := at + 1
-		for close < first.len {
-			if first[close] == '`' do break
-			close += 1
+		closing := at + 1
+		for closing < first.len {
+			if first[closing] == '`' do break
+			closing += 1
 		}
-		if close == first.len do return none
-		if same_folded(first[at + 1 : close], word) do return first[at + 1 : close]
-		at = close + 1
+		if closing == first.len do return none
+		if same_folded(first[at + 1 : closing], word) do return first[at + 1 : closing]
+		at = closing + 1
 	}
 	return none
 }
@@ -992,13 +992,13 @@ names_end :: fun(first: []utf8) -> i64 {
 			return at
 		}
 		if first[at] != '`' do break
-		close := at + 1
-		for close < first.len {
-			if first[close] == '`' do break
-			close += 1
+		closing := at + 1
+		for closing < first.len {
+			if first[closing] == '`' do break
+			closing += 1
 		}
-		if close == first.len do break
-		end = close + 1
+		if closing == first.len do break
+		end = closing + 1
 		at = end
 	}
 	for end > 0 and end < first.len and first[end] == ' ' {

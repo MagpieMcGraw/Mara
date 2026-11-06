@@ -612,9 +612,7 @@ Place :: struct { x: f32  y: f32 }
 // Mara types; calls to them go straight to the library. `prefix SDL_` after
 // the library's name lets the functions go without it: `Init` for SDL_Init.
 // They're definitions like any other: the module's other files see them, and so
-// does a module that uses it. A variable may still take one's name, since C's
-// names differ by platform, and a Mara function goes before a C function of the
-// same name from another module. A module can also give what C does as a Mara
+// does a module that uses it. A module can also give what C does as a Mara
 // function that calls it, taking Mara's types: text as []utf8, data as a slice
 // (`[]` for none, where C takes NULL).
 //

@@ -259,8 +259,8 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 // ended first.
 client_read :: fun(c: ^Client) -> bool {
 	chunk : [512]byte
-	open, e := pipe_read(c.id, &chunk)
-	if e or not open do return false
+	still_open, e := pipe_read(c.id, &chunk)
+	if e or not still_open do return false
 	text : []utf8 = chunk
 	for ch in text {
 		if c.line.len == c.line.cap do return false   // (no query is that long)
@@ -414,8 +414,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 // connection closed.
 read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	chunk : [16 * KB]byte
-	open, e := pipe_read(h.serve.output, &chunk)
-	if e or not open {
+	still_open, e := pipe_read(h.serve.output, &chunk)
+	if e or not still_open {
 		serve_down(h)
 		// (Serve ended before any of its answer — as one does when Mara was
 		// rebuilt: a new one started and asked again, once.)

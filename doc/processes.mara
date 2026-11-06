@@ -53,9 +53,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	// Without waiting: nothing has arrived yet (the child is waiting for its
 	// input to end), and its output is still open.
 	early : [64]byte
-	open, pe := pipe_read(p.output, &early)
+	still_open, pe := pipe_read(p.output, &early)
 	if pe do print("couldn't read from it:", pe)
-	print("so far:", early.len, "bytes; still open:", open)
+	print("so far:", early.len, "bytes; still open:", still_open)
 
 	// Write to its input, then close it: the child reads to its end.
 	we := file_write_text(p.input, "hello")
