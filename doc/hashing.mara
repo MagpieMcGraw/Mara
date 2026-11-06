@@ -13,18 +13,18 @@
 // Don't store passwords as hashes like those: they're made to be fast, and so are
 // guesses. bcrypt_make(password, cost) gives text to store, with a random salt in
 // it, and bcrypt_check(password, stored) says whether a password matches. Each step
-// of cost doubles the time they take: 12 is about a quarter of a second. Only a
-// password's first 72 bytes count. pbkdf2_sha256 makes a key from a password.
+// of cost doubles the time they take: 12 is about a fifth of a second. Only a
+// password's first 72 bytes count. A password with a 0 byte in them is refused:
+// bcrypt would stop there. pbkdf2_sha256 makes a key from a password.
 //
-// Blowfish's tables take 4 KB, so bcrypt needs the program's arena (see arenas.mara).
+// bcrypt here is the crypt_blowfish library, the same one Ruby's bcrypt gem uses. The
+// rest is written in Mara: checked against published test vectors and Python's hashlib,
+// but not reviewed by anyone, so use it for real secrets only knowing that.
 module hashing
 
 use mara.core
-use mara.memory
 use mara.crypto
 use mara.encoding
-
-#allocator Arena_Basic(1 * MB)
 
 main :: fun() {
 	text : [64]utf8

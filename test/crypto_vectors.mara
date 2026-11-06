@@ -21,13 +21,17 @@ use mara.encoding
 //@ expect-output: hex: 00ff10 back: true bad: Encoding_Error.Bad_Encoding
 //@ expect-output: url: a%20b%26c%2Fd a+b%26c
 //@ expect-output: url back: a b&c/d a b&c bad: Encoding_Error.Bad_Encoding
-//@ expect-output: bcrypt vector: $2a$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s.
-//@ expect-output: bcrypt check: true true false false false
-//@ expect-output: bcrypt made: 60 true false
+//@ expect-output: bcrypt plain: true true true
+//@ expect-output: bcrypt long: true true
+//@ expect-output: bcrypt high bytes: true true true
+//@ expect-output: bcrypt refused: false false false
+//@ expect-output: bcrypt zero byte: Bcrypt_Error.Bad_Bcrypt_Password false
+//@ expect-output: bcrypt made: 60 true true false
+//@ expect-output: bcrypt empty: true false
 //@ expect-output: bad cost: Bcrypt_Error.Bad_Bcrypt_Cost
 
 // Published test vectors: FIPS 180 for the SHAs, RFC 1321 for MD5, RFC 4231 and 2202
-// for HMAC, RFC 7914 for PBKDF2-HMAC-SHA-256, and jBCrypt's and Wikipedia's for bcrypt.
+// for HMAC, RFC 7914 for PBKDF2-HMAC-SHA-256, and crypt_blowfish's, jBCrypt's and Wikipedia's for bcrypt.
 
 #allocator Arena_Basic(1 * MB)
 
@@ -136,15 +140,41 @@ main :: fun() {
 	print("url back:", d1, d2, "bad:", url_decode("a%zz", &d3))
 	if d1_err or d2_err do print("url decode failed")
 
-	salt : [16]byte
-	if not bcrypt_decode("DCq7YPn5Rq63x1Lad4cll.", &salt) do print("bad salt")
-	print("bcrypt vector:", bcrypt_hash("", salt, 6))
-	empty_digest := "$2a$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s."
-	print("bcrypt check:", bcrypt_check("", empty_digest), bcrypt_check("abc123xyz", "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"), bcrypt_check("x", empty_digest), bcrypt_check("x", "not a digest"), bcrypt_check("", "$2z$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s."))
+	print("bcrypt plain:", bcrypt_check("U*U", "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"), bcrypt_check("", "$2a$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s."), bcrypt_check("abc123xyz", "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"))
+
+	// (Past 72 bytes nothing counts, so these two match the one digest.)
+	long_text := "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	long_digest := "$2a$05$abcdefghijklmnopqrstuu5s2v8.iXieOjg/.AySBTTZIIVFJeBui"
+	longer : [128]utf8
+	&longer + long_text
+	&longer + "chars after 72 are ignored"
+	print("bcrypt long:", bcrypt_check(longer, long_digest), bcrypt_check(long_text, long_digest))
+
+	// (High bytes: $2a$ means something other than $2y$ and $2b$ for these, which is
+	// what Rails's digests are.)
+	high : [3!]u8
+	high[0] = 0xFF
+	high[1] = 0xFF
+	high[2] = 0xA3
+	print("bcrypt high bytes:", bcrypt_check(high, "$2a$05$/OK.fbVrR/bpIqNJ5ianF.nqd1wy.pTMdcvrRWxyiGL2eMz.2a85."), bcrypt_check(high, "$2y$05$/OK.fbVrR/bpIqNJ5ianF.CE5elHaaO4EbggVDjb8P19RukzXSM3e"), bcrypt_check(high, "$2b$05$/OK.fbVrR/bpIqNJ5ianF.CE5elHaaO4EbggVDjb8P19RukzXSM3e"))
+
+	bytes_a3 : [1!]u8
+	bytes_a3[0] = 0xA3
+	print("bcrypt refused:", bcrypt_check("x", "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"), bcrypt_check("x", "not a digest"), bcrypt_check(bytes_a3, "$2x$05$/OK.fbVrR/bpIqNJ5ianF.CE5elHaaO4EbggVDjb8P19RukzXSM3e"))
+
+	with_zero : [3!]u8
+	with_zero[0] = 0x61
+	with_zero[1] = 0
+	with_zero[2] = 0x62
+	_, zero_err := bcrypt_make(with_zero, 4)
+	print("bcrypt zero byte:", zero_err, bcrypt_check(with_zero, "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"))
 
 	made, make_err := bcrypt_make("hunter2", 4)
 	if make_err do print("bcrypt_make failed:", make_err)
-	print("bcrypt made:", made.len, bcrypt_check("hunter2", made), bcrypt_check("hunter3", made))
+	print("bcrypt made:", made.len, made[2] == 'b', bcrypt_check("hunter2", made), bcrypt_check("hunter3", made))
+	empty, empty_err := bcrypt_make("", 4)
+	if empty_err do print("bcrypt_make failed:", empty_err)
+	print("bcrypt empty:", bcrypt_check("", empty), bcrypt_check("x", empty))
 	_, cost_err := bcrypt_make("x", 3)
 	print("bad cost:", cost_err)
 }
