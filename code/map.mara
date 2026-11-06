@@ -137,7 +137,9 @@ map_home :: fun(h: u64, n: i64) -> i64 {
 	return i64(((h >> 32) * u64(n)) >> 32)
 }
 
-// A key's hash, its top bit always set: 0 means an empty slot.
+// A key's hash, its lowest bit always set: 0 means an empty slot. (Not a top bit: a search
+// starts from the top bits, and one always set would start every search in the upper
+// half of the slots.)
 map_hash :: dispatch { map_hash_text, map_hash_i64, map_hash_u64, map_hash_i32, map_hash_u32 }
 
 map_hash_text :: fun(key: []utf8) -> u64 {
@@ -153,7 +155,7 @@ map_hash_u64 :: fun(key: u64) -> u64 {
 	h := key
 	h = (h ~ (h >> 33)) *% 0xFF51AFD7ED558CCD
 	h = (h ~ (h >> 33)) *% 0xC4CEB9FE1A85EC53
-	return (h ~ (h >> 33)) | (u64(1) << 63)
+	return (h ~ (h >> 33)) | 1
 }
 
 map_hash_i64 :: fun(key: i64) -> u64 { return map_hash_u64(u64(key)) }

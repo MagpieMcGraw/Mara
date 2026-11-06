@@ -1,0 +1,84 @@
+module map_spread
+
+use mara.core
+use mara.memory
+use mara.map
+
+//@ expect-output: numbers: starts even true , searches short true
+//@ expect-output: text: starts even true , searches short true
+//@ expect-output: small keys: starts even true , searches short true
+
+// How well a map spreads its keys, not only whether it finds them. The bit marking a slot
+// used was once the hash's top bit, and a search starts from the top bits, so every search
+// started in the upper half: all the answers were right, but at 75% full a search ran
+// thousands of steps. So this checks where searches start and how far they go, at the fullest
+// a map gets. Linear probing at 3/4 full averages about 1.5 extra steps: under 4 allows for
+// chance and nothing like that bug.
+
+#allocator Arena_Basic(64 * MB)
+
+ROOM :: 30000
+
+// (The slots a search starts in, by quarter of the table: each should get about a quarter.)
+even :: fun(quarters: [4!]i64) -> bool {
+	for q in quarters {
+		if q < ROOM / 5 or q > ROOM / 3 do return false
+	}
+	return true
+}
+
+number_keys :: fun(step: i64, label: []utf8, storage: ^[]byte) {
+	m : Map(i64, i64)
+	map_init(&m, ROOM, storage)
+	for k in 0:ROOM do map_set(&m, k * step, k)
+	n := m.slots.len - 1
+	quarters : [4!]i64
+	for q in 0:4 do quarters[q] = 0
+	steps : i64 = 0
+	for k in 0:ROOM {
+		home := map_home(map_hash(k * step), n)
+		quarters[home * 4 / n] += 1
+		d := map_find(&m, k * step) - home
+		if d < 0 do d += n
+		steps += d
+	}
+	print(label, "starts even", even(quarters), ", searches short", steps / ROOM < 4)
+}
+
+text_keys :: fun() {
+	// (Keys that look alike, as names do: "user 12345". A map keeps views of its text keys,
+	// so `keys` has to last as long as the map's storage: the compiler refuses it otherwise.)
+	keys : [ROOM!]str64
+	storage : [4 * MB]byte
+	m : Map([]utf8, i64)
+	map_init(&m, ROOM, &storage)
+	for k in 0:ROOM {
+		keys[k].len = 0
+		&keys[k] + "user "
+		number := k
+		for number > 0 or keys[k].len == 5 {
+			&keys[k] + utf8(i64('0') + number % 10)
+			number /= 10
+		}
+		map_set(&m, keys[k], k)
+	}
+	n := m.slots.len - 1
+	quarters : [4!]i64
+	for q in 0:4 do quarters[q] = 0
+	steps : i64 = 0
+	for k in 0:ROOM {
+		home := map_home(map_hash(keys[k]), n)
+		quarters[home * 4 / n] += 1
+		d := map_find(&m, keys[k]) - home
+		if d < 0 do d += n
+		steps += d
+	}
+	print("text:", "starts even", even(quarters), ", searches short", steps / ROOM < 4)
+}
+
+main :: fun() {
+	storage : [32 * MB]byte
+	number_keys(7, "numbers:", &storage)
+	text_keys()
+	number_keys(1, "small keys:", &storage)
+}
