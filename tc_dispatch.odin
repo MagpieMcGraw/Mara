@@ -128,7 +128,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -
     best: ^Type_Scope
     best_score := 0   // (1 a generic's instance, 2 structural, 3 exact)
     for group in groups {
-        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, span.at, tc_text(group))) {
+        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, span.at, tc_text(group), all = true)) {
             f := m.name
             if found, ok := tc_ref_type(k, m.ref, f); ok {
                 ft, is_scope := found.(^Type_Scope)
@@ -197,7 +197,7 @@ tc_unary_overload :: proc(k: ^TC, t: Type, at: Token_Id) -> ^Type_Scope {
     best: ^Type_Scope
     best_score := 0
     for group in resolve_overloads(k.rs, at, .Minus) {
-        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group))) {
+        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group), all = true)) {
             found, ok := tc_ref_type(k, m.ref, m.name)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)

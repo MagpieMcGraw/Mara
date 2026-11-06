@@ -481,7 +481,7 @@ tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
         tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator), name)
         return Type_Error{}
     }
-    tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+    if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     return Type_Error{}
 }
 

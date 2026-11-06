@@ -855,7 +855,7 @@ tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id)
         return Type_Error{}
     }
     if !is_variant {
-        if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+        if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound && !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e) }
     return Type_Error{}

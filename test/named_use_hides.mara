@@ -1,0 +1,32 @@
+module named_use_hides
+
+c :: use mara.core
+s :: use mara.string
+mem :: use mara.memory
+use mara.math
+
+//@ expect-output: names: hi hi there true true x 3
+//@ expect-output: locals: 1 2 3
+//@ expect-output: plain use: 3 3
+
+// `s :: use mara.string` keeps the module's names behind s. What's written
+// without a name of the module still works: operators (`&a + "hi"` is core's
+// group, `a + " there"`, `a == "hi"`, `'h' in a`). The names are free for
+// locals. A plain `use` keeps both ways of saying it.
+
+#allocator mem.Arena_Basic(1 * c.MB)
+
+main :: fun() {
+	a : c.str64
+	&a + "hi"
+	b := a + " there"
+	print("names:", a, b, a == "hi", 'h' in a, s.trimmed(" x "), s.int_text(3))
+
+	trimmed := 1
+	next := 2
+	str64 := 3
+	print("locals:", trimmed, next, str64)
+
+	nine : f64 = 9
+	print("plain use:", sqrt(nine), math.sqrt(nine))
+}

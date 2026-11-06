@@ -1,0 +1,10 @@
+module named_use_allocator_neg
+//@ expect-fail: 'Arena_Basic' is out of sight: `mem :: use mara.memory` keeps that module's names behind its name, so write `mem.Arena_Basic`
+
+use mara.core
+mem :: use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+}

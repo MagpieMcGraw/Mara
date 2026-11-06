@@ -21,13 +21,9 @@ tc_scan_allocator :: proc(k: ^TC) {
         t := k.t
         if k.table.has_scope_allocator { return }   // (a second: tc_allocator says)
         k.table.has_scope_allocator = true
-        #partial switch arena := tc_unparen(k, Tree_Id(t.a[s])); t.tag[arena] {
-        case .Call:
-            k.table.scope_allocator_name = tc_name(k, arena)
-            inner := tree_list(t, t.a[arena])
-            k.arena_size = inner[0] if len(inner) > 0 else 0
-        case .Ident:
-            k.table.scope_allocator_name = tc_name(k, arena)
+        if name, args, _, ok := tc_allocator_arena(k, tc_unparen(k, Tree_Id(t.a[s]))); ok {
+            k.table.scope_allocator_name = name
+            k.arena_size = args[0] if len(args) > 0 else 0
         }
     }
     for file in k.modules[k.main_package] or_else nil {
@@ -42,6 +38,25 @@ tc_scan_allocator :: proc(k: ^TC) {
             }
         }
     }
+}
+
+// The arena an #allocator names: `Arena_Basic(16 * MB)`, or through a name for
+// its module, `mem.Arena_Basic(…)`; in a DLL, with no size. Its name, its args,
+// and whether it's written as a call. Not ok: it's something else.
+tc_allocator_arena :: proc(k: ^TC, arena: Tree_Id) -> (name: string, args: []Tree_Id, called, ok: bool) {
+    t := k.t
+    names_module :: proc(k: ^TC, n: Tree_Id) -> bool { return k.t.tag[n] == .Ident && k.rs.refs[n].kind == .Module }
+    #partial switch t.tag[arena] {
+    case .Call:
+        return tc_name(k, arena), tree_list(t, t.a[arena]), true, true
+    case .Ident:
+        return tc_name(k, arena), nil, false, true
+    case .Method_Call:
+        if v := method_view(t, arena); names_module(k, v.receiver) { return tc_text(v.name), v.args, true, true }
+    case .Field:
+        if names_module(k, Tree_Id(t.a[arena])) { return tc_text(Token_Id(t.b[arena])), nil, false, true }
+    }
+    return
 }
 
 // `#allocator …` where it's written (a module statement, or one of main's
@@ -60,22 +75,15 @@ tc_allocator :: proc(k: ^TC, s: Tree_Id) {
     }
     k.allocator_at = s
     arena := tc_unparen(k, Tree_Id(t.a[s]))
-    #partial switch t.tag[arena] {
-    case .Call:
-        args := tree_list(t, t.a[arena])
-        for a in args { tc_check(k, a) }
-        if len(args) == 0 {
-            name := tc_name(k, arena)
-            tc_error(k, span, TYPE_ALLOCATOR_NEEDS_SIZE, name, name)
-        }
-    case .Ident:
-        if !k.shared {
-            name := tc_name(k, arena)
-            tc_error(k, span, TYPE_ALLOCATOR_NEEDS_SIZE, name, name)
-        }
-    case:
+    name, args, called, ok := tc_allocator_arena(k, arena)
+    if !ok {
         tc_error(k, span, TYPE_PROGRAM_GLOBAL_REQUIRES_ALLOCATOR_TYPE)
+        return
     }
+    // (By itself, its module used under a name: it's that name's to reach.)
+    if bare := t.tag[arena] == .Call || t.tag[arena] == .Ident; bare && k.rs.refs[arena].kind == .None && tc_behind_use(k, span, name) { return }
+    for a in args { tc_check(k, a) }
+    if called && len(args) == 0 || !called && !k.shared { tc_error(k, span, TYPE_ALLOCATOR_NEEDS_SIZE, name, name) }
 }
 
 // Whether t is the program's arena's type, the one #allocator names (by

@@ -1,0 +1,8 @@
+module named_use_fun_neg
+//@ expect-fail: 'trimmed' is out of sight: `s :: use mara.string` keeps that module's names behind its name, so write `s.trimmed`
+
+s :: use mara.string
+
+main :: fun() {
+	print(trimmed(" x "))
+}

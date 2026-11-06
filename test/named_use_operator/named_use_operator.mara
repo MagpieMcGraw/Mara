@@ -1,0 +1,13 @@
+module named_use_operator
+
+v :: use vectors
+
+// An operator names no fun, so a module's `overload` works under a name too.
+// So does a method: it's reached through the value.
+
+main :: fun() {
+	a := v.Vec{x = 1}
+	b := v.Vec{x = 2}
+	c := a + b
+	print(c.twice())
+}

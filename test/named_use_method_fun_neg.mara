@@ -1,0 +1,11 @@
+module named_use_method_fun_neg
+//@ expect-fail: 'trimmed' is out of sight: `s :: use mara.string` keeps that module's names behind its name, so write `s.trimmed`
+
+s :: use mara.string
+
+// `x.f(a)`, when x's type has no method f, is the fun `f(x, a)`: a name like any
+// other, so it's out of sight too.
+
+main :: fun() {
+	print(" x ".trimmed())
+}

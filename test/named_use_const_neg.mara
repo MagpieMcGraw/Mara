@@ -1,0 +1,8 @@
+module named_use_const_neg
+//@ expect-fail: 'MB' is out of sight: `c :: use mara.core` keeps that module's names behind its name, so write `c.MB`
+
+c :: use mara.core
+
+main :: fun() {
+	print(MB)
+}

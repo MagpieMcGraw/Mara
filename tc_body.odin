@@ -419,7 +419,16 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
         tc_error(k, span, TYPE_THIS_PROGRAM_GONE, name)
         return
     }
+    if tc_behind_use(k, span, name) { return }
     tc_error(k, span, msg, name)
+}
+
+// A name a use keeps behind its module's name (`s :: use mara.string`, for
+// `trimmed`), said so. Whether it is one.
+tc_behind_use :: proc(k: ^TC, span: Span, name: string) -> bool {
+    alias, module := resolve_named_use_of(k.rs, span.at, name) or_return
+    tc_error(k, span, TYPE_NAME_BEHIND_USE, name, alias, module, alias, name)
+    return true
 }
 
 // `x : T`: its zero, unset until written — a struct's constructor doesn't

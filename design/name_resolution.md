@@ -38,7 +38,8 @@ with the kind:
   them.
 - **Uses**: `use m` makes m's definitions seen in the scope it is written in (a file's: that
   file); `include m` makes them seen in the whole module too (not by its users: a use brings
-  in a module's own definitions only). `name :: use m` names the module, in the file.
+  in a module's own definitions only). `name :: use m` names the module, in the file, and
+  m's definitions are reached through that name alone; its operators still count.
 - **Lookup** goes from the innermost scope out: a variable seen there, else a definition;
   only when none is found, what the uses bring in, from the nearest scope that has it — two
   different ones there is ambiguous.

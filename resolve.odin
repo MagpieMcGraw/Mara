@@ -73,8 +73,17 @@ Rs_Scope :: struct {
     mark: i32,                  // len(names) when it was entered
     fence: i32,                 // the innermost fun or struct, it or around it: the variables below it are out of sight
     uses: [dynamic]^Rs_Module,  // what it uses: their definitions in sight, behind its own
+    named: [dynamic]Rs_Named_Use,   // what it uses under a name: reached through that name alone
     self: Ref,                  // a fun's or a struct's: itself (`Self`)
     signature: bool,            // a fun's or a struct's, its params and results being resolved
+}
+
+// A use that names its module (`s :: use mara.string`): its definitions are
+// reached through the name, `s.trimmed`, and aren't in sight by themselves.
+@(private="file")
+Rs_Named_Use :: struct {
+    name:   string,
+    module: ^Rs_Module,
 }
 
 // A module's definitions: what a use of it brings in.
@@ -121,10 +130,14 @@ Rs_Clash :: struct {
 }
 
 // What a file sees of the groups calls and operators choose among: its
-// module's, then each module it or its module uses.
+// module's, then each module it or its module uses. A call names its fun, so a
+// module used under a name is out of its sight; an operator names none, so
+// `all` has those too.
 Rs_Sight :: struct {
     module: ^Rs_Module,
     uses:   []^Rs_Module,
+    named:  []Rs_Named_Use,
+    all:    []^Rs_Module,
 }
 
 // --- the stack ----------------------------------------------------------------------
@@ -559,8 +572,7 @@ rs_alias_kinds :: proc(r: ^Resolver, names: []string) {
                     if imp == 0 { continue }
                     used, tok := rs_import(r, imp)
                     if used == nil { continue }
-                    append(&uses, used)
-                    if t.tag[s] == .Define { tok = t.main[s] }
+                    if t.tag[s] == .Define { tok = t.main[s] } else { append(&uses, used) }
                     named[rs_text(tok)] = used
                 }
                 for s in stmts {
@@ -628,8 +640,13 @@ rs_program :: proc(r: ^Resolver) {
                 if imp == 0 { continue }
                 used, tok := rs_import(r, imp)
                 if used == nil { continue }
-                append(&r.scopes[len(r.scopes) - 1].uses, used)
-                if t.tag[s] == .Define { tok = t.main[s] }
+                scope := &r.scopes[len(r.scopes) - 1]
+                if t.tag[s] == .Define {
+                    tok = t.main[s]
+                    append(&scope.named, Rs_Named_Use{rs_text(tok), used})
+                } else {
+                    append(&scope.uses, used)
+                }
                 r.named[tok] = used
                 rs_define(r, rs_text(tok), {tok, .Module})
             }
@@ -638,10 +655,15 @@ rs_program :: proc(r: ^Resolver) {
             // each once.)
             if t.first[f] != 0 {
                 uses := make([dynamic]^Rs_Module)
+                named := make([dynamic]Rs_Named_Use)
                 for i := len(r.scopes) - 1; i >= 0; i -= 1 {
                     for u in r.scopes[i].uses { if !slice.contains(uses[:], u) { append(&uses, u) } }
+                    append(&named, ..r.scopes[i].named[:])
                 }
-                r.sights[build_tokens[t.first[f]].file] = {m, uses[:]}
+                all := make([dynamic]^Rs_Module)
+                append(&all, ..uses[:])
+                for u in named { if !slice.contains(all[:], u.module) { append(&all, u.module) } }
+                r.sights[build_tokens[t.first[f]].file] = {m, uses[:], named[:], all[:]}
             }
             rs_leave(r)
         }
@@ -651,14 +673,15 @@ rs_program :: proc(r: ^Resolver) {
 
 // The dispatch groups named `name` in sight where `at` is: its module's,
 // then each module its file or its module uses' — groups of one name join
-// (core's `add` and a program's own). In the order a call tries them.
-resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string) -> []Token_Id {
+// (core's `add` and a program's own). In the order a call tries them. For an
+// operator's group, `all`: modules used under a name count too.
+resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string, all := false) -> []Token_Id {
     if name not_in r.dispatch_names { return nil }
     sight, ok := r.sights[build_tokens[at].file]
     if !ok { return nil }
     out := make([dynamic]Token_Id, context.temp_allocator)
     if groups, has := sight.module.dispatches[name]; has { append(&out, ..groups[:]) }
-    for u in sight.uses {
+    for u in sight.all if all else sight.uses {
         if u == sight.module { continue }
         if groups, has := u.dispatches[name]; has { append(&out, ..groups[:]) }
     }
@@ -680,6 +703,19 @@ resolve_fun_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string
     }
     if len(out) < 2 { return nil }
     return out[:]
+}
+
+// The use that keeps `name` behind a name where `at` is (`s :: use mara.string`,
+// for `trimmed`): what that name is, and the module's.
+resolve_named_use_of :: proc(r: ^Resolver, at: Token_Id, name: string) -> (alias, module: string, ok: bool) {
+    sight, has := r.sights[build_tokens[at].file]
+    if !has { return }
+    for u in sight.named {
+        _, is_def := u.module.defs[name]
+        _, is_variant := u.module.variants[name]
+        if is_def || is_variant { return u.name, u.module.name, true }
+    }
+    return
 }
 
 // Whether `ref`, what a name means where `at` is, is a fun or a type defined in
@@ -735,13 +771,14 @@ rs_plain_fun :: proc(r: ^Resolver, ref: Ref) -> bool {
 }
 
 // The groups an operation `op` overloads, by name, in sight where `at` is:
-// its module's `overload`s, then each module its file or its module uses'.
+// its module's `overload`s, then each module its file or its module uses',
+// under a name or not.
 resolve_overloads :: proc(r: ^Resolver, at: Token_Id, op: Token_Kind) -> []Token_Id {
     sight, ok := r.sights[build_tokens[at].file]
     if !ok { return nil }
     out := make([dynamic]Token_Id, context.temp_allocator)
     for o in sight.module.overloads { if o.op == op { append(&out, o.name) } }
-    for u in sight.uses {
+    for u in sight.all {
         if u == sight.module { continue }
         for o in u.overloads { if o.op == op { append(&out, o.name) } }
     }

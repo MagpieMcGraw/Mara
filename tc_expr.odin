@@ -902,7 +902,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
                 return Type_Error{}
             }
         }
-        tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
+        if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name) }
         for a in args { tc_check(k, a) }
         return Type_Error{}
     }

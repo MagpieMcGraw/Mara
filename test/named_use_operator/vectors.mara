@@ -1,0 +1,9 @@
+module vectors
+
+Vec :: struct {
+	x: i64
+	twice :: method(self: Self) -> i64 { return self.x * 2 }
+}
+overload + vec_add
+vec_add :: dispatch { vec_plus }
+vec_plus :: fun(a: Vec, b: Vec) -> Vec { return Vec{x = a.x + b.x} }

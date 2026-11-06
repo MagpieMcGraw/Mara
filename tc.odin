@@ -777,7 +777,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
         }
     case .Overload:
         name := tc_text(Token_Id(t.b[s]))
-        if len(resolve_dispatches(k.rs, Token_Id(t.b[s]), name)) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
+        if len(resolve_dispatches(k.rs, Token_Id(t.b[s]), name, all = true)) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
     }
 }
 
