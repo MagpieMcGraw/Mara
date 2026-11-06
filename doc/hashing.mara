@@ -1,0 +1,42 @@
+// How to hash, sign and store passwords, with mara.crypto.
+//
+// sha256(data) gives a digest: 32 bytes that change completely if data changes.
+// sha1 and md5 work the same way, but they're broken for security: they're here
+// because formats ask for them. To hash a big file in pieces, sha256_start, then
+// sha256_add for each piece, then sha256_finish; sha1 and md5 have the same three.
+//
+// hmac_sha256(key, message) is a digest only someone with the key can make: to sign
+// a cookie, say, so you can tell it came from you. To compare one that came back,
+// use same_secret, which takes the same time wherever they differ. `==` stops at
+// the first difference, and that tells an attacker how close a guess was.
+//
+// Don't store passwords as hashes like those: they're made to be fast, and so are
+// guesses. bcrypt_make(password, cost) gives text to store, with a random salt in
+// it, and bcrypt_check(password, stored) says whether a password matches. Each step
+// of cost doubles the time they take: 12 is about a quarter of a second. Only a
+// password's first 72 bytes count. pbkdf2_sha256 makes a key from a password.
+//
+// Blowfish's tables take 4 KB, so bcrypt needs the program's arena (see arenas.mara).
+module hashing
+
+use mara.core
+use mara.memory
+use mara.crypto
+use mara.encoding
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	text : [64]utf8
+	hex_encode(sha256("abc"), &text)
+	print(text)                                // ba7816bf8f01cfea…
+
+	signature := hmac_sha256("my secret key", "user=7")
+	again := hmac_sha256("my secret key", "user=7")
+	print(same_secret(signature, again))       // true
+
+	stored, failed := bcrypt_make("correct horse", 4)   // (4: the fastest. Use 12.)
+	if failed do print(failed)
+	print(bcrypt_check("correct horse", stored))        // true
+	print(bcrypt_check("wrong horse", stored))          // false
+}

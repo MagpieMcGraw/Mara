@@ -1,0 +1,150 @@
+module crypto_vectors
+
+use mara.core
+use mara.memory
+use mara.crypto
+use mara.encoding
+
+//@ expect-output: sha256 abc: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//@ expect-output: sha256 empty: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//@ expect-output: sha1 abc: a9993e364706816aba3e25717850c26c9cd0d89d
+//@ expect-output: md5 abc: 900150983cd24fb0d6963f7d28e17f72
+//@ expect-output: pieces: true true true
+//@ expect-output: hmac256: b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7
+//@ expect-output: hmac1: de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9
+//@ expect-output: pbkdf2: 55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc
+//@ expect-output: long key: a3536a9bb1f998bf7a6b90300889dca237636f19e0d6cfba670fa4b41b6fd4c4
+//@ expect-output: same_secret: true false false
+//@ expect-output: base64: aGVsbG8= aGVsbG8 aGk= YQ==
+//@ expect-output: base64 url: _-8 back: true
+//@ expect-output: bad base64: Encoding_Error.Bad_Encoding Encoding_Error.Bad_Encoding
+//@ expect-output: hex: 00ff10 back: true bad: Encoding_Error.Bad_Encoding
+//@ expect-output: url: a%20b%26c%2Fd a+b%26c
+//@ expect-output: url back: a b&c/d a b&c bad: Encoding_Error.Bad_Encoding
+//@ expect-output: bcrypt vector: $2a$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s.
+//@ expect-output: bcrypt check: true true false false false
+//@ expect-output: bcrypt made: 60 true false
+//@ expect-output: bad cost: Bcrypt_Error.Bad_Bcrypt_Cost
+
+// Published test vectors: FIPS 180 for the SHAs, RFC 1321 for MD5, RFC 4231 and 2202
+// for HMAC, RFC 7914 for PBKDF2-HMAC-SHA-256, and jBCrypt's and Wikipedia's for bcrypt.
+
+#allocator Arena_Basic(1 * MB)
+
+hex :: fun(data: []byte) -> [128]utf8 {
+	out : [128]utf8
+	hex_encode(data, &out)
+	return out
+}
+
+pieces_match :: fun() -> bool, bool, bool {
+	// (Split at every length a block's edge can fall at.)
+	text : [300]byte
+	for k in 0:300 do &text + u8(k % 251)
+	whole_256 := sha256(text)
+	whole_1 := sha1(text)
+	whole_md5 := md5(text)
+	ok_256 := true
+	ok_1 := true
+	ok_md5 := true
+	for cut in 0:300 {
+		a := sha256_start()
+		sha256_add(&a, text[0:cut])
+		sha256_add(&a, text[cut:300])
+		b := sha256_finish(&a)
+		if not same_secret(b, whole_256) do ok_256 = false
+		c := sha1_start()
+		sha1_add(&c, text[0:cut])
+		sha1_add(&c, text[cut:300])
+		d := sha1_finish(&c)
+		if not same_secret(d, whole_1) do ok_1 = false
+		e := md5_start()
+		md5_add(&e, text[0:cut])
+		md5_add(&e, text[cut:300])
+		f := md5_finish(&e)
+		if not same_secret(f, whole_md5) do ok_md5 = false
+	}
+	return ok_256, ok_1, ok_md5
+}
+
+main :: fun() {
+	print("sha256 abc:", hex(sha256("abc")))
+	print("sha256 empty:", hex(sha256("")))
+	print("sha1 abc:", hex(sha1("abc")))
+	print("md5 abc:", hex(md5("abc")))
+	a, b, c := pieces_match()
+	print("pieces:", a, b, c)
+
+	key20 : [20]byte
+	for k in 0:20 do &key20 + u8(0x0B)
+	print("hmac256:", hex(hmac_sha256(key20, "Hi There")))
+	print("hmac1:", hex(hmac_sha1("key", "The quick brown fox jumps over the lazy dog")))
+	out : [32]byte
+	pbkdf2_sha256("passwd", "salt", 1, &out)
+	// (RFC 7914 gives 64 bytes; these are its first 32.)
+	print("pbkdf2:", hex(out))
+	long_key : [100]byte
+	for k in 0:100 do &long_key + u8(0xAA)
+	print("long key:", hex(hmac_sha256(long_key, "abc")))
+
+	print("same_secret:", same_secret("abc", "abc"), same_secret("abc", "abd"), same_secret("abc", "ab"))
+
+	t1 : [16]utf8
+	t2 : [16]utf8
+	t3 : [16]utf8
+	t4 : [16]utf8
+	base64_encode("hello", &t1)
+	base64_encode("hello", &t2, true)
+	base64_encode("hi", &t3)
+	base64_encode("a", &t4)
+	print("base64:", t1, t2, t3, t4)
+
+	some : [2]byte
+	&some + u8(0xFF)
+	&some + u8(0xEF)
+	t5 : [16]utf8
+	base64_encode(some, &t5, true)
+	back : [16]byte
+	back_err := base64_decode(t5, &back)
+	print("base64 url:", t5, "back:", not back_err and same_secret(back, some))
+	room : [16]byte
+	bad_1 := base64_decode("a!bc", &room)
+	bad_2 := base64_decode("a", &room)
+	print("bad base64:", bad_1, bad_2)
+
+	h1 : [16]utf8
+	bytes : [3]byte
+	&bytes + u8(0)
+	&bytes + u8(0xFF)
+	&bytes + u8(0x10)
+	hex_encode(bytes, &h1)
+	h2 : [16]byte
+	h_err := hex_decode(h1, &h2)
+	room2 : [16]byte
+	print("hex:", h1, "back:", not h_err and same_secret(h2, bytes), "bad:", hex_decode("abc", &room2))
+
+	u1 : [32]utf8
+	u2 : [32]utf8
+	url_encode("a b&c/d", &u1)
+	url_encode("a b&c", &u2, true)
+	print("url:", u1, u2)
+	d1 : [32]utf8
+	d2 : [32]utf8
+	d3 : [32]utf8
+	d1_err := url_decode(u1, &d1)
+	d2_err := url_decode(u2, &d2, true)
+	print("url back:", d1, d2, "bad:", url_decode("a%zz", &d3))
+	if d1_err or d2_err do print("url decode failed")
+
+	salt : [16]byte
+	if not bcrypt_decode("DCq7YPn5Rq63x1Lad4cll.", &salt) do print("bad salt")
+	print("bcrypt vector:", bcrypt_hash("", salt, 6))
+	empty_digest := "$2a$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s."
+	print("bcrypt check:", bcrypt_check("", empty_digest), bcrypt_check("abc123xyz", "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"), bcrypt_check("x", empty_digest), bcrypt_check("x", "not a digest"), bcrypt_check("", "$2z$06$DCq7YPn5Rq63x1Lad4cll.TV4S6ytwfsfvkgY8jIucDrjc8deX1s."))
+
+	made, make_err := bcrypt_make("hunter2", 4)
+	if make_err do print("bcrypt_make failed:", make_err)
+	print("bcrypt made:", made.len, bcrypt_check("hunter2", made), bcrypt_check("hunter3", made))
+	_, cost_err := bcrypt_make("x", 3)
+	print("bad cost:", cost_err)
+}

@@ -1,0 +1,167 @@
+module mara.encoding
+
+use mara.core
+
+// Bytes as text and back: base64, hex, and the percent-escapes of URLs.
+//
+//     text : [64]utf8
+//     base64_encode(digest, &text)
+//     hex_encode(digest, &text)
+//     url_encode("a b&c", &text)      // a%20b%26c
+//
+// Each appends to what's given, after what's there. Short of room the program stops,
+// as any append does, so give it enough: base64 takes 4 characters for every 3 bytes,
+// hex 2 for each, a URL up to 3 for each. A decode that finds something it can't read
+// gives Bad_Encoding, with what came before it appended.
+
+// What a decode can fail with.
+Encoding_Error :: error {
+	Bad_Encoding
+}
+
+BASE64_ALPHABET :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+BASE64_URL_ALPHABET :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+HEX_DIGITS :: "0123456789abcdef"
+
+// Appends data as base64. With `url`, in the alphabet that's safe in URLs ('-' and
+// '_' for '+' and '/'), and without the padding '=' at its end.
+base64_encode :: fun(data: []byte, out: ^[]utf8, url: bool = false) {
+	k : i64 = 0
+	for k + 3 <= data.len {
+		n := (u32(u8(data[k])) << 16) | (u32(u8(data[k + 1])) << 8) | u32(u8(data[k + 2]))
+		out + base64_digit(n >> 18, url)
+		out + base64_digit((n >> 12) & 63, url)
+		out + base64_digit((n >> 6) & 63, url)
+		out + base64_digit(n & 63, url)
+		k += 3
+	}
+	left := data.len - k
+	if left == 1 {
+		n := u32(u8(data[k])) << 16
+		out + base64_digit(n >> 18, url)
+		out + base64_digit((n >> 12) & 63, url)
+		if not url {
+			out + '='
+			out + '='
+		}
+	elif left == 2
+		n := (u32(u8(data[k])) << 16) | (u32(u8(data[k + 1])) << 8)
+		out + base64_digit(n >> 18, url)
+		out + base64_digit((n >> 12) & 63, url)
+		out + base64_digit((n >> 6) & 63, url)
+		if not url do out + '='
+	}
+}
+
+base64_digit :: fun(n: u32, url: bool) -> utf8 {
+	if url do return BASE64_URL_ALPHABET[i64(n)]
+	return BASE64_ALPHABET[i64(n)]
+}
+
+// What a base64 character is worth, -1 if it's none. Either alphabet is read.
+base64_value :: fun(c: utf8) -> i64 {
+	if c >= 'A' and c <= 'Z' do return i64(c) - i64('A')
+	if c >= 'a' and c <= 'z' do return i64(c) - i64('a') + 26
+	if c >= '0' and c <= '9' do return i64(c) - i64('0') + 52
+	if c == '+' or c == '-' do return 62
+	if c == '/' or c == '_' do return 63
+	return -1
+}
+
+// Appends the bytes a base64 text spells, in either alphabet, its padding there or
+// not. Bad_Encoding for anything else, or for padding in the wrong place.
+base64_decode :: fun(text: []utf8, out: ^[]byte) -> err {
+	n := text.len
+	for n > 0 and text[n - 1] == '=' do n -= 1
+	if text.len - n > 2 or n % 4 == 1 do return Bad_Encoding
+	if text.len != n and text.len % 4 != 0 do return Bad_Encoding
+	bits : u32 = 0
+	held : u32 = 0
+	for k in 0:n {
+		v := base64_value(text[k])
+		if v < 0 do return Bad_Encoding
+		bits = ((bits << 6) | u32(v)) & 0xFFFF
+		held += 6
+		if held >= 8 {
+			held -= 8
+			out + u8((bits >> held) & 255)
+		}
+	}
+}
+
+// Appends data as hex, two lowercase digits for each byte.
+hex_encode :: fun(data: []byte, out: ^[]utf8) {
+	for b in data {
+		n := u8(b)
+		out + HEX_DIGITS[i64(n >> 4)]
+		out + HEX_DIGITS[i64(n & 15)]
+	}
+}
+
+// What a hex digit is worth, either case, -1 if it's none.
+hex_value :: fun(c: utf8) -> i64 {
+	if c >= '0' and c <= '9' do return i64(c) - i64('0')
+	if c >= 'a' and c <= 'f' do return i64(c) - i64('a') + 10
+	if c >= 'A' and c <= 'F' do return i64(c) - i64('A') + 10
+	return -1
+}
+
+// Appends the bytes a hex text spells. Bad_Encoding for an odd length, or anything
+// not a hex digit.
+hex_decode :: fun(text: []utf8, out: ^[]byte) -> err {
+	if text.len % 2 != 0 do return Bad_Encoding
+	k : i64 = 0
+	for k < text.len {
+		high := hex_value(text[k])
+		low := hex_value(text[k + 1])
+		if high < 0 or low < 0 do return Bad_Encoding
+		out + u8(high * 16 + low)
+		k += 2
+	}
+}
+
+// Appends text with percent-escapes for all but letters, digits and "-_.~", to go in
+// a URL or a form. With `form`, a space is '+', as HTML forms send it.
+url_encode :: fun(text: []utf8, out: ^[]utf8, form: bool = false) {
+	for c in text {
+		plain := c >= 'A' and c <= 'Z' or c >= 'a' and c <= 'z' or c >= '0' and c <= '9' or c == '-' or c == '_' or c == '.' or c == '~'
+		if plain {
+			out + c
+		elif form and c == ' '
+			out + '+'
+		else
+			n := u8(c)
+			out + '%'
+			out + upper_hex(n >> 4)
+			out + upper_hex(n & 15)
+		}
+	}
+}
+
+upper_hex :: fun(n: u8) -> utf8 {
+	if n < 10 do return utf8(i64('0') + i64(n))
+	return utf8(i64('A') + i64(n) - 10)
+}
+
+// Appends what a URL's text means, its percent-escapes read. With `form`, a '+' is a
+// space. Bad_Encoding for a '%' without two hex digits after it.
+url_decode :: fun(text: []utf8, out: ^[]utf8, form: bool = false) -> err {
+	k : i64 = 0
+	for k < text.len {
+		c := text[k]
+		if c == '%' {
+			if k + 2 >= text.len do return Bad_Encoding
+			high := hex_value(text[k + 1])
+			low := hex_value(text[k + 2])
+			if high < 0 or low < 0 do return Bad_Encoding
+			out + utf8(high * 16 + low)
+			k += 3
+		elif form and c == '+'
+			out + ' '
+			k += 1
+		else
+			out + c
+			k += 1
+		}
+	}
+}

@@ -1,0 +1,33 @@
+// How to write bytes as text and read them back, with mara.encoding.
+//
+// base64_encode and hex_encode append bytes as text, and base64_decode and
+// hex_decode append the bytes back. url_encode escapes text to go in a URL or a
+// form, and url_decode reads it back: their last argument, true, is for HTML forms,
+// which send a space as '+'. base64_encode's last argument, true, is for text
+// going in a URL: '-' and '_' for '+' and '/', and no padding.
+//
+// Each appends to what it's given, and stops the program if it's short of room, as
+// any append does. base64 takes 4 characters for every 3 bytes, hex 2 for each, and a
+// URL up to 3 for each. A decode that finds something it can't read gives Bad_Encoding.
+module encoding
+
+use mara.core
+use mara.encoding
+
+main :: fun() {
+	text : [64]utf8
+	base64_encode("hello", &text)
+	print(text)                       // aGVsbG8=
+
+	bytes : [64]byte
+	failed := base64_decode(text, &bytes)
+	print(failed, bytes.len)          // Ok 5
+
+	query : [64]utf8
+	url_encode("a b&c", &query)
+	print(query)                      // a%20b%26c
+
+	hex : [16]utf8
+	hex_encode("hi", &hex)
+	print(hex)                        // 6869
+}
