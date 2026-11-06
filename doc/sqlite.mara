@@ -8,8 +8,9 @@
 // its next row: true if there's a row to read, false when it's done. Fill in its `?`s
 // with sqlite_bind_i64, sqlite_bind_f64, sqlite_bind_text, sqlite_bind_blob and
 // sqlite_bind_null, counting from 1. Read a row with sqlite_column_i64 and the others,
-// counting from 0. sqlite_column_text and sqlite_column_blob copy into a buffer you give
-// them, and say Sqlite_Too_Long if it doesn't fit. sqlite_column_text_view and
+// counting from 0. sqlite_column_text and sqlite_column_blob add to the end of a buffer
+// you give them, and say Sqlite_Too_Long if it doesn't fit. To use one buffer for many
+// rows, set its len to 0 before each. sqlite_column_text_view and
 // sqlite_column_blob_view skip the copy, but what they give goes stale at the next step
 // and nothing checks that. Always bind values rather than joining them into the SQL:
 // that's what stops text from a user being run as SQL.

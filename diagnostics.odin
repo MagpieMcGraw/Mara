@@ -619,6 +619,7 @@ CODE_CONST_TABLE_UNNAMED :: "internal: aggregate constant has no entry in the co
 CODE_CONST_TABLE_SHAPE :: "internal: a constant table of a shape the emitter can't lay out"
 BUILD_CLANG_FAILED                :: "Error: clang failed to compile '%s'\n"
 BUILD_ARCHIVE_FAILED              :: "Error: archive creation failed for '%s'\n"
+BUILD_LIB_NO_FOLDER               :: "Error: can't build a library from '%s': its folder can't be written, and neither can your cache folder (on Linux: XDG_CACHE_HOME, or .cache in HOME)\n"
 BUILD_FOREIGN_FILE_NOT_FOUND      :: "Error: foreign file '%s' not found under %s\n"
 BUILD_FORCED_RECOMPILE_FAILED     :: "Error: forced recompile of '%s' failed\n"
 BUILD_STATIC_LIB_FAILED           :: "Error: failed to build static lib from '%s'\n"

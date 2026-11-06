@@ -528,19 +528,27 @@ folder_writable :: proc(dir: string) -> bool {
 }
 
 // Where a library goes when the folder its source is in can't be written (an installed
-// compiler, say): in the system's temporary folder, under a name from the source's path.
+// compiler, say): the user's cache folder, under a name from the source's path. Not the
+// system's temporary folder: on Linux every user shares that one, so another user could
+// put a library there first, for this build to link. "": there's no such folder, or it
+// can't be written either.
 bundled_lib_elsewhere :: proc(c_path, lib_name: string) -> string {
-    temp, err := os.temp_directory(context.allocator)
-    if err != nil || temp == "" { return "" }
+    cache, err := os.user_cache_dir(context.allocator)
+    if err != nil || cache == "" { return "" }
+    source, abs_err := os.get_absolute_path(c_path, context.allocator)
+    if abs_err != nil { return "" }
     h: u64 = 14695981039346656037
-    for i := 0; i < len(c_path); i += 1 { h = (h ~ u64(c_path[i])) * 1099511628211 }
-    dir := fmt.tprintf("%s/mara_libs_%x", temp, h)
-    os.make_directory(dir)
-    return fmt.tprintf("%s/%s", dir, lib_name)
+    for i := 0; i < len(source); i += 1 { h = (h ~ u64(source[i])) * 1099511628211 }
+    dir, _ := filepath.join({cache, "mara", fmt.tprintf("libs_%x", h)})
+    // (It's fine if it's already there: the write check is what says it can be used.)
+    os.make_directory_all(dir, {.Read_User, .Write_User, .Execute_User})
+    if !folder_writable(dir) { return "" }
+    lib, _ := filepath.join({dir, lib_name})
+    return lib
 }
 
 // The library for c_path, up to date: the one at lib_path, built there if it has to be.
-// If that folder can't be written, one in the system's temporary folder instead.
+// If that folder can't be written, one in the user's cache folder instead.
 // ("", false): it failed to build, and said why.
 bundled_lib_ready :: proc(c_path, lib_path, compiler_dir: string, always_build := false) -> (string, bool) {
     if !always_build && bundled_lib_fresh(lib_path, c_path) { return lib_path, true }
@@ -548,7 +556,7 @@ bundled_lib_ready :: proc(c_path, lib_path, compiler_dir: string, always_build :
     if !folder_writable(filepath.dir(lib_path)) {
         target = bundled_lib_elsewhere(c_path, filepath.base(lib_path))
         if target == "" {
-            fmt.printf(BUILD_ARCHIVE_FAILED, lib_path)
+            fmt.printf(BUILD_LIB_NO_FOLDER, c_path)
             return "", false
         }
         if !always_build && bundled_lib_fresh(target, c_path) { return target, true }

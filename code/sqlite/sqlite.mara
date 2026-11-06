@@ -194,7 +194,7 @@ sqlite_column_f64 :: fun(s: ^Sql_Statement, at: i32) -> f64 {
 }
 
 // Appends a column, as text, to out. NULL adds nothing. Sqlite_Too_Long if it doesn't fit,
-// with nothing added.
+// with nothing added. To use one buffer for many rows, set its len to 0 before each.
 sqlite_column_text :: fun(s: ^Sql_Statement, at: i32, out: ^[]utf8) -> err {
 	text := sqlite_column_text_view(s, at)
 	if out.len + text.len > out.cap do return Sqlite_Too_Long
@@ -202,7 +202,7 @@ sqlite_column_text :: fun(s: ^Sql_Statement, at: i32, out: ^[]utf8) -> err {
 }
 
 // Appends a column, as bytes, to out. NULL adds nothing. Sqlite_Too_Long if it doesn't
-// fit, with nothing added.
+// fit, with nothing added. To use one buffer for many rows, set its len to 0 before each.
 sqlite_column_blob :: fun(s: ^Sql_Statement, at: i32, out: ^[]byte) -> err {
 	bytes := sqlite_column_blob_view(s, at)
 	if out.len + bytes.len > out.cap do return Sqlite_Too_Long

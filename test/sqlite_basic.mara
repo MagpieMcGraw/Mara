@@ -23,6 +23,7 @@ use mara.sqlite
 //@ expect-output: no statement: Sqlite_Error.Sqlite_No_Statement Sqlite_Error.Sqlite_No_Statement Sqlite_Error.Sqlite_No_Statement
 //@ expect-output: one statement with extras: true true true
 //@ expect-output: too long: Sqlite_Error.Sqlite_Too_Long 0 Sqlite_Error.Sqlite_Too_Long 0 , and a copy lasts: hello
+//@ expect-output: columns add: helloworld , unless len is set to 0: world
 //@ expect-output: closed with a statement open: 1
 
 // mara.sqlite: everything a port of a Rails app asks of it. Rows and binds, text with
@@ -270,6 +271,17 @@ one_statement :: fun() -> err {
 	blob_err := sqlite_column_blob(&q, 0, &tiny_bytes)
 	sqlite_step(&q)?
 	print("too long:", text_err, tiny.len, blob_err, tiny_bytes.len, ", and a copy lasts:", kept)
+
+	// (Columns add to what's in a buffer. One buffer over many rows sets its len to 0.)
+	sqlite_reset(&q)?
+	joined : [16]utf8
+	last_row : [16]utf8
+	for sqlite_step(&q)? {
+		sqlite_column_text(&q, 0, &joined)?
+		last_row.len = 0
+		sqlite_column_text(&q, 0, &last_row)?
+	}
+	print("columns add:", joined, ", unless len is set to 0:", last_row)
 }
 
 // sqlite_close with a statement open: the connection goes when the statement does, and the
