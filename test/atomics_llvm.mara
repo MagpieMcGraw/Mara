@@ -1,0 +1,60 @@
+module atomics_llvm
+
+use mara.core
+use mara.memory
+use mara.os
+use mara.atomic
+
+//@ build-flags: -llvm
+//@ expect-output: one thread: 5 7 12 12 9 4
+//@ expect-output: counted: 8000000
+//@ expect-output: locked: 8000000
+
+// atomics, through LLVM: atomicrmw, cmpxchg and load atomic, which is what Linux builds
+// use. The other test goes through the x86 backend on Windows.
+
+#allocator Arena_Basic(1 * MB)
+
+Shared :: struct {
+	count: i64 = 0
+	plain: i64 = 0
+	lock: i32 = 0
+}
+
+adder :: fun(s: ^Shared) {
+	for k in 0:1000000 do _ = atomic_add(&s.count, 1)
+}
+
+locker :: fun(s: ^Shared) {
+	for k in 0:1000000 {
+		for atomic_compare_swap(&s.lock, 0, 1) != 0 {
+		}
+		s.plain += 1
+		atomic_store(&s.lock, 0)
+	}
+}
+
+run_all :: fun(work: fun(^Shared), s: ^Shared) -> err {
+	threads : [8!]Thread
+	for k in 0:8 do threads[k] = thread_start(work, s)?
+	for k in 0:8 do thread_wait(&threads[k])
+}
+
+main :: fun() {
+	x : i64 = 5
+	a := atomic_load(&x)
+	_ = atomic_add(&x, 2)
+	before := atomic_swap(&x, 12)
+	c := atomic_load(&x)
+	d := atomic_compare_swap(&x, 12, 9)
+	e := atomic_compare_swap(&x, 100, 4)
+	atomic_store(&x, 4)
+	print("one thread:", a, before, c, d, e, atomic_load(&x))
+
+	s := Shared()
+	e1 := run_all(adder, &s)
+	e2 := run_all(locker, &s)
+	if e1 or e2 do print("threads failed")
+	print("counted:", atomic_load(&s.count))
+	print("locked:", s.plain)
+}

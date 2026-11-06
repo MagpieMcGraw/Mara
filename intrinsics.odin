@@ -32,6 +32,9 @@ LLVM_Type_Rule :: enum {
     Arena_Swap,                // `@llvm.mara_arena_swap.ptr` (mara.memory's arena_swap): a pointer in, a
                                // pointer out — the arena slot set, the one it held given back; no LLVM
                                // intrinsic, a load and a store of @__mara_arena (`with`'s).
+    Atomic,                    // `@llvm.mara_atomic_add.i64` (mara.atomic's): a pointer to an integer of the
+                               // suffix's width, then integers of that width, and one out. No LLVM intrinsic:
+                               // LLVM's atomic instructions, and on x86 the locked ones.
     Thread_Run,                // `@llvm.mara_thread_run.ptr` (mara.os's thread_run): a fun, the pointer it's
                                // given, an arena's size in; a pointer out — on a new thread, an arena of the
                                // program's kind made, the slot set to it, the fun run, the arena's memory
@@ -67,6 +70,10 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"bitcast", 1, .Bit_Cast},
     {"mara_arena_swap", 1, .Arena_Swap},
     {"mara_thread_run", 3, .Thread_Run},
+    {"mara_atomic_load", 1, .Atomic},
+    {"mara_atomic_swap", 2, .Atomic},
+    {"mara_atomic_add", 2, .Atomic},
+    {"mara_atomic_compare_swap", 3, .Atomic},
 }
 
 find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
@@ -185,6 +192,22 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
         return true
     }
 
+    if spec.rule == .Atomic {
+        bits := int_width_from_suffix(suffix)
+        pointee: Type
+        if p, is_ptr := unwrap_alias(ft.params[0].type_).(^Type_Ptr); is_ptr { pointee = p.elem }
+        right := (bits == 32 || bits == 64) && pointee != nil && int_type_matches_width(pointee, bits)
+        right = right && len(ft.return_types) == 1 && int_type_matches_width(fn_primary_return(ft), bits)
+        for p, i in ft.params {
+            if i > 0 && !int_type_matches_width(p.type_, bits) { right = false }
+        }
+        if !right {
+            check_error(c, span, "intrinsic `@%s` takes a pointer to a %d-bit integer, then integers of that width, and returns one", name, bits)
+            return false
+        }
+        return true
+    }
+
     if spec.rule == .Thread_Run {
         // (A fun of one pointer, a pointer, a size in; a pointer out.)
         work, fun_in := unwrap_alias(ft.params[0].type_).(^Type_Scope)
@@ -263,7 +286,7 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
             return false
         }
         return true
-    case .Arena_Swap, .Thread_Run:
+    case .Arena_Swap, .Thread_Run, .Atomic:
         return true   // (checked above, before its suffix)
     case .Bit_Cast:
         // f32/f64: the param that float, the return an integer as wide; iN:

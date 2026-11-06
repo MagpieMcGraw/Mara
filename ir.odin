@@ -32,6 +32,7 @@ Ir_Op :: enum u8 {
     Cast,          // dest = inst ty a to to
     Fneg,          // dest = fneg ty a
     Extract,       // dest = extractvalue ty a, b — b, the part's index
+    Atomic,        // an atomic operation, by inst: a, the pointer; b, c, its values; dest, what was there
     Call,          // [dest = ]call ty [to ]a(args) — a, the callee; to, a variadic one's signature
     Ret,           // ret ty[ a]
     Br,            // br label %l
@@ -58,6 +59,7 @@ Ir :: struct {
 Ir_Inst :: enum u8 {
     None,
     Add, Sub, Mul, Sdiv, Udiv, Srem, Urem, And, Or, Xor, Shl, Lshr, Ashr,
+    Atomic_Load, Atomic_Swap, Atomic_Compare_Swap,
     Fadd, Fsub, Fmul, Fdiv, Frem,
     Eq, Ne, Slt, Sle, Sgt, Sge, Ult, Ule, Ugt, Uge,
     Oeq, Une, Olt, Ole, Ogt, Oge,
@@ -80,6 +82,9 @@ IR_INST_NAME := [Ir_Inst]string{
     .Shl = "shl",
     .Lshr = "lshr",
     .Ashr = "ashr",
+    .Atomic_Load = "load",
+    .Atomic_Swap = "xchg",
+    .Atomic_Compare_Swap = "cmpxchg",
     .Fadd = "fadd",
     .Fsub = "fsub",
     .Fmul = "fmul",
@@ -576,6 +581,13 @@ ir_print :: proc(b: ^strings.Builder, ins: Ir) {
     w :: strings.write_string
     v :: ir_print_val
     ty, to := ir_type_text(ins.ty), ir_type_text(ins.to)
+    // (cmpxchg gives what was there and whether it swapped: the first's wanted.)
+    if ins.op == .Atomic && ins.inst == .Atomic_Compare_Swap {
+        w(b, "  "); v(b, ins.dest); w(b, ".pair = cmpxchg ptr "); v(b, ins.a); w(b, ", "); w(b, ty); w(b, " "); v(b, ins.b)
+        w(b, ", "); w(b, ty); w(b, " "); v(b, ins.c); w(b, " seq_cst seq_cst\n  ")
+        v(b, ins.dest); w(b, " = extractvalue { "); w(b, ty); w(b, ", i1 } "); v(b, ins.dest); w(b, ".pair, 0\n")
+        return
+    }
     if ins.op == .Label {
         ir_print_label(b, ins.l)
         w(b, ":\n")
@@ -621,6 +633,16 @@ ir_print :: proc(b: ^strings.Builder, ins: Ir) {
         w(b, "fneg "); w(b, ty); w(b, " "); v(b, ins.a)
     case .Extract:
         w(b, "extractvalue "); w(b, ty); w(b, " "); v(b, ins.a); w(b, ", "); v(b, ins.b)
+    case .Atomic:
+        #partial switch ins.inst {
+        case .Atomic_Load:
+            w(b, "load atomic "); w(b, ty); w(b, ", ptr "); v(b, ins.a); w(b, " seq_cst")
+            align(b, ins.align)
+        case .Atomic_Swap:
+            w(b, "atomicrmw xchg ptr "); v(b, ins.a); w(b, ", "); w(b, ty); w(b, " "); v(b, ins.b); w(b, " seq_cst")
+        case .Add:
+            w(b, "atomicrmw add ptr "); v(b, ins.a); w(b, ", "); w(b, ty); w(b, " "); v(b, ins.b); w(b, " seq_cst")
+        }
     case .Call:
         w(b, "call "); w(b, ty); w(b, " ")
         if ins.to != IR_NONE { w(b, to); w(b, " ") }

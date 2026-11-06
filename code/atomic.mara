@@ -1,0 +1,52 @@
+module mara.atomic
+
+// Numbers threads can share without a Mutex: each of these happens as one step, and
+// all of them keep one order that every thread sees.
+//
+//     hits : i64 = 0
+//     atomic_add(&hits, 1)                 // from any thread
+//     now := atomic_load(&hits)
+//
+// A number shared this way has to be read and written with these every time: a plain
+// `hits += 1` from another thread can lose counts. For more than one number that have
+// to change together, use a Mutex.
+//
+// They work on i32, i64, u32 and u64.
+
+// The number at `at`.
+atomic_load :: dispatch { atomic_load_i32, atomic_load_i64, atomic_load_u32, atomic_load_u64 }
+
+// Puts value at `at`, and gives what was there.
+atomic_swap :: dispatch { atomic_swap_i32, atomic_swap_i64, atomic_swap_u32, atomic_swap_u64 }
+
+// Adds n to the number at `at`, and gives what was there before. Wraps past the top.
+atomic_add :: dispatch { atomic_add_i32, atomic_add_i64, atomic_add_u32, atomic_add_u64 }
+
+// If the number at `at` is `expected`, puts value there. Either way, gives what was
+// there, so it swapped if that's `expected`.
+atomic_compare_swap :: dispatch { atomic_compare_swap_i32, atomic_compare_swap_i64, atomic_compare_swap_u32, atomic_compare_swap_u64 }
+
+// Puts value at `at`.
+atomic_store :: fun(at: ^$T, value: T) {
+	_ = atomic_swap(at, value)
+}
+
+atomic_load_i32 :: fun(at: ^i32) -> i32 { @llvm.mara_atomic_load.i32 }
+atomic_load_i64 :: fun(at: ^i64) -> i64 { @llvm.mara_atomic_load.i64 }
+atomic_load_u32 :: fun(at: ^u32) -> u32 { @llvm.mara_atomic_load.i32 }
+atomic_load_u64 :: fun(at: ^u64) -> u64 { @llvm.mara_atomic_load.i64 }
+
+atomic_swap_i32 :: fun(at: ^i32, value: i32) -> i32 { @llvm.mara_atomic_swap.i32 }
+atomic_swap_i64 :: fun(at: ^i64, value: i64) -> i64 { @llvm.mara_atomic_swap.i64 }
+atomic_swap_u32 :: fun(at: ^u32, value: u32) -> u32 { @llvm.mara_atomic_swap.i32 }
+atomic_swap_u64 :: fun(at: ^u64, value: u64) -> u64 { @llvm.mara_atomic_swap.i64 }
+
+atomic_add_i32 :: fun(at: ^i32, n: i32) -> i32 { @llvm.mara_atomic_add.i32 }
+atomic_add_i64 :: fun(at: ^i64, n: i64) -> i64 { @llvm.mara_atomic_add.i64 }
+atomic_add_u32 :: fun(at: ^u32, n: u32) -> u32 { @llvm.mara_atomic_add.i32 }
+atomic_add_u64 :: fun(at: ^u64, n: u64) -> u64 { @llvm.mara_atomic_add.i64 }
+
+atomic_compare_swap_i32 :: fun(at: ^i32, expected: i32, value: i32) -> i32 { @llvm.mara_atomic_compare_swap.i32 }
+atomic_compare_swap_i64 :: fun(at: ^i64, expected: i64, value: i64) -> i64 { @llvm.mara_atomic_compare_swap.i64 }
+atomic_compare_swap_u32 :: fun(at: ^u32, expected: u32, value: u32) -> u32 { @llvm.mara_atomic_compare_swap.i32 }
+atomic_compare_swap_u64 :: fun(at: ^u64, expected: u64, value: u64) -> u64 { @llvm.mara_atomic_compare_swap.i64 }

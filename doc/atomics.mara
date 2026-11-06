@@ -1,0 +1,39 @@
+// How threads can share a number without a Mutex, with mara.atomic.
+//
+// Each of these happens as one step, so no thread can get between its parts.
+// atomic_load reads the number, atomic_store writes it, atomic_add adds to it and
+// atomic_swap puts a new one there, and the last two give what was there before.
+// atomic_compare_swap(&n, expected, value) puts value there only if the number is
+// `expected`, and gives what was there, so it swapped if that's `expected`.
+//
+// A number shared this way has to be read and written with these every time: a plain
+// `n += 1` from another thread can lose counts. For more than one number that have to
+// change together, use a Mutex (see threads.mara). They work on i32, i64, u32 and u64.
+module atomics
+
+use mara.core
+use mara.memory
+use mara.os
+use mara.atomic
+
+#allocator Arena_Basic(1 * MB)
+
+Stats :: struct {
+	hits: i64 = 0
+}
+
+count_hits :: fun(s: ^Stats) {
+	for k in 0:1000 do _ = atomic_add(&s.hits, 1)
+}
+
+main :: fun() {
+	stats := Stats()
+	threads : [4!]Thread
+	for k in 0:4 {
+		t, failed := thread_start(count_hits, &stats)
+		if failed do print(failed)
+		threads[k] = t
+	}
+	for k in 0:4 do thread_wait(&threads[k])
+	print(atomic_load(&stats.hits))     // 4000
+}

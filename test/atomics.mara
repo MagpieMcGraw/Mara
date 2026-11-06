@@ -1,0 +1,99 @@
+module atomics
+
+use mara.core
+use mara.memory
+use mara.os
+use mara.atomic
+
+//@ expect-output: one thread: 5 7 12 12 9 4
+//@ expect-output: widths: 3 4 5 6
+//@ expect-output: wraps: -2147483648 0
+//@ expect-output: counted: 8000000
+//@ expect-output: locked: 8000000
+//@ expect-output: swapped: 8000000
+//@ expect-output: in a field: 4
+
+// mara.atomic: each operation by itself, then eight threads adding to one number with
+// atomic_add, adding to a plain one under a lock made of atomic_compare_swap, and
+// taking turns through atomic_swap. Any lost update would show in the totals. 
+// atomics_llvm does the same through LLVM.
+
+#allocator Arena_Basic(1 * MB)
+
+Shared :: struct {
+	count: i64 = 0
+	plain: i64 = 0
+	lock: i32 = 0
+	turns: u64 = 0
+}
+
+Holder :: struct {
+	pad: i32 = 0
+	n: i64 = 0
+}
+
+adder :: fun(s: ^Shared) {
+	for k in 0:1000000 do _ = atomic_add(&s.count, 1)
+}
+
+locker :: fun(s: ^Shared) {
+	for k in 0:1000000 {
+		for atomic_compare_swap(&s.lock, 0, 1) != 0 {
+		}
+		s.plain += 1
+		atomic_store(&s.lock, 0)
+	}
+}
+
+swapper :: fun(s: ^Shared) {
+	for k in 0:1000000 {
+		for true {
+			was := atomic_load(&s.turns)
+			if atomic_compare_swap(&s.turns, was, was + 1) == was do break
+		}
+	}
+}
+
+run_all :: fun(work: fun(^Shared), s: ^Shared) -> err {
+	threads : [8!]Thread
+	for k in 0:8 do threads[k] = thread_start(work, s)?
+	for k in 0:8 do thread_wait(&threads[k])
+}
+
+main :: fun() {
+	x : i64 = 5
+	a := atomic_load(&x)
+	b := atomic_add(&x, 2)       // (5, and x is 7)
+	before := atomic_swap(&x, 12)   // (7, and x is 12)
+	c := atomic_load(&x)
+	d := atomic_compare_swap(&x, 12, 9)
+	e := atomic_compare_swap(&x, 100, 4)
+	atomic_store(&x, 4)
+	print("one thread:", a, before, c, d, e, atomic_load(&x))
+	if b != 5 do print("wrong:", b)
+
+	w1 : i32 = 3
+	w2 : i64 = 4
+	w3 : u32 = 5
+	w4 : u64 = 6
+	print("widths:", atomic_load(&w1), atomic_load(&w2), atomic_load(&w3), atomic_load(&w4))
+
+	top : i32 = 2147483647
+	_ = atomic_add(&top, 1)
+	back : u32 = 0xFFFFFFFF
+	_ = atomic_add(&back, 1)
+	print("wraps:", atomic_load(&top), atomic_load(&back))
+
+	s := Shared()
+	e1 := run_all(adder, &s)
+	e2 := run_all(locker, &s)
+	e3 := run_all(swapper, &s)
+	if e1 or e2 or e3 do print("threads failed")
+	print("counted:", atomic_load(&s.count))
+	print("locked:", s.plain)
+	print("swapped:", atomic_load(&s.turns))
+
+	h := Holder()
+	_ = atomic_add(&h.n, 4)
+	print("in a field:", atomic_load(&h.n))
+}

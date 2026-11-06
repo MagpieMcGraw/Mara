@@ -3178,6 +3178,23 @@ llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
     if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "mara_thread_run" {
         return llvm_thread_run(e, op, ops, callee)
     }
+    if iop, suffix, _ := parse_llvm_intrinsic_name(name); strings.has_prefix(iop, "mara_atomic_") {
+        // (Not a call: LLVM's atomic instructions, what was there the value.)
+        ins := Ir{op = .Atomic, ty = llvm_type_from_checker(fn_result(callee, 0)), align = i32(int_width_from_suffix(suffix) / 8)}
+        ins.a = llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+        if len(ops) > 1 { ins.b = llvm_operand(e, ops[1], fn_param(callee, 1).type_) or_return }
+        if len(ops) > 2 { ins.c = llvm_operand(e, ops[2], fn_param(callee, 2).type_) or_return }
+        switch iop {
+        case "mara_atomic_load": ins.inst = .Atomic_Load
+        case "mara_atomic_swap": ins.inst = .Atomic_Swap
+        case "mara_atomic_add":  ins.inst = .Add
+        case:                    ins.inst = .Atomic_Compare_Swap
+        }
+        ins.dest = fresh_tmp(g)
+        ir_emit(g, ins)
+        e.value[op] = ins.dest
+        return true
+    }
     if iop, _, _ := parse_llvm_intrinsic_name(name); iop == "bitcast" {
         // (Not a call: LLVM's `bitcast` — the same bits, another type.)
         p := fn_param(callee, 0)

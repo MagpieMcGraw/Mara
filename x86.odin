@@ -1133,6 +1133,29 @@ x86_inst :: proc(f: ^X86_Fn, ins: ^Ir) {
         x86_load(f, .AX, x86_mem(f, x86_slot(f, v, at.size, at.align), off), cur.size)
         x86_put(f, dest)
 
+    case .Atomic:
+        // (Each is atomic on its own, and all of them keep their order with the
+        // others': a plain aligned load, and the rest locked. xchg always is.)
+        size := x86_layout(p, ins.ty).size
+        at := x86_ptr(f, x86_val(ins.a, p.ptr), .CX)
+        #partial switch ins.inst {
+        case .Atomic_Load:
+            x86_load(f, .AX, at, size)
+        case .Atomic_Swap:
+            x86_get(f, x86_val(ins.b, x86_layout(p, ins.ty)), .AX)
+            x86_enc_rm(f, 0, size == 8, {0x87}, u8(X86_Reg.AX), at)
+        case .Add:
+            x86_get(f, x86_val(ins.b, x86_layout(p, ins.ty)), .AX)
+            append(&f.code, 0xF0)   // lock
+            x86_enc_rm(f, 0, size == 8, {0x0F, 0xC1}, u8(X86_Reg.AX), at)   // xadd
+        case .Atomic_Compare_Swap:
+            x86_get(f, x86_val(ins.b, x86_layout(p, ins.ty)), .AX)
+            x86_get(f, x86_val(ins.c, x86_layout(p, ins.ty)), .DX)
+            append(&f.code, 0xF0)   // lock
+            x86_enc_rm(f, 0, size == 8, {0x0F, 0xB1}, u8(X86_Reg.DX), at)   // cmpxchg
+        }
+        x86_put(f, dest)
+
     case .Call:
         rt := x86_layout(p, ins.ty)
         args := make([]X86_Arg, len(ins.args), context.temp_allocator)
