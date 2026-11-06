@@ -560,7 +560,9 @@ tick :: fun(n: i64) -> i64 { return n + 1 }
 //
 // `area :: dispatch{ coin_area, tile_area }`: `area(c)` calls coin_area for
 // a Coin, tile_area for a Tile. The args must fit one exactly. With
-// `overload`, an operator calls a dispatch.
+// `overload`, an operator calls a dispatch. Dispatches of one name in two
+// modules join. A fun or type of that name in your own module hides them; a
+// fun of that name in a module you use makes a bare call ambiguous.
 example_dispatch :: fun() {
 	print(area(Coin{r = 1}))               // 3.14
 	print(area(Tile{side = 2}))            // 4

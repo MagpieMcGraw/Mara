@@ -682,6 +682,36 @@ resolve_fun_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string
     return out[:]
 }
 
+// Whether `ref`, what a name means where `at` is, is a fun or a type defined in
+// that file's own module, at its top or in a body, and no dispatch group.
+resolve_own_name :: proc(r: ^Resolver, at: Token_Id, ref: Ref) -> bool {
+    if ref.kind != .Fun && ref.kind != .Type || r.dispatches[ref.decl] { return false }
+    sight, ok := r.sights[build_tokens[at].file]
+    home, has := r.sights[build_tokens[ref.decl].file]
+    return ok && has && home.module == sight.module
+}
+
+// The modules in sight where `at` is with `name`, when its own module has no
+// such name and some of them have a dispatch group and some a fun in no group.
+// Groups of one name join, but a group and a fun don't: a bare call is
+// ambiguous. Nil when it isn't that.
+resolve_group_rivals :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok { return nil }
+    if _, own := sight.module.defs[name]; own { return nil }
+    out := make([dynamic]string, context.temp_allocator)
+    groups, funs := false, false
+    for u in sight.uses {
+        if u == sight.module { continue }
+        ref, has := u.defs[name]
+        if !has || ref.kind != .Fun { continue }
+        if r.dispatches[ref.decl] { groups = true } else { funs = true }
+        if !slice.contains(out[:], u.name) { append(&out, u.name) }
+    }
+    if !groups || !funs { return nil }
+    return out[:]
+}
+
 // The modules in sight where `at` is that have a constant `name` — its own,
 // then each it uses (two or more: a bare use is ambiguous).
 resolve_const_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string {

@@ -1,0 +1,14 @@
+module fun_and_group_ambiguous
+
+//@ expect-fail: function 'pick' is ambiguous (defined in: from_group, from_fun)
+
+use mara.core
+use from_group
+use from_fun
+
+// Two used modules with one name are ambiguous, a dispatch group and a fun too:
+// only groups join. The group took the call, and the fun was never tried.
+
+main :: fun() {
+	print(pick(1))
+}

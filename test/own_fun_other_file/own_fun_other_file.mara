@@ -1,0 +1,10 @@
+module own_fun_other_file
+
+use mara.core
+
+// A module's fun in another of its files hides core's `add` too: it's its
+// module's, not its file's.
+
+main :: fun() {
+	print(add(1, 2))
+}

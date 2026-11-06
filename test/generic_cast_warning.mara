@@ -1,0 +1,21 @@
+module generic_cast_warning
+
+use mara.core
+
+//@ expect-output: 2.5 2.5 2.5
+//@ expect-warning: redundant cast to f64 — b already has that type
+//@ expect-no-warning: redundant cast to f64 — x already has that type
+
+// A cast that changes nothing is warned of, but not in a generic's body: f64(x)
+// changes nothing for this generic's f64 instance, and it's needed for its f32
+// one, so there's nothing to drop.
+
+as_f64 :: fun(x: $T) -> f64 {
+	return f64(x)
+}
+
+main :: fun() {
+	a : f32 = 2.5
+	b : f64 = 2.5
+	print(as_f64(a), as_f64(b), f64(b))
+}

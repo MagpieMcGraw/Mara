@@ -22,6 +22,7 @@
 # A `//@ build-flags: flags` line builds it with those flags (`-no assert`).
 # `//@ expect-warning: text` lines (any number): it must still compile, each
 # text among what the build says — a warning that has to be given.
+# `//@ expect-no-warning: text` lines: no such text among what it says.
 #
 # The docs' programs, doc/*.mara, are checked too: each must build and run.
 #
@@ -91,6 +92,9 @@ check_file() {  # f
     while IFS= read -r want; do
       echo "$out" | grep -qF -- "$want" || { verdict "$name" bad "MISSING WARNING: $name (want: \"$want\")"; return; }
     done < <(sed -nE 's#.*//@ expect-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
+    while IFS= read -r want; do
+      if echo "$out" | grep -qF -- "$want"; then verdict "$name" bad "UNWANTED WARNING: $name (\"$want\")"; return; fi
+    done < <(sed -nE 's#.*//@ expect-no-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
     if grep -qE '//@ expect-output:' "$f"; then
       run=$(timeout 10 "./$name$EXE" 2>&1); rc=$?
       want_rc=$(sed -nE 's#.*//@ expect-exit:[[:space:]]*([0-9]+).*#\1#p' "$f" | head -1)

@@ -869,10 +869,19 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         groups := resolve_dispatches(k.rs, tr.main[n], name)
         // (A body's group, the name its own: it alone — a body's name hides
         // its module's.)
-        if ref := tc_callee_ref(k, n); ref.kind == .Fun && k.rs.dispatches[ref.decl] && !slice.contains(groups, ref.decl) {
-            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, {ref.decl}), args)
+        callee := tc_callee_ref(k, n)
+        if callee.kind == .Fun && k.rs.dispatches[callee.decl] && !slice.contains(groups, callee.decl) {
+            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, {callee.decl}), args)
         }
-        if len(groups) > 0 {
+        // (A fun or type its own module defines, no group, hides the groups of
+        // the modules it uses, as it hides their funs.)
+        if len(groups) > 0 && !resolve_own_name(k.rs, tr.main[n], callee) {
+            // (A group and a fun no group, from two modules it uses: ambiguous.)
+            if owners := resolve_group_rivals(k.rs, tr.main[n], name); owners != nil {
+                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
+                for a in args { tc_check(k, a) }
+                return Type_Error{}
+            }
             return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
@@ -1176,8 +1185,9 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
             }
         }
     }
-    // (One that changes nothing is said to.)
-    if cast_target_same_as_operand(types[0], target) {
+    // (One that changes nothing is said to. Not in a generic's body: there it
+    // may change something for another of its types, `f64(x)` of a `$T`.)
+    if tc_instance(k, n) == 0 && cast_target_same_as_operand(types[0], target) {
         operand := tc_diag_name(k, args[0])
         if operand == "" { operand = "the operand" }
         check_warning(k.c, span, WARN_REDUNDANT_CAST, name, operand, name)
