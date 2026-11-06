@@ -1281,7 +1281,7 @@ GL_GetProcAddress :: fun(name: []utf8) -> ^byte { return SDL_GL_GetProcAddress(c
 // What SDL's functions fail with, when they give back false or no handle. SDL's
 // reason is in GetError() then, until another SDL call fails, and the err's
 // where() names the C function that failed.
-Sdl_Error :: error { Failed }
+SDL_Error :: error { Failed }
 
 // Audio — a stream to play through: opened on a device, given samples
 // (PutAudioStreamData), it plays them, converting to the device's format

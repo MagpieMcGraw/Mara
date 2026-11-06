@@ -9,7 +9,7 @@ gl :: use mara.open_gl
 //@ expect-output: error said: true
 //@ expect-output: base: true
 //@ expect-output: back to C: Ok
-//@ expect-output: opened: Sdl_Error.Failed
+//@ expect-output: opened: SDL_Error.Failed
 //@ expect-output: IOFromFile
 //@ expect-output: reason given: true
 
