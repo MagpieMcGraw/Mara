@@ -29,6 +29,15 @@ Net_Address :: struct {
 	scope: u32 = 0   // (an IPv6 link-local address's network: which of the machine's)
 }
 
+// What net_waiter_wait found: which socket, by the tag it was added with, and what it
+// can do without waiting. A connection that ended or broke counts as readable: its
+// tcp_receive says so.
+Net_Ready :: struct {
+	tag: i64
+	readable: bool
+	writable: bool
+}
+
 // Every address of this machine, port `port`: to listen at (udp_open,
 // tcp_listen) for other machines to reach, by IPv6 or IPv4.
 net_any :: fun(port: u16) -> Net_Address {
@@ -374,6 +383,116 @@ Sockaddr :: struct {
 		return c
 	}
 
+	// Waits on many sockets at once, so one thread can serve many connections.
+	// net_waiter_open makes one, with room for `room` sockets, taking what it
+	// needs from storage. A waiter is one thread's. Several threads can each add
+	// the same Tcp_Listener to their own, and tcp_accept shares its connections.
+	// (WSAPoll: the sockets, in a list it's given each time.)
+	Net_Waiter :: struct {
+		sockets: []Wsa_Poll_Fd
+		tags: []i64
+	}
+
+	// WSAPOLLFD.
+	Wsa_Poll_Fd :: struct {
+		id: File_Id
+		events: i16
+		answers: i16
+	}
+
+	POLLRDNORM :: 0x0100
+	POLLWRNORM :: 0x0010
+	POLLERR    :: 0x0001
+	POLLHUP    :: 0x0002
+	POLLNVAL   :: 0x0004
+
+	net_waiter_open :: fun(room: i64, storage: ^[]byte) -> Net_Waiter, err {
+		if not net_start() do return Net_Waiter{sockets = [], tags = []}, Socket_Failed
+		sockets := slice([:room]Wsa_Poll_Fd, storage)
+		tags := slice([:room]i64, storage)
+		return Net_Waiter{sockets = sockets, tags = tags}
+	}
+
+	// Adds a socket (a Tcp_Connection's or a Tcp_Listener's id) to wait on. It's
+	// ready when it can be read: for a listener, when a connection has come. `tag`
+	// comes back with it from net_waiter_wait.
+	net_waiter_add :: fun(w: ^Net_Waiter, id: File_Id, tag: i64) -> err {
+		if w.sockets.len == w.sockets.cap do return Socket_Failed
+		&w.sockets + Wsa_Poll_Fd{id = id, events = POLLRDNORM, answers = 0}
+		&w.tags + tag
+	}
+
+	// Sets whether a socket added also counts as ready when it can be written. Turn
+	// it on when a tcp_send_some couldn't send everything, and off when it's all gone:
+	// a socket can almost always be written, so left on it's always ready.
+	net_waiter_writing :: fun(w: ^Net_Waiter, id: File_Id, tag: i64, on: bool) -> err {
+		for k in 0:w.sockets.len {
+			if w.sockets[k].id == id {
+				w.sockets[k].events = POLLRDNORM
+				if on do w.sockets[k].events = POLLRDNORM | POLLWRNORM
+				return
+			}
+		}
+		return Socket_Failed
+	}
+
+	// Takes a socket out, before it's closed.
+	net_waiter_remove :: fun(w: ^Net_Waiter, id: File_Id) {
+		for k in 0:w.sockets.len {
+			if w.sockets[k].id == id {
+				last := w.sockets.len - 1
+				w.sockets[k] = w.sockets[last]
+				w.tags[k] = w.tags[last]
+				w.sockets.len = last
+				w.tags.len = last
+				return
+			}
+		}
+	}
+
+	// Waits until some socket is ready, at most `ms` milliseconds, or -1 as long as
+	// it takes, and puts those that are into `ready`, up to its room. The rest stay
+	// ready for next time. A socket stays ready until what it's ready for is done.
+	// `ready` is empty if the time ran out.
+	net_waiter_wait :: fun(w: ^Net_Waiter, ready: ^[]Net_Ready, ms: i64) -> err {
+		ready.len = 0
+		// (WSAPoll with nothing to wait on is an error, and nothing can come.)
+		if w.sockets.len == 0 {
+			if ms != 0 do sleep_ms(u32(ms))
+			return
+		}
+		n := WSAPoll(&w.sockets[0], u32(w.sockets.len), i32(ms))
+		if n < 0 do return Socket_Failed
+		if n == 0 do return
+		for k in 0:w.sockets.len {
+			got := w.sockets[k].answers
+			if got == 0 do continue
+			if ready.len == ready.cap do return
+			r := Net_Ready{tag = w.tags[k], readable = got & (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL) != 0, writable = got & POLLWRNORM != 0}
+			ready + r
+		}
+	}
+
+	// Lets the waiter go. The sockets in it stay open.
+	net_waiter_close :: fun(w: ^Net_Waiter) {
+		w.sockets.len = 0
+		w.tags.len = 0
+	}
+
+	// Sends as much of data as the system has room for, without waiting, and gives how
+	// many bytes that was: 0 when it has no room. Send the rest when net_waiter_wait
+	// says the socket can be written. Fails with Send_Failed once the connection has
+	// ended.
+	tcp_send_some :: fun(c: ^Tcp_Connection, data: []byte) -> i64, err {
+		if data.len == 0 do return 0
+		want := data.len
+		if want > 1 << 30 do want = 1 << 30
+		n := send(c.id, data.ptr, i32(want), 0)
+		if n >= 0 do return i64(n)
+		if WSAGetLastError() == WSAEWOULDBLOCK do return 0
+		return 0, Send_Failed
+	}
+
 	// Sends all of data on the connection, waiting while the system has no
 	// room for more. Fails with Send_Failed once the connection has ended.
 	tcp_send :: fun(c: ^Tcp_Connection, data: []byte) -> err {
@@ -622,6 +741,7 @@ Sockaddr :: struct {
 		fun recv(s: File_Id, data: ^byte, size: i32, flags: i32) -> i32
 		fun sendto(s: File_Id, data: ^byte, size: i32, flags: i32, to: ^Sockaddr, to_size: i32) -> i32
 		fun recvfrom(s: File_Id, data: ^byte, size: i32, flags: i32, from: ^Sockaddr, from_size: ^i32) -> i32
+		fun WSAPoll(sockets: ^Wsa_Poll_Fd, count: u32, ms: i32) -> i32
 		fun select(ignored: i32, read: ^Fd_Set, write: ^Fd_Set, failed: ^Fd_Set, wait: ^Timeval) -> i32
 		fun getaddrinfo(name: cstring, service: ^byte, hints: ^Addrinfo_Hints, found: ^^Addrinfo) -> i32
 		fun freeaddrinfo(found: ^Addrinfo)
@@ -814,6 +934,104 @@ Sockaddr :: struct {
 		net_no_delay(id)
 		c.id = id
 		return c
+	}
+
+	// Waits on many sockets at once, so one thread can serve many connections.
+	// net_waiter_open makes one, with room for `room` sockets, taking what it
+	// needs from storage. A waiter is one thread's. Several threads can each add
+	// the same Tcp_Listener to their own, and tcp_accept shares its connections.
+	// (epoll: the system keeps the sockets. `room` and storage are unused here.)
+	Net_Waiter :: struct {
+		id: File_Id
+	}
+
+	// struct epoll_event, packed on x86_64: its 64 bits of data at 4 bytes in.
+	Epoll_Event :: struct {
+		events: u32
+		tag_low: u32
+		tag_high: u32
+	}
+
+	EPOLL_CTL_ADD :: 1
+	EPOLL_CTL_DEL :: 2
+	EPOLL_CTL_MOD :: 3
+	EPOLL_CLOEXEC :: 0x80000
+	EPOLLIN       :: 0x001
+	EPOLLOUT      :: 0x004
+	EPOLLERR      :: 0x008
+	EPOLLHUP      :: 0x010
+
+	net_waiter_open :: fun(room: i64, storage: ^[]byte) -> Net_Waiter, err {
+		id := epoll_create1(EPOLL_CLOEXEC)
+		if id == NO_SOCKET do return Net_Waiter{id = NO_SOCKET}, Socket_Failed
+		return Net_Waiter{id = id}
+	}
+
+	// Adds a socket (a Tcp_Connection's or a Tcp_Listener's id) to wait on. It's
+	// ready when it can be read: for a listener, when a connection has come. `tag`
+	// comes back with it from net_waiter_wait.
+	net_waiter_add :: fun(w: ^Net_Waiter, id: File_Id, tag: i64) -> err {
+		e := Epoll_Event{events = EPOLLIN, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if epoll_ctl(w.id, EPOLL_CTL_ADD, id, &e) != 0 do return Socket_Failed
+	}
+
+	// Sets whether a socket added also counts as ready when it can be written. Turn
+	// it on when a tcp_send_some couldn't send everything, and off when it's all gone:
+	// a socket can almost always be written, so left on it's always ready.
+	net_waiter_writing :: fun(w: ^Net_Waiter, id: File_Id, tag: i64, on: bool) -> err {
+		e := Epoll_Event{events = EPOLLIN, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if on do e.events = EPOLLIN | EPOLLOUT
+		if epoll_ctl(w.id, EPOLL_CTL_MOD, id, &e) != 0 do return Socket_Failed
+	}
+
+	// Takes a socket out, before it's closed.
+	net_waiter_remove :: fun(w: ^Net_Waiter, id: File_Id) {
+		e := Epoll_Event{events = 0, tag_low = 0, tag_high = 0}
+		_ = epoll_ctl(w.id, EPOLL_CTL_DEL, id, &e)
+	}
+
+	// Waits until some socket is ready, at most `ms` milliseconds, or -1 as long as
+	// it takes, and puts those that are into `ready`, up to its room. The rest stay
+	// ready for next time. A socket stays ready until what it's ready for is done.
+	// `ready` is empty if the time ran out.
+	net_waiter_wait :: fun(w: ^Net_Waiter, ready: ^[]Net_Ready, ms: i64) -> err {
+		ready.len = 0
+		if ready.cap == 0 do return
+		found : [64!]Epoll_Event
+		want := ready.cap
+		if want > 64 do want = 64
+		n := epoll_wait(w.id, &found[0], i32(want), i32(ms))
+		if n < 0 {
+			// (A signal cut the wait short: as if the time ran out.)
+			if __errno_location()^ == EINTR do return
+			return Socket_Failed
+		}
+		for k in 0:i64(n) {
+			got := found[k].events
+			r := Net_Ready{tag = i64((u64(found[k].tag_high) << 32) | u64(found[k].tag_low)), readable = got & (EPOLLIN | EPOLLHUP | EPOLLERR) != 0, writable = got & EPOLLOUT != 0}
+			ready + r
+		}
+	}
+
+	// Lets the waiter go. The sockets in it stay open.
+	net_waiter_close :: fun(w: ^Net_Waiter) {
+		if w.id == NO_SOCKET do return
+		_ = close(w.id)
+		w.id = NO_SOCKET
+	}
+
+	// Sends as much of data as the system has room for, without waiting, and gives how
+	// many bytes that was: 0 when it has no room. Send the rest when net_waiter_wait
+	// says the socket can be written. Fails with Send_Failed once the connection has
+	// ended.
+	tcp_send_some :: fun(c: ^Tcp_Connection, data: []byte) -> i64, err {
+		if data.len == 0 do return 0
+		// (MSG_NOSIGNAL: a connection ended fails, not SIGPIPE ending the program.)
+		n := send(c.id, data.ptr, usize(data.len), MSG_NOSIGNAL)
+		if n >= 0 do return n
+		e := __errno_location()^
+		if e == EAGAIN or e == EINTR do return 0
+		return 0, Send_Failed
 	}
 
 	// Sends all of data on the connection, waiting while the system has no
@@ -1011,6 +1229,9 @@ Sockaddr :: struct {
 	foreign static_lib "c" {
 		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
 		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
+		fun epoll_create1(flags: i32) -> File_Id
+		fun epoll_ctl(waiter: File_Id, op: i32, id: File_Id, event: ^Epoll_Event) -> i32
+		fun epoll_wait(waiter: File_Id, events: ^Epoll_Event, count: i32, ms: i32) -> i32
 		// Sockets: named pipes' (Unix sockets) and the network's. An address
 		// is any of the families' (^byte): Sockaddr_Un, Sockaddr.
 		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id

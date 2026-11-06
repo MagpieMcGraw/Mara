@@ -1,0 +1,238 @@
+module net_waiter
+
+use mara.core
+use mara.os
+use mara.memory
+
+//@ expect-output: nothing ready: 0
+//@ expect-output: listener ready: 1 true
+//@ expect-output: served: 8 clients, 800 messages, all echoed: true
+//@ expect-output: ended seen: true
+//@ expect-output: writable: true true
+//@ expect-output: send some: filled, then none
+//@ expect-output: not ready after remove: 0
+//@ expect-output: shared listener: 4 accepted by 2 threads
+
+// One thread serving many connections through a waiter, each client on a thread of its
+// own sending messages and reading each back. Only loopback addresses, so no firewall
+// prompt.
+
+#allocator Arena_Basic(16 * MB)
+
+Client :: struct {
+	port: u16
+	sent: i64 = 0
+	right: bool = true
+}
+
+client :: fun(me: ^Client) {
+	c, failed := tcp_connect(net_local(me.port))
+	if failed {
+		me.right = false
+		return
+	}
+	for k in 0:100 {
+		message : [8]byte
+		for j in 0:8 do &message + u8(k + j)
+		if tcp_send(&c, message) {
+			me.right = false
+			break
+		}
+		me.sent += 1
+		have := 0
+		for have < 8 {
+			room : [8]byte
+			open_, _ := tcp_receive(&c, &room)
+			if not open_ {
+				me.right = false
+				tcp_close(&c)
+				return
+			}
+			for j in 0:room.len {
+				if u8(room[j]) != u8(k + have + j) do me.right = false
+			}
+			have += room.len
+			if room.len == 0 do sleep_ms(0)
+		}
+	}
+	tcp_close(&c)
+}
+
+// Serves until `clients` connections have come and gone.
+serve :: fun(l: ^Tcp_Listener, clients: i64) -> i64, i64, bool, err {
+	storage : [4 * KB]byte
+	w := net_waiter_open(32, &storage)?
+	defer net_waiter_close(&w)
+	net_waiter_add(&w, l.id, -1)?
+	connections : [32]Tcp_Connection
+	done : i64 = 0
+	accepted : i64 = 0
+	echoed : i64 = 0
+	ended_seen := false
+	for done < clients {
+		ready : [16]Net_Ready
+		net_waiter_wait(&w, &ready, 5000)?
+		if ready.len == 0 do return accepted, echoed, ended_seen, Unreachable
+		for r in ready {
+			if r.tag == -1 {
+				c : Tcp_Connection
+				got := tcp_accept(l, &c)?
+				if got {
+					net_waiter_add(&w, c.id, connections.len)?
+					&connections + c
+					accepted += 1
+				}
+				continue
+			}
+			c := &connections[r.tag]
+			room : [64]byte
+			open_ := tcp_receive(c, &room)?
+			if not open_ {
+				net_waiter_remove(&w, c.id)
+				tcp_close(c)
+				done += 1
+				ended_seen = true
+				continue
+			}
+			if room.len > 0 {
+				tcp_send(c, room)?
+				echoed += room.len
+			}
+		}
+	}
+	return accepted, echoed, ended_seen
+}
+
+small_things :: fun() -> err {
+	l := tcp_listen(net_local(0))?
+	defer tcp_listen_stop(&l)
+	storage : [KB]byte
+	w := net_waiter_open(8, &storage)?
+	defer net_waiter_close(&w)
+	net_waiter_add(&w, l.id, 7)?
+	ready : [8]Net_Ready
+	net_waiter_wait(&w, &ready, 0)?
+	print("nothing ready:", ready.len)
+
+	a := tcp_connect(net_local(l.port))?
+	defer tcp_close(&a)
+	net_waiter_wait(&w, &ready, 2000)?
+	print("listener ready:", ready.len, ready[0].tag == 7)
+	b : Tcp_Connection
+	for not tcp_accept(&l, &b)? do sleep_ms(1)
+	defer tcp_close(&b)
+
+	net_waiter_add(&w, b.id, 9)?
+	net_waiter_writing(&w, b.id, 9, true)?
+	net_waiter_wait(&w, &ready, 2000)?
+	print("writable:", ready.len == 1 and ready[0].tag == 9, ready[0].writable)
+	net_waiter_writing(&w, b.id, 9, false)?
+
+	// (Send until the system has no room: nobody's reading.)
+	big : [64 * KB]byte
+	for k in 0:big.cap do &big + u8(k & 255)
+	full := false
+	for k in 0:20000 {
+		n := tcp_send_some(&b, big)?
+		if n == 0 {
+			full = true
+			break
+		}
+	}
+	if full do print("send some: filled, then none")
+
+	net_waiter_remove(&w, b.id)
+	net_waiter_remove(&w, l.id)
+	net_waiter_wait(&w, &ready, 0)?
+	print("not ready after remove:", ready.len)
+}
+
+// Two threads accepting from one listener, each with its own waiter.
+Sharer :: struct {
+	listener: ^Tcp_Listener
+	accepted: i64 = 0
+	total: ^i64
+	lock: ^Mutex
+	failed: bool = false
+}
+
+sharer :: fun(me: ^Sharer) {
+	storage : [KB]byte
+	w, e := net_waiter_open(8, &storage)
+	if e {
+		me.failed = true
+		return
+	}
+	defer net_waiter_close(&w)
+	e2 := net_waiter_add(&w, me.listener.id, 1)
+	if e2 do me.failed = true
+	for true {
+		mutex_lock(me.lock)
+		count := me.total^
+		mutex_unlock(me.lock)
+		if count >= 4 do return
+		ready : [4]Net_Ready
+		_ = net_waiter_wait(&w, &ready, 50)
+		if ready.len == 0 do continue
+		c : Tcp_Connection
+		got, _ := tcp_accept(me.listener, &c)
+		if got {
+			me.accepted += 1
+			mutex_lock(me.lock)
+			me.total^ += 1
+			mutex_unlock(me.lock)
+			tcp_close(&c)
+		}
+	}
+}
+
+shared_listener :: fun() -> err {
+	l := tcp_listen(net_local(0))?
+	defer tcp_listen_stop(&l)
+	total : i64 = 0
+	lock := Mutex()
+	a := Sharer{listener = &l, accepted = 0, total = &total, lock = &lock, failed = false}
+	b := Sharer{listener = &l, accepted = 0, total = &total, lock = &lock, failed = false}
+	t1 := thread_start(sharer, &a)?
+	t2 := thread_start(sharer, &b)?
+	for k in 0:4 {
+		c := tcp_connect(net_local(l.port))?
+		tcp_close(&c)
+	}
+	thread_wait(&t1)
+	thread_wait(&t2)
+	if a.failed or b.failed do print("a sharer failed")
+	print("shared listener:", a.accepted + b.accepted, "accepted by 2 threads")
+}
+
+main :: fun() {
+	small := small_things()
+	if small do print("failed:", small)
+
+	l, listen_err := tcp_listen(net_local(0))
+	if listen_err do print("listen failed:", listen_err)
+	clients : [8!]Client
+	threads : [8!]Thread
+	for k in 0:8 {
+		clients[k] = Client()
+		clients[k].port = l.port
+		t, e := thread_start(client, &clients[k])
+		if e do print("thread failed:", e)
+		threads[k] = t
+	}
+	accepted, echoed, ended, serve_err := serve(&l, 8)
+	if serve_err do print("serve failed:", serve_err)
+	all_right := true
+	sent : i64 = 0
+	for k in 0:8 {
+		thread_wait(&threads[k])
+		if not clients[k].right do all_right = false
+		sent += clients[k].sent
+	}
+	print("served:", accepted, "clients,", sent, "messages, all echoed:", all_right and echoed == sent * 8)
+	print("ended seen:", ended)
+	tcp_listen_stop(&l)
+
+	shared := shared_listener()
+	if shared do print("failed:", shared)
+}
