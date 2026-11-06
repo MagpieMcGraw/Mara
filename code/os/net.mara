@@ -406,6 +406,13 @@ Sockaddr :: struct {
 	POLLHUP    :: 0x0002
 	POLLNVAL   :: 0x0004
 
+	// Adds a listener to wait on. Several threads can each add one listener to their own
+	// waiter, and tcp_accept shares its connections out. (On Windows a new connection wakes
+	// them all, and those too late get false from tcp_accept.)
+	net_waiter_add_listener :: fun(w: ^Net_Waiter, l: ^Tcp_Listener, tag: i64) -> err {
+		net_waiter_add(w, l.id, tag)?
+	}
+
 	net_waiter_open :: fun(room: i64, storage: ^[]byte) -> Net_Waiter, err {
 		if not net_start() do return Net_Waiter{sockets = [], tags = []}, Socket_Failed
 		sockets := slice([:room]Wsa_Poll_Fd, storage)
@@ -945,7 +952,8 @@ Sockaddr :: struct {
 		id: File_Id
 	}
 
-	// struct epoll_event, packed on x86_64: its 64 bits of data at 4 bytes in.
+	// struct epoll_event, packed on x86_64: its 64 bits of data at 4 bytes in. (ARM's isn't
+	// packed, and other structs here differ there too: Mara refuses to build on it.)
 	Epoll_Event :: struct {
 		events: u32
 		tag_low: u32
@@ -960,6 +968,15 @@ Sockaddr :: struct {
 	EPOLLOUT      :: 0x004
 	EPOLLERR      :: 0x008
 	EPOLLHUP      :: 0x010
+	EPOLLEXCLUSIVE :: 0x10000000
+
+	// Adds a listener to wait on. Several threads can each add one listener to their own
+	// waiter, and tcp_accept shares its connections out. (EPOLLEXCLUSIVE: a new connection wakes one
+	// thread, not all of them.)
+	net_waiter_add_listener :: fun(w: ^Net_Waiter, l: ^Tcp_Listener, tag: i64) -> err {
+		e := Epoll_Event{events = EPOLLIN | EPOLLEXCLUSIVE, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if epoll_ctl(w.id, EPOLL_CTL_ADD, l.id, &e) != 0 do return Socket_Failed
+	}
 
 	net_waiter_open :: fun(room: i64, storage: ^[]byte) -> Net_Waiter, err {
 		id := epoll_create1(EPOLL_CLOEXEC)

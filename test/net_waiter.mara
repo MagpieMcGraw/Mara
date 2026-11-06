@@ -164,7 +164,7 @@ sharer :: fun(me: ^Sharer) {
 		return
 	}
 	defer net_waiter_close(&w)
-	e2 := net_waiter_add(&w, me.listener.id, 1)
+	e2 := net_waiter_add_listener(&w, me.listener, 1)
 	if e2 do me.failed = true
 	for true {
 		mutex_lock(me.lock)

@@ -38,8 +38,9 @@
 //
 // This example runs both sides on this machine, one after the other.//
 // A server with many connections needs a waiter, so one thread can wait on them all.
-// net_waiter_open makes one, net_waiter_add adds a listener or a connection with a tag
-// to know it by, and net_waiter_wait waits until some are ready and lists them. A
+// net_waiter_open makes one, net_waiter_add_listener and net_waiter_add add a listener
+// and a connection with a tag to know each by, and net_waiter_wait waits until some are
+// ready and lists them. A
 // listener that's ready has a connection to tcp_accept, and a connection that's ready
 // has something to tcp_receive, or has ended. tcp_send waits while the system has no
 // room, so a server that mustn't wait uses tcp_send_some, which sends what fits and
