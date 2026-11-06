@@ -1088,6 +1088,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // function: its symbol.
         if ft, is_fn := graph_type(pg, op).(^Type_Scope); is_fn && ft.kind == .Fun {
             if fo, is_foreign := ft.origin.(Origin_Foreign); is_foreign {   // a C function: its link symbol
+                if fo.fails { e.note = "a C function that gives err, as a value: call it in a Mara fun"; return false }
                 e.value[op] = ir_global(fo.link_name if fo.link_name != "" else ft.name)
                 return true
             }
@@ -3001,7 +3002,13 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
     // The result: none, returned, or in a hidden slot (first).
     result: Type
     if fn_result_count(callee) == 1 && !is_untyped(fn_result(callee, 0)) { result = fn_result(callee, 0) }
-    if fn_result_count(callee) > 1 { e.note = "a foreign call's results"; return false }
+    fo := callee.origin.(Origin_Foreign)
+    if fo.fails {
+        result = fo.c_result
+    } else if fn_result_count(callee) > 1 {
+        e.note = "a foreign call's results"
+        return false
+    }
     ret_ir, slot := IR_VOID, Val{}
     ret_low: Lowering
     if result != nil {
@@ -3061,6 +3068,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
     tmp := fresh_tmp(g)
     ir_call(g, tmp, ret_ir, callee_sym, ..args[:])
     e.value[op] = tmp
+    if fo.fails { return llvm_c_fails(e, op, callee, fo, tmp, ret_ir) }
     // An aggregate returned in registers: put back together where it can be
     // read as one.
     if direct, is_direct := ret_low.(Lowering_Direct); is_direct && llvm_aggregate(result) {
@@ -3082,6 +3090,46 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         }
         e.value[op] = at
     }
+    return true
+}
+
+// What a C function in a `fails` block gives Mara (Origin_Foreign.fails): `got`,
+// what it returned, made an err — no failure when it's true or a pointer, its
+// block's error when it's false or NULL, the err's trace begun at the fun's
+// declaration — and a pointer, as the first of two results.
+@(private="file")
+llvm_c_fails :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, fo: Origin_Foreign, got: Val, ir: Ir_Type) -> bool {
+    g := e.g
+    n := fn_result_count(callee)
+    at := make([]Val, n)
+    for i in 0 ..< n {
+        if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
+        if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, fn_result(callee, i), as_local = true) }
+    }
+    if n == 2 { emit_store(g, ir, got, at[0]) }
+    made_at := at[n - 1]
+    emit_store(g, IR_I64, ir_int(0), made_at)
+    failed := fresh_tmp(g)
+    ir_icmp(g, failed, .Eq, ir, got, IR_NULL if ir == IR_PTR else ir_int(0))
+    fail, done := fresh_label(g, "foreign.failed"), fresh_label(g, "foreign.done")
+    emit_cond_br(g, failed, fail, done)
+    emit_label(g, fail)
+    made := ir_int(fo.fail_kind)
+    if !g.web {
+        made = fresh_tmp(g)
+        ir_call(g, made, IR_I64, ir_global("__mara_err_made"), {IR_I64, ir_int(fo.fail_kind), {}}, {IR_I32, ir_int(int(fo.fail_site)), {}})
+    }
+    emit_store(g, IR_I64, made, made_at)
+    emit_br(g, done)
+    emit_label(g, done)
+    if n == 1 {
+        v := fresh_tmp(g)
+        emit_load_into(g, v, IR_I64, made_at)
+        e.value[op] = v
+        return true
+    }
+    e.outs[op], e.out_run[op] = at, e.run
+    e.value[op] = at[0]
     return true
 }
 

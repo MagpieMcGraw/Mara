@@ -8,6 +8,9 @@
 // `if e`, `if not e`, `e or e2`, wherever a condition goes (`bool(e)` says
 // the same as a value). `e == .Not_A_Digit` asks how it failed.
 //
+// A C function can give an err too, when its foreign block says how its library
+// reports failure: `foreign static_lib "SDL3" fails Failed { … }` (doc/basics.mara).
+//
 // In a function that returns an err itself, `d := digit(c)?` takes the
 // value, and on a failure returns that err from the function right there.
 //

@@ -725,6 +725,13 @@ Origin_Intrinsic :: struct {
 Origin_Foreign :: struct {
     library:    string,                // "kernel32", "SDL3", etc.
     link_name:  string,                // C symbol name (prefix + decl name)
+    // A fun that gives err, in a block that says `fails F`: what C returns isn't
+    // what Mara sees. C returns a bool (false: it failed) or a pointer (NULL: it
+    // failed), and the call makes that an err (llvm_c_fails).
+    fails:      bool,
+    c_result:   Type,                  // what C returns
+    fail_kind:  int,                   // F's value
+    fail_site:  u32,                   // where the err was made, as an atom: the fun's declaration
 }
 
 Origin_From_Text :: struct {

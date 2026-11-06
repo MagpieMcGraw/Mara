@@ -1,0 +1,16 @@
+module foreign_err_no_fails_neg
+
+//@ expect-fail: doesn't say how the library reports failure
+
+// A foreign fun can give err only in a block that says how its library reports
+// failure: read as it is, C's true would be a failure and its false Ok.
+
+use mara.core
+
+foreign static_lib "kernel32" {
+	fun SetCurrentDirectoryA(path: cstring) -> err
+}
+
+main :: fun() {
+	print(SetCurrentDirectoryA("."))
+}

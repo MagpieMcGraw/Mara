@@ -324,6 +324,7 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     ret_single: Type
     has_void_return := fn_result_count(cs) == 0
     if !has_void_return { ret_single = fn_result(cs, 0) }
+    if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign && fo.fails { ret_single = fo.c_result }   // (what C returns, not the err it's made)
     if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     if !has_void_return {
         ret_low := classify(ret_single, os)

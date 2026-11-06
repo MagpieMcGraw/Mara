@@ -1,9 +1,14 @@
 package mara
 
+import "core:fmt"
 import "core:strings"
 
-// `foreign "lib" [prefix p] { fun Name(params) -> T }`: each a fun of C's
-// calling convention, linked as prefix + name.
+// `foreign "lib" [prefix p] [fails F] { fun Name(params) -> T }`: each a fun of
+// C's calling convention, linked as prefix + name.
+//
+// `fails F` says how this library reports failure, for its funs that give err:
+// `-> err` for a C bool, false when it failed, and `-> T, err` for a C pointer,
+// NULL when it failed. Those become F. A fun that gives no err is called as it is.
 
 tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
@@ -29,6 +34,55 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
+// The value of the error named after `fails`; false when it's no error that can
+// be failed with, which is said.
+tc_foreign_fails :: proc(k: ^TC, tok: Token_Id) -> (int, bool) {
+    span := token_span(build_tokens[tok])
+    name := tc_text(tok)
+    t, value, found := tc_variant_ident(k, name, Type_Err{}, false, span)
+    if !found {
+        tc_error(k, span, TYPE_FOREIGN_FAILS_NOT_ERROR, name)
+        return 0, false
+    }
+    if t == nil { return 0, false }   // (more than one has it: said)
+    if value == 0 {
+        tc_error(k, span, TYPE_FOREIGN_FAILS_OK, name)
+        return 0, false
+    }
+    return value, true
+}
+
+// A foreign fun's results, if it gives err: what C returns for them, into its
+// origin. An err anywhere else than this is an error.
+tc_foreign_err :: proc(k: ^TC, ft: ^Type_Scope, origin: ^Origin_Foreign, fails: Token_Id, kind: int, known: bool, name: string, span: Span) {
+    gives_err := false
+    for r in ft.return_types {
+        if _, is_err := distinct_base(r).(Type_Err); is_err { gives_err = true }
+    }
+    if !gives_err { return }
+    if fails == 0 {
+        tc_error(k, span, TYPE_FOREIGN_ERR_NEEDS_FAILS, name)
+        return
+    }
+    if !known { return }   // (what's wrong with `fails`: said)
+    n := len(ft.return_types)
+    _, last_err := distinct_base(ft.return_types[n - 1]).(Type_Err)
+    if !last_err || n > 2 {
+        tc_error(k, span, TYPE_FOREIGN_ERR_RESULTS, name)
+        return
+    }
+    origin.c_result = Type_Bool{}
+    if n == 2 {
+        if _, is_ptr := distinct_base(ft.return_types[0]).(^Type_Ptr); !is_ptr {
+            tc_error(k, span, TYPE_FOREIGN_ERR_RESULTS, name)
+            return
+        }
+        origin.c_result = ft.return_types[0]
+    }
+    origin.fails, origin.fail_kind = true, kind
+    origin.fail_site = checked_atom(k.checked, fmt.tprintf("%s in %s", span_location(span), origin.link_name))
+}
+
 // A module's foreign funs, for the emitter: each by its flat name, linked as
 // prefix + name (one declaration per symbol in the program).
 tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
@@ -36,6 +90,8 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
     fv := foreign_view(t, s)
     library := tc_text(fv.library)
     prefix := tc_text(fv.prefix) if fv.prefix != 0 else ""
+    fail_kind, fails_known := 0, false
+    if fv.fails != 0 { fail_kind, fails_known = tc_foreign_fails(k, fv.fails) }
     // ("mara_runtime": the compiler's own runtime, runtime/*.c — its objects
     // linked by the build itself, no library to look for.)
     if library != "mara_runtime" { k.checked.foreign_libs[library] = true }
@@ -46,6 +102,9 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         if !is_scope { continue }
         span := tree_span(t, ff)
         link := strings.concatenate({prefix, name}) if prefix != "" else name
+        origin := Origin_Foreign{library = library, link_name = link}
+        tc_foreign_err(k, ft, &origin, fv.fails, fail_kind, fails_known, name, span)
+        ft.origin = origin
         // (A foreign block is its file's own, so another file may bind a C
         // function another has: as that one does — a symbol has one C
         // signature, its one `declare`. Its Mara types may differ, a
@@ -59,7 +118,6 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
             }
             break
         }
-        ft.origin = Origin_Foreign{library = library, link_name = link}
         ft.body_span = span
         // (Its params: its variables, though it has no body to bind them.)
         for p in ft.params { annot_add_var(k.annot, ft, {p.decl, .Param, p.type_}) }

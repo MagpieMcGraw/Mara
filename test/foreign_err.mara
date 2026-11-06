@@ -1,0 +1,98 @@
+module foreign_err
+
+// A foreign block's `fails`: a fun that gives err has C's result made into one.
+// C reports success, Mara reports failure. Here, Windows' own functions do it:
+// SetCurrentDirectoryA returns true when it worked, GetModuleHandleA a handle,
+// NULL when it didn't.
+
+//@ expect-output: worked, by value: Ok
+//@ expect-output: failed, by value: Probe.Refused
+//@ expect-output: as a condition: false true
+//@ expect-output: the kind: true
+//@ expect-output: where: true
+//@ expect-output: passed on: Probe.Refused
+//@ expect-output: passed on, traced: 2
+//@ expect-output: forwarded: Probe.Refused
+//@ expect-output: found: true Ok
+//@ expect-output: not found: true Probe.Refused
+//@ expect-output: found, with a question mark: true
+//@ expect-output: not found, with a question mark: Probe.Refused
+//@ expect-output: given no err, as it is: true
+//@ expect-output: ended
+
+use mara.core
+use mara.string
+
+Probe :: error { Refused }
+
+main :: fun() {
+	run()
+}
+
+#if #windows {
+	foreign static_lib "kernel32" fails Refused {
+		fun SetCurrentDirectoryA(path: cstring) -> err
+		fun GetModuleHandleA(name: cstring) -> ^byte, err
+		fun GetCurrentThreadId() -> u32
+	}
+
+	go_to :: fun(path: []utf8) -> err {
+		return SetCurrentDirectoryA(cstring(path))
+	}
+
+	go_through :: fun(path: []utf8) -> err {
+		SetCurrentDirectoryA(cstring(path))?
+	}
+
+	module_of :: fun(name: []utf8) -> ^byte, err {
+		return GetModuleHandleA(cstring(name))
+	}
+
+	module_through :: fun(name: []utf8) -> err {
+		found := GetModuleHandleA(cstring(name))?
+		print("found, with a question mark:", found != void)
+	}
+
+	run :: fun() {
+		worked := SetCurrentDirectoryA(".")
+		print("worked, by value:", worked)
+		failed := SetCurrentDirectoryA("no_such_folder_here")
+		print("failed, by value:", failed)
+		print("as a condition:", bool(worked), bool(failed))
+		print("the kind:", failed == .Refused)
+		print("where:", contains(failed.where(), "in SetCurrentDirectoryA"))
+
+		passed := go_through("no_such_folder_here")
+		print("passed on:", passed)
+		print("passed on, traced:", passed.trace().len)
+		print("forwarded:", go_to("no_such_folder_here"))
+
+		handle, e := module_of("kernel32.dll")
+		print("found:", handle != void, e)
+		none, e2 := module_of("no_such_module_here.dll")
+		print("not found:", none == void, e2)
+		_ = module_through("kernel32.dll")
+		print("not found, with a question mark:", module_through("no_such_module_here.dll"))
+		print("given no err, as it is:", GetCurrentThreadId() != 0)
+		print("ended")
+	}
+}
+
+#if not #windows {
+	run :: fun() {
+		print("worked, by value: Ok")
+		print("failed, by value: Probe.Refused")
+		print("as a condition: false true")
+		print("the kind: true")
+		print("where: true")
+		print("passed on: Probe.Refused")
+		print("passed on, traced: 2")
+		print("forwarded: Probe.Refused")
+		print("found: true Ok")
+		print("not found: true Probe.Refused")
+		print("found, with a question mark: true")
+		print("not found, with a question mark: Probe.Refused")
+		print("given no err, as it is: true")
+		print("ended")
+	}
+}

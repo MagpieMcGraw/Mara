@@ -781,6 +781,11 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
         prefix_kw = tp_advance(p)
         prefix = tp_expect(p, .Identifier)
     }
+    fails: Token_Id
+    if tp_kind(p) == .Identifier && tp_text(p) == "fails" {
+        tp_advance(p)
+        fails = tp_expect(p, .Identifier)
+    }
     tp_skip_newlines(p)
     tp_expect(p, .Left_Brace)
     tp_skip_newlines(p)
@@ -797,7 +802,7 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
         tp_skip_newlines(p)
     }
     tp_expect(p, .Right_Brace)
-    return tp_node(p, .Foreign, kw, start, tree_rec_add(p.t, u32(static_lib), u32(lib), u32(prefix_kw), u32(prefix), tp_list(p, funs)))
+    return tp_node(p, .Foreign, kw, start, tree_rec_add(p.t, u32(static_lib), u32(lib), u32(prefix_kw), u32(prefix), tp_list(p, funs)), u32(fails))
 }
 
 // --- declarations -----------------------------------------------------------

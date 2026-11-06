@@ -619,6 +619,16 @@ Place :: struct { x: f32  y: f32 }
 // NULL). The standard library's mara.os and the SDL and OpenGL bindings in
 // code/ are made so.
 //
+// Many C libraries report success, not failure: a function returns true when it
+// worked, or a pointer that's NULL when it didn't. `fails Failed` after the
+// library's name, Failed being a variant of an error set in sight, makes such a
+// function give an err, so `?` works on it. In that block, `-> err` is a C
+// function returning a bool, and `-> T, err` with T a pointer is one returning
+// that pointer. Each gives Ok when it worked and Failed when it didn't, and the
+// err's where() names the C function. A function there that gives no err is
+// called as it is. An err in a block with no `fails` is a compile error, and such
+// a function can't be used as a value, only called.
+//
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and
 // checks a 0 is after them: a literal has one, and a buffer keeps one
 // after its text (appends write it). A slicing holds all of its room, so

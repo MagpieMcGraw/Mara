@@ -1,0 +1,19 @@
+module foreign_err_value_neg
+
+//@ expect-fail: as a value
+
+// C's function isn't what it looks like here, so it can't be handed around:
+// what makes its result an err is at the call.
+
+use mara.core
+
+Probe :: error { Refused }
+
+foreign static_lib "kernel32" fails Refused {
+	fun SetCurrentDirectoryA(path: cstring) -> err
+}
+
+main :: fun() {
+	f := SetCurrentDirectoryA
+	print(f("."))
+}

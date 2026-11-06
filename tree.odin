@@ -65,8 +65,8 @@ Tree_Tag :: enum u8 {
     For_C,          // `for init; cond; post`: a: rec {init, cond, post, body: list}
     For_Cond,       // `for cond`: a: the condition; b: list — the body
     Overload,       // `overload + name`: a: the operator; b: the dispatch's name
-    Foreign,        // `foreign static_lib "l" [prefix p] {…}`: a: rec {static_lib, library,
-                    // prefix, prefix's name, funs: list}
+    Foreign,        // `foreign static_lib "l" [prefix p] [fails F] {…}`: a: rec {static_lib,
+                    // library, prefix, prefix's name, funs: list}; b: the name after `fails`
     Foreign_Fun,    // main: `fun`; a: rec {name, params: list, returns: list}
     Expose,         // `#expose` before a definition: main: `#`; a: the statement
     Using,          // `using` before a declaration: main: `using`; a: the statement
@@ -180,7 +180,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .For_C          = {a = .Rec, rec = {0 = .Node, 1 = .Node, 2 = .Node, 3 = .List}},
     .For_Cond       = {a = .Node, b = .List},
     .Overload       = {a = .Token, b = .Token},
-    .Foreign        = {a = .Rec, rec = {0 = .Token, 1 = .Token, 2 = .Token, 3 = .Token, 4 = .List}},
+    .Foreign        = {a = .Rec, b = .Token, rec = {0 = .Token, 1 = .Token, 2 = .Token, 3 = .Token, 4 = .List}},
     .Foreign_Fun    = {a = .Rec, rec = {0 = .Token, 1 = .List, 2 = .List}},
     .Expose         = {a = .Node},
     .Using          = {a = .Node},
@@ -566,12 +566,13 @@ method_view :: proc(t: ^Tree, n: Tree_Id) -> Method_View {
 
 Foreign_View :: struct {
     library, prefix: Token_Id,   // the library's string, the prefix's name (0: none)
+    fails:           Token_Id,   // the error its funs that give err fail with (0: none)
     funs:            []Tree_Id,
 }
 
 foreign_view :: proc(t: ^Tree, n: Tree_Id) -> Foreign_View {
     r := tree_rec(t, t.a[n], 5)
-    return {library = Token_Id(r[1]), prefix = Token_Id(r[3]), funs = tree_list(t, r[4])}
+    return {library = Token_Id(r[1]), prefix = Token_Id(r[3]), fails = Token_Id(t.b[n]), funs = tree_list(t, r[4])}
 }
 
 Foreign_Fun_View :: struct {

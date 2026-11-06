@@ -1,0 +1,13 @@
+module foreign_fails_unknown_neg
+
+//@ expect-fail: no error set in sight has that variant
+
+use mara.core
+
+foreign static_lib "kernel32" fails No_Such_Variant {
+	fun SetCurrentDirectoryA(path: cstring) -> err
+}
+
+main :: fun() {
+	print(SetCurrentDirectoryA("."))
+}

@@ -1,0 +1,17 @@
+module foreign_fails_ok_neg
+
+//@ expect-fail: that variant means no failure
+
+// Ok is no failure: every failed call would look like it worked.
+
+use mara.core
+
+Probe :: error { Refused }
+
+foreign static_lib "kernel32" fails Ok {
+	fun SetCurrentDirectoryA(path: cstring) -> err
+}
+
+main :: fun() {
+	print(SetCurrentDirectoryA("."))
+}

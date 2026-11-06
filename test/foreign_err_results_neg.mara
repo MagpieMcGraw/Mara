@@ -1,0 +1,18 @@
+module foreign_err_results_neg
+
+//@ expect-fail: with T a pointer
+
+// `-> T, err` needs a pointer, the one result of C's that can say it failed.
+
+use mara.core
+
+Probe :: error { Refused }
+
+foreign static_lib "kernel32" fails Refused {
+	fun GetCurrentThreadId() -> u32, err
+}
+
+main :: fun() {
+	id, e := GetCurrentThreadId()
+	print(id, e)
+}
