@@ -1164,7 +1164,7 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun GetPerformanceFrequency() -> u64
     fun DelayNS(ns: u64)
     fun DelayPrecise(ns: u64)
-    fun malloc(size: usize) -> ^byte
+    fun malloc(size: usize) -> ^byte, err
     fun free(mem: ^byte)
     fun IOFromFile(file: cstring, mode: cstring) -> IOStream, err
     fun ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
@@ -1178,9 +1178,9 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun SaveFile(file: cstring, data: ^byte, datasize: usize) -> err
     // GetBasePath's text is SDL's to keep; free what GetPrefPath and
     // GetCurrentDirectory give you.
-    fun GetBasePath() -> ^byte
-    fun GetPrefPath(org: cstring, app: cstring) -> ^byte
-    fun GetCurrentDirectory() -> ^byte
+    fun GetBasePath() -> ^byte, err
+    fun GetPrefPath(org: cstring, app: cstring) -> ^byte, err
+    fun GetCurrentDirectory() -> ^byte, err
     fun CreateDirectory(path: cstring) -> err
     fun RemovePath(path: cstring) -> err
     fun RenamePath(oldpath: cstring, newpath: cstring) -> err

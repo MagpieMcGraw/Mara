@@ -21,12 +21,12 @@ gl :: use mara.open_gl
 // GL address is none and SDL says why. A file that isn't there can't be
 // opened: an err, where() naming the C function, GetError() SDL's reason.
 
-main :: fun() {
+main :: fun() -> err {
 	gl.gl_load(sdl.GL_GetProcAddress)
 	print("loaded:", true)
 	print("error said:", read_cstring(256, sdl.GetError()).len > 0)
 	base : [512]utf8
-	&base + read_cstring(base.cap - 1, sdl.GetBasePath())
+	&base + read_cstring(base.cap - 1, sdl.GetBasePath()?)
 	print("base:", base.len > 0)
 	print("back to C:", sdl.SetHint("MARA_TEST_BASE", cstring(base)))
 	_, e := sdl.IOFromFile("no such file.bin", "rb")
