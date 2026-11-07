@@ -349,12 +349,17 @@ dir_make :: fun(path: []utf8) -> err {
 	// as the system has it (real_path's: links followed — getcwd gives none),
 	// however it was entered; whole (no separator at its end but the root,
 	// `/`): a Path, its room past the path there to add to (`&cwd +
-	// "/code"`). Too_Large when it's longer than a Path holds (or the system
-	// won't say, or it's gone: getcwd fails every way). (exe_path:
-	// the program's own file, wherever it runs.)
+	// "/code"`). Too_Large when it's longer than a Path holds; Open_Failed
+	// when it's gone (deleted while the program ran in it); Read_Failed when
+	// the system won't say. (exe_path: the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir : Path
-		if getcwd(&dir[0], usize(dir.cap)) == void do return dir, Too_Large
+		if getcwd(&dir[0], usize(dir.cap)) == void {
+			e := __errno_location()^
+			if e == ERANGE do return dir, Too_Large
+			if e == ENOENT do return dir, Open_Failed
+			return dir, Read_Failed
+		}
 		n : i64 = 0
 		for n < dir.cap and dir[n] != 0 {
 			n += 1
@@ -512,6 +517,8 @@ dir_make :: fun(path: []utf8) -> err {
 	S_IFMT     :: u32(0xF000)   // st_mode's file kind bits
 	S_IFDIR    :: u32(0x4000)   // a directory
 	S_IFLNK    :: u32(0xA000)   // a symbolic link
+	ENOENT     :: 2
+	ERANGE     :: 34
 
 	foreign static_lib "c" {
 		fun stat(path: cstring, out: ^Stat) -> i32    // (through a link to where it leads)
