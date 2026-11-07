@@ -1513,13 +1513,15 @@ Box — struct  askcalls.mara:8   (module askcalls)
 
   A box, with a size that changes.
 
-above (types)   (basic types only, full closure (depth ∞))
-  size : i64
-  count : i64
-  left_only : i64
+  Box :: struct {
+      size: i64
+      count: i64
+      left_only: i64
+  }
 
-below (types)   (0 users, 0 use-sites, full closure (depth ∞))
-  (no users)
+below (types)   (1 user, 1 use-site, depth 1)
+  struct Walker  (field carried : Box)
+  (and 2 funs taking or returning it: `mara ask Box call`)
 === test/askcalls.mara | pick
 pick — fun  askcalls.mara:57   (module askcalls)
 
@@ -1535,22 +1537,21 @@ below (calls)   (1 direct caller, depth 1)
 === test/askcalls.mara | pick types
 pick — fun  askcalls.mara:57   (module askcalls) [generic: as pick__f32]
 
-above (types)   (basic types only, full closure (depth ∞))
+above (types)   (basic types only, depth 1)
   param a : f32
   param b : f32
 
-below (types)   (basic types only, full closure (depth ∞))
+below (types)   (basic types only, depth 1)
   return : f32
 === test/askcalls.mara | Pair
 Pair — struct  askcalls.mara:18   (module askcalls) [generic: as Pair__i64]
 
-  Pair :: struct($T: type)
+  Pair :: struct($T: type) {
+      first: T
+      second: T
+  }
 
-above (types)   (basic types only, full closure (depth ∞))
-  first : i64
-  second : i64
-
-below (types)   (0 users, 0 use-sites, full closure (depth ∞))
+below (types)   (0 users, 0 use-sites, depth 1)
   (no users)
 === test/askcalls.mara | Box.size
 Box.size — field  askcalls.mara:9   (module askcalls)
@@ -1559,11 +1560,15 @@ i64
 declared
   askcalls.mara:9  Box
     size: i64
-written 2
+written 4
   askcalls.mara:66  grow
     box.size += 1
   askcalls.mara:70  main
     box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:183  walk
+    walker.carried.size = start
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
 read 1
   askcalls.mara:74  main
     print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
@@ -1574,11 +1579,15 @@ i64
 declared
   askcalls.mara:9  Box
     size: i64
-written 2
+written 4
   askcalls.mara:66  grow
     box.size += 1
   askcalls.mara:70  main
     box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:183  walk
+    walker.carried.size = start
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
 read 1
   askcalls.mara:74  main
     print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
@@ -1589,9 +1598,11 @@ i64
 declared
   askcalls.mara:11  Box
     left_only: i64
-written 1
+written 2
   askcalls.mara:70  main
     box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
 read 1
   askcalls.mara:74  main
     print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
@@ -1602,9 +1613,11 @@ i64
 declared
   askcalls.mara:11  Box
     left_only: i64
-written 1
+written 2
   askcalls.mara:70  main
     box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
 read 1
   askcalls.mara:74  main
     print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
@@ -2051,3 +2064,447 @@ mara ask: #tokens takes only `in <module>` or `in <file>`
 === test/askmod.mara | #tokens in nosuchfn
 mara ask: #tokens counts a module or a file — 'nosuchfn' is neither
 [exit 1]
+=== test/askcalls.mara | Happening
+Happening — union  askcalls.mara:141   (module askcalls)
+
+  What can happen, each time.
+
+  Happening :: union {
+      nothing = 0
+      door       // a door was opened
+      crossed
+      unnamed
+  }
+
+below (types)   (0 users, 0 use-sites, depth 1)
+  (no users)
+  (and 1 fun taking or returning it: `mara ask Happening call`)
+
+variants (4)
+  nothing   (made 0, matched 1)
+    matched  askcalls.mara:200  third_main  if h == .nothing do print("nothing")
+  door   (made 1, matched 1)
+    made  askcalls.mara:158  happen  if n > WALK_LIMIT do return .door
+    matched  askcalls.mara:193  third_main  door
+  crossed   (made 1, matched 1)
+    made  askcalls.mara:159  happen  return .crossed
+    matched  askcalls.mara:195  third_main  .crossed
+  nothing names: unnamed
+=== test/askcalls.mara | Happening type above
+Happening — union  askcalls.mara:141   (module askcalls)
+
+above (types)   (4 variants)
+  nothing = 0
+  door = 1   // a door was opened
+  crossed = 2
+  unnamed = 3
+=== test/askcalls.mara | Happening call
+Happening — union  askcalls.mara:141   (module askcalls)
+
+above (calls)   (1 function)
+  fun    happen                 askcalls.mara:157   (return : Happening)
+
+below (calls)   (0 functions)
+  (no functions take it)
+=== test/askcalls.mara | Happen_Error
+Happen_Error — error  askcalls.mara:149   (module askcalls)
+
+  How it can go wrong.
+
+  Happen_Error :: error {
+      Too_Many   // more than fits
+      Never_Made
+  }
+
+below (types)   (0 users, 0 use-sites, depth 1)
+  (no users)
+
+variants (2)
+  Too_Many   (fails with 1, handled 1)
+    fails with  askcalls.mara:163  try_it  if n > 1 do return 0, Too_Many
+    handled  askcalls.mara:202  third_main  if e == Too_Many do print("too many")
+  nothing names: Never_Made
+=== test/askcalls.mara | door
+door — variant of union Happening  askcalls.mara:143   (module askcalls)
+
+made 1
+  askcalls.mara:158  happen
+    if n > WALK_LIMIT do return .door
+
+matched 1
+  askcalls.mara:193  third_main
+    door
+=== test/askcalls.mara | Happening.door
+door — variant of union Happening  askcalls.mara:143   (module askcalls)
+
+made 1
+  askcalls.mara:158  happen
+    if n > WALK_LIMIT do return .door
+
+matched 1
+  askcalls.mara:193  third_main
+    door
+=== test/askcalls.mara | door in Happening
+door — variant of union Happening  askcalls.mara:143   (module askcalls)
+
+made 1
+  askcalls.mara:158  happen
+    if n > WALK_LIMIT do return .door
+
+matched 1
+  askcalls.mara:193  third_main
+    door
+=== test/askcalls.mara | Happening.nope
+mara ask: union Happening has no variant 'nope' — its variants: nothing, door, crossed, unnamed
+[exit 1]
+=== test/askcalls.mara | door flow
+mara ask: Happening.door is a variant: the answer is where it's named, with no types, call or flow, above or below, or depth
+[exit 1]
+=== test/askcalls.mara | Too_Many
+Too_Many — variant of error Happen_Error  askcalls.mara:150   (module askcalls)
+
+fails with 1
+  askcalls.mara:163  try_it
+    if n > 1 do return 0, Too_Many
+
+handled 1
+  askcalls.mara:202  third_main
+    if e == Too_Many do print("too many")
+=== test/askcalls.mara | WALK_LIMIT
+WALK_LIMIT — const  askcalls.mara:155   (module askcalls)
+i64
+
+declared
+  askcalls.mara:155
+    WALK_LIMIT :: 9
+read 1
+  askcalls.mara:158  happen
+    if n > WALK_LIMIT do return .door
+=== test/askcalls.mara | WALK_LIMIT flow
+mara ask: WALK_LIMIT is a const: the answer is where it's read, with no types, call or flow, above or below, or depth
+[exit 1]
+=== test/askcalls.mara | what at askcalls.mara:158:13
+WALK_LIMIT
+i64
+
+declared
+  askcalls.mara:155
+    WALK_LIMIT :: 9
+read 1
+  askcalls.mara:158  happen
+    if n > WALK_LIMIT do return .door
+=== test/askcalls.mara | count
+mara ask: 'count' is a field of 2 structs — name one with `<struct>.count`:
+    Box.count  askcalls.mara:10
+    Bag.count  askcalls.mara:15
+[exit 1]
+=== test/askcalls.mara | Walker
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+  One who walks: what's carried is a box.
+
+  Walker :: struct {
+      carried: Box   // what they have
+      steps: i64
+      home: Bag
+  }
+
+below (types)   (0 users, 0 use-sites, depth 1)
+  (no users)
+  (and 1 fun taking or returning it: `mara ask Walker call`)
+=== test/askcalls.mara | Walker type above
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+above (types)   (2 types, depth 1)
+  carried : askcalls.Box   // what they have
+  steps : i64
+  home : askcalls.Bag
+=== test/askcalls.mara | Walker type above 0
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+above (types)   (2 types, depth 0)
+  (2 more: add a depth, or 'all')
+=== test/askcalls.mara | Walker type above 2
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+above (types)   (2 types, depth 2)
+  carried : askcalls.Box   // what they have
+    size : i64
+    count : i64
+    left_only : i64
+  steps : i64
+  home : askcalls.Bag
+    count : i64
+=== test/askcalls.mara | Walker type above all
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+above (types)   (2 types, full closure (depth ∞))
+  carried : askcalls.Box   // what they have
+    size : i64
+    count : i64
+    left_only : i64
+  steps : i64
+  home : askcalls.Bag
+    count : i64
+=== test/askcalls.mara | Walker type below
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+below (types)   (0 users, 0 use-sites, depth 1)
+  (no users)
+=== test/askcalls.mara | middle call above 0
+middle — fun  askcalls.mara:29   (module askcalls)
+
+above (calls)   (1 direct callee, depth 0)
+  (1 more: add a depth, or 'all')
+=== test/askcalls.mara | Walker.carried.size
+Box.size — field  askcalls.mara:9   (module askcalls)
+i64
+
+declared
+  askcalls.mara:9  Box
+    size: i64
+written 4
+  askcalls.mara:66  grow
+    box.size += 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:183  walk
+    walker.carried.size = start
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | Walker.nope.size
+mara ask: Walker has no field 'nope'
+[exit 1]
+=== test/askcalls.mara | Walker.steps.size
+mara ask: no struct or module named 'Walker.steps' in askcalls
+[exit 1]
+=== test/askcalls.mara | askcalls.Walker.carried.size
+Box.size — field  askcalls.mara:9   (module askcalls)
+i64
+
+declared
+  askcalls.mara:9  Box
+    size: i64
+written 4
+  askcalls.mara:66  grow
+    box.size += 1
+  askcalls.mara:70  main
+    box := Box{size = 1, count = 2, left_only = 3}
+  askcalls.mara:183  walk
+    walker.carried.size = start
+  askcalls.mara:204  third_main
+    w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
+read 1
+  askcalls.mara:74  main
+    print(long_signature(1, 2), other_top(), with_default(), no_doc(), box.size, box.count, box.left_only, bag.count, pair.first, pair.second)
+=== test/askcalls.mara | start in walk flow above
+start — local in walk  askcalls.mara:181   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  start  askcalls.mara:181  start := clock()
+    (no variable of walk feeds it)
+=== test/askcalls.mara | spent in walk flow above
+spent — local in walk  askcalls.mara:185   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  spent  askcalls.mara:185  spent := clock() - start
+    start  askcalls.mara:181  start := clock()
+=== test/askcalls.mara | there in walk flow above
+there — local in walk  askcalls.mara:184   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  there  askcalls.mara:184  there := walker.carried.count
+    walker  askcalls.mara:180  (a param)
+=== test/askcalls.mara | there in walk flow above 0
+there — local in walk  askcalls.mara:184   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  there  askcalls.mara:184  there := walker.carried.count
+    (1 more: add a depth, or 'all')
+=== test/askcalls.mara | there in walk flow above 1
+there — local in walk  askcalls.mara:184   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  there  askcalls.mara:184  there := walker.carried.count
+    walker  askcalls.mara:180  (a param)
+=== test/askcalls.mara | Walker flow above
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+above (flow) — what feeds values of type Walker  (2 values, backward slice)
+
+  fields written (2)   (what feeds one: `mara ask at <file>:<line> flow above`)
+    askcalls.mara:182  walk  walker.steps = budget
+    askcalls.mara:183  walk  walker.carried.size = start
+=== test/askcalls.mara | budget at askcalls.mara:186
+budget
+i64
+
+declared
+  askcalls.mara:180  walk
+    walk :: fun(walker: ^Walker, budget: i64) -> i64 {
+written 0
+read 2
+  askcalls.mara:182  walk
+    walker.steps = budget
+  askcalls.mara:186  walk
+    if spent > budget do return there
+=== test/askcalls.mara | budget at askcalls.mara:186 flow above
+budget — param in walk  askcalls.mara:180   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  budget   (a param: what 1 call of walk passes)
+    askcalls.mara:205  third_main  1
+=== test/askcalls.mara | nope at askcalls.mara:186
+mara ask: no 'nope' on askcalls.mara:186 — its names: spent, budget, there
+[exit 1]
+=== test/askcalls.mara | walk at askcalls.mara:180
+walk — fun  askcalls.mara:180   (module askcalls)
+
+  walk :: fun(walker: ^Walker, budget: i64) -> i64
+
+  A walk: `start` comes from a call that reads no variable, `there` reads one field of
+  what's written to, and `spent` is a call and a variable both.
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:174  askcalls.clock
+    at askcalls.mara:181  start := clock()
+    at askcalls.mara:185  spent := clock() - start
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:190  askcalls.third_main
+    at askcalls.mara:205  print(walk(&w, 1), w.home.count)
+  (2 more: add a depth, or 'all')
+=== test/askcalls.mara | Walker at askcalls.mara:180
+Walker — struct  askcalls.mara:168   (module askcalls)
+
+  One who walks: what's carried is a box.
+
+  Walker :: struct {
+      carried: Box   // what they have
+      steps: i64
+      home: Bag
+  }
+
+below (types)   (0 users, 0 use-sites, depth 1)
+  (no users)
+  (and 1 fun taking or returning it: `mara ask Walker call`)
+=== test/askcalls.mara | at askcalls.mara:186
+askcalls.mara:186  if spent > budget do return there
+
+  spent — local : i64   declared askcalls.mara:185
+  budget — param : i64   declared askcalls.mara:180
+  there — local : i64   declared askcalls.mara:184
+=== test/askcalls.mara | what at askcalls.mara:186
+askcalls.mara:186  if spent > budget do return there
+
+  spent — local : i64   declared askcalls.mara:185
+  budget — param : i64   declared askcalls.mara:180
+  there — local : i64   declared askcalls.mara:184
+=== test/askcalls.mara | at askcalls.mara:181
+start — local in walk  askcalls.mara:181   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  start  askcalls.mara:181  start := clock()
+    (no variable of walk feeds it)
+
+below (flow) — what this variable affects  (forward slice)
+
+  start  ->  the return + 2 statements + 1 branch
+    write   walker         askcalls.mara:183
+    decl    spent          askcalls.mara:185
+
+  decides (1)   (`control` adds what runs inside them)
+    if     askcalls.mara:186  if spent > budget do return there
+=== test/askcalls.mara | walk at askcalls.mara
+walk — fun  askcalls.mara:180   (module askcalls)
+
+  walk :: fun(walker: ^Walker, budget: i64) -> i64
+
+  A walk: `start` comes from a call that reads no variable, `there` reads one field of
+  what's written to, and `spent` is a call and a variable both.
+
+above (calls)   (1 direct callee, depth 1)
+  askcalls.mara:174  askcalls.clock
+    at askcalls.mara:181  start := clock()
+    at askcalls.mara:185  spent := clock() - start
+
+below (calls)   (1 direct caller, depth 1)
+  askcalls.mara:190  askcalls.third_main
+    at askcalls.mara:205  print(walk(&w, 1), w.home.count)
+  (2 more: add a depth, or 'all')
+=== test/askcalls.mara | spent at walk
+spent — local in walk  askcalls.mara:185   (module askcalls)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+  spent  askcalls.mara:185  spent := clock() - start
+    start  askcalls.mara:181  start := clock()
+
+below (flow) — what this variable affects  (forward slice)
+
+  spent  ->  the return + 1 branch
+
+  decides (1)   (`control` adds what runs inside them)
+    if     askcalls.mara:186  if spent > budget do return there
+=== test/askcalls.mara | askcalls
+askcalls — module   (7 types, 23 funs)
+
+  types        (most-used first)
+    struct   Box  askcalls.mara:8   ·  3 users
+      A box, with a size that changes.
+    struct   Bag  askcalls.mara:14   ·  1 user
+    struct   Counter  askcalls.mara:121   ·  1 user
+    union    Happening  askcalls.mara:141   ·  1 user
+      What can happen, each time.
+    struct   Walker  askcalls.mara:168   ·  1 user
+      One who walks: what's carried is a box.
+    error    Happen_Error  askcalls.mara:149
+      How it can go wrong.
+    struct   Pair  askcalls.mara:18
+
+  constants    (source order)
+    askcalls.mara:119  GIVEN_LIMIT :: 9
+    askcalls.mara:155  WALK_LIMIT :: 9
+
+  funs         (source order)
+    askcalls.mara:24  leaf :: fun(n: i64) -> i64
+      The bottom of the tree.
+    askcalls.mara:29  middle :: fun(n: i64) -> i64
+      Calls leaf twice on one line and once on another.
+    askcalls.mara:37  long_signature :: fun(first: i64, second: i64) -> i64
+      Written over lines, with no doc comment's blank line kept:
+    askcalls.mara:44  other_top :: fun() -> i64
+    askcalls.mara:49  default_value :: fun() -> i64
+      Called only through a default argument of with_default.
+    askcalls.mara:53  with_default :: fun(n: i64 = default_value()) -> i64
+    askcalls.mara:61  no_doc :: fun() -> i64
+    askcalls.mara:65  grow :: fun(box: ^Box)
+    askcalls.mara:69  main :: fun()
+    askcalls.mara:81  note_text :: fun(text: []utf8) -> i64
+    askcalls.mara:85  note_number :: fun(n: i64) -> i64
+    askcalls.mara:91  decide :: fun(budget: i64, start: i64) -> i64
+      Its budget only decides: three branches, through a local for one, and nothing
+    askcalls.mara:101  only_printed :: fun(shown: i64)
+    askcalls.mara:105  never_used :: fun(idle: i64) -> i64
+    askcalls.mara:110  discarded :: fun(kept: i64)
+      Read, into nothing.
+    askcalls.mara:115  given :: fun(a: i64, b: i64 = 4) -> i64
+      A param given a call's result, a constant, an expression and its default.
+    askcalls.mara:125  bump :: fun(counter: Counter, by: i64) -> i64
+    askcalls.mara:129  second_main :: fun(box: ^Box)
+    askcalls.mara:157  happen :: fun(n: i64) -> Happening
+    askcalls.mara:162  try_it :: fun(n: i64) -> i64, err
+    askcalls.mara:174  clock :: fun() -> i64
+    askcalls.mara:180  walk :: fun(walker: ^Walker, budget: i64) -> i64
+      A walk: `start` comes from a call that reads no variable, `there` reads one field of
+    askcalls.mara:190  third_main :: fun()

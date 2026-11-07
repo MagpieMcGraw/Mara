@@ -1236,6 +1236,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
     for arm in arms {
         a := tc_match_arm(k, subj, arm, et, ut)
         name := a.variant
+        tc_match_arm_ref(k, arm, a, st)
         #partial switch tr.tag[arm] {
         case .Arm_Dot:
             switch {
@@ -1288,6 +1289,25 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
             if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, type_name(ut), name) }
         }
     }
+}
+
+// What a match's arm names, as a name elsewhere says it: its variant. An `err`'s, by
+// kind: the variant of the one set that has it (more's an error, said by the arm).
+tc_match_arm_ref :: proc(k: ^TC, arm: Tree_Id, a: Match_Arm, subject: Type) {
+    if a.variant == "" { return }
+    decl := variant_decl(subject, a.variant)
+    if _, is_err := distinct_base(subject).(Type_Err); is_err {
+        for _, e in k.table.enums {
+            if !e.is_error_kind { continue }
+            if d := e.variant_decls[a.variant] or_else 0; d != 0 {
+                decl = d
+                break
+            }
+        }
+    }
+    if decl == 0 { return }
+    // (A value arm's value is the name; the others' is the arm's own.)
+    tc_set_ref(k, a.value if k.t.tag[arm] == .Arm_Value else arm, {decl, .Variant})
 }
 
 // A match arm, as written against a subject of enum `et` or union `ut` (nil:

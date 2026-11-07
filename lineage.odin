@@ -27,8 +27,9 @@ import "core:strings"
 // `flow above` for a variable: the lineage / producer tree. Writes into the
 // caller's builder, under the variable header render_var_slice already printed.
 // "What builds this value", following every input into the calls that produce it.
+// Each row is a variable, the line that gives it its value, as written: a call that
+// reads no variable is seen there.
 render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: ^Var_Binding, depth: int, root_def: ^Def) {
-    knd := "param" if b.kind == .Param else "local"
     fn_label := ask_label(b.fn)
     fmt.sbprint(bb, "\nabove (flow) — what builds this value, following every input into the calls that produce it\n\n")
 
@@ -41,8 +42,8 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
     if root == nil { root = var_root_def(checked, b) }
 
     // The root's direct inputs. A value-less decl (`x: T`, zero-init) or a bare
-    // parameter has none; a literal-only value reads no variable. Either way,
-    // nothing inside the function supplies the value — say so and stop.
+    // parameter has none; a value from literals or a call of nothing reads no
+    // variable. Either way, no variable supplies it — say so and stop.
     inputs: [dynamic]^Def
     defer delete(inputs)
     if root != nil && root.valued {
@@ -52,8 +53,7 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
         seen_in: map[^Def]bool
         defer delete(seen_in)
         for u in uses {
-            reach, _ := u.fn.reaching[u.op]
-            for d2 in reach { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
+            for d2 in du_reach(u) { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
         }
     }
     // Rooted at the declaration by default: if the variable is written again later,
@@ -66,87 +66,64 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
         for d in defs { if d != root { append(&later, d) } }
         slice.sort_by(later[:], def_less)
     }
-    if len(inputs) == 0 {
-        switch {
-        case b.kind == .Param && (root == nil || root.kind == .Param):
-            ask_write_param_calls(bb, checked, b)
-        case len(later) > 0 && (root == nil || !root.valued):
-            fmt.sbprintf(bb, "  %s   (declared without a value — but written again below)\n", b.name)
-        case len(later) > 0:
-            fmt.sbprintf(bb, "  %s   (declared from literals — but written again below)\n", b.name)
-        case root == nil || !root.valued:
-            fmt.sbprintf(bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
-        case:
-            fmt.sbprintf(bb, "  %s   (built from literals; nothing in %s supplies it)\n", b.name, fn_label)
-        }
+    if b.kind == .Param && (root == nil || root.kind == .Param) {
+        ask_write_param_calls(bb, checked, b)
     } else {
-        slice.sort_by(inputs[:], def_less)
-        budget := depth if depth >= 0 else (1 << 30)
-        seen: map[^Def]bool
-        defer delete(seen)
-        for d in inputs {
-            lineage_node(checked, bb, d, budget, 0, &seen)
+        lineage_row(bb, b.name, root.span if root != nil else b.span, 1)
+        switch {
+        case len(inputs) > 0:
+            slice.sort_by(inputs[:], def_less)
+            // (Depth 1 is what it reads, as a call tree's is what it calls.)
+            if depth == 0 {
+                fmt.sbprintf(bb, "    (%d more: add a depth, or 'all')\n", len(inputs))
+                break
+            }
+            budget := depth - 1 if depth > 0 else (1 << 30)
+            seen: map[^Def]bool
+            defer delete(seen)
+            for d in inputs { lineage_node(checked, bb, d, budget, 2, &seen) }
+        case root == nil || !root.valued:
+            fmt.sbprintf(bb, "    (declared without a value%s)\n", ": written again below" if len(later) > 0 else "")
+        case:
+            fmt.sbprintf(bb, "    (no variable of %s feeds it)\n", fn_label)
         }
     }
     if len(later) > 0 { render_later_writes(checked, bb, b, later[:]) }
 }
 
-// The writes after a variable's declaration, each with what it's built from — so
-// a declaration-rooted `above` can't pass for the variable's whole history.
+// A row of the tree: the variable, where it gets its value, and what's written there.
+@(private="file")
+lineage_row :: proc(bb: ^strings.Builder, name: string, span: Span, indent: int) {
+    lineage_pad(bb, indent)
+    fmt.sbprintf(bb, "%s  %s  %s\n", name, ask_loc(span), hit_source_line(build_tokens[span.tok]))
+}
+
+// The writes after a variable's declaration, each as written — so a
+// declaration-rooted `above` can't pass for the variable's whole history.
 @(private="file")
 render_later_writes :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: ^Var_Binding, later: []^Def) {
     fmt.sbprintf(bb, "\n  %s is written again — trace a write with `mara ask at <file>:<line> flow above`:\n", b.name)
-    for d in later {
-        fmt.sbprintf(bb, "    %s   ", ask_loc(d.span))
-        if d.kind == .Complex { fmt.sbprint(bb, "(part of it) ") }
-        if label, is_call := du_call_label(checked, d); is_call {
-            fmt.sbprintf(bb, "⟵ %s() ", label)
-        }
-        uses: [dynamic]Du_Use
-        defer delete(uses)
-        du_def_uses(checked, d, false, &uses)
-        names: [dynamic]string
-        defer delete(names)
-        for u in uses {
-            name := graph_name(u.fn.g, u.op)
-            if !slice.contains(names[:], name) { append(&names, name) }
-        }
-        if len(names) == 0 {
-            fmt.sbprint(bb, "from literals\n")
-            continue
-        }
-        fmt.sbprint(bb, "from ")
-        for n, i in names {
-            if i > 0 { fmt.sbprint(bb, ", ") }
-            fmt.sbprint(bb, n)
-        }
-        fmt.sbprint(bb, "\n")
-    }
+    for d in later { fmt.sbprintf(bb, "    %s  %s\n", ask_loc(d.span), hit_source_line(build_tokens[d.span.tok])) }
 }
 
-// One node of the tree: `variable ⟵ producer   loc`, then its inputs indented below.
+// One node of the tree, then its inputs indented below.
 lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, budget, indent: int, seen: ^map[^Def]bool) {
     name := d.binding.name if d.binding != nil else "?"
-    lineage_pad(bb, indent)
 
-    // A parameter / entry def is a leaf — the value enters from outside the function.
-    if d.kind == .Param || !d.valued {
-        fmt.sbprintf(bb, "%s   (param / external input)   %s\n", name, ask_loc(d.span))
+    // A parameter's entry is a leaf — the value enters from outside the function.
+    if d.kind == .Param {
+        lineage_pad(bb, indent)
+        fmt.sbprintf(bb, "%s  %s  (a param)\n", name, ask_loc(d.span))
         return
     }
     if d in seen^ {
-        fmt.sbprintf(bb, "%s   (shown above)\n", name)
+        lineage_pad(bb, indent)
+        fmt.sbprintf(bb, "%s  (shown above)\n", name)
         return
     }
     seen^[d] = true
-
-    label, is_call := du_call_label(checked, d)
-    if is_call {
-        fmt.sbprintf(bb, "%s  ⟵ %s()   %s\n", name, label, ask_loc(d.span))
-    } else {
-        fmt.sbprintf(bb, "%s   %s\n", name, ask_loc(d.span))
-    }
-    if budget == 0 { return }
+    lineage_row(bb, name, d.span, indent)
+    if !d.valued || budget == 0 { return }
 
     // Recurse into every input the producer consumed — all call arguments included,
     // unfiltered (the point of lineage: what was fed in, not just what the result
@@ -162,8 +139,7 @@ lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, b
     defer delete(kids)
     for u in uses {
         clear(&kids)
-        reach, _ := u.fn.reaching[u.op]
-        for d2 in reach {
+        for d2 in du_reach(u) {
             if child_seen[d2] { continue }
             child_seen[d2] = true
             append(&kids, d2)
@@ -175,5 +151,5 @@ lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, b
 
 @(private="file")
 lineage_pad :: proc(bb: ^strings.Builder, indent: int) {
-    for _ in 0 ..< indent { fmt.sbprint(bb, "    ") }
+    for _ in 0 ..< indent { fmt.sbprint(bb, "  ") }
 }

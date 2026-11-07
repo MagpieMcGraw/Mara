@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
@@ -18,7 +19,7 @@ Ask_Query :: struct {
     dir:     string,  // "above" | "below" | "" (both directions)
     scope:   string,  // an `in <module|file|fn>`; "" = the cwd's program
     scope2:  string,  // a second `in` — the two compose (`<var> in <fn> in <module>`)
-    at:      string,  // `at <file>:<line>`: a variable precisely; with a column, a point
+    at:      string,  // `at <file>:<line>`: a variable precisely, a name on the line, or what's on it; with a column, a point
     depth:   int,     // the hop budget; ASK_DEPTH_OMITTED, or ASK_DEPTH_ALL for `all`
     control: bool,    // `control`: add control dependence (post-dominators) to a flow slice
     help:    bool,    // `--help`: the usage, not a lookup
@@ -117,10 +118,15 @@ ask_parse_query :: proc(words: []string) -> (q: Ask_Query, err: string) {
         }
         q.target = w
     }
-    // `at` already identifies the variable, so a name alongside it is
-    // contradictory. (`at` with `in <fn>` or `in <file>` is too: ask_scopes.)
-    if q.at != "" && q.target != "" {
-        return q, fmt.tprintf("mara ask: `at` already identifies the variable — drop the name '%s'", q.target)
+    // A name `at` no line: where to look, as `in` says. (With a line, the name on it.
+    // No name, what's at it. `at` with `in <fn>` or `in <file>`: ask_scopes.)
+    if q.at != "" && q.target != "" && !ask_at_has_line(q.at) {
+        switch {
+        case q.scope == "":  q.scope = q.at
+        case q.scope2 == "": q.scope2 = q.at
+        case:                return q, "mara ask: at most two `in` scopes (e.g. a function and a module)"
+        }
+        q.at = ""
     }
     // A filter with no subject has nothing to act on; bare `mara ask` (no name,
     // no `at`, no filters) is the module map.
@@ -169,6 +175,14 @@ ask_scopes :: proc(q: Ask_Query, all_files, files: map[string][dynamic]^Source_F
     return in_, ""
 }
 
+// Whether an `at` says a line: it ends `:<line>`.
+ask_at_has_line :: proc(at: string) -> bool {
+    colon := strings.last_index_byte(at, ':')
+    if colon <= 0 { return false }
+    _, ok := ask_parse_depth(at[colon + 1:])
+    return ok
+}
+
 // Whether an `at` says a column: it ends `<line>:<col>`, whatever colons the path
 // before them has (a whole path's drive).
 ask_at_has_column :: proc(at: string) -> bool {
@@ -192,6 +206,8 @@ Ask_Session :: struct {
 
 // A query's answer; false when its subject wasn't found (or was ambiguous).
 ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string, found: bool) {
+    here, _ := os.get_working_directory(context.temp_allocator)
+    ask_run_from(here)
     // Bare `mara ask` — the module map (the project at a glance). `at`
     // identifies a variable without a name, so it is not the bare form.
     if q.target == "" && q.at == "" {
@@ -206,10 +222,16 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // disambiguates a NAMED variable) it needs no target.
     // `what at <file>:<line>:<col>` — the same point, to read.
     if q.kind == "what" {
-        if q.target != "" || !ask_at_has_column(q.at) {
-            return "mara ask: `what` is about a point — `mara ask what at <file>:<line>:<col>`\n", false
+        if q.target != "" || !ask_at_has_line(q.at) {
+            return "mara ask: `what` is about a place — `mara ask what at <file>:<line>`, or `<file>:<line>:<col>`\n", false
         }
+        if !ask_at_has_column(q.at) { return ask_what_at_line(s.checked, q.at) }
         return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true)
+    }
+    if q.target != "" && q.at != "" {
+        s.checked.du.want_control = q.control
+        ask_flow_rows = max(int) if q.depth == ASK_DEPTH_ALL else ASK_FLOW_ROWS_SHOWN
+        return ask_name_at(s.checked, q.target, q.at, q.kind, q.dir, s.pkg, q.depth)
     }
     if q.target == "" && ask_at_has_column(q.at) {
         return ask_at_point(&build_tree, s.all_files, s.checked.annot, &s.checked.code, q.at)
@@ -232,6 +254,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
         return ask_shape_query(s.checked, q.target, modules, desc, in_.file)
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
+    ask_flow_rows = max(int) if q.depth == ASK_DEPTH_ALL else ASK_FLOW_ROWS_SHOWN
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)
 }
 

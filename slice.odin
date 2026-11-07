@@ -93,8 +93,7 @@ slice_value :: proc(s: ^Slice, f: ^Du_Fn, o: Operand) {
 slice_close :: proc(s: ^Slice) {
     for len(s.work) > 0 {
         u := pop(&s.work)
-        reach, _ := u.fn.reaching[u.op]
-        for d in reach { slice_add_def(s, d) }
+        for d in du_reach(u) { slice_add_def(s, d) }
     }
 }
 
@@ -202,6 +201,17 @@ slice_split :: proc(defs: []^Def, skip: map[^Var_Binding]bool = nil) -> (params,
     return
 }
 
+// How many rows of each section a flow view lists: a god object's reach is most of the
+// program. `all` asks for every one (ask_flow_rows).
+ASK_FLOW_ROWS_SHOWN :: 40
+ask_flow_rows := ASK_FLOW_ROWS_SHOWN
+
+// The rows of a section that fit, and a line for the rest.
+@(private="file")
+flow_rows_more :: proc(bb: ^strings.Builder, total: int, indent := "    ") {
+    if total > ask_flow_rows { fmt.sbprintf(bb, "%s(%d more: add 'all')\n", indent, total - ask_flow_rows) }
+}
+
 // A listing's sections: its parameters (`name  where`), its statements (`kind
 // name  where` — under `title`, or under what precedes them when there is
 // none), its guards. A row is `(in fn)` when the slice spans funs (`in_fn`);
@@ -210,24 +220,34 @@ slice_split :: proc(defs: []^Def, skip: map[^Var_Binding]bool = nil) -> (params,
 render_params :: proc(bb: ^strings.Builder, defs: []^Def, in_fn: bool) {
     if len(defs) == 0 { return }
     fmt.sbprintf(bb, "\n  parameters (%d)\n", len(defs))
-    for d in defs { fmt.sbprintf(bb, "    %-14s %s%s\n", d.binding.name, ask_loc(d.span), render_in_fn(d, in_fn)) }
+    for d, i in defs {
+        if i == ask_flow_rows { break }
+        fmt.sbprintf(bb, "    %-14s %s%s\n", d.binding.name, ask_loc(d.span), render_in_fn(d, in_fn))
+    }
+    flow_rows_more(bb, len(defs))
 }
 
 @(private="file")
 render_stmts :: proc(bb: ^strings.Builder, title: string, defs: []^Def, in_fn: bool, own: ^Var_Binding = nil) {
     if len(defs) == 0 { return }
     if title != "" { fmt.sbprintf(bb, "\n  %s (%d)\n", title, len(defs)) }
-    for d in defs {
+    for d, i in defs {
+        if i == ask_flow_rows { break }
         word := "modify" if own != nil && d.binding == own else slice_def_word(d.kind)
         fmt.sbprintf(bb, "    %-7s %-14s %s%s\n", word, d.binding.name, ask_loc(d.span), render_in_fn(d, in_fn))
     }
+    flow_rows_more(bb, len(defs))
 }
 
 @(private="file")
 render_guards :: proc(bb: ^strings.Builder, title: string, guards: []Guard) {
     if len(guards) == 0 { return }
     fmt.sbprintf(bb, "\n  %s (%d)\n", title, len(guards))
-    for g in guards { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
+    for g, i in guards {
+        if i == ask_flow_rows { break }
+        fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span))
+    }
+    flow_rows_more(bb, len(guards))
 }
 
 @(private="file")
@@ -266,8 +286,7 @@ slice_build_succ :: proc(checked: ^Checked_Program, ft: ^Type_Scope, data_only: 
         du_def_uses(checked, d2, true, &deps)
         if !data_only { for g in du_def_guards(checked, d2) { for c in g.conds { du_value_uses(checked, d2.fn, c, true, &deps) } } }
         for u in deps {
-            reach, _ := u.fn.reaching[u.op]
-            for d1 in reach {
+            for d1 in du_reach(u) {
                 s := succ[d1]; append(&s, d2); succ[d1] = s
             }
         }
@@ -295,8 +314,7 @@ slice_build_feeders :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> map[^
         uses: [dynamic]Du_Use
         for o in graph_operands(g, ret) { du_value_uses(checked, f, o, true, &uses) }
         for u in uses {
-            reach, _ := u.fn.reaching[u.op]
-            for d in reach { feeders[d] = true }
+            for d in du_reach(u) { feeders[d] = true }
         }
         delete(uses)
     }
@@ -393,8 +411,7 @@ arg_reads_targets :: proc(checked: ^Checked_Program, f: ^Du_Fn, arg: Operand, ta
     defer delete(uses)
     du_value_uses(checked, f, arg, true, &uses)
     for u in uses {
-        reach, _ := u.fn.reaching[u.op]
-        for d in reach { if targets[d] { return true } }
+        for d in du_reach(u) { if targets[d] { return true } }
     }
     return false
 }
@@ -578,7 +595,8 @@ render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowe
         multi := max_d > 1   // a single ring stays flat, like before; deeper views bucket by hop
         fmt.sbprintf(bb, "\n  into calls — the value lands in  (%s)\n", ask_plural(len(landings), "parameter"))
         cur_d := 0
-        for L in landings {
+        for L, i in landings {
+            if i == ask_flow_rows { break }
             if multi && L.depth != cur_d {
                 cur_d = L.depth
                 tag := " (direct)" if L.depth == 1 else ""
@@ -590,6 +608,7 @@ render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowe
             more := fmt.tprintf("  (+%d more)", L.sites - 1) if L.sites > 1 else ""
             fmt.sbprintf(bb, "%s%-22s (param %s%s)  %s%s\n", indent, ask_label(L.callee), L.param.name, tystr, ask_loc(L.site), more)
         }
+        flow_rows_more(bb, len(landings))
     }
     if unfollowed > 0 {
         fmt.sbprintf(bb, "\n  %s not followed  (foreign / indirect / no body)\n", ask_plural(unfollowed, "call"))
@@ -642,8 +661,7 @@ slice_decides :: proc(checked: ^Checked_Program, ft: ^Type_Scope, values: map[^D
         for c in graph_operands(g, last) { du_value_uses(checked, f, c, true, &uses) }
         reads := false
         for u in uses {
-            reach, _ := u.fn.reaching[u.op]
-            for d in reach { reads ||= values[d] }
+            for d in du_reach(u) { reads ||= values[d] }
         }
         if !reads { continue }
         known := false
@@ -1044,9 +1062,11 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     render_stmts(bb, "control — runs inside branches/loops it drives", ctrl_stmts[:], false, own = b)
     if len(decides) > 0 {
         fmt.sbprintf(bb, "\n  decides (%d)%s\n", len(decides), "" if checked.du.want_control else "   (`control` adds what runs inside them)")
-        for d in decides {
+        for d, i in decides {
+            if i == ask_flow_rows { break }
             fmt.sbprintf(bb, "    %-6s %s  %s\n", guard_word(d.kind), ask_loc(d.span), hit_source_line(build_tokens[d.span.tok]))
         }
+        flow_rows_more(bb, len(decides))
     }
     render_landings(bb, landings[:], unfollowed)
 }
@@ -1091,10 +1111,17 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     seeds := type_flow_seeds(checked, T)
     defer delete(seeds)
 
+    // (A write to a field feeds that field, not the value: such writes are listed apart,
+    // and what feeds only them is left out. Each can be traced by its line.)
     s := Slice{checked = checked, control = checked.du.want_control}
     defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
-    for d in checked.du.defs { if d.binding != nil && seeds[d.binding] { slice_add_def(&s, d) } }
+    field_writes := make([dynamic]^Def, context.temp_allocator)
+    for d in checked.du.defs {
+        if d.binding == nil || !seeds[d.binding] { continue }
+        if d.parts != nil { append(&field_writes, d) } else { slice_add_def(&s, d) }
+    }
     slice_close(&s)
+    slice.sort_by(field_writes[:], def_less)
     params, stmts := slice_split(s.result[:], skip = seeds)   // (the T-typed values themselves aren't feeders)
     defer { delete(params); delete(stmts) }
     slice.sort_by(s.ctrl[:], guard_span_less)
@@ -1107,7 +1134,15 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     render_params(bb, params[:], true)
     render_stmts(bb, "statements", stmts[:], true)
     render_guards(bb, "control", s.ctrl[:])
-    if len(params) == 0 && len(stmts) == 0 {
+    if len(field_writes) > 0 {
+        fmt.sbprintf(bb, "\n  fields written (%d)   (what feeds one: `mara ask at <file>:<line> flow above`)\n", len(field_writes))
+        for d, i in field_writes {
+            if i == ask_flow_rows { break }
+            fmt.sbprintf(bb, "    %s  %s  %s\n", ask_loc(d.span), ask_label(d.binding.fn), hit_source_line(build_tokens[d.span.tok]))
+        }
+        flow_rows_more(bb, len(field_writes))
+    }
+    if len(params) == 0 && len(stmts) == 0 && len(field_writes) == 0 {
         fmt.sbprint(bb, "\n  (these values are constants or external inputs — nothing feeds them)\n")
     }
 }

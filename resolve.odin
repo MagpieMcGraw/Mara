@@ -345,7 +345,6 @@ rs_live :: proc(r: ^Resolver, stmts: []Tree_Id) -> []Tree_Id { return tc_live(r.
 
 // What a definition's value makes its name: a fun, a type, a module (`name
 // :: use m`, the file's), a constant.
-@(private="file")
 rs_def_kind :: proc(t: ^Tree, value: Tree_Id) -> Ref_Kind {
     #partial switch t.tag[value] {
     case .Fun_Def:                     return .Fun

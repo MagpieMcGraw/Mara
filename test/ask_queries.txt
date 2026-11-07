@@ -161,3 +161,61 @@ Pounce | [..N]T
 test/askmod.mara | #tokens
 test/askmod.mara | #tokens above
 test/askmod.mara | #tokens in nosuchfn
+
+# A type says what it is as written; a union's or an error's variants say where
+# they're made and matched. A variant can be asked about, by itself or through its type.
+test/askcalls.mara | Happening
+test/askcalls.mara | Happening type above
+test/askcalls.mara | Happening call
+test/askcalls.mara | Happen_Error
+test/askcalls.mara | door
+test/askcalls.mara | Happening.door
+test/askcalls.mara | door in Happening
+test/askcalls.mara | Happening.nope
+test/askcalls.mara | door flow
+test/askcalls.mara | Too_Many
+
+# A constant: where it's read. One that's several things says what they are.
+test/askcalls.mara | WALK_LIMIT
+test/askcalls.mara | WALK_LIMIT flow
+test/askcalls.mara | what at askcalls.mara:158:13
+test/askcalls.mara | count
+
+# A struct's tree goes a level unless asked, in source order, with its comments.
+test/askcalls.mara | Walker
+test/askcalls.mara | Walker type above
+test/askcalls.mara | Walker type above 0
+test/askcalls.mara | Walker type above 2
+test/askcalls.mara | Walker type above all
+test/askcalls.mara | Walker type below
+test/askcalls.mara | middle call above 0
+
+# Through fields.
+test/askcalls.mara | Walker.carried.size
+test/askcalls.mara | Walker.nope.size
+test/askcalls.mara | Walker.steps.size
+test/askcalls.mara | askcalls.Walker.carried.size
+
+# Flow above says the line that gives a local its value; a call that reads no variable
+# is on it. A write to one field doesn't feed a read of another.
+test/askcalls.mara | start in walk flow above
+test/askcalls.mara | spent in walk flow above
+test/askcalls.mara | there in walk flow above
+test/askcalls.mara | there in walk flow above 0
+test/askcalls.mara | there in walk flow above 1
+test/askcalls.mara | Walker flow above
+
+# A name on a line, what's on a line, and `at` as `in`.
+test/askcalls.mara | budget at askcalls.mara:186
+test/askcalls.mara | budget at askcalls.mara:186 flow above
+test/askcalls.mara | nope at askcalls.mara:186
+test/askcalls.mara | walk at askcalls.mara:180
+test/askcalls.mara | Walker at askcalls.mara:180
+test/askcalls.mara | at askcalls.mara:186
+test/askcalls.mara | what at askcalls.mara:186
+test/askcalls.mara | at askcalls.mara:181
+test/askcalls.mara | walk at askcalls.mara
+test/askcalls.mara | spent at walk
+
+# A module's map says what each fun is.
+test/askcalls.mara | askcalls

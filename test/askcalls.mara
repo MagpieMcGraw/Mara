@@ -134,4 +134,73 @@ second_main :: fun(box: ^Box) {
 	c := Counter{n = 1}
 	print(c.bump(2))
 	print(bump(c, 3))
+	third_main()
+}
+
+// What can happen, each time.
+Happening :: union {
+	nothing = 0
+	door       // a door was opened
+	crossed
+	unnamed
+}
+
+// How it can go wrong.
+Happen_Error :: error {
+	Too_Many   // more than fits
+	Never_Made
+}
+
+// How far a walk goes.
+WALK_LIMIT :: 9
+
+happen :: fun(n: i64) -> Happening {
+	if n > WALK_LIMIT do return .door
+	return .crossed
+}
+
+try_it :: fun(n: i64) -> i64, err {
+	if n > 1 do return 0, Too_Many
+	return n, Ok
+}
+
+// One who walks: what's carried is a box.
+Walker :: struct {
+	carried: Box   // what they have
+	steps: i64
+	home: Bag
+}
+
+clock :: fun() -> i64 {
+	return 5
+}
+
+// A walk: `start` comes from a call that reads no variable, `there` reads one field of
+// what's written to, and `spent` is a call and a variable both.
+walk :: fun(walker: ^Walker, budget: i64) -> i64 {
+	start := clock()
+	walker.steps = budget
+	walker.carried.size = start
+	there := walker.carried.count
+	spent := clock() - start
+	if spent > budget do return there
+	return there + spent
+}
+
+third_main :: fun() {
+	h := happen(3)
+	match h {
+	door
+		print("door")
+	.crossed
+		print("crossed")
+	else
+		print("else")
+	}
+	if h == .nothing do print("nothing")
+	v, e := try_it(1)
+	if e == Too_Many do print("too many")
+	print(v)
+	w := Walker{carried = Box{size = 1, count = 2, left_only = 3}, steps = 0, home = Bag{count = 1}}
+	print(walk(&w, 1), w.home.count)
 }

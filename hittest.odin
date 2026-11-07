@@ -28,9 +28,11 @@ import "core:path/filepath"
 // first. `mara ask what at <point>` says the same to read (ask_what_at_point):
 // a variable or a field's types along its path, where it's declared, and where
 // it's written and read, a field's on that value (place.odin) unless it's the
-// field's declaration; of anything else that's named, what it is, its type
-// and where it's declared; of what isn't, the expressions around it. A hover
-// asks for what it is alone.
+// field's declaration; of a constant, where it's read; of a variant, where it's
+// made and matched; of anything else that's named, what it is, its type and
+// where it's declared; of what isn't, the expressions around it. A hover asks
+// for what it is alone. `what at <file>:<line>` says what each name on a line
+// is, and `<name> at <file>:<line>` is `what at` at that name.
 // ---------------------------------------------------------------------------
 
 // Whether a node is one a cursor names.
@@ -219,6 +221,169 @@ Hit_Point :: struct {
     hits:   [dynamic]Tree_Id,
 }
 
+// A path as a key: whatever it's written from, the same file's the same.
+@(private="file")
+hit_path_key :: proc(path: string) -> string {
+    whole, err := filepath.abs(path, context.temp_allocator)
+    return path_key(whole if err == nil else path)
+}
+
+// A file of this build by a path, or only its name: the one at that path from here if
+// there is one, else the first with that name.
+@(private="file")
+hit_built_file :: proc(file: string) -> ^Source_File {
+    want := filepath.base(file)
+    named := hit_path_key(file)
+    found: ^Source_File
+    for f in build_files {
+        if f == nil || filepath.base(f.path) != want || f.end_token <= f.first_token { continue }
+        if hit_path_key(f.path) == named { return f }
+        if found == nil { found = f }
+    }
+    return found
+}
+
+// `<file>:<line>`, or `<file>:<line>:<col>` less its column: the file and the line.
+@(private="file")
+hit_file_line :: proc(at: string) -> (src: ^Source_File, line: int, msg: string, ok: bool) {
+    spec := at
+    if ask_at_has_column(spec) { spec = spec[:strings.last_index_byte(spec, ':')] }
+    colon := strings.last_index_byte(spec, ':')
+    if colon <= 0 { return nil, 0, fmt.tprintf("mara ask: `at %s` — expected <file>:<line>\n", at), false }
+    n, n_ok := strconv.parse_int(spec[colon + 1:])
+    if !n_ok || n < 1 { return nil, 0, fmt.tprintf("mara ask: `at %s` — the line must be a positive integer\n", at), false }
+    src = hit_built_file(spec[:colon])
+    if src == nil { return nil, 0, fmt.tprintf("mara ask: no source file named '%s' in this build\n", spec[:colon]), false }
+    return src, n, "", true
+}
+
+// The names written on a line of a file, as their tokens' ids; none past its end.
+@(private="file")
+hit_names_on_line :: proc(src: ^Source_File, line: int) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    tokens := build_tokens[src.first_token:src.end_token]
+    i, found := token_index_at(tokens, line, 1)
+    if !found { return nil }
+    for ; i < len(tokens) && token_line(tokens[i]) <= line; i += 1 {
+        if token_line(tokens[i]) == line && tokens[i].kind == .Identifier { append(&out, src.first_token + Token_Id(i)) }
+    }
+    return out[:]
+}
+
+// What a name is, as a row: its kind, its type, where it's declared.
+@(private="file")
+hit_name_row :: proc(sb: ^strings.Builder, t: ^Tree, a: ^Annotations, r: Ref, n: Tree_Id, name: string) {
+    fmt.sbprintf(sb, "  %s — %s", name, ref_kind_word(r.kind))
+    #partial switch r.kind {
+    case .Local, .Param, .Result, .Field, .Global, .Const:
+        if ty := hit_type(a, n) if t.tag[n] >= .Number else ""; ty != "" { fmt.sbprintf(sb, " : %s", ty) }
+    }
+    if r.decl != 0 { fmt.sbprintf(sb, "   declared %s", ask_loc(token_span(build_tokens[r.decl]))) }
+    strings.write_byte(sb, '\n')
+}
+
+// What a name written at a token refers to, a type's as written too: hit_ref's nodes
+// aren't types (hit_listed), which the resolver has names for.
+@(private="file")
+hit_name_ref :: proc(checked: ^Checked_Program, src: ^Source_File, want: string, line: int, tok: Token_Id) -> (r: Ref, n: Tree_Id, found: bool) {
+    t := &build_tree
+    name := token_text(build_tokens[tok])
+    if p, _, point_ok := hit_point_in(t, src, want, line, token_col(build_tokens[tok])); point_ok {
+        r, n, found = hit_ref(t, checked.annot, p.hits[:], p.at, name)
+        if found { return }
+    }
+    n = hit_node_at(t, tok)
+    if n != 0 && int(n) < len(checked.rs.refs) {
+        r = checked.rs.refs[n]
+        if r.kind != .None && r.decl != 0 && token_text(build_tokens[r.decl]) == name { return r, n, true }
+    }
+    return {}, 0, false
+}
+
+// `mara ask what at <file>:<line>`: the line, and what each name on it is. A name on a
+// line can be asked about: `mara ask <name> at <file>:<line>`.
+ask_what_at_line :: proc(checked: ^Checked_Program, at: string) -> (string, bool) {
+    t := &build_tree
+    a := checked.annot
+    src, line, msg, ok := hit_file_line(at)
+    if !ok { return msg, false }
+    want := filepath.base(src.path)
+    names := hit_names_on_line(src, line)
+    sb := strings.builder_make()
+    tokens := build_tokens[src.first_token:src.end_token]
+    i, found := token_index_at(tokens, line, 1)
+    if !found || token_line(tokens[i]) != line {
+        fmt.sbprintf(&sb, "%s:%d  (nothing's written on it)\n", want, line)
+        return strings.to_string(sb), true
+    }
+    fmt.sbprintf(&sb, "%s  %s\n\n", ask_loc(token_span(tokens[i])), hit_source_line(tokens[i]))
+    seen := make(map[string]bool, allocator = context.temp_allocator)
+    for tok in names {
+        name := token_text(build_tokens[tok])
+        r, n, refers := hit_name_ref(checked, src, want, line, tok)
+        key := fmt.tprintf("%s/%d", name, int(r.decl))
+        if !refers || seen[key] { continue }
+        seen[key] = true
+        hit_name_row(&sb, t, a, r, n, name)
+    }
+    return strings.to_string(sb), true
+}
+
+// `mara ask <name> at <file>:<line>`: what `name` is there. A fun or a type: its answer
+// anywhere. A variable: where it's written and read, or a view of it if one's asked for.
+// Anything else: where it's named.
+ask_name_at :: proc(checked: ^Checked_Program, name, at, kind, dir, pkg: string, depth: int) -> (string, bool) {
+    t := &build_tree
+    a := checked.annot
+    src, line, msg, ok := hit_file_line(at)
+    if !ok { return msg, false }
+    want := filepath.base(src.path)
+    names := hit_names_on_line(src, line)
+    written: Token_Id
+    for tok in names {
+        if token_text(build_tokens[tok]) == name {
+            written = tok
+            break
+        }
+    }
+    if written == 0 {
+        words := make([dynamic]string, context.temp_allocator)
+        for tok in names {
+            word := token_text(build_tokens[tok])
+            if !slice.contains(words[:], word) { append(&words, word) }
+        }
+        if len(words) == 0 { return fmt.tprintf("mara ask: no '%s' on %s:%d: no names are written there\n", name, want, line), false }
+        return fmt.tprintf("mara ask: no '%s' on %s:%d — its names: %s\n", name, want, line, strings.join(words[:], ", ", context.temp_allocator)), false
+    }
+    r, _, refers := hit_name_ref(checked, src, want, line, written)
+    if !refers { return fmt.tprintf("mara ask: '%s' on %s:%d refers to nothing the check knows\n", name, want, line), false }
+    filtered := kind != "" || dir != "" || depth != ASK_DEPTH_OMITTED
+    #partial switch r.kind {
+    case .Fun, .Type:
+        if r.decl != 0 {
+            tok := build_tokens[r.decl]
+            f := build_files[tok.file]
+            return ask(checked, token_text(tok), kind, dir, "", "", pkg, filepath.base(f.path), f.module, depth)
+        }
+    case .Local, .Param, .Result:
+        if filtered {
+            for _, ft in checked.functions {
+                if ft != nil && ft.kind == .Fun && span_file(ft.body_span) == src.path { du_fn(checked, ft) }
+            }
+            for b in checked.du.vars {
+                if b.tok == r.decl { return render_var_slice(checked, b, ask_label(b.fn), kind, dir, pkg, depth), true }
+            }
+        }
+    case:
+        if filtered {
+            return fmt.tprintf("mara ask: '%s' on %s:%d is a %s: the answer is where it's named, with no types, call or flow, above or below, or depth\n", name, want, line, ref_kind_word(r.kind)), false
+        }
+    }
+    p, point_msg, point_ok := hit_point_in(t, src, want, line, token_col(build_tokens[written]))
+    if !point_ok { return point_msg, false }
+    return hit_what(t, a, &p, true, "")
+}
+
 // `<file>:<line>:<col>` found: the point; else what to say instead, and
 // false.
 @(private="file")
@@ -239,12 +404,12 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
     // (A file's name alone can be several files, in the stdlib or ours: the
     // one at that path from here if there is one, else one in this build.)
     want := filepath.base(file)
-    named := path_key(file)
+    named := hit_path_key(file)
     src_file: ^Source_File
     search: for _, files in all_files {
         for f in files {
             if filepath.base(f.path) != want { continue }
-            if path_key(f.path) == named {
+            if hit_path_key(f.path) == named {
                 src_file = f
                 break search
             }
@@ -321,6 +486,10 @@ point_hits :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: 
 // field's is its last; false for neither.
 @(private="file")
 ref_name_token :: proc(t: ^Tree, n: Tree_Id, name: string) -> (Token_Id, bool) {
+    #partial switch t.tag[n] {
+    case .Arm_Dot, .Arm_Variant:   // (The variant a match's arm names; its body's last token is its body's.)
+        return t.main[n], token_text(build_tokens[t.main[n]]) == name
+    }
     if token_text(build_tokens[t.end[n] - 1]) == name { return t.end[n] - 1, true }
     if token_text(build_tokens[t.first[n]]) == name { return t.first[n], true }
     return 0, false
@@ -475,8 +644,10 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     r, named_at, refers := hit_ref(t, a, hits, p.at, name)
     if uses && refers && r.decl != 0 {
         #partial switch r.kind {
-        case .Local, .Param, .Result, .Field, .Global:
+        case .Local, .Param, .Result, .Field, .Global, .Const:
             return hit_uses_answer(t, a, p, r, named_at, title), true
+        case .Variant:
+            return hit_variant_answer(t, a, r.decl, title), true
         }
     }
     // (The point's own node: the innermost, when it ends at the point — a
@@ -533,6 +704,153 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         if shown == 8 { break }
     }
     return strings.to_string(sb), true
+}
+
+// --- variants ------------------------------------------------------------------
+
+// Whether a variant named at node n asks what a value is, or makes one: a match's
+// arm, a comparison.
+@(private="file")
+hit_variant_matched :: proc(t: ^Tree, n: Tree_Id) -> bool {
+    #partial switch t.tag[n] {
+    case .Arm_Dot, .Arm_Variant: return true
+    }
+    cur := n
+    for {
+        p := t.parent[cur]
+        #partial switch t.tag[p] {
+        case .Paren:
+            cur = p
+            continue
+        case .Arm_Value:
+            return Tree_Id(t.a[p]) == cur
+        case .Binary:
+            op := token_text(build_tokens[t.main[p]])
+            return op == "==" || op == "!="
+        }
+        return false
+    }
+}
+
+// Every place the variants `decls` are named: made (Written) or matched (Read), each
+// once, in source order.
+@(private="file")
+hit_variant_uses :: proc(t: ^Tree, a: ^Annotations, decls: []Token_Id) -> map[Token_Id][dynamic]Hit_Use {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    asked := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    for d in decls { asked[d] = true }
+    out := make(map[Token_Id][dynamic]Hit_Use, allocator = context.temp_allocator)
+    seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
+    for inst, i in a.instances {
+        for ref, k in a.refs[i] {
+            if ref.kind != .Variant || !asked[ref.decl] { continue }
+            n := inst.lo + Tree_Id(k)
+            tok, named := ref_name_token(t, n, token_text(build_tokens[ref.decl]))
+            if !named || seen[tok] { continue }
+            seen[tok] = true
+            list := out[ref.decl]
+            list.allocator = context.temp_allocator
+            hit_add_use(&list, tok, n, .Read if hit_variant_matched(t, n) else .Written, 0)
+            out[ref.decl] = list
+        }
+    }
+    for _, list in out {
+        slice.sort_by(list[:], proc(x, y: Hit_Use) -> bool {
+            if x.path != y.path { return x.path < y.path }
+            return x.tok < y.tok
+        })
+    }
+    return out
+}
+
+// The uses of one kind, a line once.
+@(private="file")
+hit_variant_rows :: proc(uses: []Hit_Use, kind: Use_Kind) -> []Hit_Use {
+    rows := make([dynamic]Hit_Use, context.temp_allocator)
+    last: Token
+    for u in uses {
+        if u.kind != kind { continue }
+        tok := build_tokens[u.tok]
+        if len(rows) > 0 && tok.file == last.file && token_line(tok) == token_line(last) { continue }
+        append(&rows, u)
+        last = tok
+    }
+    return rows[:]
+}
+
+// What a variant's uses are called: an error's are how things fail.
+@(private="file")
+hit_variant_words :: proc(is_error: bool) -> (made, matched: string) {
+    if is_error { return "fails with", "handled" }
+    return "made", "matched"
+}
+
+// How many of a variant's uses a type's view lists: `mara ask <type>.<variant>` has
+// every one.
+HIT_VARIANT_ROWS_SHOWN :: 6
+
+// A type's view of its variants: for each named anywhere, how many places make it and
+// how many match it, and where; the ones nothing names, together.
+hit_write_variants :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decls: []Token_Id, owner: string, is_error: bool) {
+    if len(decls) == 0 { return }
+    uses := hit_variant_uses(t, a, decls)
+    made_word, matched_word := hit_variant_words(is_error)
+    fmt.sbprintf(b, "\nvariants (%d)\n", len(decls))
+    never := make([dynamic]string, context.temp_allocator)
+    for decl in decls {
+        name := token_text(build_tokens[decl])
+        list := uses[decl] or_else nil
+        if len(list) == 0 {
+            append(&never, name)
+            continue
+        }
+        made, matched := hit_variant_rows(list[:], .Written), hit_variant_rows(list[:], .Read)
+        fmt.sbprintf(b, "  %s   (%s %d, %s %d)\n", name, made_word, len(made), matched_word, len(matched))
+        shown := 0
+        for rows, which in ([2][]Hit_Use{made, matched}) {
+            for u in rows {
+                if shown < HIT_VARIANT_ROWS_SHOWN {
+                    fmt.sbprintf(b, "    %s  %s  %s  %s\n", made_word if which == 0 else matched_word, ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
+                }
+                shown += 1
+            }
+        }
+        if shown > HIT_VARIANT_ROWS_SHOWN {
+            fmt.sbprintf(b, "    (%d more: `mara ask %s.%s` has each)\n", shown - HIT_VARIANT_ROWS_SHOWN, owner, name)
+        }
+    }
+    if len(never) > 0 {
+        fmt.sbprintf(b, "  nothing names: %s\n", strings.join(never[:], ", ", context.temp_allocator))
+    }
+}
+
+// A variant asked about: where it's made and where it's matched, every one.
+hit_variant_answer :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string) -> string {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    // (Its type's definition holds it.)
+    owner := ""
+    is_error := false
+    for c := hit_node_at(t, decl); c != 0; c = t.parent[c] {
+        if t.tag[c] == .Error_Def { is_error = true }
+        if t.tag[c] == .Define {
+            owner = token_text(build_tokens[t.main[c]])
+            break
+        }
+    }
+    uses := hit_variant_uses(t, a, []Token_Id{decl})
+    list := uses[decl] or_else nil
+    sb := strings.builder_make()
+    if title != "" {
+        fmt.sbprintf(&sb, "%s\n", title)
+    } else {
+        fmt.sbprintf(&sb, "%s — variant of %s  %s\n", token_text(build_tokens[decl]), owner, ask_loc(token_span(build_tokens[decl])))
+    }
+    made_word, matched_word := hit_variant_words(is_error)
+    for rows, which in ([2][]Hit_Use{hit_variant_rows(list[:], .Written), hit_variant_rows(list[:], .Read)}) {
+        fmt.sbprintf(&sb, "\n%s %d\n", made_word if which == 0 else matched_word, len(rows))
+        for u in rows { hit_write_place(&sb, t, u.tok, u.node) }
+    }
+    return strings.to_string(sb)
 }
 
 // What a use of a name does to what it names. A pointer taken may be either:
@@ -826,7 +1144,7 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
                 append(&rows, u)
                 last_tok = tok
             }
-            if (maybe || kind == .Pointer) && len(rows) == 0 { continue }
+            if (maybe || kind == .Pointer || (kind == .Written && r.kind == .Const)) && len(rows) == 0 { continue }
             word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
             fmt.sbprintf(&sb, "%s%s %d\n", "maybe " if maybe else "", word, len(rows))
             for u in rows { hit_write_place(&sb, t, u.tok, u.node) }

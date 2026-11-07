@@ -1482,7 +1482,7 @@ VIEW_USAGE :: `Usage: mara view [module]
   that is a query its Ask panel shows (mara ask -show). '-docs
   <directory><tab><words>': words its Docs panel looks up in that directory
   and the stdlib (mara docs).`
-ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
+ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
   files plus the stdlib they use — so run it from a folder whose .mara files
@@ -1499,12 +1499,18 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                    (quote it in bash: '[N!]T'); your modules, or 'in <module>'
     <name>         the subject's natural view, both directions — a type's structure,
                    a function's calls, a variable's flow (add types|call|flow to switch).
-                   A function or a type says what it is first: its signature, its doc
-                   comment. <module>.<name> finds it in that module, as a call tree writes it.
+                   A function says what it is first: its signature, its doc comment. A type:
+                   its doc comment and its declaration as written, then what uses it; a
+                   union's or an error set's, where each variant is made and matched.
+                   <module>.<name> finds it in that module, as a call tree writes it.
                    A dispatch group: its members (above), every call of any of them (below)
     <struct>.<field>  where the field is written and read, in every value: 'what at' at
-                   its declaration. Also <field> in <struct>, or <field> if no type or
-                   function has the name and one struct has the field
+                   its declaration. Also <field> in <struct>, a path of fields
+                   (<struct>.<field>.<field>), or <field> if no type or function has the
+                   name and one struct has the field
+    <type>.<variant>  where the variant is made and where it's matched (an error's: what
+                   fails with it, what handles it). Also <variant> in <type>, or <variant>
+    <constant>     where it's read, as is a global's; several things with a name are listed
     above (bfor)   only the sources — what <name> is built from / what feeds it
     below (aftr)   only the consumers — what depends on <name> / what it feeds
     types          only the type graph — a struct's fields/embeds; a function's
@@ -1521,15 +1527,20 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     control        also show CONTROL dependence — the branches/loops a value drives
                    (or that guard what feeds it). Off by default: it needs the
                    post-dominator pass, the analyzer's one slow step. Data is hot.
-    depth          hops to expand. CALL: 1 = direct, omitted = 1, 'all' = full closure;
-                   a line says how many more there are. TYPES: 0 = direct edges,
-                   omitted = full closure. FLOW (forward): call hops to follow into
-                   callees — omitted = every hop, 0 = none (count only), N = N hops.
+    depth          levels to show. CALL and TYPES: 1 = direct, omitted = 1, 'all' = every
+                   level, 0 = only how many; a line says how many more there are. FLOW above:
+                   1 = what it reads, omitted = every level. FLOW below: call hops to follow
+                   into callees — omitted = every hop, 0 = none (count only), N = N hops.
+                   Flow's lists stop at 40 rows; 'all' has every one.
     in <module>    resolve <name> within that module's namespace (disambiguation)
     in <file>      resolve <name> within one file
     in <fn>        slice the local/parameter <name> inside that function
     return in <fn> slice what feeds <fn>'s return value (the inside view)
-    at F:L         slice the variable defined at file F, line L (precise)
+    at <file|fn>   as 'in'
+    at F:L         slice the variable defined at file F, line L (precise); with none
+                   defined there, what each name on the line is
+    <name> at F:L  what <name> on that line is: a function or a type's answer; a variable's
+                   'what at', or its view if one's asked for; where anything else is named
 
   Scopes compose (any order):
     mara ask v in fn in mymod        slice 'v' in fn, with fn resolved in mymod
@@ -1542,6 +1553,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line
+    mara ask speed at camera.mara:176   what 'speed' is, there. No column needed
+    mara ask what at camera.mara:176 the line, and what each name on it is
     mara ask what at camera.mara:52:46   what is at that point. A variable or a field:
                                      the types along its path, where it's declared, where
                                      it's written and read. A field reached through a value

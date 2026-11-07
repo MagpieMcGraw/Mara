@@ -21,7 +21,9 @@ import "core:strings"
 // Reaching definitions are dataflow over the runs: a whole write replaces the
 // variable's definitions, a partial one adds to them, a join unions its
 // incoming states, and a loop iterates to its fixpoint. A defer's block sees
-// the state at each exit that runs it; what it writes stays inside it.
+// the state at each exit that runs it; what it writes stays inside it. Each use
+// says what part of its variable it reads, and each partial write what part it
+// writes: `v.a = 1` gives `v.b` nothing (du_reach).
 //
 // Control dependence is post-dominance over the runs of a fun's code: a
 // statement is guarded by the if, loop or match whose branch decides whether
@@ -53,6 +55,7 @@ Def :: struct {
     stmt_kind: Stmt_Kind,        // ... and what the statement does
     span:    Span,
     writes:  [dynamic]Node_Id,   // the operations it takes its value from
+    parts:   []string,           // what of the variable they write, a path each (du_place_path); nil: all of it
     valued:  bool,               // some write carries a value (not a bare zero or construction)
     run:     i32,                // the run of its first write, for its guards; -1 for a param
     fn:      ^Du_Fn,             // the fun it is in
@@ -102,8 +105,9 @@ Du_Fn :: struct {
 
 // A use of a variable: a leaf, in a fun's code.
 Du_Use :: struct {
-    fn: ^Du_Fn,
-    op: Node_Id,
+    fn:   ^Du_Fn,
+    op:   Node_Id,
+    part: string,   // what of the variable it reads, a path (du_place_path); "": all of it
 }
 
 Def_Use :: struct {
@@ -242,7 +246,10 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             }
         }
     }
-    for d in f.defs { du_classify(g, d) }
+    for d in f.defs {
+        du_classify(g, d)
+        du_written_parts(g, d)
+    }
 
     // Reaching definitions: states are bit sets over the fun's definitions.
     words := (len(f.defs) + 63) / 64
@@ -432,6 +439,82 @@ du_classify :: proc(g: ^Program_Graph, d: ^Def) {
     }
 }
 
+// --- what part of a variable ---------------------------------------------------
+
+// The path a place takes from its variable: `.shown.doors[].reference`, a field's name,
+// `[]` an item whatever the index. "" is all of it, and where the path can't be said it
+// stops short: what's asked of a shorter path overlaps more, never less.
+@(private="file")
+du_place_path :: proc(g: ^Program_Graph, place: Node_Id) -> string {
+    parts := make([dynamic]string, context.temp_allocator)
+    p := place
+    walk: for p != NO_NODE && graph_kind_of(g, p) == .Op {
+        #partial switch graph_op_of(g, p) {
+        case .Field:
+            append(&parts, strings.concatenate({".", graph_name(g, p)}, context.temp_allocator))
+        case .Index, .View:
+            append(&parts, "[]")
+        case .Deref:
+        case .Swizzle, .Variant, .Slice:
+            clear(&parts)
+        case:
+            break walk
+        }
+        ops := graph_operands(g, p)
+        if len(ops) == 0 { break }
+        p = ops[0].op
+    }
+    slice.reverse(parts[:])
+    return strings.concatenate(parts[:])
+}
+
+// What part of its variable a definition writes: nil, all of it.
+@(private="file")
+du_written_parts :: proc(g: ^Program_Graph, d: ^Def) {
+    parts := make([dynamic]string, 0, len(d.writes))
+    for op in d.writes {
+        _, whole, ok := du_written(g, op)
+        if !ok || whole {
+            delete(parts)
+            return
+        }
+        append(&parts, du_place_path(g, graph_operands(g, op)[0].op))
+    }
+    if len(parts) == 0 { delete(parts); return }
+    d.parts = parts[:]
+}
+
+// Whether two paths of a variable reach any of the same value: one's the other, or the
+// start of it.
+@(private="file")
+du_parts_overlap :: proc(a, b: string) -> bool {
+    short, long := a, b
+    if len(a) > len(b) { short, long = b, a }
+    if !strings.has_prefix(long, short) { return false }
+    return len(long) == len(short) || long[len(short)] == '.' || long[len(short)] == '['
+}
+
+// The definitions that may give a use what it reads: those that reach it, less the
+// writes to some other part of its variable.
+du_reach :: proc(u: Du_Use) -> []^Def {
+    reach, _ := u.fn.reaching[u.op]
+    if u.part == "" { return reach }
+    out := make([dynamic]^Def, 0, len(reach), context.temp_allocator)
+    next: for d in reach {
+        if d.parts == nil {
+            append(&out, d)
+            continue
+        }
+        for p in d.parts {
+            if du_parts_overlap(p, u.part) {
+                append(&out, d)
+                continue next
+            }
+        }
+    }
+    return out[:]
+}
+
 // --- what a value reads -------------------------------------------------------
 
 // A walk over the operations that compute a value, in a fun's code,
@@ -444,6 +527,17 @@ Du_Walk :: struct {
     filtered: bool,
     out:      ^[dynamic]Du_Use,
     seen:     map[^Def]bool,   // synthetic locals' definitions already seen through
+    path:     [dynamic]string, // what's read of the value being walked to, outermost first ...
+    base:     int,             // ... from here: what's below is another value's
+}
+
+// A value of its own, inside the one being walked: an operand's, a call's argument.
+@(private="file")
+du_walk_apart :: proc(w: ^Du_Walk, o: Operand) {
+    base := w.base
+    w.base = len(w.path)
+    du_walk_value(w, o)
+    w.base = base
 }
 
 // The variable uses a value in f's code reads. (A fun with no def-use — a
@@ -451,6 +545,7 @@ Du_Walk :: struct {
 du_value_uses :: proc(checked: ^Checked_Program, f: ^Du_Fn, o: Operand, filtered: bool, out: ^[dynamic]Du_Use) {
     if f == nil || f.g == nil { return }
     w := Du_Walk{checked = checked, f = f, filtered = filtered, out = out}
+    w.path.allocator = context.temp_allocator
     defer delete(w.seen)
     du_walk_value(&w, o)
 }
@@ -459,6 +554,7 @@ du_value_uses :: proc(checked: ^Checked_Program, f: ^Du_Fn, o: Operand, filtered
 du_def_uses :: proc(checked: ^Checked_Program, d: ^Def, filtered: bool, out: ^[dynamic]Du_Use) {
     if d.fn == nil || d.fn.g == nil { return }
     w := Du_Walk{checked = checked, f = d.fn, filtered = filtered, out = out}
+    w.path.allocator = context.temp_allocator
     defer delete(w.seen)
     for op in d.writes { du_walk_write(&w, op) }
 }
@@ -485,17 +581,25 @@ du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
     g := w.f.g
     ops := graph_operands(g, o.op)
     #partial switch graph_op_of(g, o.op) {
-    case .Read, .Address, .Field, .Deref, .Swizzle, .Variant:
+    case .Read, .Address, .Deref:
         du_walk_value(w, ops[0])
+    case .Field:
+        append(&w.path, strings.concatenate({".", graph_name(g, o.op)}, context.temp_allocator))
+        du_walk_value(w, ops[0])
+        pop(&w.path)
+    case .Swizzle, .Variant:
+        du_walk_apart(w, ops[0])   // (no path says what's read of it)
     case .Index, .View:
+        append(&w.path, "[]")
         du_walk_value(w, ops[0])
+        pop(&w.path)
         // A loop's element read is the collection's data; its position is not.
-        if graph_written(g, o.op) != .Synthetic { du_walk_value(w, ops[1]) }
-        if len(ops) > 2 { du_walk_value(w, ops[2]) }   // (a span written into bytes: its hi)
+        if graph_written(g, o.op) != .Synthetic { du_walk_apart(w, ops[1]) }
+        if len(ops) > 2 { du_walk_apart(w, ops[2]) }   // (a span written into bytes: its hi)
     case .Call, .Construct:
         du_walk_call(w, o.op)
     case .Arith, .Compare, .Unary, .Cast, .Slice, .Carve:
-        for x in ops { du_walk_value(w, x) }
+        for x in ops { du_walk_apart(w, x) }
     }
 }
 
@@ -509,11 +613,11 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
         cg := &w.checked.call_graph
         if !cg.deps_ready { cg_compute_return_deps(cg, w.checked) }
         if n, ok := cg.index_of[callee]; ok && n < len(cg.return_deps) {
-            for i in cg.return_deps[n] { if i >= 0 && i < len(args) { du_walk_value(w, args[i]) } }
+            for i in cg.return_deps[n] { if i >= 0 && i < len(args) { du_walk_apart(w, args[i]) } }
             return
         }
     }
-    for a in args { du_walk_value(w, a) }
+    for a in args { du_walk_apart(w, a) }
 }
 
 // A leaf: a variable's use, or a synthetic local seen through to the
@@ -522,15 +626,20 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
 du_walk_use :: proc(w: ^Du_Walk, op: Node_Id) {
     f := w.f
     if graph_refers(f.g, op) in f.bindings {
-        append(w.out, Du_Use{f, op})
+        parts := make([dynamic]string, context.temp_allocator)
+        #reverse for p in w.path[w.base:] { append(&parts, p) }
+        append(w.out, Du_Use{f, op, strings.concatenate(parts[:], context.temp_allocator)})
         return
     }
     reach, _ := f.reaching[op]
+    base := w.base
+    w.base = len(w.path)
     for d in reach {
         if d.binding != nil || d in w.seen { continue }
         w.seen[d] = true
         for wr in d.writes { du_walk_write(w, wr) }
     }
+    w.base = base
 }
 
 

@@ -10,7 +10,7 @@ package mara
 //   flow    a value's slice: what feeds it (above), what it feeds (below) —
 //           def-use over the program graph (defuse.odin, slice.odin,
 //           lineage.odin); `control` adds the branches that decide it.
-// A depth caps the hops (a call tree's is one unless asked: ASK_DEPTH_OMITTED);
+// A depth caps the levels (a tree of calls or types is one unless asked: ASK_DEPTH_OMITTED);
 // `in`/`at` narrow where the subject resolves
 // (ask_query.odin parses a query). Output is deterministic text, sorted for
 // stable diffs — AI-readable, greppable, golden-tested (test/ask.sh). It
@@ -22,9 +22,10 @@ import "core:slice"
 import "core:strings"
 import "core:path/filepath"
 
-// A query with no depth, and one with `all`. Below zero is every hop to the types
-// and flow views, so there the two are the same. A call tree with none goes one
-// level: the whole of one is most of the program (render_fn_calls).
+// A query with no depth, and one with `all`. A tree of calls or types with none goes
+// one level: the whole of one is often most of the program, and `all` is every level.
+// In flow, every hop either way, but a list of what's reached stops at
+// ASK_FLOW_ROWS_SHOWN unless it's `all`.
 ASK_DEPTH_OMITTED :: -1
 ASK_DEPTH_ALL     :: -2
 
@@ -54,6 +55,8 @@ Ask_Basic :: struct {
     via:      string,
     kind:     Ask_Edge_Kind,
     type_str: string,
+    order:    int,        // its place among its container's members
+    decl:     Token_Id,   // a field's declaration
 }
 
 Ask_Edge :: struct {
@@ -61,6 +64,8 @@ Ask_Edge :: struct {
     kind:     Ask_Edge_Kind,
     via:      string,   // field / param name carrying the dependency ("" for returns / base)
     wrap:     string,   // "^" / "[]" wrapper shown on the target, "" if direct
+    order:    int,      // its place among its container's members
+    decl:     Token_Id, // a field's declaration
 }
 
 Ask_Result :: struct {
@@ -462,9 +467,22 @@ ask_fuzzy :: proc(checked: ^Checked_Program, target: string, scope_file: string,
             append(&pool, Scored{ m = {label = fmt.tprintf("%s.%s", owner, field.name), sub = "field", span = token_span(build_tokens[field.decl])}, score = sc })
         }
     }
+    // (So can constants.)
+    t := &build_tree
+    for tok, def in checked.rs.defs {
+        if rs_def_kind(t, Tree_Id(t.b[def])) != .Const { continue }
+        tk := build_tokens[tok]
+        f := build_files[tk.file]
+        if scope_module != "" && f.module != scope_module { continue }
+        if scope_file != "" && filepath.base(f.path) != scope_file { continue }
+        if sc := ask_fuzzy_score(target, token_text(tk)); sc > 0 {
+            append(&pool, Scored{ m = {label = token_text(tk), sub = "const", span = token_span(tk)}, score = sc })
+        }
+    }
     slice.sort_by(pool[:], proc(x, y: Scored) -> bool {
         if x.score != y.score { return x.score > y.score }
-        return x.m.label < y.m.label
+        if x.m.label != y.m.label { return x.m.label < y.m.label }
+        return span_before(x.m.span, y.m.span)
     })
     for s, i in pool {
         if i == limit { break }
@@ -482,30 +500,6 @@ ask_write_suggestions :: proc(b: ^strings.Builder, suggestions: []Ask_Match, cut
     if cut > 0 { fmt.sbprintf(b, "    (and %d more)\n", cut) }
 }
 
-// --- variant fallback: a variant name isn't a queryable type --------------
-
-// A variant name (`Idle`, `DropFile`) is not a queryable type on its own, so
-// exact resolution misses it — yet it's a natural thing to type after seeing
-// `Stream_State` is an enum. Find its owning enum / union and point there
-// instead of dropping to a noisy fuzzy guess. Reads only variant NAME lists
-// (no union-layout machinery).
-ask_find_variant :: proc(table: ^SymbolTable, target: string, scope_module := "") -> (owner: string, kind: string, ok: bool) {
-    // When `in <module>` is active, only owners in that module count — otherwise
-    // the hint points at a union in some other module, contradicting the scope.
-    for _, e in table.enums {
-        if e.is_synthetic { continue }   // a union's internal `_Tag`: point at the union, not its tag enum
-        if scope_module != "" && e.home_package != scope_module { continue }
-        if _, has := e.variants[target]; has { return ask_label(e), ask_enum_sub(e), true }
-    }
-    for _, u in table.unions {
-        if scope_module != "" && u.home_package != scope_module { continue }
-        for vn in u.variants {
-            if vn == target { return ask_label(u), "union", true }
-        }
-    }
-    return "", "", false
-}
-
 // --- deps: forward type-dependency walk ------------------------------------
 
 // Outgoing typed edges of a container type — the SINGLE source of truth shared
@@ -520,17 +514,18 @@ Ask_Out_Edge :: struct {
     kind: Ask_Edge_Kind,
     via:  string,          // field / param name ("" for returns / base)
     wrap: string,          // "^" / "[]" / "[16]" / "[3!]" prefix shown on the target
+    decl: Token_Id,        // a field's declaration
 }
 
 ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge) {
-    add :: proc(out: ^[dynamic]Ask_Out_Edge, ty: Type, kind: Ask_Edge_Kind, via: string) {
+    add :: proc(out: ^[dynamic]Ask_Out_Edge, ty: Type, kind: Ask_Edge_Kind, via: string, decl: Token_Id = 0) {
         core, wrap := ask_peel(ty)
-        append(out, Ask_Out_Edge{ core = core, kind = kind, via = via, wrap = wrap })
+        append(out, Ask_Out_Edge{ core = core, kind = kind, via = via, wrap = wrap, decl = decl })
     }
     #partial switch v in t {
     case ^Type_Scope:
         if v.kind == .Struct {
-            for f in v.fields { add(out, f.type_, (.Embeds if f.is_using else .Contains), f.name) }
+            for f in v.fields { add(out, f.type_, (.Embeds if f.is_using else .Contains), f.name, f.decl) }
         } else {
             for p in v.params        { add(out, p.type_, .Takes, p.name) }
             for rt in v.return_types { add(out, rt, .Returns, "") }
@@ -572,7 +567,7 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int, 
         d := res.nodes[from].dist
         edges: [dynamic]Ask_Out_Edge
         ask_out_edges(table, t, &edges)
-        for e in edges {
+        for e, order in edges {
             // From the root only, honor `root_filter` — a function splits its
             // Takes (params) from its Returns so above/below show distinct graphs.
             // Deeper nodes (the param/return types' own fields) always expand fully.
@@ -582,12 +577,12 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int, 
                 // this it vanishes entirely. Record it as an inline field line so the
                 // node shows its real shape (a leaf struct like Glyph lists its
                 // x,y,w,h:i32 instead of reading as empty).
-                append(&res.nodes[from].basics, Ask_Basic{ via = e.via, kind = e.kind, type_str = fmt.tprintf("%s%s", e.wrap, type_name(e.core)) })
+                append(&res.nodes[from].basics, Ask_Basic{ via = e.via, kind = e.kind, type_str = fmt.tprintf("%s%s", e.wrap, type_name(e.core)), order = order, decl = e.decl })
                 continue
             }
             to, is_new := ask_intern(res, e.core)
             if is_new { res.nodes[to].dist = d + 1 }
-            append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap })
+            append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap, order = order, decl = e.decl })
             // Only follow into a target that can recurse AND still fits the budget.
             if ask_recurses(e.core) && (depth < 0 || d + 1 <= depth) && !processed[raw_type_key(e.core)] {
                 append(&queue, e.core)
@@ -751,10 +746,11 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, f
     res: Ask_Result
     res.root = -1
     switch verb {
-    case "deps":  ask_deps(table, &res, root, depth, root_filter)
-    case "users": ask_users(table, &res, root, depth, funcs, users_kinds)
+    case "deps":  ask_deps(table, &res, root, depth, root_filter)   // (in source order)
+    case "users":
+        ask_users(table, &res, root, depth, funcs, users_kinds)
+        ask_sort_edges(&res)
     }
-    ask_sort_edges(&res)
     return res
 }
 
@@ -776,7 +772,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         if handled { return vout, vok }
         // Not a function. A struct's a named scope too: `x in S` is `S.x`.
         if tmatches := ask_resolve_all(checked.table, scope, "", checked.functions, scope_module); len(tmatches) > 0 {
-            if tmatches[0].sub == "struct" {
+            if tmatches[0].sub == "struct" || len(ask_variants_of(tmatches[0].type_)) > 0 {
                 return ask_member(checked, scope, target, kind, dir, pkg, depth, scope_file, scope_module)
             }
             return fmt.tprintf("mara ask: '%s' is a %s, not a function — `in` scopes to a function's variables; query the %s directly with `mara ask %s`.\n", scope, tmatches[0].sub, tmatches[0].sub, scope), false
@@ -814,18 +810,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
             if len(matches) == 0 {
                 return ask_member(checked, target[:dot], target[dot + 1:], kind, dir, pkg, depth, scope_file, scope_module)
             }
-        } else if fields := ask_find_fields(checked.table, target, scope_file, scope_module, {}); len(fields) > 0 {
-            return ask_field_answer(checked, fields[:], target, kind, dir, depth, pkg)
+        } else if answer, found, answered := ask_other_name(checked, target, kind, dir, depth, pkg, scope_file, scope_module); answered {
+            return answer, found
         }
     }
     if len(matches) == 0 {
-        // Before guessing: if the name is a known variant, say so — it's the
-        // single most likely reason a real-looking name fails to resolve.
-        if owner, kind, is_variant := ask_find_variant(checked.table, target, scope_module); is_variant {
-            fmt.sbprintf(&b, "mara ask: '%s' is a variant of %s %s — variants aren't queryable yet.\n", target, kind, owner)
-            fmt.sbprintf(&b, "  (try `mara ask %s`)\n", owner)
-            return strings.to_string(b), false
-        }
         // No exact hit — offer the closest names rather than a bare miss.
         suggestions, cut := ask_fuzzy(checked, target, scope_file, ASK_FUZZY_LIMIT, scope_module)
         if len(suggestions) > 0 {
@@ -878,6 +867,10 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     show_above := dir  == "" || dir  == "above"
     show_below := dir  == "" || dir  == "below"
 
+    // A type's natural view starts with what it is, which says what it's made of: what's
+    // left to show is what uses it.
+    bare_type := kind == "" && dir == "" && !is_fn
+    hops := ask_type_hops(depth)
     // The module shown is the subject's OWN home package, not the cwd project
     // (`pkg`) — a stdlib type queried from a game dir is `mara.font`, not `Pounce`.
     home_pkg := ask_home_package(subject.type_)
@@ -912,10 +905,13 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     //   types: a struct's field types; a function's PARAMETER types.
     //   call:  a function's callees.
     //   flow:  what computes the args at a function's call sites, or what feeds a type's values.
-    if show_above && show_types {
+    if show_above && show_types && !bare_type {
         filter := bit_set[Ask_Edge_Kind]{.Takes} if is_fn else ASK_ALL_EDGES
-        res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions, filter)
-        render_ask_deps(&b, &res, depth, "above")
+        if e, is_enum := subject.type_.(^Type_Enum); is_enum {
+            render_enum_variants(&b, e)
+        } else {
+            render_ask_deps(&b, checked, subject.type_, hops, "above", filter)
+        }
     }
     if show_above && show_call {
         if is_fn { render_fn_calls(&b, checked, ft, depth, forward = true) }
@@ -932,15 +928,14 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     //   flow:  where a function's results flow, or what a type's values feed.
     if show_below && show_types {
         if is_fn {
-            res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions, {.Returns})
-            render_ask_deps(&b, &res, depth, "below")
+            render_ask_deps(&b, checked, subject.type_, hops, "below", {.Returns})
         } else {
             // Structural users only — fns that take/return this type are the `call`
             // kind (render_struct_calls below), not "structs I'm a field of".
-            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions, users_kinds = {.Contains, .Embeds, .Base})
-            render_ask_users(&b, &res, depth)
+            render_ask_users(&b, checked, subject.type_, hops, say_funs = bare_type)
         }
     }
+    if bare_type { hit_write_variants(&b, &build_tree, checked.annot, ask_variants_of(subject.type_), subject.label, ask_is_error_set(subject.type_)) }
     if show_below && show_call {
         if is_fn { render_fn_calls(&b, checked, ft, depth, forward = false) }
         else     { render_struct_calls(&b, checked, subject.type_, .Takes, "below") }
@@ -965,20 +960,156 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     return strings.to_string(b), true
 }
 
-// What a name asked about on its own is: a fun's signature (a struct's, if it takes
-// params) and its doc comment. The two views under it say how it connects.
+// What a name asked about on its own is: a fun's signature and its doc comment; a
+// type's doc comment and its declaration as written. The views under it say how it
+// connects.
 @(private="file")
 ask_write_what_it_is :: proc(b: ^strings.Builder, subject: Ask_Match) {
     first := subject.span.tok
     if first == 0 { return }
-    if ts, is_scope := subject.type_.(^Type_Scope); is_scope && (ts.kind == .Fun || ts.has_parens) {
+    ts, is_scope := subject.type_.(^Type_Scope)
+    is_fn := is_scope && ts.kind == .Fun
+    if is_fn {
         if signature := ask_signature(first); signature != "" { fmt.sbprintf(b, "\n  %s\n", signature) }
     }
-    doc := doc_comment_above(build_tokens[first])
-    if doc == "" { return }
-    strings.write_byte(b, '\n')
-    for line in strings.split_lines(doc, context.temp_allocator) {
-        if line == "" { strings.write_byte(b, '\n') } else { fmt.sbprintf(b, "  %s\n", line) }
+    if doc := doc_comment_above(build_tokens[first]); doc != "" {
+        strings.write_byte(b, '\n')
+        for line in strings.split_lines(doc, context.temp_allocator) {
+            if line == "" { strings.write_byte(b, '\n') } else { fmt.sbprintf(b, "  %s\n", line) }
+        }
+    }
+    if !is_fn {
+        strings.write_byte(b, '\n')
+        ask_write_declaration(b, first)
+    }
+}
+
+// A definition as it's written, comments and all, from the line its name's on to the
+// end of its body. A fun in its body shows its signature, its own body as `{ … }`.
+@(private="file")
+ask_write_declaration :: proc(b: ^strings.Builder, first: Token_Id) {
+    f := build_files[build_tokens[first].file]
+    Cut :: struct { from, to: int }
+    cuts := make([dynamic]Cut, context.temp_allocator)
+    braces, open := 0, 0
+    last := first
+    walk: for id := first; id < f.end_token; id += 1 {
+        tok := build_tokens[id]
+        #partial switch tok.kind {
+        case .Left_Paren, .Left_Bracket:
+            open += 1
+        case .Right_Paren, .Right_Bracket:
+            open -= 1
+        case .Left_Brace:
+            if braces > 0 {
+                if close := ask_fun_body_end(f, id); close != 0 {
+                    append(&cuts, Cut{int(tok.offset) + 1, int(build_tokens[close].offset)})
+                    id, last = close, close
+                    continue walk
+                }
+            }
+            braces += 1
+        case .Right_Brace:
+            braces -= 1
+            if braces == 0 {
+                last = id
+                break walk
+            }
+        case .Newline, .EOF:
+            if braces == 0 && open == 0 { break walk }
+            continue walk
+        }
+        last = id
+    }
+    src := f.source
+    lo, hi := int(build_tokens[first].offset), int(build_tokens[last].offset)
+    for lo > 0 && src[lo - 1] != '\n' { lo -= 1 }
+    for hi < len(src) && src[hi] != '\n' { hi += 1 }
+    text := strings.builder_make(context.temp_allocator)
+    at := lo
+    for c in cuts {
+        strings.write_string(&text, src[at:c.from])
+        strings.write_string(&text, " … ")
+        at = c.to
+    }
+    strings.write_string(&text, src[at:hi])
+    for line in strings.split_lines(strings.to_string(text), context.temp_allocator) {
+        trimmed := strings.trim_right_space(line)
+        spaced, _ := strings.replace_all(trimmed, "\t", "    ", context.temp_allocator)
+        fmt.sbprintf(b, "  %s\n", spaced)
+    }
+}
+
+// The `}` of a fun's body over lines, its `{` the token `open`; 0 for any other brace.
+@(private="file")
+ask_fun_body_end :: proc(f: ^Source_File, open: Token_Id) -> Token_Id {
+    line := token_line(build_tokens[open])
+    is_fun := false
+    for id := open - 1; id >= f.first_token && token_line(build_tokens[id]) == line; id -= 1 {
+        is_fun ||= build_tokens[id].kind == .Fun
+    }
+    if !is_fun { return 0 }
+    braces := 0
+    for id := open; id < f.end_token; id += 1 {
+        #partial switch build_tokens[id].kind {
+        case .Left_Brace:
+            braces += 1
+        case .Right_Brace:
+            braces -= 1
+            if braces == 0 { return id if token_line(build_tokens[id]) != line else 0 }
+        }
+    }
+    return 0
+}
+
+// What follows a declaration on its line: a comment, or "".
+@(private="file")
+ask_line_comment :: proc(decl: Token_Id) -> string {
+    if decl == 0 { return "" }
+    tok := build_tokens[decl]
+    f := build_files[tok.file]
+    hi := int(tok.offset)
+    for hi < len(f.source) && f.source[hi] != '\n' { hi += 1 }
+    id := decl
+    for id + 1 < f.end_token && int(build_tokens[id + 1].offset) < hi && build_tokens[id + 1].kind != .Newline { id += 1 }
+    last := build_tokens[id]
+    rest := strings.trim_space(f.source[int(last.offset + last.len):hi])
+    return rest if strings.has_prefix(rest, "//") else ""
+}
+
+// --- variants ----------------------------------------------------------------
+
+// A union's, an enum's or an error set's variants, in source order.
+ask_variants_of :: proc(t: Type) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    #partial switch v in t {
+    case ^Type_Enum:
+        for _, decl in v.variant_decls { if decl != 0 { append(&out, decl) } }
+    case ^Type_Union:
+        for name in v.variants { if decl := variant_decl(v, name); decl != 0 { append(&out, decl) } }
+    }
+    slice.sort(out[:])
+    return out[:]
+}
+
+ask_is_error_set :: proc(t: Type) -> bool {
+    e, is_enum := t.(^Type_Enum)
+    return is_enum && e.is_error_kind
+}
+
+// `types above` of a union without data, or an error set: its variants, what each's
+// numbered unless it's only an error's name.
+@(private="file")
+render_enum_variants :: proc(b: ^strings.Builder, e: ^Type_Enum) {
+    decls := ask_variants_of(e)
+    fmt.sbprintf(b, "\nabove (types)   (%s)\n", ask_plural(len(decls), "variant"))
+    for decl in decls {
+        name := token_text(build_tokens[decl])
+        strings.write_string(b, "  ")
+        strings.write_string(b, name)
+        if !e.is_error_kind { fmt.sbprintf(b, " = %d", e.variants[name]) }
+        if comment := ask_line_comment(decl); comment != "" { fmt.sbprintf(b, "   %s", comment) }
+        strings.write_byte(b, '\n')
     }
 }
 
@@ -1101,12 +1232,38 @@ ask_member :: proc(checked: ^Checked_Program, owner_text, member, kind, dir, pkg
     if dot := strings.last_index_byte(owner_text, '.'); dot > 0 {
         owner, module = owner_text[dot + 1:], owner_text[:dot]
     }
+    sb := strings.builder_make()
+    // A union's or an error set's: its variant.
+    for m in ask_resolve_all(checked.table, owner, scope_file, checked.functions, module) {
+        decls := ask_variants_of(m.type_)
+        if len(decls) == 0 { continue }
+        for decl in decls {
+            if token_text(build_tokens[decl]) != member { continue }
+            return ask_variant_answer(checked, {{ask_written_name(m.type_), m.sub, ask_home_package(m.type_), decl}}, member, kind, dir, depth, pkg)
+        }
+        words := make([dynamic]string, context.temp_allocator)
+        for decl in decls { append(&words, token_text(build_tokens[decl])) }
+        fmt.sbprintf(&sb, "mara ask: %s %s has no variant '%s' — its variants: %s\n", m.sub, m.label, member, strings.join(words[:], ", ", context.temp_allocator))
+        return strings.to_string(sb), false
+    }
     owners: [dynamic]Ask_Match
     defer delete(owners)
     for m in ask_resolve_all(checked.table, owner, scope_file, checked.functions, module) {
         if m.sub == "struct" { append(&owners, m) }
     }
-    sb := strings.builder_make()
+    // Through fields: `Viewer.camera.position`, the struct's what `camera` is.
+    owner_span: Span
+    if len(owners) == 0 {
+        if ts, missing, found := ask_follow_fields(checked, owner_text, scope_file, scope_module); found {
+            if missing != "" {
+                fmt.sbprintf(&sb, "mara ask: %s has no field '%s'\n", ask_written_name(ts), missing)
+                return strings.to_string(sb), false
+            }
+            owner_span = ts.body_span
+            owner = ask_written_name(ts)
+            append(&owners, Ask_Match{type_ = ts, label = owner, sub = "struct", span = ts.body_span})
+        }
+    }
     if len(owners) == 0 {
         fmt.sbprintf(&sb, "mara ask: no struct or module named '%s' in %s\n", owner_text, pkg)
         suggestions, cut := ask_fuzzy(checked, owner, scope_file, ASK_FUZZY_LIMIT, module)
@@ -1119,13 +1276,14 @@ ask_member :: proc(checked: ^Checked_Program, owner_text, member, kind, dir, pkg
         for m in owners { fmt.sbprintf(&sb, "    %s  %s\n", m.label, ask_loc(m.span)) }
         return strings.to_string(sb), false
     }
-    fields := ask_find_fields(checked.table, member, "", "", owners[0].span)
+    owner_span = owners[0].span
+    fields := ask_find_fields(checked.table, member, "", "", owner_span)
     defer delete(fields)
     if len(fields) > 0 { return ask_field_answer(checked, fields[:], member, kind, dir, depth, pkg) }
     // (Not a field: one of its funs, or nothing it has.)
     names := make([dynamic]string, context.temp_allocator)
     for ts in ask_all_structs(checked.table) {
-        if ts.body_span.at != owners[0].span.at { continue }
+        if ts.body_span.at != owner_span.at { continue }
         for field in ts.fields {
             if !slice.contains(names[:], field.name) { append(&names, field.name) }
         }
@@ -1134,6 +1292,156 @@ ask_member :: proc(checked: ^Checked_Program, owner_text, member, kind, dir, pkg
     if len(names) > 0 { fmt.sbprintf(&sb, " — its fields: %s", strings.join(names[:], ", ", context.temp_allocator)) }
     strings.write_byte(&sb, '\n')
     return strings.to_string(sb), false
+}
+
+// The struct a path of fields ends at, `Viewer.camera` or `scene.Viewer.camera`: its
+// start a struct, by the words before it the module it's in. `missing`, a field the
+// path names that isn't there; found false, when the path starts at no struct or goes
+// through something that holds no fields.
+@(private="file")
+ask_follow_fields :: proc(checked: ^Checked_Program, path, scope_file, scope_module: string) -> (ts: ^Type_Scope, missing: string, found: bool) {
+    parts := strings.split(path, ".", context.temp_allocator)
+    for part, k in parts {
+        module := scope_module if k == 0 else strings.join(parts[:k], ".", context.temp_allocator)
+        for m in ask_resolve_all(checked.table, part, scope_file, checked.functions, module) {
+            start, is_scope := m.type_.(^Type_Scope)
+            if !is_scope || start.kind != .Struct { continue }
+            cur := start
+            walk: for name in parts[k + 1:] {
+                for f in cur.fields {
+                    if f.name != name { continue }
+                    core, _ := ask_peel(f.type_)
+                    next, is_struct := distinct_base(core).(^Type_Scope)
+                    if !is_struct || next.kind != .Struct { return nil, "", false }
+                    cur = next
+                    continue walk
+                }
+                return cur, name, true
+            }
+            return cur, "", true
+        }
+    }
+    return nil, "", false
+}
+
+// --- a variant or a constant, by name -----------------------------------------
+
+Ask_Variant :: struct {
+    owner: string,     // its type's name, as written
+    sub:   string,     // what its type is: `union`, `error`
+    home:  string,     // its type's module
+    decl:  Token_Id,
+}
+
+// The variants called `name`, in source order; a generic's instances declare theirs
+// once.
+@(private="file")
+ask_find_variants :: proc(table: ^SymbolTable, name, scope_file, scope_module: string) -> [dynamic]Ask_Variant {
+    out: [dynamic]Ask_Variant
+    add :: proc(out: ^[dynamic]Ask_Variant, t: Type, name, scope_file, scope_module: string) {
+        if scope_module != "" && ask_home_package(t) != scope_module { return }
+        if scope_file != "" && filepath.base(span_file(ask_span(t))) != scope_file { return }
+        decl := variant_decl(t, name)
+        if decl == 0 { return }
+        for v in out { if v.decl == decl { return } }
+        sub, _ := ask_sub(t)
+        append(out, Ask_Variant{ask_written_name(t), sub, ask_home_package(t), decl})
+    }
+    for _, e in table.enums {
+        if !e.is_synthetic { add(&out, e, name, scope_file, scope_module) }   // (a union's `_Tag`: its union's)
+    }
+    for _, u in table.unions { add(&out, u, name, scope_file, scope_module) }
+    for _, m in table.mono_cache { add(&out, m, name, scope_file, scope_module) }
+    slice.sort_by(out[:], proc(a, b: Ask_Variant) -> bool { return a.decl < b.decl })
+    return out
+}
+
+// Where a variant's named. It has no graphs to choose from.
+@(private="file")
+ask_variant_answer :: proc(checked: ^Checked_Program, variants: []Ask_Variant, name, kind, dir: string, depth: int, pkg: string) -> (out: string, ok: bool) {
+    if len(variants) > 1 {
+        sb := strings.builder_make()
+        fmt.sbprintf(&sb, "mara ask: '%s' is a variant of %d types — name one with `<type>.%s`:\n", name, len(variants), name)
+        for v in variants { fmt.sbprintf(&sb, "    %s.%s  %s\n", v.owner, name, ask_loc(token_span(build_tokens[v.decl]))) }
+        return strings.to_string(sb), false
+    }
+    v := variants[0]
+    if kind != "" || dir != "" || depth != ASK_DEPTH_OMITTED {
+        return fmt.tprintf("mara ask: %s.%s is a variant: the answer is where it's named, with no types, call or flow, above or below, or depth\n", v.owner, name), false
+    }
+    home := v.home if v.home != "" else pkg
+    title := fmt.tprintf("%s — variant of %s %s  %s   (module %s)", name, v.sub, v.owner, ask_loc(token_span(build_tokens[v.decl])), home)
+    return hit_variant_answer(&build_tree, checked.annot, v.decl, title), true
+}
+
+// A constant or a global a name can be.
+@(private="file")
+Ask_Value :: struct {
+    word: string,     // `const`, `global`
+    decl: Token_Id,
+}
+
+// The constants and globals called `name`, in source order.
+@(private="file")
+ask_find_values :: proc(checked: ^Checked_Program, name, scope_file, scope_module: string) -> [dynamic]Ask_Value {
+    out: [dynamic]Ask_Value
+    add :: proc(out: ^[dynamic]Ask_Value, word: string, tok: Token_Id, scope_file, scope_module: string) {
+        f := build_files[build_tokens[tok].file]
+        if scope_module != "" && f.module != scope_module { return }
+        if scope_file != "" && filepath.base(f.path) != scope_file { return }
+        for v in out { if v.decl == tok { return } }
+        append(out, Ask_Value{word, tok})
+    }
+    t := &build_tree
+    for tok, def in checked.rs.defs {
+        if token_text(build_tokens[tok]) == name && rs_def_kind(t, Tree_Id(t.b[def])) == .Const { add(&out, "const", tok, scope_file, scope_module) }
+    }
+    a := checked.annot
+    for inst in 0 ..< len(a.instances) {
+        for ref in a.refs[inst] {
+            if ref.kind == .Global && ref.decl != 0 && token_text(build_tokens[ref.decl]) == name { add(&out, "global", ref.decl, scope_file, scope_module) }
+        }
+    }
+    slice.sort_by(out[:], proc(a, b: Ask_Value) -> bool { return a.decl < b.decl })
+    return out
+}
+
+// A name that's no definition with a view of its own: a field, a variant, a constant or
+// a global. One answers; several say what they are. answered false for none.
+@(private="file")
+ask_other_name :: proc(checked: ^Checked_Program, name, kind, dir: string, depth: int, pkg, scope_file, scope_module: string) -> (out: string, ok: bool, answered: bool) {
+    fields := ask_find_fields(checked.table, name, scope_file, scope_module, {})
+    variants := ask_find_variants(checked.table, name, scope_file, scope_module)
+    values := ask_find_values(checked, name, scope_file, scope_module)
+    defer { delete(fields); delete(variants); delete(values) }
+    groups := 0
+    for n in ([3]int{len(fields), len(variants), len(values)}) { groups += 1 if n > 0 else 0 }
+    if groups == 0 { return "", false, false }
+    if groups == 1 && len(values) <= 1 {
+        if len(fields) > 0 {
+            out, ok = ask_field_answer(checked, fields[:], name, kind, dir, depth, pkg)
+        } else if len(variants) > 0 {
+            out, ok = ask_variant_answer(checked, variants[:], name, kind, dir, depth, pkg)
+        } else {
+            v := values[0]
+            tok := build_tokens[v.decl]
+            if kind != "" || dir != "" || depth != ASK_DEPTH_OMITTED {
+                return fmt.tprintf("mara ask: %s is a %s: the answer is where it's read, with no types, call or flow, above or below, or depth\n", name, v.word), false, true
+            }
+            title := fmt.tprintf("%s — %s  %s   (module %s)", name, v.word, ask_loc(token_span(tok)), build_files[tok.file].module)
+            out, ok = ask_what_at_token(&build_tree, checked.annot, v.decl, title)
+        }
+        return out, ok, true
+    }
+    sb := strings.builder_make()
+    fmt.sbprintf(&sb, "mara ask: '%s' names %d things:\n", name, len(fields) + len(variants) + len(values))
+    for f in fields { fmt.sbprintf(&sb, "    field    %s.%s  %s\n", f.owner, name, ask_loc(token_span(build_tokens[f.decl]))) }
+    for v in variants { fmt.sbprintf(&sb, "    variant  %s.%s  %s\n", v.owner, name, ask_loc(token_span(build_tokens[v.decl]))) }
+    for v in values {
+        tok := build_tokens[v.decl]
+        fmt.sbprintf(&sb, "    %-8s %s  %s   (`mara ask %s in %s`)\n", v.word, name, ask_loc(token_span(tok)), name, build_files[tok.file].module)
+    }
+    return strings.to_string(sb), false, true
 }
 
 // Variable criterion: `mara ask <name> in <fn>`. `scope` named a thing that was
@@ -1218,6 +1526,8 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
         }
     }
     if len(bindings) == 0 {
+        // (None defined there: what's written there, unless a view of a variable's asked for.)
+        if kind == "" && dir == "" { return ask_what_at_line(checked, loc) }
         return fmt.tprintf("mara ask: no variable defined at %s:%d — point `at` at a declaration or assignment.\n", file, line), false
     }
     if len(bindings) > 1 {
@@ -1255,54 +1565,104 @@ ask_member_name :: proc(via: string, kind: Ask_Edge_Kind) -> string {
     return fmt.tprintf("%s %s", ask_edge_word(kind), via)
 }
 
-render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int, dir := "above") {
+render_ask_deps :: proc(b: ^strings.Builder, checked: ^Checked_Program, subject: Type, hops: int, dir: string, filter: bit_set[Ask_Edge_Kind]) {
+    res := ask_compute(checked.table, subject, "deps", ask_type_reach(hops), checked.functions, filter)
     root := &res.nodes[res.root]
     if len(res.edges) == 0 && len(root.basics) == 0 {
         fmt.sbprintf(b, "\n%s (types)   (no type dependencies)\n", dir)
         return
     }
-    // Count named type nodes within the depth bound — the root may be a `fun` (the
-    // subject), which is not a type and must not inflate the count; a fringe node
-    // (dist > depth) is interned as a leaf label, not a counted block.
+    // The named types shown: the subject's not one of them, and one a level past the
+    // last is only a name.
     types := 0
-    for n in res.nodes {
-        if depth >= 0 && n.dist > depth { continue }
-        if n.sub != "fun" { types += 1 }
+    for n, i in res.nodes {
+        if i == res.root || n.sub == "fun" { continue }
+        if hops < 0 || n.dist <= max(hops, 1) { types += 1 }
     }
     count := ask_plural(types, "type")
     if len(res.edges) == 0 { count = "basic types only" }   // a struct built only from primitives (Glyph)
-    fmt.sbprintf(b, "\n%s (types)   (%s, %s)\n", dir, count, ask_depth_label(depth))
+    fmt.sbprintf(b, "\n%s (types)   (%s, %s)\n", dir, count, ask_depth_label(hops))
 
     // Walk the type graph as an indented tree (mirror of the call tree). A GLOBAL
     // `seen` expands each aggregate once: a struct reached twice shows "(shown
     // above)" and the walk terminates on cyclic / diamond graphs.
-    seen: map[int]bool
-    defer delete(seen)
-    seen[res.root] = true
-    ask_walk_deps(b, res, res.root, 1, &seen)
+    if hops != 0 {
+        seen: map[int]bool
+        defer delete(seen)
+        seen[res.root] = true
+        ask_walk_deps(b, &res, res.root, 1, &seen)
+    }
+    // (How much further it goes.)
+    if hops >= 0 {
+        whole := ask_compute(checked.table, subject, "deps", -1, checked.functions, filter)
+        total := 0
+        for n, i in whole.nodes {
+            if i != whole.root && n.sub != "fun" { total += 1 }
+        }
+        shown := types if hops != 0 else 0
+        if total > shown { fmt.sbprintf(b, "  (%d more: add a depth, or 'all')\n", total - shown) }
+    }
 }
 
-// Render node_id's members at `indent` — typed fields (edges) then primitive basics,
-// recursing into struct / union targets. distinct / enum / primitive targets are
-// LEAVES: we don't unwrap a Vec3 to its `[3!]f32` base. Names are module-qualified.
+// Render node_id's members at `indent`, in source order, recursing into struct / union
+// targets. distinct / enum / primitive targets are LEAVES: we don't unwrap a Vec3 to
+// its `[3!]f32` base. Names are module-qualified. The first level's say what's beside
+// their declarations.
 ask_walk_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, node_id, indent: int, seen: ^map[int]bool) {
+    edges := make([dynamic]Ask_Edge, context.temp_allocator)
     for e in res.edges {
-        if e.from != node_id { continue }
-        tgt := res.nodes[e.to]
-        expandable := tgt.sub == "struct" || tgt.sub == "union"
+        if e.from == node_id { append(&edges, e) }
+    }
+    basics := res.nodes[node_id].basics[:]
+    pad :: proc(b: ^strings.Builder, indent: int, decl: Token_Id) -> string {
         for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        comment := ask_line_comment(decl) if indent == 1 else ""
+        return fmt.tprintf("   %s", comment) if comment != "" else ""
+    }
+    for len(edges) > 0 || len(basics) > 0 {
+        if len(edges) == 0 || (len(basics) > 0 && basics[0].order < edges[0].order) {
+            m := basics[0]
+            basics = basics[1:]
+            comment := pad(b, indent, m.decl)
+            fmt.sbprintf(b, "%s : %s%s\n", ask_member_name(m.via, m.kind), m.type_str, comment)
+            continue
+        }
+        e := edges[0]
+        ordered_remove(&edges, 0)
+        tgt := res.nodes[e.to]
+        // (One a level past the last has nothing to show, so nothing's been shown.)
+        expandable := (tgt.sub == "struct" || tgt.sub == "union") && len(tgt.basics) + ask_edges_from(res, e.to) > 0
+        comment := pad(b, indent, e.decl)
         fmt.sbprintf(b, "%s : %s%s", ask_member_name(e.via, e.kind), e.wrap, ask_qnode(tgt))
         if expandable && seen[e.to] { fmt.sbprint(b, "  (shown above)") }
-        fmt.sbprint(b, "\n")
+        fmt.sbprintf(b, "%s\n", comment)
         if expandable && !seen[e.to] {
             seen[e.to] = true
             ask_walk_deps(b, res, e.to, indent + 1, seen)
         }
     }
-    for m in res.nodes[node_id].basics {
-        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
-        fmt.sbprintf(b, "%s : %s\n", ask_member_name(m.via, m.kind), m.type_str)
+}
+
+@(private="file")
+ask_edges_from :: proc(res: ^Ask_Result, node: int) -> int {
+    n := 0
+    for e in res.edges {
+        if e.from == node { n += 1 }
     }
+    return n
+}
+
+// How many levels a tree of types shows: what's asked, or the direct ones. Below zero,
+// every level.
+@(private="file")
+ask_type_hops :: proc(depth: int) -> int {
+    return 1 if depth == ASK_DEPTH_OMITTED else depth
+}
+
+// ... as the walks take it: how far past the direct ones they go.
+@(private="file")
+ask_type_reach :: proc(hops: int) -> int {
+    return max(hops - 1, 0) if hops >= 0 else -1
 }
 
 // "full closure (depth ∞)" when unbounded, else "depth N" — shared by both
@@ -1718,10 +2078,27 @@ render_struct_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, targ
 // view reaches past one hop, rows are bucketed under "N hops" subheaders and each
 // names the closer-to-root type it references (not the subject), so a chain like
 // Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
-render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
+render_ask_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, subject: Type, hops: int, say_funs: bool) {
+    STRUCTURAL :: bit_set[Ask_Edge_Kind]{.Contains, .Embeds, .Base}
+    result := ask_compute(checked.table, subject, "users", ask_type_reach(hops), checked.functions, users_kinds = STRUCTURAL)
+    res := &result
     fmt.sbprintf(b, "\nbelow (types)   (%s, %s, %s)\n",
-                 ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(depth))
+                 ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(hops))
+    defer if say_funs {
+        // (The funs in the count a module's view gives.)
+        direct := ask_compute(checked.table, subject, "users", 0, checked.functions, users_kinds = STRUCTURAL)
+        funs := ask_user_count(checked.table, subject, checked.functions) - ask_distinct_sources(&direct)
+        if funs > 0 { fmt.sbprintf(b, "  (and %s taking or returning it: `mara ask %s call`)\n", ask_plural(funs, "fun"), ask_written_name(subject)) }
+    }
+    // (How much further it goes.)
+    more := 0
+    if hops >= 0 {
+        whole := ask_compute(checked.table, subject, "users", -1, checked.functions, users_kinds = STRUCTURAL)
+        more = ask_distinct_sources(&whole) - (ask_distinct_sources(res) if hops != 0 else 0)
+    }
+    defer if more > 0 { fmt.sbprintf(b, "  (%d more: add a depth, or 'all')\n", more) }
     if len(res.edges) == 0 { fmt.sbprint(b, "  (no users)\n"); return }
+    if hops == 0 { return }
 
     // Flatten to self-contained rows so the sort needs no captured `res` (Odin
     // proc literals don't close over locals). Order by (hop, user, edge) — all
@@ -1779,7 +2156,26 @@ ask_edge_word :: proc(k: Ask_Edge_Kind) -> string {
 
 ask_loc :: proc(span: Span) -> string {
     if span_file(span) == "" { return "?" }
-    return fmt.tprintf("%s:%d", span_file(span), span_line(span))
+    return fmt.tprintf("%s:%d", ask_short_path(span_file(span)), span_line(span))
+}
+
+// Where a query's run from (ask_run): what's outside it is written from there, where
+// that's shorter than the whole path. What's written so still finds the file: `at`
+// resolves it from here.
+ask_here: string
+@(private="file")
+ask_here_room: [4096]u8
+
+// Where queries are run from now on.
+ask_run_from :: proc(dir: string) {
+    ask_here = string(ask_here_room[:copy(ask_here_room[:], dir)])
+}
+
+@(private="file")
+ask_short_path :: proc(path: string) -> string {
+    if ask_here == "" || !filepath.is_abs(path) { return path }
+    rel, err := filepath.rel(ask_here, path, context.temp_allocator)
+    return rel if err == nil && len(rel) < len(path) else path
 }
 
 // A type's marker as a bracketed suffix (" [synthetic]"), or "" when ordinary.
@@ -1929,6 +2325,14 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
     }
     if len(types) == 0 && len(funs) == 0 { return "", false }   // not a (loaded) module
 
+    // Its constants: what its body-level definitions are that aren't funs or types.
+    consts := make([dynamic]Token_Id, context.temp_allocator)
+    for tok, def in checked.rs.defs {
+        if tok in checked.rs.owners || rs_def_kind(&build_tree, Tree_Id(build_tree.b[def])) != .Const { continue }
+        if build_files[build_tokens[tok].file].module == canonical { append(&consts, tok) }
+    }
+    slice.sort(consts[:])
+
     slice.sort_by(types[:], proc(a, b: Entry) -> bool {
         if a.users != b.users { return a.users > b.users }      // most-used first
         return a.m.label < b.m.label
@@ -1937,17 +2341,33 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
 
     b := strings.builder_make()
     fmt.sbprintf(&b, "%s — module   (%s, %s)\n", canonical, ask_plural(len(types), "type"), ask_plural(len(funs), "fun"))
+    // (A doc comment's first line is what most say first.)
+    doc_line :: proc(b: ^strings.Builder, first: Token_Id) {
+        if first == 0 { return }
+        doc := doc_comment_above(build_tokens[first])
+        if doc == "" { return }
+        if nl := strings.index_byte(doc, '\n'); nl >= 0 { doc = doc[:nl] }
+        fmt.sbprintf(b, "      %s\n", doc)
+    }
     if len(types) > 0 {
         fmt.sbprint(&b, "\n  types        (most-used first)\n")
         for e in types {
             tail := fmt.tprintf("   ·  %s", ask_plural(e.users, "user")) if e.users > 0 else ""
             fmt.sbprintf(&b, "    %-8s %s  %s%s%s\n", e.m.sub, e.m.label, ask_loc(e.m.span), ask_mark_suffix(e.m.mark), tail)
+            doc_line(&b, e.m.span.tok)
+        }
+    }
+    if len(consts) > 0 {
+        fmt.sbprint(&b, "\n  constants    (source order)\n")
+        for tok in consts {
+            fmt.sbprintf(&b, "    %s  %s\n", ask_loc(token_span(build_tokens[tok])), hit_source_line(build_tokens[tok]))
         }
     }
     if len(funs) > 0 {
         fmt.sbprint(&b, "\n  funs         (source order)\n")
         for m in funs {
-            fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+            fmt.sbprintf(&b, "    %s  %s\n", ask_loc(m.span), ask_signature(m.span.tok))
+            doc_line(&b, m.span.tok)
         }
     }
     if kind == "types" { fmt.sbprint(&b, ask_module_shapes(checked, canonical)) }
