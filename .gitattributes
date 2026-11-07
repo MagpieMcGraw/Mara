@@ -1,3 +1,7 @@
+# Text files are LF on disk too, on Windows as everywhere (git for Windows
+# would check them out CRLF).
+* text=auto eol=lf
+
 # GitHub Linguist hints — controls the language breakdown shown on the repo page.
 
 # SDL headers are bundled here so foreign blocks can be type-checked offline;
