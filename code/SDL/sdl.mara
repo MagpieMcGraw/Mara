@@ -259,6 +259,11 @@ Scancode :: union(tag u32) {
     SoftRight          = 288
     Call               = 289
     EndCall            = 290
+    // 400 to 500 SDL hands out while running, to keys its table has no code
+    // for. Count is one past the last scancode SDL can give: `[Scancode]bool`
+    // holds a bool for every one.
+    Reserved           = 400
+    Count              = 512
 }
 
 // SDL's layout: a u32 type, a u32 reserved, then each variant from byte 8 (its

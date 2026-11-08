@@ -71,6 +71,7 @@ TC :: struct {
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
+    field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
 
     // Names (design/name_resolution.md): what each refers to, the resolver's,
@@ -513,6 +514,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_allocator(k)
     tc_validate_withs(k)
     tc_validate_main(k, main)
+    tc_validate_field_refs(k)
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
 

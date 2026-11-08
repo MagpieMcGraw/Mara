@@ -753,18 +753,19 @@ print_struct_name :: proc(sd: ^Scope_Body) -> string {
 // Inline switch that prints the variant name matching `val`, or
 // "EnumName(<tag>)" when nothing matches (e.g. flag-combo, out-of-range raw
 // tag). Variants are sorted by value for stable IR; same-value aliases keep
-// the first in name order — LLVM's switch requires unique case values, so
+// the first declared — LLVM's switch requires unique case values, so
 // duplicates are folded into one case.
 gen_print_enum :: proc(g: ^Codegen, val: Val, tag_ir: Ir_Type, et: ^Type_Enum, named := true, label := "") {
     // (Its name: a distinct enum's own — label — else the enum's.)
     enum_name := label if label != "" else et.source_name if et.source_name != "" else et.name
-    Variant :: struct { name: string, value: int }
+    Variant :: struct { name: string, value: int, decl: Token_Id }
     entries := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
     for name, value in et.variants {
-        append(&entries, Variant{name = name, value = value})
+        append(&entries, Variant{name = name, value = value, decl = et.variant_decls[name]})
     }
     slice.sort_by(entries[:], proc(a, b: Variant) -> bool {
         if a.value != b.value { return a.value < b.value }
+        if a.decl != b.decl { return a.decl < b.decl }
         return a.name < b.name
     })
     // Fold same-value aliases: first wins.

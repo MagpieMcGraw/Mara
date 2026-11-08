@@ -798,11 +798,22 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     defer if tc_body_ends(k, v.body) == {.Exit} { emit_diagnostic_once(.Warning, span, WARN_LOOP_NEVER_LOOPS) }
     #partial switch t.tag[s] {
     case .For_Each:
+        // (A type looped over: its values — tc_loop_over_type.)
+        if k.t.tag[tc_unparen(k, v.collection)] == .Type_Field {
+            ft := tc_type(k, tc_unparen(k, v.collection), span)
+            tc_set_type(k, tc_unparen(k, v.collection), ft)
+            tc_loop_over_type(k, v, ft, span)
+            return
+        }
         // (A call of several results: a loop over the call — tc_for_call.)
         call := tc_unparen(k, v.collection)
         if tc_is_call(k, call) { k.several_ok = call }
         ct := tc_check(k, v.collection)
         k.several_ok = 0
+        if loops_over_type(k, v.collection) {
+            tc_loop_over_type(k, v, ct, span)
+            return
+        }
         if returns := tc_call_returns(k, v.collection); len(returns) > 1 {
             if v.by_ref != 0 { tc_error(k, span, TYPE_REF_LOOP_OVER_CALL) }
             tc_for_call(k, s, v, ct, returns)
@@ -865,6 +876,78 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }
+}
+
+// The most values `for v in T` takes: each is written into the loop's table
+// where it begins.
+TYPE_LOOP_MOST :: 4096
+
+// Whether a loop's collection is a type (`for v in Mode`, `for f in S.bool`):
+// its values are looped over (type_loop_values).
+loops_over_type :: proc(k: ^TC, n: Tree_Id) -> bool {
+    n := tc_unparen(k, n)
+    if k.t.tag[n] == .Type_Field { return true }
+    return (k.t.tag[n] == .Ident || k.t.tag[n] == .Field) && tc_ref(k, n).kind == .Type
+}
+
+// A type's values, as `for v in T` takes them: an enum's, in the order its
+// variants are declared, a value two names share once; a union's, its tags
+// (its `Name_Tag`'s); a field reference type's, each field of that type its
+// struct holds, in the struct's order. ok false for another type; whole false
+// when there are more than TYPE_LOOP_MOST.
+type_loop_values :: proc(t: Type) -> (elem: Type, values: []i128, ok, whole: bool) {
+    out := make([dynamic]i128, context.temp_allocator)
+    by_enum :: proc(out: ^[dynamic]i128, et: ^Type_Enum) {
+        Variant :: struct { name: string, value: int, decl: Token_Id }
+        vs := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
+        for name, value in et.variants { append(&vs, Variant{name, value, et.variant_decls[name]}) }
+        slice.sort_by(vs[:], proc(a, b: Variant) -> bool {
+            if a.decl != b.decl { return a.decl < b.decl }
+            if a.value != b.value { return a.value < b.value }
+            return a.name < b.name
+        })
+        for v in vs { if !slice.contains(out[:], i128(v.value)) { append(out, i128(v.value)) } }
+    }
+    #partial switch v in distinct_base(t) {
+    case ^Type_Enum:
+        by_enum(&out, v)
+        return t, out[:], true, len(out) <= TYPE_LOOP_MOST
+    case ^Type_Union:
+        by_enum(&out, v.tag_enum)
+        return v.tag_enum, out[:], true, len(out) <= TYPE_LOOP_MOST
+    case ^Type_Field:
+        paths, all := field_ref_paths(v.owner, v.elem, 2 * TYPE_LOOP_MOST)
+        for p in paths { if !slice.contains(out[:], i128(p.value)) { append(&out, i128(p.value)) } }
+        return t, out[:], true, all && len(out) <= TYPE_LOOP_MOST
+    }
+    return nil, nil, false, false
+}
+
+// `for v in T`, T a type: one of its values a round (type_loop_values), and
+// `for v, i in T` counts them from 0. They're no place: `for &v` is an error.
+tc_loop_over_type :: proc(k: ^TC, v: For_View, t: Type, span: Span) {
+    elem, values, ok, whole := type_loop_values(t)
+    if _, is_error := t.(Type_Error); is_error {
+        elem = Type_Error{}
+    } else if !ok {
+        elem = Type_Error{}
+        if st, is_scope := t.(^Type_Scope); is_scope {
+            tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, scope_display_name(st))
+        } else {
+            tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(t))
+        }
+    } else if !whole {
+        tc_error(k, span, TYPE_LOOP_OVER_TYPE_TOO_MANY, type_name(t), TYPE_LOOP_MOST)
+    }
+    _ = values
+    if v.by_ref != 0 { tc_error(k, span, TYPE_LOOP_OVER_TYPE_REF, tc_text(v.elem), type_name(t)) }
+    if names := loop_names(v); len(names) > 2 { tc_error(k, span, TYPE_LOOP_ITEM_NAMES, len(names)) }
+    if v.type_ != 0 { tc_error(k, span, TYPE_LOOP_OVER_TYPE_TYPED, type_name(elem)) }
+    tc_loop_name(k, v.elem)
+    tc_loop_name(k, v.index)
+    if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
+    if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+    tc_scope(k, v.body)
 }
 
 // A loop's name, said wrong as a declaration's would be (tc_declarable):

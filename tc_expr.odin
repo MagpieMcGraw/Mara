@@ -104,6 +104,11 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id) -> Type {
     case .Type_Name:
         // (A name written where a type's argument goes, standing for a value.)
         return tc_ident(k, n)
+    case .Type_Field:
+        // (A field reference's type where a value goes: only a loop takes one,
+        // tc_loop_over_type.)
+        tc_error(k, span, PARSE_TYPE_AS_VALUE, tc_written(k, n))
+        return Type_Error{}
     case .Hash_Name:
         return tc_hash_name(k, n)
     case .Self:
@@ -882,7 +887,12 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
                 for a in args { tc_check(k, a) }
                 return Type_Error{}
             }
-            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args)
+            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args, by_types = true)
+        }
+        // (No group of its name in sight and nothing it names: the groups of
+        // its name in the modules its arguments' types are defined in.)
+        if len(groups) == 0 && callee.kind == .None && name in k.rs.dispatch_names {
+            return tc_dispatch_call(k, n, name, nil, args, by_types = true)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
             return tc_generic_call(k, n, name, tmpl, args)
@@ -1194,9 +1204,13 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
     // item's, isn't its type. Its untyped numbers settle to the cast's.)
     k.hint = nil
     each(k, args, &types)
+    // (A field reference's value comes out as a number, an integer — a map's
+    // key — but none goes back in: TYPE_FIELD_REF_FROM_VALUE.)
     if _, is_ref := distinct_base(types[0]).(^Type_Field); is_ref {
-        tc_error(k, span, TYPE_FIELD_REF_CAST, name)
-        return Type_Error{}, true
+        if nt, to_num := target.(Type_Numeric); !to_num || nt.kind == .Float {
+            tc_error(k, span, TYPE_FIELD_REF_CAST, name)
+            return Type_Error{}, true
+        }
     }
     tc_settle_untyped(k, args[0], types[0], target)
     // (A known float made an int it doesn't fit: said so now.)

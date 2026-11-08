@@ -140,6 +140,7 @@ tc_field_type_of :: proc(k: ^TC, owner, elem: Type, span: Span) -> Type {
         tc_error(k, span, TYPE_FIELD_REF_NOT_STRUCT, type_name(owner))
         return Type_Error{}
     }
+    append(&k.field_ref_types, Field_Ref_Use{owner, elem, span})
     return type_field(owner, elem)
 }
 

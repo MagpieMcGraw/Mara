@@ -4,7 +4,7 @@ use mara.core
 
 //@ expect-fail: can't take a field reference
 
-// A field reference isn't a number: no casting it to one.
+// A field reference's value comes out only as an integer.
 
 Inner :: struct { x: f32 }
 Other :: struct { y: f32 }
@@ -19,5 +19,5 @@ S :: struct {
 
 main :: fun() {
 	f := S.inner.x
-	print(i64(f))
+	print(f64(f))
 }

@@ -1,0 +1,10 @@
+module dbt_lib
+
+use mara.core
+
+// A library's generic: score and `==` aren't in sight here. They're found by
+// the argument's type, in the module that defines it.
+best :: fun(a: $T, b: T) -> i64 {
+	if a == b do return score(a)
+	return score(a) + score(b)
+}

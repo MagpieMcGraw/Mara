@@ -1,0 +1,46 @@
+module loop_over_type
+
+use mara.core
+
+//@ expect-output: Mode.Off Off
+//@ expect-output: Mode.Slow Slow
+//@ expect-output: Mode.Fast Fast
+//@ expect-output: 0 Rect
+//@ expect-output: 2 Dot
+//@ expect-output: holds Label
+//@ expect-output: bool fields: quit mouse.pressed[0] mouse.pressed[1] mouse.pressed[2]
+//@ expect-output: f32 fields set: 2 2 2
+//@ expect-output: aliased: Mode.Slow Slow
+
+// A loop over a type: an enum's values, in the order they're declared (a value
+// two names share, once, by its first name); a union's tags; a field reference
+// type's fields, in its struct's order.
+
+Mode :: union { Off = 0  Slow = 3  Also_Slow = 3  Fast = 7 }
+
+Shape :: union {
+	Rect(w: i64) { width := w }
+	Label { text: str64 = "none" }
+	Dot
+}
+
+Mouse :: struct { x, y: f32  pressed: [3!]bool }
+Events :: struct { quit: bool  mouse: Mouse  scroll: f32 }
+Axis :: alias Events.f32
+
+main :: fun() {
+	for m in Mode { print(m, m.text()) }
+	for t, i in Shape { if t != .Label do print(i, t.text()) }
+	s : Shape = Label{text = "hi"}
+	for t in Shape { if t == s.tag do print("holds", t.text()) }
+	names : [64]utf8
+	for f in Events.bool {
+		&names + f.text()
+		&names + " "
+	}
+	print("bool fields:", names)
+	e := Events{all 0}
+	for f in Axis { e[f] = 2 }
+	print("f32 fields set:", e.mouse.x, e.mouse.y, e.scroll)
+	print("aliased:", Mode.Also_Slow, Mode.Also_Slow.text())
+}

@@ -1,0 +1,16 @@
+module field_ref_no_field_neg
+
+use mara.core
+
+//@ expect-fail: T holds no f64 field, so a T.f64 would name none
+
+// A reference type names a field of its struct: one whose struct holds no field
+// of that type has nothing for its zero to be, and would read past the struct.
+
+T :: struct { a: i32 }
+
+main :: fun() {
+	t := T{a = 1}
+	f : T.f64
+	print(t[f])
+}

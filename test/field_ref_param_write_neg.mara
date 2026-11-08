@@ -1,0 +1,18 @@
+module field_ref_param_write_neg
+
+use mara.core
+
+//@ expect-fail: cannot write to field '[f]' of immutable parameter 's'
+
+// Writing through a reference is writing a field: an immutable param refuses
+// it as it refuses `s.b = 7`.
+
+S :: struct { a: i64  b: i64 }
+
+poke :: fun(s: S, f: S.i64) { s[f] += 5 }
+
+main :: fun() {
+	s := S{a = 1, b = 2}
+	poke(s, S.b)
+	print(s.b)
+}

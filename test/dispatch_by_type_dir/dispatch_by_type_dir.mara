@@ -1,0 +1,20 @@
+module dispatch_by_type_dir
+
+use mara.core
+use dbt_lib
+
+// A generic of another module calls a dispatch group and an operator only
+// this module defines, for this module's type: found by the type.
+
+Score :: struct { v: i64 }
+
+score :: dispatch { score_of }
+score_of :: fun(s: Score) -> i64 { return s.v * 10 }
+
+overload == score_eq
+score_eq :: dispatch { score_same }
+score_same :: fun(a, b: Score) -> bool { return a.v == b.v }
+
+main :: fun() {
+	print(best(Score{v = 1}, Score{v = 2}))
+}

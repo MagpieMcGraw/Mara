@@ -1626,6 +1626,7 @@ tp_generic_arg :: proc(p: ^Tree_Parser) -> Tree_Id {
         return tp_type(p)
     }
     if k == .Identifier {
+        if tp_names_field_type(p) { return tp_type(p) }
         if tp_peek(p) == .Left_Paren { return tp_expr(p, 0) }
         if tp_peek(p) == .Right_Paren || tp_peek(p) == .Comma {
             start := p.pos
@@ -1636,6 +1637,17 @@ tp_generic_arg :: proc(p: ^Tree_Parser) -> Tree_Id {
         return tp_expr(p, 0)
     }
     return tp_type(p)
+}
+
+// At a name: whether names, then `.` and a type that isn't a name, follow —
+// `S.f32`, `m.S.[4!]bool`, a field reference's type.
+tp_names_field_type :: proc(p: ^Tree_Parser) -> bool {
+    for i := 1; tp_peek(p, i) == .Dot; i += 2 {
+        next := tp_peek(p, i + 1)
+        if next == .Identifier { continue }
+        return tp_is_type_keyword(next) || next == .Left_Bracket || next == .Caret
+    }
+    return false
 }
 
 // A struct's type, then `.` and a type that isn't a name, `S.f32`, `S.[4!]bool`:
@@ -1963,6 +1975,16 @@ tp_entry :: proc(p: ^Tree_Parser, positional: bool) -> Tree_Id {
 
 // Whether an expression is a pure name path (`A.B.C`): a qualified literal's
 // type.
+// A name path's names, `m.S` its two, in order.
+tp_path_tokens :: proc(p: ^Tree_Parser, n: Tree_Id, out: ^[dynamic]Token_Id) {
+    #partial switch p.t.tag[n] {
+    case .Ident: append(out, p.t.main[n])
+    case .Field:
+        tp_path_tokens(p, Tree_Id(p.t.a[n]), out)
+        append(out, Token_Id(p.t.b[n]))
+    }
+}
+
 tp_is_name_path :: proc(p: ^Tree_Parser, n: Tree_Id) -> bool {
     #partial switch p.t.tag[n] {
     case .Ident: return true
@@ -2316,6 +2338,16 @@ tp_postfix :: proc(p: ^Tree_Parser, operand: Tree_Id, allow_dot: bool) -> Tree_I
                 }
             }
         case .Dot:
+            // (Names, then `.` and a type that isn't a name: a field
+            // reference's type, `for f in Event_State.bool`.)
+            if next := tp_peek(p); tp_is_name_path(p, result) && (tp_is_type_keyword(next) || next == .Left_Bracket || next == .Caret) {
+                dot := tp_advance(p)
+                parts := tp_token_items()
+                tp_path_tokens(p, result, &parts)
+                owner := tp_node(p, .Type_Name, parts[0], first, tp_tokens(p, parts))
+                result = tp_node(p, .Type_Field, dot, first, u32(owner), u32(tp_type(p)))
+                continue
+            }
             dot := tp_advance(p)
             name := tp_expect(p, .Identifier)
             if tp_kind(p) == .Left_Paren {

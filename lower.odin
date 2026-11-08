@@ -858,7 +858,9 @@ lw_for :: proc(k: ^TC, s: Tree_Id) {
         }
         ct: Type
         coll := NO_VALUE
-        if !lw_pure_place(k, v.collection) {
+        if loops_over_type(k, v.collection) {
+            ct = lw_type_loop_items(k, &fl, tc_node_type(k, tc_unparen(k, v.collection)))
+        } else if !lw_pure_place(k, v.collection) {
             ct = lw_loop_items(k, &fl, v.collection)
         } else {
             // (A plain place: viewed once, where the loop begins; else built
@@ -932,6 +934,25 @@ LW_Walk :: struct {
 lw_walk_place :: proc(data: rawptr, span: Span) -> Operand {
     walk := (^LW_Walk)(data)
     return lw_expr(walk.k, walk.n, .Place).v
+}
+
+// `for v in T` (tc_loop_over_type): its type's values written into the
+// loop's own table where it begins, then walked.
+lw_type_loop_items :: proc(k: ^TC, fl: ^Graph_For, t: Type) -> Type {
+    b := k.gb
+    span := fl.span
+    elem, values, _, _ := type_loop_values(t)
+    graph_build_items(b, fl)
+    table := new_clone(Type_Fixed_Array{size = len(values), elem = elem})
+    ga := graph_build_array(b, span, graph_dest_var(fl.coll_slot, nil))
+    for value, i in values {
+        d := graph_build_array_elem(b, ga, i, elem if i == 0 else nil, table if i == 0 else nil)
+        c := graph_const(b, .Synthetic, span, elem, fmt.tprint(value), Const_Value{int = value})
+        graph_build_write_at(b, graph_dest_place(b, d, span), c, span)
+    }
+    if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, table) }
+    graph_build_typed(b, fl.coll_slot, table)
+    return table
 }
 
 // A loop's collection that is no plain place: held in the

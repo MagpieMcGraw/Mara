@@ -695,6 +695,32 @@ resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string, all := fals
     return out[:]
 }
 
+// The dispatch groups named `name` in the modules `homes` — the modules a
+// call's arguments' types are defined in, whose groups join those in sight
+// (map.mara's map_hash(key) finds the one beside the key's type).
+resolve_dispatches_in :: proc(r: ^Resolver, homes: []string, name: string) -> []Token_Id {
+    if name not_in r.dispatch_names { return nil }
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    for home in homes {
+        m, ok := r.modules[home]
+        if !ok { continue }
+        if groups, has := m.dispatches[name]; has { append(&out, ..groups[:]) }
+    }
+    return out[:]
+}
+
+// The groups an operation `op` overloads in the modules `homes` (its
+// operands' types'), beside those in sight.
+resolve_overloads_in :: proc(r: ^Resolver, homes: []string, op: Token_Kind) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    for home in homes {
+        m, ok := r.modules[home]
+        if !ok { continue }
+        for o in m.overloads { if o.op == op { append(&out, o.name) } }
+    }
+    return out[:]
+}
+
 // The modules in sight where `at` is that each have a fun `name`, when its
 // own module has none — two or more: a bare call of it is ambiguous. (Every
 // module its file or its module uses, not only the nearest's: the checker's

@@ -1,0 +1,17 @@
+module field_ref_bytes_neg
+
+use mara.core
+
+//@ expect-fail: a field reference is a place only its struct's type makes
+
+// A reference read out of bytes would be whatever number the bytes hold.
+
+S :: struct { id: i64  name: []utf8 }
+
+main :: fun() {
+	buf : [16!]byte
+	buf[0] = u64(0)
+	f : S.[]utf8 = buf[0]
+	s := S{id = 3, name = "abc"}
+	print(s[f].len)
+}

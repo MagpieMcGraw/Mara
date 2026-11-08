@@ -1,0 +1,13 @@
+module loop_over_type_typed_neg
+
+use mara.core
+
+//@ expect-fail: a loop over a type's values takes no type
+
+// Each value a loop over a type gives is of that type (a union's, its tag's).
+
+Mode :: union { Off = 0  On = 1 }
+
+main :: fun() {
+	for m: i64 in Mode { print(m) }
+}

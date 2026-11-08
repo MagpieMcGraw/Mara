@@ -232,6 +232,12 @@ example_do :: fun() {
 // counts the rounds, from 0: `for x, i in f()`. A lexer's loop:
 // `for t in next_token(&l)`.
 //
+// `for m in Mode` takes each value of a type, in the order its variants are
+// declared: an enum's (two names of one value give it once, by the first),
+// a union's tags (`Shape_Tag`, what `s.tag` is), or a field reference type's
+// fields (`for f in Input.f32`, its struct's order). With `.text()`, a
+// program can write source from a type: `key_w_press` for each Scancode.
+//
 // `in` is also a test: `x in 1..10` is whether 1 <= x <= 10, `x in 0:10`
 // whether 0 <= x < 10 (`c in 'a'..'z'`, a lower-case letter); `x in xs`, whether
 // some item of xs is x (`==` as their type has it: text, the same
@@ -565,6 +571,11 @@ tick :: fun(n: i64) -> i64 { return n + 1 }
 // `overload`, an operator calls a dispatch. Dispatches of one name in two
 // modules join. A fun or type of that name in your own module hides them; a
 // fun of that name in a module you use makes a bare call ambiguous.
+//
+// A call also tries the dispatches of its name in the modules its arguments'
+// types are defined in, and an operator their overloads. What a module gives
+// its own types goes with them: a `map_hash` beside your enum makes it a map's
+// key, and a library's generic comparing two of your structs uses your `==`.
 example_dispatch :: fun() {
 	print(area(Coin{r = 1}))               // 3.14
 	print(area(Tile{side = 2}))            // 4
@@ -615,17 +626,26 @@ Place :: struct { x: f32  y: f32 }
 // `f := Input.mouse.x` names Input's field mouse.x. Its type is `Input.f32`:
 // the struct's type, a dot, and the field's type. `state[f]` reads that field
 // of state and `state[f] = 5` writes it, through a pointer too. A path goes
-// through fields and into fixed arrays, by a number or by a variant for an
-// enum-indexed array, even one known only when it runs (checked then). It
-// doesn't go through a pointer, a slice or a list. `m := Input.mouse` makes
+// through fields and into fixed arrays and lists, by a number or by a variant
+// for an enum-indexed array, even one known only when it runs (checked then,
+// within the array's cap as indexing is). It doesn't go through a pointer or a
+// slice: what they hold isn't in the struct. `m := Input.mouse` makes
 // one too, and `m.x` is Input.mouse.x again. References compare with ==, but
 // there's no arithmetic on them and no number becomes one, so a reference is
-// always a real field. Indexing another struct's value with it doesn't build.
+// always a real field. Its value comes out as a number, `i64(f)`, counted from
+// the first field of its type: a map's key with a `map_hash` for the reference
+// type beside it. One never set (declared with no value, or in a struct
+// made `{all 0}`) is the first field of its type: `Input.f32`'s is mouse.x.
+// A reference type needs its struct to hold a field of it, of some size, and
+// indexing another struct's value with one doesn't build.
 //
 // `f.text()` is the path as text, "mouse.x" (an atom), and print shows that.
 // `R.from_text(s)`, with `R :: alias Input.f32`, gives the reference s names
-// and true, or false when no f32 field of Input has that path. A struct with
-// more than 4096 fields of one type can't name them.
+// and true; when no f32 field of Input has that path, the first and false.
+// A field through a `using` field is named without it (`hp`, not `base.hp`;
+// both are read back), and an enum-indexed array's item by its variant, the
+// first declared of a value. A struct with more than 4096 fields of one type
+// can't name them.
 example_field_refs :: fun() {
 	state := Input{all 0}
 	f := Input.mouse.x

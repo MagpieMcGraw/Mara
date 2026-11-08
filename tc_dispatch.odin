@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // Dispatch groups and operator overloads in the checker: `add(a, b)`
@@ -15,10 +16,32 @@ tc_binding_kind_fits :: proc(t, param: Type) -> bool {
     return is_float == (pk == .Float)
 }
 
+// The modules types are defined in, each once (type_home): where a call's
+// or an operation's groups are found beside those in sight.
+tc_type_homes :: proc(types: []Type) -> []string {
+    out := make([dynamic]string, context.temp_allocator)
+    for t in types {
+        home := type_home(resolve_infer(t)) if t != nil else ""
+        if home != "" && !slice.contains(out[:], home) { append(&out, home) }
+    }
+    return out[:]
+}
+
+// Members added to a list, each once (two groups can name one fun).
+tc_add_members :: proc(out: ^[dynamic]TC_Member, members: []TC_Member) {
+    each: for m in members {
+        for o in out { if o.ref.decl == m.ref.decl && o.name == m.name { continue each } }
+        append(out, m)
+    }
+}
+
 // `f(args)` where f is a dispatch group: each argument checked, the one
 // member they fit chosen — each argument its param's type (a binding no use
-// has given a width yet: a param of its kind) — then the call.
-tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member, args: []Tree_Id) -> Type {
+// has given a width yet: a param of its kind) — then the call. `by_types`:
+// the groups of its name in the modules its arguments' types are defined in
+// join (a type's own module gives what's done with it, in a library's
+// generic too); a qualified call's, or a body's own group, names it alone.
+tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member, args: []Tree_Id, by_types := false) -> Type {
     tr := k.t
     span := tree_span(tr, n)
     // (A `_`: the default the chosen function has there — checked once it
@@ -27,6 +50,18 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
     for a, i in args { underscore[i] = tr.tag[a] == .Ident && tc_name(k, a) == "_" }
     arg_types := make([dynamic]Type, context.temp_allocator)
     for a, i in args { append(&arg_types, nil if underscore[i] else tc_arg(k, a)) }
+    members := members
+    if by_types {
+        all := make([dynamic]TC_Member, context.temp_allocator)
+        append(&all, ..members)
+        tc_add_members(&all, tc_dispatch_members(k, resolve_dispatches_in(k.rs, tc_type_homes(arg_types[:]), name)))
+        members = all[:]
+        // (None in sight and none by its arguments' types: no such function.)
+        if len(members) == 0 {
+            if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name) }
+            return Type_Error{}
+        }
+    }
     matched := make([dynamic]string, context.temp_allocator)
     matched_fts := make([dynamic]^Type_Scope, context.temp_allocator)
     candidates: for m in members {
@@ -123,12 +158,13 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
 // `overload op` names, the member that fits best — its params the operands'
 // types exactly, then structurally, then a generic one's instance.
 tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -> (^Type_Scope, bool) {
-    groups := resolve_overloads(k.rs, span.at, op)
-    if len(groups) == 0 { return nil, false }
+    operands := [2]Type{lt, rt}
+    members := tc_overload_members(k, op, span.at, operands[:])
+    if len(members) == 0 { return nil, false }
     best: ^Type_Scope
     best_score := 0   // (1 a generic's instance, 2 structural, 3 exact)
-    for group in groups {
-        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, span.at, tc_text(group), all = true)) {
+    {
+        for m in members {
             f := m.name
             if found, ok := tc_ref_type(k, m.ref, f); ok {
                 ft, is_scope := found.(^Type_Scope)
@@ -191,13 +227,29 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
 }
 
 
+// The members of the groups `overload op` names: those in sight where `at`
+// is, then those in the modules the operands' types are defined in (a
+// type's `==` where a library's generic compares two), each once.
+tc_overload_members :: proc(k: ^TC, op: Token_Kind, at: Token_Id, operands: []Type) -> []TC_Member {
+    out := make([dynamic]TC_Member, context.temp_allocator)
+    for group in resolve_overloads(k.rs, at, op) {
+        tc_add_members(&out, tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group), all = true)))
+    }
+    homes := tc_type_homes(operands)
+    for group in resolve_overloads_in(k.rs, homes, op) {
+        tc_add_members(&out, tc_dispatch_members(k, resolve_dispatches_in(k.rs, homes, tc_text(group))))
+    }
+    return out[:]
+}
+
 // The function `-x` calls, when x is no number: of the groups `overload -`
 // names, the one-param member that fits best.
 tc_unary_overload :: proc(k: ^TC, t: Type, at: Token_Id) -> ^Type_Scope {
     best: ^Type_Scope
     best_score := 0
-    for group in resolve_overloads(k.rs, at, .Minus) {
-        for m in tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group), all = true)) {
+    operand := [1]Type{t}
+    {
+        for m in tc_overload_members(k, .Minus, at, operand[:]) {
             found, ok := tc_ref_type(k, m.ref, m.name)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)

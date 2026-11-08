@@ -24,7 +24,7 @@ lw_index :: proc(k: ^TC, n: Tree_Id, want: Build_Want) -> Built {
     // at the reference's offset.)
     if _, by_field := distinct_base(tc_node_type(k, idx_n)).(^Type_Field); by_field {
         t := tc_node_type(k, n)
-        p := graph_op_value(b, .View, .Explicit, span, t, "", base, lw_expr(k, idx_n, .Value, .Explicit).v)
+        p := graph_op_value(b, .View, .Explicit, span, t, "", base, lw_field_ref_at(k, idx_n, span, .Explicit))
         if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
         return {v = p, place = true, ok = true}
     }
@@ -55,7 +55,7 @@ lw_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     if pt, is_ptr := tt.(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, ix_span, pt.elem, "", cr.v) }
     if _, by_field := distinct_base(tc_node_type(k, idx_n)).(^Type_Field); by_field {
         // (`events[f] = v`: the struct's view at f's offset, written.)
-        place := graph_op_value(b, .View, .Explicit, ix_span, elem, "", base, lw_expr(k, idx_n, .Value).v)
+        place := graph_op_value(b, .View, .Explicit, ix_span, elem, "", base, lw_field_ref_at(k, idx_n, ix_span, .Explicit))
         b.at = at
         lw_store_at(k, value, place, span, op_tok, target, s)
         return

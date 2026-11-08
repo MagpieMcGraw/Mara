@@ -1,0 +1,13 @@
+module loop_over_struct_neg
+
+use mara.core
+
+//@ expect-fail: a loop takes a field reference type's fields
+
+// A struct's type isn't looped over itself: its fields of one type are, `S.f32`.
+
+S :: struct { a: f32  b: f32 }
+
+main :: fun() {
+	for f in S { print(f) }
+}

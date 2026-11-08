@@ -1,0 +1,14 @@
+module field_ref_zero_size_neg
+
+use mara.core
+
+//@ expect-fail: can't name a field of type Empty
+
+// Fields of no size are all at one place: a reference couldn't tell them apart.
+
+Empty :: struct {}
+S :: struct { a: i64  e1: Empty  e2: Empty }
+
+main :: fun() {
+	print(S.e1 == S.e2)
+}

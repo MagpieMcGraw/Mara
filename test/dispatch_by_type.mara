@@ -1,0 +1,49 @@
+module dispatch_by_type
+
+use mara.core
+use mara.memory
+use mara.map
+
+//@ expect-output: enum key: 7 true 2
+//@ expect-output: reference key: 3 true
+//@ expect-output: library ==: true false
+
+// A dispatch call or an overloaded operator also finds the groups of its name
+// in the modules its arguments' types are defined in. A library's generic uses
+// what this module gives its own types: map.mara's map_hash(key) the hashes
+// here, core's includes this module's `==` for Score.
+
+#allocator Arena_Basic(1 * MB)
+
+Mode :: union { Off = 0  Slow = 3  Fast = 7 }
+S :: struct { a: i64  b: i64 }
+R :: alias S.i64
+Score :: struct { v: i64  noise: i64 }
+
+map_hash :: dispatch { hash_mode, hash_ref }
+hash_mode :: fun(key: Mode) -> u64 { return map_hash_i64(i64(key)) }
+hash_ref :: fun(key: R) -> u64 { return map_hash_i64(i64(key)) }
+
+overload == score_eq
+score_eq :: dispatch { score_same }
+score_same :: fun(a, b: Score) -> bool { return a.v == b.v }
+
+main :: fun() {
+	mode_room : [4096]byte
+	modes : Map(Mode, i64)
+	map_init(&modes, 16, &mode_room)
+	map_set(&modes, Mode.Fast, 7)
+	map_set(&modes, Mode.Slow, 3)
+	fast, has_fast := map_get(&modes, Mode.Fast)
+	print("enum key:", fast, has_fast, modes.count)
+
+	ref_room : [4096]byte
+	refs : Map(R, i64)
+	map_init(&refs, 16, &ref_room)
+	map_set(&refs, S.b, 3)
+	b, has_b := map_get(&refs, S.b)
+	print("reference key:", b, has_b)
+
+	scores : [2!]Score = [Score{v = 1, noise = 5}, Score{v = 2, noise = 6}]
+	print("library ==:", includes(scores[:], Score{v = 2, noise = 0}), includes(scores[:], Score{v = 9, noise = 0}))
+}

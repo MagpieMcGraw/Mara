@@ -17,11 +17,21 @@ use mara.core
 //@ expect-output: composed: true mouse.x
 //@ expect-output: spelled types: 1.5 mouse 9
 //@ expect-output: by value: 2.5
+//@ expect-output: list item: true true 0 buttons[2]
+//@ expect-output: list runtime: 2.5 stick[1]
+//@ expect-output: list from_text: -1 true
+//@ expect-output: zero: name 3 name 3 name 3
+//@ expect-output: in place: tail cells[1].y
+//@ expect-output: alias: by_key[B] true true
+//@ expect-output: using: hp hp true true
+//@ expect-output: self: 2 b
+//@ expect-output: as numbers: 56 8 0 0
 
 // Field references: `Events.mouse.x` is a value naming a field of Events by its
 // place, typed `Events.f32`; `events[f]` reads and writes it, through a pointer
-// too. Paths go into fixed arrays by any index, enum-indexed ones by variant;
-// text() and from_text name them.
+// too. Paths go into fixed arrays by any index, enum-indexed ones by variant,
+// and lists within their cap, a write leaving the len as indexing does; text()
+// and from_text name them. A reference never set is its type's first field.
 
 Key :: union {
 	None = 0
@@ -83,8 +93,64 @@ main :: fun() {
 	events[r] += 1.5
 	print("spelled types:", events.scroll, t, events[t].x)
 	print("by value:", read(Inner_S{inner = Inner{x = 2.5}, fixed = [0, 0, 0, 0]}, Inner_S.inner.x))
+	pad := Pad{all 0}
+	pf := Pad.buttons[2]
+	pad[pf] = true
+	print("list item:", pad.buttons[2], pad[pf], pad.buttons.len, pf)
+	at := 1
+	if pad.flag do at = 0
+	ps := Pad.stick[at]
+	pad[ps] = 2.5
+	print("list runtime:", pad.stick[1], ps.text())
+	pg, pfound := Pad_Axis.from_text("stick[0]")
+	pad[pg] = -1
+	print("list from_text:", pad.stick[0], pfound)
+	more()
+}
+
+// A reference's zero is its type's first field: declared with no value, a
+// struct of them made `{all 0}`, from_text's miss.
+more :: fun() {
+	text := "abc"
+	s := Named{all 0}
+	s.id = 9
+	s.name = text[:]
+	z : Named.[]utf8
+	h := Holder{all 0}
+	m, _ := Named_Text.from_text("nope")
+	print("zero:", z, s[z].len, h.f, s[h.f].len, m, s[m].len)
+	print("in place:", Named.tail, Named.cells[1].y)
+	b := Keyed.by_key[B]
+	_, by_b := Keyed_Bool.from_text("by_key[B]")
+	also, by_also := Keyed_Bool.from_text("by_key[Also_B]")
+	print("alias:", b, by_b, by_also and also == b)
+	_, by_short := Keyed_Int.from_text("hp")
+	_, by_full := Keyed_Int.from_text("base.hp")
+	print("using:", Keyed.hp, Keyed.base.hp.text(), by_short, by_full)
+	o := Own{a = 1, b = 2, pick = Own.b}
+	print("self:", o[o.pick], o.pick)
+	// (Its value comes out as an integer, counted from its type's first field.)
+	print("as numbers:", i64(Named.tail), u64(Named.count), i32(Named.id), i64(Named.cells[0].x))
 }
 
 Inner :: struct { x: f32 }
 Inner_S :: struct { inner: Inner  fixed: [4!]i64 }
 read :: fun(s: Inner_S, f: Inner_S.f32) -> f32 { return s[f] }
+
+Pad :: struct {
+	flag: bool
+	buttons: [4]bool
+	stick: [2]f32
+}
+Pad_Axis :: alias Pad.f32
+
+Cell :: struct { x: f32  y: f32 }
+Named :: struct { id: i64  count: i64  name: []utf8  cells: [2!]Cell  tail: i64 }
+Named_Text :: alias Named.[]utf8
+Holder :: struct { f: Named.[]utf8 }
+K :: union { A = 0  B = 1  Also_B = 1  C = 2 }
+Base :: struct { hp: i64 }
+Keyed :: struct { by_key: [3 K]bool  using base: Base }
+Keyed_Bool :: alias Keyed.bool
+Keyed_Int :: alias Keyed.i64
+Own :: struct { a: i64  b: i64  pick: Own.i64 }

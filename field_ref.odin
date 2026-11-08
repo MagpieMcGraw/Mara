@@ -10,13 +10,21 @@ import "core:slice"
 // field's, written `Event_State.f32` (^Type_Field); its value is the field's
 // offset in bytes.
 //
-// A path goes through the struct's own fields and fixed arrays, by any index,
-// known or not. Never through a pointer, a slice or a list: what they hold
-// isn't at a fixed place in the struct.
+// A path goes through the struct's own fields, fixed arrays and lists, by any
+// index, known or not: a list's within its cap, as indexing it is. Never
+// through a pointer or a slice: what they hold isn't in the struct.
+//
+// Its value counts from the first field of its type the struct holds (its
+// type's base, field_ref_base): 0 is that field, so a reference never set —
+// declared with no value, made `{all 0}`, from_text's miss — is always a
+// field, as an enum's zero is its `= 0` variant. A type whose struct holds no
+// field of it, or a field of no size, is an error (tc_validate_field_refs).
 //
 // f.text() names the field, `keyboard.held[W]`, and `R.from_text(text)`, R an
 // alias of the reference's type, finds it again. Both know every field of that
-// type the struct holds, by its path (field_ref_paths).
+// type the struct holds, by its path (field_ref_paths): through a `using`
+// field by the name without it too, `hp` for `base.hp`, and an enum-indexed
+// array's item by each variant of its value, the first declared printed.
 // ---------------------------------------------------------------------------
 
 // The most fields of one type a struct can have named.
@@ -24,7 +32,9 @@ FIELD_REF_NAMES_MOST :: 4096
 
 Field_Path :: struct {
     text:   string,
-    offset: int,
+    value:  int,    // the reference's value: its offset less its type's base
+    offset: int,    // (its offset in the struct)
+    short:  bool,   // (a name through a using field, without it)
 }
 
 // The struct a type is, by value; nil for anything else.
@@ -65,6 +75,28 @@ struct_field_at :: proc(sd: ^Scope_Body, name: string) -> (t: Type, offset: int,
     return at.fields[i].type_, offset + struct_field_offset(at, i), at.fields[i].decl, true
 }
 
+// The items a path can go into: a fixed array's, or a list's (after its len),
+// within the cap. at is where the first is from the array's start; index_type
+// an enum-indexed array's enum. ok false for anything else.
+Field_Ref_Items :: struct {
+    elem:       Type,
+    count:      int,
+    at:         int,
+    index_type: Type,
+}
+field_ref_items :: proc(t: Type) -> (items: Field_Ref_Items, ok: bool) {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Fixed_Array:
+        return {v.elem, v.size, 0, v.index_type}, true
+    case ^Type_Partial_Array:
+        l := Layout{0, 1}
+        layout_field(&l, {8, 8})
+        at := layout_field(&l, type_layout(v.elem))
+        return {v.elem, v.size, at, nil}, true
+    }
+    return
+}
+
 // Whether a value of t holds a value of elem somewhere a path reaches.
 @(private="file")
 field_ref_holds :: proc(t, elem: Type) -> bool {
@@ -75,51 +107,82 @@ field_ref_holds :: proc(t, elem: Type) -> bool {
         }
         return false
     }
-    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array { return field_ref_holds(fa.elem, elem) }
+    if items, has := field_ref_items(t); has { return field_ref_holds(items.elem, elem) }
     return false
 }
 
-// Every field of type elem that owner holds, by its path and offset, in the
-// order the struct lists them; false when there are more than
-// FIELD_REF_NAMES_MOST. An array indexed by an enum names its items by its
-// variants, one name a value, the first by name.
-field_ref_paths :: proc(owner, elem: Type) -> ([]Field_Path, bool) {
+// Every field of type elem that owner holds, by its path and value, in the
+// order the struct lists them; false when there are more than most. An array
+// indexed by an enum names its items by its variants, in the order they're
+// declared (the first of a value printed). A field through a using field has
+// its name without it first, when no other path is named that.
+field_ref_paths :: proc(owner, elem: Type, most := FIELD_REF_NAMES_MOST) -> ([]Field_Path, bool) {
     out := make([dynamic]Field_Path, context.temp_allocator)
-    walk :: proc(out: ^[dynamic]Field_Path, t, elem: Type, prefix: string, at: int) -> bool {
-        if prefix != "" && types_equal(t, elem) {
-            if len(out) >= FIELD_REF_NAMES_MOST { return false }
-            append(out, Field_Path{prefix, at})
+    walk :: proc(out: ^[dynamic]Field_Path, t, elem: Type, full, short: string, at, most: int) -> bool {
+        if full != "" && types_equal(t, elem) {
+            if len(out) >= most { return false }
+            if short != full { append(out, Field_Path{text = short, offset = at, short = true}) }
+            append(out, Field_Path{text = full, offset = at})
         }
         if !field_ref_holds(t, elem) { return true }
+        join :: proc(prefix, name: string) -> string { return name if prefix == "" else fmt.tprintf("%s.%s", prefix, name) }
         if sd := field_ref_struct(t); sd != nil {
             for f, i in sd.fields {
                 if f.decl == 0 { continue }   // (a union variant's tag: no field written)
-                name := f.name if prefix == "" else fmt.tprintf("%s.%s", prefix, f.name)
-                walk(out, f.type_, elem, name, at + struct_field_offset(sd, i)) or_return
+                // (A using field's own fields are the struct's: named without it too.)
+                inner_short := join(short, f.name)
+                if f.is_using && !types_equal(f.type_, elem) { inner_short = short }
+                walk(out, f.type_, elem, join(full, f.name), inner_short, at + struct_field_offset(sd, i), most) or_return
             }
             return true
         }
-        fa, is_array := distinct_base(t).(^Type_Fixed_Array)
+        fa, is_array := field_ref_items(t)
         if !is_array { return true }
         size := type_size(fa.elem)
+        at := at + fa.at
         if et, by_enum := distinct_base(fa.index_type).(^Type_Enum); by_enum && fa.index_type != nil {
-            Variant :: struct { name: string, value: int }
+            Variant :: struct { name: string, value: int, decl: Token_Id }
             variants := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
-            for name, value in et.variants { append(&variants, Variant{name, value}) }
-            slice.sort_by(variants[:], proc(a, b: Variant) -> bool { return a.value < b.value || a.value == b.value && a.name < b.name })
-            for v, k in variants {
-                if v.value < 0 || v.value >= fa.size || k > 0 && v.value == variants[k - 1].value { continue }
-                walk(out, fa.elem, elem, fmt.tprintf("%s[%s]", prefix, v.name), at + v.value * size) or_return
+            for name, value in et.variants { append(&variants, Variant{name, value, et.variant_decls[name]}) }
+            slice.sort_by(variants[:], proc(a, b: Variant) -> bool {
+                if a.value != b.value { return a.value < b.value }
+                if a.decl != b.decl { return a.decl < b.decl }
+                return a.name < b.name
+            })
+            for v in variants {
+                if v.value < 0 || v.value >= fa.count { continue }
+                walk(out, fa.elem, elem, fmt.tprintf("%s[%s]", full, v.name), fmt.tprintf("%s[%s]", short, v.name), at + v.value * size, most) or_return
             }
             return true
         }
-        for i in 0 ..< fa.size {
-            walk(out, fa.elem, elem, fmt.tprintf("%s[%d]", prefix, i), at + i * size) or_return
+        for i in 0 ..< fa.count {
+            walk(out, fa.elem, elem, fmt.tprintf("%s[%d]", full, i), fmt.tprintf("%s[%d]", short, i), at + i * size, most) or_return
         }
         return true
     }
-    ok := walk(&out, owner, elem, "", 0)
-    return out[:], ok
+    ok := walk(&out, owner, elem, "", "", 0, most)
+    if len(out) == 0 { return out[:], ok }
+    base := out[0].offset
+    // (A short name another path has too names neither: dropped.)
+    kept := make([dynamic]Field_Path, 0, len(out), context.temp_allocator)
+    for p, i in out {
+        p := p
+        p.value = p.offset - base
+        if p.short {
+            taken := false
+            for q, j in out { if j != i && q.text == p.text && q.offset != p.offset { taken = true; break } }
+            if taken { continue }
+        }
+        append(&kept, p)
+    }
+    return kept[:], ok
+}
+
+// Where a reference type's values count from: the offset of the first field
+// of the type its struct holds; 0 for none (an error, tc_validate_field_refs).
+field_ref_base :: proc(owner, elem: Type) -> int {
+    paths, _ := field_ref_paths(owner, elem, 1)
+    return paths[0].offset if len(paths) > 0 else 0
 }
 
 // --- checking ---------------------------------------------------------------
@@ -145,13 +208,14 @@ tc_field_ref :: proc(k: ^TC, n: Tree_Id, owner, at: Type, field: string, span: S
         return Type_Error{}
     }
     tc_set_ref(k, n, {decl, .Field})
+    append(&k.field_ref_types, Field_Ref_Use{owner, t, span})
     return type_field(owner, t)
 }
 
-// `r[i]`, r a reference to a fixed array: a reference to its i-th item, i a
-// number or the array's enum, checked as an array's index is.
+// `r[i]`, r a reference to a fixed array or a list: a reference to its i-th
+// item, i a number or the array's enum, checked as an array's index is.
 tc_field_ref_index :: proc(k: ^TC, n, idx_n: Tree_Id, fr: ^Type_Field, span: Span) -> Type {
-    fa, is_array := distinct_base(fr.elem).(^Type_Fixed_Array)
+    fa, is_array := field_ref_items(fr.elem)
     if !is_array {
         tc_check(k, idx_n)
         tc_error(k, span, TYPE_FIELD_REF_THROUGH, type_name(fr.elem), tc_written(k, n))
@@ -164,9 +228,10 @@ tc_field_ref_index :: proc(k: ^TC, n, idx_n: Tree_Id, fr: ^Type_Field, span: Spa
     } else if !coerces_to_index_width(it) {
         tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(it))
     }
-    if at, known := tc_comptime_int(k, idx_n); known && (at < 0 || at >= i64(fa.size)) {
-        tc_error(k, span, TYPE_INDEX_OUT_OF_BOUNDS_CONST, at, fa.size, fa.size - 1)
+    if at, known := tc_comptime_int(k, idx_n); known && (at < 0 || at >= i64(fa.count)) {
+        tc_error(k, span, TYPE_INDEX_OUT_OF_BOUNDS_CONST, at, fa.count, fa.count - 1)
     }
+    append(&k.field_ref_types, Field_Ref_Use{fr.owner, fa.elem, span})
     return type_field(fr.owner, fa.elem)
 }
 
@@ -184,6 +249,31 @@ tc_index_by_field :: proc(k: ^TC, idx_n: Tree_Id, st: Type, span: Span) -> Type 
         return Type_Error{}
     }
     return fr.elem
+}
+
+// A field reference's type, spelled or made, where: checked once every
+// struct's fields are known (a struct can hold a reference to itself).
+Field_Ref_Use :: struct {
+    owner, elem: Type,
+    span:        Span,
+}
+
+// Each reference type the program has: its struct holds a field of its type
+// — its zero is the first (field_ref_base) — and one of some size, else
+// every such field is at one place, none told apart.
+tc_validate_field_refs :: proc(k: ^TC) {
+    done := make([dynamic]Field_Ref_Use, context.temp_allocator)
+    each: for u in k.field_ref_types {
+        for d in done { if types_equal(d.owner, u.owner) && types_equal(d.elem, u.elem) { continue each } }
+        append(&done, u)
+        tc_ensure_layout(k, u.owner)
+        tc_ensure_layout(k, u.elem)
+        if type_size(u.elem) == 0 {
+            tc_error(k, u.span, TYPE_FIELD_REF_NO_SIZE, type_name(u.elem))
+        } else if paths, _ := field_ref_paths(u.owner, u.elem, 1); len(paths) == 0 {
+            tc_error(k, u.span, TYPE_FIELD_REF_NO_FIELD, type_name(u.owner), type_name(u.elem), type_name(type_field(u.owner, u.elem)))
+        }
+    }
 }
 
 // The struct a base indexed by a field reference is: itself, or what it
@@ -256,45 +346,79 @@ lw_makes_field_ref :: proc(k: ^TC, n: Tree_Id) -> bool {
     return false
 }
 
-// A field reference's value: its offset in bytes. A field's is known; an
-// item's adds its index times the item's size, the index checked to be in
-// the array.
+@(private="file")
+lw_number :: proc(b: ^Graph_Builder, span: Span, c: int) -> Operand {
+    return graph_const(b, .Synthetic, span, slice_header_width_type, fmt.tprint(c), Const_Value{int = i128(c)})
+}
+
+// A field reference made, `S.path`: its value, typed as the reference (what
+// print and llvm_view know one by) — its offset less its type's base.
 lw_field_ref_offset :: proc(k: ^TC, n: Tree_Id) -> Operand {
+    b := k.gb
+    span := tree_span(k.t, n)
+    t := tc_node_type(k, n)
+    fr := distinct_base(t).(^Type_Field)
+    dyn, at := lw_field_ref_abs(k, n)
+    at -= field_ref_base(fr.owner, fr.elem)
+    if dyn == NO_VALUE { return graph_const(b, .Synthetic, span, t, fmt.tprint(at), Const_Value{int = i128(at)}) }
+    return graph_op_value(b, .Arith, .Synthetic, span, t, "+", dyn, lw_number(b, span, at))
+}
+
+// A reference's offset in its struct: a part known only when it runs
+// (NO_VALUE for none) and a known part. A field's is known; an item's adds
+// where the items start (a list's after its len) and its index times the
+// item's size, the index checked to be within the array's cap. One held, in
+// a variable or a field: its value and its type's base.
+@(private="file")
+lw_field_ref_abs :: proc(k: ^TC, n: Tree_Id) -> (dyn: Operand, at: int) {
     t := k.t
     b := k.gb
     span := tree_span(t, n)
     wide := slice_header_width_type
-    number :: proc(b: ^Graph_Builder, span: Span, c: int) -> Operand {
-        return graph_const(b, .Synthetic, span, slice_header_width_type, fmt.tprint(c), Const_Value{int = i128(c)})
+    if !lw_makes_field_ref(k, n) {
+        fr := distinct_base(tc_node_type(k, n)).(^Type_Field)
+        return lw_expr(k, n, .Value).v, field_ref_base(fr.owner, fr.elem)
     }
-    if !lw_makes_field_ref(k, n) { return lw_expr(k, n, .Value).v }   // (one held: its value)
     base := Tree_Id(t.a[n])
     #partial switch t.tag[n] {
     case .Field:
-        at: Type
-        from: Operand
+        of: Type
         if fr, is_ref := distinct_base(tc_node_type(k, base)).(^Type_Field); is_ref {
-            at, from = fr.elem, lw_field_ref_offset(k, base)
+            of = fr.elem
+            dyn, at = lw_field_ref_abs(k, base)
         } else {
-            at, from = tc_node_type(k, base), number(b, span, 0)
+            of, dyn = tc_node_type(k, base), NO_VALUE
         }
-        _, offset, _, _ := struct_field_at(field_ref_struct(at), tc_text(Token_Id(t.b[n])))
-        if offset == 0 { return from }
-        return graph_op_value(b, .Arith, .Synthetic, span, wide, "+", from, number(b, span, offset))
+        _, offset, _, _ := struct_field_at(field_ref_struct(of), tc_text(Token_Id(t.b[n])))
+        return dyn, at + offset
     case .Index:
         fr := distinct_base(tc_node_type(k, base)).(^Type_Field)
-        fa := distinct_base(fr.elem).(^Type_Fixed_Array)
-        from := lw_field_ref_offset(k, base)
+        fa, _ := field_ref_items(fr.elem)
+        dyn, at = lw_field_ref_abs(k, base)
+        at += fa.at
         idx_n := Tree_Id(t.b[n])
         ir := lw_expr(k, idx_n, .Value, .Explicit)
-        at := build_index_value(b, ir.v, tc_node_type(k, idx_n), span)
+        ix := build_index_value(b, ir.v, tc_node_type(k, idx_n), span)
         if _, known := tc_comptime_int(k, idx_n); !known {
-            text := fmt.tprintf("a field reference's index within its %d items", fa.size)
-            graph_assert(b, span, text, graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, ">=", at, number(b, span, 0)), .Implied, nil)
-            graph_assert(b, span, text, graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", at, number(b, span, fa.size)), .Implied, nil)
+            text := fmt.tprintf("a field reference's index within its %d items", fa.count)
+            graph_assert(b, span, text, graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, ">=", ix, lw_number(b, span, 0)), .Implied, nil)
+            graph_assert(b, span, text, graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", ix, lw_number(b, span, fa.count)), .Implied, nil)
         }
-        scaled := graph_op_value(b, .Arith, .Synthetic, span, wide, "*", at, number(b, span, type_size(fa.elem)))
-        return graph_op_value(b, .Arith, .Synthetic, span, wide, "+", from, scaled)
+        scaled := graph_op_value(b, .Arith, .Synthetic, span, wide, "*", ix, lw_number(b, span, type_size(fa.elem)))
+        if dyn == NO_VALUE { return scaled, at }
+        return graph_op_value(b, .Arith, .Synthetic, span, wide, "+", dyn, scaled), at
     }
     lw_fail(k, n, "a field reference made of this")
+}
+
+// `s[f]`'s offset in s: f's value and its type's base, typed as f is (what
+// llvm_view knows a field's view by).
+lw_field_ref_at :: proc(k: ^TC, idx_n: Tree_Id, span: Span, w: Written) -> Operand {
+    b := k.gb
+    t := tc_node_type(k, idx_n)
+    fr := distinct_base(t).(^Type_Field)
+    v := lw_expr(k, idx_n, .Value, w).v
+    base := field_ref_base(fr.owner, fr.elem)
+    if base == 0 { return v }
+    return graph_op_value(b, .Arith, .Synthetic, span, t, "+", v, lw_number(b, span, base))
 }

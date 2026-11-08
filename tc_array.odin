@@ -1,5 +1,7 @@
 package mara
 
+import "core:fmt"
+
 // Arrays in the checker: an element read or written, an array literal.
 
 // `a[i]`: its collection (through a pointer, what it points at), the index at
@@ -63,6 +65,9 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         k.hint = field_t
         tc_store_at(k, value, op_tok, target, s)
         tc_settle(k, diag, field_t)
+        if pname, immutable := tc_write_root_param(k, target); immutable {
+            tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, fmt.tprintf("[%s]", tc_written(k, idx_n)), pname)
+        }
         return
     }
     tt := distinct_base(ct)

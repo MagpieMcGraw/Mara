@@ -2845,20 +2845,24 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     ty, atom_ty := llvm_type_from_checker(pt), llvm_type_from_checker(fn_result(callee, 0))
     atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
     if err_kinded(pt) { v = llvm_err_kind(e, v, ty) }   // (its name is its kind's)
-    Case :: struct { value: int, text: string }
+    Case :: struct { value: int, text: string, decl: Token_Id }
     cases := make([dynamic]Case, 0, 16, context.temp_allocator)
     if et != nil {
-        for name, value in et.variants { append(&cases, Case{value, variant_text(et, name)}) }
+        for name, value in et.variants { append(&cases, Case{value, variant_text(et, name), et.variant_decls[name]}) }
     } else {
-        append(&cases, Case{0, "Ok"})
+        append(&cases, Case{0, "Ok", 0})
         for _, set in g.checked.table.enums {
             if !set.is_error_kind { continue }
-            for name, value in set.variants { if value != 0 { append(&cases, Case{value, variant_text(set, name)}) } }
+            for name, value in set.variants { if value != 0 { append(&cases, Case{value, variant_text(set, name), set.variant_decls[name]}) } }
         }
     }
-    // (By value, then name: one case a value — two variants of one value,
-    // the first's name — the same code each build.)
-    slice.sort_by(cases[:], proc(a, b: Case) -> bool { return a.value < b.value || a.value == b.value && a.text < b.text })
+    // (By value, then as declared: one case a value — two variants of one
+    // value, the first declared's name — the same code each build.)
+    slice.sort_by(cases[:], proc(a, b: Case) -> bool {
+        if a.value != b.value { return a.value < b.value }
+        if a.decl != b.decl { return a.decl < b.decl }
+        return a.text < b.text
+    })
     if v.kind == .Int {
         text := "?"
         for c in cases { if i128(c.value) == v.n { text = c.text; break } }
@@ -2888,8 +2892,8 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     return true
 }
 
-// A field reference's name as an atom (r.text()): v, its offset, switched on
-// over the offsets of the fields of its type, "?" for none. The atoms were
+// A field reference's name as an atom (r.text()): v, its value, switched on
+// over the values of the fields of its type, "?" for none. The atoms were
 // made as the program was checked (tc_field_atoms).
 @(private="file")
 llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
@@ -2897,7 +2901,7 @@ llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
     atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
     paths, _ := field_ref_paths(fr.owner, fr.elem)
     if v.kind == .Int {
-        for p in paths { if i128(p.offset) == v.n { return atom(g, p.text) } }
+        for p in paths { if i128(p.value) == v.n { return atom(g, p.text) } }
         return atom(g, "?")
     }
     at := llvm_temporary(e, {op, 0}, Type_Atom{}, as_local = true)
@@ -2907,9 +2911,9 @@ llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
     texts := make([dynamic]string, 0, len(paths), context.temp_allocator)
     seen := make(map[int]bool, allocator = context.temp_allocator)
     for p in paths {
-        if seen[p.offset] { continue }   // (two names at one offset: a struct's first field, the struct's: the first)
-        seen[p.offset] = true
-        append(&arms, Ir_Arg{IR_I64, ir_int(p.offset), fresh_label(g, "field_text.case")})
+        if seen[p.value] { continue }   // (several names of one field: the first)
+        seen[p.value] = true
+        append(&arms, Ir_Arg{IR_I64, ir_int(p.value), fresh_label(g, "field_text.case")})
         append(&texts, p.text)
     }
     ir_switch(g, IR_I64, v, done, arms[:])
@@ -2935,7 +2939,8 @@ llvm_field_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sco
 
 // `R.from_text(text)` (Origin_Field_From_Text), where it's called: per field
 // of its type, its path's length compared with the text's, then each byte —
-// the first that matches all, its offset and true; none, 0 and false.
+// the first that matches all, its value and true; none, 0 (its type's first
+// field) and false.
 @(private="file")
 llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
     g := e.g
@@ -2968,7 +2973,7 @@ llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Typ
             same = fresh_tmp(g)
             ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(p.text[i])))
         }
-        ir_store(g, IR_I64, ir_int(p.offset), at[0])
+        ir_store(g, IR_I64, ir_int(p.value), at[0])
         ir_store(g, bool_ir, ir_int(1), at[1])
         emit_br(g, done)
         emit_label(g, miss)

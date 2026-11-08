@@ -1,0 +1,14 @@
+module field_ref_type_value_neg
+
+use mara.core
+
+//@ expect-fail: the type 'S.i64' is no value
+
+// A field reference's type, written where a value goes outside a loop.
+
+S :: struct { a: i64 }
+
+main :: fun() {
+	x := S.i64
+	print(x)
+}

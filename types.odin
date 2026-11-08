@@ -1640,6 +1640,21 @@ is_array_shaped :: proc(t: Type) -> bool {
 // layout: a slice (its header), a pointer, a cstring, a fun value — or ""
 // when it can. Bytes are data: an address read out of them points wherever
 // the bytes say. (A real use for one can be let through when it comes up.)
+// The module a type is defined in: a struct's, a union's, an enum's, a
+// distinct type's; a field reference's, its struct's; a pointer's, what it
+// points at. "" for a type no module defines (a number, a slice).
+type_home :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    if v.kind == .Struct { return v.home_package }
+    case ^Type_Union:    return v.home_package
+    case ^Type_Enum:     return v.home_package
+    case ^Type_Distinct: return v.home_package
+    case ^Type_Field:    return type_home(v.owner)
+    case ^Type_Ptr:      return type_home(v.elem)
+    }
+    return ""
+}
+
 byte_reference_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
     #partial switch v in distinct_base(t) {
     case ^Type_Slice:
@@ -1651,6 +1666,9 @@ byte_reference_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string
     case Type_CString:
         if path == "" { return "a cstring is a pointer to text, not data" }
         return fmt.tprintf("`%s` is a cstring, a pointer to text", path)
+    case ^Type_Field:
+        if path == "" { return "a field reference is a place only its struct's type makes, not data" }
+        return fmt.tprintf("`%s` is a field reference, a place only its struct's type makes", path)
     case ^Type_Fixed_Array:
         return byte_reference_reason(c, v.elem, fmt.tprintf("%s[i]", path))
     case ^Type_Partial_Array:

@@ -1,0 +1,13 @@
+module loop_over_type_ref_neg
+
+use mara.core
+
+//@ expect-fail: a type's values are no place to point at
+
+// A type's values are made for the loop: `for &m` has nothing to point at.
+
+Mode :: union { Off = 0  On = 1 }
+
+main :: fun() {
+	for &m in Mode { print(m) }
+}
