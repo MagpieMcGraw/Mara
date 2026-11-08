@@ -792,12 +792,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             emit_load_into(g, tmp, IR_PTR, llvm_val(e, place))
             e.value[op] = tmp
         }
+        // (So big a read at its far end could miss the unmapped low
+        // addresses: a void one is caught here.)
+        if type_size(graph_type(pg, op)) >= VOID_GUARD_BYTES { emit_void_check(g, e.value[op], graph_origin(pg, op)) }
     case .Field:
         base := ops[0].op
         if ut := llvm_union(graph_type(pg, base)); ut != nil {
-            // A union's tag is at its start — read as load_union_tag reads it
-            // (a niche union's is its pointer's nullness); its padding, just
-            // past the tag.
+            // A union's tag is at its start — read as load_union_tag reads
+            // it; its padding, just past the tag.
             if llvm_direct(e, base) { return false }
             at := llvm_val(e, base)
             switch graph_name(pg, op) {
@@ -1281,9 +1283,10 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
     if llvm_zeroed(e, place) && llvm_type_from_checker(t) != IR_PTR { return true }
     switch {
     case llvm_scalar(t):
+        // (A field reference's void is its none, zero: a value, written.)
         ir := llvm_type_from_checker(t)
         if ir == IR_PTR { emit_store(g, ir, IR_NULL, llvm_val(e, place)) }
-        else if decl { emit_store(g, ir, llvm_zero(t), llvm_val(e, place)) }
+        else if decl || void_is_value(t) { emit_store(g, ir, llvm_zero(t), llvm_val(e, place)) }
     case llvm_partial(t) != nil:
         // (Headers only — its elements' own partial arrays' too: their room
         // there, nothing in it written.)
@@ -1619,12 +1622,6 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if llvm_direct(e, dest) { return false }
         args := llvm_ctor_args(e, op, ops) or_return   // (before the union is zeroed)
         at := llvm_val(e, dest)
-        if some := ut.niche_some; some != "" {
-            // A niche union is its Some variant's pointer: None is null, Some
-            // the pointer its literal writes next (none written: null).
-            if graph_name(pg, op) != some || !llvm_variant_written(e, op, dest) { emit_store(g, IR_PTR, IR_NULL, at) }
-            return llvm_variant_ctor(e, op, at, args)
-        }
         st := ut.variant_structs[graph_name(pg, op)]
         if st == nil { return false }
         emit_memset_zero(g, at, type_size(graph_type(pg, dest)))
@@ -2568,24 +2565,6 @@ llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     return true
 }
 
-// Whether the run, after construct `op`, writes a field of its union through
-// a variant place: the literal's fields.
-@(private="file")
-llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
-    pg := e.pg
-    root := storage_where(e.st, dest).root
-    after := false
-    for o in graph_run(pg, int(e.run)) {
-        if o == op { after = true; continue }
-        if !after || graph_op_of(pg, o) != .Write { continue }
-        p := graph_operands(pg, o)[0].op
-        if graph_op_of(pg, p) != .Field { continue }
-        v := graph_operands(pg, p)[0].op
-        if graph_op_of(pg, v) == .Variant && storage_where(e.st, v).root == root { return true }
-    }
-    return false
-}
-
 // A defer's block, run where its scope is left: its code emitted here — a
 // copy at each exit, as though written there — its labels fresh, its entry
 // going on in the current block, its end falling through to what follows.
@@ -2901,6 +2880,7 @@ llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
     atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
     paths, _ := field_ref_paths(fr.owner, fr.elem)
     if v.kind == .Int {
+        if v.n == 0 { return atom(g, "void") }
         for p in paths { if i128(p.value) == v.n { return atom(g, p.text) } }
         return atom(g, "?")
     }
@@ -2910,6 +2890,8 @@ llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
     arms := make([dynamic]Ir_Arg, 0, len(paths), context.temp_allocator)
     texts := make([dynamic]string, 0, len(paths), context.temp_allocator)
     seen := make(map[int]bool, allocator = context.temp_allocator)
+    append(&arms, Ir_Arg{IR_I64, ir_int(0), fresh_label(g, "field_text.case")})
+    append(&texts, "void")
     for p in paths {
         if seen[p.value] { continue }   // (several names of one field: the first)
         seen[p.value] = true
@@ -2939,8 +2921,7 @@ llvm_field_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sco
 
 // `R.from_text(text)` (Origin_Field_From_Text), where it's called: per field
 // of its type, its path's length compared with the text's, then each byte —
-// the first that matches all, its value and true; none, 0 (its type's first
-// field) and false.
+// the first that matches all, its value and true; none, void (0) and false.
 @(private="file")
 llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
     g := e.g
@@ -3441,8 +3422,7 @@ llvm_union_tag :: proc(e: ^Llvm, p: Node_Id) -> ^Type_Union {
     return llvm_union(graph_type(pg, graph_operands(pg, p)[0].op))
 }
 
-// A union: its tag and the payload its variants overlay at its start (a niche
-// union's storage is its Some variant's pointer alone).
+// A union: its tag and the payload its variants overlay at its start.
 @(private="file")
 llvm_union :: proc(t: Type) -> ^Type_Union {
     if t == nil { return nil }

@@ -32,7 +32,7 @@ FIELD_REF_NAMES_MOST :: 4096
 
 Field_Path :: struct {
     text:   string,
-    value:  int,    // the reference's value: its offset less its type's base
+    value:  int,    // the reference's value: its offset less its type's base, plus 1 (0 is void)
     offset: int,    // (its offset in the struct)
     short:  bool,   // (a name through a using field, without it)
 }
@@ -167,7 +167,7 @@ field_ref_paths :: proc(owner, elem: Type, most := FIELD_REF_NAMES_MOST) -> ([]F
     kept := make([dynamic]Field_Path, 0, len(out), context.temp_allocator)
     for p, i in out {
         p := p
-        p.value = p.offset - base
+        p.value = p.offset - base + 1
         if p.short {
             taken := false
             for q, j in out { if j != i && q.text == p.text && q.offset != p.offset { taken = true; break } }
@@ -294,13 +294,14 @@ tc_field_atoms :: proc(k: ^TC, qt: Type, fr: ^Type_Field, span: Span) -> bool {
         return false
     }
     checked_atom(k.checked, "?")
+    checked_atom(k.checked, "void")
     for p in paths { checked_atom(k.checked, p.text) }
     return true
 }
 
 // `r.text()`: its fun, made at each call, its body generated where it's
-// called (Origin_Field_Text): the field's path as an atom, "?" for an offset
-// no field of its type has.
+// called (Origin_Field_Text): the field's path as an atom, "void" for a void
+// one, "?" for an offset no field of its type has.
 field_text_fun :: proc(qt: Type, fr: ^Type_Field) -> ^Type_Scope {
     ft := new(Type_Scope)
     ft.kind = .Fun
@@ -352,14 +353,15 @@ lw_number :: proc(b: ^Graph_Builder, span: Span, c: int) -> Operand {
 }
 
 // A field reference made, `S.path`: its value, typed as the reference (what
-// print and llvm_view know one by) — its offset less its type's base.
+// print and llvm_view know one by) — its offset less its type's base, plus 1:
+// 0 is void, none.
 lw_field_ref_offset :: proc(k: ^TC, n: Tree_Id) -> Operand {
     b := k.gb
     span := tree_span(k.t, n)
     t := tc_node_type(k, n)
     fr := distinct_base(t).(^Type_Field)
     dyn, at := lw_field_ref_abs(k, n)
-    at -= field_ref_base(fr.owner, fr.elem)
+    at = at - field_ref_base(fr.owner, fr.elem) + 1
     if dyn == NO_VALUE { return graph_const(b, .Synthetic, span, t, fmt.tprint(at), Const_Value{int = i128(at)}) }
     return graph_op_value(b, .Arith, .Synthetic, span, t, "+", dyn, lw_number(b, span, at))
 }
@@ -376,8 +378,10 @@ lw_field_ref_abs :: proc(k: ^TC, n: Tree_Id) -> (dyn: Operand, at: int) {
     span := tree_span(t, n)
     wide := slice_header_width_type
     if !lw_makes_field_ref(k, n) {
+        // (Its offset is its value less 1, plus its type's base: a void one,
+        // none, is read through — it crashes.)
         fr := distinct_base(tc_node_type(k, n)).(^Type_Field)
-        return lw_expr(k, n, .Value).v, field_ref_base(fr.owner, fr.elem)
+        return lw_field_ref_not_void(b, lw_expr(k, n, .Value).v, span), field_ref_base(fr.owner, fr.elem) - 1
     }
     base := Tree_Id(t.a[n])
     #partial switch t.tag[n] {
@@ -411,14 +415,26 @@ lw_field_ref_abs :: proc(k: ^TC, n: Tree_Id) -> (dyn: Operand, at: int) {
     lw_fail(k, n, "a field reference made of this")
 }
 
-// `s[f]`'s offset in s: f's value and its type's base, typed as f is (what
-// llvm_view knows a field's view by).
+// `s[f]`'s offset in s: f's value less 1 and its type's base, typed as f is
+// (what llvm_view knows a field's view by). A void f, none, crashes.
 lw_field_ref_at :: proc(k: ^TC, idx_n: Tree_Id, span: Span, w: Written) -> Operand {
     b := k.gb
     t := tc_node_type(k, idx_n)
     fr := distinct_base(t).(^Type_Field)
-    v := lw_expr(k, idx_n, .Value, w).v
-    base := field_ref_base(fr.owner, fr.elem)
+    v := lw_field_ref_not_void(b, lw_expr(k, idx_n, .Value, w).v, span)
+    base := field_ref_base(fr.owner, fr.elem) - 1
     if base == 0 { return v }
     return graph_op_value(b, .Arith, .Synthetic, span, t, "+", v, lw_number(b, span, base))
+}
+
+// What a read through a value that's void says when it runs; the check
+// before it, an Implied assert of this text, is a read through the value its
+// comparison names (void_flow.odin).
+VOID_READ_TEXT :: "a field reference that isn't void"
+
+// A field reference about to be read through: checked not void, 0, where
+// the program runs.
+lw_field_ref_not_void :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Operand {
+    graph_assert(b, span, VOID_READ_TEXT, graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "!=", v, lw_number(b, span, 0)), .Implied, nil)
+    return v
 }

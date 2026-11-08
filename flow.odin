@@ -36,7 +36,7 @@ Flow_Finding :: struct {
     msg:   string,
 }
 
-Flow_Check :: enum u8 { Literal_Range, Unused, Init, Defer_Write, Void, Missing_Return }
+Flow_Check :: enum u8 { Literal_Range, Unused, Init, Defer_Write, Void, Void_Read, Missing_Return }
 
 flow_pass_make :: proc(fns: []^Type_Scope, pc: ^Program_Code = nil) -> Flow_Pass {
     fp: Flow_Pass
@@ -143,6 +143,15 @@ flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass
         defer delete(voids)
         for sp in void_defaults { voids[sp] = true }
         of_codes(c, fp, codes, .Void, &voids)
+        // (Reads through what may be void: the whole program's, worked out
+        // once every code is — void_flow.odin.)
+        through: map[Span]bool
+        defer delete(through)
+        for f in void_flow_program(checked) {
+            if f.span in through { continue }
+            through[f.span] = true
+            check_error(c, f.span, "%s", f.msg)
+        }
         for e in checked.code.fold_errors { check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name) }
     }
     for ft in fns {
@@ -501,8 +510,9 @@ flow_init_unsets :: proc(fp: ^Flow_Pass, g: ^Program_Graph, in_ctor: bool) -> bo
             if in_ctor && g.kind[v] == .Field { return true }
             base := distinct_base(graph_type(g, v))
             #partial switch _ in base {
-            case ^Type_Ptr, ^Type_Slice: return true
+            case ^Type_Slice: return true
             }
+            if void_is_value(base) { return true }
             if as_struct_body(base) != nil { return true }
         }
     }
@@ -836,17 +846,20 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             unset, fields_unset := false, false
             #partial switch kind {
             case .Write:
+                // (A pointer's void is its null, a value: not unset.)
                 val := ops[1].op
-                unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void"
+                unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" && !void_is_value(graph_type(g, v))
                 fields_unset = unset
             case .Zero:
-                // A bare declaration: a pointer or a slice unset (a bare scalar
-                // is zero), a struct's every field; a constructor's bare field.
+                // A bare declaration: a pointer (anything whose void is a
+                // value: void_is_value) or a slice unset (a bare scalar is
+                // zero), a struct's every field; a constructor's bare field.
                 // A literal's start (`{}`): every field, till its entries.
                 if graph_written(g, op) == .Synthetic {
                     #partial switch _ in distinct_base(graph_type(g, v)) {
-                    case ^Type_Ptr, ^Type_Slice: unset = true
+                    case ^Type_Slice: unset = true
                     }
+                    if void_is_value(graph_type(g, v)) { unset = true }
                     if s.in_ctor && flow_own(s, v) && g.kind[v] == .Field { unset = true }
                     fields_unset = true
                 } else if graph_name(g, op) == "{}" {
@@ -899,7 +912,7 @@ flow_set_hint :: proc(s: ^Init, v: Node_Id, field: string) -> string {
                 if len(ops) == 0 { break }
                 if graph_op_of(g, op) == .Write && len(ops) > 1 {
                     val := ops[1].op
-                    if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" { break }
+                    if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" && !void_is_value(graph_type(g, val)) { break }
                 }
                 hit = touches(s, ops[0].op, v, field)
             case .Address:
@@ -954,15 +967,16 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 // Program_Code.fold_errors, reported by flow_report.
 
 // --- where void goes -----------------------------------------------------------
-// `void` leaves a whole local variable unset, and its reads are then checked
-// (flow_check_init): `x = void`, `x : T = void`. Only a variable the check
-// follows: a scalar, a pointer, a slice, a struct by its fields. A
-// declaration's void also skips zeroing (`buf : [4096!]byte = void`). It
-// passes a C function a null, and `p == void` tests a pointer from C.
-// Anywhere else it would write nothing that anything checks: a field, an
-// element, a store through a pointer, a return, a Mara function's argument,
-// an if-branch, a parameter's default, a whole variable the check doesn't
-// follow. Each is an error, a pointer's with its own message.
+// A pointer's `void` (a fun value's, a cstring's, a field reference's) is a
+// value, its null: it goes anywhere, and a read through one needs a test
+// first (void_flow.odin). Any other type's `void` leaves a whole local
+// variable unset, and its reads are then checked (flow_check_init): `x =
+// void`, `x : T = void`. Only a variable the check follows: a scalar, a
+// slice, a struct by its fields. A declaration's void also skips zeroing
+// (`buf : [4096!]byte = void`). Anywhere else it would write nothing that
+// anything checks: a field, an element, a store through a pointer, a return,
+// a Mara function's argument, an if-branch, a parameter's default, a whole
+// variable the check doesn't follow. Each is an error.
 
 @(private="file")
 flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
@@ -980,38 +994,30 @@ flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
             if v == NO_NODE || graph_op_of(g, v) != .Const || graph_name(g, v) != "void" { continue }
             if graph_written(g, v) != .Explicit { continue }
             t := graph_type(g, v)
-            if !void_is_pointer(t) && void_declared(g, id) { continue }
+            if void_is_value(t) || void_declared(g, id) { continue }
             where_, stored := void_where(g, id, k)
             if !stored { continue }
-            msg: string
-            if void_is_pointer(t) {
-                msg = fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(t))
-            } else {
-                msg = fmt.aprintf(TYPE_VOID_NOT_FOLLOWED, where_)
-            }
-            append(found, Flow_Finding{.Void, graph_origin(g, v), msg})
+            append(found, Flow_Finding{.Void, graph_origin(g, v), fmt.aprintf(TYPE_VOID_NOT_FOLLOWED, where_)})
         }
     }
 }
 
-// A pointer, or a value that is one underneath (a cstring, a function).
-void_is_pointer :: proc(t: Type) -> bool {
+// Whether a type's `void` is a value, its null: a pointer, a value that is
+// one underneath (a cstring, a function), a field reference (its none).
+void_is_value :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
-    case ^Type_Ptr, Type_CString: return true
+    case ^Type_Ptr, Type_CString, ^Type_Field: return true
     case ^Type_Scope:             return v.kind == .Fun
     }
     return false
 }
 
-// A void stored where a `dest` goes, which no read check follows: an error.
+// A void stored where a `dest` goes, which no read check follows: an error
+// but where void is a value (a pointer's null).
 void_error :: proc(c: ^Checker, seen: ^map[Span]bool, sp: Span, dest: Type, where_: string) {
-    if seen[sp] { return }
+    if seen[sp] || void_is_value(dest) { return }
     seen[sp] = true
-    if void_is_pointer(dest) {
-        check_error(c, sp, TYPE_VOID_INTO_POINTER, where_, type_name(dest))
-    } else {
-        check_error(c, sp, TYPE_VOID_NOT_FOLLOWED, where_)
-    }
+    check_error(c, sp, TYPE_VOID_NOT_FOLLOWED, where_)
 }
 
 // Whether write `op` is a declaration's own: `x : T = void`, or a struct's

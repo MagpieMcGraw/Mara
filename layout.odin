@@ -146,9 +146,8 @@ slice_header_layout :: proc() -> Layout {
 // A union: as big as its largest variant — each variant's struct begins with
 // the tag (and the pad), so that is the union laid out holding it — at least
 // its declared size; aligned as its tag is, or to a byte with a pad (how a
-// union mirrors a C layout). A niche union is its Some variant's pointer.
+// union mirrors a C layout).
 union_layout :: proc(ut: ^Type_Union) -> Layout {
-    if ut.niche_some != "" { return {word_bytes(), word_bytes()} }
     size := ut.min_size
     for _, st in ut.variant_structs { size = max(size, type_size(st)) }
     return layout_close({size, 1 if ut.tag_pad != nil else tag_bytes(ut.tag_type)})

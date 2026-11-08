@@ -89,6 +89,44 @@ run_flow_solve :: proc(f: ^Run_Flow($S), entry: []S, data: $D, step: proc(data: 
     }
 }
 
+// The fixpoint as run_flow_solve's, `edge` saying what taking a run's k-th
+// way out does to the state (a branch's yes, k 0, or no, k 1, says something
+// about its condition).
+run_flow_solve_edges :: proc(f: ^Run_Flow($S), entry: []S, data: $D, step: proc(data: D, ri: int, op: Node_Id, state: []S),
+                             edge: proc(data: D, last: Node_Id, k: int, state: []S)) {
+    if len(f.runs) == 0 { return }
+    g := f.g
+    run_flow_enter(f, 0, entry)
+    state := make([]S, f.slots)
+    defer delete(state)
+    out := make([]S, f.slots)
+    defer delete(out)
+    for passes := 0; f.changed; passes += 1 {
+        if passes > 100_000 { fmt.panicf("dataflow over %d runs did not converge", len(f.runs)) }
+        f.changed = false
+        for ri in 0 ..< len(f.runs) {
+            if !f.entered[ri] { continue }
+            f.copy(state, f.in_state[ri])
+            ops := graph_run(g, int(f.runs[ri]))
+            for op in ops {
+                if graph_op_of(g, op) == .Run_Defer {
+                    for in_ in graph_out(g, g.defer_of[op]) {
+                        if di, ok := run_flow_at(f, in_.to); ok { run_flow_enter(f, di, state) }
+                    }
+                }
+                step(data, ri, op, state)
+            }
+            for e, k in graph_out(g, ops[len(ops) - 1]) {
+                si, ok := run_flow_at(f, e.to)
+                if !ok { continue }
+                f.copy(out, state)
+                edge(data, ops[len(ops) - 1], k, out)
+                run_flow_enter(f, si, out)
+            }
+        }
+    }
+}
+
 // Once the fixpoint is reached: each run entered, once, from its entry state
 // — the pass that reports.
 run_flow_replay :: proc(f: ^Run_Flow($S), data: $D, step: proc(data: D, ri: int, op: Node_Id, state: []S)) {

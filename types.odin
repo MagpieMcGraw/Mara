@@ -581,43 +581,6 @@ Type_Union :: struct {
     tag_map:         map[string]int,     // variant name -> tag value
     variant_structs: map[string]^Type_Scope,   // each variant's struct, by its name
     tag_enum:        ^Type_Enum,         // the <Name>_Tag enum; type of each variant struct's prepended tag field
-    // Set by the checker when the union is niche-laid-out: the variant whose
-    // single pointer IS the union's storage — null means the other, fieldless
-    // variant, so no tag is stored. "" for a tagged union. See union_niche_variant.
-    niche_some:      string,
-}
-
-// The niche layout: a union of exactly two variants, one fieldless (None) and
-// one holding a single pointer (Some), is stored as that pointer alone —
-// `^T` is never null, so null is free to mean None. Returns the Some variant,
-// or "" when the union is tagged. A union that spells out its layout — a tag
-// type, padding, a minimum size — keeps it: that is how a union mirrors a C
-// layout. Runs on the resolved, pre-header variant structs; the one place the
-// decision is made (codegen reads ut.niche_some).
-union_niche_variant :: proc(c: ^Checker, ut: ^Type_Union) -> string {
-    if len(ut.variants) != 2 { return "" }
-    if ut.tag_type != "" || ut.tag_pad != nil || ut.min_size > 0 { return "" }
-    some, has_empty := "", false
-    for vname in ut.variants {
-        vst := ut.variant_structs[vname]
-        if vst == nil { return "" }
-        switch len(vst.fields) {
-        case 0:
-            has_empty = true
-        case 1:
-            if _, is_ptr := vst.fields[0].type_.(^Type_Ptr); !is_ptr { return "" }
-            some = vname
-        case:
-            return ""
-        }
-    }
-    return some if has_empty else ""
-}
-
-// A niche union's fieldless variant: the one its null pointer holds.
-union_niche_none :: proc(ut: ^Type_Union) -> string {
-    for vname in ut.variants { if vname != ut.niche_some { return vname } }
-    return ""
 }
 
 // Once a union's variant structs have their user fields resolved, fold the tag
@@ -625,12 +588,8 @@ union_niche_none :: proc(ut: ^Type_Union) -> string {
 // rides struct codegen: `__tag` at index 0 (typed as the union's tag enum),
 // `__pad` next when the union declares padding. The reserved names can't
 // collide with user fields; codegen writes the tag value, so neither header
-// field needs a default. Niche unions (Maybe(^T)) keep their bare-pointer
-// layout and are skipped — their `is_union_variant` stays false, which is how
-// codegen tells the two representations apart.
+// field needs a default.
 finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
-    ut.niche_some = union_niche_variant(c, ut)
-    if ut.niche_some != "" { return }
     for vname in ut.variants {
         vst := ut.variant_structs[vname]
         if vst == nil || vst.is_union_variant { continue }   // idempotent

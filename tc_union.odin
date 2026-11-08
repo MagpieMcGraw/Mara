@@ -386,8 +386,7 @@ tc_union_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
 
 // `Name(args)`, Name a generic union: its instance (once) — its params bound
 // to the arguments, then made and resolved as a union is, its variants'
-// bodies checked again as its own. A niche — `Maybe(^T)`: the pointer, None
-// its null — is decided as a union's is (finalize_union_variant_headers).
+// bodies checked again as its own.
 tc_union_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)

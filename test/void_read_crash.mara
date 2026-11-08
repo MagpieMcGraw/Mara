@@ -1,0 +1,30 @@
+module void_read_crash
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+//@ expect-exit: 1
+//@ expect-output: runtime error: a read through void
+
+// A read through void the checks can't see (a test of h.p, then void written
+// through another pointer to h): reading from so big a struct could land past
+// the unmapped low addresses, so the read is checked where it runs.
+
+Big :: struct {
+	data: [70000!]byte
+	last: i64
+}
+
+H :: struct { p: ^Big }
+
+main :: fun() {
+	b : Big = {all 0}
+	h := H{p = &b}
+	q := &h
+	if h.p != void {
+		q.p = void
+		print(h.p.last)
+	}
+}

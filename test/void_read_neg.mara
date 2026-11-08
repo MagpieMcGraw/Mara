@@ -1,0 +1,46 @@
+module void_read_neg
+
+//@ expect-fail: may be void here
+
+// A read through what may be void, with no test before it: each is an error,
+// said with where the void comes from.
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+State :: struct { quit: bool  a: bool }
+Flag :: alias State.bool
+Bind :: struct { key1, key2: State.bool }
+
+walk :: fun(p: ^Node) -> i64 {
+	return p.x                    // a param some call gives void
+}
+
+find :: fun(p: ^Node, want: bool) -> ^Node {
+	if want do return p
+	return void
+}
+
+main :: fun() {
+	a := Node{x = 1, next = void}
+	b := Node{x = 2, next = &a}
+	print(walk(void))
+	f := find(&a, true)
+	print(f.x)                    // a result some return gives void
+	n := b.next
+	print(n.next.x)               // a field something sets to void
+	ks : [4!]^Node
+	print(ks[0].x)                // a bare array's items
+	z := Node{all 0}
+	print(z.next.x)               // `{all 0}`
+	s := State{all 0}
+	bs : [3!]Bind
+	bs[0].key1 = State.a
+	print(s[bs[0].key2])          // a field reference zeroed
+	g : fun() -> i64 = void
+	print(g())                    // a fun value
+	m, _ := Flag.from_text("b")
+	print(s[m])                   // from_text's miss
+}

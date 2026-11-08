@@ -351,7 +351,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
 
 // What a declaration is, as written — the checker and lowering each read it
 // here: `x : T = void`, T no pointer (uninitialized: a pointer's void is its
-// null, a value); `x := take(…)`; `x : T` with no value, by a shape's
+// null, a value, a field reference's too: void_is_value); `x := take(…)`; `x : T` with no value, by a shape's
 // `bindings` or bare; or one of a value. `cap_n`: `[:n]T`'s count, n — on a
 // declaration, an error (a slice has no storage of its own).
 Decl_Form :: enum u8 { Value, Void, Take, Shape, Bare }
@@ -362,7 +362,7 @@ tc_decl_form :: proc(k: ^TC, value, ann_node: Tree_Id, ann: Type) -> (form: Decl
         cap_n = Tree_Id(t.a[ann_node])
     }
     switch {
-    case value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann): form = .Void
+    case value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann) && !void_is_value(ann): form = .Void
     case value != 0 && t.tag[tc_unparen(k, value)] == .Take:         form = .Take
     case value == 0:
         bindings = tc_shape_bindings(k, ann_node)

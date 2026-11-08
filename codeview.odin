@@ -538,19 +538,10 @@ cv_enumeration :: proc(cv: ^Cv_Module, name, unique: string, base: u32, names: [
 }
 
 // A union: its tag and its variants over each other, as raddbg shows it the
-// variant its tag names. A niche one: its Some variant's pointer.
+// variant its tag names.
 @(private="file")
 cv_union :: proc(cv: ^Cv_Module, ut: ^Type_Union, key: [2]u64) -> u32 {
     name := ut.source_name if ut.source_name != "" else ut.name
-    if ut.niche_some != "" {
-        vst := ut.variant_structs[ut.niche_some]
-        fwd := cv_record_fwd(cv, LF_STRUCTURE, name, ut.name)
-        cv.made[key] = fwd
-        names := [1]string{ut.niche_some}
-        types := [1]u32{cv_type(cv, vst.fields[0].type_)}
-        offsets := [1]int{0}
-        return cv_record(cv, LF_STRUCTURE, name, ut.name, type_size(ut), names[:], types[:], offsets[:])
-    }
     fwd := cv_record_fwd(cv, LF_UNION, name, ut.name)
     cv.made[key] = fwd
     names := make([]string, len(ut.variants) + 1, context.temp_allocator)

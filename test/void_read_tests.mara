@@ -1,0 +1,66 @@
+module void_read_tests
+
+//@ expect-output: tests: 3 0 4 0 3 6 3 3
+//@ expect-output: refs: true false true
+
+// Each way a test says a value isn't void, so a read through it is fine:
+// `!=` and `==` with an early return, `and`, `or`, `not`, a loop's
+// condition, an assert, from_text's bool, a field reference tested.
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+State :: struct { quit: bool  a: bool }
+Flag :: alias State.bool
+
+both :: fun(p: ^Node, q: ^Node) -> i64 {
+	if p != void and q != void { return p.x + q.x }
+	return 0
+}
+
+early :: fun(p: ^Node, q: ^Node) -> i64 {
+	if p == void or q == void do return 0
+	return p.x + q.x
+}
+
+negated :: fun(p: ^Node) -> i64 {
+	if not (p == void) { return p.x }
+	return 0
+}
+
+total :: fun(p: ^Node) -> i64 {
+	n := p
+	sum := 0
+	for n != void {
+		sum += n.x
+		n = n.next
+	}
+	return sum
+}
+
+asserted :: fun(p: ^Node) -> i64 {
+	assert(p != void)
+	return p.x
+}
+
+held :: fun(p: ^Node) -> i64 {
+	// (A field compared, then read: the test holds till it's written.)
+	if p.next != void do return p.next.x
+	return p.x
+}
+
+main :: fun() {
+	a := Node{x = 1, next = void}
+	b := Node{x = 2, next = &a}
+	print("tests:", both(&a, &b), both(&a, void), early(&b, &b), early(void, &a), total(&b), total(&b) * 2, asserted(&b) + negated(&a), held(&b) + 2)
+	s := State{all 0}
+	g, found := Flag.from_text("a")
+	if found do s[g] = true
+	k : State.bool = void
+	if k != void do s[k] = true
+	m, ok := Flag.from_text("nope")
+	if ok do s[m] = true
+	print("refs:", s.a, s.quit, k == void)
+}

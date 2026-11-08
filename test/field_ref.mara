@@ -20,7 +20,7 @@ use mara.core
 //@ expect-output: list item: true true 0 buttons[2]
 //@ expect-output: list runtime: 2.5 stick[1]
 //@ expect-output: list from_text: -1 true
-//@ expect-output: zero: name 3 name 3 name 3
+//@ expect-output: void: void void void -1 true true false
 //@ expect-output: in place: tail cells[1].y
 //@ expect-output: alias: by_key[B] true true
 //@ expect-output: using: hp hp true true
@@ -74,7 +74,7 @@ main :: fun() {
 	print("printed:", f, b, by_runtime)
 	print("text:", f.text(), b.text())
 	g, found := Look.from_text("mouse.y")
-	events[g] = 7
+	if found do events[g] = 7
 	print("from_text:", events.mouse.y, found)
 	_, none := Look.from_text("mouse.z")
 	print("from_text miss:", none)
@@ -103,22 +103,19 @@ main :: fun() {
 	pad[ps] = 2.5
 	print("list runtime:", pad.stick[1], ps.text())
 	pg, pfound := Pad_Axis.from_text("stick[0]")
-	pad[pg] = -1
+	if pfound do pad[pg] = -1
 	print("list from_text:", pad.stick[0], pfound)
 	more()
 }
 
-// A reference's zero is its type's first field: declared with no value, a
-// struct of them made `{all 0}`, from_text's miss.
+// A reference's zero is void, none: a struct of them made `{all 0}`,
+// from_text's miss, `= void`. It prints "void", is -1 as a number, and
+// compares equal to void.
 more :: fun() {
-	text := "abc"
-	s := Named{all 0}
-	s.id = 9
-	s.name = text[:]
-	z : Named.[]utf8
 	h := Holder{all 0}
 	m, _ := Named_Text.from_text("nope")
-	print("zero:", z, s[z].len, h.f, s[h.f].len, m, s[m].len)
+	v : Named.[]utf8 = void
+	print("void:", h.f, m, v, i64(h.f), h.f == void, m == void, Named.name == void)
 	print("in place:", Named.tail, Named.cells[1].y)
 	b := Keyed.by_key[B]
 	_, by_b := Keyed_Bool.from_text("by_key[B]")

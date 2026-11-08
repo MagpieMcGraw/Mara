@@ -1,12 +1,10 @@
 module nicheexpr
 
-// Niche unions (bare nullable pointer: None | Some{^T}) flowing as first-class
-// values — return, bind-from-call, and argument positions — same as ordinary
-// unions. Construction in place was already supported; this covers the rest.
+// Unions of None | Some{^T} flowing as first-class values — return,
+// bind-from-call, and argument positions.
 
 use mara.maybe
 
-// No tag type: `union(tag u8)` would state a layout and opt out of the niche.
 Opt :: union {
 	Nope
 	Yep { p: ^i64 }

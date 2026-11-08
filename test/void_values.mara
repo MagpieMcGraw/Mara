@@ -1,0 +1,62 @@
+module void_values
+
+//@ expect-output: stored: true true true true true true
+//@ expect-output: given: 0 1 0 1
+//@ expect-output: refs: void a true
+
+// A pointer's `void` (a fun value's, a field reference's) is its null, a
+// value: it goes anywhere a pointer goes — a field, an element, a literal, a
+// return, an argument, a parameter's default, an if's branch, a variant's
+// field — and a test before each read through it.
+
+H :: struct {
+	n: i64
+	p: ^i64
+	q: ^i64 = void
+}
+
+Opt :: union {
+	Some { value: ^i64 }
+	None {}
+}
+
+find :: fun(q: ^i64, want: bool) -> ^i64 {
+	if want do return q
+	return void
+}
+
+deref_or :: fun(p: ^i64, or_else: i64) -> i64 {
+	if p == void do return or_else
+	return p^
+}
+
+dflt :: fun(p: ^i64 = void) -> i64 { return deref_or(p, 0) }
+
+State :: struct { quit: bool  a: bool }
+Bind :: struct { key: State.bool }
+
+main :: fun() {
+	x : i64 = 5
+	h := H(){n = 1, p = void}
+	arr : [2!]^i64 = [&x, void]
+	arr[0] = void
+	pp := &h.p
+	pp^ = void
+	c := false
+	r := if c do &x else void
+	o : Opt = Some{value = void}
+	got := false
+	match o {
+	Some s
+		got = s.value == void
+	None
+	}
+	print("stored:", h.p == void, h.q == void, arr[0] == void, arr[1] == void, r == void, got)
+	print("given:", deref_or(void, 0), deref_or(&x, 0) - 4, dflt(), dflt(&x) - 4)
+	b := Bind{key = void}
+	s := State{all 0}
+	k := State.a
+	s[k] = true
+	n := b.key
+	print("refs:", n, k, n == void)
+}

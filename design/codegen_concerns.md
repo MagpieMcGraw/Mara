@@ -24,9 +24,6 @@ belongs.
   variable when the write is a declaration (or the result slot), else in a
   temporary. That's a storage fact, like `storage_calls`' places for call
   results.
-- **Whether a union literal writes its fields** is found by scanning the rest
-  of the run (`llvm_variant_written`, for a niche union's null). Lowering
-  builds the literal; it knows.
 - **"In range by construction" is implicit.** An index skips its bounds check
   when `pg.written[op] == .Synthetic` (`llvm_op`'s `.Index`,
   `llvm_slice_index`): a loop's element index is in range because lowering

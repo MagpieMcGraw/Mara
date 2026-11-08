@@ -91,7 +91,7 @@ example_use :: fun() {
 // v`, `n += 1` write what n points at (a param can't point elsewhere), as
 // `n^ = v` does. A pointer a call gives back is written the same way:
 // `next(&list) = v`. A pointer variable is written through with `^`, since
-// `p = q` points it elsewhere.
+// `p = q` points it elsewhere. A pointer's `void` is its null: see `void`.
 //
 // `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
@@ -632,16 +632,18 @@ Place :: struct { x: f32  y: f32 }
 // slice: what they hold isn't in the struct. `m := Input.mouse` makes
 // one too, and `m.x` is Input.mouse.x again. References compare with ==, but
 // there's no arithmetic on them and no number becomes one, so a reference is
-// always a real field. Its value comes out as a number, `i64(f)`, counted from
-// the first field of its type: a map's key with a `map_hash` for the reference
-// type beside it. One never set (declared with no value, or in a struct
-// made `{all 0}`) is the first field of its type: `Input.f32`'s is mouse.x.
-// A reference type needs its struct to hold a field of it, of some size, and
-// indexing another struct's value with one doesn't build.
+// a real field or void. Its value comes out as a number, `i64(f)`, counted
+// from the first field of its type, void -1: a map's key with a `map_hash` for
+// the reference type beside it. A reference is void as a pointer is: `= void`,
+// in memory zeroed (a struct made `{all 0}`, an array's items), and reading
+// through one needs a test first (see `void`). A reference type needs its
+// struct to hold a field of it, of some size, and indexing another struct's
+// value with one doesn't build.
 //
-// `f.text()` is the path as text, "mouse.x" (an atom), and print shows that.
-// `R.from_text(s)`, with `R :: alias Input.f32`, gives the reference s names
-// and true; when no f32 field of Input has that path, the first and false.
+// `f.text()` is the path as text, "mouse.x" (an atom), "void" for void, and
+// print shows that. `R.from_text(s)`, with `R :: alias Input.f32`, gives the
+// reference s names and true; when no f32 field of Input has that path, void
+// and false — and the true is the test a read through it needs.
 // A field through a `using` field is named without it (`hp`, not `base.hp`;
 // both are read back), and an enum-indexed array's item by its variant, the
 // first declared of a value. A struct with more than 4096 fields of one type
@@ -655,7 +657,7 @@ example_field_refs :: fun() {
 	state[b] = true
 	print(state.mouse.pressed[1], b.text()) // true mouse.pressed[1]
 	g, found := Input_Number.from_text("scroll")
-	state[g] += 2
+	if found do state[g] += 2
 	print(state.scroll, found)             // 2 true
 }
 
@@ -917,18 +919,33 @@ example_Self :: fun() {
 	print(c.bumped().bumped().n)           // 2
 }
 
-// `void`: no value — `= void` leaves a variable unset, to be written before it's read.
+// `void`: no value — a pointer's null, or a variable left unset.
 //
-// Only a whole local variable, where that's checked: a field (`a[i].f = void`),
-// a store through a pointer, an argument or a return value is an error. A
-// struct literal leaves a field unset by leaving it out.
+// A pointer's `void` (a fun value's, a field reference's) is a value: it goes
+// anywhere a pointer goes, and memory zeroed holds it (`{all 0}`, a bare
+// fixed array's items). `p == void` tests it. Reading through a pointer that
+// may be void needs a test first: `if p != void { … }`, `if p == void do
+// return`, `p != void and p.x > 0`, a loop `for n != void`, or `assert(p !=
+// void)`; without one it's an error, which says where the void comes from.
+// That's worked out over the whole program: a field anything sets to void
+// may be void wherever it's read, a param some call gives void, a result
+// some return does. A pointer a C function gives back may be void. A bare
+// `p : ^T` is unset, not void: it's written before it's read.
 //
-// `buf : [4096!]byte = void` skips filling the buffer with zeros, for when
-// every item is written before it's read.
+// Any other type's `= void` leaves a whole local variable unset, to be
+// written before it's read; anywhere else (a field, an argument) it's an
+// error. `buf : [4096!]byte = void` skips filling the buffer with zeros, for
+// when every item is written before it's read.
 example_void :: fun() {
 	squares : [8!]i64 = void
 	for i in 0:8 do squares[i] = i * i
 	print(squares[7])                      // 49
+	a : i64 = 7
+	cells : [3!]^i64
+	cells[1] = &a
+	for c in cells {
+		if c != void do print(c^)              // 7
+	}
 }
 
 // `all`: every item of an array set to one value.

@@ -1,0 +1,21 @@
+module void_ref_crash
+
+//@ expect-exit: 1
+//@ expect-output: Expected a field reference that isn't void
+
+// A read through a field reference that's void, which the checks can't see (a
+// test of h.f, then void written through another pointer to h): s[h.f] is
+// checked where it runs.
+
+State :: struct { quit: bool  a: bool }
+H :: struct { f: State.bool }
+
+main :: fun() {
+	s := State{all 0}
+	h := H{f = State.a}
+	q := &h
+	if h.f != void {
+		q.f = void
+		print(s[h.f])
+	}
+}

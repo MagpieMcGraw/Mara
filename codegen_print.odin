@@ -693,8 +693,8 @@ gen_print_struct :: proc(g: ^Codegen, addr: Val, st: ^Scope_Body, name := "") {
 }
 
 // A union printed: the variant it holds, as that variant prints — `Rect {
-// w: 3 }` — chosen by its tag when the program runs (a niche union's, its
-// pointer's nullness). A tag no variant has prints `Shape(7)`.
+// w: 3 }` — chosen by its tag when the program runs. A tag no variant has
+// prints `Shape(7)`.
 gen_print_union :: proc(g: ^Codegen, addr: Val, ut: ^Type_Union, label := "") {
     tag_ir := union_tag_ir_type(ut)
     tag := load_union_tag(g, ut, addr)

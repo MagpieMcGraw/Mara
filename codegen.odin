@@ -470,7 +470,7 @@ field_ir_type :: proc(f: ^Struct_Type_Field) -> Ir_Type {
 
 // A union's IR type, `%union.<name>`. Its body: its tag (with a pad, the
 // bytes they take), then the rest of its size — the payload its variants
-// overlay; a niche union's, the Some variant's pointer alone.
+// overlay.
 //
 //   pad bytes == 0: { tag_ir, [payload_bytes x i8] }              — payload at offset tag_bytes
 //   pad bytes >  0: { [(tag_bytes+pad_bytes) x i8], [N x i8] }    — payload at offset tag_bytes+pad_bytes
@@ -481,16 +481,10 @@ field_ir_type :: proc(f: ^Struct_Type_Field) -> Ir_Type {
 // expects it (e.g. SDL3's u64 timestamp at byte 8 with a u32 tag).
 ir_union_type :: proc(ut: ^Type_Union) -> Ir_Type {
     if t, made := ir_type_recalled(ut); made { return t }
-    body: Ir_Type
-    if ut.niche_some != "" {
-        ptr := [1]Ir_Type{IR_PTR}
-        body = ir_struct_type(ptr[:])
-    } else {
-        header := union_header_bytes(ut)
-        tag_field := union_tag_ir_type(ut) if ut.tag_pad == nil else ir_array_type(header, IR_I8)
-        fields := [2]Ir_Type{tag_field, ir_array_type(type_size(ut) - header, IR_I8)}
-        body = ir_struct_type(fields[:])
-    }
+    header := union_header_bytes(ut)
+    tag_field := union_tag_ir_type(ut) if ut.tag_pad == nil else ir_array_type(header, IR_I8)
+    fields := [2]Ir_Type{tag_field, ir_array_type(type_size(ut) - header, IR_I8)}
+    body := ir_struct_type(fields[:])
     t := ir_named_type(strings.concatenate({"union.", ut.name}, context.temp_allocator), body)
     return ir_type_remember(ut, t)
 }
@@ -659,6 +653,7 @@ llvm_escape_string :: proc(s: string) -> string {
 __MARA_BOUNDS_FAIL    :: "__mara_bounds_fail"
 __MARA_OVERFLOW_FAIL  :: "__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "__mara_divz_fail"
+__MARA_VOID_FAIL      :: "__mara_void_fail"
 __MARA_SLICE_LEN_FAIL :: "__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "__mara_match_fail"
 __MARA_FTOI_FAIL      :: "__mara_ftoi_fail"
@@ -674,6 +669,7 @@ RUNTIME_FAILS := [?]Runtime_Fail{
     {__MARA_BOUNDS_FAIL,    {{IR_PTR, "loc"}, {IR_I64, "idx"}, {IR_I64, "len"}, {IR_PTR, "name"}},     "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
     {__MARA_OVERFLOW_FAIL,  {{IR_PTR, "loc"}},                                                    "%s runtime error: integer overflow\n"},
     {__MARA_DIVZ_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: division by zero\n"},
+    {__MARA_VOID_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: a read through void\n"},
     {__MARA_SLICE_LEN_FAIL, {{IR_PTR, "loc"}, {IR_I64, "new_len"}, {IR_I64, "cap"}, {IR_PTR, "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
     {__MARA_MATCH_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
     {__MARA_FTOI_FAIL,      {{IR_PTR, "loc"}, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              "%s runtime error: %.15g doesn't fit in %s\n"},
@@ -857,6 +853,24 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     ir_call(g, {}, IR_VOID, ir_global(__MARA_DIVZ_FAIL), {IR_PTR, loc_global, {}})
     ir_unreachable(g)
 
+    emit_label(g, ok_label)
+}
+
+// How far past address 0 a read through void is sure to crash on its own:
+// the systems keep the lowest 64 KB unmapped. Past it, it's checked.
+VOID_GUARD_BYTES :: 65536
+
+// A pointer read through, to something so big a read at its far end could
+// land past the unmapped low addresses: checked not void where it runs.
+emit_void_check :: proc(g: ^Codegen, ptr: Val, span: Span) {
+    ok_label := fresh_label(g, "void.ok")
+    fail_label := fresh_label(g, "void.fail")
+    cmp := fresh_tmp(g)
+    ir_icmp(g, cmp, .Eq, IR_PTR, ptr, IR_NULL)
+    emit_cond_br(g, cmp, fail_label, ok_label)
+    emit_label(g, fail_label)
+    ir_call(g, {}, IR_VOID, ir_global(__MARA_VOID_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}})
+    ir_unreachable(g)
     emit_label(g, ok_label)
 }
 
@@ -1216,21 +1230,9 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // A union's tag, and a match whose subject holds no arm's
 // ---------------------------------------------------------------------------
 
-// A union value's tag, read from its storage. A tagged union keeps it in field
-// 0. A niche union stores none — its storage is the Some variant's pointer — so
-// its tag is whichever variant the pointer's nullness says it holds.
+// A union value's tag, read from its storage: field 0.
 load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: Val) -> Val {
     tag_ir := union_tag_ir_type(ut)
-    if some := ut.niche_some; some != "" {
-        none := union_niche_none(ut)
-        ptr := fresh_tmp(g)
-        emit_load_into(g, ptr, IR_PTR, union_ptr)
-        live := fresh_tmp(g)
-        ir_icmp(g, live, .Ne, IR_PTR, ptr, IR_NULL)
-        tag := fresh_tmp(g)
-        ir_select(g, tag, live, tag_ir, ir_int(ut.tag_map[some]), ir_int(ut.tag_map[none]))
-        return tag
-    }
     tag_ptr := fresh_tmp(g)
     emit_field_gep_into(g, tag_ptr, ir_union_type(ut), union_ptr, 0)
     tag_val := fresh_tmp(g)

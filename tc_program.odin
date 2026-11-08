@@ -201,8 +201,9 @@ tc_validate_allocator :: proc(k: ^TC) {
     }
 }
 
-// A param's default of `void`: an error, nothing checks a param's reads (the
-// flow pass's other void stores, through the graph, skip these).
+// A param's default of `void`: an error but a pointer's (its null), nothing
+// checks a param's reads (the flow pass's other void stores, through the
+// graph, skip these).
 tc_void_defaults :: proc(k: ^TC, checked: ^Checked_Program, fns: []^Type_Scope) -> map[Span]bool {
     seen: map[Span]bool   // (a generic's instances share their template's nodes)
     for ft in fns {

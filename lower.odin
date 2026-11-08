@@ -1644,6 +1644,13 @@ lw_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Buil
     if !is_cast { return lw_builtin_more(k, n, name, args, want, w) }
     each(k, args, w, span, &vals)
     if want == .Place { lw_fail(k, n, "a builtin's place") }
+    // (A field reference as a number: its value less 1, the first field 0,
+    // void -1.)
+    if len(args) == 1 {
+        if fr, is_ref := distinct_base(tc_node_type(k, args[0])).(^Type_Field); is_ref {
+            vals[0] = graph_op_value(b, .Arith, .Synthetic, span, fr, "-", vals[0], graph_const(b, .Synthetic, span, slice_header_width_type, "1", Const_Value{int = 1}))
+        }
+    }
     return {v = graph_op_value(b, .Cast, w, span, target, name, ..vals[:]), ok = true}
 }
 

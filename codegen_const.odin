@@ -266,7 +266,7 @@ const_slice :: proc(cx: ^Const_Ctx, sl: ^Type_Slice, v: ^Fold) -> Ir_Const {
 @(private="file")
 const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, v: ^Fold) -> (gtype: Ir_Type, init: Ir_Const) {
     g := cx.g
-    if v.variant == nil || ut.niche_some != "" { const_fail(cx) }
+    if v.variant == nil { const_fail(cx) }
     vsd := as_struct_body(distinct_base(v.variant))
     if vsd == nil { const_fail(cx) }
     vname := ir_class_type(vsd)
