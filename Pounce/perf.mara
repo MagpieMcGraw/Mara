@@ -11,17 +11,17 @@ Performance_Timer :: struct {
     names: [MAX_PERF_PHASES!][64]utf8
     times: [MAX_PERF_PHASES!]f64
     count: i64
-    phase_start: u64
-    total_start: u64
+    phase_start: i64
+    total_start: i64
 }
 
 // Call once at the start of a timing session with the first phase name.
 perf_timer_begin :: fun(
 	first_phase: []utf8) -> Performance_Timer
 {
-	timer := Performance_Timer{0}
+	timer := Performance_Timer{all 0}
     timer.count = 0
-    timer.total_start = time_now()
+    timer.total_start = clock_ns()
     timer.phase_start = timer.total_start
     timer.names[0].len = 0
     &timer.names[0] + first_phase

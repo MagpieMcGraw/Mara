@@ -31,9 +31,9 @@ Event_State :: struct {
 
 process :: fun(events: ^Event_State) {
     events.quit = false
-    events.keyboard.pressed = {}
-    events.mouse.pressed = {}
-    events.dropfile = {0}
+    events.keyboard.pressed = {all false}
+    events.mouse.pressed = {all false}
+    events.dropfile = {all 0}
 
     events.mouse.xrel = 0
     events.mouse.yrel = 0
