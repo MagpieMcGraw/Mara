@@ -610,6 +610,46 @@ Player :: struct {
 }
 Place :: struct { x: f32  y: f32 }
 
+// `S.field`, `s[f]`: a field reference — a value naming one of a struct's fields, to read or write it in any value of that struct.
+//
+// `f := Input.mouse.x` names Input's field mouse.x. Its type is `Input.f32`:
+// the struct's type, a dot, and the field's type. `state[f]` reads that field
+// of state and `state[f] = 5` writes it, through a pointer too. A path goes
+// through fields and into fixed arrays, by a number or by a variant for an
+// enum-indexed array, even one known only when it runs (checked then). It
+// doesn't go through a pointer, a slice or a list. `m := Input.mouse` makes
+// one too, and `m.x` is Input.mouse.x again. References compare with ==, but
+// there's no arithmetic on them and no number becomes one, so a reference is
+// always a real field. Indexing another struct's value with it doesn't build.
+//
+// `f.text()` is the path as text, "mouse.x" (an atom), and print shows that.
+// `R.from_text(s)`, with `R :: alias Input.f32`, gives the reference s names
+// and true, or false when no f32 field of Input has that path. A struct with
+// more than 4096 fields of one type can't name them.
+example_field_refs :: fun() {
+	state := Input{all 0}
+	f := Input.mouse.x
+	state[f] = 5
+	print(state.mouse.x, f)                // 5 mouse.x
+	b := Input.mouse.pressed[1]
+	state[b] = true
+	print(state.mouse.pressed[1], b.text()) // true mouse.pressed[1]
+	g, found := Input_Number.from_text("scroll")
+	state[g] += 2
+	print(state.scroll, found)             // 2 true
+}
+
+Input :: struct {
+	quit: bool
+	mouse: Mouse_State
+	scroll: f32
+}
+Mouse_State :: struct {
+	x: f32  y: f32
+	pressed: [3!]bool
+}
+Input_Number :: alias Input.f32
+
 // `foreign`: functions from a C library, declared so Mara can call them.
 //
 // A `foreign static_lib "<library>" { … }` block lists C's functions with
@@ -907,6 +947,7 @@ main :: fun() {
 	example_dispatch()
 	example_overload()
 	example_using()
+	example_field_refs()
 	example_foreign()
 	example_print()
 	example_assert()

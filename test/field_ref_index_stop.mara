@@ -1,0 +1,21 @@
+module field_ref_index_stop
+
+use mara.core
+
+//@ expect-exit: 1
+//@ expect-output: before
+//@ expect-output: Expected a field reference's index within its 4 items
+
+// A field reference into a fixed array by an index known only when it runs:
+// checked then, and the program stops when it's past the array.
+
+S :: struct { fixed: [4!]i64 }
+
+main :: fun(args: [][]utf8) {
+	i := 7
+	if args.len > 5 do i = 2
+	print("before")
+	f := S.fixed[i]
+	print(f)
+	print("after")
+}

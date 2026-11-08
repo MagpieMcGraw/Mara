@@ -90,11 +90,13 @@ span_text :: proc(src: string, s: Span) -> string {
 // it is checked in — outside any generic, the one; in a generic's template,
 // each instance's, as they differ.
 @(private="file")
-hit_type :: proc(a: ^Annotations, n: Tree_Id) -> string {
+hit_type :: proc(a: ^Annotations, n: Tree_Id, ref_elem := false) -> string {
     labels := make([dynamic]string, context.temp_allocator)
     for inst, i in a.instances {
         if n < inst.lo || n > inst.hi { continue }
-        label := hit_label(annot_type(a, Instance_Id(i), n))
+        ty := annot_type(a, Instance_Id(i), n)
+        if fr, is_ref := ty.(^Type_Field); is_ref && ref_elem { ty = fr.elem }
+        label := hit_label(ty)
         if label != "" && !slice.contains(labels[:], label) { append(&labels, label) }
     }
     return strings.join(labels[:], ", ", context.temp_allocator)
@@ -1035,14 +1037,13 @@ hit_write_place :: proc(sb: ^strings.Builder, t: ^Tree, tok: Token_Id, n: Tree_I
 
 // The types along a path, as it's written: `game.timers.work` is
 // `^State.Timers.Timer`. Each part's type is all of the part's, `b[i]` the
-// item's. "" when the checker typed none of it.
+// item's; a field reference's past the first part its field's type, so
+// `Events.mouse.x` is `Events.Mouse.f32`. "" when the checker typed none of it.
 @(private="file")
 hit_path_types :: proc(t: ^Tree, a: ^Annotations, n: Tree_Id) -> string {
     parts := make([dynamic]string, context.temp_allocator)
     cur := n
     for {
-        label := hit_type(a, cur)
-        if label != "" { inject_at(&parts, 0, label) }
         c := cur
         down: for {
             #partial switch t.tag[c] {
@@ -1050,6 +1051,8 @@ hit_path_types :: proc(t: ^Tree, a: ^Annotations, n: Tree_Id) -> string {
             case: break down
             }
         }
+        label := hit_type(a, cur, ref_elem = t.tag[c] == .Field)
+        if label != "" { inject_at(&parts, 0, label) }
         if t.tag[c] != .Field { break }
         cur = Tree_Id(t.a[c])
     }

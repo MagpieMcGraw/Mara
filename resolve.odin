@@ -50,6 +50,14 @@ Resolver :: struct {
     in_sight: [dynamic]Rs_Seen,         // resolve_completing: the names in sight at the placeholder
     captured: bool,
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
+    field_types: map[Tree_Id]Rs_Field_Type,   // a type name `S.T` that's a field reference's type, by its node
+}
+
+// `S.T` as a field reference's type: what S names, what T names, and where in
+// the name's parts T starts. (T a primitive: its ref the builtin's.)
+Rs_Field_Type :: struct {
+    owner, elem: Ref,
+    split:       int,
 }
 
 // A name in sight: what it refers to, the entry of the same name it hides,
@@ -1165,6 +1173,28 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
             if _, primitive := tc_primitive_named(name); primitive { ref, ok = {kind = .Builtin}, true } else { ref, ok = rs_lookup(r, name) }
         case:
             ref, ok = rs_parts(r, parts)
+            if !ok {
+                // (No such nested type: maybe a struct's type, then a field's,
+                // `Event_State.Mouse` — a field reference's type.)
+                miss := r.miss
+                for split in 1 ..< len(parts) {
+                    owner, has := rs_parts(r, parts[:split])
+                    if !has || owner.kind != .Type { continue }
+                    elem: Ref
+                    found := false
+                    if _, primitive := tc_primitive_named(rs_text(parts[split])); primitive && split == len(parts) - 1 {
+                        elem, found = {kind = .Builtin}, true
+                    } else {
+                        elem, found = rs_parts(r, parts[split:])
+                        found = found && elem.kind == .Type
+                    }
+                    if found {
+                        r.field_types[n] = {owner, elem, split}
+                        return
+                    }
+                }
+                r.miss = miss
+            }
         }
         if ok { r.refs[n] = ref } else { rs_keep_miss(r, n) }
         return

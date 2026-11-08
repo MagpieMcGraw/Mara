@@ -10,11 +10,23 @@ lw_index :: proc(k: ^TC, n: Tree_Id, want: Build_Want) -> Built {
     b := k.gb
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
+    if lw_makes_field_ref(k, n) {
+        if want == .Place { lw_fail(k, n, "a field reference's place") }
+        return {v = lw_field_ref_offset(k, n), ok = true}
+    }
     br := lw_expr(k, base_n, .Place, temp_span = span)
     bt := tc_node_type(k, base_n)
     base := br.v
     if pt, is_ptr := distinct_base(bt).(^Type_Ptr); is_ptr {
         base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", br.v)
+    }
+    // (A struct indexed by a field reference: the field, a view of the struct
+    // at the reference's offset.)
+    if _, by_field := distinct_base(tc_node_type(k, idx_n)).(^Type_Field); by_field {
+        t := tc_node_type(k, n)
+        p := graph_op_value(b, .View, .Explicit, span, t, "", base, lw_expr(k, idx_n, .Value, .Explicit).v)
+        if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
+        return {v = p, place = true, ok = true}
     }
     ir := lw_expr(k, idx_n, .Value, .Explicit)
     index := build_index_value(b, ir.v, tc_node_type(k, idx_n), span)
@@ -41,6 +53,13 @@ lw_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     base := cr.v
     at := lw_at(k, target)   // (the element's place: the target's)
     if pt, is_ptr := tt.(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, ix_span, pt.elem, "", cr.v) }
+    if _, by_field := distinct_base(tc_node_type(k, idx_n)).(^Type_Field); by_field {
+        // (`events[f] = v`: the struct's view at f's offset, written.)
+        place := graph_op_value(b, .View, .Explicit, ix_span, elem, "", base, lw_expr(k, idx_n, .Value).v)
+        b.at = at
+        lw_store_at(k, value, place, span, op_tok, target, s)
+        return
+    }
     ir := lw_expr(k, idx_n, .Value)
     place := graph_op_value(b, .Index, .Explicit, ix_span, elem, "", base, build_index_value(b, ir.v, tc_node_type(k, idx_n), ix_span))
     b.at = at

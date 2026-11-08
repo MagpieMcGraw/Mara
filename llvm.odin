@@ -1863,6 +1863,18 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     g, pg := e.g, e.pg
     base := ops[0].op
     t := graph_type(pg, op)
+    if _, by_field := distinct_base(graph_type(pg, ops[1].op)).(^Type_Field); by_field && len(ops) == 2 {
+        // (A struct's field by a field reference: the struct's address plus
+        // the reference's offset, a place of the field's type.)
+        if llvm_direct(e, base) { e.note = "a field reference into a value held in a register"; return false }
+        off := llvm_operand(e, ops[1], slice_header_width_type) or_return
+        at := llvm_place(e, base)
+        if at.kind == .None { e.note = "a field reference into a value with no place"; return false }
+        tmp := fresh_tmp(g)
+        ir_gep(g, tmp, IR_I8, at, {SLICE_LEN_IR, off, {}})
+        e.value[op] = tmp
+        return true
+    }
     // A positional slice carve takes its own run of the bytes (llvm_carve).
     if u := e.st.user[graph_ix(e.pg, op)]; u >= 0 && graph_op_of(pg, u) == .Carve && graph_name(pg, u) == "slice" { return true }
     // A partial array in the bytes: bound by a `let`, it is the memory
@@ -2438,6 +2450,10 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         if o.op == NO_NODE || o.out != 0 { return false }
         t, v := graph_type(pg, o.op), llvm_val(e, o.op)
         if v.kind == .None { return false }   // a held view (later)
+        if fr, is_ref := distinct_base(t).(^Type_Field); is_ref {   // (a field reference: its name)
+            append(&args, Print_Arg{val = llvm_field_atom(e, fr, v, op), t = Type_Atom{}})
+            continue
+        }
         text, is_text := llvm_text(e, o.op)
         switch {
         case is_text && llvm_aggregate(t):   // (text at a ^byte prints as a C string)
@@ -2646,6 +2662,8 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
         if ft, is_from_text := callee.origin.(Origin_From_Text); is_from_text { return llvm_from_text(e, op, ops, callee, ft.enum_) }
         if fn, is_from_number := callee.origin.(Origin_From_Number); is_from_number { return llvm_from_number(e, op, ops, callee, fn.enum_) }
+        if ft, is_text := callee.origin.(Origin_Field_Text); is_text { return llvm_field_text(e, op, ops, callee, ft.field) }
+        if ft, from_text := callee.origin.(Origin_Field_From_Text); from_text { return llvm_field_from_text(e, op, ops, callee, ft.field) }
         if vt, is_text := callee.origin.(Origin_Variant_Text); is_text { return llvm_variant_text(e, op, ops, callee, vt.enum_) }
         if er, is_err := callee.origin.(Origin_Err_Runtime); is_err { return llvm_err_runtime(e, op, ops, callee, er.which) }
         if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
@@ -2867,6 +2885,98 @@ llvm_variant_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_S
     r := fresh_tmp(g)
     ir_load(g, r, atom_ty, at)
     e.value[op] = r
+    return true
+}
+
+// A field reference's name as an atom (r.text()): v, its offset, switched on
+// over the offsets of the fields of its type, "?" for none. The atoms were
+// made as the program was checked (tc_field_atoms).
+@(private="file")
+llvm_field_atom :: proc(e: ^Llvm, fr: ^Type_Field, v: Val, op: Node_Id) -> Val {
+    g := e.g
+    atom :: proc(g: ^Codegen, text: string) -> Val { return ir_int(int(checked_atom(g.checked, text))) }
+    paths, _ := field_ref_paths(fr.owner, fr.elem)
+    if v.kind == .Int {
+        for p in paths { if i128(p.offset) == v.n { return atom(g, p.text) } }
+        return atom(g, "?")
+    }
+    at := llvm_temporary(e, {op, 0}, Type_Atom{}, as_local = true)
+    ir_store(g, IR_I32, atom(g, "?"), at)
+    done := fresh_label(g, "field_text.done")
+    arms := make([dynamic]Ir_Arg, 0, len(paths), context.temp_allocator)
+    texts := make([dynamic]string, 0, len(paths), context.temp_allocator)
+    seen := make(map[int]bool, allocator = context.temp_allocator)
+    for p in paths {
+        if seen[p.offset] { continue }   // (two names at one offset: a struct's first field, the struct's: the first)
+        seen[p.offset] = true
+        append(&arms, Ir_Arg{IR_I64, ir_int(p.offset), fresh_label(g, "field_text.case")})
+        append(&texts, p.text)
+    }
+    ir_switch(g, IR_I64, v, done, arms[:])
+    for arm, i in arms {
+        emit_label(g, arm.l)
+        ir_store(g, IR_I32, atom(g, texts[i]), at)
+        emit_br(g, done)
+    }
+    emit_label(g, done)
+    r := fresh_tmp(g)
+    ir_load(g, r, IR_I32, at)
+    return r
+}
+
+// `r.text()` (Origin_Field_Text), where it's called.
+@(private="file")
+llvm_field_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
+    if len(ops) != 1 { e.note = "text()'s value"; return false }
+    v := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    e.value[op] = llvm_field_atom(e, fr, v, op)
+    return true
+}
+
+// `R.from_text(text)` (Origin_Field_From_Text), where it's called: per field
+// of its type, its path's length compared with the text's, then each byte —
+// the first that matches all, its offset and true; none, 0 and false.
+@(private="file")
+llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
+    g := e.g
+    if len(ops) != 1 { e.note = "from_text's text"; return false }
+    paths, _ := field_ref_paths(fr.owner, fr.elem)
+    at := make([]Val, 2)
+    for i in 0 ..< 2 {
+        if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
+        if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, fn_result(callee, i), as_local = true) }
+    }
+    bool_ir := llvm_type_from_checker(Type_Bool{})
+    ir_store(g, IR_I64, ir_int(0), at[0])
+    ir_store(g, bool_ir, ir_int(0), at[1])
+    header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    data := emit_header_field(g, header, SLICE.ptr)
+    n := emit_len_count(g, emit_header_field(g, header, SLICE.len))
+    done := fresh_label(g, "field_from_text.done")
+    for p in paths {
+        miss := fresh_label(g, "field_from_text.miss")
+        same := fresh_tmp(g)
+        ir_icmp(g, same, .Eq, SLICE_LEN_IR, n, ir_int(len(p.text)))
+        for i in 0 ..= len(p.text) {
+            hit := fresh_label(g, "field_from_text.hit")
+            emit_cond_br(g, same, hit, miss)
+            emit_label(g, hit)
+            if i == len(p.text) { break }
+            byte_at, ch := fresh_tmp(g), fresh_tmp(g)
+            ir_gep(g, byte_at, IR_I8, data, {IR_I64, ir_int(i), {}})
+            ir_load(g, ch, IR_I8, byte_at)
+            same = fresh_tmp(g)
+            ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(p.text[i])))
+        }
+        ir_store(g, IR_I64, ir_int(p.offset), at[0])
+        ir_store(g, bool_ir, ir_int(1), at[1])
+        emit_br(g, done)
+        emit_label(g, miss)
+    }
+    emit_br(g, done)
+    emit_label(g, done)
+    e.outs[op], e.out_run[op] = at, e.run
+    e.value[op] = at[0]
     return true
 }
 
@@ -3302,7 +3412,7 @@ llvm_ahead :: proc(e: ^Llvm, p: Node_Id) -> bool {
 llvm_scalar :: proc(t: Type) -> bool {
     if slice_ref_of(t) != nil { return false }   // (a ^[]T: a reference, by value)
     #partial switch v in distinct_base(resolve_infer(t)) {
-    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err, Type_Atom:
+    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err, Type_Atom, ^Type_Field:
         return true
     case ^Type_Scope:
         return v.kind == .Fun   // a function value: its pointer

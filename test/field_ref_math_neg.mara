@@ -1,0 +1,24 @@
+module field_ref_math_neg
+
+use mara.core
+
+//@ expect-fail: mismatched types for '+': S.f32
+
+// No arithmetic on field references.
+
+Inner :: struct { x: f32 }
+Other :: struct { y: f32 }
+Key :: union { None = 0  A = 1 }
+S :: struct {
+	inner: Inner
+	p: ^Inner
+	list: [4]i64
+	items: []i64
+	fixed: [4!]i64
+}
+
+main :: fun() {
+	f := S.inner.x
+	g := f + 1
+	print(g)
+}

@@ -1,0 +1,23 @@
+module field_ref_not_struct_neg
+
+use mara.core
+
+//@ expect-fail: isn't a struct's type
+
+// A field reference's type starts with a struct's type.
+
+Inner :: struct { x: f32 }
+Other :: struct { y: f32 }
+Key :: union { None = 0  A = 1 }
+S :: struct {
+	inner: Inner
+	p: ^Inner
+	list: [4]i64
+	items: []i64
+	fixed: [4!]i64
+}
+
+main :: fun() {
+	f : Key.f32
+	print(f)
+}

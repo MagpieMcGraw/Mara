@@ -1,0 +1,23 @@
+module field_ref_cast_neg
+
+use mara.core
+
+//@ expect-fail: can't take a field reference
+
+// A field reference isn't a number: no casting it to one.
+
+Inner :: struct { x: f32 }
+Other :: struct { y: f32 }
+Key :: union { None = 0  A = 1 }
+S :: struct {
+	inner: Inner
+	p: ^Inner
+	list: [4]i64
+	items: []i64
+	fixed: [4!]i64
+}
+
+main :: fun() {
+	f := S.inner.x
+	print(i64(f))
+}

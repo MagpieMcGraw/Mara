@@ -306,6 +306,8 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         return T_VOID
     case Type_Atom:
         return 0x75   // (an id: a u32)
+    case ^Type_Field:
+        return 0x76   // (an offset: an i64)
     case Type_Err, ^Type_Ptr, ^Type_Scope, ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array, ^Type_Enum, ^Type_Union:
     case ^Type_Distinct:
         return cv_type(cv, v.base_type)

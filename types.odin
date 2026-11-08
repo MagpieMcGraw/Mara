@@ -36,6 +36,7 @@ Type :: union {
     Type_Error,       // error recovery — suppresses cascading type errors
     Type_Err,         // open error type — accepts any variant from any `error { ... }` decl
     Type_Atom,        // constant text by id: its place in the program's table (checked_atom)
+    ^Type_Field,      // a field reference, `Event_State.f32`: its offset in the struct (field_ref.odin)
 }
 
 Type_F64 :: struct {}
@@ -54,6 +55,12 @@ Type_Void :: struct {}
 Type_Error :: struct {}
 Type_Err :: struct {}
 Type_Atom :: struct {}
+
+// A field reference's type: the struct it's of, and the field's type.
+Type_Field :: struct {
+    owner: Type,
+    elem:  Type,
+}
 
 Numeric_Kind :: enum u8 { Signed, Unsigned, Float }
 Type_Numeric :: struct {
@@ -115,7 +122,7 @@ type_table_new :: proc() -> ^Type_Table {
 // as Type lists them; of the value, what the variant holds, by this mask.
 #assert(size_of(Type) == 16)
 @(private="file")
-TYPE_VALUE_MASK := [23]u64{
+TYPE_VALUE_MASK := [24]u64{
     0,                      // (nil)
     0,                      // Type_F64
     max(u64), max(u64),     // Type_Infer_Int, Type_Infer_Float: their cells
@@ -127,6 +134,7 @@ TYPE_VALUE_MASK := [23]u64{
     max(u64),               // Type_Const_Int: its value
     0, 0, 0, 0,             // Type_Any, Type_Void, Type_Error, Type_Err
     0,                      // Type_Atom
+    max(u64),               // ^Type_Field
 }
 
 // A composite type made once while the program is checked: the same shape,
@@ -174,6 +182,10 @@ type_ptr :: proc(elem: Type) -> ^Type_Ptr {
 
 type_slice :: proc(elem: Type) -> ^Type_Slice {
     return type_shape(Type_Slice, 12, 0, elem, nil, Type_Slice{elem = elem})
+}
+
+type_field :: proc(owner, elem: Type) -> ^Type_Field {
+    return type_shape(Type_Field, 23, 0, owner, elem, Type_Field{owner = owner, elem = elem})
 }
 
 type_fixed_array :: proc(size: int, elem: Type, index_type: Type = nil) -> ^Type_Fixed_Array {
@@ -714,7 +726,14 @@ Function_Origin :: union {
     Origin_From_Number,
     Origin_Variant_Text,
     Origin_Err_Runtime,
+    Origin_Field_Text,
+    Origin_Field_From_Text,
 }
+
+// `r.text()` and `R.from_text(text)` for a field reference's type: no function
+// at all, each call generated where it is (field_text_fun, field_from_text_fun).
+Origin_Field_Text :: struct { field: ^Type_Field }
+Origin_Field_From_Text :: struct { field: ^Type_Field }
 
 Origin_Source :: struct {}
 
@@ -1126,6 +1145,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     case Type_Atom:
         _, ok := b.(Type_Atom)
         return ok
+    case ^Type_Field:
+        vb, ok := b.(^Type_Field)
+        return ok && types_equal(va.owner, vb.owner) && types_equal(va.elem, vb.elem)
     }
     return false
 }
@@ -1235,6 +1257,7 @@ type_name :: proc(t: Type) -> string {
     case Type_Error:        return "<error>"
     case Type_Err:          return "err"
     case Type_Atom:         return "atom"
+    case ^Type_Field:       return fmt.tprintf("%s.%s", type_name(v.owner), type_name(v.elem))
     }
     return "void"
 }
@@ -1535,7 +1558,7 @@ is_composite :: proc(t: Type) -> bool {
 is_comparable :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(resolve_infer(t)) {
     case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err, Type_Atom,
-         Type_Infer_Int, Type_Infer_Float, Type_Any, Type_Error:
+         ^Type_Field, Type_Infer_Int, Type_Infer_Float, Type_Any, Type_Error:
         return true
     case ^Type_Scope:
         return v.kind == .Fun

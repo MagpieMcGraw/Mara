@@ -10,6 +10,10 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
     tc_lower_dots(k, base_n, idx_n)
     bt := tc_check(k, base_n)
+    // (A field reference's array, `r[i]`: a reference to its item. A struct
+    // indexed, `events[f]`: the field f is a reference to — field_ref.odin.)
+    if fr, is_ref := distinct_base(bt).(^Type_Field); is_ref { return tc_field_ref_index(k, n, idx_n, fr, span) }
+    if st := index_struct(bt); st != nil { return tc_index_by_field(k, idx_n, st, span) }
     target := distinct_base(bt)
     if pt, is_ptr := target.(^Type_Ptr); is_ptr {
         #partial switch inner in distinct_base(pt.elem) {
@@ -52,6 +56,15 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         return
     }
     ct := tc_check(k, base_n)
+    if st := index_struct(ct); st != nil {
+        // (`events[f] = v`: the field f is a reference to, written.)
+        field_t := tc_index_by_field(k, idx_n, st, tree_span(tr, target))
+        tc_set_type(k, target, field_t)
+        k.hint = field_t
+        tc_store_at(k, value, op_tok, target, s)
+        tc_settle(k, diag, field_t)
+        return
+    }
     tt := distinct_base(ct)
     elem := index_elem_type(tt)
     tc_set_type(k, target, elem)

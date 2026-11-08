@@ -44,6 +44,14 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return tc_module_member(k, n, sd, field)
     }
+    // (`Event_State.mouse`: a field of a struct's type — a field reference,
+    // field_ref.odin. `r.xrel`, r one: a reference to a field of its field.)
+    if tr.tag[n] == .Field {
+        if fr, is_ref := distinct_base(bt).(^Type_Field); is_ref { return tc_field_ref(k, n, fr.owner, fr.elem, field, span) }
+        if tc_names_struct(k, base, bt) {
+            if _, _, _, has := struct_field_at(field_ref_struct(bt), field); has { return tc_field_ref(k, n, bt, bt, field, span) }
+        }
+    }
     // (A union's variant: a value of its own — of the union as named: a
     // distinct one's variant is its.)
     if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {

@@ -584,6 +584,7 @@ llvm_type_from_checker :: proc(t: Type) -> Ir_Type {
         panic("llvm_type_from_checker: Type_Error reached codegen — codegen runs only on a clean check")
     case Type_Err:          return IR_I64 // open error type: its kind (set_id<<16 | tag) low, where it was made high (err_kind)
     case Type_Atom:         return IR_I32 // its place in the program's table
+    case ^Type_Field:       return IR_I64 // an offset in bytes
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
         // violation as Type_Any above — abort loudly instead of silently sizing

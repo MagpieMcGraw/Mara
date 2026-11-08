@@ -1,0 +1,90 @@
+module field_ref
+
+use mara.core
+
+//@ expect-output: write by ref: 5 5
+//@ expect-output: bool by ref: true true
+//@ expect-output: runtime index: true
+//@ expect-output: printed: mouse.x keys.held[W] keys.held[S]
+//@ expect-output: text: mouse.x keys.held[W]
+//@ expect-output: from_text: 7 true
+//@ expect-output: from_text miss: false
+//@ expect-output: bind: quit false
+//@ expect-output: bind: mouse.pressed[1] true
+//@ expect-output: bind: keys.held[A] false
+//@ expect-output: through a pointer: 9 9
+//@ expect-output: compare: true false
+//@ expect-output: composed: true mouse.x
+//@ expect-output: spelled types: 1.5 mouse 9
+//@ expect-output: by value: 2.5
+
+// Field references: `Events.mouse.x` is a value naming a field of Events by its
+// place, typed `Events.f32`; `events[f]` reads and writes it, through a pointer
+// too. Paths go into fixed arrays by any index, enum-indexed ones by variant;
+// text() and from_text name them.
+
+Key :: union {
+	None = 0
+	A = 4
+	S = 22
+	W = 26
+}
+
+Mouse :: struct {
+	x, y: f32
+	pressed: [6!]bool
+}
+
+Keys :: struct {
+	held: [32 Key]bool
+}
+
+Events :: struct {
+	quit: bool
+	mouse: Mouse
+	keys: Keys
+	scroll: f32
+}
+
+Look :: alias Events.f32
+Button :: alias Events.bool
+
+main :: fun() {
+	events := Events{all 0}
+	f := Events.mouse.x
+	events[f] = 5
+	print("write by ref:", events.mouse.x, events[f])
+	b := Events.keys.held[W]
+	events[b] = true
+	print("bool by ref:", events.keys.held[W], events[b] == true)
+	k := Key.S
+	by_runtime := Events.keys.held[k]
+	events[by_runtime] = true
+	print("runtime index:", events.keys.held[S])
+	print("printed:", f, b, by_runtime)
+	print("text:", f.text(), b.text())
+	g, found := Look.from_text("mouse.y")
+	events[g] = 7
+	print("from_text:", events.mouse.y, found)
+	_, none := Look.from_text("mouse.z")
+	print("from_text miss:", none)
+	binds : [3!]Button = [Events.quit, Events.mouse.pressed[1], Events.keys.held[A]]
+	events.mouse.pressed[1] = true
+	for bind in binds { print("bind:", bind, events[bind]) }
+	p := &events
+	p[f] = 9
+	print("through a pointer:", p[f], events.mouse.x)
+	print("compare:", f == Events.mouse.x, f == Events.mouse.y)
+	m := Events.mouse
+	mx := m.x
+	print("composed:", mx == f, mx)
+	r : Events.f32 = Events.scroll
+	t : Events.Mouse = Events.mouse
+	events[r] += 1.5
+	print("spelled types:", events.scroll, t, events[t].x)
+	print("by value:", read(Inner_S{inner = Inner{x = 2.5}, fixed = [0, 0, 0, 0]}, Inner_S.inner.x))
+}
+
+Inner :: struct { x: f32 }
+Inner_S :: struct { inner: Inner  fixed: [4!]i64 }
+read :: fun(s: Inner_S, f: Inner_S.f32) -> f32 { return s[f] }

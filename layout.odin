@@ -27,6 +27,8 @@ type_layout :: proc(t: Type) -> Layout {
         return {n, n}
     case Type_Atom:
         return {4, 4}   // an id: its place in the program's table
+    case ^Type_Field:
+        return {8, 8}   // an offset in bytes
     case Type_Err:
         return {8, 8}   // its kind (its set's id and its tag) low, where it was made high
     case Type_Void:

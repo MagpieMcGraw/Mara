@@ -12,6 +12,10 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     tr := k.t
     b := k.gb
     span := tree_span(tr, n)
+    if tr.tag[n] == .Field && lw_makes_field_ref(k, n) {
+        if want == .Place { lw_fail(k, n, "a field reference's place") }
+        return {v = lw_field_ref_offset(k, n), ok = true}
+    }
     base := Tree_Id(tr.a[n])
     field: string
     if tr.tag[n] == .Dot_Ident {

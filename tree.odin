@@ -101,6 +101,8 @@ Tree_Tag :: enum u8 {
     Type_Generic,   // `Name(args)`: main: the name; a: list — the arguments (types or values)
     Type_Fun,       // `fun(T) -> R`, `fn(T -> R)`: a: list — the params; b: list — the returns
     Type_Of,        // `fn name`, `fn pkg.name`: main: `fn`; a: tokens — the name's parts
+    Type_Field,     // `S.f32`, a field reference's type not written as names (`S.T` is a Type_Name):
+                    // main: the `.`; a: the struct's type; b: the field's
     Type_Paren,     // `(T)`: a: the type
 
     // --- expressions ---
@@ -209,6 +211,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Type_Generic   = {a = .List},
     .Type_Fun       = {a = .List, b = .List},
     .Type_Of        = {a = .Tokens},
+    .Type_Field     = {a = .Node, b = .Node},
     .Type_Paren     = {a = .Node},
     .Number         = {},
     .String         = {},

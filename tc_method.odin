@@ -131,7 +131,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         // (`m.text()`, `e.text()`: an enum's or an err's name; `e.where()`,
         // where an err was made, `e.trace()` the way it came.)
         if !resolved && (name == "text" || name == "where" || name == "trace") && len(args) == 0 {
-            if ft := tc_text_fun(k, qt, name); ft != nil {
+            if ft := tc_text_fun(k, qt, name, span); ft != nil {
                 qual, resolved = ft, true
                 k.annot.call_names[tc_sid(k, n)] = ft.name
                 args = tc_with_receiver(arg, args)
@@ -204,6 +204,7 @@ tc_held_type :: proc(k: ^TC, n: Tree_Id, t: Type) -> ^Type_Scope {
 // (tc_call: E must have one). nil: E is no such enum. (Named as written,
 // `Mode.from_text`: no symbol has the name.)
 tc_from_text_fun :: proc(qt: Type) -> ^Type_Scope {
+    if fr, is_ref := distinct_base(qt).(^Type_Field); is_ref { return field_from_text_fun(qt, fr) }
     et, is_enum := distinct_base(qt).(^Type_Enum)
     if !is_enum || et.is_error_kind { return nil }
     ft := new(Type_Scope)
@@ -241,7 +242,11 @@ tc_from_number_fun :: proc(qt: Type, et: ^Type_Enum, pt: Type) -> ^Type_Scope {
 // are made now, in a fixed order, so their ids are the same each build: an
 // enum's here, an open err's — any error set's — once all are checked
 // (atoms_for_err_text). nil: x is neither.
-tc_text_fun :: proc(k: ^TC, qt: Type, method: string) -> ^Type_Scope {
+tc_text_fun :: proc(k: ^TC, qt: Type, method: string, span := Span{}) -> ^Type_Scope {
+    if fr, is_ref := distinct_base(qt).(^Type_Field); is_ref && method == "text" {
+        tc_field_atoms(k, qt, fr, span)   // (too many: said, and the call checked on)
+        return field_text_fun(qt, fr)
+    }
     et, is_enum := distinct_base(qt).(^Type_Enum)
     _, is_err := distinct_base(qt).(Type_Err)
     if !is_enum && !is_err || method != "text" && !is_err { return nil }

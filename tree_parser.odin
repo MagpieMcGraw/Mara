@@ -1638,6 +1638,17 @@ tp_generic_arg :: proc(p: ^Tree_Parser) -> Tree_Id {
     return tp_type(p)
 }
 
+// A struct's type, then `.` and a type that isn't a name, `S.f32`, `S.[4!]bool`:
+// a field reference's type. (`S.T`, all names, is a Type_Name: the checker
+// tells it from a nested type.)
+tp_field_type :: proc(p: ^Tree_Parser, start: int, owner: Tree_Id) -> Tree_Id {
+    if tp_kind(p) != .Dot { return owner }
+    next := tp_peek(p)
+    if !tp_is_type_keyword(next) && next != .Left_Bracket && next != .Caret { return owner }
+    dot := tp_advance(p)
+    return tp_node(p, .Type_Field, dot, start, u32(owner), u32(tp_type(p)))
+}
+
 tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     #partial switch tp_kind(p) {
@@ -1718,7 +1729,7 @@ tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
                 tp_advance(p)
                 append(&parts, tp_advance(p))
             }
-            return tp_node(p, .Type_Name, name, start, tp_tokens(p, parts))
+            return tp_field_type(p, start, tp_node(p, .Type_Name, name, start, tp_tokens(p, parts)))
         }
         if tp_kind(p) == .Left_Paren {
             tp_advance(p)
@@ -1735,7 +1746,7 @@ tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
         }
         parts := tp_token_items()
         append(&parts, name)
-        return tp_node(p, .Type_Name, name, start, tp_tokens(p, parts))
+        return tp_field_type(p, start, tp_node(p, .Type_Name, name, start, tp_tokens(p, parts)))
     }
     if tp_is_type_keyword(tp_kind(p)) { return tp_leaf(p, .Type_Keyword, tp_advance(p)) }
     tok := tp_tok(p)

@@ -906,6 +906,12 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         for a in args { tc_check(k, a) }
         return Type_Error{}
     }
+    if _, is_ref := distinct_base(ft_raw).(^Type_Field); is_ref {
+        // (Only `S.field` makes one: an offset from anything else could be anywhere.)
+        tc_error(k, span, TYPE_FIELD_REF_FROM_VALUE, name)
+        for a in args { tc_check(k, a) }
+        return Type_Error{}
+    }
     if dt, is_distinct := ft_raw.(^Type_Distinct); is_distinct {
         tc_set_ref(k, n, {type_decl(dt), .Type})
         k.annot.forms[tc_sid(k, n)] = .Conversion
@@ -932,6 +938,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     // (No source, and called: a foreign fun, an enum's from_text.)
     _, from_text := ft.origin.(Origin_From_Text)
     _, variant_text := ft.origin.(Origin_Variant_Text)
+    _, field_text := ft.origin.(Origin_Field_Text)
+    _, field_from_text := ft.origin.(Origin_Field_From_Text)
+    from_text ||= field_from_text
+    variant_text ||= field_text
     _, err_runtime := ft.origin.(Origin_Err_Runtime)
     if ft.is_module {
         tc_error(k, span, TYPE_CALL_OF_MODULE, name, name, name)
@@ -1148,6 +1158,10 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
     case "print":
         each(k, args, &types)
         for a, i in args { tc_is_value(k, a, types[i], tree_span(k.t, a), printed = true) }
+        // (A field reference printed: its name, llvm_print.)
+        for a, i in args {
+            if fr, is_ref := distinct_base(types[i]).(^Type_Field); is_ref { tc_field_atoms(k, types[i], fr, tree_span(k.t, a)) }
+        }
         // (Untyped numbers printed at their default width, an operation of
         // them all at one: `print(1.5 / 2)` an f64 division — each left to
         // its own, 2 was an i64 and the division had no width.)
@@ -1180,6 +1194,10 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
     // item's, isn't its type. Its untyped numbers settle to the cast's.)
     k.hint = nil
     each(k, args, &types)
+    if _, is_ref := distinct_base(types[0]).(^Type_Field); is_ref {
+        tc_error(k, span, TYPE_FIELD_REF_CAST, name)
+        return Type_Error{}, true
+    }
     tc_settle_untyped(k, args[0], types[0], target)
     // (A known float made an int it doesn't fit: said so now.)
     if nt, to_int := target.(Type_Numeric); to_int && nt.kind != .Float && nt.bits > 0 {

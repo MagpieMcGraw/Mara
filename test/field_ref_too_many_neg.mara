@@ -1,0 +1,17 @@
+module field_ref_too_many_neg
+
+use mara.core
+include mara.memory
+
+//@ expect-fail: than text() and from_text name
+
+// text() names each field a reference's type can reach, up to a limit.
+
+#allocator Arena_Basic(1 * MB)
+
+Big :: struct { held: [5000!]bool }
+
+main :: fun() {
+	f := Big.held[3]
+	print(f.text())
+}

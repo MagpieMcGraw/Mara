@@ -53,6 +53,16 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         if len(parts) == 0 { return Type_Error{} }
         if len(parts) > 1 {
             if qt := tc_qualified_type(k, n, parts); qt != nil { return qt }
+            if ft, is_field := k.rs.field_types[n]; is_field {
+                owner, _ := tc_ref_type(k, ft.owner, tc_dotted(parts[:ft.split]))
+                elem: Type
+                if ft.elem.kind == .Builtin {
+                    elem = tc_primitive(k, tc_text(parts[ft.split]), span)
+                } else {
+                    elem, _ = tc_ref_type(k, ft.elem, tc_dotted(parts[ft.split:]))
+                }
+                return tc_field_type_of(k, owner, elem, span)
+            }
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
@@ -90,6 +100,8 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         return type_ptr(tc_type(k, Tree_Id(t.a[n]), span))
     case .Type_Paren:
         return tc_type(k, Tree_Id(t.a[n]), span)
+    case .Type_Field:
+        return tc_field_type_of(k, tc_type(k, Tree_Id(t.a[n]), span), tc_type(k, Tree_Id(t.b[n]), span), span)
     case .Type_Slice:
         // (`[:n]T`: n of T, a take's count — `slice([:n]T, s)`; the type []T.)
         return type_slice(tc_type(k, Tree_Id(t.b[n]), span))
@@ -117,6 +129,18 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     }
     tc_unsupported(k, n, "this type")
     return Type_Error{}
+}
+
+// `S.T`, a field reference's type: S must be a struct's type.
+tc_field_type_of :: proc(k: ^TC, owner, elem: Type, span: Span) -> Type {
+    if owner == nil || elem == nil { return Type_Error{} }
+    if _, bad := owner.(Type_Error); bad { return owner }
+    if _, bad := elem.(Type_Error); bad { return elem }
+    if field_ref_struct(owner) == nil {
+        tc_error(k, span, TYPE_FIELD_REF_NOT_STRUCT, type_name(owner))
+        return Type_Error{}
+    }
+    return type_field(owner, elem)
 }
 
 tc_primitive :: proc(k: ^TC, name: string, span: Span) -> Type {
