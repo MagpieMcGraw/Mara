@@ -953,13 +953,16 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 // (graph_fold_code: a call in it, a struct's construction with arguments):
 // Program_Code.fold_errors, reported by flow_report.
 
-// --- void into pointers ------------------------------------------------------
-// A pointer always points at something that exists in the program. `void` is no
-// pointer value: it DE-INITIALIZES a variable — `p = void`, `p : ^T = void`, and
-// reading p is then an error (flow_check_init) — or passes a C function a null
-// for a nullable parameter; it can be compared against (`p == void`). Anywhere
-// else a void headed for a pointer — a return, an argument, a field, an element,
-// a store through a field/index/deref, an if-branch, a default — is an error.
+// --- where void goes -----------------------------------------------------------
+// `void` leaves a whole local variable unset, and its reads are then checked
+// (flow_check_init): `x = void`, `x : T = void`. Only a variable the check
+// follows: a scalar, a pointer, a slice, a struct by its fields. A
+// declaration's void also skips zeroing (`buf : [4096!]byte = void`). It
+// passes a C function a null, and `p == void` tests a pointer from C.
+// Anywhere else it would write nothing that anything checks: a field, an
+// element, a store through a pointer, a return, a Mara function's argument,
+// an if-branch, a parameter's default, a whole variable the check doesn't
+// follow. Each is an error, a pointer's with its own message.
 
 @(private="file")
 flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
@@ -976,9 +979,17 @@ flow_void :: proc(g: ^Program_Graph, found: ^[dynamic]Flow_Finding) {
             v := o.op
             if v == NO_NODE || graph_op_of(g, v) != .Const || graph_name(g, v) != "void" { continue }
             if graph_written(g, v) != .Explicit { continue }
-            if where_, stored := void_where(g, id, k); stored && void_is_pointer(graph_type(g, v)) {
-                append(found, Flow_Finding{.Void, graph_origin(g, v), fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(graph_type(g, v)))})
+            t := graph_type(g, v)
+            if !void_is_pointer(t) && void_declared(g, id) { continue }
+            where_, stored := void_where(g, id, k)
+            if !stored { continue }
+            msg: string
+            if void_is_pointer(t) {
+                msg = fmt.aprintf(TYPE_VOID_INTO_POINTER, where_, type_name(t))
+            } else {
+                msg = fmt.aprintf(TYPE_VOID_NOT_FOLLOWED, where_)
             }
+            append(found, Flow_Finding{.Void, graph_origin(g, v), msg})
         }
     }
 }
@@ -992,16 +1003,29 @@ void_is_pointer :: proc(t: Type) -> bool {
     return false
 }
 
-// A void stored where a `dest` goes: an error when dest is a pointer.
+// A void stored where a `dest` goes, which no read check follows: an error.
 void_error :: proc(c: ^Checker, seen: ^map[Span]bool, sp: Span, dest: Type, where_: string) {
-    if !void_is_pointer(dest) || seen[sp] { return }
+    if seen[sp] { return }
     seen[sp] = true
-    check_error(c, sp, TYPE_VOID_INTO_POINTER, where_, type_name(dest))
+    if void_is_pointer(dest) {
+        check_error(c, sp, TYPE_VOID_INTO_POINTER, where_, type_name(dest))
+    } else {
+        check_error(c, sp, TYPE_VOID_NOT_FOLLOWED, where_)
+    }
+}
+
+// Whether write `op` is a declaration's own: `x : T = void`, or a struct's
+// field declared so (a literal's field, `H{m = void}`, is no declaration).
+@(private="file")
+void_declared :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
+    if g.op[op] != .Write { return false }
+    ops := graph_operands(g, op)
+    return len(ops) > 0 && graph_op_of(g, ops[0].op) == .Var && graph_stmt(g, op).kind == .Decl
 }
 
 // Where operation `op` stores its k-th operand, when that is somewhere a
-// void can't go: not a whole variable (its de-init), a C function's
-// argument (a null), a comparison.
+// void can't go: not a whole variable the read check follows (its de-init),
+// a C function's argument (a null), a comparison.
 @(private="file")
 void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
     ops := graph_operands(g, op)
@@ -1021,6 +1045,9 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
             if graph_kind_of(g, d) == .Field { return fmt.tprintf("field '%s'", graph_name(g, d)), true }
             if graph_kind_of(g, d) == .Local && graph_written(g, d) == .Synthetic && graph_name(g, d) == "if" {
                 return "a branch of an if-expression", true
+            }
+            if base := distinct_base(graph_type(g, dest)); !flow_can_be_unset(base) && as_struct_body(base) == nil {
+                return fmt.tprintf("'%s', a `%s`", graph_name(g, d), type_name(graph_type(g, dest))), true
             }
         }
     case .Call, .Construct:

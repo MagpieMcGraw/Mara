@@ -919,6 +919,10 @@ example_Self :: fun() {
 
 // `void`: no value — `= void` leaves a variable unset, to be written before it's read.
 //
+// Only a whole local variable, where that's checked: a field (`a[i].f = void`),
+// a store through a pointer, an argument or a return value is an error. A
+// struct literal leaves a field unset by leaving it out.
+//
 // `buf : [4096!]byte = void` skips filling the buffer with zeros, for when
 // every item is written before it's read.
 example_void :: fun() {

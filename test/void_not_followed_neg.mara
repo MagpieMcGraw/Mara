@@ -1,0 +1,40 @@
+module void_not_followed_neg
+
+//@ expect-fail: nothing there checks that it's written before it's read
+
+// `void` leaves unset only a whole local variable the read check follows: a
+// scalar, a pointer, a slice, a struct by its fields. Anywhere else nothing
+// would check that it's written before it's read, so each of these is an
+// error (a pointer's own are in void_ptr_store_neg).
+
+H :: struct {
+	n: i64
+	m: i64
+	reset :: fun(self: ^Self) { self.m = void }   // a field through self
+}
+
+Bind :: struct {
+	key1, key2: H.i64
+}
+
+give :: fun(c: bool) -> i64 {
+	if c do return 1
+	return void                          // a return value
+}
+take :: fun(n: i64) -> i64 { return n }
+dflt :: fun(n: i64 = void) -> i64 { return n }   // a parameter's default
+
+main :: fun() {
+	bs : [3]Bind
+	bs[0].key2 = void                    // a field of an element
+	h := H{n = 1, m = void}              // a literal's field: leave it out
+	h.n = void                           // a local struct's field
+	pp := &h.n
+	pp^ = void                           // a store through a pointer
+	print(take(void))                    // an argument
+	whole : [4!]i64 = {1, 2, 3, 4}
+	whole = void                         // a whole array: its reads aren't followed
+	hp := &h
+	hp.reset()
+	print(give(true), h.n, whole[0], dflt(1), bs[0].key2)
+}
