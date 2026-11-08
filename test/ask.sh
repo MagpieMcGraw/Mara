@@ -191,8 +191,8 @@ started=$(grep -cs '^serve started' "$d1/view_hub.log")
 [ "$started" = 1 ] || follow_problems+="the window started serve $started times, not 1; "
 
 # A file's name alone can be several files: `at` means the one here. Our own
-# time.mara over the stdlib's two, and each of the stdlib's from its own
-# folder, where the folder can't say which module (code/) or can (code/os/).
+# time.mara over the stdlib's, and the stdlib's from its own folder, where the
+# folder can't say which module (code/) or can (code/os/, its os.mara).
 clash=$WORK/clash
 mkdir -p "$clash"
 printf 'module clash\n\nmain :: fun() {\n\tmine := 1\n\tprint(mine)\n}\n' > "$clash/time.mara"
@@ -201,9 +201,9 @@ case $got in mine$'\n'*) ;; *) follow_problems+="at time.mara in a module with i
 line=$(grep -n '^clock_ns ::' "$ROOT/code/time.mara" | cut -d: -f1 | head -1)
 got=$(cd "$ROOT/code" && "$MARA" ask what at time.mara:$line:1 2>&1)
 case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/ didn't find it: $got; " ;; esac
-line=$(grep -n '^[[:space:]]*clock_ns ::' "$ROOT/code/os/time.mara" | cut -d: -f1 | head -1)
-got=$(cd "$ROOT/code/os" && "$MARA" ask what at time.mara:$line:2 2>&1)
-case $got in "clock_ns — fun"*) ;; *) follow_problems+="at time.mara in code/os/ didn't find it: $got; " ;; esac
+line=$(grep -n '^read_cstring ::' "$ROOT/code/os/os.mara" | cut -d: -f1 | head -1)
+got=$(cd "$ROOT/code/os" && "$MARA" ask what at os.mara:$line:1 2>&1)
+case $got in "read_cstring — fun"*) ;; *) follow_problems+="at os.mara in code/os/ didn't find it: $got; " ;; esac
 
 serve_ok=yes
 # A module in a folder a build.mara names is the project's, in the module map and to a

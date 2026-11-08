@@ -1,0 +1,1518 @@
+module mara.os
+
+use mara.core
+use mara.string
+
+// mara.os on Linux (os.mara says what's shared).
+//
+// Linux platform layer — file I/O via libc syscalls. Mirrors the
+// Windows API surface (file_open_read/write, file_close, file_size,
+// file_read, file_write, file_delete) so user code is identical
+// across targets.
+//
+// Modern glibc has dlopen/dlsym/dlclose in libc.so; older systems
+// and musl require -ldl. Add a "dl" foreign block if a target
+// system needs that split.
+// Static-linked: clang resolves against libc at link time. ssize_t is i64
+// on 64-bit Linux; size_t is usize. mode_t is u32. fd is int = i32.
+// File_Id is distinct i32, lowers to i32 in IR, matching libc's int — so
+// the foreign declarations bind File_Id directly in the fd slots and the
+// wrappers don't need any conversion.
+
+#if #linux {
+
+	// ---- Files ----
+
+	// An open file, as file_open_read or file_open_write hands it back.
+	// 32-bit fd. Linux file descriptors are `int`, not pointer-sized.
+	File_Id :: distinct i32
+
+	// "No file": what a failed open hands back, and what file_close ignores.
+	// -1 is what open(2) returns on failure, and never a real fd (0 is stdin).
+	NO_FILE :: File_Id(-1)
+
+	// ---------------------------------------------------------------------------
+	// open(2) flags
+	// ---------------------------------------------------------------------------
+
+	// access mode — exactly one of:
+	O_RDONLY :: 0x0000
+	O_WRONLY :: 0x0001
+	O_RDWR   :: 0x0002
+
+	// creation flags — OR with access mode:
+	O_CREAT  :: 0x0040
+	O_EXCL   :: 0x0080
+	O_TRUNC  :: 0x0200
+
+	// On every file and pipe this program opens: closed in a program it
+	// starts (process_start) when that one runs — which inherits only its
+	// own input and output, as on Windows.
+	O_CLOEXEC :: 0x80000
+
+	// Default mode for created files: rw-r--r-- (octal 0o644 = decimal 420).
+	// Mara's lexer doesn't recognize `0o` octal prefixes today; using decimal.
+	DEFAULT_MODE :: 420
+
+	// ---------------------------------------------------------------------------
+	// File I/O: the same functions as the Windows side, failing the same way.
+	// ---------------------------------------------------------------------------
+
+	// Open a file for reading. Returns (id, .Ok) on success; on failure
+	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
+	// The path goes to Linux as it is, not copied (cstring): a 0 must
+	// follow it in its storage — so pass a literal, or the buffer it was
+	// appended to, not a slicing of the buffer (`buf[0:n]`: its room ends
+	// where the path does). So for every path this module takes but dir_read's,
+	// which copies its own.
+	file_open_read :: fun(path: []utf8) -> File_Id, err {
+		c := c_path(path)
+		id := open(cstring(c), O_RDONLY | O_CLOEXEC, 0)
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
+	}
+
+	// Open a file for writing, creating it if missing and truncating if present.
+	file_open_write :: fun(path: []utf8) -> File_Id, err {
+		c := c_path(path)
+		id := open(cstring(c), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DEFAULT_MODE)
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
+	}
+
+	// Open a file to add to its end, creating it if missing: each write goes
+	// after what the file has then. Others can read it while it's open (a log).
+	// (0x400: O_APPEND. Written as a number, not a constant here: a program
+	// may name its own so.)
+	file_open_append :: fun(path: []utf8) -> File_Id, err {
+		c := c_path(path)
+		id := open(cstring(c), O_WRONLY | O_CREAT | 0x400 | O_CLOEXEC, DEFAULT_MODE)
+		if id == NO_FILE do return NO_FILE, Open_Failed
+		return id
+	}
+
+	// Closes the file. NO_FILE is ignored, so `defer file_close(id)` right
+	// after an open is safe even when the open failed.
+	file_close :: fun(id: File_Id) {
+		if id == NO_FILE do return
+		_ = close(id)
+	}
+
+	// The file's size in bytes.
+	file_size :: fun(id: File_Id) -> i64, err {
+		st : Stat
+		if fstat(id, &st) < 0 do return 0, Size_Failed
+		return st.size
+	}
+
+	// Reads the next piece of a file, a pipe or a program's output into data:
+	// one read, up to data's capacity — less when less has come, or when the
+	// system reads less at a time. data.len becomes the number of bytes read
+	// (0 at the end of the file, or of a pipe whose writer closed — or with
+	// no room to read into). For all of a file, read_entire_file.
+	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
+		if data.cap == 0 {
+			data.len = 0
+			return
+		}
+		n := read(id, &data[0], usize(data.cap))
+		if n < 0 do return Read_Failed
+		data.len = n
+	}
+
+	// Write data to the file. Returns (n, .Ok) where n is bytes written. POSIX
+	// may write fewer bytes than requested under signal interruption /
+	// pipe-full / disk-full conditions; compare n against data.len for
+	// partial-write detection.
+	file_write :: fun(id: File_Id, data: []byte) -> i64, err {
+		if data.len == 0 do return 0   // (nothing to write: written)
+		n := write(id, data.ptr, usize(data.len))
+		if n < 0 do return 0, Write_Failed
+		return n
+	}
+
+	// Move the file pointer to `offset` relative to `whence` (SEEK_SET / SEEK_CUR
+	// / SEEK_END) and return the resulting absolute position. POSIX lseek.
+	file_seek :: fun(id: File_Id, offset: i64, whence: u32) -> i64, err {
+		pos := lseek(id, offset, i32(whence))
+		if pos < 0 do return 0, Seek_Failed
+		return pos
+	}
+
+	// Deletes the file at path.
+	file_delete :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if unlink(cstring(c)) != 0 do return Delete_Failed
+	}
+
+	// Moves the file at `from` to `to`, as one step: whoever reads `to` finds
+	// the old file or the new one, never part of one. A file at `to` is replaced.
+	// Both must be on one drive, or it's Rename_Failed.
+	file_rename :: fun(from: []utf8, to: []utf8) -> err {
+		a := c_path(from)
+		b := c_path(to)
+		if rename(cstring(a), cstring(b)) != 0 do return Rename_Failed
+	}
+
+	// The file's bytes, mapped into memory: read where they lie, nothing
+	// copied. The system reads each page from the file the first time it's
+	// touched, so a big file costs only what's read of it. Read only. An empty
+	// file gives an empty slice. Give the slice back to file_unmap when done,
+	// the whole of it, not a piece.
+	file_map :: fun(path: []utf8) -> []byte, err {
+		id := file_open_read(path)?
+		defer file_close(id)   // (the mapping keeps the file open)
+		size := file_size(id)?
+		if size == 0 do return []
+		// (Failing, mmap gives (void*)-1, not void, and sets errno: that's
+		// what's tested. Succeeding, it leaves errno alone.)
+		__errno_location()^ = 0
+		view := mmap(void, usize(size), PROT_READ, MAP_PRIVATE, i32(id), 0)
+		if __errno_location()^ != 0 do return [], Map_Failed
+		return slice_from_ptr(view, size)
+	}
+
+	// Unmaps a file file_map mapped. An empty slice is ignored.
+	file_unmap :: fun(data: []byte) {
+		if data.len == 0 do return
+		_ = munmap(data.ptr, usize(data.len))
+	}
+
+	// Copy `src` to `dst`. Overwrites `dst` if it exists. Reads and writes it
+	// in pieces: slower than sendfile(2), but it needs no more bindings, and
+	// suits occasional hot-reload-style copies.
+	copy_file :: fun(src: []utf8, dst: []utf8) -> err {
+		if copy_file_pieces(src, dst) do return Copy_Failed
+	}
+
+	// copy_file's copy, failing as whichever step did.
+	copy_file_pieces :: fun(src: []utf8, dst: []utf8) -> err {
+		from := file_open_read(src)?
+		defer file_close(from)
+		to := file_open_write(dst)?
+		defer file_close(to)
+		buf : [512]byte
+		for true {
+			file_read(from, &buf)?
+			if buf.len == 0 do return   // the end of the file
+			file_write(to, buf)?
+		}
+	}
+
+	// Last-write time as i64 (Linux's st_mtime is already a 64-bit signed
+	// seconds-since-epoch). Returns 0 on failure so callers comparing
+	// against a previous value see a "change" and react safely.
+	file_mtime :: fun(path: []utf8) -> i64 {
+		id, e := file_open_read(path)
+		if e do return 0
+		defer file_close(id)
+		st : Stat
+		if fstat(id, &st) < 0 do return 0
+		return st.mtime
+	}
+
+	// ---------------------------------------------------------------------------
+	// Stat structure (Linux x86_64 — verify per kernel ABI)
+	// ---------------------------------------------------------------------------
+
+	// Subset of struct stat. Layout matches glibc's x86_64 stat as of recent
+	// kernels; musl and 32-bit targets differ. Production-grade code should
+	// switch to statx(2) with an explicit field mask.
+	Stat :: struct {
+		dev:     u64
+		ino:     u64
+		nlink:   u64
+		mode:    u32
+		uid:     u32
+		gid:     u32
+		_pad0:   u32
+		rdev:    u64
+		size:    i64
+		blksize: i64
+		blocks:  i64
+		atime:   i64
+		atime_n: i64
+		mtime:   i64
+		mtime_n: i64
+		ctime:   i64
+		ctime_n: i64
+		_pad1:   [3!]i64
+	}
+	EINTR            :: 4
+	EAGAIN           :: 11
+
+	foreign static_lib "c" {
+		fun open(path: cstring, flags: i32, mode: u32) -> File_Id
+		fun close(fd: File_Id) -> i32
+		fun read(fd: File_Id, buf: ^byte, n: usize) -> i64
+		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
+		fun unlink(path: cstring) -> i32
+		fun rename(from: cstring, to: cstring) -> i32
+		fun fstat(fd: File_Id, out: ^Stat) -> i32
+		fun lseek(fd: File_Id, offset: i64, whence: i32) -> i64
+		fun __errno_location() -> ^i32
+	}
+
+	// ---- Paths ----
+
+	// The directory the program runs in — where a path not whole starts —
+	// as the system has it (real_path's: links followed — getcwd gives none),
+	// however it was entered; whole (no separator at its end but the root,
+	// `/`): a Path, its room past the path there to add to (`&cwd +
+	// "/code"`). Too_Large when it's longer than a Path holds; Open_Failed
+	// when it's gone (deleted while the program ran in it); Read_Failed when
+	// the system won't say. (exe_path: the program's own file, wherever it runs.)
+	current_dir :: fun() -> Path, err {
+		dir : Path
+		if getcwd(&dir[0], usize(dir.cap)) == void {
+			e := __errno_location()^
+			if e == ERANGE do return dir, Too_Large
+			if e == ENOENT do return dir, Open_Failed
+			return dir, Read_Failed
+		}
+		n : i64 = 0
+		for n < dir.cap and dir[n] != 0 {
+			n += 1
+		}
+		dir.len = n
+		return dir
+	}
+
+	// Makes `path` the directory the program runs in: a path not whole starts
+	// there from now on. Open_Failed when it can't go there: no such directory,
+	// say.
+	set_current_dir :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if chdir(cstring(c)) != 0 do return Open_Failed
+	}
+
+	// One directory made, the one before it there already. Whether a directory
+	// is there now.
+	dir_make_one :: fun(path: []utf8) -> bool {
+		c := c_path(path)
+		if mkdir(cstring(c), 511) == 0 do return true   // (511: 0o777, less the umask)
+		st : Stat
+		return stat(cstring(c), &st) == 0 and (st.mode & S_IFMT) == S_IFDIR
+	}
+
+	// Deletes the directory at path, which must be empty: Delete_Failed if not.
+	dir_delete :: fun(path: []utf8) -> err {
+		c := c_path(path)
+		if rmdir(cstring(c)) != 0 do return Delete_Failed
+	}
+
+	// A path as the system has it, whole — a file's or a folder's: its links
+	// followed to where they lead, `.` and `..` gone. Two spellings of one
+	// place give one path: the folders a gather starts at made so
+	// (`real_path(cwd)`), the paths built on them compare as they are.
+	// Open_Failed when nothing's there; Too_Large when it's longer than a
+	// Path holds. (realpath's own room, given back: none here past 1 KB.)
+	real_path :: fun(path: []utf8) -> Path, err {
+		out : Path
+		c := c_path(path)
+		full := realpath(cstring(c), void)
+		if full == void do return out, Open_Failed
+		name := read_cstring(4096, full)
+		if name.len > out.cap {
+			free(full)
+			return out, Too_Large
+		}
+		&out + name
+		free(full)
+		return out
+	}
+
+	// The running program's own file: its path, whole, as the system has it
+	// (real_path's: a link followed to the file itself) — however it was
+	// started (by a name its PATH found, a relative path, a link), unlike
+	// main's args[0], which is what its starter wrote — for the files
+	// that come with it, beside it: a Path, to cut to its directory and add
+	// a file's name to (`exe.len = get_dir(exe).len`, `&exe + "font.ttf"`).
+	// Too_Large when it's longer than a Path holds; Read_Failed when the
+	// system won't say. (/proc/self/exe: a link to the program's file, the
+	// kernel's own path for it.)
+	exe_path :: fun() -> Path, err {
+		path : Path
+		link := "/proc/self/exe"
+		n := readlink(cstring(link), &path[0], usize(path.cap))
+		if n < 0 do return path, Read_Failed
+		// (As long as the room, it may be cut off.)
+		if n >= path.cap do return path, Too_Large
+		path.len = n
+		return path
+	}
+
+	// The files and directories in a directory, to look through what's there:
+	// each one's name, whether it leads to a directory, and whether it's a
+	// link (Dir_Entry) — not "." or "..", in no order to count on — into
+	// storage after what's there, side by side, its len moved past them, and
+	// given back, a view of them. Fails with Open_Failed when there's no
+	// directory there, Too_Large when they don't fit in storage's room
+	// (storage untouched). The path is copied: any slice of one will do
+	// (cstring's 0 needn't follow it). (Counted first, then each written:
+	// listed twice.)
+	dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+		start := storage.len
+		none := slice([:0]Dir_Entry, storage)
+		storage.len = start
+		// (A copy of the path, a 0 after it: any slice of a path will do, as
+		// on Windows, where its search pattern is built.)
+		if path.len > 500 do return none, Open_Failed   // (the copy on the stack, under 1 KB)
+		opened : [512]utf8
+		&opened + path
+		dir := opendir(cstring(opened))
+		if dir == void do return none, Open_Failed
+		count : i64 = 0
+		for true {
+			d := readdir(dir)
+			if d == void do break
+			name := read_cstring(256, &d.name[0])
+			if name != "." and name != ".." do count += 1
+		}
+		_ = closedir(dir)
+		// (Room for them, past what aligning them may skip.)
+		if storage.cap - start < count * size_of(Dir_Entry) + 8 do return none, Too_Large
+		entries := slice([:count]Dir_Entry, storage)
+		dir = opendir(cstring(opened))
+		if dir == void do return entries[0 : 0], Open_Failed
+		k : i64 = 0
+		for k < count {
+			d := readdir(dir)
+			if d == void do break
+			name := read_cstring(256, &d.name[0])
+			if name == "." or name == ".." do continue
+			entry : Dir_Entry
+			&entry.name + name
+			entry.dir = d.kind == DT_DIR
+			entry.link = false
+			if d.kind == DT_LNK or d.kind == DT_UNKNOWN {
+				entry.link, entry.dir = dir_entry_kind(path, name)
+			}
+			&entries + entry
+			k += 1
+		}
+		_ = closedir(dir)
+		return entries   // (fewer when it lost some since it counted)
+	}
+
+	// A directory's entry, asked of the system — not opened (a named pipe
+	// opened waits for a writer): whether it's a link (lstat), and whether
+	// it leads to a directory that's there (stat, through a link). For a
+	// link readdir names (DT_LNK), and for a file system whose readdir
+	// doesn't say what an entry is (DT_UNKNOWN).
+	dir_entry_kind :: fun(path: []utf8, name: []utf8) -> bool, bool {
+		if path.len + name.len > 500 do return false, false   // (on the stack, under 1 KB)
+		full : [512]utf8
+		&full + path
+		&full + "/"
+		&full + name
+		st : Stat
+		link := lstat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFLNK
+		dir := stat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFDIR
+		return link, dir
+	}
+
+	// struct dirent (glibc, x86_64): what readdir returns, one entry.
+	Dirent :: struct {
+		ino:    u64
+		offset: i64
+		size:   u16              // this record's
+		kind:   u8               // DT_DIR, DT_REG, ...; DT_UNKNOWN: not said
+		name:   [256!]byte
+	}
+
+	DT_UNKNOWN :: u8(0)
+	DT_DIR     :: u8(4)
+	DT_LNK     :: u8(10)
+	S_IFMT     :: u32(0xF000)   // st_mode's file kind bits
+	S_IFDIR    :: u32(0x4000)   // a directory
+	S_IFLNK    :: u32(0xA000)   // a symbolic link
+	ENOENT     :: 2
+	ERANGE     :: 34
+
+	foreign static_lib "c" {
+		fun stat(path: cstring, out: ^Stat) -> i32    // (through a link to where it leads)
+		fun lstat(path: cstring, out: ^Stat) -> i32   // (a link itself)
+		// A directory's entries: opened, each next (void: no more), closed.
+		fun opendir(path: cstring) -> ^byte
+		fun readdir(dir: ^byte) -> ^Dirent
+		fun closedir(dir: ^byte) -> i32
+		// Where a link points: its path, not 0-ended, into buf; its length, -1 failing.
+		fun readlink(path: cstring, buf: ^utf8, size: usize) -> i64
+		// The directory the program runs in, 0-ended, into buf: buf; void failing
+		// (too long for buf among the ways).
+		fun getcwd(buf: ^utf8, size: usize) -> ^utf8
+		fun chdir(path: cstring) -> i32
+		fun mkdir(path: cstring, mode: u32) -> i32
+		fun rmdir(path: cstring) -> i32
+		// A path whole, links followed, 0-ended: in room it makes (resolved
+		// void) — free it — or void failing.
+		fun realpath(path: cstring, resolved: ^byte) -> ^byte
+		fun free(p: ^byte)
+	}
+
+	// ---- Pipes ----
+
+	// ---------------------------------------------------------------------------
+	// Named pipes: a program others connect to, by a name (a Unix socket)
+	// ---------------------------------------------------------------------------
+
+	// A name a program listens on (pipe_listen), for others on this machine
+	// to connect to (pipe_connect). `id` is the socket listening.
+	Pipe_Listener :: struct {
+		id: File_Id
+	}
+
+	// Listens on a name — a word, such as "mara-view-game" — for programs on
+	// this machine to connect to; pipe_accept takes each. Fails with
+	// Name_Taken when another program listens on it.
+	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
+		l := Pipe_Listener{all 0}
+		l.id = NO_FILE
+		at : Sockaddr_Un
+		size := pipe_address(name, &at)
+		if size == 0 do return l, Listen_Failed
+		ignore_broken_pipes()
+		l.id = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+		if l.id == NO_FILE do return l, Listen_Failed
+		// (Taken: binding fails, at once — no other listener's queue gets a
+		// connection asking.)
+		if bind(l.id, &at, size) != 0 {
+			taken := __errno_location()^ == EADDRINUSE
+			_ = close(l.id)
+			l.id = NO_FILE
+			if taken do return l, Name_Taken
+			return l, Listen_Failed
+		}
+		if listen(l.id, 16) != 0 {
+			_ = close(l.id)
+			l.id = NO_FILE
+			return l, Listen_Failed
+		}
+		return l
+	}
+
+	// The next program to connect to the listener's name, when one has: its
+	// connection, to read from and write to as a file's id (pipe_read not to
+	// wait), file_close ending it. NO_FILE when none has — it doesn't wait,
+	// so a window can look each frame.
+	pipe_accept :: fun(l: ^Pipe_Listener) -> File_Id, err {
+		id := accept4(l.id, void, void, SOCK_CLOEXEC)   // (its reads and writes wait, as a file's)
+		if id != NO_FILE do return id
+		e := __errno_location()^
+		// (Nobody yet; one that came and went; a signal.)
+		if e == EAGAIN or e == ECONNABORTED or e == EINTR do return NO_FILE
+		return NO_FILE, Accept_Failed
+	}
+
+	// Connects to a name a program listens on (pipe_listen): the connection,
+	// to write to and read from as a file's id, file_close ending it. Fails
+	// with Connect_Failed when nobody listens there.
+	pipe_connect :: fun(name: []utf8) -> File_Id, err {
+		at : Sockaddr_Un
+		size := pipe_address(name, &at)
+		if size == 0 do return NO_FILE, Connect_Failed
+		ignore_broken_pipes()
+		id := socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
+		if id == NO_FILE do return NO_FILE, Connect_Failed
+		if connect(id, &at, size) != 0 {
+			_ = close(id)
+			return NO_FILE, Connect_Failed
+		}
+		return id
+	}
+
+	// Stops listening: the name free for another. Connections taken stay
+	// open until closed.
+	pipe_listen_stop :: fun(l: ^Pipe_Listener) {
+		if l.id == NO_FILE do return
+		_ = close(l.id)
+		l.id = NO_FILE
+	}
+
+	// A name's socket address, and its size — 0 when too long for one. In
+	// Linux's abstract namespace, no file: a 0, then the name, a dot and the
+	// user's id (each user's names their own). Its size counts no 0 after.
+	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> u32 {
+		path : [108]utf8
+		&path + utf8(0)
+		&path + name
+		&path + "."
+		uid := getuid()
+		digits : [10!]utf8
+		n := 0
+		for true {
+			digits[n] = utf8(48 + uid % 10)
+			n += 1
+			uid = uid / 10
+			if uid == 0 do break
+		}
+		if path.len + n > 108 do return 0
+		for i in 0:n {
+			&path + digits[n - 1 - i]
+		}
+		at.family = AF_UNIX
+		for c, i in path {
+			at.path[i] = c
+		}
+		return u32(2 + path.len)
+	}
+
+	// A write to a pipe or socket nobody reads any more: Write_Failed, not
+	// SIGPIPE ending the program.
+	ignore_broken_pipes :: fun() {
+		_ = signal(SIGPIPE, SIG_IGN)
+	}
+
+	// A Unix socket's address: a path, ending in a 0 — or, in the abstract
+	// namespace, a 0 and a name, its size saying where it ends.
+	Sockaddr_Un :: struct {
+		family: u16
+		path:   [108!]utf8
+	}
+
+	AF_UNIX          :: 1
+	SIGPIPE          :: 13
+	SIG_IGN          :: 1
+
+	foreign static_lib "c" {
+		fun getuid() -> u32
+		fun signal(sig: i32, handler: usize) -> usize
+	}
+
+	// ---- Processes ----
+
+	// An environment variable's value (`env("LOCALAPPDATA")`): copied into a
+	// Path, a 0 after it. Not_Set when no variable of that name is set;
+	// Too_Large when the value is longer than a Path holds (511 characters).
+	env :: fun(name: []utf8) -> Path, err {
+		value : Path
+		c := c_path(name)
+		p := getenv(cstring(c))
+		if p == void do return value, Not_Set
+		text := read_cstring(value.cap, p)
+		// (As long as the room: no 0 found in it, no room for one.)
+		if text.len == value.cap do return value, Too_Large
+		&value + text
+		return value
+	}
+
+	// ---------------------------------------------------------------------------
+	// Processes: a program run with its input and output through pipes
+	// ---------------------------------------------------------------------------
+
+	// A program process_start started: its input, to write to with
+	// file_write; its output, to read from with file_read, or pipe_read not
+	// to wait (its error output comes there too). `id` is its pid.
+	Process :: struct {
+		id:     i32
+		input:  File_Id
+		output: File_Id
+	}
+
+	// Runs a command line — a program and its arguments, as a terminal takes
+	// them (`sh -c`) — its input and output through pipes. Read its output
+	// while it runs: one that fills its output pipe waits until it is read.
+	// The command ends in a 0, as cstring() takes it: a literal does, and so
+	// does a buffer appended to.
+	process_start :: fun(command: []utf8) -> Process, err {
+		whole : []utf8 = slice_from_ptr(command.ptr, command.cap)
+		end := command.len
+		if end == command.cap do end -= 1
+		if end < 0 or whole[end] != 0 do return Process{all 0}, Start_Failed
+		ignore_broken_pipes()
+		// (The words sh runs with, each ending in a 0; then the end of them.)
+		sh := "/bin/sh"
+		dash_c := "-c"
+		words : [4!]^utf8
+		words[0] = sh.ptr
+		words[1] = dash_c.ptr
+		words[2] = command.ptr
+		to_child : [2!]i32
+		from_child : [2!]i32
+		// (Close-on-exec, all four ends: a program started later inherits
+		// none, so this one's input ends when ours closes. The child gets its
+		// two as its input and output — dup2's copies, without the flag.)
+		if pipe2(&to_child[0], O_CLOEXEC) != 0 do return Process{all 0}, Start_Failed
+		made := pipe2(&from_child[0], O_CLOEXEC) == 0
+		// (A child's end numbered 0 to 2 — this program's own input or output
+		// closed — would stay itself in the child, flag and all, and close as
+		// it runs the command: an error instead.)
+		if not made or to_child[0] < 3 or from_child[1] < 3 {
+			_ = close(File_Id(to_child[0]))
+			_ = close(File_Id(to_child[1]))
+			if made {
+				_ = close(File_Id(from_child[0]))
+				_ = close(File_Id(from_child[1]))
+			}
+			return Process{all 0}, Start_Failed
+		}
+		pid := fork()
+		if pid == 0 {
+			// The child: the pipes its input and output, then the command.
+			// (The four ends close as it runs it: close-on-exec.)
+			_ = dup2(to_child[0], 0)
+			_ = dup2(from_child[1], 1)
+			_ = dup2(from_child[1], 2)
+			_ = execv(sh.ptr, &words[0])
+			_exit(127)   // (no shell to run it)
+		}
+		// (The child's ends are its own now: ours closed, started or not.)
+		_ = close(File_Id(to_child[0]))
+		_ = close(File_Id(from_child[1]))
+		if pid < 0 {
+			_ = close(File_Id(to_child[1]))
+			_ = close(File_Id(from_child[0]))
+			return Process{all 0}, Start_Failed
+		}
+		return Process{id = pid, input = File_Id(to_child[1]), output = File_Id(from_child[0])}
+	}
+
+	// Closes the process's input: it reads to its end. (A server its window
+	// started exits there.)
+	process_close_input :: fun(p: ^Process) {
+		file_close(p.input)
+		p.input = NO_FILE
+	}
+
+	// Reads from a pipe what has arrived, without waiting for more — for a
+	// program that can't wait, as a window between its frames: data.len
+	// becomes the number of bytes read, 0 when none has. Returns false once
+	// the pipe has ended: its writer closed and all it wrote read.
+	pipe_read :: fun(id: File_Id, data: ^[]byte) -> bool, err {
+		data.len = 0
+		ready := Poll_Fd{fd = id, events = POLLIN}
+		n := poll(&ready, 1, 0)   // (0 ms: answers at once)
+		if n < 0 do return false, Read_Failed
+		if n == 0 do return true
+		// (Readable: what has arrived, or its end — 0 bytes.)
+		file_read(id, data)?
+		return data.len > 0
+	}
+
+	// Waits for the process to end and returns its exit code — its input and
+	// output closed first, so one still writing stops rather than waiting
+	// for a reader. Read what it writes before.
+	process_wait :: fun(p: ^Process) -> i64, err {
+		process_close_input(p)
+		file_close(p.output)
+		p.output = NO_FILE
+		status: i32 = 0
+		waited := waitpid(p.id, &status, 0) >= 0
+		p.id = -1
+		if not waited do return 0, Wait_Failed
+		return i64((status >> 8) & 0xff)
+	}
+
+	// The program's own input: what a terminal types, or what the program
+	// that started it writes (process_start). Read it with file_read.
+	standard_input :: fun() -> File_Id {
+		return File_Id(0)
+	}
+
+	// The program's own output, written to with file_write. (print writes
+	// there too, through a buffer of its own: mixing the two can reorder.)
+	standard_output :: fun() -> File_Id {
+		return File_Id(1)
+	}
+
+	foreign static_lib "c" {
+		// Processes and pipes
+		fun pipe2(fds: ^i32, flags: i32) -> i32
+		fun fork() -> i32
+		fun dup2(old: i32, new: i32) -> i32
+		fun execv(path: ^utf8, words: ^^utf8) -> i32
+		fun _exit(code: i32)
+		fun waitpid(pid: i32, status: ^i32, options: i32) -> i32
+		fun getenv(name: cstring) -> ^byte
+	}
+
+	// ---- Threads ----
+
+	// ---------------------------------------------------------------------------
+	// Threads
+	// ---------------------------------------------------------------------------
+
+	// A thread thread_start started, to wait for with thread_wait. `id` is
+	// its pthread_t; `started` whether it's there to wait for.
+	Thread :: struct {
+		id:      u64
+		started: bool
+	}
+
+	// A lock one thread holds at a time: mutex_lock waits until it's free.
+	// Zero is unlocked: declare one and use it. (glibc's pthread_mutex_t,
+	// 40 bytes on x86_64; all zero is PTHREAD_MUTEX_INITIALIZER.)
+	Mutex :: struct {
+		state: [5!]i64 = {0, 0, 0, 0, 0}
+	}
+
+	// What threads wait on until another says something changed. Zero is ready:
+	// declare one and use it. A Mutex guards what's waited for. (glibc's
+	// pthread_cond_t, 48 bytes on x86_64; all zero is PTHREAD_COND_INITIALIZER.)
+	Condition :: struct {
+		state: [6!]i64 = {0, 0, 0, 0, 0, 0}
+	}
+
+	// Runs work(data) on a new thread and returns at once. The thread puts
+	// its big values on an arena of its own, of the program's kind and
+	// arena_size bytes, made when it starts and released when it ends: what
+	// it makes for the program goes into data. Wait for every thread
+	// (thread_wait) before data goes, and before main returns: the program
+	// ends when main does, its threads with it.
+	thread_start :: fun(work: fun(^$T), data: ^T, arena_size: i64 = 16 << 20) -> Thread, err {
+		none := Thread{id = 0, started = false}
+		start: ^Thread_Start = malloc(usize(size_of(Thread_Start)))
+		if start == void do return none, Thread_Start_Failed
+		// (Copied in by the system: the escape check can't see a thread's
+		// life, so it would refuse data in memory that outlives this call.
+		// That data outlives the thread is the caller's: thread_wait.)
+		given := Thread_Start{work = work, data = data, arena_size = arena_size}
+		_ = memcpy(start, &given, usize(size_of(Thread_Start)))
+		t := none
+		if pthread_create(&t.id, void, thread_entry, start) != 0 {
+			free(start)
+			return none, Thread_Start_Failed
+		}
+		t.started = true
+		return t
+	}
+
+	// A new thread's first fun, as pthreads calls it: its start read and
+	// freed, its work run on an arena of its own, the arena released after.
+	// (Its result, 0: pthreads' void* result, nothing.)
+	thread_entry :: fun(start: ^Thread_Start) -> u64 {
+		s := start^
+		free(start)
+		base := thread_run(s.work, s.data, s.arena_size)
+		if base != void do vm_release(base, s.arena_size)
+		return 0
+	}
+
+	// Waits for the thread to end. A thread waited for, or one that never
+	// started, is ignored.
+	thread_wait :: fun(t: ^Thread) {
+		if not t.started do return
+		_ = pthread_join(t.id, void)
+		t.started = false
+	}
+
+	// Takes the lock, waiting while another thread holds it.
+	mutex_lock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_lock(m)
+	}
+
+	// Lets the lock go, for the next thread waiting for it.
+	mutex_unlock :: fun(m: ^Mutex) {
+		_ = pthread_mutex_unlock(m)
+	}
+
+	// Lets the lock go and waits for a wake, as one step: no wake can come
+	// between the two. It holds the lock again when it returns. It can return
+	// with no wake sent, so wait in a loop that checks what's being waited for:
+	// `for not ready do condition_wait(&c, &m)`.
+	condition_wait :: fun(c: ^Condition, m: ^Mutex) {
+		_ = pthread_cond_wait(c, m)
+	}
+
+	// Wakes one thread waiting on c, if any is.
+	condition_wake_one :: fun(c: ^Condition) {
+		_ = pthread_cond_signal(c)
+	}
+
+	// Wakes every thread waiting on c.
+	condition_wake_all :: fun(c: ^Condition) {
+		_ = pthread_cond_broadcast(c)
+	}
+
+	// How many threads the machine runs at once: its logical processors.
+	cpu_count :: fun() -> i64 {
+		return sysconf(84)   // (_SC_NPROCESSORS_ONLN)
+	}
+
+	foreign static_lib "c" {
+		fun malloc(size: usize) -> ^byte
+		// Threads (in libc since glibc 2.34)
+		fun pthread_create(thread: ^u64, attributes: ^byte, entry: fun(^byte) -> u64, start: ^byte) -> i32
+		fun pthread_join(thread: u64, result: ^byte) -> i32
+		fun pthread_mutex_lock(m: ^Mutex) -> i32
+		fun pthread_mutex_unlock(m: ^Mutex) -> i32
+		fun pthread_cond_wait(c: ^Condition, m: ^Mutex) -> i32
+		fun pthread_cond_signal(c: ^Condition) -> i32
+		fun pthread_cond_broadcast(c: ^Condition) -> i32
+		fun sysconf(name: i32) -> i64
+	}
+
+	// ---- Time ----
+
+	// Now, on a clock that only goes forward: nanoseconds since some point —
+	// the system's start, not a date. How long something took: the
+	// difference of two.
+	clock_ns :: fun() -> i64 {
+		now := Timespec{seconds = 0, nanoseconds = 0}
+		_ = clock_gettime(CLOCK_MONOTONIC, &now)
+		return now.seconds * 1000000000 + now.nanoseconds
+	}
+
+	// Now, by the calendar: nanoseconds since 1970-01-01 00:00 UTC. It jumps
+	// when the system's clock is set, so for how long something took, clock_ns.
+	clock_unix_ns :: fun() -> i64 {
+		now := Timespec{seconds = 0, nanoseconds = 0}
+		_ = clock_gettime(CLOCK_REALTIME, &now)
+		return now.seconds * 1000000000 + now.nanoseconds
+	}
+
+	// Waits: the program does nothing for `ns` nanoseconds — at least, and
+	// a little more, as the system wakes it.
+	sleep_ns :: fun(ns: i64) {
+		if ns <= 0 do return
+		want := Timespec{seconds = ns / 1000000000, nanoseconds = ns % 1000000000}
+		left := Timespec{seconds = 0, nanoseconds = 0}
+		for nanosleep(&want, &left) != 0 {
+			if __errno_location()^ != EINTR do return
+			want = left   // (a signal cut it short: the rest)
+		}
+	}
+
+	// Waits: the program does nothing for `ms` milliseconds (at least).
+	sleep_ms :: fun(ms: u32) {
+		sleep_ns(i64(ms) * 1000000)
+	}
+
+	// clock_gettime's and nanosleep's time.
+	Timespec :: struct {
+		seconds:     i64
+		nanoseconds: i64
+	}
+	CLOCK_REALTIME   :: 0   // (clock_gettime: the calendar's)
+	CLOCK_MONOTONIC  :: 1   // (clock_gettime: a clock that only goes forward)
+
+	foreign static_lib "c" {
+		fun nanosleep(want: ^Timespec, left: ^Timespec) -> i32
+		fun clock_gettime(clock: i32, now: ^Timespec) -> i32
+	}
+
+	// ---- Memory ----
+
+	// ---------------------------------------------------------------------------
+	// mmap flags (Linux x86_64)
+	// ---------------------------------------------------------------------------
+
+	// prot — memory protection bits, combinable via OR.
+	PROT_NONE  :: 0x0      // no access; touching the page traps
+	PROT_READ  :: 0x1
+	PROT_WRITE :: 0x2
+
+	// flags — exactly one of MAP_PRIVATE / MAP_SHARED, plus optional bits.
+	// MAP_ANONYMOUS is Linux-specific (0x20); macOS uses 0x1000.
+	MAP_PRIVATE   :: 0x02
+	MAP_ANONYMOUS :: 0x20
+
+	// ---------------------------------------------------------------------------
+	// Virtual memory
+	// ---------------------------------------------------------------------------
+
+	// Reserve a virtual address range with no access. Touching the bytes traps;
+	// commit them first with vm_commit. Equivalent to Windows VirtualAlloc with
+	// MEM_RESERVE + PAGE_NOACCESS.
+	vm_reserve :: fun(size: i64) -> ^byte {
+		// mmap returns MAP_FAILED = (void*)-1 on failure, not void — so the
+		// caller's void-check doesn't catch a failed reserve. In practice this
+		// only fires on real OOM, and the subsequent vm_commit's mprotect call
+		// would fail anyway, reporting failure cleanly through that path.
+		return mmap(void, usize(size), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+	}
+
+	// Commit physical pages for [base, base+size). The range must lie inside
+	// something previously returned by vm_reserve. Returns 1 on success, 0 on
+	// failure (typically out-of-memory or bad alignment).
+	vm_commit :: fun(base: ^byte, size: i64) -> i64 {
+		if mprotect(base, usize(size), PROT_READ | PROT_WRITE) != 0 do return 0
+		return 1
+	}
+
+	// Release a reserved (and possibly committed) range: `base` exactly the
+	// pointer vm_reserve returned, size the size reserved.
+	vm_release :: fun(base: ^byte, size: i64) {
+		_ = munmap(base, usize(size))
+	}
+
+	foreign static_lib "c" {
+		// Virtual memory
+		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte
+		fun mprotect(addr: ^byte, len: usize, prot: i32) -> i32
+		fun munmap(addr: ^byte, len: usize) -> i32
+	}
+
+	// ---- Libraries ----
+
+	// ---------------------------------------------------------------------------
+	// Dynamic library loading (dlopen / dlsym / dlclose)
+	// ---------------------------------------------------------------------------
+	// Modern glibc (>= 2.34) ships dlopen et al. in libc.so. Older systems and
+	// musl require linking -ldl. If a target system breaks here, split these
+	// declarations into their own `foreign static_lib "dl" { ... }` block.
+	RTLD_LAZY :: 0x1
+	RTLD_NOW  :: 0x2
+
+	// Load a shared library by name. Returns void on failure. Caller must
+	// release with free_library.
+	load_library :: fun(name: []utf8) -> ^byte {
+		return dlopen(cstring(name), RTLD_NOW)
+	}
+
+	// Look up a symbol in a loaded library. Returns void if the symbol does not
+	// exist. Cast the returned ^byte to the function pointer type at the call site.
+	find_symbol :: fun(mod: ^byte, name: []utf8) -> ^byte {
+		return dlsym(mod, cstring(name))
+	}
+
+	// Unloads a library that load_library loaded.
+	free_library :: fun(mod: ^byte) {
+		_ = dlclose(mod)
+	}
+
+	foreign static_lib "c" {
+		// Dynamic library loading
+		fun dlopen(name: cstring, flags: i32) -> ^byte
+		fun dlsym(handle: ^byte, name: cstring) -> ^byte
+		fun dlclose(handle: ^byte) -> i32
+	}
+
+	// ---- Random ----
+
+	// Fills data with random bytes nobody can guess: all its room, so its len
+	// becomes its cap. For keys, salts and tokens.
+	random_bytes :: fun(data: ^[]byte) -> err {
+		data.len = data.cap
+		if data.cap == 0 do return
+		// (A long ask can come back part done, or cut short by a signal.)
+		done : i64 = 0
+		for done < data.cap {
+			n := getrandom(&data[done], usize(data.cap - done), 0)
+			if n < 0 {
+				if __errno_location()^ == EINTR do continue
+				data.len = 0
+				return Random_Failed
+			}
+			done += n
+		}
+	}
+
+	foreign static_lib "c" {
+		fun getrandom(into: ^byte, size: usize, flags: u32) -> i64
+	}
+
+	// ---- Network ----
+
+	// poll's question about a file: are there bytes to read (POLLIN)?
+	Poll_Fd :: struct {
+		fd:      File_Id
+		events:  i16
+		revents: i16
+	}
+
+	POLLIN :: 0x0001
+	SOCK_STREAM      :: 1
+	SOCK_NONBLOCK    :: 0x800
+	SOCK_CLOEXEC     :: 0x80000
+	ECONNABORTED     :: 103
+	EADDRINUSE       :: 98
+
+	// ---------------------------------------------------------------------------
+	// Sockets: talking to other machines
+	// ---------------------------------------------------------------------------
+
+	// The address of a machine by its name — "example.com", or an IP
+	// address's text, "192.168.1.20" or "::1" — and the port given. A name
+	// is asked of the network's name servers: it may take a second or more.
+	// A name with an IPv4 address and an IPv6 one gives the IPv4 one. Fails
+	// with Lookup_Failed when the name has no address.
+	net_lookup :: fun(name: []utf8, port: u16) -> Net_Address, err {
+		a := net_any(port)
+		if name.len > 255 do return a, Lookup_Failed
+		text : [256]utf8
+		&text + name
+		hints := Addrinfo_Hints()
+		hints.kind = SOCK_DGRAM   // (each address once, not once a kind)
+		found: ^Addrinfo = void
+		if getaddrinfo(cstring(text), void, &hints, &found) != 0 do return a, Lookup_Failed
+		defer freeaddrinfo(found)
+		pick := net_pick(found)
+		if pick == void do return a, Lookup_Failed
+		at := Sockaddr()
+		size := usize(pick.size)
+		if size > usize(size_of(Sockaddr)) do size = usize(size_of(Sockaddr))
+		_ = memcpy(&at, pick.at, size)
+		a = address_of(&at)
+		a.port = port
+		return a
+	}
+
+	// Of getaddrinfo's answers, the one to use: the first IPv4 address
+	// when the name has one, else the first IPv6 one (void when neither).
+	// IPv4 reaches a server at net_local and at net_any alike, where the
+	// system's first pick may not: "localhost" is ::1 first, and nobody
+	// listening at 127.0.0.1 hears it.
+	net_pick :: fun(found: ^Addrinfo) -> ^Addrinfo {
+		each := found
+		for each != void {
+			if each.family == AF_INET do return each
+			each = each.next
+		}
+		each = found
+		for each != void {
+			if each.family == AF_INET6 do break
+			each = each.next
+		}
+		return each   // (void when neither: the list's end)
+	}
+
+	// A UDP socket at `at` — net_any(port) for every address of this
+	// machine, net_local(port) for this machine only — to send packets from
+	// and receive packets at. Port 0: one the system picks, the socket's
+	// `port` saying which. Fails with Port_Taken when another socket has
+	// the port.
+	udp_open :: fun(at: Net_Address) -> Udp_Socket, err {
+		s := Udp_Socket{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_DGRAM, &s.v4, &s.port)
+		if e do return s, e
+		s.id = id
+		return s
+	}
+
+	// Sends data, one packet, to `to`. It may never arrive, or arrive after
+	// one sent later: UDP doesn't check. (Nor does it here: a packet the
+	// system has no room for at the moment is lost too.) Packets up to
+	// about 1200 bytes go whole across any network.
+	udp_send :: fun(s: ^Udp_Socket, to: Net_Address, data: []byte) -> err {
+		if s.v4 and not net_is_ip4(to) do return Unreachable   // (an IPv4 socket reaches no IPv6 address)
+		at := Sockaddr()
+		size := sockaddr_of(to, s.v4, &at)
+		for true {
+			if sendto(s.id, data.ptr, usize(data.len), MSG_NOSIGNAL, &at, size) >= 0 do return
+			e := __errno_location()^
+			if e == EAGAIN do return
+			if e != EINTR do return Send_Failed
+		}
+	}
+
+	// Takes the next packet that has arrived, without waiting: true, the
+	// packet in data (data.len its size) and its sender in `from`; false
+	// when none has. data's room is the biggest packet it takes: a bigger
+	// one is lost, failing with Packet_Too_Large.
+	udp_receive :: fun(s: ^Udp_Socket, data: ^[]byte, from: ^Net_Address) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return false, Packet_Too_Large
+		for true {
+			at := Sockaddr()
+			size: u32 = u32(size_of(Sockaddr))
+			// (MSG_TRUNC: the packet's whole size, though bigger than the room.)
+			n := recvfrom(s.id, &data[0], usize(data.cap), MSG_TRUNC, &at, &size)
+			if n > data.cap do return false, Packet_Too_Large
+			if n >= 0 {
+				data.len = n
+				from^ = address_of(&at)
+				return true
+			}
+			e := __errno_location()^
+			if e == EAGAIN do return false
+			// (Word from the network that an earlier packet found nobody
+			// there: no packet. Take the next.)
+			if e != EINTR and e != ECONNREFUSED do return false, Receive_Failed
+		}
+		return false
+	}
+
+	// Closes the socket.
+	udp_close :: fun(s: ^Udp_Socket) {
+		if s.id == NO_SOCKET do return
+		_ = close(s.id)
+		s.id = NO_SOCKET
+	}
+
+	// Listens at `at` — net_any(port) or net_local(port), as udp_open —
+	// for TCP connections, tcp_accept taking each. Port 0: one the system
+	// picks, the listener's `port` saying which. Fails with Port_Taken
+	// when another socket has the port.
+	tcp_listen :: fun(at: Net_Address) -> Tcp_Listener, err {
+		l := Tcp_Listener{id = NO_SOCKET, v4 = false, port = 0}
+		id, e := net_bind(at, SOCK_STREAM, &l.v4, &l.port)
+		if e do return l, e
+		l.id = id
+		return l
+	}
+
+	// The next connection to the listener, when one has come: true, and
+	// `c` it. False when none has: it doesn't wait, so a game can look each
+	// frame.
+	tcp_accept :: fun(l: ^Tcp_Listener, c: ^Tcp_Connection) -> bool, err {
+		at := Sockaddr()
+		size: u32 = u32(size_of(Sockaddr))
+		id := accept4(l.id, &at, &size, SOCK_NONBLOCK | SOCK_CLOEXEC)
+		if id == NO_SOCKET {
+			e := __errno_location()^
+			// (Nobody yet; one that came and went; a signal.)
+			if e == EAGAIN or e == ECONNABORTED or e == EINTR do return false
+			return false, Socket_Failed
+		}
+		net_no_delay(id)
+		c.id = id
+		c.v4 = l.v4
+		c.peer = address_of(&at)
+		return true
+	}
+
+	// Stops listening: the port free for another. Connections taken stay
+	// open until closed.
+	tcp_listen_stop :: fun(l: ^Tcp_Listener) {
+		if l.id == NO_SOCKET do return
+		_ = close(l.id)
+		l.id = NO_SOCKET
+	}
+
+	// Connects to a program listening at `to` (tcp_listen), waiting up to
+	// wait_ms milliseconds for it to answer. Fails with Unreachable when
+	// nobody answered.
+	tcp_connect :: fun(to: Net_Address, wait_ms: i64 = 5000) -> Tcp_Connection, err {
+		c := Tcp_Connection{id = NO_SOCKET, v4 = net_is_ip4(to), peer = to}
+		id := net_socket(c.v4, SOCK_STREAM)
+		if id == NO_SOCKET do return c, Socket_Failed
+		at := Sockaddr()
+		size := sockaddr_of(to, c.v4, &at)
+		if connect(id, &at, size) != 0 {
+			// (Under way: wait for it.)
+			if __errno_location()^ != EINPROGRESS or not net_connected(id, wait_ms) {
+				_ = close(id)
+				return c, Unreachable
+			}
+		}
+		net_no_delay(id)
+		c.id = id
+		return c
+	}
+
+	// Waits on many sockets at once, so one thread can serve many connections.
+	// net_waiter_open makes one, with room for `room` sockets, taking what it
+	// needs from storage. A waiter is one thread's. Several threads can each add
+	// the same Tcp_Listener to their own, and tcp_accept shares its connections.
+	// (epoll: the system keeps the sockets. `room` and storage are unused here.)
+	Net_Waiter :: struct {
+		id: File_Id
+	}
+
+	// struct epoll_event, packed on x86_64: its 64 bits of data at 4 bytes in. (ARM's isn't
+	// packed, and other structs here differ there too: Mara refuses to build on it.)
+	Epoll_Event :: struct {
+		events: u32
+		tag_low: u32
+		tag_high: u32
+	}
+
+	EPOLL_CTL_ADD :: 1
+	EPOLL_CTL_DEL :: 2
+	EPOLL_CTL_MOD :: 3
+	EPOLL_CLOEXEC :: 0x80000
+	EPOLLIN       :: 0x001
+	EPOLLOUT      :: 0x004
+	EPOLLERR      :: 0x008
+	EPOLLHUP      :: 0x010
+	EPOLLEXCLUSIVE :: 0x10000000
+
+	// Adds a listener to wait on. Several threads can each add one listener to their own
+	// waiter, and tcp_accept shares its connections out. (EPOLLEXCLUSIVE: a new connection wakes one
+	// thread, not all of them.)
+	net_waiter_add_listener :: fun(w: ^Net_Waiter, l: ^Tcp_Listener, tag: i64) -> err {
+		e := Epoll_Event{events = EPOLLIN | EPOLLEXCLUSIVE, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if epoll_ctl(w.id, EPOLL_CTL_ADD, l.id, &e) != 0 do return Socket_Failed
+	}
+
+	net_waiter_open :: fun(room: i64, storage: ^[]byte) -> Net_Waiter, err {
+		id := epoll_create1(EPOLL_CLOEXEC)
+		if id == NO_SOCKET do return Net_Waiter{id = NO_SOCKET}, Socket_Failed
+		return Net_Waiter{id = id}
+	}
+
+	// Adds a socket (a Tcp_Connection's or a Tcp_Listener's id) to wait on. It's
+	// ready when it can be read: for a listener, when a connection has come. `tag`
+	// comes back with it from net_waiter_wait.
+	net_waiter_add :: fun(w: ^Net_Waiter, id: File_Id, tag: i64) -> err {
+		e := Epoll_Event{events = EPOLLIN, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if epoll_ctl(w.id, EPOLL_CTL_ADD, id, &e) != 0 do return Socket_Failed
+	}
+
+	// Sets whether a socket added also counts as ready when it can be written. Turn
+	// it on when a tcp_send_some couldn't send everything, and off when it's all gone:
+	// a socket can almost always be written, so left on it's always ready.
+	net_waiter_writing :: fun(w: ^Net_Waiter, id: File_Id, tag: i64, on: bool) -> err {
+		e := Epoll_Event{events = EPOLLIN, tag_low = u32(u64(tag) & 0xFFFFFFFF), tag_high = u32(u64(tag) >> 32)}
+		if on do e.events = EPOLLIN | EPOLLOUT
+		if epoll_ctl(w.id, EPOLL_CTL_MOD, id, &e) != 0 do return Socket_Failed
+	}
+
+	// Takes a socket out, before it's closed.
+	net_waiter_remove :: fun(w: ^Net_Waiter, id: File_Id) {
+		e := Epoll_Event{events = 0, tag_low = 0, tag_high = 0}
+		_ = epoll_ctl(w.id, EPOLL_CTL_DEL, id, &e)
+	}
+
+	// Waits until some socket is ready, at most `ms` milliseconds, or -1 as long as
+	// it takes, and puts those that are into `ready`, up to its room. The rest stay
+	// ready for next time. A socket stays ready until what it's ready for is done.
+	// `ready` is empty if the time ran out.
+	net_waiter_wait :: fun(w: ^Net_Waiter, ready: ^[]Net_Ready, ms: i64) -> err {
+		ready.len = 0
+		if ready.cap == 0 do return
+		found : [64!]Epoll_Event
+		want := ready.cap
+		if want > 64 do want = 64
+		n := epoll_wait(w.id, &found[0], i32(want), i32(ms))
+		if n < 0 {
+			// (A signal cut the wait short: as if the time ran out.)
+			if __errno_location()^ == EINTR do return
+			return Socket_Failed
+		}
+		for k in 0:i64(n) {
+			got := found[k].events
+			r := Net_Ready{tag = i64((u64(found[k].tag_high) << 32) | u64(found[k].tag_low)), readable = got & (EPOLLIN | EPOLLHUP | EPOLLERR) != 0, writable = got & EPOLLOUT != 0}
+			ready + r
+		}
+	}
+
+	// Lets the waiter go. The sockets in it stay open.
+	net_waiter_close :: fun(w: ^Net_Waiter) {
+		if w.id == NO_SOCKET do return
+		_ = close(w.id)
+		w.id = NO_SOCKET
+	}
+
+	// Sends as much of data as the system has room for, without waiting, and gives how
+	// many bytes that was: 0 when it has no room. Send the rest when net_waiter_wait
+	// says the socket can be written. Fails with Send_Failed once the connection has
+	// ended.
+	tcp_send_some :: fun(c: ^Tcp_Connection, data: []byte) -> i64, err {
+		if data.len == 0 do return 0
+		// (MSG_NOSIGNAL: a connection ended fails, not SIGPIPE ending the program.)
+		n := send(c.id, data.ptr, usize(data.len), MSG_NOSIGNAL)
+		if n >= 0 do return n
+		e := __errno_location()^
+		if e == EAGAIN or e == EINTR do return 0
+		return 0, Send_Failed
+	}
+
+	// Sends all of data on the connection, waiting while the system has no
+	// room for more. Fails with Send_Failed once the connection has ended.
+	tcp_send :: fun(c: ^Tcp_Connection, data: []byte) -> err {
+		rest := data
+		for rest.len > 0 {
+			// (MSG_NOSIGNAL: a connection ended fails, not SIGPIPE ending
+			// the program.)
+			n := send(c.id, rest.ptr, usize(rest.len), MSG_NOSIGNAL)
+			if n > 0 {
+				rest = rest[n:.len]
+				continue
+			}
+			e := __errno_location()^
+			if e == EINTR do continue
+			if e != EAGAIN do return Send_Failed
+			if net_wait(c.id, true, -1) < 0 do return Send_Failed
+		}
+	}
+
+	// Takes what has arrived on the connection, without waiting for more:
+	// data.len becomes the number of bytes, 0 when none has. Returns false
+	// once the connection has ended: the other side closed it (and all it
+	// sent is read), or it broke.
+	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
+		data.len = 0
+		if data.cap == 0 do return true
+		n := recv(c.id, &data[0], usize(data.cap), 0)
+		if n > 0 {
+			data.len = n
+			return true
+		}
+		if n == 0 do return false
+		e := __errno_location()^
+		if e == EAGAIN or e == EINTR do return true
+		if e == ECONNRESET do return false
+		return false, Receive_Failed
+	}
+
+	// Closes the connection: the other side's tcp_receive returns false once
+	// it has read all this side sent.
+	tcp_close :: fun(c: ^Tcp_Connection) {
+		if c.id == NO_SOCKET do return
+		_ = close(c.id)
+		c.id = NO_SOCKET
+	}
+
+	// A new socket, IPv4 (v4) or IPv6, TCP (SOCK_STREAM) or UDP
+	// (SOCK_DGRAM): not waiting — its reads and writes answer at once — and
+	// not handed to programs this one starts. NO_SOCKET failing.
+	net_socket :: fun(v4: bool, kind: i32) -> File_Id {
+		family: i32 = AF_INET6
+		if v4 do family = AF_INET
+		return socket(family, kind | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)
+	}
+
+	// A socket of the kind given at `at`, listening there if TCP; whether
+	// it's IPv4 into v4, the port it has into port. At net_any an IPv6
+	// socket takes IPv4 too. Where that fails — no IPv6 on the machine, or
+	// an IPv6 socket that won't take IPv4 — an IPv4 one takes it all. (Not
+	// when the port is taken: IPv4's may be free, but the port is someone
+	// else's.)
+	net_bind :: fun(at: Net_Address, kind: i32, v4: ^bool, port: ^u16) -> File_Id, err {
+		v4^ = net_is_ip4(at)
+		id, e := net_bind_as(at, kind, v4^, port)
+		if e and e != Port_Taken and not v4^ and net_is_any(at) {
+			v4^ = true
+			id4, e4 := net_bind_as(at, kind, true, port)
+			id = id4
+			e = e4
+		}
+		if e do return NO_SOCKET, e
+		return id
+	}
+
+	// net_bind's socket, IPv4 (v4) or IPv6: made, bound to `at`, listening
+	// if TCP, the port it has into port. At net_any an IPv6 one takes IPv4
+	// too, or fails.
+	net_bind_as :: fun(at: Net_Address, kind: i32, v4: bool, port: ^u16) -> File_Id, err {
+		id := net_socket(v4, kind)
+		if id == NO_SOCKET do return NO_SOCKET, Socket_Failed
+		if not v4 and net_is_any(at) {
+			off: i32 = 0   // (IPv4 too, as ::ffff:a.b.c.d)
+			if setsockopt(id, IPPROTO_IPV6, IPV6_V6ONLY, &off, 4) != 0 {
+				_ = close(id)
+				return NO_SOCKET, Socket_Failed
+			}
+		}
+		on: i32 = 1
+		// (A port a listener just let go is free at once, not after the
+		// minutes its old connections' ends linger.)
+		if kind == SOCK_STREAM do _ = setsockopt(id, SOL_SOCKET, SO_REUSEADDR, &on, 4)
+		sa := Sockaddr()
+		size := sockaddr_of(at, v4, &sa)
+		if bind(id, &sa, size) != 0 {
+			taken := __errno_location()^ == EADDRINUSE
+			_ = close(id)
+			if taken do return NO_SOCKET, Port_Taken
+			return NO_SOCKET, Socket_Failed
+		}
+		if kind == SOCK_STREAM and listen(id, SOMAXCONN) != 0 {
+			_ = close(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		mine := Sockaddr()
+		mine_size: u32 = u32(size_of(Sockaddr))
+		if getsockname(id, &mine, &mine_size) != 0 {
+			_ = close(id)
+			return NO_SOCKET, Socket_Failed
+		}
+		port^ = address_of(&mine).port
+		return id
+	}
+
+	// Waits up to `ms` milliseconds for the connect under way: true once
+	// connected.
+	net_connected :: fun(id: File_Id, ms: i64) -> bool {
+		if net_wait(id, true, ms) <= 0 do return false
+		problem: i32 = 0
+		size: u32 = 4
+		if getsockopt(id, SOL_SOCKET, SO_ERROR, &problem, &size) != 0 do return false
+		return problem == 0
+	}
+
+	// Waits until the socket can be written to (`writing`) or read from, or
+	// has failed, at most `ms` milliseconds — -1, as long as it takes: above
+	// 0 then, 0 when the time ran out, below 0 failing.
+	net_wait :: fun(id: File_Id, writing: bool, ms: i64) -> i32 {
+		ready := Poll_Fd{fd = id, events = POLLIN}
+		if writing do ready.events = POLLOUT
+		for true {
+			n := poll(&ready, 1, i32(ms))
+			if n >= 0 or __errno_location()^ != EINTR do return n
+		}
+		return -1
+	}
+
+	// Sends what's written at once, not holding small writes back to join
+	// them (Nagle's wait): a game's messages are small, and late is worse.
+	net_no_delay :: fun(id: File_Id) {
+		on: i32 = 1
+		_ = setsockopt(id, IPPROTO_TCP, TCP_NODELAY, &on, 4)
+	}
+
+	// Whether the address is net_any's: every address of this machine.
+	net_is_any :: fun(a: Net_Address) -> bool {
+		for k in 0:16 {
+			if a.ip[k] != 0 do return false
+		}
+		return true
+	}
+
+	// getaddrinfo's answers, a list: each an address the name has.
+	Addrinfo :: struct {
+		flags:    i32
+		family:   i32
+		kind:     i32
+		protocol: i32
+		size:     u32        // at's
+		at:       ^Sockaddr
+		name:     ^byte      // (the canonical name, asked for)
+		next:     ^Addrinfo
+	}
+
+	// getaddrinfo's question, Addrinfo's layout: which answers are wanted,
+	// its pointers 0.
+	Addrinfo_Hints :: struct {
+		flags:    i32 = 0
+		family:   i32 = 0   // (0: any)
+		kind:     i32 = 0
+		protocol: i32 = 0
+		size:     u32 = 0
+		pointers: [3!]u64 = {0, 0, 0}
+	}
+
+	AF_INET         :: 2
+	AF_INET6        :: 10
+	SOCK_DGRAM      :: 2
+	IPPROTO_TCP     :: 6
+	IPPROTO_IPV6    :: 41
+	IPV6_V6ONLY     :: 26
+	TCP_NODELAY     :: 1
+	SOL_SOCKET      :: 1
+	SO_REUSEADDR    :: 2
+	SO_ERROR        :: 4
+	SOMAXCONN       :: 4096
+	MSG_TRUNC       :: 0x20
+	MSG_NOSIGNAL    :: 0x4000
+	POLLOUT         :: 0x0004
+	ECONNREFUSED    :: 111
+	ECONNRESET      :: 104
+	EINPROGRESS     :: 115
+
+	foreign static_lib "c" {
+		fun memcpy(to: ^byte, from: ^byte, size: usize) -> ^byte
+		fun poll(fds: ^Poll_Fd, count: u64, timeout_ms: i32) -> i32
+		fun epoll_create1(flags: i32) -> File_Id
+		fun epoll_ctl(waiter: File_Id, op: i32, id: File_Id, event: ^Epoll_Event) -> i32
+		fun epoll_wait(waiter: File_Id, events: ^Epoll_Event, count: i32, ms: i32) -> i32
+		// Sockets: named pipes' (Unix sockets) and the network's. An address
+		// is any of the families' (^byte): Sockaddr_Un, Sockaddr.
+		fun socket(domain: i32, kind: i32, protocol: i32) -> File_Id
+		fun bind(fd: File_Id, at: ^byte, size: u32) -> i32
+		fun listen(fd: File_Id, backlog: i32) -> i32
+		fun accept4(fd: File_Id, at: ^byte, size: ^u32, flags: i32) -> File_Id
+		fun connect(fd: File_Id, at: ^byte, size: u32) -> i32
+		fun getsockname(fd: File_Id, at: ^byte, size: ^u32) -> i32
+		fun setsockopt(fd: File_Id, level: i32, name: i32, value: ^byte, size: u32) -> i32
+		fun getsockopt(fd: File_Id, level: i32, name: i32, value: ^byte, size: ^u32) -> i32
+		fun send(fd: File_Id, data: ^byte, size: usize, flags: i32) -> i64
+		fun recv(fd: File_Id, data: ^byte, size: usize, flags: i32) -> i64
+		fun sendto(fd: File_Id, data: ^byte, size: usize, flags: i32, to: ^byte, to_size: u32) -> i64
+		fun recvfrom(fd: File_Id, data: ^byte, size: usize, flags: i32, from: ^byte, from_size: ^u32) -> i64
+		fun getaddrinfo(name: cstring, service: ^byte, hints: ^Addrinfo_Hints, found: ^^Addrinfo) -> i32
+		fun freeaddrinfo(found: ^Addrinfo)
+	}
+}

@@ -1,45 +1,536 @@
 module mara.os
 
+use mara.core
+use mara.string
+
 // What the operating system does, the same on every platform: the only place
 // in the standard library with platform code. Everything over it is portable.
 //
-// One file for each topic. Each has the same functions in an `#if` block for
-// each platform, its foreign calls with them. A C function is bound once per
-// platform, by the first file to need it, and all the module's files see it.
+// This file is what every platform shares: types, errors, and what needs no
+// system call. windows.mara and linux.mara each give the same functions for
+// their platform, with the foreign calls they make, by topic in the order here.
 
-// Windows:
-// Win32 platform layer — file I/O, virtual memory, dynamic library loading.
-// All foreign calls go directly to kernel32.dll (statically linked at build
-// time); no C glue file needed.
-//
-// Type notes:
-//   Win32 HANDLE is a pointer-sized opaque token. The kernel uses it as
-//   an index into a per-process handle table; user mode never derefs it.
-//   We expose file handles as `File_Id :: distinct i64` and bind the
-//   relevant kernel32 entry points with i64 in the HANDLE slots — same
-//   bits at the ABI level (both pointer and i64 return in RAX on x64),
-//   no ptr↔int conversion needed in user-facing code. INVALID_HANDLE_VALUE
-//   ((HANDLE)-1 in C) becomes plain `-1` here.
-//
-//   Module handles (HMODULE from LoadLibraryA) and function-pointer
-//   results from GetProcAddress stay as `^byte` for now — they're truly
-//   pointer-typed and the call sites cast them at use. Could become
-//   Module_Id / Symbol_Addr distinct types later if it'd help.
-// Static-linked: clang resolves the symbols against kernel32.lib at link
-// time. No dynamic_lib needed — kernel32.dll is implicitly loaded into every
-// Win32 process at startup. BOOL is i32 (Win32 zero/non-zero), not Mara bool.
 
-// Linux:
-// Linux platform layer — file I/O via libc syscalls. Mirrors the
-// Windows API surface (file_open_read/write, file_close, file_size,
-// file_read, file_write, file_delete) so user code is identical
-// across targets.
+// ---- Files ----
+
+// Files: opening, reading, writing, mapping and deleting them.
+
+// File_Id is the public token for an open file. Treat it as opaque — flow it
+// from file_open_* through file_read / file_write / file_close without
+// inspecting the bits. The kernel checks validity on every syscall, so the
+// only enforced rule is "use the value file_open_* handed you, don't
+// manufacture one."
 //
-// Modern glibc has dlopen/dlsym/dlclose in libc.so; older systems
-// and musl require -ldl. Add a "dl" foreign block if a target
-// system needs that split.
-// Static-linked: clang resolves against libc at link time. ssize_t is i64
-// on 64-bit Linux; size_t is usize. mode_t is u32. fd is int = i32.
-// File_Id is distinct i32, lowers to i32 in IR, matching libc's int — so
-// the foreign declarations bind File_Id directly in the fd slots and the
-// wrappers don't need any conversion.
+// The underlying representation is platform-native: distinct i64 on Windows
+// (pointer-sized HANDLE) and distinct i32 on Linux (fd is int). User code
+// sees one type name and one set of operations across platforms; only the
+// wrappers and platform-specific bindings know what's underneath.
+// Defined inside each platform's #if block so the underlying matches the
+// kernel ABI exactly — no widening at the boundary.
+
+// What a file operation can fail with.
+// File-system error set. Each fallible file operation returns one of these
+// in its trailing err slot; callers either `?`-propagate or match. No
+// print() inside the stdlib — the error value is the diagnostic, and the
+// caller chooses whether to log, retry, or bail.
+File_Error :: error {
+    Open_Failed
+    Size_Failed
+    Read_Failed
+    Write_Failed
+    Delete_Failed
+    Copy_Failed
+    Too_Large
+    Seek_Failed
+    Map_Failed
+    Rename_Failed
+}
+
+// Whence values for file_seek — identical numeric values on Win32
+// (FILE_BEGIN/CURRENT/END) and POSIX (SEEK_SET/CUR/END), so one set serves both.
+SEEK_SET :: 0   // relative to the start of the file
+SEEK_CUR :: 1   // relative to the current position
+SEEK_END :: 2   // relative to the end of the file
+
+// Writes text to a file, a pipe or a program's input — all of it, in as
+// many writes as that takes (file_write may take only part). Write_Failed
+// when a write fails: the other end gone, say.
+file_write_text :: fun(id: File_Id, text: []utf8) -> err {
+	bytes : []byte = text
+	for bytes.len > 0 {
+		n := file_write(id, bytes)?
+		if n <= 0 do return Write_Failed   // (nothing went: more tries won't either)
+		bytes = bytes[n : bytes.len]
+	}
+}
+
+// Opens a file and reads its data into the provided buffer. Then closes the
+// file. Returns a slice of the buffer containing the read data. Slice .len
+// and .cap are both set to the size of the file in bytes.
+read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
+	start := storage.len
+	none := storage[start : start]
+	id, oe := file_open_read(path)
+	if oe do return none, oe
+	defer file_close(id)
+	size, se := file_size(id)
+	if se do return none, se
+	if size > storage.cap - start do return none, Too_Large
+	got : i64 = 0
+	for got < size {
+		rest := storage[start + got : start + size]
+		re := file_read(id, &rest)
+		if re do return none, re
+		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
+		got += rest.len
+	}
+	storage.len = start + got
+	return storage[start : start + got]
+}
+
+
+// ---- Paths ----
+
+// Paths and directories: a path's parts, where the program is, what's in a directory.
+
+// A path, as current_dir and exe_path give one back: up to 512
+// characters (Windows' paths here end at 260), its room past them there to
+// add a name to. Its separators are '/', Windows' too. Under 1 KB: it lives
+// where it's declared, no arena needed.
+Path :: alias [512]utf8
+
+// A file or a directory found in a directory (dir_read): its name — not
+// its path — whether it leads to a directory, and whether it's a link: a
+// symbolic link (on Windows a junction too), its `dir` saying where it
+// leads — true for a link to a directory, false for one to a file or to
+// nothing there. A walk down a tree goes into the entries that are `dir and
+// not link`: a link can lead back up, round and round, or to a tree walked
+// already.
+Dir_Entry :: struct {
+    name: [260]utf8
+    dir:  bool   // a directory, or a link to one
+    link: bool   // a symbolic link, or a Windows junction
+}
+
+// Returns the file's name at the end of a path: the part after its last
+// separator. A path with no separator is returned whole; one ending in a
+// separator gives an empty slice. The result is a slice of the path, not a
+// copy.
+get_file :: fun(path: []utf8) -> []utf8 {
+	start : i64 = 0
+	for i in 0:path.len {
+		if path_separator(path[i]) do start = i + 1
+	}
+	return path[start : path.len]
+}
+
+// Whether ch separates a path's parts: '/' — and on Windows '\' too
+// (elsewhere a '\' can be part of a name).
+path_separator :: fun(ch: utf8) -> bool {
+	if ch == '/' do return true
+	#if #windows {
+		if ch == '\\' do return true
+	}
+	return false
+}
+
+// Returns the directory a path is in, as a Path of its own: the path up to
+// and including its last separator ('\'s made '/' on Windows), so a file's
+// name can go after it: `dir := get_dir(exe)`, `&dir + "font.ttf"`. A name
+// alone gives an empty Path. A directory longer than a Path holds stops the
+// program.
+get_dir :: fun(path: []utf8) -> Path {
+	end : i64 = 0
+	for ch, i in path {
+		if path_separator(ch) do end = i + 1
+	}
+	dir : Path
+	&dir + path[0 : end]
+	#if #windows {
+		slashes_forward(&dir)
+	}
+	return dir
+}
+
+// A path's '\'s made '/': the paths this module gives back say '/' on every
+// system, Windows' too (it takes either). Only on Windows: elsewhere a '\'
+// can be part of a name.
+slashes_forward :: fun(path: ^[]utf8) {
+	for k in 0:path.len {
+		if path[k] == '\\' do path[k] = '/'
+	}
+}
+
+// The path without the separators at its end.
+trim_separators :: fun(path: []utf8) -> []utf8 {
+	n := path.len
+	for n > 0 {
+		if not path_separator(path[n - 1]) do break
+		n -= 1
+	}
+	return path[0 : n]
+}
+
+// A path for C: copied, a 0 after it — so the functions here take any slice
+// of a path, a view into storage too (its room ends where the path does: no
+// 0 can follow). Empty when it's too long for the copy: the call then fails
+// as for a path that isn't there.
+c_path :: fun(path: []utf8) -> [512]utf8 {
+	c : [512]utf8
+	if path.len < c.cap do &c + path
+	return c
+}
+
+// Whether two paths name the same place: separators at their ends not
+// minded; on Windows '/' and '\' alike, and letters' case not minded (as its
+// file system doesn't). Text only: neither path is looked up.
+same_path :: fun(a: []utf8, b: []utf8) -> bool {
+	x := trim_separators(a)
+	y := trim_separators(b)
+	if x.len != y.len do return false
+	for i in 0:x.len {
+		cx := x[i]
+		cy := y[i]
+		#if #windows {
+			if cx == '/' do cx = '\\'
+			if cy == '/' do cy = '\\'
+			cx = lower(cx)
+			cy = lower(cy)
+		}
+		if cx != cy do return false
+	}
+	return true
+}
+
+// Makes the directory at path, and any directories leading to it that aren't
+// there yet. One that's there already is fine. Open_Failed when it can't be made:
+// a file has that name, say, or the system won't allow it.
+dir_make :: fun(path: []utf8) -> err {
+	// (Each leading directory tried. One that fails, a drive's `C:` say, isn't
+	// the failure yet: the last one says.)
+	for k in 1:path.len {
+		if path_separator(path[k]) do _ = dir_make_one(path[0:k])
+	}
+	if not dir_make_one(path) do return Open_Failed
+}
+
+
+// ---- Pipes ----
+
+// Named pipes: programs on this machine talking to each other by a name.
+
+// What listening on a name, or connecting to one, can fail with.
+Pipe_Error :: error {
+    Listen_Failed
+    Name_Taken       // another program listens on the name
+    Accept_Failed
+    Connect_Failed   // nobody listens on the name
+}
+
+
+// ---- Processes ----
+
+// Other programs and this one's surroundings: starting a process and talking
+// to it through pipes, standard input and output, environment variables.
+
+// What starting or waiting for a process can fail with.
+Process_Error :: error {
+    Start_Failed
+    Wait_Failed
+}
+
+// What reading an environment variable can fail with.
+Env_Error :: error {
+    Not_Set   // no variable of that name is set
+}
+
+
+// ---- Threads ----
+
+// Threads, mutexes and condition variables.
+
+// What starting a thread can fail with.
+Thread_Error :: error {
+    Thread_Start_Failed
+}
+
+// What thread_start hands a new thread: the fun to run, its data, and its
+// arena's size. (In the process's heap: the thread frees it once read.)
+Thread_Start :: struct {
+	work:       fun(^byte)
+	data:       ^byte
+	arena_size: i64
+}
+
+// Runs work(data) on an arena of the program's kind, size bytes, made for
+// it, and gives back the arena's memory, to release (void, in a program with
+// no arena). A new thread's: only thread_entry calls it.
+thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mara_thread_run.ptr }
+
+
+// ---- Time ----
+
+// The clock and waiting. (Frame timers, and the rest of time, are mara.time's.)
+
+
+// ---- Memory ----
+
+// Memory straight from the OS, for arenas to manage, and reading C's text.
+
+// DANGER BELOW
+
+// Scan a C-owned NUL-terminated buffer into an honest slice: len is the
+// distance to the first 0 (or cap if none found within the window).
+read_cstring :: fun(cap: i64, src: ^byte) -> []utf8 {
+	view : []utf8 = slice_from_ptr(src, cap)
+	for utf8_byte, i in view {
+		if utf8_byte == 0 do return view[:i]
+	}
+	return view
+}
+
+// Reserves cap bytes of memory from the OS, for an arena to manage.
+// NEVER CALL THIS FUNCTION: make an arena instead (mara.memory).
+sys_alloc :: fun(cap: i64) -> []byte {
+	#if #native {
+		raw := vm_reserve(cap)
+		_ = vm_commit(raw, cap)
+    	return slice_from_ptr(raw, cap)
+	}
+	#if #web {
+		return slice_from_ptr(malloc(usize(cap)), cap)
+	}
+}
+
+#if #web {
+	// emcc auto-links libc, so malloc/free resolve without a port flag.
+	foreign static_lib "emscripten" {
+	    fun malloc(size: usize) -> ^byte
+	    fun free(ptr: ^byte)
+	    fun emscripten_set_main_loop(callback: fun(), fps: i64, simulate_infinite_loop: i64)
+	    fun emscripten_set_main_loop_arg(callback: fun(^byte), arg: ^byte, fps: i64, simulate_infinite_loop: i64)
+	    fun emscripten_cancel_main_loop()
+	}
+}
+
+
+// ---- Libraries ----
+
+// Loading a library of code while the program runs.
+
+
+// ---- Random ----
+
+// Random bytes nobody can guess, from the system: for keys, salts and tokens.
+
+// What asking the system for random bytes can fail with.
+Random_Error :: error {
+    Random_Failed
+}
+
+
+// ---- Network ----
+
+// Sockets: talking to other machines.
+
+// What talking to other machines (sockets) can fail with.
+Net_Error :: error {
+    Lookup_Failed      // no address found for the name
+    Socket_Failed      // the system made no socket, or couldn't set it up
+    Port_Taken         // another socket has the port
+    Unreachable        // nobody answered there: no program listens, no such machine, or the wait ran out
+    Send_Failed        // the connection has ended, or the packet can't go
+    Receive_Failed
+    Packet_Too_Large   // a packet bigger than the room given for it: it's lost
+}
+
+// ---------------------------------------------------------------------------
+// Sockets: talking to other machines
+// ---------------------------------------------------------------------------
+
+// Where on the network: a machine's IP address and a port on it. An IPv4
+// address is kept the way IPv6 writes one: ::ffff:a.b.c.d. net_lookup finds
+// one by name, net_text writes one.
+Net_Address :: struct {
+	ip:    [16!]u8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	port:  u16 = 0
+	scope: u32 = 0   // (an IPv6 link-local address's network: which of the machine's)
+}
+
+// What net_waiter_wait found: which socket, by the tag it was added with, and what it
+// can do without waiting. A connection that ended or broke counts as readable: its
+// tcp_receive says so.
+Net_Ready :: struct {
+	tag: i64
+	readable: bool
+	writable: bool
+}
+
+// Every address of this machine, port `port`: to listen at (udp_open,
+// tcp_listen) for other machines to reach, by IPv6 or IPv4.
+net_any :: fun(port: u16) -> Net_Address {
+	a := Net_Address()
+	a.port = port
+	return a
+}
+
+// This machine, port `port`: 127.0.0.1. Listened at, only programs on this
+// machine reach it.
+net_local :: fun(port: u16) -> Net_Address {
+	a := net_any(port)
+	a.ip[10] = 0xFF
+	a.ip[11] = 0xFF
+	a.ip[12] = 127
+	a.ip[15] = 1
+	return a
+}
+
+// Whether the address is an IPv4 one (::ffff:a.b.c.d).
+net_is_ip4 :: fun(a: Net_Address) -> bool {
+	for k in 0:10 {
+		if a.ip[k] != 0 do return false
+	}
+	return a.ip[10] == 0xFF and a.ip[11] == 0xFF
+}
+
+// Whether the two are the same address and port.
+net_same :: fun(a: Net_Address, b: Net_Address) -> bool {
+	for k in 0:16 {
+		if a.ip[k] != b.ip[k] do return false
+	}
+	return a.port == b.port and a.scope == b.scope
+}
+
+// The address as text: "192.168.1.20:7777", or for IPv6
+// "[2001:db8::1]:7777".
+net_text :: fun(a: Net_Address) -> str64 {
+	t : str64
+	if net_is_ip4(a) {
+		for k in 12:16 {
+			if k > 12 do &t + "."
+			&t + int_text(i64(a.ip[k]))
+		}
+		&t + ":"
+		&t + int_text(i64(a.port))
+		return t
+	}
+	// (Eight groups of 16 bits in hex, the longest run of 0 groups — two or
+	// more — written as "::".)
+	best: i64 = -1
+	best_len: i64 = 0
+	k: i64 = 0
+	for k < 8 {
+		if net_group(a, k) != 0 {
+			k += 1
+			continue
+		}
+		run := k
+		for run < 8 and net_group(a, run) == 0 do run += 1
+		if run - k >= 2 and run - k > best_len {
+			best = k
+			best_len = run - k
+		}
+		k = run
+	}
+	&t + "["
+	k = 0
+	for k < 8 {
+		if k == best {
+			&t + "::"
+			k += best_len
+			continue
+		}
+		if k > 0 and k != best + best_len do &t + ":"
+		g := net_group(a, k)
+		shift: u32 = 16
+		written := false
+		for _ in 0:4 {
+			shift -= 4
+			d := (g >> shift) & 0xF
+			if d != 0 or written or shift == 0 {
+				if d < 10 do &t + utf8(48 + d)
+				if d >= 10 do &t + utf8(87 + d)
+				written = true
+			}
+		}
+		k += 1
+	}
+	&t + "]:"
+	&t + int_text(i64(a.port))
+	return t
+}
+
+// The address's 16-bit group k of 8, as IPv6 writes them.
+net_group :: fun(a: Net_Address, k: i64) -> u32 {
+	return (u32(a.ip[2 * k]) << 8) | u32(a.ip[2 * k + 1])
+}
+
+// A socket address as the system takes one: an IPv4 one (16 bytes: the
+// family, the port, the 4 address bytes, 8 zeros) or an IPv6 one (28 bytes:
+// the family, the port, 4 bytes of flow, the 16 address bytes, the scope).
+// The port is big end first, as the network has it.
+Sockaddr :: struct {
+	family: u16 = 0
+	port:   u16 = 0
+	rest:   [24!]u8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+}
+
+#if #native {
+	// A UDP socket (udp_open): packets sent from it and received at it.
+	// `port` is the port it has.
+	Udp_Socket :: struct {
+		id:   File_Id
+		v4:   bool   // (IPv4 only; otherwise IPv6, taking IPv4 too)
+		port: u16
+	}
+
+	// A port a program listens on for TCP connections (tcp_listen). `port`
+	// is the port it has.
+	Tcp_Listener :: struct {
+		id:   File_Id
+		v4:   bool
+		port: u16
+	}
+
+	// A TCP connection (tcp_connect, tcp_accept): bytes both ways, each
+	// side's arriving all and in order. `peer` is the other side's address.
+	Tcp_Connection :: struct {
+		id:   File_Id
+		v4:   bool
+		peer: Net_Address
+	}
+
+	// No socket: what a socket's id is once closed, or when it failed to
+	// open.
+	NO_SOCKET :: File_Id(-1)
+
+	// The address as the system takes it, into `at`, IPv4 (v4) or IPv6:
+	// its size.
+	sockaddr_of :: fun(a: Net_Address, v4: bool, at: ^Sockaddr) -> u32 {
+		at.port = (a.port >> 8) | ((a.port & 0xFF) << 8)
+		if v4 {
+			at.family = AF_INET
+			for k in 0:4 do at.rest[k] = a.ip[12 + k]
+			return 16
+		}
+		at.family = AF_INET6
+		for k in 0:16 do at.rest[4 + k] = a.ip[k]
+		for k in 0:4 do at.rest[20 + k] = u8((a.scope >> u32(8 * k)) & 0xFF)
+		return 28
+	}
+
+	// The address the system gave, in `at`.
+	address_of :: fun(at: ^Sockaddr) -> Net_Address {
+		a := Net_Address()
+		a.port = (at.port >> 8) | ((at.port & 0xFF) << 8)
+		if at.family == AF_INET {
+			a.ip[10] = 0xFF
+			a.ip[11] = 0xFF
+			for k in 0:4 do a.ip[12 + k] = at.rest[k]
+			return a
+		}
+		for k in 0:16 do a.ip[k] = at.rest[4 + k]
+		for k in 0:4 do a.scope = a.scope | (u32(at.rest[20 + k]) << u32(8 * k))
+		return a
+	}
+}
