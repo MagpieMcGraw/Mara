@@ -1,7 +1,8 @@
 module view
 
 use mara.core
-use mara.os
+use mara.files
+use mara.paths
 use mara.math
 use mara.memory
 use mara.string

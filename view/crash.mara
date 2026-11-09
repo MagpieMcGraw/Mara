@@ -2,7 +2,9 @@ module view
 
 use mara.core
 use mara.string
-use mara.os
+use mara.files
+use mara.paths
+os :: use mara.os
 use mara.math
 use mara.sdl
 
@@ -181,12 +183,12 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 	&command + ":"
 	&command + int_text(line)
 	&command + "\""
-	pr, e := process_start(command)   // (the buffer itself: a 0 follows its text)
+	pr, e := os.process_start(command)   // (the buffer itself: a 0 follows its text)
 	if e {
 		lines_status(l, "The editor didn't start: mara editor names it.", STYLE_BAD)
 		return
 	}
-	_, _ = process_wait(&pr)
+	_, _ = os.process_wait(&pr)
 }
 
 // The editor the windows were told of, as editor.txt keeps it — read again

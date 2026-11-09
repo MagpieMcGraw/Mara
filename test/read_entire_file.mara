@@ -1,7 +1,7 @@
 module read_entire_file
 
 use mara.core
-use mara.os
+use mara.files
 
 // read_entire_file: all of a file or Too_Large, never one cut off — into
 // storage after what's there, its len moved past it, and given back, a view

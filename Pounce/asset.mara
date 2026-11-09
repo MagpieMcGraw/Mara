@@ -2,7 +2,7 @@ module asset
 
 use mara.core
 
-use mara.os
+use mara.files
 use mara.skyline
 use mara.font
 gl :: use mara.open_gl
@@ -79,13 +79,13 @@ Tex_Stream :: struct {
 	packer: = Skyline(1024, 1024)
 	cache_index:   i64
 	current_layer: u32
-	file_handle:   os.File_Id
+	file_handle:   File_Id
 	file_open:     bool
 }
 
 Mesh_Stream :: struct {
 	cache_index:  i64
-	file_handle:  os.File_Id
+	file_handle:  File_Id
 	file_open:    bool
 }
 

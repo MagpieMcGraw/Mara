@@ -1,7 +1,7 @@
 module assign_through
 
 use mara.core
-use mara.os
+use mara.files
 use mara.memory
 
 #allocator Arena_Basic(1 * MB)

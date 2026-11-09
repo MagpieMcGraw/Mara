@@ -22,7 +22,8 @@
 module current_dir
 
 use mara.core
-use mara.os
+use mara.files
+use mara.paths
 use mara.memory
 
 #allocator Arena_Basic(1 * MB)

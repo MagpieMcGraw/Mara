@@ -10,7 +10,7 @@ module cachetest
 //   * `?` propagation, bool(err), magic/version validation
 
 use mara.core
-use mara.os
+use mara.files
 include mara.memory
 
 #allocator Arena_Basic(16 * MB)
@@ -85,7 +85,7 @@ open_cache :: fun(image: []byte) -> i64, err {
 // --- cache_read), self-contained on this fixture's Header / Entry. -----------
 
 St :: struct {
-    file:    os.File_Id
+    file:    File_Id
     is_open: bool
     count:   i64
 }

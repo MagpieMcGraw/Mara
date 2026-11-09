@@ -1,10 +1,10 @@
 module seektest
 
-// Exercises os.file_seek: write 0..15 to a file, then seek (SET / CUR / END)
+// Exercises file_seek: write 0..15 to a file, then seek (SET / CUR / END)
 // and read to confirm the file pointer lands where expected.
 
 use mara.core
-use mara.os
+use mara.files
 
 main :: fun() {
     data : [16]byte

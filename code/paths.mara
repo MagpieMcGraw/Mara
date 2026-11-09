@@ -1,0 +1,116 @@
+module mara.paths
+
+use mara.core
+os :: use mara.os
+
+// Paths and directories: a path's parts, where the program is and the
+// directory it runs in, what's in a directory, making and deleting
+// directories. mara.os does it for each platform. A path given back says '/'
+// between its parts, Windows' too; Windows takes either. What a call fails
+// with is mara.os's File_Error: name one with `os :: use mara.os`, as
+// `os.Open_Failed`.
+
+// A path as current_dir, exe_path and get_dir give one back: up to 512
+// characters, the room past it there to add a name to.
+Path :: alias os.Path
+
+// A file or a directory dir_read found: its name (not its path), whether it
+// leads to a directory, and whether it's a link (a symbolic link, a Windows
+// junction). A walk down a tree goes into those that are `dir and not link`:
+// a link can lead back up.
+Dir_Entry :: alias os.Dir_Entry
+
+// Whether ch separates a path's parts: '/', and on Windows '\' too.
+path_separator :: fun(ch: utf8) -> bool {
+	return os.path_separator(ch)
+}
+
+// The file's name at the end of a path: the part after its last separator, a
+// view of the path. A path with no separator is all name; one ending in one
+// has none.
+get_file :: fun(path: []utf8) -> []utf8 {
+	start : i64 = 0
+	for i in 0:path.len {
+		if path_separator(path[i]) do start = i + 1
+	}
+	return path[start : path.len]
+}
+
+// The directory a path is in, as a Path of its own: the path up to and
+// including its last separator, so a name can go after it: `dir :=
+// get_dir(exe)`, `&dir + "font.ttf"`. A name alone gives an empty Path.
+get_dir :: fun(path: []utf8) -> Path {
+	end : i64 = 0
+	for ch, i in path {
+		if path_separator(ch) do end = i + 1
+	}
+	dir : Path
+	&dir + path[0 : end]
+	os.slashes_forward(&dir)
+	return dir
+}
+
+// The path without the separators at its end.
+trim_separators :: fun(path: []utf8) -> []utf8 {
+	return os.trim_separators(path)
+}
+
+// Whether two paths name the same place, by their text: separators at their
+// ends not minded, and on Windows '/' and '\' alike and letters' case not
+// minded. Neither path is looked up: for that, real_path both first.
+same_path :: fun(a: []utf8, b: []utf8) -> bool {
+	return os.same_path(a, b)
+}
+
+// The directory the program runs in, where a path that isn't whole starts:
+// whole, as the system has it (as real_path gives it). Too_Large when it's
+// longer than a Path holds; Open_Failed when it's gone.
+current_dir :: fun() -> Path, err {
+	return os.current_dir()
+}
+
+// Makes `path` the directory the program runs in. Open_Failed when there's
+// no such directory.
+set_current_dir :: fun(path: []utf8) -> err {
+	return os.set_current_dir(path)
+}
+
+// A path as the system has it, whole: `.` and `..` gone, links followed, on
+// Windows letters' case as on disk. Two spellings of one place give one path.
+// Open_Failed when nothing's there; Too_Large when it's longer than a Path.
+real_path :: fun(path: []utf8) -> Path, err {
+	return os.real_path(path)
+}
+
+// The running program's own file, whole, however it was started (main's
+// args[0] is what its starter wrote): to find the files that come with it,
+// `get_dir(exe)` then a name added.
+exe_path :: fun() -> Path, err {
+	return os.exe_path()
+}
+
+// What's in a directory, one Dir_Entry each (not "." or "..", in no order to
+// count on), written into storage after what's there and given back as a
+// view of them. Open_Failed when there's no directory there; Too_Large when
+// they don't fit in storage's room.
+dir_read :: fun(path: []utf8, storage: ^[]byte) -> []Dir_Entry, err {
+	return os.dir_read(path, storage)
+}
+
+// Makes the directory at path, and those leading to it that aren't there
+// yet. One that's there already is fine. Open_Failed when it can't be made: a
+// file has that name, say.
+dir_make :: fun(path: []utf8) -> err {
+	// (Each leading directory tried. One that fails, a drive's `C:` say, isn't
+	// the failure yet: the last one says.)
+	for k in 1:path.len {
+		if path_separator(path[k]) do _ = os.dir_make_one(path[0:k])
+	}
+	if not os.dir_make_one(path) do return os.Open_Failed
+}
+
+// Deletes the directory at path, which must be empty: Delete_Failed when it
+// isn't.
+dir_delete :: fun(path: []utf8) -> err {
+	return os.dir_delete(path)
+}

@@ -9,7 +9,7 @@
 module write_file
 
 use mara.core
-use mara.os
+use mara.files
 use mara.memory
 
 #allocator Arena_Basic(16 * MB)

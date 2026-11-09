@@ -2,7 +2,7 @@ module view
 
 use mara.core
 use mara.string
-use mara.os
+use mara.files
 use mara.math
 use mara.sdl
 

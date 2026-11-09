@@ -18,7 +18,9 @@ module view
 // (Windows won't write over a program that's running).
 
 use mara.core
-use mara.os
+use mara.files
+use mara.paths
+os :: use mara.os
 use mara.math
 use mara.sdl
 use mara.memory
@@ -124,7 +126,7 @@ Ui :: struct {
 
 // Says what failed, and SDL's reason.
 sdl_failed :: fun(what: []utf8) {
-	print("mara view: %: %", what, read_cstring(256, GetError()))
+	print("mara view: %: %", what, os.read_cstring(256, GetError()))
 }
 
 main :: fun(args: [][]utf8) -> i64 {

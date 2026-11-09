@@ -1,7 +1,7 @@
 module path_parts
 
 use mara.core
-use mara.os
+use mara.paths
 
 //@ expect-output: [lexer.mara] [lexer.mara] [] []
 //@ expect-output: backslashes: true

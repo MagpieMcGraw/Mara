@@ -2,7 +2,9 @@ module view
 
 use mara.core
 use mara.string
-use mara.os
+use mara.files
+use mara.paths
+os :: use mara.os
 use mara.math
 use mara.memory
 use mara.sdl
@@ -47,13 +49,13 @@ Client :: struct {
 
 Hub :: struct {
 	listening: bool
-	listener:  Pipe_Listener
+	listener:  os.Pipe_Listener
 	compiler:  [1000]utf8   // the compiler's path
 	command:   [2000]utf8   // "<compiler>" serve <module>
 	dir:       [1000]utf8   // the folder the window runs in
 	module_name: [300]utf8  // the module it's on there
 	moved:     bool           // it's gone to another folder: its files to read (run)
-	serve:     Process
+	serve:     os.Process
 	serving:   bool           // serve started, not ended
 	waiting:   [16]Client   // connected, their lines coming or waiting for serve
 	asked:     Client         // the one whose query serve is answering
@@ -78,9 +80,9 @@ hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 	here, no_dir := current_dir()
 	if not no_dir do &h.dir + here
 	serve_command(h)
-	l, e := pipe_listen(args[3])
+	l, e := os.pipe_listen(args[3])
 	if e {
-		if e == .Name_Taken {
+		if e == os.Name_Taken {
 			lines_status(&ui.asked, "Another window answers mara ask.", STYLE_DIM)
 		else
 			lines_status(&ui.asked, "mara ask can't reach this window: listening on its pipe failed.", STYLE_BAD)
@@ -158,7 +160,7 @@ hub_stop :: fun(h: ^Hub) {
 	}
 	h.waiting.len = 0
 	if not h.listening do return
-	pipe_listen_stop(&h.listener)
+	os.pipe_listen_stop(&h.listener)
 	if h.asking do file_close(h.asked.id)
 	serve_down(h)
 	h.listening = false
@@ -167,7 +169,7 @@ hub_stop :: fun(h: ^Hub) {
 // The connections that have come, into the waiting list.
 take_connections :: fun(h: ^Hub) {
 	for h.waiting.len < h.waiting.cap {
-		c, e := pipe_accept(&h.listener)
+		c, e := os.pipe_accept(&h.listener)
 		if e or c == NO_FILE do break
 		// (Its place filled where it is: a Client is too big to build aside.)
 		h.waiting.len += 1
@@ -259,7 +261,7 @@ hub_poll :: fun(ui: ^Ui, h: ^Hub) {
 // ended first.
 client_read :: fun(c: ^Client) -> bool {
 	chunk : [512]byte
-	still_open, e := pipe_read(c.id, &chunk)
+	still_open, e := os.pipe_read(c.id, &chunk)
 	if e or not still_open do return false
 	text : []utf8 = chunk
 	for ch in text {
@@ -414,7 +416,7 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 // connection closed.
 read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	chunk : [16 * KB]byte
-	still_open, e := pipe_read(h.serve.output, &chunk)
+	still_open, e := os.pipe_read(h.serve.output, &chunk)
 	if e or not still_open {
 		serve_down(h)
 		// (Serve ended before any of its answer — as one does when Mara was
@@ -572,7 +574,7 @@ cursor_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 // Serve running: started unless it is. False when it can't be.
 serve_up :: fun(h: ^Hub) -> bool {
 	if h.serving do return true
-	p, e := process_start(h.command)
+	p, e := os.process_start(h.command)
 	if e do return false
 	h.serve = p
 	h.serving = true
@@ -582,7 +584,7 @@ serve_up :: fun(h: ^Hub) -> bool {
 // Serve ended — its input closed: it ends there — and waited for.
 serve_down :: fun(h: ^Hub) {
 	if not h.serving do return
-	_, we := process_wait(&h.serve)
+	_, we := os.process_wait(&h.serve)
 	h.serving = false
 	if we do return   // (its handles closed all the same)
 }

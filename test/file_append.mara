@@ -12,7 +12,8 @@ module file_append
 // sooblivion bound CreateFileW instead, CreateFileA refused.
 
 use mara.core
-use mara.os
+use mara.files
+os :: use mara.os
 use mara.memory
 
 #allocator Arena_Basic(1 * MB)
@@ -23,9 +24,9 @@ use mara.memory
 	}
 	// (GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING: only if it's there.)
 	opens :: fun(path: []utf8) -> bool {
-		c := c_path(path)
+		c := os.c_path(path)
 		id := CreateFileA(cstring(c), 0x80000000, 1, void, 3, 0x80, NO_FILE)
-		if id == INVALID_HANDLE_VALUE do return false
+		if id == os.INVALID_HANDLE_VALUE do return false
 		file_close(id)
 		return true
 	}
@@ -34,7 +35,7 @@ else
 		fun open(path: cstring, flags: i32, mode: u32) -> File_Id
 	}
 	opens :: fun(path: []utf8) -> bool {
-		c := c_path(path)
+		c := os.c_path(path)
 		id := open(cstring(c), 0, 0)
 		if id == NO_FILE do return false
 		file_close(id)

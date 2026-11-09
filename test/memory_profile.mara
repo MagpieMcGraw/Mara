@@ -1,7 +1,9 @@
 module memory_profile
 
 use mara.core
-use mara.os
+use mara.files
+use mara.paths
+os :: use mara.os
 use mara.string
 use mara.memory
 
@@ -116,9 +118,9 @@ report :: fun(exe: []utf8) -> err {
 	&command + "\""
 	&command + exe
 	&command + "\" child"
-	p := process_start(command)?
-	process_close_input(&p)
-	code := process_wait(&p)?
+	p := os.process_start(command)?
+	os.process_close_input(&p)
+	code := os.process_wait(&p)?
 	print("child:", code)
 	here := exe_path()?
 	path : Path

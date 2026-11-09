@@ -2,7 +2,8 @@ module string_helpers
 
 use mara.core
 use mara.string
-use mara.os
+use mara.files
+use mara.paths
 
 // The text helpers mara.string has and the path helpers mara.os has, that
 // the view window (view/) wrote for itself first: each on its edges — empty

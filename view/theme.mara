@@ -1,7 +1,7 @@
 module view
 
 use mara.core
-use mara.os
+use mara.files
 use mara.math
 
 // The window's themes — the Theme menu's: Dark, Light, and Sublime's: the

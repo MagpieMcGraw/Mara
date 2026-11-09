@@ -1,7 +1,7 @@
 module zinit
 
 use mara.core
-use mara.os
+use mara.files
 include mara.memory
 
 #allocator Arena_Basic(16 * MB)

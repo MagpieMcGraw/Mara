@@ -16,13 +16,14 @@
 module named_pipes
 
 use mara.core
-use mara.os
+use mara.files
+os :: use mara.os
 
 NAME :: "mara-doc-named-pipes"
 
 // The program that connects: asks, and prints what comes back.
 ask :: fun() {
-	id, e := pipe_connect(NAME)
+	id, e := os.pipe_connect(NAME)
 	if e {
 		print("couldn't connect:", e)
 		return
@@ -42,18 +43,18 @@ main :: fun(args: [][]utf8) -> i64 {
 		ask()
 		return 0
 	}
-	l, e := pipe_listen(NAME)
+	l, e := os.pipe_listen(NAME)
 	if e {
 		print("couldn't listen:", e)
 		return 1
 	}
-	defer pipe_listen_stop(&l)
+	defer os.pipe_listen_stop(&l)
 
 	command : str256
 	&command + "\""
 	&command + args[0]
 	&command + "\" ask"
-	p, pe := process_start(command)
+	p, pe := os.process_start(command)
 	if pe {
 		print("couldn't start it:", pe)
 		return 1
@@ -62,7 +63,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	// Look until it connects. (A window would draw a frame between looks.)
 	c := NO_FILE
 	for c == NO_FILE {
-		got, ae := pipe_accept(&l)
+		got, ae := os.pipe_accept(&l)
 		if ae {
 			print("couldn't accept:", ae)
 			return 1
@@ -88,7 +89,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	}
 	said : []utf8 = out
 	print("it printed:", said)
-	_, xe := process_wait(&p)
+	_, xe := os.process_wait(&p)
 	if xe do print("couldn't wait for it:", xe)
 	return 0
 }

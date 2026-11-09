@@ -1,7 +1,7 @@
 module font_coverage
 
 use mara.core
-use mara.os
+use mara.files
 use mara.math
 use mara.font
 include mara.memory

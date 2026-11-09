@@ -32,7 +32,7 @@
 module directories
 
 use mara.core
-use mara.os
+use mara.paths
 use mara.string
 use mara.memory
 

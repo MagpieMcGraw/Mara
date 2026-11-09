@@ -68,7 +68,7 @@ example_use :: fun() {
 	//     use mara.core             // KB, MB, str64
 	//     use mara.string           // trimmed(line)
 	//     use mara.memory           // Arena_Debug
-	//     os :: use mara.os         // os.read_entire_file(…)
+	//     files :: use mara.files   // files.read_entire_file(…)
 }
 
 // `fun`, `method`: a function — code with a name, called with values, giving values back.

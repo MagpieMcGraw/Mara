@@ -13,7 +13,8 @@ use mara.string
 
 // ---- Files ----
 
-// Files: opening, reading, writing, mapping and deleting them.
+// Files: what each platform does to open, read, write, map and delete them.
+// mara.files is what programs use: it forwards here.
 
 // File_Id is the public token for an open file. Treat it as opaque — flow it
 // from file_open_* through file_read / file_write / file_close without
@@ -46,52 +47,10 @@ File_Error :: error {
     Rename_Failed
 }
 
-// Whence values for file_seek — identical numeric values on Win32
-// (FILE_BEGIN/CURRENT/END) and POSIX (SEEK_SET/CUR/END), so one set serves both.
-SEEK_SET :: 0   // relative to the start of the file
-SEEK_CUR :: 1   // relative to the current position
-SEEK_END :: 2   // relative to the end of the file
-
-// Writes text to a file, a pipe or a program's input — all of it, in as
-// many writes as that takes (file_write may take only part). Write_Failed
-// when a write fails: the other end gone, say.
-file_write_text :: fun(id: File_Id, text: []utf8) -> err {
-	bytes : []byte = text
-	for bytes.len > 0 {
-		n := file_write(id, bytes)?
-		if n <= 0 do return Write_Failed   // (nothing went: more tries won't either)
-		bytes = bytes[n : bytes.len]
-	}
-}
-
-// Opens a file and reads its data into the provided buffer. Then closes the
-// file. Returns a slice of the buffer containing the read data. Slice .len
-// and .cap are both set to the size of the file in bytes.
-read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
-	start := storage.len
-	none := storage[start : start]
-	id, oe := file_open_read(path)
-	if oe do return none, oe
-	defer file_close(id)
-	size, se := file_size(id)
-	if se do return none, se
-	if size > storage.cap - start do return none, Too_Large
-	got : i64 = 0
-	for got < size {
-		rest := storage[start + got : start + size]
-		re := file_read(id, &rest)
-		if re do return none, re
-		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
-		got += rest.len
-	}
-	storage.len = start + got
-	return storage[start : start + got]
-}
-
-
 // ---- Paths ----
 
-// Paths and directories: a path's parts, where the program is, what's in a directory.
+// Paths and directories: what each platform does. mara.paths is what
+// programs use: it forwards here.
 
 // A path, as current_dir and exe_path give one back: up to 512
 // characters (Windows' paths here end at 260), its room past them there to
@@ -112,18 +71,6 @@ Dir_Entry :: struct {
     link: bool   // a symbolic link, or a Windows junction
 }
 
-// Returns the file's name at the end of a path: the part after its last
-// separator. A path with no separator is returned whole; one ending in a
-// separator gives an empty slice. The result is a slice of the path, not a
-// copy.
-get_file :: fun(path: []utf8) -> []utf8 {
-	start : i64 = 0
-	for i in 0:path.len {
-		if path_separator(path[i]) do start = i + 1
-	}
-	return path[start : path.len]
-}
-
 // Whether ch separates a path's parts: '/' — and on Windows '\' too
 // (elsewhere a '\' can be part of a name).
 path_separator :: fun(ch: utf8) -> bool {
@@ -134,30 +81,14 @@ path_separator :: fun(ch: utf8) -> bool {
 	return false
 }
 
-// Returns the directory a path is in, as a Path of its own: the path up to
-// and including its last separator ('\'s made '/' on Windows), so a file's
-// name can go after it: `dir := get_dir(exe)`, `&dir + "font.ttf"`. A name
-// alone gives an empty Path. A directory longer than a Path holds stops the
-// program.
-get_dir :: fun(path: []utf8) -> Path {
-	end : i64 = 0
-	for ch, i in path {
-		if path_separator(ch) do end = i + 1
-	}
-	dir : Path
-	&dir + path[0 : end]
-	#if #windows {
-		slashes_forward(&dir)
-	}
-	return dir
-}
-
-// A path's '\'s made '/': the paths this module gives back say '/' on every
-// system, Windows' too (it takes either). Only on Windows: elsewhere a '\'
-// can be part of a name.
+// On Windows, a path's '\'s made '/': the paths given back say '/' on every
+// system (Windows takes either). Elsewhere nothing: a '\' can be part of a
+// name.
 slashes_forward :: fun(path: ^[]utf8) {
-	for k in 0:path.len {
-		if path[k] == '\\' do path[k] = '/'
+	#if #windows {
+		for k in 0:path.len {
+			if path[k] == '\\' do path[k] = '/'
+		}
 	}
 }
 
@@ -201,19 +132,6 @@ same_path :: fun(a: []utf8, b: []utf8) -> bool {
 	}
 	return true
 }
-
-// Makes the directory at path, and any directories leading to it that aren't
-// there yet. One that's there already is fine. Open_Failed when it can't be made:
-// a file has that name, say, or the system won't allow it.
-dir_make :: fun(path: []utf8) -> err {
-	// (Each leading directory tried. One that fails, a drive's `C:` say, isn't
-	// the failure yet: the last one says.)
-	for k in 1:path.len {
-		if path_separator(path[k]) do _ = dir_make_one(path[0:k])
-	}
-	if not dir_make_one(path) do return Open_Failed
-}
-
 
 // ---- Pipes ----
 

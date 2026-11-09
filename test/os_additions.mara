@@ -1,7 +1,9 @@
 module os_additions
 
 use mara.core
-use mara.os
+use mara.files
+use mara.paths
+os :: use mara.os
 use mara.memory
 
 //@ expect-output: dirs: made, and made again
@@ -45,7 +47,7 @@ write_text :: fun(path: []utf8, text: []utf8) -> err {
 	file_write_text(id, text)?
 }
 
-files :: fun() -> err {
+file_ops :: fun() -> err {
 	dir_make(at("/a/b/c"))?
 	dir_make(at("/a/b/c"))?
 	print("dirs: made, and made again")
@@ -60,7 +62,7 @@ files :: fun() -> err {
 	file_rename(file, moved)?
 	text := read_text(moved)?
 	_, gone := file_open_read(file)
-	print("renamed:", text, "; the old name gone:", gone == Open_Failed)
+	print("renamed:", text, "; the old name gone:", gone == os.Open_Failed)
 
 	write_text(file, "new text")?
 	file_rename(file, moved)?
@@ -82,23 +84,23 @@ files :: fun() -> err {
 random :: fun() -> err {
 	a : [32]byte
 	b : [32]byte
-	random_bytes(&a)?
-	random_bytes(&b)?
+	os.random_bytes(&a)?
+	os.random_bytes(&b)?
 	differ := false
 	for k in 0:32 {
 		if a[k] != b[k] do differ = true
 	}
 	print("random:", a.len, "of", a.cap, ", and two asks differ:", differ)
 	none : [0]byte
-	random_bytes(&none)?
+	os.random_bytes(&none)?
 	print("no room:", none.len)
 }
 
 // A queue three threads take from, one thread filling it: each taker waits on
 // the condition while it's empty.
 Queue :: struct {
-	lock: Mutex
-	changed: Condition
+	lock: os.Mutex
+	changed: os.Condition
 	items: [16]i64
 	first: i64 = 0
 	closed: bool = false
@@ -108,11 +110,11 @@ Queue :: struct {
 
 taker :: fun(q: ^Queue) {
 	for true {
-		mutex_lock(&q.lock)
-		for q.items.len == q.first and not q.closed do condition_wait(&q.changed, &q.lock)
+		os.mutex_lock(&q.lock)
+		for q.items.len == q.first and not q.closed do os.condition_wait(&q.changed, &q.lock)
 		if q.items.len == q.first {
 			q.takers_done += 1
-			mutex_unlock(&q.lock)
+			os.mutex_unlock(&q.lock)
 			return
 		}
 		q.total += q.items[q.first]
@@ -121,37 +123,37 @@ taker :: fun(q: ^Queue) {
 			q.items.len = 0
 			q.first = 0
 		}
-		condition_wake_all(&q.changed)
-		mutex_unlock(&q.lock)
+		os.condition_wake_all(&q.changed)
+		os.mutex_unlock(&q.lock)
 	}
 }
 
 queue :: fun() -> err {
 	q := Queue()
-	threads : [3!]Thread
-	for k in 0:3 do threads[k] = thread_start(taker, &q)?
+	threads : [3!]os.Thread
+	for k in 0:3 do threads[k] = os.thread_start(taker, &q)?
 	for k in 1..100 {
-		mutex_lock(&q.lock)
-		for q.items.len == q.items.cap do condition_wait(&q.changed, &q.lock)
+		os.mutex_lock(&q.lock)
+		for q.items.len == q.items.cap do os.condition_wait(&q.changed, &q.lock)
 		&q.items + k
-		condition_wake_one(&q.changed)
-		mutex_unlock(&q.lock)
+		os.condition_wake_one(&q.changed)
+		os.mutex_unlock(&q.lock)
 	}
-	mutex_lock(&q.lock)
+	os.mutex_lock(&q.lock)
 	q.closed = true
-	condition_wake_all(&q.changed)
-	mutex_unlock(&q.lock)
-	for k in 0:3 do thread_wait(&threads[k])
+	os.condition_wake_all(&q.changed)
+	os.mutex_unlock(&q.lock)
+	for k in 0:3 do os.thread_wait(&threads[k])
 	print("queue:", q.total, "from 100 items,", q.takers_done, "takers done")
 }
 
 main :: fun() {
-	file_err := files()
+	file_err := file_ops()
 	if file_err do print("files failed:", file_err)
 	random_err := random()
 	if random_err do print("random failed:", random_err)
 	// (After 2026, before 2100, in nanoseconds since 1970.)
-	now := clock_unix_ns()
+	now := os.clock_unix_ns()
 	print("clock:", now > 1767225600 * i64(1000000000) and now < 4102444800 * i64(1000000000))
 	queue_err := queue()
 	if queue_err do print("queue failed:", queue_err)

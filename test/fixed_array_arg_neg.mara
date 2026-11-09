@@ -6,7 +6,7 @@ module fixed_array_arg_neg
 // param): the error says to declare it a list, the same room.
 
 use mara.core
-use mara.os
+use mara.files
 
 main :: fun() {
 	storage : [100!]byte

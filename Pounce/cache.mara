@@ -26,7 +26,7 @@ module cache
 // Validation is magic + version only, same level as cache_v3.
 
 use mara.core   // str64, utf8, the `+` append overload
-use mara.os     // file_open_read/write, file_seek, file_read, file_write, file_close
+use mara.files  // file_open_read/write, file_seek, file_read, file_write, file_close
 use gfx         // Vertex, Mesh_Data
 
 CACHE_MAGIC   :: u32(0x68636143)  // "Cach" little-endian
@@ -204,7 +204,7 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
 // A streaming handle: an open cache file plus its entry count. The TOC is read on
 // demand (cache_entry), so this stays tiny — embed one per asset type.
 Cache :: struct {
-    file:    os.File_Id
+    file:    File_Id
     is_open: bool
     count:   i64
 }

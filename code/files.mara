@@ -1,0 +1,140 @@
+module mara.files
+
+use mara.core
+os :: use mara.os
+
+// Files: opening one, reading and writing it, its size, moving, copying and
+// deleting it, mapping it into memory, reading it whole. mara.os does it for
+// each platform. What a call fails with is mara.os's File_Error: name one
+// with `os :: use mara.os`, as `os.Too_Large`.
+
+// An open file, as file_open_read, file_open_write or file_open_append give
+// one: hand it to the calls here, then to file_close. A pipe's or a
+// program's input and output are files too.
+File_Id :: alias os.File_Id
+
+// No file: what an open gives when it fails. file_close ignores it.
+NO_FILE :: os.NO_FILE
+
+// Where file_seek counts from: the start, where it is now, the end.
+SEEK_SET :: 0
+SEEK_CUR :: 1
+SEEK_END :: 2
+
+// Opens a file to read. Open_Failed when it can't: it isn't there, say. The
+// id is NO_FILE then, so `defer file_close(id)` right after is safe.
+file_open_read :: fun(path: []utf8) -> File_Id, err {
+	return os.file_open_read(path)
+}
+
+// Opens a file to write: made when it isn't there, emptied when it is.
+file_open_write :: fun(path: []utf8) -> File_Id, err {
+	return os.file_open_write(path)
+}
+
+// Opens a file to add to its end, made when it isn't there: each write goes
+// after what it has then. Others can read it while it's open, a log say.
+file_open_append :: fun(path: []utf8) -> File_Id, err {
+	return os.file_open_append(path)
+}
+
+// Closes a file. NO_FILE is ignored.
+file_close :: fun(id: File_Id) {
+	os.file_close(id)
+}
+
+// The file's size in bytes.
+file_size :: fun(id: File_Id) -> i64, err {
+	return os.file_size(id)
+}
+
+// Reads the next piece of a file, a pipe or a program's output into data: up
+// to data's cap, less when less is there or comes at a time. data.len becomes
+// how many bytes came: 0 at the end. For all of a file, read_entire_file.
+file_read :: fun(id: File_Id, data: ^[]byte) -> err {
+	return os.file_read(id, data)
+}
+
+// Writes data and gives how many bytes went: fewer than data.len sometimes
+// (a full disk, a pipe). For all of it, file_write_text.
+file_write :: fun(id: File_Id, data: []byte) -> i64, err {
+	return os.file_write(id, data)
+}
+
+// Writes text to a file, a pipe or a program's input: all of it, in as many
+// writes as that takes. Write_Failed when a write fails: the other end gone,
+// say.
+file_write_text :: fun(id: File_Id, text: []utf8) -> err {
+	bytes : []byte = text
+	for bytes.len > 0 {
+		n := file_write(id, bytes)?
+		if n <= 0 do return os.Write_Failed   // (nothing went: more tries won't either)
+		bytes = bytes[n : bytes.len]
+	}
+}
+
+// Moves where the next read or write happens: `offset` bytes from SEEK_SET,
+// SEEK_CUR or SEEK_END. Gives the new place, counted from the start.
+file_seek :: fun(id: File_Id, offset: i64, whence: u32) -> i64, err {
+	return os.file_seek(id, offset, whence)
+}
+
+// Deletes the file at path.
+file_delete :: fun(path: []utf8) -> err {
+	return os.file_delete(path)
+}
+
+// Moves the file at `from` to `to` in one step: whoever reads `to` finds the
+// old file or the new one, never part of one. A file at `to` is replaced.
+// Both must be on one drive, or it's Rename_Failed.
+file_rename :: fun(from: []utf8, to: []utf8) -> err {
+	return os.file_rename(from, to)
+}
+
+// Copies the file at `src` to `dst`, replacing what's there.
+copy_file :: fun(src: []utf8, dst: []utf8) -> err {
+	return os.copy_file(src, dst)
+}
+
+// When the file was last written, as a number that grows: two compared say
+// whether it changed. 0 when it can't be told, so a check sees a change.
+file_mtime :: fun(path: []utf8) -> i64 {
+	return os.file_mtime(path)
+}
+
+// The file's bytes mapped into memory: read where they lie, nothing copied.
+// The system reads each page the first time it's touched, so a big file costs
+// only what's read of it. Read only. Give the whole slice to file_unmap when
+// done.
+file_map :: fun(path: []utf8) -> []byte, err {
+	return os.file_map(path)
+}
+
+// Unmaps what file_map mapped. An empty slice is ignored.
+file_unmap :: fun(data: []byte) {
+	os.file_unmap(data)
+}
+
+// Reads a whole file into storage, after what's in it already, and gives it
+// back as a view of storage: storage's len moved past it. Too_Large when it
+// doesn't fit in what's left of storage's room, storage as it was.
+read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
+	start := storage.len
+	none := storage[start : start]
+	id, oe := file_open_read(path)
+	if oe do return none, oe
+	defer file_close(id)
+	size, se := file_size(id)
+	if se do return none, se
+	if size > storage.cap - start do return none, os.Too_Large
+	got : i64 = 0
+	for got < size {
+		rest := storage[start + got : start + size]
+		re := file_read(id, &rest)
+		if re do return none, re
+		if rest.len == 0 do break   // (it ended sooner: it shrank since its size was taken)
+		got += rest.len
+	}
+	storage.len = start + got
+	return storage[start : start + got]
+}

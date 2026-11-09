@@ -12,7 +12,7 @@
 module map_file
 
 use mara.core
-use mara.os
+use mara.files
 
 main :: fun() {
 	id, e := file_open_write("map_file_example.txt")
