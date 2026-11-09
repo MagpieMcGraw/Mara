@@ -73,6 +73,7 @@ TC :: struct {
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
+    arena_stmt:    Tree_Id,           // its `#allocator` statement
 
     // Names (design/name_resolution.md): what each refers to, the resolver's,
     // found before the check; and what each declaration means now — a
@@ -1172,8 +1173,6 @@ atoms_for_err_text :: proc(checked: ^Checked_Program) {
 atoms_for_arena :: proc(checked: ^Checked_Program) {
     alloc_type := checked.table.scope_allocator_type
     if alloc_type == nil { return }
-    fn := alloc_type.functions["alloc"] or_else nil
-    if fn == nil || len(fn.params) <= 2 { return }
     for pg in checked.code.codes {
         if pg == nil { continue }
         for id := Node_Id(1); id <= pg.end; id += 1 {

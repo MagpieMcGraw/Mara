@@ -24,6 +24,7 @@ tc_scan_allocator :: proc(k: ^TC) {
         if name, args, _, ok := tc_allocator_arena(k, tc_unparen(k, Tree_Id(t.a[s]))); ok {
             k.table.scope_allocator_name = name
             k.arena_size = args[0] if len(args) > 0 else 0
+            k.arena_stmt = s
         }
     }
     for file in k.modules[k.main_package] or_else nil {
@@ -169,8 +170,18 @@ tc_find_allocator :: proc(k: ^TC) -> ^Type_Scope {
     return nil
 }
 
-// The arena's type: a fun `*_<name>` with what an arena has (mark, alloc,
-// reset); its size, a constant.
+// mara.memory's Arena_Basic: the shape of an arena (nil: not in the program).
+tc_arena_shape :: proc(table: ^SymbolTable) -> ^Type_Scope {
+    for _, ft in table.funs {
+        if ft != nil && ft.kind == .Struct && ft.home_package == "mara.memory" && (ft.source_name == "Arena_Basic" || ft.name == "Arena_Basic") { return ft }
+    }
+    return nil
+}
+
+// The arena's type: a fun `*_<name>` shaped as Arena_Basic is (`~Arena_Basic`:
+// its methods, each with its signature) — and, for the calls the compiler
+// makes itself, made with its size alone, its methods with no params past
+// Arena_Basic's, its memory in `base`; its size, a constant.
 tc_validate_allocator :: proc(k: ^TC) {
     if !k.table.has_scope_allocator { return }
     name := k.table.scope_allocator_name
@@ -185,12 +196,32 @@ tc_validate_allocator :: proc(k: ^TC) {
         k.table.has_scope_allocator = false
         return
     }
-    for req in ([]string{"mark", "alloc", "reset"}) {
-        if req not_in alloc.functions {
-            tc_error(k, {}, TYPE_PROGRAM_SCOPE_ALLOCATOR_MISSING_REQUIRED, name, req)
-            k.table.has_scope_allocator = false
-            return
+    span := tree_span(k.t, k.arena_stmt)
+    shape := tc_arena_shape(k.table)
+    if shape == nil {
+        tc_error(k, span, TYPE_ALLOCATOR_NEEDS_MEMORY, name)
+        k.table.has_scope_allocator = false
+        return
+    }
+    before := k.c.errors
+    check_shape_constraint(k.c, "#allocator", "Arena_Basic", shape, alloc, span)
+    if k.c.errors == before {
+        for fname, shape_fn in shape.functions {
+            if fn := alloc.functions[fname]; len(fn.params) != len(shape_fn.params) {
+                tc_error(k, span, TYPE_ALLOCATOR_EXTRA_PARAM, name, fname, len(fn.params), len(shape_fn.params))
+            }
         }
+        base := struct_field_index(&alloc.sd, "base")
+        if base < 0 || !types_equal(alloc.sd.fields[base].type_, shape.sd.fields[struct_field_index(&shape.sd, "base")].type_) {
+            tc_error(k, span, TYPE_ALLOCATOR_NEEDS_BASE, name)
+        }
+        if len(alloc.params) != 1 || !types_equal(alloc.params[0].type_, shape.params[0].type_) {
+            tc_error(k, span, TYPE_ALLOCATOR_MADE_WITH_SIZE, name, name)
+        }
+    }
+    if k.c.errors != before {
+        k.table.has_scope_allocator = false
+        return
     }
     k.table.scope_allocator_type = alloc
     if k.arena_size == 0 { return }

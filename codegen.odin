@@ -174,7 +174,6 @@ Codegen :: struct {
     arena_mark_name:  string,                     // flat name for the arena mark function
     arena_reset_name: string,                     // flat name for the arena reset function
     arena_new_name:   string,                     // flat name for the arena new function
-    arena_alloc_has_debug: bool,                  // true if alloc() takes name/span debug params
 
     // Overflow-checking intrinsics used (for declaration at end of module)
     overflow_intrinsics: map[string]bool,
@@ -1136,8 +1135,9 @@ emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: s
     return emit_arena_bump_val(g, ir_int(size), name, loc)
 }
 
-// Call the Mara arena_alloc() function from the memory package.
-// arena_alloc(a: ^Arena, size: int, name: ^byte, span: ^byte) -> []byte
+// Call the arena's alloc — Arena_Basic's signature, as #allocator's type
+// was checked to have (tc_validate_allocator):
+// alloc(a: ^Self, size: i64, name: atom, span: atom) -> []byte
 // Returns the data pointer. arena_alloc is responsible for aborting on
 // OOM — it already prints diagnostics with the name / loc strings we
 // pass in. No codegen-side check; if the user supplies a buggy arena
@@ -1168,12 +1168,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: Val, name: string = "<alloc>"
     // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
     // alloc hands back a `[]byte`, the size shares the slice header width.
     alloc_ir := mara_fn(g, g.arena_alloc_name)
-    w := SLICE_LEN_IR
-    if g.arena_alloc_has_debug {
-        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_I32, name_id, {}}, {IR_I32, span_id, {}}, {IR_PTR, tmp_slice, {}})
-    } else {
-        ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {w, size_val, {}}, {IR_PTR, tmp_slice, {}})
-    }
+    ir_call(g, {}, IR_VOID, alloc_ir, {IR_PTR, arena_ptr, {}}, {SLICE_LEN_IR, size_val, {}}, {IR_I32, name_id, {}}, {IR_I32, span_id, {}}, {IR_PTR, tmp_slice, {}})
     // Extract raw data pointer from the returned slice header
     data_ptr := emit_header_field(g, tmp_slice, SLICE.ptr)
 

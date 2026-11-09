@@ -1,0 +1,74 @@
+module allocator_custom
+
+//@ expect-output: sum 499500
+//@ expect-output: allocs made: true
+
+// An arena of the program's own: #allocator takes any type shaped as
+// mara.memory's Arena_Basic is — its four methods, each with Arena_Basic's
+// signature. Its fields past `base` are its own: this one counts its allocs,
+// and is bigger than Arena_Basic.
+
+use mara.core
+use mara.memory
+use mara.os
+
+#allocator Counting(4 * MB)
+
+Counting :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+	capacity: i64 = cap
+	current_mark: i64 = -1
+	allocs: i64
+	notes: [4!]i64
+
+	base.len = 0
+
+	mark :: fun(a: ^Self) {
+		off := (a.base.len + 15) & -16
+		a.base[off] = a.current_mark
+		a.current_mark = off
+		a.base.len = off + 16
+	}
+
+	alloc :: fun(a: ^Self, size: i64, name: atom = #caller_name, span: atom = #caller_span) -> []byte {
+		off := (a.base.len + 15) & -16
+		end := off + size
+		if end > a.capacity {
+			dump(a, size, name, span)
+			crash()
+		}
+		a.allocs += 1
+		result := a.base[off : end]
+		a.base.len = end
+		return result
+	}
+
+	reset :: fun(a: ^Self) {
+		cm := a.current_mark
+		prev : i64 = a.base[cm]
+		a.base.len = cm
+		a.current_mark = prev
+	}
+
+	dump :: fun(a: ^Self, failed_size: i64, failed_name: atom, failed_span: atom) {
+		print("Counting is full:", failed_name, failed_size, failed_span)
+	}
+}
+
+// Big enough to live on the arena.
+sum_to :: (n: i64) -> i64 {
+	numbers : [4000]i64
+	for k in 0:n do &numbers + k
+	total := 0
+	for x in numbers do total += x
+	return total
+}
+
+main :: () {
+	print("sum", sum_to(1000))
+	own := Counting(64 * KB)
+	with &own {
+		print("sum", sum_to(1000))
+	}
+	print("allocs made:", own.allocs > 0)
+}

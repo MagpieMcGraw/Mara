@@ -467,11 +467,6 @@ scope_is_intrinsic :: proc(ts: ^Type_Scope) -> bool {
     return ts.node != 0 && scope_view(&build_tree, ts.node).intrinsic != 0
 }
 
-// Whether a scope's body is written empty.
-scope_body_is_empty :: proc(ts: ^Type_Scope) -> bool {
-    return ts.node == 0 || len(scope_view(&build_tree, ts.node).body) == 0
-}
-
 
 // Primary return type — the only return for single-return funs, the first for
 // multi-return funs, nil for void. Multi-return callers should iterate the list
@@ -1744,10 +1739,8 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //   - declares every method the constraint type declares;
 //   - each shared method's signature is equivalent under Self substitution
 //     (param count + param types + return type, treating the receiver and
-//     any other Self occurrences as positionally compatible);
-//   - fits within the constraint's declared byte size (the constraint type
-//     reserves the budget explicitly, most commonly via a `size: [N!]byte`
-//     filler field).
+//     any other Self occurrences as positionally compatible).
+// Its fields and its size are its own: what's made is the concrete type.
 // Each shortcoming surfaces as its own diagnostic at `span`.
 check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span) {
     // `void` is the universal subtype for shape constraints — used as the
@@ -1772,12 +1765,13 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
             param_name, constraint_name, type_name(arg))
         return
     }
+    shown := arg_scope.source_name if arg_scope.source_name != "" else arg_scope.name   // (as written, not its flat name)
     for fn_name, ct_fn in ct.functions {
         arg_fn, arg_has := arg_scope.functions[fn_name]
         if !arg_has || arg_fn == nil {
             check_error(c, span,
                 TYPE_TYPE_SATISFY_MISSING_METHOD,
-                arg_scope.name, constraint_name, fn_name)
+                shown, constraint_name, fn_name)
             continue
         }
         // Extra trailing params on the concrete are fine — provided they
@@ -1787,7 +1781,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
         if len(arg_fn.params) < len(ct_fn.params) {
             check_error(c, span,
                 TYPE_TYPE_SATISFY_METHOD_EXPECTS_LEAST,
-                arg_scope.name, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
+                shown, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
             continue
         }
         extras_ok := true
@@ -1795,7 +1789,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
             if !field_has_default(arg_fn.params[i]) {
                 check_error(c, span,
                     TYPE_TYPE_SATISFY_METHOD_EXTRA_PARAM,
-                    arg_scope.name, constraint_name, fn_name, arg_fn.params[i].name)
+                    shown, constraint_name, fn_name, arg_fn.params[i].name)
                 extras_ok = false
             }
         }
@@ -1806,7 +1800,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
             if !self_equivalent(ct_p, arg_p, ct, arg_scope) {
                 check_error(c, span,
                     TYPE_TYPE_SATISFY_METHOD_PARAM_EXPECTED,
-                    arg_scope.name, constraint_name, fn_name,
+                    shown, constraint_name, fn_name,
                     ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
             }
         }
@@ -1827,15 +1821,8 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
             arg_ret := fn_primary_return(arg_fn)
             check_error(c, span,
                 TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN,
-                arg_scope.name, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
+                shown, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
         }
-    }
-    ct_size  := type_size(ct)
-    arg_size := type_size(arg_scope)
-    if arg_size > ct_size {
-        check_error(c, span,
-            TYPE_TYPE_FIT_SIZE_BUDGET_NEEDS,
-            arg_scope.name, constraint_name, arg_size, ct_size)
     }
 }
 

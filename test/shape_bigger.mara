@@ -1,0 +1,27 @@
+module shape_bigger
+
+//@ expect-output: holds 5 of 3 words
+
+// A type satisfies a shape by its methods. Its fields and its size are its
+// own: this one is three times its shape's size.
+
+Shape :: struct {
+	n: i64
+	get :: fun(b: ^Self) -> i64 { return 0 }
+}
+
+Wide :: struct(start: i64) {
+	pad: [2!]i64
+	n: i64 = start
+	get :: fun(b: ^Self) -> i64 { return b.n }
+}
+
+Holder :: struct(S: ~Shape = void) {
+	inner: S
+}
+
+main :: () {
+	h : Holder(Wide(5))
+	p := &h.inner
+	print("holds", p.get(), "of", size_of(Wide) / 8, "words")
+}

@@ -44,6 +44,8 @@ oom_string :: "
 // program's allocator with `#allocator Arena_Basic(16 * MB)`.
 // A block holding a value of 1 KB or more marks it when it starts and
 // resets it when it ends, by itself.
+// A type of your own can be the program's arena too: #allocator takes any
+// type that has Arena_Basic's four methods, each with the same params.
 Arena_Basic :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap

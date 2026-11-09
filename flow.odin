@@ -71,7 +71,7 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
     if ts, is_scope := graph_type(g, 0).(^Type_Scope); is_scope && fp.sources[ts] {
         flow_init_fun(fp, g, found)
         if graph_kind_of(g, 0) == .Fun { flow_defers(g, found) }
-        if !scope_body_is_empty(ts) && flow_missing_return(g, ts) {
+        if flow_missing_return(g, ts) {
             name := ts.source_name if ts.source_name != "" else ts.name
             append(found, Flow_Finding{.Missing_Return, ts.body_span, fmt.aprintf(TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)})
         }
@@ -156,11 +156,9 @@ flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass
     }
     for ft in fns {
         if ft == nil { continue }
-        // Source bodies only: intrinsics/foreigns have no Mara statements. An
-        // empty one declares a shape (`Arena`'s methods, which a `~Arena`
-        // param's type must have): nothing to return from.
+        // Source bodies only: intrinsics/foreigns have no Mara statements.
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
-        if scope_body_is_empty(ft) || !graphed { continue }
+        if !graphed { continue }
         g := checked.code.funs[ft] or_else nil
         if g == nil { fmt.panicf("missing return: '%s' has no code", ft.name) }
         flow_report_found(c, fp.found[g][:], .Missing_Return)

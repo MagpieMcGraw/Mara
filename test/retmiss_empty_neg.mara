@@ -1,0 +1,19 @@
+module retmiss_empty_neg
+//@ expect-fail: function 'stub' missing return on all code paths
+
+// A fun with a result and nothing in its body falls off its end like any
+// other. It was let through once: its number came back 0, and its slice or
+// struct whatever its caller's memory held.
+
+Pair :: struct {
+	a, b: i64
+}
+
+stub :: () -> Pair {
+	// to do
+}
+
+main :: () {
+	p := stub()
+	print(p.a, p.b)
+}

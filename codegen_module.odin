@@ -188,7 +188,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.arena_mark_name    = task.main_g.arena_mark_name
     g.arena_reset_name   = task.main_g.arena_reset_name
     g.arena_new_name     = task.main_g.arena_new_name
-    g.arena_alloc_has_debug = task.main_g.arena_alloc_has_debug
 
     // Per-worker string-name prefix so this task's `@.str.N` references
     // can never collide with the main thread's (used by @main emission)
@@ -356,10 +355,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         if fn, ok := alloc_type.functions["alloc"]; ok && fn != nil { g.arena_alloc_name = fn.name }
         if fn, ok := alloc_type.functions["mark"];  ok && fn != nil { g.arena_mark_name  = fn.name }
         if fn, ok := alloc_type.functions["reset"]; ok && fn != nil { g.arena_reset_name = fn.name }
-        // (alloc() may take debug params, name and span, past (arena, size).)
-        if alloc_cf, af_ok := checked.functions[g.arena_alloc_name]; af_ok {
-            g.arena_alloc_has_debug = len(alloc_cf.params) > 2
-        }
     }
 
     // @main lives in its own builder so the final-assembly step can place it

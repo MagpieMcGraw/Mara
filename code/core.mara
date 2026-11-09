@@ -132,23 +132,3 @@ filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
 	for item in items {if keep(item) do &new + item}
 	return new
 }
-
-// What an arena must have to be the program's allocator. Arena_Basic and
-// Arena_Debug (mara.memory) are the ones to use.
-Arena :: struct {
-	size: [64!]byte
-
-	// Remembers where the arena is now; reset frees what came after.
-	mark :: fun(a: ^Self) {
-	}
-	// Hands out size bytes.
-	alloc :: fun(a: ^Self, size: i64) -> []byte	{
-		return void
-	}
-	// Frees everything allocated since the last mark.
-	reset :: fun(a: ^Self) {
-	}
-	// Reports that an allocation of size bytes didn't fit.
-	dump :: fun(a: ^Self, size: i64, name, span: ^byte)	{
-	}
-}

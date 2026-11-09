@@ -1,0 +1,26 @@
+module allocator_shape_neg
+//@ expect-fail: type 'Lopsided' does not satisfy `~Arena_Basic`: method 'alloc' expects at least 4 param(s), got 2
+
+// #allocator's type is checked against mara.memory's Arena_Basic, method by
+// method: this one's alloc takes no name and span, and it has no dump.
+
+use mara.core
+use mara.memory
+use mara.os
+
+#allocator Lopsided(1 * MB)
+
+Lopsided :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+
+	mark :: fun(a: ^Self) {}
+	alloc :: fun(a: ^Self, size: i64) -> []byte {
+		return a.base[0 : size]
+	}
+	reset :: fun(a: ^Self) {}
+}
+
+main :: () {
+	big : [4000]i64
+	print(big.len)
+}
