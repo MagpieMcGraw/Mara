@@ -811,6 +811,36 @@ resolve_fun_owners :: proc(r: ^Resolver, at: Token_Id, name: string) -> []string
     return out[:]
 }
 
+// A module in sight at a point, as what's listed there sees it (can_do_funs):
+// its name, what its names are called with (`s.` for `s :: use m`, else ""),
+// its definitions and its dispatch groups.
+Resolve_Seen_Module :: struct {
+    name, prefix: string,
+    defs:         map[string]Ref,
+    dispatches:   map[string][dynamic]Token_Id,
+}
+
+// The modules in sight where `at` is: its file's own first, then its uses,
+// then those it names.
+resolve_modules_in_sight :: proc(r: ^Resolver, at: Token_Id) -> []Resolve_Seen_Module {
+    sight, ok := r.sights[build_tokens[at].file]
+    if !ok || sight.module == nil { return nil }
+    out := make([dynamic]Resolve_Seen_Module, context.temp_allocator)
+    seen :: proc(m: ^Rs_Module, prefix: string) -> Resolve_Seen_Module { return {m.name, prefix, m.defs, m.dispatches} }
+    append(&out, seen(sight.module, ""))
+    for u in sight.uses { if u != sight.module { append(&out, seen(u, "")) } }
+    for n in sight.named { append(&out, seen(n.module, fmt.tprintf("%s.", n.name))) }
+    return out[:]
+}
+
+// The names of the dispatch groups behind operators (`overload + add`), every
+// module's.
+resolve_overload_names :: proc(r: ^Resolver) -> map[string]bool {
+    out := make(map[string]bool, allocator = context.temp_allocator)
+    for _, m in r.modules { for o in m.overloads { out[rs_text(o.name)] = true } }
+    return out
+}
+
 // The use that keeps `name` behind a name where `at` is (`s :: use mara.string`,
 // for `trimmed`): what that name is, and the module's.
 resolve_named_use_of :: proc(r: ^Resolver, at: Token_Id, name: string) -> (alias, module: string, ok: bool) {

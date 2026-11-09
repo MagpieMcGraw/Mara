@@ -219,3 +219,8 @@ test/askcalls.mara | spent at walk
 
 # A module's map says what each fun is.
 test/askcalls.mara | askcalls
+test/askcando.mara | what at askcando.mara:15:1
+test/askcando.mara | what at askcando.mara:16:24
+test/askcando.mara | what at askcando.mara:21:2
+test/askcando.mara | what at askcando.mara:22:2
+test/askcando.mara | what at askcando.mara:23:2

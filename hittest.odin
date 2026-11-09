@@ -623,23 +623,23 @@ hit_ops :: proc(pc: ^Program_Code, a: ^Annotations, n: Tree_Id) -> string {
 // around it, innermost first, to its statement, each with its type. (`ask at`
 // lists every node, for the tree's sake.)
 ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
-                          a: ^Annotations, spec: string, uses := false) -> (string, bool) {
+                          a: ^Annotations, spec: string, uses := false, checked: ^Checked_Program = nil) -> (string, bool) {
     p, msg, ok := hit_point(t, all_files, spec)
     if !ok { return msg, false }
-    return hit_what(t, a, &p, uses, "")
+    return hit_what(t, a, &p, uses, "", checked)
 }
 
 // What `what at` says at a declaration's name, with its uses. `title` is its first line.
-ask_what_at_token :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string) -> (string, bool) {
+ask_what_at_token :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string, checked: ^Checked_Program = nil) -> (string, bool) {
     tok := build_tokens[decl]
     src := build_files[tok.file]
     p, msg, ok := hit_point_in(t, src, filepath.base(src.path), token_line(tok), token_col(tok))
     if !ok { return msg, false }
-    return hit_what(t, a, &p, true, title)
+    return hit_what(t, a, &p, true, title, checked)
 }
 
 @(private="file")
-hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: string) -> (string, bool) {
+hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: string, checked: ^Checked_Program = nil) -> (string, bool) {
     hits := p.hits[:]
     name := token_text(p.tokens[p.tok_i])
     inner := hits[len(hits) - 1]
@@ -647,7 +647,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     if uses && refers && r.decl != 0 {
         #partial switch r.kind {
         case .Local, .Param, .Result, .Field, .Global, .Const:
-            return hit_uses_answer(t, a, p, r, named_at, title), true
+            return hit_uses_answer(t, a, p, r, named_at, title, checked), true
         case .Variant:
             return hit_variant_answer(t, a, r.decl, title), true
         }
@@ -676,7 +676,22 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
                 fmt.sbprintf(&sb, "  %s\n", first)
             }
         }
+        // (A type's name: what a value of it can do.)
+        if checked != nil && r.kind == .Type {
+            if ty, bound := checked_binding(checked, r, name); bound {
+                if fs, is_scope := ty.(^Type_Scope); !is_scope || fs.kind == .Struct && !fs.is_module {
+                    can_do(&sb, checked, ty, Token_Id(p.at))
+                }
+            }
+        } else if checked != nil && r.kind == .Builtin {
+            if ty, is_type := tc_primitive_named(name); is_type { can_do(&sb, checked, ty, Token_Id(p.at)) }
+        }
         return strings.to_string(sb), true
+    }
+
+    // (A type's keyword, `i64`: what a value of it can do.)
+    if checked != nil {
+        if ty, is_type := tc_primitive_named(name); is_type { can_do(&sb, checked, ty, Token_Id(p.at)) }
     }
 
     // The expressions around it, innermost first: each one line, to the
@@ -1087,7 +1102,7 @@ hit_asked_places :: proc(f: ^Place_Finder, t: ^Tree, a: ^Annotations, n: Tree_Id
 // locals and params (place.odin); where that can't be told, a use is listed
 // apart as a maybe. A field's declaration is about every value of its struct.
 @(private="file")
-hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id, title: string) -> string {
+hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_at: Tree_Id, title: string, checked: ^Checked_Program = nil) -> string {
     if len(t.parent) != len(t.tag) { tree_parents(t) }
     name := token_text(build_tokens[r.decl])
     here := p.tokens[p.tok_i].file
@@ -1134,6 +1149,15 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
     }
     if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
+    if checked != nil {
+        // (What it can do: its type's, the node naming it or a use's.)
+        ty := completion_type_of(a, named_at)
+        for u in uses {
+            if ty != nil { break }
+            ty = completion_type_of(a, u.node)
+        }
+        can_do(&sb, checked, ty, Token_Id(p.at))
+    }
     fmt.sbprint(&sb, "\ndeclared\n")
     hit_write_place(&sb, t, r.decl, hit_node_at(t, r.decl))
     for maybe in ([2]bool{false, true}) {

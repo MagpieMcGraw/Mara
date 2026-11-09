@@ -1,0 +1,27 @@
+module askcando
+
+// Fixture for what `mara ask what at` says a value can do (can_do.odin): its
+// kind's built-in operations, then the funs in sight taking it — a generic's
+// by its shape (Map), a dispatch group by its name (float_text), a named
+// use's as `s.f`. Queried by test/ask_queries.txt.
+
+use mara.core
+use mara.map
+use mara.memory
+s :: use mara.string
+
+#allocator Arena_Basic(1 * MB)
+
+Action :: union { jump  fire  none = 0 }
+Bind :: struct { key: i64  held: bool }
+
+bind_count :: fun(binds: [Action]Bind) -> i64 { return binds.len }
+
+main :: fun() {
+	binds : [Action]Bind
+	speed : f64 = 2.5
+	m : Map([]utf8, i64)
+	storage : [KB]byte
+	map_init(&m, 8, &storage)
+	print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)
+}

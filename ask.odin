@@ -1220,7 +1220,7 @@ ask_field_answer :: proc(checked: ^Checked_Program, fields: []Ask_Field, name, k
     f := fields[0]
     home := f.home if f.home != "" else pkg
     title := fmt.tprintf("%s.%s — field  %s   (module %s)", f.owner, name, ask_loc(token_span(build_tokens[f.decl])), home)
-    return ask_what_at_token(&build_tree, checked.annot, f.decl, title)
+    return ask_what_at_token(&build_tree, checked.annot, f.decl, title, checked)
 }
 
 // `<struct>.<member>`, or `<member> in <struct>`: the field's answer, or the fun's
@@ -1429,7 +1429,7 @@ ask_other_name :: proc(checked: ^Checked_Program, name, kind, dir: string, depth
                 return fmt.tprintf("mara ask: %s is a %s: the answer is where it's read, with no types, call or flow, above or below, or depth\n", name, v.word), false, true
             }
             title := fmt.tprintf("%s — %s  %s   (module %s)", name, v.word, ask_loc(token_span(tok)), build_files[tok.file].module)
-            out, ok = ask_what_at_token(&build_tree, checked.annot, v.decl, title)
+            out, ok = ask_what_at_token(&build_tree, checked.annot, v.decl, title, checked)
         }
         return out, ok, true
     }

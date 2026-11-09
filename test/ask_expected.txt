@@ -780,6 +780,10 @@ Unsaved line: Ask answers from the saved file, and this line isn't in it yet.
 o.inner.value
 Outer.Inner.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askuses: touch
+
 declared
   askuses.mara:10  Inner
     value: i64 = 5
@@ -803,6 +807,11 @@ read 1
 === test/askuses.mara | what at askuses.mara:36:4
 o.inner
 Outer.Inner
+
+operations
+  .value .other
+  Inner{…}   print   into bytes: `bytes[k] = s`   for f in Inner.T: its fields of type T
+  askuses: set_value
 
 declared
   askuses.mara:15  Outer
@@ -830,6 +839,10 @@ read 1
 value
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askuses: touch
+
 declared
   askuses.mara:10  Inner
     value: i64 = 5
@@ -842,6 +855,10 @@ read 1
 === test/askuses.mara | what at askuses.mara:11:2
 other
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askuses: touch
 
 declared
   askuses.mara:11  Inner
@@ -866,6 +883,10 @@ read 1
 o.list
 Outer.[4]i64
 
+operations
+  .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l + x   l + x a new list   next(&l)
+  mara.core: filter next
+
 declared
   askuses.mara:16  Outer
     list: [4]i64
@@ -883,6 +904,10 @@ read 1
 o.items
 Outer.[]i64
 
+operations
+  .len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s + x within its cap
+  mara.core: filter next
+
 declared
   askuses.mara:17  Outer
     items: []i64
@@ -897,6 +922,12 @@ read 2
 === test/askuses.mara | what at askuses.mara:57:4
 o.point
 Outer.^Inner
+
+operations
+  p.field   p^   p^ = v   == void (test it before reading through it)
+  through it: .value .other
+  through it: Inner{…}   print   into bytes: `bytes[k] = s`   for f in Inner.T: its fields of type T
+  askuses: set_value
 
 declared
   askuses.mara:18  Outer
@@ -913,6 +944,10 @@ read 2
 o.name
 Outer.[8]utf8
 
+operations
+  .len .cap   t[i]   t[a:b]   for c, i in t   ==   &t + "more"  &t + 'c'   t + "x" a new buffer   cstring(t)
+  mara.core: filter next
+
 declared
   askuses.mara:19  Outer
     name: [8]utf8
@@ -923,6 +958,10 @@ read 0
 === test/askuses.mara | what at askuses.mara:61:2
 mine
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askuses: touch
 
 declared
   askuses.mara:60  main
@@ -938,6 +977,11 @@ read 1
 === test/askuses.mara | what at askuses.mara:22:14
 p
 ^i64
+
+operations
+  p^   p^ = v   == void (test it before reading through it)
+  through it: + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askuses: touch
 
 declared
   askuses.mara:22  touch
@@ -957,6 +1001,9 @@ set_value — fun
 === test/askplaces.mara | what at askplaces.mara:72:16
 s.clocks.work.ticks
 Shared.Clocks.Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -984,6 +1031,9 @@ maybe written 3
 s.frame.ticks
 Shared.Clock.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+
 declared
   askplaces.mara:9  Clock
     ticks: i64 = 1
@@ -1010,6 +1060,9 @@ maybe written 3
 s.spare.ticks
 Shared.Clock.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+
 declared
   askplaces.mara:9  Clock
     ticks: i64 = 1
@@ -1033,6 +1086,9 @@ maybe written 3
 === test/askplaces.mara | what at askplaces.mara:75:6
 own.ticks
 Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1058,6 +1114,9 @@ maybe written 3
 copied.ticks
 Clock.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+
 declared
   askplaces.mara:9  Clock
     ticks: i64 = 1
@@ -1077,6 +1136,9 @@ maybe written 3
 === test/askplaces.mara | what at askplaces.mara:81:7
 work.ticks
 ^Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1103,6 +1165,9 @@ maybe written 3
 === test/askplaces.mara | what at askplaces.mara:39:4
 c.ticks
 ^Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1133,6 +1198,9 @@ maybe written 3
 === test/askplaces.mara | what at askplaces.mara:9:2
 ticks
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1182,6 +1250,9 @@ read 2
 === test/askplaces.mara | what at askplaces.mara:60:4
 c.ticks
 ^Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1234,6 +1305,9 @@ maybe read 2
 s.clocks.held.ticks
 Shared.Clocks.^Clock.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+
 declared
   askplaces.mara:9  Clock
     ticks: i64 = 1
@@ -1284,6 +1358,9 @@ maybe read 2
 === test/askplaces.mara | what at askplaces.mara:100:11
 pick(&s).ticks
 Clock.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1336,6 +1413,9 @@ maybe read 2
 one.ticks
 ^Clock.i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+
 declared
   askplaces.mara:9  Clock
     ticks: i64 = 1
@@ -1355,6 +1435,9 @@ maybe written 3
 === test/askplaces.mara | what at askplaces.mara:91:18
 ticks
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:9  Clock
@@ -1380,6 +1463,11 @@ maybe written 3
 s.clocks.frame
 Shared.Clocks.Clock
 
+operations
+  .ticks .name
+  Clock{…}   print   into bytes: `bytes[k] = s`   for f in Clock.T: its fields of type T
+  askplaces: called_later show tick twice
+
 declared
   askplaces.mara:15  Clocks
     frame := Clock()
@@ -1399,6 +1487,9 @@ read 1
 === test/askplaces.mara | what at askplaces.mara:104:16
 counter.half
 Counter.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
 
 declared
   askplaces.mara:27  Counter
@@ -1557,6 +1648,10 @@ below (types)   (0 users, 0 use-sites, depth 1)
 Box.size — field  askcalls.mara:9   (module askcalls)
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
+
 declared
   askcalls.mara:9  Box
     size: i64
@@ -1575,6 +1670,10 @@ read 1
 === test/askcalls.mara | size in Box
 Box.size — field  askcalls.mara:9   (module askcalls)
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
 
 declared
   askcalls.mara:9  Box
@@ -1595,6 +1694,10 @@ read 1
 Box.left_only — field  askcalls.mara:11   (module askcalls)
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
+
 declared
   askcalls.mara:11  Box
     left_only: i64
@@ -1610,6 +1713,10 @@ read 1
 Box.left_only — field  askcalls.mara:11   (module askcalls)
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
+
 declared
   askcalls.mara:11  Box
     left_only: i64
@@ -1624,6 +1731,10 @@ read 1
 === test/askcalls.mara | Pair.first
 Pair.first — field  askcalls.mara:19   (module askcalls)
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
 
 declared
   askcalls.mara:19  Pair
@@ -2174,6 +2285,10 @@ handled 1
 WALK_LIMIT — const  askcalls.mara:155   (module askcalls)
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
+
 declared
   askcalls.mara:155
     WALK_LIMIT :: 9
@@ -2186,6 +2301,10 @@ mara ask: WALK_LIMIT is a const: the answer is where it's read, with no types, c
 === test/askcalls.mara | what at askcalls.mara:158:13
 WALK_LIMIT
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
 
 declared
   askcalls.mara:155
@@ -2260,6 +2379,10 @@ above (calls)   (1 direct callee, depth 0)
 Box.size — field  askcalls.mara:9   (module askcalls)
 i64
 
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
+
 declared
   askcalls.mara:9  Box
     size: i64
@@ -2284,6 +2407,10 @@ mara ask: no struct or module named 'Walker.steps' in askcalls
 === test/askcalls.mara | askcalls.Walker.carried.size
 Box.size — field  askcalls.mara:9   (module askcalls)
 i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcalls: decide discarded given happen leaf long_signature middle never_used note_it only_printed try_it with_default
 
 declared
   askcalls.mara:9  Box
@@ -2508,3 +2635,70 @@ askcalls — module   (7 types, 23 funs)
     askcalls.mara:180  walk :: fun(walker: ^Walker, budget: i64) -> i64
       A walk: `start` comes from a call that reads no variable, `there` reads one field of
     askcalls.mara:190  third_main :: fun()
+=== test/askcando.mara | what at askcando.mara:15:1
+Action — type
+  declared  askcando.mara:15
+  Action :: union { jump  fire  none = 0 }
+
+operations
+  .text()   Action.from_text(s)   i64(e)   Action(n)   ==   if e   match   for v in Action
+=== test/askcando.mara | what at askcando.mara:16:24
+i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  mara.map: map_hash
+  mara.string: s.int_text
+
+  key: i64
+  struct { key: i64  held: bool }
+=== test/askcando.mara | what at askcando.mara:21:2
+binds
+[Action]Bind
+
+operations
+  .len .cap (3)   a[i]   a[a:b]   for x, i in a   for &x in a   a[Action.v]   for v in Action do a[v] (i in a loop over a is a number)
+  askcando: bind_count
+  mara.core: filter next
+
+declared
+  askcando.mara:21  main
+    binds : [Action]Bind
+written 0
+read 1
+  askcando.mara:26  main
+    print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)
+=== test/askcando.mara | what at askcando.mara:22:2
+speed
+f64
+
+operations
+  + - * /   == < <= > >=   i64(x) f64(x) f32(x)   text: float_text(x, decimals) in mara.string
+  mara.string: s.float_text
+
+declared
+  askcando.mara:22  main
+    speed : f64 = 2.5
+written 0
+read 1
+  askcando.mara:26  main
+    print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)
+=== test/askcando.mara | what at askcando.mara:23:2
+m
+Map__arr_utf8__i64
+
+operations
+  .count .room .slots
+  Map{…}   print   into bytes: `bytes[k] = s`   for f in Map.T: its fields of type T
+  mara.map: map_at map_clear map_delete map_find map_get map_has map_init map_set
+
+declared
+  askcando.mara:23  main
+    m : Map([]utf8, i64)
+written 0
+pointer taken 1
+  askcando.mara:25  main
+    map_init(&m, 8, &storage)
+read 1
+  askcando.mara:26  main
+    print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)

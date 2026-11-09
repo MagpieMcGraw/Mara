@@ -226,7 +226,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
             return "mara ask: `what` is about a place — `mara ask what at <file>:<line>`, or `<file>:<line>:<col>`\n", false
         }
         if !ask_at_has_column(q.at) { return ask_what_at_line(s.checked, q.at) }
-        return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true)
+        return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true, checked = s.checked)
     }
     if q.target != "" && q.at != "" {
         s.checked.du.want_control = q.control
