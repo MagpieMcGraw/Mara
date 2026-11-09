@@ -143,6 +143,7 @@ Arena :: struct {
 	}
 	// Hands out size bytes.
 	alloc :: fun(a: ^Self, size: i64) -> []byte	{
+		return void
 	}
 	// Frees everything allocated since the last mark.
 	reset :: fun(a: ^Self) {
