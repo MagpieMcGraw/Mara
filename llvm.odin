@@ -316,7 +316,10 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_probe(e)
     llvm_temps(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
-        if i > 0 { emit_label(g, e.label[r]) }
+        if i > 0 {
+            llvm_after_crash(e, e.runs[i - 1])
+            emit_label(g, e.label[r])
+        }
         e.run = r
         for op in graph_run(pg, int(r)) {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
@@ -327,7 +330,17 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
             if !llvm_op(e, op) { return false }
         }
     }
+    llvm_after_crash(e, e.runs[e.own - 1])
     return true
+}
+
+// A run that ended in crash() leaves the block after it open, for code to
+// go on in (emit_crash): closed here, where a label or the fun's end
+// follows instead.
+@(private="file")
+llvm_after_crash :: proc(e: ^Llvm, r: i32) {
+    ops := graph_run(e.pg, int(r))
+    if graph_op_of(e.pg, ops[len(ops) - 1]) == .Crash { ir_unreachable(e.g) }
 }
 
 // Two places of one type swapped (storage_swaps): 64 bytes at a time through a
@@ -2589,7 +2602,10 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     saved := e.run
     defer e.run = saved
     for r, i in body {
-        if i > 0 { emit_label(g, e.label[r]) }
+        if i > 0 {
+            llvm_after_crash(e, body[i - 1])
+            emit_label(g, e.label[r])
+        }
         e.run = r
         ops := graph_run(pg, int(r))
         for o, k in ops {

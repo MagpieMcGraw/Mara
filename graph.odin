@@ -568,7 +568,7 @@ graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -
 
 graph_is_terminator :: proc(k: Op_Kind) -> bool {
     #partial switch k {
-    case .Jump, .Branch, .Switch, .Return: return true
+    case .Jump, .Branch, .Switch, .Return, .Crash: return true
     }
     return false
 }
@@ -1747,6 +1747,13 @@ graph_run_close :: proc(b: ^Graph_Builder) {
     append(&b.g.run_first, i32(len(b.g.run_ops)))
     append(&b.g.run_ops, ..r.ops[:])
     b.code.run = nil
+}
+
+// `crash(…)`: the program ends there, and so does its run — nothing follows
+// it, as nothing follows a return.
+graph_build_crash :: proc(b: ^Graph_Builder, w: Written, span: Span, operands: ..Operand) {
+    graph_op(b, .Crash, w, span, nil, "crash", ..operands)
+    graph_run_close(b)
 }
 
 @(private="file")
@@ -3548,7 +3555,7 @@ graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
 
 
 // A statement of the body's code (not a definition), before it is lowered:
-// one right after a return, break or continue is unreachable
+// one right after a return, break, continue or crash() is unreachable
 // (graph.unreachable).
 graph_build_body_stmt :: proc(b: ^Graph_Builder, span: Span) {
     if b.code.active && b.code.run == nil {

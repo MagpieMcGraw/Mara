@@ -358,7 +358,7 @@ TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES :: "broadcast literal '{{all ...}}' fo
 TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED :: "broadcast value for field '%s' has type %s, expected %s (element of %s)"
 TYPE_USING_FIELD_STRUCT_FIXED_ARRAY :: "using field '%s' must be a struct or fixed-array type"
 TYPE_FUNCTION_MISSING_RETURN_ALL_CODE :: "function '%s' missing return on all code paths"
-TYPE_UNREACHABLE_CODE :: "unreachable code: it follows a return, break or continue"
+TYPE_UNREACHABLE_CODE :: "unreachable code: it follows a return, break, continue or crash()"
 TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE :: "cannot iterate over struct type '%s': a loop takes a field reference type's fields, `for f in S.f32`, or an enum's or a union's values"
 TYPE_LOOP_OVER_TYPE_REF :: "`for &%s in %s`: a type's values are no place to point at; loop over them by value, `for v in T`"
 TYPE_LOOP_OVER_TYPE_TOO_MANY :: "%s has more values than a loop takes (%d at most)"

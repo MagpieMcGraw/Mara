@@ -1,0 +1,56 @@
+module crash_ends_path
+
+//@ expect-output: 1 1 2 1 8
+//@ expect-output: done
+
+// crash() ends a path as a return does: a fun whose every path returns or
+// crashes has no missing return, and a variable assigned on every path that
+// goes on is assigned.
+
+use mara.core
+
+Kind :: union { A B C }
+
+pick :: (n: i64) -> i64 {
+	if n > 0 do return 1
+	crash("pick: not above zero")
+}
+
+later :: (c: bool) -> i64 {
+	x : i64 = void
+	if c {
+		x = 1
+	else
+		crash("not c")
+	}
+	return x
+}
+
+name :: (k: Kind) -> i64 {
+	match k {
+	A
+		return 1
+	B
+		return 2
+	C
+		crash("C has none")
+	}
+}
+
+find :: (xs: []i64, want: i64) -> i64 {
+	for x, i in xs {
+		if x == want do return i
+	}
+	crash("not there")
+}
+
+cleanup :: (n: i64) -> i64 {
+	defer print("cleanup ran")
+	if n < 0 do crash("below zero")
+	return n * 2
+}
+
+main :: () {
+	print(pick(1), later(true), name(B), find([1, 2, 3], 2), cleanup(4))
+	print("done")
+}

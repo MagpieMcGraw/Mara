@@ -1,0 +1,16 @@
+module crash_branch_falls_neg
+//@ expect-fail: function 'half' missing return on all code paths
+
+// A crash ends its own path only: the path past the `if` still falls off.
+
+use mara.core
+
+half :: (n: i64) -> i64 {
+	if n > 0 {
+		crash("no")
+	}
+}
+
+main :: () {
+	print(half(-1))
+}

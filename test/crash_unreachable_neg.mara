@@ -1,0 +1,15 @@
+module crash_unreachable_neg
+//@ expect-fail: [crash_unreachable_neg.mara:10:2] Type error: unreachable code: it follows a return, break, continue or crash()
+
+// A statement right after a crash() never runs, as one after a return.
+
+use mara.core
+
+pick :: (n: i64) -> i64 {
+	crash("no")
+	return n
+}
+
+main :: () {
+	print(pick(1))
+}

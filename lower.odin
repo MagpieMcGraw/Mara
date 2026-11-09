@@ -1637,7 +1637,11 @@ lw_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Buil
     switch name {
     case "print", "crash":
         each(k, args, w, span, &vals)
-        graph_op(b, .Print if name == "print" else .Crash, w, span, nil, name, ..vals[:])
+        if name == "crash" {
+            graph_build_crash(b, w, span, ..vals[:])
+        } else {
+            graph_op(b, .Print, w, span, nil, name, ..vals[:])
+        }
         return {v = NO_VALUE, ok = true}
     }
     target, is_cast := cast_result_type(name)
