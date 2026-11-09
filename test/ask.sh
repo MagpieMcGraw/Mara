@@ -22,13 +22,14 @@ EXPECTED=$ROOT/test/ask_expected.txt
 WORK=${TMP:-/tmp}/mara_ask
 rm -rf "$WORK"; mkdir -p "$WORK"
 # A file outside the module asked about (the stdlib's) prints as a whole
-# path: its root made <root>, its separators '/', so the goldens hold on any
-# machine.
+# path, or as one from the module's directory (`..\code\math.mara`): its
+# root made <root>, its separators '/', so the goldens hold on any machine.
 ROOT_NATIVE=$ROOT
 command -v cygpath > /dev/null && ROOT_NATIVE=$(cygpath -w "$ROOT")
 export ROOT ROOT_NATIVE
 norm_paths() {
-  perl -pe 's{(?:\Q$ENV{ROOT_NATIVE}\E|\Q$ENV{ROOT}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>$p"}ge'
+  perl -pe 's{(?:\Q$ENV{ROOT_NATIVE}\E|\Q$ENV{ROOT}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>$p"}ge;
+            s{(?:\.\.[\\/])+(code(?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>/$p"}ge'
 }
 actual=$WORK/actual.txt
 : > "$actual"
