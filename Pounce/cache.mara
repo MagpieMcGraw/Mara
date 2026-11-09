@@ -26,7 +26,7 @@ module cache
 // Validation is magic + version only, same level as cache_v3.
 
 use mara.core   // str64, utf8, the `+` append overload
-use mara.files  // file_open_read/write, file_seek, file_read, file_write, file_close
+use mara.files  // file_open_read/write, file_seek, file_read, file_write_text (all of it, bytes too), file_close
 use gfx         // Vertex, Mesh_Data
 
 CACHE_MAGIC   :: u32(0x68636143)  // "Cach" little-endian
@@ -121,6 +121,7 @@ cache_put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
 // straight from the blobs — no staging copy.
 cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err {
     count := blobs.len
+    toc.len = cache_toc_bytes(count)       // (a slice stops at len: the header+TOC are it)
     off := cache_put_header(toc, count)   // absolute payload start
 
     for i in 0:count {
@@ -138,11 +139,10 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
     id := file_open_write(path)?
     defer file_close(id)
 
-    head := toc[0 : cache_toc_bytes(count)]
-    _ = file_write(id, head)?
+    file_write_text(id, toc[:])?
     for i in 0:count {
         px := blobs[i].pixels
-        _ = file_write(id, px)?
+        file_write_text(id, px)?
     }
 }
 
@@ -151,8 +151,10 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
 // must hold the summed payload bytes (a write past its cap stops the program).
 cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err {
     count := blobs.len
+    toc.len = cache_toc_bytes(count)       // (a slice stops at len: the header+TOC are it)
     base := cache_put_header(toc, count)   // absolute payload start
     dcur : i64 = 0                         // cursor within `data`
+    data.len = data.cap                    // (staged anywhere in its room; its len the payload's after)
 
     for i in 0:count {
         b := blobs[i]
@@ -174,14 +176,13 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
         data[ioff : ioff + ibytes] = b.mesh.indices
         dcur += vbytes + ibytes
     }
+    data.len = dcur
 
     id := file_open_write(path)?
     defer file_close(id)
 
-    head := toc[0 : cache_toc_bytes(count)]
-    _ = file_write(id, head)?
-    payload := data[0 : dcur]
-    _ = file_write(id, payload)?
+    file_write_text(id, toc[:])?
+    file_write_text(id, data[:])?
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,7 @@ cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
 cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> []byte, err {
     size := i64(e.data_size)
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
+    dst.len = size   // (a slice stops at len)
     buf := dst[0 : size]
     file_read(c.file, &buf)?
     return buf
@@ -282,6 +284,9 @@ cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Ve
     if size != vbytes + icount * size_of(u32) do return Mesh_Data{all 0}, Bad_Header
 
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
+    scratch.len = size   // (a slice stops at len: these are what's filled)
+    verts.len = vcount
+    inds.len = icount
     buf := scratch[0 : size]
     file_read(c.file, &buf)?
     if buf.len != size do return Mesh_Data{all 0}, Bad_Header

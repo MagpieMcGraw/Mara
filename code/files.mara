@@ -65,9 +65,9 @@ file_write :: fun(id: File_Id, data: []byte) -> i64, err {
 	return os.file_write(id, data)
 }
 
-// Writes text to a file, a pipe or a program's input: all of it, in as many
-// writes as that takes. Write_Failed when a write fails: the other end gone,
-// say.
+// Writes text, or bytes, to a file, a pipe or a program's input: all of it,
+// in as many writes as that takes. Write_Failed when a write fails: the
+// other end gone, say.
 file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 	bytes : []byte = text
 	for bytes.len > 0 {
