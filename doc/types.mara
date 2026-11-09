@@ -1,0 +1,250 @@
+// What each kind of value can do: its fields and methods, the operators that
+// take it, how it becomes text and how it's read back from text.
+//
+// Each kind has an example below, found in the docs by its name: numbers,
+// truth, characters, text, lists, arrays, slices, enums, unions, errors,
+// structs, pointers, field_references, atoms. More on one: text.mara,
+// arrays.mara, unions.mara, errors.mara, maps.mara, printing.mara.
+//
+// Numbers (i64 … u8, f64, f32): + - * / %, +% -% *% wrap around, == < >,
+// i64(x) f64(x) u8(x) convert. To text: int_text(n), float_text(x, decimals).
+// From text: parse_number(s), an f64 and whether s was a number.
+//
+// Truth (bool): and, or, not, ==. No text of its own: `if b do "on" else "off"`.
+//
+// Characters (utf8, byte): == <, i64(c), utf8(n), lower(c), upper(c).
+//
+// Text ([]utf8, str64, [N]utf8): .len .cap, t[i], t[a:b], for c in t, ==,
+// &t + "more" (or a character, or any text), t + "x" (a new buffer), find,
+// starts_with, ends_with, contains, trimmed, line_end, skip_spaces.
+//
+// Lists ([N]T): .len .cap, l[i], l[a:b], for x in l, for &x in l, x in l,
+// &l + x, l + x (a new list), next(&l).
+//
+// Fixed arrays ([N!]T, [Enum]T): .len .cap, a[i], a[Enum.v], a[a:b],
+// for x, i in a, and .x .y .z .w, .xy, .xyz on up to 4 items.
+//
+// Slices ([]T): .len .cap .ptr, s[i], s[a:b], for x in s: a view, no copy.
+//
+// Enums: .text(), E.from_text(s), i64(e), E(n), ==, `if e`, match, for v in E.
+//
+// Unions with fields: .tag, match, u.tag == .V.
+//
+// Errors (err): `if e`, ?, ==, match, .text(), .where(), .trace().
+//
+// Structs: .field, s.method(), S{…}, S(…), size_of(S), into bytes.
+//
+// Pointers (^T): &x, p.field, p^, p^ = v, == void.
+//
+// Field references (S.T): s[f], .text(), R.from_text(s) for R :: alias S.T,
+// i64(f), == void.
+//
+// Atoms: print, go where text goes, ==.
+//
+// Maps (Map(K, V), mara.map): map_set, map_get, map_at, map_has, map_delete.
+//
+// The text funs here are mara.string's (int_text, find, trimmed …); the
+// rest are built in.
+module types
+
+use mara.core
+use mara.string
+
+// Numbers: whole ones (i64, i32, i16, i8, u64 … u8) and floats (f64, f32).
+// Math, comparing, converting, and to text and back.
+example_numbers :: fun() {
+	n := 7
+	print(n / 2, n % 2, f64(n) / 2)        // 3 1 3.5
+	small : u8 = 250
+	print(small +% 10)                     // 4: wrapped past 255
+	t : str64
+	&t + int_text(n)
+	&t + " and "
+	x : f64 = 2.25
+	&t + float_text(x, 1)
+	print(t)                               // 7 and 2.2
+	back, ok := parse_number("42")
+	print(i64(back), ok)                   // 42 true
+}
+
+// Truth: bool, and, or, not. It prints as true or false; for text of your
+// own, pick it.
+example_truth :: fun() {
+	held := true
+	print(held and not false)              // true
+	t : str64
+	&t + (if held do "on" else "off")
+	print(t)                               // on
+}
+
+// Characters: utf8 is one character of text, byte one byte of memory. They
+// compare as their codes do and convert to and from numbers.
+example_characters :: fun() {
+	c := 'a'
+	print(i64(c), utf8(i64(c) + 1))        // 97 b
+	print(upper(c), c < 'z')               // A true
+}
+
+// Text: a literal "hi", a slice of one ([]utf8), or a buffer you add to
+// (str64, str256, [N]utf8). Building a line of text and reading words back
+// out of it.
+example_text :: fun() {
+	line : str256
+	&line + "jump"
+	&line + ' '
+	&line + int_text(44)
+	print(line, line.len, line.cap)        // jump 44 7 256
+	space, _ := find(line, " ")
+	word := line[0:space]
+	print(word == "jump", starts_with(line, "ju"))   // true true
+	for c in word do print(upper(c))       // J U M P, one to a line
+	path := "keys" + ".txt"                // a join: a new buffer
+	print(path, trimmed("  x  "))          // keys.txt x
+}
+
+// Lists: [N]T holds up to N items. len is how many it has, cap how many fit.
+example_lists :: fun() {
+	l : [8]i64
+	&l + 3
+	&l + 5
+	next(&l)^ = 7                          // one more item, written in place
+	for &x in l do x^ += 1
+	print(l, l.len, l.cap)                 // [4, 6, 8] 3 8
+	print(6 in l, l[1:3])                  // true [6, 8]
+	more := l + 9                          // a new list, l as it was
+	print(more.len, l.len)                 // 4 3
+}
+
+// Fixed arrays: [N!]T is exactly N items; [Enum]T one for each of an enum's
+// values, indexed by them. A loop over one gives numbers, so loop over the
+// enum to have its values.
+example_arrays :: fun() {
+	v : [3!]f32 = [1, 2, 3]
+	print(v.len, v[2], v.x, v.yz)          // 3 3 1 [2, 3]
+	keys : [Move]i64
+	keys[Move.left] = 30
+	keys[.right] = 32
+	for m in Move do print(m.text(), keys[m])   // left 30, right 32, none 0
+}
+
+Move :: union { left  right  none = 0 }
+
+// Slices: []T views part of a list, an array or text, without a copy.
+example_slices :: fun() {
+	a : [5!]i64 = [1, 2, 3, 4, 5]
+	s := a[1:4]
+	print(s, s.len)                        // [2, 3, 4] 3
+	s[0] = 20
+	print(a[1])                            // 20: the view is a's own items
+}
+
+// Enums: a union whose variants hold nothing. To text with .text(), back
+// with E.from_text(s) (the `= 0` variant when s names none), to a number and
+// back, and each value in a loop.
+example_enums :: fun() {
+	m := Move.right
+	print(m, m.text(), i64(m))             // Move.right right 2
+	back := Move.from_text("left")
+	print(back, Move(2), Move.from_text("up"))   // Move.left Move.right Move.none
+	if Move.none do print("set") else do print("none is false")   // none is false
+	for each in Move do print(each)        // Move.left, Move.right, Move.none
+}
+
+// Unions with fields: one variant's fields at a time. .tag says which; match
+// takes its fields. See unions.mara.
+example_unions :: fun() {
+	s : Shape = Circle{r = 2}
+	print(s.tag == .Circle)                // true
+	match s {
+	Circle c
+		print(c.r)                         // 2
+	Square q
+		print(q.side)
+	}
+}
+
+Shape :: union {
+	Circle { r: i64 }
+	Square { side: i64 }
+}
+
+// Errors: an err says how a function failed. `if e` is true when it did;
+// .text() names it, .where() says where it began. See errors.mara.
+example_errors :: fun() {
+	e : err = Out_Of_Room
+	print(e, e.text())                     // Key_Error.Out_Of_Room Key_Error.Out_Of_Room
+	print(e == Out_Of_Room, bool(e))       // true true
+}
+
+Key_Error :: error { Out_Of_Room }
+
+// Structs: fields, methods, built by a literal or by its body, printed whole,
+// written into bytes as they are.
+example_structs :: fun() {
+	b := Bind{key = 44, held = true}
+	print(b, b.shown())                    // Bind { key: 44, held: true } 44 held
+	bytes : [32]byte
+	bytes[0] = b                           // its bytes, as they are
+	again : Bind = bytes[0]
+	print(again.key, size_of(Bind))        // 44 16
+}
+
+Bind :: struct {
+	key: i64
+	held: bool
+	shown :: fun(b: Bind) -> str64 {
+		t : str64
+		&t + int_text(b.key)
+		if b.held do &t + " held"
+		return t
+	}
+}
+
+// Pointers: ^T points at a T. Its fields read through it; p^ is all of it.
+// A pointer can be void, pointing at nothing: test it first.
+example_pointers :: fun() {
+	b := Bind{key = 1, held = false}
+	p := &b
+	p.key = 2
+	p^.held = true
+	print(b, p == void)                    // Bind { key: 2, held: true } false
+}
+
+// Field references: a value naming one of a struct's fields, of type
+// `Bind.i64` for Bind's i64 fields. Back from text through an alias of that
+// type. See basics.mara.
+example_field_references :: fun() {
+	b := Bind{key = 5, held = false}
+	f := Bind.key
+	print(b[f], f.text(), i64(f))          // 5 key 0
+	g, found := Bind_Number.from_text("key")
+	if found do print(b[g])                // 5
+}
+
+Bind_Number :: alias Bind.i64
+
+// Atoms: constant text by id, as .text() gives. They print, go where text
+// goes, and compare.
+example_atoms :: fun() {
+	a := Move.left.text()
+	t : str64
+	&t + a
+	print(t, a == "left")                  // left true
+}
+
+main :: fun() {
+	example_numbers()
+	example_truth()
+	example_characters()
+	example_text()
+	example_lists()
+	example_arrays()
+	example_slices()
+	example_enums()
+	example_unions()
+	example_errors()
+	example_structs()
+	example_pointers()
+	example_field_references()
+	example_atoms()
+}

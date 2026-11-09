@@ -14,7 +14,7 @@
 //
 // Longer pages on some of these: program.mara (a program's shape),
 // arrays.mara, text.mara, errors.mara, unions.mara, arenas.mara,
-// printing.mara.
+// printing.mara. What each kind of value can do, kind by kind: types.mara.
 module basics
 
 use mara.core
