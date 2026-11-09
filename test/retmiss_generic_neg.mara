@@ -1,0 +1,18 @@
+module retmiss_generic_neg
+//@ expect-fail: [retmiss_generic_neg.mara:10:1] Type error: function 'first_above' missing return on all code paths
+
+// A generic fun's missing return is its template's: named as written, and
+// said once however many types it's made for.
+
+use mara.core
+
+// Falls off its end when none is above.
+first_above :: (xs: []$T, least: T) -> T {
+	for x in xs {
+		if x > least do return x
+	}
+}
+
+main :: () {
+	print(first_above([1, 2, 3], 1), first_above([1.5, 2.5], 2.0))
+}

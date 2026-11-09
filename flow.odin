@@ -72,7 +72,10 @@ flow_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) {
         flow_init_fun(fp, g, found)
         if graph_kind_of(g, 0) == .Fun { flow_defers(g, found) }
         if flow_missing_return(g, ts) {
+            // (As written: a generic's instance has no name of its own but its flat
+            // one, `mod_f__i64` — its template's, so its instances' errors are one.)
             name := ts.source_name if ts.source_name != "" else ts.name
+            if ts.source_name == "" && ts.decl != 0 { name = tc_text(ts.decl) }
             append(found, Flow_Finding{.Missing_Return, ts.body_span, fmt.aprintf(TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)})
         }
     }
