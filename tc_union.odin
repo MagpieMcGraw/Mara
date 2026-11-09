@@ -303,12 +303,38 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
 // Whether an enum is in sight where its variant is named by itself: its
 // module's, or a used one's; a body's, only in that body (or one inside it).
 tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
-    if !resolve_sees_module(k.rs, span.at, et.home_package) { return false }
-    if et.owner == nil { return true }
-    for b := k.body; b != nil; b = b.parent_scope {
-        if b == et.owner { return true }
+    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, span: Span) -> bool {
+        if !resolve_sees_module(k.rs, span.at, home) { return false }
+        if owner == nil { return true }
+        for b := k.body; b != nil; b = b.parent_scope {
+            if b == owner { return true }
+        }
+        return false
     }
+    if sees(k, et.home_package, et.owner, span) { return true }
+    for a in et.aliased { if sees(k, a.home, a.owner, span) { return true } }
     return false
+}
+
+// `A :: alias E`, E an enum, an error set or a union: E's variants in sight
+// where A is (tc_sees_enum), as they are where E is. Once A's base is known.
+tc_alias_sight :: proc(k: ^TC, s: Tree_Id, owner: ^Type_Scope = nil) {
+    t := k.t
+    if t.tag[s] != .Define || t.a[s] != 0 { return }
+    value := Tree_Id(t.b[s])
+    if value == 0 || t.tag[value] != .Alias_Def { return }
+    bound, _ := tc_bound(k, t.main[s])
+    dt, is_dt := bound.(^Type_Distinct)
+    if !is_dt || dt.base_type == nil { return }
+    et: ^Type_Enum
+    #partial switch b in unwrap_alias(dt) {
+    case ^Type_Enum:  et = b
+    case ^Type_Union: et = b.tag_enum
+    }
+    if et == nil { return }
+    a := Enum_Alias{k.pkg, owner}
+    if (et.home_package == a.home && et.owner == owner) || slice.contains(et.aliased[:], a) { return }
+    append(&et.aliased, a)
 }
 
 // Ok is 0 in every error set, the one no-error value: `.Ok` that only error

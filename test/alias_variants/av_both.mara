@@ -1,0 +1,8 @@
+module alias_variants
+
+// The set in sight two ways, by its home and by an alias: one set, so its
+// variants aren't ambiguous.
+use av_home
+use av_lib
+
+both_routes :: fun() -> err { return Lost }

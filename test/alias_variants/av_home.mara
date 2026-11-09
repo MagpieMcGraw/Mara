@@ -1,0 +1,5 @@
+module av_home
+
+// What the other two modules alias: an error set and an enum.
+Home_Error :: error { Lost, Broken }
+Light :: union { Red  Amber  Green }

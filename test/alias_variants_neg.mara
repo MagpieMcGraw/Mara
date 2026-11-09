@@ -1,0 +1,13 @@
+module alias_variants_neg
+//@ expect-fail: write `files.Too_Large`
+
+// mara.files used by its name keeps its error set's variants behind it, as
+// it does its funs.
+
+use mara.core
+files :: use mara.files
+
+main :: fun() {
+	e : err = Too_Large
+	print(e)
+}

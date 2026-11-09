@@ -1,0 +1,36 @@
+module files_errors
+//@ expect-output: missing: Open_Failed
+//@ expect-output: small: Too_Large
+//@ expect-output: by set: true
+//@ expect-output: dir: Open_Failed
+
+// mara.files' and mara.paths' errors named with only those modules in sight:
+// File_Error is an alias of mara.os's, so its variants come with it. Both
+// modules alias it: one set, so neither the type nor a variant is ambiguous.
+
+use mara.core
+use mara.files
+use mara.paths
+
+name :: fun(e: err) -> str64 {
+	match e {
+	Open_Failed
+		return "Open_Failed"
+	File_Error.Too_Large
+		return "Too_Large"
+	else
+		return "other"
+	}
+}
+
+main :: fun() {
+	storage : [16]byte
+	_, missing := read_entire_file("no_such_file.txt", &storage)
+	print("missing:", name(missing))
+	_, small := read_entire_file("run.sh", &storage)
+	print("small:", name(small))
+	print("by set:", small == Too_Large and small != File_Error.Open_Failed)
+	entries : [256]byte
+	_, de := dir_read("no_such_dir", &entries)
+	print("dir:", name(de))
+}

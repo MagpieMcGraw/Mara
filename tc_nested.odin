@@ -54,6 +54,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     }
     // (A distinct type's base, once every name here is declared.)
     for s in distincts { tc_resolve_distinct(k, s, Tree_Id(t.b[s])) }
+    for s in distincts { tc_alias_sight(k, s, owner) }
     // (A union's variants' fields, as a module's: tc_resolve_union.)
     for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }

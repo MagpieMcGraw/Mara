@@ -2,7 +2,6 @@ module view
 
 use mara.core
 use mara.files
-os :: use mara.os
 use mara.math
 use mara.memory
 use mara.string
@@ -80,7 +79,7 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	p.stamp = file_mtime(path)
 	p.text.len = 0
 	_, e := read_entire_file(path, &p.text)
-	if e == os.Open_Failed {
+	if e == Open_Failed {
 		p.missing = true
 		&p.problem + "No profile.txt here yet: build the program with `mara build -profile time` and run it."
 		return

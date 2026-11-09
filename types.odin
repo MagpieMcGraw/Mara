@@ -567,6 +567,13 @@ Type_Enum :: struct {
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
     owner:         ^Type_Scope,   // the fun or struct whose body defines it; nil: its module's
     zero_name:     string,        // its variant written `= 0` — what from_text gives for no name; "": none
+    aliased:       [dynamic]Enum_Alias,   // where `A :: alias E` names it: its variants in sight there too
+}
+
+// A module (and the body, nil for its top) where an alias names an enum.
+Enum_Alias :: struct {
+    home:  string,
+    owner: ^Type_Scope,
 }
 
 Type_Union :: struct {
@@ -876,11 +883,17 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     if _, ok := a.(Type_Error); ok { return true }
     if _, ok := b.(Type_Error); ok { return true }
 
-    // Open `err` type accepts any error_kind variant. Symmetric: a value of
-    // a specific error_kind flows into an `err`-typed slot, and `err`-typed
-    // values compare against specific error_kind variants. Both directions
-    // route through the same u32 IR shape, so codegen treats this as a
-    // no-op coercion.
+    // Transparent type aliases (`Name :: type(T)`) unwrap to their base
+    // before any other comparison. They have no nominal identity — they
+    // exist purely as renames. `distinct` types do not unwrap here.
+    a := unwrap_alias(resolve_infer(a))
+    b := unwrap_alias(resolve_infer(b))
+
+    // Open `err` type accepts any error_kind variant (an alias's too).
+    // Symmetric: a value of a specific error_kind flows into an `err`-typed
+    // slot, and `err`-typed values compare against specific error_kind
+    // variants. Both directions route through the same u32 IR shape, so
+    // codegen treats this as a no-op coercion.
     if _, ok := a.(Type_Err); ok {
         if _, ok2 := b.(Type_Err); ok2 { return true }
         if et, ok2 := b.(^Type_Enum); ok2 { return et.is_error_kind }
@@ -888,12 +901,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     if _, ok := b.(Type_Err); ok {
         if et, ok2 := a.(^Type_Enum); ok2 { return et.is_error_kind }
     }
-
-    // Transparent type aliases (`Name :: type(T)`) unwrap to their base
-    // before any other comparison. They have no nominal identity — they
-    // exist purely as renames. `distinct` types do not unwrap here.
-    a := unwrap_alias(resolve_infer(a))
-    b := unwrap_alias(resolve_infer(b))
 
     // (A type of its own takes a literal its base takes — `c : Count = 3`,
     // `name : Name = "Ann"` — and nothing else of its base's.)

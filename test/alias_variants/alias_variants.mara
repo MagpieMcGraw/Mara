@@ -1,0 +1,34 @@
+module alias_variants
+
+// Variants through an alias: bare, by the alias's name, by the module's name
+// (a named use), in a match, as a comparison's other side, through an alias
+// of an alias, through a body's alias. av_home isn't in sight in this file.
+
+use mara.core
+use av_lib
+lib :: use av_lib
+
+returns :: fun() -> err { return Lost }
+by_alias :: fun() -> err { return Lib_Error.Broken }
+by_module :: fun() -> err { return lib.Broken }
+
+main :: fun() {
+	print(returns(), by_alias(), by_module(), both_routes())
+	e := fail(true)
+	if e == Broken do print("bare compare")
+	if e == Lib_Error.Broken do print("alias compare")
+	if e == lib.Broken do print("module compare")
+	match e {
+	Lost
+		print("lost")
+	Lib_Error.Broken
+		print("broken")
+	else
+		print("else")
+	}
+	l : Light = .Amber
+	m : Lamp = Green
+	print(l, m, l == Light.Amber, m == lib.Green)
+	Local :: alias Lib_Error
+	if fail(false) == Local.Lost do print("body alias")
+}

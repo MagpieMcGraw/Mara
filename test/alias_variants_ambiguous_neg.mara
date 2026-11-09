@@ -1,0 +1,15 @@
+module alias_variants_ambiguous_neg
+//@ expect-fail: is ambiguous
+
+// A set of this module's own with a name mara.files' File_Error has: a bare
+// one names neither.
+
+use mara.core
+use mara.files
+
+Mine :: error { Too_Large }
+
+main :: fun() {
+	e : err = Too_Large
+	print(e)
+}

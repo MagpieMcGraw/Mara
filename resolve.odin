@@ -37,6 +37,7 @@ Resolver :: struct {
     owners:  map[Token_Id]Token_Id,     // ... a body's: the fun or struct whose body it's in, by its token
     owner:   Token_Id,                  // the fun or struct whose body is being resolved
     members: map[Token_Id]map[string]Ref,   // ... what a qualified name reaches in it (rs_members)
+    alias_of: map[Token_Id]Token_Id,    // `A :: alias B`: the type it names in the end, by A's token (rs_alias_targets)
     dispatches: map[Token_Id]bool,      // the definitions that are dispatches (their member's the checker's)
     type_params: map[Token_Id]bool,     // the declarations that are type params (what they're bound to is the checker's)
     type_params_of: map[Tree_Id][dynamic]Token_Id,   // ... each generic's, by its node (an instance binds them)
@@ -207,7 +208,7 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
         found: Ref
         n := 0
         for m in r.scopes[i].uses {
-            if ref, ok := m.defs[name]; ok && (n == 0 || ref != found) {
+            if ref, ok := m.defs[name]; ok && (n == 0 || !rs_same(r, ref, found)) {
                 found = ref
                 n += 1
             }
@@ -219,7 +220,10 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
             seen := make([dynamic]Ref, context.temp_allocator)
             for m in r.scopes[i].uses {
                 ref, ok := m.defs[name]
-                if !ok || slice.contains(seen[:], ref) { continue }
+                if !ok { continue }
+                one := false
+                for x in seen { one = one || rs_same(r, x, ref) }
+                if one { continue }
                 append(&seen, ref)
                 if !slice.contains(owners[:], m.name) { append(&owners, m.name) }
             }
@@ -459,7 +463,7 @@ rs_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
     def, ok := r.defs[ref.decl]
     if !ok { return nil, false }
     t := r.t
-    value := Tree_Id(t.b[def])
+    value := Tree_Id(t.b[r.defs[r.alias_of[ref.decl] or_else ref.decl]])
     m := make(map[string]Ref)
     #partial switch t.tag[value] {
     case .Struct_Def, .Fun_Def:
@@ -572,22 +576,13 @@ rs_alias_kinds :: proc(r: ^Resolver, names: []string) {
             m := r.modules[name]
             for f in m.files {
                 stmts := rs_live(r, tree_list(t, t.a[f]))
-                uses := make([dynamic]^Rs_Module, context.temp_allocator)
-                named := make(map[string]^Rs_Module, context.temp_allocator)
-                for s in stmts {
-                    imp := rs_stmt_import(t, s)
-                    if imp == 0 { continue }
-                    used, tok := rs_import(r, imp)
-                    if used == nil { continue }
-                    if t.tag[s] == .Define { tok = t.main[s] } else { append(&uses, used) }
-                    named[rs_text(tok)] = used
-                }
+                uses, named := rs_file_uses(r, stmts)
                 for s in stmts {
                     if t.tag[s] != .Define || t.a[s] != 0 { continue }
                     def_name := rs_text(t.main[s])
                     ref, ok := m.defs[def_name]
                     if !ok || ref.decl != t.main[s] || ref.kind == .Type { continue }
-                    if rs_names_type(t, Tree_Id(t.b[s]), m, uses[:], named) {
+                    if rs_names_type(t, Tree_Id(t.b[s]), m, uses, named) {
                         m.defs[def_name] = {ref.decl, .Type}
                         changed = true
                     }
@@ -595,6 +590,83 @@ rs_alias_kinds :: proc(r: ^Resolver, names: []string) {
             }
         }
     }
+}
+
+// A file's uses: the modules it uses plainly, and each it uses by its name
+// (`os :: use mara.os`, `use mara.os` by `os`).
+@(private="file")
+rs_file_uses :: proc(r: ^Resolver, stmts: []Tree_Id) -> ([]^Rs_Module, map[string]^Rs_Module) {
+    t := r.t
+    uses := make([dynamic]^Rs_Module, context.temp_allocator)
+    named := make(map[string]^Rs_Module, context.temp_allocator)
+    for s in stmts {
+        imp := rs_stmt_import(t, s)
+        if imp == 0 { continue }
+        used, tok := rs_import(r, imp)
+        if used == nil { continue }
+        if t.tag[s] == .Define { tok = t.main[s] } else { append(&uses, used) }
+        named[rs_text(tok)] = used
+    }
+    return uses[:], named
+}
+
+// `A :: alias B`, B a type a module defines (`B`, `m.B`): what A names in
+// the end, past any aliases between (`B :: alias C`), into r.alias_of — two
+// names for it are one (rs_same), and `m.A.X` reaches what it does wherever
+// m is resolved from (rs_members). An enum's or an error set's variants are
+// A's module's too: `m.X`, as `m.B.X` is. Again until nothing changes.
+@(private="file")
+rs_alias_targets :: proc(r: ^Resolver, names: []string) {
+    t := r.t
+    for changed := true; changed; {
+        changed = false
+        for name in names {
+            m := r.modules[name]
+            for f in m.files {
+                stmts := rs_live(r, tree_list(t, t.a[f]))
+                uses, named := rs_file_uses(r, stmts)
+                for s in stmts {
+                    if t.tag[s] != .Define || t.a[s] != 0 || t.main[s] in r.alias_of { continue }
+                    value := Tree_Id(t.b[s])
+                    if value == 0 || t.tag[value] != .Alias_Def || t.tag[Tree_Id(t.a[value])] != .Type_Name { continue }
+                    parts := tree_token_list(t, t.a[Tree_Id(t.a[value])])
+                    ref: Ref
+                    if len(parts) == 1 {
+                        ref = m.defs[rs_text(parts[0])] or_else Ref{}
+                        for u in uses { if ref.kind == .None { ref = u.defs[rs_text(parts[0])] or_else Ref{} } }
+                    } else if u := named[rs_text(parts[0])] or_else nil; len(parts) == 2 && u != nil {
+                        ref = u.defs[rs_text(parts[1])] or_else Ref{}
+                    }
+                    def, ok := r.defs[ref.decl]
+                    if ref.kind != .Type || !ok { continue }
+                    // (An alias of a type name: its target, once known; of any
+                    // other type, `[512]utf8`, it is the one named.)
+                    target := ref.decl
+                    named_value := Tree_Id(t.b[def])
+                    if t.tag[named_value] == .Alias_Def && t.tag[Tree_Id(t.a[named_value])] == .Type_Name {
+                        target = r.alias_of[ref.decl] or_else 0
+                        if target == 0 { continue }
+                    }
+                    r.alias_of[t.main[s]] = target
+                    changed = true
+                    e := Tree_Id(t.b[r.defs[target]])
+                    if t.tag[e] == .Error_Def {
+                        for tok in tree_token_list(t, t.a[e]) { if rs_text(tok) not_in m.variants { m.variants[rs_text(tok)] = {tok, .Variant} } }
+                    } else if t.tag[e] == .Union_Def && !rs_union_has_data(t, e) {
+                        for vr in tree_list(t, t.b[e]) { if rs_text(t.main[vr]) not_in m.variants { m.variants[rs_text(t.main[vr])] = {t.main[vr], .Variant} } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Whether two refs are one: the same, or two type names for one type (r.alias_of).
+@(private="file")
+rs_same :: proc(r: ^Resolver, a, b: Ref) -> bool {
+    if a == b { return true }
+    if a.kind != .Type || b.kind != .Type { return false }
+    return (r.alias_of[a.decl] or_else a.decl) == (r.alias_of[b.decl] or_else b.decl)
 }
 
 // Whether a definition's value is a name by itself naming a type: `B` (its
@@ -629,6 +701,7 @@ rs_program :: proc(r: ^Resolver) {
     slice.sort(names[:])
     for name in names { rs_module(r, name) }
     rs_alias_kinds(r, names[:])
+    rs_alias_targets(r, names[:])
     for name in names {
         m := r.modules[name]
         rs_enter(r, .Module)

@@ -1,0 +1,15 @@
+module av_lib
+
+use mara.core
+home :: use av_home
+
+// Another name for each, and one alias of an alias: their variants are in
+// sight wherever this module is, as they are where av_home is.
+Lib_Error :: alias home.Home_Error
+Light :: alias home.Light
+Lamp :: alias Light
+
+fail :: fun(broken: bool) -> err {
+	if broken do return Broken
+	return Lost
+}

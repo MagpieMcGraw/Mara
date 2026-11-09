@@ -6,9 +6,12 @@ os :: use mara.os
 // Paths and directories: a path's parts, where the program is and the
 // directory it runs in, what's in a directory, making and deleting
 // directories. mara.os does it for each platform. A path given back says '/'
-// between its parts, Windows' too; Windows takes either. What a call fails
-// with is mara.os's File_Error: name one with `os :: use mara.os`, as
-// `os.Open_Failed`.
+// between its parts, Windows' too; Windows takes either.
+
+// What a call here fails with, as mara.files' calls do: `Open_Failed`,
+// `File_Error.Open_Failed`, `paths.Open_Failed` where this module is used by
+// that name.
+File_Error :: alias os.File_Error
 
 // A path as current_dir, exe_path and get_dir give one back: up to 512
 // characters, the room past it there to add a name to.
@@ -106,7 +109,7 @@ dir_make :: fun(path: []utf8) -> err {
 	for k in 1:path.len {
 		if path_separator(path[k]) do _ = os.dir_make_one(path[0:k])
 	}
-	if not os.dir_make_one(path) do return os.Open_Failed
+	if not os.dir_make_one(path) do return Open_Failed
 }
 
 // Deletes the directory at path, which must be empty: Delete_Failed when it

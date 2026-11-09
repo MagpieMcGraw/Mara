@@ -439,9 +439,11 @@ example_error :: fun() {
 // where Meters does, so the two can't be mixed up. A literal goes in
 // (`m : Meters = 3`), an f64 by a conversion (`Meters(x)`), and two Meters
 // do f64's math. `Label :: alias [16]utf8` is the same type by another
-// name, and goes anywhere its base does (core's str64 is one). `Spot ::
-// Point`, a name by itself that names a type, is a new type too (naming a
-// value instead, it's a constant).
+// name, and goes anywhere its base does (core's str64 is one). An alias of
+// an enum or an error set brings its variants: where mara.files' `File_Error
+// :: alias os.File_Error` is in sight, so is `Too_Large`. Two aliases of one
+// type are one name, never ambiguous. `Spot :: Point`, a name by itself that
+// names a type, is a new type too (naming a value instead, it's a constant).
 example_distinct :: fun() {
 	Meters :: f64
 	Label :: alias [16]utf8

@@ -5,8 +5,11 @@ os :: use mara.os
 
 // Files: opening one, reading and writing it, its size, moving, copying and
 // deleting it, mapping it into memory, reading it whole. mara.os does it for
-// each platform. What a call fails with is mara.os's File_Error: name one
-// with `os :: use mara.os`, as `os.Too_Large`.
+// each platform.
+
+// What a call here fails with: `Too_Large`, `File_Error.Too_Large`,
+// `files.Too_Large` where this module is used by that name.
+File_Error :: alias os.File_Error
 
 // An open file, as file_open_read, file_open_write or file_open_append give
 // one: hand it to the calls here, then to file_close. A pipe's or a
@@ -68,7 +71,7 @@ file_write_text :: fun(id: File_Id, text: []utf8) -> err {
 	bytes : []byte = text
 	for bytes.len > 0 {
 		n := file_write(id, bytes)?
-		if n <= 0 do return os.Write_Failed   // (nothing went: more tries won't either)
+		if n <= 0 do return Write_Failed   // (nothing went: more tries won't either)
 		bytes = bytes[n : bytes.len]
 	}
 }
@@ -126,7 +129,7 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 	defer file_close(id)
 	size, se := file_size(id)
 	if se do return none, se
-	if size > storage.cap - start do return none, os.Too_Large
+	if size > storage.cap - start do return none, Too_Large
 	got : i64 = 0
 	for got < size {
 		rest := storage[start + got : start + size]

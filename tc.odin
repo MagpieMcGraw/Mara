@@ -577,6 +577,9 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id) -> []int {
     for f, i in files {
         for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_resolve(k, s) }
     }
+    for f in files {
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_alias_sight(k, s) }
+    }
     for f, i in files {
         for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_validate(k, s) }
     }
