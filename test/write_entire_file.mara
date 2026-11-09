@@ -1,0 +1,76 @@
+module write_entire_file
+//@ expect-output: first: one
+//@ expect-output: replaced: two, longer
+//@ expect-output: bytes: 3
+//@ expect-output: left beside it: 0
+//@ expect-output: no dir: File_Error.Open_Failed
+//@ expect-output: no dir: nothing made
+//@ expect-output: empty: 0
+//@ expect-output: held open: File_Error.Rename_Failed
+//@ expect-output: held open, as it was: kept
+//@ expect-output: held open: nothing left
+
+// write_entire_file: text and bytes, a file replaced whole, no new file left
+// beside it, and a failure that leaves nothing behind.
+
+use mara.core
+use mara.files
+use mara.paths
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+DIR :: "write_entire_file_dir"
+PATH :: "write_entire_file_dir/out.txt"
+
+read :: fun(storage: ^[]byte) -> []utf8 {
+	storage.len = 0
+	data, e := read_entire_file(PATH, storage)
+	if e do return storage[0:0]
+	return data
+}
+
+main :: fun() {
+	_ = dir_make(DIR)
+	storage : [256]byte
+	_ = write_entire_file(PATH, "one")
+	print("first:", read(&storage))
+	_ = write_entire_file(PATH, "two, longer")
+	print("replaced:", read(&storage))
+	bytes : [3!]byte = [1, 2, 3]
+	_ = write_entire_file(PATH, bytes)
+	print("bytes:", read(&storage).len)
+
+	entries : [4096]byte
+	listed, le := dir_read(DIR, &entries)
+	if le do print("couldn't list:", le)
+	print("left beside it:", listed.len - 1)
+
+	e := write_entire_file("no_such_dir_here/out.txt", "x")
+	listed2, _ := dir_read(DIR, &entries)
+	print("no dir:", e)
+	if listed2.len == listed.len do print("no dir: nothing made")
+
+	_ = write_entire_file(PATH, "")
+	print("empty:", read(&storage).len)
+
+	// (Windows: a file open to read can't be replaced; it's tried for a
+	// moment, then left as it was.)
+	_ = write_entire_file(PATH, "kept")
+	#if #windows {
+		id, _ := file_open_read(PATH)
+		he := write_entire_file(PATH, "lost")
+		file_close(id)
+		print("held open:", he)
+		print("held open, as it was:", read(&storage))
+		listed3, _ := dir_read(DIR, &entries)
+		if listed3.len == 1 do print("held open: nothing left")
+	else
+		print("held open: File_Error.Rename_Failed")
+		print("held open, as it was: kept")
+		print("held open: nothing left")
+	}
+
+	_ = file_delete(PATH)
+	_ = dir_delete(DIR)
+}

@@ -291,12 +291,7 @@ brightness :: fun(c: Color) -> f32 {
 // colors`): kept in colors.txt for every window — this one's theme, if
 // it's Sublime's, made of them now.
 colors_set :: fun(ui: ^Ui, colors: []utf8) {
-	id, oe := file_open_write(ui.colors_path)
-	if not oe {
-		_ = file_write_text(id, colors)
-		_ = file_write_text(id, "\n")
-		file_close(id)
-	}
+	_ = write_entire_file(ui.colors_path, colors)
 	if ui.theme == THEME_SUBLIME do theme_set(ui, THEME_SUBLIME)
 }
 

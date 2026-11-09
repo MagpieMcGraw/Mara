@@ -212,11 +212,7 @@ editor_load :: fun(ui: ^Ui) {
 editor_set :: fun(ui: ^Ui, program: []utf8) {
 	ui.editor.len = 0
 	&ui.editor + program[0 : min_int(program.len, ui.editor.cap)]
-	id, oe := file_open_write(ui.editor_path)
-	if not oe {
-		_ = file_write_text(id, ui.editor)
-		file_close(id)
-	}
+	_ = write_entire_file(ui.editor_path, ui.editor)
 	crash_status(ui)
 	ui.dirty = true
 }

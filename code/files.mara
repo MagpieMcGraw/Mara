@@ -1,11 +1,12 @@
 module mara.files
 
 use mara.core
+use mara.encoding
 os :: use mara.os
 
 // Files: opening one, reading and writing it, its size, moving, copying and
-// deleting it, mapping it into memory, reading it whole. mara.os does it for
-// each platform.
+// deleting it, mapping it into memory, reading or writing it whole. mara.os
+// does it for each platform.
 
 // What a call here fails with: `Too_Large`, `File_Error.Too_Large`,
 // `files.Too_Large` where this module is used by that name.
@@ -140,4 +141,39 @@ read_entire_file :: fun(path: []utf8, storage: ^[]byte) -> []byte, err {
 	}
 	storage.len = start + got
 	return storage[start : start + got]
+}
+
+// Writes data to a file whole, replacing what's there: into a new file
+// beside it first, then moved over it in one step, so whoever reads path
+// finds the old file or the new one, never part of one, nor an empty one when
+// the program stops halfway. Text goes in as it is. Open_Failed when the new
+// file can't be made (no such directory, say); Rename_Failed when it can't be
+// moved over (on Windows, another program holding path open: tried for a
+// moment first). path is as it was then.
+write_entire_file :: fun(path: []utf8, data: []byte) -> err {
+	// (The new file: path and a random part, `notes.txt.1f3a9c0b.tmp`, so two
+	// programs writing one file don't write into one new file.)
+	tmp : os.Path
+	if path.len > tmp.cap - 13 do return Too_Large
+	&tmp + path
+	&tmp + "."
+	r : [4]byte
+	_ = os.random_bytes(&r)
+	hex_encode(r, &tmp)
+	&tmp + ".tmp"
+	id := file_open_write(tmp)?
+	we := file_write_text(id, data)
+	file_close(id)
+	if we {
+		_ = file_delete(tmp)
+		return we
+	}
+	re := file_rename(tmp, path)
+	for tries in 0:20 {
+		if not re do return
+		os.sleep_ms(10)
+		re = file_rename(tmp, path)
+	}
+	_ = file_delete(tmp)
+	return re
 }

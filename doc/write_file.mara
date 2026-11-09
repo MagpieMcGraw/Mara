@@ -1,11 +1,15 @@
 // How to write a file, and delete one.
 //
-// file_open_write creates the file, or empties it if it's already there.
-// file_open_append keeps what's there and writes after it (a log's way),
-// creating the file if it's missing.
-// file_write_text writes text into it, all of it. file_write writes bytes —
-// text becomes bytes with `bytes : []byte = text`, the same memory seen
-// as bytes — and may write only part of them: it says how many it wrote.
+// write_entire_file writes a file whole, text or bytes, replacing what's
+// there: into a new file beside it, then moved over it in one step, so a
+// program reading it, or the file after a crash, has the old one or the new
+// one, never part of one.
+//
+// Step by step: file_open_write creates the file, or empties it if it's
+// already there. file_open_append keeps what's there and writes after it (a
+// log's way), creating the file if it's missing. file_write_text writes text
+// into it, all of it. file_write writes bytes and may write only part of
+// them: it says how many it wrote.
 module write_file
 
 use mara.core
@@ -13,13 +17,6 @@ use mara.files
 use mara.memory
 
 #allocator Arena_Basic(16 * MB)
-
-// Writes text to the file at path, replacing what was there.
-save :: fun(path: []utf8, text: []utf8) -> err {
-	id := file_open_write(path)?
-	defer file_close(id)
-	file_write_text(id, text)?
-}
 
 // Adds text to the end of the file at path.
 add_line :: fun(path: []utf8, text: []utf8) -> err {
@@ -29,7 +26,7 @@ add_line :: fun(path: []utf8, text: []utf8) -> err {
 }
 
 main :: fun() {
-	err := save("write_file_demo.txt", "one line\nanother line\n")
+	err := write_entire_file("write_file_demo.txt", "one line\nanother line\n")
 	if err {
 		print("couldn't write it:", err)
 		return
