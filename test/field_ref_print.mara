@@ -1,0 +1,39 @@
+module field_ref_print
+
+//@ expect-output: alone: held[1] void
+//@ expect-output: a list: [held[1], jump]
+//@ expect-output: an array: [jump, held[3]]
+//@ expect-output: in a struct: Bind { key: jump, combo: [held[0]] }
+//@ expect-output: formatted: held[1] and [held[1], jump]
+
+// A field reference prints as its field's name wherever it is: by itself, a
+// list's item, an array's, a struct's field. (In a list it printed as a
+// number once: `[2, 5]`.)
+
+use mara.core
+
+Keys :: struct {
+	held: [4!]bool
+	jump: bool
+}
+Bind :: struct {
+	key: Keys.bool
+	combo: [4]Keys.bool
+}
+
+main :: () {
+	one := Keys.held[1]
+	none : Keys.bool = void
+	combo : [4]Keys.bool
+	&combo ++ Keys.held[1] ++ Keys.jump
+	fixed : [2!]Keys.bool = [Keys.jump, Keys.held[3]]
+	b : Bind
+	b.key = Keys.jump
+	b.combo = []
+	&b.combo ++ Keys.held[0]
+	print("alone:", one, none)
+	print("a list:", combo)
+	print("an array:", fixed)
+	print("in a struct:", b)
+	print("formatted: % and %", one, combo)
+}

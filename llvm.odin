@@ -2460,10 +2460,6 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         if o.op == NO_NODE || o.out != 0 { return false }
         t, v := graph_type(pg, o.op), llvm_val(e, o.op)
         if v.kind == .None { return false }   // a held view (later)
-        if fr, is_ref := distinct_base(t).(^Type_Field); is_ref {   // (a field reference: its name)
-            append(&args, Print_Arg{val = llvm_field_atom(e, fr, v, op), t = Type_Atom{}})
-            continue
-        }
         text, is_text := llvm_text(e, o.op)
         switch {
         case is_text && llvm_aggregate(t):   // (text at a ^byte prints as a C string)

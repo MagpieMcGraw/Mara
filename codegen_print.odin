@@ -439,6 +439,34 @@ emit_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Print_Arg, call_
     flush(g, &seg_buf)
 }
 
+// A field reference printed: its field's name, as text() gives it — "void"
+// for none — wherever it is: by itself, a list's item, a struct's field.
+gen_print_field_ref :: proc(g: ^Codegen, val: Val, fr: ^Type_Field) {
+    paths, _ := field_ref_paths(fr.owner, fr.elem)
+    done, other := fresh_label(g, "field_print.done"), fresh_label(g, "field_print.other")
+    arms := make([dynamic]Ir_Arg, 0, len(paths) + 1, context.temp_allocator)
+    texts := make([dynamic]string, 0, len(paths) + 1, context.temp_allocator)
+    seen := make(map[int]bool, allocator = context.temp_allocator)
+    append(&arms, Ir_Arg{IR_I64, ir_int(0), fresh_label(g, "field_print.case")})
+    append(&texts, "void")
+    for p in paths {
+        if seen[p.value] { continue }   // (several names of one field: the first)
+        seen[p.value] = true
+        append(&arms, Ir_Arg{IR_I64, ir_int(p.value), fresh_label(g, "field_print.case")})
+        append(&texts, p.text)
+    }
+    ir_switch(g, IR_I64, val, other, arms[:])
+    for arm, i in arms {
+        emit_label(g, arm.l)
+        emit_print_literal(g, texts[i])
+        emit_br(g, done)
+    }
+    emit_label(g, other)
+    emit_print_literal(g, "?")
+    emit_br(g, done)
+    emit_label(g, done)
+}
+
 // Emit a printf("%s", literal) for an inline static string.
 emit_print_literal :: proc(g: ^Codegen, s: string) {
     emit_printf(g, "%s", {IR_PTR, get_string_literal(g, s), {}})
@@ -486,6 +514,7 @@ emit_print_value :: proc(g: ^Codegen, val: Val, ty: Type) {
         ir_call(g, {}, IR_VOID, ir_global("__mara_print_err"), {IR_I64, val, {}})
         return
     }
+    if fr, ok := bt.(^Type_Field); ok { gen_print_field_ref(g, val, fr); return }
     if _, ok := bt.(Type_Atom); ok {   // (its text, looked up)
         data, n := emit_atom_text(g, val, g.print_span)
         emit_print_text(g, data, n)
