@@ -183,7 +183,7 @@ Key_Error :: error { Out_Of_Room }
 example_structs :: fun() {
 	b := Bind{key = 44, held = true}
 	print(b, b.shown())                    // Bind { key: 44, held: true } 44 held
-	bytes : [32]byte
+	bytes : [32!]byte
 	bytes[0] = b                           // its bytes, as they are
 	again : Bind = bytes[0]
 	print(again.key, size_of(Bind))        // 44 16

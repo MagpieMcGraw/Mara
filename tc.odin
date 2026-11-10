@@ -71,6 +71,14 @@ TC :: struct {
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
+    // Lists that stay empty (tc_list_use): each list's declaration, by its
+    // token; the node about to be checked as a use that can't change it (an
+    // index's base — list_index — a `.len`'s, a loop's); each one's first index.
+    lists:         []List_Flags,
+    list_ok:       Tree_Id,
+    list_index:    bool,
+    list_indexed:  [dynamic]List_Indexed,
+    lists_raw:     map[^Type_Scope]bool,   // structs read out of raw memory, seen (tc_lists_raw)
     field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_stmt:    Tree_Id,           // its `#allocator` statement
@@ -462,6 +470,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     slice.sort(all_named[:])
     for tok in all_named { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
     k.bound = make([]u32, len(build_tokens))
+    k.lists = make([]List_Flags, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
     k.annot = annot_new(t)
     checked.annot = k.annot
@@ -514,6 +523,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_validate_allocator(k)
     tc_validate_main(k, main)
     tc_validate_field_refs(k)
+    tc_lists_report(k)
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
 

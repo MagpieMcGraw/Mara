@@ -44,6 +44,7 @@ tc_check_byte_flow :: proc(k: ^TC, dest: Type, value: Tree_Id, vt: Type, span: S
         } else if why := byte_reference_reason(k.c, dest); why != "" {
             tc_error(k, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
         }
+        tc_lists_raw(k, dest)
     }
     return flow
 }

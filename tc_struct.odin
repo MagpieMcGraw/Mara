@@ -31,6 +31,10 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     } else {
         field = tc_text(Token_Id(tr.b[n]))
     }
+    // (What this field is about to be used as, before its base's check says
+    // what the base is; a `.len` or `.cap` read changes no list.)
+    list_ok, list_index := n == k.list_ok, k.list_index
+    if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok, k.list_index = tc_unparen(k, base), false }
     // (`pkg.X` inside pkg: its own constant — its value's type. The
     // resolver's: pkg itself names nothing.)
     if tr.tag[n] == .Field && tr.tag[base] == .Ident && k.rs.refs[base].kind == .None {
@@ -42,7 +46,9 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     bt := tc_check(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        return tc_module_member(k, n, sd, field)
+        mt := tc_module_member(k, n, sd, field)
+        if r := k.rs.refs[n]; r.kind == .Global { tc_list_use(k, r.decl, mt, list_ok, list_index, span) }
+        return mt
     }
     // (`Event_State.mouse`: a field of a struct's type — a field reference,
     // field_ref.odin. `r.xrel`, r one: a reference to a field of its field.)
@@ -62,7 +68,11 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     t, is_member, known, known_ok := tc_field_type(k, n, base, bt, field, span)
-    tc_set_ref(k, n, tc_member_ref(k, bt, t, field, is_member))
+    ref := tc_member_ref(k, bt, t, field, is_member)
+    tc_set_ref(k, n, ref)
+    if ref.kind == .Field {
+        #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, list_ok, list_index, span) }
+    }
     if known_ok { k.annot.known[tc_sid(k, n)] = {known, t} }
     return t
 }
@@ -224,6 +234,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         tc_set_type(k, target, ft)
         // (A field, its own or a using field's struct's; else a using array's swizzle.)
         if decl := struct_field_decl(sd, field); decl != 0 { tc_set_ref(k, target, {decl, .Field}) } else { tc_set_ref(k, target, {kind = .Builtin}) }
+        tc_list_use(k, struct_field_decl(sd, field), ft, false, false, span)
     }
     vt := tc_store_at(k, value, op_tok, target, s)
     k.hint = nil
@@ -688,6 +699,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
        k.t.tag[v] == .Array {
         k.hint = f.type_
     }
+    tc_list_use(k, f.decl, f.type_, false, false, span)
     vt := probed if probed != nil else tc_check(k, value)   // (a spread that wasn't: checked as one)
     if !coerce_deferred(k.c, vt, f.type_, span) && types_incompatible(f.type_, vt) {
         if positional {

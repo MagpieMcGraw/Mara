@@ -435,6 +435,7 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
     defer tc_bind(k, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
+    if (ref.kind == .Local || ref.kind == .Global || ref.kind == .Field) && is_partial_array(ann) { k.lists[ref.decl] += {.Fresh} }
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
 }
 
@@ -554,6 +555,7 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (exi
     if found {
         tc_set_ref(k, target, ref)
         tc_set_type(k, target, existing)   // (the name written: its type)
+        tc_list_use(k, ref.decl, existing, false, false, span)
     }
     if ref.kind == .Const {
         tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
@@ -802,6 +804,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         // (A call of several results: a loop over the call — tc_for_call.)
         call := tc_unparen(k, v.collection)
         if tc_is_call(k, call) { k.several_ok = call }
+        k.list_ok, k.list_index = call, false   // (looped over: no change to it)
         ct := tc_check(k, v.collection)
         k.several_ok = 0
         if loops_over_type(k, v.collection) {

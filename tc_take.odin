@@ -39,6 +39,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
     if tc_text(t.main[n]) == "let" && is_slice_type(taken) {
         tc_error(k, span, TYPE_LET_SLICE, type_name(taken))
     }
+    tc_lists_raw(k, taken)   // (what's in the storage already may be its lists' lens)
     if count != 0 {
         ct := tc_check_at(k, count, slice_header_width_type)
         if !is_any(ct) && !is_numeric(ct) {

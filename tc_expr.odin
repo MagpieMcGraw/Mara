@@ -298,6 +298,9 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         return Type_Error{}
     }
+    if ref.kind == .Local || ref.kind == .Global || ref.kind == .Field {
+        #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, n == k.list_ok, k.list_index, span) }
+    }
     return t
 }
 

@@ -13,7 +13,7 @@ Clock :: struct {
 Clocks :: struct {
 	work  := Clock()
 	frame := Clock()
-	list: [2]Clock
+	list: [2!]Clock
 	held: ^Clock
 }
 

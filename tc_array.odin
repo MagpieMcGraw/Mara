@@ -11,6 +11,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
     tc_lower_dots(k, base_n, idx_n)
+    k.list_ok, k.list_index = tc_unparen(k, base_n), true
     bt := tc_check(k, base_n)
     // (A field reference's array, `r[i]`: a reference to its item. A struct
     // indexed, `events[f]`: the field f is a reference to — field_ref.odin.)
@@ -45,6 +46,53 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     return t
 }
 
+// A list declared with nothing in it that no code gives a len stays empty:
+// an index into it is past its len, and a loop over it runs no times —
+// warned once the program is checked. A list's declaration (a local's, a
+// global's, a field's) is Fresh when it is given no value, and Changed by
+// any use that could give it one: all but an index's base, a `.len` or
+// `.cap` read and a loop over it (k.list_ok: the node about to be checked
+// as one of those).
+List_Flag    :: enum u8 { Fresh, Changed, Indexed }
+List_Flags   :: bit_set[List_Flag; u8]
+List_Indexed :: struct { decl: Token_Id, span: Span }
+
+// A use of a list's name: `ok`, one that can't change it; `index`, an index's base.
+tc_list_use :: proc(k: ^TC, decl: Token_Id, t: Type, ok, index: bool, span: Span) {
+    if decl == 0 || !is_partial_array(t) { return }
+    if !ok {
+        k.lists[decl] += {.Changed}
+    } else if index && .Indexed not_in k.lists[decl] {
+        k.lists[decl] += {.Indexed}
+        append(&k.list_indexed, List_Indexed{decl, span})
+    }
+}
+
+// A value of type `t` read out of raw memory (bytes, a take): the lists in
+// it come with the lens written there.
+tc_lists_raw :: proc(k: ^TC, t: Type) {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Fixed_Array:   tc_lists_raw(k, v.elem)
+    case ^Type_Partial_Array: tc_lists_raw(k, v.elem)
+    case ^Type_Slice:         tc_lists_raw(k, v.elem)
+    case ^Type_Union:
+        for _, vs in v.variant_structs { tc_lists_raw(k, vs) }
+    case ^Type_Scope:
+        if v.kind != .Struct || v.is_module || k.lists_raw[v] { return }
+        k.lists_raw[v] = true
+        for f in v.fields {
+            tc_list_use(k, f.decl, f.type_, false, false, {})
+            tc_lists_raw(k, f.type_)
+        }
+    }
+}
+
+tc_lists_report :: proc(k: ^TC) {
+    for u in k.list_indexed {
+        if f := k.lists[u.decl]; .Fresh in f && .Changed not_in f { check_warning(k.c, u.span, WARN_LIST_STAYS_EMPTY, tc_text(u.decl)) }
+    }
+}
+
 // `a[i] = v`: the element, then the value into it.
 tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0) {
     diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
@@ -57,6 +105,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
         return
     }
+    k.list_ok, k.list_index = tc_unparen(k, base_n), true
     ct := tc_check(k, base_n)
     if st := index_struct(ct); st != nil {
         // (`events[f] = v`: the field f is a reference to, written.)

@@ -208,6 +208,7 @@ tc_field_ref :: proc(k: ^TC, n: Tree_Id, owner, at: Type, field: string, span: S
         return Type_Error{}
     }
     tc_set_ref(k, n, {decl, .Field})
+    tc_list_use(k, decl, t, false, false, span)   // (a list reached by reference: it may be given a len through it)
     append(&k.field_ref_types, Field_Ref_Use{owner, t, span})
     return type_field(owner, t)
 }

@@ -751,6 +751,11 @@ example_assert :: fun() {
 // room, so loops and prints see every item, and an append finds no room and
 // stops the program. To fill one from its start, set its len to 0 first. A
 // slicing of a list keeps as much of the list's len as falls in it.
+//
+// An index reaches any of a list's room, and changes no len: `list[5] = 1`
+// on an empty list leaves it empty. A list that is indexed but never given
+// a len anywhere (nothing appends to it or writes its `.len`) gets a
+// warning: it was likely meant as a fixed array, `[8!]i64`.
 example_len :: fun() {
 	list : [8]i64
 	&list ++ 3
