@@ -40,8 +40,8 @@ main :: fun() {
 	at : i64 = 0
 	for at <= text.len {
 		end := line_end(text, at)
-		&lines + trimmed(text[at : end])
-		if end < text.len do &lines + '|'
+		&lines ++ trimmed(text[at : end])
+		if end < text.len do &lines ++ '|'
 		at = end + 1
 	}
 	print("lines:", lines)

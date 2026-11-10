@@ -54,10 +54,10 @@ text_keys :: fun() {
 	map_init(&m, ROOM, &storage)
 	for k in 0:ROOM {
 		keys[k].len = 0
-		&keys[k] + "user "
+		&keys[k] ++ "user "
 		number := k
 		for number > 0 or keys[k].len == 5 {
-			&keys[k] + utf8(i64('0') + number % 10)
+			&keys[k] ++ utf8(i64('0') + number % 10)
 			number /= 10
 		}
 		map_set(&m, keys[k], k)

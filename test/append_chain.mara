@@ -5,47 +5,45 @@ use mara.memory
 
 #allocator Arena_Basic(4 * MB)
 
-//@ expect-output: one a line: C:/code/a.mara 14
+//@ expect-output: chain: C:/code/a.mara 14
+//@ expect-output: a sum: 1 41
 //@ expect-output: next: 2 C:/code/b.mara x/y
 //@ expect-output: struct: 1 3 0
 //@ expect-output: items: 3 1 2 3
 //@ expect-output: through a pointer: 2 dir/one dir/two
 //@ expect-output: as it is: 1 ab
 
-// An add gives nothing back, so adds don't chain: one to a line.
-// `next(&list)` makes a list one longer and gives that item, to write into
-// where it is — `f := next(&files)`, then `f + dir`, `f + "/"`, `f + name`,
-// nothing copied — as it is (as an add's dst is): empty in a list only
-// grown, what it held in one shrunk and filled again. (`&name + a + b`
-// is an error: append_chain_neg.)
+// `&list ++ x` appends, and gives its list back: appends chain, each onto
+// the same list. `++` comes after every arithmetic operator, so `&lines ++
+// pos + 1` appends the sum, one item (written with `+`, it appended pos and
+// then 1). `next(&list)` makes a list one longer and gives that item, to
+// write into where it is — `next(&files) ++ dir ++ "/" ++ name`, nothing
+// copied — as it is: empty in a list only grown, what it held in one shrunk
+// and filled again.
 
 Name :: alias [500]utf8
 Pair :: struct { a: i64  b: i64 }
 
 // A list's next name, from its parts, through the list's pointer.
 add_name :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
-	n := next(names)
-	n + dir
-	n + "/"
-	n + file
+	next(names) ++ dir ++ "/" ++ file
 }
 
 main :: fun() {
 	name : str64
-	&name + "C:/code"
-	&name + "/"
-	&name + "a.mara"
-	print("one a line:", name, name.len)
+	&name ++ "C:/code" ++ "/" ++ "a.mara"
+	print("chain:", name, name.len)
+
+	lines : [8]i64
+	pos := 40
+	&lines ++ pos + 1
+	print("a sum:", lines.len, lines[0])
 
 	files : [10]Name
-	f := next(&files)
-	f + "C:/code"
-	f + "/"
-	f + "b.mara"
+	next(&files) ++ "C:/code" ++ "/" ++ "b.mara"
 	g := next(&files)
-	g + "x"
-	g + '/'
-	g + "y"
+	g ++ "x" ++ '/'
+	g ++ "y"
 	print("next:", files.len, files[0], files[1])
 
 	pairs : [4]Pair
@@ -54,9 +52,7 @@ main :: fun() {
 	print("struct:", pairs.len, pairs[0].a, pairs[0].b)
 
 	nums : [8]i64
-	&nums + 1
-	&nums + 2
-	&nums + 3
+	&nums ++ 1 ++ 2 ++ 3
 	print("items:", nums.len, nums[0], nums[1], nums[2])
 
 	names : [4]Name
@@ -65,8 +61,8 @@ main :: fun() {
 	print("through a pointer:", names.len, names[0], names[1])
 
 	again : [4]str64
-	next(&again) + "a"
+	next(&again) ++ "a"
 	again.len = 0
-	next(&again) + "b"
+	next(&again) ++ "b"
 	print("as it is:", again.len, again[0])
 }

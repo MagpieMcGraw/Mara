@@ -41,7 +41,7 @@ group :: fun(items: []$T, kind: fun(T) -> $K, storage: ^[]byte) -> [K][]T {
 		lists[i] = slice([:c]T, storage)
 	}
 	for item in items {
-		&lists[kind(item)] + item
+		&lists[kind(item)] ++ item
 	}
 	return lists
 }

@@ -924,9 +924,9 @@ hit_use_kind :: proc(t: ^Tree, a: ^Annotations, i: Instance_Id, n: Tree_Id) -> U
             return .Written if Tree_Id(t.a[p]) == cur else .Read
         case .Unary:
             if token_text(build_tokens[t.main[p]]) != "&" { return .Read }
-            // (`&x + v` adds to x.)
+            // (`&x ++ v` adds to x.)
             up := t.parent[p]
-            if t.tag[up] == .Binary && Tree_Id(t.a[up]) == p && token_text(build_tokens[t.main[up]]) == "+" { return .Written }
+            if t.tag[up] == .Binary && Tree_Id(t.a[up]) == p && token_text(build_tokens[t.main[up]]) == "++" { return .Written }
             return .Pointer
         case:
             return .Read

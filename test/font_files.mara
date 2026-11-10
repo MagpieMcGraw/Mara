@@ -48,8 +48,8 @@ main :: fun() -> i64 {
 show_chars :: fun(name: []utf8) -> err {
 	file : [64 * KB]byte
 	path : [64]utf8
-	&path + "fonts/"
-	&path + name
+	&path ++ "fonts/"
+	&path ++ name
 	read_entire_file(path, &file)?
 	check_ttf(&file)?
 	ttf := TTF(&file)

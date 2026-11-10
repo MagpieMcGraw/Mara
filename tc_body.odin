@@ -150,24 +150,21 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
 }
 
 
-// An operator's value on a line of its own, `clean + c`: an error, as a
-// call's dropped value is. A join (mara.core's) makes a new list and leaves
-// its left one as it was, so the message points to the append, `&clean + c`.
+// An operator's value on a line of its own, `clean ++ c`: an error, as a
+// call's dropped value is — unless its left side is a pointer, `&clean ++ c`:
+// what the pointer is to is what an overload's function was called to change.
 tc_dropped_value :: proc(k: ^TC, n: Tree_Id, rt: Type, span: Span) {
     _, is_void := rt.(Type_Void)
     _, is_error := rt.(Type_Error)
     if is_void || is_error { return }
     t := k.t
-    // (A chain's outer join is built in place, an append: tc_note_join_in_place.)
-    callee := tc_callee(k, n)
-    if t.tag[n] == .Binary && (is_core_join(callee) || is_core_append(callee)) {
-        first := tc_unparen(k, Tree_Id(t.a[n]))
+    if t.tag[n] == .Binary && tc_callee(k, n) != nil {
+        left := Tree_Id(t.a[n])
+        if _, through := distinct_base(tc_node_type(k, left)).(^Type_Ptr); through { return }
+        // (A chain's, `a ++ b ++ c`: the one it starts from.)
+        first := tc_unparen(k, left)
         for t.tag[first] == .Binary { first = tc_unparen(k, Tree_Id(t.a[first])) }
-        list := tc_written(k, first)
-        // (`&a + b + c` would append b and then join c onto nothing: for a
-        // chain, the first append only.)
-        hint := fmt.tprintf("&%s", tc_written(k, n)) if first == tc_unparen(k, Tree_Id(t.a[n])) else fmt.tprintf("&%s + ...", list)
-        tc_error(k, span, TYPE_DROPPED_JOIN, tc_written(k, n), list, hint)
+        tc_error(k, span, TYPE_DROPPED_OPERATOR_VALUE, tc_written(k, n), tc_written(k, first), tc_written(k, n))
         return
     }
     tc_error(k, span, TYPE_DROPPED_VALUE, tc_written(k, n))

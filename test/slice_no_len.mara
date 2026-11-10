@@ -37,7 +37,7 @@ Holder :: struct {
 }
 
 fill_one :: fun(room: ^[]i64) {
-	room + 9
+	room ++ 9
 }
 
 count_through :: fun(p: ^[]i64) -> i64 {
@@ -51,7 +51,7 @@ count_copy :: fun(p: ^[]i64) -> i64 {
 
 copy_and_add :: fun(p: ^[]i64) -> []i64 {
 	w := p^
-	&w + 7
+	&w ++ 7
 	return w
 }
 
@@ -61,7 +61,7 @@ count_param :: fun(xs: []i64) -> i64 {
 
 main :: fun(args: [][]utf8) {
 	xs : [16]i64
-	for k in 1..8 do &xs + k
+	for k in 1..8 do &xs ++ k
 
 	// A window inside the len: all of it.
 	v := xs[2:6]
@@ -86,7 +86,7 @@ main :: fun(args: [][]utf8) {
 	// `[:]`: the whole room, its items in it; an append goes after them.
 	whole := xs[:]
 	before := whole.len
-	&whole + 9
+	&whole ++ 9
 	print("whole:", before, whole.cap, "- appended:", whole.len, xs[8], xs.len)
 
 	// A fixed array's slicing has no len: all of it, full. To fill one, its
@@ -96,7 +96,7 @@ main :: fun(args: [][]utf8) {
 	full := buf[2:6]
 	room := buf[0:8]
 	room.len = 0
-	&room + 5
+	&room ++ 5
 	print("fixed:", full.len, full.cap, "- room:", room.len, room, "- under it:", buf[0], buf[1])
 
 	// Nothing appended: still all of its room.
@@ -109,12 +109,12 @@ main :: fun(args: [][]utf8) {
 
 	// As a source: a slicing gives its items; an empty list gives nothing.
 	dst : [8]i64
-	&dst + xs[0:2]
+	&dst ++ xs[0:2]
 	first := dst.len
 	empty : [8]i64
-	&empty + 4
+	&empty ++ 4
 	empty.len = 0
-	&dst + empty
+	&dst ++ empty
 	print("from a slicing:", first, "- from an empty list:", dst.len)
 
 	// A len set is the len.
@@ -137,7 +137,7 @@ main :: fun(args: [][]utf8) {
 
 	// Text: a slicing reads as its characters.
 	name : str64
-	&name + "north gate"
+	&name ++ "north gate"
 	print("text:", name[0:5], name[0:5] == "north")
 
 	// A take from a slicing of an empty list: from its start.

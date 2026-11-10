@@ -39,7 +39,7 @@ Skyline :: struct (atlas_w: i64, atlas_h: i64) {
 
 	// Seed the skyline with one flat floor segment at y=0 spanning the
 	// full width. Every subsequent insert builds the contour on top of it.
-	&nodes + Skyline_Node{0, 0, atlas_w}
+	&nodes ++ Skyline_Node{0, 0, atlas_w}
 }
 
 // Try to place a rect of size (w, h). On success returns the top-left corner

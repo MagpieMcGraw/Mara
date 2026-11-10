@@ -58,9 +58,9 @@ main :: fun() {
 	pairs : [4]Pair
 	for name, k in "abcd" {
 		p : Pair
-		&p.name + name
+		&p.name ++ name
 		p.n = k + 1
-		&pairs + p
+		&pairs ++ p
 	}
 	pair_room : [512]byte
 	kept := filter(pairs, is_even_pair, &pair_room)

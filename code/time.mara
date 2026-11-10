@@ -156,17 +156,17 @@ date_to_unix :: fun(d: Date) -> i64 {
 date_text :: fun(d: Date) -> str64 {
 	out : str64
 	date_digits(&out, d.year, 4)
-	&out + '-'
+	&out ++ '-'
 	date_digits(&out, d.month, 2)
-	&out + '-'
+	&out ++ '-'
 	date_digits(&out, d.day, 2)
-	&out + 'T'
+	&out ++ 'T'
 	date_digits(&out, d.hour, 2)
-	&out + ':'
+	&out ++ ':'
 	date_digits(&out, d.minute, 2)
-	&out + ':'
+	&out ++ ':'
 	date_digits(&out, d.second, 2)
-	&out + 'Z'
+	&out ++ 'Z'
 	return out
 }
 
@@ -175,28 +175,28 @@ date_http_text :: fun(d: Date) -> str64 {
 	days := [7!][]utf8{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	months := [12!][]utf8{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 	out : str64
-	&out + days[d.weekday]
-	&out + ", "
+	&out ++ days[d.weekday]
+	&out ++ ", "
 	date_digits(&out, d.day, 2)
-	&out + ' '
-	&out + months[d.month - 1]
-	&out + ' '
+	&out ++ ' '
+	&out ++ months[d.month - 1]
+	&out ++ ' '
 	date_digits(&out, d.year, 4)
-	&out + ' '
+	&out ++ ' '
 	date_digits(&out, d.hour, 2)
-	&out + ':'
+	&out ++ ':'
 	date_digits(&out, d.minute, 2)
-	&out + ':'
+	&out ++ ':'
 	date_digits(&out, d.second, 2)
-	&out + " GMT"
+	&out ++ " GMT"
 	return out
 }
 
 // A whole number as at least `count` digits, with zeros in front.
 date_digits :: fun(out: ^[]utf8, n: i64, count: i64) {
 	text := int_text(n)
-	for k in text.len:count do out + '0'
-	out + text
+	for k in text.len:count do out ++ '0'
+	out ++ text
 }
 
 // Reads a date: 2026-11-06, then if there's more, a 'T' or a space and 14:57:03,

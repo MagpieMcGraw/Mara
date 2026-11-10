@@ -108,7 +108,7 @@ trim_separators :: fun(path: []utf8) -> []utf8 {
 // as for a path that isn't there.
 c_path :: fun(path: []utf8) -> [512]utf8 {
 	c : [512]utf8
-	if path.len < c.cap do &c + path
+	if path.len < c.cap do &c ++ path
 	return c
 }
 
@@ -325,11 +325,11 @@ net_text :: fun(a: Net_Address) -> str64 {
 	t : str64
 	if net_is_ip4(a) {
 		for k in 12:16 {
-			if k > 12 do &t + "."
-			&t + int_text(i64(a.ip[k]))
+			if k > 12 do &t ++ "."
+			&t ++ int_text(i64(a.ip[k]))
 		}
-		&t + ":"
-		&t + int_text(i64(a.port))
+		&t ++ ":"
+		&t ++ int_text(i64(a.port))
 		return t
 	}
 	// (Eight groups of 16 bits in hex, the longest run of 0 groups — two or
@@ -350,15 +350,15 @@ net_text :: fun(a: Net_Address) -> str64 {
 		}
 		k = run
 	}
-	&t + "["
+	&t ++ "["
 	k = 0
 	for k < 8 {
 		if k == best {
-			&t + "::"
+			&t ++ "::"
 			k += best_len
 			continue
 		}
-		if k > 0 and k != best + best_len do &t + ":"
+		if k > 0 and k != best + best_len do &t ++ ":"
 		g := net_group(a, k)
 		shift: u32 = 16
 		written := false
@@ -366,15 +366,15 @@ net_text :: fun(a: Net_Address) -> str64 {
 			shift -= 4
 			d := (g >> shift) & 0xF
 			if d != 0 or written or shift == 0 {
-				if d < 10 do &t + utf8(48 + d)
-				if d >= 10 do &t + utf8(87 + d)
+				if d < 10 do &t ++ utf8(48 + d)
+				if d >= 10 do &t ++ utf8(87 + d)
 				written = true
 			}
 		}
 		k += 1
 	}
-	&t + "]:"
-	&t + int_text(i64(a.port))
+	&t ++ "]:"
+	&t ++ int_text(i64(a.port))
 	return t
 }
 

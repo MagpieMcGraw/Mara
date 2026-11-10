@@ -46,10 +46,10 @@ main :: fun() {
 	}
 
 	out : [64]utf8
-	&out + "{\"name\":"
+	&out ++ "{\"name\":"
 	json_add_text("Bob \"B\"", &out)
-	&out + ",\"age\":"
-	&out + int_text(31)
-	&out + '}'
+	&out ++ ",\"age\":"
+	&out ++ int_text(31)
+	&out ++ '}'
 	print(out)                                 // {"name":"Bob \"B\"","age":31}
 }

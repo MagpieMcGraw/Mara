@@ -92,8 +92,8 @@ main :: () {
 	tokens := 0
 	rounds : i64 = 0
 	for t, i in next_token(&l) {
-		&words + l.text[t.at : t.at + t.len]
-		&words + '|'
+		&words ++ l.text[t.at : t.at + t.len]
+		&words ++ '|'
 		tokens += 1
 		rounds = i + 1
 	}

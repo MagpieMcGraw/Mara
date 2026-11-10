@@ -33,8 +33,8 @@ clear :: fun(p: ^[4]i64) {
 
 main :: fun() {
 	m := Mouse()
-	&m.pressed + true
-	&m.pressed + true
+	&m.pressed ++ true
+	&m.pressed ++ true
 	m.pressed[4] = true
 	m.pressed = []
 	print("assigned:", m.pressed.len, m.pressed[0], m.pressed[4])
@@ -51,8 +51,8 @@ main :: fun() {
 	print("argument:", count([]))
 
 	nums : [4]i64
-	&nums + 7
-	&nums + 8
+	&nums ++ 7
+	&nums ++ 8
 	clear(&nums)
 	print("through a pointer:", nums.len, nums[0])
 

@@ -24,7 +24,7 @@ else
 
 main :: fun() {
 	b : str64
-	&b + "abcd"
+	&b ++ "abcd"
 	print("before")
 	print(c_len(b[0:2]))
 }

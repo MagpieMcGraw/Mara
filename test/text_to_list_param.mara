@@ -16,7 +16,7 @@ GREETING :: "hello"
 
 copied :: (a: str64) str64 {
 	out := a
-	&out + "de"
+	&out ++ "de"
 	return out
 }
 
@@ -25,12 +25,12 @@ room :: (a: [$N]$T) i64 { return a.cap }
 main :: () {
 	x : str64 = "abc"
 	print("var % | literal % | constant %", copied(x), copied("abc"), copied(GREETING))
-	j := "abc" + "de"
-	c := "abc" + "de" + "f" + '!'
-	g := GREETING + ", you"
+	j := "abc" ++ "de"
+	c := "abc" ++ "de" ++ "f" ++ '!'
+	g := GREETING ++ ", you"
 	print("join % % % | chain % % | const join %", j, j.len, j.cap, c, c.cap, g)
 	tail : [64]utf8
-	&tail + "-0123456789"
-	b := "| indexed" + tail
+	&tail ++ "-0123456789"
+	b := "| indexed" ++ tail
 	print("generic room % | onto a view % %", room("hi"), b, b.len)
 }

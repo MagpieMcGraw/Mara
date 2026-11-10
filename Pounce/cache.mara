@@ -95,7 +95,7 @@ entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
 entry_name :: fun(e: ^Cache_Entry) -> str64 {
     out : str64
     for i in 0:i64(e.name_len) {
-        &out + e.name[i]
+        &out ++ e.name[i]
     }
     return out
 }

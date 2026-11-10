@@ -22,7 +22,7 @@ main :: fun() {
 	name := if given.len > 9 do given[0] else "(default)"
 	print("other way:", name, name.len)
 	letters : str64
-	&letters + "abc"
+	&letters ++ "abc"
 	chosen := if given.len > 1 do letters[:.len] else given[0]
 	print("a list:", chosen)
 }

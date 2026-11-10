@@ -26,7 +26,7 @@ main :: fun() -> err {
 	print("loaded:", true)
 	print("error said:", read_cstring(256, sdl.GetError()).len > 0)
 	base : [512]utf8
-	&base + read_cstring(base.cap - 1, sdl.GetBasePath()?)
+	&base ++ read_cstring(base.cap - 1, sdl.GetBasePath()?)
 	print("base:", base.len > 0)
 	print("back to C:", sdl.SetHint("MARA_TEST_BASE", cstring(base)))
 	_, e := sdl.IOFromFile("no such file.bin", "rb")

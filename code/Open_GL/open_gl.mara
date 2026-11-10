@@ -447,7 +447,7 @@ gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
     name : [64]utf8
     for i in 0:mara_gl_proc_count() {
         name.len = 0
-        &name + os.read_cstring(name.cap - 1, mara_gl_proc_name(i))
+        &name ++ os.read_cstring(name.cap - 1, mara_gl_proc_name(i))
         mara_gl_proc_set(i, get_proc(name))
     }
 }

@@ -55,7 +55,7 @@ example_module :: fun() {
 // m` is, for now, another spelling of `use m`.
 //
 // Uses go at the top, after the `module` line. Nearly every file uses
-// mara.core: text buffers, `&list + x`, comparing texts.
+// mara.core: text buffers, `&list ++ x`, comparing texts.
 //
 // A variable or a param can't take the name of a fun, a type, a module or
 // a variant in sight — its module's or one it uses: `next := 3` beside
@@ -450,7 +450,7 @@ example_distinct :: fun() {
 	m : Meters = 3
 	print(m + m)                           // 6
 	l : Label
-	&l + "hi"
+	&l ++ "hi"
 	print(l)                               // hi
 }
 
@@ -589,11 +589,11 @@ tile_area :: fun(t: Tile) -> f64 { return t.side * t.side }
 Coin :: struct { r: f64 }
 Tile :: struct { side: f64 }
 
-// `overload`: an operator — `+`, `-`, `*`, `==` — on your own types, through a dispatch.
+// `overload`: an operator — `+`, `-`, `*`, `==`, `++` — on your own types, through a dispatch.
 //
 // `overload + plus` makes `a + b` call `plus(a, b)` when a function in the
-// dispatch plus takes them. Core does this for text: `&name + "x"` is its
-// add, `a == b` its equal.
+// dispatch plus takes them. Core does this for text: `&name ++ "x"` is its
+// add, `a == b` its equal. `++` has no meaning but an overload's.
 example_overload :: fun() {
 	v := V2{1, 2} + V2{10, 20}
 	print(v)                               // V2 { x: 11, y: 22 }
@@ -700,7 +700,7 @@ Input_Number :: alias Input.f32
 // `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
 // buffer itself, unsliced. Text C gives back is read with
 // `read_cstring(n, p)` (mara.os), a view of at most n bytes, up to its 0. Appended
-// to a buffer, `&b + read_cstring(b.cap - 1, p)`, it's C text again.
+// to a buffer, `&b ++ read_cstring(b.cap - 1, p)`, it's C text again.
 example_foreign :: fun() {
 	// From code/SDL/sdl.mara:
 	//
@@ -752,8 +752,8 @@ example_assert :: fun() {
 // slicing of a list keeps as much of the list's len as falls in it.
 example_len :: fun() {
 	list : [8]i64
-	&list + 3
-	&list + 4
+	&list ++ 3
+	&list ++ 4
 	print(list.len, list.cap)              // 2 8
 	word := "hello"
 	print(word.len)                        // 5
@@ -763,7 +763,7 @@ example_len :: fun() {
 	room := buf[0:4]
 	print(room.len)                        // 4
 	room.len = 0
-	&room + 9
+	&room ++ 9
 	print(room.len, buf[0])                // 1 9
 }
 
@@ -858,8 +858,8 @@ example_size_of :: fun() {
 example_slice :: fun() {
 	storage : [64]byte
 	xs := slice([:3]i64, &storage)             // room for 3, empty
-	&xs + 5
-	&xs + 7
+	&xs ++ 5
+	&xs ++ 7
 	print(xs.len, xs.cap, xs[1], storage.len)  // 2 3 7 24
 
 	n := let(i64, &storage[32])

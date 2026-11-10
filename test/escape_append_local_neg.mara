@@ -11,8 +11,8 @@ use mara.core
 
 add_local :: fun(list: ^[][]utf8) {
 	text : str64
-	&text + "gone when this returns"
-	list + text
+	&text ++ "gone when this returns"
+	list ++ text
 }
 
 main :: fun() {

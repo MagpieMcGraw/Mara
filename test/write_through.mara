@@ -41,7 +41,7 @@ main :: fun() {
 	next(&counts) = 1
 	next(&counts) += 4
 	xs : [2]i64
-	&xs + 0
+	&xs ++ 0
 	first(&xs) = 8
 	print("calls:", views[0], pairs[0].b, pairs[1].b, counts[0], counts[1], xs[0])
 	q := &n

@@ -165,7 +165,7 @@ draw_state_append :: fun(
 			color = vis.color,
 			layer = vis.texture.layer,
 		}
-		&batch.instances + instance
+		&batch.instances ++ instance
 	}
 }
 
@@ -195,7 +195,7 @@ append_one :: fun(
 		color = vis.color,
 		layer = vis.texture.layer,
 	}
-	&batch.instances + instance
+	&batch.instances ++ instance
 }
 
 draw_state_reset :: fun(state: ^DrawState) {

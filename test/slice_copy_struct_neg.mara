@@ -18,7 +18,7 @@ clear_first :: fun(items: []i64) {
 
 main :: fun() {
 	list : [4]i64
-	&list + 5
+	&list ++ 5
 	clear_first(list)
 	print(list[0])
 }

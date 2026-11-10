@@ -30,7 +30,7 @@ main :: () {
 
 	storage : [64]byte
 	views := slice([:1][]i64, &storage)
-	&views + [1, 2, 3][:]
+	&views ++ [1, 2, 3][:]
 	print("appended:", views.len, views[0].len, views[0][2])
 
 	bytes : [32]byte

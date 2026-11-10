@@ -19,16 +19,16 @@ main :: fun(args: [][]utf8) -> i64 {
 		for true {
 			e := file_read(standard_input(), &chunk)
 			if bool(e) or chunk.len == 0 do break
-			&got + chunk
+			&got ++ chunk
 		}
 		text : []utf8 = got
 		print("child got:", text)
 		return 3
 	}
 	command : str256
-	&command + "\""
-	&command + args[0]
-	&command + "\" child"
+	&command ++ "\""
+	&command ++ args[0]
+	&command ++ "\" child"
 	p, e := process_start(command)
 	if bool(e) {
 		print("start failed:", e)
@@ -51,7 +51,7 @@ main :: fun(args: [][]utf8) -> i64 {
 			return 1
 		}
 		if chunk.len == 0 do break
-		&out + chunk
+		&out ++ chunk
 	}
 	text : []utf8 = out
 	print(text)

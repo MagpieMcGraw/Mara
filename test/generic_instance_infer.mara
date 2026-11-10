@@ -44,6 +44,6 @@ main :: fun() {
 	print("a method's:", (&c).again(0))
 
 	hs : [2]Holder(i64)
-	&hs + a
+	&hs ++ a
 	print("in a list:", holders_first(hs))
 }

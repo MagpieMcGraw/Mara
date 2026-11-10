@@ -73,7 +73,7 @@ work :: fun(job: ^Job) {
 
 main :: () {
 	numbers : [1000000]i64
-	for k in 1..1000000 do &numbers + k
+	for k in 1..1000000 do &numbers ++ k
 	total := Total()
 	jobs : [8]Job
 	per := 125000
@@ -82,7 +82,7 @@ main :: () {
 		job.numbers = numbers[k * per : (k + 1) * per]
 		job.total = &total
 		job.arena = &total   // (the thread's own, once it's run)
-		&jobs + job
+		&jobs ++ job
 	}
 	threads : [8]Thread
 	for k in 0:8 {
@@ -91,7 +91,7 @@ main :: () {
 			print("thread_start failed:", e)
 			return
 		}
-		&threads + t
+		&threads ++ t
 	}
 	print("started % threads", threads.len)
 	for k in 0:8 do thread_wait(&threads[k])
@@ -100,8 +100,8 @@ main :: () {
 	grand := 0
 	same := true
 	for k in 0:8 {
-		if k > 0 do &sums + " "
-		&sums + int_text(jobs[k].sum)
+		if k > 0 do &sums ++ " "
+		&sums ++ int_text(jobs[k].sum)
 		grand += jobs[k].sum
 		if jobs[k].last != 16769025 do same = false
 	}

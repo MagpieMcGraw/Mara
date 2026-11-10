@@ -71,11 +71,11 @@ main :: fun() {
 	print("run-time indices:", xs[0].tag, xs[1].tag, xs[2].tag)
 	p := Pa{all 0}
 	q := Pa{all 0}
-	&p.items + 1
-	&q.items + 2
-	&q.items + 3
+	&p.items ++ 1
+	&q.items ++ 2
+	&q.items ++ 3
 	p, q = q, p
-	&p.items + 9
+	&p.items ++ 9
 	print("partial arrays:", p.items.len, p.items[0], p.items[2], q.items.len, q.items[0])
 	x, x = x, x
 	print("self:", x.tag)

@@ -13,8 +13,8 @@ use mara.core
 main :: fun() {
 	a := "hello"
 	name : str64
-	&name + "hel"
-	&name + "lo"
+	&name ++ "hel"
+	&name ++ "lo"
 	s := "say hello"
 	line := s[4:9]
 	print(a == "hello", a == name, name == line, a != "help", a == "hell", a != a)

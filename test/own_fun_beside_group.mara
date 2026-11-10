@@ -18,7 +18,7 @@ min :: fun(a: $T, b: T) -> i64 { return 7 }
 main :: fun() {
 	abs :: fun(a: []utf8) -> i64 { return 9 }
 	s : str64
-	&s + "hi"
+	&s ++ "hi"
 	one : i64 = 1
 	two : i64 = 2
 	print("own:", add(1, 2), min(1, 2), abs("x"), s, max(one, two))

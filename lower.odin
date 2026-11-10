@@ -1058,9 +1058,6 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         if want == .Value { return {v = graph_read(b, p, ty, span), ok = true} }
         return {v = p, place = true, ok = true}
     case .Binary:
-        if given := k.annot.args[tc_sid(k, n)] or_else nil; len(given) == 2 && given[0].kind == .Built_Into {
-            return lw_join_in_place(k, n, tc_callee(k, n), want, w, dest, temp, span)
-        }
         return lw_binary_op(k, n, build_tokens[t.main[n]].kind, span, Tree_Id(t.a[n]), Tree_Id(t.b[n]), want, w, ty)
     case .Call, .Method_Call:
         return lw_call(k, n, want, w, dest, temp, temp_span)
@@ -1203,40 +1200,6 @@ lw_hold :: proc(k: ^TC, n: Tree_Id, span: Span) -> Operand {
     lw_store(k, n, t, r, d, span)
     graph_build_typed(b, slot, t)
     return graph_var(b, slot, t, span)
-}
-
-// `(x + a) + b`, a join onto a join (tc_note_join_in_place): built where it
-// goes — a fresh destination, else a temporary (`x = y + "-" + x` would
-// read x after its first part overwrote it: an assignment's is `temp`) —
-// the left join's result there first (a join onto a join itself: there in
-// place too), then b appended into it by `add`, the call the checker chose,
-// as `&it + b` would: a chain builds one list, x copied once, no list per
-// `+`.
-lw_join_in_place :: proc(k: ^TC, n: Tree_Id, add: ^Type_Scope, want: Build_Want, w: Written, dest: Dest, temp: bool, span: Span) -> Built {
-    b := k.gb
-    t := k.t
-    jt := tc_node_type(k, n)
-    left, right := Tree_Id(t.a[n]), Tree_Id(t.b[n])
-    into := want == .Into && !temp
-    target := dest
-    slot := NO_NODE
-    if !into {
-        slot = graph_slot(b, "join", nil, span)
-        target = graph_dest_var(slot, nil)
-    }
-    r := lw_expr(k, left, .Into, w, dest = target)
-    at := graph_dest_place(b, target, span)
-    if !r.into { graph_build_write_at(b, at, lw_value(k, r, left, tc_node_type(k, left)), span) }
-    addr := graph_op_value(b, .Address, w, span, type_ptr(jt), "", at)
-    rr := lw_expr(k, right, .Either, w)
-    a0 := graph_build_as(b, addr, false, type_ptr(jt), span, span, {sig = add, param = 0})
-    a1 := graph_build_as(b, rr.v, rr.place, tc_node_type(k, right), tree_span(t, right), span, {sig = add, param = 1})
-    graph_call_op(b, .Call, w, span, add, fn_primary_return(add), a0, a1)
-    if into { return {ok = true, into = true} }
-    graph_build_typed(b, slot, jt)
-    p := graph_var(b, slot, jt, span)
-    if want == .Value { return {v = graph_read(b, p, jt, span), ok = true} }
-    return {v = p, place = true, ok = true}
 }
 
 // A unary operation (tc_unary); `of`: the operand in place of its own.
@@ -1558,8 +1521,6 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
                 } else {
                     r = lw_expr(k, a, .Either, .Implied, dest = use, temp_span = use_at)
                 }
-            case .Built_Into:
-                lw_fail(k, a, "a join's left side built into a call (lw_join_in_place's)")
             case .Written, .Receiver:
                 held_big := false
                 if held == NO_NODE { r, held_big = lw_big_held(k, a, at, w, span) }

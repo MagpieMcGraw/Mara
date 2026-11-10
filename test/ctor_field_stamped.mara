@@ -30,10 +30,10 @@ Outer :: struct {
 
 main :: fun() {
 	o := Outer()
-	&o.text.chars + u32(7)
-	&o.middle.inner.name + "ab"
+	&o.text.chars ++ u32(7)
+	&o.middle.inner.name ++ "ab"
 	o.middle.list.len += 1
-	&o.middle.list[0].name + "cd"
-	&o.middle.pair[1].name + "ef"
+	&o.middle.list[0].name ++ "cd"
+	&o.middle.pair[1].name ++ "ef"
 	print(o.running, o.text.chars.len, o.text.chars.cap, o.middle.inner.name, o.middle.list[0].name, o.middle.pair[1].name)
 }

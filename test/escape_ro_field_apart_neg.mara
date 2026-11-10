@@ -17,7 +17,7 @@ touch :: (s: ^Src) {
 
 copies :: (names: [][]utf8) -> [4][]utf8 {
 	out : [4][]utf8
-	for n in names { &out + n }
+	for n in names { &out ++ n }
 	return out
 }
 

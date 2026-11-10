@@ -60,7 +60,7 @@ main :: fun() {
 	// spacing (space before `&`, glued after) with a dedicated parse error.
 	// First-statement-on-line is fine:
 	nums : [8]i64
-	&nums + 7
+	&nums ++ 7
 	assert(nums.len == 1) assert(nums[0] == 7)
 
 	// Unambiguous spacings of binary AND all still parse: symmetric, glued,

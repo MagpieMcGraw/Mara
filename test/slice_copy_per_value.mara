@@ -30,7 +30,7 @@ hold :: fun(numbers: []i64) -> Holder {
 
 fill :: fun(storage: ^[]byte) -> Holder {
 	holder := Holder{numbers = slice([:4]i64, storage)}
-	&holder.numbers + 7
+	&holder.numbers ++ 7
 	return holder
 }
 
@@ -44,8 +44,8 @@ File :: class (
 }
 
 lex :: fun(file: ^File) {
-	file.lines + file.pos
-	file.lines + file.data.len
+	file.lines ++ file.pos
+	file.lines ++ file.data.len
 	file.pos += 1
 }
 
@@ -61,7 +61,7 @@ start :: fun(decoder: ^Decoder, data: []byte) {
 }
 
 step :: fun(decoder: ^Decoder) {
-	&decoder.values + i64(decoder.data[decoder.at])
+	&decoder.values ++ i64(decoder.data[decoder.at])
 	decoder.at += 1
 }
 
@@ -70,13 +70,13 @@ main :: fun() {
 	filled := fill(&buf)
 	print("filled:", filled.numbers.len, filled.numbers[0])
 	nums : [4]i64
-	&nums + 1
-	&nums + 2
+	&nums ++ 1
+	&nums ++ 2
 	print("held:", hold(nums).numbers.len)
 
 	texts : [2][8]utf8
-	&texts + "ab"
-	&texts + "c"
+	&texts ++ "ab"
+	&texts ++ "c"
 	lines : [16]i64
 	line_slice := lines[0:lines.cap]
 	line_slice.len = 0
@@ -88,8 +88,8 @@ main :: fun() {
 	print("lexed:", line_slice.len, line_slice[1], files[0].data)
 
 	bytes : [4]byte
-	&bytes + 3
-	&bytes + 9
+	&bytes ++ 3
+	&bytes ++ 9
 	decoder : Decoder
 	start(&decoder, bytes)
 	step(&decoder)

@@ -38,7 +38,7 @@ main :: fun() {
 	print("this program's directory ends with a separator:", dir.len > 0)
 
 	// A file beside it: the directory, then the file's name.
-	&dir + "exe_path.mara"
+	&dir ++ "exe_path.mara"
 	_, re := read_entire_file(dir, &storage)
 	print("its source beside it reads:", not re)
 }

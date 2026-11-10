@@ -410,42 +410,6 @@ TC_In_Range :: struct {
     includes_end:  bool,   // written `..`: x <= hi; `:`: x < hi
 }
 
-// `(x + a) + b`, `+` a join both times (mara.core's join, join_item): the
-// left one's result is a temporary nothing else sees, so b is appended into
-// it in place — the call is the add `&it + b` would make, the left built
-// into its result (Built_Into: lw_join_in_place). A chain then builds one
-// list, copying x once.
-tc_note_join_in_place :: proc(k: ^TC, at, left, right: Tree_Id, callee: ^Type_Scope, lt, rt: Type, span: Span) {
-    if at == 0 || !is_core_join(callee) { return }
-    l := tc_unparen(k, left)
-    if k.t.tag[l] != .Binary { return }
-    // (The left a join, or a join onto a join, in place itself.)
-    given := k.annot.args[tc_sid(k, l)] or_else nil
-    in_place := len(given) == 2 && given[0].kind == .Built_Into
-    if lc := tc_callee(k, l); !in_place && (lc == nil || !is_core_join(lc)) { return }
-    if add, ok := tc_operator_overload(k, .Plus, type_ptr(lt), rt, span); ok && !is_core_join(add) {
-        tc_set_callee(k, at, add)
-        tc_set_args(k, at, {{left, .Built_Into, -1}, {right, .Written, -1}})
-    }
-}
-
-// Whether a fun is one of mara.core's appends, `&list + x`: they give
-// nothing back.
-is_core_append :: proc(f: ^Type_Scope) -> bool {
-    if f == nil || f.home_package != "mara.core" { return false }
-    switch f.source_name if f.source_name != "" else f.name {
-    case "utf8_add", "utf8_add_item", "slice_add", "slice_add_item": return true
-    }
-    // (A generic one's instance: by its name, as is_core_join.)
-    return strings.has_prefix(f.name, "mara_core_slice_add__") || strings.has_prefix(f.name, "mara_core_slice_add_item__")
-}
-
-// Whether a fun is an instance of mara.core's join or join_item.
-is_core_join :: proc(f: ^Type_Scope) -> bool {
-    if f == nil || f.home_package != "mara.core" { return false }
-    return strings.has_prefix(f.name, "mara_core_join__") || strings.has_prefix(f.name, "mara_core_join_item__")
-}
-
 tc_in_range :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
@@ -577,28 +541,32 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     // (A type of its own over a number takes its base's operators: tc_own_op.)
     _, l_own := own_number(lt)
     _, r_own := own_number(rt)
-    if !and_or && (l_own || r_own) {
+    if !and_or && op != .Plus_Plus && (l_own || r_own) {
         return tc_own_op(k, op, wrapping, span, left, right, lt, rt)
     }
     // (utf8 takes arithmetic and bitwise operators as u8 does: tc_utf8_op —
-    // with a number or utf8 on the other side; `&buf + ch` is an append.)
+    // with a number or utf8 on the other side.)
     scalar :: proc(t: Type) -> bool { return is_utf8_type(t) || is_numeric(t) || is_any(t) }
-    if !and_or && !is_comparison_op(op) && in_range == nil && (is_utf8_type(lt) || is_utf8_type(rt)) && scalar(lt) && scalar(rt) {
+    if !and_or && op != .Plus_Plus && !is_comparison_op(op) && in_range == nil && (is_utf8_type(lt) || is_utf8_type(rt)) && scalar(lt) && scalar(rt) {
         return tc_utf8_op(k, op, span, left, right, lt, rt)
     }
     if wrapping && (!is_wrap_operand(lt) || !is_wrap_operand(rt)) {
         tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER, op_str(op), type_name(lt), type_name(rt))
         return Type_Error{}
     }
-    // (An operand no number: an `overload`'s function, when one fits.)
-    if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
+    // (An operand no number: an `overload`'s function, when one fits. `++`
+    // has no meaning but an overload's.)
+    if !and_or && (op == .Plus_Plus || !is_numeric(lt) || !is_numeric(rt)) {
         if callee, found := tc_operator_overload(k, op, lt, rt, span); found {
             tc_set_callee(k, at, callee)
             tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
             tc_settle(k, left, callee.params[0].type_)
             tc_settle(k, right, callee.params[1].type_)
-            tc_note_join_in_place(k, at, left, right, callee, lt, rt, span)
             return fn_primary_return(callee)
+        }
+        if op == .Plus_Plus {
+            tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT_2, "++", type_name(solidify_type(lt)), type_name(solidify_type(rt)))
+            return Type_Error{}
         }
     }
     // (A byte is memory, not a number: arithmetic and bitwise operators
@@ -655,45 +623,6 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         t = Type_Bool{}
     case .Plus:
         if !is_numeric(lt) || !is_numeric(rt) {
-            // (`&buf + x` on a fixed array: no overload is missing — it can't grow.)
-            if hint := tc_partial_hint(k, left, lt); hint != "" {
-                tc_error(k, span, TYPE_APPEND_TO_FIXED_ARRAY, type_name(lt), type_name(rt), hint)
-                return Type_Error{}
-            }
-            // (`&list + a + b`: the left an append, which gives nothing back.)
-            if l := tc_unparen(k, left); tr.tag[l] == .Binary && is_core_append(tc_callee(k, l)) {
-                target, item := Tree_Id(tr.a[l]), Tree_Id(tr.b[l])
-                if is_numeric(rt) && is_numeric(tc_node_type(k, item)) {
-                    tc_error(k, span, TYPE_APPEND_CHAIN_SUM, tc_written(k, l), tc_written(k, right),
-                             tc_written(k, target), tc_written(k, item), tc_written(k, right))
-                } else {
-                    tc_error(k, span, TYPE_APPEND_CHAIN, tc_written(k, l), tc_written(k, right))
-                }
-                return Type_Error{}
-            }
-            // (A view joined: it has no room to make the new one of.)
-            if is_slice_type(lt) {
-                tc_error(k, span, TYPE_JOIN_VIEW, type_name(lt))
-                return Type_Error{}
-            }
-            // (`&p + x`, p a pointer to a list already: p itself meant.)
-            if pt, is_ptr := distinct_base(lt).(^Type_Ptr); is_ptr {
-                if inner, to_ptr := distinct_base(pt.elem).(^Type_Ptr); to_ptr && loop_elem(inner.elem) != nil {
-                    target := tc_written(k, tc_unparen(k, left))
-                    name := target[1:] if strings.has_prefix(target, "&") else target
-                    tc_error(k, span, TYPE_APPEND_POINTER_TO_POINTER, target, type_name(lt), name, type_name(pt.elem), name, tc_written(k, right))
-                    return Type_Error{}
-                }
-            }
-            // (A view onto a list of lists: an item takes it, not the list.)
-            if pt, is_ptr := distinct_base(lt).(^Type_Ptr); is_ptr {
-                if items := loop_elem(pt.elem); items != nil && arg_incompatible(items, rt) && !types_incompatible(items, rt) {
-                    target, item := tc_written(k, tc_unparen(k, left)), tc_written(k, right)
-                    list := target[1:] if strings.has_prefix(target, "&") else fmt.tprintf("%s^", target)
-                    tc_error(k, span, TYPE_APPEND_VIEW_TO_LISTS, target, item, type_name(items), list, item, target, item)
-                    return Type_Error{}
-                }
-            }
             tc_error(k, span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT, type_name(lt), type_name(rt))
             return Type_Error{}
         }

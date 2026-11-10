@@ -14,19 +14,19 @@ use mara.core
 
 main :: fun() {
 	nums : [8]i64
-	&nums + [1, 2, 3]
-	&nums + 4
+	&nums ++ [1, 2, 3]
+	&nums ++ 4
 	print("items:", nums, nums.len)
 	bytes : [8]u8
-	&bytes + [250, 251]
+	&bytes ++ [250, 251]
 	print("bytes:", bytes, bytes.len)
 
 	storage : [64]byte
 	views := slice([:2][]i64, &storage)
-	&views + [1, 2, 3]
+	&views ++ [1, 2, 3]
 	print("one view:", views.len, views[0].len, views[0][2])
 	list : [4][]i64
-	&list + [4, 5]
-	&list + [6]
+	&list ++ [4, 5]
+	&list ++ [6]
 	print("views in a list:", list.len, list[0], list[1])
 }

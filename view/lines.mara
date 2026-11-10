@@ -106,13 +106,13 @@ lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 	for ch in s {
 		if ch == '\t' {
 			for _ in 0:TAB_SPACES {
-				&l.text + ' '
+				&l.text ++ ' '
 			}
 		elif ch != '\r'
-			&l.text + ch
+			&l.text ++ ch
 		}
 	}
-	&l.lines + Line{at = at, len = l.text.len - at, style = style, state = state, link_at = 0, link_len = 0, fold_at = 0, fold_len = 0, hidden = false}
+	&l.lines ++ Line{at = at, len = l.text.len - at, style = style, state = state, link_at = 0, link_len = 0, fold_at = 0, fold_len = 0, hidden = false}
 }
 
 // Line k's text.
@@ -133,7 +133,7 @@ lines_link :: fun(l: ^Lines, link: []utf8) {
 	ln := &l.lines[l.lines.len - 1]
 	ln.link_at = l.text.len
 	ln.link_len = link.len
-	&l.text + link
+	&l.text ++ link
 }
 
 // The n lines from k — a fun's signature — made a fold's: clicked, they show
@@ -186,7 +186,7 @@ lines_lit :: fun(l: ^Lines, k: i64) -> bool {
 // The status line: its text, in a style (as much as it holds).
 lines_status :: fun(l: ^Lines, s: []utf8, style: i64) {
 	l.status.len = 0
-	&l.status + s[0 : min_int(s.len, l.status.cap)]
+	&l.status ++ s[0 : min_int(s.len, l.status.cap)]
 	l.status_style = style
 }
 

@@ -17,15 +17,15 @@ most_first :: fun(a: Fruit, b: Fruit) -> bool { return a.count > b.count }
 
 main :: fun() {
 	numbers : [8]i64
-	&numbers + 5
-	&numbers + 2
-	&numbers + 9
+	&numbers ++ 5
+	&numbers ++ 2
+	&numbers ++ 9
 	sort(&numbers)
 	print(numbers)                     // [2, 5, 9]
 
 	fruit : [8]Fruit
-	&fruit + Fruit{name = "plums", count = 2}
-	&fruit + Fruit{name = "apples", count = 7}
+	&fruit ++ Fruit{name = "plums", count = 2}
+	&fruit ++ Fruit{name = "apples", count = 7}
 	sort_by(&fruit, most_first)
 	print(fruit[0].name)               // apples
 }

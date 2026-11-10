@@ -42,40 +42,40 @@ room_twice :: fun(a: [$N]$T) -> i64 {
 
 main :: fun() {
 	cwd : str64
-	&cwd + "C:/Code"
-	code := cwd + "/code"
+	&cwd ++ "C:/Code"
+	code := cwd ++ "/code"
 	print("joined: % % | kept: % %", code, code.cap, cwd, cwd.len)
 
-	file := code + '/' + "core.mara"
+	file := code ++ '/' ++ "core.mara"
 	print("chained:", file, file.len)
 
 	nums : [64]i64
-	&nums + 1
-	more := nums + 2 + 3
+	&nums ++ 1
+	more := nums ++ 2 ++ 3
 	print("items:", nums.len, more.len, more[2], more.cap)
 
-	print("compare:", cwd + "/code" == "C:/Code/code")
+	print("compare:", cwd ++ "/code" == "C:/Code/code")
 
 	x : str64
-	&x + "old"
+	&x ++ "old"
 	y : str64
-	&y + "new"
-	x = y + "-" + "and-" + x
+	&y ++ "new"
+	x = y ++ "-" ++ "and-" ++ x
 	print("assigned:", x)
-	show(y + "/" + "z")
+	show(y ++ "/" ++ "z")
 
 	whole : str64
-	&whole + "C:/Code/rest"
+	&whole ++ "C:/Code/rest"
 	dir := whole[0 : 7]
-	made := Path(dir) + "/" + "x.mara"
+	made := Path(dir) ++ "/" ++ "x.mara"
 	small : str64
-	&small + "abc"
-	wide := Path(small) + "def"
+	&small ++ "abc"
+	wide := Path(small) ++ "def"
 	print("made: % % | wider: % % %", made, made.cap, wide, wide.cap, small)
 
 	big : [1000]utf8
-	&big + "start"
-	long := big + "-a" + "-b" + "-c"
+	&big ++ "start"
+	long := big ++ "-a" ++ "-b" ++ "-c"
 	print("big:", long, long.len, long.cap)
 
 	three : [3!]i64 = {1, 2, 3}

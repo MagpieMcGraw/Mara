@@ -20,8 +20,8 @@ Bag :: struct {
 
 bag_of :: fun(storage: ^[]byte) -> Bag {
 	bag := Bag{items = slice([:4]i64, storage)}
-	&bag.items + 7
-	&bag.items + 8
+	&bag.items ++ 7
+	&bag.items ++ 8
 	return bag
 }
 
@@ -56,22 +56,22 @@ main :: fun() {
 	print("take:", bag.items.len, bag.items[0], bag.items[1])
 
 	list : [8]i64
-	&list + 1
-	&list + 2
+	&list ++ 1
+	&list ++ 2
 	view := list[0 : 2]   // (a slice of a mutable local)
 	view[0] = 5
 	print("local:", list[0], view[0])
 
-	&list + 3
+	&list ++ 3
 	set_first(&list, 9)
 	print("mutable param:", list[0], list.len)
 
 	print("read:", sum(list), list.len)
 
 	src : [2]byte
-	&src + u8(4)
+	&src ++ u8(4)
 	dst : [2]byte
-	&dst + u8(0)
+	&dst ++ u8(0)
 	copy_first(src, &dst)
 	print("byte:", dst[0])
 }

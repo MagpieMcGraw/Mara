@@ -31,8 +31,8 @@ first :: fun(list: ^[]Pair) -> ^Pair { return &list[0] }
 main :: fun() {
 	storage : [16384]byte
 	names : [2][]utf8
-	&names + "assign_through.mara"
-	&names + "assign_through.mara"
+	&names ++ "assign_through.mara"
+	&names ++ "assign_through.mara"
 	views, e := load(names, &storage)
 	print("views:", views.len, views[0].len == views[1].len and views[0].len > 0, e)
 

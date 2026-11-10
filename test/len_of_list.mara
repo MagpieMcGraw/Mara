@@ -19,14 +19,14 @@ Holder :: struct {
 
 main :: fun() {
 	l : [8]i32
-	&l + 4
-	&l + 5
+	&l ++ 4
+	&l ++ 5
 	print("list:", len(l), cap(l))
 	s : str64
-	&s + "hello"
+	&s ++ "hello"
 	print("named list:", len(s), cap(s))
 	h : Holder
-	&h.name + "ann"
+	&h.name ++ "ann"
 	print("field:", len(h.name), cap(h.name))
 	f : [3!]i32 = [1, 2, 3]
 	print("fixed:", len(f), cap(f))

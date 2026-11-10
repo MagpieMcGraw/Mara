@@ -26,7 +26,7 @@ use mara.memory
 main :: fun() {
 	n := 1
 	line : str1024
-	&line + "a longer line than the literal"
+	&line ++ "a longer line than the literal"
 	a := if n == 0 do "short" else line
 	print("text then list:", a, a.len)
 	b := if n != 0 do "short" else line
@@ -36,8 +36,8 @@ main :: fun() {
 
 	three : [3!]i32 = [1, 2, 3]
 	list : [8]i32
-	&list + 4
-	&list + 5
+	&list ++ 4
+	&list ++ 5
 	d := if n == 0 do three else list
 	print("fixed then list:", d, d.len)
 	e := if n != 0 do three else list

@@ -41,7 +41,7 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 	if re do return false
 	if own {
 		lines_add(&ui.crash, "mara view itself crashed the last time it ran. Its report, from view/crash.txt:", STYLE_TITLE)
-		&ui.crash_dir + get_dir(path)
+		&ui.crash_dir ++ get_dir(path)
 	}
 	text : []utf8 = ui.crash_text
 	end := text.len
@@ -85,7 +85,7 @@ own_crash_look :: fun(ui: ^Ui) {
 		if crash_load(ui, ui.own_crash_path, true) do crash_show(ui)
 	}
 	ui.own_crash_seen.len = 0
-	&ui.own_crash_seen + now
+	&ui.own_crash_seen ++ now
 	layout_save(ui)
 }
 
@@ -161,8 +161,8 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	// (The window's own calls: its sources, beside it — a path not already whole.)
 	full : [2000]utf8
 	whole := file.len > 1 and (file[1] == ':' or file[0] == '/' or file[0] == '\\')
-	if ui.crash_dir.len > 0 and not whole do &full + ui.crash_dir
-	&full + file[0 : min_int(file.len, 1000)]
+	if ui.crash_dir.len > 0 and not whole do &full ++ ui.crash_dir
+	&full ++ file[0 : min_int(file.len, 1000)]
 	editor_open(ui, &ui.crash, full, line)
 }
 
@@ -176,13 +176,13 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 		return
 	}
 	command : [3000]utf8
-	&command + "\""
-	&command + ui.editor
-	&command + "\" \""
-	&command + file
-	&command + ":"
-	&command + int_text(line)
-	&command + "\""
+	&command ++ "\""
+	&command ++ ui.editor
+	&command ++ "\" \""
+	&command ++ file
+	&command ++ ":"
+	&command ++ int_text(line)
+	&command ++ "\""
 	pr, e := os.process_start(command)   // (the buffer itself: a 0 follows its text)
 	if e {
 		lines_status(l, "The editor didn't start: mara editor names it.", STYLE_BAD)
@@ -204,14 +204,14 @@ editor_load :: fun(ui: ^Ui) {
 		if text[n - 1] != '\n' and text[n - 1] != '\r' do break
 		n -= 1
 	}
-	&ui.editor + text[0 : n]
+	&ui.editor ++ text[0 : n]
 }
 
 // The editor a "-editor <program>" line names, kept in editor.txt for every
 // window.
 editor_set :: fun(ui: ^Ui, program: []utf8) {
 	ui.editor.len = 0
-	&ui.editor + program[0 : min_int(program.len, ui.editor.cap)]
+	&ui.editor ++ program[0 : min_int(program.len, ui.editor.cap)]
 	_ = write_entire_file(ui.editor_path, ui.editor)
 	crash_status(ui)
 	ui.dirty = true

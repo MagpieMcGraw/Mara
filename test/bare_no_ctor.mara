@@ -40,9 +40,9 @@ main :: fun() {
 	a.doubled = 18
 	print("written", a.minimum_fields, a.doubled)
 	o : Outer
-	&o.inner.buf + "abc"
+	&o.inner.buf ++ "abc"
 	o.items.len += 1
-	&o.items[0].buf + "xy"
-	&o.fixed[1].buf + "z"
+	&o.items[0].buf ++ "xy"
+	&o.fixed[1].buf ++ "z"
 	print("stamped", o.inner.buf, o.items[0].buf, o.fixed[1].buf)
 }

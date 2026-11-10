@@ -2139,6 +2139,7 @@ graph_size_of :: proc(t: Type) -> Maybe(Const_Value) {
 graph_token_text :: proc(op: Token_Kind) -> string {
     #partial switch op {
     case .Plus:          return "+"
+    case .Plus_Plus:     return "++"
     case .Minus:         return "-"
     case .Star:          return "*"
     case .Slash:         return "/"

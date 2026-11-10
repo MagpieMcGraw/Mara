@@ -81,11 +81,11 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	_, e := read_entire_file(path, &p.text)
 	if e == Open_Failed {
 		p.missing = true
-		&p.problem + "No profile.txt here yet: build the program with `mara build -profile time` and run it."
+		&p.problem ++ "No profile.txt here yet: build the program with `mara build -profile time` and run it."
 		return
 	}
 	if e {
-		&p.problem + "profile.txt couldn't be read (or is over 8 MB)."
+		&p.problem ++ "profile.txt couldn't be read (or is over 8 MB)."
 		return
 	}
 	text : []utf8 = p.text
@@ -103,14 +103,14 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 		}
 		if line.len == 0 do continue
 		if p.columns.len == 0 {
-			if not read_columns(p, line) and p.header.len < p.header.cap do &p.header + line
+			if not read_columns(p, line) and p.header.len < p.header.cap do &p.header ++ line
 			if p.problem.len > 0 do return
 			continue
 		}
 		if not profile_row(p, line) do return
 	}
 	if p.columns.len == 0 {
-		&p.problem + "profile.txt has no line naming its columns: not a profile this window knows."
+		&p.problem ++ "profile.txt has no line naming its columns: not a profile this window knows."
 		return
 	}
 	if p.sort_by >= p.columns.len do p.sort_by = -1
@@ -128,8 +128,8 @@ read_columns :: fun(p: ^Profile, line: Field) -> bool {
 	for at < text.len {
 		w := next_word(text, at)
 		if w.len == 0 do break
-		if words.len > 0 and words.len < words.cap do &words + ' '
-		if words.len + w.len <= words.cap do &words + text[w.at : w.at + w.len]
+		if words.len > 0 and words.len < words.cap do &words ++ ' '
+		if words.len + w.len <= words.cap do &words ++ text[w.at : w.at + w.len]
 		at = w.at + w.len
 	}
 	if words.len < 8 do return false
@@ -154,11 +154,11 @@ read_columns :: fun(p: ^Profile, line: Field) -> bool {
 			}
 		}
 		if found < 0 or p.columns.len == p.columns.cap {
-			&p.problem + "profile.txt has a column this window doesn't know: "
-			&p.problem + words[at : words.len]
+			&p.problem ++ "profile.txt has a column this window doesn't know: "
+			&p.problem ++ words[at : words.len]
 			return true
 		}
-		&p.columns + found
+		&p.columns ++ found
 		at += column_title(found).len + 1
 	}
 	return true
@@ -167,7 +167,7 @@ read_columns :: fun(p: ^Profile, line: Field) -> bool {
 // A row read off its line; false when it isn't one (p.problem says).
 profile_row :: fun(p: ^Profile, line: Field) -> bool {
 	if p.rows.len == MAX_ROWS {
-		&p.problem + "profile.txt has more funs than this window shows (20000)."
+		&p.problem ++ "profile.txt has more funs than this window shows (20000)."
 		return false
 	}
 	row := Row{all 0}
@@ -191,11 +191,11 @@ profile_row :: fun(p: ^Profile, line: Field) -> bool {
 		}
 	}
 	if not ok {
-		&p.problem + "A row of profile.txt isn't one this window knows: "
-		&p.problem + text[0 : min_int(text.len, 200)]
+		&p.problem ++ "A row of profile.txt isn't one this window knows: "
+		&p.problem ++ text[0 : min_int(text.len, 200)]
 		return false
 	}
-	&p.rows + row
+	&p.rows ++ row
 	return true
 }
 

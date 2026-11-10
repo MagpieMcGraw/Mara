@@ -59,7 +59,7 @@ set_name :: fun(e: ^Entry, name: str64) {
 get_name :: fun(e: ^Entry, out: ^str64) {
     out.len = 0
     for i in 0:i64(e.name_len) {
-        out + e.name[i]
+        out ++ e.name[i]
     }
 }
 
@@ -148,7 +148,7 @@ main :: fun() {
     // entry 0: a byte payload, staged into `data`
     px : [16]u8
     for i in 0:16 {
-        &px + u8(i * 3)
+        &px ++ u8(i * 3)
     }
     e0 : Entry
     set_name(&e0, "kenney/bridge")
@@ -169,12 +169,12 @@ main :: fun() {
         v.position = [f32(i), f32(i) + 0.5, f32(i) + 0.25]
         v.normal   = [0.0, 1.0, 0.0]
         v.uv       = [f32(i) * 0.1, f32(i) * 0.2]
-        &verts + v
+        &verts ++ v
     }
     inds : [3]u32
-    &inds + u32(0)
-    &inds + u32(1)
-    &inds + u32(2)
+    &inds ++ u32(0)
+    &inds ++ u32(1)
+    &inds ++ u32(2)
 
     vcount := i64(verts.len)
     icount := i64(inds.len)

@@ -133,9 +133,9 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	shown_query := asked[0 : min_int(asked.len, 60)]
 	if d.words.len == 0 and ex.kind.len == 0 {
 		none : [300]utf8
-		&none + "Nothing to look up in \""
-		&none + shown_query
-		&none + "\": no word of two letters or more."
+		&none ++ "Nothing to look up in \""
+		&none ++ shown_query
+		&none ++ "\": no word of two letters or more."
 		lines_status(l, none, STYLE_DIM)
 		return
 	}
@@ -150,38 +150,38 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 	}
 	status : [300]utf8
 	if d.exact_shown {
-		&status + "At the cursor: "
-		&status + ex.kind
-		&status + " "
-		&status + ex.name[0 : min_int(ex.name.len, 60)]
-		&status + ". "
+		&status ++ "At the cursor: "
+		&status ++ ex.kind
+		&status ++ " "
+		&status ++ ex.name[0 : min_int(ex.name.len, 60)]
+		&status ++ ". "
 		if d.count == 0 {
-			&status + "Nothing more found."
+			&status ++ "Nothing more found."
 			lines_status(l, status, STYLE_DIM)
 			return
 		}
-		&status + "And "
+		&status ++ "And "
 	}
 	if d.count == 0 {
-		&status + "Nothing found for \""
-		&status + shown_query
-		&status + "\""
+		&status ++ "Nothing found for \""
+		&status ++ shown_query
+		&status ++ "\""
 		where_looked(ui, dir, &status)
-		&status + "."
+		&status ++ "."
 		lines_status(l, status, STYLE_BAD)
 		return
 	}
-	&status + int_text(d.count)
-	&status + " found for \""
-	&status + shown_query
-	&status + "\""
+	&status ++ int_text(d.count)
+	&status ++ " found for \""
+	&status ++ shown_query
+	&status ++ "\""
 	where_looked(ui, dir, &status)
 	if d.count > d.found.len {
-		&status + ", the best "
-		&status + int_text(d.found.len)
-		&status + " shown"
+		&status ++ ", the best "
+		&status ++ int_text(d.found.len)
+		&status ++ " shown"
 	}
-	&status + "."
+	&status ++ "."
 	lines_status(l, status, STYLE_DIM)
 }
 
@@ -189,11 +189,11 @@ docs_search :: fun(ui: ^Ui, dir: []utf8, asked: []utf8, ex: Exact, into: i64) {
 docs_keep_query :: fun(q: ^Docs_Query, dir: []utf8, words: []utf8, ex: Exact) {
 	q.made = true
 	q.dir.len, q.words.len, q.kind.len, q.name.len, q.path.len = 0, 0, 0, 0, 0
-	&q.dir + dir[0 : min_int(dir.len, q.dir.cap)]
-	&q.words + words[0 : min_int(words.len, q.words.cap)]
-	&q.kind + ex.kind[0 : min_int(ex.kind.len, q.kind.cap)]
-	&q.name + ex.name[0 : min_int(ex.name.len, q.name.cap)]
-	&q.path + ex.path[0 : min_int(ex.path.len, q.path.cap)]
+	&q.dir ++ dir[0 : min_int(dir.len, q.dir.cap)]
+	&q.words ++ words[0 : min_int(words.len, q.words.cap)]
+	&q.kind ++ ex.kind[0 : min_int(ex.kind.len, q.kind.cap)]
+	&q.name ++ ex.name[0 : min_int(ex.name.len, q.name.cap)]
+	&q.path ++ ex.path[0 : min_int(ex.path.len, q.path.cap)]
 	q.line = ex.line
 }
 
@@ -213,11 +213,11 @@ docs_reload :: fun(ui: ^Ui) {
 	}
 	// (Copies: the search keeps the query again, over these.)
 	dir, words, kind, name, path : [1000]utf8
-	&dir + q.dir
-	&words + q.words
-	&kind + q.kind
-	&name + q.name
-	&path + q.path
+	&dir ++ q.dir
+	&words ++ q.words
+	&kind ++ q.kind
+	&name ++ q.name
+	&path ++ q.path
 	scroll := l.scroll
 	open_folds : [16 * KB]utf8
 	docs_open_folds(l, &open_folds)
@@ -237,10 +237,10 @@ docs_open_folds :: fun(l: ^Lines, folds: ^[16 * KB]utf8) {
 		if not lines_fold_head(l, k) or l.lines[l.lines[k].fold_at].hidden do continue
 		s := line_text(l, k)
 		if folds.len + s.len + 30 > folds.cap do return
-		folds + int_text(fold_same_above(l, k))
-		folds + ' '
-		folds + s
-		folds + '\n'
+		folds ++ int_text(fold_same_above(l, k))
+		folds ++ ' '
+		folds ++ s
+		folds ++ '\n'
 	}
 }
 
@@ -250,9 +250,9 @@ docs_reopen_folds :: fun(l: ^Lines, folds: []utf8) {
 	for k in 0:l.lines.len {
 		if not lines_fold_head(l, k) do continue
 		key : [1100]utf8
-		&key + int_text(fold_same_above(l, k))
-		&key + ' '
-		&key + line_text(l, k)[0 : min_int(line_text(l, k).len, 1000)]
+		&key ++ int_text(fold_same_above(l, k))
+		&key ++ ' '
+		&key ++ line_text(l, k)[0 : min_int(line_text(l, k).len, 1000)]
 		at : i64 = 0
 		for at < folds.len {
 			end := at
@@ -297,9 +297,9 @@ docs_pin :: fun(ui: ^Ui) {
 // stdlib" — nothing when it's the stdlib's own.
 where_looked :: fun(ui: ^Ui, dir: []utf8, status: ^[300]utf8) {
 	if dir.len == 0 or dir == "." or stdlib_dir(ui, dir) do return
-	status + ", in "
-	status + get_file(trim_separators(dir))
-	status + " and the stdlib"
+	status ++ ", in "
+	status ++ get_file(trim_separators(dir))
+	status ++ " and the stdlib"
 }
 
 // The words asked, lower case: each run of letters, digits and _, two or
@@ -321,9 +321,9 @@ docs_words :: fun(d: ^Docs, asked: []utf8) {
 		if end - at >= 2 and d.words.len < d.words.cap and d.query.len + end - at <= d.query.cap {
 			w := Field{at = d.query.len, len = end - at}
 			for k in at:end {
-				&d.query + lower(asked[k])
+				&d.query ++ lower(asked[k])
 			}
-			&d.words + w
+			&d.words ++ w
 		}
 		at = end
 	}
@@ -335,7 +335,7 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 	d.source.len = 0
 	d.files.len = 0
 	d.root.len = 0
-	&d.root + ui.compiler_dir
+	&d.root ++ ui.compiler_dir
 	// (Unless it's the stdlib's own, or doc/: read below, once.)
 	if dir.len == 0 {
 		docs_read_dir(d, ".", ui.sep)
@@ -343,8 +343,8 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 		docs_read_dir(d, dir, ui.sep)
 	}
 	code : [1000]utf8
-	&code + ui.compiler_dir
-	&code + "code"
+	&code ++ ui.compiler_dir
+	&code ++ "code"
 	docs_read_dir(d, code, ui.sep)
 	// (The directories in code/, as the compiler looks in them.)
 	room : [64 * KB]byte
@@ -353,15 +353,15 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 		for entry in entries {
 			if not entry.dir do continue
 			sub_dir : [1000]utf8
-			&sub_dir + code
-			&sub_dir + ui.sep
-			&sub_dir + entry.name
+			&sub_dir ++ code
+			&sub_dir ++ ui.sep
+			&sub_dir ++ entry.name
 			docs_read_dir(d, sub_dir, ui.sep)
 		}
 	}
 	doc : [1000]utf8
-	&doc + ui.compiler_dir
-	&doc + "doc"
+	&doc ++ ui.compiler_dir
+	&doc ++ "doc"
 	docs_read_dir(d, doc, ui.sep)
 }
 
@@ -369,11 +369,11 @@ docs_read :: fun(ui: ^Ui, d: ^Docs, dir: []utf8) {
 // it, doc/.
 stdlib_dir :: fun(ui: ^Ui, dir: []utf8) -> bool {
 	code : [1000]utf8
-	&code + ui.compiler_dir
-	&code + "code"
+	&code ++ ui.compiler_dir
+	&code ++ "code"
 	doc : [1000]utf8
-	&doc + ui.compiler_dir
-	&doc + "doc"
+	&doc ++ ui.compiler_dir
+	&doc ++ "doc"
 	return same_path(dir, code) or same_path(dir, doc) or same_path(get_dir(trim_separators(dir)), code)
 }
 
@@ -392,10 +392,10 @@ docs_read_dir :: fun(d: ^Docs, dir: []utf8, sep: utf8) {
 		if d.files.len == d.files.cap do return
 		path : [1000]utf8
 		if dir != "." {
-			&path + dir
-			&path + sep
+			&path ++ dir
+			&path ++ sep
 		}
-		&path + name
+		&path ++ name
 		if not docs_add_file(d, path) and d.source.len == d.source.cap do return
 	}
 }
@@ -408,8 +408,8 @@ docs_add_file :: fun(d: ^Docs, path: []utf8) -> bool {
 	text, e := read_entire_file(path, &d.source)
 	if e do return false
 	file := Docs_File{at = at, len = text.len}
-	&file.path + path
-	&d.files + file
+	&file.path ++ path
+	&d.files ++ file
 	return true
 }
 
@@ -693,7 +693,7 @@ doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 		if keep and c < e and trimmed(text[c : e]) == DOC_MARK do keep = false
 		if keep {
 			if c > e do c = e
-			out + Field{at = c, len = e - c}
+			out ++ Field{at = c, len = e - c}
 		}
 		at = end + 1
 	}
@@ -791,9 +791,9 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 // param's: its fun's signature), the comment above it; a builtin, said.
 docs_show_exact :: fun(d: ^Docs, l: ^Lines, ex: Exact) {
 	title : [1200]utf8
-	&title + ex.name[0 : min_int(ex.name.len, 200)]
-	&title + "   "
-	&title + ex.kind
+	&title ++ ex.name[0 : min_int(ex.name.len, 200)]
+	&title ++ "   "
+	&title ++ ex.kind
 	if d.has_exact {
 		lines_add(l, "At the cursor:", STYLE_DIM)
 		d.exact_shown = true
@@ -888,10 +888,10 @@ comment_above :: fun(text: []utf8, at: i64) -> i64 {
 docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8, word: []utf8) {
 	text := docs_text(d, fd.file)
 	title : [1200]utf8
-	&title + text[fd.name.at : fd.name.at + fd.name.len]
+	&title ++ text[fd.name.at : fd.name.at + fd.name.len]
 	if fd.kind == DEF_FIELD {
-		&title + "   field of "
-		&title + text[fd.owner.at : fd.owner.at + fd.owner.len]
+		&title ++ "   field of "
+		&title ++ text[fd.owner.at : fd.owner.at + fd.owner.len]
 	}
 	if is_entry(fd.kind) {
 		// (Named by the word clicked or looked up, when it's one of the names
@@ -904,10 +904,10 @@ docs_show :: fun(d: ^Docs, l: ^Lines, fd: Found, kind: []utf8, word: []utf8) {
 			name = entry_name_of(text, fd, d.query[w.at : w.at + w.len])
 		}
 		if name.len == 0 do name = example_name(text, fd)
-		&title + name
+		&title ++ name
 		if kind.len > 0 {
-			&title + "   "
-			&title + kind
+			&title ++ "   "
+			&title ++ kind
 		}
 	}
 	lines_add(l, title, STYLE_TITLE)
@@ -934,9 +934,9 @@ example_name :: fun(text: []utf8, fd: Found) -> []utf8 {
 // The place a definition opens, clicked: `<file>:<line>`.
 docs_link :: fun(d: ^Docs, fd: Found) -> [1100]utf8 {
 	link : [1100]utf8
-	&link + d.files[fd.file].path
-	&link + ":"
-	&link + int_text(fd.line)
+	&link ++ d.files[fd.file].path
+	&link ++ ":"
+	&link ++ int_text(fd.line)
 	return link
 }
 
@@ -962,14 +962,14 @@ docs_footer :: fun(d: ^Docs, l: ^Lines, fd: Found, names: []utf8) {
 		}
 	}
 	footer : [1400]utf8
-	&footer + "  "
+	&footer ++ "  "
 	if names.len > 0 {
-		&footer + names[0 : min_int(names.len, 300)]
-		&footer + "   "
+		&footer ++ names[0 : min_int(names.len, 300)]
+		&footer ++ "   "
 	}
-	&footer + short[0 : min_int(short.len, 1000)]
-	&footer + ":"
-	&footer + int_text(fd.line)
+	&footer ++ short[0 : min_int(short.len, 1000)]
+	&footer ++ ":"
+	&footer ++ int_text(fd.line)
 	lines_add(l, footer, STYLE_DIM)
 	lines_link(l, docs_link(d, fd))
 }
@@ -1030,7 +1030,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 			if i == 0 and is_entry(fd.kind) {
 				end := names_end(line)
 				for ch in line[0 : end] {
-					if ch != '`' and names.len < names.cap do &names + ch
+					if ch != '`' and names.len < names.cap do &names ++ ch
 				}
 				for names.len > 0 {
 					last := names[names.len - 1]
@@ -1061,11 +1061,11 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 			}
 			if doc_list_item(words_in) or para.len + 1 + words_in.len > para.cap do doc_paragraph(l, &para)
 			if para.len == 0 {
-				&para + "  "
+				&para ++ "  "
 			else
-				&para + ' '
+				&para ++ ' '
 			}
-			&para + words_in[0 : min_int(words_in.len, para.cap - para.len)]
+			&para ++ words_in[0 : min_int(words_in.len, para.cap - para.len)]
 			said = true
 		}
 		doc_paragraph(l, &para)
@@ -1190,9 +1190,9 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 	}
 	if most < count {
 		more : [60]utf8
-		&more + "  … "
-		&more + int_text(count - most)
-		&more + " more lines"
+		&more ++ "  … "
+		&more ++ int_text(count - most)
+		&more ++ " more lines"
 		lines_add(l, more, STYLE_DIM)
 	}
 	// (Its body hidden: as much of it as there was room for.)
@@ -1313,8 +1313,8 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 		end -= 1
 	}
 	shown : [1200]utf8
-	&shown + "  "
-	&shown + code[k : min_int(end, k + 1000)]
+	&shown ++ "  "
+	&shown ++ code[k : min_int(end, k + 1000)]
 	lines_add(l, shown, STYLE_MARA)
 }
 

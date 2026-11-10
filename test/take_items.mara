@@ -23,15 +23,15 @@ main :: fun() {
 	tokens : [8]Token
 	first := slice([:3]Token, &tokens)
 	second := slice([:4]Token, &tokens)
-	&first + Token{offset = 1, len = 2, kind = 7}
-	&second + Token{offset = 5, len = 1, kind = 9}
-	&second + Token{offset = 6, len = 3, kind = 4}
+	&first ++ Token{offset = 1, len = 2, kind = 7}
+	&second ++ Token{offset = 5, len = 1, kind = 9}
+	&second ++ Token{offset = 6, len = 3, kind = 4}
 	print("parts:", first.len, first.cap, second.len, second.cap)
 	print("cursor:", tokens.len, "| in place:", tokens[0].offset, tokens[3].offset, tokens[4].kind)
 
 	ints : [4]i64
 	a := part_of(&ints, 2)
-	&a + 30
-	&a + 31
+	&a ++ 30
+	&a ++ 31
 	print("through a param:", a.len, ints.len, "|", ints[0], ints[1])
 }

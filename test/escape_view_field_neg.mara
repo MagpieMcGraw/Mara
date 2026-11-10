@@ -18,7 +18,7 @@ main :: fun() {
 	for i in 0:2 {
 		storage : [64!]byte
 		r := Reader{data = storage[:]}
-		&names + name_of(&r)
+		&names ++ name_of(&r)
 	}
 	print(names.len)
 }

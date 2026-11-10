@@ -9,6 +9,6 @@ use mara.core
 
 main :: fun() {
 	names : [8]str64
-	next(names) + "Ada"
+	next(names) ++ "Ada"
 	print(names.len)
 }

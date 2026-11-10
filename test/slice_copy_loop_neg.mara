@@ -15,9 +15,9 @@ clear_rows :: fun(rows: [][]i64) {
 
 main :: fun() {
 	a : [2]i64
-	&a + 1
+	&a ++ 1
 	rows : [1][]i64
-	&rows + a
+	&rows ++ a
 	clear_rows(rows)
 	print(a[0])
 }

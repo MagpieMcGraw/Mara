@@ -102,7 +102,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     // default meshes
     prim_indices, prim_names := gfx.primitives_init(vao)
     for i in 0:prim_names.cap {
-        &a.meshes + Mesh{prim_names[i], prim_indices[i]}
+        &a.meshes ++ Mesh{prim_names[i], prim_indices[i]}
     }
 
     // GPU texture array setup
@@ -127,7 +127,7 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
     // Register default texture so it can be queried by name
-    &a.textures + DEFAULT_TEXTURE
+    &a.textures ++ DEFAULT_TEXTURE
 
     // GPU font texture array setup, one layer per font
     a.font_texture_size = 1024

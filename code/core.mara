@@ -8,9 +8,9 @@ KB :: 1 << 10 // 1024
 MB :: 1 << 20 // 1024 * 1024
 GB :: 1 << 30 // 1024 * 1024 * 1024
 
-overload + add
-// Appends to a text buffer or a list, or joins one to a new one; which one
-// runs depends on what is added, and to what.
+overload ++ add
+// `&list ++ x` appends x to the list. `list ++ x` joins them into a new list.
+// An append gives its list back, so appends chain: `&name ++ dir ++ "/"`.
 add :: dispatch{ utf8_add, utf8_add_item, byte_add_item, slice_add, slice_add_item, join, join_item }
 
 // `a == b` on text: whether both hold the same characters.
@@ -26,12 +26,13 @@ not_equal :: dispatch{ utf8_not_equal }
 // Appends text to dst; it must fit in dst's capacity. A slicing of a fixed
 // array is full: set its len to 0 first to fill it.
 // (We write 0 after it, so dst stays a valid C string.)
-utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
+utf8_add :: fun(dst: ^[]utf8, src: []utf8) -> ^[]utf8 {
 	n := dst.len
 	dst[n:] = src
 	end := n + src.len
 	dst.len = end
 	if end < dst.cap do dst[end] = 0
+	return dst
 }
 
 // Whether a and b hold the same characters.
@@ -49,48 +50,52 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 }
 
 // Appends one character to dst; it must fit in dst's capacity.
-utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
+utf8_add_item :: fun(dst: ^[]utf8, src: utf8) -> ^[]utf8 {
 	n := dst.len
 	dst[n] = src
 	dst.len = n + 1
 	if n + 1 < dst.cap do dst[n + 1] = 0
+	return dst
 }
 
 // Appends one byte, given as a u8, to dst; it must fit in dst's capacity.
-byte_add_item :: fun(dst: ^[]byte, src: u8) {
+byte_add_item :: fun(dst: ^[]byte, src: u8) -> ^[]byte {
 	n := dst.len
 	dst[n] = src
 	dst.len = n + 1
+	return dst
 }
 
 // Appends items to dst; they must fit in dst's capacity. A slicing of a
 // fixed array is full: set its len to 0 first to fill it.
-slice_add :: fun(dst: ^[]$T, src: []$T) {
+slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T {
 	n := dst.len
 	dst[n:] = src
 	dst.len = n + src.len
+	return dst
 }
 
 // Appends one item to dst; it must fit in dst's capacity.
-slice_add_item :: fun(dst: ^[]$T, src: $T) {
+slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 	n := dst.len
 	dst[n] = src
 	dst.len = n + 1
+	return dst
 }
 
 // A new list: a's items, then b's — of a's own type, its room (a Path
-// joined is a Path: `cwd + "/code"`), a itself as it was. `a + b`. Past the
-// room, the program stops, as an add does. (`&a + b` adds into a itself.)
+// joined is a Path: `cwd ++ "/code"`), a itself as it was. `a ++ b`. Past the
+// room, the program stops, as an add does. (`&a ++ b` adds into a itself.)
 join :: fun(a: [$N]$T, b: []T) -> [N]T {
 	out := a
-	&out + b
+	&out ++ b
 	return out
 }
 
-// A new list: a's items, then one more — of a's own type. `a + item`.
+// A new list: a's items, then one more — of a's own type. `a ++ item`.
 join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 	out := a
-	&out + b
+	&out ++ b
 	return out
 }
 
@@ -132,6 +137,6 @@ includes :: fun(items: []$T, x: $U) -> bool {
 // slice() does).
 filter :: fun(items: []$T, keep: $P, storage: ^[]byte) -> []T {
 	new := slice([:items.len]T, storage)
-	for item in items {if keep(item) do &new + item}
+	for item in items {if keep(item) do &new ++ item}
 	return new
 }

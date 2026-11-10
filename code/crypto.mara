@@ -73,7 +73,7 @@ sha256_add :: fun(s: ^Sha256, data: []byte) {
 	k : i64 = 0
 	if s.waiting.len > 0 {
 		for k < data.len and s.waiting.len < 64 {
-			&s.waiting + data[k]
+			&s.waiting ++ data[k]
 			k += 1
 		}
 		if s.waiting.len < 64 do return
@@ -85,7 +85,7 @@ sha256_add :: fun(s: ^Sha256, data: []byte) {
 		k += 64
 	}
 	for k < data.len {
-		&s.waiting + data[k]
+		&s.waiting ++ data[k]
 		k += 1
 	}
 }
@@ -181,7 +181,7 @@ sha1_add :: fun(s: ^Sha1, data: []byte) {
 	k : i64 = 0
 	if s.waiting.len > 0 {
 		for k < data.len and s.waiting.len < 64 {
-			&s.waiting + data[k]
+			&s.waiting ++ data[k]
 			k += 1
 		}
 		if s.waiting.len < 64 do return
@@ -193,7 +193,7 @@ sha1_add :: fun(s: ^Sha1, data: []byte) {
 		k += 64
 	}
 	for k < data.len {
-		&s.waiting + data[k]
+		&s.waiting ++ data[k]
 		k += 1
 	}
 }
@@ -259,10 +259,10 @@ sha1_block :: fun(s: ^Sha1, block: []byte) {
 // bits, biggest byte first.
 sha_pad_add :: fun(s: $S, adder: $P, bits: u64) {
 	pad : [72]byte
-	&pad + u8(0x80)
-	for (s.waiting.len + pad.len) % 64 != 56 do &pad + u8(0)
+	&pad ++ u8(0x80)
+	for (s.waiting.len + pad.len) % 64 != 56 do &pad ++ u8(0)
 	for k in 0:8 {
-		&pad + u8((bits >> u64(56 - k * 8)) & 255)
+		&pad ++ u8((bits >> u64(56 - k * 8)) & 255)
 	}
 	adder(s, pad)
 }
@@ -321,7 +321,7 @@ md5_add :: fun(s: ^Md5, data: []byte) {
 	k : i64 = 0
 	if s.waiting.len > 0 {
 		for k < data.len and s.waiting.len < 64 {
-			&s.waiting + data[k]
+			&s.waiting ++ data[k]
 			k += 1
 		}
 		if s.waiting.len < 64 do return
@@ -333,7 +333,7 @@ md5_add :: fun(s: ^Md5, data: []byte) {
 		k += 64
 	}
 	for k < data.len {
-		&s.waiting + data[k]
+		&s.waiting ++ data[k]
 		k += 1
 	}
 }
@@ -343,10 +343,10 @@ md5_finish :: fun(s: ^Md5) -> [16!]byte {
 	// (As SHA ends, but the length comes smallest byte first.)
 	bits := u64(s.total) * 8
 	pad : [72]byte
-	&pad + u8(0x80)
-	for (s.waiting.len + pad.len) % 64 != 56 do &pad + u8(0)
+	&pad ++ u8(0x80)
+	for (s.waiting.len + pad.len) % 64 != 56 do &pad ++ u8(0)
 	for k in 0:8 {
-		&pad + u8((bits >> u64(k * 8)) & 255)
+		&pad ++ u8((bits >> u64(k * 8)) & 255)
 	}
 	md5_add(s, pad)
 	out : [16!]byte
@@ -460,7 +460,7 @@ pbkdf2_sha256 :: fun(password: []byte, salt: []byte, iterations: i64, out: ^[]by
 			for j in 0:32 do total[j] = u8(total[j]) ~ u8(u[j])
 		}
 		for j in 0:32 {
-			if out.len < out.cap do out + total[j]
+			if out.len < out.cap do out ++ total[j]
 		}
 		block += 1
 	}
@@ -535,7 +535,7 @@ bcrypt_check :: fun(password: []byte, digest: []utf8) -> bool {
 	key : [73]utf8
 	if not bcrypt_key(password, &key) do return false
 	stored : [64]utf8
-	&stored + digest
+	&stored ++ digest
 	out : str64
 	if blowfish_rn(cstring(key), cstring(stored), &out[0], i32(out.cap)) == 0 do return false
 	out.len = 60
@@ -549,7 +549,7 @@ bcrypt_key :: fun(password: []byte, key: ^[]utf8) -> bool {
 		if k == 72 do break
 		c := u8(password[k])
 		if c == 0 do return false
-		key + utf8(c)
+		key ++ utf8(c)
 	}
 	return true
 }

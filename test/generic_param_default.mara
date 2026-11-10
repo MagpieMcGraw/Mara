@@ -38,9 +38,9 @@ who :: fun(x: $T, caller: atom = #caller_name) -> atom {
 
 main :: fun() {
 	list : [2]i64
-	&list + 1
+	&list ++ 1
 	print("room:", room_for(&list))
-	&list + 2
+	&list ++ 2
 	r := room_for(&list)
 	print("room:", r)
 	_ = told(&list, "here")
@@ -50,6 +50,6 @@ main :: fun() {
 	print("named:", who(5))
 
 	texts : [1]str64
-	&texts + "a"
+	&texts ++ "a"
 	_ = room_for(&texts)
 }

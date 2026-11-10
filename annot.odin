@@ -48,16 +48,14 @@ Ref_Kind :: enum u8 {
 // What a param of a call receives: an argument written at the call, the
 // receiver a method is called on, or the param's default — its expression in
 // its fun's signature, run at the call (a group's one value: which of its
-// results), or `#caller_name`'s, given where the call is; or a join's left
-// side, built into the call's own result, and that result's address (`(x +
-// a) + b`, appended into in place: tc_note_join_in_place).
+// results), or `#caller_name`'s, given where the call is.
 Arg :: struct {
     node: Tree_Id,
     kind: Arg_Kind,
     slot: i32,   // a default that is one of its group's value's results; -1: none
 }
 
-Arg_Kind :: enum u8 { Written, Receiver, Default, Call_Site, Built_Into }
+Arg_Kind :: enum u8 { Written, Receiver, Default, Call_Site }
 
 // How a call is made: a fun or a constructor named, one a dispatch chose, a
 // generic's instance, a builtin, a distinct type's conversion, or through a
@@ -432,7 +430,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
                 ok := false
                 #partial switch arg.kind {
                 case .Call_Site: continue
-                case .Default, .Built_Into:   // (built as the call is: a default, the address of the call's own result)
+                case .Default:   // (built as the call is)
                     ok = passed[j].op >= 0 && graph_syntax(g, passed[j].op) == g.syntax[op]
                 case:            ok = from(g, writes, i, tree_lo(t, arg.node), arg.node, passed[j].op)
                 }

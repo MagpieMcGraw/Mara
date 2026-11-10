@@ -17,10 +17,10 @@ main :: () {
 	e := get_file("")
 	out : [200]utf8
 	for part, i in [4!][]utf8{a, c, d, e} {
-		if i > 0 do &out + " "
-		&out + "["
-		&out + part
-		&out + "]"
+		if i > 0 do &out ++ " "
+		&out ++ "["
+		&out ++ part
+		&out ++ "]"
 	}
 	print(out)
 

@@ -1,13 +1,13 @@
 module fixed_array_append_neg
 
-//@ expect-fail: `names` is a fixed array, with no len to move: declare it a list, `[64]utf8`
+//@ expect-fail: mismatched types for '++': ^[64!]utf8 and [64]utf8
 
-// Appending (`&a + x`) to a fixed array: no overload is missing — it can't
-// grow. The error says to declare it a partial array.
+// A fixed array has no len to move, so nothing appends to one: a list,
+// `[64]utf8`, is what grows.
 
 use mara.core
 
 main :: fun() {
 	names : [64!]utf8
-	&names + "one"
+	&names ++ "one"
 }

@@ -317,7 +317,7 @@ use mara.string
 			free(full)
 			return out, Too_Large
 		}
-		&out + name
+		&out ++ name
 		free(full)
 		return out
 	}
@@ -327,7 +327,7 @@ use mara.string
 	// started (by a name its PATH found, a relative path, a link), unlike
 	// main's args[0], which is what its starter wrote — for the files
 	// that come with it, beside it: a Path, to cut to its directory and add
-	// a file's name to (`exe.len = get_dir(exe).len`, `&exe + "font.ttf"`).
+	// a file's name to (`exe.len = get_dir(exe).len`, `&exe ++ "font.ttf"`).
 	// Too_Large when it's longer than a Path holds; Read_Failed when the
 	// system won't say. (/proc/self/exe: a link to the program's file, the
 	// kernel's own path for it.)
@@ -359,7 +359,7 @@ use mara.string
 		// on Windows, where its search pattern is built.)
 		if path.len > 500 do return none, Open_Failed   // (the copy on the stack, under 1 KB)
 		opened : [512]utf8
-		&opened + path
+		&opened ++ path
 		dir := opendir(cstring(opened))
 		if dir == void do return none, Open_Failed
 		count : i64 = 0
@@ -382,13 +382,13 @@ use mara.string
 			name := read_cstring(256, &d.name[0])
 			if name == "." or name == ".." do continue
 			entry : Dir_Entry
-			&entry.name + name
+			&entry.name ++ name
 			entry.dir = d.kind == DT_DIR
 			entry.link = false
 			if d.kind == DT_LNK or d.kind == DT_UNKNOWN {
 				entry.link, entry.dir = dir_entry_kind(path, name)
 			}
-			&entries + entry
+			&entries ++ entry
 			k += 1
 		}
 		_ = closedir(dir)
@@ -403,9 +403,9 @@ use mara.string
 	dir_entry_kind :: fun(path: []utf8, name: []utf8) -> bool, bool {
 		if path.len + name.len > 500 do return false, false   // (on the stack, under 1 KB)
 		full : [512]utf8
-		&full + path
-		&full + "/"
-		&full + name
+		&full ++ path
+		&full ++ "/"
+		&full ++ name
 		st : Stat
 		link := lstat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFLNK
 		dir := stat(cstring(full), &st) == 0 and (st.mode & S_IFMT) == S_IFDIR
@@ -535,9 +535,9 @@ use mara.string
 	// user's id (each user's names their own). Its size counts no 0 after.
 	pipe_address :: fun(name: []utf8, at: ^Sockaddr_Un) -> u32 {
 		path : [108]utf8
-		&path + utf8(0)
-		&path + name
-		&path + "."
+		&path ++ utf8(0)
+		&path ++ name
+		&path ++ "."
 		uid := getuid()
 		digits : [10!]utf8
 		n := 0
@@ -549,7 +549,7 @@ use mara.string
 		}
 		if path.len + n > 108 do return 0
 		for i in 0:n {
-			&path + digits[n - 1 - i]
+			&path ++ digits[n - 1 - i]
 		}
 		at.family = AF_UNIX
 		for c, i in path {
@@ -593,7 +593,7 @@ use mara.string
 		text := read_cstring(value.cap, p)
 		// (As long as the room: no 0 found in it, no room for one.)
 		if text.len == value.cap do return value, Too_Large
-		&value + text
+		&value ++ text
 		return value
 	}
 
@@ -1032,7 +1032,7 @@ use mara.string
 		a := net_any(port)
 		if name.len > 255 do return a, Lookup_Failed
 		text : [256]utf8
-		&text + name
+		&text ++ name
 		hints := Addrinfo_Hints()
 		hints.kind = SOCK_DGRAM   // (each address once, not once a kind)
 		found: ^Addrinfo = void
@@ -1275,7 +1275,7 @@ use mara.string
 		for k in 0:i64(n) {
 			got := found[k].events
 			r := Net_Ready{tag = i64((u64(found[k].tag_high) << 32) | u64(found[k].tag_low)), readable = got & (EPOLLIN | EPOLLHUP | EPOLLERR) != 0, writable = got & EPOLLOUT != 0}
-			ready + r
+			ready ++ r
 		}
 	}
 

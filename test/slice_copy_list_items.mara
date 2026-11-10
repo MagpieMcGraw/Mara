@@ -17,7 +17,7 @@ words :: fun(line: []utf8) -> [8][]utf8 {
 	start : i64 = 0
 	for k in 0:line.len + 1 {
 		if k == line.len or line[k] == ' ' {
-			&out + line[start : k]
+			&out ++ line[start : k]
 			start = k + 1
 		}
 	}
@@ -25,8 +25,8 @@ words :: fun(line: []utf8) -> [8][]utf8 {
 }
 
 keep :: fun(texts: []utf8, into: ^[][]utf8) {
-	into + texts[0 : 1]
-	into + texts[1 : 2]
+	into ++ texts[0 : 1]
+	into ++ texts[1 : 2]
 }
 
 main :: fun() {

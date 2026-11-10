@@ -122,11 +122,11 @@ sizes :: fun(n: i64, state: ^u64) -> bool {
 	for shape in 0:5 {
 		big.len = 0
 		for k in 0:n {
-			if shape == 0 do &big + next_number(state)
-			if shape == 1 do &big + k
-			if shape == 2 do &big + (n - k)
-			if shape == 3 do &big + (k % 7)
-			if shape == 4 do &big + (if k < n / 2 do k else n - k)
+			if shape == 0 do &big ++ next_number(state)
+			if shape == 1 do &big ++ k
+			if shape == 2 do &big ++ (n - k)
+			if shape == 3 do &big ++ (k % 7)
+			if shape == 4 do &big ++ (if k < n / 2 do k else n - k)
 		}
 		sort(&big)
 		if not in_order(big) or big.len != n do ok = false
@@ -138,7 +138,7 @@ sizes :: fun(n: i64, state: ^u64) -> bool {
 // in time.
 heap_path :: fun() -> bool {
 	big : [20000]i64
-	for k in 0:20000 do &big + (20000 - k)
+	for k in 0:20000 do &big ++ (20000 - k)
 	sort_run(&big, later_or_same, 0, big.len, 0)
 	return in_order_down(big)
 }
@@ -157,28 +157,28 @@ main :: fun() {
 	maps(&storage)
 
 	xs : [6]i64
-	&xs + 5
-	&xs + 2
-	&xs + 9
-	&xs + 1
-	&xs + 3
-	&xs + 8
+	&xs ++ 5
+	&xs ++ 2
+	&xs ++ 9
+	&xs ++ 1
+	&xs ++ 3
+	&xs ++ 8
 	sort(&xs)
 	print("sorted:", xs)
 	sort_by(&xs, later)
 	print("by:", xs)
 
 	names : [3]str64
-	&names + "cal"
-	&names + "amy"
-	&names + "bob"
+	&names ++ "cal"
+	&names ++ "amy"
+	&names ++ "bob"
 	sort_by(&names, name_before)
 	print("names:", names[0], names[1], names[2])
 
 	none : [4]i64
 	sort(&none)
 	one : [4]i64
-	&one + 7
+	&one ++ 7
 	sort(&one)
 	print("empty and one:", none.len, one.len)
 

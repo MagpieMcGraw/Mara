@@ -26,20 +26,20 @@ main :: () {
 	chunk : [256]byte
 	chunk.len = 64
 	span := Span{name = [], start = 3}
-	&span.name + "abc"
+	&span.name ++ "abc"
 	chunk[16] = span
 	print("span written: %", chunk.len)
 	back : Span = chunk[16]
 	print("read back: % % %", back.name, back.name.len, back.start)
 
 	other := Span{name = [], start = 77}
-	&other.name + "hello"
+	&other.name ++ "hello"
 	chunk[33] = other
 	again : Span = chunk[33]
 	print("unaligned: % % %", again.name, again.name.len, again.start)
 
 	outer := Outer{span = Span{name = [], start = 9}, last = 41}
-	&outer.span.name + "xy"
+	&outer.span.name ++ "xy"
 	chunk[100] = outer
 	o : Outer = chunk[100]
 	print("nested: % % % last %", o.span.name, o.span.name.len, o.span.start, o.last)

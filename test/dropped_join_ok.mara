@@ -12,10 +12,10 @@ use mara.core
 
 main :: fun() {
 	clean : [16]utf8
-	for c in "abc" do &clean + c
+	for c in "abc" do &clean ++ c
 	print("append:", clean.len, clean)
-	joined := clean + 'd'
+	joined := clean ++ 'd'
 	print("join:", joined.len, joined, clean.len)
-	_ = clean + 'e'
+	_ = clean ++ 'e'
 	print("discarded:", clean.len)
 }

@@ -61,15 +61,15 @@ text_of :: fun(path: []utf8) -> str256 {
 	out : str256
 	data, e := read_entire_file(path, &storage)
 	if e do return out
-	for b in data do &out + utf8(b)
+	for b in data do &out ++ utf8(b)
 	return out
 }
 
 main :: fun() {
 	old : str64
-	&old + "file_append_test.txt"
+	&old ++ "file_append_test.txt"
 	new : str64
-	&new + "file_append_new.txt"
+	&new ++ "file_append_new.txt"
 	_ = file_delete(new)
 	e1 := fresh(old, "one|")
 	e2 := add_to(old, "two|")

@@ -6,7 +6,7 @@ module list_size_neg
 
 use mara.core
 
-grow :: (p: ^[4]i64) { &p^ + 7 }
+grow :: (p: ^[4]i64) { &p^ ++ 7 }
 
 main :: () {
 	small : [2]i64

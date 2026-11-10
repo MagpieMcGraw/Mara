@@ -33,7 +33,7 @@ client :: fun(me: ^Client) {
 	}
 	for k in 0:100 {
 		message : [8]byte
-		for j in 0:8 do &message + u8(k + j)
+		for j in 0:8 do &message ++ u8(k + j)
 		if tcp_send(&c, message) {
 			me.right = false
 			break
@@ -79,7 +79,7 @@ serve :: fun(l: ^Tcp_Listener, clients: i64) -> i64, i64, bool, err {
 				got := tcp_accept(l, &c)?
 				if got {
 					net_waiter_add(&w, c.id, connections.len)?
-					&connections + c
+					&connections ++ c
 					accepted += 1
 				}
 				continue
@@ -130,7 +130,7 @@ small_things :: fun() -> err {
 
 	// (Send until the system has no room: nobody's reading.)
 	big : [64 * KB]byte
-	for k in 0:big.cap do &big + u8(k & 255)
+	for k in 0:big.cap do &big ++ u8(k & 255)
 	full := false
 	for k in 0:20000 {
 		n := tcp_send_some(&b, big)?

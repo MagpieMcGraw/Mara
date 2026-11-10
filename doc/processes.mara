@@ -29,7 +29,7 @@ child :: fun() {
 	for true {
 		e := file_read(os.standard_input(), &chunk)
 		if e or chunk.len == 0 do break   // 0 bytes: the end
-		&got + chunk
+		&got ++ chunk
 	}
 	text : []utf8 = got
 	print("the child got:", text)
@@ -42,9 +42,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	}
 	// Its own path, quoted (a path can have spaces), then an argument.
 	command : str256
-	&command + "\""
-	&command + args[0]
-	&command + "\" child"
+	&command ++ "\""
+	&command ++ args[0]
+	&command ++ "\" child"
 	p, e := os.process_start(command)
 	if e {
 		print("couldn't start it:", e)
@@ -69,7 +69,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	for true {
 		re := file_read(p.output, &chunk)
 		if re or chunk.len == 0 do break
-		&out + chunk
+		&out ++ chunk
 	}
 	text : []utf8 = out
 	print("it said:", text)

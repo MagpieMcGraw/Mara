@@ -41,8 +41,8 @@ main :: fun() {
 	gone : err = Gone
 	out : str256
 	for e in [a, b, c, lost, gone] {
-		if out.len > 0 do &out + "|"
-		&out + kind(e)
+		if out.len > 0 do &out ++ "|"
+		&out ++ kind(e)
 	}
 	print("kinds:", out)
 }

@@ -11,16 +11,16 @@ use mara.core
 
 main :: () {
 	buf : [8]byte
-	for k in 0:8 do &buf + u8(255)
+	for k in 0:8 do &buf ++ u8(255)
 	buf.len = 0
-	&buf + u8(1)
+	&buf ++ u8(1)
 	first : u8 = buf[0]
 	second : u8 = buf[1]
 	third : u8 = buf[2]
 	print("one byte:", first, second, third)
 
-	&buf + u8(2)
-	&buf + u8(3)
+	&buf ++ u8(2)
+	&buf ++ u8(3)
 	a : u8 = buf[0]
 	b : u8 = buf[1]
 	c : u8 = buf[2]

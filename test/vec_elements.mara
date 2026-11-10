@@ -29,7 +29,7 @@ fill :: fun(out: ^[]Vec3, n: i64) {
 	}
 }
 push_pt :: fun(arr: ^[]Vec3, v: Vec3) {
-	arr + v
+	arr ++ v
 }
 
 main :: fun() {

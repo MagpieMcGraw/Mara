@@ -52,7 +52,7 @@ sum_piece :: fun(job: ^Job) {
 
 main :: fun() {
 	numbers : [100000]i64
-	for k in 1..100000 do &numbers + k
+	for k in 1..100000 do &numbers ++ k
 	progress := Progress()
 
 	// Four pieces of 25,000 numbers each.
@@ -61,7 +61,7 @@ main :: fun() {
 		job := Job()
 		job.numbers = numbers[k * 25000 : (k + 1) * 25000]
 		job.progress = &progress
-		&jobs + job
+		&jobs ++ job
 	}
 
 	threads : [4]Thread
@@ -71,7 +71,7 @@ main :: fun() {
 			print("couldn't start a thread:", e)
 			return
 		}
-		&threads + t
+		&threads ++ t
 	}
 	for k in 0:4 do thread_wait(&threads[k])
 

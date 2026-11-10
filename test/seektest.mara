@@ -9,7 +9,7 @@ use mara.files
 main :: fun() {
     data : [16]byte
     for i in 0:16 {
-        &data + u8(i)
+        &data ++ u8(i)
     }
     wid, we := file_open_write("seektest.bin")
     if bool(we) { print("open-write failed"); return }

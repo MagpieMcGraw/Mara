@@ -15,6 +15,6 @@ walk :: fun(path: []utf8, name: []utf8) {
 
 main :: fun() {
 	cwd : str64
-	&cwd + "C:/Code"
+	&cwd ++ "C:/Code"
 	walk(cwd, "x")
 }

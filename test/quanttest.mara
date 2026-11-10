@@ -13,7 +13,7 @@ main :: fun() {
 	assert(s.len == 5)
 
 	// Headroom means appends work on a literal copy...
-	&s + " world"
+	&s ++ " world"
 	assert(s.len == 11)
 	print(s)
 

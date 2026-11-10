@@ -10,7 +10,7 @@ import "core:strings"
 // then, a module to a line, the funs in sight where it's asked whose first
 // param takes it (`x.f()` or `f(x)`, `f(&x)` for a pointer param). A dispatch
 // group is named for its members; the groups behind operators (core's add for
-// `+`) are said by the operator. A generic fun's first param is matched by its
+// `++`) are said by the operator. A generic fun's first param is matched by its
 // shape: `[]$T` takes any slice, list or array, `^Map($K, $V)` any Map.
 // ---------------------------------------------------------------------------
 
@@ -53,11 +53,11 @@ can_do_builtin :: proc(ty: Type) -> []string {
     case Type_Bool:
         append(&out, "and  or  not  ==   no text of its own: `if b do \"on\" else \"off\"`")
     case Type_Utf8:
-        append(&out, "== < >   i64(c)  utf8(n)   &text + c")
+        append(&out, "== < >   i64(c)  utf8(n)   &text ++ c")
     case Type_Byte:
         append(&out, "== (0 to 255)   a value read out of bytes: `v : u8 = bytes[k]`")
     case Type_Atom:
-        append(&out, "print   goes where text goes (`&t + a`)   ==")
+        append(&out, "print   goes where text goes (`&t ++ a`)   ==")
     case Type_CString:
         append(&out, "text for a C fun: `cstring(buf)` makes one")
     case Type_Err:
@@ -81,15 +81,15 @@ can_do_builtin :: proc(ty: Type) -> []string {
         append(&out, line)
     case ^Type_Slice:
         if _, text := v.elem.(Type_Utf8); text {
-            append(&out, ".len .cap   t[i]   t[a:b]   for c, i in t   ==   &t + \"more\" within its cap")
+            append(&out, ".len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ \"more\" within its cap")
         } else {
-            append(&out, ".len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s + x within its cap")
+            append(&out, ".len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s ++ x within its cap")
         }
     case ^Type_Partial_Array:
         if _, text := v.elem.(Type_Utf8); text {
-            append(&out, ".len .cap   t[i]   t[a:b]   for c, i in t   ==   &t + \"more\"  &t + 'c'   t + \"x\" a new buffer   cstring(t)")
+            append(&out, ".len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ \"more\"  &t ++ 'c'   t ++ \"x\" a new buffer   cstring(t)")
         } else {
-            append(&out, ".len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l + x   l + x a new list   next(&l)")
+            append(&out, ".len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list   next(&l)")
         }
     case ^Type_Fixed_Array:
         line := fmt.tprintf(".len .cap (%d)   a[i]   a[a:b]   for x, i in a   for &x in a", v.size)

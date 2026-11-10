@@ -41,7 +41,7 @@ outer :: fun() -> i64, err { return inner() }
 
 name :: fun(ok: bool) -> str64, bool {
 	s : str64
-	&s + "hello"
+	&s ++ "hello"
 	return s, ok
 }
 fwd_name :: fun(ok: bool) -> str64, bool { return name(ok) }
@@ -64,8 +64,8 @@ step :: fun(fail: bool) -> i64, err {
 	return 3
 }
 cleanup :: fun(fail: bool, log: ^[8]i64) -> i64, err {
-	defer &log^ + 1
-	defer? &log^ + 2
+	defer &log^ ++ 1
+	defer? &log^ ++ 2
 	return step(fail)
 }
 
@@ -113,7 +113,7 @@ main :: fun() {
 	z, zok := count_down(3)
 	print("down", z, zok)
 	buf : [16]utf8
-	&buf + "word"
+	&buf ++ "word"
 	w, wok := fwd_two(&buf)
 	print(w, wok)
 	sz, se := fwd_sized(4)

@@ -173,28 +173,28 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 
 	// The status line.
 	status : [300]utf8
-	&status + "profile.txt: "
-	&status + int_text(p.rows.len)
-	&status + " funs"
+	&status ++ "profile.txt: "
+	&status ++ int_text(p.rows.len)
+	&status ++ " funs"
 	if p.sort_by < 0 {
-		&status + ", as in the file (most total time first). Click a column title to sort by it."
+		&status ++ ", as in the file (most total time first). Click a column title to sort by it."
 	else
-		&status + ", sorted by "
-		&status + column_title(p.columns[p.sort_by])
+		&status ++ ", sorted by "
+		&status ++ column_title(p.columns[p.sort_by])
 		if is_number(p.columns[p.sort_by]) {
 			if p.descending {
-				&status + ", largest first"
+				&status ++ ", largest first"
 			else
-				&status + ", smallest first"
+				&status ++ ", smallest first"
 			}
 		else
 			if p.descending {
-				&status + ", Z to A"
+				&status ++ ", Z to A"
 			else
-				&status + ", A to Z"
+				&status ++ ", A to Z"
 			}
 		}
-		&status + ". Click it again for the other way."
+		&status ++ ". Click it again for the other way."
 	}
 	fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
 	_ = text_draw(&ui.text, rd, status, r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.dim)

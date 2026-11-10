@@ -789,7 +789,7 @@ o.list
 Outer.[4]i64
 
 operations
-  .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l + x   l + x a new list   next(&l)
+  .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list   next(&l)
   mara.core: filter next
 
 declared
@@ -799,7 +799,7 @@ written 3
   askuses.mara:48  main
     o.list = [1, 2, 3, 4]
   askuses.mara:49  main
-    &o.list + 5
+    &o.list ++ 5
   askuses.mara:50  main
     o.list[0] = 6
 read 1
@@ -810,7 +810,7 @@ o.items
 Outer.[]i64
 
 operations
-  .len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s + x within its cap
+  .len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s ++ x within its cap
   mara.core: filter next
 
 declared
@@ -850,7 +850,7 @@ o.name
 Outer.[8]utf8
 
 operations
-  .len .cap   t[i]   t[a:b]   for c, i in t   ==   &t + "more"  &t + 'c'   t + "x" a new buffer   cstring(t)
+  .len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ "more"  &t ++ 'c'   t ++ "x" a new buffer   cstring(t)
   mara.core: filter next
 
 declared
@@ -858,7 +858,7 @@ declared
     name: [8]utf8
 written 1
   askuses.mara:59  main
-    &o.name + "x"
+    &o.name ++ "x"
 read 0
 === test/askuses.mara | what at askuses.mara:61:2
 mine
@@ -2034,6 +2034,7 @@ Tokens in module askmod: 104 in 1 file
   -           0
   /           0
   %           0
+  ++          0
   +%          0
   -%          0
   *%          0

@@ -84,7 +84,7 @@ first :: fun(xs: []$T) -> T { return xs[0] }
 
 main :: fun() {
 	s : str64
-	&s + "hello"
+	&s ++ "hello"
 	head := s[0:3]
 	whole : []utf8 = s
 	h0 := s[0]
@@ -92,8 +92,8 @@ main :: fun() {
 	print("str64:", head, whole, h0, s, s.len, s.cap, len(s), s.starts_with("je"))
 	letters : str64
 	for c in s {
-		&letters + c
-		&letters + ' '
+		&letters ++ c
+		&letters ++ ' '
 	}
 	print("loop:", letters)
 	sp := &s

@@ -18,8 +18,8 @@ use mara.math
 
 main :: fun() {
 	a : c.str64
-	&a + "hi"
-	b := a + " there"
+	&a ++ "hi"
+	b := a ++ " there"
 	print("names:", a, b, a == "hi", 'h' in a, s.trimmed(" x "), s.int_text(3))
 
 	trimmed := 1

@@ -9,11 +9,11 @@ Holder :: struct {
 
 main :: fun() {
     src : [8]utf8
-    &src + 'w'
-    &src + 'o'
-    &src + 'r'
-    &src + 'l'
-    &src + 'd'
+    &src ++ 'w'
+    &src ++ 'o'
+    &src ++ 'r'
+    &src ++ 'l'
+    &src ++ 'd'
     h : Holder
     h.name = "hello"
     print(h.name)

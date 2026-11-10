@@ -157,7 +157,7 @@ wrap :: (x: $T) -> T {
 main :: fun() {
 	twice :: (x: $T) -> T { return x + x }
 	fill :: (list: ^[$N]i64, n: i64) {
-		for i in 0:n { list + i }
+		for i in 0:n { list ++ i }
 	}
 	sum :: (xs: [$N!]i64) -> i64 {
 		s := 0
@@ -170,8 +170,8 @@ main :: fun() {
 	}
 	read_data :: (files: []i64, buf: ^[$N]byte) -> [MAX]i64, err {
 		result : [MAX]i64
-		for f in files { &result + f }
-		buf + 7
+		for f in files { &result ++ f }
+		buf ++ 7
 		return result
 	}
 	l : [8]i64

@@ -37,14 +37,14 @@ Color :: struct {
 text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -> err {
 	t.chars.len = 0
 	for c in 32:127 {
-		&t.chars + u32(c)
+		&t.chars ++ u32(c)
 	}
 	extra_text := EXTRA
 	extra : []utf8 = extra_text
 	at : i64 = 0
 	for at < extra.len {
 		c, n := char_at(extra, at)
-		&t.chars + c
+		&t.chars ++ c
 		at += n
 	}
 	atlas : [ATLAS * ATLAS]byte

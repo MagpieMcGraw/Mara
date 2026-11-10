@@ -36,7 +36,7 @@ primitive_sphere :: fun(
             u_coord := f32(s) / f32(sectors)
             v_coord := f32(r) / f32(rings)
 
-            &verts + Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
+            &verts ++ Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
         }
     }
 
@@ -45,12 +45,12 @@ primitive_sphere :: fun(
             cur := u32(r * (sectors + 1) + s)
             below := cur + u32(sectors + 1)
 
-            &inds + cur
-            &inds + below
-            &inds + (cur + 1)
-            &inds + (cur + 1)
-            &inds + below
-            &inds + (below + 1)
+            &inds ++ cur
+            &inds ++ below
+            &inds ++ (cur + 1)
+            &inds ++ (cur + 1)
+            &inds ++ below
+            &inds ++ (below + 1)
         }
     }
 

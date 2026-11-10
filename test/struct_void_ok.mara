@@ -43,7 +43,7 @@ main :: fun() {
 	h.unset = 5
 	print("built", h.set, h.unset)
 	n : Named
-	&n.name + "ok"
+	&n.name ++ "ok"
 	n.n = 2
 	print("listed", n.n, n.name)
 }

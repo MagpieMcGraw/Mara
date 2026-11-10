@@ -23,18 +23,18 @@ add_in_place :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 	names.len += 1
 	last := &names[names.len - 1]
 	last.len = 0
-	last + dir
-	last + "/"
-	last + file
+	last ++ dir
+	last ++ "/"
+	last ++ file
 }
 
 // A name built apart, then copied onto the list's end.
 add_copy :: fun(names: ^[]Name, dir: []utf8, file: []utf8) {
 	full : Name
-	&full + dir
-	&full + "/"
-	&full + file
-	names + full
+	&full ++ dir
+	&full ++ "/"
+	&full ++ file
+	names ++ full
 }
 
 main :: fun() {

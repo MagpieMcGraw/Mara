@@ -190,19 +190,19 @@ default_layout :: fun(ui: ^Ui) {
 	upper_h := floor_f32((room_h - MARGIN) * 0.5)
 	keys := Panel{kind = KEYS_PANEL, shown = false}
 	keys.box = Rect{x = ui.width - 520.0 - 4.0 * MARGIN, y = top + 4.0 * MARGIN, w = 520.0, h = 330.0}
-	&ui.panels + keys
+	&ui.panels ++ keys
 	profile := Panel{kind = PROFILE_PANEL, shown = true}
 	profile.box = Rect{x = MARGIN, y = top + MARGIN, w = left_w, h = room_h}
-	&ui.panels + profile
+	&ui.panels ++ profile
 	docs := Panel{kind = DOCS_PANEL, shown = true}
 	docs.box = Rect{x = right_x, y = top + MARGIN, w = right_w, h = upper_h}
-	&ui.panels + docs
+	&ui.panels ++ docs
 	ask := Panel{kind = ASK_PANEL, shown = true}
 	ask.box = Rect{x = right_x, y = top + MARGIN + upper_h + MARGIN, w = right_w, h = room_h - upper_h - MARGIN}
-	&ui.panels + ask
+	&ui.panels ++ ask
 	crash := Panel{kind = CRASH_PANEL, shown = false}
 	crash.box = Rect{x = MARGIN, y = top + MARGIN + upper_h + MARGIN, w = left_w, h = room_h - upper_h - MARGIN}
-	&ui.panels + crash
+	&ui.panels ++ crash
 	clamp_panels(ui)
 }
 
@@ -631,38 +631,38 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
 	text : [1000]utf8
-	&text + "mara view layout\nwindow "
-	&text + int_text(i64(ui.width))
-	&text + " "
-	&text + int_text(i64(ui.height))
-	&text + "\ntheme "
+	&text ++ "mara view layout\nwindow "
+	&text ++ int_text(i64(ui.width))
+	&text ++ " "
+	&text ++ int_text(i64(ui.height))
+	&text ++ "\ntheme "
 	if ui.theme == THEME_LIGHT {
-		&text + "light"
+		&text ++ "light"
 	elif ui.theme == THEME_SUBLIME
-		&text + "sublime"
+		&text ++ "sublime"
 	else
-		&text + "dark"
+		&text ++ "dark"
 	}
-	&text + "\n"
+	&text ++ "\n"
 	if ui.own_crash_seen.len > 0 {
-		&text + "own_crash "
-		&text + ui.own_crash_seen
-		&text + "\n"
+		&text ++ "own_crash "
+		&text ++ ui.own_crash_seen
+		&text ++ "\n"
 	}
 	for pn in ui.panels {
-		&text + "panel "
-		&text + panel_name(pn.kind)
-		&text + " "
-		&text + int_text(i64(pn.shown))
-		&text + " "
-		&text + int_text(i64(floor_f32(pn.box.x + 0.5)))
-		&text + " "
-		&text + int_text(i64(floor_f32(pn.box.y + 0.5)))
-		&text + " "
-		&text + int_text(i64(floor_f32(pn.box.w + 0.5)))
-		&text + " "
-		&text + int_text(i64(floor_f32(pn.box.h + 0.5)))
-		&text + "\n"
+		&text ++ "panel "
+		&text ++ panel_name(pn.kind)
+		&text ++ " "
+		&text ++ int_text(i64(pn.shown))
+		&text ++ " "
+		&text ++ int_text(i64(floor_f32(pn.box.x + 0.5)))
+		&text ++ " "
+		&text ++ int_text(i64(floor_f32(pn.box.y + 0.5)))
+		&text ++ " "
+		&text ++ int_text(i64(floor_f32(pn.box.w + 0.5)))
+		&text ++ " "
+		&text ++ int_text(i64(floor_f32(pn.box.h + 0.5)))
+		&text ++ "\n"
 	}
 	_ = write_entire_file(ui.layout_path, text)
 }
@@ -695,7 +695,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		for w_at < line.len {
 			w := next_word(line, w_at)
 			if w.len == 0 or words.len == words.cap do break
-			&words + w
+			&words ++ w
 			w_at = w.at + w.len
 		}
 		if words.len == 0 do continue
@@ -712,7 +712,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		if head == "own_crash" and words.len == 2 {
 			ui.own_crash_seen.len = 0
 			seen := word_text(line, words[1])
-			&ui.own_crash_seen + seen[0 : min_int(seen.len, ui.own_crash_seen.cap)]
+			&ui.own_crash_seen ++ seen[0 : min_int(seen.len, ui.own_crash_seen.cap)]
 		}
 		if head == "theme" and words.len == 2 {
 			name := word_text(line, words[1])
@@ -732,7 +732,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 				y, _ := parse_number(word_text(line, words[4]))
 				bw, _ := parse_number(word_text(line, words[5]))
 				bh, _ := parse_number(word_text(line, words[6]))
-				&ui.panels + Panel{kind = kind, shown = shown > 0.5, box = Rect{x = f32(x), y = f32(y), w = f32(bw), h = f32(bh)}}
+				&ui.panels ++ Panel{kind = kind, shown = shown > 0.5, box = Rect{x = f32(x), y = f32(y), w = f32(bw), h = f32(bh)}}
 			}
 		}
 	}
@@ -741,23 +741,23 @@ layout_load :: fun(ui: ^Ui) -> bool {
 	// layout has them, in front, to be seen.)
 	saved : [8]Panel
 	for pn in ui.panels {
-		&saved + pn
+		&saved ++ pn
 	}
 	default_layout(ui)
 	defaults : [8]Panel
 	for pn in ui.panels {
-		&defaults + pn
+		&defaults ++ pn
 	}
 	ui.panels.len = 0
 	for pn in saved {
-		&ui.panels + pn
+		&ui.panels ++ pn
 	}
 	for pn in defaults {
 		named := false
 		for s in saved {
 			if s.kind == pn.kind do named = true
 		}
-		if not named do &ui.panels + pn
+		if not named do &ui.panels ++ pn
 	}
 	return true
 }

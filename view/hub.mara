@@ -75,10 +75,10 @@ Hub :: struct {
 // (the view's command line, main's args).
 hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 	if args.len < 4 do return
-	&h.compiler + args[1]
-	&h.module_name + args[2]
+	&h.compiler ++ args[1]
+	&h.module_name ++ args[2]
 	here, no_dir := current_dir()
-	if not no_dir do &h.dir + here
+	if not no_dir do &h.dir ++ here
 	serve_command(h)
 	l, e := os.pipe_listen(args[3])
 	if e {
@@ -99,10 +99,10 @@ hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 // the window runs in.
 serve_command :: fun(h: ^Hub) {
 	h.command.len = 0
-	&h.command + "\""
-	&h.command + h.compiler
-	&h.command + "\" serve "
-	&h.command + h.module_name
+	&h.command ++ "\""
+	&h.command ++ h.compiler
+	&h.command ++ "\" serve "
+	&h.command ++ h.module_name
 }
 
 // Where a line says it's asked from, `-in "<folder>" <module>` at its start:
@@ -142,11 +142,11 @@ hub_follow :: fun(ui: ^Ui, h: ^Hub, dir: []utf8, name: []utf8) {
 			return
 		}
 		h.dir.len = 0
-		&h.dir + dir
+		&h.dir ++ dir
 		h.moved = true
 	}
 	h.module_name.len = 0
-	&h.module_name + name
+	&h.module_name ++ name
 	serve_command(h)
 	title := window_title(name)
 	_ = SetWindowTitle(ui.window, cstring(title))
@@ -266,7 +266,7 @@ client_read :: fun(c: ^Client) -> bool {
 	text : []utf8 = chunk
 	for ch in text {
 		if c.line.len == c.line.cap do return false   // (no query is that long)
-		&c.line + ch
+		&c.line ++ ch
 		if ch == '\n' {
 			c.whole = true
 			break
@@ -338,8 +338,8 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 // end line — failed when nothing was `found`.
 answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 	out : [64 * KB]utf8
-	&out + found.status
-	&out + "\n\n"
+	&out ++ found.status
+	&out ++ "\n\n"
 	for k in 0:found.lines.len {
 		if found.lines[k].hidden do continue
 		text := line_text(found, k)
@@ -347,15 +347,15 @@ answer_lines :: fun(found: ^Lines, c: ^Client, ok: bool) {
 			if file_write_text(c.id, out) do return
 			out.len = 0
 		}
-		&out + text[0 : min_int(text.len, out.cap - 1)]
-		&out + "\n"
+		&out ++ text[0 : min_int(text.len, out.cap - 1)]
+		&out ++ "\n"
 	}
 	if not ok {
-		&out + ANSWER_FAILED
+		&out ++ ANSWER_FAILED
 	else
-		&out + ANSWER_DONE
+		&out ++ ANSWER_DONE
 	}
-	&out + "\n"
+	&out ++ "\n"
 	_ = file_write_text(c.id, out)
 }
 
@@ -378,8 +378,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	if h.shown {
 		lines_clear(&ui.asked)
 		heading : [2100]utf8
-		&heading + "mara ask "
-		&heading + asked
+		&heading ++ "mara ask "
+		&heading ++ asked
 		lines_add(&ui.asked, heading, STYLE_QUERY)
 		lines_add(&ui.asked, "", STYLE_TEXT)
 		lines_status(&ui.asked, "Asking…", STYLE_DIM)
@@ -390,8 +390,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	h.resent = false
 	h.current.len = 0
 	h.sent.len = 0
-	&h.sent + query
-	&h.sent + '\n'
+	&h.sent ++ query
+	&h.sent ++ '\n'
 	if serve_up(h) {
 		if not file_write_text(h.serve.input, h.sent) {
 			h.asking = true
@@ -446,7 +446,7 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 	text : []utf8 = chunk
 	for ch in text {
 		if ch != '\n' {
-			if h.current.len < h.current.cap do &h.current + ch
+			if h.current.len < h.current.cap do &h.current ++ ch
 			continue
 		}
 		line := trimmed(h.current)
@@ -547,16 +547,16 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 		name -= 1
 	}
 	shown : [1000]utf8
-	&shown + "  "
-	&shown + line[name : min_int(line.len, name + 900)]
+	&shown ++ "  "
+	&shown ++ line[name : min_int(line.len, name + 900)]
 	lines_add(l, shown, STYLE_DIM)
 	link : [2000]utf8
 	whole := line[2] == '/' or line[2] == '\\' or line[3] == ':'
 	if not whole {
-		&link + h.dir
-		&link + "/"
+		&link ++ h.dir
+		&link ++ "/"
 	}
-	&link + line[2 : min_int(end, 900)]
+	&link ++ line[2 : min_int(end, 900)]
 	lines_link(l, link)
 }
 

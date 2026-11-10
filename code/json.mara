@@ -90,7 +90,7 @@ json_parse :: fun(text: []utf8, values: ^[]Json) -> err {
 			if depth == JSON_DEEPEST do return Json_Too_Deep
 			stack[depth] = values.len
 			depth += 1
-			values + Json{kind = kind, text = text[at:at], key = key, span = 1}
+			values ++ Json{kind = kind, text = text[at:at], key = key, span = 1}
 			at = json_skip(text, at + 1)
 			// (Its first value next, unless it closes at once.)
 			if at >= text.len or text[at] != closer do continue
@@ -99,21 +99,21 @@ json_parse :: fun(text: []utf8, values: ^[]Json) -> err {
 		elif c == '"'
 			end := json_string_end(text, at)
 			if end < 0 do return Bad_Json
-			values + Json{kind = Json_String, text = text[at + 1:end], key = key, span = 1}
+			values ++ Json{kind = Json_String, text = text[at + 1:end], key = key, span = 1}
 			at = end + 1
 		elif c == '-' or (c >= '0' and c <= '9')
 			end := json_number_end(text, at)
 			if end < 0 do return Bad_Json
-			values + Json{kind = Json_Number, text = text[at:end], key = key, span = 1}
+			values ++ Json{kind = Json_Number, text = text[at:end], key = key, span = 1}
 			at = end
 		elif json_word_at(text, at, "true")
-			values + Json{kind = Json_True, text = text[at:at + 4], key = key, span = 1}
+			values ++ Json{kind = Json_True, text = text[at:at + 4], key = key, span = 1}
 			at += 4
 		elif json_word_at(text, at, "false")
-			values + Json{kind = Json_False, text = text[at:at + 5], key = key, span = 1}
+			values ++ Json{kind = Json_False, text = text[at:at + 5], key = key, span = 1}
 			at += 5
 		elif json_word_at(text, at, "null")
-			values + Json{kind = Json_Null, text = text[at:at + 4], key = key, span = 1}
+			values ++ Json{kind = Json_Null, text = text[at:at + 4], key = key, span = 1}
 			at += 4
 		else
 			return Bad_Json
@@ -293,7 +293,7 @@ json_unescape :: fun(text: []utf8, out: ^[]utf8) -> err {
 		c := text[at]
 		if c != '\\' {
 			if out.len == out.cap do return Json_Too_Long
-			out + c
+			out ++ c
 			at += 1
 			continue
 		}
@@ -327,7 +327,7 @@ json_unescape :: fun(text: []utf8, out: ^[]utf8) -> err {
 		if e == 'n' do ch = '\n'
 		if e == 'r' do ch = '\r'
 		if e == 't' do ch = '\t'
-		out + ch
+		out ++ ch
 	}
 }
 
@@ -338,45 +338,45 @@ json_four_hex :: fun(text: []utf8, at: i64) -> i64 {
 // A character's code as utf8.
 json_add_code :: fun(code: i64, out: ^[]utf8) {
 	if code < 0x80 {
-		out + utf8(code)
+		out ++ utf8(code)
 	elif code < 0x800
-		out + utf8(0xC0 + code / 64)
-		out + utf8(0x80 + code % 64)
+		out ++ utf8(0xC0 + code / 64)
+		out ++ utf8(0x80 + code % 64)
 	elif code < 0x10000
-		out + utf8(0xE0 + code / 4096)
-		out + utf8(0x80 + code / 64 % 64)
-		out + utf8(0x80 + code % 64)
+		out ++ utf8(0xE0 + code / 4096)
+		out ++ utf8(0x80 + code / 64 % 64)
+		out ++ utf8(0x80 + code % 64)
 	else
-		out + utf8(0xF0 + code / 262144)
-		out + utf8(0x80 + code / 4096 % 64)
-		out + utf8(0x80 + code / 64 % 64)
-		out + utf8(0x80 + code % 64)
+		out ++ utf8(0xF0 + code / 262144)
+		out ++ utf8(0x80 + code / 4096 % 64)
+		out ++ utf8(0x80 + code / 64 % 64)
+		out ++ utf8(0x80 + code % 64)
 	}
 }
 
 // Appends text as a JSON string: its quotes, and escapes for what needs them.
 json_add_text :: fun(text: []utf8, out: ^[]utf8) {
-	out + '"'
+	out ++ '"'
 	for c in text {
 		n := i64(c)
 		if c == '"' {
-			out + "\\\""
+			out ++ "\\\""
 		elif c == '\\'
-			out + "\\\\"
+			out ++ "\\\\"
 		elif c == '\n'
-			out + "\\n"
+			out ++ "\\n"
 		elif c == '\r'
-			out + "\\r"
+			out ++ "\\r"
 		elif c == '\t'
-			out + "\\t"
+			out ++ "\\t"
 		elif n >= 0 and n < 32
 			digits := "0123456789abcdef"
-			out + "\\u00"
-			out + digits[n / 16]
-			out + digits[n % 16]
+			out ++ "\\u00"
+			out ++ digits[n / 16]
+			out ++ digits[n % 16]
 		else
-			out + c
+			out ++ c
 		}
 	}
-	out + '"'
+	out ++ '"'
 }

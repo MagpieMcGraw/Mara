@@ -19,7 +19,7 @@ poke :: fun(file: ^File) {
 
 main :: fun() {
 	text : [8]utf8
-	&text + "ab"
+	&text ++ "ab"
 	files : [2]File
 	files[0] = File(text)
 	poke(&files[0])

@@ -24,7 +24,7 @@ perf_timer_begin :: fun(
     timer.total_start = clock_ns()
     timer.phase_start = timer.total_start
     timer.names[0].len = 0
-    &timer.names[0] + first_phase
+    &timer.names[0] ++ first_phase
     return timer
 }
 
@@ -39,7 +39,7 @@ perf_timer_mark :: fun(timer: ^Performance_Timer, next_phase: []utf8) {
 
     if timer.count < MAX_PERF_PHASES {
         timer.names[timer.count].len = 0
-        &timer.names[timer.count] + next_phase
+        &timer.names[timer.count] ++ next_phase
     }
     timer.phase_start = now
 }

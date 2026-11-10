@@ -17,7 +17,7 @@ first_word :: fun(text: []utf8) -> []utf8 {
 
 main :: fun() {
 	line : [32]utf8
-	&line + "hello world"
+	&line ++ "hello world"
 	head := first_word(line)
 	head[0] = 'J'
 	print(line)

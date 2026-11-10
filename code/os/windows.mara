@@ -314,7 +314,7 @@ use mara.string
 	// and junctions followed, a mapped drive's folder its server's), however
 	// it was entered; whole (no separator at its end but a drive's root,
 	// `C:/`), its separators '/', a 0 after it: a Path, its room past the
-	// path there to add to (`&cwd + "/code"`). Too_Large when it's longer
+	// path there to add to (`&cwd ++ "/code"`). Too_Large when it's longer
 	// than a Path holds; Open_Failed when it's gone (deleted while the
 	// program ran in it); Read_Failed when the system won't say.
 	// (exe_path: the program's own file, wherever it runs.)
@@ -381,8 +381,8 @@ use mara.string
 		room := name.len
 		if unc do room += 2
 		if room > out.cap do return out, Too_Large
-		if unc do &out + "\\\\"
-		&out + name
+		if unc do &out ++ "\\\\"
+		&out ++ name
 		slashes_forward(&out)
 		return out
 	}
@@ -393,7 +393,7 @@ use mara.string
 	// relative path, a link), unlike main's args[0], which is what its
 	// starter wrote — for the files that come with it, beside it: a Path, to
 	// cut to its directory and add a file's name to (`exe.len =
-	// get_dir(exe).len`, `&exe + "font.ttf"`). Too_Large when it's longer
+	// get_dir(exe).len`, `&exe ++ "font.ttf"`). Too_Large when it's longer
 	// than a Path holds; Read_Failed when the system won't say.
 	// (GetModuleFileNameA: in the system's code page, as the other files'
 	// functions here take paths; the folders spelled as the program was
@@ -423,8 +423,8 @@ use mara.string
 		storage.len = start
 		if path.len > 500 do return none, Open_Failed   // (its pattern on the stack, under 1 KB)
 		pattern : [512]utf8
-		&pattern + path
-		&pattern + "\\*"
+		&pattern ++ path
+		&pattern ++ "\\*"
 		found : WIN32_FIND_DATAA
 		search := FindFirstFileA(cstring(pattern), &found)
 		if search == INVALID_HANDLE_VALUE do return none, Open_Failed
@@ -445,7 +445,7 @@ use mara.string
 			name := read_cstring(260, &found.name[0])
 			if name != "." and name != ".." {
 				entry : Dir_Entry
-				&entry.name + name
+				&entry.name ++ name
 				entry.dir = (found.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
 				entry.link = false
 				// (A link: a reparse point tagged a symbolic link or a
@@ -457,7 +457,7 @@ use mara.string
 					entry.link = true
 					entry.dir = link_leads_to_dir(path, name)
 				}
-				&entries + entry
+				&entries ++ entry
 				k += 1
 			}
 			if not bool(FindNextFileA(search, &found)) do break
@@ -475,9 +475,9 @@ use mara.string
 	// Opened, it's followed — asked for nothing, nothing read.
 	link_leads_to_dir :: fun(path: []utf8, name: []utf8) -> bool {
 		full : [800]utf8
-		&full + path
-		&full + "\\"
-		&full + name
+		&full ++ path
+		&full ++ "\\"
+		&full ++ name
 		id := CreateFileA(cstring(full), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, void, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return false
 		info : BY_HANDLE_FILE_INFORMATION
@@ -544,8 +544,8 @@ use mara.string
 	pipe_listen :: fun(name: []utf8) -> Pipe_Listener, err {
 		l := Pipe_Listener{all 0}
 		if name.len > 200 do return l, Listen_Failed
-		&l.name + "\\\\.\\pipe\\"
-		&l.name + name
+		&l.name ++ "\\\\.\\pipe\\"
+		&l.name ++ name
 		l.id = pipe_instance(&l, FILE_FLAG_FIRST_PIPE_INSTANCE)
 		if l.id == INVALID_HANDLE_VALUE {
 			l.id = NO_FILE
@@ -594,8 +594,8 @@ use mara.string
 	pipe_connect :: fun(name: []utf8) -> File_Id, err {
 		full : [300]utf8
 		if name.len > 200 do return NO_FILE, Connect_Failed
-		&full + "\\\\.\\pipe\\"
-		&full + name
+		&full ++ "\\\\.\\pipe\\"
+		&full ++ name
 		for _ in 0:5 {
 			id := CreateFileA(cstring(full), GENERIC_READ | GENERIC_WRITE, 0, void, OPEN_EXISTING, 0, NO_FILE)
 			if id != INVALID_HANDLE_VALUE do return id
@@ -1137,7 +1137,7 @@ use mara.string
 		if not net_start() do return a, Socket_Failed
 		if name.len > 255 do return a, Lookup_Failed
 		text : [256]utf8
-		&text + name
+		&text ++ name
 		hints := Addrinfo_Hints()
 		hints.kind = SOCK_DGRAM   // (each address once, not once a kind)
 		found: ^Addrinfo = void
@@ -1340,8 +1340,8 @@ use mara.string
 	// comes back with it from net_waiter_wait.
 	net_waiter_add :: fun(w: ^Net_Waiter, id: File_Id, tag: i64) -> err {
 		if w.sockets.len == w.sockets.cap do return Socket_Failed
-		&w.sockets + Wsa_Poll_Fd{id = id, events = POLLRDNORM, answers = 0}
-		&w.tags + tag
+		&w.sockets ++ Wsa_Poll_Fd{id = id, events = POLLRDNORM, answers = 0}
+		&w.tags ++ tag
 	}
 
 	// Sets whether a socket added also counts as ready when it can be written. Turn
@@ -1391,7 +1391,7 @@ use mara.string
 			if got == 0 do continue
 			if ready.len == ready.cap do return
 			r := Net_Ready{tag = w.tags[k], readable = got & (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL) != 0, writable = got & POLLWRNORM != 0}
-			ready + r
+			ready ++ r
 		}
 	}
 

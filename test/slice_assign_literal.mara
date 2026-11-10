@@ -49,9 +49,9 @@ main :: fun() {
 	n[0:2] = [3, 4]
 	print("i32s:", n)
 	g : [8]i64
-	&g + 1
-	&g + 2
-	&g + 3
+	&g ++ 1
+	&g ++ 2
+	&g ++ 3
 	g[0:2] = [8, 8]
 	print("partial:", g)
 	print("param:", total([1, 2, 3]))

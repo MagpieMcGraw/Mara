@@ -26,8 +26,8 @@ ROOT :: "os_additions_out"
 
 at :: fun(name: []utf8) -> Path {
 	p : Path
-	&p + ROOT
-	&p + name
+	&p ++ ROOT
+	&p ++ name
 	return p
 }
 
@@ -37,7 +37,7 @@ read_text :: fun(path: []utf8) -> str64, err {
 	room : [64]byte
 	file_read(id, &room)?
 	out : str64
-	for b in room do &out + utf8(b)
+	for b in room do &out ++ utf8(b)
 	return out
 }
 
@@ -135,7 +135,7 @@ queue :: fun() -> err {
 	for k in 1..100 {
 		os.mutex_lock(&q.lock)
 		for q.items.len == q.items.cap do os.condition_wait(&q.changed, &q.lock)
-		&q.items + k
+		&q.items ++ k
 		os.condition_wake_one(&q.changed)
 		os.mutex_unlock(&q.lock)
 	}

@@ -2,15 +2,16 @@
 //
 // Text is utf8 characters. A literal "like this" can't change. A buffer
 // can: `name : str64` holds up to 64 characters (str256 and str1024 hold
-// more, `[N]utf8` any N), and `&name + "more"` adds to it. An add gives
-// nothing back, so adds don't chain: one to a line. A list of texts,
+// more, `[N]utf8` any N), and `&name ++ "more"` adds to it. An add gives
+// its buffer back, so adds chain: `&name ++ dir ++ "/" ++ file`. `++` comes
+// after arithmetic: `&lines ++ pos + 1` adds the sum. A list of texts,
 // `[100]str64`: `next(&list)` makes it one longer and gives that text, to
-// add into where it is — `next(&list) + file`.
-// Without the `&`, `name + "more"` joins: a new buffer of name's own type,
-// name as it was. Joins chain — `file := dir + "/" + name` (built once, in
-// place). A join on a line of its own is an error: its new buffer would go
-// nowhere, so `&name + c` is the one meant. A view, `s[a:b]`, has no room
-// to join onto: make a buffer of it first, `str64(view) + "more"`
+// add into where it is — `next(&list) ++ file`.
+// Without the `&`, `name ++ "more"` joins: a new buffer of name's own type,
+// name as it was. Joins chain — `file := dir ++ "/" ++ name`. A join on a
+// line of its own is an error: its new buffer would go nowhere, so `&name
+// ++ c` is the one meant. A view, `s[a:b]`, has no room to join onto: make
+// a buffer of it first, `str64(view) ++ "more"`
 // (Path(view), any `[N]utf8`). A fun that
 // gives text back says how much room it gets, `-> str64`: what it returns
 // is copied into the caller's (a literal too — never a view of it).
@@ -43,29 +44,29 @@ main :: fun() {
 	print(greeting[1:4])                     // ell
 
 	name : str64
-	&name + "Ada"
-	&name + ' '                              // one character
-	&name + "Lovelace"
+	&name ++ "Ada"
+	&name ++ ' '                              // one character
+	&name ++ "Lovelace"
 	print(name, name.len, name.cap)          // Ada Lovelace 12 64
 
 	// One add a line; a list's next text is added into where it is.
 	path : str64
-	&path + "doc"
-	&path + '/'
-	&path + "text.mara"
+	&path ++ "doc"
+	&path ++ '/'
+	&path ++ "text.mara"
 	print(path)                              // doc/text.mara
 	paths : [8]str64
-	next(&paths) + "doc/basics.mara"
+	next(&paths) ++ "doc/basics.mara"
 	print(paths.len, paths[0])               // 1 doc/basics.mara
 	print(name == "Ada Lovelace", name != "Ada")   // true true
 
 	// Without the &, a join: a new buffer, of name's type; name as it was.
-	full := name + ", " + "Countess"
+	full := name ++ ", " ++ "Countess"
 	print(full, full.cap)                    // Ada Lovelace, Countess 64
 	print(name)                              // Ada Lovelace
-	first := str64(name[0:3]) + '!'          // a view: a buffer of it first
+	first := str64(name[0:3]) ++ '!'          // a view: a buffer of it first
 	print(first)                             // Ada!
-	print(number_name(1) + "!")              // one!
+	print(number_name(1) ++ "!")              // one!
 
 	// Each character, with its position.
 	for c, i in "abc" {

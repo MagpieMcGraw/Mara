@@ -128,7 +128,7 @@ child :: (c: Case) {
 		}
 	element
 		things : [2]Thing
-		&things + Ref{p = &x}
+		&things ++ Ref{p = &x}
 		match things[0] {
 		Ref r
 			things[0] = Num{n = 0x4242424242}
@@ -160,7 +160,7 @@ child :: (c: Case) {
 		print(four.len)
 	overfill
 		big : [8]i64
-		for i in 0:5 do &big + i
+		for i in 0:5 do &big ++ i
 		s := Short(big)
 		print(s.len)
 	slicefill
@@ -184,10 +184,10 @@ child :: (c: Case) {
 // The child for one case: what it said, and its exit code.
 run_case :: (exe: []utf8, name: []utf8) {
 	command : str256
-	&command + "\""
-	&command + exe
-	&command + "\" "
-	&command + name
+	&command ++ "\""
+	&command ++ exe
+	&command ++ "\" "
+	&command ++ name
 	p, e := process_start(command)
 	if e {
 		print("start failed:", e)
@@ -199,7 +199,7 @@ run_case :: (exe: []utf8, name: []utf8) {
 	for true {
 		re := file_read(p.output, &chunk)
 		if re or chunk.len == 0 do break
-		&out + chunk
+		&out ++ chunk
 	}
 	code, _ := process_wait(&p)
 	text : []utf8 = out

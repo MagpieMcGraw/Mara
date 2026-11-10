@@ -29,27 +29,27 @@ base64_encode :: fun(data: []byte, out: ^[]utf8, url: bool = false) {
 	k : i64 = 0
 	for k + 3 <= data.len {
 		n := (u32(u8(data[k])) << 16) | (u32(u8(data[k + 1])) << 8) | u32(u8(data[k + 2]))
-		out + base64_digit(n >> 18, url)
-		out + base64_digit((n >> 12) & 63, url)
-		out + base64_digit((n >> 6) & 63, url)
-		out + base64_digit(n & 63, url)
+		out ++ base64_digit(n >> 18, url)
+		out ++ base64_digit((n >> 12) & 63, url)
+		out ++ base64_digit((n >> 6) & 63, url)
+		out ++ base64_digit(n & 63, url)
 		k += 3
 	}
 	left := data.len - k
 	if left == 1 {
 		n := u32(u8(data[k])) << 16
-		out + base64_digit(n >> 18, url)
-		out + base64_digit((n >> 12) & 63, url)
+		out ++ base64_digit(n >> 18, url)
+		out ++ base64_digit((n >> 12) & 63, url)
 		if not url {
-			out + '='
-			out + '='
+			out ++ '='
+			out ++ '='
 		}
 	elif left == 2
 		n := (u32(u8(data[k])) << 16) | (u32(u8(data[k + 1])) << 8)
-		out + base64_digit(n >> 18, url)
-		out + base64_digit((n >> 12) & 63, url)
-		out + base64_digit((n >> 6) & 63, url)
-		if not url do out + '='
+		out ++ base64_digit(n >> 18, url)
+		out ++ base64_digit((n >> 12) & 63, url)
+		out ++ base64_digit((n >> 6) & 63, url)
+		if not url do out ++ '='
 	}
 }
 
@@ -84,7 +84,7 @@ base64_decode :: fun(text: []utf8, out: ^[]byte) -> err {
 		held += 6
 		if held >= 8 {
 			held -= 8
-			out + u8((bits >> held) & 255)
+			out ++ u8((bits >> held) & 255)
 		}
 	}
 }
@@ -93,8 +93,8 @@ base64_decode :: fun(text: []utf8, out: ^[]byte) -> err {
 hex_encode :: fun(data: []byte, out: ^[]utf8) {
 	for b in data {
 		n := u8(b)
-		out + HEX_DIGITS[i64(n >> 4)]
-		out + HEX_DIGITS[i64(n & 15)]
+		out ++ HEX_DIGITS[i64(n >> 4)]
+		out ++ HEX_DIGITS[i64(n & 15)]
 	}
 }
 
@@ -115,7 +115,7 @@ hex_decode :: fun(text: []utf8, out: ^[]byte) -> err {
 		high := hex_value(text[k])
 		low := hex_value(text[k + 1])
 		if high < 0 or low < 0 do return Bad_Encoding
-		out + u8(high * 16 + low)
+		out ++ u8(high * 16 + low)
 		k += 2
 	}
 }
@@ -126,14 +126,14 @@ url_encode :: fun(text: []utf8, out: ^[]utf8, form: bool = false) {
 	for c in text {
 		plain := c >= 'A' and c <= 'Z' or c >= 'a' and c <= 'z' or c >= '0' and c <= '9' or c == '-' or c == '_' or c == '.' or c == '~'
 		if plain {
-			out + c
+			out ++ c
 		elif form and c == ' '
-			out + '+'
+			out ++ '+'
 		else
 			n := u8(c)
-			out + '%'
-			out + upper_hex(n >> 4)
-			out + upper_hex(n & 15)
+			out ++ '%'
+			out ++ upper_hex(n >> 4)
+			out ++ upper_hex(n & 15)
 		}
 	}
 }
@@ -154,13 +154,13 @@ url_decode :: fun(text: []utf8, out: ^[]utf8, form: bool = false) -> err {
 			high := hex_value(text[k + 1])
 			low := hex_value(text[k + 2])
 			if high < 0 or low < 0 do return Bad_Encoding
-			out + utf8(high * 16 + low)
+			out ++ utf8(high * 16 + low)
 			k += 3
 		elif form and c == '+'
-			out + ' '
+			out ++ ' '
 			k += 1
 		else
-			out + c
+			out ++ c
 			k += 1
 		}
 	}

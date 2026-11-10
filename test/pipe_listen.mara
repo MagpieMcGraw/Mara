@@ -38,10 +38,10 @@ client :: fun(word: []utf8) -> i64 {
 // This program again (exe: its path, args[0]), as a client saying a word.
 start_client :: fun(exe: []utf8, word: []utf8) -> Process, err {
 	command : str256
-	&command + "\""
-	&command + exe
-	&command + "\" client "
-	&command + word
+	&command ++ "\""
+	&command ++ exe
+	&command ++ "\" client "
+	&command ++ word
 	return process_start(command)
 }
 

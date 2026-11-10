@@ -51,9 +51,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	defer os.pipe_listen_stop(&l)
 
 	command : str256
-	&command + "\""
-	&command + args[0]
-	&command + "\" ask"
+	&command ++ "\""
+	&command ++ args[0]
+	&command ++ "\" ask"
 	p, pe := os.process_start(command)
 	if pe {
 		print("couldn't start it:", pe)
@@ -85,7 +85,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	for true {
 		oe := file_read(p.output, &chunk)
 		if oe or chunk.len == 0 do break
-		&out + chunk
+		&out ++ chunk
 	}
 	said : []utf8 = out
 	print("it printed:", said)

@@ -27,10 +27,10 @@ else
 main :: fun() {
 	print("literal:", c_len("hello"))
 	b : str64
-	&b + "abc"
+	&b ++ "abc"
 	print("buffer:", c_len(b))
 	print("through a param:", c_len("hello"), c_len(b))
 	b.len = 0
-	&b + ""
+	&b ++ ""
 	print("emptied:", c_len(b))
 }

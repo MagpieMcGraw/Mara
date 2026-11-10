@@ -46,7 +46,7 @@ hex :: fun(data: []byte) -> [128]utf8 {
 pieces_match :: fun() -> bool, bool, bool {
 	// (Split at every length a block's edge can fall at.)
 	text : [300]byte
-	for k in 0:300 do &text + u8(k % 251)
+	for k in 0:300 do &text ++ u8(k % 251)
 	whole_256 := sha256(text)
 	whole_1 := sha1(text)
 	whole_md5 := md5(text)
@@ -82,7 +82,7 @@ main :: fun() {
 	print("pieces:", a, b, c)
 
 	key20 : [20]byte
-	for k in 0:20 do &key20 + u8(0x0B)
+	for k in 0:20 do &key20 ++ u8(0x0B)
 	print("hmac256:", hex(hmac_sha256(key20, "Hi There")))
 	print("hmac1:", hex(hmac_sha1("key", "The quick brown fox jumps over the lazy dog")))
 	out : [32]byte
@@ -96,7 +96,7 @@ main :: fun() {
 	pbkdf2_sha256("password", "salt", 2, &two)
 	print("pbkdf2 two blocks:", hex(two[0:32]))
 	long_key : [100]byte
-	for k in 0:100 do &long_key + u8(0xAA)
+	for k in 0:100 do &long_key ++ u8(0xAA)
 	print("long key:", hex(hmac_sha256(long_key, "abc")))
 
 	print("same_secret:", same_secret("abc", "abc"), same_secret("abc", "abd"), same_secret("abc", "ab"))
@@ -112,8 +112,8 @@ main :: fun() {
 	print("base64:", t1, t2, t3, t4)
 
 	some : [2]byte
-	&some + u8(0xFF)
-	&some + u8(0xEF)
+	&some ++ u8(0xFF)
+	&some ++ u8(0xEF)
 	t5 : [16]utf8
 	base64_encode(some, &t5, true)
 	back : [16]byte
@@ -126,9 +126,9 @@ main :: fun() {
 
 	h1 : [16]utf8
 	bytes : [3]byte
-	&bytes + u8(0)
-	&bytes + u8(0xFF)
-	&bytes + u8(0x10)
+	&bytes ++ u8(0)
+	&bytes ++ u8(0xFF)
+	&bytes ++ u8(0x10)
 	hex_encode(bytes, &h1)
 	h2 : [16]byte
 	h_err := hex_decode(h1, &h2)
@@ -154,8 +154,8 @@ main :: fun() {
 	long_text := "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	long_digest := "$2a$05$abcdefghijklmnopqrstuu5s2v8.iXieOjg/.AySBTTZIIVFJeBui"
 	longer : [128]utf8
-	&longer + long_text
-	&longer + "chars after 72 are ignored"
+	&longer ++ long_text
+	&longer ++ "chars after 72 are ignored"
 	print("bcrypt long:", bcrypt_check(longer, long_digest), bcrypt_check(long_text, long_digest))
 
 	// (High bytes: $2a$ means something other than $2y$ and $2b$ for these, which is

@@ -46,7 +46,7 @@ main :: fun() {
 	d := Inner() {value = 11}
 	print(a.value + b.value + c.value + d.value)
 	o.list = [1, 2, 3, 4]
-	&o.list + 5
+	&o.list ++ 5
 	o.list[0] = 6
 	print(o.list[1])
 	storage : [2!]i64
@@ -56,7 +56,7 @@ main :: fun() {
 	o.point = &o.inner
 	o.point.other = 12
 	print(o.point.other)
-	&o.name + "x"
+	&o.name ++ "x"
 	mine := 1
 	mine = 2
 	mine += 1

@@ -22,13 +22,13 @@ main :: fun() {
 
     farr : [3!]Inner
     print("local fixed   (0 0):", farr[0].x, farr[1].x)
-    &farr[1].name + "ok"
+    &farr[1].name ++ "ok"
     print("element name  (ok):", farr[1].name)
 
     h := Holder()
     print("field fixed   (7 7):", h.fixed[0].x, h.fixed[1].x)
 
     names : [3!]str64
-    &names[0] + "hi"
+    &names[0] ++ "hi"
     print("str64 elem    (hi):", names[0])
 }

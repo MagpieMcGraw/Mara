@@ -25,16 +25,16 @@ or_none :: fun(view: []utf8) -> []utf8 {
 
 main :: fun() {
 	line : str1024
-	&line + "one two three four five six seven eight nine ten eleven twelve thirteen"
+	&line ++ "one two three four five six seven eight nine ten eleven twelve thirteen"
 	print("literal first:", if line.len == 0 do "none" else line[:.len])
 	print("slice first:", if line.len != 0 do line[:.len] else "none")
 	line.len = 0
 	print("empty:", if line.len == 0 do "none" else line[:.len])
 
 	short : [2]i64
-	&short + 1
+	&short ++ 1
 	long : [8]i64
-	for i in 1..5 do &long + i
+	for i in 1..5 do &long ++ i
 	view := long[0 : 5]
 	picked := if long.len > 2 do short else view
 	print("list:", picked, picked.len)

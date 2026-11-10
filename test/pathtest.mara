@@ -10,8 +10,8 @@ main :: fun() {
 	// mara.os copies a path for C, a 0 after it (c_path): any slice of a
 	// path opens. The arena backs the 4 KB read buffer.
 	path : [64]utf8
-	&path + "pathtest"
-	&path + ".mara"
+	&path ++ "pathtest"
+	&path ++ ".mara"
 	data : [4096]byte
 	text, err := read_entire_file(path, &data)
 	assert(not bool(err))

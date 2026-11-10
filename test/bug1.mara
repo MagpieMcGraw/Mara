@@ -9,8 +9,8 @@ use mara.core
 // NRVO: `out` is the single returned local -> built directly in %sret.
 build :: fun() -> str64 {
     out : str64
-    &out + 'h'
-    &out + 'i'
+    &out ++ 'h'
+    &out ++ 'i'
     return out
 }
 
@@ -34,8 +34,8 @@ main :: fun() {
     print(w)              // hi
 
     base : str64
-    &base + 'y'
-    &base + 'o'
+    &base ++ 'y'
+    &base ++ 'o'
     p := passthrough(base)
     print(p)              // yo
 }

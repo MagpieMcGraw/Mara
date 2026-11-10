@@ -58,7 +58,7 @@ Counting :: class(cap: i64) {
 // Big enough to live on the arena.
 sum_to :: (n: i64) -> i64 {
 	numbers : [4000]i64
-	for k in 0:n do &numbers + k
+	for k in 0:n do &numbers ++ k
 	total := 0
 	for x in numbers do total += x
 	return total

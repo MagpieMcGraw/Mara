@@ -38,7 +38,7 @@ send_lots :: fun(s: ^Sender) {
 	block : [65536]byte
 	for b in 0:64 {
 		block.len = 0
-		for k in 0:BLOCK do &block + u8((b * BLOCK + k) % 251)
+		for k in 0:BLOCK do &block ++ u8((b * BLOCK + k) % 251)
 		if tcp_send(s.conn, block) do return
 	}
 	s.sent = true
@@ -76,17 +76,17 @@ main :: fun() {
 	_, taken := udp_open(net_local(server.port))
 	print("udp:", e, e2, "- port picked:", server.port != 0, "- again:", taken)
 	hello : [16]byte
-	&hello + "hello"
+	&hello ++ "hello"
 	_ = udp_send(&client, net_local(server.port), hello)
 	got : [1500]byte
 	from := Net_Address()
 	came, e3 := wait_packet(&server, &got, &from)
-	print("udp packet:", came, e3, got.len, "[" + got + "]", "from the client", net_same(from, net_local(client.port)))
+	print("udp packet:", came, e3, got.len, "[" ++ got ++ "]", "from the client", net_same(from, net_local(client.port)))
 	back : [16]byte
-	&back + "back"
+	&back ++ "back"
 	_ = udp_send(&server, from, back)
 	came2, _ := wait_packet(&client, &got, &from)
-	print("udp reply:", came2, "[" + got + "]")
+	print("udp reply:", came2, "[" ++ got ++ "]")
 	small : [2]byte
 	_ = udp_send(&client, net_local(server.port), hello)
 	_, e4 := wait_packet(&server, &small, &from)
@@ -100,10 +100,10 @@ main :: fun() {
 	to := here
 	to.port = server6.port
 	v6 : [8]byte
-	&v6 + "v6"
+	&v6 ++ "v6"
 	_ = udp_send(&client6, to, v6)
 	came6, _ := wait_packet(&server6, &got, &from)
-	print("udp ipv6:", came6, "[" + got + "]", "from the client", from.port == client6.port)
+	print("udp ipv6:", came6, "[" ++ got ++ "]", "from the client", from.port == client6.port)
 	udp_close(&server6)
 	udp_close(&client6)
 

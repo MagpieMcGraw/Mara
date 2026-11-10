@@ -14,7 +14,7 @@ Lexer :: class (tokens_in: []i64) {
 }
 
 lex :: fun(lexer: ^Lexer) {
-	&lexer.tokens + 7
+	&lexer.tokens ++ 7
 }
 
 main :: fun() {

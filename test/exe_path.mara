@@ -34,7 +34,7 @@ main :: fun() -> i64 {
 	print("opens:", not oe)
 	file_close(id)
 	beside := get_dir(path)
-	&beside + "exe_path.mara"
+	&beside ++ "exe_path.mara"
 	sid, se := file_open_read(beside)
 	print("beside it:", not se)
 	file_close(sid)

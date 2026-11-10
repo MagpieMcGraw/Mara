@@ -33,15 +33,15 @@ main :: fun() {
 	m := Mode.from_text("run")
 	print(m)
 	name : str64
-	&name + "che"
-	&name + "ck"
+	&name ++ "che"
+	&name ++ "ck"
 	m = Mode.from_text(name)
 	print(m)
 	print(Mode.from_text("ru"), Mode.from_text("runx"), Mode.from_text(""))
 	d := D.from_text("run")
 	print(d)
 	word : str64
-	&word + "run"
+	&word ++ "run"
 	m = Mode.from_text(word[0:3])
 	print("slice:", m)
 	h := Holder{m = Mode.from_text("check")}

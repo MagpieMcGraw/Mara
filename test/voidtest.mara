@@ -10,7 +10,7 @@ Holder :: struct {
 main :: fun() {
 	// Annotated decls: void = uninitialized, every shape.
 	a : [64]utf8 = void
-	&a + "filled later"
+	&a ++ "filled later"
 	print(a)
 
 	b : [8!]i64 = void
@@ -25,7 +25,7 @@ main :: fun() {
 	// written through.
 	h := Holder()
 	print(h.n)
-	&h.buf + "via field"
+	&h.buf ++ "via field"
 	print(h.buf)
 
 	// Re-init after de-init: write clears the uninit tracking.

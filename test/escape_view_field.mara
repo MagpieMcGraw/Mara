@@ -20,7 +20,7 @@ main :: fun() {
 	names : [4][]byte
 	for i in 0:2 {
 		r := Reader{data = storage[:]}
-		&names + name_of(&r)
+		&names ++ name_of(&r)
 	}
 	print("names:", names.len, names[0].len)
 }

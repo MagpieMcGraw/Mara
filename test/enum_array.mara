@@ -30,10 +30,10 @@ main :: fun() {
 	line : str64
 	for v, i in seen {
 		if v > 0 {
-			if line.len > 0 do &line + " | "
-			&line + text_of(i)
-			&line + " "
-			&line + text_of(v)
+			if line.len > 0 do &line ++ " | "
+			&line ++ text_of(i)
+			&line ++ " "
+			&line ++ text_of(v)
 		}
 	}
 	print("counted:", line)
@@ -49,7 +49,7 @@ main :: fun() {
 // A small number's digits.
 text_of :: fun(n: i64) -> str64 {
 	out : str64
-	if n >= 10 do &out + utf8(i64('0') + n / 10)
-	&out + utf8(i64('0') + n % 10)
+	if n >= 10 do &out ++ utf8(i64('0') + n / 10)
+	&out ++ utf8(i64('0') + n % 10)
 	return out
 }

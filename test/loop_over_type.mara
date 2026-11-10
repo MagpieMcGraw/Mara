@@ -35,8 +35,8 @@ main :: fun() {
 	for t in Shape { if t == s.tag do print("holds", t.text()) }
 	names : [64]utf8
 	for f in Events.bool {
-		&names + f.text()
-		&names + " "
+		&names ++ f.text()
+		&names ++ " "
 	}
 	print("bool fields:", names)
 	e := Events{all 0}

@@ -50,11 +50,11 @@ main :: fun() {
 	h.xs = []
 	print("kept:", d.len + h.xs.len, count([]), count(d))
 	nums : [3]i64
-	&nums + 9
+	&nums ++ 9
 	print("chosen:", either(true, nums).len, either(false, nums).len)
 	list : [4]i64
-	&list + 1
+	&list ++ 1
 	list = []
-	&list + 3
+	&list ++ 3
 	print("list:", list)
 }

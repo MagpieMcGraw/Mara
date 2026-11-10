@@ -33,8 +33,8 @@ P :: struct {
 show :: fun(label: []utf8, buf: []byte) {
 	text : str256
 	for c, i in buf {
-		if i > 0 do &text + ' '
-		&text + int_text(i64(c))
+		if i > 0 do &text ++ ' '
+		&text ++ int_text(i64(c))
 	}
 	print(label, text)
 }

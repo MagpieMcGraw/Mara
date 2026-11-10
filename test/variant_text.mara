@@ -35,8 +35,8 @@ main :: fun(args: [][]utf8) {
 	lost : err = Lost
 	print("open:", lost.text())
 	buf : str64
-	&buf + "failed: "
-	&buf + e.text()
+	&buf ++ "failed: "
+	&buf ++ e.text()
 	print("kept:", buf)
 	print("constant:", Parse_Error.Empty.text())
 }

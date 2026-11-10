@@ -66,6 +66,7 @@ Token_Kind :: enum u8 {
     Star,
     Slash,
     Modulo,
+    Plus_Plus,    // ++  — no meaning of its own: an `overload ++`'s
     Wrap_Plus,    // +%  — wrapping (two's-complement) add, no overflow trap
     Wrap_Minus,   // -%  — wrapping sub / wrapping unary negate
     Wrap_Star,    // *%  — wrapping mul
@@ -140,7 +141,7 @@ TOKEN_TEXTS := [Token_Kind][2]string{
     .U8 = {"u8", ""}, .U16 = {"u16", ""}, .U32 = {"u32", ""}, .U64 = {"u64", ""},
     .F32 = {"f32", ""}, .Utf8 = {"utf8", ""}, .Byte = {"byte", ""},
     .Plus = {"+", ""}, .Minus = {"-", ""}, .Star = {"*", ""}, .Slash = {"/", ""}, .Modulo = {"%", ""},
-    .Wrap_Plus = {"+%", ""}, .Wrap_Minus = {"-%", ""}, .Wrap_Star = {"*%", ""},
+    .Plus_Plus = {"++", ""}, .Wrap_Plus = {"+%", ""}, .Wrap_Minus = {"-%", ""}, .Wrap_Star = {"*%", ""},
     .Equals = {"=", ""}, .Equal_Equal = {"==", ""}, .Not_Equal = {"!=", ""},
     .Less = {"<", ""}, .Less_Equal = {"<=", ""}, .Greater = {">", ""}, .Greater_Equal = {">=", ""},
     .Plus_Equal = {"+=", ""}, .Minus_Equal = {"-=", ""}, .Mul_Equal = {"*=", ""}, .Div_Equal = {"/=", ""},
@@ -665,6 +666,7 @@ next_token :: proc(l: ^Lexer) -> Token {
         return op(l, 2, .Greater_Equal) if c1 == '=' else op(l, 1, .Greater)
     case '+':
         switch c1 {
+        case '+': return op(l, 2, .Plus_Plus)
         case '=': return op(l, 2, .Plus_Equal)
         case '%': return op(l, 3, .Wrap_Plus_Equal) if c2 == '=' else op(l, 2, .Wrap_Plus)
         }

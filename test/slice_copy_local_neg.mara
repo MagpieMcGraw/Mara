@@ -10,7 +10,7 @@ use mara.core
 
 grow :: fun(items: []i64) -> i64 {
 	out := items
-	&out + 1
+	&out ++ 1
 	return out.len
 }
 

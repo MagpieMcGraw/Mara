@@ -156,7 +156,7 @@ game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) -> err {
 
 game_events :: fun(game: ^Megastruct) {
 	quit_msg := ""
-	&quit_msg + "Escaping..."
+	&quit_msg ++ "Escaping..."
 
 	process(&game.events)
 	ev := &game.events	kb := &ev.keyboard	file := &ev.dropfile

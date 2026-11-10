@@ -9,7 +9,7 @@ use mara.core
 
 made :: fun() -> [4]i64 {
 	out : [4]i64
-	&out + 1
+	&out ++ 1
 	return out
 }
 

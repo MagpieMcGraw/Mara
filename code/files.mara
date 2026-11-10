@@ -155,12 +155,12 @@ write_entire_file :: fun(path: []utf8, data: []byte) -> err {
 	// programs writing one file don't write into one new file.)
 	tmp : os.Path
 	if path.len > tmp.cap - 13 do return Too_Large
-	&tmp + path
-	&tmp + "."
+	&tmp ++ path
+	&tmp ++ "."
 	r : [4]byte
 	_ = os.random_bytes(&r)
 	hex_encode(r, &tmp)
-	&tmp + ".tmp"
+	&tmp ++ ".tmp"
 	id := file_open_write(tmp)?
 	we := file_write_text(id, data)
 	file_close(id)

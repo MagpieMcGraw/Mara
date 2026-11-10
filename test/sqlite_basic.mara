@@ -54,12 +54,12 @@ tables :: fun() -> err {
 	defer sqlite_finish(&query)
 	line : [64]utf8
 	for sqlite_step(&query)? {
-		if line.len > 0 do &line + ' '
-		&line + int_text(sqlite_column_i64(&query, 0))
-		&line + ' '
+		if line.len > 0 do &line ++ ' '
+		&line ++ int_text(sqlite_column_i64(&query, 0))
+		&line ++ ' '
 		sqlite_column_text(&query, 1, &line)?
-		&line + ' '
-		&line + int_text(sqlite_column_i64(&query, 2))
+		&line ++ ' '
+		&line ++ int_text(sqlite_column_i64(&query, 2))
 	}
 	print("rows:", line)
 
@@ -99,10 +99,10 @@ tables :: fun() -> err {
 	}
 
 	bytes : [4]byte
-	&bytes + u8(1)
-	&bytes + u8(0)
-	&bytes + u8(255)
-	&bytes + u8(7)
+	&bytes ++ u8(1)
+	&bytes ++ u8(0)
+	&bytes ++ u8(255)
+	&bytes ++ u8(7)
 	blob := sqlite_prepare(&db, "SELECT ?")?
 	defer sqlite_finish(&blob)
 	sqlite_bind_blob(&blob, 1, bytes)?
@@ -120,8 +120,8 @@ tables :: fun() -> err {
 		sqlite_reset(&again)?
 		sqlite_bind_i64(&again, 1, k)?
 		if sqlite_step(&again)? {
-			if seen.len > 0 do &seen + ' '
-			&seen + int_text(sqlite_column_i64(&again, 0))
+			if seen.len > 0 do &seen ++ ' '
+			&seen ++ int_text(sqlite_column_i64(&again, 0))
 		}
 	}
 	print("reused:", seen)

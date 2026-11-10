@@ -1,0 +1,15 @@
+module append_plus_neg
+
+use mara.core
+
+//@ expect-fail: mismatched types for '+': [64]utf8 and text (1 bytes)
+
+// `+` is arithmetic's: appends and joins are `++`. A `+` in a chain of them
+// adds its two sides first, and text has no sum.
+
+main :: fun() {
+	name : str64
+	dir := "C:/code"
+	&name ++ dir + "/"
+	print(name)
+}

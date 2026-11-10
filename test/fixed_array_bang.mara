@@ -33,7 +33,7 @@ main :: fun() {
 	seen[.c] = true
 	print("| by enum", seen.len, seen[.c])
 	list : [3]i64
-	&list + 7
+	&list ++ 7
 	room : [MAX]byte
 	print("| lists", list.len, list.cap, room.len, room.cap)
 }

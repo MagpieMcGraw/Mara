@@ -70,7 +70,7 @@ main :: fun() {
 	defer udp_close(&client)
 
 	hello : [32]byte
-	&hello + "hello"
+	&hello ++ "hello"
 	_ = udp_send(&client, net_local(server.port), hello)
 
 	// Look for a packet each millisecond, as a game would each frame.
@@ -115,7 +115,7 @@ main :: fun() {
 	defer tcp_close(&accepted)
 
 	message : [32]byte
-	&message + "a message, all of it"
+	&message ++ "a message, all of it"
 	_ = tcp_send(&conn, message)
 	room : [1200]byte
 	got := 0

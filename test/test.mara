@@ -1113,12 +1113,12 @@ Holder_Sized :: struct {
 
 test_sized_slice_field :: fun() {
 	s := ""
-	&s + "world"
+	&s ++ "world"
 	print(s)
 	print(s.len)
 	h := Holder_Sized{all 0}
 	h.count = 42
-	&h.name + "hello"
+	&h.name ++ "hello"
 	print(h.name)
 	print(h.name.len)
 	print(h.count)
@@ -1479,19 +1479,19 @@ test_string_append :: fun() {
 	empty := ""
 	print(empty)
 	one := ""
-	&one + "Escaping..."
+	&one ++ "Escaping..."
 	print(one)
 	many := ""
-	&many + "ab"
-	&many + "cd"
-	&many + "ef"
+	&many ++ "ab"
+	&many ++ "cd"
+	&many ++ "ef"
 	print(many)
 	sized : [64]utf8
-	&sized + "from sized"
+	&sized ++ "from sized"
 	print(sized)
 	grt := "hello"
 	print(grt)
-	&grt + " world"
+	&grt ++ " world"
 	print(grt)
 }
 

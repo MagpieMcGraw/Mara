@@ -15,12 +15,12 @@ Src :: struct (text: []utf8, line_list: ^[16]i64) {
 }
 
 note :: (s: ^Src) {
-	s.lines + s.data.len
+	s.lines ++ s.data.len
 }
 
 copies :: (names: [][]utf8) -> [4][]utf8 {
 	out : [4][]utf8
-	for n in names { &out + n }
+	for n in names { &out ++ n }
 	return out
 }
 

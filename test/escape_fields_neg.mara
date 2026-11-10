@@ -31,7 +31,7 @@ kept_of :: fun(work: ^Work) -> Kept {
 fill :: fun(settings: ^Settings, storage: ^[]byte) -> i64 {
 	work := Work{settings = settings, numbers = slice([:16]i64, storage)}
 	kept := slice([:2]Kept, storage)
-	&kept + kept_of(&work)
+	&kept ++ kept_of(&work)
 	return kept.len
 }
 

@@ -85,7 +85,7 @@ sqlite_close :: fun(db: ^Sqlite) {
 sqlite_run :: fun(db: ^Sqlite, sql: []utf8) -> err {
 	copy : [8 * KB]utf8
 	if sql.len >= copy.cap do return Sqlite_Bad_Sql
-	&copy + sql
+	&copy ++ sql
 	sqlite_check(sqlite3_exec(db.handle, cstring(copy), 0, 0, 0))?
 }
 
@@ -198,7 +198,7 @@ sqlite_column_f64 :: fun(s: ^Sql_Statement, at: i32) -> f64 {
 sqlite_column_text :: fun(s: ^Sql_Statement, at: i32, out: ^[]utf8) -> err {
 	text := sqlite_column_text_view(s, at)
 	if out.len + text.len > out.cap do return Sqlite_Too_Long
-	out + text
+	out ++ text
 }
 
 // Appends a column, as bytes, to out. NULL adds nothing. Sqlite_Too_Long if it doesn't
@@ -206,7 +206,7 @@ sqlite_column_text :: fun(s: ^Sql_Statement, at: i32, out: ^[]utf8) -> err {
 sqlite_column_blob :: fun(s: ^Sql_Statement, at: i32, out: ^[]byte) -> err {
 	bytes := sqlite_column_blob_view(s, at)
 	if out.len + bytes.len > out.cap do return Sqlite_Too_Long
-	out + bytes
+	out ++ bytes
 }
 
 // A column as text, with no copy: a view of SQLite's memory. It goes stale at the next
@@ -257,7 +257,7 @@ sqlite_busy_wait :: fun(db: ^Sqlite, ms: i32) {
 // What SQLite says about the connection's last failure.
 sqlite_message :: fun(db: ^Sqlite) -> str256 {
 	out : str256
-	&out + read_cstring(255, sqlite3_errmsg(db.handle))
+	&out ++ read_cstring(255, sqlite3_errmsg(db.handle))
 	return out
 }
 

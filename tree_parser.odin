@@ -758,7 +758,7 @@ tp_overload :: proc(p: ^Tree_Parser) -> Tree_Id {
     kw := tp_advance(p)
     op := tp_advance(p)
     #partial switch build_tokens[op].kind {
-    case .Star, .Plus, .Minus, .Slash, .Modulo, .Equal_Equal, .Not_Equal, .In:
+    case .Star, .Plus, .Plus_Plus, .Minus, .Slash, .Modulo, .Equal_Equal, .Not_Equal, .In:
     case:
         tp_error(p, op, PARSE_OVERLOAD_EXPECTED_OP, token_text(build_tokens[op]))
     }
@@ -1845,12 +1845,13 @@ tp_precedence :: proc(k: Token_Kind) -> int {
     case .Or:  return 1
     case .And: return 2
     case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal: return 3
-    case .Pipe: return 4
-    case .Tilde: return 5
-    case .Ampersand: return 6
-    case .Shift_Left, .Shift_Right: return 7
-    case .Plus, .Minus, .Wrap_Plus, .Wrap_Minus: return 8
-    case .Star, .Slash, .Modulo, .Wrap_Star: return 9
+    case .Plus_Plus: return 4   // (under every arithmetic operator: `&xs ++ a + 1` adds the sum)
+    case .Pipe: return 5
+    case .Tilde: return 6
+    case .Ampersand: return 7
+    case .Shift_Left, .Shift_Right: return 8
+    case .Plus, .Minus, .Wrap_Plus, .Wrap_Minus: return 9
+    case .Star, .Slash, .Modulo, .Wrap_Star: return 10
     }
     return -1
 }
@@ -1866,14 +1867,14 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             kw := tp_advance(p)
             if is_not_in { tp_advance(p) }
             tp_skip_newlines(p)
-            lo := tp_expr(p, 4)
+            lo := tp_expr(p, 5)
             // (No `..`: `x in xs`, among a collection's items — hi none.)
             hi: Tree_Id
             dots: Token_Id
             if tp_is_range_mark(p) {
                 dots = tp_range_dots(p)
                 tp_skip_newlines(p)
-                hi = tp_expr(p, 4)
+                hi = tp_expr(p, 5)
             }
             left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi), u32(dots)))
             continue

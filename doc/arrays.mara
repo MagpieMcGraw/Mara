@@ -8,7 +8,7 @@
 // and `a[:]` run to the end of its room (a list's whole cap), `a[1:.len]`
 // to the end of its items. A slice of a list keeps as much of the list's
 // len as falls in it: its len is its items, its cap its room, and an append
-// goes after its items (`room := list[:]`, then `&room + x`). A slice of a
+// goes after its items (`room := list[:]`, then `&room ++ x`). A slice of a
 // fixed array holds all of it until you append to it: then it fills from
 // its start. A list given where a slice goes is a view of its items
 // (`sum(list)`). Functions usually take slices, so they work on any of
@@ -34,8 +34,8 @@ main :: fun() {
 	print(fixed.len, fixed[0], sum(fixed[:]))    // 4 1 10
 
 	list : [8]i64
-	&list + 10
-	&list + 20
+	&list ++ 10
+	&list ++ 20
 	print(list.len, list.cap, sum(list))      // 2 8 30
 	next(&list) = 30
 	print(list.len, list[2])                     // 3 30

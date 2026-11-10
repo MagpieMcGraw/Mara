@@ -9,7 +9,7 @@ use mara.core
 
 first :: fun() -> ^i64 {
 	nums : [4]i64
-	&nums + 1
+	&nums ++ 1
 	keep : ^i64
 	for &n in nums { keep = n }
 	return keep
