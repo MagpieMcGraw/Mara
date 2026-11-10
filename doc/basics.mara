@@ -695,8 +695,9 @@ Input_Number :: alias Input.f32
 // a function can't be used as a value, only called.
 //
 // `cstring(s)` hands C s's bytes as they are — it copies nothing — and
-// checks a 0 is after them: a literal has one, and a buffer keeps one
-// after its text (appends write it). A slicing holds all of its room, so
+// checks a 0 is after them: a literal has one, and a new buffer is all 0,
+// so its text has one. A buffer used again is emptied with `b = []`, all 0
+// again (`b.len = 0` keeps its old text). A slicing holds all of its room, so
 // `b[0:n]` has no 0 after it, and cstring() stops the program: give C the
 // buffer itself, unsliced. Text C gives back is read with
 // `read_cstring(n, p)` (mara.os), a view of at most n bytes, up to its 0. Appended

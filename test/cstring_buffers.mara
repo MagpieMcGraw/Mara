@@ -6,11 +6,15 @@ use mara.core
 //@ expect-output: buffer: 3
 //@ expect-output: through a param: 5 3
 //@ expect-output: emptied: 0
+//@ expect-output: used again: 2
 
 // cstring(s) hands C s's bytes as they are — no copy — checked to have a 0
-// after them: a literal has one, and a buffer keeps one after its text
-// (appends write it). A slice over a buffer has none past its end (its len
-// is its cap): cstring_slice_stop. So text for C stays a buffer, unsliced.
+// after them: a literal has one, and a new buffer is all 0, so what's
+// appended to it has one. An append writes nothing after its text: a buffer
+// used again is emptied with `b = []`, all 0 again (`b.len = 0` would keep
+// its old characters, and cstring() would stop the program). A slice over a
+// buffer has none past its end (its len is its cap): cstring_slice_stop. So
+// text for C stays a buffer, unsliced.
 
 #if #windows {
 	foreign static_lib "kernel32" {
@@ -30,7 +34,8 @@ main :: fun() {
 	&b ++ "abc"
 	print("buffer:", c_len(b))
 	print("through a param:", c_len("hello"), c_len(b))
-	b.len = 0
-	&b ++ ""
+	b = []
 	print("emptied:", c_len(b))
+	&b ++ "xy"
+	print("used again:", c_len(b))
 }

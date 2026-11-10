@@ -11,51 +11,30 @@ GB :: 1 << 30 // 1024 * 1024 * 1024
 overload ++ add
 // `&list ++ x` appends x to the list. `list ++ x` joins them into a new list.
 // An append gives its list back, so appends chain: `&name ++ dir ++ "/"`.
-add :: dispatch{ utf8_add, utf8_add_item, byte_add_item, slice_add, slice_add_item, join, join_item }
+// Nothing is written after what's appended. Text for C needs a 0 after it:
+// a new list is all 0, and `name = []` makes a used one all 0 again
+// (`name.len = 0` keeps its old characters).
+add :: dispatch{ byte_add_item, slice_add, slice_add_item, join, join_item }
 
-// `a == b` on text: whether both hold the same characters.
+// `a == b`, `a != b` on lists and slices: whether both hold the same items.
+// Text is a list of characters, so this is how texts compare.
 overload == equal
-// Whether two texts hold the same characters: `a == b`.
-equal :: dispatch{ utf8_equal }
-
-// `a != b` on text: whether their characters differ.
+equal :: dispatch{ slice_equal }
 overload != not_equal
-// Whether two texts' characters differ: `a != b`.
-not_equal :: dispatch{ utf8_not_equal }
+not_equal :: dispatch{ slice_not_equal }
 
-// Appends text to dst; it must fit in dst's capacity. A slicing of a fixed
-// array is full: set its len to 0 first to fill it.
-// (We write 0 after it, so dst stays a valid C string.)
-utf8_add :: fun(dst: ^[]utf8, src: []utf8) -> ^[]utf8 {
-	n := dst.len
-	dst[n:] = src
-	end := n + src.len
-	dst.len = end
-	if end < dst.cap do dst[end] = 0
-	return dst
-}
-
-// Whether a and b hold the same characters.
-utf8_equal :: fun(a: []utf8, b: []utf8) -> bool {
+// Whether a and b hold the same items in the same order.
+slice_equal :: fun(a: []$T, b: []$T) -> bool {
 	if a.len != b.len do return false
-	for c, i in a {
-		if c != b[i] do return false
+	for x, i in a {
+		if x != b[i] do return false
 	}
 	return true
 }
 
-// Whether a and b hold different characters.
-utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
-	return not utf8_equal(a, b)
-}
-
-// Appends one character to dst; it must fit in dst's capacity.
-utf8_add_item :: fun(dst: ^[]utf8, src: utf8) -> ^[]utf8 {
-	n := dst.len
-	dst[n] = src
-	dst.len = n + 1
-	if n + 1 < dst.cap do dst[n + 1] = 0
-	return dst
+// Whether a and b differ: in how many items they hold, or in one of them.
+slice_not_equal :: fun(a: []$T, b: []$T) -> bool {
+	return not slice_equal(a, b)
 }
 
 // Appends one byte, given as a u8, to dst; it must fit in dst's capacity.

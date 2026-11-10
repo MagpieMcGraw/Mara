@@ -442,11 +442,11 @@ foreign static_lib "open_gl" {
 // `get_proc` gives each one's address by its name (sdl.GL_GetProcAddress),
 // void for one the driver hasn't (an extension's: gl_has_extension).
 gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
-    // (Each name copied into a buffer: get_proc hands it to C, and a buffer
-    // keeps the 0 after its text that C needs.)
+    // (Each name copied into a buffer: get_proc hands it to C, which needs a
+    // 0 after it. `name = []` makes the buffer all 0 again for the next.)
     name : [64]utf8
     for i in 0:mara_gl_proc_count() {
-        name.len = 0
+        name = []
         &name ++ os.read_cstring(name.cap - 1, mara_gl_proc_name(i))
         mara_gl_proc_set(i, get_proc(name))
     }

@@ -98,7 +98,7 @@ hub_start :: fun(ui: ^Ui, h: ^Hub, args: [][]utf8) {
 // The command that starts serve: on the module the window's on, in the folder
 // the window runs in.
 serve_command :: fun(h: ^Hub) {
-	h.command.len = 0
+	h.command = []   // (all 0 again: it goes to C, which needs a 0 after it)
 	&h.command ++ "\""
 	&h.command ++ h.compiler
 	&h.command ++ "\" serve "

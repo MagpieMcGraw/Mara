@@ -249,7 +249,7 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: Val, span: Sp
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
     loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
-    emit_fail(g, fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc))
+    emit_fail(g, fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — a buffer emptied with `.len = 0` keeps its old text: empty it with `= []`. A slicing has no room after it: pass the buffer\n", loc))
     emit_label(g, pass_lbl)
     return src_ptr
 }
