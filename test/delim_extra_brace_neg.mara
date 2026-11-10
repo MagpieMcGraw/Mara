@@ -1,0 +1,12 @@
+module delim_extra_brace_neg
+//@ expect-fail: [delim_extra_brace_neg.mara:12:1] Parse error: this `}` closes nothing: no `{` is open here. The `}` at 10:2 isn't lined up with the `{` it closes, at 8:12
+
+use mara.core
+
+// A `}` too many: the last has nothing to close, and the one out of line is
+// pointed at.
+main :: () {
+	print("a")
+	}
+	print("b")
+}

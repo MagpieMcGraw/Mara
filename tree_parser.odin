@@ -22,6 +22,11 @@ Tree_Parser :: struct {
     // there, though the parse went on past it (tp_recover).
     boundary_error: int,
     stmt_start:     int,      // where the statement began: recovery never goes back that far
+    // The token the file's brackets stop matching at (delims_check); -1: they
+    // match. The parser's errors from it on come of that: not said, and not
+    // among the file's errors (`unsaid` of `errors`).
+    quiet_from:     int,
+    unsaid:         int,
 }
 
 // Parse a file into the build's tree: its root, and how many errors.
@@ -29,6 +34,10 @@ tree_parse_file :: proc(f: ^Source_File) -> (root: Tree_Id, errors: int) {
     t := &build_tree
     tree_init(t)
     p := Tree_Parser{t = t, tokens = build_tokens[:f.end_token], first = int(f.first_token), pos = int(f.first_token), file = f.path, boundary_error = -1}
+    // (Its brackets first: one that doesn't match is said once, as what it
+    // is, after the errors before it.)
+    brackets := delims_check(p.tokens, p.first)
+    p.quiet_from = brackets.at
     stmts := make([dynamic]Tree_Id, context.temp_allocator)
     tp_skip_newlines(&p)
     for tp_kind(&p) != .EOF {
@@ -39,10 +48,14 @@ tree_parse_file :: proc(f: ^Source_File) -> (root: Tree_Id, errors: int) {
         if p.errors > errs { tp_recover(&p) }
         tp_skip_separator(&p)
     }
+    if brackets.at >= 0 {
+        p.quiet_from = -1
+        tp_error(&p, Token_Id(brackets.at), "%s", brackets.message)
+    }
     root = tree_add(t, .File, 0, tree_list_add(t, stmts[:]))
     t.first[root], t.end[root] = f.first_token, f.end_token
     append(&t.files, root)
-    return root, p.errors
+    return root, p.errors - p.unsaid
 }
 
 // --- tokens ---------------------------------------------------------------
@@ -78,8 +91,24 @@ tp_advance :: proc(p: ^Tree_Parser) -> Token_Id {
 
 tp_expect :: proc(p: ^Tree_Parser, kind: Token_Kind) -> Token_Id {
     tok := tp_tok(p)
-    if tok.kind != kind { tp_error(p, tp_here(p), PARSE_EXPECTED_TOKEN, kind, tok.kind, token_text(tok)) }
+    if tok.kind != kind { tp_expected(p, kind, tok) }
     return tp_advance(p)
+}
+
+// "expected this, found that" — for a closer, with the bracket it would
+// close, and, where a value follows a value in a list, the `,` that may be
+// what's missing.
+tp_expected :: proc(p: ^Tree_Parser, kind: Token_Kind, tok: Token) {
+    #partial switch kind {
+    case .Right_Paren, .Right_Bracket, .Right_Brace:
+        open := delims_opener_before(p.tokens, p.first, p.pos, kind)
+        if open < 0 { break }
+        comma := ""
+        if kind != .Right_Brace && token_starts_value(tok.kind) { comma = PARSE_COMMA_MISSING }
+        tp_error(p, tp_here(p), PARSE_EXPECTED_CLOSER, kind_shown(kind), token_shown(p.tokens[open]), delims_where(p.tokens[open]), token_shown(tok), comma)
+        return
+    }
+    tp_error(p, tp_here(p), PARSE_EXPECTED_TOKEN, kind_shown(kind), token_shown(tok))
 }
 
 // A number that doesn't parse: why — past u64, or not a number.
@@ -100,6 +129,10 @@ tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
     tok := build_tokens[at]
     if p.boundary_error < 0 && tp_is_boundary(tok.kind) { p.boundary_error = int(at) }
+    if p.quiet_from >= 0 && int(at) >= p.quiet_from {   // (the unmatched bracket's doing)
+        p.unsaid += 1
+        return
+    }
     emit_diagnostic(.Parse_Error, format_location(p.file, token_line(tok), token_col(tok)), msg, ..args)
 }
 
@@ -262,7 +295,7 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
     if tok.kind == .Else {
         tp_error(p, tp_here(p), PARSE_STRAY_ELSE)
     } else {
-        tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, token_text(tok))
+        tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN_STMT, token_shown(tok))
     }
     bad := tp_advance(p)
     return tp_node(p, .Expr_Stmt, bad, start)
@@ -1762,7 +1795,7 @@ tp_type :: proc(p: ^Tree_Parser) -> Tree_Id {
     }
     if tp_is_type_keyword(tp_kind(p)) { return tp_leaf(p, .Type_Keyword, tp_advance(p)) }
     tok := tp_tok(p)
-    tp_error(p, tp_here(p), PARSE_EXPECTED_TYPE, tok.kind, token_text(tok))
+    tp_error(p, tp_here(p), PARSE_EXPECTED_TYPE, token_shown(tok))
     bad := tp_advance(p)
     return tp_node(p, .Type_Name, bad, start)
 }
@@ -2288,7 +2321,7 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
         result = tp_node(p, .Import, kw, start, tp_tokens(p, parts))
     case:
         tok := tp_tok(p)
-        tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN, tok.kind, token_text(tok))
+        tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN, token_shown(tok))
         result = tp_leaf(p, .Number, tp_advance(p))
     }
     return tp_postfix(p, result, allow_dot)

@@ -1,0 +1,13 @@
+module delim_in_text
+
+//@ expect-output: { [ ( true )
+
+// Brackets in a text, a character or a comment aren't brackets: } ] )
+
+use mara.core
+
+main :: () {
+	open := '('
+	/* } } ] */
+	print("{ [ (", open == '(', ")")
+}

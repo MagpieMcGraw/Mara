@@ -1,0 +1,12 @@
+module delim_comma_neg
+//@ expect-fail: [delim_comma_neg.mara:11:19] Parse error: expected `)` here, to close the `(` at 11:7 — found `keybinds`. Is a `,` missing before it?
+
+// A value right after a value in a call's arguments: the error names the
+// `(` still open, and asks after the comma.
+
+use mara.core
+
+main :: () {
+	keybinds := 5
+	print("Keybind:" keybinds)
+}

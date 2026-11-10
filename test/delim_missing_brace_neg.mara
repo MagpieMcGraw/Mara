@@ -1,0 +1,22 @@
+module delim_missing_brace_neg
+//@ expect-fail: [delim_missing_brace_neg.mara:13:13] Parse error: a `}` is missing, most likely this `{`'s: the `}` at 16:2 closes it, but isn't lined up with its line
+
+// With a `}` missing, every `}` after it closes the block before its own,
+// and the `{` left open at the file's end is main's. The one whose `}` isn't
+// lined up with it is the likely one: the `if`'s.
+
+use mara.core
+
+main :: () {
+	for i in 0:3 {
+		// its `}` is missing
+		if i == 1 {
+			print("one")
+		print(i)
+	}
+	print("done")
+}
+
+other :: () {
+	print("other")
+}
