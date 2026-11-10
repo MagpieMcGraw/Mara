@@ -201,8 +201,9 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
 // itself). Nil when the name isn't one.
 tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
     t := k.t
-    if n == 0 || t.tag[n] != .Ident || k.rs.refs[n].kind != .Type { return nil, 0 }
-    ty, ok := tc_ref_type(k, k.rs.refs[n], tc_name(k, n))
+    // (Its name, bare or through its module: `Action`, `game.Action`.)
+    if n == 0 || (t.tag[n] != .Ident && t.tag[n] != .Field) || k.rs.refs[n].kind != .Type { return nil, 0 }
+    ty, ok := tc_ref_type(k, k.rs.refs[n], tc_name(k, n) if t.tag[n] == .Ident else tc_text(Token_Id(t.b[n])))
     if !ok || ty == nil { return nil, 0 }
     hi := -1
     #partial switch e in distinct_base(ty) {
@@ -340,8 +341,9 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
         // (An array's capacity is its type's; a fixed one's length too.)
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
-        if !names || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        if !names || (field != "cap" && field != "len") { return 0, false }
         if slots, has := tc_enum_len(k, base, field); has { return i64(slots), true }
+        if t.tag[base] != .Ident { return 0, false }
         bt, ok := tc_ref_type(k, k.rs.refs[base], tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {

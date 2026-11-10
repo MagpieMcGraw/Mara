@@ -1,0 +1,24 @@
+module enum_len_module
+
+use mara.core
+k :: use enum_len_kinds
+
+//@ expect-output: 3 3 4 3
+//@ expect-output: 3 5
+//@ expect-output: 3 4
+
+// An enum named through its module: its len and cap, an array sized by it
+// (`[k.Action]T`) or by its len, and a constant made of it — as by its bare
+// name.
+
+M :: k.Action.len + 1
+
+main :: fun() {
+	print(k.Action.len, k.Action.cap, M, k.SPEEDS)
+	by : [k.Action]i64
+	by[k.Action.run] = 5
+	print(by.len, by[1])
+	flat : [k.Action.len!]i64
+	sized : [M!]i64
+	print(flat.len, sized.len)
+}

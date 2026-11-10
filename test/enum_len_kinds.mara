@@ -1,0 +1,4 @@
+module enum_len_kinds
+
+Action :: union { walk  run  jump }
+SPEEDS :: Action.len
