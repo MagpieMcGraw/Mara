@@ -1,7 +1,7 @@
 module slice_no_len_full_append
 
 //@ expect-exit: 1
-//@ expect-output: Expected n < dst.cap, but n was 4 and dst.cap was 4
+//@ expect-output: runtime error: index 4 out of bounds [0, 4) for 'dst'
 // A slicing of a fixed array has no len and is full: an append into it finds
 // no room and stops the program (set its len to 0 first to fill it).
 

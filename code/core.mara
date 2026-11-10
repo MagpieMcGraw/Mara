@@ -28,7 +28,6 @@ not_equal :: dispatch{ utf8_not_equal }
 // (We write 0 after it, so dst stays a valid C string.)
 utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
 	n := dst.len
-	assert(n + src.len <= dst.cap)
 	dst[n:] = src
 	end := n + src.len
 	dst.len = end
@@ -52,7 +51,6 @@ utf8_not_equal :: fun(a: []utf8, b: []utf8) -> bool {
 // Appends one character to dst; it must fit in dst's capacity.
 utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
 	n := dst.len
-	assert(n < dst.cap)
 	dst[n] = src
 	dst.len = n + 1
 	if n + 1 < dst.cap do dst[n + 1] = 0
@@ -61,7 +59,6 @@ utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
 // Appends one byte, given as a u8, to dst; it must fit in dst's capacity.
 byte_add_item :: fun(dst: ^[]byte, src: u8) {
 	n := dst.len
-	assert(n < dst.cap)
 	dst[n] = src
 	dst.len = n + 1
 }
@@ -70,7 +67,6 @@ byte_add_item :: fun(dst: ^[]byte, src: u8) {
 // fixed array is full: set its len to 0 first to fill it.
 slice_add :: fun(dst: ^[]$T, src: []$T) {
 	n := dst.len
-	assert(n + src.len <= dst.cap)
 	dst[n:] = src
 	dst.len = n + src.len
 }
@@ -78,7 +74,6 @@ slice_add :: fun(dst: ^[]$T, src: []$T) {
 // Appends one item to dst; it must fit in dst's capacity.
 slice_add_item :: fun(dst: ^[]$T, src: $T) {
 	n := dst.len
-	assert(n < dst.cap)
 	dst[n] = src
 	dst.len = n + 1
 }
