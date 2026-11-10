@@ -46,3 +46,10 @@ main :: fun() {
 	next(&counts)^ += 4
 	print("counts:", counts.len, counts[0])
 }
+
+// A list made one longer, and a pointer to the new item to write into.
+next :: fun(list: ^[]$T) -> ^T {
+	n := list.len
+	list.len = n + 1
+	return &list[n]
+}

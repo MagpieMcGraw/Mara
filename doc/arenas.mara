@@ -20,7 +20,8 @@
 // mara.memory.
 //
 // Part of a program can run on an arena of its own — an arena as a value,
-// and a `with` block run on it: see with_arena.mara.
+// made the current one with mara.memory's arena_swap, which gives back the
+// one it was: `was := arena_swap(&level)`, then `_ = arena_swap(was)`.
 module arenas
 
 use mara.core

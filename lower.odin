@@ -306,8 +306,6 @@ lw_scan_returns :: proc(k: ^TC, stmts: []Tree_Id, r: ^LW_Returns) {
             lw_scan_returns(k, v.else_, r)
         case .For_Range, .For_Each, .For_C, .For_Cond:
             lw_scan_returns(k, for_view(t, s).body, r)
-        case .With:
-            lw_scan_returns(k, tree_list(t, t.b[s]), r)
         case .Match:
             for arm in tree_list(t, t.b[s]) { lw_scan_returns(k, lw_arm_body(k, arm), r) }
         }
@@ -496,8 +494,6 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned), tree_defer_on_failure(t, s))
         lw_scope(k, body)
         graph_build_defer_end(k.gb, gd)
-    case .With:
-        lw_with(k, s)
     case .Allocator:
         // (main's: its entry made the arena.)
     case .Match:
@@ -797,37 +793,6 @@ lw_if :: proc(k: ^TC, s: Tree_Id) {
     graph_build_else(b, &fi, span, lw_scope_arena(k, v.else_, b.body.returned))
     if len(v.else_) > 0 { lw_scope(k, v.else_) }
     graph_build_if_end(b, &fi)
-}
-
-// `with &a {…}` (tc_with): a block of its own that sets the arena slot to a
-// — arena_swap, the one it held kept — and puts that back by a defer of its
-// own at every way out; inside it the body's block, so the body's arena
-// marks and resets are a's, done before the slot is put back.
-lw_with :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    b := k.gb
-    span := tree_span(t, s)
-    swap := tc_arena_swap(k.table)
-    if swap == nil { lw_fail(k, s, "a `with` with no arena_swap") }
-    pt := fn_primary_return(swap)
-    p := Tree_Id(t.a[s])
-    body := tree_list(t, t.b[s])
-    outer := graph_build_block_open(b, "with", span, false)
-    r := lw_expr(k, p, .Value)
-    // (A pointer to the arena, as arena_swap takes any: its address alone.)
-    arg := graph_op_value(b, .Cast, .Synthetic, span, pt, "", r.v)
-    was := Operand{graph_call_op(b, .Call, .Synthetic, span, swap, pt, arg), 0}
-    slot := graph_slot(b, "with", nil, span)
-    graph_build_write_at(b, graph_var(b, slot, nil, span), was, span)
-    graph_build_typed(b, slot, pt)
-    gd := graph_build_defer(b, span, false, false)
-    back := graph_read(b, graph_var(b, slot, pt, span), pt, span)
-    graph_call_op(b, .Call, .Synthetic, span, swap, pt, back)
-    graph_build_defer_end(b, gd)
-    inner := graph_build_block_open(b, "with body", span, lw_scope_arena(k, body, b.body.returned))
-    lw_scope(k, body)
-    graph_build_block_close(b, inner)
-    graph_build_block_close(b, outer)
 }
 
 // A loop (tc_for): its block, its variables, then its runs.

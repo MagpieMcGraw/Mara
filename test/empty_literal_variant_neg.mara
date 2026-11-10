@@ -5,11 +5,19 @@ module empty_literal_variant_neg
 // A variant's `{}`: its bare name is it with its defaults, `.None`.
 
 use mara.core
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Point :: struct { x: i64  y: i64 }
 
 main :: fun() {
 	v : Maybe(i64) = None{}
 	print("built")
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

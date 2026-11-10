@@ -789,8 +789,8 @@ o.list
 Outer.[4]i64
 
 operations
-  .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list   next(&l)
-  mara.core: filter next
+  .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list
+  mara.core: filter
 
 declared
   askuses.mara:16  Outer
@@ -811,7 +811,7 @@ Outer.[]i64
 
 operations
   .len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s ++ x within its cap
-  mara.core: filter next
+  mara.core: filter
 
 declared
   askuses.mara:17  Outer
@@ -851,7 +851,7 @@ Outer.[8]utf8
 
 operations
   .len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ "more"  &t ++ 'c'   t ++ "x" a new buffer   cstring(t)
-  mara.core: filter next
+  mara.core: filter
 
 declared
   askuses.mara:19  Outer
@@ -2012,7 +2012,6 @@ Tokens in module askmod: 104 in 1 file
   defer       0
   defer?      0
   using       0
-  with        0
   distinct    0
   dispatch    0
   overload    0
@@ -2565,7 +2564,7 @@ binds
 operations
   .len .cap (3)   a[i]   a[a:b]   for x, i in a   for &x in a   a[Action.v]   for v in Action do a[v] (i in a loop over a is a number)
   askcando: bind_count
-  mara.core: filter next
+  mara.core: filter
 
 declared
   askcando.mara:21  main

@@ -15,9 +15,9 @@ use mara.os
 
 // The arena the code after it puts its big values on — set to a (an arena
 // of the program's kind: #allocator's), and the one it was given back.
-// `with &a {…}` is the way to: it puts the old one back at every way out of
-// its block, so its callers never see a. Called by hand, it changes the
-// arena for everything after it, the callers' code too.
+// It changes the arena for everything after it, the callers' code too: put
+// the old one back when done (`was := arena_swap(&a)`, then
+// `_ = arena_swap(was)`, at every way out).
 arena_swap :: fun(a: ^byte) -> ^byte { @llvm.mara_arena_swap.ptr }
 
 // ---------------------------------------------------------------------------

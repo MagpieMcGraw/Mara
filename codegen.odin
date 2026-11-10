@@ -1112,7 +1112,7 @@ can_elide_overflow :: proc(op: string, ir_type: Ir_Type, left, right: Val) -> bo
 // ---------------------------------------------------------------------------
 
 // The arena big values go on now: what the slot points at (main's arena,
-// an #expose fun's host's, a `with`'s).
+// an #expose fun's host's, one arena_swap set).
 get_context_arena_ptr :: proc(g: ^Codegen) -> Val {
     arena_ptr := fresh_tmp(g)
     ir_load(g, arena_ptr, IR_PTR, ir_global("__mara_arena"))

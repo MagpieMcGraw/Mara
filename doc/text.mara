@@ -5,8 +5,8 @@
 // more, `[N]utf8` any N), and `&name ++ "more"` adds to it. An add gives
 // its buffer back, so adds chain: `&name ++ dir ++ "/" ++ file`. `++` comes
 // after arithmetic: `&lines ++ pos + 1` adds the sum. A list of texts,
-// `[100]str64`: `next(&list)` makes it one longer and gives that text, to
-// add into where it is — `next(&list) ++ file`.
+// `[100]str64`: `list.len += 1` makes it one longer, and that text is added
+// into where it is — `&list[list.len - 1] ++ file`.
 // Without the `&`, `name ++ "more"` joins: a new buffer of name's own type,
 // name as it was. Joins chain — `file := dir ++ "/" ++ name`. A join on a
 // line of its own is an error: its new buffer would go nowhere, so `&name
@@ -56,7 +56,8 @@ main :: fun() {
 	&path ++ "text.mara"
 	print(path)                              // doc/text.mara
 	paths : [8]str64
-	next(&paths) ++ "doc/basics.mara"
+	paths.len += 1
+	&paths[0] ++ "doc/basics.mara"
 	print(paths.len, paths[0])               // 1 doc/basics.mara
 	print(name == "Ada Lovelace", name != "Ada")   // true true
 

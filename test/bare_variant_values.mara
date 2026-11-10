@@ -10,7 +10,7 @@ module bare_variant_values
 // invalid IR (the tag number used as a pointer) or "undefined variable".
 
 use mara.core
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Shape :: union(tag u32) {
 	Circle = 1 { r: i32 = 7 }
@@ -63,4 +63,12 @@ main :: fun() {
 	s2 := is_some(n)
 	n = .None
 	print("maybe=% % % %", s1, s2, is_some(n), is_some(.None))
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

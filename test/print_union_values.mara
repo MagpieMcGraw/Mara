@@ -15,7 +15,7 @@ module print_union_values
 // struct or an array (a zeroed one holds its first variant), a generic
 // union, a niche one (Maybe(^T): its pointer's nullness is its tag).
 
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Shape :: union {
 	Rect { w: i64 = 2  h: i64 = 3 }
@@ -55,4 +55,12 @@ main :: fun() {
 	print(z)
 	q : Maybe(^i64) = .None
 	print("niche", q)
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

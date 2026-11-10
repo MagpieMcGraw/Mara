@@ -3,7 +3,7 @@ module nicheexpr
 // Unions of None | Some{^T} flowing as first-class values — return,
 // bind-from-call, and argument positions.
 
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Opt :: union {
 	Nope
@@ -54,4 +54,12 @@ main :: fun() {
 	}
 
 	print("nicheexpr ok")
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

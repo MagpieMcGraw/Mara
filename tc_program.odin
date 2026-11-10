@@ -10,7 +10,7 @@ import "core:strings"
 // its size checked where it's written (nothing built: main's entry makes
 // the arena), its type checked for what an arena has once every module is.
 // Another arena of its kind is a value (`Arena_Basic(1 * MB)`), and a block
-// runs on it with `with &a {…}`.
+// runs on it once arena_swap (mara.memory) makes it the current one.
 
 // The main module's `#allocator` — at its top, or among main's own
 // statements (main's entry makes the arena either way: what comes before it
@@ -100,61 +100,6 @@ tc_is_program_arena :: proc(k: ^TC, t: Type) -> bool {
 tc_is_arena_ptr :: proc(k: ^TC, t: Type) -> bool {
     p, is_ptr := unwrap_alias(t).(^Type_Ptr)
     return is_ptr && tc_is_program_arena(k, p.elem)
-}
-
-// `with &a {…}` (or `with &a do s`): its block run on another arena — a, of
-// the program's kind: what the block, and everything it calls, puts on an
-// arena goes on a. The arena it was is back at every way out of the block,
-// as a defer's block runs: its callers never see a.
-tc_with :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    p := Tree_Id(t.a[s])
-    pt := tc_check(k, p)
-    span := tree_span(t, p)
-    switch {
-    case is_any(pt):
-    case !k.table.has_scope_allocator:
-        tc_error(k, span, TYPE_WITH_NEEDS_ALLOCATOR)
-    case tc_is_program_arena(k, pt):
-        name := tc_diag_name(k, p)
-        tc_error(k, span, TYPE_WITH_NEEDS_ARENA_ADDRESS, name if name != "" else "a")
-    case !tc_is_arena_ptr(k, pt):
-        tc_error(k, span, TYPE_WITH_NEEDS_ARENA_POINTER, k.table.scope_allocator_name, type_name(pt))
-    }
-    append(&k.withs, TC_With{span = tree_span(t, s), sid = tc_sid(k, s)})
-    tc_scope(k, tree_list(t, t.b[s]))
-}
-
-// mara.memory's arena_swap: what `with` sets the arena with, and puts it
-// back with (nil: not in the program).
-tc_arena_swap :: proc(table: ^SymbolTable) -> ^Type_Scope {
-    for _, ft in table.funs {
-        if ft != nil && ft.kind == .Fun && ft.home_package == "mara.memory" && (ft.source_name == "arena_swap" || ft.name == "arena_swap") { return ft }
-    }
-    return nil
-}
-
-// A `with` checked: where it is, and its node (in the instance it was
-// checked in) — a call of arena_swap's, as the call graph is told.
-TC_With :: struct {
-    span: Span,
-    sid:  Syntax_Id,
-}
-
-// Every `with`: mara.memory there, its arena_swap with it — and, to the call
-// graph (made from the annotations: callees first), a call of it, the `with`
-// its call.
-tc_validate_withs :: proc(k: ^TC) {
-    if len(k.withs) == 0 { return }
-    swap := tc_arena_swap(k.table)
-    for w in k.withs {
-        if swap == nil {
-            tc_error(k, w.span, TYPE_WITH_NEEDS_MEMORY)
-            continue
-        }
-        k.annot.callees[w.sid] = swap
-        k.annot.forms[w.sid] = .Fun
-    }
 }
 
 // The arena's type #allocator names, `*_<name>` among the funs (nil: none

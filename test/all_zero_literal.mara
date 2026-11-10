@@ -13,7 +13,7 @@ module all_zero_literal
 // (`{}` and `{0}` are gone: empty_literal_*_neg, zero_literal_*_neg.)
 
 use mara.core
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Point :: struct { x: i64  y: i64 = 7 }
 Box :: struct { at: Point  tags: [3]i64 }
@@ -42,4 +42,12 @@ main :: fun() {
 	p := Point{x = 1, y = 2}
 	p = {all 0}
 	print("assigned:", p.x, p.y)
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

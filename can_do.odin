@@ -89,7 +89,7 @@ can_do_builtin :: proc(ty: Type) -> []string {
         if _, text := v.elem.(Type_Utf8); text {
             append(&out, ".len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ \"more\"  &t ++ 'c'   t ++ \"x\" a new buffer   cstring(t)")
         } else {
-            append(&out, ".len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list   next(&l)")
+            append(&out, ".len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list")
         }
     case ^Type_Fixed_Array:
         line := fmt.tprintf(".len .cap (%d)   a[i]   a[a:b]   for x, i in a   for &x in a", v.size)

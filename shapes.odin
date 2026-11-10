@@ -128,8 +128,6 @@ shape_lists :: proc(t: ^Tree, list: []Tree_Id, out: ^[dynamic][]Tree_Id) {
             shape_lists(t, v.else_, out)
         case .For_Range, .For_Each, .For_C, .For_Cond:
             shape_lists(t, for_view(t, s).body, out)
-        case .With:
-            shape_lists(t, tree_list(t, t.b[s]), out)
         case .Defer:
             shape_lists(t, tree_list(t, t.a[s]), out)
         case .Match:
@@ -337,7 +335,7 @@ shape_unchanged :: proc(env: ^Shape_Env, body: []Tree_Id, decl, at: Tree_Id, roo
             if shape_subtree_writes(env, Tree_Id(t.a[holder]), roots, &seen) { return false }
         case .For_Range, .For_Each, .For_C, .For_Cond:
             if shape_subtree_writes(env, holder, roots, &seen) { return false }
-        case .Match, .With:
+        case .Match:
             if shape_subtree_writes(env, Tree_Id(t.a[holder]), roots, &seen) { return false }
         }
     }
@@ -362,8 +360,6 @@ shape_chain :: proc(t: ^Tree, list: []Tree_Id, at: Tree_Id, out: ^[dynamic]Shape
             append(&inner, v.then, v.else_)
         case .For_Range, .For_Each, .For_C, .For_Cond:
             append(&inner, for_view(t, s).body)
-        case .With:
-            append(&inner, tree_list(t, t.b[s]))
         case .Defer:
             append(&inner, tree_list(t, t.a[s]))
         case .Match:
@@ -639,7 +635,7 @@ do_comment :: proc(t: ^Tree, src: string, first, end: Token_Id) -> bool {
 @(private="file")
 do_one :: proc(t: ^Tree, src: string, n: Tree_Id) -> bool {
     #partial switch t.tag[n] {
-    case .If, .Elif, .For_Range, .For_Each, .For_C, .For_Cond, .Match, .With, .Defer, .Decl, .Define:
+    case .If, .Elif, .For_Range, .For_Each, .For_C, .For_Cond, .Match, .Defer, .Decl, .Define:
         return false
     }
     first, last := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]

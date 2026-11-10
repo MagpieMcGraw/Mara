@@ -42,7 +42,6 @@ Token_Kind :: enum u8 {
     Defer,
     Defer_Err,  // defer? — a defer only a failure runs
     Using,
-    With,       // with p {…} — a block run on another program
     Distinct,
     Dispatch,
     Overload,
@@ -134,7 +133,7 @@ TOKEN_TEXTS := [Token_Kind][2]string{
     .Return = {"return", ""}, .For = {"for", ""}, .In = {"in", ""}, .Break = {"break", ""},
     .Continue = {"continue", ""}, .And = {"and", ""}, .Or = {"or", ""}, .Not = {"not", ""},
     .Match = {"match", ""}, .Foreign = {"foreign", ""}, .Defer = {"defer", ""}, .Defer_Err = {"defer?", ""},
-    .Using = {"using", ""}, .With = {"with", ""}, .Distinct = {"distinct", ""}, .Dispatch = {"dispatch", ""},
+    .Using = {"using", ""}, .Distinct = {"distinct", ""}, .Dispatch = {"dispatch", ""},
     .Overload = {"overload", ""}, .Do = {"do", ""}, .Var = {"var", ""}, .Intrinsic = {"intrinsic", ""},
     .Int = {"int", ""}, .F64 = {"f64", ""}, .Bool_Type = {"bool", ""},
     .I8 = {"i8", ""}, .I16 = {"i16", ""}, .I32 = {"i32", ""}, .I64 = {"i64", ""},
@@ -333,7 +332,6 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
         }
     case 'w':
         switch text {
-        case "with": return .With, true
         }
     }
     return .EOF, false

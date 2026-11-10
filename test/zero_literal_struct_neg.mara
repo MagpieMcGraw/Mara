@@ -5,7 +5,7 @@ module zero_literal_struct_neg
 // `{0}` is gone: every field zero is `{all 0}`.
 
 use mara.core
-use mara.maybe
+
 
 Point :: struct { x: i64  y: i64 }
 

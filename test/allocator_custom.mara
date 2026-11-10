@@ -67,8 +67,8 @@ sum_to :: (n: i64) -> i64 {
 main :: () {
 	print("sum", sum_to(1000))
 	own := Counting(64 * KB)
-	with &own {
-		print("sum", sum_to(1000))
-	}
+	was := arena_swap(&own)
+	print("sum", sum_to(1000))
+	_ = arena_swap(was)
 	print("allocs made:", own.allocs > 0)
 }

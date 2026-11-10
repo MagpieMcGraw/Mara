@@ -5,7 +5,7 @@ use mara.memory
 
 //@ expect-output: before it
 //@ expect-output: big: 7
-//@ expect-output: with: 16408
+//@ expect-output: on lib: 16408
 
 // The program's arena named among main's own statements: main's entry makes
 // it either way, so what comes before it runs on it too.
@@ -26,5 +26,7 @@ main :: () {
 	print("big:", big[2 * MB - 1])
 
 	lib := Arena_Basic(1 * MB)
-	with &lib do print("with:", work(&lib))
+	was := arena_swap(&lib)
+	print("on lib:", work(&lib))
+	_ = arena_swap(was)
 }

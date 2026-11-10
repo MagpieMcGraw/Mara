@@ -1041,7 +1041,7 @@ module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
 }
 
 // The program's globals: the arena slot (what every big local is put on,
-// `with` sets) — the main TU's own, every other's to link to — and, in a
+// arena_swap sets) — the main TU's own, every other's to link to — and, in a
 // program (a DLL runs on its host's), the main TU's arena itself and its
 // command line, main's `args`.
 @(private="file")

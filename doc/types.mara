@@ -15,11 +15,11 @@
 // Characters (utf8, byte): == <, i64(c), utf8(n), lower(c), upper(c).
 //
 // Text ([]utf8, str64, [N]utf8): .len .cap, t[i], t[a:b], for c in t, ==,
-// &t + "more" (or a character, or any text), t + "x" (a new buffer), find,
+// &t ++ "more" (or a character, or any text), t ++ "x" (a new buffer), find,
 // starts_with, ends_with, contains, trimmed, line_end, skip_spaces.
 //
 // Lists ([N]T): .len .cap, l[i], l[a:b], for x in l, for &x in l, x in l,
-// &l + x, l + x (a new list), next(&l).
+// &l ++ x, l ++ x (a new list).
 //
 // Fixed arrays ([N!]T, [Enum]T): .len .cap, a[i], a[Enum.v], a[a:b],
 // for x, i in a, and .x .y .z .w, .xy, .xyz on up to 4 items.
@@ -107,7 +107,7 @@ example_lists :: fun() {
 	l : [8]i64
 	&l ++ 3
 	&l ++ 5
-	next(&l)^ = 7                          // one more item, written in place
+	&l ++ 7
 	for &x in l do x^ += 1
 	print(l, l.len, l.cap)                 // [4, 6, 8] 3 8
 	print(6 in l, l[1:3])                  // true [6, 8]

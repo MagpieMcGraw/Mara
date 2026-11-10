@@ -82,7 +82,6 @@ TC :: struct {
     rs:            ^Resolver,
     top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
     in_defer:      bool,                // a defer's block being checked (its body's)
-    withs:         [dynamic]TC_With,    // each `with` (tc_with): mara.memory's arena_swap found for it, once every module is checked
     allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
     main_allocators: [dynamic]Tree_Id,  // the `#allocator`s among main's own statements (tc_scan_allocator): there, one is the program's
     loops:         int,                 // the loops around the statement being checked (in its body, or its defer's block)
@@ -513,7 +512,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         checked.functions[key] = ft
     }
     tc_validate_allocator(k)
-    tc_validate_withs(k)
     tc_validate_main(k, main)
     tc_validate_field_refs(k)
     tc_blocks_end(k)

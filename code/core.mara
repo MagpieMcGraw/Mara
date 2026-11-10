@@ -78,19 +78,6 @@ join_item :: fun(a: [$N]$T, b: T) -> [N]T {
 	return out
 }
 
-// returns a pointer to the next empty item in the list
-// and increments the .len by 1
-next :: fun(list: ^[]$T) -> ^T {
-	/*
-	we could zero the slot that's about to get written
-	array append could be written as next(&list)^ = x
-	*/
-	n := list.len
-	assert(n < list.cap)
-	list.len = n + 1
-	return &list[n]
-}
-
 // `x in xs`: whether some item of xs is x — includes(xs, x) — and `x not in
 // xs`, whether none is. A list, an array, a view; through one pointer too
 // (`this_file not in files`, files a ^[]Filename). (An overload names a

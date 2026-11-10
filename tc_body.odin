@@ -133,8 +133,6 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         k.in_defer, k.loops = true, 0
         tc_scope(k, tree_list(t, t.a[s]))
         k.in_defer, k.loops = in_defer, loops
-    case .With:
-        tc_with(k, s)
     case .Allocator:
         if slice.contains(k.main_allocators[:], s) { tc_allocator(k, s) } else { tc_error(k, span, TYPE_ALLOCATOR_AT_TOP) }
     case .Match:
@@ -412,7 +410,7 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
         tc_error(k, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, miss.hidden)
         return
     }
-    // (What there was before #allocator, `with` and main's args: what's there now.)
+    // (What there was before #allocator and main's args: what's there now.)
     if name == "this_program" || name == "Program" {
         tc_error(k, span, TYPE_THIS_PROGRAM_GONE, name)
         return
@@ -730,7 +728,6 @@ tc_stmt_ends :: proc(k: ^TC, s: Tree_Id) -> bit_set[Loop_End] {
     #partial switch t.tag[s] {
     case .Break, .Return: return {.Exit}
     case .Continue:       return {.Loop}
-    case .With:           return tc_body_ends(k, tree_list(t, t.b[s]))   // (its body's, as a block's)
     case .If:
         v := if_view(t, s)
         if v.hash == 0 {

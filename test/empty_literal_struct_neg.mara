@@ -5,7 +5,7 @@ module empty_literal_struct_neg
 // `{}` is gone: every field zero is `{all 0}`, fields unset `void` or a bare declaration.
 
 use mara.core
-use mara.maybe
+
 
 Point :: struct { x: i64  y: i64 }
 

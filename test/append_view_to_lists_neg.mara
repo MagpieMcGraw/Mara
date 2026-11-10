@@ -3,8 +3,7 @@ module append_view_to_lists_neg
 //@ expect-fail: mismatched types for '++': ^[4]str64 and []utf8
 
 // A list of lists takes items, and a view is no item: it has no room of
-// its own. Its text goes into one — an item there, `&names[i] ++ view`, or
-// a new one, `next(&names) ++ view` (append_chain).
+// its own. Its text goes into an item there: `&names[i] ++ view`.
 
 use mara.core
 

@@ -8,7 +8,7 @@ module test
 use mara.core
 use mara.memory
 use mara.math
-use mara.maybe
+// (Maybe: defined at this file's end.)
 use mara.string
 
 #allocator Arena_Debug(1 * MB)
@@ -1688,4 +1688,12 @@ main :: fun() -> i64 {
 	// <<< CALLS END >>>
 	print("=== all tests passed ===")
 	return 0
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

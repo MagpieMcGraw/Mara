@@ -31,7 +31,7 @@ LLVM_Type_Rule :: enum {
                                // on the machine.
     Arena_Swap,                // `@llvm.mara_arena_swap.ptr` (mara.memory's arena_swap): a pointer in, a
                                // pointer out — the arena slot set, the one it held given back; no LLVM
-                               // intrinsic, a load and a store of @__mara_arena (`with`'s).
+                               // intrinsic, a load and a store of @__mara_arena.
     Atomic,                    // `@llvm.mara_atomic_add.i64` (mara.atomic's): a pointer to an integer of the
                                // suffix's width, then integers of that width, and one out. No LLVM intrinsic:
                                // LLVM's atomic instructions, and on x86 the locked ones.

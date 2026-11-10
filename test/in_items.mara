@@ -39,3 +39,10 @@ main :: () {
 	add_new(&files, "c.mara")
 	print("| added", files.len, "| includes", includes(files, "c.mara"))
 }
+
+// A list made one longer, and a pointer to the new item to write into.
+next :: fun(list: ^[]$T) -> ^T {
+	n := list.len
+	list.len = n + 1
+	return &list[n]
+}

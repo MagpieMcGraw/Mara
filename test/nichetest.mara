@@ -1,6 +1,6 @@
 module nichetest
 
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 // A union of two variants, one fieldless, one holding a single pointer: a
 // tagged union like any other (it was once stored as the pointer alone).
@@ -48,4 +48,12 @@ main :: fun() {
 	}
 
 	print("niche ok")
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }

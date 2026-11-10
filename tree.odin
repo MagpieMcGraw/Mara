@@ -48,8 +48,6 @@ Tree_Tag :: enum u8 {
     Continue,
     Defer,          // `defer`, `defer?`: main: the keyword (tree_defer_on_failure);
                     // a: list — the body
-    With,           // `with &a {…}`: a: the arena (a pointer to one); b: list — the
-                    // body, run on it
     Allocator,      // `#allocator Arena_Basic(16 * MB)` (a DLL's: `#allocator
                     // Arena_Basic`): main: the `#`; a: the arena
     If,             // `if c {…}`, `if c do s`, `#if`: a: the condition; b: rec {then:
@@ -168,7 +166,6 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Break          = {},
     .Continue       = {},
     .Defer          = {a = .List},
-    .With           = {a = .Node, b = .List},
     .Allocator      = {a = .Node},
     .If             = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
     .Elif           = {a = .Node, b = .Rec, rec = {0 = .List, 1 = .List, 2 = .Token}},
@@ -413,7 +410,7 @@ tree_stmt :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
     for n != 0 {
         #partial switch t.tag[n] {
         case .Assign, .Compound, .Decl, .Using, .Expr_Stmt, .Return, .Break, .Continue, .Defer,
-             .With, .If, .Elif, .Match, .For_Range, .For_Each, .For_C, .For_Cond, .Define, .Variant:
+             .If, .Elif, .Match, .For_Range, .For_Each, .For_C, .For_Cond, .Define, .Variant:
             return n
         }
         n = t.parent[n]

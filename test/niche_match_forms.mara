@@ -11,7 +11,7 @@ module niche_match_forms
 // `.tag`. (It was once stored as the pointer alone, null for None; pointers
 // have their own null, `void`, so it's a tagged union like any other.)
 
-use mara.maybe
+// (Maybe: defined at this file's end.)
 
 Tagged :: union(tag u32) {
 	Empty
@@ -48,4 +48,12 @@ main :: fun() {
 	print("else", with_else(a), with_else(b))
 	print("tag", a.tag == 0, b.tag == 1)
 	print("sizes", size_of(Maybe(^i64)), size_of(Tagged))
+}
+
+// Nothing, or a value: a generic union.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
 }
