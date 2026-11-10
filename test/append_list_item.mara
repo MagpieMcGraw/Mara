@@ -1,0 +1,29 @@
+module append_list_item
+
+use mara.core
+
+//@ expect-output: 2 [[1, 2], [3]]
+//@ expect-output: 2 [[jump], [held[1], run]]
+//@ expect-output: 4 [1, 2, 3, 4]
+//@ expect-output: 2 [walk, run]
+
+// A list of lists takes a whole list as one item: a literal after `++` is
+// built as the inner list (its len its items), and the outer len goes up by
+// one. Where the right side is a slice's, the literal is items, as before.
+
+Keys :: struct { held: [4!]bool  jump: bool  run: bool }
+
+main :: fun() {
+	grid : [3][4]i64
+	&grid ++ [1, 2] ++ [3]
+	print(grid.len, grid)
+	combo : [3][4]Keys.bool
+	&combo ++ [Keys.jump] ++ [Keys.held[1], Keys.run]
+	print(combo.len, combo)
+	flat : [8]i64
+	&flat ++ [1, 2, 3] ++ [4]
+	print(flat.len, flat)
+	names : [3][16]utf8
+	&names ++ "walk" ++ "run"
+	print(names.len, names)
+}

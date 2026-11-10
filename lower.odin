@@ -1263,7 +1263,8 @@ lw_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             // 3]`: built in a temporary and given as a call's argument is, a
             // view of it where the param is a slice.)
             if callee == nil || i >= len(callee.params) { lw_fail(k, side, "an array literal as an operand") }
-            r := lw_expr(k, side, .Either, w, temp_span = tree_span(tr, side))
+            use, _ := lw_use_type(k, side, callee.params[i].type_, span)   // (a list's item, `&rows ++ [1, 2]`: built as the list)
+            r := lw_expr(k, side, .Either, w, dest = use, temp_span = tree_span(tr, side))
             types[i] = tc_node_type(k, side)
             sides[i] = lw_value_as(k, side, types[i], r, callee.params[i].type_, span, {sig = callee, param = i})
             continue
