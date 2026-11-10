@@ -1,0 +1,29 @@
+module append_nothing_full
+
+//@ expect-output: text: abcd 4
+//@ expect-output: items: 4
+//@ expect-output: run: 9
+
+// Nothing appended to a full list is no error: a run may start at its
+// destination's end when it holds nothing (the start was checked as an
+// index, which the end isn't). One item too many still stops the program:
+// append_chain and slice_no_len_full_append.
+
+use mara.core
+
+main :: () {
+	name : [4]utf8
+	&name ++ "abcd"
+	&name ++ ""
+	print("text:", name, name.len)
+
+	nums : [4]i64
+	&nums ++ 1 ++ 2 ++ 3 ++ 4
+	none : [4]i64
+	&nums ++ none
+	print("items:", nums.len)
+
+	full : [4!]i64 = [9, 9, 9, 9]
+	full[4:] = none
+	print("run:", full[3])
+}

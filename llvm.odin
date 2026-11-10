@@ -2045,7 +2045,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     case .Var, .Field: name = graph_name(pg, base)
     case .Deref:       name = graph_name(pg, graph_operands(pg, base)[0].op)
     }
-    emit_bounds_check(g, lo, dst.bound, name, span)
+    emit_bounds_check(g, lo, dst.bound, name, span, end_ok = true)
     hi_ok, hi_err := fresh_label(g, "slice.high.ok"), fresh_label(g, "slice.high.err")
     hi_cmp := fresh_tmp(g)
     ir_icmp(g, hi_cmp, .Sgt, w, hi, dst.bound)

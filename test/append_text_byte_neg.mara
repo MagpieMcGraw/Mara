@@ -1,0 +1,17 @@
+module append_text_byte_neg
+//@ expect-fail: [append_text_byte_neg.mara:15:5] Type error: mismatched types for '++': ^[64]utf8 and u8
+
+// A pointer to a text list is no pointer to a list of bytes, so the append
+// that takes a u8 into bytes doesn't take one into text: `utf8(x)` says the
+// number is a character. A number written out is one already, and chains.
+
+use mara.core
+
+main :: () {
+	t : [64]utf8
+	&t ++ 65 ++ utf8(66) ++ 67
+	print(t)   // ABC
+	x : u8 = 68
+	&t ++ x
+	print(t)
+}

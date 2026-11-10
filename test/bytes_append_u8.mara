@@ -2,6 +2,7 @@ module bytes_append_u8
 
 //@ expect-output: one byte: 1 255 255
 //@ expect-output: three: 3 1 2 3
+//@ expect-output: text: ABC
 
 // A u8 appended to a list of bytes is that one byte, and nothing after it.
 // (It ran text's append once, which writes a 0 after what it adds: the byte
@@ -25,4 +26,9 @@ main :: () {
 	b : u8 = buf[1]
 	c : u8 = buf[2]
 	print("three:", buf.len, a, b, c)
+
+	// A number written out, into text: a character, and the chain goes on.
+	t : [8]utf8
+	&t ++ 65 ++ utf8(66) ++ 67
+	print("text:", t)
 }

@@ -1867,14 +1867,14 @@ tp_expr :: proc(p: ^Tree_Parser, min_prec := 0) -> Tree_Id {
             kw := tp_advance(p)
             if is_not_in { tp_advance(p) }
             tp_skip_newlines(p)
-            lo := tp_expr(p, 5)
+            lo := tp_expr(p, 4)
             // (No `..`: `x in xs`, among a collection's items — hi none.)
             hi: Tree_Id
             dots: Token_Id
             if tp_is_range_mark(p) {
                 dots = tp_range_dots(p)
                 tp_skip_newlines(p)
-                hi = tp_expr(p, 5)
+                hi = tp_expr(p, 4)
             }
             left = tp_node(p, .In_Range, kw, first, u32(left), tree_rec_add(p.t, u32(lo), u32(hi), u32(dots)))
             continue

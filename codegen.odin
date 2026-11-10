@@ -761,7 +761,9 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
 // A runtime bounds check: idx < 0 or idx >= len fails (__mara_bounds_fail);
 // both at slice header width (SLICE_LEN_IR). `name` is the array's, for the
 // message.
-emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Span = {}) {
+// `end_ok`: idx may be len_val itself — where a run starts, which may be
+// the end with nothing in it (`full[4:] = none`).
+emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Span = {}, end_ok := false) {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
     // entirely. Covers `arr[3]` against a fixed-size array and other
@@ -778,7 +780,7 @@ emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Sp
     neg_cmp := fresh_tmp(g)
     ir_icmp(g, neg_cmp, .Slt, w, idx, ir_int(0))
     upper_cmp := fresh_tmp(g)
-    ir_icmp(g, upper_cmp, .Sge, w, idx, len_val)
+    ir_icmp(g, upper_cmp, .Sgt if end_ok else .Sge, w, idx, len_val)
     combined := fresh_tmp(g)
     ir_bin(g, combined, .Or, IR_I1, neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)

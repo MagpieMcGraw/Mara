@@ -974,6 +974,12 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // what's written through the pointer is the pointee's width:
         // coerce_deferred decides it first, exactly.)
         if is_infer(resolve_infer(va.elem)) != is_infer(resolve_infer(vb.elem)) { return false }
+        // (A buffer of bytes, characters or u8 is read as one of another's
+        // (buffer_elem_compatible) — but not written as one: a pointer to
+        // a text list is no pointer to a list of bytes.)
+        if ia, ib := loop_elem(va.elem), loop_elem(vb.elem); ia != nil && ib != nil {
+            if is_byte_sized_memory_type(ia) && is_byte_sized_memory_type(ib) && !types_equal(ia, ib) { return false }
+        }
         return types_equal(va.elem, vb.elem)
     case ^Type_Scope:
         vb, ok := b.(^Type_Scope)
