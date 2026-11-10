@@ -33,8 +33,8 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     // (What this field is about to be used as, before its base's check says
     // what the base is; a `.len` or `.cap` read changes no list.)
-    list_ok, list_index := n == k.list_ok, k.list_index
-    if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok, k.list_index = tc_unparen(k, base), false }
+    list_ok, list_index := n == k.list_ok, n == k.list_at
+    if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok = tc_unparen(k, base) }
     // (`pkg.X` inside pkg: its own constant — its value's type. The
     // resolver's: pkg itself names nothing.)
     if tr.tag[n] == .Field && tr.tag[base] == .Ident && k.rs.refs[base].kind == .None {

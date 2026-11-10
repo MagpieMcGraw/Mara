@@ -299,7 +299,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         return Type_Error{}
     }
     if ref.kind == .Local || ref.kind == .Global || ref.kind == .Field {
-        #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, n == k.list_ok, k.list_index, span) }
+        #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, n == k.list_ok, n == k.list_at, span) }
     }
     return t
 }
@@ -954,6 +954,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         } else if slot, is_slot := item.slot.?; is_slot {
             at = tc_tuple_default(k, a, slot, span)
         } else {
+            k.list_ok = a   // (a list given by value: no change to it)
             at = k.recv.t if a == k.recv.node else tc_check(k, a)
         }
         // (Bytes read as an array param: `buf[off]`, `buf[lo:hi]` — its size
@@ -1641,5 +1642,6 @@ TC_Recv :: struct {
 // An argument, checked — or the receiver, as checked.
 tc_arg :: proc(k: ^TC, a: Tree_Id) -> Type {
     if a != 0 && a == k.recv.node { return k.recv.t }
+    k.list_ok = a   // (a list given by value: no change to it — tc_list_use)
     return tc_check(k, a)
 }

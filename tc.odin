@@ -73,10 +73,11 @@ TC :: struct {
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
     // Lists that stay empty (tc_list_use): each list's declaration, by its
     // token; the node about to be checked as a use that can't change it (an
-    // index's base — list_index — a `.len`'s, a loop's); each one's first index.
+    // index's base — list_at — or a `.len`'s, a loop's, an argument: list_ok); each
+    // one's first index.
     lists:         []List_Flags,
     list_ok:       Tree_Id,
-    list_index:    bool,
+    list_at:       Tree_Id,
     list_indexed:  [dynamic]List_Indexed,
     lists_raw:     map[^Type_Scope]bool,   // structs read out of raw memory, seen (tc_lists_raw)
     field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)

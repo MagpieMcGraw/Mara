@@ -11,7 +11,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(tr, n)
     base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
     tc_lower_dots(k, base_n, idx_n)
-    k.list_ok, k.list_index = tc_unparen(k, base_n), true
+    k.list_at = tc_unparen(k, base_n)
     bt := tc_check(k, base_n)
     // (A field reference's array, `r[i]`: a reference to its item. A struct
     // indexed, `events[f]`: the field f is a reference to — field_ref.odin.)
@@ -51,8 +51,8 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
 // warned once the program is checked. A list's declaration (a local's, a
 // global's, a field's) is Fresh when it is given no value, and Changed by
 // any use that could give it one: all but an index's base, a `.len` or
-// `.cap` read and a loop over it (k.list_ok: the node about to be checked
-// as one of those).
+// `.cap` read, a loop over it and an argument that is the list itself, by
+// value (k.list_at, k.list_ok: the node about to be checked as one of those).
 List_Flag    :: enum u8 { Fresh, Changed, Indexed }
 List_Flags   :: bit_set[List_Flag; u8]
 List_Indexed :: struct { decl: Token_Id, span: Span }
@@ -60,7 +60,7 @@ List_Indexed :: struct { decl: Token_Id, span: Span }
 // A use of a list's name: `ok`, one that can't change it; `index`, an index's base.
 tc_list_use :: proc(k: ^TC, decl: Token_Id, t: Type, ok, index: bool, span: Span) {
     if decl == 0 || !is_partial_array(t) { return }
-    if !ok {
+    if !ok && !index {
         k.lists[decl] += {.Changed}
     } else if index && .Indexed not_in k.lists[decl] {
         k.lists[decl] += {.Indexed}
@@ -105,7 +105,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
         tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
         return
     }
-    k.list_ok, k.list_index = tc_unparen(k, base_n), true
+    k.list_at = tc_unparen(k, base_n)
     ct := tc_check(k, base_n)
     if st := index_struct(ct); st != nil {
         // (`events[f] = v`: the field f is a reference to, written.)

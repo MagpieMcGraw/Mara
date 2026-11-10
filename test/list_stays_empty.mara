@@ -6,6 +6,7 @@ use mara.core
 //@ expect-warning: Warning: 'used' is indexed, but nothing gives it a len
 //@ expect-warning: Warning: 'table' is indexed, but nothing gives it a len
 //@ expect-warning: Warning: 'seen' is indexed, but nothing gives it a len
+//@ expect-warning: Warning: 'shown' is indexed, but nothing gives it a len
 //@ expect-no-warning: 'names'
 //@ expect-no-warning: 'later'
 //@ expect-no-warning: 'filled'
@@ -16,18 +17,21 @@ use mara.core
 //@ expect-no-warning: 'items'
 //@ expect-no-warning: 'made'
 //@ expect-no-warning: 'whole'
+//@ expect-no-warning: 'grown'
 //@ expect-output: combos 0
 //@ expect-output: walk 0 2
 //@ expect-output: 0 5 | 0 3 | 1
 //@ expect-output: seen h true 1 2
 //@ expect-output: read 2 8 | 1 4 | 2
+//@ expect-output: [] 0 0 | 1
 
 // A list declared with nothing in it that no code gives a len stays empty:
 // indexed, it is warned about — the index is past its len, a loop over it
 // runs no times (combo: its inner lists are appended to, its own len stays
 // 0). Anything that could give it a len — an append, its `.len` written,
 // its address taken, a value written to it whole, a literal's field, a read
-// out of bytes — in any function, and it isn't.
+// out of bytes — in any function, and it isn't. Given to a function by
+// value (printed, counted), it is still empty.
 
 Keys :: struct { held: [4!]bool  jump: bool  run: bool }
 
@@ -46,6 +50,9 @@ Packet :: struct {
 Made :: struct {
 	made: [4]i64
 }
+
+count :: fun(xs: []i64) -> i64 { return xs.len }
+grow :: fun(xs: ^[]i64) { xs ++ 1 }
 
 fill :: fun(b: ^Bind) {
 	&b.names ++ "walk"
@@ -89,4 +96,11 @@ main :: fun() {
 	whole : [4]i64
 	whole = [1, 2]
 	print("read", got.items.len, got.items[1], "|", m.made.len, m.made[0], "|", whole[1])
+
+	shown : [4]i64
+	shown[0] = 1
+	grown : [4]i64
+	grown[1] = 1
+	grow(&grown)
+	print(shown, count(shown), len(shown), "|", grown.len)
 }
