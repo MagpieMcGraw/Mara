@@ -40,8 +40,8 @@ slice_not_equal :: fun(a: []$T, b: []$T) -> bool {
 // Appends one byte, given as a u8, to dst; it must fit in dst's capacity.
 byte_add_item :: fun(dst: ^[]byte, src: u8) -> ^[]byte {
 	n := dst.len
-	dst[n] = src
 	dst.len = n + 1
+	dst[n] = src
 	return dst
 }
 
@@ -57,8 +57,8 @@ slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T {
 // Appends one item to dst; it must fit in dst's capacity.
 slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 	n := dst.len
-	dst[n] = src
 	dst.len = n + 1
+	dst[n] = src
 	return dst
 }
 

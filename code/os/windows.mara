@@ -137,11 +137,11 @@ use mara.string
 		// or more doesn't wrap to a small count — 4 GB to none.)
 		want := data.cap
 		if want > 1 << 30 do want = 1 << 30
-		if not bool(ReadFile(id, &data[0], u32(want), &read, void)) {
-			// (A pipe whose writer closed: its end, as a file's is — 0 bytes.)
-			if GetLastError() != ERROR_BROKEN_PIPE do return Read_Failed
-		}
+		data.len = want   // (ReadFile's to fill: read is 0 when it fails)
+		ok := bool(ReadFile(id, &data[0], u32(want), &read, void))
 		data.len = i64(read)
+		// (A pipe whose writer closed: its end, as a file's is — 0 bytes.)
+		if not ok and GetLastError() != ERROR_BROKEN_PIPE do return Read_Failed
 	}
 
 	// Write data to the file. Returns (n, .Ok) where n is bytes written. Win32
@@ -320,8 +320,7 @@ use mara.string
 	// (exe_path: the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir := real_path(".")?
-		if dir.len == dir.cap do return dir, Too_Large   // (no room for its 0)
-		dir[dir.len] = 0
+		if dir.len == dir.cap do return dir, Too_Large   // (no room for the 0 after it: real_path's Path is zero past its len)
 		return dir
 	}
 
@@ -366,6 +365,7 @@ use mara.string
 		// (Its whole name, `\\?\C:\…` or `\\?\UNC\server\…`: its length, or
 		// the room it wants, its 0 counted, when that's more than full has.)
 		full : [600]utf8
+		full.len = full.cap   // (the system's to fill)
 		n := i64(GetFinalPathNameByHandleA(id, &full[0], u32(full.cap), 0))
 		if n == 0 do return out, Read_Failed
 		if n >= full.cap do return out, Too_Large
@@ -400,7 +400,9 @@ use mara.string
 	// started — so real_path asked too.)
 	exe_path :: fun() -> Path, err {
 		path : Path
+		path.len = path.cap   // (the system's to fill)
 		n := i64(GetModuleFileNameA(void, &path[0], u32(path.cap)))
+		path.len = 0
 		if n == 0 do return path, Read_Failed
 		// (As long as the room, it was cut off: no room for its 0.)
 		if n >= path.cap do return path, Too_Large
@@ -663,7 +665,9 @@ use mara.string
 		// (Its length; the room it wants, its 0 counted, when that's more
 		// than value has; 0 for none, or for an empty one: the error says.)
 		SetLastError(0)
+		value.len = value.cap   // (the system's to fill)
 		n := i64(GetEnvironmentVariableA(cstring(c), &value[0], u32(value.cap)))
+		value.len = 0
 		if n == 0 and GetLastError() == ERROR_ENVVAR_NOT_FOUND do return value, Not_Set
 		if n >= value.cap do return value, Too_Large
 		value.len = n
@@ -1209,7 +1213,9 @@ use mara.string
 		for true {
 			at := Sockaddr()
 			size: i32 = i32(size_of(Sockaddr))
+			data.len = data.cap   // (the system's to fill)
 			n := recvfrom(s.id, &data[0], i32(data.cap), 0, &at, &size)
+			data.len = 0
 			if n >= 0 {
 				data.len = i64(n)
 				from^ = address_of(&at)
@@ -1441,7 +1447,9 @@ use mara.string
 		if data.cap == 0 do return true
 		want := data.cap
 		if want > 1 << 30 do want = 1 << 30
+		data.len = want   // (the system's to fill)
 		n := recv(c.id, &data[0], i32(want), 0)
+		data.len = 0
 		if n > 0 {
 			data.len = i64(n)
 			return true

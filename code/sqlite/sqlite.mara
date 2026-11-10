@@ -162,7 +162,7 @@ sqlite_bind_f64 :: fun(s: ^Sql_Statement, at: i32, value: f64) -> err {
 sqlite_bind_text :: fun(s: ^Sql_Statement, at: i32, value: []utf8) -> err {
 	// (Given no pointer, SQLite would bind a NULL. Empty text isn't that.)
 	if value.len == 0 {
-		blank : [1]utf8
+		blank : [1!]utf8
 		sqlite_check(sqlite3_bind_text(s.handle, at, &blank[0], 0, SQLITE_TRANSIENT))?
 		return
 	}

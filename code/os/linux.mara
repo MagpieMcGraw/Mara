@@ -115,7 +115,9 @@ use mara.string
 			data.len = 0
 			return
 		}
+		data.len = data.cap   // (the system's to fill)
 		n := read(id, &data[0], usize(data.cap))
+		data.len = 0
 		if n < 0 do return Read_Failed
 		data.len = n
 	}
@@ -278,8 +280,10 @@ use mara.string
 	// the system won't say. (exe_path: the program's own file, wherever it runs.)
 	current_dir :: fun() -> Path, err {
 		dir : Path
+		dir.len = dir.cap   // (the system's to fill; its length found below)
 		if getcwd(&dir[0], usize(dir.cap)) == void {
 			e := errno()
+			dir.len = 0
 			if e == ERANGE do return dir, Too_Large
 			if e == ENOENT do return dir, Open_Failed
 			return dir, Read_Failed
@@ -348,7 +352,9 @@ use mara.string
 	exe_path :: fun() -> Path, err {
 		path : Path
 		link := "/proc/self/exe"
+		path.len = path.cap   // (the system's to fill)
 		n := readlink(cstring(link), &path[0], usize(path.cap))
+		path.len = 0
 		if n < 0 do return path, Read_Failed
 		// (As long as the room, it may be cut off.)
 		if n >= path.cap do return path, Too_Large
@@ -1122,7 +1128,9 @@ use mara.string
 			at := Sockaddr()
 			size: u32 = u32(size_of(Sockaddr))
 			// (MSG_TRUNC: the packet's whole size, though bigger than the room.)
+			data.len = data.cap   // (the system's to fill)
 			n := recvfrom(s.id, &data[0], usize(data.cap), MSG_TRUNC, &at, &size)
+			data.len = 0
 			if n > data.cap do return false, Packet_Too_Large
 			if n >= 0 {
 				data.len = n
@@ -1340,7 +1348,9 @@ use mara.string
 	tcp_receive :: fun(c: ^Tcp_Connection, data: ^[]byte) -> bool, err {
 		data.len = 0
 		if data.cap == 0 do return true
+		data.len = data.cap   // (the system's to fill)
 		n := recv(c.id, &data[0], usize(data.cap), 0)
+		data.len = 0
 		if n > 0 {
 			data.len = n
 			return true

@@ -519,9 +519,13 @@ bcrypt_make :: fun(password: []byte, cost: i64) -> str64, err {
 	salt : [16]byte
 	random_bytes(&salt)?
 	setting : [32]utf8
+	setting.len = setting.cap   // (C's to fill)
 	if gensalt_blowfish_rn("$2b$", u64(cost), &salt[0], 16, &setting[0], 32) == 0 do return out, Bcrypt_Failed
 	setting.len = 29   // (C wrote it: "$2b$12$" and 22 of salt, then its 0)
-	if blowfish_rn(cstring(key), cstring(setting), &out[0], i32(out.cap)) == 0 do return out, Bcrypt_Failed
+	out.len = out.cap   // (C's to fill)
+	made := blowfish_rn(cstring(key), cstring(setting), &out[0], i32(out.cap)) != 0
+	out.len = 0
+	if not made do return out, Bcrypt_Failed
 	out.len = 60
 	return out
 }
@@ -537,6 +541,7 @@ bcrypt_check :: fun(password: []byte, digest: []utf8) -> bool {
 	stored : [64]utf8
 	&stored ++ digest
 	out : str64
+	out.len = out.cap   // (C's to fill)
 	if blowfish_rn(cstring(key), cstring(stored), &out[0], i32(out.cap)) == 0 do return false
 	out.len = 60
 	return same_secret(out, digest)

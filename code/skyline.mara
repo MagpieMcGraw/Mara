@@ -129,17 +129,18 @@ skyline_insert :: fun(sky: ^Skyline, start_idx: i64, x: i64, new_y: i64, w: i64)
 		for j in (start_idx + replacement_size):(sky.nodes.len - shift) {
 			sky.nodes[j] = sky.nodes[j + shift]
 		}
+		sky.nodes.len += delta
 	elif delta > 0
 		// Single node split into two — make room by shifting right by one.
 		// Walk right-to-left so we don't overwrite slots before reading them.
-		j := sky.nodes.len - 1
+		sky.nodes.len += delta
+		j := sky.nodes.len - 1 - delta
 		for j >= start_idx + 1 {
 			sky.nodes[j + 1] = sky.nodes[j]
 			j -= 1
 		}
 	}
 
-	sky.nodes.len += delta
 	sky.nodes[start_idx] = Skyline_Node{x, new_y, w}
 	if remainder > 0 do sky.nodes[start_idx + 1] = Skyline_Node{x + w, last_y, remainder}
 

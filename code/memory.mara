@@ -62,12 +62,12 @@ Arena_Basic :: class(cap: i64) {
 		// and subsequent allocs need a 16-aligned base for typed views.
 		off := (a.base.len + 15) & -16
 
-		a.base[off] = prev
-		a.current_mark = off
 		// Advance past the 16-aligned backlink slot so the next alloc can't
 		// clobber it before reset reads it back. (The old offset-field version
 		// set the cursor back to `off` here — a latent corruption bug.)
 		a.base.len = off + 16
+		a.base[off] = prev
+		a.current_mark = off
 		#if #profile_memory {
 			__mara_mem_arena("Arena_Basic", &a.base)
 		}
@@ -132,8 +132,8 @@ Arena_Debug :: class(cap: i64) {
 
 	// sys_alloc hands back len == cap; reset len to 0 so base.len IS the bump
 	// cursor (cap stays the reservation). Every base[off] access is a sized
-	// byte read/write, which bounds-checks against capacity, so carving ahead
-	// of len is fine — no separate offset field needed.
+	// byte read/write, which bounds-checks against capacity — no separate offset
+	// field needed; the len is moved first, then what's under it written.
 	base.len = 0
 
 	// Remembers where the arena is now; reset frees what came after.
@@ -141,11 +141,11 @@ Arena_Debug :: class(cap: i64) {
 		prev := a.current_mark
 		off := (a.base.len + 15) & -16
 
+		a.base.len = off + 16
 		a.base[off] = prev
 		a.base[off + size_of(prev)] = a.last_alloc
 
 		a.current_mark = off
-		a.base.len = off + 16
 		#if #profile_memory {
 			__mara_mem_arena("Arena_Debug", &a.base)
 		}
@@ -183,12 +183,12 @@ Arena_Debug :: class(cap: i64) {
 			size = size,
 			name = name,
 			span = span }
+		a.base.len = end
 		a.base[off] = h
 
 		data_off := off + HEADER_SIZE
 		result := a.base[data_off : data_off+size]
 		a.last_alloc = off
-		a.base.len = end
 		#if #profile_memory {
 			__mara_mem_arena("Arena_Debug", &a.base)
 		}

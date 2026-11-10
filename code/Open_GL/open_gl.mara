@@ -642,6 +642,7 @@ GetShaderiv :: fun(shader: u32, pname: GL_Shader_Param, params: ^i32) { glGetSha
 // room holds; log.len its length.
 GetShaderInfoLog :: fun(shader: u32, log: ^[]utf8) {
     n : i32 = 0
+    log.len = log.cap   // (GL's to fill)
     glGetShaderInfoLog(shader, i32(log.cap), &n, &log[0])
     log.len = i64(n)
 }
@@ -650,6 +651,7 @@ GetProgramiv :: fun(program: u32, pname: GL_Shader_Param, params: ^i32) { glGetP
 // room holds; log.len its length.
 GetProgramInfoLog :: fun(program: u32, log: ^[]utf8) {
     n : i32 = 0
+    log.len = log.cap   // (GL's to fill)
     glGetProgramInfoLog(program, i32(log.cap), &n, &log[0])
     log.len = i64(n)
 }
