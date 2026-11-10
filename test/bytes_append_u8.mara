@@ -1,0 +1,28 @@
+module bytes_append_u8
+
+//@ expect-output: one byte: 1 255 255
+//@ expect-output: three: 3 1 2 3
+
+// A u8 appended to a list of bytes is that one byte, and nothing after it.
+// (It ran text's append once, which writes a 0 after what it adds: the byte
+// after a list's len was overwritten.)
+
+use mara.core
+
+main :: () {
+	buf : [8]byte
+	for k in 0:8 do &buf + u8(255)
+	buf.len = 0
+	&buf + u8(1)
+	first : u8 = buf[0]
+	second : u8 = buf[1]
+	third : u8 = buf[2]
+	print("one byte:", first, second, third)
+
+	&buf + u8(2)
+	&buf + u8(3)
+	a : u8 = buf[0]
+	b : u8 = buf[1]
+	c : u8 = buf[2]
+	print("three:", buf.len, a, b, c)
+}

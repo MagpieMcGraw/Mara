@@ -11,7 +11,7 @@ GB :: 1 << 30 // 1024 * 1024 * 1024
 overload + add
 // Appends to a text buffer or a list, or joins one to a new one; which one
 // runs depends on what is added, and to what.
-add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item, join, join_item }
+add :: dispatch{ utf8_add, utf8_add_item, byte_add_item, slice_add, slice_add_item, join, join_item }
 
 // `a == b` on text: whether both hold the same characters.
 overload == equal
@@ -56,6 +56,14 @@ utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
 	dst[n] = src
 	dst.len = n + 1
 	if n + 1 < dst.cap do dst[n + 1] = 0
+}
+
+// Appends one byte, given as a u8, to dst; it must fit in dst's capacity.
+byte_add_item :: fun(dst: ^[]byte, src: u8) {
+	n := dst.len
+	assert(n < dst.cap)
+	dst[n] = src
+	dst.len = n + 1
 }
 
 // Appends items to dst; they must fit in dst's capacity. A slicing of a

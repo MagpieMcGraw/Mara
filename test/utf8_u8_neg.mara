@@ -1,0 +1,17 @@
+module utf8_u8_neg
+//@ expect-fail: [utf8_u8_neg.mara:15:2] Type error: cannot assign u8 to variable 'c' of type utf8
+
+// A character is no number's: a u8 or an i8 becomes one with `utf8(x)`, and
+// a character a number with `u8(c)` — as their arithmetic asks already. A
+// whole-number literal still goes where a character does (`c : utf8 = 65`).
+
+use mara.core
+
+main :: () {
+	small : u8 = 67
+	ok : utf8 = utf8(small)
+	back : u8 = u8(ok)
+	lit : utf8 = 65
+	c : utf8 = small
+	print(ok, back, lit, c)
+}

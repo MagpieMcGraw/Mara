@@ -922,11 +922,8 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Infer_Int); ok { return true }
         // Infer float compatible with float numeric types only
         if _, ok := b.(Type_Infer_Float); ok { return va.kind == .Float }
-        // utf8 (incl. char literals) is compatible with i8/u8
-        if _, ok := b.(Type_Utf8); ok {
-            return (va.kind == .Unsigned || va.kind == .Signed) && va.bits == 8
-        }
-        // (An enum's value is no integer's: `i64(e)` converts, said so.)
+        // (A character is no number's, nor an enum's value an integer's:
+        // `u8(c)`, `i64(e)` convert, said so.)
         return false
     case Type_F64:
         if _, ok := b.(Type_Infer_Int); ok { return true }
@@ -950,10 +947,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return false
     case Type_Utf8:
         if _, ok := b.(Type_Utf8); ok { return true }
-        if _, ok := b.(Type_Infer_Int); ok { return true }
-        if nb, ok := b.(Type_Numeric); ok {
-            return (nb.kind == .Unsigned || nb.kind == .Signed) && nb.bits == 8
-        }
+        if _, ok := b.(Type_Infer_Int); ok { return true }   // (a whole-number literal: `c : utf8 = 65`)
         return false
     case Type_Byte:
         _, ok := b.(Type_Byte)
