@@ -48,14 +48,15 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
 
 // A list declared with nothing in it that no code gives a len stays empty:
 // an index into it is past its len, and a loop over it runs no times —
-// warned once the program is checked. A list's declaration (a local's, a
+// warned once the program is checked, where it is first indexed or looped
+// over (Indexed: either). A list's declaration (a local's, a
 // global's, a field's) is Fresh when it is given no value, and Changed by
 // any use that could give it one: all but an index's base, a `.len` or
 // `.cap` read, a loop over it and an argument that is the list itself, by
 // value (k.list_at, k.list_ok: the node about to be checked as one of those).
 List_Flag    :: enum u8 { Fresh, Changed, Indexed }
 List_Flags   :: bit_set[List_Flag; u8]
-List_Indexed :: struct { decl: Token_Id, span: Span }
+List_Indexed :: struct { decl: Token_Id, span: Span, loop: bool }
 
 // A use of a list's name: `ok`, one that can't change it; `index`, an index's base.
 tc_list_use :: proc(k: ^TC, decl: Token_Id, t: Type, ok, index: bool, span: Span) {
@@ -64,8 +65,18 @@ tc_list_use :: proc(k: ^TC, decl: Token_Id, t: Type, ok, index: bool, span: Span
         k.lists[decl] += {.Changed}
     } else if index && .Indexed not_in k.lists[decl] {
         k.lists[decl] += {.Indexed}
-        append(&k.list_indexed, List_Indexed{decl, span})
+        append(&k.list_indexed, List_Indexed{decl, span, false})
     }
+}
+
+// A loop over a list's name (n, checked): as an index is, what only a list
+// with a len answers.
+tc_list_looped :: proc(k: ^TC, n: Tree_Id, t: Type) {
+    if !is_partial_array(t) { return }
+    r := tc_ref(k, n)
+    if r.decl == 0 || (r.kind != .Local && r.kind != .Global && r.kind != .Field) || .Indexed in k.lists[r.decl] { return }
+    k.lists[r.decl] += {.Indexed}
+    append(&k.list_indexed, List_Indexed{r.decl, tree_span(k.t, n), true})
 }
 
 // A value of type `t` read out of raw memory (bytes, a take): the lists in
@@ -89,7 +100,9 @@ tc_lists_raw :: proc(k: ^TC, t: Type) {
 
 tc_lists_report :: proc(k: ^TC) {
     for u in k.list_indexed {
-        if f := k.lists[u.decl]; .Fresh in f && .Changed not_in f { check_warning(k.c, u.span, WARN_LIST_STAYS_EMPTY, tc_text(u.decl)) }
+        if f := k.lists[u.decl]; .Fresh in f && .Changed not_in f {
+            check_warning(k.c, u.span, WARN_LIST_STAYS_EMPTY, tc_text(u.decl), "looped over" if u.loop else "indexed", "the loop" if u.loop else "a loop over it")
+        }
     }
 }
 

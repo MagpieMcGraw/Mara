@@ -807,6 +807,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         k.list_ok = call   // (looped over: no change to it)
         ct := tc_check(k, v.collection)
         k.several_ok = 0
+        tc_list_looped(k, call, ct)
         if loops_over_type(k, v.collection) {
             tc_loop_over_type(k, v, ct, span)
             return

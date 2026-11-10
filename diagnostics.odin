@@ -594,7 +594,7 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 // `len = i64(x)` does not, and the cast site can't distinguish the two.)
 TYPE_IN_NEEDS_ITEMS :: "`in` takes a range, `x in lo .. hi`, or something with items to look among — a list, an array, a view: `x in xs` — and %s has none"
 TYPE_IN_ITEM_TYPE :: "can't look for a %s among %s items: `==` doesn't compare them"
-WARN_LIST_STAYS_EMPTY :: "'%s' is indexed, but nothing gives it a len: it stays an empty list, and a loop over it runs no times. Append to it with `++`, or declare it a fixed array, `[n!]T`"
+WARN_LIST_STAYS_EMPTY :: "'%s' is %s, but nothing gives it a len: it stays an empty list, and %s runs no times. Append to it with `++`, or declare it a fixed array, `[n!]T`"
 WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"
 WARN_CHAIN_MISALIGNED :: "this `%s` belongs to the `if` on line %d, but is indented differently. Was it meant for another `if`?"
 WARN_REDUNDANT_CAST ::"redundant cast to %s — %s already has that type, drop the `%s(...)`"
