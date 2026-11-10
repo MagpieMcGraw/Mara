@@ -35,6 +35,16 @@ find_byte :: fun(s: []utf8, b: utf8) -> i64, bool {
 	return -1, false
 }
 
+// s cut at its first sep: the text before it, the text after it, true. When
+// s has no sep: s, an empty text, false. Takes a text apart a piece at a
+// time: `line, rest, _ = cut(rest, '\n')` while rest.len > 0.
+cut :: fun(s: []utf8, sep: utf8) -> []utf8, []utf8, bool {
+	for c, i in s {
+		if c == sep do return s[0:i], s[i + 1:], true
+	}
+	return s, s[s.len:], false
+}
+
 // True if `s` begins with `prefix`. Cheaper than full find when you only
 // care about the head of the string (`#include`, `#version`, etc.).
 starts_with :: fun(s: []utf8, prefix: []utf8) -> bool {
@@ -400,21 +410,21 @@ parse_number_exact :: fun(digits: []utf8, exponent: i64) -> f64 {
 		return (u64(big[at / 32]) >> u64(at % 32)) & 1
 	}
 	mantissa : u64 = 0
-	cut := length - keep
+	dropped := length - keep
 	k := length - 1
-	for k >= 0 and k >= cut {
+	for k >= 0 and k >= dropped {
 		mantissa = (mantissa << 1) | bit_at(&big, k)
 		k -= 1
 	}
-	if cut < 0 do mantissa = mantissa << u64(-cut)
-	if cut > 0 {
+	if dropped < 0 do mantissa = mantissa << u64(-dropped)
+	if dropped > 0 {
 		// (Rounded to the nearest, a tie to the even one: the bit just below decides, and
 		// then whether anything at all is below that.)
 		below := rest_nonzero
-		for j in 0:cut - 1 {
+		for j in 0:dropped - 1 {
 			if bit_at(&big, j) != 0 do below = true
 		}
-		if bit_at(&big, cut - 1) != 0 and (below or mantissa & 1 != 0) do mantissa += 1
+		if bit_at(&big, dropped - 1) != 0 and (below or mantissa & 1 != 0) do mantissa += 1
 	}
 	if binary < -1022 {
 		// (No exponent: a carry out of the top makes it the smallest with one, by itself.)
@@ -474,19 +484,19 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1) -> str64 {
 		}
 		return v % 10
 	}
-	// (The digits from `from` up to `cut`, rounded at cut, with one more digit
+	// (The digits from `from` up to `end`, rounded at end, with one more digit
 	// first: '0', unless the rounding carried into it.)
-	rounded :: fun(limbs: []u32, from: i64, cut: i64) -> str64 {
+	rounded :: fun(limbs: []u32, from: i64, end: i64) -> str64 {
 		kept : str64
 		&kept ++ '0'
-		for k in from:cut {
+		for k in from:end {
 			&kept ++ utf8(i64('0') + digit(limbs, k))
 		}
-		after := digit(limbs, cut)
+		after := digit(limbs, end)
 		up := after > 5
 		if after == 5 {
-			up = digit(limbs, cut - 1) % 2 == 1
-			for k in cut + 1:limbs.len * 9 {
+			up = digit(limbs, end - 1) % 2 == 1
+			for k in end + 1:limbs.len * 9 {
 				if digit(limbs, k) != 0 do up = true
 			}
 		}
