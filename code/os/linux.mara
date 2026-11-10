@@ -166,9 +166,9 @@ use mara.string
 		if size == 0 do return []
 		// (Failing, mmap gives (void*)-1, not void, and sets errno: that's
 		// what's tested. Succeeding, it leaves errno alone.)
-		__errno_location()^ = 0
+		errno_clear()
 		view := mmap(void, usize(size), PROT_READ, MAP_PRIVATE, i32(id), 0)
-		if __errno_location()^ != 0 do return [], Map_Failed
+		if errno() != 0 do return [], Map_Failed
 		return slice_from_ptr(view, size)
 	}
 
@@ -253,6 +253,20 @@ use mara.string
 		fun __errno_location() -> ^i32
 	}
 
+	// The error number the last failed system call left (C's errno).
+	errno :: fun() -> i32 {
+		at := __errno_location()
+		assert(at != void)   // (C never gives none: said for the void check)
+		return at^
+	}
+
+	// Sets errno to 0, before a call that only says it failed by setting it.
+	errno_clear :: fun() {
+		at := __errno_location()
+		assert(at != void)
+		at^ = 0
+	}
+
 	// ---- Paths ----
 
 	// The directory the program runs in — where a path not whole starts —
@@ -265,7 +279,7 @@ use mara.string
 	current_dir :: fun() -> Path, err {
 		dir : Path
 		if getcwd(&dir[0], usize(dir.cap)) == void {
-			e := __errno_location()^
+			e := errno()
 			if e == ERANGE do return dir, Too_Large
 			if e == ENOENT do return dir, Open_Failed
 			return dir, Read_Failed
@@ -478,7 +492,7 @@ use mara.string
 		// (Taken: binding fails, at once — no other listener's queue gets a
 		// connection asking.)
 		if bind(l.id, &at, size) != 0 {
-			taken := __errno_location()^ == EADDRINUSE
+			taken := errno() == EADDRINUSE
 			_ = close(l.id)
 			l.id = NO_FILE
 			if taken do return l, Name_Taken
@@ -499,7 +513,7 @@ use mara.string
 	pipe_accept :: fun(l: ^Pipe_Listener) -> File_Id, err {
 		id := accept4(l.id, void, void, SOCK_CLOEXEC)   // (its reads and writes wait, as a file's)
 		if id != NO_FILE do return id
-		e := __errno_location()^
+		e := errno()
 		// (Nobody yet; one that came and went; a signal.)
 		if e == EAGAIN or e == ECONNABORTED or e == EINTR do return NO_FILE
 		return NO_FILE, Accept_Failed
@@ -869,7 +883,7 @@ use mara.string
 		want := Timespec{seconds = ns / 1000000000, nanoseconds = ns % 1000000000}
 		left := Timespec{seconds = 0, nanoseconds = 0}
 		for nanosleep(&want, &left) != 0 {
-			if __errno_location()^ != EINTR do return
+			if errno() != EINTR do return
 			want = left   // (a signal cut it short: the rest)
 		}
 	}
@@ -991,7 +1005,7 @@ use mara.string
 		for done < data.cap {
 			n := getrandom(&data[done], usize(data.cap - done), 0)
 			if n < 0 {
-				if __errno_location()^ == EINTR do continue
+				if errno() == EINTR do continue
 				data.len = 0
 				return Random_Failed
 			}
@@ -1091,7 +1105,7 @@ use mara.string
 		size := sockaddr_of(to, s.v4, &at)
 		for true {
 			if sendto(s.id, data.ptr, usize(data.len), MSG_NOSIGNAL, &at, size) >= 0 do return
-			e := __errno_location()^
+			e := errno()
 			if e == EAGAIN do return
 			if e != EINTR do return Send_Failed
 		}
@@ -1115,7 +1129,7 @@ use mara.string
 				from^ = address_of(&at)
 				return true
 			}
-			e := __errno_location()^
+			e := errno()
 			if e == EAGAIN do return false
 			// (Word from the network that an earlier packet found nobody
 			// there: no packet. Take the next.)
@@ -1151,7 +1165,7 @@ use mara.string
 		size: u32 = u32(size_of(Sockaddr))
 		id := accept4(l.id, &at, &size, SOCK_NONBLOCK | SOCK_CLOEXEC)
 		if id == NO_SOCKET {
-			e := __errno_location()^
+			e := errno()
 			// (Nobody yet; one that came and went; a signal.)
 			if e == EAGAIN or e == ECONNABORTED or e == EINTR do return false
 			return false, Socket_Failed
@@ -1182,7 +1196,7 @@ use mara.string
 		size := sockaddr_of(to, c.v4, &at)
 		if connect(id, &at, size) != 0 {
 			// (Under way: wait for it.)
-			if __errno_location()^ != EINPROGRESS or not net_connected(id, wait_ms) {
+			if errno() != EINPROGRESS or not net_connected(id, wait_ms) {
 				_ = close(id)
 				return c, Unreachable
 			}
@@ -1269,7 +1283,7 @@ use mara.string
 		n := epoll_wait(w.id, &found[0], i32(want), i32(ms))
 		if n < 0 {
 			// (A signal cut the wait short: as if the time ran out.)
-			if __errno_location()^ == EINTR do return
+			if errno() == EINTR do return
 			return Socket_Failed
 		}
 		for k in 0:i64(n) {
@@ -1295,7 +1309,7 @@ use mara.string
 		// (MSG_NOSIGNAL: a connection ended fails, not SIGPIPE ending the program.)
 		n := send(c.id, data.ptr, usize(data.len), MSG_NOSIGNAL)
 		if n >= 0 do return n
-		e := __errno_location()^
+		e := errno()
 		if e == EAGAIN or e == EINTR do return 0
 		return 0, Send_Failed
 	}
@@ -1312,7 +1326,7 @@ use mara.string
 				rest = rest[n:.len]
 				continue
 			}
-			e := __errno_location()^
+			e := errno()
 			if e == EINTR do continue
 			if e != EAGAIN do return Send_Failed
 			if net_wait(c.id, true, -1) < 0 do return Send_Failed
@@ -1332,7 +1346,7 @@ use mara.string
 			return true
 		}
 		if n == 0 do return false
-		e := __errno_location()^
+		e := errno()
 		if e == EAGAIN or e == EINTR do return true
 		if e == ECONNRESET do return false
 		return false, Receive_Failed
@@ -1394,7 +1408,7 @@ use mara.string
 		sa := Sockaddr()
 		size := sockaddr_of(at, v4, &sa)
 		if bind(id, &sa, size) != 0 {
-			taken := __errno_location()^ == EADDRINUSE
+			taken := errno() == EADDRINUSE
 			_ = close(id)
 			if taken do return NO_SOCKET, Port_Taken
 			return NO_SOCKET, Socket_Failed
@@ -1431,7 +1445,7 @@ use mara.string
 		if writing do ready.events = POLLOUT
 		for true {
 			n := poll(&ready, 1, i32(ms))
-			if n >= 0 or __errno_location()^ != EINTR do return n
+			if n >= 0 or errno() != EINTR do return n
 		}
 		return -1
 	}
