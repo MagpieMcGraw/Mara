@@ -101,6 +101,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     #partial switch v in distinct_base(bt) {
     case ^Type_Enum:
         if val, has := v.variants[field]; has { return bt, false, i128(val), true }
+        if slots, has := tc_enum_len(k, base, field); has { return Type_Numeric{kind = .Signed, bits = 64}, false, i128(slots), true }
         tc_error(k, span, TYPE_ENUM_VARIANT, type_name(v), field)
         return Type_Error{}, false, 0, false
     case ^Type_Union:
@@ -120,6 +121,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
             tc_unsupported(k, n, "a union's variant as a value")
             return Type_Error{}, false, 0, false
         }
+        if slots, has := tc_enum_len(k, base, field); has { return Type_Numeric{kind = .Signed, bits = 64}, false, i128(slots), true }
         tc_union_field_error(k, span, v, Tree_Id(k.t.a[n]), field)
         return Type_Error{}, false, 0, false
     }

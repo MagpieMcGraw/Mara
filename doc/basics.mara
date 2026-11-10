@@ -383,6 +383,9 @@ example_struct :: fun() {
 //
 // An enum can size an array: `[Light]bool` holds one for each of its values
 // (the highest value + 1 of them), indexed by them — `seen[Green]`.
+// `Light.len` is that number (`Light.cap` too, as a fixed array's are the
+// same), known when the program is compiled: `[Light.len!]str64` is an
+// array of as many, indexed by plain numbers.
 //
 // A number gives the variant whose value it is: `Light(2)` is Green, and
 // `i64(Green)` is 2 again. `l.text()` is a variant's name, "Green" (an

@@ -1,0 +1,42 @@
+module enum_len
+
+use mara.core
+
+//@ expect-output: 4 4 | 7 | 2
+//@ expect-output: 4 8 4 4
+//@ expect-output: 3 6 Action.activate
+//@ expect-output: true 4
+//@ expect-output: Odd.len 2
+
+// `Action.len` and `Action.cap`: how many items an array sized by the enum
+// has, `[Action]T` — the same number both, as a fixed array's are; known
+// when the program is compiled, so it sizes an array and makes a constant.
+// It is the highest value + 1 (Gappy: 7), and a union's counts its variants.
+// A variant named len is still the variant.
+
+Action :: union { move_fwd  move_back  jump  activate }
+Gappy :: union { a  b = 5  c }
+Odd :: union { len  other }
+Shape :: union { Circle { r: f32 }  Rect { w: f32  h: f32 } }
+
+N :: Action.len
+
+names_of :: fun(names: [Action.len!][16]utf8) -> i64 { return names.len }
+
+main :: fun() {
+	print(Action.len, Action.cap, "|", Gappy.len, "|", Shape.len)
+	names : [Action.len!][16]utf8
+	more : [Action.len * 2]i64
+	by_const : [N!]i64
+	print(names.len, more.cap, by_const.len, names_of(names))
+	last := Action.len - 1
+	sum := 0
+	for i in 0:Action.len do sum += i
+	print(last, sum, Action(last))
+	by : [Action]i64
+	flat : [Action.len!]i64
+	flat = by
+	print(by.len == Action.len, flat.len)
+	x := Odd.len
+	print(x, Odd.cap)
+}

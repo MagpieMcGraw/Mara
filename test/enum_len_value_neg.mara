@@ -1,0 +1,14 @@
+module enum_len_value_neg
+
+//@ expect-fail: enum 'Action' has no variant 'len'
+
+// `.len` is the enum's, by its name: a value of it has none.
+
+use mara.core
+
+Action :: union { walk  run }
+
+main :: fun() {
+	act := Action.run
+	print(act.len)
+}

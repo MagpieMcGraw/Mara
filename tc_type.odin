@@ -217,6 +217,19 @@ tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
     return ty, hi + 1
 }
 
+// `Action.len`, `Action.cap`, Action an enum's name (or a union's) with no
+// variant named so: how many items an array sized by it has, `[Action]T` —
+// both the same, as a fixed array's are.
+tc_enum_len :: proc(k: ^TC, base: Tree_Id, field: string) -> (int, bool) {
+    if field != "len" && field != "cap" { return 0, false }
+    et, slots := tc_enum_slots(k, tc_unparen(k, base))
+    #partial switch e in distinct_base(et) {
+    case ^Type_Enum:  if field in e.variants { return 0, false }
+    case ^Type_Union: if field in e.tag_map { return 0, false }
+    }
+    return slots, et != nil
+}
+
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
     // (A generic's size param, `$N` or `N`, in an instance: what it's bound to.)
@@ -328,6 +341,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
         if !names || (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        if slots, has := tc_enum_len(k, base, field); has { return i64(slots), true }
         bt, ok := tc_ref_type(k, k.rs.refs[base], tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {
