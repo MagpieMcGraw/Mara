@@ -16,7 +16,7 @@
 //
 // Text ([]utf8, str64, [N]utf8): .len .cap, t[i], t[a:b], for c in t, ==,
 // &t ++ "more" (or a character, or any text), t ++ "x" (a new buffer), find,
-// starts_with, ends_with, contains, cut, trimmed, line_end, skip_spaces.
+// starts_with, ends_with, contains, cut, pieces, trimmed, line_end, skip_spaces.
 //
 // Lists ([N]T): .len .cap, l[i], l[a:b], for x in l, for &x in l, x in l,
 // &l ++ x, l ++ x (a new list).

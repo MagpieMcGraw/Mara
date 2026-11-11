@@ -19,7 +19,7 @@
 //
 // The rest is in mara.string. Searching: find, find_byte, starts_with,
 // ends_with, contains, contains_folded (letters' case not minded). Taking a
-// text apart: cut, trimmed, line_end, skip_spaces. Sorting: compare,
+// text apart: cut, pieces, trimmed, line_end, skip_spaces. Sorting: compare,
 // compare_folded. Case: lower, upper. A number to text and back: int_text,
 // float_text, parse_number.
 //
@@ -84,12 +84,9 @@ main :: fun() {
 	key, value, has_eq := cut("volume=80", '=')
 	print(key, value, has_eq)                // volume 80 true
 
-	// A piece at a time: cut off the first, keep what's after.
-	colors := "red,green,blue"
-	rest : []utf8 = colors
-	for rest.len > 0 {
-		color : []utf8
-		color, rest, _ = cut(rest, ',')
+	// Each piece in turn: pieces moves k past the one it gives.
+	k := 0
+	for color in pieces("red,green,blue", &k, ',') {
 		print(color)                         // red, then green, then blue
 	}
 	print(compare("apple", "banana"))        // -1: apple comes first

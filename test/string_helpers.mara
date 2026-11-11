@@ -17,6 +17,8 @@ use mara.paths
 //@ expect-output: lines: one|two|three|
 //@ expect-output: cut: [a|b,c] true [|x] true [x|] true [abc|] false [|] false
 //@ expect-output: pieces: fire|a,b|c|;;jump|d|;
+//@ expect-output: each piece: [a|b||c|] [] [x|] [|x|]
+//@ expect-output: combos: key.e+key.shift+;key.ret+;
 //@ expect-output: case: a Z 1 a Z
 //@ expect-output: chars: 97 1 8212 3
 //@ expect-output: compare: -1 0 1 -1 -1
@@ -59,7 +61,7 @@ main :: fun() {
 	// A piece at a time, cut back into what's left: lines, then words.
 	binds := "fire a,b c\r\n\njump d \n"
 	rest : []utf8 = binds
-	pieces : str64
+	words_seen : str64
 	for rest.len > 0 {
 		line : []utf8
 		line, rest, _ = cut(rest, '\n')
@@ -67,11 +69,32 @@ main :: fun() {
 		for words.len > 0 {
 			word : []utf8
 			word, words, _ = cut(words, ' ')
-			&pieces ++ word ++ '|'
+			&words_seen ++ word ++ '|'
 		}
-		&pieces ++ ';'
+		&words_seen ++ ';'
 	}
-	print("pieces:", pieces)
+	print("pieces:", words_seen)
+
+	// pieces: each in turn, the last too, an empty one between two seps.
+	each :: fun(s: []utf8) -> str64 {
+		out : str64
+		k := 0
+		for p in pieces(s, &k, ',') do &out ++ p ++ '|'
+		return out
+	}
+	print("each piece: [%] [%] [%] [%]", each("a,b,,c,"), each(""), each("x"), each(",x"))
+
+	// Combos at '#', their inputs at ',', a blank one skipped.
+	combo_line := "key.e, key.shift # key.ret # "
+	combos : str64
+	c_at := 0
+	for combo in pieces(combo_line, &c_at, '#') {
+		if trimmed(combo).len == 0 do continue
+		i_at := 0
+		for input in pieces(combo, &i_at, ',') do &combos ++ trimmed(input) ++ '+'
+		&combos ++ ';'
+	}
+	print("combos:", combos)
 
 	print("case:", lower('A'), upper('z'), lower('1'), lower('a'), upper('Z'))
 
