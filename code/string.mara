@@ -45,17 +45,19 @@ cut :: fun(s: []utf8, sep: utf8) -> []utf8, []utf8, bool {
 	return s, s[s.len:], false
 }
 
-// The piece of s from at up to the next sep or the end, with at moved past
-// that sep; false once at is past the end. A loop over the pieces, the last
-// one too: `at := 0` then `for word in pieces(line, &at, ' ')`. Two seps in a
-// row give an empty piece; a sep at the end gives none after it.
-pieces :: fun(s: []utf8, at: ^i64, sep: utf8) -> []utf8, bool {
-	start := at^
-	if start >= s.len do return s[s.len:], false
-	end := start
-	for end < s.len and s[end] != sep do end += 1
-	at = end + 1
-	return s[start:end], true
+// s cut at every sep: the pieces between, in order, views of s. Two seps in a
+// row give an empty piece; a sep at the end gives none after it. At most 32:
+// the 32nd holds the rest, its seps too. `for word in chop(line, ' ')`.
+chop :: fun(s: []utf8, sep: utf8) -> [32][]utf8 {
+	out : [32][]utf8
+	start := 0
+	for c, i in s {
+		if c != sep or out.len == out.cap - 1 do continue
+		&out ++ s[start:i]
+		start = i + 1
+	}
+	if start < s.len do &out ++ s[start:]
+	return out
 }
 
 // True if `s` begins with `prefix`. Cheaper than full find when you only

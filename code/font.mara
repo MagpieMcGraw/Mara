@@ -573,26 +573,26 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 			contour_lo := raw.len
 			for k in 0:n_seg {
 				s := segments[k]
-				parts : i64 = 1
+				pieces : i64 = 1
 				if s.curve {
 					devx := s.ax - 2.0 * s.cx + s.bx
 					devy := s.ay - 2.0 * s.cy + s.by
-					parts = 1 + i64(floor_f32(2.0 * sqrt_f32(sqrt_f32(3.0 * (devx * devx + devy * devy)))))
+					pieces = 1 + i64(floor_f32(2.0 * sqrt_f32(sqrt_f32(3.0 * (devx * devx + devy * devy)))))
 				}
-				if raw.len + parts > raw.cap do return Glyph_Too_Complex
+				if raw.len + pieces > raw.cap do return Glyph_Too_Complex
 				fx := s.ax
 				fy := s.ay
-				for p in 1..parts {
+				for p in 1..pieces {
 					qx := s.bx
 					qy := s.by
-					if p < parts {
-						t := f32(p) / f32(parts)
+					if p < pieces {
+						t := f32(p) / f32(pieces)
 						u := 1.0 - t
 						qx = u*u*s.ax + 2.0*u*t*s.cx + t*t*s.bx
 						qy = u*u*s.ay + 2.0*u*t*s.cy + t*t*s.by
 					}
 					&raw ++ Raster_Edge{hidden = false, x0 = fx, y0 = fy, x1 = qx, y1 = qy, color = 7,
-						open_start = (p == 1), open_end = (p == parts), corner = (p == 1 and s.corner)}
+						open_start = (p == 1), open_end = (p == pieces), corner = (p == 1 and s.corner)}
 					fx = qx
 					fy = qy
 				}

@@ -21,11 +21,11 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.font      31 types  · 20 funs
     mara.math      4 types   · 91 funs
     mara.memory    3 types   · 1 fun
-    mara.open_gl   29 types  · 97 funs
+    mara.open_gl   29 types  · 100 funs
     mara.os        34 types  · 98 funs
     mara.sdl       22 types  · 1 fun
     mara.skyline   2 types   · 6 funs
-    mara.string    0 types   · 20 funs
+    mara.string    0 types   · 21 funs
     mara.time      4 types   · 18 funs
 === Pounce | camera
 camera — module   (1 type, 9 funs)

@@ -17,7 +17,8 @@ use mara.paths
 //@ expect-output: lines: one|two|three|
 //@ expect-output: cut: [a|b,c] true [|x] true [x|] true [abc|] false [|] false
 //@ expect-output: pieces: fire|a,b|c|;;jump|d|;
-//@ expect-output: each piece: [a|b||c|] [] [x|] [|x|]
+//@ expect-output: chopped: [a|b||c|] [] [x|] [|x|]
+//@ expect-output: chop limit: 32 18
 //@ expect-output: combos: key.e+key.shift+;key.ret+;
 //@ expect-output: case: a Z 1 a Z
 //@ expect-output: chars: 97 1 8212 3
@@ -75,23 +76,24 @@ main :: fun() {
 	}
 	print("pieces:", words_seen)
 
-	// pieces: each in turn, the last too, an empty one between two seps.
+	// chop: every piece, the last too, an empty one between two seps.
 	each :: fun(s: []utf8) -> str64 {
 		out : str64
-		k := 0
-		for p in pieces(s, &k, ',') do &out ++ p ++ '|'
+		for p in chop(s, ',') do &out ++ p ++ '|'
 		return out
 	}
-	print("each piece: [%] [%] [%] [%]", each("a,b,,c,"), each(""), each("x"), each(",x"))
+	print("chopped: [%] [%] [%] [%]", each("a,b,,c,"), each(""), each("x"), each(",x"))
+	// Past 32 pieces, the 32nd holds the rest: here 9 x's and their commas.
+	many : str256
+	for n in 0:40 do &many ++ "x,"
+	parts := chop(many, ',')
+	print("chop limit:", parts.len, parts[31].len)
 
 	// Combos at '#', their inputs at ',', a blank one skipped.
-	combo_line := "key.e, key.shift # key.ret # "
 	combos : str64
-	c_at := 0
-	for combo in pieces(combo_line, &c_at, '#') {
+	for combo in chop("key.e, key.shift # key.ret # ", '#') {
 		if trimmed(combo).len == 0 do continue
-		i_at := 0
-		for input in pieces(combo, &i_at, ',') do &combos ++ trimmed(input) ++ '+'
+		for input in chop(combo, ',') do &combos ++ trimmed(input) ++ '+'
 		&combos ++ ';'
 	}
 	print("combos:", combos)
