@@ -28,6 +28,8 @@ When implementing a feature, prefer hard errors over silent fallbacks for unhand
 
 Always build tests from inside the test folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
 
+The test suite (test/run.sh) must not block work. Once a change passes the tests aimed at it, rebuild Mara.exe (keep the old one as Mara.prev.exe) and commit. Then run the suite in the background, in a git worktree of that commit, with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
+
 # Surprise
 
 I may make small edits to various files while you are working. Usually touching Mara code or my notes. I almost never touch the compiler code so a conflict there is unlilely. Don't worry about it.
