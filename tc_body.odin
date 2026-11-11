@@ -1167,7 +1167,9 @@ tc_array_assign :: proc(k: ^TC, span: Span, name: string, fa: ^Type_Fixed_Array,
     case ^Type_Partial_Array:
         size := v.size
         if m := tc_unparen(k, value); k.t.tag[m] == .String { size = len(tc_text(k.t.main[m])) }
-        if types_incompatible(fa.elem, v.elem) {
+        if types_incompatible(fa, v) {   // (a list, not text: types_compatible's)
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
+        } else if types_incompatible(fa.elem, v.elem) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
         } else if size > 0 && size > fa.size {
             tc_error(k, span, TYPE_ARRAY_ELEMENTS_CAPACITY, size, name, fa.size)

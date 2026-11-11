@@ -1,0 +1,18 @@
+module list_to_fixed_neg
+
+//@ expect-fail: argument 1 ('x') of 'takes_fixed': parameter 'a' expects [3!]i64, got [3]i64
+
+// A list where a fixed array goes: refused. Its len can change, and nothing
+// builds the copy (codegen stopped: "can't lower 'main' ... argument 'a'").
+// A text literal still fills a fixed array of utf8.
+
+use mara.core
+
+takes_fixed :: fun(a: [3!]i64) -> i64 { return a[2] }
+
+main :: fun() {
+	t : [8!]utf8 = "lit"
+	x : [3]i64 = [1, 2, 3]
+	x.len = 2
+	print(t, takes_fixed(x))
+}

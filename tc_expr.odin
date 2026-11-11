@@ -1552,10 +1552,11 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
         types[i] = tc_check(k, branch)
     }
     t := types[0]
+    arrays := tc_array_rank(types[0]) > 0 && tc_array_rank(types[1]) > 0   // (either goes into the other: below)
     switch {
     case is_untyped(types[0]) || is_infer(types[0]): t = types[1]
     case is_untyped(types[1]) || is_infer(types[1]):
-    case types_incompatible(types[0], types[1]):
+    case types_incompatible(types[0], types[1]) && (!arrays || types_incompatible(types[1], types[0])):
         tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
     case:
         // (Two arrays, or an array and a slice: the branch the other goes

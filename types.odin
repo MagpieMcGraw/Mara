@@ -1009,12 +1009,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // runtime-length question, so it must be explicit — never an implicit
         // coercion. (This arm used to accept []T; codegen then silently
         // dropped the copy on the return path and zeroed the result.)
-        // Implicit coercion: [N!]T is compatible with [M]T (partial array
-        // view). Lets fixed-array decls take partial-array sources — most
-        // importantly `fa : [N!]utf8 = "lit"` after the literal-type
-        // change made literals partial.
+        // A text literal (a list typed by its text) fills one: `fa : [N!]utf8
+        // = "lit"`. No other list goes where a fixed array goes — its len
+        // can change, and nothing builds that copy (codegen stopped on it).
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            return items_compatible(va.elem, pa.elem)
+            return pa.text != 0 && items_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
