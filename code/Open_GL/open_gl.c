@@ -102,6 +102,8 @@ typedef void   (*PFN_glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei
 typedef void   (*PFN_glGetProgramiv)(GLuint program, GLenum pname, GLint *params);
 typedef void   (*PFN_glGetProgramInfoLog)(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
 typedef void   (*PFN_glMultiDrawElementsIndirect)(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride);
+typedef void   (*PFN_glRenderbufferStorageMultisample)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
+typedef void   (*PFN_glClipControl)(GLenum origin, GLenum depth);
 typedef void   (*PFN_glDetachShader)(GLuint program, GLuint shader);
 typedef void   (*PFN_glDeleteVertexArrays)(GLsizei n, const GLuint *arrays);
 typedef void   (*PFN_glDeleteBuffers)(GLsizei n, const GLuint *buffers);
@@ -178,6 +180,8 @@ static PFN_glGetShaderInfoLog         _glGetShaderInfoLog;
 static PFN_glGetProgramiv             _glGetProgramiv;
 static PFN_glGetProgramInfoLog        _glGetProgramInfoLog;
 static PFN_glMultiDrawElementsIndirect _glMultiDrawElementsIndirect;
+static PFN_glRenderbufferStorageMultisample _glRenderbufferStorageMultisample;
+static PFN_glClipControl             _glClipControl;
 static PFN_glDetachShader              _glDetachShader;
 static PFN_glDeleteVertexArrays        _glDeleteVertexArrays;
 static PFN_glDeleteBuffers             _glDeleteBuffers;
@@ -264,6 +268,8 @@ static Gl_Proc gl_procs[] = {
     {"glGetProgramiv",                    (void **)&_glGetProgramiv},
     {"glGetProgramInfoLog",               (void **)&_glGetProgramInfoLog},
     {"glMultiDrawElementsIndirect",       (void **)&_glMultiDrawElementsIndirect},
+    {"glRenderbufferStorageMultisample",  (void **)&_glRenderbufferStorageMultisample},
+    {"glClipControl",                     (void **)&_glClipControl},
     {"glDetachShader",                    (void **)&_glDetachShader},
     {"glDeleteVertexArrays",              (void **)&_glDeleteVertexArrays},
     {"glDeleteBuffers",                   (void **)&_glDeleteBuffers},
@@ -373,6 +379,8 @@ void   glUniformHandleui64ARB(GLint location, GLuint64 value)                   
 
 // Multi-draw indirect
 void   glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride) { _glMultiDrawElementsIndirect(mode, type, indirect, drawcount, stride); }
+void   glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) { _glRenderbufferStorageMultisample(target, samples, internalformat, width, height); }
+void   glClipControl(GLenum origin, GLenum depth) { _glClipControl(origin, depth); }
 
 // Fences (GL 3.2)
 GLsync glFenceSync(GLenum condition, GLbitfield flags)                                { return _glFenceSync(condition, flags); }

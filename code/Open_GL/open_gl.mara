@@ -65,6 +65,9 @@ GL_Capability :: union(tag u32) {
     CLIP_DISTANCE1            = 12289   // 0x3001
     TEXTURE_CUBE_MAP_SEAMLESS = 34895   // 0x884F
     FRAMEBUFFER_SRGB          = 36281   // 0x8DB9
+    MULTISAMPLE               = 32925   // 0x809D
+    SAMPLE_ALPHA_TO_COVERAGE  = 32926   // 0x809E: a fragment's alpha picks how many of its samples it covers
+    DEPTH_CLAMP               = 34383   // 0x864F: no clipping at the near and far planes
 }
 
 GL_Blend_Factor :: union(tag u32) {
@@ -367,6 +370,7 @@ foreign static_lib "opengl32" {
     fun glReadBuffer(src: GL_Attachment)                                 // what reads and blits take from it
     fun glFinish()
     fun glFlush()
+    fun glReadPixels(x: i32, y: i32, width: i32, height: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
 }
 
 Enable :: fun(cap: GL_Capability) { glEnable(cap) }
@@ -414,6 +418,15 @@ Finish :: fun() { glFinish() }
 // Sends the commands given so far to the card without waiting for them.
 // The card starts on them while the CPU carries on.
 Flush :: fun() { glFlush() }
+// The read framebuffer's pixels, width x height from (x, y), its bottom
+// row first, into `pixels`: room for all of them, its len set to their
+// bytes. `format` RGB or RGBA with UNSIGNED_BYTE, 3 or 4 bytes a pixel.
+ReadPixels :: fun(x: i32, y: i32, width: i32, height: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^[]byte) {
+    per : i64 = 4
+    if format == RGB do per = 3
+    pixels.len = i64(width) * i64(height) * per   // (GL's to fill)
+    glReadPixels(x, y, width, height, format, type, &pixels[0])
+}
 
 // ---------------------------------------------------------------------------
 // Modern GL functions (3.0+) — loaded at runtime via open_gl.c.
@@ -523,6 +536,8 @@ foreign static_lib "open_gl" {
     fun glMakeTextureHandleNonResidentARB(handle: u64)
     fun glUniformHandleui64ARB(location: i32, value: u64)
     fun glMultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: usize, drawcount: i32, stride: i32)
+    fun glRenderbufferStorageMultisample(target: GL_Renderbuffer_Target, samples: i32, internalformat: u32, width: i32, height: i32)
+    fun glClipControl(origin: u32, depth: u32)
     fun glFenceSync(condition: u32, flags: u32) -> GL_Sync
     fun glClientWaitSync(sync: GL_Sync, flags: u32, timeout: u64) -> u32   // a GL_Wait_Result's value
     fun glDeleteSync(sync: GL_Sync)
@@ -680,6 +695,19 @@ BindRenderbuffer :: fun(target: GL_Renderbuffer_Target, renderbuffer: u32) { glB
 // The format a sized one, as a number: `u32(gl.DEPTH24_STENCIL8)`.
 RenderbufferStorage :: fun(target: GL_Renderbuffer_Target, internalformat: u32, width: i32, height: i32) { glRenderbufferStorage(target, internalformat, width, height) }
 FramebufferRenderbuffer :: fun(target: GL_Framebuffer_Target, attachment: GL_Attachment, renderbuffertarget: GL_Renderbuffer_Target, renderbuffer: u32) { glFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) }
+// A renderbuffer with `samples` samples a pixel: what a multisampled
+// framebuffer draws into. BlitFramebuffer resolves it into a plain one.
+RenderbufferStorageMultisample :: fun(target: GL_Renderbuffer_Target, samples: i32, internalformat: u32, width: i32, height: i32) { glRenderbufferStorageMultisample(target, samples, internalformat, width, height) }
+// The depth range clip space has (GL 4.5). `zero_to_one` true: 0 at the
+// near plane to 1 at the far one, as a projection made for it gives; with
+// a float depth buffer and near and far swapped it keeps its precision far
+// away. False: GL's own -1 to 1.
+ClipControl :: fun(zero_to_one: bool) {
+    lower_left : u32 = 0x8CA1
+    depth : u32 = 0x935E   // GL_NEGATIVE_ONE_TO_ONE
+    if zero_to_one do depth = 0x935F
+    glClipControl(lower_left, depth)
+}
 // Which color attachment each of a shader's outputs writes: `n` of them
 // at `bufs` (`layout(location = i) out` takes bufs[i]).
 // Which color attachment each of a shader's outputs writes: `bufs[i]` for
