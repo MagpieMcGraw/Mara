@@ -332,6 +332,11 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         }
     } else {
         final = solidify_type(vt)
+        // (`x := [a, b, c]` whose len its fun sets: a list, as `x : [3]T = …` is.)
+        if fa, is_fixed := final.(^Type_Fixed_Array); is_fixed && fa.index_type == nil && fields_of == nil && tc_literal_grows(k, ref.decl, value) {
+            final = type_partial_array(fa.size, fa.elem)
+            tc_value_at(k, value, vt, final, span)
+        }
         if is_untyped(final) && k.c.errors == errors_before {
             check_warning(k.c, span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, name)
         }
@@ -342,6 +347,37 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
+}
+
+// Whether `x := [a, b, …]` (decl: x; value: the literal) is a list: its fun
+// sets x's len or appends to it — `x.len = n`, `x.len -= 1`, `&x ++ v` —
+// which only a list does. (By the resolver's refs: uses not checked yet.)
+tc_literal_grows :: proc(k: ^TC, decl: Token_Id, value: Tree_Id) -> bool {
+    tr := k.t
+    if tr.tag[tc_unparen(k, value)] != .Array || k.body == nil { return false }
+    i, ok := k.scope_of[k.body]
+    if !ok || tr.tag[k.scopes[i].node] != .Fun_Def { return false }
+    names_x :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
+        n := tc_unparen(k, n)
+        return k.t.tag[n] == .Ident && k.rs.refs[n].decl == decl
+    }
+    len_of_x :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
+        n := tc_unparen(k, n)
+        return k.t.tag[n] == .Field && tc_text(Token_Id(k.t.b[n])) == "len" && names_x(k, Tree_Id(k.t.a[n]), decl)
+    }
+    hi := k.scopes[i].node
+    for n in tree_lo(tr, hi) ..= hi {
+        #partial switch tr.tag[n] {
+        case .Assign:
+            for tg in tree_list(tr, tr.a[n]) { if len_of_x(k, tg, decl) { return true } }
+        case .Compound:
+            if len_of_x(k, Tree_Id(tr.a[n]), decl) { return true }
+        case .Binary:
+            l := tc_unparen(k, Tree_Id(tr.a[n]))
+            if tc_text(tr.main[n]) == "++" && tr.tag[l] == .Unary && tc_text(tr.main[l]) == "&" && names_x(k, Tree_Id(tr.a[l]), decl) { return true }
+        }
+    }
+    return false
 }
 
 // What a declaration is, as written — the checker and lowering each read it

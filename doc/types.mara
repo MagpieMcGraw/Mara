@@ -103,6 +103,8 @@ example_text :: fun() {
 }
 
 // Lists: [N]T holds up to N items. len is how many it has, cap how many fit.
+// `x := [a, b, c]` is a fixed array, but a list, [3]T, when its fun sets x's
+// len or appends to it: len 3 to start, room for 3.
 example_lists :: fun() {
 	l : [8]i64
 	&l ++ 3
@@ -113,6 +115,9 @@ example_lists :: fun() {
 	print(6 in l, l[1:3])                  // true [6, 8]
 	more := l ++ 9                          // a new list, l as it was
 	print(more.len, l.len)                 // 4 3
+	picks := [10, 20, 30]
+	picks.len = 2                          // so picks is a list
+	print(picks, picks.cap)                // [10, 20] 3
 }
 
 // Fixed arrays: [N!]T is exactly N items; [Enum]T one for each of an enum's

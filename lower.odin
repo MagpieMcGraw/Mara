@@ -590,7 +590,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         sc := k.scopes[k.scope_of[fields_of]]
         k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
     }
-    r := lw_expr(k, value, .Into, dest = graph_dest_var(decl, nil if is_untyped(ann) else ann, tc_sid(k, target)), temp_span = span)
+    into: Type = nil if is_untyped(ann) else ann
+    // (`x := [a, b, c]` the checker made a list (tc_literal_grows): built as one, its len set.)
+    if is_untyped(ann) && is_partial_array(final) && t.tag[tc_unparen(k, value)] == .Array { into = final }
+    r := lw_expr(k, value, .Into, dest = graph_dest_var(decl, into, tc_sid(k, target)), temp_span = span)
     k.field_default = saved_field
     if !is_any(ann) { lw_byte_view_address(k, ann, value) }
     graph_build_typed(b, decl, final)

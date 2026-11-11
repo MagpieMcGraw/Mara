@@ -1,0 +1,44 @@
+module literal_list_inferred
+
+use mara.core
+use mara.string
+
+// `x := [a, b, c]` is a fixed array, unless its fun sets x's len or appends
+// to it: then a list of the literal's count, as `x : [3]T = [a, b, c]` is —
+// len 3 to start, room for 3.
+
+//@ expect-output: pieces: 3 2 3 [a ] [ b]
+//@ expect-output: nums: 3 [1, 2, 9]
+//@ expect-output: grows: 1 [7]
+//@ expect-output: fixed: 3 6
+
+takes_fixed :: fun(a: [3!]i64) -> i64 { return a[2] }
+
+main :: fun() {
+	c1, c2, c3 : []utf8
+	found2, found3 : bool
+	c1, c2, found2 = cut("a # b", '#')
+	c2, c3, found3 = cut(c2, '#')
+	divided := [c1, c2, c3]
+	start := divided.len
+	if found3 do divided.len = 3
+	elif found2 do divided.len = 2
+	else do divided.len = 1
+	print("pieces: % % % [%] [%]", start, divided.len, divided.cap, divided[0], divided[1])
+
+	// A len written by -=, then an append into the room it left.
+	nums := [1, 2, 3]
+	nums.len -= 1
+	&nums ++ 9
+	print("nums:", nums.len, nums)
+
+	// Emptied, then an append: a list from the start.
+	grows := [5, 6]
+	grows.len = 0
+	&grows ++ 7
+	print("grows:", grows.len, grows)
+
+	// Neither: still fixed, and goes where a fixed array goes.
+	fixed := [4, 5, 6]
+	print("fixed:", fixed.len, takes_fixed(fixed))
+}
