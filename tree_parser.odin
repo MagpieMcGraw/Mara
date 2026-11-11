@@ -259,6 +259,11 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
         tp_error(p, tp_here(p), PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, token_text(tok))
     }
     bad := tp_advance(p)
+    // (A stray `elif` — one being typed after `if c do s`, its `do` not there
+    // yet: its condition is kept, so what's asked about its names is answered.)
+    if tok.kind == .Elif && !tp_is_boundary(tp_kind(p)) {
+        return tp_node(p, .Expr_Stmt, bad, start, u32(tp_condition(p)))
+    }
     return tp_node(p, .Expr_Stmt, bad, start)
 }
 

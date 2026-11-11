@@ -421,6 +421,11 @@ def main():
     check("completion of a name: the param, the fun, a local before, keywords", {"camera", "camera_move", "fwd", "return"} <= set(items)
           and items["camera"]["kind"] == 6 and items["camera_move"]["kind"] == 3, sorted(items)[:40])
 
+    # (An `elif` being typed after `if c do s`, its `do` not there yet.)
+    elif_ = text.replace("\tfwd, up, right := obj_get_directions(camera.obj.dir)", "\tfwd, up, right := obj_get_directions(camera.obj.dir)\n\tif camera.fov_y > 0 do camera.fov_y = 1\n\telif cam", 1)
+    items = complete(elif_, 54, "\telif cam")
+    check("completion in an elif with no do yet: the names in sight", {"camera", "camera_move", "fwd"} <= set(items), sorted(items)[:40])
+
     module = text.replace("if keyboard.held[sdl.Scancode.W] {", "if keyboard.held[sdl.] {", 1)
     items = complete(module, 56, "sdl.")
     check("completion after a module: its names", "Scancode" in items, sorted(items)[:30])
