@@ -526,6 +526,7 @@ TYPE_UNION_PADDING_DECLARE_UNION_PAD :: "union '%s' has no padding (declare with
 TYPE_MODULE_SYMBOL :: "module '%s' has no symbol '%s'"
 TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE :: "cannot access field '%s' on array type %s"
 TYPE_SLICE_TYPE_FIELD :: "slice type %s has no field '%s'"
+TYPE_FIXED_ARRAY_LEN_SET :: "a fixed array, %s, is always %d long: its %s can't be set. For a len that changes, make it a list, `%s`"
 TYPE_PARTIAL_ARRAY_TYPE_FIELD :: "partial array type %s has no field '%s'"
 TYPE_CANNOT_ACCESS_FIELD_TYPE :: "cannot access field '%s' on type %s"
 TYPE_LEN_EXPECTS_ARGUMENT :: "len() expects 1 argument, got %d"

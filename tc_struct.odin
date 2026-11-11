@@ -738,8 +738,16 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     case ^Type_Slice:         elem = v.elem
     case ^Type_Partial_Array: elem = v.elem
     case ^Type_Fixed_Array:
+        if field == "len" || field == "cap" {
+            tc_error(k, span, TYPE_FIXED_ARRAY_LEN_SET, type_name(obj), v.size, field, type_name(type_partial_array(v.size, v.elem)))
+            return
+        }
         if !is_swizzle_field(field, v.size) {
-            if is_all_swizzle_chars(field) { tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size) }
+            if is_all_swizzle_chars(field) {
+                tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size)
+            } else {
+                tc_error(k, span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, field, type_name(obj))
+            }
             return
         }
         if pname, immutable := tc_write_root_param(k, target); immutable {
@@ -764,6 +772,8 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
         }
         return
     case:
+        // (No field to write: lowering would find none either.)
+        if !is_any(bt) { tc_error(k, span, TYPE_CANNOT_ACCESS_FIELD_TYPE, field, type_name(bt)) }
         return
     }
     // (A param's header is its caller's: `^[]T` moves a cursor.)

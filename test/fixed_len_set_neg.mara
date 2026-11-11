@@ -1,0 +1,14 @@
+module fixed_len_set_neg
+
+//@ expect-fail: a fixed array, [3!]i64, is always 3 long: its len can't be set. For a len that changes, make it a list, `[3]i64`
+
+// A declared fixed array's len written: a type error, not a stop in lowering
+// ("a write to an unknown field").
+
+use mara.core
+
+main :: fun() {
+	x : [3!]i64
+	x.len = 2
+	print(x.len)
+}
