@@ -1,0 +1,28 @@
+module print_zero_byte
+
+use mara.core
+
+// A text prints whole, a 0 byte in it too (printf's %.*s stopped at one, so
+// what came after was lost). run.sh shows a 0 byte as @.
+
+//@ expect-output: [a@b] 3
+//@ expect-output: Named { name: x@y, n: 1 }
+//@ expect-output: after: ok
+
+Named :: struct {
+	name: str64
+	n: i64
+}
+
+main :: fun() {
+	t : str64
+	&t ++ 'a'
+	&t ++ utf8(0)
+	&t ++ 'b'
+	print("[%] %", t, t.len)
+	s := Named{name = "x", n = 1}
+	&s.name ++ utf8(0)
+	&s.name ++ 'y'
+	print(s)
+	print("after: ok")
+}

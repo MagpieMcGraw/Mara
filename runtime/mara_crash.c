@@ -104,6 +104,19 @@ int __mara_tee_printf(const char* fmt, ...) {
     return written;
 }
 
+// A text's n bytes printed whole (printf's %.*s stops at a 0 byte); with tee,
+// mirrored into the open entry as __mara_tee_printf does.
+void __mara_print_text(const char* s, long long n, int tee) {
+    if (n <= 0) return;
+    if (tee && mara_entry_active && mara_entry_len < sizeof mara_entry) {
+        size_t k = sizeof mara_entry - mara_entry_len;
+        if ((size_t)n < k) k = (size_t)n;
+        memcpy(mara_entry + mara_entry_len, s, k);
+        mara_entry_len += k;
+    }
+    fwrite(s, 1, (size_t)n, stdout);
+}
+
 // One-shot append: the whole entry in a single OS-level end-of-file write.
 static void mara_append_entry(const char* path) {
 #ifdef _WIN32

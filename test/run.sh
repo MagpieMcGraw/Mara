@@ -96,7 +96,7 @@ check_file() {  # f
       if echo "$out" | grep -qF -- "$want"; then verdict "$name" bad "UNWANTED WARNING: $name (\"$want\")"; return; fi
     done < <(sed -nE 's#.*//@ expect-no-warning:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
     if grep -qE '//@ expect-output:' "$f"; then
-      run=$(timeout 10 "./$name$EXE" 2>&1); rc=$?
+      run=$(timeout 10 "./$name$EXE" 2>&1 | tr '\000' '@'; exit "${PIPESTATUS[0]}"); rc=$?   # (a 0 byte shows as @)
       want_rc=$(sed -nE 's#.*//@ expect-exit:[[:space:]]*([0-9]+).*#\1#p' "$f" | head -1)
       missing=""
       while IFS= read -r want; do

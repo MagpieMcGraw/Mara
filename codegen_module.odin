@@ -862,6 +862,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         // into every native build (see ensure_crash_runtime in main.odin).
         strings.write_string(&b, "declare void @__mara_crash_begin()\n")
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
+        strings.write_string(&b, "declare void @__mara_print_text(ptr, i64, i32)\n")
         strings.write_string(&b, "declare void @__mara_crash_end()\n")
         strings.write_string(&b, "declare void @__mara_crash_install()\n")
         // An err's trace, runtime/mara_err.c: linked into every native build.

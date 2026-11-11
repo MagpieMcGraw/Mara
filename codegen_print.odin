@@ -361,9 +361,14 @@ raw_print :: proc(name: string) -> (spec: string, ir: Ir_Type, ok: bool) {
     return
 }
 
-// Text of `n` bytes (at slice header width) at `data`, printed: bounded, so
-// it needs no terminating 0. (`%.*s` takes an int: n, narrowed.)
+// Text of `n` bytes (at slice header width) at `data`, printed whole, 0 bytes
+// too: by runtime/mara_crash.c's fwrite, teed in a fail block. (Web links no
+// runtime: printf's `%.*s` there, which stops at a 0; it takes an int, n narrowed.)
 emit_print_text :: proc(g: ^Codegen, data, n: Val) {
+    if !g.web {
+        ir_call(g, {}, IR_VOID, ir_global("__mara_print_text"), {IR_PTR, data, {}}, {SLICE_LEN_IR, n, {}}, {IR_I32, ir_int(int(g.tee)), {}})
+        return
+    }
     prec := fresh_tmp(g)
     ir_cast(g, prec, .Trunc, SLICE_LEN_IR, n, IR_I32)
     emit_printf(g, "%.*s", {IR_I32, prec, {}}, {IR_PTR, data, {}})
