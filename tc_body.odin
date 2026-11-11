@@ -40,7 +40,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
         tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
-        tc_scope(k, v.body, top = true)
+        tc_scope(k, v.body)
     }
     // (A struct: what its top block declared, its layout.)
     if ts.kind == .Struct { tc_layout(k, sc) }
@@ -93,14 +93,10 @@ tc_layout :: proc(k: ^TC, sc: ^TC_Scope) {
     }
 }
 
-// A block's statements: each checked whole before the next. `top`: a body's
-// own block.
-tc_scope :: proc(k: ^TC, stmts: []Tree_Id, top := false) {
+// A block's statements: each checked whole before the next.
+tc_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     t := k.t
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
-    outer_top := k.top
-    k.top = top
-    defer k.top = outer_top
     // (Its declarations, for the stack's size guard at its end.)
     saved := k.decls
     decls := make([dynamic]TC_Decl_Note, virtual.arena_allocator(k.blocks))   // (scratch: the check's)

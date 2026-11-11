@@ -36,9 +36,9 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
     // (A module's: checked outside any body, wherever its first use is.)
-    outer_body, outer_top := k.body, k.top
-    if !kc.local { k.body, k.top = nil, false }
-    defer k.body, k.top = outer_body, outer_top
+    outer_body := k.body
+    if !kc.local { k.body = nil }
+    defer k.body = outer_body
     append(&k.annot.bodies, Annot_Body{nil, tc_instance(k, kc.value), tree_lo(k.t, kc.value), kc.value})
     t := k.t
     span := tree_span(t, kc.def)

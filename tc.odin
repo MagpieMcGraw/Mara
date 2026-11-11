@@ -89,7 +89,6 @@ TC :: struct {
     // definition's type, a variable's in the body being checked, a template's
     // in the instance being checked — by the token that declares it.
     rs:            ^Resolver,
-    top:           bool,                // a body's own block being checked (not a nested one's): tc_scope
     in_defer:      bool,                // a defer's block being checked (its body's)
     allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
     main_allocators: [dynamic]Tree_Id,  // the `#allocator`s among main's own statements (tc_scan_allocator): there, one is the program's
