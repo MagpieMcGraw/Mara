@@ -1,0 +1,14 @@
+module block_defs_scope_neg
+//@ expect-fail: undefined identifier 'Step'
+
+// A block's definition is in sight in its block alone: not after it.
+
+use mara.core
+
+main :: fun() {
+	for i in 0:2 {
+		Step :: 10
+		print(i * Step)
+	}
+	print(Step)
+}

@@ -31,7 +31,7 @@ tc_template_owner :: proc(k: ^TC, tmpl: TC_Template) -> ^Type_Scope {
 // is named for its owner too (`main_twice__i64`), as its plain funs are.
 tc_instance_name :: proc(k: ^TC, tmpl: TC_Template, name: string, type_args: []Type) -> string {
     if tmpl.owner != nil {
-        return mangle_generic_name(fmt.tprintf("%s_%s", tmpl.owner.name, tc_name(k, tmpl.def)), type_args)
+        return mangle_generic_name(fmt.tprintf("%s_%s", tmpl.owner.name, tc_def_name(k, tmpl.def)), type_args)
     }
     return mangle_generic_name(name, type_args)
 }

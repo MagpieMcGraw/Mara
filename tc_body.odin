@@ -77,8 +77,8 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
     }
     for s in stmts {
         if t.tag[s] == .Define {
-            // (A body's definitions are registered and checked with it.)
-            if !top { tc_unsupported(k, s, "a definition in a block") }
+            // (A body's definitions, its blocks' too, are registered and checked
+            // with it: tc_body_defs.)
             continue
         }
         if t.tag[s] == .Using && fields_of != nil {

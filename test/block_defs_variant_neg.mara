@@ -1,0 +1,15 @@
+module block_defs_variant_neg
+//@ expect-fail: undefined identifier 'big'
+
+// An enum defined in a block: its variants are in sight in that block alone.
+
+use mara.core
+
+main :: fun() {
+	on := true
+	if on {
+		Kind :: union { small  big }
+		print(small)
+	}
+	print(big)
+}

@@ -71,6 +71,7 @@ TC :: struct {
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
+    block_defs:    map[Tree_Id]TC_Block_Def,   // each definition in a body's block (an if's, a loop's): tc_body_defs
     // Lists that stay empty (tc_list_use): each list's declaration, by its
     // token; the node about to be checked as a use that can't change it (an
     // index's base — list_at — or a `.len`'s, a loop's, an argument: list_ok); each
@@ -718,7 +719,7 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = ni
     name := tc_name(k, def)
     span := tree_span(k.t, def)
     alias := k.t.tag[node] == .Alias_Def
-    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
+    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, tc_def_name(k, def))
     if flat in k.table.distinct_types {
         tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)
         return

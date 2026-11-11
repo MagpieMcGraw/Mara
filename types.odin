@@ -561,6 +561,7 @@ Type_Enum :: struct {
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
     owner:         ^Type_Scope,   // the fun or struct whose body defines it; nil: its module's
+    sight_lo, sight_hi: Token_Id, // a block's (an if's, a loop's, in its owner's body): the block's tokens; 0: the whole body
     zero_name:     string,        // its variant written `= 0` — what from_text gives for no name; "": none
     aliased:       [dynamic]Enum_Alias,   // where `A :: alias E` names it: its variants in sight there too
 }
@@ -569,6 +570,7 @@ Type_Enum :: struct {
 Enum_Alias :: struct {
     home:  string,
     owner: ^Type_Scope,
+    lo, hi: Token_Id,   // a block's: its tokens (Type_Enum.sight_lo)
 }
 
 Type_Union :: struct {

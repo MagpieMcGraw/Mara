@@ -82,7 +82,8 @@ module_short_name :: proc(module: string) -> string {
 // table takes; bound in its owner's body once checked.
 tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     name := tc_name(k, def)
-    mangled := strings.concatenate({sc.ts.name, "_", name})
+    filed := tc_def_name(k, def)
+    mangled := strings.concatenate({sc.ts.name, "_", filed})
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, mangled = mangled, pkg = k.pkg, local = true})
     kc.sid = tc_sid(k, value)
     k.const_at[k.t.main[def]] = kc
@@ -91,7 +92,7 @@ tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     // (A use in its owner's methods finds it through its owner: its scope's.)
     owner := sc.ts
     if owner not_in k.scope_consts { k.scope_consts[owner] = make(map[string]^TC_Const) }
-    (&k.scope_consts[owner])[name] = kc
+    (&k.scope_consts[owner])[filed] = kc
 }
 
 // A body's constants, checked before its code — each a member of its owner
@@ -100,7 +101,7 @@ tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope) {
     for kc in sc.consts {
         tc_check_const(k, kc)
         tc_scope_bind(k, sc.ts, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
-        tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const})
+        if kc.def not_in k.block_defs { tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const}) }   // (a block's: no member)
     }
 }
 

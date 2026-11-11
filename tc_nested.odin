@@ -8,6 +8,54 @@ import "core:fmt"
 // struct's names; no body sees another's locals), and a fun or struct
 // checked as its own body.
 
+// A definition in a block of a body — an if's, a loop's, a match arm's, a
+// defer's: which of its body's it is (1, 2, …), and its block's tokens.
+// It is its body's definition like any other, checked with it; in sight in
+// its block alone (the resolver's), and no member of its body's owner.
+TC_Block_Def :: struct {
+    n:      int,
+    lo, hi: Token_Id,
+}
+
+// A body's definitions: its own statements', then its blocks' (each noted:
+// k.block_defs). Not those of the funs and structs it defines: theirs.
+tc_body_defs :: proc(k: ^TC, stmts: []Tree_Id, out: ^[dynamic]Tree_Id, count: ^int, block := false) {
+    t := k.t
+    live := tc_live(k, stmts)
+    for s in live {
+        #partial switch t.tag[s] {
+        case .Define:
+            append(out, s)
+            if block && s not_in k.block_defs {
+                count^ += 1
+                k.block_defs[s] = {count^, t.first[live[0]], t.end[live[len(live) - 1]]}
+            }
+        case .If, .Elif:
+            v := if_view(t, s)
+            tc_body_defs(k, v.then, out, count, true)
+            tc_body_defs(k, v.else_, out, count, true)
+        case .For_Range, .For_Each, .For_C:
+            tc_body_defs(k, for_view(t, s).body, out, count, true)
+        case .For_Cond:
+            tc_body_defs(k, tree_list(t, t.b[s]), out, count, true)
+        case .Defer:
+            tc_body_defs(k, tree_list(t, t.a[s]), out, count, true)
+        case .Match:
+            for arm in tree_list(t, t.b[s]) {
+                tc_body_defs(k, tree_list(t, t.b[arm] if t.tag[arm] == .Arm_Value else t.a[arm]), out, count, true)
+            }
+        }
+    }
+}
+
+// A definition's name as its owner files it: as written; a block's, with
+// its number (`Input__2`) — two blocks' of one name are two.
+tc_def_name :: proc(k: ^TC, def: Tree_Id) -> string {
+    name := tc_name(k, def)
+    if bd, in_block := k.block_defs[def]; in_block { return fmt.aprintf("%s__%d", name, bd.n) }
+    return name
+}
+
 // A body's definitions, registered (once): each fun's and struct's type made
 // and its signature resolved.
 tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
@@ -19,8 +67,10 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)
-    for s in tc_live(k, scope_view(t, sc.node).body) {
-        if t.tag[s] != .Define { continue }
+    defs := make([dynamic]Tree_Id, context.temp_allocator)
+    count := 0
+    tc_body_defs(k, scope_view(t, sc.node).body, &defs, &count)
+    for s in defs {
         value := Tree_Id(t.b[s])
         if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {
             tc_register_nested(k, s, value, owner, owner_i)
@@ -64,6 +114,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
 tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_i: int) {
     t := k.t
     name := tc_name(k, def)
+    filed := tc_def_name(k, def)
     span := tree_span(t, def)
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
@@ -74,7 +125,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
         // (A struct's: found by a value's method call, as its plain funs are.)
         if owner.kind == .Struct && !is_struct {
             if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
-            (&k.generic_methods[owner])[name] = t.main[def]
+            (&k.generic_methods[owner])[filed] = t.main[def]
         }
         return
     }
@@ -82,7 +133,7 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
         tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name)
         return
     }
-    mangled := fmt.aprintf("%s_%s", owner.name, name)
+    mangled := fmt.aprintf("%s_%s", owner.name, filed)
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = mangled, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
@@ -93,13 +144,13 @@ tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner
     callable := !is_struct || len(v.params) > 0
     if is_struct {
         if callable { k.table.funs[mangled] = ts } else { k.table.structs[mangled] = ts }
-        tc_scope_bind(k, owner, name, ts, {ts.decl, .Type})
+        tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type})
     }
     // (Its mangled name the module's, where codegen and a qualified use find it.)
     tc_bound_set(k, ts.decl, ts)
     if callable {
         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
-        owner.functions[name] = ts
+        owner.functions[filed] = ts
     }
     k.scope_of[ts] = len(k.scopes)
     append(&k.scopes[owner_i].nested, len(k.scopes))

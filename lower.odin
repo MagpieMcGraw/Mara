@@ -261,7 +261,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
     f := graph_body_begin(b, ts, span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
-    if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil, top = true) }
+    if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil) }
     return graph_body_end(b, f)
 }
 
@@ -418,19 +418,17 @@ lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
 }
 
 // A block's statements (tc_scope).
-lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := false) {
+lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil) {
     t := k.t
     b := k.gb
     stmts := tc_live(k, stmts)
     for s in stmts {
         if t.tag[s] == .Define {
-            if top {
-                graph_build_def(b, tc_graph_decl(k, s))
-                // (A union's variants with bodies: placed as a module's are.)
-                variants := make([dynamic]Graph_Decl, context.temp_allocator)
-                tc_variant_graph_decls(k, s, &variants)
-                for d in variants { graph_build_def(b, d) }
-            }
+            graph_build_def(b, tc_graph_decl(k, s))
+            // (A union's variants with bodies: placed as a module's are.)
+            variants := make([dynamic]Graph_Decl, context.temp_allocator)
+            tc_variant_graph_decls(k, s, &variants)
+            for d in variants { graph_build_def(b, d) }
             continue
         }
         span := tree_span(t, s)

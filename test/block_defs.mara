@@ -1,0 +1,108 @@
+module block_defs
+
+//@ expect-output: loop 0 Kind.small 10
+//@ expect-output: loop 1 Kind.big 20
+//@ expect-output: then Kind.round 7
+//@ expect-output: else Kind.flat 3 hi
+//@ expect-output: arm Rect { w: 3 } 6
+//@ expect-output: while 9 2.5
+//@ expect-output: twice 8 3
+//@ expect-output: deferred 5
+//@ expect-output: Mode.held
+
+// Definitions in a block — an if's, a loop's, a match arm's, a defer's — work
+// as a body's do: a constant, a fun, a struct, an enum, a union with fields,
+// an alias, a distinct type, a generic, a dispatch group. Each is in sight in
+// its block alone, from the block's first line: two blocks' definitions of
+// one name are two, and so are their variants. They used to be "a definition
+// in a block is not supported yet".
+
+use mara.core
+
+Mode :: union { held  pressed }
+Keys :: struct { up: bool  down: bool }
+
+main :: fun() {
+	for i in 0:2 {
+		print("loop", i, pick(i), scale(i))   // (used before they are written, as in a body)
+		Kind :: union { small  big }
+		Step :: 10
+		pick :: fun(n: i64) -> Kind {
+			if n == 0 do return small
+			return big
+		}
+		scale :: fun(n: i64) -> i64 { return (n + 1) * Step }
+	}
+
+	on := true
+	if on {
+		Kind :: union { round  square }
+		Size :: 7
+		k := round
+		print("then", k, Size)
+	else
+		print("never")
+	}
+	if not on {
+		print("never")
+	else
+		Kind :: union { flat  round }
+		Size :: 3
+		Name :: alias [16]utf8
+		n : Name
+		&n ++ "hi"
+		k := flat
+		print("else", k, Size, n)
+	}
+
+	m := pressed
+	match m {
+	pressed
+		Shape :: union {
+			Rect { w: i64 }
+			Dot
+		}
+		Pair :: struct { a: i64  b: i64 }
+		s : Shape = Rect{w = 3}
+		p := Pair{2, 4}
+		print("arm", s, p.a + p.b)
+	else
+		print("never")
+	}
+
+	n := 0
+	for n < 1 {
+		Meters :: distinct f64
+		Count :: 9
+		d := Meters(2.5)
+		print("while", Count, d)
+		n += 1
+	}
+
+	for j in 0:1 {
+		twice :: fun(x: $T) -> T { return x + x }
+		ai :: (x: i64) -> i64 { return x + 1 }
+		af :: (x: f64) -> f64 { return x * 2 }
+		bump :: dispatch { ai, af }
+		four : i64 = 4
+		two : i64 = 2
+		print("twice", twice(four), bump(two))
+	}
+
+	defer {
+		Last :: 5
+		print("deferred", Last)
+	}
+
+	// A block inside a block sees the outer one's; an alias of a field's type.
+	for row in 0:1 {
+		Input :: alias Keys.bool
+		if row == 0 {
+			x : Input = Keys.down
+			_ = x
+			State :: alias Mode
+			st : State = held
+			print(st)
+		}
+	}
+}

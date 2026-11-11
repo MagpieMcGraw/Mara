@@ -16,6 +16,8 @@ import "core:strings"
 tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
     t := k.t
     name := tc_name(k, def)
+    filed := tc_def_name(k, def)
+    block := k.block_defs[def]   // (none: zeros — the whole body)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg, owner = owner}
@@ -38,7 +40,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
     }
     has_data := false
     for v in variants { if v.fields { has_data = true } }
-    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, name)
+    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, filed)
     if !has_data {
         if flat in k.table.enums {
             tc_error(k, span, TYPE_ENUM_ALREADY_DEFINED, name)
@@ -47,6 +49,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
         et := new(Type_Enum)
         et.name, et.source_name, et.home_package, et.span = flat, name, k.pkg, span
         et.tag_type, et.is_error_kind, et.owner = h.tag_type, is_error, owner
+        et.sight_lo, et.sight_hi = block.lo, block.hi
         if is_error {
             // (Its set's id, its variants' values its id and their place.)
             k.table.error_set_counter += 1
@@ -70,7 +73,8 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) 
         tc_error(k, span, TYPE_UNION_ALREADY_DEFINED, name)
         return
     }
-    ut := tc_make_union(k, k.pkg, name, span, h, variants[:], owner = owner)
+    ut := tc_make_union(k, k.pkg, filed, span, h, variants[:], owner = owner, shown = name)
+    ut.tag_enum.sight_lo, ut.tag_enum.sight_hi = block.lo, block.hi
     ut.tag_enum.span.at = t.main[node]   // (its tag's enum: declared by its `union`)
     if owner == nil { register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name) }   // (a body's: found in it alone, tc_sees_enum)
     tc_bound_set(k, k.t.main[def], ut)
@@ -157,17 +161,18 @@ tc_union_same_tags :: proc(k: ^TC, variants: []TC_Variant) {
 // body defining it — named for it, as a nested struct is, and seen only
 // there.)
 tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header, variants: []TC_Variant,
-                      subst: TC_Bindings = nil, owner: ^Type_Scope = nil) -> ^Type_Union {
+                      subst: TC_Bindings = nil, owner: ^Type_Scope = nil, shown := "") -> ^Type_Union {
     // (Its flat names' prefix: its module's, a body's owner's.)
     flat :: proc(pkg: string, owner: ^Type_Scope, name: string) -> string {
         return make_flat_name(pkg, name) if owner == nil else strings.concatenate({owner.name, "_", name})
     }
     ut := new(Type_Union)
-    ut.name, ut.source_name, ut.home_package, ut.span = flat(pkg, owner, name), name, pkg, span
+    shown := shown if shown != "" else name   // (as written: a block's is filed with its number)
+    ut.name, ut.source_name, ut.home_package, ut.span = flat(pkg, owner, name), shown, pkg, span
     ut.tag_type, ut.min_size = h.tag_type, h.min_size
     tag_et := new(Type_Enum)
-    tag_et.source_name = strings.concatenate({name, "_Tag"})
-    tag_et.name = flat(pkg, owner, tag_et.source_name)
+    tag_et.source_name = strings.concatenate({shown, "_Tag"})
+    tag_et.name = flat(pkg, owner, strings.concatenate({name, "_Tag"}))
     tag_et.owner = owner
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
@@ -303,16 +308,17 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
 // Whether an enum is in sight where its variant is named by itself: its
 // module's, or a used one's; a body's, only in that body (or one inside it).
 tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
-    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, span: Span) -> bool {
+    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, lo, hi: Token_Id, span: Span) -> bool {
         if !resolve_sees_module(k.rs, span.at, home) { return false }
         if owner == nil { return true }
+        if hi != 0 && (span.at < lo || span.at >= hi) { return false }   // (a block's: in its block alone)
         for b := k.body; b != nil; b = b.parent_scope {
             if b == owner { return true }
         }
         return false
     }
-    if sees(k, et.home_package, et.owner, span) { return true }
-    for a in et.aliased { if sees(k, a.home, a.owner, span) { return true } }
+    if sees(k, et.home_package, et.owner, et.sight_lo, et.sight_hi, span) { return true }
+    for a in et.aliased { if sees(k, a.home, a.owner, a.lo, a.hi, span) { return true } }
     return false
 }
 
@@ -332,8 +338,9 @@ tc_alias_sight :: proc(k: ^TC, s: Tree_Id, owner: ^Type_Scope = nil) {
     case ^Type_Union: et = b.tag_enum
     }
     if et == nil { return }
-    a := Enum_Alias{k.pkg, owner}
-    if (et.home_package == a.home && et.owner == owner) || slice.contains(et.aliased[:], a) { return }
+    block := k.block_defs[s]
+    a := Enum_Alias{k.pkg, owner, block.lo, block.hi}
+    if (et.home_package == a.home && et.owner == owner && et.sight_hi == 0) || slice.contains(et.aliased[:], a) { return }
     append(&et.aliased, a)
 }
 

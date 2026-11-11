@@ -1,0 +1,46 @@
+module block_defs_generic
+//@ expect-output: 3 Fit.fits
+//@ expect-output: 250.5 Fit.wide
+//@ expect-output: 36
+
+// Definitions in the blocks of a generic fun's body and of a struct's fun:
+// each instance has its own; a fun in a block has its own blocks' too.
+
+use mara.core
+
+show :: fun(x: $T) {
+	if size_of(T) == 8 {
+		Fit :: union { fits  wide }
+		Limit :: 100
+		f := wide
+		if x < Limit do f = fits
+		print(x, f)
+	}
+}
+
+P :: struct {
+	n: i64
+	grown :: fun(p: P) -> i64 {
+		if p.n > 3 {
+			Factor :: 3
+			grow :: fun(v: i64) -> i64 {
+				if v > 0 {
+					Same :: 3
+					return v * Factor * Same
+				}
+				return 0
+			}
+			return grow(p.n)
+		}
+		return 0
+	}
+}
+
+main :: fun() {
+	a : i64 = 3
+	b : f64 = 250.5
+	show(a)
+	show(b)
+	p := P{n = 4}
+	print(p.grown())
+}
