@@ -80,9 +80,9 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
 // `x := let(T, s)`, `x : T = slice([:n]T, s)`: the local bound to the
 // memory taken (a `let`'s, no space of its own on the arena); an
 // annotation, the take's type.
-tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
+tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type) {
     span := tree_span(k.t, s)
-    ref := tc_decl_ref(k, target, fields_of)
+    ref := tc_decl_ref(k, target)
     vt := tc_check(k, value)
     if !is_any(ann) && types_incompatible(ann, vt) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(ann))
@@ -91,5 +91,4 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type,
     tc_bind(k, name, final, ref)
     tc_set_type(k, target, final)
     tc_note_decl(k, name, final, span, true)
-    if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
 }

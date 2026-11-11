@@ -4,8 +4,7 @@ package mara
 // name (declared, or written) or a target, in turn — each at its result's
 // type.
 
-tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, ann: Tree_Id,
-                       fields_of: ^Type_Scope = nil) {
+tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, ann: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     names := make([]string, len(targets))
@@ -48,7 +47,7 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
         if returns == nil {
             if is_any(vt) {
                 // (Of no type, reported: its names none either.)
-                for name, i in names { if name != "" { tc_bind(k, name, Type_Error{}, tc_decl_ref(k, targets[i], fields_of)) } }
+                for name, i in names { if name != "" { tc_bind(k, name, Type_Error{}, tc_decl_ref(k, targets[i])) } }
                 return
             }
             tc_broadcast(k, s, targets, value, is_decl)
@@ -78,13 +77,11 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 }
             } else {
                 // (Declarable as a declaration of one name is: tc_declarable.)
-                if !tc_declarable(k, k.t.main[tg], name, span, fields_of != nil) { rt = Type_Error{} }
-                tc_bind(k, name, rt, tc_decl_ref(k, tg, fields_of))
+                if !tc_declarable(k, tc_decl_ref(k, tg), name, span) { rt = Type_Error{} }
+                tc_bind(k, name, rt, tc_decl_ref(k, tg))
                 tc_set_type(k, tg, rt)
-                tc_set_ref(k, tg, tc_decl_ref(k, tg, fields_of))
+                tc_set_ref(k, tg, tc_decl_ref(k, tg))
             }
-            // (A struct's field: its value its slot of the call's.)
-            if fields_of != nil { tc_add_field(fields_of, name, k.t.main[tg], rt, value, i) }
         } else {
             if pname, immutable := tc_write_root_param(k, tg); immutable {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
@@ -104,6 +101,6 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
 tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool) {
     for tg in targets {
         // (A declaration's bare names declared; a place, written.)
-        if is_decl && k.t.tag[tg] == .Ident { tc_decl_one(k, s, tg, value, 0, nil) } else { tc_assign_one(k, s, tg, value) }
+        if is_decl && k.t.tag[tg] == .Ident { tc_decl_one(k, s, tg, value, 0) } else { tc_assign_one(k, s, tg, value) }
     }
 }

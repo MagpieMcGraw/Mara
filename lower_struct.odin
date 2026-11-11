@@ -218,23 +218,21 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     if tr.tag[n] == .Broadcast { ty, entries = 0, slice.clone([]Tree_Id{n}, context.temp_allocator) }
     name := tc_name(k, ty) if ty != 0 && tr.tag[ty] == .Ident else ""
     t := tc_node_type(k, n)
-    fd: ^TC_Field_Default
-    if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     variant := name if ty != 0 && tr.tag[ty] == .Ident && tc_ref(k, ty).kind == .Variant else ""
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)
-    list_fill := fd == nil && to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes: tc_literal)
+    list_fill := to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes: tc_literal)
     // (A named struct or union — `type P`, `distinct U` — built as its base.)
     ts, _ := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
     // (A struct's or a variant's `{all 0}`: every field zero, tc_literal's.)
-    zero := fa == nil && fd == nil && !list_fill && tc_all_zero(k, entries)
+    zero := fa == nil && !list_fill && tc_all_zero(k, entries)
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !list_fill {
+    } else if fa == nil && !list_fill {
         sd = &ts.sd
     }
     d := dest
@@ -243,16 +241,16 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     placed := want != .Into && temp_span != {}
     at := temp_span if into_temp || placed else span
     gl: ^Graph_Literal
-    broadcast := (fa != nil || fd != nil || list_fill) && tc_is_broadcast(k, n)
+    broadcast := (fa != nil || list_fill) && tc_is_broadcast(k, n)
     if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
-    if fa != nil || fd != nil || list_fill {
+    if fa != nil || list_fill {
         if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
     } else {
         // (A literal runs no constructor: its zero, then its entries.)
         gl = graph_build_literal(b, span, name, zero, t, d)
     }
     if gl == nil && !broadcast { lw_fail(k, n, "a literal the graph builds no way") }
-    if fd != nil || list_fill {
+    if list_fill {
         lw_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, d)
     } else if fa != nil {
         lw_array_entries(k, n, entries, t, gl, d, broadcast)

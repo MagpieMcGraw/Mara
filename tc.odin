@@ -67,7 +67,6 @@ TC :: struct {
     body:          ^Type_Scope,       // the fun or struct whose body is being checked: what its bindings are variables of
     vars:          [dynamic]Var_Decl, // ... the variables it has bound so far (Annotations.vars once it is done)
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
-    field_default: TC_Field_Default,  // the struct field whose value is being checked
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)

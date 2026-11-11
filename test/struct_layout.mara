@@ -1,0 +1,49 @@
+module struct_layout
+
+//@ expect-output: P { a: 0, b: 0, n: 7, half: 3.5, name: hi, xs: [1, 2], grid: [5, 5, 5], v: V { x: 0, y: 0 }, q: 2, r: 1, w: 9 }
+//@ expect-output: 2 9 7
+//@ expect-output: Q { pos: V { x: 1, y: 2 }, big: true } 1 2
+
+// A struct's layout is what its constructor's top block declares, each name
+// a field of the type its declaration found — checked as a fun's locals are:
+// several names from one value, a call's several results, a literal whose
+// len the body sets (a list), `all v` at the declaration's type, a
+// declaration in a block (no field), a constant, a fun.
+
+use mara.core
+
+V :: struct { x: i64  y: i64 }
+
+divmod :: fun(a: i64, b: i64) -> i64, i64 { return a / b, a % b }
+
+P :: struct {
+	a, b := 0
+	n : i64 = 7
+	half := 3.5
+	name : [8]utf8 = "hi"
+	xs := [1, 2, 3]
+	xs.len = 2
+	grid : [3!]i64 = all 5
+	v : V = all 0
+	q, r := divmod(n, 3)
+	w := 0
+	if n > 3 {
+		extra := 9
+		w = extra
+	}
+	Twice :: 2
+	count :: fun(p: P) -> i64 { return p.xs.len * Twice / 2 }
+}
+
+Q :: struct {
+	using pos: V
+	big := false
+}
+
+main :: fun() {
+	p := P()
+	print(p)
+	print(p.count(), p.w, p.n)
+	q := Q{pos = V{1, 2}, big = true}
+	print(q, q.x, q.y)
+}

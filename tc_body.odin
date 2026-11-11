@@ -5,19 +5,18 @@ import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
 
-// Bodies, checked statement by statement in the order they run: a fun's
-// code; a struct's constructor, whose field declarations are its fields —
-// each typed as its declaration finds, so its fields are known once its
-// body is checked. (The graph is lowered from them once checking is done:
-// lower.odin, which replays each body where TC.events says it was checked.)
+// Bodies, checked statement by statement in the order they run. A struct's
+// is its constructor, a fun's body like any other: once it is checked, the
+// struct takes what its top block declared as its layout (tc_layout). (The
+// graph is lowered from them once checking is done: lower.odin, which
+// replays each body where TC.events says it was checked.)
 
 tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     ts := sc.ts
     v := scope_view(t, sc.node)
     span := tree_span(t, sc.def)
-    is_struct := ts.kind == .Struct
-    if is_struct { ts.sig_state = .In_Progress }
+    ts.sig_state = .In_Progress
     hint := k.hint
     defer k.hint = hint
     outer, outer_vars, outer_defer, outer_loops := k.body, k.vars, k.in_defer, k.loops
@@ -28,40 +27,75 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     }
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
-    if is_struct { tc_early_self(k, v.body) }
-    // (A struct's params its constants may use; its and a fun's constants
-    // checked before its code.)
-    if is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
+    // (Its params and named results — locals: its variables, an intrinsic's
+    // too, though no code of its reads them. Bound before its constants: a
+    // constant may be written with a param that is one, a struct's size.)
+    for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) }
     tc_check_local_consts(k, sc)
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
-    if v.intrinsic != 0 && !is_struct { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
+    if v.intrinsic != 0 { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
     k.annot.decls[tc_sid(k, sc.node)] = ts
     tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
-    // (A fun's definitions are checked before its code; a struct's once its
-    // fields are known: its methods read them.)
-    if !is_struct { tc_check_defs(k, sc) }
-    // (Its params and named results — locals: its variables, an intrinsic's
-    // too, though no code of its reads them.)
-    if !is_struct { for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) } }
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
         tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
-        tc_scope(k, v.body, ts if is_struct else nil, top = true)
+        tc_scope(k, v.body, top = true)
     }
-    if is_struct {
-        // (A field's width its uses left open: settled, as a local's is.)
-        for &fl in ts.fields { fl.type_ = solidify_type(fl.type_) }
-        ts.sig_state = .Resolved
-    }
+    // (A struct: what its top block declared, its layout.)
+    if ts.kind == .Struct { tc_layout(k, sc) }
+    ts.sig_state = .Resolved
     // (A default param's width the body left open: settled.)
     solidify_param_defaults(k.c, ts)
-    if is_struct { tc_check_defs(k, sc) }
+    // (Its definitions' bodies, after its own: a struct's methods read its
+    // layout.)
+    tc_check_defs(k, sc)
 }
 
-// A block's statements: each checked whole before the next. `fields_of`: the
-// struct whose top block it is (its declarations are its fields).
-tc_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := false) {
+// A struct's layout: what its constructor's top block declared, in order —
+// each name a field of the type its declaration found (`_` names none; one
+// that failed, none). `using f: T` marks its field: T's own fields are
+// reached as the struct's.
+tc_layout :: proc(k: ^TC, sc: ^TC_Scope) {
+    t := k.t
+    ts := sc.ts
+    body := scope_view(t, sc.node).body
+    tc_early_self(k, body)
+    for s in tc_live(k, body) {
+        d, using_ := s, false
+        if t.tag[s] == .Using { d, using_ = Tree_Id(t.a[s]), true }
+        if t.tag[d] != .Decl { continue }
+        v := decl_view(t, d)
+        // (Several names from one call: each its slot of the call's results.)
+        several := len(v.targets) > 1 && len(v.values) == 1 && tc_call_returns(k, v.values[0]) != nil
+        for tg, i in v.targets {
+            if t.tag[tg] != .Ident { continue }
+            name := tc_name(k, tg)
+            if name == "_" || name in ts.field_map { continue }
+            ft, bound := tc_bound(k, t.main[tg])
+            if !bound || ft == nil { continue }
+            if _, failed := ft.(Type_Error); failed { continue }
+            value: Tree_Id
+            if len(v.values) == 1 { value = v.values[0] } else if i < len(v.values) { value = v.values[i] }
+            // (`x : T = void`: no default — the field starts unset.)
+            if value != 0 && tc_is_void(k, value) && !tc_is_pointer(ft) && !void_is_value(ft) { value = 0 }
+            // (A width its uses left open: settled, as a local's is.)
+            append(&ts.fields, Struct_Type_Field{name = name, decl = t.main[tg], type_ = solidify_type(ft), default_node = value,
+                                                 default_slot = i if several else nil, is_using = using_})
+            build_field_map(&ts.sd)
+            if !using_ { continue }
+            f := ts.fields[len(ts.fields) - 1]
+            if _, is_array := f.type_.(^Type_Fixed_Array); is_array { continue }
+            sd := as_scope_body(f.type_)
+            if sd != nil { tc_struct_ensure(k, sd_type_scope(sd)) }   // (its fields known)
+            if sd == nil || len(sd.fields) == 0 { tc_error(k, tree_span(t, sc.def), TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, f.name) }
+        }
+    }
+}
+
+// A block's statements: each checked whole before the next. `top`: a body's
+// own block.
+tc_scope :: proc(k: ^TC, stmts: []Tree_Id, top := false) {
     t := k.t
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
     outer_top := k.top
@@ -81,13 +115,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil, top := 
             // with it: tc_body_defs.)
             continue
         }
-        if t.tag[s] == .Using && fields_of != nil {
-            tc_using(k, s, fields_of)
-        } else if t.tag[s] == .Decl && fields_of != nil {
-            tc_decl(k, s, fields_of)
-        } else {
-            tc_stmt(k, s)
-        }
+        tc_stmt(k, s)
     }
 }
 
@@ -115,6 +143,10 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         }
     case .Decl:
         tc_decl(k, s)
+    case .Using:
+        // (`using f: T`: f's declaration. What `using` says is its layout's:
+        // tc_layout.)
+        if d := Tree_Id(t.a[s]); t.tag[d] == .Decl { tc_decl(k, d) } else { tc_unsupported(k, s, "this `using`") }
     case .Assign:
         tc_assign(k, s)
     case .Return:
@@ -180,16 +212,15 @@ tc_defer_on_failure :: proc(k: ^TC, s: Tree_Id) {
 }
 
 // `x := v`, `x : T = v`, `x : T`: its type the annotation's, else the
-// value's. In a struct's top block (`fields_of`), a field: typed as its
-// annotation, else as its value.
-tc_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
+// value's.
+tc_decl :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
     if len(v.targets) > 1 && len(v.values) == 1 {
         // (Several from one value: its results — bare names declared, places
         // stored.)
-        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, fields_of)
+        tc_destructure(k, s, v.targets, v.values[0], true, v.type_)
         return
     }
     for tg in v.targets {
@@ -202,22 +233,13 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
         tc_unsupported(k, s, "this declaration")
         return
     }
-    // (Several names, each its own declaration — a struct's fields made
-    // first, together: annotated, typed as they are made.)
-    if len(v.targets) > 1 && fields_of != nil && v.type_ != 0 {
-        ft := tc_type(k, v.type_, span)
-        for tg, i in v.targets {
-            if tc_name(k, tg) == "_" { continue }   // (no field)
-            tc_add_field(fields_of, tc_name(k, tg), k.t.main[tg], ft, v.values[i] if i < len(v.values) else 0)
-        }
-    }
     for tg, i in v.targets {
-        tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, fields_of)
+        tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_)
     }
 }
 
 // One name's declaration.
-tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Type_Scope) {
+tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     name := tc_name(k, target)
@@ -228,15 +250,15 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         if value != 0 { tc_check(k, value) }
         return
     }
-    ref := tc_decl_ref(k, target, fields_of)
+    ref := tc_decl_ref(k, target)
     tc_set_ref(k, target, ref)
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, span) }
-    if !tc_declarable(k, ref.decl, name, span, fields_of != nil) {
+    if !tc_declarable(k, ref, name, span) {
         tc_bound_set(k, ref.decl, Type_Error{})   // (its uses aren't reported again)
         return
     }
-    if fields_of == nil && ann_node != 0 && ck_decl_fits(k, ann, value) {   // (the lean core's: ck.odin)
+    if ann_node != 0 && ck_decl_fits(k, ann, value) {   // (the lean core's: ck.odin)
         ck_decl(k, s, target, value, name, ann, ref)
         return
     }
@@ -253,16 +275,15 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         return
     }
     if form == .Void {
-        tc_decl_void(k, s, target, value, name, ann, fields_of)
+        tc_decl_void(k, s, target, value, name, ann)
         return
     }
-    if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ref.decl, ann, value) }
     #partial switch form {
     case .Take:
-        tc_decl_take(k, s, target, value, name, ann, fields_of)
+        tc_decl_take(k, s, target, value, name, ann)
         return
     case .Shape:
-        tc_decl_shape(k, s, target, name, ann, bindings, fields_of)
+        tc_decl_shape(k, s, target, name, ann, bindings)
         return
     case .Bare:
         tc_decl_bare(k, target, name, ref, ann, span)
@@ -270,18 +291,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     }
     k.hint = ann
     errors_before := k.c.errors
-    // (A struct's field: its `all v` is its field's.)
-    saved_field := k.field_default
-    k.field_default = {}
-    if fields_of != nil {
-        sc := k.scopes[k.scope_of[fields_of]]
-        k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
-    }
     // (One name for a call's several results: said below. A `?`'s, by it.)
     if tc_is_call(k, tc_unparen(k, value)) { k.several_ok = tc_unparen(k, value) }
     vt := tc_check(k, value)
     k.several_ok = 0
-    k.field_default = saved_field
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
         tc_bind(k, name, Type_Error{}, ref)
         return
@@ -316,7 +329,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
         }
         tc_value_at(k, value, vt, ann, span)
         final = ann
-    } else if existing, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); shadowed {
+    } else if existing, shadowed := tc_declared_before(k, ref); shadowed {
         // (Reported as a shadow: checked as the write it reads as.)
         tc_check_write(k, value, vt, existing, name, span)
         return
@@ -333,7 +346,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     } else {
         final = solidify_type(vt)
         // (`x := [a, b, c]` whose len its fun sets: a list, as `x : [3]T = …` is.)
-        if fa, is_fixed := final.(^Type_Fixed_Array); is_fixed && fa.index_type == nil && fields_of == nil && tc_literal_grows(k, ref.decl, value) {
+        if fa, is_fixed := final.(^Type_Fixed_Array); is_fixed && fa.index_type == nil && tc_literal_grows(k, ref.decl, value) {
             final = type_partial_array(fa.size, fa.elem)
             tc_value_at(k, value, vt, final, span)
         }
@@ -346,7 +359,6 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     tc_set_type(k, target, final)   // (the name declared: its type)
     tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
-    if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, ref.decl, final, value) }
 }
 
 // Whether `x := [a, b, …]` (decl: x; value: the literal) is a list: its fun
@@ -356,7 +368,7 @@ tc_literal_grows :: proc(k: ^TC, decl: Token_Id, value: Tree_Id) -> bool {
     tr := k.t
     if tr.tag[tc_unparen(k, value)] != .Array || k.body == nil { return false }
     i, ok := k.scope_of[k.body]
-    if !ok || tr.tag[k.scopes[i].node] != .Fun_Def { return false }
+    if !ok { return false }
     names_x :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
         n := tc_unparen(k, n)
         return k.t.tag[n] == .Ident && k.rs.refs[n].decl == decl
@@ -402,10 +414,11 @@ tc_decl_form :: proc(k: ^TC, value, ann_node: Tree_Id, ann: Type) -> (form: Decl
     return
 }
 
-// What a declaration's name declares: its own token — a struct's field in
-// its top block, else a local.
-tc_decl_ref :: proc(k: ^TC, target: Tree_Id, fields_of: ^Type_Scope) -> Ref {
-    return {k.t.main[target], .Field if fields_of != nil else .Local}
+// What a declaration's name declares: its own token, as the resolver found
+// it — a local; in a struct's top block, a field.
+tc_decl_ref :: proc(k: ^TC, target: Tree_Id) -> Ref {
+    if ref := k.rs.refs[target]; ref.kind == .Field && ref.decl == k.t.main[target] { return ref }
+    return {k.t.main[target], .Local}
 }
 
 // Whether a name can be declared here (tok: the token that declares it):
@@ -414,11 +427,11 @@ tc_decl_ref :: proc(k: ^TC, target: Tree_Id, fields_of: ^Type_Scope) -> Ref {
 // an enclosing local is reported, and declares.) A param's name is taken
 // too: params and what the body declares are one name space, so a field or
 // a local named as a param would be ambiguous.
-tc_declarable :: proc(k: ^TC, tok: Token_Id, name: string, span: Span, field: bool) -> bool {
-    c := k.rs.clashes[tok] or_else {}
+tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
+    c := k.rs.clashes[ref.decl] or_else {}
     if c.taken {
         if c.param && k.body != nil {
-            tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "field" if field else "variable")
+            tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "field" if ref.kind == .Field else "variable")
         } else {
             tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
         }
@@ -476,19 +489,12 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
 }
 
 
-// A struct's field, as its declaration finds it.
-tc_add_field :: proc(ts: ^Type_Scope, name: string, decl: Token_Id, t: Type, value: Tree_Id, slot: Maybe(int) = nil) {
-    if name in ts.field_map { return }   // (added with the others declared with it)
-    append(&ts.fields, Struct_Type_Field{name = name, decl = decl, type_ = t, default_node = value, default_slot = slot})
-    build_field_map(&ts.sd)
-}
-
 // A name already declared where a declaration (tok) would declare it, below
-// the module — the resolver's: what it means. (A field's: in its struct's
-// top block only, where it's taken — refused, so never here.)
-tc_declared_before :: proc(k: ^TC, tok: Token_Id, in_struct: bool) -> (Type, bool) {
-    if in_struct { return nil, false }
-    c := k.rs.clashes[tok] or_else {}
+// the module — the resolver's: what it means. (A field's name is its
+// struct's own: none.)
+tc_declared_before :: proc(k: ^TC, ref: Ref) -> (Type, bool) {
+    if ref.kind == .Field { return nil, false }
+    c := k.rs.clashes[ref.decl] or_else {}
     if c.before == 0 { return nil, false }
     return tc_bound(k, c.before)
 }
@@ -990,7 +996,7 @@ tc_loop_over_type :: proc(k: ^TC, v: For_View, t: Type, span: Span) {
 // same.
 tc_loop_name :: proc(k: ^TC, tok: Token_Id) {
     if tok == 0 || tc_text(tok) == "_" { return }
-    _ = tc_declarable(k, tok, tc_text(tok), Span{at = tok, tok = tok, end = tok + 1}, false)
+    _ = tc_declarable(k, {tok, .Local}, tc_text(tok), Span{at = tok, tok = tok, end = tok + 1})
 }
 
 // `for &item in xs`: the loop's name a pointer to each item where it is
@@ -1286,17 +1292,16 @@ tc_is_pointer :: proc(t: Type) -> bool {
 
 // `x : T = void`: declared uninitialized (no construction, no stores) —
 // the value where it is written void. Unannotated, there is no type.
-tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
+tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type) {
     span := tree_span(k.t, s)
-    ref := tc_decl_ref(k, target, fields_of)
+    ref := tc_decl_ref(k, target)
     if is_any(ann) {
-        if _, shadowed := tc_declared_before(k, ref.decl, fields_of != nil); !shadowed {
+        if _, shadowed := tc_declared_before(k, ref); !shadowed {
             tc_error(k, span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, name, name)
             tc_bind(k, name, Type_Error{}, ref)
         }
         return
     }
-    if fields_of != nil { tc_add_field(fields_of, name, ref.decl, ann, 0) }
     tc_bind(k, name, ann, ref)
     tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
@@ -1570,32 +1575,6 @@ tc_has_self :: proc(k: ^TC, n: Tree_Id) -> bool {
     return false
 }
 
-// `using f: T`: a struct's field whose own fields are reached as its
-// struct's — T a struct with fields, or a fixed array (its swizzles); said
-// at the struct when it is neither.
-tc_using :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope) {
-    t := k.t
-    d := Tree_Id(t.a[s])
-    if t.tag[d] != .Decl {
-        tc_unsupported(k, s, "this `using`")
-        return
-    }
-    tc_decl(k, d, fields_of)
-    at := tree_span(t, k.scopes[k.scope_of[fields_of]].def)
-    for tg in decl_view(t, d).targets {
-        i, has := fields_of.field_map[tc_name(k, tg)]
-        if !has { continue }
-        f := &fields_of.fields[i]
-        f.is_using = true
-        if _, is_array := f.type_.(^Type_Fixed_Array); is_array { continue }
-        sd := as_scope_body(f.type_)
-        if sd != nil { tc_struct_ensure(k, sd_type_scope(sd)) }   // (its fields known)
-        if sd == nil || len(sd.fields) == 0 {
-            tc_error(k, at, TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, f.name)
-        }
-    }
-}
-
 // The shape shortcut: `h : Holder(Box(5))`, a shape's argument a
 // constructor's call, means `h : Holder(Box) = {inner = Box(5)}` — each field
 // of the shape's type given that call. Its bindings (none: no shortcut).
@@ -1627,9 +1606,9 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
 
 // A declaration by the shape shortcut: its struct's literal, each field the
 // shape's call.
-tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {
+tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding) {
     span := tree_span(k.t, s)
-    ref := tc_decl_ref(k, target, fields_of)
+    ref := tc_decl_ref(k, target)
     // (Its literal built from the shape: no constructor run, as a bare
     // declaration runs none.)
     k.hint = ann

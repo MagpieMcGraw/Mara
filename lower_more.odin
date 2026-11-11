@@ -299,13 +299,14 @@ lw_arg_type :: proc(k: ^TC, a: Tree_Id) -> Type {
 
 // `x : T = void` (tc_decl_void): declared uninitialized — a field's, its
 // void written.
-lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
+lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type) {
     b := k.gb
     span := tree_span(k.t, s)
-    decl := lw_field_decl(k, fields_of, name, target, span)
-    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
+    decl := lw_field_decl(k, name, target, span)
+    field := decl != NO_NODE
+    if !field { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
     graph_build_typed(b, decl, ann)
-    if fields_of != nil {
+    if field {
         val := graph_build_void(b, ann, tree_span(k.t, value))
         graph_build_write_at(b, graph_var(b, decl, ann, span), val, span)
         return
@@ -430,10 +431,10 @@ lw_tuple_default :: proc(k: ^TC, src: Tree_Id, slot: int, w: Written) -> Built {
 
 // A declaration by the shape shortcut (tc_decl_shape): its local (a struct's
 // field), then its literal built into it.
-lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, fields_of: ^Type_Scope) {
+lw_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding) {
     b := k.gb
     span := tree_span(k.t, s)
-    decl := lw_field_decl(k, fields_of, name, target, span)
+    decl := lw_field_decl(k, name, target, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
     // (Its construction is the name's, as the checker annotates it.)
     at := lw_at(k, target)

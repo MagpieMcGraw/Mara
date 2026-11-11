@@ -68,7 +68,6 @@ lw_worker :: proc(k: ^TC, p: ^Graph_Program) -> ^TC {
     w.gb = graph_builder_new(p)
     w.lowering = true
     w.lower = {}
-    w.field_default = {}
     return w
 }
 
@@ -244,7 +243,8 @@ lw_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Build_Wan
 }
 
 // A fun's or a struct's body (tc_scope_body): its code, statement by
-// statement — a struct's top block's declarations its fields.
+// statement. (What a struct's top block declares is built as its fields:
+// lw_field_decl.)
 lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     b := k.gb
     t := k.t
@@ -261,7 +261,7 @@ lw_body :: proc(k: ^TC, sc: ^TC_Scope) -> ^Program_Graph {
     returned := lw_returned_local(k, ts, v.body) if b.arena && v.intrinsic == 0 else 0
     holds := v.intrinsic == 0 && !is_struct && lw_scope_arena(k, v.body, returned)
     f := graph_body_begin(b, ts, span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit, returned, holds)
-    if v.intrinsic == 0 { lw_scope(k, v.body, ts if is_struct else nil) }
+    if v.intrinsic == 0 { lw_scope(k, v.body) }
     return graph_body_end(b, f)
 }
 
@@ -418,7 +418,7 @@ lw_decl_type :: proc(k: ^TC, target, value, ann_node: Tree_Id) -> (Type, bool) {
 }
 
 // A block's statements (tc_scope).
-lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil) {
+lw_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     t := k.t
     b := k.gb
     stmts := tc_live(k, stmts)
@@ -434,13 +434,7 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id, fields_of: ^Type_Scope = nil) {
         span := tree_span(t, s)
         at := lw_at(k, s)
         graph_build_body_stmt(b, span)
-        if t.tag[s] == .Using && fields_of != nil {
-            lw_decl(k, Tree_Id(t.a[s]), fields_of)
-        } else if t.tag[s] == .Decl && fields_of != nil {
-            lw_decl(k, s, fields_of)
-        } else {
-            lw_stmt(k, s)
-        }
+        lw_stmt(k, s)
         b.at = at
     }
 }
@@ -477,6 +471,8 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         lw_expr(k, e, .Value)
     case .Decl:
         lw_decl(k, s)
+    case .Using:
+        lw_decl(k, Tree_Id(t.a[s]))   // (`using f: T`: f's declaration)
     case .Assign:
         lw_assign(k, s)
     case .Return:
@@ -506,35 +502,26 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
 
 // --- declarations ---------------------------------------------------------------
 
-lw_decl :: proc(k: ^TC, s: Tree_Id, fields_of: ^Type_Scope = nil) {
+lw_decl :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
-    b := k.gb
     span := tree_span(t, s)
     v := decl_view(t, s)
+    // (Several names: a struct's fields made first, together, in order.)
+    if len(v.targets) > 1 {
+        for tg in v.targets { if t.tag[tg] == .Ident { lw_field_decl(k, tc_name(k, tg), tg, span) } }
+    }
     if len(v.targets) > 1 && len(v.values) == 1 {
-        if fields_of != nil {
-            names := make([]string, len(v.targets), context.temp_allocator)
-            toks := make([]Token_Id, len(v.targets), context.temp_allocator)
-            for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
-            graph_build_fields(b, names, toks, span)
-        }
         lw_destructure(k, s, v.targets, v.values[0], true)
         return
     }
-    if len(v.targets) > 1 && fields_of != nil {
-        names := make([]string, len(v.targets), context.temp_allocator)
-        toks := make([]Token_Id, len(v.targets), context.temp_allocator)
-        for tg, i in v.targets { names[i], toks[i] = tc_name(k, tg), t.main[tg] }
-        graph_build_fields(b, names, toks, span)
-    }
     for tg, i in v.targets {
-        lw_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, fields_of)
+        lw_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_)
     }
 }
 
 // One name's declaration (tc_decl_one): its local, its value built into it,
 // then stored at its type.
-lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Type_Scope) {
+lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
     t := k.t
     b := k.gb
     span := tree_span(t, s)
@@ -552,19 +539,19 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     form, _, bindings := tc_decl_form(k, value, ann_node, ann)
     #partial switch form {
     case .Void:
-        lw_decl_void(k, s, target, value, name, ann, fields_of)
+        lw_decl_void(k, s, target, value, name, ann)
         return
     case .Take:
-        lw_decl_take(k, s, target, value, name, ann, fields_of)
+        lw_decl_take(k, s, target, value, name, ann)
         return
     case .Shape:
-        lw_decl_shape(k, s, target, name, ann, bindings, fields_of)
+        lw_decl_shape(k, s, target, name, ann, bindings)
         return
     case .Bare:
-        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, fields_of, name, target, span))
+        lw_decl_bare(k, target, name, ann, span, lw_field_decl(k, name, target, span))
         return
     }
-    decl := lw_field_decl(k, fields_of, name, target, span)
+    decl := lw_field_decl(k, name, target, span)
     if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, tc_node_type(k, target)) }
     vt := tc_node_type(k, value)
     final := tc_node_type(k, target)
@@ -582,17 +569,10 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, fields_of: ^Typ
     reads := is_partial_array(final) && tc_byte_flow(k, final, value, vt) == .Read && (t.tag[m] == .Index || t.tag[m] == .Slice)
     zero := prefixed && (fills || reads)
     if zero { graph_build_zero_var(b, decl, final, span) }
-    saved_field := k.field_default
-    k.field_default = {}
-    if fields_of != nil {
-        sc := k.scopes[k.scope_of[fields_of]]
-        k.field_default = {value = tc_unparen(k, value), name = name, t = ann, span = tree_span(t, sc.def)}
-    }
     into: Type = nil if is_untyped(ann) else ann
     // (`x := [a, b, c]` the checker made a list (tc_literal_grows): built as one, its len set.)
     if is_untyped(ann) && is_partial_array(final) && t.tag[tc_unparen(k, value)] == .Array { into = final }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(decl, into, tc_sid(k, target)), temp_span = span)
-    k.field_default = saved_field
     if !is_any(ann) { lw_byte_view_address(k, ann, value) }
     graph_build_typed(b, decl, final)
     wrote, zeroed := lw_store(k, value, vt, r, graph_dest_var(decl, final, tc_sid(k, target)), span, settle = true)

@@ -115,7 +115,7 @@ lw_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     b := k.gb
     for tg in targets {
         b.sub = tg   // (each target's statement its own: graph_stmt)
-        if is_decl && t.tag[tg] == .Ident { lw_decl_one(k, s, tg, value, 0, nil) } else { lw_assign_one(k, s, tg, value) }
+        if is_decl && t.tag[tg] == .Ident { lw_decl_one(k, s, tg, value, 0) } else { lw_assign_one(k, s, tg, value) }
         b.sub = 0
     }
 }
@@ -191,11 +191,11 @@ lw_take :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written) -> Built {
 
 // `x := let(T, s)`, `x : T = slice([:n]T, s)` (tc_decl_take): the local bound
 // to the memory taken, the take into it.
-lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, fields_of: ^Type_Scope) {
+lw_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type) {
     t := k.t
     b := k.gb
     span := tree_span(t, s)
-    decl := lw_field_decl(k, fields_of, name, target, span)
+    decl := lw_field_decl(k, name, target, span)
     field := decl != NO_NODE
     if !field { decl = graph_build_decl(b, name, t.main[target], span, tc_node_type(k, target), bound = tc_text(t.main[tc_unparen(k, value)]) == "let") }
     r := lw_expr(k, value, .Into, dest = graph_dest_var(decl, nil if is_untyped(ann) else ann, tc_sid(k, target)))

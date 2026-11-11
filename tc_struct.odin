@@ -312,19 +312,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // Its type: written (`Foo{…}`, `[3!]f32{…}`, `Vec3{…}`), or its use's.
     t: Type
     variant: string   // (a union's variant's literal: its name)
-    // (A struct field's `all v`: its field's type, an array — fixed or
-    // partial; said at the struct when it is none.)
-    fd: ^TC_Field_Default
-    if ty == 0 && n == k.field_default.value && tc_is_broadcast(k, n) { fd = &k.field_default }
     switch {
-    case fd != nil:
-        #partial switch _ in distinct_base(fd.t) {
-        case ^Type_Fixed_Array, ^Type_Partial_Array:
-            t = fd.t
-        case:
-            tc_error(k, fd.span, TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES, fd.name, type_name(fd.t))
-            return Type_Error{}
-        }
     case ty == 0:
         hint := k.hint
         if ut, is_union := distinct_base(hint).(^Type_Union); is_union {
@@ -395,7 +383,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     // (`{}` and `{0}`: gone, each told what to write instead.)
-    if fd == nil && !tc_is_broadcast(k, n) && (len(entries) == 0 || tc_zero_entry(k, entries)) {
+    if !tc_is_broadcast(k, n) && (len(entries) == 0 || tc_zero_entry(k, entries)) {
         tc_old_zero_literal(k, n, t, variant, len(entries) == 0)
         return Type_Error{}
     }
@@ -416,21 +404,21 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     _, to_list := distinct_base(t).(^Type_Partial_Array)
-    list_fill := fd == nil && to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes)
+    list_fill := to_list && tc_is_broadcast(k, n)   // (`all v`, `{all v}` into a list where it goes)
     // (A named struct or union — `type P`, `distinct P` — built as its base.)
     ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
-    if fa == nil && vst == nil && fd == nil && !list_fill && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
+    if fa == nil && vst == nil && !list_fill && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
     }
     // (A struct's or a variant's `{all 0}`: every field zero, all of them set.)
-    zero := fa == nil && fd == nil && !list_fill && tc_all_zero(k, entries)
+    zero := fa == nil && !list_fill && tc_all_zero(k, entries)
     sd: ^Scope_Body
     if vst != nil {
         sd = &vst.sd
-    } else if fa == nil && fd == nil && !list_fill {
+    } else if fa == nil && !list_fill {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
     }
@@ -440,9 +428,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_set_callee(k, n, ts)
         tc_set_args(k, n, []Arg{})   // (none: its body doesn't run)
     }
-    if fd != nil {
-        tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name, fd)
-    } else if list_fill {
+    if list_fill {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name)   // (entries[0] the broadcast: n itself when bare)
     } else if fa != nil {
         tc_array_entries(k, n, entries, fa, t, name)
@@ -560,16 +546,8 @@ tc_name_parts :: proc(k: ^TC, n: Tree_Id, parts: ^[dynamic]Token_Id) -> bool {
 }
 
 // A struct field whose value is being checked (its `all v` is its own).
-TC_Field_Default :: struct {
-    value: Tree_Id,
-    name:  string,
-    t:     Type,
-    span:  Span,   // (its struct's: where its broadcast's failures are said)
-}
-
-// `all v` into an array (`lit_t`): v checked against its element. (A struct
-// field's, `fd`: said as the field's.)
-tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, fd: ^TC_Field_Default = nil) {
+// `all v` into an array (`lit_t`): v checked against its element.
+tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string) {
     span := tree_span(k.t, n)
     elem: Type
     #partial switch v in distinct_base(lit_t) {
@@ -579,14 +557,6 @@ tc_broadcast_fill :: proc(k: ^TC, n, value: Tree_Id, lit_t: Type, name: string, 
     if tc_zero_fill(k, value, elem) { return }   // (`all 0` into structs or arrays: every item zero)
     if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 { k.hint = elem }
     vt := tc_check(k, value)
-    if fd != nil {
-        if !is_any(vt) && types_incompatible(elem, vt) {
-            tc_error(k, fd.span, TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED, fd.name, type_name(vt), type_name(elem), type_name(lit_t))
-            return
-        }
-        tc_value_at(k, value, vt, elem, fd.span)
-        return
-    }
     if types_incompatible(elem, vt) {
         tc_error(k, span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED, name, type_name(vt), type_name(elem))
         return
