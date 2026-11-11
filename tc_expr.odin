@@ -894,9 +894,9 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         return Type_Error{}
     }
     is_struct := ft.kind == .Struct
-    // (`Foo(args) {f = v}`: its fields written once it is constructed.)
+    // (`f(args) {x = v}`: the fields given written into what the call
+    // gives — a struct's constructor's, any fun's that gives a struct.)
     overrides := Tree_Id(tr.b[n]) if tr.tag[n] == .Call else method_view(tr, n).overrides
-    if overrides != 0 && !is_struct { tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, name) }
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, ref if indirect else Ref{ft.decl, .Type if is_struct else .Fun})
     k.annot.forms[tc_sid(k, n)] = .Value if indirect else .Fun
@@ -984,11 +984,22 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         }
         tc_value_at(k, a, at, pt, span)
     }
-    if is_struct {
-        if overrides != 0 { tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), &ft.sd) }
-        return ft
+    result: Type = ft if is_struct else fn_primary_return(ft)
+    if overrides != 0 {
+        sd := &ft.sd if is_struct else nil
+        if !is_struct && result != nil && len(ft.return_types) == 1 {
+            if rs, gives_struct := distinct_base(result).(^Type_Scope); gives_struct && rs.kind == .Struct {
+                tc_struct_ensure(k, rs)
+                sd = &rs.sd
+            }
+        }
+        if sd == nil {
+            tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_NEEDS_STRUCT, name)
+        } else {
+            tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), sd)
+        }
     }
-    return fn_primary_return(ft)
+    return result
 }
 
 // A literal that doesn't fit the type it is used at.

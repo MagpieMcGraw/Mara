@@ -1,0 +1,13 @@
+module call_override_neg
+//@ expect-fail: it needs a call that gives one struct
+
+// A block after a call writes fields: the call must give a struct.
+
+use mara.core
+
+count :: fun(n: i64) -> i64 { return n + 1 }
+
+main :: fun() {
+	a := count(1) { x = 2 }
+	print(a)
+}

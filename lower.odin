@@ -1488,8 +1488,22 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         return lw_construct(k, n, ft, ops[:], want, w, dest, false, temp_span, overrides = overrides)
     }
     ret := fn_primary_return(ft)
-    if indirect { return {v = graph_build_indirect(b, name, lw_local(k, n), ft, ret, ops[:], w, span), ok = true} }
-    call := Operand{graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}
+    call: Operand
+    if indirect {
+        call = graph_build_indirect(b, name, lw_local(k, n), ft, ret, ops[:], w, span)
+    } else {
+        call = Operand{graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}
+    }
+    // (`f(args) {x = v}`: what it gives held, the fields given written into
+    // it — tc_call's.)
+    if overrides != 0 {
+        d := graph_dest_var(graph_slot(b, "temp", ret, span), ret)
+        graph_build_write_at(b, graph_dest_place(b, d, span), call, span)
+        sd := as_scope_body(distinct_base(ret))
+        lw_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), sd, graph_build_override(b, d, sd))
+        return {v = graph_read(b, graph_dest_place(b, d, span), ret, span), ok = true}
+    }
+    if indirect { return {v = call, ok = true} }
     if view_slot != NO_NODE {
         graph_build_write_at(b, graph_var(b, view_slot, ret, temp_span), call, temp_span)
         return {v = graph_var(b, view_slot, ret, temp_span), place = true, ok = true}

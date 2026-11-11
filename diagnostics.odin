@@ -572,7 +572,7 @@ TYPE_CALL_OF_MODULE :: "'%s' here is the module a `use` names, so it can't be ca
 TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE :: "cannot construct %s from %s; underlying type is %s"
 TYPE_FUNCTION :: "'%s' is not a function"
 TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "function '%s' is ambiguous (defined in: %s). Use a qualified call (e.g. `%s.%s(...)`), or use only one of the modules here."
-TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID :: "'%s' field-override block is only valid on struct construction"
+TYPE_FIELD_OVERRIDE_BLOCK_NEEDS_STRUCT :: "the block after '%s(…)' writes fields into what the call gives: it needs a call that gives one struct"
 TYPE_BYTE_ELEMENT_NUMBER :: "element %d, '%s', is a number (%s), not a byte: an array of bytes takes bytes, or int literals from 0 to 255"
 TYPE_ARRAY_ELEMENT_TYPE_EXPECTED ::"array element %d has type %s, expected %s"
 TYPE_EMPTY_ARRAY_NO_TYPE :: "`[]` has nothing to say what it holds: write where it goes, `xs : []i64 = []`, or pass it where a slice or a list is taken"

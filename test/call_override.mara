@@ -1,0 +1,35 @@
+module call_override
+
+//@ expect-output: V { x: 1, y: 9 }
+//@ expect-output: V { x: 7, y: 5 }
+//@ expect-output: V { x: 3, y: 4 }
+//@ expect-output: 12
+
+// `f(args) {x = v}`: the fields given are written into what the call gives —
+// a struct's constructor's (a struct with no params is called like any), a
+// fun's that gives a struct, a method's. It used to be valid on a struct's
+// construction only.
+
+use mara.core
+
+V :: struct { x: i64 = 1  y: i64 = 2 }
+
+make :: fun(n: i64) -> V { return V{n, n} }
+
+Box :: struct {
+	v: V
+	get :: fun(b: Box) -> V { return b.v }
+}
+
+sum :: fun(v: V) -> i64 { return v.x + v.y }
+
+main :: fun() {
+	a := V() { y = 9 }
+	print(a)
+	b := make(7) { y = 5 }
+	print(b)
+	box := Box{v = V{3, 0}}
+	c := box.get() { y = 4 }
+	print(c)
+	print(sum(make(2) { y = 10 }))
+}

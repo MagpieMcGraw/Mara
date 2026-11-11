@@ -297,20 +297,14 @@ lw_arg_type :: proc(k: ^TC, a: Tree_Id) -> Type {
     return tc_node_type(k, a)
 }
 
-// `x : T = void` (tc_decl_void): declared uninitialized — a field's, its
-// void written.
+// `x : T = void` (tc_decl_void): declared uninitialized — unset until
+// written, a field as a local.
 lw_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type) {
     b := k.gb
     span := tree_span(k.t, s)
     decl := lw_field_decl(k, name, target, span)
-    field := decl != NO_NODE
-    if !field { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
+    if decl == NO_NODE { decl = graph_build_decl(b, name, k.t.main[target], span, ann) }
     graph_build_typed(b, decl, ann)
-    if field {
-        val := graph_build_void(b, ann, tree_span(k.t, value))
-        graph_build_write_at(b, graph_var(b, decl, ann, span), val, span)
-        return
-    }
     graph_build_void_decl(b, decl, ann, span, span)
 }
 
