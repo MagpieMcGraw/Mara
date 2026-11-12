@@ -89,7 +89,7 @@ tc_lists_raw :: proc(k: ^TC, t: Type) {
     case ^Type_Union:
         for _, vs in v.variant_structs { tc_lists_raw(k, vs) }
     case ^Type_Scope:
-        if v.kind != .Struct || v.is_module || k.lists_raw[v] { return }
+        if v.kind != .Struct || k.lists_raw[v] { return }
         k.lists_raw[v] = true
         for f in v.fields {
             tc_list_use(k, f.decl, f.type_, false, false, {})

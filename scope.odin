@@ -23,9 +23,8 @@ raw_type_key :: proc(t: Type) -> rawptr {
 
 // A member of scope s, by name: its type.
 scope_bind :: proc(s: ^Type_Scope, name: string, t: Type) {
-    // (A struct's or a fun's member, what a value of it reaches by type; a
-    // module's names are the resolver's.)
-    if s == nil || s.is_module { return }
+    // (A scope's member, what a value of it reaches by type.)
+    if s == nil { return }
     s.types[name] = t
 }
 
@@ -51,10 +50,10 @@ type_decl :: proc(t: Type) -> Token_Id {
     return 0
 }
 
-// A callable scope: a fun, or a struct (its constructor's body). A module
-// is a .Struct too, but never callable.
+// A callable scope: a fun, or a struct (its constructor's body) — a module
+// too, an empty struct.
 scope_is_callable :: proc(s: ^Type_Scope) -> bool {
-    return s != nil && (s.kind == .Fun || (s.kind == .Struct && !s.is_module))
+    return s != nil && (s.kind == .Fun || s.kind == .Struct)
 }
 
 // The module scope at the top of a scope's chain. nil if `start` is nil.

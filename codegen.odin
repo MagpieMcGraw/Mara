@@ -1198,7 +1198,6 @@ emit_arena_reset :: proc(g: ^Codegen) {
 register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     context.allocator = codegen_keep(g)   // (the module's: it outlives the function being emitted)
     context.temp_allocator = context.allocator
-    if sd_is_module(sd) { return }  // module-struct — namespace only, no data layout
     key := sd.name
     if key in g.registered_structs { return }
     g.registered_structs[key] = true

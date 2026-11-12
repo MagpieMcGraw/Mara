@@ -875,10 +875,6 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     from_text ||= field_from_text
     variant_text ||= field_text
     _, err_runtime := ft.origin.(Origin_Err_Runtime)
-    if ft.is_module {
-        tc_error(k, span, TYPE_CALL_OF_MODULE, name, name, name)
-        return Type_Error{}
-    }
     if !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
@@ -1191,7 +1187,9 @@ tc_is_value :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span, printed := false) -
     m := tc_unparen(k, n)
     name := tc_diag_name(k, m)
     ts, is_scope := t.(^Type_Scope)
-    if is_scope && ts.is_module {
+    // (A module's name — the name, whatever a use calls it. Called, it is
+    // made: an empty struct's value.)
+    if (k.t.tag[m] == .Ident || k.t.tag[m] == .Field) && k.rs.refs[m].kind == .Module {
         tc_error(k, span, TYPE_MODULE_NOT_VALUE, name)
         return false
     }
@@ -1215,7 +1213,7 @@ tc_is_value :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span, printed := false) -
 // distinct type's; "" for any other.
 tc_type_source_name :: proc(t: Type) -> string {
     #partial switch v in t {
-    case ^Type_Scope:    if v.kind == .Struct && !v.is_module { return v.source_name }
+    case ^Type_Scope:    if v.kind == .Struct { return v.source_name }
     case ^Type_Enum:     return v.source_name
     case ^Type_Union:    return v.source_name
     case ^Type_Distinct: return v.source_name

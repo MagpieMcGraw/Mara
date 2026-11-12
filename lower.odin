@@ -167,7 +167,7 @@ lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl, owner: ^Type_Scope) -> []^Type_Sco
     _, n := annot_split(d.node)
     for _, i in a.instances {   // (its body as each instance checked it: a generic's, a generic union's variant's)
         ts := a.decls[annot_key(Instance_Id(i), n)] or_else nil
-        if ts == nil || ts.is_module || slice.contains(out[:], ts) { continue }
+        if ts == nil || slice.contains(out[:], ts) { continue }
         if ts.parent_scope != owner { continue }
         append(&out, ts)
     }
@@ -1061,7 +1061,7 @@ lw_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Build_Want
 // holds one doesn't.
 lw_names_fun :: proc(k: ^TC, n: Tree_Id, t: Type) -> bool {
     ts, is_scope := t.(^Type_Scope)
-    if !is_scope || ts.is_module { return false }
+    if !is_scope { return false }
     #partial switch tc_ref(k, n).kind {
     case .Fun:  return true
     case .Type: return ts.kind == .Fun || len(ts.params) > 0
@@ -1091,11 +1091,9 @@ lw_ident :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
         kv := k.annot.known[tc_sid(k, n)]
         return {v = graph_const(b, w, span, t, name, Const_Value{int = kv.value}, untyped = true), ok = true}
     }
-    if ts, is_scope := t.(^Type_Scope); is_scope && !ts.is_module {
-        if lw_names_fun(k, n, t) {
-            if want == .Place { return {} }
-            return {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
-        }
+    if lw_names_fun(k, n, t) {
+        if want == .Place { return {} }
+        return {v = graph_op_value(b, .Global, w, span, t, name), ok = true}
     }
     // (A module's or a type's name is no value: what a field reads through
     // it is built, lw_field.)

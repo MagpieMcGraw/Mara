@@ -399,12 +399,12 @@ fn_param :: proc(ft: ^Type_Scope, i: int) -> Struct_Type_Field {
 }
 
 fn_result_count :: proc(ft: ^Type_Scope) -> int {
-    if ft.kind == .Struct && !ft.is_module { return 1 + len(ft.return_types) }
+    if ft.kind == .Struct { return 1 + len(ft.return_types) }
     return len(ft.return_types)
 }
 
 fn_result :: proc(ft: ^Type_Scope, i: int) -> Type {
-    if ft.kind == .Struct && !ft.is_module {
+    if ft.kind == .Struct {
         if i == 0 { return Type(ft) }
         return distinct_base(ft.return_types[i - 1])
     }
@@ -634,7 +634,8 @@ scope_path_name :: proc(cf: ^Type_Scope) -> string {
         return strings.concatenate({written, "[", args, "]"})
     }
     name := scope_display_name(cf)
-    for p := cf.parent_scope; p != nil && !p.is_module; p = p.parent_scope {
+    // (Said from its module down: the outermost scope, the module, isn't.)
+    for p := cf.parent_scope; p != nil && p.parent_scope != nil; p = p.parent_scope {
         if outer := scope_display_name(p); outer != "" { name = strings.concatenate({outer, ".", name}) }
     }
     return name

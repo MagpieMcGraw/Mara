@@ -3346,9 +3346,9 @@ Graph_Literal :: struct {
 // `args` (its params' defaults, the checker's).
 graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_init: bool, t: Type, d: Dest, args: []Operand = nil, construct := false) -> ^Graph_Literal {
     ts, is_scope := distinct_base(t).(^Type_Scope)   // (a named struct's: its base's constructor)
-    if is_scope && ts.kind == .Struct && !ts.is_module && zero_init {
+    if is_scope && ts.kind == .Struct && zero_init {
         graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span))
-    } else if is_scope && ts.kind == .Struct && !ts.is_module && (construct || ts.is_union_variant) {
+    } else if is_scope && ts.kind == .Struct && (construct || ts.is_union_variant) {
         // (A variant as a struct of its own: its construction writes its tag
         // — a literal's, `{}`, runs no body.)
         if construct && len(args) != len(ts.params) { graph_fatal(span, "'%s' built without its arguments", ts.name) }
@@ -3357,7 +3357,7 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
         if construct { append(&ops, ..args) }
         op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops[:])
         if !construct { b.g.name[op] = graph_intern(b, strings.concatenate({graph_name(b.g, op), "{}"})) }   // as written: braces, no call
-    } else if is_scope && ts.kind == .Struct && !ts.is_module {
+    } else if is_scope && ts.kind == .Struct {
         graph_op(b, .Zero, .Explicit, span, t, "{}", graph_dest_place(b, d, span))
     } else if graph_aggregate(t) {
         if _, is_union := distinct_base(t).(^Type_Union); is_union {
@@ -3669,11 +3669,11 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     // union's variant has none.)
     t := b.checked.table
     for _, ft in b.checked.functions {
-        if _, is_foreign := ft.origin.(Origin_Foreign); !ft.is_module && !is_foreign { check(&count, &bad, ft, ft.body_span) }
+        if _, is_foreign := ft.origin.(Origin_Foreign); !is_foreign { check(&count, &bad, ft, ft.body_span) }
     }
     variants := make(map[^Type_Scope]bool, context.temp_allocator)
     for _, u in t.unions { for _, st in u.variant_structs { variants[st] = true } }
-    for _, st in t.funs { if st.kind == .Struct && !st.is_module && st not_in variants { check(&count, &bad, st, st.body_span) } }
+    for _, st in t.funs { if st.kind == .Struct && st not_in variants { check(&count, &bad, st, st.body_span) } }
     if bad > 0 {
         flush_diagnostics()
         os.exit(1)

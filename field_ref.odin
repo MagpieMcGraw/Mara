@@ -41,7 +41,7 @@ Field_Path :: struct {
 // The struct a type is, by value; nil for anything else.
 field_ref_struct :: proc(t: Type) -> ^Scope_Body {
     ts, is_scope := distinct_base(t).(^Type_Scope)
-    if !is_scope || ts.kind != .Struct || ts.is_module { return nil }
+    if !is_scope || ts.kind != .Struct { return nil }
     return &ts.sd
 }
 

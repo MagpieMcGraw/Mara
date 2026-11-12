@@ -678,7 +678,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         // (A type's name: what a value of it can do.)
         if checked != nil && r.kind == .Type {
             if ty, bound := checked_binding(checked, r, name); bound {
-                if fs, is_scope := ty.(^Type_Scope); !is_scope || fs.kind == .Struct && !fs.is_module {
+                if fs, is_scope := ty.(^Type_Scope); !is_scope || fs.kind == .Struct {
                     can_do(&sb, checked, ty, Token_Id(p.at))
                 }
             }

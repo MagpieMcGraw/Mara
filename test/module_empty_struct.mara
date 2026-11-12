@@ -1,0 +1,16 @@
+module module_empty_struct
+
+//@ expect-output: made 0 mara.string {} mara.string {}
+
+// A module is a scope that declares nothing itself — its files do — so its
+// type is the empty struct: its name is a type's, and calling it makes a
+// value of no size. (It was refused case by case: "can't be called".)
+
+use mara.core
+s :: use mara.string
+
+main :: fun() {
+	a := s()
+	v : s
+	print("made", size_of(s), a, v)
+}

@@ -63,7 +63,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 } else if has && mref.kind == .Type {
                     qual, resolved = tc_held_type(k, n, mt), true
                     failed = qual == nil
-                } else if sd_is_module(qsd) {
+                } else if qref.kind == .Module {
                     tc_error(k, span, TYPE_MODULE_FUNCTION, scope_display_name(qsd), name)
                     return Type_Error{}
                 }
@@ -73,8 +73,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                     // an instance's when it takes Self.)
                     qual, resolved = fn, true
                     k.annot.call_names[tc_sid(k, n)] = fn.name
-                    is_type := qref.kind == .Type || qref.kind == .Fun
-                    if !is_type && !sd_is_module(qsd) {
+                    if !tc_names_def(qref) {
                         args, failed = tc_self_args(k, n, fn, qsd, qt, recv, args)
                     }
                 } else if t, holds := qsd.types[name]; holds {

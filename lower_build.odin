@@ -83,18 +83,15 @@ lw_either_place :: proc(k: ^TC, e: Tree_Id, temp_span: Span = {}) -> bool {
         case ref.kind == .Module || ref.kind == .Type: return false
         case tc_name(k, e) == "void":             return false
         }
-        if ts, is_scope := ty.(^Type_Scope); is_scope && !ts.is_module {   // (a fun's name: its global)
-            if lw_names_fun(k, e, ty) { return false }
-        }
+        if lw_names_fun(k, e, ty) { return false }   // (a fun's name: its global)
         return true
     case .Field, .Dot_Ident:
         if t.tag[e] == .Dot_Ident && tc_sid(k, e) not_in k.annot.dot_bases { return false }   // (a variant)
         if lw_const_named(k, e) { return graph_aggregate(tc_node_type(k, e)) }
         base, field := lw_field_parts(k, e)
         bt := tc_node_type(k, base)
-        if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-            return tc_ref(k, e).kind != .Variant   // (else an enum's variant it holds)
-        }
+        // (Through a module's name: its member — unless an enum's variant it holds.)
+        if tc_ref(k, tc_unparen(k, base)).kind == .Module { return tc_ref(k, e).kind != .Variant }
         if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
             if _, has := ut.tag_map[field]; has { return false }
         }

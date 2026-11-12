@@ -247,12 +247,14 @@ rs_push_at :: proc(r: ^Resolver, slot: i32, ref: Ref, variable: bool, conflict :
 // A definition — a fun, a type, a constant, a type param, a module's name —
 // seen throughout the current scope. Another of its name in sight around it:
 // neither is hidden — the name means neither (rs_conflict).
+// (`own_uses`: beside what this scope's own uses bring too — a use's
+// module's name, declared after them.)
 @(private="file")
-rs_define :: proc(r: ^Resolver, name: string, ref: Ref) {
+rs_define :: proc(r: ^Resolver, name: string, ref: Ref, own_uses := false) {
     if name == "" || name == "_" { return }
     if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
     slot := rs_slot(r, name)
-    other := rs_other_at(r, slot, name, ref)
+    other := rs_other_at(r, slot, name, ref, own_uses)
     rs_push_at(r, slot, ref, false)
     if other { rs_push_at(r, slot, {}, false, conflict = true) }
 }
@@ -279,9 +281,11 @@ rs_other_in_sight :: proc(r: ^Resolver, name: string, ref: Ref) -> bool {
     return rs_other_at(r, slot if ok else -1, name, ref)
 }
 
-// (`slot`: the name's; -1: it has none — nothing of it is on the stack.)
+// (`slot`: the name's; -1: it has none — nothing of it is on the stack.
+// Two uses of one scope that each bring the name are rs_lookup's to find,
+// when it is used: `own_uses` false.)
 @(private="file")
-rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref) -> bool {
+rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref, own_uses := false) -> bool {
     fence := r.scopes[len(r.scopes) - 1].fence
     if slot >= 0 {
         for i := r.top[slot]; i >= 0; i = r.names[i].hides {
@@ -291,7 +295,7 @@ rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref) -> bool {
             break
         }
     }
-    for i := len(r.scopes) - 2; i >= 0; i -= 1 {
+    for i := len(r.scopes) - (1 if own_uses else 2); i >= 0; i -= 1 {
         for m in r.scopes[i].uses {
             if other, has := m.defs[name]; has && !rs_shares(r, other, ref) { return true }
         }
@@ -1079,7 +1083,7 @@ rs_uses :: proc(r: ^Resolver, live: []Tree_Id, note := true) {
         // another name for it.)
         if used.decl == 0 {
             r.named[tok] = used
-            rs_define(r, rs_text(tok), {tok, .Module})
+            rs_define(r, rs_text(tok), {tok, .Module}, own_uses = true)
         } else {
             rs_define(r, rs_text(tok), ref)
         }

@@ -41,7 +41,9 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     if tr.tag[n] == .Field && resolve_names_scope(k.rs, k.rs.refs[tc_unparen(k, base)]) {
         if t, found := tc_scope_member(k, n, field); found { return t }
     }
-    if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
+    // (Through a module's name, and it has no such name: it has nothing
+    // else — a module declares nothing.)
+    if sd := as_scope_body(bt); sd != nil && k.rs.refs[tc_unparen(k, base)].kind == .Module {
         tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
         return Type_Error{}
     }
@@ -122,10 +124,6 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     }
 
     if sd := tc_struct_of(k, bt); sd != nil && len(sd.fields) > 0 {
-        if sd_is_module(sd) {
-            tc_unsupported(k, n, "a module's member")
-            return Type_Error{}, false, 0, false
-        }
         // (Its own field, else one a `using` field's struct has, or its
         // array's swizzle.)
         if ft := resolve_struct_field(sd, field); ft != nil { return ft, true, 0, false }
@@ -404,7 +402,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     ts, is_scope := distinct_base(t).(^Type_Scope)
     vst: ^Type_Scope
     if variant != "" { vst = distinct_base(t).(^Type_Union).variant_structs[variant] }
-    if fa == nil && vst == nil && !list_fill && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 && !ts.is_union_variant) {
+    if fa == nil && vst == nil && !list_fill && (!is_scope || ts.kind != .Struct || ts.node == 0 && !ts.is_union_variant) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
     }
@@ -419,7 +417,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     // (A literal runs no constructor — its fields are its entries — but a
     // variant's, as a struct of its own: its construction writes its tag.)
-    if is_scope && ts.kind == .Struct && !ts.is_module && !zero && ts.is_union_variant {
+    if is_scope && ts.kind == .Struct && !zero && ts.is_union_variant {
         tc_set_callee(k, n, ts)
         tc_set_args(k, n, []Arg{})   // (none: its body doesn't run)
     }
@@ -476,7 +474,7 @@ tc_zero_fill :: proc(k: ^TC, value: Tree_Id, elem: Type) -> bool {
     case ^Type_Fixed_Array, ^Type_Partial_Array:
         return true
     case ^Type_Scope:
-        return e.kind == .Struct && !e.is_module
+        return e.kind == .Struct
     }
     return false
 }
