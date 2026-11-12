@@ -674,15 +674,18 @@ ask_type_name :: proc(t: Type) -> string {
 Ask_Rev_Ref :: struct { container: Type, kind: Ask_Edge_Kind, via: string, wrap: string }
 
 // flat type name -> every container that references it (one outgoing edge each).
-// Built once from the SAME `ask_out_edges` model `deps` uses, so the two
+// Built once a check (the table keeps it: a question asks it, however many
+// times) from the SAME `ask_out_edges` model `deps` uses, so the two
 // directions can't disagree about the graph. Keyed by flat name (not pointer) so
 // a generic's monomorphized fields — distinct objects sharing a canonical name —
 // all fold onto the one queryable type. Containers are deduped by identity: a
 // parameterized struct lives in BOTH `.structs` and `.funs` (data struct + ctor),
 // and counting its edges twice would double every use-site.
-ask_build_reverse_index :: proc(table: ^SymbolTable, funcs: map[string]^Type_Scope) -> map[string][dynamic]Ask_Rev_Ref {
+ask_type_users :: proc(table: ^SymbolTable, funcs: map[string]^Type_Scope) -> map[string][dynamic]Ask_Rev_Ref {
+    if table.users_made { return table.users }
+    context.allocator = table.allocator
     rev: map[string][dynamic]Ask_Rev_Ref
-    seen: map[rawptr]bool
+    seen := make(map[rawptr]bool, allocator = context.temp_allocator)
     add :: proc(table: ^SymbolTable, rev: ^map[string][dynamic]Ask_Rev_Ref, seen: ^map[rawptr]bool, container: Type) {
         // Declaring a type is not "using" it — a module namespace owns no data
         // fields, so this only formalizes an already-empty scan.
@@ -706,6 +709,7 @@ ask_build_reverse_index :: proc(table: ^SymbolTable, funcs: map[string]^Type_Sco
     // FFI functions reference types through their params/returns (e.g. every SDL
     // fn taking a `Window`), so scan the foreign ones too or `users` misses them.
     for _, f in funcs { if ask_is_foreign(f) { add(table, &rev, &seen, f) } }
+    table.users, table.users_made = rev, true
     return rev
 }
 
@@ -724,7 +728,7 @@ ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: in
     res.root = rid
     res.nodes[rid].dist = 0
     if ask_type_name(target) == "" { return }   // an unnamed target can't be matched by name
-    rev := ask_build_reverse_index(table, funcs)
+    rev := ask_type_users(table, funcs)
     processed: map[rawptr]bool
     queue: [dynamic]Type
     append(&queue, target)
@@ -2100,7 +2104,7 @@ ask_call_arg_text :: proc(n: Tree_Id, index, params: int) -> string {
 // Returns edge, so it is not listed under `above`; a true "what builds this value"
 // producer query is deferred (design/mara_ask.txt, struct call above).
 render_struct_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, target: Type, want: Ask_Edge_Kind, dir: string) {
-    rev := ask_build_reverse_index(checked.table, checked.functions)
+    rev := ask_type_users(checked.table, checked.functions)
     name := ask_type_name(target)
     refs := rev[name]   // bind first — a map index of an absent key is a transient lvalue
 

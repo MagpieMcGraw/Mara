@@ -437,6 +437,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
                          lower := true) -> ^Checked_Program {
     table := new(SymbolTable)
+    table.allocator = context.allocator
     main_mod := new(Type_Scope)
     main_mod.name = main_package
     main_mod.home_package = main_package
@@ -1181,6 +1182,12 @@ SymbolTable :: struct {
     enums:          map[string]^Type_Enum,
     unions:         map[string]^Type_Union,
     distinct_types: map[string]^Type_Distinct,
+    // What names each type — the type records above, the other way round:
+    // found when first asked for (ask_type_users), kept with the check, in
+    // what the check was made in.
+    users:          map[string][dynamic]Ask_Rev_Ref,
+    users_made:     bool,
+    allocator:      runtime.Allocator,
 
     // Error_kind set ID assignment counter — incremented as each
     // `Name :: error { ... }` is registered. Encoded as the high 16 bits of
