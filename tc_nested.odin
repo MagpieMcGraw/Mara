@@ -75,10 +75,8 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     if sc.registered { return }
     sc.registered = true
     t := k.t
-    // (What its definitions are named for and seen in: the scope — but a
-    // module's, flat names whoever uses the module sees: none.)
-    owner := sc.ts if !sc.ts.is_module else nil
-    owner_i := k.scope_of[sc.ts]
+    owner := sc.ts
+    owner_i := k.scope_of[owner]
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)

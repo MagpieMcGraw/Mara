@@ -13,27 +13,25 @@ TC_Template :: struct {
     def, node: Tree_Id,
     lo:        Tree_Id,   // its body's lowest node (its nodes: [lo, node])
     pkg:       string,
-    owner:     ^Type_Scope,   // a body's: the fun or struct defining it (its last instance, a generic one's; at a call, the call's)
+    owner:     ^Type_Scope,   // the scope defining it: a module, a fun or a struct (its last instance, a generic one's; at a call, the call's)
 }
 
-// The body a template in a body is made for at a call: the one the call is
-// in (a generic owner's instance, its own), else the one that registered it.
-// nil for a module's.
+// The scope a template is made for at a call: a module's, the module; a
+// body's, the body the call is in (a generic owner's instance, its own),
+// else the one that registered it.
 tc_template_owner :: proc(k: ^TC, tmpl: TC_Template) -> ^Type_Scope {
-    if tmpl.owner == nil { return nil }
+    if tmpl.owner.is_module { return tmpl.owner }
     for b := k.body; b != nil; b = b.parent_scope {
         if b.node == tmpl.owner.node { return b }
     }
     return tmpl.owner
 }
 
-// A generic's instance name: its name and the types it's made at. A body's
-// is named for its owner too (`main_twice__i64`), as its plain funs are.
+// A generic's instance name: its name and the types it's made at, named
+// for its owner (`main_twice__i64`, `mara_core_swap__i64`) as its plain funs
+// are.
 tc_instance_name :: proc(k: ^TC, tmpl: TC_Template, name: string, type_args: []Type) -> string {
-    if tmpl.owner != nil {
-        return mangle_generic_name(fmt.tprintf("%s_%s", tmpl.owner.name, tc_def_name(k, tmpl.def)), type_args)
-    }
-    return mangle_generic_name(name, type_args)
+    return mangle_generic_name(make_flat_name(tmpl.owner.name, tc_def_name(k, tmpl.def)), type_args)
 }
 
 // What a body's generic sees its owners' type params bound to: each
@@ -387,9 +385,9 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     ft.kind = .Fun
     ft.home_package = tmpl.pkg
     ft.node = tmpl.node
-    // (No source name: named by its flat one. A body's is its owner's already.)
+    // (No source name: named by its flat one, its owner's in it.)
     owner := tmpl.owner
-    ft.name = mangled if owner != nil else make_flat_name(tmpl.pkg, mangled)
+    ft.name = mangled
     saved_pkg := k.pkg
     k.pkg = tmpl.pkg
     defer k.pkg = saved_pkg
@@ -426,7 +424,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     tc_bound_set(k, ft.decl, ft)   // (its template's name, in it: it)
     k.instances[mangled] = ft
     append(&k.instance_order, mangled)
-    ft.parent_scope = owner if owner != nil else k.module_scopes[tmpl.pkg] or_else nil
+    ft.parent_scope = owner
     k.scope_of[ft] = len(k.scopes)
     sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true})
     append(&k.scopes, sc)
@@ -595,14 +593,13 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, tar
     v := scope_view(tr, tmpl.node)
     span := tree_span(tr, tmpl.def)
     st := new(Type_Scope)
-    // (A body's: named for its owner, as its plain structs are; said as written.)
+    // (Named for its owner, as its plain structs are; said as written.)
     owner := tmpl.owner
-    st.name, st.source_name, st.home_package = make_flat_name(tmpl.pkg, mangled), mangled, tmpl.pkg
-    if owner != nil { st.name, st.source_name = mangled, mangle_generic_name(tc_name(k, tmpl.def), targs) }
+    st.name, st.source_name, st.home_package = mangled, mangle_generic_name(tc_name(k, tmpl.def), targs), tmpl.pkg
     st.kind, st.node = .Struct, tmpl.node
     st.generic_base = tc_name(k, tmpl.def)
     append(&st.generic_args, ..targs)
-    st.parent_scope = owner if owner != nil else k.module_scopes[tmpl.pkg] or_else nil
+    st.parent_scope = owner
     st.has_parens = build_tokens[tr.main[tmpl.node] + 1].kind == .Left_Paren
     st.is_packed = v.packed != 0
     k.table.mono_cache[mangled] = st

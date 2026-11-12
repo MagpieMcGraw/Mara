@@ -597,12 +597,12 @@ tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
 
 // `T :: U`, `T :: alias U`: its name (its base once every name is known:
 // tc_resolve). `T :: U` is a type of its own, `alias` another name for U.
-// (`owner`: the body defining it — named for it.)
-tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil) {
+// (`owner`: the scope defining it — named for it.)
+tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
     name := tc_name(k, def)
     span := tree_span(k.t, def)
     alias := k.t.tag[node] == .Alias_Def
-    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, tc_def_name(k, def))
+    flat := make_flat_name(owner.name, tc_def_name(k, def))
     if flat in k.table.distinct_types {
         tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)
         return
@@ -653,11 +653,10 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// A fun or a struct: its name declared where it is defined — the scope
-// registered as `owner_i`: a module (`owner` nil: its names are flat, and
-// whoever uses it sees them), or the fun or struct whose body has it
-// (`owner`) — and its type made (its signature and body wait). A body's is
-// named for its owner (`Arena_mark`).
+// A fun or a struct: its name declared where it is defined — `owner`, the
+// scope registered as `owner_i`: a module, or the fun or struct whose body
+// has it — and its type made (its signature and body wait). It is named for
+// its owner (`mara_core_Arena`, `mara_core_Arena_mark`).
 tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_i: int) {
     t := k.t
     name := tc_name(k, def)
@@ -669,7 +668,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_
         // (A template: checked as each instance, a body's named for its
         // owner — tc_instance_name.)
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(t, node), pkg = k.pkg, owner = owner}
-        if owner != nil && owner.kind == .Struct && !is_struct {
+        if owner.kind == .Struct && !is_struct {
             // (A struct's: found by a value's method call, as its plain funs are.)
             if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
             (&k.generic_methods[owner])[filed] = t.main[def]
@@ -678,37 +677,30 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_
     }
     // (A struct's constructor may fail: one of no params has none.)
     if is_struct && len(v.returns) > 0 && len(v.params) == 0 { tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name) }
-    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, filed)
-    taken := flat in k.table.funs
-    if owner != nil { taken = filed in owner.functions || filed in owner.types }
-    if taken {
+    flat := make_flat_name(owner.name, filed)
+    if flat in k.table.funs || filed in owner.functions {
         tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED if is_struct else TYPE_FUNCTION_ALREADY_DEFINED, name)
         return
     }
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.parent_scope = node, owner if owner != nil else k.module_scopes[k.pkg] or_else nil
+    ts.node, ts.parent_scope = node, owner
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
     ts.is_exposed = k.exposed[def]
     ts.decl = t.main[def]
     tc_bound_set(k, ts.decl, ts)
     k.scope_of[ts] = len(k.scopes)
-    if owner == nil {
-        // (The module's: its name the table's, where a qualified use finds it.)
-        k.table.funs[flat] = ts
-    } else {
-        // (A body's: its owner's member by name — a struct, a type; a fun, or
-        // a struct built by params, what a value's method call finds.)
-        if is_struct {
-            k.table.funs[flat] = ts
-            tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type})
-        }
-        if !is_struct || len(v.params) > 0 {
-            if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
-            owner.functions[filed] = ts
-        }
+    // (The table's, by its flat name: every struct, and a module's funs —
+    // what a tool lists as the module's. Its owner's member by name — a
+    // struct, a type; a fun, or a struct built by params, what a value's
+    // method call finds.)
+    if is_struct || owner.is_module { k.table.funs[flat] = ts }
+    if is_struct { tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type}) }
+    if !is_struct || len(v.params) > 0 {
+        if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
+        owner.functions[filed] = ts
     }
     append(&k.scopes[owner_i].nested, len(k.scopes))
     if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }

@@ -57,7 +57,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 } else if tmpl, is_template := tc_template(k, mref); mref.kind == .Fun && is_template && k.t.tag[tmpl.node] == .Fun_Def {
                     // (`gl.BufferData(…, data)`: a generic fun a module has;
                     // `Box.add(&b, 1)`, a struct's, made for the struct named.)
-                    return tc_generic_call(k, n, name, tmpl, args, owner = sd_type_scope(qsd) if tmpl.owner != nil else nil)
+                    return tc_generic_call(k, n, name, tmpl, args, owner = sd_type_scope(qsd))
                 } else if et := tc_held_enum(mt); has && mref.kind == .Type && et != nil {
                     return tc_enum_number(k, n, name, et, args)   // (`gl.GL_Tex_Param(n)`)
                 } else if has && mref.kind == .Type {
