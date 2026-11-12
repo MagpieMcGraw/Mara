@@ -3,6 +3,7 @@ package mara
 import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
+import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:sync"
@@ -301,12 +302,13 @@ tc_blocks_end :: proc(k: ^TC) {
     k.blocks = nil
 }
 
-// A scope as registered — a fun, a struct, a module: its type, its
+// A scope as registered — a fun, a struct, a module, a file: its type, its
 // definition, its body.
 TC_Scope :: struct {
     ts:   ^Type_Scope,
-    def:  Tree_Id,   // its Define (a module's: its node — no statement defines it)
-    node: Tree_Id,   // its Fun_Def or Struct_Def; a module's Module_Scope
+    def:  Tree_Id,   // its Define (a module's, a file's: its node — no statement defines it)
+    node: Tree_Id,   // its Fun_Def or Struct_Def; a module's Module_Scope; a file's File
+    into: ^Type_Scope,   // the scope that includes it (a file's: its module): its definitions are that one's — registered, named and placed as its
     foreigns: [dynamic]Tree_Id,   // the foreign blocks in its body
     nested: [dynamic]int,   // the funs and structs defined in its body
     consts: [dynamic]^TC_Const,   // the constants defined in its body
@@ -567,20 +569,38 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     return checked
 }
 
-// A module checked: the scope its files' statements are the body of — a
-// body as a fun's is (tc_scope_body): its definitions registered, its
-// statements checked in order, its definitions' bodies. Its definitions are
-// named for the module and seen by whoever uses it; what its statements run,
-// nothing calls. The scopes it defines.
+// A module checked: a scope whose body is nothing but the files it
+// includes — a body as a fun's is (tc_scope_body). It declares nothing: an
+// empty struct. Each file is a scope of its own, a fun's body nothing calls:
+// its statements checked in order, what it declares its own. What a file
+// defines is its module's — registered, named and seen as the module's:
+// that is what including it is. The scopes the module defines.
 tc_check_module_body :: proc(k: ^TC) -> []int {
     node := k.module_nodes[k.pkg]
-    sc := new_clone(TC_Scope{ts = k.module_scopes[k.pkg], def = node, node = node})
-    sc.ts.node = node
-    tc_bound_set(k, resolve_module_own(k.rs, k.pkg), sc.ts)   // (its own name, where its code qualifies with it: it)
-    k.scope_of[sc.ts] = len(k.scopes)
+    m := k.module_scopes[k.pkg]
+    sc := new_clone(TC_Scope{ts = m, def = node, node = node})
+    m.node = node
+    tc_bound_set(k, resolve_module_own(k.rs, k.pkg), m)   // (its own name, where its code qualifies with it: it)
+    k.scope_of[m] = len(k.scopes)
     append(&k.scopes, sc)
+    for f in k.modules[k.pkg] {
+        file := new(Type_Scope)
+        file.name, file.home_package, file.kind = m.name, m.home_package, .Fun
+        if tok := k.t.first[f]; tok != 0 { file.source_name = filepath.base(build_files[build_tokens[tok].file].path) }
+        file.node, file.parent_scope = f, m
+        k.scope_of[file] = len(k.scopes)
+        k.scope_at[f] = len(k.scopes)
+        append(&k.scopes, new_clone(TC_Scope{ts = file, def = f, node = f, into = m, registered = true}))
+    }
     tc_scope_body(k, sc)
     return sc.nested[:]
+}
+
+// The scope a scope's definitions are registered in: itself; an included
+// one's, the scope that includes it.
+tc_defs_owner :: proc(k: ^TC, ts: ^Type_Scope) -> ^Type_Scope {
+    if i, known := k.scope_of[ts]; known && k.scopes[i].into != nil { return k.scopes[i].into }
+    return ts
 }
 
 // A struct's body checked, its fields found, when something needs them
@@ -862,13 +882,15 @@ tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) 
     }
 }
 
-// What a statement declares, as the builder builds it: a definition's code —
-// a body's, or a module's, whose own statements are code nothing calls (.Code:
-// none is built).
+// What a statement declares, as the builder builds it: a definition's code;
+// a file a module includes, a scope's.
 tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     t := k.t
     d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s)}
     #partial switch t.tag[s] {
+    case .File:
+        d.form, d.node = .Scope, tc_sid(k, s)
+        if i, known := k.scope_at[s]; known { d.name = k.scopes[i].ts.source_name }
     case .Define:
         d.name = tc_name(k, s)
         value := Tree_Id(t.b[s])

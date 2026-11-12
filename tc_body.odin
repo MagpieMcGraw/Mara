@@ -178,6 +178,10 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         tc_allocator(k, s)
     case .Overload:
         tc_validate(k, s)   // (its group: one in sight)
+    case .File:
+        // (A file its module includes: a scope of its own, its statements
+        // its body's.)
+        tc_scope_body(k, k.scopes[k.scope_at[s]])
     case .Module:
         // (`module m`: the module that includes this file — its first line.)
         if first := tree_list(t, t.a[t.files[build_tokens[t.first[s]].file]]); first[0] != s { tc_error(k, span, TYPE_MODULE_AT_TOP) }

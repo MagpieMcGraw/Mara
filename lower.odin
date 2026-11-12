@@ -183,7 +183,8 @@ lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, 
     c, built := b.prog.bodies[ts]
     if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
     graph_place_scope(b.prog, c, ts, name, written)
-    for d in c.defs { lw_place_decl(k, codes, d, ts) }
+    owner := tc_defs_owner(k, ts)
+    for d in c.defs { lw_place_decl(k, codes, d, owner) }
 }
 
 // The declaration of the variable a name refers to: in the code being built,
@@ -421,7 +422,7 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     stmts := tc_live(k, stmts)
     for s in stmts {
         if t.tag[s] == .Foreign || t.tag[s] == .Overload { continue }   // (C's funs, an operator's group: no code)
-        if t.tag[s] == .Define {
+        if t.tag[s] == .Define || t.tag[s] == .File {   // (a definition; a file a module includes: its scope's code)
             graph_build_def(b, tc_graph_decl(k, s))
             // (A union's variants with bodies: placed as a module's are.)
             variants := make([dynamic]Graph_Decl, context.temp_allocator)

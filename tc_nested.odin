@@ -25,6 +25,9 @@ tc_body_defs :: proc(k: ^TC, stmts: []Tree_Id, out: ^[dynamic]Tree_Id, count: ^i
     live := tc_live(k, stmts)
     for s in live {
         #partial switch t.tag[s] {
+        case .File:
+            // (A file a module includes: what it defines is the module's.)
+            tc_body_defs(k, tree_list(t, t.a[s]), out, count)
         case .Foreign:
             append(out, s)
         case .Define:
