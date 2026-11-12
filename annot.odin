@@ -1,5 +1,6 @@
 package mara
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -113,6 +114,12 @@ Annotations :: struct {
     vars: map[^Type_Scope][dynamic]Var_Decl,
     // Each body and constant value checked, in the order checked.
     bodies: [dynamic]Annot_Body,
+
+    // The relations above, the other way round (relations.odin): found when
+    // first asked for, kept with the check — in what the check was made in.
+    allocator:  runtime.Allocator,
+    uses_first: []u32,   // by a declaration's token: where its uses begin in `uses` (annot_uses)
+    uses:       []Use,
 }
 
 // A value known when the program is checked, and its type as checked.
@@ -133,6 +140,7 @@ annot_split :: proc(key: Syntax_Id) -> (Instance_Id, Tree_Id) {
 
 annot_new :: proc(t: ^Tree) -> ^Annotations {
     a := new(Annotations)
+    a.allocator = context.allocator
     a.type_table = type_table_new()
     append(&a.instances, Instance{lo = 0, hi = Tree_Id(len(t.tag) - 1)})
     append(&a.types, make([]Type_Id, len(t.tag)))

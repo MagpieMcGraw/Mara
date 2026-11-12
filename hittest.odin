@@ -498,56 +498,23 @@ ref_name_token :: proc(t: ^Tree, n: Tree_Id, name: string) -> (Token_Id, bool) {
 
 // How many places name a declaration, its own aside, a generic's instances once.
 hit_name_count :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> int {
-    name := token_text(build_tokens[decl])
-    seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
-    for inst, i in a.instances {
-        for ref, k in a.refs[i] {
-            if ref.decl != decl { continue }
-            if tok, named := ref_name_token(t, inst.lo + Tree_Id(k), name); named && tok != decl { seen[tok] = true }
-        }
-    }
-    return len(seen)
-}
-
-// Every reference in the program, by the declaration it names (its name's
-// token): each the name's token where it's written, once — mara lsp keeps
-// them to tell a declaration renamed from its uses (lsp.odin's names).
-references_by_declaration :: proc(t: ^Tree, a: ^Annotations) -> map[Token_Id][dynamic]Token_Id {
-    out := make(map[Token_Id][dynamic]Token_Id)
-    seen := make(map[Token_Id]bool)
-    for inst, i in a.instances {
-        for r, k in a.refs[i] {
-            if r.decl == 0 { continue }
-            n := inst.lo + Tree_Id(k)
-            tok, named := ref_name_token(t, n, token_text(build_tokens[r.decl]))
-            if !named || tok == r.decl || seen[tok] { continue }
-            seen[tok] = true
-            uses := out[r.decl]
-            append(&uses, tok)
-            out[r.decl] = uses
-        }
-    }
-    return out
+    return len(references_to(t, a, decl)) - 1
 }
 
 // Every name that refers to the declaration whose name is the token `decl`,
-// as its token: the declaration's own first, each once.
+// as its token: the declaration's own first, each once (a generic's body's,
+// checked an instance at a time, once). What refers to it: annot_uses.
 references_to :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Token_Id {
     name := token_text(build_tokens[decl])
     seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
     out := make([dynamic]Token_Id, context.temp_allocator)
     seen[decl] = true
     append(&out, decl)
-    for inst, i in a.instances {
-        for r, k in a.refs[i] {
-            if r.decl != decl { continue }
-            tok, named := ref_name_token(t, inst.lo + Tree_Id(k), name)
-            if !named { continue }
-            if !seen[tok] {
-                seen[tok] = true
-                append(&out, tok)
-            }
-        }
+    for u in annot_uses(a, decl) {
+        tok, named := ref_name_token(t, u.node, name)
+        if !named || seen[tok] { continue }
+        seen[tok] = true
+        append(&out, tok)
     }
     return out[:]
 }
@@ -753,21 +720,18 @@ hit_variant_matched :: proc(t: ^Tree, n: Tree_Id) -> bool {
 @(private="file")
 hit_variant_uses :: proc(t: ^Tree, a: ^Annotations, decls: []Token_Id) -> map[Token_Id][dynamic]Hit_Use {
     if len(t.parent) != len(t.tag) { tree_parents(t) }
-    asked := make(map[Token_Id]bool, allocator = context.temp_allocator)
-    for d in decls { asked[d] = true }
     out := make(map[Token_Id][dynamic]Hit_Use, allocator = context.temp_allocator)
     seen := make(map[Token_Id]bool, allocator = context.temp_allocator)
-    for inst, i in a.instances {
-        for ref, k in a.refs[i] {
-            if ref.kind != .Variant || !asked[ref.decl] { continue }
-            n := inst.lo + Tree_Id(k)
-            tok, named := ref_name_token(t, n, token_text(build_tokens[ref.decl]))
+    for decl in decls {
+        for u in annot_uses(a, decl) {
+            if annot_use_ref(a, u).kind != .Variant { continue }
+            tok, named := ref_name_token(t, u.node, token_text(build_tokens[decl]))
             if !named || seen[tok] { continue }
             seen[tok] = true
-            list := out[ref.decl]
+            list := out[decl]
             list.allocator = context.temp_allocator
-            hit_add_use(&list, tok, n, .Read if hit_variant_matched(t, n) else .Written, 0)
-            out[ref.decl] = list
+            hit_add_use(&list, tok, u.node, .Read if hit_variant_matched(t, u.node) else .Written, 0)
+            out[decl] = list
         }
     }
     for _, list in out {
@@ -1114,18 +1078,14 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         finder = place_finder_make(t, a)
         asked = hit_asked_places(finder, t, a, named_at, r.decl)
     }
-    for inst, i in a.instances {
-        for ref, k in a.refs[i] {
-            if ref.decl != r.decl { continue }
-            n := inst.lo + Tree_Id(k)
-            tok, named := ref_name_token(t, n, name)
-            if !named || seen[tok] { continue }
-            m := Place_Match.Yes
-            if asked != nil && int(tok) != p.at { m = place_match(asked, hit_use_places(finder, t, n, r.decl, Instance_Id(i))) }
-            if m == .No { continue }
-            seen[tok] = true
-            hit_add_use(&uses, tok, n, hit_use_kind(t, a, Instance_Id(i), n), here, m == .Maybe)
-        }
+    for u in annot_uses(a, r.decl) {
+        tok, named := ref_name_token(t, u.node, name)
+        if !named || seen[tok] { continue }
+        m := Place_Match.Yes
+        if asked != nil && int(tok) != p.at { m = place_match(asked, hit_use_places(finder, t, u.node, r.decl, u.inst)) }
+        if m == .No { continue }
+        seen[tok] = true
+        hit_add_use(&uses, tok, u.node, hit_use_kind(t, a, u.inst, u.node), here, m == .Maybe)
     }
 
     // (A declaration, a literal's entry, have no type of their own: their uses' does.)

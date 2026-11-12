@@ -61,16 +61,24 @@ lsp_keep_names :: proc(s: ^Lsp) {
     {
         context.allocator = virtual.arena_allocator(&fresh.arena)
         fresh.names = make([dynamic]Lsp_Name)
-        for decl, uses in references_by_declaration(&build_tree, session.checked.annot) {
-            tok := build_tokens[decl]
-            path := lsp_abs(s, build_files[tok.file].path)
-            if path_key(path) not_in s.overlays { continue }   // (the editor's open files': what it renames)
-            n := Lsp_Name{name = strings.clone(token_text(tok)), decl = {strings.clone(path), int(tok.offset)}}
-            for u in uses {
-                ut := build_tokens[u]
-                append(&n.uses, Lsp_Place{strings.clone(lsp_abs(s, build_files[ut.file].path)), int(ut.offset)})
+        // (Each declaration in the editor's open files — what it renames —
+        // that something names: its uses, the check's — annot_uses.)
+        a := session.checked.annot
+        for f in build_files {
+            path := lsp_abs(s, f.path)
+            if path_key(path) not_in s.overlays { continue }
+            for decl := f.first_token; decl < f.end_token; decl += 1 {
+                if len(annot_uses(a, decl)) == 0 { continue }
+                uses := references_to(&build_tree, a, decl)[1:]
+                if len(uses) == 0 { continue }
+                tok := build_tokens[decl]
+                n := Lsp_Name{name = strings.clone(token_text(tok)), decl = {strings.clone(path), int(tok.offset)}}
+                for u in uses {
+                    ut := build_tokens[u]
+                    append(&n.uses, Lsp_Place{strings.clone(lsp_abs(s, build_files[ut.file].path)), int(ut.offset)})
+                }
+                append(&fresh.names, n)
             }
-            append(&fresh.names, n)
         }
         for r in renaming {
             old := s.names.names[r.index]

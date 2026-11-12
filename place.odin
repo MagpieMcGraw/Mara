@@ -135,15 +135,14 @@ place_finder_make :: proc(t: ^Tree, a: ^Annotations) -> ^Place_Finder {
     }
 
     // A fun used as a value is called from who knows where.
-    taken := make(map[Token_Id]bool, allocator = context.temp_allocator)
-    for inst, i in a.instances {
-        for r, k in a.refs[i] {
-            n := inst.lo + Tree_Id(k)
-            if r.kind == .Fun && r.decl != 0 && (t.tag[n] == .Ident || t.tag[n] == .Field) { taken[r.decl] = true }
-        }
-    }
     for _, ts in a.decls {
-        if ts == nil || !taken[ts.decl] { continue }
+        if ts == nil { continue }
+        taken := false
+        for u in annot_uses(a, ts.decl) {
+            taken = annot_use_ref(a, u).kind == .Fun && (t.tag[u.node] == .Ident || t.tag[u.node] == .Field)
+            if taken { break }
+        }
+        if !taken { continue }
         for p in ts.params {
             if p.decl != 0 { place_give(f, p.decl, {}) }
         }
