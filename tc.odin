@@ -48,7 +48,6 @@ TC :: struct {
     scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
     scope_at:      map[Tree_Id]int,       // ... by its node (no instance's): whose definitions a name may need registered
-    mine:          ^[dynamic]int,     // the ones the module being checked registered
     checked_modules: map[string]^Type_Scope,
     in_progress:   map[string]bool,
     std:           ^Type_Scope,
@@ -91,7 +90,7 @@ TC :: struct {
     rs:            ^Resolver,
     in_defer:      bool,                // a defer's block being checked (its body's)
     allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
-    main_allocators: [dynamic]Tree_Id,  // the `#allocator`s among main's own statements (tc_scan_allocator): there, one is the program's
+    main_allocators: [dynamic]Tree_Id,  // the `#allocator`s at the main module's top and among main's own statements (tc_scan_allocator): there, one is the program's
     loops:         int,                 // the loops around the statement being checked (in its body, or its defer's block)
     module_scopes: map[string]^Type_Scope,   // each module's record, by its name: what its definitions are declared in
     bound:         []u32,               // by token: its binding's place in binds (0: none)
@@ -241,20 +240,18 @@ tc_scope_bind :: proc(k: ^TC, s: ^Type_Scope, name: string, t: Type, ref: Ref) {
     tc_bound_set(k, ref.decl, t)
 }
 
-// What the checker checked, in the order it did — a body, a constant, a
-// module's statement settled, the program's struct — and where: the instance
-// and the module it was checked in. What lowering builds, in that order
-// (lower.odin).
+// What the checker checked, in the order it did — a body, a constant — and
+// where: the instance and the module it was checked in. What lowering
+// builds, in that order (lower.odin).
 TC_Event :: struct {
     kind:     TC_Event_Kind,
     sc:       ^TC_Scope,         // .Body
     kc:       ^TC_Const,         // .Const
-    sid:      Syntax_Id,         // .Module_Stmt
     salt:     TC_Salt,
     pkg:      string,
 }
 
-TC_Event_Kind :: enum u8 { Body, Const, Module_Stmt }
+TC_Event_Kind :: enum u8 { Body, Const }
 
 tc_event :: proc(k: ^TC, e: TC_Event) {
     e := e
@@ -302,16 +299,14 @@ tc_blocks_end :: proc(k: ^TC) {
     k.blocks = nil
 }
 
-tc_module_stmt :: proc(k: ^TC, sid: Syntax_Id) {
-    tc_event(k, {kind = .Module_Stmt, sid = sid})
-}
-
-// A fun or a struct as registered: its type, its definition, the scope its
-// name is declared in.
+// A scope as registered — a fun, a struct, a module: its type, its
+// definition, its body.
 TC_Scope :: struct {
     ts:   ^Type_Scope,
-    def:  Tree_Id,   // its Define
-    node: Tree_Id,   // its Fun_Def or Struct_Def
+    def:  Tree_Id,   // its Define (0: a module's — no statement defines it)
+    node: Tree_Id,   // its Fun_Def or Struct_Def (0: a module's)
+    files: []Tree_Id,   // a module's: the files it includes — their statements are its body's
+    foreigns: [dynamic]Tree_Id,   // the foreign blocks in its body
     nested: [dynamic]int,   // the funs and structs defined in its body
     consts: [dynamic]^TC_Const,   // the constants defined in its body
     subst:  TC_Bindings,       // an instance's: its type params bound
@@ -564,51 +559,17 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     return checked
 }
 
-// A module's files: each its own scope (its imports its own), chained to the
-// module's, where its definitions are declared; their names registered, then
-// their bodies checked.
+// A module checked: the scope its files' statements are the body of — a
+// body as a fun's is (tc_scope_body): its definitions registered, its
+// statements checked in order, its definitions' bodies. Its definitions are
+// named for the module and seen by whoever uses it; what its statements run,
+// nothing calls. The scopes it defines.
 tc_check_module_files :: proc(k: ^TC, files: []Tree_Id) -> []int {
-    // (The scopes this module registers: a `use` in it checks another, whose
-    // own are its.)
-    saved := k.mine
-    list: [dynamic]int
-    k.mine = &list
-    defer k.mine = saved
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s) }
-    }
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s) }
-    }
-    mine := list[:]
-    // (Signatures first: a constant's value may call a fun — an error, but
-    // one found at its call.)
-    for i in mine { tc_signature(k, k.scopes[i]) }
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_resolve(k, s) }
-    }
-    for f in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_alias_sight(k, s) }
-    }
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_validate(k, s) }
-    }
-    // A struct's fields are what its body declares: each struct's body is
-    // checked first (or sooner, by what needs its fields), then each fun's.
-    for i in mine { tc_struct_ensure(k, k.scopes[i].ts) }
-    for i in mine {
-        if ts := k.scopes[i].ts; ts != nil && ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
-    }
-    for i in mine {
-        tc_module_stmt(k, tc_sid(k, k.scopes[i].def))
-    }
-    // (Its foreign funs, for the emitter.)
-    for f, i in files {
-        for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
-            if k.t.tag[s] == .Foreign { tc_extract_foreign(k, s, k.pkg) }
-        }
-    }
-    return mine
+    sc := new_clone(TC_Scope{ts = k.module_scopes[k.pkg], files = files})
+    k.scope_of[sc.ts] = len(k.scopes)
+    append(&k.scopes, sc)
+    tc_scope_body(k, sc)
+    return sc.nested[:]
 }
 
 // A struct's body checked, its fields found, when something needs them
@@ -624,35 +585,6 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
     tc_scope_body(k, k.scopes[i])
 }
 
-// A module statement's declaration, registered: a fun's name, its type made.
-// A module statement's names, the first pass: its
-// funs, structs, types and unions declared, its constants listed — before
-// any `use` in the module checks another.
-tc_register_types :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    if t.tag[s] != .Define { return }
-    value := Tree_Id(t.b[s])
-    if value == 0 { return }
-    if t.a[s] == 0 {
-        #partial switch t.tag[value] {
-        case .Fun_Def, .Struct_Def:
-            tc_register_scope(k, s, value)
-            return
-        case .Alias_Def, .Distinct_Def:
-            tc_register_distinct(k, s, value)
-            return
-        case .Union_Def, .Error_Def:
-            tc_register_union(k, s, value)
-            return
-        }
-    }
-    if tc_name_alias(k, s) {
-        tc_register_distinct(k, s, value)
-        return
-    }
-    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value) }
-}
-
 // `A :: B`, a name by itself naming a type (the resolver's: rs_alias_kinds):
 // a type of its own, as `A :: [16]utf8` is.
 tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
@@ -661,46 +593,6 @@ tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
     if value == 0 || t.a[s] != 0 { return false }
     if t.tag[value] != .Ident && t.tag[value] != .Field { return false }
     return k.rs.refs[value].kind == .Type
-}
-
-// The rest of a module statement, the second pass: a `use`, a dispatch, an
-// overload.
-tc_register :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    #partial switch t.tag[s] {
-    case .Module:
-        return
-    case .Expr_Stmt:
-        if e := Tree_Id(t.a[s]); t.tag[e] == .Import { return }   // (a use: checked before its module — tc_check_uses)
-    case .Define:
-        value := Tree_Id(t.b[s])
-        if value != 0 && t.tag[value] == .Import { return }
-        if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
-            return   // (the resolver's: its members are checked to exist once every name is known)
-        }
-        #partial switch t.tag[value] {
-        case .Fun_Def, .Struct_Def, .Alias_Def, .Distinct_Def, .Union_Def, .Error_Def:
-            if t.a[s] == 0 { return }   // (the first pass's)
-        case:
-            if value != 0 && !tc_is_definition(t.tag[value]) { return }   // (a constant: the first pass's)
-        }
-        if value != 0 {
-            tc_unsupported(k, value, "this module definition")
-            return
-        }
-    case .Decl:
-        tc_module_decl(k, s)
-        return
-    case .Foreign:
-        tc_register_foreign(k, s)
-        return
-    case .Allocator:
-        tc_allocator(k, s)
-        return
-    case .Overload:
-        return   // (the resolver's: resolve_overloads)
-    }
-    tc_unsupported(k, s, "this module statement")
 }
 
 // `T :: U`, `T :: alias U`: its name (its base once every name is known:
@@ -720,33 +612,6 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = ni
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
     tc_bound_set(k, k.t.main[def], dt)
-}
-
-// What a module statement leaves for every name to be known: a distinct
-// type's base.
-tc_resolve :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    if t.tag[s] != .Define { return }
-    value := Tree_Id(t.b[s])
-    if tc_name_alias(k, s) {
-        tc_resolve_distinct(k, s, value)
-        return
-    }
-    if value != 0 && !tc_is_definition(t.tag[value]) {
-        // (A constant: checked, and built, here in its module's order.)
-        if kc := k.const_at[t.main[s]] or_else nil; kc != nil && kc.def == s {
-            tc_check_const(k, kc)
-            tc_module_stmt(k, tc_sid(k, s))
-        }
-        return
-    }
-    if t.a[s] != 0 { return }
-    if value != 0 && t.tag[value] == .Union_Def {
-        tc_resolve_union(k, s, value)
-        return
-    }
-    if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
-    tc_resolve_distinct(k, s, value)
 }
 
 // `T :: distinct U`'s (or `T :: U`'s) base, once every name is known.
@@ -784,15 +649,16 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
         }
     case .Overload:
         name := tc_text(Token_Id(t.b[s]))
-        if len(resolve_dispatches(k.rs, Token_Id(t.b[s]), name, all = true)) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
+        if len(resolve_overload_groups(k.rs, Token_Id(t.b[s]), Token_Id(t.b[s]))) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
     }
 }
 
-// A fun or a struct: its name declared where it is defined — its module, or
-// the fun or struct whose body has it (`owner`, registered as `owner_i`) —
-// and its type made (its signature and body wait). A body's is named for its
-// owner (`Arena_mark`).
-tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil, owner_i := -1) {
+// A fun or a struct: its name declared where it is defined — the scope
+// registered as `owner_i`: a module (`owner` nil: its names are flat, and
+// whoever uses it sees them), or the fun or struct whose body has it
+// (`owner`) — and its type made (its signature and body wait). A body's is
+// named for its owner (`Arena_mark`).
+tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_i: int) {
     t := k.t
     name := tc_name(k, def)
     filed := tc_def_name(k, def)
@@ -803,14 +669,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil, 
         // (A template: checked as each instance, a body's named for its
         // owner — tc_instance_name.)
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(t, node), pkg = k.pkg, owner = owner}
-        if owner == nil {
-            // (Its place in the module's order: a template the module's scope
-            // binds a type to is that type's declaration — mara.core's
-            // `Program` is the compiler's program struct — extracted there:
-            // tc_extract.)
-            append(k.mine, len(k.scopes))
-            append(&k.scopes, new_clone(TC_Scope{def = def, node = node}))
-        } else if owner.kind == .Struct && !is_struct {
+        if owner != nil && owner.kind == .Struct && !is_struct {
             // (A struct's: found by a value's method call, as its plain funs are.)
             if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
             (&k.generic_methods[owner])[filed] = t.main[def]
@@ -839,8 +698,6 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil, 
     if owner == nil {
         // (The module's: its name the table's, where a qualified use finds it.)
         k.table.funs[flat] = ts
-        append(k.mine, len(k.scopes))
-        k.scope_at[node] = len(k.scopes)
     } else {
         // (A body's: its owner's member by name — a struct, a type; a fun, or
         // a struct built by params, what a value's method call finds.)
@@ -852,9 +709,9 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil, 
             if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
             owner.functions[filed] = ts
         }
-        append(&k.scopes[owner_i].nested, len(k.scopes))
-        if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
     }
+    append(&k.scopes[owner_i].nested, len(k.scopes))
+    if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
     append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
 }
 
@@ -902,22 +759,6 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
     for i in list {
         sc := k.scopes[i]
         ft := sc.ts
-        if ft == nil {
-            // A template, extracted as the builtin type of its name (mara.core's
-            // `Program`: the compiler's), when there's one.
-            name := tc_name(k, sc.def)
-            found, _ := tc_ref_type(k, {kind = .Builtin}, name)
-            if ft = found.(^Type_Scope) or_else nil; ft == nil { continue }
-            key := make_flat_name(module, name)
-            k.annot.decls[tc_sid(k, sc.node)] = ft
-            ft.origin = Origin_Source{}
-            ft.body_span = tree_span(k.t, sc.def)
-            _, already := checked.functions[key]
-            ft.name = key
-            checked.functions[key] = ft
-            if !already { append(&checked.function_order, key) }
-            continue
-        }
         // (Its own definitions first.)
         tc_extract(k, sc.nested[:], module, is_main, nested = true)
         name := ft.source_name
@@ -1035,14 +876,13 @@ tc_variant_graph_decls :: proc(k: ^TC, s: Tree_Id, decls: ^[dynamic]Graph_Decl) 
     }
 }
 
-// What a statement outside any body declares, as the builder builds it.
+// What a statement declares, as the builder builds it: a definition's code —
+// a body's, or a module's, whose own statements are code nothing calls (.Code:
+// none is built).
 tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     t := k.t
     d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s)}
     #partial switch t.tag[s] {
-    case .Expr_Stmt:
-        if imp := Tree_Id(t.a[s]); t.tag[imp] != .Import { d.form = .Code }   // (a use: no code)
-    case .Module, .Return, .Break, .Continue, .Overload, .Foreign, .Allocator:
     case .Define:
         d.name = tc_name(k, s)
         value := Tree_Id(t.b[s])
@@ -1054,10 +894,8 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
             // (A use, a type, a dispatch: no code of its own.)
         case:
             if tc_name_alias(k, s) { break }   // (`A :: B`, B a type: another name for it)
-            d.settles, d.value = true, tc_sid(k, value)   // a constant
+            d.value = tc_sid(k, value)   // a constant
         }
-    case:
-        d.form = .Code
     }
     return d
 }

@@ -103,7 +103,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // or calls, the program's struct.
     clear(&run.list)
     run.next = 0
-    for e, i in k.events { if e.kind != .Module_Stmt { append(&run.list, i) } }
+    for _, i in k.events { append(&run.list, i) }
     middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
         for i in middle_take(run) {
             lw_code(mw.k, run.codes, i)

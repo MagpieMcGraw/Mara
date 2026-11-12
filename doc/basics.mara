@@ -28,6 +28,11 @@ use mara.core
 // into <name>.exe; with no name, the folder's. A module's files all see each
 // other's names, with no `use` between them.
 //
+// A file's top is a scope like a fun's body: what one can hold, the other
+// can. A variable written there is the file's own — no fun sees it — and
+// code there is checked like any other, but nothing calls a file, so it
+// never runs.
+//
 // Library modules have dotted names, like mara.os, and live in the
 // compiler's code/ folder. The comment right above the `module` line is the
 // file's doc comment.

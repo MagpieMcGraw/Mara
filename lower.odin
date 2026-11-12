@@ -38,16 +38,14 @@ Lower :: struct {
 lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
     p := graph_program_new(k.checked, tc_module_graph_decls(k))
     lw_const_index(k)
-    // What each module statement was settled as; each code's event — where
-    // it was checked: a body's by its fun or struct (and the statement that
-    // declares it), a constant's by its declaration.
+    // Each code's event — where it was checked: a body's by its fun or
+    // struct (and the statement that declares it), a constant's by its
+    // declaration.
     n := len(k.events)
     codes := LW_Codes{done = make([]bool, n), code = make([]^Program_Graph, n), folded = make([]bool, n), analysed = make([]bool, n)}
     for e, i in k.events {
         tc_salt_set(k, e.salt)
         switch e.kind {
-        case .Module_Stmt:
-            graph_module_stmt(p, e.sid)
         case .Body:
             codes.bodies[e.sc.ts] = i
         case .Const:
@@ -94,11 +92,8 @@ lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
 // checked.
 lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
     b := k.gb
-    for ms in b.prog.module_list {
-        if !ms.settled && ms.d.settles { graph_fatal(ms.d.span, "the checker settled no declaration here") }
-        lw_place_decl(k, codes, ms.d)
-    }
-    for e, i in k.events { if e.kind != .Module_Stmt { lw_code(k, codes, i) } }
+    for d in b.prog.module_list { lw_place_decl(k, codes, d) }
+    for _, i in k.events { lw_code(k, codes, i) }
 }
 
 // Each code's event (TC.events): where it was checked, and whether it is
@@ -133,9 +128,9 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
 // definition: a constant's, or a fun's or struct's, each of its instances —
 // lowered and put in place (Program_Code.codes, the program's written order:
 // each module's statements in turn, a code's body's definitions after it).
-// (What runs nothing — a variable, which no function sees, an import, a
-// type, a dispatch group, a foreign fun, a constant nothing uses — is no
-// code.)
+// (What runs nothing — an import, a type, a dispatch group, a foreign fun,
+// a constant nothing uses — is no code; nor is a module's own statement, a
+// variable or a call at a file's top: nothing calls a module.)
 lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scope = nil) {
     b := k.gb
     if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
@@ -153,8 +148,6 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scop
             graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
         }
         for ts in list { lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit) }
-    case .Code:
-        graph_fatal(d.span, "code outside a body reached the graph")
     }
 }
 
@@ -423,6 +416,7 @@ lw_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     b := k.gb
     stmts := tc_live(k, stmts)
     for s in stmts {
+        if t.tag[s] == .Foreign || t.tag[s] == .Overload { continue }   // (C's funs, an operator's group: no code)
         if t.tag[s] == .Define {
             graph_build_def(b, tc_graph_decl(k, s))
             // (A union's variants with bodies: placed as a module's are.)

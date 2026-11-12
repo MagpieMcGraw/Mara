@@ -1,0 +1,14 @@
+module file_var_unseen_neg
+
+//@ expect-fail: 'count' is a local of 'file_var_unseen_neg'
+
+// A variable at a file's top is the file's own: a fun does not see it, as it
+// does not see the locals of a fun around it.
+
+use mara.core
+
+count := 5
+
+main :: fun() {
+	print(count)
+}

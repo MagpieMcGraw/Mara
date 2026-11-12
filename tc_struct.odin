@@ -46,9 +46,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     bt := tc_check(k, base)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        mt := tc_module_member(k, n, sd, field)
-        if r := k.rs.refs[n]; r.kind == .Global { tc_list_use(k, r.decl, mt, list_ok, list_index, span) }
-        return mt
+        return tc_module_member(k, n, sd, field)
     }
     // (`Event_State.mouse`: a field of a struct's type — a field reference,
     // field_ref.odin. `r.xrel`, r one: a reference to a field of its field.)

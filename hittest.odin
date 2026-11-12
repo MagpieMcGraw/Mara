@@ -198,7 +198,6 @@ ref_kind_word :: proc(k: Ref_Kind) -> string {
     case .Param:   return "param"
     case .Result:  return "result"
     case .Field:   return "field"
-    case .Global:  return "global"
     case .Const:   return "const"
     case .Variant: return "variant"
     case .Fun:     return "fun"
@@ -277,7 +276,7 @@ hit_names_on_line :: proc(src: ^Source_File, line: int) -> []Token_Id {
 hit_name_row :: proc(sb: ^strings.Builder, t: ^Tree, a: ^Annotations, r: Ref, n: Tree_Id, name: string) {
     fmt.sbprintf(sb, "  %s — %s", name, ref_kind_word(r.kind))
     #partial switch r.kind {
-    case .Local, .Param, .Result, .Field, .Global, .Const:
+    case .Local, .Param, .Result, .Field, .Const:
         if ty := hit_type(a, n) if t.tag[n] >= .Number else ""; ty != "" { fmt.sbprintf(sb, " : %s", ty) }
     }
     if r.decl != 0 { fmt.sbprintf(sb, "   declared %s", ask_loc(token_span(build_tokens[r.decl]))) }
@@ -646,7 +645,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     r, named_at, refers := hit_ref(t, a, hits, p.at, name)
     if uses && refers && r.decl != 0 {
         #partial switch r.kind {
-        case .Local, .Param, .Result, .Field, .Global, .Const:
+        case .Local, .Param, .Result, .Field, .Const:
             return hit_uses_answer(t, a, p, r, named_at, title, checked), true
         case .Variant:
             return hit_variant_answer(t, a, r.decl, title), true

@@ -36,7 +36,6 @@ Ref_Kind :: enum u8 {
     Param,
     Result,    // a named result
     Field,     // a struct's field: declared in its body, or reached through a value
-    Global,    // a module's variable
     Const,
     Variant,   // an enum's, a union's or an error set's
     Fun,       // a fun, a method, a struct's constructor (its struct)
@@ -360,7 +359,7 @@ annot_check :: proc(a: ^Annotations, t: ^Tree, pc: ^Program_Code, errors: int) {
             i, n := annot_split(key)
             if n in in_default { continue }
             #partial switch annot_ref(a, i, n).kind {
-            case .Local, .Param, .Result, .Field, .Global: continue
+            case .Local, .Param, .Result, .Field: continue
             }
             report(&problems, t, n, i, "is annotated as calling %s; the graph makes no such call", ts.name if ts != nil else "nothing")
         }

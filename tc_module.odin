@@ -39,9 +39,8 @@ tc_path :: proc(k: ^TC, imp: Tree_Id) -> string {
     return strings.to_string(sb)
 }
 
-// A module checked: its scope (its names), its files registered and
-// checked, its functions extracted. Once; a module that needs itself is a
-// cycle.
+// A module checked: its scope (its names), its body — its files' — checked,
+// its functions extracted. Once; a module that needs itself is a cycle.
 tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     if m, done := k.checked_modules[name]; done { return m }
     if name in k.in_progress {
@@ -69,22 +68,4 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
         tc_scope_bind(k, k.std, name[len("mara."):], m, {kind = .Module})
     }
     return m
-}
-
-// A module's variables: its file's block's locals — typed (by what is
-// written, else by its value), no function sees them (one that reaches for
-// one is told so: report_unresolved).
-tc_module_decl :: proc(k: ^TC, s: Tree_Id) {
-    t := k.t
-    v := decl_view(t, s)
-    span := tree_span(t, s)
-    ann: Type
-    if v.type_ != 0 { ann = tc_type(k, v.type_, span) }
-    for tg, i in v.targets {
-        vt: Type = Type_Error{}
-        if i < len(v.values) { vt = solidify_type(tc_check(k, v.values[i])) }
-        tc_bound_set(k, t.main[tg], ann if ann != nil else vt)
-        tc_set_ref(k, tg, {t.main[tg], .Global})
-        tc_set_type(k, tg, ann if ann != nil else vt)
-    }
 }

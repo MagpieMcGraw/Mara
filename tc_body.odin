@@ -7,14 +7,16 @@ import "core:strings"
 
 // Bodies, checked statement by statement in the order they run. A struct's
 // is its constructor, a fun's body like any other: once it is checked, the
-// struct takes what its top block declared as its layout (tc_layout). (The
-// graph is lowered from them once checking is done: lower.odin, which
-// replays each body where TC.events says it was checked.)
+// struct takes what its top block declared as its layout (tc_layout). A
+// module's is its files' statements: checked the same, though nothing calls
+// it — no code is built of it. (The graph is lowered from them once checking
+// is done: lower.odin, which replays each body where TC.events says it was
+// checked.)
 
 tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     ts := sc.ts
-    v := scope_view(t, sc.node)
+    v := scope_view(t, sc.node) if sc.node != 0 else Scope_View{}
     span := tree_span(t, sc.def)
     ts.sig_state = .In_Progress
     hint := k.hint
@@ -25,7 +27,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         if len(k.vars) > 0 { k.annot.vars[ts] = k.vars }
         k.body, k.vars, k.in_defer, k.loops = outer, outer_vars, outer_defer, outer_loops
     }
-    append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
+    if sc.node != 0 { append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node}) }
     tc_register_defs(k, sc)
     // (Its params and named results — locals: its variables, an intrinsic's
     // too, though no code of its reads them. Bound before its constants: a
@@ -35,21 +37,26 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
-    k.annot.decls[tc_sid(k, sc.node)] = ts
-    tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
+    if sc.node != 0 {
+        k.annot.decls[tc_sid(k, sc.node)] = ts
+        tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
+    }
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
         tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
-        tc_scope(k, v.body)
+        for stmts in tc_scope_stmts(k, sc) { tc_scope(k, stmts) }
     }
-    // (A struct: what its top block declared, its layout.)
-    if ts.kind == .Struct { tc_layout(k, sc) }
+    // (A struct: what its top block declared, its layout. A module is no
+    // value: it has none.)
+    if ts.kind == .Struct && !ts.is_module { tc_layout(k, sc) }
     ts.sig_state = .Resolved
     // (A default param's width the body left open: settled.)
     solidify_param_defaults(k.c, ts)
     // (Its definitions' bodies, after its own: a struct's methods read its
     // layout.)
     tc_check_defs(k, sc)
+    // (Its foreign funs, for the emitter.)
+    for s in sc.foreigns { tc_extract_foreign(k, s, ts.name) }
 }
 
 // A struct's layout: what its constructor's top block declared, in order —
@@ -112,7 +119,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id) {
         k.decls = saved
     }
     for s in stmts {
-        if t.tag[s] == .Define {
+        if t.tag[s] == .Define || t.tag[s] == .Foreign {
             // (A body's definitions, its blocks' too, are registered and checked
             // with it: tc_body_defs.)
             continue
@@ -172,7 +179,12 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         tc_scope(k, tree_list(t, t.a[s]))
         k.in_defer, k.loops = in_defer, loops
     case .Allocator:
-        if slice.contains(k.main_allocators[:], s) { tc_allocator(k, s) } else { tc_error(k, span, TYPE_ALLOCATOR_AT_TOP) }
+        tc_allocator(k, s)
+    case .Overload:
+        tc_validate(k, s)   // (its group: one in sight)
+    case .Module:
+        // (`module m`: the module that includes this file — its first line.)
+        if first := tree_list(t, t.a[t.files[build_tokens[t.first[s]].file]]); first[0] != s { tc_error(k, span, TYPE_MODULE_AT_TOP) }
     case .Match:
         tc_match(k, s)
     case .Break, .Continue:
@@ -500,7 +512,7 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
     defer tc_bind(k, name, ann, ref)
     tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
-    if (ref.kind == .Local || ref.kind == .Global || ref.kind == .Field) && is_partial_array(ann) { k.lists[ref.decl] += {.Fresh} }
+    if (ref.kind == .Local || ref.kind == .Field) && is_partial_array(ann) { k.lists[ref.decl] += {.Fresh} }
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
 }
 
@@ -635,7 +647,7 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (exi
 // struct's field (in its body), a module's.
 tc_is_variable :: proc(ref: Ref) -> bool {
     #partial switch ref.kind {
-    case .Local, .Param, .Result, .Field, .Global: return true
+    case .Local, .Param, .Result, .Field: return true
     }
     return false
 }

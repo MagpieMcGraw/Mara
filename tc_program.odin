@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // The program's arena: `#allocator Arena_Debug(16 * MB)`, at the top of the
@@ -29,7 +30,11 @@ tc_scan_allocator :: proc(k: ^TC) {
     }
     for file in k.modules[k.main_package] or_else nil {
         for s in tc_live(k, tree_list(t, t.a[file])) {
-            if t.tag[s] == .Allocator { scan(k, s); continue }
+            if t.tag[s] == .Allocator {
+                append(&k.main_allocators, s)
+                scan(k, s)
+                continue
+            }
             is_main := t.tag[s] == .Define && tc_name(k, s) == "main" && t.tag[t.b[s]] == .Fun_Def
             if !is_main { continue }
             for b in tc_live(k, scope_view(t, Tree_Id(t.b[s])).body) {
@@ -68,6 +73,10 @@ tc_allocator :: proc(k: ^TC, s: Tree_Id) {
     span := tree_span(t, s)
     if k.pkg != k.main_package {
         tc_error(k, span, TYPE_ALLOCATOR_IN_MAIN_MODULE)
+        return
+    }
+    if !slice.contains(k.main_allocators[:], s) {
+        tc_error(k, span, TYPE_ALLOCATOR_AT_TOP)
         return
     }
     if k.allocator_at != 0 && k.allocator_at != s {

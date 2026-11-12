@@ -283,7 +283,6 @@ shape_roots :: proc(t: ^Tree, a: ^Annotations, i: Instance_Id, e: Tree_Id, roots
         r := annot_ref(a, i, n)
         #partial switch r.kind {
         case .Local, .Param: roots[r.decl] = true
-        case .Global:        return false
         }
     }
     return true

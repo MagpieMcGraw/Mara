@@ -1,0 +1,16 @@
+module file_var_hides_neg
+
+//@ expect-fail: variable 'helper' would hide the fun 'helper'
+
+// A variable at a file's top cannot take the name of a fun in sight, as a
+// local cannot: the fun would be out of reach below it.
+
+use mara.core
+
+helper := 5
+
+helper :: fun() -> i64 { return 1 }
+
+main :: fun() {
+	print(helper())
+}

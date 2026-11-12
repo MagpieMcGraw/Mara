@@ -10,7 +10,8 @@ import "core:strings"
 // `-> err` for a C bool, false when it failed, and `-> T, err` for a C pointer,
 // NULL when it failed. Those become F. A fun that gives no err is called as it is.
 
-tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
+// (`owner`: the scope whose body has it, by name — its funs are named for it.)
+tc_register_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
     t := k.t
     fv := foreign_view(t, s)
     k.c.in_foreign_sig = true
@@ -21,7 +22,7 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id) {
         span := tree_span(t, ff)
         ft := new(Type_Scope)
         ft.kind, ft.calling_conv = .Fun, .C
-        ft.home_package, ft.name = k.pkg, make_flat_name(k.pkg, name)
+        ft.home_package, ft.name = k.pkg, make_flat_name(owner, name)
         for g in v.params {
             pv := params_view(t, g)
             for pn in pv.names {
@@ -83,9 +84,10 @@ tc_foreign_err :: proc(k: ^TC, ft: ^Type_Scope, origin: ^Origin_Foreign, fails: 
     origin.fail_site = checked_atom(k.checked, fmt.tprintf("%s in %s", span_location(span), origin.link_name))
 }
 
-// A module's foreign funs, for the emitter: each by its flat name, linked as
-// prefix + name (one declaration per symbol in the program).
-tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
+// A scope's foreign funs, for the emitter: each by its flat name (`owner`:
+// the scope's), linked as prefix + name (one declaration per symbol in the
+// program).
+tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
     t := k.t
     fv := foreign_view(t, s)
     library := tc_text(fv.library)
@@ -103,7 +105,7 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, module: string) {
         span := tree_span(t, ff)
         link := strings.concatenate({prefix, name}) if prefix != "" else name
         // (A name a module defines once, as any definition's.)
-        flat := make_flat_name(module, name)
+        flat := make_flat_name(owner, name)
         if _, bound := k.checked.functions[flat]; bound || flat in k.table.funs {
             tc_error(k, span, TYPE_FUNCTION_ALREADY_DEFINED, name)
             continue

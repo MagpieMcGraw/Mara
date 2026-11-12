@@ -73,7 +73,7 @@ completion_named :: proc(c: ^Completions, checked: ^Checked_Program, name: strin
     t, _ := checked_binding(checked, ref, name)
     kind := Completion_Kind.Type
     #partial switch ref.kind {
-    case .Local, .Param, .Result, .Field, .Global, .Const: kind = .Variable
+    case .Local, .Param, .Result, .Field, .Const: kind = .Variable
     case .Fun:     kind = .Function
     case .Module:  kind = .Module
     case .Variant: kind = .Variant

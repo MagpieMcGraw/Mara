@@ -74,7 +74,7 @@ tc_list_use :: proc(k: ^TC, decl: Token_Id, t: Type, ok, index: bool, span: Span
 tc_list_looped :: proc(k: ^TC, n: Tree_Id, t: Type) {
     if !is_partial_array(t) { return }
     r := tc_ref(k, n)
-    if r.decl == 0 || (r.kind != .Local && r.kind != .Global && r.kind != .Field) || .Indexed in k.lists[r.decl] { return }
+    if r.decl == 0 || (r.kind != .Local && r.kind != .Field) || .Indexed in k.lists[r.decl] { return }
     k.lists[r.decl] += {.Indexed}
     append(&k.list_indexed, List_Indexed{r.decl, tree_span(k.t, n), true})
 }

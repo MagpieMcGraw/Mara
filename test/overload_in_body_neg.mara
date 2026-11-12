@@ -1,0 +1,23 @@
+module overload_in_body_neg
+
+//@ expect-fail: mismatched types for '+': V3 and V3
+
+// An `overload` in a body is that body's: another fun's `+` does not see it.
+
+use mara.core
+
+V3 :: distinct [3!]i64
+vadd :: fun(a: V3, b: V3) -> V3 { return V3{a[0] + b[0], a[1] + b[1], a[2] + b[2]} }
+plus :: dispatch { vadd }
+
+main :: fun() {
+	inner()
+	v := V3{1, 2, 3} + V3{4, 5, 6}
+	print(v[0])
+}
+
+inner :: fun() {
+	overload + plus
+	v := V3{1, 2, 3} + V3{4, 5, 6}
+	print(v[0])
+}

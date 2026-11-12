@@ -252,7 +252,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     ref := k.rs.refs[n]
     t, ok := tc_ref_type(k, ref, name)
     kc := k.const_at[ref.decl] if ref.kind == .Const else nil
-    if ref.kind == .None || kc != nil && !kc.local {
+    if ref.kind == .None || kc != nil && kc.owner.is_module {
         // (A module's constant two modules have — its own and one it uses,
         // or two it uses — is ambiguous: said so.)
         if !tc_const_unambiguous(k, n, name, span) { return Type_Error{} }
@@ -298,7 +298,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         return Type_Error{}
     }
-    if ref.kind == .Local || ref.kind == .Global || ref.kind == .Field {
+    if ref.kind == .Local || ref.kind == .Field {
         #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, n == k.list_ok, n == k.list_at, span) }
     }
     return t

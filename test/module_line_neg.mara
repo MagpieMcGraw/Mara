@@ -1,0 +1,12 @@
+module module_line_neg
+
+//@ expect-fail: it is the file's first line
+
+// `module` is a file's first line: it names the module the file is part of.
+
+use mara.core
+
+main :: fun() {
+	module other
+	print("hi")
+}

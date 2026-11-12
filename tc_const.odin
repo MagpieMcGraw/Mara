@@ -10,23 +10,13 @@ import "core:strings"
 TC_Const :: struct {
     def, value, ann: Tree_Id,
     name:  string,          // as written
-    mangled: string,        // a body's: named for its owner
+    mangled: string,        // its symbol: named for the scope that defines it (`main_K`, `mara_core_KB`)
     sid:   Syntax_Id,       // its value's, as the builder keys it (an instance's its own)
-    local: bool,            // a body's (its type its value's)
+    owner: ^Type_Scope,     // the scope that defines it: a module, a fun, a struct
     pkg:   string,
     t:     Type,
     state: Resolution_State,
     visiting: bool,         // its value being checked or folded: a use in it is a cycle
-}
-
-// A module's constant: by the token that declares it, and by its flat name
-// (its symbol: what the builder names its table).
-tc_register_const :: proc(k: ^TC, def, value: Tree_Id) {
-    name := tc_name(k, def)
-    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, pkg = k.pkg})
-    kc.sid = tc_sid(k, value)
-    k.const_at[k.t.main[def]] = kc
-    k.consts[make_flat_name(k.pkg, name)] = kc
 }
 
 // A constant checked (once).
@@ -35,9 +25,9 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     kc.state = .In_Progress
     tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
-    // (A module's: checked outside any body, wherever its first use is.)
+    // (A module's: checked in no fun's body, wherever its first use is.)
     outer_body := k.body
-    if !kc.local { k.body = nil }
+    if kc.owner.is_module { k.body = kc.owner }
     defer k.body = outer_body
     append(&k.annot.bodies, Annot_Body{nil, tc_instance(k, kc.value), tree_lo(k.t, kc.value), kc.value})
     t := k.t
@@ -49,7 +39,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     k.hint = ann if !is_any(ann) else nil
     vt := tc_check(k, kc.value)
     final := vt
-    if !is_any(ann) && !kc.local {
+    if !is_any(ann) {
         if types_incompatible(ann, vt) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE, type_name(vt), kc.name, type_name(ann))
         }
@@ -78,13 +68,14 @@ module_short_name :: proc(module: string) -> string {
     return module
 }
 
-// A body's constant: named for its owner (`main_K`), the name the builder's
-// table takes; bound in its owner's body once checked.
-tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
+// A scope's constant: by the token that declares it, and by its symbol —
+// named for the scope that defines it (`main_K`, `mara_core_KB`), the name
+// the builder's table takes; bound in its scope's body once checked.
+tc_register_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     name := tc_name(k, def)
     filed := tc_def_name(k, def)
-    mangled := strings.concatenate({sc.ts.name, "_", filed})
-    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, mangled = mangled, pkg = k.pkg, local = true})
+    mangled := make_flat_name(sc.ts.name, filed)
+    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, mangled = mangled, pkg = k.pkg, owner = sc.ts})
     kc.sid = tc_sid(k, value)
     k.const_at[k.t.main[def]] = kc
     k.consts[mangled] = kc

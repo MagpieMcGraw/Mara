@@ -2,10 +2,11 @@ package mara
 
 import "core:fmt"
 
-// Definitions in a body: a struct's methods and types, a fun's own funs,
-// structs, enums, error sets, distinct types and aliases. Each is named for
-// its owner (`Arena_mark`), declared in its owner's scope (a method sees its
-// struct's names; no body sees another's locals), and a fun or struct
+// Definitions in a scope — a module's, a struct's methods and types, a
+// fun's own: funs, structs, enums, error sets, distinct types, aliases,
+// constants, dispatch groups, foreign funs. Each is named for the scope that
+// defines it (`Arena_mark`, `mara_core_Arena`), declared in it (a method sees
+// its struct's names; no body sees another's locals), and a fun or struct
 // checked as its own body.
 
 // A definition in a block of a body — an if's, a loop's, a match arm's, a
@@ -24,6 +25,8 @@ tc_body_defs :: proc(k: ^TC, stmts: []Tree_Id, out: ^[dynamic]Tree_Id, count: ^i
     live := tc_live(k, stmts)
     for s in live {
         #partial switch t.tag[s] {
+        case .Foreign:
+            append(out, s)
         case .Define:
             append(out, s)
             if block && s not_in k.block_defs {
@@ -56,21 +59,37 @@ tc_def_name :: proc(k: ^TC, def: Tree_Id) -> string {
     return name
 }
 
-// A body's definitions, registered (once): each fun's and struct's type made
-// and its signature resolved.
+// A scope's statements, list by list: its body's; a module's, each of the
+// files' it includes.
+tc_scope_stmts :: proc(k: ^TC, sc: ^TC_Scope) -> [][]Tree_Id {
+    out := make([dynamic][]Tree_Id, context.temp_allocator)
+    if sc.node != 0 { append(&out, scope_view(k.t, sc.node).body) }
+    for f in sc.files { append(&out, tree_list(k.t, k.t.a[f])) }
+    return out[:]
+}
+
+// A scope's definitions, registered (once): each one's name declared and its
+// type made, then — every name of the scope's known — each distinct type's
+// base, each fun's and struct's signature, each union's variants.
 tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     if sc.registered { return }
     sc.registered = true
     t := k.t
-    owner := sc.ts
-    owner_i := k.scope_of[owner]
+    // (What its definitions are named for and seen in: the scope — but a
+    // module's, flat names whoever uses the module sees: none.)
+    owner := sc.ts if !sc.ts.is_module else nil
+    owner_i := k.scope_of[sc.ts]
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)
     defs := make([dynamic]Tree_Id, context.temp_allocator)
     count := 0
-    tc_body_defs(k, scope_view(t, sc.node).body, &defs, &count)
+    for stmts in tc_scope_stmts(k, sc) { tc_body_defs(k, stmts, &defs, &count) }
     for s in defs {
+        if t.tag[s] == .Foreign {
+            append(&sc.foreigns, s)
+            continue
+        }
         value := Tree_Id(t.b[s])
         if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {
             tc_register_scope(k, s, value, owner, owner_i)
@@ -99,17 +118,20 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             continue
         }
         if value != 0 && !tc_is_definition(t.tag[value]) {
-            tc_register_local_const(k, s, value, sc)
+            tc_register_const(k, s, value, sc)
             continue
         }
-        tc_unsupported(k, s, "a definition in a body")
+        tc_unsupported(k, s, "this definition")
     }
-    // (A distinct type's base, once every name here is declared.)
+    // (A foreign fun's types, a distinct type's base: once every name here
+    // is declared.)
+    for s in sc.foreigns { tc_register_foreign(k, s, sc.ts.name) }
     for s in distincts { tc_resolve_distinct(k, s, Tree_Id(t.b[s])) }
     for s in distincts { tc_alias_sight(k, s, owner) }
-    // (A union's variants' fields, as a module's: tc_resolve_union.)
-    for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }
+    // (A union's variants' fields: their bodies, checked — once the scope's
+    // funs have their signatures, for one to call.)
+    for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for s in dispatches { tc_validate(k, s) }
 }
 

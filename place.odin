@@ -244,14 +244,12 @@ place_of :: proc(f: ^Place_Finder, n: Tree_Id, i: Instance_Id) -> []Place {
         r := place_ref(f, n, i)
         #partial switch r.kind {
         case .Local, .Param, .Result: return place_of_var(f, r.decl)
-        case .Global:                 return place_one(r.decl)
         case .Field:                  return place_down(place_one(PLACE_EVERY), r.decl)
         }
     case .Field:
         r := place_ref(f, n, i)
         operand := Tree_Id(t.a[n])
         #partial switch r.kind {
-        case .Global:  return place_one(r.decl)   // (a module's variable, by the module's name)
         case .Builtin: return place_inside(f, operand, i)   // (`.len`, a swizzle: a part of it)
         case .Field:
             base := place_inside(f, operand, i)

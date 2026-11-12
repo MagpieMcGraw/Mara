@@ -1,0 +1,14 @@
+module file_code_checked_neg
+
+//@ expect-fail: cannot assign text (3 bytes) to variable 'total'
+
+// Code at a file's top is checked like any other, though nothing runs it.
+
+use mara.core
+
+total := 1
+total = "one"
+
+main :: fun() {
+	print("hi")
+}

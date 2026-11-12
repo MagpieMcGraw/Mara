@@ -1,0 +1,12 @@
+module body_const_type_neg
+
+//@ expect-fail: cannot assign text (5 bytes) to constant 'K' of type i64
+
+// A constant's written type counts in a body as at a file's top.
+
+use mara.core
+
+main :: fun() {
+	K : i64 : "seven"
+	print(K)
+}

@@ -233,7 +233,7 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
 tc_overload_members :: proc(k: ^TC, op: Token_Kind, at: Token_Id, operands: []Type) -> []TC_Member {
     out := make([dynamic]TC_Member, context.temp_allocator)
     for group in resolve_overloads(k.rs, at, op) {
-        tc_add_members(&out, tc_dispatch_members(k, resolve_dispatches(k.rs, at, tc_text(group), all = true)))
+        tc_add_members(&out, tc_dispatch_members(k, resolve_overload_groups(k.rs, at, group)))
     }
     homes := tc_type_homes(operands)
     for group in resolve_overloads_in(k.rs, homes, op) {

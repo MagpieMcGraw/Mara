@@ -638,8 +638,7 @@ Graph_Program :: struct {
     checked: ^Checked_Program,
     // Each module's statements, in written order: where the code each
     // defines goes (lower_place).
-    module_stmts: map[Syntax_Id]int,
-    module_list:  [dynamic]Graph_Module_Stmt,
+    module_list:  [dynamic]Graph_Decl,
     // Every name the checker's table has a constant under, by its value's id
     // (a module's constant is there under its flat name and its bare one):
     // what its table is named (graph_table_names).
@@ -794,13 +793,6 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     return b
 }
 
-// A module's statement, and whether the checker has settled it (a constant, a
-// variable: once, by the first pass over it).
-Graph_Module_Stmt :: struct {
-    d:       Graph_Decl,
-    settled: bool,
-}
-
 // The program's modules' statements: the modules in name order, each's in
 // written order — where the code each defines goes.
 @(private="file")
@@ -809,18 +801,8 @@ graph_modules :: proc(b: ^Graph_Program, programs: map[string][]Graph_Decl) {
     for name in programs { append(&modules, name) }
     slice.sort(modules[:])
     for name in modules {
-        for d in programs[name] {
-            b.module_stmts[d.id] = len(b.module_list)
-            append(&b.module_list, Graph_Module_Stmt{d = d})
-        }
+        append(&b.module_list, ..programs[name])
     }
-}
-
-// A module's statement the checker has met: settled, if it's one it settles.
-graph_module_stmt :: proc(b: ^Graph_Program, id: Syntax_Id) {
-    i, is_module := b.module_stmts[id]
-    if !is_module || b.module_list[i].settled { return }
-    if b.module_list[i].d.settles { b.module_list[i].settled = true }
 }
 
 // A builder done with (its codes, and what they hold, stay: Program_Code.stores).
@@ -848,7 +830,6 @@ graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
 @(private="file")
 graph_program_free :: proc(p: ^Graph_Program) {
     delete(p.constant_names)
-    delete(p.module_stmts)
     delete(p.module_list)
     for _, c in p.bodies { delete(c.defs); free(c) }
     delete(p.bodies)
@@ -1415,7 +1396,6 @@ Graph_Decl :: struct {
     id:      Syntax_Id,
     span:    Span,
     form:    Graph_Decl_Form,
-    settles: bool,               // a variable's or a constant's: built as the checker settles it
     name:    string,             // what it names: a constant, a scope
     value:   Syntax_Id,          // a constant's value (0: none), which its uses find it by
     generic: bool,               // .Scope: a generic's, built for each instance
@@ -1423,9 +1403,8 @@ Graph_Decl :: struct {
 }
 
 Graph_Decl_Form :: enum u8 {
-    None,       // a constant (its code is found by its id), a type, a call, a rule
+    None,       // a constant (its code is found by its id), a type, a use, a module's own statement: no code
     Scope,      // a fun or a struct
-    Code,       // code outside a body: an error
 }
 
 // A plain declaration, as a field of the owning struct or a local / constant.

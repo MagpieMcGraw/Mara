@@ -1393,12 +1393,6 @@ ask_find_values :: proc(checked: ^Checked_Program, name, scope_file, scope_modul
     for tok, def in checked.rs.defs {
         if token_text(build_tokens[tok]) == name && rs_def_kind(t, Tree_Id(t.b[def])) == .Const { add(&out, "const", tok, scope_file, scope_module) }
     }
-    a := checked.annot
-    for inst in 0 ..< len(a.instances) {
-        for ref in a.refs[inst] {
-            if ref.kind == .Global && ref.decl != 0 && token_text(build_tokens[ref.decl]) == name { add(&out, "global", ref.decl, scope_file, scope_module) }
-        }
-    }
     slice.sort_by(out[:], proc(a, b: Ask_Value) -> bool { return a.decl < b.decl })
     return out
 }

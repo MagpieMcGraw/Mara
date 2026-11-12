@@ -83,6 +83,7 @@ Rs_Scope :: struct {
     fence: i32,                 // the innermost fun or struct, it or around it: the variables below it are out of sight
     uses: [dynamic]^Rs_Module,  // what it uses: their definitions in sight, behind its own
     named: [dynamic]Rs_Named_Use,   // what it uses under a name: reached through that name alone
+    overloads: [dynamic]Rs_Overload,   // its `overload op name`s: the operators' groups in it
     self: Ref,                  // a fun's or a struct's: itself (`Self`)
     signature: bool,            // a fun's or a struct's, its params and results being resolved
 }
@@ -148,6 +149,7 @@ Rs_Sight :: struct {
     uses:   []^Rs_Module,
     named:  []Rs_Named_Use,
     all:    []^Rs_Module,
+    overloads: []Rs_Overload,   // the `overload`s of the scopes around it, the nearest's first
     lo, hi: Token_Id,   // the scope's tokens (hi 0: the file's — all of them)
 }
 
@@ -180,14 +182,16 @@ rs_sight_at :: proc(r: ^Resolver, at: Token_Id) -> (Rs_Sight, bool) {
 rs_sight_here :: proc(r: ^Resolver, lo, hi: Token_Id) -> Rs_Sight {
     uses := make([dynamic]^Rs_Module)
     named := make([dynamic]Rs_Named_Use)
+    overloads := make([dynamic]Rs_Overload)
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
         for u in r.scopes[i].uses { if !slice.contains(uses[:], u) { append(&uses, u) } }
         append(&named, ..r.scopes[i].named[:])
+        append(&overloads, ..r.scopes[i].overloads[:])
     }
     all := make([dynamic]^Rs_Module)
     append(&all, ..uses[:])
     for u in named { if !slice.contains(all[:], u.module) { append(&all, u.module) } }
-    return {r.module, uses[:], named[:], all[:], lo, hi}
+    return {r.module, uses[:], named[:], all[:], overloads[:], lo, hi}
 }
 
 // --- the stack ----------------------------------------------------------------------
@@ -357,7 +361,6 @@ rs_signature_clash :: proc(r: ^Resolver, tok: Token_Id) {
 rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
     if name == "_" { return }
     cur := i32(len(r.scopes) - 1)
-    if k := r.scopes[cur].kind; k == .Module || k == .File { return }
     if slot, ok := r.slots[name]; ok {
         fence := r.scopes[cur].fence
         for i := r.top[slot]; i >= 0; i = r.names[i].hides {
@@ -770,6 +773,16 @@ resolve_dispatches :: proc(r: ^Resolver, at: Token_Id, name: string, all := fals
     return out[:]
 }
 
+// The dispatch groups an `overload` names (`group`, its name's token) where
+// `at` is: those of that name in sight there, and the one the name means
+// where the overload is written — a body's own group.
+resolve_overload_groups :: proc(r: ^Resolver, at, group: Token_Id) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    append(&out, ..resolve_dispatches(r, at, rs_text(group), all = true))
+    if ref, ok := r.token_refs[group]; ok && r.dispatches[ref.decl] && !slice.contains(out[:], ref.decl) { append(&out, ref.decl) }
+    return out[:]
+}
+
 // The dispatch groups named `name` in the modules `homes` — the modules a
 // call's arguments' types are defined in, whose groups join those in sight
 // (map.mara's map_hash(key) finds the one beside the key's type).
@@ -909,13 +922,14 @@ rs_plain_fun :: proc(r: ^Resolver, ref: Ref) -> bool {
 }
 
 // The groups an operation `op` overloads, by name, in sight where `at` is:
-// its module's `overload`s, then each module its file or its module uses',
-// under a name or not.
+// the `overload`s of the scopes around it, its module's, then each module its
+// scopes use, under a name or not.
 resolve_overloads :: proc(r: ^Resolver, at: Token_Id, op: Token_Kind) -> []Token_Id {
     sight, ok := rs_sight_at(r, at)
     if !ok { return nil }
     out := make([dynamic]Token_Id, context.temp_allocator)
-    for o in sight.module.overloads { if o.op == op { append(&out, o.name) } }
+    for o in sight.overloads { if o.op == op { append(&out, o.name) } }
+    for o in sight.module.overloads { if o.op == op && !slice.contains(out[:], o.name) { append(&out, o.name) } }
     for u in sight.all {
         if u == sight.module { continue }
         for o in u.overloads { if o.op == op { append(&out, o.name) } }
@@ -957,8 +971,9 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id) {
 rs_stmts :: proc(r: ^Resolver, live: []Tree_Id, used := false) {
     if !used { rs_uses(r, live) }
     for s in live { rs_stmt(r, s) }
-    // (What it sees of the groups, when it uses a module itself.)
-    if cur := r.scopes[len(r.scopes) - 1]; len(live) > 0 && len(cur.uses) + len(cur.named) > 0 {
+    // (What it sees of the groups, when it uses a module or overloads an
+    // operator itself.)
+    if cur := r.scopes[len(r.scopes) - 1]; len(live) > 0 && len(cur.uses) + len(cur.named) + len(cur.overloads) > 0 {
         t := r.t
         file := build_tokens[t.first[live[0]]].file
         if file not_in r.sights { r.sights[file] = {} }
@@ -970,11 +985,13 @@ rs_stmts :: proc(r: ^Resolver, live: []Tree_Id, used := false) {
 // definitions in sight throughout it, behind its own — under the name alone,
 // when the use gives one — and the module's name, its path's last part or the
 // name given. Its own: whoever names into the scope doesn't see them. Each is
-// noted for its module (Rs_Module.used).
+// noted for its module (Rs_Module.used). And its `overload`s: the groups its
+// operators call, throughout it.
 @(private="file")
 rs_uses :: proc(r: ^Resolver, live: []Tree_Id) {
     t := r.t
     for s in live {
+        if t.tag[s] == .Overload { append(&r.scopes[len(r.scopes) - 1].overloads, Rs_Overload{build_tokens[t.a[s]].kind, Token_Id(t.b[s])}) }
         imp := rs_stmt_import(t, s)
         if imp == 0 { continue }
         alias := t.main[s] if t.tag[s] == .Define else Token_Id(0)
@@ -993,14 +1010,6 @@ rs_uses :: proc(r: ^Resolver, live: []Tree_Id) {
     }
 }
 
-// What a declaration declares here: a module's variable in a file, else a
-// local — a struct's body's too: what its top block declares is its
-// constructor's locals, its layout once checked (tc_layout).
-@(private="file")
-rs_var_kind :: proc(r: ^Resolver) -> Ref_Kind {
-    return .Global if r.scopes[len(r.scopes) - 1].kind == .File else .Local
-}
-
 @(private="file")
 rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
     t := r.t
@@ -1012,10 +1021,12 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         v := decl_view(t, s)
         rs_node(r, v.type_)
         for x in v.values { rs_node(r, x) }
-        kind := rs_var_kind(r)
+        // (A local, whatever scope declares it: a file's is its module's
+        // body's; a struct's, its constructor's — its layout once checked,
+        // tc_layout.)
         for tg in v.targets {
             if t.tag[tg] != .Ident { rs_node(r, tg); continue }
-            ref := Ref{t.main[tg], kind}
+            ref := Ref{t.main[tg], .Local}
             r.refs[tg] = ref
             c := rs_clash(r, rs_text(t.main[tg]))
             if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[t.main[tg]] = c }
@@ -1092,7 +1103,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         // from here on, a variable: its uses aren't reported again.)
         rs_node(r, s)
         for tg in tree_list(t, t.a[s]) {
-            if t.tag[tg] == .Ident && r.refs[tg].kind == .None { rs_declare(r, rs_text(t.main[tg]), {t.main[tg], rs_var_kind(r)}) }
+            if t.tag[tg] == .Ident && r.refs[tg].kind == .None { rs_declare(r, rs_text(t.main[tg]), {t.main[tg], .Local}) }
         }
     case .Break, .Continue, .Module:
     case:
@@ -1499,7 +1510,7 @@ resolve_check :: proc(k: ^TC) {
             fmt.printfln("resolve: %s:%d: %v `%s`: checker %v %s, resolver %v %s", span_file(sp), span_line(sp), t.tag[n],
                 tc_text(t.main[n]), want.kind, rs_where(want.decl), got.kind, rs_where(got.decl))
         }
-        variable := got.kind == .Local || got.kind == .Param || got.kind == .Result || got.kind == .Field || got.kind == .Global || r.type_params[got.decl]
+        variable := got.kind == .Local || got.kind == .Param || got.kind == .Result || got.kind == .Field || r.type_params[got.decl]
         switch {
         case want.kind == .None && got.kind == .None:
         case want == got:

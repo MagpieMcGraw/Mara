@@ -1,0 +1,55 @@
+module scope_statements
+
+//@ expect-output: main 3
+//@ expect-output: len 5
+//@ expect-output: sum 5 7 9
+//@ expect-output: typed 7 1
+
+// A module is a scope like a fun's body, checked by the same code: what a
+// body can hold, a file's top can, and the other way round.
+//
+// At a file's top, a variable is the file's — no fun sees it — and code is
+// checked as any is; nothing calls a file, so it never runs. In a body, a
+// foreign block's funs and an `overload` are that body's. A constant's
+// written type counts in a body as it does at a file's top. These used to be
+// "this module statement is not supported yet", "this statement is not
+// supported yet", and a body's `K : u8 : 7` an i64.
+
+use mara.core
+
+count := 5
+total := count + 2
+if total > 3 { total = 3 }
+print("never", total)
+
+V3 :: distinct [3!]i64
+vadd :: fun(a: V3, b: V3) -> V3 { return V3{a[0] + b[0], a[1] + b[1], a[2] + b[2]} }
+
+main :: fun() {
+	print("main", 3)
+	print("len", c_len("hello"))
+	sums()
+	typed()
+}
+
+c_len :: fun(s: []utf8) -> i64 {
+	#if #windows {
+		foreign static_lib "kernel32" { fun lstrlenA(s: cstring) -> i32 }
+		return i64(lstrlenA(cstring(s)))
+	else
+		foreign static_lib "c" { fun strlen(s: cstring) -> usize }
+		return i64(strlen(cstring(s)))
+	}
+}
+
+sums :: fun() {
+	v := V3{1, 2, 3} + V3{4, 5, 6}
+	print("sum", v[0], v[1], v[2])
+	overload + plus          // (below its use: in sight through the body, as a definition is)
+	plus :: dispatch { vadd }
+}
+
+typed :: fun() {
+	K : u8 : 7
+	print("typed", K, size_of(K))
+}
