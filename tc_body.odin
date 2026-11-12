@@ -117,7 +117,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     for s in stmts {
         if t.tag[s] == .Define || t.tag[s] == .Foreign {
             // (A body's definitions, its blocks' too, are registered and checked
-            // with it: tc_body_defs.)
+            // with it: tc_register_defs.)
             continue
         }
         tc_stmt(k, s)

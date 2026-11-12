@@ -71,7 +71,6 @@ TC :: struct {
     struct_instances: [dynamic]int,   // each generic struct's instance's scope, as made
     variant_scopes:   [dynamic]int,   // each union variant's struct's scope (one with a body: tc_variant_struct)
     exposed:       map[Tree_Id]bool,  // each definition `#expose` marks (a DLL's entry)
-    block_defs:    map[Tree_Id]TC_Block_Def,   // each definition in a body's block (an if's, a loop's): tc_body_defs
     text_enums:    map[Tree_Id]^Type_Enum,     // each enum and error set, by its definition: one, however many instances of a generic have it in their body
     // Lists that stay empty (tc_list_use): each list's declaration, by its
     // token; the node about to be checked as a use that can't change it (an

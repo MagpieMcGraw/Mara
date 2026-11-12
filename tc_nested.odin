@@ -9,56 +9,17 @@ import "core:fmt"
 // its struct's names; no body sees another's locals), and a fun or struct
 // checked as its own body.
 
-// A definition in a block of a body — an if's, a loop's, a match arm's, a
-// defer's: which of its body's it is (1, 2, …), and its block's tokens.
-// It is its body's definition like any other, checked with it; in sight in
-// its block alone (the resolver's), and no member of its body's owner.
-TC_Block_Def :: struct {
-    n:      int,
-    lo, hi: Token_Id,
-}
-
-// A body's definitions: its own statements', then its blocks' (each noted:
-// k.block_defs). Not those of the funs and structs it defines: theirs.
-tc_body_defs :: proc(k: ^TC, stmts: []Tree_Id, out: ^[dynamic]Tree_Id, count: ^int, block := false) {
-    t := k.t
-    live := tc_live(k, stmts)
-    for s in live {
-        #partial switch t.tag[s] {
-        case .File:
-            // (A file a module includes: what it defines is the module's.)
-            tc_body_defs(k, tree_list(t, t.a[s]), out, count)
-        case .Foreign:
-            append(out, s)
-        case .Define:
-            append(out, s)
-            if block && s not_in k.block_defs {
-                count^ += 1
-                k.block_defs[s] = {count^, t.first[live[0]], t.end[live[len(live) - 1]]}
-            }
-        case .If, .Elif:
-            v := if_view(t, s)
-            tc_body_defs(k, v.then, out, count, true)
-            tc_body_defs(k, v.else_, out, count, true)
-        case .For_Range, .For_Each, .For_C:
-            tc_body_defs(k, for_view(t, s).body, out, count, true)
-        case .For_Cond:
-            tc_body_defs(k, tree_list(t, t.b[s]), out, count, true)
-        case .Defer:
-            tc_body_defs(k, tree_list(t, t.a[s]), out, count, true)
-        case .Match:
-            for arm in tree_list(t, t.b[s]) {
-                tc_body_defs(k, tree_list(t, t.b[arm] if t.tag[arm] == .Arm_Value else t.a[arm]), out, count, true)
-            }
-        }
-    }
-}
+// What a scope defines is the resolver's list (resolve_defs): its own
+// statements' definitions and its blocks' — an if's, a loop's, a match arm's, a
+// defer's; a module's, its files'. A block's is its body's definition like
+// any other, checked with it; in sight in its block alone, and no member of
+// its body's owner.
 
 // A definition's name as its owner files it: as written; a block's, with
 // its number (`Input__2`) — two blocks' of one name are two.
 tc_def_name :: proc(k: ^TC, def: Tree_Id) -> string {
     name := tc_name(k, def)
-    if bd, in_block := k.block_defs[def]; in_block { return fmt.aprintf("%s__%d", name, bd.n) }
+    if bd, in_block := resolve_block(k.rs, def); in_block { return fmt.aprintf("%s__%d", name, bd.block) }
     return name
 }
 
@@ -74,10 +35,8 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)
-    defs := make([dynamic]Tree_Id, context.temp_allocator)
-    count := 0
-    tc_body_defs(k, scope_view(t, sc.node).body, &defs, &count)
-    for s in defs {
+    for def in resolve_defs(k.rs, owner.decl, owner.name) {
+        s := def.node
         if t.tag[s] == .Foreign {
             append(&sc.foreigns, s)
             continue

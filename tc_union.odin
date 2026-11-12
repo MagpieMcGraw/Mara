@@ -327,7 +327,7 @@ tc_another_instances :: proc(k: ^TC, owner: ^Type_Scope) -> bool {
 // (an if's, a loop's), else its owner's body's — a module's has none: its
 // files are its text.
 tc_sight :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> (lo, hi: Token_Id, block: bool) {
-    if bd, in_block := k.block_defs[def]; in_block { return bd.lo, bd.hi, true }
+    if bd, in_block := resolve_block(k.rs, def); in_block { return bd.lo, bd.hi, true }
     return k.t.first[owner.node], k.t.end[owner.node], false
 }
 

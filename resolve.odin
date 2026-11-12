@@ -54,6 +54,62 @@ Resolver :: struct {
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
     field_types: map[Tree_Id]Rs_Field_Type,   // a type name `S.T` that's a field reference's type, by its node
     type_names: map[Token_Id]bool,      // the definitions `A :: B` that name a type, by the token that declares them (rs_settle_aliases)
+    // What each scope defines, as written — the one list of it: the checker
+    // registers from it, a tool lists from it (resolve_defs). A fun's or a
+    // struct's body's, by the token that declares it; a module's is its
+    // space's (Rs_Space.list).
+    body_defs:  map[Token_Id]^Rs_Defs,
+    block_of:   map[Tree_Id]Rs_Def,     // a definition in a block of its scope's body, by its node: which, and where it is in sight
+    file_rank:  int,                    // the file being resolved: its place among its module's
+}
+
+// A definition as written in a scope: its statement (a Define, a foreign
+// block). In a block of the scope's body — an if's, a loop's, a match arm's, a
+// defer's — it is the body's definition all the same, in sight in its block
+// alone: `block`, which of the body's block definitions it is (1, 2, …; 0:
+// none — the body's own), and the block's tokens.
+Rs_Def :: struct {
+    node:   Tree_Id,
+    block:  int,
+    lo, hi: Token_Id,
+    rank:   int,   // (its file's place among its module's: the order they're listed in)
+}
+
+// A scope's definitions, in the order written — its files', a module's.
+Rs_Defs :: struct {
+    list:   [dynamic]Rs_Def,
+    blocks: int,    // the block definitions so far
+    sorted: bool,
+}
+
+// What a scope defines, in the order written: the scope the token `decl`
+// declares (a fun, a struct, a variant), or — 0 — the module named.
+resolve_defs :: proc(r: ^Resolver, decl: Token_Id, module: string) -> []Rs_Def {
+    d: ^Rs_Defs
+    if decl != 0 {
+        d = r.body_defs[decl] or_else nil
+    } else if m, ok := r.modules[module]; ok {
+        d = &m.list
+    }
+    if d == nil { return nil }
+    if !d.sorted {
+        // (Met a scope at a time — a body's own, then each block's as its
+        // statement is reached: as written is by file, then by place.)
+        t := r.t
+        context.user_ptr = t
+        slice.sort_by(d.list[:], proc(x, y: Rs_Def) -> bool {
+            t := (^Tree)(context.user_ptr)
+            return x.rank < y.rank || x.rank == y.rank && t.first[x.node] < t.first[y.node]
+        })
+        d.sorted = true
+    }
+    return d.list[:]
+}
+
+// A definition in a block of its scope's body: which, and the block's tokens.
+resolve_block :: proc(r: ^Resolver, def: Tree_Id) -> (Rs_Def, bool) {
+    d, in_block := r.block_of[def]
+    return d, in_block
 }
 
 // `S.T` as a field reference's type: what S names, what T names, and where in
@@ -113,6 +169,7 @@ Rs_Space :: struct {
     overloads: [dynamic]Rs_Overload,            // its `overload op name`s, in order
     used:     [dynamic]Rs_Use,                  // every use written in it, any scope's
     aliases:  bool,                             // some definition of it may be another name for a type: `A :: B`, `A :: alias B`
+    list:     Rs_Defs,                          // a module's: what it defines, as written (resolve_defs)
 }
 
 @(private="file")
@@ -867,8 +924,9 @@ rs_program :: proc(r: ^Resolver) {
         // (A file is a scope as a body is: its definitions, its uses, its
         // statements. Its module's scope, around it, has every file's
         // definitions: the files of one module see each other's.)
-        for f in m.files {
+        for f, rank in m.files {
             rs_enter(r, .File)
+            r.file_rank = rank
             rs_body(r, tree_list(t, t.a[f]), m)
             // (The file's own sight, every token of it: after its scopes'.)
             if t.first[f] != 0 {
@@ -1033,6 +1091,7 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Rs_Space = nil) {
     // — then which of its definitions are other names for types: what they
     // name may come from a use.)
     rs_each_def(r, live)
+    rs_note_defs(r, live)
     rs_uses(r, live)
     rs_settle_aliases(r, live, space)
     for s in live { rs_stmt(r, s) }
@@ -1043,6 +1102,32 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Rs_Space = nil) {
         file := build_tokens[t.first[live[0]]].file
         if file not_in r.sights { r.sights[file] = {} }
         append(&r.sights[file], rs_sight_here(r, t.first[live[0]], t.end[live[len(live) - 1]]))
+    }
+}
+
+// A scope's definition statements, noted for the scope whose they are: the
+// fun or struct whose body this is, or is a block of; a file's, its module's.
+@(private="file")
+rs_note_defs :: proc(r: ^Resolver, live: []Tree_Id) {
+    t := r.t
+    d: ^Rs_Defs
+    for s in live {
+        if t.tag[s] != .Define && t.tag[s] != .Foreign { continue }
+        if d == nil {
+            if r.owner == 0 {
+                d = &r.module.list
+            } else {
+                if r.owner not_in r.body_defs { r.body_defs[r.owner] = new(Rs_Defs) }
+                d = r.body_defs[r.owner]
+            }
+        }
+        def := Rs_Def{node = s, rank = r.file_rank}
+        if t.tag[s] == .Define && r.scopes[len(r.scopes) - 1].kind == .Block {
+            d.blocks += 1
+            def.block, def.lo, def.hi = d.blocks, t.first[live[0]], t.end[live[len(live) - 1]]
+            r.block_of[s] = def
+        }
+        append(&d.list, def)
     }
 }
 
