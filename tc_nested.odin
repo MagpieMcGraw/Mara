@@ -59,15 +59,6 @@ tc_def_name :: proc(k: ^TC, def: Tree_Id) -> string {
     return name
 }
 
-// A scope's statements, list by list: its body's; a module's, each of the
-// files' it includes.
-tc_scope_stmts :: proc(k: ^TC, sc: ^TC_Scope) -> [][]Tree_Id {
-    out := make([dynamic][]Tree_Id, context.temp_allocator)
-    if sc.node != 0 { append(&out, scope_view(k.t, sc.node).body) }
-    for f in sc.files { append(&out, tree_list(k.t, k.t.a[f])) }
-    return out[:]
-}
-
 // A scope's definitions, registered (once): each one's name declared and its
 // type made, then — every name of the scope's known — each distinct type's
 // base, each fun's and struct's signature, each union's variants.
@@ -82,7 +73,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)
     defs := make([dynamic]Tree_Id, context.temp_allocator)
     count := 0
-    for stmts in tc_scope_stmts(k, sc) { tc_body_defs(k, stmts, &defs, &count) }
+    tc_body_defs(k, scope_view(t, sc.node).body, &defs, &count)
     for s in defs {
         if t.tag[s] == .Foreign {
             append(&sc.foreigns, s)

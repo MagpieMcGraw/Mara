@@ -16,11 +16,10 @@ TC_Template :: struct {
     owner:     ^Type_Scope,   // the scope defining it: a module, a fun or a struct (its last instance, a generic one's; at a call, the call's)
 }
 
-// The scope a template is made for at a call: a module's, the module; a
-// body's, the body the call is in (a generic owner's instance, its own),
-// else the one that registered it.
+// The scope a template is made for at a call: the one the call is in when
+// that is its owner's body (a generic owner's instance, its own), else the
+// one that registered it.
 tc_template_owner :: proc(k: ^TC, tmpl: TC_Template) -> ^Type_Scope {
-    if tmpl.owner.is_module { return tmpl.owner }
     for b := k.body; b != nil; b = b.parent_scope {
         if b.node == tmpl.owner.node { return b }
     }
@@ -38,7 +37,7 @@ tc_instance_name :: proc(k: ^TC, tmpl: TC_Template, name: string, type_args: []T
 // generic instance's around it, the nearest's last.
 tc_owner_bindings :: proc(k: ^TC, owner: ^Type_Scope) -> TC_Bindings {
     chain := make([dynamic]^Type_Scope, context.temp_allocator)
-    for b := owner; b != nil && !b.is_module; b = b.parent_scope { append(&chain, b) }
+    for b := owner; b != nil; b = b.parent_scope { append(&chain, b) }
     out := make(TC_Bindings, allocator = context.temp_allocator)
     #reverse for b in chain {
         i, known := k.scope_of[b]

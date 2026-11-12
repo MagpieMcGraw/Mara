@@ -8,15 +8,14 @@ import "core:strings"
 // Bodies, checked statement by statement in the order they run. A struct's
 // is its constructor, a fun's body like any other: once it is checked, the
 // struct takes what its top block declared as its layout (tc_layout). A
-// module's is its files' statements: checked the same, though nothing calls
-// it — no code is built of it. (The graph is lowered from them once checking
-// is done: lower.odin, which replays each body where TC.events says it was
-// checked.)
+// module's is its files' statements, a body like any other. (The graph is
+// lowered from them once checking is done: lower.odin, which replays each
+// body where TC.events says it was checked.)
 
 tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     ts := sc.ts
-    v := scope_view(t, sc.node) if sc.node != 0 else Scope_View{}
+    v := scope_view(t, sc.node)
     span := tree_span(t, sc.def)
     ts.sig_state = .In_Progress
     hint := k.hint
@@ -27,7 +26,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         if len(k.vars) > 0 { k.annot.vars[ts] = k.vars }
         k.body, k.vars, k.in_defer, k.loops = outer, outer_vars, outer_defer, outer_loops
     }
-    if sc.node != 0 { append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node}) }
+    append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
     tc_register_defs(k, sc)
     // (Its params and named results — locals: its variables, an intrinsic's
     // too, though no code of its reads them. Bound before its constants: a
@@ -37,18 +36,15 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
-    if sc.node != 0 {
-        k.annot.decls[tc_sid(k, sc.node)] = ts
-        tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
-    }
+    k.annot.decls[tc_sid(k, sc.node)] = ts
+    tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
     if v.intrinsic == 0 {
         tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
-        for stmts in tc_scope_stmts(k, sc) { tc_scope(k, stmts) }
+        tc_scope(k, v.body)
     }
-    // (A struct: what its top block declared, its layout. A module is no
-    // value: it has none.)
-    if ts.kind == .Struct && !ts.is_module { tc_layout(k, sc) }
+    // (A struct: what its top block declared, its layout.)
+    if ts.kind == .Struct { tc_layout(k, sc) }
     ts.sig_state = .Resolved
     // (A default param's width the body left open: settled.)
     solidify_param_defaults(k.c, ts)

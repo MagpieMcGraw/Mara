@@ -88,13 +88,16 @@ lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
 }
 
 // Each code put in place where the program writes it — the modules in name
-// order, each's statements as written — lowered there, if it wasn't yet;
-// and one no statement places lowered all the same, as it was checked.
+// order, each one's code, then its definitions' as written — lowered there,
+// if it wasn't yet; and one no statement places lowered all the same, as it
+// was checked. (A module read for a use no live code makes — one in a dead
+// `#if` — isn't checked: nothing of it is built.)
 lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
     b := k.gb
-    // (A module builds no code of its own to hold its definitions: they
-    // are placed from its statements, each as a body's is.)
-    for d in tc_module_graph_decls(k) { lw_place_decl(k, codes, d) }
+    names := make([dynamic]string, 0, len(k.checked_modules), context.temp_allocator)
+    for name in k.checked_modules { append(&names, name) }
+    slice.sort(names[:])
+    for name in names { lw_place_scope(k, codes, k.checked_modules[name], name, {}, .Explicit) }
     for _, i in k.events { lw_code(k, codes, i) }
 }
 
@@ -126,14 +129,13 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     }
 }
 
-// The code a statement outside any body defines — a module's, a body's
-// definition: a constant's, or a fun's or struct's, each of its instances —
+// The code a definition in a body — a module's, a fun's, a struct's —
+// defines: a constant's, or a fun's or struct's, each of its instances —
 // lowered and put in place (Program_Code.codes, the program's written order:
-// each module's statements in turn, a code's body's definitions after it).
-// (What runs nothing — an import, a type, a dispatch group, a foreign fun,
-// a constant nothing uses — is no code; nor is a module's own statement, a
-// variable or a call at a file's top: nothing calls a module.)
-lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scope = nil) {
+// a code's body's definitions after it). (What runs nothing — an import, a
+// type, a dispatch group, a foreign fun, a constant nothing uses — is no
+// code.) `owner`: the body's scope.
+lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scope) {
     b := k.gb
     if i, is_const := codes.consts[d.id]; is_const { lw_code(k, codes, i) }
     if c, built := b.prog.consts[d.id]; built {
@@ -157,7 +159,7 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scop
 // ids stable) — as the checker recorded them by its node (Annotations.decls).
 // A body's generic (`owner` its body's scope): the instances made for that
 // body, not another instance of a generic owner's.
-lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl, owner: ^Type_Scope = nil) -> []^Type_Scope {
+lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl, owner: ^Type_Scope) -> []^Type_Scope {
     a := k.annot
     out := make([dynamic]^Type_Scope, context.temp_allocator)
     if ts := a.decls[d.node] or_else nil; ts != nil { append(&out, ts) }   // (a generic's too: the compiler's Program, one scope)
@@ -166,7 +168,7 @@ lw_decl_scopes :: proc(k: ^TC, d: Graph_Decl, owner: ^Type_Scope = nil) -> []^Ty
     for _, i in a.instances {   // (its body as each instance checked it: a generic's, a generic union's variant's)
         ts := a.decls[annot_key(Instance_Id(i), n)] or_else nil
         if ts == nil || ts.is_module || slice.contains(out[:], ts) { continue }
-        if owner != nil && ts.parent_scope != owner { continue }
+        if ts.parent_scope != owner { continue }
         append(&out, ts)
     }
     slice.sort_by(out[:], proc(x, y: ^Type_Scope) -> bool { return ask_type_name(x) < ask_type_name(y) })
@@ -485,8 +487,9 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
         gd := graph_build_defer(k.gb, span, lw_scope_arena(k, body, k.gb.body.returned), tree_defer_on_failure(t, s))
         lw_scope(k, body)
         graph_build_defer_end(k.gb, gd)
-    case .Allocator:
-        // (main's: its entry made the arena.)
+    case .Allocator, .Module:
+        // (The program's arena: main's entry made it. A file's `module` line:
+        // no code.)
     case .Match:
         lw_match(k, s)
     case .Break, .Continue:

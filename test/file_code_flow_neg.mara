@@ -1,0 +1,16 @@
+module file_code_flow_neg
+
+//@ expect-fail: 'p' may be void here, and this reads through it
+
+// Code at a file's top is a body's code like any other: lowered, and seen by
+// the passes that run on the lowered program — here, the one that follows
+// what may be void. (Nothing calls a module, so it never runs.)
+
+use mara.core
+
+p : ^i64 = void
+v := p^
+
+main :: fun() {
+	print("hi")
+}

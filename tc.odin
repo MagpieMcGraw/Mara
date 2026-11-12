@@ -30,6 +30,7 @@ TC :: struct {
     addressed_calls: map[Tree_Id]bool,
     several_ok:    Tree_Id,           // the call (or `?`) about to be checked where several results go — tc_call
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
+    module_nodes:  map[string]Tree_Id,     // each module's body's node: its files' statements (tree_module_scope)
     pkg:           string,            // the module being checked
     // The block scopes and the names bound in them: what name resolution
     // works in while the check runs — scratch, gone once it's done
@@ -303,9 +304,8 @@ tc_blocks_end :: proc(k: ^TC) {
 // definition, its body.
 TC_Scope :: struct {
     ts:   ^Type_Scope,
-    def:  Tree_Id,   // its Define (0: a module's — no statement defines it)
-    node: Tree_Id,   // its Fun_Def or Struct_Def (0: a module's)
-    files: []Tree_Id,   // a module's: the files it includes — their statements are its body's
+    def:  Tree_Id,   // its Define (a module's: its node — no statement defines it)
+    node: Tree_Id,   // its Fun_Def or Struct_Def; a module's Module_Scope
     foreigns: [dynamic]Tree_Id,   // the foreign blocks in its body
     nested: [dynamic]int,   // the funs and structs defined in its body
     consts: [dynamic]^TC_Const,   // the constants defined in its body
@@ -458,6 +458,13 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     diagnosed := diagnostics_count()
     ir_types_forget()   // (a check of serve's, after another: its types are new)
     types_forget_shapes()
+    // (Each module's body's node, before anything is sized by the tree.)
+    {
+        names := make([dynamic]string, 0, len(modules), context.temp_allocator)
+        for name in modules { append(&names, name) }
+        slice.sort(names[:])
+        for name in names { k.module_nodes[name] = tree_module_scope(t, modules[name]) }
+    }
     k.rs = resolve_program(k)
     // (`all` declared: a keyword — each said where it's declared, in order.)
     all_named := make([dynamic]Token_Id, context.temp_allocator)
@@ -500,7 +507,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 
     tc_check_uses(k, main_package)
     k.pkg = main_package
-    main := tc_check_module_files(k, files)
+    main := tc_check_module_body(k)
 
     // (Generic structs' instances: their methods, their inits — before the
     // main module's.)
@@ -564,8 +571,10 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 // statements checked in order, its definitions' bodies. Its definitions are
 // named for the module and seen by whoever uses it; what its statements run,
 // nothing calls. The scopes it defines.
-tc_check_module_files :: proc(k: ^TC, files: []Tree_Id) -> []int {
-    sc := new_clone(TC_Scope{ts = k.module_scopes[k.pkg], files = files})
+tc_check_module_body :: proc(k: ^TC) -> []int {
+    node := k.module_nodes[k.pkg]
+    sc := new_clone(TC_Scope{ts = k.module_scopes[k.pkg], def = node, node = node})
+    sc.ts.node = node
     k.scope_of[sc.ts] = len(k.scopes)
     append(&k.scopes, sc)
     tc_scope_body(k, sc)
@@ -834,26 +843,6 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
     if !found && !k.shared {
         tc_error(k, {}, "module '%s' must define fun main()", k.main_package)
     }
-}
-
-// The checked modules' statements, as the builder builds them
-// (tc_graph_decl): the modules in name order, each's as written. (A module
-// read for a use no live code makes — one in a dead `#if` — isn't checked:
-// nothing of it is built.)
-tc_module_graph_decls :: proc(k: ^TC) -> []Graph_Decl {
-    names := make([dynamic]string, 0, len(k.checked_modules), context.temp_allocator)
-    for name in k.checked_modules { append(&names, name) }
-    slice.sort(names[:])
-    decls := make([dynamic]Graph_Decl, context.temp_allocator)
-    for name in names {
-        for f in k.modules[name] {
-            for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
-                append(&decls, tc_graph_decl(k, s))
-                tc_variant_graph_decls(k, s, &decls)
-            }
-        }
-    }
-    return decls[:]
 }
 
 // A union's variants with bodies, after its statement: each a struct's

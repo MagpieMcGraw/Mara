@@ -34,6 +34,7 @@ build_tree: Tree
 Tree_Tag :: enum u8 {
     None,
     File,           // a: list — its statements
+    Module_Scope,   // a module's body (tree_module_scope): a — its files' statements, a list of nodes that are their files' still (no children of its own)
 
     // --- statements ---
     Module,         // a: tokens — the name's parts (`mara.math`; `1M` is two)
@@ -156,6 +157,7 @@ Tree_Shape :: struct {
 tree_shapes := [Tree_Tag]Tree_Shape{
     .None           = {},
     .File           = {a = .List},
+    .Module_Scope   = {},
     .Module         = {a = .Tokens},
     .Expr_Stmt      = {a = .Node},
     .Define         = {a = .Node, b = .Node},
@@ -467,6 +469,15 @@ tree_lo :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
     }
 }
 
+// A module's body, as a node: its files' statements, in the files' order —
+// it includes them. What a fun's Fun_Def is to its scope. The statements
+// stay their files' nodes: it has no children (its subtree is itself).
+tree_module_scope :: proc(t: ^Tree, files: []Tree_Id) -> Tree_Id {
+    stmts := make([dynamic]Tree_Id, context.temp_allocator)
+    for f in files { append(&stmts, ..tree_list(t, t.a[f])) }
+    return tree_add(t, .Module_Scope, 0, tree_list_add(t, stmts[:]))
+}
+
 // --- views: a form's fields by name ----------------------------------------
 
 // A fun's or a struct's.
@@ -477,6 +488,7 @@ Scope_View :: struct {
 }
 
 scope_view :: proc(t: ^Tree, n: Tree_Id) -> Scope_View {
+    if t.tag[n] == .Module_Scope { return {body = tree_list(t, t.a[n])} }
     r := tree_rec(t, t.a[n], 5)
     v := Scope_View{
         generics  = tree_list(t, r[0]),

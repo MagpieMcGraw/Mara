@@ -57,7 +57,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     tc_check_uses(k, name)
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
-    list := tc_check_module_files(k, files)
+    list := tc_check_module_body(k)
     k.pkg, k.hint = saved_pkg, saved_hint
     delete_key(&k.in_progress, name)
     tc_extract(k, list, name, is_main = false)

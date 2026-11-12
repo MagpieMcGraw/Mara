@@ -25,9 +25,9 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     kc.state = .In_Progress
     tc_event(k, {kind = .Const, kc = kc})
     defer kc.state = .Resolved
-    // (A module's: checked in no fun's body, wherever its first use is.)
+    // (Checked as its scope's code, wherever its first use is.)
     outer_body := k.body
-    if kc.owner.is_module { k.body = kc.owner }
+    k.body = kc.owner
     defer k.body = outer_body
     append(&k.annot.bodies, Annot_Body{nil, tc_instance(k, kc.value), tree_lo(k.t, kc.value), kc.value})
     t := k.t
