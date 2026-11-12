@@ -477,6 +477,34 @@ tree_module_scope :: proc(t: ^Tree, files: []Tree_Id) -> Tree_Id {
     return tree_add(t, .Module_Scope, 0, tree_list_add(t, files))
 }
 
+// A file's nodes: lo up to hi, its root — files are parsed one after
+// another, each one's nodes together, children before their parents.
+tree_file_nodes :: proc(t: ^Tree, file: u16) -> (lo, hi: Tree_Id) {
+    hi = t.files[file]
+    lo = t.files[file - 1] + 1 if file > 0 else 1
+    return
+}
+
+// The innermost node holding a token: the first of its file's that does
+// (children come before their parents); 0 for none.
+tree_node_at :: proc(t: ^Tree, tok: Token_Id) -> Tree_Id {
+    lo, hi := tree_file_nodes(t, build_tokens[tok].file)
+    for n in lo ..= hi {
+        if t.first[n] <= tok && tok < t.end[n] { return n }
+    }
+    return 0
+}
+
+// The Define whose name is the token `decl` — a fun's, a struct's, a
+// constant's; 0 for none (a local's, a param's, a field's).
+tree_define_at :: proc(t: ^Tree, decl: Token_Id) -> Tree_Id {
+    lo, hi := tree_file_nodes(t, build_tokens[decl].file)
+    for n in lo ..= hi {
+        if t.tag[n] == .Define && t.first[n] == decl { return n }
+    }
+    return 0
+}
+
 // --- views: a form's fields by name ----------------------------------------
 
 // A fun's or a struct's.

@@ -154,7 +154,7 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
     // (A definition's own name refers to nothing — it's what's declared
     // there: itself, then. A param's, the same.)
     for n in hits {
-        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = hit_define_kind(t, n)}, n, true }
+        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = rs_def_kind(t, Tree_Id(t.b[n]))}, n, true }
     }
     if g := hit_param_group(t, at); g != 0 { return Ref{decl = Token_Id(at), kind = .Param}, g, true }
     return {}, 0, false
@@ -163,31 +163,14 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
 // The param group that declares a name, its token `at`; 0 for none.
 @(private="file")
 hit_param_group :: proc(t: ^Tree, at: int) -> Tree_Id {
-    for i in 1 ..< len(t.tag) {
+    lo, hi := tree_file_nodes(t, build_tokens[at].file)
+    for i in lo ..= hi {
         if t.tag[i] != .Param_Group || int(t.first[i]) > at || at >= int(t.end[i]) { continue }
         for name in tree_token_list(t, t.a[i]) {
             if int(name) == at { return Tree_Id(i) }
         }
     }
     return 0
-}
-
-// What a definition defines, as a reference's kind: a fun, a type (a
-// struct, a union, an enum, an error set), else a constant.
-@(private="file")
-hit_define_kind :: proc(t: ^Tree, n: Tree_Id) -> Ref_Kind {
-    first, last := build_tokens[t.first[n]], build_tokens[t.end[n] - 1]
-    text := build_files[first.file].source[first.offset:last.offset + last.len]
-    colons := strings.index(text, "::")
-    if colons < 0 { return .Const }
-    what := strings.trim_left_space(text[colons + 2:])
-    switch {
-    case strings.has_prefix(what, "fun"): return .Fun
-    case strings.has_prefix(what, "struct"), strings.has_prefix(what, "class"), strings.has_prefix(what, "union"),
-         strings.has_prefix(what, "enum"), strings.has_prefix(what, "error"):
-        return .Type
-    }
-    return .Const
 }
 
 // A reference's kind as `ask at` says it.
@@ -293,7 +276,7 @@ hit_name_ref :: proc(checked: ^Checked_Program, src: ^Source_File, want: string,
         r, n, found = hit_ref(t, checked.annot, p.hits[:], p.at, name)
         if found { return }
     }
-    n = hit_node_at(t, tok)
+    n = tree_node_at(t, tok)
     if n != 0 && int(n) < len(checked.rs.refs) {
         r = checked.rs.refs[n]
         if r.kind != .None && r.decl != 0 && token_text(build_tokens[r.decl]) == name { return r, n, true }
@@ -442,11 +425,10 @@ hit_point_in :: proc(t: ^Tree, src_file: ^Source_File, want: string, line, col: 
     // the parent: made after its children.)
     at := base + tok_i
     hits := make([dynamic]Tree_Id, context.temp_allocator)
-    for i in 1 ..< len(t.tag) {
-        n := Tree_Id(i)
+    lo, hi := tree_file_nodes(t, build_tokens[at].file)
+    for n in lo ..= hi {
         first, end := int(t.first[n]), int(t.end[n])
-        if first < base || first >= int(src_file.end_token) || !hit_listed(t.tag[n]) { continue }
-        if first <= at && at < end { append(&hits, n) }
+        if hit_listed(t.tag[n]) && first <= at && at < end { append(&hits, n) }
     }
     if len(hits) == 0 {
         return p, fmt.tprintf("%s:%d:%d — token '%s', but no node covers it\n",
@@ -636,7 +618,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         } else {
             fmt.sbprintf(&sb, "  declared  %s\n", ask_loc(token_span(build_tokens[r.decl])))
             // (A definition's first line: a fun's signature, a struct's params.)
-            if def := hit_definition_at(t, r.decl); def != 0 {
+            if def := tree_define_at(t, r.decl); def != 0 {
                 first := span_text(source_of(build_tokens[r.decl]), tree_span(t, def))
                 first = strings.trim_suffix(strings.trim_suffix(first, " …"), " {")
                 fmt.sbprintf(&sb, "  %s\n", first)
@@ -810,7 +792,7 @@ hit_variant_answer :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: str
     // (Its type's definition holds it.)
     owner := ""
     is_error := false
-    for c := hit_node_at(t, decl); c != 0; c = t.parent[c] {
+    for c := tree_node_at(t, decl); c != 0; c = t.parent[c] {
         if t.tag[c] == .Error_Def { is_error = true }
         if t.tag[c] == .Define {
             owner = token_text(build_tokens[t.main[c]])
@@ -975,16 +957,6 @@ hit_holder_name :: proc(t: ^Tree, n: Tree_Id) -> string {
     return ""
 }
 
-// The innermost node holding a token. (Children come before their parents, so
-// the first found.)
-@(private="file")
-hit_node_at :: proc(t: ^Tree, tok: Token_Id) -> Tree_Id {
-    for i in 1 ..< len(t.tag) {
-        if t.first[i] <= tok && tok < t.end[i] { return Tree_Id(i) }
-    }
-    return 0
-}
-
 // The line of source a token's on, trimmed: tabs between its words one space.
 hit_source_line :: proc(tok: Token) -> string {
     src := source_of(tok)
@@ -1118,7 +1090,7 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         can_do(&sb, checked, ty, Token_Id(p.at))
     }
     fmt.sbprint(&sb, "\ndeclared\n")
-    hit_write_place(&sb, t, r.decl, hit_node_at(t, r.decl))
+    hit_write_place(&sb, t, r.decl, tree_node_at(t, r.decl))
     for maybe in ([2]bool{false, true}) {
         for kind in Use_Kind {
             rows := make([dynamic]Hit_Use, context.temp_allocator)
@@ -1137,16 +1109,6 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         }
     }
     return strings.to_string(sb)
-}
-
-// The Define whose name is the token `decl` — a fun's, a struct's, a
-// constant's; 0 for none (a local's, a param's, a field's).
-@(private="file")
-hit_definition_at :: proc(t: ^Tree, decl: Token_Id) -> Tree_Id {
-    for i in 1 ..< len(t.tag) {
-        if t.tag[i] == .Define && t.first[i] == decl { return Tree_Id(i) }
-    }
-    return 0
 }
 
 // The source text of the file a token is in.

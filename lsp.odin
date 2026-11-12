@@ -436,19 +436,15 @@ lsp_symbols :: proc(s: ^Lsp, params: json.Value) -> string {
     if file == nil { return "[]" }
     t := &build_tree
     items := make([dynamic]string)
-    for i in 1 ..< len(t.tag) {
-        if t.tag[i] != .Define || t.first[i] < file.first_token || t.first[i] >= file.end_token { continue }
+    lo, hi := tree_file_nodes(t, build_tokens[file.first_token].file)
+    for i in lo ..= hi {
+        if t.tag[i] != .Define { continue }
         first, last := build_tokens[t.first[i]], build_tokens[t.end[i] - 1]
-        text := file.source[first.offset:last.offset + last.len]
         kind := 14   // a constant
-        if colons := strings.index(text, "::"); colons >= 0 {
-            what := strings.trim_left_space(text[colons + 2:])
-            switch {
-            case strings.has_prefix(what, "fun"):                                          kind = 12   // a function
-            case strings.has_prefix(what, "struct"), strings.has_prefix(what, "class"):    kind = 23   // a struct
-            case strings.has_prefix(what, "union"), strings.has_prefix(what, "enum"),
-                 strings.has_prefix(what, "error"):                                        kind = 10   // an enum
-            }
+        #partial switch t.tag[t.b[i]] {
+        case .Fun_Def, .Dispatch_Def:  kind = 12   // a function
+        case .Struct_Def:              kind = 23   // a struct
+        case .Union_Def, .Error_Def:   kind = 10   // an enum
         }
         append(&items, fmt.tprintf(`{{"name":%s,"kind":%d,"range":%s,"selectionRange":%s}}`,
                                    json_str(token_text(first)), kind, lsp_token_range(s, first, last), lsp_token_range(s, first, first)))
