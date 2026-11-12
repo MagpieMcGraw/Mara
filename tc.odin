@@ -836,20 +836,24 @@ tc_validate_main :: proc(k: ^TC, main: []int) {
     }
 }
 
-// Each module's statements, as the builder builds them (tc_graph_decl).
-tc_module_graph_decls :: proc(k: ^TC) -> map[string][]Graph_Decl {
-    out := make(map[string][]Graph_Decl, len(k.modules), context.temp_allocator)
-    for name, files in k.modules {
-        decls: [dynamic]Graph_Decl
-        for f in files {
+// The checked modules' statements, as the builder builds them
+// (tc_graph_decl): the modules in name order, each's as written. (A module
+// read for a use no live code makes — one in a dead `#if` — isn't checked:
+// nothing of it is built.)
+tc_module_graph_decls :: proc(k: ^TC) -> []Graph_Decl {
+    names := make([dynamic]string, 0, len(k.checked_modules), context.temp_allocator)
+    for name in k.checked_modules { append(&names, name) }
+    slice.sort(names[:])
+    decls := make([dynamic]Graph_Decl, context.temp_allocator)
+    for name in names {
+        for f in k.modules[name] {
             for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
                 append(&decls, tc_graph_decl(k, s))
                 tc_variant_graph_decls(k, s, &decls)
             }
         }
-        out[name] = decls[:]
     }
-    return out
+    return decls[:]
 }
 
 // A union's variants with bodies, after its statement: each a struct's

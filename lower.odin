@@ -36,7 +36,7 @@ Lower :: struct {
 }
 
 lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
-    p := graph_program_new(k.checked, tc_module_graph_decls(k))
+    p := graph_program_new(k.checked)
     lw_const_index(k)
     // Each code's event — where it was checked: a body's by its fun or
     // struct (and the statement that declares it), a constant's by its
@@ -87,12 +87,14 @@ lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
     return s
 }
 
-// Each code put in place where the program writes it — lowered there, if it
-// wasn't yet — and one no statement places lowered all the same, as it was
-// checked.
+// Each code put in place where the program writes it — the modules in name
+// order, each's statements as written — lowered there, if it wasn't yet;
+// and one no statement places lowered all the same, as it was checked.
 lower_place :: proc(k: ^TC, codes: ^LW_Codes) {
     b := k.gb
-    for d in b.prog.module_list { lw_place_decl(k, codes, d) }
+    // (A module builds no code of its own to hold its definitions: they
+    // are placed from its statements, each as a body's is.)
+    for d in tc_module_graph_decls(k) { lw_place_decl(k, codes, d) }
     for _, i in k.events { lw_code(k, codes, i) }
 }
 

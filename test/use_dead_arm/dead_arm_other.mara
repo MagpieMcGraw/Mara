@@ -1,0 +1,5 @@
+module dead_arm_other
+
+use mara.core
+
+helper :: fun() -> i64 { return 1 }

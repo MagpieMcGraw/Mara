@@ -1,0 +1,15 @@
+module use_dead_arm
+
+// A use in a dead `#if` arm names a module the build reads (it reads what
+// any `use` names) and never checks: nothing of that module is built. It
+// used to stop the build: "'helper' reached the graph unchecked".
+
+use mara.core
+
+#if false {
+	use dead_arm_other
+}
+
+main :: fun() {
+	print("hi")
+}

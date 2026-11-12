@@ -636,9 +636,6 @@ Graph_Tables :: struct {
 // built it.
 Graph_Program :: struct {
     checked: ^Checked_Program,
-    // Each module's statements, in written order: where the code each
-    // defines goes (lower_place).
-    module_list:  [dynamic]Graph_Decl,
     // Every name the checker's table has a constant under, by its value's id
     // (a module's constant is there under its flat name and its bare one):
     // what its table is named (graph_table_names).
@@ -748,10 +745,9 @@ Decl_Site :: struct {
 }
 
 // The program's lowering, made once the program is checked (lower_begin).
-graph_program_new :: proc(checked: ^Checked_Program, modules: map[string][]Graph_Decl) -> ^Graph_Program {
+graph_program_new :: proc(checked: ^Checked_Program) -> ^Graph_Program {
     p := new(Graph_Program)
     p.checked = checked
-    graph_modules(p, modules)
     // What builders on other threads add to, made here: it grows with this
     // thread's allocator (Graph_Program.allocator), which only one thread uses
     // at a time — under the lock while they run, this one waiting for them.
@@ -793,18 +789,6 @@ graph_builder_new :: proc(p: ^Graph_Program) -> ^Graph_Builder {
     return b
 }
 
-// The program's modules' statements: the modules in name order, each's in
-// written order — where the code each defines goes.
-@(private="file")
-graph_modules :: proc(b: ^Graph_Program, programs: map[string][]Graph_Decl) {
-    modules := make([dynamic]string, 0, len(programs), context.temp_allocator)
-    for name in programs { append(&modules, name) }
-    slice.sort(modules[:])
-    for name in modules {
-        append(&b.module_list, ..programs[name])
-    }
-}
-
 // A builder done with (its codes, and what they hold, stay: Program_Code.stores).
 // (`made_in`: what its runs and bodies were made with — a worker's, its
 // store's arena.)
@@ -830,7 +814,6 @@ graph_builder_free :: proc(b: ^Graph_Builder, made_in := context.allocator) {
 @(private="file")
 graph_program_free :: proc(p: ^Graph_Program) {
     delete(p.constant_names)
-    delete(p.module_list)
     for _, c in p.bodies { delete(c.defs); free(c) }
     delete(p.bodies)
     for _, c in p.consts { free(c) }
