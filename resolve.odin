@@ -35,6 +35,7 @@ Resolver :: struct {
     top:     [dynamic]i32,    // by slot: the name's innermost entry in names (-1: none)
     allocator: mem.Allocator,          // the check's: what is found of a scope on a later ask is kept with it
     scopes:  [dynamic]Rs_Level,        // the scopes entered, the innermost last
+    here:    ^Scope,                   // ... the innermost one's that has a record
     modules: map[string]^Scope,
     spaces:  map[Token_Id]^Scope,      // a fun's or a struct's scope, by the token that declares it
     files:   map[u16]^Scope,           // a file's, by its index
@@ -66,11 +67,11 @@ Resolver :: struct {
 // block). In a block of the scope's body — an if's, a loop's, a match arm's, a
 // defer's — it is the body's definition all the same, in sight in its block
 // alone: `block`, which of the body's block definitions it is (1, 2, …; 0:
-// none — the body's own), and the block's tokens.
+// none — the body's own), and the block's scope.
 Rs_Def :: struct {
     node:   Tree_Id,
     block:  int,
-    lo, hi: Token_Id,
+    scope:  ^Scope,
     rank:   int,   // (its file's place among its module's: the order they're listed in)
 }
 
@@ -87,8 +88,7 @@ Rs_Defs :: struct {
 // declares (a fun, a struct, a variant), or — 0 — the module named.
 resolve_defs :: proc(r: ^Resolver, decl: Token_Id, module: string) -> []Rs_Def {
     d: ^Rs_Defs
-    sc: ^Scope
-    if decl != 0 { sc = r.spaces[decl] or_else nil } else { sc = r.modules[module] or_else nil }
+    sc := resolve_scope(r, decl, module)
     if sc == nil { return nil }
     d = &sc.list
     if !d.sorted {
@@ -105,7 +105,14 @@ resolve_defs :: proc(r: ^Resolver, decl: Token_Id, module: string) -> []Rs_Def {
     return d.list[:]
 }
 
-// A definition in a block of its scope's body: which, and the block's tokens.
+// The scope the token `decl` declares (a fun, a struct, a variant), or — 0 —
+// the module named; nil: none.
+resolve_scope :: proc(r: ^Resolver, decl: Token_Id, module: string) -> ^Scope {
+    if decl != 0 { return r.spaces[decl] or_else nil }
+    return r.modules[module] or_else nil
+}
+
+// A definition in a block of its scope's body: which, and the block's scope.
 resolve_block :: proc(r: ^Resolver, def: Tree_Id) -> (Rs_Def, bool) {
     d, in_block := r.block_of[def]
     return d, in_block
@@ -295,24 +302,10 @@ rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
     lv := &r.scopes[len(r.scopes) - 1]
     if lv.scope == nil {
         lv.scope = new(Scope)
-        lv.scope.kind = lv.kind
-        lv.scope.parent = rs_around(r)
+        lv.scope.kind, lv.scope.parent = lv.kind, r.here
+        r.here = lv.scope
     }
     return lv.scope
-}
-
-// The nearest scope around the one being resolved that has a record.
-@(private="file")
-rs_around :: proc(r: ^Resolver) -> ^Scope {
-    for i := len(r.scopes) - 2; i >= 0; i -= 1 { if sc := r.scopes[i].scope; sc != nil { return sc } }
-    return nil
-}
-
-// What the scope entered at a level uses.
-@(private="file")
-rs_level_uses :: proc(r: ^Resolver, i: int) -> []^Scope {
-    sc := r.scopes[i].scope
-    return sc.uses[:] if sc != nil else nil
 }
 
 // --- the stack ----------------------------------------------------------------------
@@ -321,11 +314,13 @@ rs_level_uses :: proc(r: ^Resolver, i: int) -> []^Scope {
 rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil) {
     fence := i32(len(r.scopes)) if kind == .Fun || kind == .Struct else r.scopes[len(r.scopes) - 1].fence if len(r.scopes) > 0 else -1
     append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope})
+    if scope != nil { r.here = scope }
 }
 
 @(private="file")
 rs_leave :: proc(r: ^Resolver) {
     s := pop(&r.scopes)
+    if s.scope != nil { r.here = s.scope.parent }
     for i32(len(r.names)) > s.mark {
         e := pop(&r.names)
         r.top[e.slot] = e.hides
@@ -408,8 +403,10 @@ rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref, own_uses :=
             break
         }
     }
-    for i := len(r.scopes) - (1 if own_uses else 2); i >= 0; i -= 1 {
-        for m in rs_level_uses(r, i) {
+    around := r.here
+    if !own_uses && around != nil && around == r.scopes[len(r.scopes) - 1].scope { around = around.parent }
+    for sc := around; sc != nil; sc = sc.parent {
+        for m in sc.uses {
             if other, has := m.defs[name]; has && !rs_shares(r, other, ref) { return true }
         }
     }
@@ -436,8 +433,8 @@ rs_conflict_miss :: proc(r: ^Resolver, name: string) {
         if e.conflict || e.variable && e.scope < fence { continue }
         add(r, &owners, rs_owner_name(r, e.scope), e.ref)
     }
-    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        for m in rs_level_uses(r, i) { if ref, has := m.defs[name]; has { add(r, &owners, m.name, ref) } }
+    for sc := r.here; sc != nil; sc = sc.parent {
+        for m in sc.uses { if ref, has := m.defs[name]; has { add(r, &owners, m.name, ref) } }
     }
     r.miss.owners = owners[:]
 }
@@ -463,10 +460,10 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
             return e.ref, true
         }
     }
-    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
+    for sc := r.here; sc != nil; sc = sc.parent {
         found: Ref
         n := 0
-        for m in rs_level_uses(r, i) {
+        for m in sc.uses {
             if ref, ok := m.defs[name]; ok && (n == 0 || !rs_same(r, ref, found)) {
                 found = ref
                 n += 1
@@ -480,7 +477,7 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
             owners := make([dynamic]string)
             seen := make([dynamic]Ref, context.temp_allocator)
             groups := true
-            for m in rs_level_uses(r, i) {
+            for m in sc.uses {
                 ref, ok := m.defs[name]
                 if !ok { continue }
                 one := false
@@ -526,8 +523,8 @@ rs_capture :: proc(r: ^Resolver) {
             break
         }
     }
-    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        for m in rs_level_uses(r, i) {
+    for sc := r.here; sc != nil; sc = sc.parent {
+        for m in sc.uses {
             for name, ref in m.defs {
                 if name in seen { continue }
                 seen[name] = true
@@ -537,12 +534,13 @@ rs_capture :: proc(r: ^Resolver) {
     }
 }
 
-// Whether a module's definitions are in sight where `at` is: its own, or one
-// its file or its module uses.
-resolve_sees_module :: proc(r: ^Resolver, at: Token_Id, module: string) -> bool {
-    for sc := rs_scope_at(r, at); sc != nil; sc = sc.parent {
-        if sc.kind == .Module && sc.name == module { return true }
-        for u in sc.uses { if u.name == module { return true } }
+// Whether a scope's definitions are in sight where `at` is: in its own text
+// (a module's: its files'), or where a scope around `at` uses it.
+resolve_sees :: proc(r: ^Resolver, at: Token_Id, sc: ^Scope) -> bool {
+    if sc == nil { return false }
+    if sc.kind != .Module && at >= sc.lo && at < sc.hi { return true }
+    for s := rs_scope_at(r, at); s != nil; s = s.parent {
+        if s == sc || slice.contains(s.uses[:], sc) { return true }
     }
     return false
 }
@@ -550,16 +548,6 @@ resolve_sees_module :: proc(r: ^Resolver, at: Token_Id, module: string) -> bool 
 // Whether a name refers to a scope names reach into: a module, a struct, a fun.
 resolve_names_scope :: proc(r: ^Resolver, ref: Ref) -> bool {
     return rs_space_of(r, ref) != nil
-}
-
-// Whether the struct or fun `decl` declares is used where `at` is (`use
-// Shapes`): its definitions, its enums' variants, in sight there.
-resolve_uses_scope :: proc(r: ^Resolver, at, decl: Token_Id) -> bool {
-    if decl == 0 { return false }
-    for sc := rs_scope_at(r, at); sc != nil; sc = sc.parent {
-        for u in sc.uses { if u.decl == decl { return true } }
-    }
-    return false
 }
 
 // A module's definitions, by name (nil: no such module).
@@ -1194,7 +1182,7 @@ rs_note_defs :: proc(r: ^Resolver, live: []Tree_Id) {
         def := Rs_Def{node = s, rank = r.file_rank}
         if t.tag[s] == .Define && r.scopes[len(r.scopes) - 1].kind == .Block {
             d.blocks += 1
-            def.block, def.lo, def.hi = d.blocks, t.first[live[0]], t.end[live[len(live) - 1]]
+            def.block, def.scope = d.blocks, rs_scope_here(r)
             r.block_of[s] = def
         }
         append(&d.list, def)
@@ -1399,8 +1387,8 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
     scope := rs_scope_of(r, t.main[def], node)
+    scope.parent = r.here
     rs_enter(r, .Struct if is_struct else .Fun, scope)
-    scope.parent = rs_around(r)
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
     outer := r.generic

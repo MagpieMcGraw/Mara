@@ -2395,9 +2395,8 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
 
     // Its constants: what its body-level definitions are that aren't funs or types.
     consts := make([dynamic]Token_Id, context.temp_allocator)
-    for tok, def in checked.rs.defs {
-        if tok in checked.rs.owners || rs_def_kind(&build_tree, Tree_Id(build_tree.b[def])) != .Const { continue }
-        if build_files[build_tokens[tok].file].module == canonical { append(&consts, tok) }
+    for d in resolve_defs(checked.rs, 0, canonical) {
+        if build_tree.tag[d.node] == .Define && rs_def_kind(&build_tree, Tree_Id(build_tree.b[d.node])) == .Const { append(&consts, build_tree.main[d.node]) }
     }
     slice.sort(consts[:])
 

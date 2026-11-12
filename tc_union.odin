@@ -57,7 +57,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         k.text_enums[def] = et
         et.name, et.source_name, et.home_package, et.span = flat, name, k.pkg, span
         et.tag_type, et.is_error_kind, et.owner = h.tag_type, is_error, owner
-        et.sight_lo, et.sight_hi, et.sight_block = tc_sight(k, def, owner)
+        et.scope = tc_def_scope(k, def, owner)
         if is_error {
             // (Its set's id, its variants' values its id and their place.)
             k.table.error_set_counter += 1
@@ -81,7 +81,7 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         return
     }
     ut := tc_make_union(k, k.pkg, filed, span, h, variants[:], nil, owner, shown = name)
-    ut.tag_enum.sight_lo, ut.tag_enum.sight_hi, ut.tag_enum.sight_block = tc_sight(k, def, owner)
+    ut.tag_enum.scope = tc_def_scope(k, def, owner)
     ut.tag_enum.span.at = t.main[node]   // (its tag's enum: declared by its `union`)
     tc_bound_set(k, k.t.main[def], ut)
     // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
@@ -175,7 +175,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     tag_et.source_name = strings.concatenate({shown, "_Tag"})
     tag_et.name = make_flat_name(owner.name, strings.concatenate({name, "_Tag"}))
     tag_et.owner = owner
-    tag_et.sight_lo, tag_et.sight_hi = k.t.first[owner.node], k.t.end[owner.node]
+    tag_et.scope = resolve_scope(k.rs, owner.decl, owner.name)
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     tag_et.zero_name = tc_zero_name(variants)
@@ -323,12 +323,11 @@ tc_another_instances :: proc(k: ^TC, owner: ^Type_Scope) -> bool {
     return true
 }
 
-// The text a definition's variants are in sight in by themselves: its block's
-// (an if's, a loop's), else its owner's body's — a module's has none: its
-// files are its text.
-tc_sight :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> (lo, hi: Token_Id, block: bool) {
-    if bd, in_block := resolve_block(k.rs, def); in_block { return bd.lo, bd.hi, true }
-    return k.t.first[owner.node], k.t.end[owner.node], false
+// The scope a definition is written in: its block's (an if's, a loop's),
+// else its owner's.
+tc_def_scope :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> ^Scope {
+    if bd, in_block := resolve_block(k.rs, def); in_block { return bd.scope }
+    return resolve_scope(k.rs, owner.decl, owner.name)
 }
 
 // Whether an enum is in sight where its variant is named by itself: in the
@@ -336,12 +335,8 @@ tc_sight :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> (lo, hi: Token_Id,
 // and where that scope is used (a block is no one's to use). By the text,
 // whichever instance of a generic is being checked.
 tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
-    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, lo, hi: Token_Id, block: bool, at: Token_Id) -> bool {
-        if hi == 0 { return resolve_sees_module(k.rs, at, home) }   // (a module's: its files, and where it is used)
-        return at >= lo && at < hi || !block && resolve_uses_scope(k.rs, at, owner.decl)
-    }
-    if sees(k, et.home_package, et.owner, et.sight_lo, et.sight_hi, et.sight_block, span.at) { return true }
-    for a in et.aliased { if sees(k, a.home, a.owner, a.lo, a.hi, a.block, span.at) { return true } }
+    if resolve_sees(k.rs, span.at, et.scope) { return true }
+    for a in et.aliased { if resolve_sees(k.rs, span.at, a) { return true } }
     return false
 }
 
@@ -361,9 +356,8 @@ tc_alias_sight :: proc(k: ^TC, s: Tree_Id, owner: ^Type_Scope) {
     case ^Type_Union: et = b.tag_enum
     }
     if et == nil { return }
-    lo, hi, block := tc_sight(k, s, owner)
-    a := Enum_Alias{k.pkg, owner, lo, hi, block}
-    if (et.home_package == a.home && et.sight_lo == lo && et.sight_hi == hi) || slice.contains(et.aliased[:], a) { return }
+    a := tc_def_scope(k, s, owner)
+    if a == et.scope || slice.contains(et.aliased[:], a) { return }
     append(&et.aliased, a)
 }
 

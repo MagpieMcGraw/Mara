@@ -55,6 +55,13 @@ member, a literal's field names. The checker finds those in the type's declarati
   name's entries by name, for lookup without a scan. A scope's definitions are pushed when it
   is entered, its variables as they are declared; leaving it pops back to its mark. Crossing
   into a fun or a struct hides the variables below.
+- **The scopes** (2026-11-12): one record a scope (`Scope`), made the first time the resolver
+  meets it and kept after the stack is gone — a module, a file, a fun's or a struct's body; a
+  block when it defines, uses or overloads something. It holds what the scope defines (by
+  name, and its statements as written), what it uses, and the scope it is written in. What is
+  in sight at a point — for a variant named by itself, a call's dispatch groups, an operator's
+  overloads — is the scope's there and each one's around it: the checker and the tools ask
+  the record, nothing is copied out for them.
 - **Output**: for each name node, its `Ref` (the declaring token, the kind) in the
   annotations' instance 0. A generic's body is resolved once: its names mean the same in every
   instance; only its type params' bindings differ, and those are the checker's.

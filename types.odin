@@ -561,19 +561,9 @@ Type_Enum :: struct {
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
     owner:         ^Type_Scope,   // the scope that defines it: a module, a fun, a struct
-    sight_lo, sight_hi: Token_Id, // the text its variants are in sight in by themselves: its owner's body's tokens, its block's (tc_sight); none: a module's — its files
-    sight_block:   bool,          // ... a block's (an if's, a loop's): no one's to use
+    scope:         ^Scope,        // the scope it is written in — its owner's, or a block of it: where its variants are in sight by themselves (tc_sees_enum)
     zero_name:     string,        // its variant written `= 0` — what from_text gives for no name; "": none
-    aliased:       [dynamic]Enum_Alias,   // where `A :: alias E` names it: its variants in sight there too
-}
-
-// Where an alias names an enum: its module, the scope that defines it, and
-// that scope's text (Type_Enum.sight_lo).
-Enum_Alias :: struct {
-    home:  string,
-    owner: ^Type_Scope,
-    lo, hi: Token_Id,
-    block: bool,
+    aliased:       [dynamic]^Scope,       // the scopes an `A :: alias E` of it is written in: its variants in sight there too
 }
 
 Type_Union :: struct {
