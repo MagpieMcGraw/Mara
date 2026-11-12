@@ -219,23 +219,43 @@ rs_leave :: proc(r: ^Resolver) {
     }
 }
 
+// A name's slot (made, the first time it is met).
 @(private="file")
-rs_push :: proc(r: ^Resolver, name: string, ref: Ref, variable: bool) {
-    if name == "" || name == "_" { return }
-    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
+rs_slot :: proc(r: ^Resolver, name: string) -> i32 {
     slot, ok := r.slots[name]
     if !ok {
         slot = i32(len(r.top))
         append(&r.top, -1)
         r.slots[name] = slot
     }
-    append(&r.names, Rs_Name{slot = slot, ref = ref, hides = r.top[slot], scope = i32(len(r.scopes) - 1), variable = variable})
+    return slot
+}
+
+@(private="file")
+rs_push :: proc(r: ^Resolver, name: string, ref: Ref, variable: bool, conflict := false) {
+    if name == "" || name == "_" { return }
+    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
+    rs_push_at(r, rs_slot(r, name), ref, variable, conflict)
+}
+
+@(private="file")
+rs_push_at :: proc(r: ^Resolver, slot: i32, ref: Ref, variable: bool, conflict := false) {
+    append(&r.names, Rs_Name{slot = slot, ref = ref, hides = r.top[slot], scope = i32(len(r.scopes) - 1), variable = variable, conflict = conflict})
     r.top[slot] = i32(len(r.names) - 1)
 }
 
-// A definition, seen throughout the current scope.
+// A definition — a fun, a type, a constant, a type param, a module's name —
+// seen throughout the current scope. Another of its name in sight around it:
+// neither is hidden — the name means neither (rs_conflict).
 @(private="file")
-rs_define :: proc(r: ^Resolver, name: string, ref: Ref) { rs_push(r, name, ref, false) }
+rs_define :: proc(r: ^Resolver, name: string, ref: Ref) {
+    if name == "" || name == "_" { return }
+    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
+    slot := rs_slot(r, name)
+    other := rs_other_at(r, slot, name, ref)
+    rs_push_at(r, slot, ref, false)
+    if other { rs_push_at(r, slot, {}, false, conflict = true) }
+}
 
 // A variable, seen from here on.
 @(private="file")
@@ -255,8 +275,15 @@ rs_shares :: proc(r: ^Resolver, a, b: Ref) -> bool {
 // sight are a conflict: nothing hides anything.
 @(private="file")
 rs_other_in_sight :: proc(r: ^Resolver, name: string, ref: Ref) -> bool {
+    slot, ok := r.slots[name]
+    return rs_other_at(r, slot if ok else -1, name, ref)
+}
+
+// (`slot`: the name's; -1: it has none — nothing of it is on the stack.)
+@(private="file")
+rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref) -> bool {
     fence := r.scopes[len(r.scopes) - 1].fence
-    if slot, ok := r.slots[name]; ok {
+    if slot >= 0 {
         for i := r.top[slot]; i >= 0; i = r.names[i].hides {
             e := &r.names[i]
             if e.variable && e.scope < fence { continue }
@@ -275,10 +302,7 @@ rs_other_in_sight :: proc(r: ^Resolver, name: string, ref: Ref) -> bool {
 // A name two definitions in sight share: from here to its scope's end it
 // means neither (rs_lookup: ambiguous, each said).
 @(private="file")
-rs_conflict :: proc(r: ^Resolver, name: string) {
-    rs_push(r, name, {}, false)
-    r.names[len(r.names) - 1].conflict = true
-}
+rs_conflict :: proc(r: ^Resolver, name: string) { rs_push(r, name, {}, false, conflict = true) }
 
 // A conflicted name's miss: the scope of each thing that has it — innermost
 // first, each once.
@@ -506,15 +530,7 @@ rs_def_kind :: proc(t: ^Tree, value: Tree_Id) -> Ref_Kind {
 rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil) {
     t := r.t
     def :: proc(r: ^Resolver, into: ^map[string]Ref, name: string, ref: Ref) {
-        if into != nil {
-            into[name] = ref
-        } else {
-            // (Another of its name in sight around it: neither is hidden —
-            // the name means neither.)
-            other := rs_other_in_sight(r, name, ref)
-            rs_define(r, name, ref)
-            if other { rs_conflict(r, name) }
-        }
+        if into != nil { into[name] = ref } else { rs_define(r, name, ref) }
         if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
     }
     for s in rs_live(r, stmts) {

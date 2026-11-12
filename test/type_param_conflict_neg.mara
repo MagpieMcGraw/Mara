@@ -1,0 +1,17 @@
+module type_param_conflict_neg
+
+//@ expect-fail: type name 'T' is ambiguous (defined in: twice, type_param_conflict_neg)
+
+// A type param is a definition like any other: named as a type in sight
+// around it, it hides nothing — the name means neither. (Type params were
+// put in sight by their own path, which no conflict check saw.)
+
+use mara.core
+
+T :: struct { n: i64 }
+
+twice :: fun(x: $T) -> T { return x }
+
+main :: fun() {
+	print(twice(2))
+}
