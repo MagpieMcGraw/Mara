@@ -142,6 +142,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         } else if name := tc_diag_name(k, op); t.tag[op] == .Ident && rt != nil && tc_type_source_name(rt) == name {
             // (A type's name alone: there's nothing to run.)
             tc_error(k, span, TYPE_TYPE_NOT_VALUE, name)
+        } else if _, failed := rt.(Type_Error); rt != nil && !failed && tc_only_reads(k, op) {
+            // (A value read and dropped: `if c do done` meant `done = true`.)
+            check_warning(k.c, span, WARN_LINE_DOES_NOTHING, tc_written(k, op), tc_written(k, op))
         }
     case .Decl:
         tc_decl(k, s)
@@ -181,6 +184,18 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
+
+// An expression that only reads — a name, a field, an item, a literal — with
+// no call at its top (an overloaded index is one): alone on a line, nothing.
+tc_only_reads :: proc(k: ^TC, n: Tree_Id) -> bool {
+    #partial switch k.t.tag[n] {
+    case .Number, .String, .Char, .True, .False, .Ident, .Dot_Ident, .Deref, .Field, .In_Range, .Literal, .Array, .Size_Of, .Self:
+        return true
+    case .Index, .Slice:
+        return tc_callee(k, n) == nil
+    }
+    return false
+}
 
 // An operator's value on a line of its own, `clean ++ c`: an error, as a
 // call's dropped value is — unless its left side is a pointer, `&clean ++ c`:

@@ -596,6 +596,7 @@ TYPE_IN_ITEM_TYPE :: "can't look for a %s among %s items: `==` doesn't compare t
 WARN_LIST_STAYS_EMPTY :: "'%s' is %s, but nothing gives it a len: it stays an empty list, and %s runs no times. Append to it with `++`, or declare it a fixed array, `[n!]T`"
 WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"
 WARN_CHAIN_MISALIGNED :: "this `%s` belongs to the `if` on line %d, but is indented differently. Was it meant for another `if`?"
+WARN_LINE_DOES_NOTHING :: "'%s' by itself does nothing: it's read and dropped. Was an assignment (`%s = ...`) or a call meant?"
 WARN_REDUNDANT_CAST ::"redundant cast to %s — %s already has that type, drop the `%s(...)`"
 
 TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"

@@ -1,0 +1,33 @@
+module does_nothing_warn
+
+use mara.core
+
+// A value that only reads, by itself as a statement: a warning. Warlock's
+// `if events[input] do inputs_true` meant `inputs_true = true`, built without
+// a word, and no action ever fired.
+
+//@ expect-warning: 'done' by itself does nothing: it's read and dropped. Was an assignment (`done = ...`) or a call meant?
+//@ expect-warning: 'p.x' by itself does nothing
+//@ expect-warning: 'items[1]' by itself does nothing
+//@ expect-no-warning: 'buf' by itself
+//@ expect-no-warning: 'bump' by itself
+//@ expect-output: 1 [ab]
+
+Point :: struct { x, y: i64 }
+
+bump :: fun(n: ^i64) { n^ += 1 }
+
+main :: fun() {
+	done := false
+	c := true
+	if c do done
+	p := Point{x = 1, y = 2}
+	p.x
+	items := [4, 5, 6]
+	items[1]
+	n : i64 = 0
+	bump(&n)
+	buf : str64
+	&buf ++ "a" ++ "b"
+	print("% [%]", n, buf)
+}
