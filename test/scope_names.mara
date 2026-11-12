@@ -1,0 +1,36 @@
+module scope_names
+
+//@ expect-output: a 8
+//@ expect-output: b 10
+//@ expect-output: c 7
+//@ expect-output: d 3
+//@ expect-output: e Kind.big Kind.small
+
+// A name into a struct or a fun reaches what a name into a module does: its
+// funs, its constants, its types, an enum's variants through the type or by
+// the scope's name alone. `P.K` used to pass the checker and stop the build
+// in lowering; `outer.Step` and `P.Kind.big` were "no field".
+
+use mara.core
+
+P :: struct {
+	K :: 7
+	Kind :: union { small  big }
+	x: i64 = 1
+	twice :: fun(n: i64) -> i64 { return n * 2 }
+}
+
+outer :: fun() -> i64 {
+	Step :: 3
+	bump :: fun(n: i64) -> i64 { return n + Step }
+	return bump(1)
+}
+
+main :: fun() {
+	print("a", P.twice(4))
+	print("b", outer.bump(7))
+	print("c", P.K)
+	print("d", outer.Step)
+	k := P.Kind.big
+	print("e", k, P.small)
+}

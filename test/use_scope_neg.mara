@@ -1,0 +1,22 @@
+module use_scope_neg
+
+//@ expect-fail: undefined function 'area'
+
+// What a use of a struct brings in is in sight in the scope that uses it,
+// no further: another fun doesn't see it.
+
+use mara.core
+
+Shapes :: struct {
+	area :: fun(w: i64, h: i64) -> i64 { return w * h }
+}
+
+main :: fun() {
+	inner()
+	print(area(2, 3))
+}
+
+inner :: fun() {
+	use Shapes
+	print(area(2, 3))
+}

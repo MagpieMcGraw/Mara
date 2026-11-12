@@ -1,0 +1,14 @@
+module use_no_scope_neg
+
+//@ expect-fail: module 'Kind' not found
+
+// A use names a scope: a module, a struct, a fun. An enum is none.
+
+use mara.core
+
+Kind :: union { small  big }
+
+main :: fun() {
+	use Kind
+	print("hi")
+}

@@ -117,18 +117,9 @@ lw_const_named :: proc(k: ^TC, e: Tree_Id) -> bool {
         return tc_ref(k, e).kind == .Const
     case .Field, .Dot_Ident:
         if t.tag[e] == .Dot_Ident && tc_sid(k, e) not_in k.annot.dot_bases { return false }
-        if tc_ref(k, e).kind != .Const { return false }
-        base, _ := lw_field_parts(k, e)
-        if lw_own_const(k, e, base) { return true }
-        sd := as_scope_body(tc_node_type(k, base))
-        return sd != nil && sd_is_module(sd)
+        return tc_ref(k, e).kind == .Const   // (a scope's, by name: `m.X`, `P.X`)
     }
     return false
-}
-
-// `pkg.X` inside pkg: its own constant (pkg itself names nothing).
-lw_own_const :: proc(k: ^TC, n, base: Tree_Id) -> bool {
-    return k.t.tag[n] == .Field && k.t.tag[base] == .Ident && tc_ref(k, base).kind == .None && tc_ref(k, n).kind == .Const
 }
 
 // A field access's base and its field's name.

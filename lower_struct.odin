@@ -23,12 +23,10 @@ lw_field :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest, t
     } else {
         field = tc_text(Token_Id(tr.b[n]))
     }
-    // (`pkg.X` inside pkg: its own constant.)
-    if lw_own_const(k, n, base) { return lw_const_use(k, lw_const_of(k, n, tc_ref(k, n).decl), n, tc_node_type(k, n), want, w) }
+    // (A scope's constant by name — `m.X`, `P.X`, `pkg.X` inside pkg: a
+    // value of its own.)
+    if lw_const_named(k, n) { return lw_const_use(k, lw_const_of(k, n, tc_ref(k, n).decl), n, tc_node_type(k, n), want, w) }
     bt := tc_node_type(k, base)
-    if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        return lw_module_member(k, n, base, field, bt, want, w)
-    }
     // (What reads no value of its base — a union's variant, an enum's, a
     // fun — builds none of it.)
     if ut, is_union := distinct_base(bt).(^Type_Union); is_union && field != "tag" && field != "pad" {
@@ -70,32 +68,6 @@ lw_field_base :: proc(k: ^TC, base: Tree_Id, span: Span, w: Written) -> Built {
     if r := tc_ref(k, tc_unparen(k, base)).kind; r == .Module || r == .Type { return {} }
     ask: Build_Want = .Place if lw_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
     return lw_expr(k, base, ask, w, temp_span = span)
-}
-
-// `m.X`, m a module (tc_module_member): an enum's variant it holds, its
-// value; its constant, a value of its own; else its member (the base
-// built).
-lw_module_member :: proc(k: ^TC, n, base: Tree_Id, field: string, bt: Type, want: Build_Want, w: Written) -> Built {
-    b := k.gb
-    span := tree_span(k.t, n)
-    t := tc_node_type(k, n)
-    ref := tc_ref(k, n)
-    if ref.kind == .Variant {
-        et, is_enum := distinct_base(t).(^Type_Enum)
-        if !is_enum { lw_fail(k, n, "a module's member of no enum") }
-        return lw_enum_value(k, et, et.variants[field], field, span, want, w, lw_err_site(k, n))
-    }
-    if ref.kind == .Const { return lw_const_use(k, lw_const_of(k, n, ref.decl), n, t, want, w) }
-    // (A fun of the module as a value, `gl_load(sdl.GL_GetProcAddress)`: its
-    // global, as its bare name gives — lw_ident. A module holds no place.)
-    if lw_names_fun(k, n, t) {
-        if want == .Place { return {} }
-        return {v = graph_op_value(b, .Global, w, span, t, field), ok = true}
-    }
-    p := lw_member_place(k, n, field, lw_field_base(k, base, span, w), bt, t)
-    if p == NO_VALUE { return {} }
-    if want == .Value { return {v = graph_read(b, p, t, span), ok = true} }
-    return {v = p, place = true, ok = true}
 }
 
 // A variant by itself (`.Circle`, `Shape.Circle`): a union's, constructed;

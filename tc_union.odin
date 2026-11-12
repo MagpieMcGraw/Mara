@@ -301,9 +301,11 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
 }
 
 // Whether an enum is in sight where its variant is named by itself: its
-// module's, or a used one's; a body's, only in that body (or one inside it).
+// module's, or a used one's; a body's, only in that body (or one inside it),
+// or where the body's fun or struct is used.
 tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
     sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, lo, hi: Token_Id, span: Span) -> bool {
+        if !owner.is_module && hi == 0 && resolve_uses_scope(k.rs, span.at, owner.decl) { return true }   // (`use Shapes`: as a module's)
         if !resolve_sees_module(k.rs, span.at, home) { return false }
         if owner.is_module { return true }
         if hi != 0 && (span.at < lo || span.at >= hi) { return false }   // (a block's: in its block alone)

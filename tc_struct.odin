@@ -45,8 +45,14 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     bt := tc_check(k, base)
+    // (A name into a scope — a module, a struct, a fun: its definition, the
+    // resolver's. A module has nothing else.)
+    if tr.tag[n] == .Field && resolve_names_scope(k.rs, k.rs.refs[tc_unparen(k, base)]) {
+        if t, found := tc_scope_member(k, n, field); found { return t }
+    }
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
-        return tc_module_member(k, n, sd, field)
+        tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
+        return Type_Error{}
     }
     // (`Event_State.mouse`: a field of a struct's type — a field reference,
     // field_ref.odin. `r.xrel`, r one: a reference to a field of its field.)
@@ -764,25 +770,34 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
     tc_value_at(k, diag, vt, ft, span)
 }
 
-// `m.X`, m a module: its constant, an enum's variant it holds, or its member
-// (a type, a fun — the base of a further access).
-tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string) -> Type {
-    span := tree_span(k.t, n)
+// `m.X`, `P.X`: a name into a scope — a module, a struct, a fun — as the
+// resolver found it: its constant, an enum's variant it holds, or its member
+// (a type, a fun — the base of a further access). False: it has no such name.
+tc_scope_member :: proc(k: ^TC, n: Tree_Id, field: string) -> (Type, bool) {
     ref := k.rs.refs[n]
+    if ref.kind == .None { return nil, false }
     t, found := tc_ref_type(k, ref, field)
-    if !found {
-        tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
-        return Type_Error{}
+    // (Its constant, not checked yet: checked here, by its use.)
+    if kc := k.const_at[ref.decl] or_else nil; !found && ref.kind == .Const && kc != nil {
+        if kc.state == .In_Progress {
+            tc_error(k, tree_span(k.t, n), TYPE_CONSTANT_DEFINED_ITSELF, field)
+            return Type_Error{}, true
+        }
+        tc_check_const(k, kc)
+        t, found = kc.t, true
     }
+    if !found { return nil, false }
     if ref.kind == .Variant {
         // (An enum's variant it holds: its value; a union's is no value.)
-        if _, is_enum := t.(^Type_Enum); !is_enum {
+        et, is_enum := t.(^Type_Enum)
+        if !is_enum {
             tc_unsupported(k, n, "a union's variant as a value")
-            return Type_Error{}
+            return Type_Error{}, true
         }
+        k.annot.known[tc_sid(k, n)] = {i128(et.variants[field]), t}
     }
     tc_set_ref(k, n, ref)
-    return t
+    return t, true
 }
 
 // The constant a write, or an address, lands in, when its target is rooted

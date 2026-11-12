@@ -1,0 +1,63 @@
+module use_scope
+
+//@ expect-output: plain 6 4 Kind.square Kind.round 4 6
+//@ expect-output: named 20 4 Kind.round
+//@ expect-output: fun 4 3
+//@ expect-output: block 1
+
+// Any scope can be used as a module is: `use Shapes` brings a struct's
+// definitions — its funs, types, constants, dispatch groups, its enums'
+// variants, its operators — in sight in the scope that uses it, behind that
+// scope's own; `s :: use Shapes` keeps them behind the name. A fun's own
+// definitions the same. It used to be "module 'Shapes' not found".
+
+use mara.core
+
+Shapes :: struct {
+	Sides :: 4
+	Kind :: union { round  square }
+	V2 :: distinct [2!]i64
+	area :: fun(w: i64, h: i64) -> i64 { return w * h }
+	vadd :: fun(a: V2, b: V2) -> V2 { return V2{a[0] + b[0], a[1] + b[1]} }
+	plus :: dispatch { vadd }
+	overload + plus
+	name := "shapes"
+}
+
+tools :: fun() {
+	Step :: 3
+	bump :: fun(n: i64) -> i64 { return n + Step }
+}
+
+main :: fun() {
+	plain()
+	named()
+	of_fun()
+	in_block()
+}
+
+plain :: fun() {
+	use Shapes
+	k : Kind = square
+	v := V2{1, 2} + V2{3, 4}
+	print("plain", area(2, 3), Sides, k, .round, v[0], v[1])
+}
+
+named :: fun() {
+	s :: use Shapes
+	k := s.Kind.round
+	print("named", s.area(4, 5), s.Sides, k)
+}
+
+of_fun :: fun() {
+	use tools
+	print("fun", bump(1), Step)
+}
+
+in_block :: fun() {
+	on := true
+	if on {
+		use Shapes
+		print("block", area(1, 1))
+	}
+}

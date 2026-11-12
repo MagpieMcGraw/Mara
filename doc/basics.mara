@@ -64,6 +64,12 @@ example_module :: fun() {
 // written in a fun's body, a struct's, or a block: the module's names are then
 // visible there alone, from that scope's first line.
 //
+// A module is a scope, and any scope with a name can be used the same way:
+// `use Shapes`, Shapes a struct or a fun, makes what its body defines — its
+// funs, types, constants, its enums' variants, its operators — visible
+// here; `s :: use Shapes` keeps them behind `s`. Its variables are not
+// definitions: a struct's fields stay its values'.
+//
 // A variable or a param can't take the name of a fun, a type, a module or
 // a variant in sight — its module's or one it uses: `filter := 3` beside
 // mara.core's filter is an error, since the fun would be out of reach below
