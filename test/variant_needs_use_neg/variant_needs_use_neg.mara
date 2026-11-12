@@ -1,0 +1,16 @@
+module variant_needs_use_neg
+
+//@ expect-fail: unknown type 'Rect'
+
+// A union's variants are no program-wide names: `Rect{w = 3}` with nothing
+// saying whose Rect it is finds the union in sight that has it, and this
+// module doesn't use the module that defines one (a module it uses does).
+// It used to compile.
+
+use mara.core
+use vnu_mid
+
+main :: fun() {
+	s := Rect{w = 3}
+	print(s, mid())
+}

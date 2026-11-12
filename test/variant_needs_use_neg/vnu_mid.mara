@@ -1,0 +1,10 @@
+module vnu_mid
+
+use mara.core
+use vnu_lib
+
+mid :: fun() -> i64 {
+	s := Rect{w = 1}   // (in sight here: this module uses vnu_lib)
+	print(s)
+	return 1
+}

@@ -4,7 +4,8 @@ module block_defs_generic
 //@ expect-output: 36
 
 // Definitions in the blocks of a generic fun's body and of a struct's fun:
-// each instance has its own; a fun in a block has its own blocks' too.
+// in sight in the block's text, whichever instance is checked (an enum is
+// one type for every instance); a fun in a block has its own blocks' too.
 
 use mara.core
 

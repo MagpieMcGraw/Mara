@@ -103,21 +103,3 @@ build_field_map :: proc(st: ^Scope_Body) {
         st.field_map[f.name] = i
     }
 }
-
-// Track variant ownership in c.table.variant_to_enum so the dot-shorthand
-// fallback (`.Core` with no expected type) can find variants by name across
-// visible enums/unions. Variants are never bound as bare names: bare variant
-// resolution goes through an expected type.
-register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, enum_key: string = "") {
-    key := enum_key if enum_key != "" else et.name
-    for vname in et.variants {
-        if existing_enum, mapped := c.table.variant_to_enum[vname]; mapped {
-            if existing_enum != "" && existing_enum != key {
-                c.table.variant_to_enum[vname] = "" // ambiguous — different enum
-            }
-        } else {
-            c.table.variant_to_enum[vname] = key
-        }
-    }
-}
-

@@ -560,17 +560,20 @@ Type_Enum :: struct {
     is_error_kind: bool,    // true for `Name :: error { ... }` — flat tag set in the global `err` type
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
     is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
-    owner:         ^Type_Scope,   // the fun or struct whose body defines it; nil: its module's
-    sight_lo, sight_hi: Token_Id, // a block's (an if's, a loop's, in its owner's body): the block's tokens; 0: the whole body
+    owner:         ^Type_Scope,   // the scope that defines it: a module, a fun, a struct
+    sight_lo, sight_hi: Token_Id, // the text its variants are in sight in by themselves: its owner's body's tokens, its block's (tc_sight); none: a module's — its files
+    sight_block:   bool,          // ... a block's (an if's, a loop's): no one's to use
     zero_name:     string,        // its variant written `= 0` — what from_text gives for no name; "": none
     aliased:       [dynamic]Enum_Alias,   // where `A :: alias E` names it: its variants in sight there too
 }
 
-// A module (and the body, nil for its top) where an alias names an enum.
+// Where an alias names an enum: its module, the scope that defines it, and
+// that scope's text (Type_Enum.sight_lo).
 Enum_Alias :: struct {
     home:  string,
     owner: ^Type_Scope,
-    lo, hi: Token_Id,   // a block's: its tokens (Type_Enum.sight_lo)
+    lo, hi: Token_Id,
+    block: bool,
 }
 
 Type_Union :: struct {
@@ -2190,25 +2193,6 @@ all_err_returns :: proc(types: [dynamic]Type) -> bool {
         if !is_err_type(t) { return false }
     }
     return true
-}
-
-// Resolve a bare variant name to its owning union, when the name identifies a
-// single union across the whole program. register_enum_variants already
-// collapses a name shared by two enums/unions to the "" sentinel in
-// variant_to_enum, so a non-empty mapping guarantees one owner; we then locate
-// that union by its synthetic <Name>_Tag enum. Returns nil for an unknown or
-// ambiguous name — those have no single inferred type, so the caller leaves the
-// literal untyped (a hinted slot resolves it; a hint-less one is left to the
-// existing fallthrough).
-variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
-    owner_enum, mapped := c.table.variant_to_enum[variant]
-    if !mapped || owner_enum == "" { return nil }
-    for _, ut in c.table.unions {
-        if ut.tag_enum != nil && ut.tag_enum.name == owner_enum {
-            return ut
-        }
-    }
-    return nil
 }
 
 // When promote_numeric leaves a binary result as an infer type, adopt the

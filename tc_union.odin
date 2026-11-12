@@ -17,7 +17,6 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
     t := k.t
     name := tc_name(k, def)
     filed := tc_def_name(k, def)
-    block := k.block_defs[def]   // (none: zeros — the whole body)
     // (A generic union: a template, made as each instance — tc_union_instance.)
     if tc_union_is_generic(k, node) {
         k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg, owner = owner}
@@ -46,10 +45,19 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
             tc_error(k, span, TYPE_ENUM_ALREADY_DEFINED, name)
             return
         }
+        // (One definition is one enum: a generic's body's, its first
+        // instance's, is every instance's — nothing in it is the generic's
+        // params'.)
+        if made := k.text_enums[def] or_else nil; made != nil {
+            tc_bound_set(k, k.t.main[def], made)
+            for _, tok in made.variant_decls { tc_bound_set(k, tok, made) }
+            return
+        }
         et := new(Type_Enum)
+        k.text_enums[def] = et
         et.name, et.source_name, et.home_package, et.span = flat, name, k.pkg, span
         et.tag_type, et.is_error_kind, et.owner = h.tag_type, is_error, owner
-        et.sight_lo, et.sight_hi = block.lo, block.hi
+        et.sight_lo, et.sight_hi, et.sight_block = tc_sight(k, def, owner)
         if is_error {
             // (Its set's id, its variants' values its id and their place.)
             k.table.error_set_counter += 1
@@ -66,7 +74,6 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         k.table.enums[flat] = et
         tc_bound_set(k, k.t.main[def], et)
         for _, tok in et.variant_decls { tc_bound_set(k, tok, et) }   // (a variant named, `m.Red`: its enum's value)
-        if owner.is_module { register_enum_variants(k.c, et, flat) }   // (a body's: found in it alone, tc_sees_enum)
         return
     }
     if flat in k.table.unions {
@@ -74,9 +81,8 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         return
     }
     ut := tc_make_union(k, k.pkg, filed, span, h, variants[:], nil, owner, shown = name)
-    ut.tag_enum.sight_lo, ut.tag_enum.sight_hi = block.lo, block.hi
+    ut.tag_enum.sight_lo, ut.tag_enum.sight_hi, ut.tag_enum.sight_block = tc_sight(k, def, owner)
     ut.tag_enum.span.at = t.main[node]   // (its tag's enum: declared by its `union`)
-    if owner.is_module { register_enum_variants(k.c, ut.tag_enum, ut.tag_enum.name) }   // (a body's: found in it alone, tc_sees_enum)
     tc_bound_set(k, k.t.main[def], ut)
     // (Its tag's enum, `Name_Tag`, a name too — `U_Tag.A` a value, as an
     // enum's variant is — declared where the union is, by its `union`; unless
@@ -169,6 +175,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     tag_et.source_name = strings.concatenate({shown, "_Tag"})
     tag_et.name = make_flat_name(owner.name, strings.concatenate({name, "_Tag"}))
     tag_et.owner = owner
+    tag_et.sight_lo, tag_et.sight_hi = k.t.first[owner.node], k.t.end[owner.node]
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     tag_et.zero_name = tc_zero_name(variants)
@@ -268,10 +275,7 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
             if v, has := ut.tag_map[name]; has { return hint, v, true }
         }
         if _, is_err := hb.(Type_Err); is_err {
-            owners := make([dynamic]string, context.temp_allocator)
-            for ename, edef in k.table.enums {
-                if edef.is_error_kind && name in edef.variants && tc_sees_enum(k, edef, span) { append(&owners, ename) }
-            }
+            owners := tc_variant_enums(k, name, span, errors = true)
             tc_error_ok(k, name, &owners)
             if len(owners) > 1 {
                 tc_variant_ambiguous(k, name, owners[:], span, bare)
@@ -284,10 +288,7 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
         }
     }
     if !dot { return nil, 0, false }
-    owners := make([dynamic]string, context.temp_allocator)
-    for ename, edef in k.table.enums {
-        if name in edef.variants && tc_sees_enum(k, edef, span) { append(&owners, ename) }
-    }
+    owners := tc_variant_enums(k, name, span)
     tc_error_ok(k, name, &owners)
     if len(owners) > 1 {
         tc_variant_ambiguous(k, name, owners[:], span, bare)
@@ -300,22 +301,47 @@ tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, dot: bool, span: Span
     return nil, 0, false
 }
 
-// Whether an enum is in sight where its variant is named by itself: its
-// module's, or a used one's; a body's, only in that body (or one inside it),
-// or where the body's fun or struct is used.
-tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
-    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, lo, hi: Token_Id, span: Span) -> bool {
-        if !owner.is_module && hi == 0 && resolve_uses_scope(k.rs, span.at, owner.decl) { return true }   // (`use Shapes`: as a module's)
-        if !resolve_sees_module(k.rs, span.at, home) { return false }
-        if owner.is_module { return true }
-        if hi != 0 && (span.at < lo || span.at >= hi) { return false }   // (a block's: in its block alone)
-        for b := k.body; b != nil; b = b.parent_scope {
-            if b == owner { return true }
-        }
-        return false
+// The enums in sight where `span` is that have a variant `name` (`errors`:
+// the error sets alone), by name. (A union with fields in a generic's body is
+// made for each instance: of those, the one made for the body being checked.)
+tc_variant_enums :: proc(k: ^TC, name: string, span: Span, errors := false) -> [dynamic]string {
+    owners := make([dynamic]string, context.temp_allocator)
+    for ename, edef in k.table.enums {
+        if errors && !edef.is_error_kind || name not_in edef.variants { continue }
+        // (A union's tag's enum: one that isn't its definition's only.)
+        if tc_sees_enum(k, edef, span) && !(edef.is_synthetic && tc_another_instances(k, edef.owner)) { append(&owners, ename) }
     }
-    if sees(k, et.home_package, et.owner, et.sight_lo, et.sight_hi, span) { return true }
-    for a in et.aliased { if sees(k, a.home, a.owner, a.lo, a.hi, span) { return true } }
+    return owners
+}
+
+// Whether a scope is a generic's instance other than the one being checked
+// (or one around it).
+tc_another_instances :: proc(k: ^TC, owner: ^Type_Scope) -> bool {
+    i, known := k.scope_of[owner]
+    if !known || !k.scopes[i].synthetic { return false }
+    for b := k.body; b != nil; b = b.parent_scope { if b == owner { return false } }
+    return true
+}
+
+// The text a definition's variants are in sight in by themselves: its block's
+// (an if's, a loop's), else its owner's body's — a module's has none: its
+// files are its text.
+tc_sight :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> (lo, hi: Token_Id, block: bool) {
+    if bd, in_block := k.block_defs[def]; in_block { return bd.lo, bd.hi, true }
+    return k.t.first[owner.node], k.t.end[owner.node], false
+}
+
+// Whether an enum is in sight where its variant is named by itself: in the
+// text of the scope that defines it — a module's files, a body, a block —
+// and where that scope is used (a block is no one's to use). By the text,
+// whichever instance of a generic is being checked.
+tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
+    sees :: proc(k: ^TC, home: string, owner: ^Type_Scope, lo, hi: Token_Id, block: bool, at: Token_Id) -> bool {
+        if hi == 0 { return resolve_sees_module(k.rs, at, home) }   // (a module's: its files, and where it is used)
+        return at >= lo && at < hi || !block && resolve_uses_scope(k.rs, at, owner.decl)
+    }
+    if sees(k, et.home_package, et.owner, et.sight_lo, et.sight_hi, et.sight_block, span.at) { return true }
+    for a in et.aliased { if sees(k, a.home, a.owner, a.lo, a.hi, a.block, span.at) { return true } }
     return false
 }
 
@@ -335,9 +361,9 @@ tc_alias_sight :: proc(k: ^TC, s: Tree_Id, owner: ^Type_Scope) {
     case ^Type_Union: et = b.tag_enum
     }
     if et == nil { return }
-    block := k.block_defs[s]
-    a := Enum_Alias{k.pkg, owner, block.lo, block.hi}
-    if (et.home_package == a.home && et.owner == owner && et.sight_hi == 0) || slice.contains(et.aliased[:], a) { return }
+    lo, hi, block := tc_sight(k, s, owner)
+    a := Enum_Alias{k.pkg, owner, lo, hi, block}
+    if (et.home_package == a.home && et.sight_lo == lo && et.sight_hi == hi) || slice.contains(et.aliased[:], a) { return }
     append(&et.aliased, a)
 }
 
@@ -398,11 +424,23 @@ tc_variant_call :: proc(k: ^TC, n: Tree_Id, ut: ^Type_Union, name: string, args:
 }
 
 // The union a literal named by a bare variant builds: the one expected,
-// else the one union with that variant (two such: ambiguous, reported).
-tc_variant_union :: proc(k: ^TC, name: string) -> (^Type_Union, bool) {
+// else the one union in sight with that variant (two such: ambiguous,
+// reported).
+tc_variant_union :: proc(k: ^TC, name: string, span: Span) -> (^Type_Union, bool) {
     if ut, is_union := distinct_base(k.hint).(^Type_Union); is_union && name in ut.tag_map { return ut, false }
-    if ut := variant_owner_union(k.c, name); ut != nil { return ut, false }
-    return nil, false
+    found: ^Type_Union
+    owners := make([dynamic]string, context.temp_allocator)
+    for _, ut in k.table.unions {
+        if name not_in ut.tag_map || !tc_sees_enum(k, ut.tag_enum, span) || tc_another_instances(k, ut.tag_enum.owner) { continue }
+        found = ut
+        append(&owners, ut.source_name if ut.source_name != "" else ut.name)
+    }
+    if len(owners) > 1 {
+        slice.sort(owners[:])
+        tc_error(k, span, TYPE_AMBIGUOUS_VARIANT_LITERAL, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
+        return nil, true
+    }
+    return found, false
 }
 
 // Whether a union is generic: its header names a param (`union($T: type)`).

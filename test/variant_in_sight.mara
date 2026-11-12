@@ -1,0 +1,36 @@
+module variant_in_sight
+
+//@ expect-output: body Box { w: 1 } Dot
+//@ expect-output: generic 5 Some { value: 5 }
+//@ expect-output: generic 2.5 Some { value: 2.5 }
+//@ expect-output: built Pair { first: 1, second: 2 }
+
+// A variant named with nothing saying whose it is — `Box{w = 1}`, `.Dot`,
+// `Pair(1, 2)` — is the one union's in sight that has it: in the text of the
+// scope that defines the union, or where that scope is used. A union a fun's
+// body defines is found there like a module's (it was "unknown type 'Box'"),
+// and in a generic's body, by the text, for each instance.
+
+use mara.core
+
+main :: fun() {
+	U :: union { Box { w: i64 }  Dot }
+	b := Box{w = 1}
+	d : U = .Dot
+	print("body", b, d)
+	wrap(5)
+	wrap(2.5)
+	built()
+}
+
+wrap :: fun(x: $T) {
+	Maybe :: union { Some { value: T }  None }
+	m := Some{value = x}
+	print("generic", x, m)
+}
+
+built :: fun() {
+	Shape :: union { Pair(a: i64, b: i64) { first := a  second := b }  Empty }
+	p := Pair(1, 2)
+	print("built", p)
+}

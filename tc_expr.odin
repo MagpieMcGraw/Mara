@@ -835,7 +835,12 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     if qual != nil { ft_raw, found = qual, true }
     if !found {
         // (A union's variant built by its params: `Rect(5)` where a Shape goes.)
-        if ut, _ := tc_variant_union(k, name); ut != nil { return tc_variant_call(k, n, ut, name, args) }
+        ut, ambiguous := tc_variant_union(k, name, span)
+        if ut != nil { return tc_variant_call(k, n, ut, name, args) }
+        if ambiguous {
+            for a in args { tc_check(k, a) }
+            return Type_Error{}
+        }
         // (A fun two modules it uses have: ambiguous.)
         if qual == nil && ref.kind == .None {
             if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {

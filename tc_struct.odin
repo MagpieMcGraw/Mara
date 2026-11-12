@@ -341,7 +341,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         found, ok := tc_ref_type(k, tyref, name)
         if !ok {
             // (A union's variant: the union expected's, or the one union with it.)
-            vut, ambiguous := tc_variant_union(k, name)
+            vut, ambiguous := tc_variant_union(k, name, span)
             if ambiguous { return Type_Error{} }
             if vut == nil {
                 return tc_unknown_literal(k, n, name, entries)
@@ -852,26 +852,12 @@ tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     return true
 }
 
-// A literal of a name no type or union owns: a variant's two unions have
-// (ambiguous: said so), else an unknown type — unless a variant's or a
-// local's (what takes it checks it) — its fields' values checked.
+// A literal of a name no type in sight has, and no union in sight a variant
+// of: an unknown type — unless a local's (what takes it checks it) — its
+// fields' values checked.
 tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    owner, is_variant := k.table.variant_to_enum[name]
-    if is_variant && owner == "" {
-        // (The unions that own it: a literal builds a payload.)
-        owners := make([dynamic]string, context.temp_allocator)
-        for _, ut in k.table.unions {
-            if name in ut.tag_map { append(&owners, ut.source_name if ut.source_name != "" else ut.name) }
-        }
-        slice.sort(owners[:])
-        first := owners[0] if len(owners) > 0 else name
-        tc_error(k, span, TYPE_AMBIGUOUS_VARIANT_LITERAL, name, strings.join(owners[:], ", ", context.temp_allocator), first, name)
-        return Type_Error{}
-    }
-    if !is_variant {
-        if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound && !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
-    }
+    if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound && !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e) }
     return Type_Error{}
 }
