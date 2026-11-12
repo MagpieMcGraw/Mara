@@ -25,12 +25,20 @@ Call_Edge :: struct {
     to:   ^Type_Scope,
 }
 
+// A call written in a fun's or a struct's body: who calls whom, and the
+// call's node.
+Call_Site :: struct {
+    from, to: ^Type_Scope,
+    node:     Tree_Id,
+}
+
 Call_Graph :: struct {
     nodes:     [dynamic]^Type_Scope,   // node id -> the callable scope
     index_of:  map[^Type_Scope]int,    // scope -> node id
     out_edges: [dynamic][dynamic]int,  // node id -> callee node ids
     in_edges:  [dynamic][dynamic]int,  // node id -> caller node ids (each ascending)
-    edge_line: map[Call_Edge]int,      // (caller,callee) scope edge -> first call-site line (call order)
+    calls:     [dynamic]Call_Site,     // every call written, as the graph was built: who calls whom, where (a default argument's call is written in the callee: none)
+    sites:     map[Call_Edge][dynamic]Tree_Id,   // ... by (caller, callee), when first asked for (cg_sites)
 
     // Strongly-connected components. scc_of[node] = its component id; sccs[id] =
     // that component's member node ids. Tarjan emits components in REVERSE
@@ -102,12 +110,10 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
                 append(&g.out_edges[from], to)
             }
             if callee.calling_conv == .C { effectful[caller] = true }
-            // Call order: the first line calling it. A default argument is
-            // written in the callee, so it gives no line in the caller.
+            // Where it is written. A default argument is written in the
+            // callee, so it is no call written in the caller.
             if implied { continue }
-            edge := Call_Edge{from = caller, to = callee}
-            line := span_line(tree_span(t, Tree_Id(u64(key) & 0xffff_ffff)))
-            if cur, ok := g.edge_line[edge]; !ok || line < cur { g.edge_line[edge] = line }
+            append(&g.calls, Call_Site{caller, callee, Tree_Id(u64(key) & 0xffff_ffff)})
         }
     }
     for key, form in a.forms {
@@ -132,28 +138,26 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     return g
 }
 
-// Where each fun calls each other, for what's asked (ask.odin): the node of every
-// call written in the caller. A default argument's call is written in the callee,
-// so it gives none, as with edge_line.
-cg_call_sites :: proc(checked: ^Checked_Program) -> map[Call_Edge][dynamic]Tree_Id {
-    sites: map[Call_Edge][dynamic]Tree_Id
-    rc := cg_runs_make(checked.annot, &build_tree)
-    defer cg_runs_free(&rc)
-    a := checked.annot
-    for key, callee in a.callees {
-        if a.forms[key] == .Value { continue }
-        callers, implied := cg_runs_in(&rc, key)
-        if implied { continue }
-        _, n := annot_split(key)
-        for caller in callers {
-            edge := Call_Edge{from = caller, to = callee}
-            if edge not_in sites { sites[edge] = make([dynamic]Tree_Id) }
-            list := sites[edge]
-            append(&list, n)
-            sites[edge] = list
+// Every call written, by who calls whom: each one's node, in the order the
+// graph was built in. Grouped the first time it is asked for.
+cg_sites :: proc(g: ^Call_Graph) -> map[Call_Edge][dynamic]Tree_Id {
+    if g.sites == nil && len(g.calls) > 0 {
+        for c in g.calls {
+            edge := Call_Edge{from = c.from, to = c.to}
+            list := g.sites[edge]
+            append(&list, c.node)
+            g.sites[edge] = list
         }
     }
-    return sites
+    return g.sites
+}
+
+// The first line a caller calls a callee on: its call order (none written
+// there: after every one that is).
+cg_first_line :: proc(g: ^Call_Graph, t: ^Tree, edge: Call_Edge) -> int {
+    line := 1 << 30
+    for n in cg_sites(g)[edge] or_else nil { line = min(line, span_line(tree_span(t, n))) }
+    return line
 }
 
 // Whether a builtin call prints: `print`, `print_cstr`, `print_int`,

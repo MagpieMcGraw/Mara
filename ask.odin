@@ -1771,7 +1771,7 @@ Ask_Call_Walk :: struct {
     cg:      ^Call_Graph,
     adj:     [][dynamic]int,                   // callees, or callers
     forward: bool,                             // callees
-    sites:   map[Call_Edge][dynamic]Tree_Id,   // every call written (cg_call_sites)
+    sites:   map[Call_Edge][dynamic]Tree_Id,   // every call written (the call graph's)
     seen:    map[Ask_Call_Key]bool,
 }
 
@@ -1786,7 +1786,7 @@ ask_call_funs :: proc(w: ^Ask_Call_Walk, nodes: []int) -> [dynamic]Ask_Call_Fun 
             if slice.contains(nodes, k) { continue }
             caller, callee := w.cg.nodes[node], w.cg.nodes[k]
             if !w.forward { caller, callee = callee, caller }
-            line := w.cg.edge_line[Call_Edge{from = caller, to = callee}] or_else (1 << 30)
+            line := cg_first_line(w.cg, &build_tree, Call_Edge{from = caller, to = callee})
             key := ask_call_key(w.cg, k)
             if i, known := at[key]; known {
                 f := &funs[i]
@@ -1910,7 +1910,7 @@ render_fn_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
 render_calls_of :: proc(b: ^strings.Builder, checked: ^Checked_Program, roots: []int, depth: int, forward: bool) {
     cg := &checked.call_graph
     hops := 1 if depth == ASK_DEPTH_OMITTED else depth
-    sites := cg_call_sites(checked)
+    sites := cg_sites(&checked.call_graph)
     w := Ask_Call_Walk{cg = cg, adj = cg.out_edges[:] if forward else cg.in_edges[:], forward = forward, sites = sites}
     direct := len(ask_call_funs(&w, roots))
     dir_word, row_word := "above", "direct callee"
@@ -2041,7 +2041,7 @@ ask_write_param_calls :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b
     rows := make([dynamic]Row, context.temp_allocator)
     if nf, known := cg.index_of[b.fn]; known {
         key := ask_call_key(cg, nf)
-        sites := cg_call_sites(checked)
+        sites := cg_sites(&checked.call_graph)
         for edge, nodes in sites {
             to, has := cg.index_of[edge.to]
             if !has || ask_call_key(cg, to) != key { continue }

@@ -54,11 +54,9 @@ orders_of :: proc(t: ^Tree, a: ^Annotations, files: ^map[u16]bool = nil) -> [dyn
     of_struct := make(map[^Type_Scope]int, allocator = context.temp_allocator)
     of_results := make(map[Tree_Id]int, allocator = context.temp_allocator)   // (by the fun's Fun_Def)
     of_params := make(map[Tree_Id]int, allocator = context.temp_allocator)
-    funs := make([dynamic]Tree_Id, context.temp_allocator)   // (every Fun_Def: a return's own fun)
     for key, ts in a.decls {
         if ts == nil || ts.is_module { continue }
         _, n := annot_split(key)
-        if t.tag[n] == .Fun_Def { append(&funs, n) }
         if files != nil && build_tokens[t.first[n]].file not_in files^ { continue }
         name := ts.source_name if ts.source_name != "" else ts.name
         name_tok := Token_Id(0)   // (before its `::`)
@@ -125,7 +123,7 @@ orders_of :: proc(t: ^Tree, a: ^Annotations, files: ^map[u16]bool = nil) -> [dyn
             case .Return:
                 entries = tree_list(t, t.a[n])
                 if len(entries) < 2 { continue }
-                fun := order_own_fun(t, funs[:], n)
+                fun := order_own_fun(t, n)
                 o, kept := of_results[fun]
                 if fun == 0 || !kept { continue }
                 site, at = .Return, o
@@ -180,13 +178,14 @@ order_groups :: proc(groups: []Order_Group, parts: []string) -> []Order_Group {
     return groups
 }
 
-// The fun a node is in: the innermost Fun_Def around it; 0 for none.
-order_own_fun :: proc(t: ^Tree, funs: []Tree_Id, n: Tree_Id) -> Tree_Id {
-    best := Tree_Id(0)
-    for f in funs {
-        if t.first[f] <= t.first[n] && t.first[n] < t.end[f] && (best == 0 || t.first[f] > t.first[best]) { best = f }
+// The fun a node is in: the innermost Fun_Def around it, as the tree has it;
+// 0 for none.
+order_own_fun :: proc(t: ^Tree, n: Tree_Id) -> Tree_Id {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    for p := t.parent[n]; p != 0; p = t.parent[p] {
+        if t.tag[p] == .Fun_Def { return p }
     }
-    return best
+    return 0
 }
 
 // What an order's parts are called: "fields", "results", "params".
