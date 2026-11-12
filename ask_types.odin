@@ -302,7 +302,7 @@ ask_shape_query :: proc(checked: ^Checked_Program, query: string, modules: map[s
             add(&declared, sh, Span{at = v.tok}, token_text(build_tokens[v.tok]), v.type_, fmt.tprintf("local in %s", fname))
         }
     }
-    for m in ask_all_definitions(checked.table, "", checked.functions) {
+    for m in ask_all_definitions(checked.table, "", checked.functions, every = true) {
         ts, is_scope := m.type_.(^Type_Scope)
         if !is_scope || ts.kind != .Struct || !owned(ts) || ask_is_variant(m.type_) { continue }
         if !in_scope(ask_span(ts), ts.home_package, modules, file) { continue }

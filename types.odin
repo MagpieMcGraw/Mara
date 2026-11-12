@@ -654,6 +654,7 @@ Type_Distinct :: struct {
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     span:             Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     base_type:        Type,    // the underlying type (transparent at codegen level)
+    owner:            ^Type_Scope,   // the scope that defines it: a module, a fun, a struct
 
     is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
 }

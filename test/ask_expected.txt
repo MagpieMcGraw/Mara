@@ -18,9 +18,9 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.encoding  1 type    · 10 funs
     mara.endian    0 types   · 9 funs
     mara.files     2 types   · 17 funs
-    mara.font      31 types  · 20 funs
+    mara.font      13 types  · 20 funs
     mara.math      4 types   · 91 funs
-    mara.memory    3 types   · 1 fun
+    mara.memory    2 types   · 1 fun
     mara.open_gl   29 types  · 100 funs
     mara.os        34 types  · 98 funs
     mara.sdl       22 types  · 1 fun
@@ -31,7 +31,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -49,7 +49,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -76,7 +76,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -103,7 +103,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -121,7 +121,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -139,7 +139,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  13 users
+    struct   Camera  camera.mara:10   ·  14 users
 
   funs         (source order)
     camera.mara:39  camera_look_down :: fun(camera: ^Camera)
@@ -177,7 +177,7 @@ Camera — struct  camera.mara:10   (module camera)
 below (types)   (1 user, 2 use-sites, depth 1)
   struct Megastruct  (field cam : Camera)
   struct Megastruct  (field cameras : [6]Camera)
-  (and 12 funs taking or returning it: `mara ask Camera call`)
+  (and 13 funs taking or returning it: `mara ask Camera call`)
 === Pounce | Camera type above
 Camera — struct  camera.mara:10   (module camera)
 
@@ -207,7 +207,7 @@ above (calls)   (0 functions)
 === Pounce | Camera call below
 Camera — struct  camera.mara:10   (module camera)
 
-below (calls)   (12 functions)
+below (calls)   (13 functions)
   fun    append_one             gfx_draw_state.mara:172   (param cam : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
@@ -219,6 +219,7 @@ below (calls)   (12 functions)
   fun    draw_marker            Pounce.mara:235   (param cam : Camera)
   fun    draw_state_append      gfx_draw_state.mara:136   (param cam : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
+  fun    view_and_projections   camera.mara:25   (param cam : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
 === Pounce | Camera flow above 2
 Camera — struct  camera.mara:10   (module camera)
@@ -2607,3 +2608,51 @@ pointer taken 1
 read 1
   askcando.mara:26  main
     print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)
+=== Pounce | Camera.view_and_projections
+Camera.view_and_projections — fun  camera.mara:25   (module camera)
+
+  view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4
+
+above (calls)   (5 direct callees, depth 1)
+  <root>/code/math.mara:1085  mara.math.mat4_perspective
+    at camera.mara:27  proj := mat4_perspective(cam.fov_y, w/h, cam.near_plane, cam.far_plane)
+  <root>/code/math.mara:1098  mara.math.mat4_ortho
+    at camera.mara:30  ortho := mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
+  <root>/code/math.mara:1067  mara.math.mat4_translate
+    at camera.mara:31  t := mat4_translate(cam.obj.pos)
+  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+    at camera.mara:32  r := mat4_from_quat(cam.obj.dir)
+  <root>/code/math.mara:1026  mara.math.mat4_mul
+    at camera.mara:33  view := r * t
+  (15 more: add a depth, or 'all')
+
+below (calls)   (1 direct caller, depth 1)
+  camera.mara:10  camera.Camera  (struct)
+    at camera.mara:23  proj, ortho, view = view_and_projections(#self)
+  (4 more: add a depth, or 'all')
+=== Pounce | view_and_projections in Camera
+Camera.view_and_projections — fun  camera.mara:25   (module camera)
+
+  view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4
+
+above (calls)   (5 direct callees, depth 1)
+  <root>/code/math.mara:1085  mara.math.mat4_perspective
+    at camera.mara:27  proj := mat4_perspective(cam.fov_y, w/h, cam.near_plane, cam.far_plane)
+  <root>/code/math.mara:1098  mara.math.mat4_ortho
+    at camera.mara:30  ortho := mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
+  <root>/code/math.mara:1067  mara.math.mat4_translate
+    at camera.mara:31  t := mat4_translate(cam.obj.pos)
+  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+    at camera.mara:32  r := mat4_from_quat(cam.obj.dir)
+  <root>/code/math.mara:1026  mara.math.mat4_mul
+    at camera.mara:33  view := r * t
+  (15 more: add a depth, or 'all')
+
+below (calls)   (1 direct caller, depth 1)
+  camera.mara:10  camera.Camera  (struct)
+    at camera.mara:23  proj, ortho, view = view_and_projections(#self)
+  (4 more: add a depth, or 'all')
+=== Pounce | view_and_projections
+mara ask: no type or function named 'view_and_projections' in Pounce
+  (defined inside another scope: `mara ask Camera.view_and_projections`)
+[exit 1]

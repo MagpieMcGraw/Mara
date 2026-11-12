@@ -263,6 +263,7 @@ Ask_Match :: struct {
     sub:   string,   // "struct" / "union" / "error" / "distinct" / "fun" ("enum" only for a union's synthetic tag)
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
+    inside: string,  // the scope whose body defines it, as its name is said in full: "Pool." ("": a module's own)
 }
 
 // Every definition in (optionally) the scoped file, deduped by (span, kind).
@@ -281,10 +282,23 @@ Ask_Match :: struct {
 // answer is the same each run.
 Ask_Dedup_Key :: struct { span: Span, sub: string }
 
-ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
+// What is listed is what a scope defines itself, as the code sees it: a
+// module's own definitions (`within` nil: any module's), or those in the body
+// of the fun or struct `within` — never what a scope inside it defines, which
+// is that scope's (`Pool.Head`, `Head in Pool`). `every`: no scope's view —
+// all of them, for what counts every struct of a module.
+ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "",
+                            within: ^Type_Scope = nil, every := false) -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
     seen: map[Ask_Dedup_Key]int
-    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]int, t: Type, scope_file: string, scope_module: string) {
+    Where :: struct { within: ^Type_Scope, every: bool }
+    at := Where{within, every}
+    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]int, t: Type, scope_file: string, scope_module: string, at: Where) {
+        // (The scope that defines it: the one asked about.)
+        if owner := ask_owner_scope(t); !at.every {
+            if at.within == nil && owner != nil && !owner.is_module { return }
+            if at.within != nil && (owner == nil || owner.decl != at.within.decl || owner.is_module) { return }
+        }
         // A module's backing namespace is a `.Struct`-kind Type_Scope with
         // is_module set — a compiler-generated scope holding the module's defs,
         // not a data type. It has no fields, no span, and no users, yet ask_sub
@@ -315,27 +329,76 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
         seen[key] = len(matches)
         append(matches, m)
     }
-    for _, f in table.funs           { consider(&matches, &seen, f, scope_file, scope_module) }
-    for _, e in table.enums          { consider(&matches, &seen, e, scope_file, scope_module) }
-    for _, u in table.unions         { consider(&matches, &seen, u, scope_file, scope_module) }
-    for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file, scope_module) }
+    for _, f in table.funs           { consider(&matches, &seen, f, scope_file, scope_module, at) }
+    for _, e in table.enums          { consider(&matches, &seen, e, scope_file, scope_module, at) }
+    for _, u in table.unions         { consider(&matches, &seen, u, scope_file, scope_module, at) }
+    for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file, scope_module, at) }
     // FFI functions are absent from table.funs — surface the foreign ones from
     // checked.functions so resolution, fuzzy, and the module views all see them.
     // So are a generic's instances: they're how it's found.
     for _, f in funcs {
-        if ask_is_foreign(f) || ask_written_name(f) != ask_label(f) { consider(&matches, &seen, f, scope_file, scope_module) }
+        if ask_is_foreign(f) || ask_written_name(f) != ask_label(f) { consider(&matches, &seen, f, scope_file, scope_module, at) }
     }
-    for _, m in table.mono_cache { consider(&matches, &seen, m, scope_file, scope_module) }
+    for _, m in table.mono_cache { consider(&matches, &seen, m, scope_file, scope_module, at) }
     return matches
 }
 
-// Exact resolution: the definitions whose name the user typed verbatim.
-ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
+// The scope that defines a type or a fun: a module, or the fun or struct
+// whose body has it (nil: unknown — the compiler's own).
+ask_owner_scope :: proc(t: Type) -> ^Type_Scope {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.parent_scope
+    case ^Type_Enum:     return v.owner
+    case ^Type_Union:    return v.tag_enum.owner if v.tag_enum != nil else nil
+    case ^Type_Distinct: return v.owner
+    }
+    return nil
+}
+
+// Exact resolution: the definitions whose name the user typed verbatim — a
+// module's own, or (`within`) those a fun's or a struct's body defines.
+ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "",
+                        within: ^Type_Scope = nil) -> [dynamic]Ask_Match {
     out: [dynamic]Ask_Match
-    for m in ask_all_definitions(table, scope_file, funcs, scope_module) {
+    for m in ask_all_definitions(table, scope_file, funcs, scope_module, within) {
         if m.label == target || m.flat == target { append(&out, m) }
     }
     return out
+}
+
+// What a name with dots reaches, as code writes it: `m.Pool` — a module's
+// definition; `Pool.Head`, `main.inner`, `m.Pool.Head` — one the body of the
+// struct or fun before the last dot defines. Named in full, `Pool.Head`.
+ask_resolve_path :: proc(checked: ^Checked_Program, target, scope_file, scope_module: string) -> [dynamic]Ask_Match {
+    dot := strings.last_index_byte(target, '.')
+    if dot <= 0 { return ask_resolve_all(checked.table, target, scope_file, checked.functions, scope_module) }
+    owner, name := target[:dot], target[dot + 1:]
+    if out := ask_resolve_all(checked.table, name, scope_file, checked.functions, owner); len(out) > 0 { return out }
+    out: [dynamic]Ask_Match
+    for o in ask_resolve_path(checked, owner, scope_file, scope_module) {
+        ts, is_scope := o.type_.(^Type_Scope)
+        if !is_scope { continue }
+        for m in ask_resolve_all(checked.table, name, "", checked.functions, "", ts) {
+            m := m
+            m.inside = fmt.tprintf("%s%s.", o.inside, o.label)
+            append(&out, m)
+        }
+    }
+    return out
+}
+
+// The scopes whose bodies define something named `name`: each as `Scope.name`,
+// for a miss to say where it is.
+ask_defined_in :: proc(checked: ^Checked_Program, name: string) -> []string {
+    out := make([dynamic]string, context.temp_allocator)
+    for m in ask_all_definitions(checked.table, "", checked.functions, "", nil, every = true) {
+        owner := ask_owner_scope(m.type_)
+        if m.label != name || owner == nil || owner.is_module || m.mark == "synthetic" { continue }
+        full := fmt.tprintf("%s.%s", ask_written_name(owner), name)
+        if !slice.contains(out[:], full) { append(&out, full) }
+    }
+    slice.sort(out[:])
+    return out[:]
 }
 
 // --- fuzzy fallback: "did you mean" when exact resolution finds nothing -------
@@ -765,7 +828,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // Variable criterion — `<name> in <fn>`. A non-empty `scope` named something
     // that was not a module or file (main() consumes those), so resolve it as a
     // function and slice the local/parameter `target` inside it.
-    if scope != "" {
+    // (`<name> in <scope>`, the scope a struct or a fun: a definition its body
+    // has — `Head in Pool` is `Pool.Head`.)
+    nested: [dynamic]Ask_Match
+    if scope != "" { nested = ask_resolve_path(checked, fmt.tprintf("%s.%s", scope, target), scope_file, scope_module) }
+    if scope != "" && len(nested) == 0 {
         vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg, scope_module, depth)
         if handled { return vout, vok }
         // Not a function. A struct's a named scope too: `x in S` is `S.x`.
@@ -778,7 +845,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         return fmt.tprintf("mara ask: '%s' is not a known module, file, or function in %s\n", scope, pkg), false
     }
 
-    matches := ask_resolve_all(checked.table, target, scope_file, checked.functions, scope_module)
+    matches := nested if len(nested) > 0 else ask_resolve_all(checked.table, target, scope_file, checked.functions, scope_module)
     b := strings.builder_make()
 
     // Describe the resolution scope for the not-found / ambiguity messages. The
@@ -802,9 +869,10 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
             return ask_dispatch_answer(checked, groups[:], group_name, kind, dir, pkg, depth)
         }
         // A name with a dot: a definition of that module, as a call tree's rows write
-        // it (`scene.read_actor_look`), or a struct's field.
+        // it (`scene.read_actor_look`); one a struct's or a fun's body defines
+        // (`Pool.Head`, `main.inner`); or a struct's field.
         if dot > 0 {
-            matches = ask_resolve_all(checked.table, target[dot + 1:], scope_file, checked.functions, target[:dot])
+            matches = ask_resolve_path(checked, target, scope_file, scope_module)
             if len(matches) == 0 {
                 return ask_member(checked, target[:dot], target[dot + 1:], kind, dir, pkg, depth, scope_file, scope_module)
             }
@@ -821,7 +889,12 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         } else {
             fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
         }
-        fmt.sbprint(&b, "  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)\n")
+        // (One a struct's or a fun's body defines: it is that scope's.)
+        if inside := ask_defined_in(checked, target); len(inside) > 0 {
+            fmt.sbprintf(&b, "  (defined inside another scope: `mara ask %s`)\n", strings.join(inside, "`, `mara ask ", context.temp_allocator))
+        } else {
+            fmt.sbprint(&b, "  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)\n")
+        }
         return strings.to_string(b), false
     }
     if len(matches) > 1 {
@@ -873,7 +946,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // (`pkg`) — a stdlib type queried from a game dir is `mara.font`, not `Pounce`.
     home_pkg := ask_home_package(subject.type_)
     if home_pkg == "" { home_pkg = pkg }
-    fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), home_pkg, ask_mark_suffix(subject.mark))
+    fmt.sbprintf(&b, "%s%s — %s  %s   (module %s)%s\n", subject.inside, subject.label, subject.sub, ask_loc(subject.span), home_pkg, ask_mark_suffix(subject.mark))
     if kind == "" && dir == "" { ask_write_what_it_is(&b, subject) }
     header_len := len(strings.to_string(b))
 
@@ -2261,7 +2334,7 @@ ask_module_shapes :: proc(checked: ^Checked_Program, module: string) -> string {
             if v.kind == .Local { add(&counts, &written, v.type_, 2) }
         }
     }
-    for m in ask_all_definitions(checked.table, "", checked.functions) {
+    for m in ask_all_definitions(checked.table, "", checked.functions, every = true) {
         ts, is_scope := m.type_.(^Type_Scope)
         if !is_scope || ts.kind != .Struct || !owned(ts, module) || ask_is_variant(m.type_) { continue }
         for f in ts.fields { add(&counts, &written, f.type_, 3) }

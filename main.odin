@@ -1442,6 +1442,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                    Flow's lists stop at 40 rows; 'all' has every one.
     in <module>    resolve <name> within that module's namespace (disambiguation)
     in <file>      resolve <name> within one file
+    in <scope>     a definition in the body of that struct or fun: 'Head in Pool',
+                   as 'Pool.Head'. A name by itself is a module's own: what a
+                   struct's or a fun's body defines is asked for through it.
     in <fn>        slice the local/parameter <name> inside that function
     return in <fn> slice what feeds <fn>'s return value (the inside view)
     at <file|fn>   as 'in'

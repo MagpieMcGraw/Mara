@@ -619,7 +619,7 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         return
     }
     dt := new(Type_Distinct)
-    dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
+    dt.name, dt.source_name, dt.span, dt.home_package, dt.owner = flat, name, span, k.pkg, owner
     dt.is_alias = alias
     k.table.distinct_types[flat] = dt
     tc_bound_set(k, k.t.main[def], dt)
@@ -689,7 +689,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_
     // (A struct's constructor may fail: one of no params has none.)
     if is_struct && len(v.returns) > 0 && len(v.params) == 0 { tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name) }
     flat := make_flat_name(owner.name, filed)
-    if flat in k.table.funs || filed in owner.functions {
+    if flat in k.table.funs {
         tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED if is_struct else TYPE_FUNCTION_ALREADY_DEFINED, name)
         return
     }
@@ -703,11 +703,10 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_
     ts.decl = t.main[def]
     tc_bound_set(k, ts.decl, ts)
     k.scope_of[ts] = len(k.scopes)
-    // (The table's, by its flat name: every struct, and a module's funs —
-    // what a tool lists as the module's. Its owner's member by name — a
+    // (The table's, by its flat name. Its owner's member by name — a
     // struct, a type; a fun, or a struct built by params, what a value's
     // method call finds.)
-    if is_struct || owner.is_module { k.table.funs[flat] = ts }
+    k.table.funs[flat] = ts
     if is_struct { tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type}) }
     if !is_struct || len(v.params) > 0 {
         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
