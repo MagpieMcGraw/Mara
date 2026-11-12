@@ -402,6 +402,14 @@ def main():
     h = c.request("textDocument/hover", {"textDocument": doc, "position": {"line": 0, "character": 0}})
     check("hover in a comment: nothing", h is None, h)
 
+    # An alias half-typed, `X :: alias` and nothing yet: its parse error, and
+    # the server still answers (the resolver read the name's first part, of none).
+    half = text + "\nHalf :: alias\n"
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri(CAMERA), "version": 4}, "contentChanges": [{"text": half}]})
+    diags = c.diagnostics_for(CAMERA)
+    syms = c.request("textDocument/documentSymbol", {"textDocument": doc})   # (a dead server: no answer, queue.Empty)
+    check("alias with nothing after: an error, and the server answers on", any(x["severity"] == 1 for x in diags) and isinstance(syms, list), diags)
+
     # Completion, each in an unsaved edit that doesn't parse as it stands.
     def complete(edited, line_no, before):
         """Items offered on 1-based line `line_no`, just after `before` there."""

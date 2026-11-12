@@ -629,11 +629,12 @@ rs_alias_targets :: proc(r: ^Resolver, names: []string) {
                     if value == 0 || t.tag[value] != .Alias_Def || t.tag[Tree_Id(t.a[value])] != .Type_Name { continue }
                     parts := tree_token_list(t, t.a[Tree_Id(t.a[value])])
                     ref: Ref
+                    // (No parts: `X :: alias` half-written, the editor's text — the parse error says so.)
                     if len(parts) == 1 {
                         ref = m.defs[rs_text(parts[0])] or_else Ref{}
                         for u in uses { if ref.kind == .None { ref = u.defs[rs_text(parts[0])] or_else Ref{} } }
-                    } else if u := named[rs_text(parts[0])] or_else nil; len(parts) == 2 && u != nil {
-                        ref = u.defs[rs_text(parts[1])] or_else Ref{}
+                    } else if len(parts) == 2 {
+                        if u := named[rs_text(parts[0])] or_else nil; u != nil { ref = u.defs[rs_text(parts[1])] or_else Ref{} }
                     }
                     def, ok := r.defs[ref.decl]
                     if ref.kind != .Type || !ok { continue }
@@ -1161,6 +1162,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
 // is the checker's — `fn v.method`.)
 @(private="file")
 rs_parts :: proc(r: ^Resolver, parts: []Token_Id) -> (ref: Ref, ok: bool) {
+    if len(parts) == 0 { return }   // (a name half-written: only mara lsp gets past its parse error)
     ref, ok = rs_lookup(r, rs_text(parts[0]))
     if ok { r.token_refs[parts[0]] = ref }
     for part in parts[1:] {
