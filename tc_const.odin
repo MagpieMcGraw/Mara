@@ -70,10 +70,6 @@ tc_register_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
     k.const_at[k.t.main[def]] = kc
     k.consts[mangled] = kc
     append(&sc.consts, kc)
-    // (A use in its owner's methods finds it through its owner: its scope's.)
-    owner := sc.ts
-    if owner not_in k.scope_consts { k.scope_consts[owner] = make(map[string]^TC_Const) }
-    (&k.scope_consts[owner])[filed] = kc
 }
 
 // A body's constants, checked before its code — each a member of its owner

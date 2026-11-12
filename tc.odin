@@ -60,7 +60,6 @@ TC :: struct {
     templates:     map[Token_Id]TC_Template, // the generic definitions (a union's too), by the token that declares them
     generic_methods: map[^Type_Scope]map[string]Token_Id,   // the generic funs each struct defines, by name
     consts:        map[string]^TC_Const,     // the constants, by their symbols (a module's flat name, a body's owner-named)
-    scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
     const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,

@@ -76,7 +76,7 @@ lw_worker :: proc(k: ^TC, p: ^Graph_Program) -> ^TC {
 lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
     s := make([dynamic]int, context.temp_allocator)
     append(&s, len(k.addressed_calls), len(k.modules), len(k.events), len(k.const_by_decl), len(k.scopes), len(k.scope_of),
-        len(k.checked_modules), len(k.in_progress), len(k.templates), len(k.consts), len(k.scope_consts),
+        len(k.checked_modules), len(k.in_progress), len(k.templates), len(k.consts),
         len(k.instances), len(k.instance_order), len(k.vars), len(k.struct_instances), len(k.variant_scopes),
         len(k.exposed))
     a := k.annot
@@ -1117,7 +1117,6 @@ lw_variant_value :: proc(t: Type, name: string) -> int {
 // (TC.const_by_decl): made before any code is lowered, which only reads it.
 lw_const_index :: proc(k: ^TC) {
     for _, kc in k.consts { k.const_by_decl[lw_const_key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc }
-    for _, list in k.scope_consts { for _, kc in list { k.const_by_decl[lw_const_key(u64(kc.sid) >> 32, k.t.main[kc.def])] = kc } }
 }
 
 @(private="file")
