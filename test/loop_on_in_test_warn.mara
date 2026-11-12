@@ -1,0 +1,27 @@
+module loop_on_in_test_warn
+
+use mara.core
+
+// `for true in xs` has no name before `in`, so it isn't a loop over xs's
+// items: it loops while `true in xs` holds (Warlock printed forever). A
+// warning; a test meant as one goes in parentheses, and `not in` is left be.
+
+//@ expect-warning: this `for` runs while `true in actions` is true: `true` isn't a name for each item, so it's a test.
+//@ expect-no-warning: `(true in actions)`
+//@ expect-no-warning: `n not in
+//@ expect-output: 3 5 1
+
+main :: fun() {
+	actions := [false, true, false]
+	n := 0
+	for true in actions {
+		n += 1
+		if n == 3 do break
+	}
+	m := 0
+	for (true in actions) and m < 5 do m += 1
+	for m not in 1..3 do m -= 4
+	on := 0
+	for a in actions do if a do on += 1
+	print(n, m + 4, on)
+}

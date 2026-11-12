@@ -926,6 +926,11 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         if v.init != 0 { tc_stmt(k, v.init) }
         ct := tc_check(k, v.cond)
         if !is_condition_type(ct) { tc_not_condition(k, span, ct, TYPE_CONDITION_BOOL, type_name(ct)) }
+        // (`for true in xs`: no name before `in`, so a test of xs's items, looped
+        // on — a loop over them was meant. Wrapped, `for (… in xs)`, it's meant.)
+        if t.tag[s] == .For_Cond && t.tag[v.cond] == .In_Range && tc_text(t.main[v.cond]) == "in" {
+            emit_diagnostic_once(.Warning, tree_span(t, v.cond), WARN_LOOP_ON_IN_TEST, tc_written(k, v.cond), tc_written(k, Tree_Id(t.a[v.cond])))
+        }
         if v.post != 0 { tc_stmt(k, v.post) }
         tc_scope(k, v.body)
     }
