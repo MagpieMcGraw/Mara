@@ -850,8 +850,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     #partial switch t.tag[s] {
     case .For_Each:
         // (A type looped over: its values — tc_loop_over_type.)
-        if k.t.tag[tc_unparen(k, v.collection)] == .Type_Field {
-            ft := tc_type(k, tc_unparen(k, v.collection), span)
+        if ft, is_field_type := tc_looped_field_type(k, tc_unparen(k, v.collection), span); is_field_type {
             tc_set_type(k, tc_unparen(k, v.collection), ft)
             tc_loop_over_type(k, v, ft, span)
             return
@@ -940,11 +939,25 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
 // where it begins.
 TYPE_LOOP_MOST :: 4096
 
+// A loop's collection that is a field reference's type — `S.bool`, as the
+// parser reads it; `Binds.Combos`, its field's type a name (the resolver's:
+// a type in sight, no member of Binds) — and that type.
+tc_looped_field_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> (Type, bool) {
+    t := k.t
+    if t.tag[n] == .Type_Field { return tc_type(k, n, span), true }
+    ft, named := k.rs.field_types[n]
+    if !named || t.tag[n] != .Field { return nil, false }
+    owner, _ := tc_ref_type(k, ft.owner, tc_written(k, Tree_Id(t.a[n])))
+    elem, _ := tc_ref_type(k, ft.elem, tc_text(Token_Id(t.b[n])))
+    return tc_field_type_of(k, owner, elem, span), true
+}
+
 // Whether a loop's collection is a type (`for v in Mode`, `for f in S.bool`):
 // its values are looped over (type_loop_values).
 loops_over_type :: proc(k: ^TC, n: Tree_Id) -> bool {
     n := tc_unparen(k, n)
     if k.t.tag[n] == .Type_Field { return true }
+    if _, named := k.rs.field_types[n]; named && k.t.tag[n] == .Field { return true }
     return (k.t.tag[n] == .Ident || k.t.tag[n] == .Field) && tc_ref(k, n).kind == .Type
 }
 

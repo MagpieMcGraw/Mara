@@ -1,0 +1,44 @@
+module loop_over_named_field_type
+
+//@ expect-output: move_fwd 1 [[w]]
+//@ expect-output: activate 2 [[e, shift], [enter]]
+//@ expect-output: 0 a V { x: 1, y: 2 }
+//@ expect-output: 1 b V { x: 0, y: 0 }
+//@ expect-output: speed 2
+
+// `for f in Binds.Combos`: a struct's fields of one type looped over, the
+// type a name — an alias, a struct — as `for f in S.bool` loops over a
+// built-in type's. It used to need a name for the field reference's type
+// first (`Slot :: alias Binds.Combos`, `for f in Slot`): `Binds.Combos` read
+// as a field of Binds.
+
+use mara.core
+
+Keys :: struct { w: bool  e: bool  shift: bool  enter: bool }
+Input :: alias Keys.bool
+Combos :: alias [3][4]Input
+
+Binds :: struct {
+	move_fwd: Combos = [[Keys.w]]
+	activate: Combos = [[Keys.e, Keys.shift], [Keys.enter]]
+	speed: f32 = 2
+}
+
+V :: struct { x: i64  y: i64 }
+Pair :: struct { a: V = V{1, 2}  n: i64  b: V }
+
+main :: fun() {
+	binds := Binds()
+	for f in Binds.Combos {
+		print(f.text(), binds[f].len, binds[f])
+	}
+	p := Pair()
+	p.b = V{0, 0}
+	p.n = 0
+	for f, i in Pair.V {
+		print(i, f.text(), p[f])
+	}
+	for f in Binds.f32 {
+		print(f.text(), binds[f])
+	}
+}

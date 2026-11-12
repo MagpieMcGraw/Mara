@@ -235,8 +235,9 @@ example_do :: fun() {
 // `for m in Mode` takes each value of a type, in the order its variants are
 // declared: an enum's (two names of one value give it once, by the first),
 // a union's tags (`Shape_Tag`, what `s.tag` is), or a field reference type's
-// fields (`for f in Input.f32`, its struct's order). With `.text()`, a
-// program can write source from a type: `key_w_press` for each Scancode.
+// fields (`for f in Input.f32`, its struct's order; the field's type may be
+// a name, `for f in Binds.Combos`). With `.text()`, a program can write
+// source from a type: `key_w_press` for each Scancode.
 //
 // `in` is also a test: `x in 1..10` is whether 1 <= x <= 10, `x in 0:10`
 // whether 0 <= x < 10 (`c in 'a'..'z'`, a lower-case letter); `x in xs`, whether

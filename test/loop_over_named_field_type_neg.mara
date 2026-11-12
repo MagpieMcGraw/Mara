@@ -1,0 +1,17 @@
+module loop_over_named_field_type_neg
+//@ expect-fail: Pair holds no Other field
+
+// A struct with no field of the type named: refused, as a field reference's
+// type written out is (field_ref_no_field_neg).
+
+use mara.core
+
+V :: struct { x: i64 }
+Other :: struct { n: i64 }
+Pair :: struct { a: V  b: V }
+
+main :: fun() {
+	for f in Pair.Other {
+		print(f.text())
+	}
+}

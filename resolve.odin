@@ -1273,6 +1273,13 @@ rs_node :: proc(r: ^Resolver, n: Tree_Id) {
                 } else if r.refs[q].kind == .Module {
                     // (A module's enum's variant, by its name alone.)
                     if mod := rs_ref_module(r, r.refs[q]); mod != nil { if v, has := mod.variants[field]; has { r.refs[n] = v } }
+                } else if r.refs[q].kind == .Type {
+                    // (`S.T`, T no member of S but a type in sight: a field
+                    // reference's type, written where a value goes — a
+                    // loop's, `for f in Binds.Combos`.)
+                    miss := r.miss
+                    if elem, has := rs_lookup(r, field); has && elem.kind == .Type { r.field_types[n] = {r.refs[q], elem, 0} }
+                    r.miss = miss
                 }
             }
         }
