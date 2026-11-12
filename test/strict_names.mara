@@ -1,0 +1,26 @@
+module strict_names
+
+//@ expect-output: own 100 7 Box { n: 1 }
+//@ expect-output: used 2 1024
+//@ expect-output: body 3 5
+
+// Two things of one name in sight hide nothing: the bare name means neither
+// (strict_names_neg). Each is still reached by saying whose it is — a used
+// module's through the module, this module's own through its own name, a
+// fun's own through the fun's.
+
+use mara.core
+use mara.string
+
+skip_spaces :: fun(s: []utf8, at: i64) -> i64 { return at + 100 }   // (mara.string has one)
+KB :: 7                                                             // (mara.core has one)
+Box :: struct { n: i64 }
+K :: 5
+
+main :: fun() {
+	b := strict_names.Box{n = 1}
+	print("own", strict_names.skip_spaces("  x", 0), strict_names.KB, b)
+	print("used", string.skip_spaces("  x", 0), core.KB)
+	K :: 3   // (the module has one)
+	print("body", main.K, strict_names.K)
+}

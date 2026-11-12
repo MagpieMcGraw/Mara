@@ -1,0 +1,17 @@
+module strict_names_neg
+
+//@ expect-fail: constant 'K' is ambiguous (defined in: main, strict_names_neg)
+
+// A definition in a body named as one around it hides nothing: the bare name
+// means neither, as with a module's own beside a used module's. (The body's
+// used to win, silently.) Said through its scope each works: `main.K`,
+// `strict_names_neg.K`.
+
+use mara.core
+
+K :: 5
+
+main :: fun() {
+	K :: 3
+	print(K)
+}

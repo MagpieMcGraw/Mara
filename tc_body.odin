@@ -483,6 +483,7 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
         tc_error(k, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, miss.hidden)
         return
     }
+    if tc_ambiguous(k, miss, span, name) { return }
     // (What there was before #allocator and main's args: what's there now.)
     if name == "this_program" || name == "Program" {
         tc_error(k, span, TYPE_THIS_PROGRAM_GONE, name)
@@ -490,6 +491,38 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
     }
     if tc_behind_use(k, span, name) { return }
     tc_error(k, span, msg, name)
+}
+
+// A name two things in sight have (the resolver's miss): it means neither,
+// said so — each one's scope named. Whether it is one.
+tc_ambiguous :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string) -> bool {
+    // (Twice in one scope: its files', say.)
+    if len(miss.owners) == 1 && miss.first.kind != .None {
+        tc_error(k, span, TYPE_NAME_DEFINED_TWICE, name, miss.owners[0])
+        return true
+    }
+    if len(miss.owners) < 2 { return false }
+    owners := strings.join(miss.owners, ", ", context.temp_allocator)
+    first := module_short_name(miss.owners[0])
+    #partial switch miss.first.kind {
+    case .Const: tc_error(k, span, TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, owners, first, name)
+    case .Fun:   tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, owners, first, name)
+    case .Type:  tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, owners, name)
+    case:        tc_error(k, span, TYPE_NAME_AMBIGUOUS, name, owners, first, name)
+    }
+    return true
+}
+
+// The first name in an expression of numbers (`96 * KB`) that two things in
+// sight have: said so. Whether there is one.
+tc_ambiguous_in :: proc(k: ^TC, n: Tree_Id, span: Span) -> bool {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Ident:  return k.rs.refs[n].kind == .None && tc_ambiguous(k, k.rs.misses[n] or_else {}, span, tc_name(k, n))
+    case .Paren, .Unary: return tc_ambiguous_in(k, Tree_Id(t.a[n]), span)
+    case .Binary: return tc_ambiguous_in(k, Tree_Id(t.a[n]), span) || tc_ambiguous_in(k, Tree_Id(t.b[n]), span)
+    }
+    return false
 }
 
 // A name a use keeps behind its module's name (`s :: use mara.string`, for

@@ -252,11 +252,8 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     ref := k.rs.refs[n]
     t, ok := tc_ref_type(k, ref, name)
     kc := k.const_at[ref.decl] if ref.kind == .Const else nil
-    if ref.kind == .None || kc != nil && kc.owner.is_module {
-        // (A module's constant two modules have — its own and one it uses,
-        // or two it uses — is ambiguous: said so.)
-        if !tc_const_unambiguous(k, n, name, span) { return Type_Error{} }
-    }
+    // (Two things in sight of this name: ambiguous, said so.)
+    if ref.kind == .None && tc_ambiguous(k, k.rs.misses[n] or_else {}, span, name) { return Type_Error{} }
     if ok || kc != nil { tc_set_ref(k, n, ref) }
     // (A generic's size param, `[$N]T`, as a value: the size it was bound
     // to, a constant — untyped, the width its use takes.)
@@ -803,22 +800,25 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             k.annot.forms[tc_sid(k, n)] = .Builtin
             return t
         }
+        // (Two things in sight of this name, not both groups: ambiguous.)
+        miss := k.rs.misses[n] or_else {}
+        if tr.tag[n] == .Method_Call { miss = k.rs.token_misses[method_view(tr, n).name] or_else {} }
+        if tc_ambiguous(k, miss, span, name) {
+            for a in args { tc_check(k, a) }
+            return Type_Error{}
+        }
         groups := resolve_dispatches(k.rs, tr.main[n], name)
-        // (A body's group, the name its own: it alone — a body's name hides
-        // its module's.)
+        // (A body's group of this name joins those in sight, as a module's do.)
         callee := tc_callee_ref(k, n)
         if callee.kind == .Fun && k.rs.dispatches[callee.decl] && !slice.contains(groups, callee.decl) {
-            return tc_dispatch_call(k, n, name, tc_dispatch_members(k, {callee.decl}), args)
+            joined := make([dynamic]Token_Id, context.temp_allocator)
+            append(&joined, callee.decl)
+            append(&joined, ..groups)
+            groups = joined[:]
         }
-        // (A fun or type its own module defines, no group, hides the groups of
-        // the modules it uses, as it hides their funs.)
-        if len(groups) > 0 && !resolve_own_name(k.rs, tr.main[n], callee) {
-            // (A group and a fun no group, from two modules it uses: ambiguous.)
-            if owners := resolve_group_rivals(k.rs, tr.main[n], name); owners != nil {
-                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
-                for a in args { tc_check(k, a) }
-                return Type_Error{}
-            }
+        // (The groups of its name in sight, joined. A fun or a type of that
+        // name beside them is a conflict, said above.)
+        if len(groups) > 0 {
             return tc_dispatch_call(k, n, name, tc_dispatch_members(k, groups), args, by_types = true)
         }
         // (No group of its name in sight and nothing it names: the groups of
@@ -840,14 +840,6 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         if ambiguous {
             for a in args { tc_check(k, a) }
             return Type_Error{}
-        }
-        // (A fun two modules it uses have: ambiguous.)
-        if qual == nil && ref.kind == .None {
-            if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
-                tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
-                for a in args { tc_check(k, a) }
-                return Type_Error{}
-            }
         }
         if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name) }
         for a in args { tc_check(k, a) }
@@ -874,13 +866,6 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     if !is_scope {
         tc_error(k, span, TYPE_FUNCTION, name)
         return Type_Error{}
-    }
-    // (A fun two modules it uses have: ambiguous.)
-    if qual == nil && ft.name != "" {
-        if owners := resolve_fun_owners(k.rs, tr.main[n], name); owners != nil {
-            tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
-            return Type_Error{}
-        }
     }
     // (No source, and called: a foreign fun, an enum's from_text.)
     _, from_text := ft.origin.(Origin_From_Text)

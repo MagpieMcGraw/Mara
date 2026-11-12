@@ -50,16 +50,6 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     tc_bound_set(k, k.t.main[kc.def], final)
 }
 
-// Whether a bare name (n) names no constant two modules in sight have — its
-// own and one it uses, or two it uses: those are ambiguous (reported: its
-// uses must qualify it).
-tc_const_unambiguous :: proc(k: ^TC, n: Tree_Id, name: string, span: Span) -> bool {
-    owners := resolve_const_owners(k.rs, k.t.main[n], name)
-    if len(owners) < 2 { return true }
-    tc_error(k, span, TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), module_short_name(owners[0]), name)
-    return false
-}
-
 // A module's name as code qualifies with it: `mara.os`'s is `os`, as in
 // `os.clock_ns()`. (`mara.os.clock_ns()` doesn't parse as a module's: `mara`
 // is no name.)

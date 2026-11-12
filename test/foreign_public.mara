@@ -6,7 +6,8 @@ module foreign_public
 
 // A foreign block's funs are its module's, so a module that uses it can call
 // them: mara.os's GetLastError here, as it can its Mara funs. A module's own
-// definition goes first, as it does before any module's.
+// fun named as one of them is a conflict, as with any name: said through
+// the module's own name.
 
 use mara.core
 use mara.os
@@ -22,7 +23,7 @@ main :: fun() {
 	run :: fun() {
 		print("through a use:", GetLastError() >= 0)
 		print("through its name:", named.GetLastError() >= 0)
-		print("this module's own:", CloseHandle())
+		print("this module's own:", foreign_public.CloseHandle())
 	}
 }
 

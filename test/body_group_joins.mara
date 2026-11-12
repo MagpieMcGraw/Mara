@@ -1,0 +1,20 @@
+module body_group_joins
+
+//@ expect-output: 5 200
+
+// Dispatch groups of one name join, a body's with those in sight around it
+// as a module's with a used module's: a call picks among all their members.
+// (A body's group used to hide the module's of that name.)
+
+use mara.core
+
+tf :: fun(x: f64) -> f64 { return 200 }
+bump :: dispatch { tf }
+
+main :: fun() {
+	ai :: fun(x: i64) -> i64 { return x + 1 }
+	bump :: dispatch { ai }
+	n : i64 = 4
+	f : f64 = 1.5
+	print(bump(n), bump(f))
+}

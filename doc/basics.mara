@@ -70,6 +70,15 @@ example_module :: fun() {
 // here; `s :: use Shapes` keeps them behind `s`. Its variables are not
 // definitions: a struct's fields stay its values'.
 //
+// Nothing hides anything. Two things of one name in sight — this module's
+// and a used module's, a fun's own and its module's — are a conflict: the
+// bare name means neither, and using it is an error that names both. Each
+// is still reached by saying whose it is: `string.trimmed(s)`, this
+// module's own as `basics.trimmed(s)`, a fun's own as `main.K`. Dispatch
+// groups are the exception: groups of one name join, and a call picks among
+// all their members. A union's variants are found the same way as any name:
+// in the scope that defines the union, or where that scope is used.
+//
 // A variable or a param can't take the name of a fun, a type, a module or
 // a variant in sight — its module's or one it uses: `filter := 3` beside
 // mara.core's filter is an error, since the fun would be out of reach below

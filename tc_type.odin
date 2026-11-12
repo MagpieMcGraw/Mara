@@ -256,6 +256,7 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) 
         return 0, false
     }
     if v, ok := tc_comptime_int(k, n); ok { return int(v), true }
+    if tc_ambiguous_in(k, n, span) { return 0, false }
     if tc_has_float(k, n) {
         tc_error(k, span, TYPE_SIZE_EXPRESSION_INTEGER, "a float")
     } else {
@@ -502,7 +503,7 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
             return Type_Error{}
         }
     }
-    tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+    if !tc_ambiguous(k, k.rs.misses[n] or_else {}, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     return Type_Error{}
 }
 

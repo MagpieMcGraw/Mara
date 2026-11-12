@@ -57,32 +57,32 @@ Holder :: struct($T: type) {
 	pair :: (h: Holder(T), x: $U) -> U { return x + x }
 }
 
-// A generic struct defined in a fun, its name the module's too.
+// A generic struct defined in a fun.
 Cell :: struct($T: type) { v: T }
 
 cells :: () -> i64 {
-	Cell :: struct($T: type) {
+	Pair :: struct($T: type) {
 		v: T
 		w: T
-		sum :: (c: Cell(T)) -> T { return c.v + c.w }
+		sum :: (c: Pair(T)) -> T { return c.v + c.w }
 	}
-	a : Cell(i64) = {v = 1, w = 2}
-	c : Cell(f64) = {v = 0.5, w = 0.25}
+	a : Pair(i64) = {v = 1, w = 2}
+	c : Pair(f64) = {v = 0.5, w = 0.25}
 	print("% %", a.sum(), c.sum())
 	return a.v
 }
 
 more_cells :: () -> i64 {
-	Cell :: struct($T: type) { v: T, extra: i64 }
-	a : Cell(i64) = {v = 10, extra = 5}
+	Slot :: struct($T: type) { v: T, extra: i64 }
+	a : Slot(i64) = {v = 10, extra = 5}
 	return a.v + a.extra
 }
 
-// A union with fields in a fun, its name the module's too.
+// A union with fields in a fun.
 Shape :: union { Circle(r: i64) { rad := r } }
 
 shapes :: () -> i64 {
-	Shape :: union {
+	Form :: union {
 		Dot
 		Line(n: i64) {
 			len := n
@@ -90,7 +90,7 @@ shapes :: () -> i64 {
 		}
 		Label { text: str64 = "none" }
 	}
-	size :: (s: Shape) -> i64 {
+	size :: (s: Form) -> i64 {
 		match s {
 		Dot
 			return 1
@@ -101,9 +101,9 @@ shapes :: () -> i64 {
 		}
 		return 0
 	}
-	a : Shape = .Dot
-	b : Shape = Shape.Line(7)
-	c : Shape = Label{text = "hey"}
+	a : Form = .Dot
+	b : Form = Form.Line(7)
+	c : Form = Label{text = "hey"}
 	print(b)
 	return size(a) + size(b) + size(c)
 }

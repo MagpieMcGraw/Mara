@@ -288,15 +288,6 @@ opens_params :: fun(s: []utf8, at: i64) -> bool {
 	return s[e] == ':' and (e + 1 >= s.len or s[e + 1] != ':')
 }
 
-// Where the spaces (and tabs) from s[at] end.
-skip_spaces :: fun(s: []utf8, at: i64) -> i64 {
-	k := at
-	for k < s.len and (s[k] == ' ' or s[k] == '\t') {
-		k += 1
-	}
-	return k
-}
-
 // The word ending just before s[at], spaces between left out; "" for none.
 word_before :: fun(s: []utf8, at: i64) -> []utf8 {
 	end := at

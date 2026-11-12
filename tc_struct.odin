@@ -35,15 +35,6 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     // what the base is; a `.len` or `.cap` read changes no list.)
     list_ok, list_index := n == k.list_ok, n == k.list_at
     if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok = tc_unparen(k, base) }
-    // (`pkg.X` inside pkg: its own constant — its value's type. The
-    // resolver's: pkg itself names nothing.)
-    if tr.tag[n] == .Field && tr.tag[base] == .Ident && k.rs.refs[base].kind == .None {
-        if kc := tc_const_named(k, n); kc != nil {
-            t := tc_check(k, kc.value)
-            tc_set_ref(k, n, {k.t.main[kc.def], .Const})
-            return t
-        }
-    }
     bt := tc_check(k, base)
     // (A name into a scope — a module, a struct, a fun: its definition, the
     // resolver's. A module has nothing else.)
@@ -857,7 +848,10 @@ tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
 // fields' values checked.
 tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    if _, bound := tc_ref_type(k, k.rs.refs[Tree_Id(k.t.a[n])], name); !bound && !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+    ty := Tree_Id(k.t.a[n])
+    if _, bound := tc_ref_type(k, k.rs.refs[ty], name); !bound && !tc_ambiguous(k, k.rs.misses[ty] or_else {}, span, name) && !tc_behind_use(k, span, name) {
+        tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+    }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e) }
     return Type_Error{}
 }

@@ -576,6 +576,7 @@ tc_check_module_body :: proc(k: ^TC) -> []int {
     node := k.module_nodes[k.pkg]
     sc := new_clone(TC_Scope{ts = k.module_scopes[k.pkg], def = node, node = node})
     sc.ts.node = node
+    tc_bound_set(k, resolve_module_own(k.rs, k.pkg), sc.ts)   // (its own name, where its code qualifies with it: it)
     k.scope_of[sc.ts] = len(k.scopes)
     append(&k.scopes, sc)
     tc_scope_body(k, sc)

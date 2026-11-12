@@ -4,19 +4,20 @@ module body_dispatch
 //@ expect-output: 100 200
 
 // A dispatch group defined in a body, as a module's: its members the body's
-// funs, seen only there. Its name hides a module's group of that name.
+// funs, seen only there. (One named as a group in sight joins it:
+// strict_names.)
 
 use mara.core
 
 ti :: (x: i64) -> i64 { return 100 }
 tf :: (x: f64) -> f64 { return 200 }
-bump :: dispatch { ti, tf }
+far :: dispatch { ti, tf }
 
 // The module's group: none of main's.
 outside :: () -> i64, f64 {
 	i : i64 = 1
 	f : f64 = 1
-	return bump(i), bump(f)
+	return far(i), far(f)
 }
 
 main :: fun() {

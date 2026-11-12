@@ -3,23 +3,19 @@ module own_fun_beside_group
 use mara.core
 use mara.math
 
-//@ expect-output: own: 1003 7 9 hi 2
+//@ expect-fail: function 'add' is ambiguous (defined in: own_fun_beside_group, mara.core, mara.math)
 
-// A fun its own module defines hides the dispatch groups of the modules it
-// uses, as it hides their funs: here a plain fun beside core's `add`, a generic
-// beside math's `min`, a fun in a body beside math's `abs`. They lost to the
-// groups: "no matching function in dispatch group", though they fit. The group
-// still does its other work: `&s + "hi"` is core's `add`, by its operator, and
-// `max` isn't hidden by anything.
+// A fun its own module defines beside a dispatch group of that name in a
+// module it uses hides nothing, and is not hidden: the bare name means
+// neither, and the call says so — here a plain fun beside core's and math's
+// `add`, a generic beside math's `min`, a fun in a body beside math's `abs`.
+// Said through its scope each works: strict_names. (The own fun used to win
+// silently; before that, the groups did.)
 
 add :: fun(a: i64, b: i64) -> i64 { return a + b + 1000 }
 min :: fun(a: $T, b: T) -> i64 { return 7 }
 
 main :: fun() {
 	abs :: fun(a: []utf8) -> i64 { return 9 }
-	s : str64
-	&s ++ "hi"
-	one : i64 = 1
-	two : i64 = 2
-	print("own:", add(1, 2), min(1, 2), abs("x"), s, max(one, two))
+	print("own:", add(1, 2), min(1, 2), abs("x"))
 }
