@@ -92,8 +92,8 @@ Ui :: struct {
 	crash_dir:   [1000]utf8    // where the calls' files are: the window's own report's, its directory; none, here
 	own_crash_path: [1000]utf8 // the window's own crash.txt, beside its program
 	own_crash_seen: [32]utf8   // that file's time when the window last looked (layout.txt's); none: never
-	crash_hover: i64 = -1        // the call under the mouse as last drawn
-	docs_hover:  i64 = -1        // the Docs title under the mouse as last drawn
+	crash_hovered: i64 = -1        // the call under the mouse as last drawn
+	docs_hovered: i64 = -1        // the Docs title under the mouse as last drawn
 	// What the mouse selects in (select.mara): the lines, how many clicks
 	// began it — 2: a word, 3: a line, the one they selected — what Ctrl+C
 	// copied, a 0 after it.
@@ -330,8 +330,8 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			}
 			// (Drawn again only when what's under it changes: all motion shows.)
 			if profile_hover(ui, p) != ui.hover_row do ui.dirty = true
-			if crash_hover(ui) != ui.crash_hover do ui.dirty = true
-			if docs_hover(ui) != ui.docs_hover do ui.dirty = true
+			if crash_hover(ui) != ui.crash_hovered do ui.dirty = true
+			if docs_hover(ui) != ui.docs_hovered do ui.dirty = true
 			if ui.menu_open != MENU_NONE {
 				// (Over another menu's button: that menu, as menu bars do.)
 				b := menu_button_at(ui, ui.mouse_x, ui.mouse_y)

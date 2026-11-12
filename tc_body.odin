@@ -54,8 +54,10 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
 
 // A struct's layout: what its constructor's top block declared, in order —
 // each name a field of the type its declaration found (`_` names none; one
-// that failed, none). `using f: T` marks its field: T's own fields are
-// reached as the struct's.
+// that failed, none). They were its constructor's locals while it was
+// checked: taken, they are the struct's fields — no longer among its body's
+// variables, and named as fields from here on (what a tool says of one).
+// `using f: T` marks its field: T's own fields are reached as the struct's.
 tc_layout :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     ts := sc.ts
@@ -83,6 +85,10 @@ tc_layout :: proc(k: ^TC, sc: ^TC_Scope) {
             append(&ts.fields, Struct_Type_Field{name = name, decl = t.main[tg], type_ = solidify_type(ft), default_node = value,
                                                  default_slot = i if several else nil, is_using = using_})
             build_field_map(&ts.sd)
+            tc_set_ref(k, tg, {t.main[tg], .Field})
+            for vd, at in k.vars {
+                if vd.tok == t.main[tg] { ordered_remove(&k.vars, at); break }
+            }
             if !using_ { continue }
             f := ts.fields[len(ts.fields) - 1]
             if _, is_array := f.type_.(^Type_Fixed_Array); is_array { continue }
@@ -410,10 +416,8 @@ tc_decl_form :: proc(k: ^TC, value, ann_node: Tree_Id, ann: Type) -> (form: Decl
     return
 }
 
-// What a declaration's name declares: its own token, as the resolver found
-// it — a local; in a struct's top block, a field.
+// What a declaration's name declares: its own token, a local.
 tc_decl_ref :: proc(k: ^TC, target: Tree_Id) -> Ref {
-    if ref := k.rs.refs[target]; ref.kind == .Field && ref.decl == k.t.main[target] { return ref }
     return {k.t.main[target], .Local}
 }
 
@@ -427,7 +431,7 @@ tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
     c := k.rs.clashes[ref.decl] or_else {}
     if c.taken {
         if c.param && k.body != nil {
-            tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "field" if ref.kind == .Field else "variable")
+            tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "variable")
         } else {
             tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
         }
@@ -486,10 +490,8 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
 
 
 // A name already declared where a declaration (tok) would declare it, below
-// the module — the resolver's: what it means. (A field's name is its
-// struct's own: none.)
+// the module — the resolver's: what it means.
 tc_declared_before :: proc(k: ^TC, ref: Ref) -> (Type, bool) {
-    if ref.kind == .Field { return nil, false }
     c := k.rs.clashes[ref.decl] or_else {}
     if c.before == 0 { return nil, false }
     return tc_bound(k, c.before)

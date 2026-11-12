@@ -12,7 +12,7 @@ module text_partial_array
 
 use mara.core
 
-name :: fun(k: i64) -> str64 {
+name_of :: fun(k: i64) -> str64 {
 	if k > 0 do return "abc"
 	return "defgh"
 }
@@ -26,8 +26,8 @@ set_name :: fun(e: ^Entry, new_name: str64) {
 }
 
 main :: fun() {
-	a := name(1)
-	b := name(0)
+	a := name_of(1)
+	b := name_of(0)
 	print(a, a.len, b, b.len)
 	s, n := pair()
 	print(s, s.len, n)

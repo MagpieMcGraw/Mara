@@ -327,13 +327,14 @@ lw_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
     return false
 }
 
-// A struct's field's node, made with its declaration — a name its struct's
-// top block declares (tc_decl_ref). (Else none: a local's is made by its
-// caller.)
+// A struct's field's node, made with its declaration — one its struct took
+// for its layout (tc_layout). (Else none: a local's is made by its caller.)
 lw_field_decl :: proc(k: ^TC, name: string, target: Tree_Id, span: Span) -> Node_Id {
     b := k.gb
-    if name == "_" || tc_decl_ref(k, target).kind != .Field { return NO_NODE }
     tok := k.t.main[target]
+    if k.lower.ts == nil { return NO_NODE }
+    i, taken := k.lower.ts.field_map[name]
+    if !taken || k.lower.ts.fields[i].decl != tok { return NO_NODE }
     if d := graph_local(b, tok); d != NO_NODE { return d }   // (made with the others declared with it)
     graph_build_fields(b, {name}, {tok}, span)
     return graph_local(b, tok)

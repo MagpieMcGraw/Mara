@@ -71,7 +71,7 @@ Megastruct :: struct {
 
 	cameras: [6]Camera = all Camera(1280, 720, 90)
 
-	camera := Camera(1280, 720, 90)
+	cam := Camera(1280, 720, 90)
 	mouse_look: bool
 
 	// Draw states
@@ -132,8 +132,8 @@ game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) -> err {
 	// parallel to the world up (+Z) that camera_turn_walking yaws around, so
 	// horizontal mouselook rolled instead of panning; look_down fixes the
 	// orientation. The scene then sits out along +Z in front of the camera.
-	game.camera.obj.pos = Vec3{0, 0, 0}
-	camera_look_down(&game.camera)
+	game.cam.obj.pos = Vec3{0, 0, 0}
+	camera_look_down(&game.cam)
 
 	// Playa quad shows the whole font atlas (layer 0) so the MDEI text path has
 	// real glyph data to sample. tex_coords {1,1,0,0} maps the quad's 0..1 UVs
@@ -181,7 +181,7 @@ game_events :: fun(game: ^Megastruct) {
 		game.mouse_look = not game.mouse_look
 		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
 	}
-	if game.mouse_look do camera_turn_walking(&game.camera, &ev.mouse)
+	if game.mouse_look do camera_turn_walking(&game.cam, &ev.mouse)
 
 	// Squares dragged with the left button: the one under the mouse when it's
 	// pressed, then kept under it — where its ray meets their plane, less
@@ -213,7 +213,7 @@ mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
 	if w <= 0 or h <= 0 do return Vec3{all 0}, false
 	x := 2.0 * game.events.mouse.x / f32(w) - 1.0
 	y := 1.0 - 2.0 * game.events.mouse.y / f32(h)
-	inv := mat4_inverse(game.camera.proj * game.camera.view)
+	inv := mat4_inverse(game.cam.proj * game.cam.view)
 	near := inv * Vec4{x, y, -1, 1}
 	far := inv * Vec4{x, y, 1, 1}
 	if near.w == 0 or far.w == 0 do return Vec3{all 0}, false
@@ -226,8 +226,8 @@ mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
 	return Vec3{a.x + d.x * t, a.y + d.y * t, z}, true
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
-	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
-	camera_update(&game.camera, f32(game.timers.fixed.step))
+	camera_move(&game.cam, &game.events.keyboard, f32(game.timers.fixed.step))
+	camera_update(&game.cam, f32(game.timers.fixed.step))
 }
 // Append a solid-colored quad through the object shader. The image atlas holds a
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
@@ -260,14 +260,14 @@ game_draw :: fun(game: ^Megastruct) {
 	// The squares (game.markers), so one object isn't the only thing on
 	// screen. Drawn through the object shader / image atlas.
 	for m in game.markers {
-		draw_marker(&game.draw_state_object, m.pos, m.color, game.camera)
+		draw_marker(&game.draw_state_object, m.pos, m.color, game.cam)
 	}
 	draw_state_render(&game.draw_state_object)
 	draw_state_reset(&game.draw_state_object)
 
 	// Playa quad through the text shader / font atlas.
 	append_one(&game.draw_state_text,
-		game.playa.obj, game.playa.visual, game.camera)
+		game.playa.obj, game.playa.visual, game.cam)
 	draw_state_render(&game.draw_state_text)
 	draw_state_reset(&game.draw_state_text)
 

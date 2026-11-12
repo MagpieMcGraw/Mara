@@ -1,0 +1,19 @@
+module hide_field_neg
+//@ expect-fail: variable 'fast' would hide the variant Mode.fast
+
+// What a struct's top block declares is its constructor's variable, named
+// by the rules any variable is: one may not take a variant's name in sight
+// (or a fun's, a type's, a module's: hide_fun_neg, variant_name_neg). It
+// used to be let through, as a field reached through its struct.
+
+use mara.core
+
+Holder :: struct {
+	fast: i64 = 4
+}
+Mode :: union { fast  slow }
+
+main :: fun() {
+	h := Holder()
+	print(h.fast)
+}

@@ -30,7 +30,7 @@ DrawCommand :: struct {
 // DrawState bundles everything needed for one MDI draw call
 DrawState :: struct {
 	// Shader and texture
-	shader: u32,
+	shader_id: u32,
 	texture: u32,
 
 	// Reference to VAO state (for dynamic mesh access)
@@ -75,7 +75,7 @@ draw_state_init :: fun(
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
 	state^ = DrawState{
-		shader = shader_id,
+		shader_id = shader_id,
 		texture = 0,
 		batch_count = 0,
 		texture = 0,
@@ -88,7 +88,7 @@ draw_state_init :: fun(
 }
 
 draw_state_bind :: fun(state: ^DrawState) {
-	gl.UseProgram(state.shader)
+	gl.UseProgram(state.shader_id)
 	gl.ActiveTexture(gl.TEXTURE0)
 	gl.BindTexture(gl.TEXTURE_2D_ARRAY, state.texture)
 }
@@ -101,7 +101,7 @@ draw_state_bind :: fun(state: ^DrawState) {
 // window. (Per-frame instance data is checked in draw_state_render.)
 draw_state_assert_ready :: fun(state: ^DrawState) {
 	// Program + per-draw GPU resources
-	assert(state.shader != 0)          // linked shader program
+	assert(state.shader_id != 0)          // linked shader program
 	assert(state.command_buffer != 0)  // MultiDrawIndirect command buffer
 	assert(state.texture != 0)         // both current shaders sample a sampler2DArray
 

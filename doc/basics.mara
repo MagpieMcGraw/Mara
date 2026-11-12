@@ -61,7 +61,7 @@ example_module :: fun() {
 // a variant in sight — its module's or one it uses: `filter := 3` beside
 // mara.core's filter is an error, since the fun would be out of reach below
 // it, and so is `fun(lower: []utf8)` beside mara.string's lower. A struct's
-// field can (it's reached through its struct, `h.next`).
+// field is its constructor's variable: the same goes for it.
 example_use :: fun() {
 	// At the top of a file:
 	//

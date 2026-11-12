@@ -175,7 +175,7 @@ Camera — struct  camera.mara:10   (module camera)
   }
 
 below (types)   (1 user, 2 use-sites, depth 1)
-  struct Megastruct  (field camera : Camera)
+  struct Megastruct  (field cam : Camera)
   struct Megastruct  (field cameras : [6]Camera)
   (and 12 funs taking or returning it: `mara ask Camera call`)
 === Pounce | Camera type above
@@ -197,7 +197,7 @@ above (types)   (2 types, depth 1)
 Camera — struct  camera.mara:10   (module camera)
 
 below (types)   (1 user, 2 use-sites, depth 1)
-  struct Megastruct  (field camera : Camera)
+  struct Megastruct  (field cam : Camera)
   struct Megastruct  (field cameras : [6]Camera)
 === Pounce | Camera call above
 Camera — struct  camera.mara:10   (module camera)
@@ -273,7 +273,7 @@ above (types)   (32 types, depth 2)
     fov_x : f32
     near_plane : f32
     far_plane : f32
-  camera : camera.Camera  (shown above)
+  cam : camera.Camera  (shown above)
   mouse_look : bool
   vao : gfx.VAO_State
     vao : u32
@@ -288,7 +288,7 @@ above (types)   (32 types, depth 2)
     meshes : [512!]gfx.VAO_Mesh
     mesh_count : i64
   draw_state_object : gfx.DrawState
-    shader : u32
+    shader_id : u32
     texture : u32
     vao_state : ^gfx.VAO_State  (shown above)
     command_buffer : u32
@@ -363,7 +363,7 @@ above (calls)   (8 direct callees, depth 1)
 
 below (calls)   (1 direct caller, depth 1)
   Pounce.mara:228  Pounce.game_update
-    at Pounce.mara:230  camera_update(&game.camera, f32(game.timers.fixed.step))
+    at Pounce.mara:230  camera_update(&game.cam, f32(game.timers.fixed.step))
   (2 more: add a depth, or 'all')
 === Pounce | camera_update type above
 camera_update — fun  camera.mara:140   (module camera)
@@ -403,7 +403,7 @@ camera_update — fun  camera.mara:140   (module camera)
 
 below (calls)   (1 direct caller, depth 1)
   Pounce.mara:228  Pounce.game_update
-    at Pounce.mara:230  camera_update(&game.camera, f32(game.timers.fixed.step))
+    at Pounce.mara:230  camera_update(&game.cam, f32(game.timers.fixed.step))
   (2 more: add a depth, or 'all')
 === Pounce | camera_update flow above
 camera_update — fun  camera.mara:140   (module camera)
@@ -595,7 +595,7 @@ written 8
   Pounce.mara:96  game_init
     game^ = Megastruct()
   Pounce.mara:135  game_init
-    game.camera.obj.pos = Vec3{0, 0, 0}
+    game.cam.obj.pos = Vec3{0, 0, 0}
 read 11
   camera.mara:31  view_and_projections
     t := mat4_translate(cam.obj.pos)

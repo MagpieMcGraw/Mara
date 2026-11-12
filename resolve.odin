@@ -169,7 +169,7 @@ rs_leave :: proc(r: ^Resolver) {
 @(private="file")
 rs_push :: proc(r: ^Resolver, name: string, ref: Ref, variable: bool) {
     if name == "" || name == "_" { return }
-    if name == "all" && ref.kind != .Field && ref.decl != 0 { r.all_named[ref.decl] = true }
+    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
     slot, ok := r.slots[name]
     if !ok {
         slot = i32(len(r.top))
@@ -318,8 +318,6 @@ rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
     cur := i32(len(r.scopes) - 1)
     if k := r.scopes[cur].kind; k == .Module || k == .File { return }
     if slot, ok := r.slots[name]; ok {
-        in_struct := false
-        for sc in r.scopes { if sc.kind == .Struct { in_struct = true } }
         fence := r.scopes[cur].fence
         for i := r.top[slot]; i >= 0; i = r.names[i].hides {
             e := &r.names[i]
@@ -331,7 +329,7 @@ rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
                 return
             }
             if e.variable && e.scope < fence { continue }   // (past a fun's boundary: out of sight)
-            c.before, c.shadows = e.ref.decl, !in_struct
+            c.before, c.shadows = e.ref.decl, true
             break
         }
     }
@@ -374,7 +372,7 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
     t := r.t
     def :: proc(r: ^Resolver, into: ^map[string]Ref, name: string, ref: Ref) {
         if into != nil { into[name] = ref } else { rs_define(r, name, ref) }
-        if name == "all" && ref.kind != .Field && ref.decl != 0 { r.all_named[ref.decl] = true }
+        if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
     }
     for s in rs_live(r, stmts) {
         #partial switch t.tag[s] {
@@ -948,15 +946,12 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id) {
     for s in live { rs_stmt(r, s) }
 }
 
-// What a declaration declares here: a struct's field in its body's top, a
-// module's variable in a file, else a local.
+// What a declaration declares here: a module's variable in a file, else a
+// local — a struct's body's too: what its top block declares is its
+// constructor's locals, its layout once checked (tc_layout).
 @(private="file")
 rs_var_kind :: proc(r: ^Resolver) -> Ref_Kind {
-    #partial switch r.scopes[len(r.scopes) - 1].kind {
-    case .Struct: return .Field
-    case .File:   return .Global
-    }
-    return .Local
+    return .Global if r.scopes[len(r.scopes) - 1].kind == .File else .Local
 }
 
 @(private="file")
@@ -976,7 +971,6 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
             ref := Ref{t.main[tg], kind}
             r.refs[tg] = ref
             c := rs_clash(r, rs_text(t.main[tg]))
-            if kind == .Field { c.hides = {} }   // (a field is reached through its struct: `x.name`)
             if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[t.main[tg]] = c }
             rs_declare(r, rs_text(t.main[tg]), ref)
         }

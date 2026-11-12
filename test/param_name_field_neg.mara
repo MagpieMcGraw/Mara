@@ -4,7 +4,7 @@ use mara.core
 
 // MUST FAIL: params and a body's declarations are one name space — a field
 // named as a param would make `w` ambiguous; the error says which `w` it is.
-//@ expect-fail: 'w' is already a param of P: give this field a name of its own
+//@ expect-fail: 'w' is already a param of P: give this variable a name of its own
 
 P :: struct(w: i64) {
 	w := w

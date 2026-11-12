@@ -1,0 +1,14 @@
+module all_field_neg
+//@ expect-fail: `all` is a keyword
+
+// A struct's field named `all`: refused, as a variable or a param named it
+// is (all_local_neg, all_name_neg).
+
+use mara.core
+
+Flags :: struct { all: bool  some: bool }
+
+main :: fun() {
+	f := Flags{some = false}
+	print(f.some)
+}

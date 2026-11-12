@@ -144,8 +144,8 @@ crash_hover :: fun(ui: ^Ui) -> i64 {
 
 // The Crash panel: the report, the call under the mouse lit.
 draw_crash :: fun(ui: ^Ui, r: Rect) {
-	ui.crash_hover = crash_hover(ui)
-	ui.crash.lit = ui.crash_hover
+	ui.crash_hovered = crash_hover(ui)
+	ui.crash.lit = ui.crash_hovered
 	draw_lines(ui, &ui.crash, r, "No crash yet. When the program crashes, its report shows here, and a call clicked opens in the editor.")
 }
 

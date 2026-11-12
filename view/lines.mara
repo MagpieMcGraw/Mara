@@ -64,7 +64,7 @@ Lines :: struct {
 	status: [400]utf8   // the status line; none when empty
 	status_style: i64
 	scroll: i64           // the first row shown
-	cut:    bool          // more came than it holds: the rest left out
+	cut_off: bool          // more came than it holds: the rest left out
 	lit:    i64 = -1      // a line lit, all its rows (the call under the mouse); -1: none
 	// What's selected: from where the mouse pressed to where it is (or was
 	// let go) — none when they're the same place.
@@ -83,7 +83,7 @@ lines_clear :: fun(l: ^Lines) {
 	l.status.len = 0
 	l.status_style = STYLE_DIM
 	l.scroll = 0
-	l.cut = false
+	l.cut_off = false
 	l.rows.len = 0
 	l.rows_lines = 0
 	l.anchor = Spot{all 0}
@@ -93,7 +93,7 @@ lines_clear :: fun(l: ^Lines) {
 // A line added in a style: its tabs as spaces, a carriage return left out.
 lines_add :: fun(l: ^Lines, s: []utf8, style: i64) {
 	if l.lines.len == l.lines.cap or l.text.len + s.len * TAB_SPACES > l.text.cap {
-		l.cut = true
+		l.cut_off = true
 		return
 	}
 	// (Mara code's line after another: what's open where that one ends.)
@@ -213,7 +213,7 @@ lines_wrap :: fun(ui: ^Ui, l: ^Lines, w: f32) {
 			l.rows_lines += 1
 		elif not wrap(ui, l.text[ln.at : ln.at + ln.len], ln.style, w, l.rows_lines, ln.at, &l.rows)
 			l.rows_lines = l.lines.len
-			l.cut = true
+			l.cut_off = true
 		else
 			l.rows_lines += 1
 		}
