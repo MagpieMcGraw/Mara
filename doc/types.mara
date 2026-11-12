@@ -222,8 +222,8 @@ example_field_references :: fun() {
 	b := Bind{key = 5, held = false}
 	f := Bind.key
 	print(b[f], f.text(), i64(f))          // 5 key 0
-	g, found := Bind_Number.from_text("key")
-	if found do print(b[g])                // 5
+	g := Bind_Number.from_text("key")        // void when no i64 field is named so
+	if g != void do print(b[g])            // 5
 }
 
 Bind_Number :: alias Bind.i64

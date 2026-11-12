@@ -647,8 +647,8 @@ Place :: struct { x: f32  y: f32 }
 //
 // `f.text()` is the path as text, "mouse.x" (an atom), "void" for void, and
 // print shows that. `R.from_text(s)`, with `R :: alias Input.f32`, gives the
-// reference s names and true; when no f32 field of Input has that path, void
-// and false — and the true is the test a read through it needs.
+// reference s names; void when no f32 field of Input has that path, so test
+// it (`if g != void`) before reading through it.
 // A field through a `using` field is named without it (`hp`, not `base.hp`;
 // both are read back), and an enum-indexed array's item by its variant, the
 // first declared of a value. A struct with more than 4096 fields of one type
@@ -661,9 +661,9 @@ example_field_refs :: fun() {
 	b := Input.mouse.pressed[1]
 	state[b] = true
 	print(state.mouse.pressed[1], b.text()) // true mouse.pressed[1]
-	g, found := Input_Number.from_text("scroll")
-	if found do state[g] += 2
-	print(state.scroll, found)             // 2 true
+	g := Input_Number.from_text("scroll")
+	if g != void do state[g] += 2
+	print(state.scroll, g)                 // 2 scroll
 }
 
 Input :: struct {
@@ -831,6 +831,10 @@ example_utf8 :: fun() {
 // so a typo is never taken for a real choice. Letter case counts: name the
 // variants the way the text writes them. Then `match` takes the enum, and the
 // checker sees that every variant is handled.
+//
+// A field reference comes back from text the same way, one value:
+// `R.from_text(s)` with `R :: alias Input.bool` gives the reference s names,
+// or void when it names none (see `field_refs`).
 example_from_text :: fun() {
 	cmd := Command.from_text("run")
 	print(cmd)                             // Command.run

@@ -2928,21 +2928,15 @@ llvm_field_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sco
 
 // `R.from_text(text)` (Origin_Field_From_Text), where it's called: per field
 // of its type, its path's length compared with the text's, then each byte —
-// the first that matches all, its value and true; none, void (0) and false.
+// the first that matches all, its value; none, void (0).
 @(private="file")
 llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
     g := e.g
     if len(ops) != 1 { e.note = "from_text's text"; return false }
     paths, _ := field_ref_paths(fr.owner, fr.elem)
-    at := make([]Val, 2)
-    for i in 0 ..< 2 {
-        if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
-        if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, fn_result(callee, i), as_local = true) }
-    }
-    bool_ir := llvm_type_from_checker(Type_Bool{})
-    ir_store(g, IR_I64, ir_int(0), at[0])
-    ir_store(g, bool_ir, ir_int(0), at[1])
     header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
+    ir_store(g, IR_I64, ir_int(0), at)
     data := emit_header_field(g, header, SLICE.ptr)
     n := emit_len_count(g, emit_header_field(g, header, SLICE.len))
     done := fresh_label(g, "field_from_text.done")
@@ -2961,15 +2955,15 @@ llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Typ
             same = fresh_tmp(g)
             ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(p.text[i])))
         }
-        ir_store(g, IR_I64, ir_int(p.value), at[0])
-        ir_store(g, bool_ir, ir_int(1), at[1])
+        ir_store(g, IR_I64, ir_int(p.value), at)
         emit_br(g, done)
         emit_label(g, miss)
     }
     emit_br(g, done)
     emit_label(g, done)
-    e.outs[op], e.out_run[op] = at, e.run
-    e.value[op] = at[0]
+    v := fresh_tmp(g)
+    ir_load(g, v, IR_I64, at)
+    e.value[op] = v
     return true
 }
 

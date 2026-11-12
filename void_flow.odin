@@ -69,7 +69,6 @@ Void_Code :: struct {
     of_var:   map[Node_Id][dynamic]i32,    // each var's keys
     params:   map[Node_Id]int,             // a param's node → its index
     slots:    map[Node_Id][dynamic]Operand,   // an `and` / `or` slot → what's written to it
-    guards:   map[Node_Id]Node_Id,            // a bool from_text gave → the variable its reference went into
     why:      []string,                    // each key's: what made it void (the latest)
     words:    int,
     read:     map[int]bool,                // the facts it read
@@ -364,7 +363,6 @@ void_code :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, found: ^[dynamic]
         delete(c.params)
         for _, l in c.slots { delete(l) }
         delete(c.slots)
-        delete(c.guards)
         delete(c.why)
         delete(c.read)
     }
@@ -418,7 +416,6 @@ void_keys :: proc(c: ^Void_Code) {
                     }
                 }
             }
-            if g.op[id] == .Write { void_guard(c, id) }
             if g.op[id] != .Compare { continue }
             ops := graph_operands(g, id)
             if len(ops) != 2 { continue }
@@ -432,28 +429,6 @@ void_keys :: proc(c: ^Void_Code) {
             fact := void_place_fact(c, p)
             void_add_key(c, var, path, fact if void_is_param_root(c, var) else -1, fact, false)
         }
-    }
-}
-
-// `ok` written from from_text's second result: it says whether the
-// reference written from its first, in the same statement, is void.
-@(private="file")
-void_guard :: proc(c: ^Void_Code, w: Node_Id) {
-    g := c.g
-    ops := graph_operands(g, w)
-    if len(ops) < 2 || ops[1].out != 1 || !graph_is_leaf(ops[0].op) { return }
-    call := ops[1].op
-    if call == NO_NODE || call >= CONST || graph_kind_of(g, call) != .Op || graph_op_of(g, call) != .Call { return }
-    callee := graph_called(g, call)
-    if callee == nil { return }
-    if _, from_text := callee.origin.(Origin_Field_From_Text); !from_text { return }
-    // (The first result's write: the same call's output 0, into a variable.)
-    for id := Node_Id(1); id <= g.end; id += 1 {
-        if g.kind[id] != .Op || g.op[id] != .Write { continue }
-        o := graph_operands(g, id)
-        if len(o) < 2 || o[1].op != call || o[1].out != 0 || !graph_is_leaf(o[0].op) { continue }
-        c.guards[graph_refers(g, ops[0].op)] = graph_refers(g, o[0].op)
-        return
     }
 }
 
@@ -1146,10 +1121,6 @@ void_narrow :: proc(c: ^Void_Code, state: []u64, cond: Operand, truth: bool, dep
                 if (word == "and") == truth {
                     for w in writes { void_narrow(c, state, w, truth, depth + 1) }
                 }
-            }
-            // (from_text's bool, true: the reference it gave isn't void.)
-            if ref, guards := c.guards[v]; guards && truth {
-                void_set(c, state, c.key_of[Void_Place{ref, ""}] or_else -1, false, "")
             }
         }
         return

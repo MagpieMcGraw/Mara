@@ -73,10 +73,10 @@ main :: fun() {
 	print("runtime index:", events.keys.held[S])
 	print("printed:", f, b, by_runtime)
 	print("text:", f.text(), b.text())
-	g, found := Look.from_text("mouse.y")
-	if found do events[g] = 7
-	print("from_text:", events.mouse.y, found)
-	_, none := Look.from_text("mouse.z")
+	g := Look.from_text("mouse.y")
+	if g != void do events[g] = 7
+	print("from_text:", events.mouse.y, g != void)
+	none := Look.from_text("mouse.z") != void
 	print("from_text miss:", none)
 	binds : [3!]Button = [Events.quit, Events.mouse.pressed[1], Events.keys.held[A]]
 	events.mouse.pressed[1] = true
@@ -102,9 +102,9 @@ main :: fun() {
 	ps := Pad.stick[at]
 	pad[ps] = 2.5
 	print("list runtime:", pad.stick[1], ps.text())
-	pg, pfound := Pad_Axis.from_text("stick[0]")
-	if pfound do pad[pg] = -1
-	print("list from_text:", pad.stick[0], pfound)
+	pg := Pad_Axis.from_text("stick[0]")
+	if pg != void do pad[pg] = -1
+	print("list from_text:", pad.stick[0], pg != void)
 	more()
 }
 
@@ -113,16 +113,17 @@ main :: fun() {
 // compares equal to void.
 more :: fun() {
 	h := Holder{all 0}
-	m, _ := Named_Text.from_text("nope")
+	m := Named_Text.from_text("nope")
 	v : Named.[]utf8 = void
 	print("void:", h.f, m, v, i64(h.f), h.f == void, m == void, Named.name == void)
 	print("in place:", Named.tail, Named.cells[1].y)
 	b := Keyed.by_key[B]
-	_, by_b := Keyed_Bool.from_text("by_key[B]")
-	also, by_also := Keyed_Bool.from_text("by_key[Also_B]")
+	by_b := Keyed_Bool.from_text("by_key[B]") != void
+	also := Keyed_Bool.from_text("by_key[Also_B]")
+	by_also := also != void
 	print("alias:", b, by_b, by_also and also == b)
-	_, by_short := Keyed_Int.from_text("hp")
-	_, by_full := Keyed_Int.from_text("base.hp")
+	by_short := Keyed_Int.from_text("hp") != void
+	by_full := Keyed_Int.from_text("base.hp") != void
 	print("using:", Keyed.hp, Keyed.base.hp.text(), by_short, by_full)
 	o := Own{a = 1, b = 2, pick = Own.b}
 	print("self:", o[o.pick], o.pick)

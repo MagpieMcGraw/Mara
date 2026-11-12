@@ -41,6 +41,6 @@ main :: fun() {
 	print(s[bs[0].key2])          // a field reference zeroed
 	g : fun() -> i64 = void
 	print(g())                    // a fun value
-	m, _ := Flag.from_text("b")
+	m := Flag.from_text("b")
 	print(s[m])                   // from_text's miss
 }

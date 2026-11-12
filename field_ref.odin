@@ -14,14 +14,15 @@ import "core:slice"
 // index, known or not: a list's within its cap, as indexing it is. Never
 // through a pointer or a slice: what they hold isn't in the struct.
 //
-// Its value counts from the first field of its type the struct holds (its
-// type's base, field_ref_base): 0 is that field, so a reference never set —
-// declared with no value, made `{all 0}`, from_text's miss — is always a
-// field, as an enum's zero is its `= 0` variant. A type whose struct holds no
-// field of it, or a field of no size, is an error (tc_validate_field_refs).
+// Its value is its field's offset less its type's base (the first field of
+// its type the struct holds, field_ref_base), plus 1; 0 is void, so a
+// reference never set — declared with no value, made `{all 0}` — is void, as
+// a pointer's is. A type whose struct holds no field of it, or a field of no
+// size, is an error (tc_validate_field_refs).
 //
 // f.text() names the field, `keyboard.held[W]`, and `R.from_text(text)`, R an
-// alias of the reference's type, finds it again. Both know every field of that
+// alias of the reference's type, finds it again (void when text names no
+// field, as an enum's from_text gives its `= 0` variant). Both know every field of that
 // type the struct holds, by its path (field_ref_paths): through a `using`
 // field by the name without it too, `hp` for `base.hp`, and an enum-indexed
 // array's item by each variant of its value, the first declared printed.
@@ -316,7 +317,7 @@ field_text_fun :: proc(qt: Type, fr: ^Type_Field) -> ^Type_Scope {
 
 // `R.from_text(text)`, R a reference's type: its fun, made at each call, its
 // body generated where it's called (Origin_Field_From_Text): the reference
-// whose path text is, and true; none, 0 and false.
+// whose path text is; void when it names none.
 field_from_text_fun :: proc(qt: Type, fr: ^Type_Field) -> ^Type_Scope {
     ft := new(Type_Scope)
     ft.kind = .Fun
@@ -324,7 +325,6 @@ field_from_text_fun :: proc(qt: Type, fr: ^Type_Field) -> ^Type_Scope {
     ft.source_name = "from_text"
     append(&ft.params, Struct_Type_Field{name = "text", type_ = type_slice(Type_Utf8{})})
     append(&ft.return_types, qt)
-    append(&ft.return_types, Type_Bool{})
     ft.origin = Origin_Field_From_Text{field = fr}
     return ft
 }

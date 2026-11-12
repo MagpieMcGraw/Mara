@@ -5,7 +5,7 @@ module void_read_tests
 
 // Each way a test says a value isn't void, so a read through it is fine:
 // `!=` and `==` with an early return, `and`, `or`, `not`, a loop's
-// condition, an assert, from_text's bool, a field reference tested.
+// condition, an assert, a field reference tested (from_text's too).
 
 Node :: struct {
 	x: i64
@@ -56,11 +56,11 @@ main :: fun() {
 	b := Node{x = 2, next = &a}
 	print("tests:", both(&a, &b), both(&a, void), early(&b, &b), early(void, &a), total(&b), total(&b) * 2, asserted(&b) + negated(&a), held(&b) + 2)
 	s := State{all 0}
-	g, found := Flag.from_text("a")
-	if found do s[g] = true
+	g := Flag.from_text("a")
+	if g != void do s[g] = true
 	k : State.bool = void
 	if k != void do s[k] = true
-	m, ok := Flag.from_text("nope")
-	if ok do s[m] = true
+	m := Flag.from_text("nope")
+	if m != void do s[m] = true
 	print("refs:", s.a, s.quit, k == void)
 }
