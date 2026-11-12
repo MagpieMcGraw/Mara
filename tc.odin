@@ -795,50 +795,73 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
     }
 }
 
-// A fun or a struct: its name declared in its module, its type made (its
-// signature and body wait).
-tc_register_scope :: proc(k: ^TC, def, node: Tree_Id) {
+// A fun or a struct: its name declared where it is defined — its module, or
+// the fun or struct whose body has it (`owner`, registered as `owner_i`) —
+// and its type made (its signature and body wait). A body's is named for its
+// owner (`Arena_mark`).
+tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope = nil, owner_i := -1) {
     t := k.t
     name := tc_name(k, def)
+    filed := tc_def_name(k, def)
     span := tree_span(t, def)
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
-        // (A template: checked as each instance.)
-        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(k.t, node), pkg = k.pkg}
-        // (Its place in the module's order: a template the module's scope
-        // binds a type to is that type's declaration — mara.core's `Program`
-        // is the compiler's program struct — extracted there: tc_extract.)
-        append(k.mine, len(k.scopes))
-        append(&k.scopes, new_clone(TC_Scope{def = def, node = node}))
+        // (A template: checked as each instance, a body's named for its
+        // owner — tc_instance_name.)
+        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(t, node), pkg = k.pkg, owner = owner}
+        if owner == nil {
+            // (Its place in the module's order: a template the module's scope
+            // binds a type to is that type's declaration — mara.core's
+            // `Program` is the compiler's program struct — extracted there:
+            // tc_extract.)
+            append(k.mine, len(k.scopes))
+            append(&k.scopes, new_clone(TC_Scope{def = def, node = node}))
+        } else if owner.kind == .Struct && !is_struct {
+            // (A struct's: found by a value's method call, as its plain funs are.)
+            if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
+            (&k.generic_methods[owner])[filed] = t.main[def]
+        }
         return
     }
     // (A struct's constructor may fail: one of no params has none.)
     if is_struct && len(v.returns) > 0 && len(v.params) == 0 { tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name) }
-    flat := make_flat_name(k.pkg, name)
-    if is_struct && (flat in k.table.structs || flat in k.table.funs) {
-        tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED, name)
-        return
-    }
-    if !is_struct && flat in k.table.funs {
-        tc_error(k, span, TYPE_FUNCTION_ALREADY_DEFINED, name)
+    flat := make_flat_name(k.pkg, name) if owner == nil else fmt.aprintf("%s_%s", owner.name, filed)
+    taken := flat in k.table.funs
+    if owner != nil { taken = filed in owner.functions || filed in owner.types }
+    if taken {
+        tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED if is_struct else TYPE_FUNCTION_ALREADY_DEFINED, name)
         return
     }
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.parent_scope = node, k.module_scopes[k.pkg] or_else nil
+    ts.node, ts.parent_scope = node, owner if owner != nil else k.module_scopes[k.pkg] or_else nil
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
     ts.is_exposed = k.exposed[def]
-    // (A struct with params is constructed by a call, as a fun is.)
-    callable := !is_struct || len(v.params) > 0
-    if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
     ts.decl = t.main[def]
     tc_bound_set(k, ts.decl, ts)
     k.scope_of[ts] = len(k.scopes)
-    append(k.mine, len(k.scopes))
-    k.scope_at[node] = len(k.scopes)
+    if owner == nil {
+        // (The module's: its name the table's, where a qualified use finds it.)
+        k.table.funs[flat] = ts
+        append(k.mine, len(k.scopes))
+        k.scope_at[node] = len(k.scopes)
+    } else {
+        // (A body's: its owner's member by name — a struct, a type; a fun, or
+        // a struct built by params, what a value's method call finds.)
+        if is_struct {
+            k.table.funs[flat] = ts
+            tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type})
+        }
+        if !is_struct || len(v.params) > 0 {
+            if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
+            owner.functions[filed] = ts
+        }
+        append(&k.scopes[owner_i].nested, len(k.scopes))
+        if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
+    }
     append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
 }
 
@@ -1318,8 +1341,7 @@ Checked_Program :: struct {
 
 SymbolTable :: struct {
     // Type registries
-    structs:        map[string]^Type_Scope,      // data-layout scopes (struct/class with or without params)
-    funs:           map[string]^Type_Scope,      // callable funs and struct constructors (kind=.Struct + params, or kind=.Fun)
+    funs:           map[string]^Type_Scope,      // the funs and the structs (a union's variants' too), by flat name; each module
     enums:          map[string]^Type_Enum,
     unions:         map[string]^Type_Union,
     distinct_types: map[string]^Type_Distinct,

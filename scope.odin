@@ -91,9 +91,8 @@ resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
     }
     // (A named struct — `type P`, `distinct P` — has P's functions.)
     if sd := as_scope_body(distinct_base(inner)); sd != nil && len(sd.fields) > 0 { return sd }
-    // Check by type name in the struct table
+    // (By its type's name, in the table.)
     tn := type_name(t)
-    if st, ok := c.table.structs[tn]; ok { return &st.sd }
     if st, ok := c.table.funs[tn]; ok { return &st.sd }
     return nil
 }

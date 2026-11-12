@@ -227,7 +227,7 @@ tc_variant_struct :: proc(k: ^TC, pkg, union_name: string, v: TC_Variant, subst:
     vst.name = make_flat_name(pkg, vst.source_name) if owner == nil else strings.concatenate({owner.name, "_", vst.source_name})
     vst.home_package, vst.kind, vst.body_span = pkg, .Struct, v.span
     vst.decl = v.span.at
-    k.table.structs[vst.name] = vst
+    k.table.funs[vst.name] = vst
     if v.fields {
         vst.node, vst.parent_scope = v.body, owner if owner != nil else k.module_scopes[pkg] or_else nil
         k.scope_of[vst] = len(k.scopes)

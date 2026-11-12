@@ -370,13 +370,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Generate LLVM type declarations for all structs from checked type data.
     // Map iteration order is hash-seeded and not deterministic between runs,
     // so collect keys and sort for byte-identical builds.
-    struct_keys: [dynamic]string
-    defer delete(struct_keys)
-    for k in checked.table.structs { append(&struct_keys, k) }
-    slice.sort(struct_keys[:])
-    for k in struct_keys {
-        register_struct_decl(&g, checked.table.structs[k])
-    }
     fun_keys: [dynamic]string
     defer delete(fun_keys)
     for k in checked.table.funs { append(&fun_keys, k) }

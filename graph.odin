@@ -3711,7 +3711,7 @@ graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
     }
     variants := make(map[^Type_Scope]bool, context.temp_allocator)
     for _, u in t.unions { for _, st in u.variant_structs { variants[st] = true } }
-    for _, st in t.structs { if !st.is_module && st not_in variants { check(&count, &bad, st, st.body_span) } }
+    for _, st in t.funs { if st.kind == .Struct && !st.is_module && st not_in variants { check(&count, &bad, st, st.body_span) } }
     if bad > 0 {
         flush_diagnostics()
         os.exit(1)

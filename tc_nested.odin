@@ -73,7 +73,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     for s in defs {
         value := Tree_Id(t.b[s])
         if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {
-            tc_register_nested(k, s, value, owner, owner_i)
+            tc_register_scope(k, s, value, owner, owner_i)
             continue
         }
         if t.a[s] == 0 && value != 0 {
@@ -109,53 +109,6 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     for s in unions { tc_resolve_union(k, s, Tree_Id(t.b[s])) }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }
     for s in dispatches { tc_validate(k, s) }
-}
-
-tc_register_nested :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_i: int) {
-    t := k.t
-    name := tc_name(k, def)
-    filed := tc_def_name(k, def)
-    span := tree_span(t, def)
-    v := scope_view(t, node)
-    is_struct := t.tag[node] == .Struct_Def
-    if tc_is_generic(k, node) {
-        // (A template, as a module's: checked as each instance, named for its
-        // owner — tc_instance_name.)
-        k.templates[t.main[def]] = TC_Template{def = def, node = node, lo = tree_lo(t, node), pkg = k.pkg, owner = owner}
-        // (A struct's: found by a value's method call, as its plain funs are.)
-        if owner.kind == .Struct && !is_struct {
-            if owner not_in k.generic_methods { k.generic_methods[owner] = make(map[string]Token_Id) }
-            (&k.generic_methods[owner])[filed] = t.main[def]
-        }
-        return
-    }
-    if is_struct && len(v.returns) > 0 && len(v.params) == 0 {
-        tc_error(k, span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, name)
-        return
-    }
-    mangled := fmt.aprintf("%s_%s", owner.name, filed)
-    ts := new(Type_Scope)
-    ts.name, ts.source_name, ts.home_package = mangled, name, k.pkg
-    ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.parent_scope = node, owner
-    ts.decl = t.main[def]
-    ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
-    ts.is_packed = v.packed != 0
-    callable := !is_struct || len(v.params) > 0
-    if is_struct {
-        if callable { k.table.funs[mangled] = ts } else { k.table.structs[mangled] = ts }
-        tc_scope_bind(k, owner, filed, ts, {ts.decl, .Type})
-    }
-    // (Its mangled name the module's, where codegen and a qualified use find it.)
-    tc_bound_set(k, ts.decl, ts)
-    if callable {
-        if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
-        owner.functions[filed] = ts
-    }
-    k.scope_of[ts] = len(k.scopes)
-    append(&k.scopes[owner_i].nested, len(k.scopes))
-    if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
-    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
 }
 
 // A body's definitions checked: its structs' bodies (their fields), then its

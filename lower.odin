@@ -85,7 +85,7 @@ lw_shared_sizes :: proc(k: ^TC) -> [dynamic]int {
     append(&s, len(a.instances), len(a.types), len(a.refs), len(a.callees), len(a.args), len(a.forms), len(a.overrides),
         len(a.receivers), len(a.call_names), len(a.size_of), len(a.dot_bases), len(a.vars), len(a.bodies),
         len(a.type_table.types))
-    append(&s, len(k.checked.functions), len(k.table.funs), len(k.table.structs))
+    append(&s, len(k.checked.functions), len(k.table.funs))
     return s
 }
 

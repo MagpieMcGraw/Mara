@@ -315,7 +315,6 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
         seen[key] = len(matches)
         append(matches, m)
     }
-    for _, s in table.structs        { consider(&matches, &seen, s, scope_file, scope_module) }
     for _, f in table.funs           { consider(&matches, &seen, f, scope_file, scope_module) }
     for _, e in table.enums          { consider(&matches, &seen, e, scope_file, scope_module) }
     for _, u in table.unions         { consider(&matches, &seen, u, scope_file, scope_module) }
@@ -638,7 +637,6 @@ ask_build_reverse_index :: proc(table: ^SymbolTable, funcs: map[string]^Type_Sco
             rev^[name] = list                                   // append to a local copy, store back
         }
     }
-    for _, s in table.structs        { add(table, &rev, &seen, s) }
     for _, s in table.funs           { add(table, &rev, &seen, s) }
     for _, u in table.unions         { add(table, &rev, &seen, u) }
     for _, d in table.distinct_types { add(table, &rev, &seen, d) }
@@ -1172,7 +1170,6 @@ ask_all_structs :: proc(table: ^SymbolTable) -> [dynamic]^Type_Scope {
         seen[ts] = true
         append(out, ts)
     }
-    for _, ts in table.structs { add(&out, &seen, ts) }
     for _, ts in table.funs { add(&out, &seen, ts) }
     for _, ts in table.mono_cache { add(&out, &seen, ts) }
     return out

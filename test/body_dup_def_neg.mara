@@ -1,0 +1,13 @@
+module body_dup_def_neg
+//@ expect-fail: function 'f' already defined
+
+// A name defined twice in a fun's body: an error, as it is in a module. It
+// used to be let through, the second taking the first's place.
+
+use mara.core
+
+main :: fun() {
+	f :: fun() -> i64 { return 1 }
+	f :: fun() -> i64 { return 2 }
+	print(f())
+}
