@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Fills release/: the compiler other projects build with (sooblivion copies
-# it into its own compiler/ with its update_compiler.bat). Made from HEAD,
-# and only when the working tree is clean and the full suite passes with
-# the very Mara.exe and stdlib being released: a whole compiler home —
-# Mara.exe, code/, runtime/, tools/ — and MARA_VERSION.txt saying which Mara
-# it is. release/ is gitignored. Built in release.new/, swapped in when it
-# passes; on a failure release/ stays as it was.
+# Fills release/: the compiler other projects build with (sox copies it into
+# its own compiler/ with its update_compiler.bat), and what a GitHub release
+# zips. Made from HEAD, and only when the working tree is clean and the full
+# suite passes with the very Mara.exe and stdlib being released: a whole
+# compiler home — Mara.exe, code/, runtime/, tools/ — with doc/, LICENSE
+# (the bundled libraries' and tools' licenses sit in their folders) and
+# MARA_VERSION.txt saying which Mara it is. release/ is gitignored. Built in
+# release.new/, swapped in when it passes; on a failure release/ stays as it was.
 #
 #   bash release.sh
 set -euo pipefail
@@ -27,8 +28,9 @@ STAGE=$ROOT/release.new
 rm -rf "$STAGE"
 mkdir -p "$STAGE/tools"
 
-# The stdlib and the runtime as committed (no caches built from older ones).
-git archive HEAD code runtime | tar -x -C "$STAGE"
+# The stdlib, the runtime, the docs and the license as committed (no caches
+# built from older ones).
+git archive HEAD code runtime doc LICENSE | tar -x -C "$STAGE"
 # The toolchain: the last release's files kept where they're the same
 # (a fresh clang.exe each time wakes the virus scan), copied where not.
 for f in tools/*; do
