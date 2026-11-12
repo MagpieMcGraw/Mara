@@ -1,0 +1,31 @@
+module alias_in_body
+
+//@ expect-output: alias Mode.pressed Mode.pressed Mode.held
+//@ expect-output: through K.square
+//@ expect-output: inner Size.round
+
+// Another name for a type works in a body as at a file's top, by the same
+// code: `A :: m.B` (a name through a module or a struct) names a type, and
+// `A :: alias E` is one type with E.
+
+use mara.core
+
+Shapes :: struct {
+	Kind :: union { round  square }
+	Size :: Kind
+}
+
+main :: fun() {
+	Mode :: union { held  pressed }
+	M2 :: alias Mode
+	a : M2 = pressed
+	b : Mode = a
+	print("alias", a, b, M2.held)
+
+	K :: Shapes.Kind
+	k : K = square
+	print("through", k)
+
+	s : Shapes.Size = round
+	print("inner", s)
+}
