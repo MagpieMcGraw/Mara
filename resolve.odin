@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -8,7 +9,9 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 // Name resolution (design/name_resolution.md): what each name in the tree
 // refers to, found from the tree alone — before checking, with a stack of
-// the names in sight that is thrown away once it's done.
+// the names in sight that is thrown away once it's done. What stays is each
+// scope's record (Scope): what it defines, what it uses, the scope it's in —
+// what the checker and the tools ask of a scope afterwards.
 //
 // Mara has one kind of scope: a module (its files' text), a file (what it
 // uses), a struct's body, a fun's body, a block. A definition (`name :: …`)
@@ -30,10 +33,12 @@ Resolver :: struct {
     // a keyword (a broadcast, `all v`), said by the checker (TYPE_ALL_KEYWORD).
     all_named: map[Token_Id]bool,
     top:     [dynamic]i32,    // by slot: the name's innermost entry in names (-1: none)
-    scopes:  [dynamic]Rs_Scope,
-    modules: map[string]^Rs_Space,
-    spaces:  map[Token_Id]^Rs_Space,   // a fun's or a struct's names, by the token that declares it (rs_space_of)
-    named:   map[Token_Id]^Rs_Space,   // a module's name, by the token that declares it (its use's)
+    allocator: mem.Allocator,          // the check's: what is found of a scope on a later ask is kept with it
+    scopes:  [dynamic]Rs_Level,        // the scopes entered, the innermost last
+    modules: map[string]^Scope,
+    spaces:  map[Token_Id]^Scope,      // a fun's or a struct's scope, by the token that declares it
+    files:   map[u16]^Scope,           // a file's, by its index
+    named:   map[Token_Id]^Scope,      // a module's name, by the token that declares it (its use's)
     defs:    map[Token_Id]Tree_Id,      // a definition, by the token that declares it: its Define
     owners:  map[Token_Id]Token_Id,     // ... a body's: the fun or struct whose body it's in, by its token
     owner:   Token_Id,                  // the fun or struct whose body is being resolved
@@ -43,8 +48,7 @@ Resolver :: struct {
     type_params: map[Token_Id]bool,     // the declarations that are type params (what they're bound to is the checker's)
     type_params_of: map[Tree_Id][dynamic]Token_Id,   // ... each generic's, by its node (an instance binds them)
     generic:     Tree_Id,               // the definition whose signature is being resolved: its type params'
-    module:  ^Rs_Space,                // the module being resolved
-    sights:  map[u16][dynamic]Rs_Sight, // by file: the modules in sight in each scope there that uses any — an inner one before the one around it, the file's last (rs_sight_at)
+    module:  ^Scope,                   // the module being resolved
     misses:  map[Tree_Id]Rs_Miss,       // why a name resolved to nothing, by its node ...
     token_misses: map[Token_Id]Rs_Miss, // ... by its token
     clashes: map[Token_Id]Rs_Clash,     // what a declaration runs into, by the token it declares
@@ -54,11 +58,6 @@ Resolver :: struct {
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
     field_types: map[Tree_Id]Rs_Field_Type,   // a type name `S.T` that's a field reference's type, by its node
     type_names: map[Token_Id]bool,      // the definitions `A :: B` that name a type, by the token that declares them (rs_settle_aliases)
-    // What each scope defines, as written — the one list of it: the checker
-    // registers from it, a tool lists from it (resolve_defs). A fun's or a
-    // struct's body's, by the token that declares it; a module's is its
-    // space's (Rs_Space.list).
-    body_defs:  map[Token_Id]^Rs_Defs,
     block_of:   map[Tree_Id]Rs_Def,     // a definition in a block of its scope's body, by its node: which, and where it is in sight
     file_rank:  int,                    // the file being resolved: its place among its module's
 }
@@ -75,7 +74,9 @@ Rs_Def :: struct {
     rank:   int,   // (its file's place among its module's: the order they're listed in)
 }
 
-// A scope's definitions, in the order written — its files', a module's.
+// What a scope defines, as written (Scope.list) — the one list of it: the
+// checker registers from it, a tool lists from it (resolve_defs). A module's
+// is its files'.
 Rs_Defs :: struct {
     list:   [dynamic]Rs_Def,
     blocks: int,    // the block definitions so far
@@ -86,12 +87,10 @@ Rs_Defs :: struct {
 // declares (a fun, a struct, a variant), or — 0 — the module named.
 resolve_defs :: proc(r: ^Resolver, decl: Token_Id, module: string) -> []Rs_Def {
     d: ^Rs_Defs
-    if decl != 0 {
-        d = r.body_defs[decl] or_else nil
-    } else if m, ok := r.modules[module]; ok {
-        d = &m.list
-    }
-    if d == nil { return nil }
+    sc: ^Scope
+    if decl != 0 { sc = r.spaces[decl] or_else nil } else { sc = r.modules[module] or_else nil }
+    if sc == nil { return nil }
+    d = &sc.list
     if !d.sorted {
         // (Met a scope at a time — a body's own, then each block's as its
         // statement is reached: as written is by file, then by place.)
@@ -135,14 +134,14 @@ Rs_Name :: struct {
 @(private="file")
 Rs_Scope_Kind :: enum u8 { Module, File, Fun, Struct, Block }
 
+// A scope entered: where the stack of names stood, and its record (a block
+// that uses and overloads nothing has none).
 @(private="file")
-Rs_Scope :: struct {
+Rs_Level :: struct {
     kind: Rs_Scope_Kind,
     mark: i32,                  // len(names) when it was entered
     fence: i32,                 // the innermost fun or struct, it or around it: the variables below it are out of sight
-    uses: [dynamic]^Rs_Space,  // what it uses: their definitions in sight, behind its own
-    named: [dynamic]Rs_Named_Use,   // what it uses under a name: reached through that name alone
-    overloads: [dynamic]Rs_Overload,   // its `overload op name`s: the operators' groups in it
+    scope: ^Scope,
     self: Ref,                  // a fun's or a struct's: itself (`Self`)
     signature: bool,            // a fun's or a struct's, its params and results being resolved
 }
@@ -152,24 +151,38 @@ Rs_Scope :: struct {
 @(private="file")
 Rs_Named_Use :: struct {
     name:   string,
-    module: ^Rs_Space,
+    module: ^Scope,
 }
 
-// A scope's names — a module's (its files'), a fun's or a struct's body's:
-// what a use of it brings in sight, and what a name into it reaches.
-@(private="file")
-Rs_Space :: struct {
-    name:     string,
-    decl:     Token_Id,   // a fun's or a struct's: what declares it (0: a module)
+// A scope of the program's text, kept: a module (its files' definitions), a
+// file, a fun's or a struct's body, a block that uses or overloads
+// something. What it defines, what it uses, and the scope it is written in.
+// What is in sight at a point is its scope's and each one's around it
+// (rs_sight_at); what a use of a scope brings, and what a name into it
+// reaches, are its definitions.
+Scope :: struct {
+    kind:     Rs_Scope_Kind,
+    parent:   ^Scope,     // the scope it is written in (a file's: its module)
+    name:     string,     // a module's, a fun's, a struct's
+    decl:     Token_Id,   // a fun's or a struct's: what declares it (0: a module, a file, a block)
+    lo, hi:   Token_Id,   // its statements' tokens (a module's: none)
     own:      Token_Id,   // a module's: its name's last part, as its first file's `module` line writes it — what names it inside itself (rs_own_module)
-    files:    []Tree_Id,
-    defs:     map[string]Ref,
+    files:    []Tree_Id,  // a module's files ...
+    parts:    []^Scope,   // ... and the scope of each
+    inner:    [dynamic]^Scope,   // a file's: the scopes in it that use or overload something, an inner one before the one around it (rs_scope_at)
+    // What it defines.
+    defs:     map[string]Ref,   // by name: a module's; a fun's or a struct's once something names into it (filled)
+    filled:   bool,
     variants: map[string]Ref,   // its enums' variants: what `m.X` reaches past its definitions
     dispatches: map[string][dynamic]Token_Id,   // its dispatch groups, by name (one name's join)
-    overloads: [dynamic]Rs_Overload,            // its `overload op name`s, in order
-    used:     [dynamic]Rs_Use,                  // every use written in it, any scope's
-    aliases:  bool,                             // some definition of it may be another name for a type: `A :: B`, `A :: alias B`
-    list:     Rs_Defs,                          // a module's: what it defines, as written (resolve_defs)
+    aliases:  bool,             // some definition of it may be another name for a type: `A :: B`, `A :: alias B`
+    list:     Rs_Defs,          // its definition statements, as written (resolve_defs)
+    // What it uses.
+    uses:     [dynamic]^Scope,          // the scopes it uses: their definitions in sight in it, behind its own
+    named:    [dynamic]Rs_Named_Use,    // ... under a name: reached through that name alone
+    overloads: [dynamic]Rs_Overload,    // its `overload op name`s: the operators' groups in it
+    used:     [dynamic]Rs_Use,          // a module's: every use written in it, any scope's
+    sight:    ^Rs_Sight,                // what is in sight in it, once asked (rs_sight_at)
 }
 
 @(private="file")
@@ -205,17 +218,16 @@ Rs_Clash :: struct {
     hides:  Ref,   // a fun, a type or a module of that name in sight (kind None: none)
 }
 
-// What a file sees of the groups calls and operators choose among: its
-// module's, then each module it or its module uses. A call names its fun, so a
-// module used under a name is out of its sight; an operator names none, so
-// `all` has those too.
+// What is in sight at a point of the groups calls and operators choose
+// among: its module's, then what its scope and each one around it use. A
+// call names its fun, so a module used under a name is out of its sight; an
+// operator names none, so `all` has those too.
 Rs_Sight :: struct {
-    module: ^Rs_Space,
-    uses:   []^Rs_Space,
+    module: ^Scope,
+    uses:   []^Scope,
     named:  []Rs_Named_Use,
-    all:    []^Rs_Space,
+    all:    []^Scope,
     overloads: []Rs_Overload,   // the `overload`s of the scopes around it, the nearest's first
-    lo, hi: Token_Id,   // the scope's tokens (hi 0: the file's — all of them)
 }
 
 // A use as written, `use m` or `name :: use m` (alias: its name's token), in
@@ -231,40 +243,84 @@ resolve_module_uses :: proc(r: ^Resolver, module: string) -> []Rs_Use {
     return nil
 }
 
-// What is in sight of the groups where `at` is: the innermost scope's there
-// that uses a module, else its file's.
+// The scope `at` is in: the innermost there that uses or overloads
+// something, else its file's (nil: no file of the program's).
 @(private="file")
-rs_sight_at :: proc(r: ^Resolver, at: Token_Id) -> (Rs_Sight, bool) {
-    list, ok := r.sights[build_tokens[at].file]
-    if !ok { return {}, false }
-    for s in list { if s.hi == 0 || at >= s.lo && at < s.hi { return s, true } }
-    return {}, false
+rs_scope_at :: proc(r: ^Resolver, at: Token_Id) -> ^Scope {
+    file := r.files[build_tokens[at].file] or_else nil
+    if file == nil { return nil }
+    for s in file.inner { if at >= s.lo && at < s.hi { return s } }
+    return file
 }
 
-// What the current scope sees of the groups: its module's, then what it and
-// each scope around it use — each once.
+// What is in sight of the groups where `at` is: what its scope uses, then
+// each scope around it — each once. Found the first time its scope is asked,
+// and kept with it.
 @(private="file")
-rs_sight_here :: proc(r: ^Resolver, lo, hi: Token_Id) -> Rs_Sight {
-    uses := make([dynamic]^Rs_Space)
+rs_sight_at :: proc(r: ^Resolver, at: Token_Id) -> (Rs_Sight, bool) {
+    here := rs_scope_at(r, at)
+    if here == nil { return {}, false }
+    if here.sight != nil { return here.sight^, true }
+    context.allocator = r.allocator
+    s := new(Rs_Sight)
+    uses := make([dynamic]^Scope)
     named := make([dynamic]Rs_Named_Use)
     overloads := make([dynamic]Rs_Overload)
-    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        for u in r.scopes[i].uses { if !slice.contains(uses[:], u) { append(&uses, u) } }
-        append(&named, ..r.scopes[i].named[:])
-        append(&overloads, ..r.scopes[i].overloads[:])
+    for sc := here; sc != nil; sc = sc.parent {
+        for u in sc.uses { if !slice.contains(uses[:], u) { append(&uses, u) } }
+        append(&named, ..sc.named[:])
+        append(&overloads, ..sc.overloads[:])
+        s.module = sc   // (the outermost: its module)
     }
-    all := make([dynamic]^Rs_Space)
+    all := make([dynamic]^Scope)
     append(&all, ..uses[:])
     for u in named { if !slice.contains(all[:], u.module) { append(&all, u.module) } }
-    return {r.module, uses[:], named[:], all[:], overloads[:], lo, hi}
+    s.uses, s.named, s.all, s.overloads = uses[:], named[:], all[:], overloads[:]
+    here.sight = s
+    return s^, true
+}
+
+// A scope's `overload`s of an operation, as one that sees it has them: its
+// own statements'; a module's, its files'. (`once`: those not listed yet.)
+@(private="file")
+rs_overloads_of :: proc(sc: ^Scope, op: Token_Kind, out: ^[dynamic]Token_Id, once := false) {
+    for o in sc.overloads { if o.op == op && !(once && slice.contains(out[:], o.name)) { append(out, o.name) } }
+    for f in sc.parts { rs_overloads_of(f, op, out, once) }
+}
+
+// The record of the scope being resolved — a block's, made the first time it
+// has something to keep: in the nearest scope around it that has one.
+@(private="file")
+rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
+    lv := &r.scopes[len(r.scopes) - 1]
+    if lv.scope == nil {
+        lv.scope = new(Scope)
+        lv.scope.kind = lv.kind
+        lv.scope.parent = rs_around(r)
+    }
+    return lv.scope
+}
+
+// The nearest scope around the one being resolved that has a record.
+@(private="file")
+rs_around :: proc(r: ^Resolver) -> ^Scope {
+    for i := len(r.scopes) - 2; i >= 0; i -= 1 { if sc := r.scopes[i].scope; sc != nil { return sc } }
+    return nil
+}
+
+// What the scope entered at a level uses.
+@(private="file")
+rs_level_uses :: proc(r: ^Resolver, i: int) -> []^Scope {
+    sc := r.scopes[i].scope
+    return sc.uses[:] if sc != nil else nil
 }
 
 // --- the stack ----------------------------------------------------------------------
 
 @(private="file")
-rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind) {
+rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil) {
     fence := i32(len(r.scopes)) if kind == .Fun || kind == .Struct else r.scopes[len(r.scopes) - 1].fence if len(r.scopes) > 0 else -1
-    append(&r.scopes, Rs_Scope{kind = kind, mark = i32(len(r.names)), fence = fence})
+    append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope})
 }
 
 @(private="file")
@@ -353,7 +409,7 @@ rs_other_at :: proc(r: ^Resolver, slot: i32, name: string, ref: Ref, own_uses :=
         }
     }
     for i := len(r.scopes) - (1 if own_uses else 2); i >= 0; i -= 1 {
-        for m in r.scopes[i].uses {
+        for m in rs_level_uses(r, i) {
             if other, has := m.defs[name]; has && !rs_shares(r, other, ref) { return true }
         }
     }
@@ -381,7 +437,7 @@ rs_conflict_miss :: proc(r: ^Resolver, name: string) {
         add(r, &owners, rs_owner_name(r, e.scope), e.ref)
     }
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        for m in r.scopes[i].uses { if ref, has := m.defs[name]; has { add(r, &owners, m.name, ref) } }
+        for m in rs_level_uses(r, i) { if ref, has := m.defs[name]; has { add(r, &owners, m.name, ref) } }
     }
     r.miss.owners = owners[:]
 }
@@ -410,7 +466,7 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
         found: Ref
         n := 0
-        for m in r.scopes[i].uses {
+        for m in rs_level_uses(r, i) {
             if ref, ok := m.defs[name]; ok && (n == 0 || !rs_same(r, ref, found)) {
                 found = ref
                 n += 1
@@ -424,7 +480,7 @@ rs_lookup :: proc(r: ^Resolver, name: string) -> (Ref, bool) {
             owners := make([dynamic]string)
             seen := make([dynamic]Ref, context.temp_allocator)
             groups := true
-            for m in r.scopes[i].uses {
+            for m in rs_level_uses(r, i) {
                 ref, ok := m.defs[name]
                 if !ok { continue }
                 one := false
@@ -471,7 +527,7 @@ rs_capture :: proc(r: ^Resolver) {
         }
     }
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
-        for m in r.scopes[i].uses {
+        for m in rs_level_uses(r, i) {
             for name, ref in m.defs {
                 if name in seen { continue }
                 seen[name] = true
@@ -484,10 +540,10 @@ rs_capture :: proc(r: ^Resolver) {
 // Whether a module's definitions are in sight where `at` is: its own, or one
 // its file or its module uses.
 resolve_sees_module :: proc(r: ^Resolver, at: Token_Id, module: string) -> bool {
-    sight, ok := rs_sight_at(r, at)
-    if !ok { return false }
-    if sight.module.name == module { return true }
-    for u in sight.uses { if u.name == module { return true } }
+    for sc := rs_scope_at(r, at); sc != nil; sc = sc.parent {
+        if sc.kind == .Module && sc.name == module { return true }
+        for u in sc.uses { if u.name == module { return true } }
+    }
     return false
 }
 
@@ -499,9 +555,10 @@ resolve_names_scope :: proc(r: ^Resolver, ref: Ref) -> bool {
 // Whether the struct or fun `decl` declares is used where `at` is (`use
 // Shapes`): its definitions, its enums' variants, in sight there.
 resolve_uses_scope :: proc(r: ^Resolver, at, decl: Token_Id) -> bool {
-    sight, ok := rs_sight_at(r, at)
-    if !ok || decl == 0 { return false }
-    for u in sight.uses { if u.decl == decl { return true } }
+    if decl == 0 { return false }
+    for sc := rs_scope_at(r, at); sc != nil; sc = sc.parent {
+        for u in sc.uses { if u.decl == decl { return true } }
+    }
     return false
 }
 
@@ -638,7 +695,7 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
 // Again until nothing changes: `A :: B`, `B :: C`. Kept in the scope's names
 // too (`space`; nil: none made). Whether any was found.
 @(private="file")
-rs_settle_aliases :: proc(r: ^Resolver, live: []Tree_Id, space: ^Rs_Space) -> (any: bool) {
+rs_settle_aliases :: proc(r: ^Resolver, live: []Tree_Id, space: ^Scope) -> (any: bool) {
     t := r.t
     for changed := true; changed; {
         changed = false
@@ -778,30 +835,48 @@ resolve_module_own :: proc(r: ^Resolver, module: string) -> Token_Id {
 // The names of the scope a name refers to — a module, a struct, a fun: nil
 // for anything else. A struct's and a fun's are found once, from its body.
 @(private="file")
-rs_space_of :: proc(r: ^Resolver, ref: Ref) -> ^Rs_Space {
+rs_space_of :: proc(r: ^Resolver, ref: Ref) -> ^Scope {
     if ref.kind == .Module { return rs_ref_module(r, ref) }
     if ref.decl == 0 || ref.kind != .Type && ref.kind != .Fun { return nil }
-    if sp, made := r.spaces[ref.decl]; made { return sp }
+    if sp, made := r.spaces[ref.decl]; made && sp.filled { return sp }
     def, ok := r.defs[r.alias_of[ref.decl] or_else ref.decl]
     if !ok { return nil }
     t := r.t
     value := Tree_Id(t.b[def])
     if t.tag[value] != .Struct_Def && t.tag[value] != .Fun_Def { return nil }
-    sp := new(Rs_Space)
-    sp.name, sp.decl = rs_text(t.main[def]), t.main[def]
-    r.spaces[ref.decl] = sp
-    rs_space_fill(r, sp, scope_view(t, value).body)
-    rs_space_variants(r, sp)
+    sp := rs_scope_of(r, t.main[def], value)
+    if !sp.filled {
+        sp.filled = true
+        rs_space_fill(r, sp, scope_view(t, value).body)
+        rs_space_variants(r, sp)
+    }
     return sp
+}
+
+// A fun's or a struct's scope, by the token that declares it: made the first
+// time it is met — named into, or resolved.
+@(private="file")
+rs_scope_of :: proc(r: ^Resolver, decl: Token_Id, node: Tree_Id) -> ^Scope {
+    if sc, made := r.spaces[decl]; made { return sc }
+    sc := new(Scope)
+    sc.kind = .Struct if r.t.tag[node] == .Struct_Def else .Fun
+    sc.name, sc.decl = rs_text(decl), decl
+    r.spaces[decl] = sc
+    return sc
 }
 
 // A module's names, from all its files.
 @(private="file")
-rs_module :: proc(r: ^Resolver, name: string) -> ^Rs_Space {
+rs_module :: proc(r: ^Resolver, name: string) -> ^Scope {
     if m, ok := r.modules[name]; ok { return m }
-    m := new(Rs_Space)
-    m.name = name
+    m := new(Scope)
+    m.kind, m.name, m.filled = .Module, name, true
     m.files = r.k.modules[name] or_else nil
+    m.parts = make([]^Scope, len(m.files))
+    for &f in m.parts {
+        f = new(Scope)
+        f.kind, f.parent, f.name = .File, m, name
+    }
     r.modules[name] = m
     for f in m.files {
         if stmts := tree_list(r.t, r.t.a[f]); m.own == 0 && len(stmts) > 0 && r.t.tag[stmts[0]] == .Module {
@@ -813,11 +888,10 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Rs_Space {
     return m
 }
 
-// A scope's statements' names, into its space: its definitions; its dispatch
-// groups and its operators' overloads — what a call, an operation, in sight
-// of it chooses among.
+// A scope's statements' names, into its record: its definitions and its
+// dispatch groups — what a call in sight of it chooses among.
 @(private="file")
-rs_space_fill :: proc(r: ^Resolver, m: ^Rs_Space, stmts: []Tree_Id) {
+rs_space_fill :: proc(r: ^Resolver, m: ^Scope, stmts: []Tree_Id) {
     t := r.t
     rs_each_def(r, stmts, &m.defs)
     for s in rs_live(r, stmts) {
@@ -832,8 +906,6 @@ rs_space_fill :: proc(r: ^Resolver, m: ^Rs_Space, stmts: []Tree_Id) {
             if value := Tree_Id(t.b[s]); value != 0 && t.a[s] == 0 {
                 #partial switch t.tag[value] { case .Ident, .Field, .Alias_Def: m.aliases = true }
             }
-        case .Overload:
-            append(&m.overloads, Rs_Overload{build_tokens[t.a[s]].kind, Token_Id(t.b[s])})
         }
     }
 }
@@ -841,7 +913,7 @@ rs_space_fill :: proc(r: ^Resolver, m: ^Rs_Space, stmts: []Tree_Id) {
 // A space's enums' and error sets' variants: what `m.X` reaches past its
 // definitions.
 @(private="file")
-rs_space_variants :: proc(r: ^Resolver, m: ^Rs_Space) {
+rs_space_variants :: proc(r: ^Resolver, m: ^Scope) {
     t := r.t
     for _, ref in m.defs {
         def, ok := r.defs[r.alias_of[ref.decl] or_else ref.decl]
@@ -862,7 +934,7 @@ rs_space_variants :: proc(r: ^Resolver, m: ^Rs_Space) {
 // (its path's last part), and what it refers to (a module: nothing — the use
 // declares its name).
 @(private="file")
-rs_import :: proc(r: ^Resolver, imp: Tree_Id) -> (^Rs_Space, Token_Id, Ref) {
+rs_import :: proc(r: ^Resolver, imp: Tree_Id) -> (^Scope, Token_Id, Ref) {
     t := r.t
     sb := strings.builder_make(context.temp_allocator)
     parts := tree_token_list(t, t.a[imp])
@@ -925,15 +997,10 @@ rs_program :: proc(r: ^Resolver) {
         // statements. Its module's scope, around it, has every file's
         // definitions: the files of one module see each other's.)
         for f, rank in m.files {
-            rs_enter(r, .File)
+            rs_enter(r, .File, m.parts[rank])
             r.file_rank = rank
+            if t.first[f] != 0 { r.files[build_tokens[t.first[f]].file] = m.parts[rank] }
             rs_body(r, tree_list(t, t.a[f]), m)
-            // (The file's own sight, every token of it: after its scopes'.)
-            if t.first[f] != 0 {
-                file := build_tokens[t.first[f]].file
-                if file not_in r.sights { r.sights[file] = {} }
-                append(&r.sights[file], rs_sight_here(r, 0, 0))
-            }
             rs_leave(r)
         }
         rs_leave(r)
@@ -943,8 +1010,8 @@ rs_program :: proc(r: ^Resolver) {
 // A module's scope, entered: the build's own names, then its files'
 // definitions.
 @(private="file")
-rs_enter_module :: proc(r: ^Resolver, m: ^Rs_Space) {
-    rs_enter(r, .Module)
+rs_enter_module :: proc(r: ^Resolver, m: ^Scope) {
+    rs_enter(r, .Module, m)
     for b in ([]string{"std", "void"}) { rs_define(r, b, {kind = .Builtin}) }
     r.module = m
     for name, ref in m.defs { rs_define(r, name, ref) }
@@ -998,7 +1065,7 @@ resolve_overloads_in :: proc(r: ^Resolver, homes: []string, op: Token_Kind) -> [
     for home in homes {
         m, ok := r.modules[home]
         if !ok { continue }
-        for o in m.overloads { if o.op == op { append(&out, o.name) } }
+        rs_overloads_of(m, op, &out)
     }
     return out[:]
 }
@@ -1018,7 +1085,7 @@ resolve_modules_in_sight :: proc(r: ^Resolver, at: Token_Id) -> []Resolve_Seen_M
     sight, ok := rs_sight_at(r, at)
     if !ok || sight.module == nil { return nil }
     out := make([dynamic]Resolve_Seen_Module, context.temp_allocator)
-    seen :: proc(m: ^Rs_Space, prefix: string) -> Resolve_Seen_Module { return {m.name, prefix, m.defs, m.dispatches} }
+    seen :: proc(m: ^Scope, prefix: string) -> Resolve_Seen_Module { return {m.name, prefix, m.defs, m.dispatches} }
     append(&out, seen(sight.module, ""))
     for u in sight.uses { if u != sight.module { append(&out, seen(u, "")) } }
     for n in sight.named { append(&out, seen(n.module, fmt.tprintf("%s.", n.name))) }
@@ -1029,19 +1096,19 @@ resolve_modules_in_sight :: proc(r: ^Resolver, at: Token_Id) -> []Resolve_Seen_M
 // module's.
 resolve_overload_names :: proc(r: ^Resolver) -> map[string]bool {
     out := make(map[string]bool, allocator = context.temp_allocator)
-    for _, m in r.modules { for o in m.overloads { out[rs_text(o.name)] = true } }
+    for _, m in r.modules { for f in m.parts { for o in f.overloads { out[rs_text(o.name)] = true } } }
     return out
 }
 
 // The use that keeps `name` behind a name where `at` is (`s :: use mara.string`,
 // for `trimmed`): what that name is, and the module's.
 resolve_named_use_of :: proc(r: ^Resolver, at: Token_Id, name: string) -> (alias, module: string, ok: bool) {
-    sight, has := rs_sight_at(r, at)
-    if !has { return }
-    for u in sight.named {
-        _, is_def := u.module.defs[name]
-        _, is_variant := u.module.variants[name]
-        if is_def || is_variant { return u.name, u.module.name, true }
+    for sc := rs_scope_at(r, at); sc != nil; sc = sc.parent {
+        for u in sc.named {
+            _, is_def := u.module.defs[name]
+            _, is_variant := u.module.variants[name]
+            if is_def || is_variant { return u.name, u.module.name, true }
+        }
     }
     return
 }
@@ -1054,10 +1121,10 @@ resolve_overloads :: proc(r: ^Resolver, at: Token_Id, op: Token_Kind) -> []Token
     if !ok { return nil }
     out := make([dynamic]Token_Id, context.temp_allocator)
     for o in sight.overloads { if o.op == op { append(&out, o.name) } }
-    for o in sight.module.overloads { if o.op == op && !slice.contains(out[:], o.name) { append(&out, o.name) } }
+    rs_overloads_of(sight.module, op, &out, once = true)
     for u in sight.all {
         if u == sight.module { continue }
-        for o in u.overloads { if o.op == op { append(&out, o.name) } }
+        rs_overloads_of(u, op, &out)
     }
     return out[:]
 }
@@ -1085,7 +1152,7 @@ rs_block :: proc(r: ^Resolver, stmts: []Tree_Id) {
 // (`space`: the scope's names, where it has them — a module's file's, a
 // fun's or a struct's body's that something named into.)
 @(private="file")
-rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Rs_Space = nil) {
+rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Scope = nil) {
     live := rs_live(r, stmts)
     // (Its definitions, then its uses — one may name a definition of its own
     // — then which of its definitions are other names for types: what they
@@ -1095,13 +1162,16 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Rs_Space = nil) {
     rs_uses(r, live)
     rs_settle_aliases(r, live, space)
     for s in live { rs_stmt(r, s) }
-    // (What it sees of the groups, when it uses a module or overloads an
-    // operator itself.)
-    if cur := r.scopes[len(r.scopes) - 1]; len(live) > 0 && len(cur.uses) + len(cur.named) + len(cur.overloads) > 0 {
+    // (Where it is; found there by what asks what is in sight at a point,
+    // when it uses a scope or overloads an operator itself: rs_scope_at.)
+    if sc := r.scopes[len(r.scopes) - 1].scope; sc != nil && len(live) > 0 {
         t := r.t
-        file := build_tokens[t.first[live[0]]].file
-        if file not_in r.sights { r.sights[file] = {} }
-        append(&r.sights[file], rs_sight_here(r, t.first[live[0]], t.end[live[len(live) - 1]]))
+        sc.lo, sc.hi = t.first[live[0]], t.end[live[len(live) - 1]]
+        if sc.kind != .File && len(sc.uses) + len(sc.named) + len(sc.overloads) > 0 {
+            for i := len(r.scopes) - 2; i >= 0; i -= 1 {
+                if r.scopes[i].kind == .File { append(&r.scopes[i].scope.inner, sc); break }
+            }
+        }
     }
 }
 
@@ -1114,11 +1184,11 @@ rs_note_defs :: proc(r: ^Resolver, live: []Tree_Id) {
     for s in live {
         if t.tag[s] != .Define && t.tag[s] != .Foreign { continue }
         if d == nil {
-            if r.owner == 0 {
-                d = &r.module.list
-            } else {
-                if r.owner not_in r.body_defs { r.body_defs[r.owner] = new(Rs_Defs) }
-                d = r.body_defs[r.owner]
+            // (The fun's or the struct's whose body this is, or is a block
+            // of; else its module's.)
+            d = &r.module.list
+            for i := len(r.scopes) - 1; i >= 0; i -= 1 {
+                if k := r.scopes[i].kind; k == .Fun || k == .Struct { d = &r.scopes[i].scope.list; break }
             }
         }
         def := Rs_Def{node = s, rank = r.file_rank}
@@ -1135,13 +1205,13 @@ rs_note_defs :: proc(r: ^Resolver, live: []Tree_Id) {
 // definitions in sight throughout it, behind its own — under the name alone,
 // when the use gives one — and the module's name, its path's last part or the
 // name given. Its own: whoever names into the scope doesn't see them. Each is
-// noted for its module (Rs_Space.used; `note` false: it is, already). And its
+// noted for its module (Scope.used; `note` false: it is, already). And its
 // `overload`s: the groups its operators call, throughout it.
 @(private="file")
 rs_uses :: proc(r: ^Resolver, live: []Tree_Id, note := true) {
     t := r.t
     for s in live {
-        if t.tag[s] == .Overload { append(&r.scopes[len(r.scopes) - 1].overloads, Rs_Overload{build_tokens[t.a[s]].kind, Token_Id(t.b[s])}) }
+        if t.tag[s] == .Overload { append(&rs_scope_here(r).overloads, Rs_Overload{build_tokens[t.a[s]].kind, Token_Id(t.b[s])}) }
         imp := rs_stmt_import(t, s)
         if imp == 0 { continue }
         alias := t.main[s] if t.tag[s] == .Define else Token_Id(0)
@@ -1150,7 +1220,7 @@ rs_uses :: proc(r: ^Resolver, live: []Tree_Id, note := true) {
         // before this one is.)
         if note && r.module != nil && (used == nil || used.decl == 0) { append(&r.module.used, Rs_Use{imp, alias}) }
         if used == nil { continue }
-        scope := &r.scopes[len(r.scopes) - 1]
+        scope := rs_scope_here(r)
         if alias != 0 {
             tok = alias
             append(&scope.named, Rs_Named_Use{rs_text(tok), used})
@@ -1328,7 +1398,9 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     t := r.t
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
-    rs_enter(r, .Struct if is_struct else .Fun)
+    scope := rs_scope_of(r, t.main[def], node)
+    rs_enter(r, .Struct if is_struct else .Fun, scope)
+    scope.parent = rs_around(r)
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
     outer := r.generic
@@ -1374,7 +1446,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     r.generic = outer
     outer_owner := r.owner
     r.owner = t.main[def]
-    if v.intrinsic == 0 { rs_body(r, v.body, r.spaces[t.main[def]] or_else nil) }
+    if v.intrinsic == 0 { rs_body(r, v.body, scope if scope.filled else nil) }
     r.owner = outer_owner
     rs_leave(r)
 }
@@ -1604,7 +1676,7 @@ rs_builtin_call :: proc(name: string) -> bool {
 
 // The module a name refers to.
 @(private="file")
-rs_ref_module :: proc(r: ^Resolver, ref: Ref) -> ^Rs_Space {
+rs_ref_module :: proc(r: ^Resolver, ref: Ref) -> ^Scope {
     return r.named[ref.decl] or_else nil
 }
 
@@ -1636,10 +1708,10 @@ rs_children :: proc(r: ^Resolver, n: Tree_Id) {
 }
 
 // The program's names resolved, before it's checked: the resolver, kept for
-// the checker to read (its refs; what's in sight is gone).
+// the checker to read (its refs, its scopes; the names in sight are gone).
 resolve_program :: proc(k: ^TC) -> ^Resolver {
     r := new(Resolver)
-    r.k, r.t = k, k.t
+    r.k, r.t, r.allocator = k, k.t, context.allocator
     r.refs = make([]Ref, len(k.t.tag))
     rs_program(r)
     delete(r.names)
