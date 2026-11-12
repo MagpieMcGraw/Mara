@@ -1,0 +1,18 @@
+module use_in_scope_neg
+
+//@ expect-fail: undefined function 'trimmed'
+
+// A use in a fun's body is that body's: another fun doesn't see what it
+// brings in.
+
+use mara.core
+
+main :: fun() {
+	inner()
+	print(trimmed(" no "))
+}
+
+inner :: fun() {
+	use mara.string
+	print(trimmed(" yes "))
+}

@@ -88,7 +88,7 @@ Source_File :: struct {
     path:    string,           // for diagnostics + lexer span info
     module:  string,           // declared module name
     source:  string,           // file bytes (kept alive through lex)
-    imports: [dynamic]string,  // paths from `use`/`include`
+    imports: [dynamic]string,  // the path of each `use`/`include` in it, any scope's (lex_file)
     first_token, end_token: Token_Id,   // its range of build_tokens (lex_file)
     lines:   [dynamic]u32,     // where each of its lines starts (lex_file)
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
@@ -128,93 +128,9 @@ extract_package_name :: proc(source: string) -> string {
     return rest[name_start:j]
 }
 
-// Scan the top of `source` for `use` / `include` statements
-// and pull out the imported paths. Mara's convention puts imports in the
-// preamble (after `module X`, before any top-level declarations); the
-// scanner stops at the first non-import top-level line. Lines we recognize:
-//
-//   use foo.bar              include foo.bar
-//   name :: use foo.bar
-//   name :: include foo.bar  name := use foo.bar      (legacy)
-//
-// Anything beyond the preamble is invisible here — the closure won't follow
-// a `use` that appears after the first non-import line. The type checker
-// still parses imports anywhere at top level; this is a discovery shortcut,
-// not a grammar restriction.
-extract_imports :: proc(source: string) -> [dynamic]string {
-    paths: [dynamic]string
-    i := 0
-    for i < len(source) {
-        // Skip leading whitespace on this line
-        for i < len(source) && (source[i] == ' ' || source[i] == '\t') { i += 1 }
-        if i >= len(source) { break }
-        // Blank line
-        if source[i] == '\n' || source[i] == '\r' {
-            i += 1
-            continue
-        }
-        // Line comment — skip rest of line
-        if i + 1 < len(source) && source[i] == '/' && source[i+1] == '/' {
-            for i < len(source) && source[i] != '\n' { i += 1 }
-            continue
-        }
-        // Block comment — skip past its `*/`
-        if i + 1 < len(source) && source[i] == '/' && source[i+1] == '*' {
-            i, _ = block_comment_end(source, i)
-            continue
-        }
-        // Capture the full trimmed line (without newline)
-        line_start := i
-        for i < len(source) && source[i] != '\n' { i += 1 }
-        line := strings.trim_space(source[line_start:i])
-
-        // Module declaration — skip
-        if strings.has_prefix(line, "module ") {
-            continue
-        }
-
-        // Direct forms first
-        path := ""
-        if strings.has_prefix(line, "use ") {
-            path = path_word_at(line[len("use "):])
-        } else if strings.has_prefix(line, "include ") {
-            path = path_word_at(line[len("include "):])
-        } else {
-            // Aliased forms: `<name> :: use <path>` / `:: include` / `:= use` / `:= include`.
-            for marker in ([]string{" :: use ", " :: include ", " := use ", " := include "}) {
-                if idx := strings.index(line, marker); idx >= 0 {
-                    path = path_word_at(line[idx + len(marker):])
-                    break
-                }
-            }
-        }
-        if path != "" {
-            append(&paths, path)
-            continue
-        }
-        // First non-import top-level line — stop scanning. Imports later in
-        // the file (rare, by convention) will be missed; if they're needed,
-        // the type checker will flag the missing module at the use site.
-        break
-    }
-    return paths
-}
-
-// Read a dotted identifier (`mara.sdl3`, `foo_bar`) from the start of `s`.
-// Returns "" if the prefix isn't a valid identifier start.
-path_word_at :: proc(s: string) -> string {
-    i := 0
-    for i < len(s) && (is_alpha(s[i]) || is_digit(s[i]) || s[i] == '.' || s[i] == '_') {
-        i += 1
-    }
-    return s[:i]
-}
-
 // Walk every .mara source dir the compiler knows about and index files by
-// their declared module name. For each file we also extract the use/include
-// preamble so the next step can prune to just the modules the target needs.
-// Source bytes are kept on the returned Source_File so the lex phase doesn't
-// re-read from disk.
+// their declared module name. Source bytes are kept on the returned
+// Source_File so the lex phase doesn't re-read from disk.
 //
 // Order of scans (later entries shadow earlier ones for module-name conflicts):
 //   1. <compiler_dir>/code/           — stdlib loose .mara files
@@ -253,7 +169,6 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
             f.path    = path
             f.module  = pkg
             f.source  = source
-            f.imports = extract_imports(source)
             f.stdlib  = found.stdlib
             if other, seen := found.folder[pkg]; seen && other != dir {
                 if found.problem^ == "" {
@@ -300,12 +215,23 @@ ask_file_discovered :: proc(all_files: map[string][dynamic]^Source_File, token: 
     return false
 }
 
-// Walk the use graph from `target` and return the subset of `all_files` we
-// need to lex + parse. Same exact-match rule the type checker uses: a `use foo`
-// enqueues exactly the module `foo`. Submodules `foo.*` are pulled in only when
-// something issues an explicit `use foo.bar`, riding in via that import like
-// any other dependency rather than being globbed in by the parent.
-compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string) -> map[string][dynamic]^Source_File {
+// Walk the use graph from `target`, lexing each module it reaches, and return
+// that subset of `all_files`: what the build parses. A module's uses are what
+// its lexer met — `use foo` in any scope of any of its files — so each
+// module is lexed as it is reached, and its uses reach the next. Same
+// exact-match rule the type checker uses: a `use foo` enqueues exactly the
+// module `foo`. Submodules `foo.*` are pulled in only when something issues an
+// explicit `use foo.bar`, riding in via that import like any other dependency
+// rather than being globbed in by the parent.
+compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string, perf: ^Performance_Timer = nil) -> map[string][dynamic]^Source_File {
+    if perf != nil { perf_timer_mark(perf, "lex") }
+    // (Room for the tokens first — about one for each two bytes of dense
+    // code, of every file found: which of them the target reaches isn't known
+    // yet, and room not written to costs nothing — so they aren't copied as
+    // they grow: lex_file.)
+    bytes := 0
+    for _, files in all_files { for f in files { bytes += len(f.source) } }
+    lex_reserve(bytes / 2)
     result: map[string][dynamic]^Source_File
     visited: map[string]bool
     worklist: [dynamic]string
@@ -319,6 +245,7 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
         if !has { continue }
         result[module] = files
         for f in files {
+            lex_file(f)
             for path in f.imports {
                 if path in all_files && !visited[path] {
                     append(&worklist, path)
@@ -330,24 +257,8 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2: lex every file in the closed set, using the cached source bytes.
-// ---------------------------------------------------------------------------
-
-lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
-    // (Room for the tokens first — about one for each two bytes of dense
-    // code — so they aren't copied as they grow: lex_file.)
-    bytes := 0
-    for _, module_files in files { for f in module_files { bytes += len(f.source) } }
-    lex_reserve(bytes / 2)
-    for _, module_files in files {
-        for f in module_files {
-            lex_file(f)
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Stage 3: parse the token streams into the flat tree.
+// Stage 2: parse the token streams (lexed as the closure was found:
+// compute_use_closure) into the flat tree.
 // ---------------------------------------------------------------------------
 
 // Every file the build reads, parsed into the flat tree (build_tree: a root
@@ -1229,9 +1140,6 @@ run_view :: proc(args: CLI_Args) {
 check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, perf: ^Performance_Timer) -> (checked: ^Checked_Program, shared: bool, failure: string) {
     analysis := args.ask || args.serve || args.edit   // (read-only: no code, no entry point needed)
 
-    perf_timer_mark(perf, "lex")
-    lex_target_files(files)
-
     perf_timer_mark(perf, "parse")
     parse_errors := parse_target_files()
 
@@ -1971,7 +1879,7 @@ main :: proc() {
     // Prune to the use-closure starting from the target. Modules outside
     // the closure aren't lexed/parsed, so unrelated `.mara` files in the
     // search dir can't dump diagnostics into the build.
-    files := compute_use_closure(all_files, args.pkg_name)
+    files := compute_use_closure(all_files, args.pkg_name, &perf)
 
     // `ask ... in <scope>` narrows where the subject resolves (ask_scopes). A
     // bad scope fails here, before the check; a query from stdin, as its answer.

@@ -1,0 +1,16 @@
+module use_in_block_neg
+
+//@ expect-fail: undefined identifier 's'
+
+// A use in a block is that block's: its name is out of sight after it.
+
+use mara.core
+
+main :: fun() {
+	on := true
+	if on {
+		s :: use mara.string
+		print(s.trimmed(" yes "))
+	}
+	print(s.trimmed(" no "))
+}

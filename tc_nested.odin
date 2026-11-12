@@ -89,6 +89,8 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             case .Dispatch_Def:
                 append(&dispatches, s)   // (the resolver's, as a module's: its members checked once declared)
                 continue
+            case .Import:
+                continue   // (`name :: use m`: checked before its module — tc_check_uses)
             }
         }
         if tc_name_alias(k, s) {

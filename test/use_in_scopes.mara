@@ -1,0 +1,49 @@
+module use_in_scopes
+
+//@ expect-output: fun true hi
+//@ expect-output: block 5
+//@ expect-output: named true
+//@ expect-output: struct 3
+//@ expect-output: math 2 4 6 5
+
+// `use` works in any scope — a fun's body, a block, a struct's body — as it
+// does at a file's top: what it brings in is in sight in that scope alone,
+// from the scope's first line. A module used only so is checked like any
+// other. It used to be legal at a file's top only.
+
+use mara.core
+
+Point :: struct {
+	use mara.math
+	x: f32 = sqrt(f32(9))
+}
+
+main :: fun() {
+	inner()
+	on := true
+	if on {
+		print("block", trimmed("  hello ").len)   // (before its use is written, as a definition is)
+		use mara.string
+	}
+	named()
+	p := Point()
+	print("struct", p.x)
+	vectors()
+}
+
+inner :: fun() {
+	use mara.string
+	print("fun", starts_with("hi there", "hi"), trimmed(" hi "))
+}
+
+named :: fun() {
+	s :: use mara.string
+	print("named", s.contains("abc", "b"))
+}
+
+vectors :: fun() {
+	use mara.math
+	a := Vec3{1, 2, 3}
+	b := a + a   // (the operator's group is mara.math's: in sight here)
+	print("math", b[0], b[1], b[2], length(Vec3{3, 4, 0}))
+}

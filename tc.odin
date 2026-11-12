@@ -503,6 +503,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     void_type := type_ptr(Type_Any{})
     table.builtins["void"] = void_type
 
+    tc_check_uses(k, main_package)
     k.pkg = main_package
     main := tc_check_module_files(k, files)
 
@@ -670,18 +671,10 @@ tc_register :: proc(k: ^TC, s: Tree_Id) {
     case .Module:
         return
     case .Expr_Stmt:
-        if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
-            tc_use(k, e)
-            tc_module_stmt(k, tc_sid(k, s))
-            return
-        }
+        if e := Tree_Id(t.a[s]); t.tag[e] == .Import { return }   // (a use: checked before its module — tc_check_uses)
     case .Define:
         value := Tree_Id(t.b[s])
-        if value != 0 && t.tag[value] == .Import {
-            m := tc_use(k, value, alias = t.main[s])
-            tc_module_stmt(k, tc_sid(k, s))
-            return
-        }
+        if value != 0 && t.tag[value] == .Import { return }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
             return   // (the resolver's: its members are checked to exist once every name is known)
         }
@@ -1048,8 +1041,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s)}
     #partial switch t.tag[s] {
     case .Expr_Stmt:
-        // (A bare `use m` the checker settles.)
-        if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import { d.settles = true }
+        if imp := Tree_Id(t.a[s]); t.tag[imp] != .Import { d.form = .Code }   // (a use: no code)
     case .Module, .Return, .Break, .Continue, .Overload, .Foreign, .Allocator:
     case .Define:
         d.name = tc_name(k, s)
@@ -1058,10 +1050,8 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         #partial switch tag {
         case .Fun_Def, .Struct_Def:
             d.form, d.generic, d.node = .Scope, tc_is_generic(k, value), tc_sid(k, value)
-        case .Import:
-            d.settles = true
-        case .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def:
-            // (A type, a dispatch: no code of its own.)
+        case .Import, .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def:
+            // (A use, a type, a dispatch: no code of its own.)
         case:
             if tc_name_alias(k, s) { break }   // (`A :: B`, B a type: another name for it)
             d.settles, d.value = true, tc_sid(k, value)   // a constant

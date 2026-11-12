@@ -164,7 +164,7 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
         c.failure = module_missing(all_files, args.pkg_name)
         return
     }
-    files := compute_use_closure(all_files, args.pkg_name)
+    files := compute_use_closure(all_files, args.pkg_name, &perf)
     checked, _, failure := check_module(args, files, &perf)
     c.session = Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
     c.failure = failure
@@ -184,7 +184,6 @@ serve_overlay :: proc(all_files: map[string][dynamic]^Source_File, overlays: map
             text, open := overlays[path_key(path)]
             if !open { continue }
             f.source = strings.clone(text)
-            f.imports = extract_imports(f.source)
         }
     }
 }

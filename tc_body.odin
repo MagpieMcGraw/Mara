@@ -128,6 +128,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
+        if t.tag[e] == .Import { return }   // (`use m`: checked before its module — tc_check_uses)
         if tc_override(k, e) { return }
         k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
         rt := tc_check(k, e)

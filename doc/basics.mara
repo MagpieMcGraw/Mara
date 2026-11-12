@@ -55,7 +55,9 @@ example_module :: fun() {
 // m` is, for now, another spelling of `use m`.
 //
 // Uses go at the top, after the `module` line. Nearly every file uses
-// mara.core: text buffers, `&list ++ x`, comparing texts.
+// mara.core: text buffers, `&list ++ x`, comparing texts. A use can also be
+// written in a fun's body, a struct's, or a block: the module's names are then
+// visible there alone, from that scope's first line.
 //
 // A variable or a param can't take the name of a fun, a type, a module or
 // a variant in sight — its module's or one it uses: `filter := 3` beside

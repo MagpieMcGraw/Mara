@@ -2,9 +2,15 @@ package mara
 
 import "core:strings"
 
-// Modules in the checker: `use m` checks m (once, where it is first
-// used — its own uses first) and binds the name that declares it (its alias,
-// else its path's last part). What it makes visible where is the resolver's.
+// Modules in the checker: a module is checked once every module it uses is
+// — `use m` in any scope of it, the resolver's list (resolve_module_uses) —
+// and each use binds the name that declares it (its alias, else its path's
+// last part). What it makes visible where is the resolver's.
+
+// A module's uses, each checked and its name bound: before the module is.
+tc_check_uses :: proc(k: ^TC, name: string) {
+    for u in resolve_module_uses(k.rs, name) { tc_use(k, u.imp, u.alias) }
+}
 
 tc_use :: proc(k: ^TC, imp: Tree_Id, alias := Token_Id(0)) -> ^Type_Scope {
     t := k.t
@@ -49,6 +55,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.kind = .Struct
     m.is_module = true
     k.module_scopes[name] = m
+    tc_check_uses(k, name)
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
     list := tc_check_module_files(k, files)

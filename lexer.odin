@@ -735,12 +735,28 @@ lex_file :: proc(f: ^Source_File) {
     for c, i in transmute([]u8)f.source { if c == '\n' { push(&f.lines, u32(i + 1)) } }
     l := lexer_init(f.source, f.path)
     f.first_token = Token_Id(len(build_tokens))
+    // (Each `use a.b`, wherever it's written — a file's top, a body, a block:
+    // the modules the build must read too. `path`: one being read — 1 a
+    // part due, 2 a part read — from `lo` to `hi` of the source.)
+    path, lo, hi := 0, 0, 0
     for {
         tok := next_token(&l)
         tok.id = Token_Id(len(build_tokens))   // stamp before append: its id is the current length
         tok.file = file
         if tok.kind == .String || tok.kind == .Char { build_literals[tok.id] = l.value }
         push(&build_tokens, tok)
+        if path != 0 || tok.kind == .Use || tok.kind == .Include {
+            switch {
+            case path == 1 && tok.kind == .Identifier:
+                if hi == 0 { lo = int(tok.offset) }
+                path, hi = 2, int(tok.offset) + int(tok.len)
+            case path == 2 && tok.kind == .Dot:
+                path = 1
+            case:
+                if hi != 0 { append(&f.imports, f.source[lo:hi]) }
+                path, hi = 1 if tok.kind == .Use || tok.kind == .Include else 0, 0
+            }
+        }
         if tok.kind == .EOF { break }
     }
     f.end_token = Token_Id(len(build_tokens))
