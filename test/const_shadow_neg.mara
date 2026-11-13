@@ -1,7 +1,7 @@
 module const_shadow_neg
-//@ expect-fail: shadows a constant from an outer scope
+//@ expect-fail: 'N' here is both the variable declared at
 
-// A variable may not take a constant's name: `N` would mean two things.
+// A variable named as a constant in sight: `N` read by itself means both.
 
 N :: 5
 
