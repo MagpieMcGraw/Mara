@@ -1,0 +1,15 @@
+module enum_value_dot_neg
+
+use mara.core
+
+// A dot after an enum's value names a variant; `Mode(i). n` in a call is a
+// comma typed as a period (Warlock's print), and the error says so.
+
+//@ expect-fail: 'Mode(i).n': a dot after a value of enum Mode names one of its variants, and it has none called 'n'. Was a comma meant: `Mode(i), n`?
+
+Mode :: union { off, on }
+
+main :: fun() {
+	counts : [Mode]f32
+	for n, i in counts do print(Mode(i). n)
+}

@@ -441,6 +441,7 @@ TYPE_CANNOT_ASSIGN_MULTI_COMPONENT_SWIZZLE :: "cannot assign %s to multi-compone
 TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY :: "swizzle '%s' has component out of range for [%d] array"
 TYPE_LAST_ARM_MATCH :: "'else' must be the last arm in a match"
 TYPE_ENUM_VARIANT :: "enum '%s' has no variant '%s'"
+TYPE_ENUM_VALUE_VARIANT :: "'%s.%s': a dot after a value of enum %s names one of its variants, and it has none called '%s'%s"
 TYPE_ERR_ARM_NO_VARIANT :: "'%s' is no error set's variant: an arm of a match on an err names one (`Not_A_Digit`), or Ok"
 TYPE_ERR_ARM_AMBIGUOUS :: "'%s' is a variant of %s: say which, `%s.%s`"
 TYPE_UNION_VARIANT :: "union '%s' has no variant '%s'"

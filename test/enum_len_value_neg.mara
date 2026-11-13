@@ -1,6 +1,6 @@
 module enum_len_value_neg
 
-//@ expect-fail: enum 'Action' has no variant 'len'
+//@ expect-fail: 'act.len': a dot after a value of enum Action names one of its variants, and it has none called 'len'
 
 // `.len` is the enum's, by its name: a value of it has none.
 

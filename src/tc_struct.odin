@@ -90,6 +90,13 @@ tc_member_ref :: proc(k: ^TC, bt, t: Type, field: string, member: bool) -> Ref {
     return {kind = .Builtin}
 }
 
+// Whether a field's name stands apart from its dot, `x. y`.
+tc_dot_spaced :: proc(k: ^TC, n: Tree_Id) -> bool {
+    if k.t.tag[n] != .Field { return false }
+    dot, name := build_tokens[k.t.main[n]], build_tokens[Token_Id(k.t.b[n])]
+    return dot.kind == .Dot && dot.file == name.file && dot.offset + dot.len < name.offset
+}
+
 // A field's type: whether it names part of the value (a member), or a
 // fixed array's length (its value, else -1).
 tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, known: i128, known_ok: bool) {
@@ -99,7 +106,14 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     case ^Type_Enum:
         if val, has := v.variants[field]; has { return bt, false, i128(val), true }
         if slots, has := tc_enum_len(k, base, field); has { return Type_Numeric{kind = .Signed, bits = 64}, false, i128(slots), true }
-        tc_error(k, span, TYPE_ENUM_VARIANT, type_name(v), field)
+        if q := tc_unparen(k, base); k.names.refs[q].kind == .Type && k.t.tag[q] != .Call {   // (`Mode(i)` names a type too)
+            tc_error(k, span, TYPE_ENUM_VARIANT, type_name(v), field)
+        } else {
+            // (After a value: `Action(i). num` in a call is a comma typed as a period, likely.)
+            b := tc_written(k, base)
+            comma := fmt.tprintf(". Was a comma meant: `%s, %s`?", b, field) if tc_dot_spaced(k, n) else ""
+            tc_error(k, span, TYPE_ENUM_VALUE_VARIANT, b, field, type_name(v), field, comma)
+        }
         return Type_Error{}, false, 0, false
     case ^Type_Union:
         switch field {
