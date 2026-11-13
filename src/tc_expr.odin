@@ -1460,12 +1460,12 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
 }
 
 // `E(n)`, E an enum: the variant whose value the integer n is
-// (`GL_Tex_Param(0x813D)`). A constant that's no variant's value is an
+// (`Tex_Param(0x813D)`). A constant that's no variant's value is an
 // error here; a number known only when it runs is checked there, the
 // program stopped when it's none (llvm_from_number).
 tc_enum_number :: proc(k: ^TC, n: Tree_Id, name: string, et: ^Type_Enum, args: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
-    tc_set_ref(k, n, {type_decl(et), .Type})   // (the call names its enum: `Mode(3)`, `gl.GL_Tex_Param(n)`)
+    tc_set_ref(k, n, {type_decl(et), .Type})   // (the call names its enum: `Mode(3)`, `gl.Tex_Param(n)`)
     if len(args) != 1 {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
         for a in args { tc_check(k, a) }

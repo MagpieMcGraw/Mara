@@ -74,7 +74,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	text : [128 * KB]utf8
 	fragment_at := expand(&text, raw, filepath)?
 
-	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.GL_Shader_Type) -> u32, err {
+	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> u32, err {
 		shader := gl.CreateShader(shader_type)
 		gl.ShaderSource(shader, text)
 		gl.CompileShader(shader)

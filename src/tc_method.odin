@@ -69,7 +69,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                     // `Box.add(&b, 1)`, a struct's, made for the struct named.)
                     return tc_generic_call(k, n, name, tmpl, args, owner = sd_type_scope(qsd))
                 } else if et := tc_held_enum(mt); has && mref.kind == .Type && et != nil {
-                    return tc_enum_number(k, n, name, et, args)   // (`gl.GL_Tex_Param(n)`)
+                    return tc_enum_number(k, n, name, et, args)   // (`gl.Tex_Param(n)`)
                 } else if has && mref.kind == .Type {
                     qual, resolved = tc_held_type(k, n, mt), true
                     failed = qual == nil
@@ -193,7 +193,7 @@ tc_with_receiver :: proc(recv: Tree_Id, args: []Tree_Id) -> []Tree_Id {
 }
 
 // A type a scope holds, when it's an enum (no error set): called, the
-// variant a number is (`gl.GL_Tex_Param(n)`, tc_enum_number).
+// variant a number is (`gl.Tex_Param(n)`, tc_enum_number).
 tc_held_enum :: proc(t: Type) -> ^Type_Enum {
     et, is_enum := t.(^Type_Enum)
     return et if is_enum && !et.is_error_kind && !et.is_synthetic else nil
