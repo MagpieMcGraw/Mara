@@ -631,6 +631,7 @@ lw_ctor_args :: proc(k: ^TC, ts: ^Type_Scope, span: Span) -> []Operand {
 lw_default :: proc(k: ^TC, def: Tree_Id, t: Type, span: Span, w: Graph_Widen) -> Operand {
     pin := lw_pin(k)
     defer k.gb.pin = pin
+    if v, made := lw_text_as_list(k, def, t, span, .Implied); made { return v }
     use, at := lw_use_type(k, def, t, span)
     r := lw_expr(k, def, .Either, .Implied, dest = use, temp_span = at)
     return lw_value_as(k, def, tc_node_type(k, def), r, t, span, w)
@@ -1449,8 +1450,9 @@ lw_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, want: Bu
         defer k.gb.pin = pin
         pt := ft.params[i].type_
         use, use_at := lw_use_type(k, a, pt, span)
-        if arg.kind == .Written {
-            if v, made := lw_text_as_list(k, a, pt, span, w); made {
+        // (Text for a list, written or the param's default: `dir: Path = "shaders"`.)
+        if arg.kind == .Written || arg.kind == .Default && arg.slot < 0 {
+            if v, made := lw_text_as_list(k, a, pt, span, w if arg.kind == .Written else .Implied); made {
                 append(&ops, v)
                 continue
             }

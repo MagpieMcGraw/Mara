@@ -1,0 +1,37 @@
+module default_text_list
+//@ expect-output: 7 16 3 7 12
+//@ expect-output: shaders/lit.glsl
+
+// A list param's default written as text: left out by a call, a
+// construction and a bare declaration, the list is made of it, as when the
+// text is written at the call.
+
+use mara.core
+use mara.paths
+use mara.memory
+
+#allocator Arena_Basic(4 * MB)
+
+size :: fun(p: []utf8) -> i64 { return p.len }
+
+count :: fun(dir: Path = "shaders") -> i64 { return dir.len }
+
+Loader :: struct(dir: Path = "shaders") {
+	n := size(dir ++ "/lit.glsl")
+	file := dir ++ "/lit.glsl"
+}
+
+Named :: struct(dir: Path = "shaders", also: [16]utf8 = "more") {
+	n := dir.len + also.len + 1
+}
+
+main :: fun() {
+	l := Loader()
+	given := Loader("abc")
+	bare : Loader
+	both := Named()
+	print(count(), l.n, given.dir_len(), bare.n - 9, both.n)
+	print(l.file)
+}
+
+dir_len :: fun(l: Loader) -> i64 { return l.n - 9 }
