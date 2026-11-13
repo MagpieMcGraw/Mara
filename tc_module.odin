@@ -1,5 +1,6 @@
 package mara
 
+import "core:slice"
 import "core:strings"
 
 // Modules in the checker: a module is checked once every module it uses is
@@ -10,6 +11,15 @@ import "core:strings"
 // A module's uses, each checked and its name bound: before the module is.
 tc_check_uses :: proc(k: ^TC, name: string) {
     for u in resolve_module_uses(k.rs, name) { tc_use(k, u.imp, u.alias) }
+}
+
+// A module's names, recorded in full once the modules it uses are checked
+// (resolve_module_ready); each `all` it declares, said: a keyword.
+tc_module_names_ready :: proc(k: ^TC, name: string) {
+    resolve_module_ready(k.rs, name)
+    slice.sort(k.rs.all_new[:])
+    for tok in k.rs.all_new { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
+    clear(&k.rs.all_new)
 }
 
 tc_use :: proc(k: ^TC, imp: Tree_Id, alias := Token_Id(0)) -> ^Type_Scope {
@@ -54,7 +64,9 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.kind = .Struct
     m.is_module = true
     k.module_scopes[name] = m
+    resolve_module_begin(k.rs, name)
     tc_check_uses(k, name)
+    tc_module_names_ready(k, name)
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
     list := tc_check_module_body(k)

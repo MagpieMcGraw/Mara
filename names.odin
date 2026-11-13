@@ -32,20 +32,36 @@ Names_Open :: struct {
 
 // The innermost record whose text holds `at` (nil: none).
 names_record_at :: proc(r: ^Resolver, at: Token_Id) -> ^Scope {
-    if !r.records_sorted {
-        keep := make([dynamic]^Scope, 0, len(r.records), r.allocator)
-        for sc in r.records { if sc.text_hi > sc.text_lo { append(&keep, sc) } }
-        slice.sort_by(keep[:], proc(a, b: ^Scope) -> bool { return a.text_lo < b.text_lo || a.text_lo == b.text_lo && a.text_hi > b.text_hi })
-        r.records = keep
-        r.record_lo = make([]Token_Id, len(keep), r.allocator)
-        for sc, i in keep { r.record_lo[i] = sc.text_lo }
-        r.records_sorted = true
+    // (The records made since the last ask, each in its file's index.)
+    if r.indexed < len(r.records) {
+        dirty := make([dynamic]^Names_File, context.temp_allocator)
+        for sc in r.records[r.indexed:] {
+            if sc.text_hi <= sc.text_lo { continue }
+            file := build_tokens[sc.text_lo].file
+            nf := r.by_file[file] or_else nil
+            if nf == nil {
+                nf = new(Names_File, r.allocator)
+                r.by_file[file] = nf
+            }
+            append(&nf.records, sc)
+            if !slice.contains(dirty[:], nf) { append(&dirty, nf) }
+        }
+        r.indexed = len(r.records)
+        for nf in dirty {
+            slice.sort_by(nf.records[:], proc(a, b: ^Scope) -> bool { return a.text_lo < b.text_lo || a.text_lo == b.text_lo && a.text_hi > b.text_hi })
+            resize(&nf.lo, len(nf.records))
+            for sc, i in nf.records { nf.lo[i] = sc.text_lo }
+        }
+        r.record_file = nil
     }
+    if int(at) >= len(build_tokens) { return nil }
+    nf := r.by_file[build_tokens[at].file] or_else nil
+    if nf == nil { return nil }
     // (The last to start at or before it — where the last ask's did, when it's
     // still that one; else searched — then the scopes around it.)
-    los := r.record_lo
+    los := nf.lo[:]
     i := r.record_last
-    if !(i < len(los) && los[i] <= at && (i + 1 == len(los) || los[i + 1] > at)) {
+    if !(r.record_file == nf && i < len(los) && los[i] <= at && (i + 1 == len(los) || los[i + 1] > at)) {
         lo, hi := 0, len(los)
         for lo < hi {
             mid := (lo + hi) / 2
@@ -53,12 +69,18 @@ names_record_at :: proc(r: ^Resolver, at: Token_Id) -> ^Scope {
         }
         if lo == 0 { return nil }
         i = lo - 1
-        r.record_last = i
+        r.record_file, r.record_last = nf, i
     }
-    for sc := r.records[i]; sc != nil && sc.text_hi != 0; sc = sc.parent {
+    for sc := nf.records[i]; sc != nil && sc.text_hi != 0; sc = sc.parent {
         if at >= sc.text_lo && at < sc.text_hi { return sc }
     }
     return nil
+}
+
+// A file's records, by where they start.
+Names_File :: struct {
+    records: [dynamic]^Scope,
+    lo:      [dynamic]Token_Id,
 }
 
 // The body whose variables are in sight in a scope: its fun's, its struct's,

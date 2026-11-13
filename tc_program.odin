@@ -51,7 +51,19 @@ tc_scan_allocator :: proc(k: ^TC) {
 // and whether it's written as a call. Not ok: it's something else.
 tc_allocator_arena :: proc(k: ^TC, arena: Tree_Id) -> (name: string, args: []Tree_Id, called, ok: bool) {
     t := k.t
-    names_module :: proc(k: ^TC, n: Tree_Id) -> bool { return k.t.tag[n] == .Ident && k.rs.refs[n].kind == .Module }
+    // (Asked before the main module's names are filled — tc_scan_allocator's: of
+    // the table, its definitions and uses recorded.)
+    names_module :: proc(k: ^TC, n: Tree_Id) -> bool {
+        if k.t.tag[n] != .Ident { return false }
+        ref := k.rs.refs[n]
+        if ref.kind == .None {
+            walking := k.rs.walking
+            k.rs.walking = true   // (nothing kept: its aliases aren't settled yet)
+            ref = names_ref(k.rs, n, base = true)
+            k.rs.walking = walking
+        }
+        return ref.kind == .Module
+    }
     #partial switch t.tag[arena] {
     case .Call:
         return tc_name(k, arena), tree_list(t, t.a[arena]), true, true

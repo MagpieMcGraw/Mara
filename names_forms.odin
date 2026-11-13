@@ -315,14 +315,14 @@ names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
 // as a token, each declaration's clash — the tables the checker and the tools
 // read. (A declaration's own name the walk gave already.) mara lsp's
 // completion: the names in sight where its placeholder is.
-names_fill :: proc(r: ^Resolver) {
+names_fill :: proc(r: ^Resolver, lo, hi: Tree_Id) {
     t := r.t
     // (A name that qualifies another: a module's own name may name it.)
-    base := make([]bool, len(t.tag), context.temp_allocator)
-    for n in 1 ..< len(t.tag) {
+    base := make(map[Tree_Id]bool, allocator = context.temp_allocator)
+    for n in lo ..= hi {
         #partial switch t.tag[n] {
         case .Field:       base[Tree_Id(t.a[n])] = true
-        case .Method_Call: base[method_view(t, Tree_Id(n)).receiver] = true
+        case .Method_Call: base[method_view(t, n).receiver] = true
         }
     }
     token :: proc(r: ^Resolver, tok: Token_Id, plain: bool) {
@@ -333,13 +333,12 @@ names_fill :: proc(r: ^Resolver) {
             if m := names_token_miss(r, tok); m.hidden != "" || len(m.owners) > 0 { r.token_misses[tok] = m }
         }
     }
-    for n in 1 ..< len(t.tag) {
-        nid := Tree_Id(n)
+    for nid in lo ..= hi {
         if resolve_completing && !r.captured && t.main[nid] != 0 && strings.contains(rs_text(t.main[nid]), COMPLETE_HERE) { names_capture(r, t.main[nid]) }
         #partial switch t.tag[nid] {
         case .Ident, .Call, .Method_Call, .Field, .Type_Name, .Type_Keyword, .Type_Dollar, .Type_Of, .Type_Generic:
             if r.refs[nid].kind != .None { continue }
-            ref := names_ref(r, nid, base[nid])
+            ref := names_ref(r, nid, base[nid] or_else false)
             r.refs[nid] = ref
             if ref.kind == .None {
                 #partial switch t.tag[nid] {
@@ -367,15 +366,18 @@ names_fill :: proc(r: ^Resolver) {
             token(r, Token_Id(t.a[nid]), true)   // (`~Shape`: the shape)
         }
     }
-    // (What each declaration runs into.)
-    for sc in r.records {
-        for v in sc.vars {
-            if !v.clashes { continue }
-            c := names_clash(r, v, sc)
-            keep := c.hides.kind != .None if v.ref.kind != .Local else c.taken || c.before != 0 || c.constant || c.hides.kind != .None
-            if keep { r.clashes[v.ref.decl] = c }
-        }
+}
+
+// What each variable recorded since the last time runs into.
+names_fill_clashes :: proc(r: ^Resolver) {
+    for o in r.new_vars {
+        v := o.sc.vars[o.at]
+        if !v.clashes { continue }
+        c := names_clash(r, v, o.sc)
+        keep := c.hides.kind != .None if v.ref.kind != .Local else c.taken || c.before != 0 || c.constant || c.hides.kind != .None
+        if keep { r.clashes[v.ref.decl] = c }
     }
+    clear(&r.new_vars)
 }
 
 // mara lsp's completion: the names in sight at `at` — each name's nearest,

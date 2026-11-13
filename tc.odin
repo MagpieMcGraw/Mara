@@ -468,11 +468,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         for name in names { k.module_nodes[name] = tree_module_scope(t, modules[name]) }
     }
     k.rs = resolve_program(k)
-    // (`all` declared: a keyword — each said where it's declared, in order.)
-    all_named := make([dynamic]Token_Id, context.temp_allocator)
-    for tok in k.rs.all_named { append(&all_named, tok) }
-    slice.sort(all_named[:])
-    for tok in all_named { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
     k.bound = make([]u32, len(build_tokens))
     k.lists = make([]List_Flags, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
@@ -496,6 +491,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
+    resolve_module_begin(k.rs, main_package)
     tc_scan_allocator(k)
     // (A DLL with an entry `#expose` marks: its host passes the context.)
     if shared {
@@ -508,6 +504,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     table.builtins["void"] = void_type
 
     tc_check_uses(k, main_package)
+    tc_module_names_ready(k, main_package)
     k.pkg = main_package
     main := tc_check_module_body(k)
 

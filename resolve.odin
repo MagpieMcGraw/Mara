@@ -59,9 +59,15 @@ Resolver :: struct {
     block_of:   map[Tree_Id]Rs_Def,     // a definition in a block of its scope's body, by its node: which, and where it is in sight
     file_rank:  int,                    // the file being resolved: its place among its module's
     records:    [dynamic]^Scope,        // every scope's record that covers text, by where it starts once sorted (names_record_at)
-    records_sorted: bool,
-    record_lo:  []Token_Id,             // ... where each starts, side by side (the search reads these)
-    record_last: int,                   // ... the last one names_record_at started from (the next ask is usually near)
+    indexed:    int,                    // ... how many of them are in their file's index (by_file)
+    by_file:    map[u16]^Names_File,    // each file's records, by where they start (names_record_at)
+    record_file: ^Names_File,           // ... the file and the record the last search started from (the next is usually near)
+    record_last: int,
+    begun:      map[string]bool,        // the modules whose names are being or have been recorded
+    all_new:    [dynamic]Token_Id,      // each `all` declared since the checker last said so
+    new_vars:   [dynamic]Names_Open,    // the variables recorded since names_fill last found what each runs into
+    alias_sites: [dynamic]Rs_Alias_Site,   // the bodies whose definitions may name types (`A :: B`), settled once the modules they use are checked
+    alias_mark:  int,                      // ... where the module being recorded's start
     open_vars:  [dynamic]Names_Open,    // the variables recorded in the levels entered, for their ends (rs_leave)
     levels_entered: int,                // (each level's id)
     seen_defs, seen_used: [dynamic]Names_Seen,   // names_find's scratch
@@ -350,7 +356,7 @@ rs_slot :: proc(r: ^Resolver, name: string) -> i32 {
 @(private="file")
 rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id, clash := false) {
     if name == "" || name == "_" { return }
-    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
+    if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true; append(&r.all_new, ref.decl) }
     slot := rs_slot(r, name)
     if ref.decl == 0 { return }
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
@@ -361,6 +367,7 @@ rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id, clash :
             lv := r.scopes[len(r.scopes) - 1]
             append(&body.vars, Name_Var{name, ref, from, 0, lv.id, lv.kind, clash, slot})
             append(&r.open_vars, Names_Open{body, len(body.vars) - 1})
+            append(&r.new_vars, Names_Open{body, len(body.vars) - 1})
             return
         }
     }
@@ -441,7 +448,7 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil,
             }
             into[name] = ref
         }
-        if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
+        if name == "all" && ref.decl != 0 && ref.decl not_in r.all_named { r.all_named[ref.decl] = true; append(&r.all_new, ref.decl) }
     }
     for s in rs_live(r, stmts) {
         #partial switch t.tag[s] {
@@ -651,6 +658,7 @@ rs_scope_of :: proc(r: ^Resolver, decl: Token_Id, node: Tree_Id) -> ^Scope {
 @(private="file")
 rs_module :: proc(r: ^Resolver, name: string) -> ^Scope {
     if m, ok := r.modules[name]; ok { return m }
+    name := strings.clone(name, r.allocator)   // (a use's path is written in scratch: the record keeps its name)
     m := new(Scope)
     m.kind, m.name, m.filled = .Module, name, true
     m.files = r.k.modules[name] or_else nil
@@ -745,67 +753,93 @@ rs_same :: proc(r: ^Resolver, a, b: Ref) -> bool {
     return (r.alias_of[a.decl] or_else a.decl) == (r.alias_of[b.decl] or_else b.decl)
 }
 
-// Every module's names recorded, a module after the modules it uses — what
-// it names in them is settled by then. In each: its files' definitions and
-// uses, then which of its definitions are other names for types (again until
-// nothing changes: one file's `A :: B` may name another's `B :: C`), then
-// each file's statements. A file is a scope as a body is; its module's scope,
-// around it, has every file's definitions: the files of one module see each
-// other's.
-rs_program :: proc(r: ^Resolver) {
-    t := r.t
-    names := make([dynamic]string, context.temp_allocator)
-    for name in r.k.modules { append(&names, name) }
-    slice.sort(names[:])
-    for name in names { rs_module(r, name) }
-    order := make([dynamic]string, context.temp_allocator)
-    seen := make(map[string]bool, allocator = context.temp_allocator)
-    for name in names { rs_module_order(r, name, &order, &seen) }
-    for name in order {
-        m := r.modules[name]
-        rs_enter_module(r, m)
-        for f, rank in m.files {
-            rs_enter(r, .File, m.parts[rank], t.end[f])
-            m.parts[rank].text_lo, m.parts[rank].text_hi = t.first[f], t.end[f]
-            append(&r.records, m.parts[rank])
-            r.file_rank = rank
-            if t.first[f] != 0 { r.files[build_tokens[t.first[f]].file] = m.parts[rank] }
-            rs_body_names(r, rs_live(r, tree_list(t, t.a[f])))
-            rs_leave(r)
-        }
-        for changed := m.aliases; changed; {
-            changed = false
-            for f, rank in m.files {
-                rs_enter(r, .File, m.parts[rank], t.end[f])
-                if rs_settle_aliases(r, rs_live(r, tree_list(t, t.a[f])), m) { changed = true }
-                rs_leave(r)
-            }
-        }
-        for f, rank in m.files {
-            rs_enter(r, .File, m.parts[rank], t.end[f])
-            m.parts[rank].level = r.scopes[len(r.scopes) - 1].id
-            r.file_rank = rank
-            rs_body_stmts(r, rs_live(r, tree_list(t, t.a[f])))
-            rs_leave(r)
-        }
-        rs_leave(r)
-    }
+// A body whose definitions may be other names for types, to settle (rs_settle_aliases)
+// from its record once the modules its module uses are checked: its statements,
+// and its definitions' table (nil: a block's).
+Rs_Alias_Site :: struct {
+    here:  ^Scope,
+    stmts: []Tree_Id,
+    space: ^Scope,
 }
 
-// A module after each module its files use (the lexer's list of them), once.
-// (A module that needs itself is the checker's to say: met again here, it's
-// left where it is.)
+// Whether a scope's statements define a name by another (`A :: B`, `A :: m.B`,
+// `A :: alias B`): what rs_settle_aliases looks at.
 @(private="file")
-rs_module_order :: proc(r: ^Resolver, name: string, order: ^[dynamic]string, seen: ^map[string]bool) {
-    if name in seen { return }
-    seen[name] = true
-    for f in r.k.modules[name] {
-        if r.t.first[f] == 0 { continue }
-        for path in build_files[build_tokens[r.t.first[f]].file].imports {
-            if path in r.k.modules { rs_module_order(r, path, order, seen) }
+rs_has_aliases :: proc(t: ^Tree, live: []Tree_Id) -> bool {
+    for s in live {
+        if t.tag[s] != .Define || t.a[s] != 0 { continue }
+        if value := Tree_Id(t.b[s]); value != 0 {
+            #partial switch t.tag[value] { case .Ident, .Field, .Alias_Def: return true }
         }
     }
-    append(order, name)
+    return false
+}
+
+// A module's names, recorded as the checker reaches it — before its uses are
+// checked (what it needs checked first is among them: a `use` in any scope of
+// it): its files' definitions and uses, then their statements — each scope
+// in them, each variable. Which of its definitions are other names for types
+// waits for the modules it uses (resolve_module_ready).
+resolve_module_begin :: proc(r: ^Resolver, name: string) {
+    if name in r.begun { return }
+    r.begun[name] = true
+    t := r.t
+    m := rs_module(r, name)
+    r.walking = true
+    defer r.walking = false
+    rs_enter_module(r, m)
+    for f, rank in m.files {
+        rs_enter(r, .File, m.parts[rank], t.end[f])
+        m.parts[rank].text_lo, m.parts[rank].text_hi = t.first[f], t.end[f]
+        append(&r.records, m.parts[rank])
+        r.file_rank = rank
+        if t.first[f] != 0 { r.files[build_tokens[t.first[f]].file] = m.parts[rank] }
+        rs_body_names(r, rs_live(r, tree_list(t, t.a[f])))
+        rs_leave(r)
+    }
+    r.alias_mark = len(r.alias_sites)
+    for f, rank in m.files {
+        rs_enter(r, .File, m.parts[rank], t.end[f])
+        m.parts[rank].level = r.scopes[len(r.scopes) - 1].id
+        r.file_rank = rank
+        rs_body_stmts(r, rs_live(r, tree_list(t, t.a[f])))
+        rs_leave(r)
+    }
+    rs_leave(r)
+}
+
+// ... once the modules it uses are checked (what it names in them is settled
+// by then): which of its definitions are other names for types — its files'
+// (again until nothing changes: one file's `A :: B` may name another's `B ::
+// C`), then its bodies', outer first — then what each name written in it
+// means (names_fill). A file is a scope as a body is; its module's scope,
+// around it, has every file's definitions: the files of one module see each
+// other's.
+resolve_module_ready :: proc(r: ^Resolver, name: string) {
+    t := r.t
+    m := r.modules[name]
+    if m == nil { return }
+    r.walking = true
+    rs_enter_module(r, m)
+    for changed := m.aliases; changed; {
+        changed = false
+        for f, rank in m.files {
+            rs_enter(r, .File, m.parts[rank], t.end[f])
+            if rs_settle_aliases(r, rs_live(r, tree_list(t, t.a[f])), m) { changed = true }
+            rs_leave(r)
+        }
+    }
+    rs_leave(r)
+    outer := r.here
+    for site in r.alias_sites[r.alias_mark:] {
+        r.here = site.here
+        rs_settle_aliases(r, rs_live(r, site.stmts), site.space)
+    }
+    r.here = outer
+    resize(&r.alias_sites, r.alias_mark)
+    r.walking = false
+    for f in m.files { names_fill(r, tree_lo(t, f), f) }
+    names_fill_clashes(r)
 }
 
 // A module's scope, entered (the build's own names, `std` and `void`, are in
@@ -957,7 +991,7 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Scope = nil) {
     // — then which of its definitions are other names for types: what they
     // name may come from a use.)
     rs_body_names(r, live)
-    rs_settle_aliases(r, live, space)
+    if rs_has_aliases(r.t, live) { append(&r.alias_sites, Rs_Alias_Site{r.here, stmts, space}) }
     rs_body_stmts(r, live)
 }
 
@@ -1236,7 +1270,7 @@ rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
         if r.generic not_in r.type_params_of { r.type_params_of[r.generic] = {} }
         append(&r.type_params_of[r.generic], tok)
     }
-    if rs_text(tok) == "all" { r.all_named[tok] = true }
+    if rs_text(tok) == "all" && tok not_in r.all_named { r.all_named[tok] = true; append(&r.all_new, tok) }
     rs_scope_here(r).params[rs_text(tok)] = {tok, .Type}
 }
 
@@ -1293,10 +1327,7 @@ resolve_program :: proc(k: ^TC) -> ^Resolver {
     r := new(Resolver)
     r.k, r.t, r.allocator = k, k.t, context.allocator
     r.refs = make([]Ref, len(k.t.tag))
-    r.walking = true
-    rs_program(r)
-    r.walking = false
-    names_fill(r)
+
     return r
 }
 
