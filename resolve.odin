@@ -65,6 +65,7 @@ Resolver :: struct {
     records_sorted: bool,
     visited:    []bool,                 // MARA_NAMES=check: by node, whether the walk reached it (a dead `#if` arm's it doesn't)
     open_vars:  [dynamic]Names_Open,    // the variables recorded in the levels entered, for their ends (rs_leave)
+    levels_entered: int,                // (each level's id)
 }
 
 // A definition as written in a scope: its statement (a Define, a foreign
@@ -142,7 +143,6 @@ Rs_Name :: struct {
     conflict: bool,   // no name of anything: two definitions in sight share it, from here to its scope's end (rs_conflict)
 }
 
-@(private="file")
 Rs_Scope_Kind :: enum u8 { Module, File, Fun, Struct, Block }
 
 // A scope entered: where the stack of names stood, and its record (a block
@@ -157,6 +157,7 @@ Rs_Level :: struct {
     signature: bool,            // a fun's or a struct's, its params and results being resolved
     end: Token_Id,              // where its text ends: its variables are out of sight from there
     open: int,                  // its variables, from here in open_vars
+    id: int,                    // which it is: what's declared at one level (names.odin's clashes)
 }
 
 // A use that names its module (`s :: use mara.string`): its definitions are
@@ -207,6 +208,10 @@ Scope :: struct {
     vars:     [dynamic]Name_Var,
     var_at:   map[Token_Id]int,
     checked:  bool,                     // its body was checked
+    dups:     map[string][dynamic]Ref,  // the names it defines more than once: the earlier ones (a module's: its files')
+    level:    int,                      // the level it's the record of (Rs_Level.id)
+    body_lo:  Token_Id,                 // a fun's or a struct's: where its body starts (`Self` before it is the scope around's)
+    variant:  bool,                     // ... a union variant's body
 }
 
 @(private="file")
@@ -320,6 +325,7 @@ rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
     if lv.scope == nil {
         lv.scope = new(Scope)
         lv.scope.kind, lv.scope.parent = lv.kind, r.here
+        lv.scope.level = lv.id
         r.here = lv.scope
         append(&r.records, lv.scope)
     }
@@ -331,7 +337,8 @@ rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
 @(private="file")
 rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil, end: Token_Id = 0) {
     fence := i32(len(r.scopes)) if kind == .Fun || kind == .Struct else r.scopes[len(r.scopes) - 1].fence if len(r.scopes) > 0 else -1
-    append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope, end = end, open = len(r.open_vars)})
+    r.levels_entered += 1
+    append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope, end = end, open = len(r.open_vars), id = r.levels_entered})
     if scope != nil { r.here = scope }
 }
 
@@ -390,7 +397,7 @@ rs_define :: proc(r: ^Resolver, name: string, ref: Ref, own_uses := false) {
 // A variable, seen from here on — and recorded in its body's record (a fun's,
 // a struct's, a file's): in sight from `from` to its level's end (names.odin).
 @(private="file")
-rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id) {
+rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id, clash := false) {
     rs_push(r, name, ref, true)
     if name == "" || name == "_" || ref.decl == 0 { return }
     for i := len(r.scopes) - 1; i >= 0; i -= 1 {
@@ -400,7 +407,8 @@ rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id) {
             if body == nil { return }
             at, seen := body.var_at[ref.decl]
             if !seen {
-                append(&body.vars, Name_Var{name, ref, from, 0})
+                lv := r.scopes[len(r.scopes) - 1]
+                append(&body.vars, Name_Var{name, ref, from, 0, lv.id, lv.kind, clash})
                 at = len(body.vars) - 1
                 body.var_at[ref.decl] = at
             }
@@ -657,7 +665,6 @@ rs_clash :: proc(r: ^Resolver, name: string) -> (c: Rs_Clash) {
 
 // --- definitions ----------------------------------------------------------------------
 
-@(private="file")
 rs_text :: proc(tok: Token_Id) -> string { return tc_text(tok) }
 
 @(private="file")
@@ -678,10 +685,18 @@ rs_def_kind :: proc(t: ^Tree, value: Tree_Id) -> Ref_Kind {
 // Each definition among statements: into a module's table (`into`), else in
 // sight in the current scope. (`name :: use m` is a use: rs_uses.)
 @(private="file")
-rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil) {
+rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil, dups: ^map[string][dynamic]Ref = nil) {
     t := r.t
-    def :: proc(r: ^Resolver, into: ^map[string]Ref, name: string, ref: Ref) {
-        if into != nil { into[name] = ref } else { rs_define(r, name, ref) }
+    def :: proc(r: ^Resolver, into: ^map[string]Ref, dups: ^map[string][dynamic]Ref, name: string, ref: Ref) {
+        if into != nil {
+            if old, has := into[name]; has && dups != nil && !rs_shares(r, old, ref) {
+                if name not_in dups^ { dups[name] = {} }
+                append(&dups[name], old)
+            }
+            into[name] = ref
+        } else {
+            rs_define(r, name, ref)
+        }
         if name == "all" && ref.decl != 0 { r.all_named[ref.decl] = true }
     }
     for s in rs_live(r, stmts) {
@@ -692,27 +707,27 @@ rs_each_def :: proc(r: ^Resolver, stmts: []Tree_Id, into: ^map[string]Ref = nil)
             if kind == .Module { continue }
             if kind == .Const && r.type_names[t.main[s]] { kind = .Type }   // (`A :: B`, B a type: rs_settle_aliases)
             if t.tag[value] == .Dispatch_Def { r.dispatches[t.main[s]] = true }
-            def(r, into, rs_text(t.main[s]), {t.main[s], kind})
+            def(r, into, dups, rs_text(t.main[s]), {t.main[s], kind})
             r.defs[t.main[s]] = s
             if into == nil && r.owner != 0 { r.owners[t.main[s]] = r.owner }
             // (A union's tag enum — a union with data's: `<Name>_Tag`,
             // declared by its `union`.)
             if t.tag[value] == .Union_Def && rs_union_has_data(t, value) {
-                def(r, into, strings.concatenate({rs_text(t.main[s]), "_Tag"}, context.temp_allocator), {t.main[value], .Type})
+                def(r, into, dups, strings.concatenate({rs_text(t.main[s]), "_Tag"}, context.temp_allocator), {t.main[value], .Type})
                 r.defs[t.main[value]] = s
             }
         case .Foreign:
             // (A foreign block's funs are definitions like any other.)
             for ff in foreign_view(t, s).funs {
                 name := foreign_fun_view(t, ff).name
-                def(r, into, rs_text(name), {name, .Fun})
+                def(r, into, dups, rs_text(name), {name, .Fun})
             }
         case .Using:
             // (`using x :: …`: as written without it.)
             inner := Tree_Id(t.a[s])
             if t.tag[inner] == .Define {
                 one := [1]Tree_Id{inner}
-                rs_each_def(r, one[:], into)
+                rs_each_def(r, one[:], into, dups)
             }
         }
     }
@@ -798,11 +813,10 @@ rs_declare_loop :: proc(r: ^Resolver, tok: Token_Id, from: Token_Id) {
         c := rs_clash(r, name)
         if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[tok] = c }
     }
-    rs_declare(r, name, {tok, .Local}, from)
+    rs_declare(r, name, {tok, .Local}, from, clash = true)
 }
 
 // Whether a union's variants hold data (else it is an enum).
-@(private="file")
 rs_union_has_data :: proc(t: ^Tree, u: Tree_Id) -> bool {
     for vr in tree_list(t, t.b[u]) { if t.b[vr] != 0 { return true } }
     return false
@@ -867,7 +881,6 @@ resolve_module_own :: proc(r: ^Resolver, module: string) -> Token_Id {
 
 // The names of the scope a name refers to — a module, a struct, a fun: nil
 // for anything else. A struct's and a fun's are found once, from its body.
-@(private="file")
 rs_space_of :: proc(r: ^Resolver, ref: Ref) -> ^Scope {
     if ref.kind == .Module { return rs_ref_module(r, ref) }
     if ref.decl == 0 || ref.kind != .Type && ref.kind != .Fun { return nil }
@@ -919,6 +932,9 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Scope {
         }
     }
     for f in m.files { rs_space_fill(r, m, tree_list(r.t, r.t.a[f])) }
+    // (Each file's own, in its record too: one of them defined in another
+    // file as well conflicts there, as it's seen.)
+    for f, i in m.files { rs_each_def(r, tree_list(r.t, r.t.a[f]), &m.parts[i].defs, &m.parts[i].dups) }
     rs_space_variants(r, m)
     return m
 }
@@ -928,7 +944,7 @@ rs_module :: proc(r: ^Resolver, name: string) -> ^Scope {
 @(private="file")
 rs_space_fill :: proc(r: ^Resolver, m: ^Scope, stmts: []Tree_Id) {
     t := r.t
-    rs_each_def(r, stmts, &m.defs)
+    rs_each_def(r, stmts, &m.defs, nil if m.kind == .Module else &m.dups)
     for s in rs_live(r, stmts) {
         #partial switch t.tag[s] {
         case .Define:
@@ -1032,6 +1048,7 @@ rs_program :: proc(r: ^Resolver) {
         // definitions: the files of one module see each other's.)
         for f, rank in m.files {
             rs_enter(r, .File, m.parts[rank], t.end[f])
+            m.parts[rank].level = r.scopes[len(r.scopes) - 1].id
             m.parts[rank].text_lo, m.parts[rank].text_hi = t.first[f], t.end[f]
             append(&r.records, m.parts[rank])
             r.file_rank = rank
@@ -1196,7 +1213,7 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Scope = nil) {
     rs_each_def(r, live)
     rs_note_defs(r, live)
     // (A block's definitions, in its record too: in sight in it alone.)
-    if lv := r.scopes[len(r.scopes) - 1]; lv.kind == .Block && lv.scope != nil { rs_each_def(r, live, &lv.scope.defs) }
+    if lv := r.scopes[len(r.scopes) - 1]; lv.kind == .Block && lv.scope != nil { rs_each_def(r, live, &lv.scope.defs, &lv.scope.dups) }
     rs_uses(r, live)
     rs_settle_aliases(r, live, space)
     for s in live { rs_stmt(r, s) }
@@ -1306,7 +1323,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
             r.refs[tg] = ref
             c := rs_clash(r, rs_text(t.main[tg]))
             if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[t.main[tg]] = c }
-            rs_declare(r, rs_text(t.main[tg]), ref, t.end[s])
+            rs_declare(r, rs_text(t.main[tg]), ref, t.end[s], clash = true)
         }
     case .Using:
         rs_stmt(r, Tree_Id(t.a[s]))
@@ -1452,6 +1469,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
         rs_space_variants(r, scope)
     }
     rs_enter(r, .Struct if is_struct else .Fun, scope, t.end[node])
+    scope.level, scope.body_lo, scope.variant = r.scopes[len(r.scopes) - 1].id, rs_from_body(r, v.body, t.end[node]), t.tag[def] == .Variant
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
     outer := r.generic
@@ -1478,7 +1496,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
         }
         for name in pv.names {
             rs_signature_clash(r, name)
-            rs_declare(r, rs_text(name), {name, .Param}, t.end[v.params[len(v.params) - 1]])
+            rs_declare(r, rs_text(name), {name, .Param}, t.end[v.params[len(v.params) - 1]], clash = true)
         }
     }
     for x in v.returns {
@@ -1487,7 +1505,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
             rs_node(r, pv.type_)
             for name in pv.names {
                 rs_signature_clash(r, name)
-                rs_declare(r, rs_text(name), {name, .Result}, rs_from_body(r, v.body, t.end[node]))
+                rs_declare(r, rs_text(name), {name, .Result}, rs_from_body(r, v.body, t.end[node]), clash = true)
             }
         } else {
             rs_node(r, x)
@@ -1700,7 +1718,6 @@ rs_own_base :: proc(r: ^Resolver, q: Tree_Id) {
 
 // Whether a ref names a definition a qualified name can reach into: a
 // module, a type, a fun (its nested definitions).
-@(private="file")
 rs_names_def :: proc(ref: Ref) -> bool {
     return ref.kind == .Module || ref.kind == .Type || ref.kind == .Fun
 }
@@ -1717,7 +1734,6 @@ rs_self :: proc(r: ^Resolver) -> (Ref, bool) {
 
 // The builtins called by name: print, crash, the casts, len, … (the checker's
 // tc_builtin's).
-@(private="file")
 rs_builtin_call :: proc(name: string) -> bool {
     switch name {
     case "print", "crash", "int", "uint", "print_cstr", "print_int", "print_float", "len", "cap", "slice_from_ptr", "cstring",
@@ -1728,7 +1744,6 @@ rs_builtin_call :: proc(name: string) -> bool {
 }
 
 // The module a name refers to.
-@(private="file")
 rs_ref_module :: proc(r: ^Resolver, ref: Ref) -> ^Scope {
     return r.named[ref.decl] or_else nil
 }

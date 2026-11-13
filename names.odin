@@ -21,6 +21,9 @@ Name_Var :: struct {
     name:     string,
     ref:      Ref,
     from, to: Token_Id,
+    level:    int,             // the level it's declared at (Rs_Level.id), and its kind
+    level_kind: Rs_Scope_Kind,
+    clashes:  bool,            // what it runs into is said where it's declared (names_clash): a `:=`'s, a loop's, a param's, a result's
 }
 
 // A variable bound in a block not closed yet: its body's record, its place.
@@ -65,132 +68,240 @@ names_body_of :: proc(sc: ^Scope) -> ^Scope {
 
 // --- the answer -----------------------------------------------------------------------
 
+// Something a name could mean where it's asked: what it refers to, whose it
+// is (the fun's or the struct's it's in, else the module's; a use's, the
+// scope it brings), where it came in sight (later: nearer).
+@(private="file")
+Names_Seen :: struct {
+    ref:   Ref,
+    owner: string,
+    at:    Token_Id,
+    block: bool,     // defined or brought in a block's record
+}
+
+// Whose a scope's names are: the fun's or the struct's it's in, else its
+// module's.
+names_owner :: proc(sc: ^Scope) -> string {
+    for s := sc; s != nil; s = s.parent {
+        #partial switch s.kind { case .Fun, .Struct, .File, .Module: return s.name }
+    }
+    return ""
+}
+
 // What `name` means where `at` is: a variable in sight, else what the scopes
 // out from there define or bring by a use. Two things of one name in sight are
 // neither (nothing hides anything) — but a variable declared beside what's in
 // sight already is itself from there on (that it hides it is said where it's
-// declared).
-names_lookup :: proc(r: ^Resolver, name: string, at: Token_Id) -> (Ref, bool) {
+// declared). Nothing: why — a local of a fun around, past its boundary; the
+// scopes that each have it.
+names_find :: proc(r: ^Resolver, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Rs_Miss) {
     here := names_record_at(r, at)
-    if here == nil { return {}, false }
-    // (The innermost variable in sight.)
-    v: ^Name_Var
-    if body := names_body_of(here); body != nil {
+    if here == nil { return }
+    body := names_body_of(here)
+    // (Its body's variables in sight, nearest first.)
+    vars := make([dynamic]^Name_Var, context.temp_allocator)
+    if body != nil {
         for &x in body.vars {
-            if x.name == name && x.from <= at && (x.to == 0 || at < x.to) && (v == nil || x.from > v.from) { v = &x }
+            if x.name == name && x.from <= at && (x.to == 0 || at < x.to) { append(&vars, &x) }
         }
+        slice.sort_by(vars[:], proc(a, b: ^Name_Var) -> bool { return a.from > b.from })
     }
-    defined := make([dynamic]Ref, context.temp_allocator)   // what the scopes out from here define, innermost first
-    def_lo := Token_Id(0)                                    // ... where the innermost of them starts
-    used_levels := 0
-    first_used: [dynamic]Ref                                 // the innermost scope's uses' that have it
-    first_used = make([dynamic]Ref, context.temp_allocator)
-    others := make([dynamic]Ref, context.temp_allocator)     // the outer scopes' uses'
+    defs := make([dynamic]Names_Seen, context.temp_allocator)    // defined out from here, nearest first
+    used := make([dynamic]Names_Seen, context.temp_allocator)    // brought by uses ...
+    used_level := make([dynamic]int, context.temp_allocator)     // ... and which scope out from here's
+    level := 0
     for s := here; s != nil; s = s.parent {
-        one :: proc(r: ^Resolver, s: ^Scope, ref: Ref, defined: ^[dynamic]Ref, def_lo: ^Token_Id, v: ^Name_Var) -> bool {
-            ref := ref
-            if ref.kind == .Const && r.type_names[ref.decl] { ref.kind = .Type }
-            // (Defined in a block entered after the variable: they conflict.)
-            if v != nil {
-                return !(s.kind == .Block && s.text_lo > v.from && !rs_shares(r, v.ref, ref))
+        owner := names_owner(s)
+        block := s.kind == .Block
+        if x, has := s.declared[name]; has { append(&defs, Names_Seen{x, owner, s.text_lo, block}) }
+        if x, has := s.defs[name]; has {
+            x := x
+            if x.kind == .Const && r.type_names[x.decl] { x.kind = .Type }
+            append(&defs, Names_Seen{x, owner, s.text_lo, block})
+            // (Defined there more than once: each.)
+            earlier := s.dups[name]   // (bound first: a loop over a map's entry is unsafe in Odin)
+            for d in earlier {
+                d := d
+                if d.kind == .Const && r.type_names[d.decl] { d.kind = .Type }
+                append(&defs, Names_Seen{d, owner, s.text_lo, block})
             }
-            if len(defined) == 0 { def_lo^ = s.text_lo }
-            append(defined, ref)
-            return true
         }
-        if ref, ok := s.params[name]; ok { if !one(r, s, ref, &defined, &def_lo, v) { return {}, false } }
-        if ref, ok := s.declared[name]; ok { if !one(r, s, ref, &defined, &def_lo, v) { return {}, false } }
-        if ref, ok := s.defs[name]; ok { if !one(r, s, ref, &defined, &def_lo, v) { return {}, false } }
-        level := false
+        if x, has := s.params[name]; has { append(&defs, Names_Seen{x, owner, s.text_lo, block}) }
+        if s.kind == .Module && (name == "std" || name == "void") { append(&defs, Names_Seen{Ref{kind = .Builtin}, owner, 0, false}) }
+        any := false
         for u in s.uses {
-            ref, ok := u.defs[name]
-            if !ok { continue }
-            if v != nil {
-                if s.kind == .Block && s.text_lo > v.from && !rs_shares(r, v.ref, ref) { return {}, false }
-                continue
+            if x, has := u.defs[name]; has {
+                append(&used, Names_Seen{x, u.name, s.text_lo, block})
+                append(&used_level, level)
+                any = true
             }
-            if used_levels == 0 { append(&first_used, ref) } else { append(&others, ref) }
-            level = true
         }
-        if level { used_levels += 1 }
-        if s.kind == .Module && (name == "std" || name == "void") && v == nil { append(&defined, Ref{kind = .Builtin}) }
+        if any { level += 1 }
     }
-    if v != nil { return v.ref, true }
-    // (Two of one name in sight: neither — unless they're one, or dispatch
-    // groups, which join.)
-    if len(defined) > 0 {
-        first := defined[0]
-        for x in defined[1:] { if !rs_shares(r, first, x) { return {}, false } }
-        for x in first_used { if !rs_shares(r, first, x) { return {}, false } }
-        for x in others { if !rs_shares(r, first, x) { return {}, false } }
-        return first, true
+    // (A local of a fun or a struct around: out of sight past its boundary.)
+    outer: ^Name_Var
+    if body != nil {
+        for s := names_body_of(body.parent); s != nil && outer == nil; s = names_body_of(s.parent) {
+            for &x in s.vars {
+                if x.name == name && x.from <= at && (x.to == 0 || at < x.to) && (outer == nil || x.from > outer.from) { outer = &x }
+            }
+            if outer != nil { miss.hidden = names_owner(s) }
+        }
     }
-    if len(first_used) == 0 { return {}, false }
-    first := first_used[0]
-    for x in others { if !rs_shares(r, first, x) { return {}, false } }
-    // (The innermost scope's uses: one thing of the name, else none.)
-    for x in first_used[1:] { if !rs_same(r, first, x) { return {}, false } }
-    return first, true
+    // (Two things in sight: what each is, whose — nearest first, each once.)
+    conflict :: proc(r: ^Resolver, miss: ^Rs_Miss, vars: []^Name_Var, body: ^Scope, defs, used: []Names_Seen) {
+        owners := make([dynamic]string)
+        add :: proc(miss: ^Rs_Miss, owners: ^[dynamic]string, owner: string, ref: Ref) {
+            if miss.first.kind == .None { miss.first = ref }
+            if owner != "" && !slice.contains(owners[:], owner) { append(owners, owner) }
+        }
+        seen := make([dynamic]Names_Seen, context.temp_allocator)
+        for v in vars { append(&seen, Names_Seen{v.ref, names_owner(body), v.from, false}) }
+        append(&seen, ..defs)
+        slice.stable_sort_by(seen[:], proc(a, b: Names_Seen) -> bool { return a.at > b.at })
+        for x in seen { add(miss, &owners, x.owner, x.ref) }
+        for x in used { add(miss, &owners, x.owner, x.ref) }
+        miss.owners = owners[:]
+    }
+    if len(vars) > 0 {
+        v := vars[0]
+        // (Defined or brought in a block entered after it: the two conflict.)
+        for x in defs { if x.block && x.at > v.from && !rs_shares(r, v.ref, x.ref) { miss.hidden = ""; conflict(r, &miss, vars[:], body, defs[:], used[:]); return } }
+        for x in used { if x.block && x.at > v.from && !rs_shares(r, v.ref, x.ref) { miss.hidden = ""; conflict(r, &miss, vars[:], body, defs[:], used[:]); return } }
+        return v.ref, true, {}
+    }
+    // (A conflict is met where the later of the two came in sight: a local of
+    // a fun around, past its boundary, is said only if it came after.)
+    past :: proc(miss: ^Rs_Miss, outer: ^Name_Var, at: Token_Id) { if outer == nil || outer.from <= at { miss.hidden = "" } }
+    if len(defs) > 0 {
+        first := defs[0]
+        for x in defs[1:] { if !rs_shares(r, first.ref, x.ref) { past(&miss, outer, max(first.at, x.at)); conflict(r, &miss, nil, body, defs[:], used[:]); return } }
+        for x in used { if !rs_shares(r, first.ref, x.ref) { past(&miss, outer, max(first.at, x.at)); conflict(r, &miss, nil, body, defs[:], used[:]); return } }
+        return first.ref, true, {}
+    }
+    if len(used) == 0 { return }
+    first := used[0].ref
+    for x, i in used { if used_level[i] > 0 && !rs_shares(r, first, x.ref) { past(&miss, outer, max(used[0].at, x.at)); conflict(r, &miss, nil, body, nil, used[:]); return } }
+    // (The nearest scope's uses: one thing of the name, else none — dispatch
+    // groups the checker's to choose among.)
+    groups := true
+    unlike := make([dynamic]Names_Seen, context.temp_allocator)
+    for x, i in used {
+        if used_level[i] > 0 { break }
+        one := false
+        for d in unlike { one = one || rs_same(r, d.ref, x.ref) }
+        if one { continue }
+        append(&unlike, x)
+        groups = groups && x.ref.kind == .Fun && r.dispatches[x.ref.decl]
+    }
+    if len(unlike) == 1 { return first, true, {} }
+    if !groups {
+        owners := make([dynamic]string)
+        for d in unlike { if !slice.contains(owners[:], d.owner) { append(&owners, d.owner) } }
+        miss.owners, miss.first = owners[:], unlike[0].ref
+    }
+    return
 }
 
-// --- the check (stage 1) -------------------------------------------------------------
+// What `name` means where `at` is (names_find, without why not).
+names_lookup :: proc(r: ^Resolver, name: string, at: Token_Id) -> (Ref, bool) {
+    ref, ok, _ := names_find(r, name, at)
+    return ref, ok
+}
 
-// MARA_NAMES=check: what each name checked means, asked as above, against
-// what the resolver found it to — one line a disagreement (the first few),
-// then counts.
+// --- the check ----------------------------------------------------------------------
+
+// MARA_NAMES=check: each name the resolver's walk reached, asked of the table
+// — what it refers to, why it means nothing, a field reference's type — and
+// each name written as a token, each declaration's clash, against what the
+// resolver found. One line a disagreement (the first few), then counts by what.
 names_check :: proc(k: ^TC) {
-    if !names_checking || k.c.errors > 0 { return }
+    if !names_checking { return }
     r := k.rs
     t := k.t
-    agree, differ := 0, 0
-    differ_by := make(map[string]int, allocator = context.temp_allocator)
-    compare :: proc(r: ^Resolver, what: string, at: Token_Id, name: string, want: Ref, agree, differ: ^int, by: ^map[string]int) {
-        got, _ := names_lookup(r, name, at)
-        if got == want { agree^ += 1; return }
-        differ^ += 1
-        key := fmt.tprintf("%s: resolver %v, names %v", what, want.kind, got.kind)
-        by[key] += 1
-        if differ^ <= 40 {
-            sp := Span{at = at, tok = at, end = at + 1}
-            fmt.printfln("names: %s:%d: %s `%s`: resolver %v %s, names %v %s", span_file(sp), span_line(sp), what, name,
-                         want.kind, names_where(want.decl), got.kind, names_where(got.decl))
+    y := Names_Tally{by = make(map[string]int, allocator = context.temp_allocator)}
+    // (A name that qualifies another: a module's own name may name it.)
+    base := make([]bool, len(t.tag), context.temp_allocator)
+    for n in 1 ..< len(t.tag) {
+        #partial switch t.tag[n] {
+        case .Field:       base[Tree_Id(t.a[n])] = true
+        case .Method_Call: base[method_view(t, Tree_Id(n)).receiver] = true
         }
     }
     for n in 1 ..< len(t.tag) {
         nid := Tree_Id(n)
         if !r.visited[nid] { continue }   // (a dead `#if` arm's)
+        at := t.main[nid] if t.main[nid] != 0 else t.first[nid]
         #partial switch t.tag[nid] {
-        case .Ident:
-            if r.refs[nid].decl == t.main[nid] { continue }   // (a declaration's own name: no use)
-            if r.refs[nid].kind == .Module && r.refs[nid].decl == resolve_module_own_any(r, r.refs[nid].decl) { continue }   // (a module's own name inside itself)
-            compare(r, "Ident", t.main[nid], tc_text(t.main[nid]), r.refs[nid], &agree, &differ, &differ_by)
-        case .Call:
-            name := tc_text(t.main[nid])
-            if names_builtin_call(name) { continue }
-            compare(r, "Call", t.main[nid], name, r.refs[nid], &agree, &differ, &differ_by)
-        case .Type_Name:
-            parts := tree_token_list(t, t.a[nid])
-            if len(parts) != 1 { continue }
-            name := tc_text(parts[0])
-            if name == "Self" { continue }
-            if _, primitive := tc_primitive_named(name); primitive { continue }
-            compare(r, "Type_Name", parts[0], name, r.refs[nid], &agree, &differ, &differ_by)
-        case .Type_Generic:
-            compare(r, "Type_Generic", t.main[nid], tc_text(t.main[nid]), r.refs[nid], &agree, &differ, &differ_by)
-        case .Type_Dollar:
-            tok := Token_Id(t.a[nid])
-            compare(r, "Type_Dollar", tok, tc_text(tok), r.refs[nid], &agree, &differ, &differ_by)
+        case .Ident, .Call, .Method_Call, .Field, .Type_Name, .Type_Keyword, .Type_Dollar, .Type_Of, .Type_Generic:
+            want := r.refs[nid]
+            if t.tag[nid] == .Ident && want.decl == t.main[nid] { continue }   // (a declaration's own name: no use)
+            names_tally(&y, fmt.tprint(t.tag[nid]), at, tc_text(t.main[nid]), want == names_ref(r, nid, base[nid]), want, names_ref(r, nid, base[nid]))
+            #partial switch t.tag[nid] {
+            case .Ident, .Call, .Type_Name, .Type_Generic:
+                if want.kind == .None {
+                    wm := r.misses[nid] or_else Rs_Miss{}
+                    gm := names_miss(r, nid)
+                    names_tally(&y, fmt.tprintf("%v miss", t.tag[nid]), at, tc_text(t.main[nid]), names_miss_same(wm, gm), wm.first, gm.first, wm, gm)
+                }
+            }
+            #partial switch t.tag[nid] {
+            case .Field, .Type_Name:
+                wf, wok := r.field_types[nid]
+                gf, gok := names_field_type(r, nid)
+                names_tally(&y, fmt.tprintf("%v field type", t.tag[nid]), at, tc_text(t.main[nid]), wok == gok && wf == gf, wf.elem, gf.elem)
+            }
         }
     }
     for tok, want in r.token_refs {
-        if want.kind == .Module && want.decl == resolve_module_own_any(r, want.decl) { continue }
-        compare(r, "token", tok, tc_text(tok), want, &agree, &differ, &differ_by)
+        names_tally(&y, "token", tok, tc_text(tok), want == names_token_ref(r, tok), want, names_token_ref(r, tok))
     }
-    fmt.printfln("names: %d agree, %d differ", agree, differ)
+    for tok, want in r.token_misses {
+        got := names_token_miss(r, tok)
+        names_tally(&y, "token miss", tok, tc_text(tok), names_miss_same(want, got), want.first, got.first, want, got)
+    }
+    for sc in names_vars_of(r) {
+        for v in sc.vars {
+            if !v.clashes { continue }
+            want := r.clashes[v.ref.decl] or_else Rs_Clash{}
+            got := names_clash(r, v, sc)
+            // (A `:=`'s is kept only when it runs into something.)
+            if v.ref.kind == .Local && !(got.taken || got.before != 0 || got.constant || got.hides.kind != .None) { got = {} }
+            if v.ref.kind != .Local && got.hides.kind == .None { got = {} }
+            names_tally(&y, fmt.tprintf("%v clash", v.ref.kind), v.ref.decl, v.name, want == got, want.hides, got.hides, clash = [2]Rs_Clash{want, got})
+        }
+    }
+    fmt.printfln("names: %d agree, %d differ", y.agree, y.differ)
     keys := make([dynamic]string, context.temp_allocator)
-    for key in differ_by { append(&keys, key) }
+    for key in y.by { append(&keys, key) }
     slice.sort(keys[:])
-    for key in keys { fmt.printfln("names: differ %s: %d", key, differ_by[key]) }
+    for key in keys { fmt.printfln("names: differ %s: %d", key, y.by[key]) }
+}
+
+@(private="file")
+Names_Tally :: struct {
+    agree, differ: int,
+    by: map[string]int,
+}
+
+@(private="file")
+names_tally :: proc(y: ^Names_Tally, what: string, at: Token_Id, name: string, same: bool, want, got: Ref, wm: Rs_Miss = {}, gm: Rs_Miss = {}, clash: [2]Rs_Clash = {}) {
+    if same { y.agree += 1; return }
+    y.differ += 1
+    y.by[what] += 1
+    if y.differ > 60 { return }
+    sp := Span{at = at, tok = at, end = at + 1}
+    fmt.printfln("names: %s:%d: %s `%s`: resolver %v %s, names %v %s", span_file(sp), span_line(sp), what, name,
+                 want.kind, names_where(want.decl), got.kind, names_where(got.decl))
+    if wm.hidden != "" || gm.hidden != "" || len(wm.owners) + len(gm.owners) > 0 {
+        fmt.printfln("names:     miss: resolver hidden %q owners %v, names hidden %q owners %v", wm.hidden, wm.owners, gm.hidden, gm.owners)
+    }
+    if clash[0] != clash[1] { fmt.printfln("names:     clash: resolver %v, names %v", clash[0], clash[1]) }
+}
+
+@(private="file")
+names_miss_same :: proc(a, b: Rs_Miss) -> bool {
+    return a.hidden == b.hidden && a.first == b.first && slice.equal(a.owners, b.owners)
 }
 
 // Whether a token is some module's own name as it names itself (rs_own_module's).
