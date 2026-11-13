@@ -61,6 +61,9 @@ Resolver :: struct {
     type_names: map[Token_Id]bool,      // the definitions `A :: B` that name a type, by the token that declares them (rs_settle_aliases)
     block_of:   map[Tree_Id]Rs_Def,     // a definition in a block of its scope's body, by its node: which, and where it is in sight
     file_rank:  int,                    // the file being resolved: its place among its module's
+    records:    [dynamic]^Scope,        // every scope's record that covers text, by where it starts once sorted (names_record_at)
+    records_sorted: bool,
+    visited:    []bool,                 // MARA_NAMES=check: by node, whether the walk reached it (a dead `#if` arm's it doesn't)
 }
 
 // A definition as written in a scope: its statement (a Define, a foreign
@@ -190,6 +193,17 @@ Scope :: struct {
     overloads: [dynamic]Rs_Overload,    // its `overload op name`s: the operators' groups in it
     used:     [dynamic]Rs_Use,          // a module's: every use written in it, any scope's
     sight:    ^Rs_Sight,                // what is in sight in it, once asked (rs_sight_at)
+    // What a name means at a point (names.odin): the text it covers — a
+    // file's, a fun's or a struct's whole definition, a union's, a block's
+    // statements; a module's, none — its type params, the names its uses
+    // declare, and its variables as the checker binds them (a fun's, a
+    // struct's, a file's).
+    text_lo, text_hi: Token_Id,
+    params:   map[string]Ref,
+    declared: map[string]Ref,
+    vars:     [dynamic]Name_Var,
+    var_at:   map[Token_Id]int,
+    checked:  bool,                     // its body was checked
 }
 
 @(private="file")
@@ -304,6 +318,7 @@ rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
         lv.scope = new(Scope)
         lv.scope.kind, lv.scope.parent = lv.kind, r.here
         r.here = lv.scope
+        append(&r.records, lv.scope)
     }
     return lv.scope
 }
@@ -373,7 +388,6 @@ rs_declare :: proc(r: ^Resolver, name: string, ref: Ref) { rs_push(r, name, ref,
 
 // Whether two definitions of one name are no conflict: one definition, two
 // names for one type, or two dispatch groups (groups of one name join).
-@(private="file")
 rs_shares :: proc(r: ^Resolver, a, b: Ref) -> bool {
     if a.decl == b.decl || rs_same(r, a, b) { return true }
     return a.kind == .Fun && b.kind == .Fun && r.dispatches[a.decl] && r.dispatches[b.decl]
@@ -849,7 +863,9 @@ rs_scope_of :: proc(r: ^Resolver, decl: Token_Id, node: Tree_Id) -> ^Scope {
     sc := new(Scope)
     sc.kind = .Struct if r.t.tag[node] == .Struct_Def else .Fun
     sc.name, sc.decl = rs_text(decl), decl
+    sc.text_lo, sc.text_hi = r.t.first[node], r.t.end[node]
     r.spaces[decl] = sc
+    append(&r.records, sc)
     return sc
 }
 
@@ -943,7 +959,6 @@ rs_import :: proc(r: ^Resolver, imp: Tree_Id) -> (^Scope, Token_Id, Ref) {
 // --- the walk -------------------------------------------------------------------------
 
 // Whether two refs are one: the same, or two type names for one type (r.alias_of).
-@(private="file")
 rs_same :: proc(r: ^Resolver, a, b: Ref) -> bool {
     if a == b { return true }
     if a.kind != .Type || b.kind != .Type { return false }
@@ -986,6 +1001,8 @@ rs_program :: proc(r: ^Resolver) {
         // definitions: the files of one module see each other's.)
         for f, rank in m.files {
             rs_enter(r, .File, m.parts[rank])
+            m.parts[rank].text_lo, m.parts[rank].text_hi = t.first[f], t.end[f]
+            append(&r.records, m.parts[rank])
             r.file_rank = rank
             if t.first[f] != 0 { r.files[build_tokens[t.first[f]].file] = m.parts[rank] }
             rs_body(r, tree_list(t, t.a[f]), m)
@@ -1147,6 +1164,8 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Scope = nil) {
     // name may come from a use.)
     rs_each_def(r, live)
     rs_note_defs(r, live)
+    // (A block's definitions, in its record too: in sight in it alone.)
+    if lv := r.scopes[len(r.scopes) - 1]; lv.kind == .Block && lv.scope != nil { rs_each_def(r, live, &lv.scope.defs) }
     rs_uses(r, live)
     rs_settle_aliases(r, live, space)
     for s in live { rs_stmt(r, s) }
@@ -1155,6 +1174,7 @@ rs_body :: proc(r: ^Resolver, stmts: []Tree_Id, space: ^Scope = nil) {
     if sc := r.scopes[len(r.scopes) - 1].scope; sc != nil && len(live) > 0 {
         t := r.t
         sc.lo, sc.hi = t.first[live[0]], t.end[live[len(live) - 1]]
+        if sc.text_hi == 0 { sc.text_lo, sc.text_hi = sc.lo, sc.hi }
         if sc.kind != .File && len(sc.uses) + len(sc.named) + len(sc.overloads) > 0 {
             for i := len(r.scopes) - 2; i >= 0; i -= 1 {
                 if r.scopes[i].kind == .File { append(&r.scopes[i].scope.inner, sc); break }
@@ -1227,8 +1247,10 @@ rs_uses :: proc(r: ^Resolver, live: []Tree_Id, note := true) {
         if used.decl == 0 {
             r.named[tok] = used
             rs_define(r, rs_text(tok), {tok, .Module}, own_uses = true)
+            scope.declared[rs_text(tok)] = {tok, .Module}
         } else {
             rs_define(r, rs_text(tok), ref)
+            scope.declared[rs_text(tok)] = ref
         }
     }
 }
@@ -1359,6 +1381,7 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
             rs_node(r, Tree_Id(t.a[vr]))
             if body := Tree_Id(t.b[vr]); body != 0 { rs_scope_def(r, vr, body) }
         }
+        if sc := r.scopes[len(r.scopes) - 1].scope; sc != nil && sc.text_hi == 0 { sc.text_lo, sc.text_hi = t.first[value], t.end[value] }
         rs_leave(r)
     case .Dispatch_Def:
         // (Its members: names, written as tokens.)
@@ -1388,6 +1411,13 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
     is_struct := t.tag[node] == .Struct_Def
     scope := rs_scope_of(r, t.main[def], node)
     scope.parent = r.here
+    // (Its definitions, in its record: what a name in it means is asked of
+    // it — names.odin.)
+    if !scope.filled {
+        scope.filled = true
+        rs_space_fill(r, scope, v.body)
+        rs_space_variants(r, scope)
+    }
     rs_enter(r, .Struct if is_struct else .Fun, scope)
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
@@ -1476,6 +1506,7 @@ rs_type_param :: proc(r: ^Resolver, tok: Token_Id) {
         append(&r.type_params_of[r.generic], tok)
     }
     rs_define(r, rs_text(tok), {tok, .Type})
+    rs_scope_here(r).params[rs_text(tok)] = {tok, .Type}
 }
 
 // The type params a type written declares (`$T`).
@@ -1507,6 +1538,7 @@ rs_dollars :: proc(r: ^Resolver, n: Tree_Id) {
 @(private="file")
 rs_node :: proc(r: ^Resolver, n: Tree_Id) {
     if n == 0 { return }
+    if r.visited != nil { r.visited[n] = true }
     t := r.t
     if resolve_completing && !r.captured && t.main[n] != 0 && strings.contains(rs_text(t.main[n]), COMPLETE_HERE) { rs_capture(r) }
     #partial switch t.tag[n] {
@@ -1701,6 +1733,7 @@ resolve_program :: proc(k: ^TC) -> ^Resolver {
     r := new(Resolver)
     r.k, r.t, r.allocator = k, k.t, context.allocator
     r.refs = make([]Ref, len(k.t.tag))
+    if names_checking { r.visited = make([]bool, len(k.t.tag)) }
     rs_program(r)
     delete(r.names)
     delete(r.slots)

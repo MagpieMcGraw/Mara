@@ -27,18 +27,30 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         k.body, k.vars, k.in_defer, k.loops = outer, outer_vars, outer_defer, outer_loops
     }
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
+    // (Its variables, in sight in it alone: its params past their own list.)
+    outer_from := k.names_from
+    names_enter(k)
+    defer {
+        names_leave(k, t.end[sc.node])
+        k.names_from = outer_from
+    }
+    names_body_checked(k, sc.node)
     tc_register_defs(k, sc)
     // (Its params and named results — locals: its variables, an intrinsic's
     // too, though no code of its reads them. Bound before its constants: a
     // constant may be written with a param that is one, a struct's size.)
+    k.names_from = t.end[v.params[len(v.params) - 1]] if len(v.params) > 0 else 0
     for p in ts.params { tc_bind(k, p.name, p.type_, {p.decl, .Param}) }
+    k.names_from = 0
     tc_check_local_consts(k, sc)
     // (An intrinsic's body is the compiler's: its signature, the LLVM
     // intrinsic's shape.)
     if v.intrinsic != 0 { check_llvm_intrinsic_signature(k.c, ts, tc_intrinsic_name(k, v.intrinsic), span) }
     k.annot.decls[tc_sid(k, sc.node)] = ts
     tc_event(k, {kind = .Body, sc = sc})   // (lowered from here: after its constants)
+    k.names_from = names_from_body(k, v.body, t.end[sc.node])
     for name, i in ts.return_binding_names { tc_bind(k, name, ts.return_types[i], {ts.return_binding_decls[i], .Result}) }
+    k.names_from = 0
     if v.intrinsic == 0 {
         tc_type_params_bind(k, sc.subst)   // (an instance's: its type params, checked whenever its body is)
         tc_scope(k, v.body)
@@ -110,9 +122,11 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id) {
     saved := k.decls
     decls := make([dynamic]TC_Decl_Note, virtual.arena_allocator(k.blocks))   // (scratch: the check's)
     k.decls = &decls
+    names_enter(k)
     defer {
         tc_storage_sizes(k, decls[:])
         k.decls = saved
+        names_leave(k, t.end[stmts[len(stmts) - 1]] if len(stmts) > 0 else 0)
     }
     for s in stmts {
         if t.tag[s] == .Define || t.tag[s] == .Foreign {
@@ -128,6 +142,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
     k.hint = nil   // (What the last statement was checked as is nothing to this one.)
+    outer_stmt := k.names_stmt
+    k.names_stmt = s
+    defer k.names_stmt = outer_stmt
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
@@ -163,7 +180,10 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .If, .Elif:
         tc_if(k, s)
     case .For_Range, .For_Each, .For_C, .For_Cond:
+        // (Its names, in sight in it alone.)
+        names_enter(k)
         tc_for(k, s)
+        names_leave(k, t.end[s])
     case .Compound:
         tc_compound(k, s)
     case .Defer:
@@ -949,8 +969,10 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         // (A loop variable named `_` is none: nothing the body can name.)
         tc_loop_name(k, v.elem)
         tc_loop_name(k, v.index)
+        k.names_from = names_from_body(k, v.body, t.end[s])
         if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
         if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+        k.names_from = 0
         tc_scope(k, v.body)
     case .For_Range:
         lt := tc_check(k, v.lo)
@@ -965,7 +987,9 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         hc, hc_ok := tc_comptime_int(k, v.hi)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, tc_text(v.dots), hc, lc, hc) }
         tc_loop_name(k, v.var)
+        k.names_from = names_from_body(k, v.body, t.end[s])
         if tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
+        k.names_from = 0
         tc_scope(k, v.body)
     case:
         if v.init != 0 { tc_stmt(k, v.init) }
@@ -1062,8 +1086,10 @@ tc_loop_over_type :: proc(k: ^TC, v: For_View, t: Type, span: Span) {
     if v.type_ != 0 { tc_error(k, span, TYPE_LOOP_OVER_TYPE_TYPED, type_name(elem)) }
     tc_loop_name(k, v.elem)
     tc_loop_name(k, v.index)
+    k.names_from = names_from_body(k, v.body)
     if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
     if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+    k.names_from = 0
     tc_scope(k, v.body)
 }
 
@@ -1135,7 +1161,9 @@ tc_for_call :: proc(k: ^TC, s: Tree_Id, v: For_View, ct: Type, returns: []Type) 
         t: Type = slice_header_width_type   // (one after the values: the round)
         if bad { t = Type_Error{} } else if i < len(values) { t = solidify_type(returns[values[i]]) }
         tc_loop_name(k, tok)
+        k.names_from = names_from_body(k, v.body)
         tc_bind(k, tc_text(tok), t, {tok, .Local})
+        k.names_from = 0
     }
     tc_scope(k, v.body)
 }
@@ -1464,8 +1492,12 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
                     // (A rebound subject: its meaning back after the arm.)
                     was, had := tc_bound(k, a.bound_tok)
                     defer tc_bound_restore(k, a.bound_tok, was, had)
+                    names_enter(k)
+                    k.names_from = names_from_body(k, a.body, tr.end[arm])
                     tc_bind(k, a.bound, vs, {a.bound_tok, .Local})
+                    k.names_from = 0
                     tc_scope(k, a.body)
+                    names_leave(k, tr.end[arm])
                     if name != "" { covered[name] = true }
                     continue
                 }
