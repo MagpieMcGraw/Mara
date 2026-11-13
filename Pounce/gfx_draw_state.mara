@@ -107,6 +107,7 @@ draw_state_assert_ready :: fun(state: ^DrawState) {
 
 	// The shared geometry VAO and its backing buffers
 	vao := state.vao_state
+	assert(vao != void)                // draw_state_init gave it one
 	assert(vao.vao != 0)
 	assert(vao.vertex_vbo != 0)
 	assert(vao.ebo != 0)
@@ -210,6 +211,7 @@ draw_state_reset :: fun(state: ^DrawState) {
 // Uploads each batch's instances sequentially, then issues one MDI call
 draw_state_render :: fun(state: ^DrawState) {	
 	vao_info := state.vao_state
+	assert(vao_info != void)   // draw_state_init gave it one
 	gl.BindBuffer(gl.ARRAY_BUFFER, vao_info.instance_vbo)
 
 	gpu_offset: isize = 0
