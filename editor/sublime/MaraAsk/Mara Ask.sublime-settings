@@ -31,21 +31,17 @@
     "show_in_window": true,
 
     // When the cursor rests this long in a .mara file, a `mara view` window is
-    // told where it is — the highlight's words, when there's one; else the
-    // name under the cursor; else, in a call's parentheses, the fun called:
+    // told where it is — a byte in the file as saved (a highlight's two) — and
+    // the compiler says what's there:
     "delay_ms": 300,
 
-    // ... a window open anywhere looks the words up in its Docs panel (mara
-    // docs): what the name at the cursor refers to first, the text matches below.
+    // ... the window looks it up in its Docs panel: what the name there refers
+    // to first, the text matches below.
     "docs_at_cursor": true,
 
-    // ... the window open on the module shows what's at the cursor at the top
-    // of its Ask panel (mara ask -cursor what at ...) — in a saved file.
+    // ... the window open on the module shows what's there at the top of its
+    // Ask panel (mara ask -cursor cursor at <file>@<byte>).
     "what_at_cursor": true,
-
-    // ... in a call's parentheses, off a name, the fun being called is looked
-    // up (signature help).
-    "signature_help": true,
 
     // When a .mara file is saved, a `mara view` window's Docs panel looks up
     // again what it shows (mara docs -reload; its reload button, F5), so the

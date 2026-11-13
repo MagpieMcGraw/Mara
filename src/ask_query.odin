@@ -221,11 +221,19 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.
     // `what at <file>:<line>:<col>` — the same point, to read.
-    if q.kind == "what" {
-        if q.target != "" || !ask_at_has_line(q.at) {
-            return "mara ask: `what` is about a place — `mara ask what at <file>:<line>`, or `<file>:<line>:<col>`\n", false
+    // `cursor at <file>@<byte>` — an editor's cursor, for a window's panels.
+    if q.kind == "cursor" {
+        if _, _, _, is_bytes := hit_byte_spec(q.at); q.target != "" || !(is_bytes || ask_at_has_column(q.at)) {
+            return "mara ask: `cursor` is about an editor's cursor — `mara ask cursor at <file>@<byte>`\n", false
         }
-        if !ask_at_has_column(q.at) { return ask_what_at_line(s.checked, q.at) }
+        return ask_cursor(&build_tree, s.all_files, s.checked.annot, q.at, s.checked)
+    }
+    if q.kind == "what" {
+        _, _, _, is_bytes := hit_byte_spec(q.at)
+        if q.target != "" || !(is_bytes || ask_at_has_line(q.at)) {
+            return "mara ask: `what` is about a place — `mara ask what at <file>:<line>`, `<file>:<line>:<col>` or `<file>@<byte>`\n", false
+        }
+        if !is_bytes && !ask_at_has_column(q.at) { return ask_what_at_line(s.checked, q.at) }
         return ask_what_at_point(&build_tree, s.all_files, s.checked.annot, q.at, uses = true, checked = s.checked)
     }
     if q.target != "" && q.at != "" {

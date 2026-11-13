@@ -2657,6 +2657,178 @@ in — calls includes
   {x = a.x + b.x, y = a.y + b.y}
   Vec(){x = a.x + b.x, y = a.y + b.y}   : Vec
   return Vec(){x = a.x + b.x, y = a.y + b.y}
+=== test/askcursor.mara | cursor at askcursor.mara@320
+docs	count	field	count	<work>/askcursor/askcursor.mara	9
+items[i].count
+Item.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcursor: twice
+
+declared
+  askcursor.mara:9  Item
+    count: i64
+written 1
+  askcursor.mara:20  main
+    items[i].count = 3   /* a block comment */
+read 1
+  askcursor.mara:21  main
+    n := twice(items[i].count)
+=== test/askcursor.mara | cursor at askcursor.mara@316
+docs	i	local	i	<work>/askcursor/askcursor.mara	18
+i
+i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcursor: twice
+
+declared
+  askcursor.mara:18  main
+    i := 2
+written 0
+read 2
+  askcursor.mara:20  main
+    items[i].count = 3   /* a block comment */
+  askcursor.mara:21  main
+    n := twice(items[i].count)
+=== test/askcursor.mara | cursor at askcursor.mara@317
+docs					0
+] : Item
+
+  items[i]   : Item
+  items[i].count   : i64
+  items[i].count = 3
+=== test/askcursor.mara | cursor at askcursor.mara@379
+docs					0
+) : i64
+
+  twice(items[i].count)   : i64
+  n := twice(items[i].count)
+=== test/askcursor.mara | cursor at askcursor.mara@364
+docs	items	local	items	<work>/askcursor/askcursor.mara	17
+items
+[4!]Item
+
+operations
+  .len .cap (4)   a[i]   a[a:b]   for x, i in a   for &x in a   .x .y .z .w  .xy .xyz
+  mara.core: filter
+
+declared
+  askcursor.mara:17  main
+    items : [4!]Item
+written 1
+  askcursor.mara:20  main
+    items[i].count = 3   /* a block comment */
+read 1
+  askcursor.mara:21  main
+    n := twice(items[i].count)
+=== test/askcursor.mara | cursor at askcursor.mara@295
+docs	Item	type	Item	<work>/askcursor/askcursor.mara	8
+Item — type
+  declared  askcursor.mara:8
+  Item :: struct
+
+operations
+  .count
+  Item{…}   print   into bytes: `bytes[k] = s`   for f in Item.T: its fields of type T
+=== test/askcursor.mara | cursor at askcursor.mara@453
+docs	print	builtin	print		0
+print — builtin
+  built into the compiler
+=== test/askcursor.mara | cursor at askcursor.mara@214
+docs	twice	fun	twice	<work>/askcursor/askcursor.mara	12
+twice — fun
+  declared  askcursor.mara:12
+  twice :: fun(x: i64) -> i64
+=== test/askcursor.mara | cursor at askcursor.mara@405
+docs	slice_add	fun	slice_add	<root>/code/core.mara	50
+++ — calls slice_add
+  declared  <root>/code/core.mara:50
+  slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T
+
+  &name ++ "é"   : ^[]utf8
+  &name ++ "é" ++ "/"   : ^[]utf8
+=== test/askcursor.mara | cursor at askcursor.mara@406
+docs	slice_add	fun	slice_add	<root>/code/core.mara	50
+++ — calls slice_add
+  declared  <root>/code/core.mara:50
+  slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T
+
+  &name ++ "é"   : ^[]utf8
+  &name ++ "é" ++ "/"   : ^[]utf8
+=== test/askcursor.mara | cursor at askcursor.mara@413
+docs	slice_add	fun	slice_add	<root>/code/core.mara	50
+++ — calls slice_add
+  declared  <root>/code/core.mara:50
+  slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T
+
+  &name ++ "é" ++ "/"   : ^[]utf8
+=== test/askcursor.mara | cursor at askcursor.mara@419
+docs	m	local	m	<work>/askcursor/askcursor.mara	24
+m
+i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcursor: twice
+
+declared
+  askcursor.mara:24  main
+    m := (n + 1) * 2
+written 0
+read 1
+  askcursor.mara:25  main
+    print(twice(n), m, name, it)
+=== test/askcursor.mara | cursor at askcursor.mara@328
+docs					0
+3 : i64
+
+  items[i].count = 3
+=== test/askcursor.mara | cursor at askcursor.mara@335
+=== test/askcursor.mara | cursor at askcursor.mara@51
+=== test/askcursor.mara | cursor at askcursor.mara@146
+=== test/askcursor.mara | cursor at askcursor.mara@425-436
+docs	(n + 1) * 2				0
+(n + 1) * 2 : i64
+
+  m := (n + 1) * 2
+=== test/askcursor.mara | cursor at askcursor.mara@364-378
+docs	items[i].count	field	count	<work>/askcursor/askcursor.mara	9
+items[i].count
+Item.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcursor: twice
+
+declared
+  askcursor.mara:9  Item
+    count: i64
+written 1
+  askcursor.mara:20  main
+    items[i].count = 3   /* a block comment */
+read 1
+  askcursor.mara:21  main
+    n := twice(items[i].count)
+=== test/askcursor.mara | what at askcursor.mara@320
+items[i].count
+Item.i64
+
+operations
+  + - * / %   +% -% *% wrap around   & | ~ << >>   == < <= > >=   f64(x) i64(x) u8(x)   text: int_text(n) in mara.string
+  askcursor: twice
+
+declared
+  askcursor.mara:9  Item
+    count: i64
+written 1
+  askcursor.mara:20  main
+    items[i].count = 3   /* a block comment */
+read 1
+  askcursor.mara:21  main
+    n := twice(items[i].count)
 === Pounce | Camera.view_and_projections
 Camera.view_and_projections — fun  camera.mara:25   (module camera)
 

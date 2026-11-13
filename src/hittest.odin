@@ -203,6 +203,8 @@ Hit_Point :: struct {
     tok_i:  int,
     at:     int,
     hits:   [dynamic]Tree_Id,
+    written: string,   // a highlight's text, over several tokens (hit_point_tokens)
+    blank:   bool,     // an editor's cursor on nothing: a blank, a comment (hit_point_bytes)
 }
 
 // A path as a key: whatever it's written from, the same file's the same.
@@ -372,11 +374,17 @@ ask_name_at :: proc(checked: ^Checked_Program, name, at, kind, dir, pkg: string,
 // false.
 @(private="file")
 hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: string) -> (p: Hit_Point, msg: string, ok: bool) {
+    // (An editor's cursor: `<file>@<byte>`, hit_point_bytes.)
+    if file, lo, hi, is_bytes := hit_byte_spec(spec); is_bytes {
+        src, want, missing := hit_find_file(all_files, file)
+        if src == nil { return p, missing, false }
+        return hit_point_bytes(t, src, want, lo, hi)
+    }
     // (From the end: a whole path's drive has a colon too.)
     col_at := strings.last_index_byte(spec, ':')
     line_at := strings.last_index_byte(spec[:max(col_at, 0)], ':')
     if col_at <= 0 || line_at <= 0 {
-        return p, fmt.tprintf("mara ask: `at %s` — expected <file>:<line>:<col>\n", spec), false
+        return p, fmt.tprintf("mara ask: `at %s` — expected <file>:<line>:<col>, or <file>@<byte>\n", spec), false
     }
     file := spec[:line_at]
     line, line_ok := strconv.parse_int(spec[line_at + 1:col_at])
@@ -384,12 +392,18 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
     if !line_ok || !col_ok || line < 1 || col < 1 {
         return p, fmt.tprintf("mara ask: `at %s` — line and column must be positive integers\n", spec), false
     }
+    src_file, want, missing := hit_find_file(all_files, file)
+    if src_file == nil { return p, missing, false }
+    return hit_point_in(t, src_file, want, line, col)
+}
 
+// The file a point names, and its name; nil, and what to say, for none.
+@(private="file")
+hit_find_file :: proc(all_files: map[string][dynamic]^Source_File, file: string) -> (src_file: ^Source_File, want, missing: string) {
     // (A file's name alone can be several files, in the stdlib or ours: the
     // one at that path from here if there is one, else one in this build.)
-    want := filepath.base(file)
+    want = filepath.base(file)
     named := hit_path_key(file)
-    src_file: ^Source_File
     search: for _, files in all_files {
         for f in files {
             if filepath.base(f.path) != want { continue }
@@ -400,10 +414,8 @@ hit_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: s
             if src_file == nil || (src_file.end_token <= src_file.first_token && f.end_token > f.first_token) { src_file = f }
         }
     }
-    if src_file == nil {
-        return p, fmt.tprintf("mara ask: no source file named '%s'\n", file), false
-    }
-    return hit_point_in(t, src_file, want, line, col)
+    if src_file == nil { missing = fmt.tprintf("mara ask: no source file named '%s'\n", file) }
+    return
 }
 
 // The point at a line and a column of a file, `want` the file's name.
@@ -412,27 +424,34 @@ hit_point_in :: proc(t: ^Tree, src_file: ^Source_File, want: string, line, col: 
     if src_file.end_token <= src_file.first_token {
         return p, fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
     }
-
-    // (Token positions print from the file's first.)
-    base := int(src_file.first_token)
     tokens := build_tokens[src_file.first_token:src_file.end_token]
     tok_i, found := token_index_at(tokens, line, col)
     if !found {
         return p, fmt.tprintf("mara ask: nothing at %s:%d:%d\n", want, line, col), false
     }
+    p, msg, ok = hit_point_tokens(t, src_file, want, tok_i, tok_i)
+    p.line, p.col = line, col   // (as asked: `ask at` says them)
+    return
+}
 
-    // (The file's nodes holding the cursor; the widest first — an equal one,
-    // the parent: made after its children.)
-    at := base + tok_i
+// The point at tokens first to last of a file (its own numbering): the nodes
+// holding them all, the widest first — an equal one, the parent: made after its
+// children. Its token, the last.
+@(private="file")
+hit_point_tokens :: proc(t: ^Tree, src_file: ^Source_File, want: string, first, last: int) -> (p: Hit_Point, msg: string, ok: bool) {
+    // (Token positions print from the file's first.)
+    base := int(src_file.first_token)
+    tokens := build_tokens[src_file.first_token:src_file.end_token]
+    at := base + last
     hits := make([dynamic]Tree_Id, context.temp_allocator)
     lo, hi := tree_file_nodes(t, build_tokens[at].file)
     for n in lo ..= hi {
-        first, end := int(t.first[n]), int(t.end[n])
-        if hit_listed(t.tag[n]) && first <= at && at < end { append(&hits, n) }
+        if hit_listed(t.tag[n]) && int(t.first[n]) <= base + first && at < int(t.end[n]) { append(&hits, n) }
     }
+    line, col := token_line(tokens[last]), token_col(tokens[last])
     if len(hits) == 0 {
         return p, fmt.tprintf("%s:%d:%d — token '%s', but no node covers it\n",
-                              want, line, col, token_text(tokens[tok_i])), false
+                              want, line, col, token_text(tokens[last])), false
     }
     width :: proc(t: ^Tree, n: Tree_Id) -> int { return int(t.end[n] - t.first[n]) }
     for a in 1 ..< len(hits) {
@@ -443,7 +462,147 @@ hit_point_in :: proc(t: ^Tree, src_file: ^Source_File, want: string, line, col: 
         }
         hits[b + 1] = h
     }
-    return Hit_Point{src_file, want, line, col, base, tokens, tok_i, at, hits}, "", true
+    p = Hit_Point{src = src_file, want = want, line = line, col = col, base = base, tokens = tokens, tok_i = last, at = at, hits = hits}
+    if first != last {
+        p.written = src_file.source[tokens[first].offset:tokens[last].offset + tokens[last].len]
+    }
+    return p, "", true
+}
+
+// --- an editor's cursor: a byte ------------------------------------------------
+
+// `<file>@<byte>`: an editor's cursor, between bytes byte-1 and byte of the file
+// as saved (from 0); `<file>@<lo>-<hi>`, a highlight. ok false for neither.
+hit_byte_spec :: proc(spec: string) -> (file: string, lo, hi: int, ok: bool) {
+    at := strings.last_index_byte(spec, '@')
+    if at <= 0 { return }
+    nums := spec[at + 1:]
+    a, b := nums, nums
+    if dash := strings.index_byte(nums, '-'); dash >= 0 { a, b = nums[:dash], nums[dash + 1:] }
+    l, l_ok := strconv.parse_int(a, 10)
+    h, h_ok := strconv.parse_int(b, 10)
+    if !l_ok || !h_ok || l < 0 || h < l { return }
+    return spec[:at], l, h, true
+}
+
+// What an editor's cursor at byte lo of a file means — hi past lo, a highlight:
+// the smallest node holding its tokens. A cursor touches the token it's in and
+// the one ending at it: a name or a literal before an operator, an operator
+// before other punctuation, the one before when they're alike (`items[i]|.x`).
+// Between tokens, the nearest on its line. Nothing (`blank`) on a line with
+// none, or in a comment. A call's `(` or `,`: the fun it calls, as it's written;
+// a fun's params' brackets and commas: the fun.
+@(private="file")
+hit_point_bytes :: proc(t: ^Tree, src: ^Source_File, want: string, lo, hi: int) -> (p: Hit_Point, msg: string, ok: bool) {
+    tokens := build_tokens[src.first_token:src.end_token]
+    real :: proc(k: Token_Kind) -> bool { return k != .Newline && k != .EOF }
+    end_of :: proc(tk: Token) -> int { return int(tk.offset + tk.len) }
+    nothing :: proc(p: ^Hit_Point, want: string, lo: int) -> (Hit_Point, string, bool) {
+        p.blank = true
+        return p^, fmt.tprintf("mara ask: nothing at %s@%d: a blank or a comment\n", want, lo), false
+    }
+    // (The last token starting at or before lo.)
+    i := -1
+    {
+        l, h := 0, len(tokens) - 1
+        for l <= h {
+            m := (l + h) / 2
+            if int(tokens[m].offset) <= lo { i = m; l = m + 1 } else { h = m - 1 }
+        }
+    }
+    // (A highlight: the tokens in it.)
+    if hi > lo {
+        first, last := -1, -1
+        for k := max(i, 0); k < len(tokens) && int(tokens[k].offset) < hi; k += 1 {
+            if !real(tokens[k].kind) || end_of(tokens[k]) <= lo { continue }
+            if first < 0 { first = k }
+            last = k
+        }
+        if first < 0 || last < 0 { return nothing(&p, want, lo) }
+        return hit_point_tokens(t, src, want, first, last)
+    }
+    // (In a block comment over lines: one Newline token.)
+    if i >= 0 && tokens[i].kind == .Newline && lo < end_of(tokens[i]) && strings.has_prefix(token_text(tokens[i]), "/*") {
+        return nothing(&p, want, lo)
+    }
+    rank :: proc(tk: Token) -> int {
+        #partial switch tk.kind {
+        case .Number, .String, .Char, .Identifier: return 3
+        case .Plus, .Minus, .Star, .Slash, .Modulo, .Plus_Plus, .Wrap_Plus, .Wrap_Minus, .Wrap_Star,
+             .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Shift_Left, .Shift_Right,
+             .Pipe, .Tilde, .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal, .And_Equal,
+             .Or_Equal, .Xor_Equal, .Shift_Left_Equal, .Shift_Right_Equal, .Wrap_Plus_Equal,
+             .Wrap_Minus_Equal, .Wrap_Star_Equal:
+            return 2
+        }
+        text := token_text(tk)
+        if len(text) > 0 && (text[0] == '_' || (text[0] | 0x20 >= 'a' && text[0] | 0x20 <= 'z')) { return 3 }   // (a keyword)
+        return 1
+    }
+    // (The token the cursor is in, and the one ending at it.)
+    inside, before := -1, -1
+    for k in ([2]int{i, i - 1}) {
+        if k < 0 || !real(tokens[k].kind) { continue }
+        if int(tokens[k].offset) <= lo && lo < end_of(tokens[k]) { inside = k }
+        if end_of(tokens[k]) == lo { before = k }
+    }
+    pick := before
+    if inside >= 0 && (before < 0 || rank(tokens[inside]) > rank(tokens[before])) { pick = inside }
+    if pick < 0 {
+        // (Between tokens: the nearest on the line, unless it's in a comment.)
+        line := token_line_at(src, lo)
+        line_lo := int(src.lines[line])
+        line_hi := int(src.lines[line + 1]) if line + 1 < len(src.lines) else len(src.source)
+        prev, next := -1, -1
+        for k := i; k >= 0 && end_of(tokens[k]) > line_lo; k -= 1 {
+            if real(tokens[k].kind) && end_of(tokens[k]) <= lo { prev = k; break }
+        }
+        for k := max(i, 0); k < len(tokens) && int(tokens[k].offset) < line_hi; k += 1 {
+            if real(tokens[k].kind) && int(tokens[k].offset) >= lo { next = k; break }
+        }
+        gap_lo := end_of(tokens[prev]) if prev >= 0 else line_lo
+        gap := src.source[gap_lo:lo]
+        if strings.contains(gap, "//") || strings.last_index(gap, "/*") > strings.last_index(gap, "*/") { return nothing(&p, want, lo) }
+        switch {
+        case prev < 0 && next < 0: return nothing(&p, want, lo)
+        case prev < 0:             pick = next
+        case next < 0:             pick = prev
+        case:                      pick = prev if lo - end_of(tokens[prev]) <= int(tokens[next].offset) - lo else next
+        }
+    }
+    p, msg, ok = hit_point_tokens(t, src, want, pick, pick)
+    if !ok { return }
+    // (A call's `(` or `,`: the fun it calls; a fun's params': the fun.)
+    #partial switch tokens[pick].kind {
+    case .Left_Paren, .Right_Paren, .Comma:
+        if len(t.parent) != len(t.tag) { tree_parents(t) }
+        inner := p.hits[len(p.hits) - 1]
+        to: Token_Id
+        #partial switch t.tag[inner] {
+        case .Call:
+            if tokens[pick].kind != .Right_Paren { to = t.main[inner] }
+        case .Method_Call:
+            if tokens[pick].kind != .Right_Paren { to = Token_Id(tree_rec(t, t.a[inner], 4)[1]) }
+        case .Fun_Def:
+            if up := t.parent[inner]; t.tag[up] == .Define { to = t.main[up] }
+        }
+        if to != 0 && int(build_tokens[to].file) == int(tokens[pick].file) {
+            k := int(to) - p.base
+            return hit_point_tokens(t, src, want, k, k)
+        }
+    }
+    return
+}
+
+// The line (from 0) byte b of a file is on.
+@(private="file")
+token_line_at :: proc(src: ^Source_File, b: int) -> int {
+    l, h, line := 0, len(src.lines) - 1, 0
+    for l <= h {
+        m := (l + h) / 2
+        if int(src.lines[m]) <= b { line = m; l = m + 1 } else { h = m - 1 }
+    }
+    return line
 }
 
 // The reference the name at `<file>:<line>:<col>` makes (mara lsp): its
@@ -577,6 +736,43 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
     return hit_what(t, a, &p, uses, "", checked)
 }
 
+// `mara ask cursor at <file>@<byte>`: what a window shows for an editor's cursor
+// (hit_point_bytes says which token it means). First a line for its Docs panel,
+// `docs<tab><words><tab><kind><tab><name><tab><path><tab><line>`: the words it
+// looks up — the name, the function an operator calls, a highlight's text; none
+// for punctuation — and what the point refers to, its declaration's place (a
+// keyword's kind "keyword", a builtin's path empty). Then `what at`'s answer.
+// Nothing at all on a blank or in a comment: what the window shows stays.
+ask_cursor :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a: ^Annotations, spec: string, checked: ^Checked_Program) -> (string, bool) {
+    p, msg, ok := hit_point(t, all_files, spec)
+    if !ok { return "" if p.blank else msg, p.blank }
+    tok := p.tokens[p.tok_i]
+    name := token_text(tok)
+    words, kind, def, path := "", "", "", ""
+    line := 0
+    place :: proc(decl: Token_Id) -> (def, path: string, line: int) {
+        tok := build_tokens[decl]
+        path = build_files[tok.file].path
+        if whole, err := filepath.abs(path, context.temp_allocator); err == nil { path = whole }
+        return token_text(tok), path, token_line(tok)
+    }
+    if r, _, refers := hit_ref(t, a, p.hits[:], p.at, name); refers {
+        words, kind, def = name, ref_kind_word(r.kind), name
+        if r.decl != 0 { def, path, line = place(r.decl) }
+    } else if calls := hit_op_calls(t, a, p.hits[:], p.at); len(calls) > 0 {
+        kind = "fun"
+        def, path, line = place(calls[0])
+        words = def
+    } else if _, is_keyword := keyword_lookup(name); is_keyword || name == "defer?" {
+        words, kind, def = name, "keyword", name
+    } else if tok.kind == .Identifier {
+        words = name
+    }
+    if p.written != "" { words = p.written }
+    what, found := hit_what(t, a, &p, true, "", checked)
+    return fmt.tprintf("docs\t%s\t%s\t%s\t%s\t%d\n%s", words, kind, def, path, line, what), found
+}
+
 // What `what at` says at a declaration's name, with its uses. `title` is its first line.
 ask_what_at_token :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string, checked: ^Checked_Program = nil) -> (string, bool) {
     tok := build_tokens[decl]
@@ -606,8 +802,8 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     own_type := hit_type(a, inner) if own else ""
 
     sb := strings.builder_make()
-    // (As written: a string with its quotes.)
-    written := span_text(p.src.source, token_span(p.tokens[p.tok_i]))
+    // (As written: a string with its quotes; a highlight, all of it.)
+    written := p.written if p.written != "" else span_text(p.src.source, token_span(p.tokens[p.tok_i]))
     fmt.sbprint(&sb, written)
     if refers { fmt.sbprintf(&sb, " — %s", ref_kind_word(r.kind)) }
     // (An operator an `overload` gives a meaning: the function it calls.)

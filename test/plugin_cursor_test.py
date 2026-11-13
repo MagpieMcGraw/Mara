@@ -1,6 +1,7 @@
 """The Sublime plugin's cursor: what it asks a window when the cursor rests and
 when a file is saved, in files with and without unsaved changes. Sublime stood
-in for, and mara too: this checks what's sent, not what's answered.
+in for, and mara too: this checks what's sent — a byte of the file as saved —
+not what's answered (test/ask.sh's cursor queries: which token it means).
 
     python test/plugin_cursor_test.py
 """
@@ -25,6 +26,12 @@ class Region:
 
     def empty(self):
         return self.a == self.b
+
+    def size(self):
+        return self.end() - self.begin()
+
+    def contains(self, point):
+        return self.begin() <= point <= self.end()
 
 
 class Settings(dict):
@@ -53,8 +60,6 @@ def run_mara(args, cwd):
 
 
 mara_ask._run_mara = run_mara
-docs = []   # (the words each rest gave Docs)
-mara_ask._docs_send = lambda mara, cwd, words, *a, **k: docs.append(words) or True
 mara_ask._tell_editor = lambda *a: None
 mara_ask._tell_colors = lambda *a: None
 
@@ -65,12 +70,16 @@ class View:
     def __init__(self, path, text, dirty=False):
         self.path, self.text, self.dirty = path, text, dirty
         self.caret = 0
+        self.anchor = None   # (a highlight's other end)
         self.view_id = View.next_id
         View.next_id += 1
         self.active = self
 
     def id(self):
         return self.view_id
+
+    def change_count(self):
+        return hash(self.text)
 
     def file_name(self):
         return self.path
@@ -88,7 +97,7 @@ class View:
         return types.SimpleNamespace(active_view=lambda: self.active)
 
     def sel(self):
-        return [Region(self.caret)]
+        return [Region(self.caret if self.anchor is None else self.anchor, self.caret)]
 
     def substr(self, region):
         if isinstance(region, int):   # (a point: its character)
@@ -104,24 +113,14 @@ class View:
         end = self.text.find("\n", point)
         return Region(start, len(self.text) if end < 0 else end)
 
-    def word(self, point):
-        ok = lambda c: c.isalnum() or c == "_"
-        a, b = point, point
-        while a > 0 and ok(self.text[a - 1]):
-            a -= 1
-        while b < len(self.text) and ok(self.text[b]):
-            b += 1
-        return Region(a, b)
+    def click(self, word, k=1):
+        self.caret = self.text.index(word) + k
+        self.anchor = None
+        return self
 
-    # (Enough of Sublime's: a comment runs from `//` to its line's end, a string
-    # between quotes on one line.)
-    def match_selector(self, point, selector):
-        line = self.substr(self.line(point))
-        before = line[:point - self.line(point).begin()]
-        return "//" in before or before.count('"') % 2 == 1
-
-    def click(self, word):
-        self.caret = self.text.index(word) + 1
+    def highlight(self, words):
+        self.anchor = self.text.index(words)
+        self.caret = self.anchor + len(words)
         return self
 
 
@@ -140,7 +139,6 @@ def check(what, got, want):
 
 def rest(view):
     del asked[:]
-    del docs[:]
     cursor.on_selection_modified_async(view)
     while timers:
         timers.pop()()
@@ -170,23 +168,32 @@ check("edits in two places: moved between them", L(["X", "X", "b", "c", "b", "Y"
 check("edits in two places: past them", L(["X", "X", "b", "c", "b", "Y", "d"], saved, 6), 4)
 check("edits in two places: the second not saved", L(["X", "b", "c", "b", "Y", "d"], saved, 4), None)
 
-# --- what's asked ------------------------------------------------------------
+# --- what's asked: a byte in the file as saved ---------------------------------
 
 folder = tempfile.mkdtemp()
 path = os.path.join(folder, "m.mara")
-disk = "module m\n\nfirst := 1\nsecond := 2\n"
-with open(path, "w", encoding="utf-8", newline="\r\n") as f:   # (on disk with CRLF, as ours are)
+disk = 'module m\n\nfirst := 1\nsecond := "é" ++ x\n'
+with open(path, "w", encoding="utf-8", newline="\r\n") as f:   # (CRLF on disk: Sublime's buffer has none)
     f.write(disk)
+raw = open(path, "rb").read()
 
 view = View(path, disk)
-check("nothing unsaved: what's at the point", rest(view.click("second")), ["-cursor what at m.mara:4:1"])
+at = raw.index(b"second") + 1
+check("nothing unsaved: the byte, CRs counted", rest(view.click("second")), ["-cursor cursor at m.mara@%d" % at])
 check("the same rest again: nothing", rest(view), [])
+at = raw.index(b"++")
+check("past a two-byte character: bytes, not characters", rest(view.click("++", 0)), ["-cursor cursor at m.mara@%d" % at])
+lo = raw.index(b"first := 1")
+check("a highlight: its two bytes", rest(view.highlight("first := 1")), ["-cursor cursor at m.mara@%d-%d" % (lo, lo + 10)])
+check("a highlight over lines: nothing", rest(view.highlight("1\nsecond")), [])
+view.click("\n\n", 1)
+check("a blank line: asked all the same (the compiler says nothing's there)", rest(view), ["-cursor cursor at m.mara@%d" % (raw.index(b"\r\n\r\n") + 2)])
 
-view = View(path, "module m\n\nadded := 0\nfirst := 1\nsecond := 2\n", dirty=True)
-check("unsaved, lines added above: the line in the saved file", rest(view.click("second")), ["-cursor what at m.mara:4:1"])
+view = View(path, 'module m\n\nadded := 0\nfirst := 1\nsecond := "é" ++ x\n', dirty=True)
+check("unsaved, lines added above: the line in the saved file", rest(view.click("second")), ["-cursor cursor at m.mara@%d" % (raw.index(b"second") + 1)])
 check("unsaved, on the new line: said to be unsaved", rest(view.click("added")), ["-cursor #unsaved"])
 
-view = View(path, "module m\n\nfirst := 12\nsecond := 2\n", dirty=True)
+view = View(path, 'module m\n\nfirst := 12\nsecond := "é" ++ x\n', dirty=True)
 check("unsaved, on a changed line: said to be unsaved", rest(view.click("first")), ["-cursor #unsaved"])
 
 gone = View(os.path.join(folder, "gone.mara"), "module m\nname := 1\n", dirty=True)
@@ -194,64 +201,12 @@ check("the file's not on disk: said to be unsaved", rest(gone.click("name")), ["
 
 view = View(path, disk)
 rest(view.click("second"))
-check("saved: asked again at the cursor", save(view), ["-cursor what at m.mara:4:1"])
-view.caret = view.text.index("\n\n") + 1
-check("saved, on nothing: nothing asked", save(view), [])
+check("saved: Ask asked again at the cursor", save(view), ["-cursor what at m.mara@%d" % (raw.index(b"second") + 1)])
 
 other = View(path, disk)
 other.click("second")
 other.active = View(path, disk)
 check("saved, another file being worked in: nothing asked", save(other), [])
-
-# --- an operator: what it calls ---------------------------------------------
-
-ops_path = os.path.join(folder, "ops.mara")
-ops = 'module ops\n\nfull := name ++ "a + b"\nsame := full == "x" // a + b\nf :: fun() -> i64\n'
-with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
-    f.write(ops)
-view = View(ops_path, ops)
-check("on `++`: what's at it", rest(view.click("++")), ["-cursor what at ops.mara:3:14"])
-view.caret = ops.index("++ ") + 2
-check("just past `++`: the same", mara_ask._rest_words(view), ("++", ops.index("++")))
-view.caret = ops.index("==")
-check("on `==`: what's at it", rest(view), ["-cursor what at ops.mara:4:14"])
-view.caret = ops.index("+ b\"")
-check("a `+` in a string: nothing", rest(view), [])
-view.caret = ops.index("+ b\n")
-check("a `+` in a comment: nothing", rest(view), [])
-view.caret = ops.index(":=") + 1
-check("`:=`: nothing", rest(view), [])
-view.caret = ops.index("->") + 1
-check("`->`: nothing", rest(view), [])
-view.caret = ops.index("++")
-check("on `++`: asked, Docs not (no word to look up)", (rest(view), docs), (["-cursor what at ops.mara:3:14"], []))
-
-idx = 'module ops\n\nn := items[i]\nm := items[i + 1].x\ns := "]"\n'
-with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
-    f.write(idx)
-view = View(ops_path, idx)
-view.caret = idx.index("i]") + 2
-check("just past an index's `]`: what's at it", rest(view), ["-cursor what at ops.mara:3:13"])
-view.caret = idx.index("i]") + 1
-check("before it, beside a name: the name", rest(view), ["-cursor what at ops.mara:3:12"])
-check("... and Docs looks the name up", docs, ["i"])
-view.caret = idx.index("1]") + 1
-check("beside a number: the `]`", rest(view), ["-cursor what at ops.mara:4:17"])
-view.caret = idx.index('"]"') + 2
-check("a `]` in a string: nothing", rest(view), [])
-
-calls = 'module ops\n\nn := twice(it.count)\nm := (n + 1) * 2\ntwice :: fun(x: i64) -> i64 {\n'
-with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
-    f.write(calls)
-view = View(ops_path, calls)
-view.caret = calls.index("count)") + 6
-check("just past a call's `)`: what's at it", rest(view), ["-cursor what at ops.mara:3:20"])
-view.caret = calls.index("1)") + 2
-check("just past a `)` around a value: what's at it", rest(view), ["-cursor what at ops.mara:4:12"])
-view.caret = calls.index("i64)") + 4
-check("just past a fun's params: nothing", rest(view), [])
-view.caret = calls.index("count)") + 5
-check("before a call's `)`: the name beside it", rest(view), ["-cursor what at ops.mara:3:15"])
 
 text = View(os.path.join(folder, "notes.txt"), "second")
 check("not a Mara file saved: nothing asked", save(text.click("second")), [])

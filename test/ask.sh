@@ -24,11 +24,14 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 # A file outside the module asked about (the stdlib's) prints as a whole
 # path, or as one from the module's directory (`..\code\math.mara`): its
 # root made <root>, its separators '/', so the goldens hold on any machine.
+# A fixture's own file, whole (the cursor's Docs line), is <work>'s.
 ROOT_NATIVE=$ROOT
-command -v cygpath > /dev/null && ROOT_NATIVE=$(cygpath -w "$ROOT")
-export ROOT ROOT_NATIVE
+WORK_NATIVE=$WORK
+command -v cygpath > /dev/null && ROOT_NATIVE=$(cygpath -w "$ROOT") && WORK_NATIVE=$(cygpath -w "$WORK")
+export ROOT ROOT_NATIVE WORK WORK_NATIVE
 norm_paths() {
-  perl -pe 's{(?:\Q$ENV{ROOT_NATIVE}\E|\Q$ENV{ROOT}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>$p"}ge;
+  perl -pe 's{(?:\Q$ENV{WORK_NATIVE}\E|\Q$ENV{WORK}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<work>$p"}ge;
+            s{(?:\Q$ENV{ROOT_NATIVE}\E|\Q$ENV{ROOT}\E)((?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>$p"}ge;
             s{(?:\.\.[\\/])+(code(?:[\\/][\w.-]+)+)}{my $p = $1; $p =~ tr|\\|/|; "<root>/$p"}ge'
 }
 actual=$WORK/actual.txt

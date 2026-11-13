@@ -357,32 +357,23 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 
 # ---- the cursor: docs and what's there, in a `mara view` window ----------------
 #
-# When the cursor rests (delay_ms), and only when where it is changed, a window
-# is told two things, for reading after an alt-tab:
-#   Docs (mara docs): the window looks the words up — what the name at the
-#     cursor refers to first, the compiler's answer, then the text matches in
+# When the cursor rests (delay_ms), and only when where it is changed, the
+# window is told where it is: `mara ask -cursor cursor at <file>@<byte>`, the
+# byte in the file as saved (from 0; a highlight on one line, `@<lo>-<hi>`).
+# The compiler says what's there — which token the cursor means, a blank or a
+# comment nothing — and the window shows it, for reading after an alt-tab:
+#   Docs: what the name there refers to first, then the text matches for it in
 #     the file's directory, the stdlib and doc/.
-#   Ask (mara ask -cursor what at <point>): the window moves to the file's
-#     module and shows what's at the cursor at the top of its Ask panel: a
-#     variable's or a field's types along its path, where it's declared, written
-#     and read; anything else named, what it is, its type, where it's declared.
-# The words: what's highlighted, when something is (one line; a whole fun isn't
-# words); else the name or the operator under the cursor (`++`: what it calls),
-# or an index's `]` beside it, a call's `)` just before it; else, in a call's
-# parentheses, the fun
-# being called (signature help). The point: the cursor — with a highlight, its
-# cursor end, so what's under the cursor shows as well. An unsaved file's
-# places may be stale: Docs then shows the text matches alone. Ask answers from
-# the saved file: the line asked about is found there (_saved_at), a line that
-# isn't there yet is said to be unsaved, and saving asks again at the cursor.
-# Off with "docs_at_cursor" / "what_at_cursor" / "signature_help".
+#   Ask: the window moves to the file's module and shows what's there at the
+#     top of its Ask panel: a variable's or a field's types along its path,
+#     where it's declared, written and read; anything else named, what it is,
+#     its type, where it's declared; an operator, the function it calls.
+# Ask answers from the saved file: an unsaved file's line is found there
+# (_saved_byte), a line that isn't there yet is said to be unsaved, and saving
+# asks again at the cursor. Off with "docs_at_cursor" / "what_at_cursor".
 
 _cursor_pending = [0]   # the latest rest's number: older ones don't send
-_cursor_sent = [None]   # (file, words, point) last sent: the same again isn't
-
-_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_WORDY_RE = re.compile(r"[A-Za-z_]")
-_NOT_CALLS = frozenset(("fun", "if", "elif", "for", "match", "return", "and", "or", "not", "do"))
+_cursor_sent = [None]   # (file, (lo, hi), change count) last sent: the same again isn't
 
 
 def _docs_cwd(view):
@@ -396,42 +387,16 @@ def _docs_cwd(view):
     return None
 
 
-# What a rest at the cursor looks up: the words and their point; (None, None) for
-# nothing there.
-def _rest_words(view):
+# The cursor's place, as points: (lo, hi), hi past lo for a highlight; None for
+# several cursors, or a highlight over lines (a whole fun isn't something there).
+def _rest_range(view):
     sel = view.sel()
     if len(sel) != 1:
-        return None, None
+        return None
     s = sel[0]
-    caret = s.b
-    if not s.empty():
-        text = view.substr(s).strip()
-        # (A highlight over lines — a whole fun — isn't words to look up.)
-        if not text or "\n" in text or len(text) > 200:
-            return None, None
-        # (The cursor end: just past the highlight when it was made left to
-        # right — its last character, then, not what follows it.)
-        return text, (s.b - 1 if s.b > s.a else s.b)
-    word = view.word(caret)
-    name = view.substr(word)
-    if _NAME_RE.match(name):
-        return name, word.begin()
-    op = _operator_at(view, caret)
-    if op is not None:
-        return op
-    # (Next to an index's `]`, just past a call's `)`: what's at it, `items[i]`,
-    # `twice(n)` and its type. Before a `)` is in the call: signature help's.)
-    for p in (caret - 1, caret):
-        if p < 0 or p >= view.size() or view.match_selector(p, "comment, string"):
-            continue
-        c = view.substr(p)
-        if c == "]" or (c == ")" and p == caret - 1 and not _closes_params(view, p)):
-            return c, p
-    if _settings().get("signature_help", True):
-        callee = _callee_at(view, caret)
-        if callee is not None:
-            return callee
-    return None, None
+    if not s.empty() and (s.size() > 200 or "\n" in view.substr(s)):
+        return None
+    return s.begin(), s.end()
 
 
 class MaraCursor(sublime_plugin.EventListener):
@@ -452,56 +417,37 @@ class MaraCursor(sublime_plugin.EventListener):
         active = window.active_view() if window else None
         if active is None or active.id() != view.id():
             return
-        words, point = _rest_words(view)
-        if words is not None:
-            _ask_cursor(mara, cwd, view, _docs_at(view, point))
+        place = _rest_range(view)
+        if place is not None and _settings().get("what_at_cursor", True):
+            _ask_cursor(mara, cwd, ["what"], _byte_spec(view, *place))
 
     def on_selection_modified_async(self, view):
         cwd = _docs_cwd(view)
-        if cwd is None:
+        if cwd is None or not view.file_name():
             return
-        words, point = _rest_words(view)
-        if words is None:
+        place = _rest_range(view)
+        if place is None:
             return
-        key = (view.file_name() or cwd, words, point)
+        key = (view.file_name(), place, view.change_count())   # (an edit: the same place may be something else)
         _cursor_pending[0] += 1
         number = _cursor_pending[0]
-        at = _docs_at(view, point)
         delay = _settings().get("delay_ms", 300)
-        sublime.set_timeout_async(lambda: _cursor_send(number, key, cwd, words, at, view), delay)
+        sublime.set_timeout_async(lambda: _cursor_send(number, key, cwd, view, place), delay)
 
 
-# A point as `mara docs at` and `mara ask what at` take it: "<file>:<line>:
-# <col>", from 1; None in a view with no file (the output pane).
-# What a right-click is on, to look up: the highlight it's in (one line of
-# it), else the name under it — from the command palette, no click: at the
-# cursor. The words and their point (a highlight's: its cursor end, as a rest
-# takes it); (None, None) for nothing there.
-def _words_clicked(view, event):
+# What a right-click is on: the highlight it's in (one line of it), else the
+# point — from the command palette, no click: the cursor. As points (lo, hi).
+def _place_clicked(view, event):
     if event is not None and "x" in event:
         point = view.window_to_text((event["x"], event["y"]))
     elif len(view.sel()):
         point = view.sel()[0].b
     else:
-        return None, None
-    for s in view.sel():
-        if not s.empty() and s.contains(point):
-            text = view.substr(s).strip()
-            if text and "\n" not in text and len(text) <= 200:
-                return text, (s.b - 1 if s.b > s.a else s.b)
-    word = view.word(point)
-    name = view.substr(word)
-    if _NAME_RE.match(name):
-        return name, word.begin()
-    return None, None
-
-
-def _docs_at(view, point):
-    fname = view.file_name()
-    if not fname:
         return None
-    row, col = view.rowcol(point)
-    return "%s:%d:%d" % (os.path.basename(fname), row + 1, col + 1)
+    for s in view.sel():
+        if not s.empty() and s.contains(point) and s.size() <= 200 and "\n" not in view.substr(s):
+            return s.begin(), s.end()
+    return point, point
 
 
 # The line in `saved` that line n of `now` is, as an index, both lists of lines:
@@ -527,105 +473,38 @@ def _saved_line(now, saved, n):
     return None
 
 
-# The point `at` in the file as it's saved, which is what Ask answers from: `at`
-# itself when nothing's unsaved, else the same place on its line in the saved
-# file. None when its line isn't in the saved file yet.
-def _saved_at(view, at):
-    if not view.is_dirty():
-        return at
+# Points lo to hi (one line) as the compiler takes them: "<file>@<byte>" or
+# "<file>@<lo>-<hi>", bytes in the file as saved, from 0 — Sublime counts
+# characters, and its buffer has no CRs. The line is found in the saved file
+# when there are unsaved edits; None when it isn't there yet.
+def _byte_spec(view, lo, hi):
     try:
-        with open(view.file_name(), encoding="utf-8", errors="replace") as f:
-            saved = f.read().split("\n")
+        with open(view.file_name(), "rb") as f:
+            saved = f.read().split(b"\n")
     except OSError:
         return None
-    name, line, col = at.rsplit(":", 2)
-    now = view.substr(sublime.Region(0, view.size())).split("\n")
-    found = _saved_line(now, saved, int(line) - 1)
-    return None if found is None else "%s:%d:%s" % (name, found + 1, col)
-
-
-# What's at the point `at` shown at the top of a window's Ask panel.
-def _ask_cursor(mara, cwd, view, at):
-    if not at or not _settings().get("what_at_cursor", True):
-        return
-    saved = _saved_at(view, at)
-    _run_mara([mara, "ask", "-cursor"] + (["what", "at", saved] if saved else ["#unsaved"]), cwd)
-
-
-# The operator the caret is on, or just after — `++`, `==`, `+=` — and where it
-# starts; None for none, or one in a comment or a string. (Not `=`, `->`, `&`,
-# `^`: they say nothing an operator's answer would.)
-_OPERATORS = frozenset((
-    "++", "+", "-", "*", "/", "%", "+%", "-%", "*%", "<<", ">>", "|", "~",
-    "==", "!=", "<", "<=", ">", ">=",
-    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "~=", "<<=", ">>=", "+%=", "-%=", "*%="))
-_OP_CHARS = frozenset("".join(_OPERATORS))
-
-
-def _operator_at(view, caret):
-    line = view.line(caret)
-    text = view.substr(line)
-    i = caret - line.begin()
-    if not (i < len(text) and text[i] in _OP_CHARS):
-        i -= 1
-        if i < 0 or text[i] not in _OP_CHARS:
+    row, col = view.rowcol(lo)
+    hi_col = col + (hi - lo)
+    if view.is_dirty():
+        now = view.substr(sublime.Region(0, view.size())).split("\n")
+        found = _saved_line(now, [l.rstrip(b"\r").decode("utf-8", "replace") for l in saved], row)
+        if found is None:
             return None
-    lo, hi = i, i + 1
-    while lo > 0 and text[lo - 1] in _OP_CHARS:
-        lo -= 1
-    while hi < len(text) and text[hi] in _OP_CHARS:
-        hi += 1
-    if text[lo:hi] not in _OPERATORS or view.match_selector(line.begin() + lo, "comment, string"):
+        row = found
+    if row >= len(saved):
         return None
-    return text[lo:hi], line.begin() + lo
+    start = sum(len(l) + 1 for l in saved[:row])
+    text = view.substr(view.line(lo))
+    b_lo = start + len(text[:col].encode("utf-8"))
+    b_hi = start + len(text[:hi_col].encode("utf-8"))
+    name = os.path.basename(view.file_name())
+    return "%s@%d" % (name, b_lo) if b_hi == b_lo else "%s@%d-%d" % (name, b_lo, b_hi)
 
 
-# Whether the `)` at p closes a fun's params, `fun(x: i64)`: what's at it is
-# the `)` alone.
-_FUN_END_RE = re.compile(r"(?:^|\W)(?:fun|fn)\s*$")
-
-
-def _closes_params(view, p):
-    start = view.line(p).begin()
-    text = view.substr(sublime.Region(start, p))
-    depth = 0
-    for i in range(len(text) - 1, -1, -1):
-        if text[i] == ")":
-            depth += 1
-        elif text[i] == "(":
-            if depth == 0:
-                return _FUN_END_RE.search(text[:i]) is not None
-            depth -= 1
-    return False
-
-
-# The call being typed at the caret: the name before its unclosed `(` on the
-# caret's line — a method's, after its `.` — and where that name starts. None
-# when the caret is in no call.
-def _callee_at(view, caret):
-    start = view.line(caret).begin()
-    text = view.substr(sublime.Region(start, caret))
-    depth = 0
-    i = len(text) - 1
-    while i >= 0:
-        c = text[i]
-        if c == ")":
-            depth += 1
-        elif c == "(":
-            if depth == 0:
-                break
-            depth -= 1
-        i -= 1
-    if i < 0:
-        return None
-    end = i
-    j = end
-    while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
-        j -= 1
-    name = text[j:end]
-    if not name or name[0].isdigit() or name in _NOT_CALLS:
-        return None
-    return name, start + j
+# What's at `spec` shown at the top of a window's Ask panel, the query `what`
+# (["cursor"]: its Docs panel too); a line that isn't saved yet, said so.
+def _ask_cursor(mara, cwd, what, spec):
+    _run_mara([mara, "ask", "-cursor"] + (what + ["at", spec] if spec else ["#unsaved"]), cwd)
 
 
 # The windows told how to open a file at a line — this Sublime's own subl,
@@ -726,32 +605,36 @@ def _tell_colors(mara, cwd, view):
         _colors_told[0] = words
 
 
-# The rest's two lookups, unless a newer rest came, or this one was sent already.
-def _cursor_send(number, key, cwd, words, at, view):
+# The rest's question, unless a newer rest came, or this one was sent already:
+# `cursor`, for both panels; `what`, Ask's alone; or Docs alone.
+def _cursor_send(number, key, cwd, view, place):
     if number != _cursor_pending[0] or _cursor_sent[0] == key:
         return
     _cursor_sent[0] = key
     mara = _settings().get("mara_path", "mara")
     _tell_editor(mara, cwd)
     _tell_colors(mara, cwd, view)
-    # (`++`, `]`: no word for Docs to look up — what it shows stays.)
-    if _settings().get("docs_at_cursor", True) and _WORDY_RE.search(words):
-        _docs_send(mara, cwd, words, at, say=False)
-    _ask_cursor(mara, cwd, view, at)
+    spec = _byte_spec(view, *place)
+    docs = _settings().get("docs_at_cursor", True)
+    if _settings().get("what_at_cursor", True):
+        _ask_cursor(mara, cwd, ["cursor"] if docs else ["what"], spec)
+    elif docs and spec:
+        _docs_send(mara, cwd, spec, say=False)
 
 
-# The words looked up in a window's Docs panel (mara docs), what it found on
-# the status bar — unless `say` is False: a cursor's rest says nothing there,
-# where the line and column are (the panel shows it). `wait`: a window just
-# opened may not listen yet — asked again, a little apart, until one answers
-# (DOCS_WAIT seconds at most). Whether one did.
+# What's at the point `at` (a byte, _byte_spec) looked up in a window's Docs
+# panel (mara docs at), what it found on the status bar — unless `say` is
+# False: a cursor's rest says nothing there, where the line and column are (the
+# panel shows it). `wait`: a window just opened may not listen yet — asked
+# again, a little apart, until one answers (DOCS_WAIT seconds at most). Whether
+# one did.
 DOCS_WAIT = 8.0
 
 
-def _docs_send(mara, cwd, words, at, wait=False, say=True):
+def _docs_send(mara, cwd, at, wait=False, say=True):
     give_up = time.time() + (DOCS_WAIT if wait else 0)
     while True:
-        rc, out = _run_mara([mara, "docs"] + (["at", at] if at else []) + [words], cwd)
+        rc, out = _run_mara([mara, "docs", "at", at], cwd)
         if "no window is open" not in out or time.time() >= give_up:
             break
         time.sleep(0.15)
@@ -813,8 +696,8 @@ class MaraViewCommand(sublime_plugin.TextCommand):
         mara = _settings().get("mara_path", "mara")
         module = _module_of(view)
         cwd = os.path.dirname(fname)
-        words, point = _words_clicked(view, event)
-        at = _docs_at(view, point) if words else None
+        place = _place_clicked(view, event)
+        at = _byte_spec(view, *place) if place else None
         _allow_foreground()
 
         def go():
@@ -823,12 +706,12 @@ class MaraViewCommand(sublime_plugin.TextCommand):
                 lines = out.strip().splitlines()
                 sublime.status_message("mara view: " + (lines[0] if lines else "failed (exit %d)" % rc))
                 return
-            if not words or not _docs_send(mara, cwd, words, at, wait=True):
+            if not at or not _docs_send(mara, cwd, at, wait=True):
                 return
             # (Once it's up: what the windows are told at a rest.)
             _tell_editor(mara, cwd)
             _tell_colors(mara, cwd, view)
-            _ask_cursor(mara, cwd, view, at)
+            _ask_cursor(mara, cwd, ["what"], at)
 
         threading.Thread(target=go, daemon=True).start()
 

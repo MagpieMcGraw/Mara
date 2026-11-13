@@ -1473,7 +1473,14 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
                                      params; where that can't be told, a use is listed as
                                      maybe. At a field's declaration: every value's. Anything
                                      else named: what it is, its type, where it's declared.
-                                     What's no name: the expressions around it, innermost first
+                                     What's no name: the expressions around it, innermost first;
+                                     an operator, the function it calls
+    mara ask what at camera.mara@1520    the same at a byte of the file (from 0), as an
+                                     editor's cursor is: between two tokens, a name's; just
+                                     past ']' or a call's ')', what they close; a call's '('
+                                     or ',', the fun called; spaces, the line's nearest token;
+                                     a blank line or a comment, nothing. '@lo-hi': a highlight
+    mara ask cursor at camera.mara@1520  the same, after a line for a window's Docs panel
 
   The window (mara view), when one is open, answers 'mara ask' from wherever
   it's run. -show: it shows the query and its answer in its Ask panel too (an
@@ -1676,8 +1683,10 @@ parse_args :: proc() -> CLI_Args {
         }
         args.docs = true
         rest := positional[2:]
-        // (`at <file>:<line>:<col>` first: the point the words are at.)
-        if len(rest) >= 2 && rest[0] == "at" && strings.count(rest[1], ":") >= 2 {
+        // (`at <file>:<line>:<col>` or `<file>@<byte>` first: the point the words are at.)
+        is_bytes := false
+        if len(rest) >= 2 { _, _, _, is_bytes = hit_byte_spec(rest[1]) }
+        if len(rest) >= 2 && rest[0] == "at" && (is_bytes || strings.count(rest[1], ":") >= 2) {
             args.docs_at = rest[1]
             rest = rest[2:]
         }
@@ -1775,8 +1784,14 @@ build_dirs_in :: proc(args: ^CLI_Args, dir: string) -> (problem: string) {
 module_at :: proc(dir, at: string) -> string {
     name, problem := module_here("", dir)
     if problem == "" { return name }
-    if colon := strings.index_byte(at, ':'); colon > 0 {
-        path, _ := filepath.join({dir, at[:colon]})
+    file := at
+    if f, _, _, is_bytes := hit_byte_spec(at); is_bytes {
+        file = f
+    } else if colon := strings.index_byte(at, ':'); colon > 0 {
+        file = at[:colon]
+    }
+    if file != "" {
+        path, _ := filepath.join({dir, file})
         if m := file_module(path); m != "" { return m }
     }
     return filepath.base(dir)

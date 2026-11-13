@@ -87,7 +87,7 @@ docs_via_view :: proc(args: CLI_Args) {
     exact := ""
     if args.docs_at != "" {
         name: string
-        exact, name = docs_exact(args, cwd, words)
+        exact, name = docs_exact(args, words)
         if words == "" { words = name }
     }
     request := strings.concatenate({"-docs ", cwd, "\t", words, exact}, context.temp_allocator)
@@ -138,51 +138,26 @@ colors_via_view :: proc(args: CLI_Args) {
     }
 }
 
-// What the name at `mara docs at <point>` refers to, as the docs request's
+// What the point of `mara docs at <point>` refers to, as the docs request's
 // last fields — "\t<kind>\t<name>\t<path>\t<line>", a builtin's path empty,
-// a keyword's kind "keyword" — and its name. "" when nothing there refers to
-// anything, or the point's token isn't the words' (the file changed since it
-// was saved: the point is on something else now).
-docs_exact :: proc(args: CLI_Args, cwd, words: string) -> (exact, name: string) {
-    // (`mara ask at`'s first lines: "<file>:<l>:<c>  token '<t>'", then
-    // "refers to: <kind> <name>  <file>:<line>".)
-    lines := strings.split_lines(docs_point_answer(args), context.temp_allocator)
-    if len(lines) < 2 { return }
-    token := ""
-    if at := strings.index(lines[0], "token '"); at >= 0 { token = strings.trim_suffix(lines[0][at + 7:], "'") }
-    if words != "" && !docs_same_word(token, words) { return }
-    // (A keyword refers to nothing: it's itself, shown by its entry in
-    // doc/basics.mara.)
-    if !strings.has_prefix(lines[1], "refers to: ") {
-        if _, is_keyword := keyword_lookup(token); is_keyword || token == "defer?" {
-            return fmt.tprintf("\tkeyword\t%s\t\t0", token), token
-        }
-        return
-    }
-    s := lines[1][len("refers to: "):]
-    space := strings.index_byte(s, ' ')
-    if space < 0 { return }
-    kind := s[:space]
-    s = s[space + 1:]
-    loc := ""
-    if gap := strings.index(s, "  "); gap >= 0 {
-        loc = strings.trim_space(s[gap + 2:])
-        s = s[:gap]
-    }
-    name = s
-    if loc == "" { return fmt.tprintf("\t%s\t%s\t\t0", kind, name), name }   // (a builtin)
-    colon := strings.last_index_byte(loc, ':')
-    if colon < 0 { return "", name }
-    path, line := loc[:colon], loc[colon + 1:]
-    if !filepath.is_abs(path) { path, _ = filepath.join({cwd, path}, context.temp_allocator) }
-    return fmt.tprintf("\t%s\t%s\t%s\t%s", kind, name, path, line), name
+// a keyword's kind "keyword" — and the words there (ask_cursor's first line).
+// No fields when nothing there refers to anything, or the words given aren't
+// the point's (the file changed since it was saved: it's on something else now).
+docs_exact :: proc(args: CLI_Args, words: string) -> (exact, found: string) {
+    answer := docs_point_answer(args)
+    first := answer[:max(strings.index_byte(answer, '\n'), 0)]
+    fields := strings.split(first, "\t", context.temp_allocator)
+    if len(fields) != 6 || fields[0] != "docs" { return }
+    found = fields[1]
+    if fields[2] == "" || (words != "" && !docs_same_word(found, words)) { return "", found }
+    return fmt.tprintf("\t%s\t%s\t%s\t%s", fields[2], fields[3], fields[4], fields[5]), found
 }
 
-// `mara ask at <point>`'s answer: the window's, when one is open and there's
-// a module here for it to ask about, else from a check made here. "" when it
-// failed.
+// `mara ask cursor at <point>`'s answer: the window's, when one is open and
+// there's a module here for it to ask about, else from a check made here. ""
+// when it failed.
 docs_point_answer :: proc(args: CLI_Args) -> string {
-    query := []string{"at", args.docs_at}
+    query := []string{"cursor", "at", args.docs_at}
     if module_is_in(".", args.pkg_name) {
         b := strings.builder_make(context.temp_allocator)
         view_write_here(&b, args.pkg_name)

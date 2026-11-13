@@ -235,6 +235,47 @@ test/askop.mara | what at askop.mara:24:15
 test/askop.mara | what at askop.mara:25:13
 test/askop.mara | what at askop.mara:15:23
 
+# An editor's cursor, a byte (`cursor at <file>@<byte>`): which token it means,
+# the Docs line before the answer; a blank or a comment, nothing.
+# on a name
+test/askcursor.mara | cursor at askcursor.mara@320
+# between a name and ]: the name
+test/askcursor.mara | cursor at askcursor.mara@316
+# just past ]: the ]
+test/askcursor.mara | cursor at askcursor.mara@317
+# just past a call's ): the call
+test/askcursor.mara | cursor at askcursor.mara@379
+# just inside a call's (: the name beside it
+test/askcursor.mara | cursor at askcursor.mara@364
+# in an empty call's (): the fun called
+test/askcursor.mara | cursor at askcursor.mara@295
+# a call's , : the fun
+test/askcursor.mara | cursor at askcursor.mara@453
+# a fun's params' ): the fun
+test/askcursor.mara | cursor at askcursor.mara@214
+# on ++ : the overload
+test/askcursor.mara | cursor at askcursor.mara@405
+# just past ++
+test/askcursor.mara | cursor at askcursor.mara@406
+# past a multi-byte character
+test/askcursor.mara | cursor at askcursor.mara@413
+# indentation: the line's first
+test/askcursor.mara | cursor at askcursor.mara@419
+# trailing a statement, spaces after: the last token
+test/askcursor.mara | cursor at askcursor.mara@328
+# in a block comment: nothing
+test/askcursor.mara | cursor at askcursor.mara@335
+# in a line comment: nothing
+test/askcursor.mara | cursor at askcursor.mara@51
+# a blank line: nothing
+test/askcursor.mara | cursor at askcursor.mara@146
+# a highlight: the expression
+test/askcursor.mara | cursor at askcursor.mara@425-436
+# a highlight of a field path
+test/askcursor.mara | cursor at askcursor.mara@364-378
+# `what at` takes a byte too.
+test/askcursor.mara | what at askcursor.mara@320
+
 # What a scope defines is that scope's: a fun in a struct's body is asked for
 # through the struct, as code names it, and by itself is a miss that says where
 # it is.

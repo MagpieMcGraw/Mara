@@ -19,7 +19,9 @@ use mara.sdl
 //                       <query>` would there
 //   -show -in ...       the same, shown in the Ask panel (an editor's queries)
 //   -cursor -in ...     the same, shown at the Ask panel's top: what's at the
-//                       editor's cursor (`mara ask -cursor what at <point>`)
+//                       editor's cursor (`mara ask -cursor cursor at <file>@<byte>`);
+//                       its answer's first line, "docs<tab>…", looked up in
+//                       the Docs panel (cursor_docs). No answer: both stay
 //   -raise -in "<folder>" <module>      the window brought to the front:
 //                       `mara view` with it open already
 // -show, -cursor and -raise also move the window to that module (hub_follow).
@@ -64,6 +66,7 @@ Hub :: struct {
 	cursor:    bool           // ... what's at the editor's cursor, shown at its top
 	cursor_started: bool      // ... its first line come: the last one's replaced
 	cursor_errors:  bool      // ... the module's errors in it: it doesn't check
+	cursor_dir: [1000]utf8   // ... the folder it's asked from: Docs looks there
 	gone:      bool           // ... its connection failed: the answer read on to its end
 	sent:      [2100]utf8   // ... the line serve was sent
 	answered:  bool           // ... any of the answer come
@@ -296,7 +299,28 @@ line_of :: fun(c: ^Client) -> []utf8 {
 // A "-docs <words>" line answered: the words looked up, the Docs panel
 // showing what's found; the connection sent it as text, its end line after.
 answer_docs :: fun(ui: ^Ui, c: ^Client) {
-	line := line_of(c)
+	docs_line(ui, line_of(c))
+	// (The lines it filled: the shown ones, or while pinned, the waiting ones.)
+	found := &ui.docs[ui.docs_front]
+	if ui.docs_pinned do found = &ui.docs[1 - ui.docs_front]
+	answer_lines(found, c, ui.search.count > 0 or ui.search.exact_shown)
+}
+
+// What an editor's cursor gives the Docs panel, the first line of serve's
+// answer to `cursor at`: "docs<tab><words><tab><kind><tab><name><tab><path>
+// <tab><line>", looked up as a "-docs" line from the folder it's asked from. No
+// words and nothing referred to (punctuation): what the panel shows stays.
+cursor_docs :: fun(ui: ^Ui, h: ^Hub, line: []utf8) {
+	if starts_with(line, "docs\t\t\t") do return
+	request : [5100]utf8
+	&request ++ "-docs "
+	&request ++ h.cursor_dir
+	&request ++ line[4 : line.len]
+	docs_line(ui, request)
+}
+
+// A "-docs <directory><tab><words>…" line looked up: the Docs panel shows what's found.
+docs_line :: fun(ui: ^Ui, line: []utf8) {
 	// (Its fields, between tabs: the directory, the words, then the cursor's
 	// kind, name, path and line. One field alone: the words, the window's
 	// own directory.)
@@ -327,10 +351,6 @@ answer_docs :: fun(ui: ^Ui, c: ^Client) {
 	}
 	docs_search(ui, dir, words, ex, -1)
 	ui.dirty = true
-	// (The lines it filled: the shown ones, or while pinned, the waiting ones.)
-	found := &ui.docs[ui.docs_front]
-	if ui.docs_pinned do found = &ui.docs[1 - ui.docs_front]
-	answer_lines(found, c, ui.search.count > 0 or ui.search.exact_shown)
 }
 
 // Lines sent as an answer: the status line, a blank one, each line shown (a
@@ -374,6 +394,8 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	if h.shown do query = line[6 : line.len]
 	if h.cursor do query = line[8 : line.len]
 	dir, name, asked := line_place(query)
+	h.cursor_dir.len = 0
+	if h.cursor do &h.cursor_dir ++ dir[0 : min_int(dir.len, h.cursor_dir.cap)]
 	if h.shown or h.cursor do hub_follow(ui, h, dir, name)
 	if h.shown {
 		lines_clear(&ui.asked)
@@ -460,13 +482,20 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 					lines_status(&ui.asked, "Answered.", STYLE_DIM)
 				}
 			}
-			// (Nothing at the cursor — a blank, a comment: nothing shown. The
-			// module not checking: why, kept, under its title.)
+			// (Nothing at the cursor — a blank, a comment — answers nothing:
+			// what's shown stays. A failure clears it; the module not checking
+			// keeps why, under its title.)
 			failed := line == ANSWER_FAILED and not h.cursor_errors
-			if h.cursor and (failed or not h.cursor_started) do lines_clear(&ui.at_cursor)
+			if h.cursor and failed do lines_clear(&ui.at_cursor)
 			ui.dirty = true
 			h.current.len = 0
 			return
+		}
+		// (A cursor's answer starts with its Docs panel's line.)
+		if h.cursor and not h.cursor_started and starts_with(h.current, "docs\t") {
+			cursor_docs(ui, h, h.current)
+			h.current.len = 0
+			continue
 		}
 		if h.shown {
 			lines_add(&ui.asked, h.current, STYLE_TEXT)

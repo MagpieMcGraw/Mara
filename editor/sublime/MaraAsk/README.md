@@ -37,28 +37,28 @@ appears in an output panel with every `file:line` clickable.
   file, the window is told where it is, for reading after an alt-tab. It follows
   you: it moves to that file's module, and its title says which one. Reading in
   the stdlib or doc/ doesn't move it.
-  - its **Docs** panel (`mara docs`) looks the words up: what the name at the
-    cursor refers to first — the compiler's answer, a local's or a param's too
+  - its **Docs** panel looks it up: what the name at the cursor (an
+    operator: the function it calls) refers to first — the compiler's answer, a local's or a param's too
     — then the text matches in the file's directory, the stdlib and doc/, with
     doc comments and signatures;
-  - its **Ask** panel (`mara ask -cursor what at <file>:<line>:<col>`) shows
+  - its **Ask** panel shows
     what's at the cursor at its top: for a variable or a field, the types along
     its path, where it's declared, and every place it's written and read in the
     module and the modules it uses, each opening in the editor when clicked. A
     field used through a value lists that value's uses, followed through locals
     and params, with any it can't be sure of under `maybe`; at the field's
     declaration, every value's. For anything else named, what it is, its type and
-    where it's declared.
+    where it's declared; an operator, the function it calls.
 
-  The words: what's **highlighted**, when something is (one line — a highlight
-  over lines isn't looked up); else the name under the cursor; else, in a
-  call's parentheses, the fun being called (signature help). The point: the
-  cursor — with a highlight, its cursor end, so what's under the cursor shows
-  too. In an unsaved file the places may be stale, so Docs shows the text matches
-  alone. Ask answers from the saved file: it finds the line you're on there, so
-  the line numbers it lists are the saved file's, and a line that isn't saved yet
-  it says so. Saving asks again at the cursor. The status bar says how many were
-  found.
+  The plugin sends one byte, the cursor's place in the saved file (`mara ask
+  -cursor cursor at <file>@<byte>`; a **highlight** on one line, two), and the
+  compiler says what's there. Of the two tokens a cursor can touch, a name
+  wins; just past `]` or a call's `)`, what they close; in a call's `(` or `,`,
+  the fun called; between tokens, the nearest on the line; on a blank line or
+  in a comment, nothing, and what the window shows stays. A highlight is the
+  smallest expression holding it. Ask answers from the saved file: it finds the
+  line you're on there, so the line numbers it lists are the saved file's, and a
+  line that isn't saved yet it says so. Saving asks again at the cursor.
 
   The window is also told where this Sublime is (`mara editor`, once it's
   open): a call in its **Crash** panel — the program's last crash, the calls
@@ -93,11 +93,11 @@ LSP's has no `"id"`, and Sublime only merges menu items by id — another
   any scope your color scheme defines).
 - `show_in_window` — show queries in a `mara view` window's Ask panel (default `true`).
 - `delay_ms` — how long the cursor rests before a window is told (default `300`).
-- `docs_at_cursor` — look the words up in the window's Docs panel (default `true`).
+- `docs_at_cursor` — look what's at the cursor up in the window's Docs panel
+  (default `true`).
 - `what_at_cursor` — show what's at the cursor at the top of the window's Ask
-  panel (default `true`).
-- `signature_help` — in a call's parentheses, off a name, look up the fun being
-  called (default `true`).
+  panel (default `true`). Which token the cursor means is the compiler's call:
+  the plugin sends a byte (`mara ask -cursor cursor at <file>@<byte>`).
 - `tell_colors` — tell the windows your color scheme's colors, for their Sublime
   theme (default `true`).
 

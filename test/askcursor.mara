@@ -1,0 +1,26 @@
+module askcursor
+
+// `cursor at <file>@<byte>`: which token an editor's cursor means, and the
+// Docs line before the answer. A comment: nothing.
+
+use mara.core
+
+Item :: struct {
+	count: i64
+}
+
+twice :: fun(x: i64) -> i64 {
+	return x * 2
+}
+
+main :: fun() {
+	items : [4!]Item
+	i := 2
+	it := Item(){count = 1}
+	items[i].count = 3   /* a block comment */
+	n := twice(items[i].count)
+	name : [64]utf8
+	&name ++ "é" ++ "/"
+	m := (n + 1) * 2
+	print(twice(n), m, name, it)
+}
