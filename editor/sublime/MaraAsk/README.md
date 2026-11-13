@@ -74,9 +74,10 @@ appears in an output panel with every `file:line` clickable.
 | `mara_ask_pick` | `Ctrl+K Ctrl+D` | choose a matrix cell (types/call/flow × above/below) |
 | `mara_ask_clear_highlights` | `Ctrl+K Ctrl+C` | clear the in-code flow highlight |
 | `mara_view` | right-click → Open mara view | the window (`mara view`) on the file's module — brought to the front and moved here when it's open already — with what was right-clicked looked up there (its Docs, and Ask's what's-at-the-cursor), as a rest on it would |
+| `mara_use_name` | right-click a `use` line → Name this use… | the name the file writes that module's names through, changed with every name written through it (`mara edit <prefix>.use [name]`): asks for the name — `gl` makes `use mara.open_gl` into `gl :: use mara.open_gl` and `Clear()` into `gl.Clear()`; none makes it a plain use and `gl.Clear()` into `Clear()`. Unsaved .mara files are saved first; the compiler checks the module again and puts the files back if it doesn't check (what it said is shown in a panel) |
 
 All cells are also in the command palette (`Mara Ask: …`; the window: `Mara:
-open mara view`). Rebind in `Default (Windows).sublime-keymap`.
+open mara view`; a use's name: `Mara: name this use…`). Rebind in `Default (Windows).sublime-keymap`.
 
 The window's item is in the right-click menu itself, not LSP's submenu:
 LSP's has no `"id"`, and Sublime only merges menu items by id — another

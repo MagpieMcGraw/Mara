@@ -1,4 +1,6 @@
 [
     // The window on this file's module (shown for .mara files only).
-    { "caption": "Open mara view", "command": "mara_view" }
+    { "caption": "Open mara view", "command": "mara_view" },
+    // On a use line: the name its module's names are written through.
+    { "caption": "Name this use…", "command": "mara_use_name" }
 ]

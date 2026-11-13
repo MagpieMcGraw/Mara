@@ -718,3 +718,68 @@ class MaraViewCommand(sublime_plugin.TextCommand):
     def is_visible(self):
         fname = self.view.file_name()
         return bool(fname and fname.endswith(".mara")) or self.view.match_selector(0, "source.mara")
+
+
+# ---- a use's name ------------------------------------------------------------
+# On a `use` line — `use mara.open_gl`, `gl :: use mara.open_gl` — the name the
+# file writes that module's names through, changed with every name written
+# through it: `mara edit <module> <prefix>.use [name]`. A name: its names go
+# through it (`gl.Clear()`). None: the use is a plain one and its names are
+# written by themselves (`Clear()`). The compiler checks the module again
+# afterwards and puts the files back if it doesn't check.
+
+_USE_RE = re.compile(r"^\s*(?:([A-Za-z_]\w*)\s*::\s*)?(?:use|include)\s+([A-Za-z_][\w.]*)\s*(?://.*)?$")
+
+
+def _use_at(view, event):
+    # The use written on the line clicked, or the cursor's: (its name or None,
+    # the module's path); None when the line isn't a use.
+    place = _place_clicked(view, event)
+    if not place:
+        return None
+    m = _USE_RE.match(view.substr(view.line(place[0])))
+    return (m.group(1), m.group(2)) if m else None
+
+
+class MaraUseNameCommand(sublime_plugin.TextCommand):
+    def want_event(self):
+        return True
+
+    def run(self, edit, event=None):
+        view = self.view
+        window = view.window()
+        fname = view.file_name()
+        use = _use_at(view, event)
+        module = _module_of(view)
+        if not fname or not use or not module:
+            sublime.status_message("mara: put the cursor on a use line of a saved .mara file")
+            return
+        alias, path = use
+
+        def named(name):
+            name = name.strip()
+            if name == (alias or ""):
+                return
+            # (The compiler edits the files on disk: what's unsaved goes there first.)
+            for v in window.views():
+                if v.is_dirty() and (v.file_name() or "").endswith(".mara"):
+                    v.run_command("save", {"async": False})
+            mara = _settings().get("mara_path", "mara")
+            args = [mara, "edit", module, (alias or path) + ".use"] + ([name] if name else [])
+
+            def go():
+                rc, out = _run_mara(args, os.path.dirname(fname))
+                lines = out.strip().splitlines()
+                sublime.status_message("mara: " + (lines[-1] if lines else "edit failed (exit %d)" % rc))
+                if rc != 0:
+                    panel = window.create_output_panel("mara_edit")
+                    panel.run_command("append", {"characters": out})
+                    window.run_command("show_panel", {"panel": "output.mara_edit"})
+
+            threading.Thread(target=go, daemon=True).start()
+
+        window.show_input_panel("%s's names through (none: by themselves):" % path, alias or "", named, None, None)
+
+    def is_visible(self, event=None):
+        fname = self.view.file_name()
+        return bool(fname and fname.endswith(".mara")) and _use_at(self.view, event) is not None
