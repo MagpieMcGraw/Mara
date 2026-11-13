@@ -406,7 +406,6 @@ order_entry_text :: proc(t: ^Tree, o: Order, to: []string, e: Tree_Id) -> string
 }
 
 // `file:line:col` of a token.
-@(private="file")
 token_location :: proc(tok: Token) -> string {
     return fmt.tprintf("%s:%d:%d", build_files[tok.file].path, token_line(tok), token_col(tok))
 }
@@ -416,11 +415,13 @@ token_location :: proc(tok: Token) -> string {
 // `mara edit [module] <name>.<fields|results|params> <part> ...` (EDIT_USAGE):
 // the order named put in the one given, in the module checked here — the
 // files written. `<fun>.calls`: the fun called where its body is written out
-// (shape_matches). What was done, or what stopped it (false).
-edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (said: string, ok: bool) {
+// (shape_matches). `<prefix>.use`: how a use names its module (edit_use.odin).
+// What was done, or what stopped it (false).
+edit_run :: proc(checked: ^Checked_Program, module, target: string, to: []string) -> (said: string, ok: bool) {
     dot := strings.last_index_byte(target, '.')
-    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do|elif>\n", target), false }
+    if dot <= 0 { return fmt.tprintf("mara edit: '%s' isn't <name>.<fields|results|params|calls|do|elif|use>\n", target), false }
     name, kind_word := target[:dot], target[dot + 1:]
+    if kind_word == "use" { return edit_use(checked, module, name, to) }
     if kind_word == "calls" { return edit_calls(checked, name) }
     if kind_word == "do" { return edit_do(checked, name) }
     if kind_word == "elif" { return edit_elif(checked, name) }
@@ -429,7 +430,7 @@ edit_run :: proc(checked: ^Checked_Program, target: string, to: []string) -> (sa
     case "fields":  kind = .Fields
     case "results": kind = .Results
     case "params":  kind = .Params
-    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls, do or elif\n", kind_word), false
+    case:           return fmt.tprintf("mara edit: '%s': what to edit is fields, results, params, calls, do, elif or use\n", kind_word), false
     }
     orders := orders_of(&build_tree, checked.annot)
     found := make([dynamic]Order)
@@ -550,7 +551,8 @@ edit_apply :: proc(edits: []Order_Edit) -> (written: []string, problem: string) 
     }
     out := make([dynamic]string)
     for file, list in by_file {
-        slice.sort_by(list[:], proc(x, y: Order_Edit) -> bool { return x.at > y.at })
+        // (Last first; two at one place in the order given: the first made stays nearest what follows.)
+        slice.stable_sort_by(list[:], proc(x, y: Order_Edit) -> bool { return x.at > y.at })
         text := build_files[file].source
         for e in list { text = strings.concatenate({text[:e.at], e.text, text[e.end:]}) }
         path := build_files[file].path

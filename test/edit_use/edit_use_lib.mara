@@ -1,0 +1,8 @@
+module edit_use_lib
+
+Mode :: union { Fast  Slow }
+State :: struct { v: i64 = 3 }
+LIMIT :: 10
+
+twice :: fun(x: i64) -> i64 { return x * 2 }
+show :: fun(s: State) -> i64 { return s.v }

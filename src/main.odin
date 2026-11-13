@@ -1138,7 +1138,7 @@ run_view :: proc(args: CLI_Args) {
 // summary — for build and ask to print and exit on, and serve to answer
 // with. `shared`: the module builds a DLL (no main, or -shared).
 check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, perf: ^Performance_Timer) -> (checked: ^Checked_Program, shared: bool, failure: string) {
-    analysis := args.ask || args.serve || args.edit   // (read-only: no code, no entry point needed)
+    analysis := args.ask || args.serve || args.edit || os.get_env("MARA_CHECK_ONLY", context.temp_allocator) != ""   // (read-only: no code, no entry point needed)
 
     perf_timer_mark(perf, "parse")
     parse_errors := parse_target_files()
@@ -1290,6 +1290,7 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
        mara edit [module] <fun>.calls
        mara edit [module] <fun>.do
        mara edit [module] <fun>.elif
+       mara edit [module] <prefix>.use [name]
 
   Puts a struct's fields, a fun's results or a fun's params in another
   order, and every place that gives them by position with them: the
@@ -1318,7 +1319,21 @@ EDIT_USAGE :: `Usage: mara edit [module] <name>.<fields|results|params> <part> .
   before the last ends in a return, break or continue, so the next if is
   only tested when the one before was false.
 
-    mara edit next_token.elif`
+    mara edit next_token.elif
+
+  mara edit [module] <prefix>.use [name] changes how the module's files name
+  a module they use, the use's line and every name written through it. The
+  prefix is the name the use gives now: gl for (gl :: use mara.open_gl),
+  open_gl (or mara.open_gl) for a plain (use mara.open_gl). With a name, the
+  use becomes (name :: use ...) and its names go through it. With none, it
+  becomes a plain use and its names are written by themselves — one that
+  would mean something else there stays through the module's own name. The
+  module is checked again afterwards; if it doesn't check, its files are put
+  back.
+
+    mara edit gl.use glx          gl.Clear()  ->  glx.Clear()
+    mara edit gl.use              gl.Clear()  ->  Clear()
+    mara edit open_gl.use gl      Clear()     ->  gl.Clear()`
 
 DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
        mara docs -reload
@@ -1591,7 +1606,12 @@ parse_args :: proc() -> CLI_Args {
             return args
         }
         cwd, _ := os.get_working_directory(context.allocator)
-        if !strings.contains(rest[0], ".") {
+        // (What to edit ends in its kind; a word before it is the module.)
+        is_target :: proc(word: string) -> bool {
+            for kind in ([]string{".fields", ".results", ".params", ".calls", ".do", ".elif", ".use"}) { if strings.has_suffix(word, kind) { return true } }
+            return false
+        }
+        if !is_target(rest[0]) {
             args.pkg_name, rest = rest[0], rest[1:]
         } else {
             name, problem := module_here("edit", cwd)
@@ -1601,7 +1621,7 @@ parse_args :: proc() -> CLI_Args {
             }
             args.pkg_name = name
         }
-        if len(rest) < 2 && !(len(rest) == 1 && (strings.has_suffix(rest[0], ".calls") || strings.has_suffix(rest[0], ".do") || strings.has_suffix(rest[0], ".elif"))) {
+        if len(rest) < 2 && !(len(rest) == 1 && (strings.has_suffix(rest[0], ".calls") || strings.has_suffix(rest[0], ".do") || strings.has_suffix(rest[0], ".elif") || strings.has_suffix(rest[0], ".use"))) {
             fmt.println(EDIT_USAGE)
             return args
         }
@@ -1913,15 +1933,22 @@ main :: proc() {
 
     checked, pkg_shared, failure := check_module(args, files, &perf)
     if failure != "" {
-        perf_timer_end(&perf)
+        if os.get_env("MARA_CHECK_ONLY", context.temp_allocator) == "" { perf_timer_end(&perf) }
         fmt.print(failure)
         os.exit(1)
+    }
+
+    // (MARA_CHECK_ONLY: the check, and nothing after — how `mara edit` sees
+    // that a module still checks with its files rewritten.)
+    if os.get_env("MARA_CHECK_ONLY", context.temp_allocator) != "" {
+        flush_diagnostics()
+        return
     }
 
     // `edit` stops here too: the orders the check found, one put in another (edit.odin).
     if args.edit {
         flush_diagnostics()
-        said, ok := edit_run(checked, args.edit_target, args.edit_to)
+        said, ok := edit_run(checked, args.pkg_name, args.edit_target, args.edit_to)
         fmt.print(said)
         if !ok { os.exit(1) }
         return

@@ -131,6 +131,62 @@ def main():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+    # How a use names its module: another name, none (its names by
+    # themselves), a name again — the program meaning what it did each time.
+    d = tempfile.mkdtemp(prefix="mara_edit_")
+    try:
+        for f in os.listdir(os.path.join(ROOT, "test", "edit_use")):
+            if f.endswith(".mara"):
+                shutil.copy(os.path.join(ROOT, "test", "edit_use", f), d)
+        exe = os.path.join(d, "prefixes.exe" if os.name == "nt" else "prefixes")
+        original = read(d, "prefixes.mara")
+
+        def runs(what):
+            code, out = mara(d, "build", "prefixes")
+            got = subprocess.run([exe], capture_output=True, text=True).stdout.strip()
+            check(what + ": the program builds, and means what it did", code == 0 and got == "10 4 7 3 1", (got, out))
+
+        runs("use, before")
+        code, out = mara(d, "edit", "prefixes", "lib.use", "other")
+        text = read(d, "prefixes.mara")
+        check("use: another name, said", code == 0 and "edit_use_lib goes by other now: 7 of its names" in out, out)
+        check("use: its line and every name through it", "other :: use edit_use_lib" in text and "lib.LIMIT" not in text and "lib.Mode" not in text
+              and "other.LIMIT, other.twice(2), mine.w, other.show(s), mode_speed(other.Slow)" in text, text)
+        runs("use, another name")
+
+        code, out = mara(d, "edit", "prefixes", "other.use", "State")
+        check("use: a name that means something already, refused", code == 1 and "'State' means something already" in out
+              and read(d, "prefixes.mara") == text, out)
+
+        code, out = mara(d, "edit", "prefixes", "other.use")
+        text = read(d, "prefixes.mara")
+        check("use: no name, said — one kept", code == 0 and "names are by themselves now: 6 of them, and 1 kept through edit_use_lib" in out, out)
+        check("use: a plain use, the names bare, the module's own State's left, the library's through its module",
+              "\nuse edit_use_lib\n" in text.replace("\r", "") and "mine : State" in text and "s := edit_use_lib.State()" in text
+              and "print(LIMIT, twice(2), mine.w, show(s), mode_speed(Slow))" in text and "m: Mode" in text and "m == Fast" in text, text)
+        runs("use, no name")
+        code, out = mara(d, "edit", "prefixes", "edit_use_lib.use")
+        check("use: no name again, nothing to do", code == 0 and "by themselves in" in out and "already" in out, out)
+
+        # (A method call that calls the module's fun: the fun called through the name.)
+        open(os.path.join(d, "prefixes.mara"), "w", encoding="utf-8", newline="").write(text.replace("show(s)", "s.show()"))
+        runs("use, a method call")
+        code, out = mara(d, "edit", "prefixes", "edit_use_lib.use", "lib")
+        check("use: a name again, said", code == 0 and "edit_use_lib goes by lib now: 7 of its names" in out, out)
+        check("use: as it was written at first", read(d, "prefixes.mara") == original, read(d, "prefixes.mara"))
+        runs("use, a name again")
+
+        # The module's own fun of a library's name: its names by themselves
+        # would make `twice(2)` either — the files are put back.
+        before = read(d, "clash.mara")
+        code, out = mara(d, "edit", "clash", "lib.use")
+        check("use: an edit that doesn't check is undone, said why", code == 1 and "'twice' is ambiguous" in out
+              and "its files are as they were" in out and read(d, "clash.mara") == before, out)
+        code, out = mara(d, "edit", "clash", "nothing.use", "x")
+        check("use: no such use, said", code == 1 and "no use in clash names a module nothing" in out, out)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
     if bad:
         print("EDIT: %d FAILED" % len(bad))
         sys.exit(1)

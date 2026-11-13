@@ -1,0 +1,20 @@
+module prefixes
+
+// test/edit_test.py changes how this module names edit_use_lib: `mara edit
+// lib.use …`. Its own State is what the bare name means here.
+
+use mara.core
+lib :: use edit_use_lib
+
+State :: struct { w: i64 = 7 }
+
+mode_speed :: fun(m: lib.Mode) -> i64 {
+	if m == lib.Fast do return 9
+	return 1
+}
+
+main :: fun() {
+	mine : State
+	s := lib.State()
+	print(lib.LIMIT, lib.twice(2), mine.w, lib.show(s), mode_speed(lib.Slow))
+}

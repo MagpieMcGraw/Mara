@@ -1,0 +1,13 @@
+module clash
+
+// Its own fun is a twice too: with edit_use_lib's names by themselves,
+// `twice(2)` would mean either — the edit is undone.
+
+use mara.core
+lib :: use edit_use_lib
+
+twice :: fun(x: i64) -> i64 { return x * 3 }
+
+main :: fun() {
+	print(lib.LIMIT, twice(2))
+}
