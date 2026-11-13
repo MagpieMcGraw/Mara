@@ -64,6 +64,7 @@ Resolver :: struct {
     records:    [dynamic]^Scope,        // every scope's record that covers text, by where it starts once sorted (names_record_at)
     records_sorted: bool,
     visited:    []bool,                 // MARA_NAMES=check: by node, whether the walk reached it (a dead `#if` arm's it doesn't)
+    open_vars:  [dynamic]Names_Open,    // the variables recorded in the levels entered, for their ends (rs_leave)
 }
 
 // A definition as written in a scope: its statement (a Define, a foreign
@@ -154,6 +155,8 @@ Rs_Level :: struct {
     scope: ^Scope,
     self: Ref,                  // a fun's or a struct's: itself (`Self`)
     signature: bool,            // a fun's or a struct's, its params and results being resolved
+    end: Token_Id,              // where its text ends: its variables are out of sight from there
+    open: int,                  // its variables, from here in open_vars
 }
 
 // A use that names its module (`s :: use mara.string`): its definitions are
@@ -326,9 +329,9 @@ rs_scope_here :: proc(r: ^Resolver) -> ^Scope {
 // --- the stack ----------------------------------------------------------------------
 
 @(private="file")
-rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil) {
+rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil, end: Token_Id = 0) {
     fence := i32(len(r.scopes)) if kind == .Fun || kind == .Struct else r.scopes[len(r.scopes) - 1].fence if len(r.scopes) > 0 else -1
-    append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope})
+    append(&r.scopes, Rs_Level{kind = kind, mark = i32(len(r.names)), fence = fence, scope = scope, end = end, open = len(r.open_vars)})
     if scope != nil { r.here = scope }
 }
 
@@ -336,6 +339,8 @@ rs_enter :: proc(r: ^Resolver, kind: Rs_Scope_Kind, scope: ^Scope = nil) {
 rs_leave :: proc(r: ^Resolver) {
     s := pop(&r.scopes)
     if s.scope != nil { r.here = s.scope.parent }
+    for o in r.open_vars[s.open:] { o.sc.vars[o.at].to = s.end }
+    resize(&r.open_vars, s.open)
     for i32(len(r.names)) > s.mark {
         e := pop(&r.names)
         r.top[e.slot] = e.hides
@@ -382,9 +387,35 @@ rs_define :: proc(r: ^Resolver, name: string, ref: Ref, own_uses := false) {
     if other { rs_push_at(r, slot, {}, false, conflict = true) }
 }
 
-// A variable, seen from here on.
+// A variable, seen from here on — and recorded in its body's record (a fun's,
+// a struct's, a file's): in sight from `from` to its level's end (names.odin).
 @(private="file")
-rs_declare :: proc(r: ^Resolver, name: string, ref: Ref) { rs_push(r, name, ref, true) }
+rs_declare :: proc(r: ^Resolver, name: string, ref: Ref, from: Token_Id) {
+    rs_push(r, name, ref, true)
+    if name == "" || name == "_" || ref.decl == 0 { return }
+    for i := len(r.scopes) - 1; i >= 0; i -= 1 {
+        #partial switch r.scopes[i].kind {
+        case .Fun, .Struct, .File:
+            body := r.scopes[i].scope
+            if body == nil { return }
+            at, seen := body.var_at[ref.decl]
+            if !seen {
+                append(&body.vars, Name_Var{name, ref, from, 0})
+                at = len(body.vars) - 1
+                body.var_at[ref.decl] = at
+            }
+            append(&r.open_vars, Names_Open{body, at})
+            return
+        }
+    }
+}
+
+// Where a block's names are in sight from: its first statement (else `none`).
+@(private="file")
+rs_from_body :: proc(r: ^Resolver, body: []Tree_Id, none: Token_Id) -> Token_Id {
+    if len(body) > 0 { return r.t.first[body[0]] }
+    return none
+}
 
 // Whether two definitions of one name are no conflict: one definition, two
 // names for one type, or two dispatch groups (groups of one name join).
@@ -761,13 +792,13 @@ rs_settle_aliases :: proc(r: ^Resolver, live: []Tree_Id, space: ^Scope) -> (any:
 // declaration's is (an enclosing loop's name, `for i` in `for value, i`:
 // it would hide it) — said by tc_for (tc_declarable).
 @(private="file")
-rs_declare_loop :: proc(r: ^Resolver, tok: Token_Id) {
+rs_declare_loop :: proc(r: ^Resolver, tok: Token_Id, from: Token_Id) {
     name := rs_text(tok)
     if name != "_" {
         c := rs_clash(r, name)
         if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[tok] = c }
     }
-    rs_declare(r, name, {tok, .Local})
+    rs_declare(r, name, {tok, .Local}, from)
 }
 
 // Whether a union's variants hold data (else it is an enum).
@@ -1000,7 +1031,7 @@ rs_program :: proc(r: ^Resolver) {
         // statements. Its module's scope, around it, has every file's
         // definitions: the files of one module see each other's.)
         for f, rank in m.files {
-            rs_enter(r, .File, m.parts[rank])
+            rs_enter(r, .File, m.parts[rank], t.end[f])
             m.parts[rank].text_lo, m.parts[rank].text_hi = t.first[f], t.end[f]
             append(&r.records, m.parts[rank])
             r.file_rank = rank
@@ -1149,7 +1180,7 @@ rs_stmt_import :: proc(t: ^Tree, s: Tree_Id) -> Tree_Id {
 // A block: its definitions in sight throughout, then its statements in order.
 @(private="file")
 rs_block :: proc(r: ^Resolver, stmts: []Tree_Id) {
-    rs_enter(r, .Block)
+    rs_enter(r, .Block, end = r.t.end[stmts[len(stmts) - 1]] if len(stmts) > 0 else 0)
     rs_body(r, stmts)
     rs_leave(r)
 }
@@ -1275,7 +1306,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
             r.refs[tg] = ref
             c := rs_clash(r, rs_text(t.main[tg]))
             if c.taken || c.before != 0 || c.constant || c.hides.kind != .None { r.clashes[t.main[tg]] = c }
-            rs_declare(r, rs_text(t.main[tg]), ref)
+            rs_declare(r, rs_text(t.main[tg]), ref, t.end[s])
         }
     case .Using:
         rs_stmt(r, Tree_Id(t.a[s]))
@@ -1300,12 +1331,13 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
                 // (Its binding; with none, a subject that is a name is
                 // rebound, the variant's payload — declared by the subject's
                 // token.)
-                rs_enter(r, .Block)
+                rs_enter(r, .Block, end = t.end[arm])
                 subject := Tree_Id(t.a[s])
+                from := rs_from_body(r, tree_list(t, t.a[arm]), t.end[arm])
                 if b := Token_Id(t.b[arm]); b != 0 {
-                    rs_declare(r, rs_text(b), {b, .Local})
+                    rs_declare(r, rs_text(b), {b, .Local}, from)
                 } else if t.tag[subject] == .Ident {
-                    rs_declare(r, rs_text(t.main[subject]), {t.main[subject], .Local})
+                    rs_declare(r, rs_text(t.main[subject]), {t.main[subject], .Local}, from)
                 }
                 rs_body(r, tree_list(t, t.a[arm]))
                 rs_leave(r)
@@ -1320,11 +1352,12 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         rs_node(r, v.lo)
         rs_node(r, v.hi)
         rs_node(r, v.collection)
-        rs_enter(r, .Block)
-        if v.var != 0 { rs_declare_loop(r, v.var) }
-        if v.elem != 0 { rs_declare_loop(r, v.elem) }
-        if v.index != 0 { rs_declare_loop(r, v.index) }
-        for tok in v.more { rs_declare_loop(r, tok) }
+        rs_enter(r, .Block, end = t.end[s])
+        from := rs_from_body(r, v.body, t.end[s])
+        if v.var != 0 { rs_declare_loop(r, v.var, from) }
+        if v.elem != 0 { rs_declare_loop(r, v.elem, from) }
+        if v.index != 0 { rs_declare_loop(r, v.index, from) }
+        for tok in v.more { rs_declare_loop(r, tok, from) }
         if v.init != 0 { rs_stmt(r, v.init) }
         rs_node(r, v.cond)
         if v.post != 0 { rs_stmt(r, v.post) }
@@ -1348,7 +1381,7 @@ rs_stmt :: proc(r: ^Resolver, s: Tree_Id) {
         // from here on, a variable: its uses aren't reported again.)
         rs_node(r, s)
         for tg in tree_list(t, t.a[s]) {
-            if t.tag[tg] == .Ident && r.refs[tg].kind == .None { rs_declare(r, rs_text(t.main[tg]), {t.main[tg], .Local}) }
+            if t.tag[tg] == .Ident && r.refs[tg].kind == .None { rs_declare(r, rs_text(t.main[tg]), {t.main[tg], .Local}, t.end[s]) }
         }
     case .Break, .Continue, .Module:
     case:
@@ -1366,7 +1399,7 @@ rs_def_value :: proc(r: ^Resolver, def, value: Tree_Id) {
         rs_scope_def(r, def, value)
     case .Union_Def:
         // (Its type params, in sight in its variants.)
-        rs_enter(r, .Block)
+        rs_enter(r, .Block, end = t.end[value])
         outer := r.generic
         r.generic = value
         for o in tree_list(t, t.a[value]) {
@@ -1418,7 +1451,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
         rs_space_fill(r, scope, v.body)
         rs_space_variants(r, scope)
     }
-    rs_enter(r, .Struct if is_struct else .Fun, scope)
+    rs_enter(r, .Struct if is_struct else .Fun, scope, t.end[node])
     sc := &r.scopes[len(r.scopes) - 1]
     sc.self, sc.signature = {t.main[def], .Variant if t.tag[def] == .Variant else .Type}, true
     outer := r.generic
@@ -1445,7 +1478,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
         }
         for name in pv.names {
             rs_signature_clash(r, name)
-            rs_declare(r, rs_text(name), {name, .Param})
+            rs_declare(r, rs_text(name), {name, .Param}, t.end[v.params[len(v.params) - 1]])
         }
     }
     for x in v.returns {
@@ -1454,7 +1487,7 @@ rs_scope_def :: proc(r: ^Resolver, def, node: Tree_Id) {
             rs_node(r, pv.type_)
             for name in pv.names {
                 rs_signature_clash(r, name)
-                rs_declare(r, rs_text(name), {name, .Result})
+                rs_declare(r, rs_text(name), {name, .Result}, rs_from_body(r, v.body, t.end[node]))
             }
         } else {
             rs_node(r, x)

@@ -89,13 +89,6 @@ TC :: struct {
     // definition's type, a variable's in the body being checked, a template's
     // in the instance being checked — by the token that declares it.
     rs:            ^Resolver,
-    // The variables as they're bound, for what a name means at a point
-    // (names.odin): the blocks open, each one's variables, where the next is
-    // in sight from (0: past its statement), the statement being checked.
-    names_levels:  [dynamic]int,
-    names_open:    [dynamic]Names_Open,
-    names_from:    Token_Id,
-    names_stmt:    Tree_Id,
     in_defer:      bool,                // a defer's block being checked (its body's)
     allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
     main_allocators: [dynamic]Tree_Id,  // the `#allocator`s at the main module's top and among main's own statements (tc_scan_allocator): there, one is the program's
@@ -297,7 +290,6 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
     #partial switch ref.kind {
     case .Local, .Param, .Result:
         if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
-        names_bind(k, name, ref)
     }
 }
 

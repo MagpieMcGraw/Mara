@@ -63,44 +63,6 @@ names_body_of :: proc(sc: ^Scope) -> ^Scope {
     return nil
 }
 
-// --- the checker's side -----------------------------------------------------------------
-
-names_enter :: proc(k: ^TC) {
-    if !names_checking { return }
-    append(&k.names_levels, len(k.names_open))
-}
-
-// A block closed at `end`: its variables are out of sight from there.
-names_leave :: proc(k: ^TC, end: Token_Id) {
-    if !names_checking { return }
-    mark := pop(&k.names_levels)
-    for o in k.names_open[mark:] { o.sc.vars[o.at].to = end }
-    resize(&k.names_open, mark)
-}
-
-// A variable bound (tc_bind): in sight from k.names_from, else past the
-// statement that declares it. (An instance binds it again: kept once.)
-names_bind :: proc(k: ^TC, name: string, ref: Ref) {
-    if !names_checking || ref.decl == 0 || name == "_" { return }
-    body := names_body_of(names_record_at(k.rs, ref.decl))
-    if body == nil { return }
-    at, seen := body.var_at[ref.decl]
-    if !seen {
-        from := k.names_from
-        if from == 0 { from = k.t.end[k.names_stmt] if k.names_stmt != 0 else ref.decl + 1 }
-        append(&body.vars, Name_Var{name, ref, from, 0})
-        at = len(body.vars) - 1
-        body.var_at[ref.decl] = at
-    }
-    append(&k.names_open, Names_Open{body, at})
-}
-
-// A body checked: its names compared (names_check).
-names_body_checked :: proc(k: ^TC, node: Tree_Id) {
-    if !names_checking || node == 0 || k.t.first[node] == 0 { return }
-    if body := names_body_of(names_record_at(k.rs, k.t.first[node])); body != nil { body.checked = true }
-}
-
 // --- the answer -----------------------------------------------------------------------
 
 // What `name` means where `at` is: a variable in sight, else what the scopes
@@ -183,9 +145,6 @@ names_check :: proc(k: ^TC) {
     agree, differ := 0, 0
     differ_by := make(map[string]int, allocator = context.temp_allocator)
     compare :: proc(r: ^Resolver, what: string, at: Token_Id, name: string, want: Ref, agree, differ: ^int, by: ^map[string]int) {
-        sc := names_record_at(r, at)
-        body := names_body_of(sc)
-        if body == nil || !body.checked { return }
         got, _ := names_lookup(r, name, at)
         if got == want { agree^ += 1; return }
         differ^ += 1
@@ -263,8 +222,3 @@ names_check_begin :: proc() {
     names_checking = os.get_env("MARA_NAMES", context.temp_allocator) == "check"
 }
 
-// Where a block's names are in sight from: its first statement (else `none`).
-names_from_body :: proc(k: ^TC, body: []Tree_Id, none: Token_Id = 0) -> Token_Id {
-    if len(body) > 0 { return k.t.first[body[0]] }
-    return none
-}
