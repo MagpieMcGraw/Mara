@@ -75,6 +75,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         // (A name by itself, `A :: B`'s B: the type it names — annotated so,
         // `m.B`'s m its module.)
         name := tc_name(k, n) if t.tag[n] == .Ident else ""
+        if t.tag[n] == .Ident && tc_hider_use(k, k.names.refs[n], name, span) { return Type_Error{} }
         tc_set_ref(k, n, k.names.refs[n])
         if base := Tree_Id(t.a[n]); t.tag[n] == .Field && t.tag[base] == .Ident { tc_set_ref(k, base, k.names.refs[base]) }
         if ty, ok := tc_ref_type(k, k.names.refs[n], name); ok && ty != nil { return ty }
@@ -517,6 +518,7 @@ tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
 tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
     if _, is_primitive := tc_primitive_named(name); is_primitive { return tc_primitive(k, name, span) }
     ref := k.names.refs[n]
+    if tc_hider_use(k, ref, name, span) { return Type_Error{} }
     if t, ok := tc_ref_type(k, ref, name); ok { return t }
     // (Two modules' type, said so.)
     if owners := (k.names.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {

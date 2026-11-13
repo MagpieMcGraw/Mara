@@ -79,11 +79,11 @@ example_module :: fun() {
 // all their members. A union's variants are found the same way as any name:
 // in the scope that defines the union, or where that scope is used.
 //
-// A variable or a param can't take the name of a fun, a type, a module or
-// a variant in sight — its module's or one it uses: `filter := 3` beside
-// mara.core's filter is an error, since the fun would be out of reach below
-// it, and so is `fun(lower: []utf8)` beside mara.string's lower. A struct's
-// field is its constructor's variable: the same goes for it.
+// A variable, a param or a field may have the name of a fun, a type, a
+// module, a constant or a variant in sight, but where that name is written
+// by itself it means both, and that's an error naming both: `filter := 3`
+// beside mara.core's filter is fine until `print(filter)`. A field read
+// through its value, `state.quit`, never means two things.
 example_use :: fun() {
 	// At the top of a file:
 	//

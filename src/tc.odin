@@ -80,6 +80,7 @@ TC :: struct {
     list_at:       Tree_Id,
     list_indexed:  [dynamic]List_Indexed,
     lists_raw:     map[^Type_Scope]bool,   // structs read out of raw memory, seen (tc_lists_raw)
+    hiders: map[Token_Id]Hider,   // each variable named as a definition in sight: said where it's used bare (tc_hider_use)
     field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_stmt:    Tree_Id,           // its `#allocator` statement
@@ -276,15 +277,10 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
         if ref.decl != 0 && name != "_" { tc_variant_named(k, name, ref) }
     }
     // (A param, a named result, named as a fun, a type or a module in sight:
-    // refused, as a variable is — tc_declarable's — the name table's clash.)
+    // noted, as a variable's is — tc_declarable's — the name table's clash.)
     #partial switch ref.kind {
     case .Param, .Result:
-        if c, has := k.names.clashes[ref.decl]; has && c.hides.kind != .None && name != "_" {
-            word := "fun" if c.hides.kind == .Fun else "type" if c.hides.kind == .Type else "module"
-            at := c.hides.decl
-            tc_error(k, Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}, TYPE_SIGNATURE_HIDES_DEFINITION,
-                     "param" if ref.kind == .Param else "result", name, word, name, span_loc(Span{at = at, tok = at, end = at + 1}))
-        }
+        if c, has := k.names.clashes[ref.decl]; has && c.hides.kind != .None && name != "_" { tc_hider_note(k, ref.decl, name, c.hides) }
     }
     tc_bound_set(k, ref.decl, t)
     #partial switch ref.kind {
@@ -320,8 +316,8 @@ tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
 }
 
 // A variable, a param or a result named as a variant in sight (its name by
-// itself is a value, `mode := help`): it would hide the variant, so it's
-// refused, as a fun's name is (tc_declarable). A field may share it.
+// itself is a value, `mode := help`): noted, as a fun's name is
+// (tc_declarable) — a bare use of it means both (tc_hider_use).
 tc_variant_named :: proc(k: ^TC, name: string, ref: Ref) {
     at := Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}
     owner: ^Type_Enum
@@ -331,11 +327,34 @@ tc_variant_named :: proc(k: ^TC, name: string, ref: Ref) {
         if owner == nil || edef.name < owner.name { owner = edef }
     }
     if owner == nil { return }
-    word := "param" if ref.kind == .Param else "result" if ref.kind == .Result else "variable"
     enum_name := type_name(owner)
     if owner.is_synthetic { enum_name = strings.trim_suffix(enum_name, "_Tag") }   // (a union's tag: the union's)
-    v := variant_decl(owner, name)
-    tc_error(k, at, TYPE_VARIABLE_HIDES_VARIANT, word, name, enum_name, name, span_loc(Span{at = v, tok = v, end = v + 1}))
+    k.hiders[ref.decl] = {"variant", strings.concatenate({enum_name, ".", name}), variant_decl(owner, name)}
+}
+
+// What a variable's name is beside where it's declared: a variant, a fun, a
+// type, a module or a constant of its name in sight.
+Hider :: struct { word, what: string, at: Token_Id }
+
+// A variable (decl) named as a definition in sight (hidden): noted.
+tc_hider_note :: proc(k: ^TC, decl: Token_Id, name: string, hidden: Ref) {
+    word := "fun" if hidden.kind == .Fun else "type" if hidden.kind == .Type else "module" if hidden.kind == .Module else "constant"
+    k.hiders[decl] = {word, fmt.aprintf("'%s'", name), hidden.decl}
+}
+
+// A bare name that means a variable declared beside a variant, fun, type,
+// module or constant of its name: here it means both, said so. Whether it
+// does. (A declaration alone clashes with nothing: a field read through its
+// struct never means two things.)
+tc_hider_use :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
+    if len(k.hiders) == 0 { return false }
+    #partial switch ref.kind { case .Local, .Param, .Result, .Field: case: return false }
+    h, has := k.hiders[ref.decl]
+    if !has { return false }
+    word := "param" if ref.kind == .Param else "result" if ref.kind == .Result else "variable"
+    tc_error(k, span, TYPE_NAME_MEANS_BOTH, name, word, span_loc(Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}),
+             h.word, h.what, span_loc(Span{at = h.at, tok = h.at, end = h.at + 1}))
+    return true
 }
 
 // A condition of type t that isn't one, said with msg; for an enum, what

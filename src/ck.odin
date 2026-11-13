@@ -45,6 +45,7 @@ ck_core :: proc(k: ^TC, n: Tree_Id) -> Ck_Kind {
         case .Local, .Param, .Result:
         case: return .None
         }
+        if len(k.hiders) > 0 && ref.decl in k.hiders { return .None }   // (beside a definition of its name: the general path says so)
         t, ok := tc_bound(k, ref.decl)
         if !ok { return .None }
         return ck_kind_of(t)

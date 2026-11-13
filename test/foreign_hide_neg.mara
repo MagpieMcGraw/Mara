@@ -1,8 +1,9 @@
 module foreign_hide_neg
 
-//@ expect-fail: variable 'abs' would hide the fun 'abs'
+//@ expect-fail: 'abs' here is both the variable declared at
 
-// A C function is a definition like any other: a variable can't hide it.
+// A C function is a definition like any other: a variable of its name, read
+// by that name alone, means both.
 
 use mara.core
 

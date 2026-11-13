@@ -238,6 +238,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     hint := k.hint
     k.hint = nil
+    if tc_hider_use(k, k.names.refs[n], name, span) { return Type_Error{} }
     // (A variant of the enum expected, first.)
     if hint != nil {
         if et, _, found := tc_variant_ident(k, name, hint, false, span); found {
@@ -831,6 +832,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         }
     }
     ref := tc_callee_ref(k, n)
+    if qual == nil && tc_hider_use(k, ref, name, span) {
+        for a in args { tc_check(k, a) }
+        return Type_Error{}
+    }
     ft_raw, found := tc_ref_type(k, ref, name)
     if qual != nil { ft_raw, found = qual, true }
     if !found {

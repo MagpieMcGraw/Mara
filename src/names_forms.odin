@@ -299,13 +299,14 @@ names_clash :: proc(r: ^Name_Table, v: Name_Var, body: ^Scope) -> (c: Name_Clash
                 c.taken, c.param = true, kind == .Param
                 return
             }
-            c.before, c.shadows = near.ref.decl if use_var else def.decl, true
+            // (A definition's name: what it hides, below — not a variable shadowed.)
+            hides := !use_var && (def.kind == .Fun || def.kind == .Type || def.kind == .Module || def.kind == .Const)
+            if !hides { c.before, c.shadows = near.ref.decl if use_var else def.decl, true }
         }
     }
     ref := found if ok else miss.first
     #partial switch ref.kind {
-    case .Const:              c.constant = true
-    case .Fun, .Type, .Module: c.hides = ref
+    case .Const, .Fun, .Type, .Module: c.hides = ref
     }
     return
 }
@@ -374,7 +375,7 @@ names_fill_clashes :: proc(r: ^Name_Table) {
         v := o.sc.vars[o.at]
         if !v.clashes { continue }
         c := names_clash(r, v, o.sc)
-        keep := c.hides.kind != .None if v.ref.kind != .Local else c.taken || c.before != 0 || c.constant || c.hides.kind != .None
+        keep := c.hides.kind != .None if v.ref.kind != .Local else c.taken || c.before != 0 || c.hides.kind != .None
         if keep { r.clashes[v.ref.decl] = c }
     }
     clear(&r.new_vars)

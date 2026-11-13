@@ -1,0 +1,26 @@
+module hide_field_ok
+
+use mara.core
+
+// A struct's fields may have the names of a variant, a fun and a constant in
+// sight: read through a value they never mean two things (Warlock's
+// Event_State.quit beside Action.quit). Bare, the names are the others'.
+
+//@ expect-output: true 2 3 Action.quit 1 1024
+
+Action :: union { walk, quit }
+
+count :: fun() -> i64 { return 1 }
+LIMIT :: 1024
+
+State :: struct {
+	quit: bool
+	count: i64
+	LIMIT: i64
+}
+
+main :: fun() {
+	s := State{quit = true, count = 2, LIMIT = 3}
+	a := quit
+	print(s.quit, s.count, s.LIMIT, a, count(), LIMIT)
+}

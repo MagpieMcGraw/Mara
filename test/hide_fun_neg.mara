@@ -1,10 +1,10 @@
 module hide_fun_neg
 
-//@ expect-fail: variable 'filter' would hide the fun 'filter'
+//@ expect-fail: 'filter' here is both the variable declared at
 
-// A variable may not take the name of a fun in sight, its own module's or
-// one it uses (mara.core's filter here): the fun would be out of reach
-// below it, and nothing would say so. A field may (hide_ok).
+// A variable named as a fun in sight, its own module's or one it uses
+// (mara.core's filter here): where the name is read by itself it means
+// both, said so. A field read through its value never does (hide_field_ok).
 
 use mara.core
 

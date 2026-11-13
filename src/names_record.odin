@@ -233,9 +233,9 @@ Name_Miss :: struct {
 // param's, said apart); an enclosing one it hides (before: what declares
 // it; shadows: said so — not in a struct); a constant in sight.
 Name_Clash :: struct {
-    taken, param, shadows, constant: bool,
+    taken, param, shadows: bool,
     before: Token_Id,
-    hides:  Ref,   // a fun, a type or a module of that name in sight (kind None: none)
+    hides:  Ref,   // a fun, a type, a module or (not a param's) a constant of that name in sight (kind None: none)
 }
 
 // What is in sight at a point of the groups calls and operators choose

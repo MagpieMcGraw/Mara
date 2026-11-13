@@ -1,9 +1,9 @@
 module hide_param_module_neg
 
-//@ expect-fail: param 'string' would hide the module 'string'
+//@ expect-fail: 'string' here is both the param declared at
 
-// A param named as a module its file uses: `string.` in the body would be
-// the param.
+// A param named as a module its file uses: `string.` in the body means
+// both.
 
 use mara.string
 

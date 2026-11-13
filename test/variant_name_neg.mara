@@ -1,11 +1,11 @@
 module variant_name_neg
 
-//@ expect-fail: variable 'slow' would hide the variant Speed.slow
+//@ expect-fail: 'slow' here is both the variable declared at [variant_name_neg.mara:
 
-// A variant's name by itself is a value (`s := slow`), so a variable may not
-// take it: the variant would be out of reach below it, and nothing would
-// say so — refused, as a fun's name is (hide_fun_neg). A param, a loop's
-// variable and a named result likewise; a field may (hide_ok).
+// A variant's name by itself is a value (`s := slow`), so a variable of
+// that name, read by it alone, means both — said so, as a fun's name is
+// (hide_fun_neg). A param, a loop's variable and a named result likewise;
+// a field read through its value never does (hide_field_ok).
 
 Speed :: union { fast  slow }
 

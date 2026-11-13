@@ -450,9 +450,9 @@ tc_decl_ref :: proc(k: ^TC, target: Tree_Id) -> Ref {
 }
 
 // Whether a name can be declared here (tok: the token that declares it):
-// not in this scope already, and no constant's, fun's, type's or module's
-// in sight (it would hide that one) — the name table's. (Shadowing
-// an enclosing local is reported, and declares.) A param's name is taken
+// not in this scope already — the name table's. (Shadowing an enclosing
+// local is reported, and declares. A constant's, fun's, type's or module's
+// name in sight is noted: a bare use means both, tc_hider_use.) A param's name is taken
 // too: params and what the body declares are one name space, so a field or
 // a local named as a param would be ambiguous.
 tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
@@ -465,18 +465,8 @@ tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
         }
         return false
     }
-    // (A fun's, a type's, a module's name: said as that, not as a shadow.)
-    if c.hides.kind != .None {
-        word := "fun" if c.hides.kind == .Fun else "type" if c.hides.kind == .Type else "module"
-        at := c.hides.decl
-        tc_error(k, span, TYPE_VARIABLE_HIDES_DEFINITION, name, word, name, span_loc(Span{at = at, tok = at, end = at + 1}))
-        return false
-    }
+    if c.hides.kind != .None { tc_hider_note(k, ref.decl, name, c.hides) }
     if c.shadows { tc_error(k, span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, name) }
-    if c.constant {
-        tc_error(k, span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, name)
-        return false
-    }
     return true
 }
 
@@ -651,6 +641,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
 // it can't be written (reported).
 tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (existing: Type, ref: Ref, ok: bool) {
     ref = k.names.refs[target]
+    if tc_hider_use(k, ref, name, span) { return nil, {}, false }
     found: bool
     existing, found = tc_ref_type(k, ref, name)
     if found {

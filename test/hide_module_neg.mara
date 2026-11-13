@@ -1,9 +1,9 @@
 module hide_module_neg
 
-//@ expect-fail: variable 'os' would hide the module 'os'
+//@ expect-fail: 'os' here is both the variable declared at
 
-// A variable may not take the name of a module its file uses: `os.` would
-// mean the variable below it.
+// A variable named as a module its file uses: `os` read by itself means
+// both.
 
 use mara.os
 
