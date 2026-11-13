@@ -1,0 +1,15 @@
+module bare_ctor_args_neg
+
+// A bare declaration runs its type's constructor with no arguments: one that
+// takes some can't be, so it's an error saying what to write instead.
+
+//@ expect-fail: 'cam : Cam' runs Cam's constructor, which takes arguments: write `cam := Cam(…)`, or `= void` to leave it unset
+
+use mara.core
+
+Cam :: struct(w: i64) { width := w }
+
+main :: fun() {
+	cam : Cam
+	print(cam.width)
+}

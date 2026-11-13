@@ -1,6 +1,6 @@
 module empty_literal_struct_neg
 
-//@ expect-fail: `Point{}` gives none of Point's fields. For every field zero, write `Point{all 0}`. For its fields unset, to write before reading them, write `void`, or declare it bare: `name : Point`
+//@ expect-fail: `Point{}` gives none of Point's fields. For every field zero, write `Point{all 0}`. For what its body builds, declare it bare: `name : Point`. For its fields unset, to write before reading them, write `void`
 
 // `{}` is gone: every field zero is `{all 0}`, fields unset `void` or a bare declaration.
 

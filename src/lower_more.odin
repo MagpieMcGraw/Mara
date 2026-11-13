@@ -443,8 +443,10 @@ lw_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, wa
     span := tree_span(k.t, s)
     ts := t.(^Type_Scope)
     sd := &ts.sd
-    // (A bare declaration's: no constructor run — its other fields unset.)
-    gl := graph_build_literal(k.gb, span, "", false, t, dest)
+    // (A declaration's: its constructor run with no arguments, as a bare
+    // one's is, then the shape's fields written.)
+    construct := ctor_need(ts) == .Runs
+    gl := graph_build_literal(k.gb, span, "", false, t, dest, lw_ctor_args(k, ts, span) if construct else nil, construct = construct)
     if gl == nil { lw_fail(k, s, "a literal the graph builds no way") }
     for bd in bindings {
         idx, has := sd.field_map[bd.field]

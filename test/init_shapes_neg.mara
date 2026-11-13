@@ -1,8 +1,9 @@
 module init_shapes_neg
-//@ expect-fail: is used before being assigned a value
+//@ expect-fail: 'p' may be void here
 
-// Reads the definite-assignment check must reject: unset on a loop's back
-// edge, and a field a braces literal never gave, its type inferred.
+// A read the void check must reject: void on a loop's back edge. (A field a
+// braces literal never gave is its zero, void for a pointer: comparing it
+// is fine.)
 
 Node :: struct { next : ^Node  val : i64 }
 

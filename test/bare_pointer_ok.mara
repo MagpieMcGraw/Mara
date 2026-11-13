@@ -1,0 +1,45 @@
+module bare_pointer_ok
+
+use mara.core
+
+// A pointer void only because it's zeroed is the fun's own to write or test:
+// written before it's followed is fine, a test is fine, and its address
+// handed to a call (`init(&d, &vs)`) counts as a write, as it may fill it. A
+// struct's bare pointer field is void where the struct is built, and written
+// there, fine too.
+
+//@ expect-output: written 7
+//@ expect-output: tested true
+//@ expect-output: filled 3
+//@ expect-output: built 7
+
+VS :: struct { vao: u32 }
+DS :: struct {
+	id: u32
+	vs: ^VS
+}
+
+init :: fun(state: ^DS, vs: ^VS) { state^ = DS{id = 1, vs = vs} }
+
+use_it :: fun(state: ^DS) -> u32 { return state.vs.vao }
+
+Node :: struct {
+	next: ^i64
+	val: i64 = 1
+}
+
+main :: fun() {
+	x : i64 = 7
+	p : ^i64
+	p = &x
+	print("written", p^)
+	q : ^i64
+	print("tested", q == void)
+	vs := VS{vao = 3}
+	d : DS
+	init(&d, &vs)
+	print("filled", use_it(&d))
+	n := Node()
+	n.next = &x
+	print("built", n.next^)
+}

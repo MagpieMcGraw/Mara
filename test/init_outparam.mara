@@ -1,9 +1,12 @@
 module init_outparam
 
+//@ expect-output: init_outparam 17
+
 // Handing a variable's address to a call is an out-parameter: the callee may
-// assign through it, so the variable counts as assigned afterwards. These used
-// to read as "field 'p' of 'h' is used before being assigned a value".
-// (A LOCAL alias's writes are still tracked: see aliasprobe / init_alias_neg.)
+// assign through it, so a pointer in it that's void only because it was
+// zeroed (declared bare) counts as written afterwards. (An address kept in a
+// local, `hp := &h`, isn't one: what's void under it is void wherever it's
+// read — init_alias_neg.)
 
 Holder :: struct { p: ^i64, sl: []i64 }
 
@@ -28,10 +31,5 @@ main :: fun() {
 	set_ptr(&p, &y)              // a pointer variable, assigned through ^^
 	c := p^
 
-	h3 : Holder
-	hp := &h3
-	init(hp, &y)                 // a pointer known to alias h3
-	d := h3.p^
-
-	print("init_outparam", a + b + c + d)   // 22
+	print("init_outparam", a + b + c)   // 17
 }

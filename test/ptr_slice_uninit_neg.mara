@@ -1,8 +1,9 @@
 module ptr_slice_uninit_neg
-//@ expect-fail: before being assigned
+//@ expect-fail: may be void here, and this reads through it
 
 // A `^[]T` local is a real pointer: declared without a value it's void, and
-// using it before assignment is an error (not a silent null deref).
+// reading through it before a write or a test is an error (not a silent null
+// deref).
 
 main :: fun() {
 	s : ^[]i64

@@ -1,8 +1,9 @@
 module init_alias_neg
-//@ expect-fail: before being assigned
+//@ expect-fail: 'hp.p' may be void here
 
 // Taking an address is not an assignment: only handing it to a call is (see
-// init_outparam). Here the pointer is used locally and h.p is read unassigned.
+// init_outparam). Kept in a local, what's void under it — h.p, zeroed — may
+// be void wherever it's read: through hp, unchecked, an error.
 
 Holder :: struct { p: ^i64 }
 

@@ -500,6 +500,49 @@ constructs_bare :: proc(ft: ^Type_Scope) -> bool {
     return len(ft.return_types) == 0
 }
 
+// What making a value of t with no arguments takes — a bare declaration, a
+// literal before its entries, a fixed array's items: its zero alone (a
+// number, a pointer, a list, a plain layout); its constructor run (a param,
+// a default, a statement, a field whose type's runs); or none can be made so
+// — its constructor takes arguments, or can fail.
+Ctor_Need :: enum u8 { Zero, Runs, Args, Fails }
+
+ctor_need :: proc(t: Type, depth := 0) -> Ctor_Need {
+    if depth > 16 { return .Zero }
+    #partial switch v in distinct_base(t) {
+    case ^Type_Fixed_Array:
+        return ctor_need(v.elem, depth + 1)
+    case ^Type_Scope:
+        if v.kind != .Struct || v.is_module { return .Zero }
+        for p in v.params { if p.default_node == 0 { return .Args } }
+        if len(v.return_types) > 0 { return .Fails }
+        if len(v.params) > 0 { return .Runs }
+        for f in v.fields { if f.default_node != 0 || ctor_need(f.type_, depth + 1) != .Zero { return .Runs } }
+        if v.node == 0 { return .Zero }
+        tr := &build_tree
+        for s in scope_view(tr, v.node).body {
+            s := s
+            if tr.tag[s] == .Using { s = Tree_Id(tr.a[s]) }
+            #partial switch tr.tag[s] {
+            case .Define, .Fun_Def, .Struct_Def, .Union_Def, .Error_Def, .Dispatch_Def, .Distinct_Def, .Alias_Def, .Foreign, .Overload, .Module:
+            case .Decl: if len(decl_view(tr, s).values) > 0 { return .Runs }
+            case:       return .Runs
+            }
+        }
+    }
+    return .Zero
+}
+
+// The struct a value of t is made by, its items' for a fixed array: nil for
+// none.
+ctor_struct :: proc(t: Type) -> ^Type_Scope {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Fixed_Array: return ctor_struct(v.elem)
+    case ^Type_Scope:       if v.kind == .Struct && !v.is_module { return v }
+    }
+    return nil
+}
+
 // Get the C-ified flat/mangled name of a named Type. Returns "" for
 // nameless type variants (primitives, slices, etc.). Used by callers that
 // need a string key (codegen lookups, error messages) when they have a

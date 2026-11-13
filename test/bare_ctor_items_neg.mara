@@ -1,0 +1,15 @@
+module bare_ctor_items_neg
+
+// A bare fixed array of structs builds each item with no arguments: a
+// constructor that takes some can't, so it's an error.
+
+//@ expect-fail: 'cams : [2!]Cam' runs Cam's constructor for each item, which takes arguments: write `= all Cam(…)`, or `= void` to leave them unset
+
+use mara.core
+
+Cam :: struct(w: i64) { width := w }
+
+main :: fun() {
+	cams : [2!]Cam
+	print(cams[0].width)
+}

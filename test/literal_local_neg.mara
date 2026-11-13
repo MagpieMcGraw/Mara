@@ -2,12 +2,13 @@ module literal_local_neg
 
 //@ expect-fail: field 'y' of 'q' is used before being assigned a value
 
-// A literal into a variable may leave fields for later — read before they're
-// written, an error (its defaults don't run: `Point(){x = 2}` runs them).
+// A literal runs its constructor, then its entries: a field the constructor
+// leaves unset (declared `= void`) and the literal doesn't give is for later
+// — read before it's written, an error.
 
 Point :: struct {
 	x: f32
-	y: f32 = 1
+	y: f32 = void
 }
 
 main :: fun() {

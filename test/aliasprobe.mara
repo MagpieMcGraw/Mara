@@ -1,5 +1,10 @@
 module aliasprobe
-//@ expect-fail: before being assigned
+//@ expect-output: true
+
+// A bare struct's pointer field is its zero, void: a value, compared through
+// an alias of the struct.
+
+use mara.core
 
 Node :: struct { next : ^Node  val : i64 }
 

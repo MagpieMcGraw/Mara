@@ -1,5 +1,9 @@
 module uninitfield
-//@ expect-fail: before being assigned
+//@ expect-output: true
+
+// A bare struct's pointer field is its zero, void: a value to compare.
+
+use mara.core
 
 Node :: struct {
 	next : ^Node

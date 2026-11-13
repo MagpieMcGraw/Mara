@@ -581,7 +581,8 @@ lw_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
     if zeroed && !prefixed { lw_fail(k, s, "a new partial array read from bytes") }
 }
 
-// `x : T` (tc_decl_bare): its zero — unset until written, no constructor run.
+// `x : T` (tc_decl_bare): T's value made with no arguments — its zero, or
+// its constructor run (lw_construct_bare).
 lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Span, field: Node_Id) {
     b := k.gb
     if _, is_error := ann.(Type_Error); is_error { return }
@@ -594,7 +595,26 @@ lw_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ann: Type, span: Spa
     }
     at := lw_at(k, target)
     defer b.at = at
+    if ctor_need(ann) == .Runs {
+        lw_construct_bare(k, ann, graph_dest_var(decl, ann, tc_sid(k, target)), tree_span(k.t, target))
+        return
+    }
     graph_build_bare(b, decl, ann, tree_span(k.t, target))
+}
+
+// A value of t made with no arguments into d (ctor_need: .Runs): a struct's
+// constructor run on its params' defaults; a fixed array's, one item made,
+// then copied into each, as `= all T()` does.
+lw_construct_bare :: proc(k: ^TC, t: Type, d: Dest, span: Span) {
+    b := k.gb
+    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array {
+        item := graph_build_temp(b, span, fa.elem)
+        lw_construct_bare(k, fa.elem, item, span)
+        graph_build_fill(b, span, t, d, graph_read(b, graph_dest_place(b, item, span), fa.elem, span))
+        return
+    }
+    st := ctor_struct(t)
+    graph_build_literal(b, span, "", false, t, d, lw_ctor_args(k, st, span), construct = true)
 }
 
 // A construction's arguments (tc_ctor_args): its params' defaults.

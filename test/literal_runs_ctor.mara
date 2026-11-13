@@ -1,0 +1,38 @@
+module literal_runs_ctor
+
+use mara.core
+
+// A literal runs its constructor first, with no arguments, then writes the
+// fields it gives over theirs: Cam{fov = 60} keeps speed's default. `{all
+// 0}` zeroes every field after. A variant's literal runs its body the same
+// way.
+
+//@ expect-output: literal 0.5 60
+//@ expect-output: in order 0.5 30
+//@ expect-output: all 0 0 0
+//@ expect-output: variant 9 4
+
+Cam :: struct {
+	speed: f32 = 0.5
+	fov := 90
+}
+
+Shape :: union {
+	Rect { w: i64 = 3, h: i64 = 4 }
+	Dot
+}
+
+main :: fun() {
+	lit := Cam{fov = 60}
+	print("literal", lit.speed, lit.fov)
+	pos := Cam{0.5, 30}
+	print("in order", pos.speed, pos.fov)
+	z := Cam{all 0}
+	print("all 0", z.speed, z.fov)
+	r : Shape = Rect{w = 9}
+	match r {
+	Rect re
+		print("variant", re.w, re.h)
+	else
+	}
+}

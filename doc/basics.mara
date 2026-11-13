@@ -349,21 +349,22 @@ Shape :: union {
 // `struct`, `class`: a type made of named fields, like a record.
 //
 // Each field is `name: type`, with a default (`= 1`, or `name := 1` for its
-// type too) or without one: unset until it's written. A value: `p :=
-// Point()` (its body run: every field its default), `Point(){x = 2}` (then
-// the fields given written over theirs), a literal `Point{x = 2, y = 3}` or
-// `Point{2, 3}` (in order) — a literal runs no body: it gives every field, or
-// those it leaves are unset — `Point{all 0}` (every field zero). `p : Point`
-// declares one without running its body — every field unset, to be written
-// before it's read (reading one first, or the whole, is an error); its memory
-// is zero all the same. `p = void` makes its fields unset again, writing
-// nothing. `p.x` reads or writes a field.
+// type too) or without one: its type's zero, or what its type's body builds.
+// A value: `p := Point()` (its body run: every field its default), `p :
+// Point` (the same), `Point(){x = 2}` (then the fields given written over
+// theirs), a literal `Point{x = 2}` or `Point{2, 3}` (in order: its body run,
+// then the fields given written over theirs), `Point{all 0}` (every field
+// zero). A struct whose body needs arguments or can fail can't be declared
+// bare or written as a literal: `g := Grid(4)`. `p : Point = void` declares
+// one unset, its memory not even zeroed: every field is written before it's
+// read (reading one first, or the whole, is an error). `p = void` makes its
+// fields unset again, writing nothing. `p.x` reads or writes a field.
 //
 // Params, `Grid :: struct(w: i64) { … }`, are what it's built from:
 // `Grid(4)`. Its body runs to build it, so a field can be worked out from
 // them. A fun in the body is a method: `g.cells()`, Self being the struct.
-// A field of a struct type is unset the same way unless it's built:
-// `pos := Place()`; an array of them, `= all Place()`. `class` is another
+// A field of a struct type is built the same way, `pos : Place` running
+// Place's body; a fixed array of them, each item's. `class` is another
 // spelling of `struct`.
 example_struct :: fun() {
 	Point :: struct {
@@ -953,14 +954,17 @@ example_Self :: fun() {
 //
 // A pointer's `void` (a fun value's, a field reference's) is a value: it goes
 // anywhere a pointer goes, and memory zeroed holds it (`{all 0}`, a bare
-// fixed array's items). `p == void` tests it. Reading through a pointer that
+// declaration). `p == void` tests it. Reading through a pointer that
 // may be void needs a test first: `if p != void { … }`, `if p == void do
 // return`, `p != void and p.x > 0`, a loop `for n != void`, or `assert(p !=
 // void)`; without one it's an error, which says where the void comes from.
 // That's worked out over the whole program: a field anything sets to void
 // may be void wherever it's read, a param some call gives void, a result
 // some return does. A pointer a C function gives back may be void. A bare
-// `p : ^T` is unset, not void: it's written before it's read.
+// `p : ^T` is void till it's written: following it before a write or a test
+// is an error in the fun that declares it, and handing out its address
+// (`init(&p)`) counts as a write. A struct's bare pointer field is void the
+// same way where the struct is built.
 //
 // Any other type's `= void` leaves a whole local variable unset, to be
 // written before it's read; anywhere else (a field, an argument) it's an

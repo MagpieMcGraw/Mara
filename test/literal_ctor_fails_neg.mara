@@ -1,0 +1,20 @@
+module literal_ctor_fails_neg
+
+// A literal runs its type's constructor first: one that can fail would have
+// nothing to take its err, so it's an error.
+
+//@ expect-fail: `Risky{…}` runs Risky's constructor first, which can fail: build it with `Risky()?`, then set its fields
+
+use mara.core
+
+Bad :: error { Neg }
+
+Risky :: struct(x: i64 = 0) -> err {
+	v: i64 = 1
+	if x < 0 do return Neg
+}
+
+main :: fun() {
+	r := Risky{v = 2}
+	print(r.v)
+}

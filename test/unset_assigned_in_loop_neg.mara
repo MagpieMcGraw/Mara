@@ -11,7 +11,7 @@ File :: struct { name: i64, tokens: ^i64 }
 main :: fun(args: [][]utf8) {
 	t := 7
 	files : [2!]File = [File{1, &t}, File{2, &t}]
-	found : File
+	found : File = void
 	for f in files {
 		if f.name == args.len {
 			found = f

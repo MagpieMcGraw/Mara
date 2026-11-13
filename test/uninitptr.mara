@@ -1,5 +1,5 @@
 module uninitptr
-//@ expect-fail: before being assigned
+//@ expect-fail: may be void here, and this reads through it
 
 main :: fun() {
 	p : ^i64

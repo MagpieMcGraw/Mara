@@ -2,11 +2,11 @@ module literal_gap_variant_neg
 
 //@ expect-fail: Rect has 2 fields but only 1 was set. h was not set.
 
-// A variant's literal runs no body either: every field of its variant is
-// given, or it's an error (`.Rect` constructs one, its defaults run).
+// A variant's literal runs its body, then its entries: a field the body
+// leaves unset (declared `= void`) is given, or it's an error.
 
 Shape :: union {
-	Rect { w: i64 = 2  h: i64 = 3 }
+	Rect { w: i64 = 2  h: i64 = void }
 	Dot
 }
 

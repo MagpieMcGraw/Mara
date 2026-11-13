@@ -17,7 +17,7 @@ Wide :: struct(start: i64) {
 }
 
 Holder :: struct(S: ~Shape = void) {
-	inner: S
+	inner: S = void
 }
 
 main :: () {

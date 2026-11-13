@@ -1,5 +1,5 @@
 module uninitbranch
-//@ expect-fail: before being assigned
+//@ expect-fail: may be void here, and this reads through it
 
 pick :: fun(cond: bool, src: ^i64) {
 	p : ^i64

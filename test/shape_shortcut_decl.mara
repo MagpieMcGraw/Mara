@@ -19,7 +19,7 @@ Box :: struct(start: i64) {
 }
 
 Holder :: struct(S: ~Shape = void) {
-	inner: S
+	inner: S = void
 }
 
 Outer :: struct {

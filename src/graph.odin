@@ -1415,10 +1415,10 @@ graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_const(b, .Explicit, span, t, "void", nil)
 }
 
-// A bare declaration's value: its zero — a struct's, an array's, its
-// partial arrays' headers stamped (the zero op's) — and nothing more. Its
-// type's constructor doesn't run: `x : T` is unset until written (flow.odin's
-// definite assignment); `x := T()` constructs.
+// A bare declaration's value when its type's constructor does nothing past
+// its zero (ctor_need): the zero — a struct's, an array's, its partial
+// arrays' headers stamped (the zero op's). One whose constructor runs is
+// built by it (lw_construct_bare).
 @(private="file")
 graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, span: Span) {
     graph_op(b, .Zero, .Synthetic, span, t, "", dest)
@@ -3465,6 +3465,7 @@ Literal_Gap :: struct {
     field:  string,
     owner:  string,   // its struct's (or variant's) name, as written
     fields: int,      // how many fields it has
+    ctor:   ^Type_Scope,   // its constructor: a gap is one only where it leaves the field unset (flow_ctor_unset)
 }
 
 // A literal's gaps, all at once: one after another in the list.

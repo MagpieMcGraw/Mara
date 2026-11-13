@@ -25,10 +25,16 @@ import "core:strings"
 // code reads some and makes some void; the codes are run until no fact
 // changes (a code again when a fact it read did), then once more to report.
 //
+// A pointer void only because it was zeroed — a bare declaration, a literal
+// that doesn't give it, a constructor's bare field (void_ctor_leaves) — is
+// the code's own: it must be written or tested before it's followed there,
+// and its address handed out counts as a write (the callee may fill it). A
+// copy of it elsewhere is void there as any is.
+//
 // Not followed: a write through one pointer to what another pointer's test
 // said (they may alias); a call between a test and a read, writing void where
 // the test looked; a fun value C calls back; a struct built at a heap place
-// whose constructor leaves a pointer field bare (definite assignment's).
+// whose constructor leaves a pointer field bare.
 
 // What may be void, program-wide.
 Void_Fact_Kind :: enum u8 { Field, Param, Result, Typed, Sig_Param, Sig_Result }
@@ -41,6 +47,8 @@ Void_Fact_Key :: struct {
 }
 
 Void_Facts :: struct {
+    pc:      ^Program_Code,
+    leaves:  map[^Type_Scope][]string,  // what each constructor leaves zeroed (void_ctor_leaves)
     ids:     map[Void_Fact_Key]int,
     void:    [dynamic]bool,
     why:     [dynamic]string,           // what made it void: said after the error
@@ -73,6 +81,7 @@ Void_Code :: struct {
     words:    int,
     read:     map[int]bool,                // the facts it read
     found:    ^[dynamic]Flow_Finding,      // reporting: the reads through void found
+    call_addrs: map[Node_Id]bool,          // the addresses handed straight to a call (void_args: a zeroed place there is filled)
 }
 
 Void_Place :: struct {
@@ -87,6 +96,11 @@ VOID_PATH_DEPTH :: 4      // how deep a struct local's fields are followed
 void_flow_program :: proc(checked: ^Checked_Program) -> []Flow_Finding {
     codes := checked.code.codes[:]
     vf: Void_Facts
+    vf.pc = &checked.code
+    defer {
+        for _, l in vf.leaves { for p in l { delete(p) }; delete(l) }
+        delete(vf.leaves)
+    }
     // (What a code's run works out is its own: freed once it's done.)
     scratch: virtual.Arena
     if err := virtual.arena_init_growing(&scratch); err != nil { fmt.panicf("void flow: no arena (%v)", err) }
@@ -197,6 +211,7 @@ void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Su
                 }
             case .Construct:
                 void_type_facts(&c, sm, t, 0, add)
+                if len(void_ctor_leaves(vf, graph_called(g, id))) > 0 { sm.sources = true }
             case .Zero:
                 if void_holds(t, 0) { sm.sources = true }
             case .Cast:
@@ -365,9 +380,10 @@ void_code :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, found: ^[dynamic]
         delete(c.slots)
         delete(c.why)
         delete(c.read)
+        delete(c.call_addrs)
     }
     void_keys(&c)
-    c.words = max(1, (len(c.keys) + 63) / 64)
+    c.words = max(1, (2 * len(c.keys) + 63) / 64)   // (each key's void bit, then its zeroed bit: void_set_zeroed)
     c.why = make([]string, len(c.keys))
     entry := make([]u64, c.words)
     defer delete(entry)
@@ -406,6 +422,11 @@ void_keys :: proc(c: ^Void_Code) {
         case .Field:
             if in_ctor && g.parent[id] == 0 { void_var_keys(c, id, .Field) }
         case .Op:
+            if g.op[id] == .Call || g.op[id] == .Construct {
+                for a in du_call_args(g, id) {
+                    if x := a.op; x != NO_NODE && x < CONST && graph_kind_of(g, x) == .Op && graph_op_of(g, x) == .Address { c.call_addrs[x] = true }
+                }
+            }
             if g.op[id] == .Write {
                 ops := graph_operands(g, id)
                 d := ops[0].op
@@ -737,12 +758,27 @@ void_fact_text :: proc(c: ^Void_Code, id: int) -> string {
 @(private="file")
 void_set :: proc(c: ^Void_Code, state: []u64, k: i32, is_void: bool, why: string) {
     if k < 0 { return }
+    bits_clear(state, len(c.keys) + int(k))
     if is_void {
         bits_set(state, int(k))
         if why != "" { c.why[k] = why }
     } else {
         bits_clear(state, int(k))
     }
+}
+
+// A key void only because it's zeroed (a bare declaration's, a literal's
+// start, a constructor's bare field): the code's own to write or test.
+@(private="file")
+void_set_zeroed :: proc(c: ^Void_Code, state: []u64, k: i32, why: string) {
+    if k < 0 { return }
+    void_set(c, state, k, true, why)
+    bits_set(state, len(c.keys) + int(k))
+}
+
+@(private="file")
+void_zeroed :: proc(c: ^Void_Code, state: []u64, k: i32) -> bool {
+    return bits_has(state, len(c.keys) + int(k))
 }
 
 // The keys under a place (deeper than it; `whole`: itself too), each by its
@@ -778,7 +814,7 @@ void_copy_under :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, src: Node_Id
         if sok {
             from := strings.concatenate({spath, key.path[len(path):]}, context.temp_allocator)
             if sk, has := c.key_of[Void_Place{svar, from}]; has {
-                void_set(c, state, k, bits_has(state, int(sk)), c.why[sk])
+                if void_zeroed(c, state, sk) { void_set_zeroed(c, state, k, c.why[sk]) } else { void_set(c, state, k, bits_has(state, int(sk)), c.why[sk]) }
                 continue
             }
         }
@@ -786,14 +822,141 @@ void_copy_under :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, src: Node_Id
     }
 }
 
+// A struct built at a followed place by its constructor: the pointers it
+// leaves zeroed there (void_ctor_leaves), the code's own to write or test.
+@(private="file")
+void_construct :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, ts: ^Type_Scope, span: Span) {
+    leaves := void_ctor_leaves(c.vf, ts)
+    if len(leaves) == 0 { return }
+    var, path, ok := void_place_path(c, dest)
+    if !ok { return }
+    name := ts.source_name if ts.source_name != "" else ts.name
+    why := fmt.tprintf("%s's constructor leaves it void (at %s)", name, void_where(c, span))
+    for l in leaves {
+        if k, has := c.key_of[Void_Place{var, strings.concatenate({path, l}, context.temp_allocator)}]; has { void_set_zeroed(c, state, k, why) }
+    }
+}
+
+// The pointers a struct's constructor leaves zeroed, by path (`.next`,
+// `.pos.owner`): under its fields declared bare (or given a literal that
+// leaves them out) or built by a constructor that leaves them so, that its
+// code never writes — nor hands out the address of. Worked out once a
+// struct, from its code.
+void_ctor_leaves :: proc(vf: ^Void_Facts, ts: ^Type_Scope, depth := 0) -> []string {
+    if ts == nil || vf.pc == nil || depth > VOID_PATH_DEPTH { return nil }
+    if known, ok := vf.leaves[ts]; ok { return known }
+    vf.leaves[ts] = nil   // (while it's worked out: a struct that builds itself leaves nothing)
+    g := graph_fun_code(vf.pc, ts)
+    if g == nil || graph_kind_of(g, 0) != .Struct { return nil }
+    zeroed := make([dynamic]string, context.temp_allocator)
+    written := make([dynamic]string, context.temp_allocator)
+    for id := Node_Id(1); id <= g.end; id += 1 {
+        #partial switch g.kind[id] {
+        case .Fun, .Struct:
+            id = graph_last(g, id)
+            continue
+        case .Op:
+        case:
+            continue
+        }
+        #partial switch g.op[id] {
+        case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Address, .Arena_Alloc:
+        case:
+            continue
+        }
+        ops := graph_operands(g, id)
+        if len(ops) == 0 { continue }
+        d := ops[0].op
+        root, path := void_field_path(g, d)
+        if root == NO_NODE { continue }
+        whole := graph_is_leaf(d)
+        if whole && g.op[id] == .Zero && (g.written[id] == .Synthetic || flow_is_literal_name(graph_name(g, id))) {
+            void_pointer_paths(graph_type(g, root), path, &zeroed, 0)
+            continue
+        }
+        if whole && g.op[id] == .Construct && !flow_is_literal_name(graph_name(g, id)) {
+            for l in void_ctor_leaves(vf, graph_called(g, id), depth + 1) { append(&zeroed, strings.concatenate({path, l}, context.temp_allocator)) }
+            continue
+        }
+        append(&written, path)
+    }
+    left := make([dynamic]string)
+    each: for z in zeroed {
+        for w in written {
+            if z == w || len(z) > len(w) && strings.has_prefix(z, w) && z[len(w)] == '.' { continue each }
+        }
+        append(&left, strings.clone(z))
+    }
+    vf.leaves[ts] = left[:]
+    return left[:]
+}
+
+// A constructor's own field a place is rooted at (`.wrap.data`; past an
+// element, the field it's in), as a key's path.
+@(private="file")
+void_field_path :: proc(g: ^Program_Graph, p: Node_Id) -> (root: Node_Id, path: string) {
+    names := make([dynamic]string, context.temp_allocator)
+    for id := p; id != NO_NODE; {
+        if graph_is_leaf(id) {
+            root = graph_refers(g, id)
+            break
+        }
+        if graph_kind_of(g, id) != .Op { return NO_NODE, "" }
+        #partial switch graph_op_of(g, id) {
+        case .Var:
+            root = graph_refers(g, id)
+            id = NO_NODE
+            continue
+        case .Field:
+            append(&names, graph_name(g, id))
+        case .Index, .View, .Slice, .Swizzle, .Variant:
+            clear(&names)
+        case:
+            return NO_NODE, ""
+        }
+        id = graph_operands(g, id)[0].op
+    }
+    if root <= 0 || root > g.end || g.kind[root] != .Field || g.parent[root] != 0 { return NO_NODE, "" }
+    b := strings.builder_make(context.temp_allocator)
+    strings.write_string(&b, ".")
+    strings.write_string(&b, graph_name(g, root))
+    #reverse for n in names {
+        strings.write_string(&b, ".")
+        strings.write_string(&b, n)
+    }
+    return root, strings.to_string(b)
+}
+
+// Each pointer under a value of t, by path past `prefix` (a struct's fields,
+// not too deep; an array's items aren't followed here).
+@(private="file")
+void_pointer_paths :: proc(t: Type, prefix: string, out: ^[dynamic]string, depth: int) {
+    if depth >= VOID_PATH_DEPTH { return }
+    if void_is_value(t) {
+        append(out, prefix)
+        return
+    }
+    sd := as_struct_body(distinct_base(t))
+    if sd == nil { return }
+    for f in sd.fields {
+        if strings.has_prefix(f.name, "__") { continue }
+        void_pointer_paths(f.type_, strings.concatenate({prefix, ".", f.name}, context.temp_allocator), out, depth + 1)
+    }
+}
+
 // What's under a followed place, gone where the code doesn't follow it (its
 // address taken, a copy of it written elsewhere, passed, returned): each key
 // that may be void makes its home fact so.
 @(private="file")
-void_escape :: proc(c: ^Void_Code, state: []u64, p: Node_Id, whole: bool) {
+void_escape :: proc(c: ^Void_Code, state: []u64, p: Node_Id, whole: bool, address := false) {
     var, path, ok := void_place_path(c, p)
     if !ok { return }
     for k in void_under(c, var, path, whole) {
+        // (Its address handed out, a zeroed one may be filled there: written.)
+        if address && void_zeroed(c, state, k) {
+            void_set(c, state, k, false, "")
+            continue
+        }
         if !bits_has(state, int(k)) || c.keys[k].home < 0 || c.vf.void[c.keys[k].home] { continue }
         void_raise(c, c.keys[k].home, fmt.tprintf("%s can be void: %s", void_fact_text(c, c.keys[k].home), c.why[k]))
     }
@@ -822,10 +985,20 @@ void_zero :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, mode: Void_Zero, s
             void_set(c, state, k, void_fact_is(c, key.home), c.vf.why[key.home] if key.home >= 0 else "")
             continue
         }
-        is_void := mode == .All || mode == .Bare && key.elems && void_fixed_elems(c, var, key.path)
-        void_set(c, state, k, is_void, why)
-        // (A constructor's own field: the struct's, wherever it's read.)
-        if is_void && var <= c.g.end && c.g.kind[var] == .Field { void_raise(c, key.home, why) }
+        // (`{all 0}` and a bare fixed array's items: void, as written; an
+        // array literal's items and a list's aren't (written one at a time,
+        // an item never stops being void). A bare declaration's zero, a
+        // literal's start: zeroed, the code's own — till its entries or
+        // writes give one.)
+        if mode == .All || mode == .Bare && key.elems && void_fixed_elems(c, var, key.path) {
+            void_set(c, state, k, true, why)
+            // (A constructor's own field: the struct's, wherever it's read.)
+            if var <= c.g.end && c.g.kind[var] == .Field { void_raise(c, key.home, why) }
+        } else if key.elems {
+            void_set(c, state, k, false, why)
+        } else {
+            void_set_zeroed(c, state, k, why)
+        }
     }
 }
 
@@ -945,7 +1118,7 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
         // (An address handed over: what's under it may be written there.)
         if x < CONST && graph_kind_of(g, x) == .Op && graph_op_of(g, x) == .Address {
             p := graph_operands(g, x)[0].op
-            void_escape(c, state, p, true)
+            void_escape(c, state, p, true, address = true)
             if var, path, ok := void_place_path(c, p); ok {
                 for u in void_under(c, var, path, true) {
                     uk := c.keys[u]
@@ -993,6 +1166,7 @@ void_op :: proc(c: ^Void_Code, op: Node_Id, state: []u64, reporting: bool) {
                 void_zero(c, state, ops[0].op, .Literal, graph_origin(g, op))
             } else {
                 void_copy_under(c, state, ops[0].op, NO_NODE)
+                void_construct(c, state, ops[0].op, graph_called(g, op), graph_origin(g, op))
             }
         }
     case .Assert:
@@ -1032,8 +1206,9 @@ void_op :: proc(c: ^Void_Code, op: Node_Id, state: []u64, reporting: bool) {
         void_zero(c, state, ops[0].op, mode, graph_origin(g, op))
     case .Address:
         // (A pointer to a followed place, kept or passed on: what may be void
-        // under it is, wherever it's read through.)
-        if len(ops) > 0 { void_escape(c, state, ops[0].op, true) }
+        // under it is, wherever it's read through. One handed straight to a
+        // call is the call's: void_args.)
+        if len(ops) > 0 && !c.call_addrs[op] { void_escape(c, state, ops[0].op, true) }
     case .Slice:
         // (A slice of a followed array: its items, wherever it's read.)
         if len(ops) > 0 { void_escape(c, state, ops[0].op, false) }

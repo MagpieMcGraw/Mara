@@ -1312,10 +1312,8 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
             }
         }
     case llvm_struct(t) != nil:
-        // A declared local struct is zero (a constructor's field is left as
-        // it is, in Self zeroed already).
-        local := graph_is_leaf(place) && graph_kind_of(pg, graph_refers(pg, place)) == .Local
-        if decl && local { emit_memset_zero(g, llvm_val(e, place), type_size(t)) }
+        // (`x : T = void`: unset, its memory as it is — nothing written; a
+        // constructor's field is in Self, zeroed already.)
     case llvm_aggregate(t):
     case:
         return false

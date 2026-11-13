@@ -127,7 +127,10 @@ flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass
         // (Generic instances share their template's spans: check_error
         // reports one once — and the checks that say so, once a span.)
         for span in checked.code.unreachable { check_error(c, span, TYPE_UNREACHABLE_CODE) }
-        gaps := checked.code.literal_gaps[:]
+        gaps := make([dynamic]Literal_Gap, context.temp_allocator)
+        for gap in checked.code.literal_gaps {
+            if gap.ctor == nil || slice.contains(flow_ctor_unset(fp, gap.ctor), gap.field) { append(&gaps, gap) }
+        }
         for i := 0; i < len(gaps); {
             j := i + 1
             for j < len(gaps) && gaps[j].span == gaps[i].span { j += 1 }
@@ -474,9 +477,8 @@ flow_add_fields :: proc(s: ^Init, sd: ^Scope_Body, prefix: string, depth: int, b
 }
 
 // Whether anything in a code can leave one of its variables unset — `void`
-// written to it, a bare pointer, slice or struct, a construction whose
-// constructor leaves a field unset; in a constructor, a bare field. Without,
-// nothing is ever unset: there's no unset read to find.
+// written to it, a construction whose constructor leaves a field unset.
+// Without, nothing is ever unset: there's no unset read to find.
 @(private="file")
 flow_init_unsets :: proc(fp: ^Flow_Pass, g: ^Program_Graph, in_ctor: bool) -> bool {
     for id := Node_Id(1); id <= g.end; id += 1 {
@@ -496,25 +498,16 @@ flow_init_unsets :: proc(fp: ^Flow_Pass, g: ^Program_Graph, in_ctor: bool) -> bo
         ops := graph_operands(g, id)
         d := ops[0].op if len(ops) > 0 else NO_NODE
         if g.op[id] == .Construct {
-            if flow_is_literal(g, id) || len(flow_ctor_unset(fp, graph_called(g, id))) > 0 { return true }
+            if len(flow_ctor_unset(fp, graph_called(g, id))) > 0 { return true }
             continue
         }
         if !graph_is_leaf(d) { continue }   // (only a whole variable is made unset)
         v := graph_refers(g, d)
         if v <= 0 || v > g.end { continue }   // (its own only: flow_own)
-        #partial switch g.op[id] {
-        case .Write:
+        // (A zero — a bare declaration's, a literal's start — is a value.)
+        if g.op[id] == .Write {
             val := ops[1].op
             if val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" { return true }
-        case .Zero:
-            if g.written[id] != .Synthetic && !flow_is_literal(g, id) { continue }
-            if in_ctor && g.kind[v] == .Field { return true }
-            base := distinct_base(graph_type(g, v))
-            #partial switch _ in base {
-            case ^Type_Slice: return true
-            }
-            if void_is_value(base) { return true }
-            if as_struct_body(base) != nil { return true }
         }
     }
     return false
@@ -564,12 +557,14 @@ flow_ctor_unset :: proc(fp: ^Flow_Pass, ts: ^Type_Scope, depth := 0) -> []string
         ops := graph_operands(g, id)
         if len(ops) == 0 { continue }
         d := ops[0].op
-        if g.op[id] == .Zero && g.written[id] == .Synthetic && graph_is_leaf(d) {
-            if v := graph_refers(g, d); v > 0 && v <= g.end && g.kind[v] == .Field {
-                // (A partial array's zero is an empty one: a value.)
+        if g.op[id] == .Zero && g.written[id] == .Synthetic && graph_is_leaf(d) { continue }   // (a bare field: its zero, a value)
+        if g.op[id] == .Write && graph_is_leaf(d) && len(ops) > 1 {
+            // (A field declared `= void`: unset till its code writes it — a pointer's void is its null.)
+            val := ops[1].op
+            if v := graph_refers(g, d); v > 0 && v <= g.end && g.kind[v] == .Field && val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" && !void_is_value(graph_type(g, v)) {
                 if _, pa := distinct_base(graph_type(g, v)).(^Type_Partial_Array); !pa { bare[v] = true }
+                continue
             }
-            continue
         }
         root, path := flow_ctor_path(g, d)
         if root <= 0 || root > g.end || g.kind[root] != .Field { continue }
@@ -852,23 +847,11 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
                 unset = val != NO_NODE && graph_op_of(g, val) == .Const && graph_name(g, val) == "void" && !void_is_value(graph_type(g, v))
                 fields_unset = unset
             case .Zero:
-                // A bare declaration: a pointer (anything whose void is a
-                // value: void_is_value) or a slice unset (a bare scalar is
-                // zero), a struct's every field; a constructor's bare field.
-                // A literal's start (`{}`): every field, till its entries.
-                if graph_written(g, op) == .Synthetic {
-                    #partial switch _ in distinct_base(graph_type(g, v)) {
-                    case ^Type_Slice: unset = true
-                    }
-                    if void_is_value(graph_type(g, v)) { unset = true }
-                    if s.in_ctor && flow_own(s, v) && g.kind[v] == .Field { unset = true }
-                    fields_unset = true
-                } else if graph_name(g, op) == "{}" {
-                    fields_unset = true
-                }
+                // (A bare declaration's zero, a literal's start: a value — a
+                // pointer's void is its null, flow_void's to follow.)
             case .Construct:
                 if flow_is_literal(g, op) {
-                    flow_set_var(s, state, v, false, true)   // (a variant's literal: no body run)
+                    flow_set_var(s, state, v, false, false)   // (a variant's literal with no body: its zero and tag)
                 } else {
                     flow_construct(s, state, v, "", graph_called(g, op))
                 }
@@ -880,8 +863,7 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
             if kind == .Construct && !flow_is_literal(g, op) {
                 flow_construct(s, state, v, path, graph_called(g, op))
             } else {
-                // (A literal's start, `{}`: the field's fields unset, till its entries.)
-                flow_set_path(s, state, v, path, (kind == .Zero || kind == .Construct) && flow_is_literal(g, op))
+                flow_set_path(s, state, v, path, false)
             }
         }
         if kind == .Construct { flow_init_out_params(s, op, state) }

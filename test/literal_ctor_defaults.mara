@@ -1,12 +1,12 @@
 module literal_ctor_defaults
 
 //@ expect-output: 5 9 5 7 2
-//@ expect-output: 0 0
+//@ expect-output: 5 5
 
-// A construction without arguments — `P()` — runs its constructor on its
-// params' defaults (a literal used to call it with none: whatever the
-// argument registers held; a literal runs none now, its fields its entries).
-// A bare array's elements aren't built: they're their zero.
+// A construction without arguments — `P()`, a literal, a bare declaration —
+// runs its constructor on its params' defaults (a literal once called it
+// with none: whatever the argument registers held). A bare fixed array's
+// items are each built so.
 
 Bad :: error {
 	Neg
@@ -38,7 +38,6 @@ main :: fun() {
 	pb := P()
 	h := Holder()
 	print(p.v, p2.v, pb.v, h.p.v, h.q.v)
-	qs : [2!]Q
-	ts : [2!]T
-	print(qs[1].v, ts[1].v)
+	ps : [2!]P
+	print(ps[0].v, ps[1].v)
 }

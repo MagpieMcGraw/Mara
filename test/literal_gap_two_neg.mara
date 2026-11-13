@@ -4,14 +4,14 @@ use mara.core
 
 //@ expect-fail: Token has 4 fields but only 2 were set. offset and len were not set.
 
-// A literal that leaves several fields unset: one error for it, naming them
-// all.
+// A literal that leaves several fields unset (declared `= void`): one error
+// for it, naming them all.
 
 Token :: struct {
 	kind:   i64
 	file:   i64
-	offset: i64
-	len:    i64
+	offset: i64 = void
+	len:    i64 = void
 }
 
 show :: fun(t: Token) { print(t.kind, t.len) }

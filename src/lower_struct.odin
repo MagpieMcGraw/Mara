@@ -217,8 +217,14 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
     if in_temp { d = graph_build_temp(b, at, build_temp_type(d)) }
     if fa != nil || list_fill {
         if !broadcast { gl = graph_build_literal(b, span, name, zero, t, d) }
+    } else if ctor_need(vst if vst != nil else ts) == .Runs {
+        // (Its constructor run with no arguments, then its entries; `{all 0}`
+        // zeroes every field after.)
+        args := lw_variant_args(k, t, name, span) if vst != nil else lw_ctor_args(k, ts, span)
+        gl = graph_build_literal(b, span, name, false, t, d, args, construct = true)
+        if zero { graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span)) }
     } else {
-        // (A literal runs no constructor: its zero, then its entries.)
+        // (Nothing past its zero to run: its zero, then its entries.)
         gl = graph_build_literal(b, span, name, zero, t, d)
     }
     if gl == nil && !broadcast { lw_fail(k, n, "a literal the graph builds no way") }
@@ -228,20 +234,20 @@ lw_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Dest,
         lw_array_entries(k, n, entries, t, gl, d, broadcast)
     } else if !zero {
         lw_literal_fields(k, n, entries, sd, gl)
-        lw_literal_gaps(k, n, entries, sd, d, vst, name)
+        lw_literal_gaps(k, n, entries, sd, d, vst, name, (vst if vst != nil else ts) if ctor_need(vst if vst != nil else ts) == .Runs else nil)
     }
     return lw_built(k, want, in_temp, into_temp, d, t, at, placed)
 }
 
-// A literal's fields it gives no value — unset, as it runs no constructor.
-// Into a fun's own variable of a struct, they may be written after (flow.odin
-// finds a read before); anywhere else — an argument, an element, a field, a
-// constant, a union's variant — nothing can: each is said (Literal_Gap). A
-// partial array's zero, an empty one, is a value.
-lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body, d: Dest, vst: ^Type_Scope, variant: string) {
+// A literal's fields it gives no value, where its constructor may leave them
+// unset (declared `= void`: flow_report keeps those flow_ctor_unset names). Into a fun's own
+// variable of a struct, they may be written after (flow.odin finds a read
+// before); anywhere else — an argument, an element, a field, a constant, a
+// union's variant — nothing can: each is said (Literal_Gap).
+lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body, d: Dest, vst: ^Type_Scope, variant: string, ctor: ^Type_Scope) {
     b := k.gb
     tr := k.t
-    if sd == nil { return }
+    if sd == nil || ctor == nil { return }
     // (A fun's own variable: declared with it, or assigned it — its place computed.)
     decl := d.decl if d.kind == .Var else NO_NODE
     if d.kind == .At && graph_is_leaf(d.at.op) { decl = graph_refers(b.g, d.at.op) }
@@ -262,8 +268,7 @@ lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body,
     gaps := make([dynamic]Literal_Gap, context.temp_allocator)
     for f in user {
         if given[f.name] { continue }
-        if _, pa := distinct_base(f.type_).(^Type_Partial_Array); pa { continue }
-        append(&gaps, Literal_Gap{tree_span(tr, n), f.name, owner, len(user)})
+        append(&gaps, Literal_Gap{tree_span(tr, n), f.name, owner, len(user), ctor})
     }
     if len(gaps) > 0 { graph_note_literal_gaps(b, gaps[:]) }
 }

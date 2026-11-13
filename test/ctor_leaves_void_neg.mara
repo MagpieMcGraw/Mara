@@ -1,0 +1,19 @@
+module ctor_leaves_void_neg
+
+// A constructor that leaves a pointer field bare leaves it void where the
+// struct is built: followed there before a write or a test, an error that
+// names the constructor.
+
+//@ expect-fail: Holder's constructor leaves it void
+
+use mara.core
+
+Holder :: struct {
+	p: ^i64
+	count: i64 = 2
+}
+
+main :: fun() {
+	h := Holder()
+	print(h.p^)
+}

@@ -12,7 +12,7 @@ Pair :: struct {
 show :: fun(p: Pair) { print(p.a) }
 
 main :: fun() {
-	p : Pair
+	p : Pair = void
 	p.a = 1
 	show(p)
 }

@@ -2,8 +2,8 @@ module struct_void_nested_neg
 
 //@ expect-fail: field 'pos.y' of 't' is used before being assigned a value
 
-// A struct field's own fields, by their path: `t.pos.x` written leaves
-// `t.pos.y` unset.
+// A struct field's own fields, by their path: declared `= void`, `t.pos.x`
+// written leaves `t.pos.y` unset.
 
 Pos :: struct {
 	x: f32
@@ -16,7 +16,7 @@ Thing :: struct {
 }
 
 main :: fun() {
-	t : Thing
+	t : Thing = void
 	t.pos.x = 1
 	print(t.pos.y)
 }

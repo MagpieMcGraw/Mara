@@ -1,0 +1,13 @@
+module bare_pointer_void_neg
+
+// A bare pointer is its zero, void: followed before a write or a test, an
+// error that says where it was zeroed.
+
+//@ expect-fail: 'p' may be void here, and this reads through it. Test it first (`if p != void`) or assert it (`assert(p != void)`): it's zeroed at line 11
+
+use mara.core
+
+main :: fun() {
+	p : ^i64
+	print(p^)
+}

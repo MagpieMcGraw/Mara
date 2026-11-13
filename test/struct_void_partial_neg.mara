@@ -11,7 +11,7 @@ Pair :: struct {
 }
 
 main :: fun() {
-	p : Pair
+	p : Pair = void
 	p.a = 1
 	print(p.b)
 }

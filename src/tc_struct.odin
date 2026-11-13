@@ -416,6 +416,18 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}
     }
+    // (A struct's literal: its constructor first, with no arguments, then
+    // its entries — said when it takes some or can fail. A variant's,
+    // tc_variant_built.)
+    if fa == nil && vst == nil && !list_fill {
+        lit := tc_written(k, ty) if ty != 0 else type_name(t)
+        switch ctor_need(ts) {
+        case .Zero:
+        case .Runs:  if len(ts.params) > 0 { tc_ctor_args(k, ts, span) }
+        case .Args:  tc_error(k, span, TYPE_LITERAL_CTOR_ARGS, lit, "{…}", type_name(ts), lit, "{…}")
+        case .Fails: tc_error(k, span, TYPE_LITERAL_CTOR_FAILS, lit, "{…}", type_name(ts), lit)
+        }
+    }
     // (A struct's or a variant's `{all 0}`: every field zero, all of them set.)
     zero := fa == nil && !list_fill && tc_all_zero(k, entries)
     sd: ^Scope_Body

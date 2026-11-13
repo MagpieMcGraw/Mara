@@ -1,0 +1,57 @@
+module bare_constructs
+
+use mara.core
+
+// A bare declaration is its type's value made with no arguments: a number's
+// zero, a plain layout's zero (readable: Warlock's Controls), or what its
+// constructor builds — a field's default, a field of a struct type built in
+// turn, each item of a fixed array, a param's default.
+
+//@ expect-output: plain false 0
+//@ expect-output: built 0.5 90
+//@ expect-output: field 0.5 0
+//@ expect-output: items 90 90
+//@ expect-output: params 32
+//@ expect-output: number 0
+
+Action :: union { walk, quit }
+
+Controls :: class {
+	on: [Action]bool
+	amount: [Action]f32
+}
+
+Cam :: struct {
+	speed: f32 = 0.5
+	fov := 90
+}
+
+Holder :: struct {
+	cam: Cam
+	count: i64
+}
+
+Grid :: struct(cell := 16) {
+	size := cell * 2
+}
+
+check :: fun(on: bool) -> Controls {
+	c : Controls
+	if on do c.on[quit] = true
+	return c
+}
+
+main :: fun() {
+	c := check(false)
+	print("plain", c.on[quit], c.amount[walk])
+	cam : Cam
+	print("built", cam.speed, cam.fov)
+	h : Holder
+	print("field", h.cam.speed, h.count)
+	cams : [3!]Cam
+	print("items", cams[0].fov, cams[2].fov)
+	g : Grid
+	print("params", g.size)
+	n : i64
+	print("number", n)
+}

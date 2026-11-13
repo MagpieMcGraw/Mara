@@ -1,0 +1,15 @@
+module literal_ctor_args_neg
+
+// A literal runs its type's constructor first, with no arguments: one that
+// takes some can't be, so it's an error naming the call form.
+
+//@ expect-fail: `Cam{…}` runs Cam's constructor first, which takes arguments: write `Cam(…){…}`
+
+use mara.core
+
+Cam :: struct(w: i64) { width := w }
+
+main :: fun() {
+	c := Cam{width = 3}
+	print(c.width)
+}
