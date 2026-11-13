@@ -13,40 +13,40 @@ import "core:strings"
 // What node n's name refers to, as written (Ref{}: nothing — why: names_miss).
 // `base`: it qualifies another (`pkg.f()`), where a module's own name names
 // the module.
-names_ref :: proc(r: ^Resolver, n: Tree_Id, base := false) -> Ref {
+names_ref :: proc(r: ^Name_Table, n: Tree_Id, base := false) -> Ref {
     t := r.t
     #partial switch t.tag[n] {
     case .Ident:
-        ref, ok, miss := names_find(r, rs_text(t.main[n]), t.main[n])
+        ref, ok, miss := names_find(r, tc_text(t.main[n]), t.main[n])
         if ok { return ref }
         if base && miss.hidden == "" && len(miss.owners) == 0 {
-            if own, is_own := names_own_module(r, rs_text(t.main[n]), t.main[n]); is_own { return own }
+            if own, is_own := names_own_module(r, tc_text(t.main[n]), t.main[n]); is_own { return own }
         }
     case .Call:
-        name := rs_text(t.main[n])
-        if rs_builtin_call(name) { return {kind = .Builtin} }
+        name := tc_text(t.main[n])
+        if names_builtin_call(name) { return {kind = .Builtin} }
         ref, _ := names_lookup(r, name, t.main[n])
         return ref
     case .Method_Call:
         mv := method_view(t, n)
-        if ref, ok := names_member(r, mv.receiver, rs_text(mv.name)); ok { return ref }
+        if ref, ok := names_member(r, mv.receiver, tc_text(mv.name)); ok { return ref }
     case .Field:
         q := Tree_Id(t.a[n])
-        field := rs_text(Token_Id(t.b[n]))
+        field := tc_text(Token_Id(t.b[n]))
         if ref, ok := names_member(r, q, field); ok { return ref }
         // (A module's, a struct's, a fun's enum's variant, by its name alone.)
         if t.tag[q] == .Ident || t.tag[q] == .Field {
             qref := names_base_ref(r, q)
-            if rs_names_def(qref) {
+            if names_reaches(qref) {
                 if _, has := names_members(r, qref); has {
-                    if sp := rs_space_of(r, qref); sp != nil { if ref, found := sp.variants[field]; found { return ref } }
+                    if sp := names_space_of(r, qref); sp != nil { if ref, found := sp.variants[field]; found { return ref } }
                 }
             }
         }
     case .Type_Name:
         parts := tree_token_list(t, t.a[n])
         if len(parts) == 0 { return {} }   // (a type missing where one was due: the parser said so)
-        name := rs_text(parts[0])
+        name := tc_text(parts[0])
         if len(parts) == 1 {
             if name == "Self" { ref, _ := names_self(r, parts[0]); return ref }
             if _, primitive := tc_primitive_named(name); primitive { return {kind = .Builtin} }
@@ -60,13 +60,13 @@ names_ref :: proc(r: ^Resolver, n: Tree_Id, base := false) -> Ref {
     case .Type_Dollar:
         // (`$T` again: the first's — what declared it.)
         tok := Token_Id(t.a[n])
-        ref, _ := names_lookup(r, rs_text(tok), tok)
+        ref, _ := names_lookup(r, tc_text(tok), tok)
         return ref
     case .Type_Of:
         ref, _ := names_parts(r, tree_token_list(t, t.a[n]))
         return ref
     case .Type_Generic:
-        ref, _ := names_lookup(r, rs_text(t.main[n]), t.main[n])
+        ref, _ := names_lookup(r, tc_text(t.main[n]), t.main[n])
         return ref
     }
     return {}
@@ -74,21 +74,21 @@ names_ref :: proc(r: ^Resolver, n: Tree_Id, base := false) -> Ref {
 
 // Why node n's name means nothing: a local of a fun around, past its
 // boundary; the scopes that each have it.
-names_miss :: proc(r: ^Resolver, n: Tree_Id) -> Rs_Miss {
+names_miss :: proc(r: ^Name_Table, n: Tree_Id) -> Name_Miss {
     t := r.t
     #partial switch t.tag[n] {
     case .Ident, .Type_Generic:
-        _, ok, miss := names_find(r, rs_text(t.main[n]), t.main[n])
+        _, ok, miss := names_find(r, tc_text(t.main[n]), t.main[n])
         if !ok { return miss }
     case .Call:
-        name := rs_text(t.main[n])
-        if rs_builtin_call(name) { return {} }
+        name := tc_text(t.main[n])
+        if names_builtin_call(name) { return {} }
         _, ok, miss := names_find(r, name, t.main[n])
         if !ok { return miss }
     case .Type_Name:
         parts := tree_token_list(t, t.a[n])
         if len(parts) == 0 { return {} }
-        name := rs_text(parts[0])
+        name := tc_text(parts[0])
         if len(parts) == 1 && (name == "Self" || tc_is_primitive_name(name)) { return {} }
         _, ok, miss := names_find(r, name, parts[0])
         if !ok { return miss }
@@ -105,7 +105,7 @@ tc_is_primitive_name :: proc(name: string) -> bool {
 // A qualified name's base's ref: filled already (names_fill, in node order —
 // a base before what it qualifies), else found.
 @(private="file")
-names_base_ref :: proc(r: ^Resolver, q: Tree_Id) -> Ref {
+names_base_ref :: proc(r: ^Name_Table, q: Tree_Id) -> Ref {
     if ref := r.refs[q]; ref.kind != .None { return ref }
     return names_ref(r, q, base = true)
 }
@@ -113,11 +113,11 @@ names_base_ref :: proc(r: ^Resolver, q: Tree_Id) -> Ref {
 // What a qualified name's base (a module, a type, a fun, by its name) has by
 // `name`.
 @(private="file")
-names_member :: proc(r: ^Resolver, q: Tree_Id, name: string) -> (Ref, bool) {
+names_member :: proc(r: ^Name_Table, q: Tree_Id, name: string) -> (Ref, bool) {
     t := r.t
     if t.tag[q] != .Ident && t.tag[q] != .Field { return {}, false }
     qref := names_base_ref(r, q)
-    if !rs_names_def(qref) { return {}, false }
+    if !names_reaches(qref) { return {}, false }
     m, ok := names_members(r, qref)
     if !ok { return {}, false }
     ref, found := m[name]
@@ -126,16 +126,16 @@ names_member :: proc(r: ^Resolver, q: Tree_Id, name: string) -> (Ref, bool) {
 
 // A qualified name's parts (`a.b.c`): the first in sight — a module's own name
 // as itself, when nothing in sight has it — each next one a member.
-names_parts :: proc(r: ^Resolver, parts: []Token_Id) -> (ref: Ref, ok: bool) {
+names_parts :: proc(r: ^Name_Table, parts: []Token_Id) -> (ref: Ref, ok: bool) {
     if len(parts) == 0 { return }
-    miss: Rs_Miss
-    ref, ok, miss = names_find(r, rs_text(parts[0]), parts[0])
-    if !ok && len(parts) > 1 && len(miss.owners) == 0 { ref, ok = names_own_module(r, rs_text(parts[0]), parts[0]) }
+    miss: Name_Miss
+    ref, ok, miss = names_find(r, tc_text(parts[0]), parts[0])
+    if !ok && len(parts) > 1 && len(miss.owners) == 0 { ref, ok = names_own_module(r, tc_text(parts[0]), parts[0]) }
     for part in parts[1:] {
         if !ok { break }
         m, has := names_members(r, ref)
         if !has { return {}, false }
-        ref, ok = m[rs_text(part)]
+        ref, ok = m[tc_text(part)]
     }
     return
 }
@@ -143,8 +143,8 @@ names_parts :: proc(r: ^Resolver, parts: []Token_Id) -> (ref: Ref, ok: bool) {
 // A name written as a token (a dispatch's member, an `overload`'s fun, a
 // method's name, `~Shape`, a qualified name's first part): what it refers to
 // where it's written.
-names_token_ref :: proc(r: ^Resolver, tok: Token_Id) -> Ref {
-    name := rs_text(tok)
+names_token_ref :: proc(r: ^Name_Table, tok: Token_Id) -> Ref {
+    name := tc_text(tok)
     ref, ok, miss := names_find(r, name, tok)
     if ok { return ref }
     // (A qualified name's first: its module's own name.)
@@ -155,17 +155,17 @@ names_token_ref :: proc(r: ^Resolver, tok: Token_Id) -> Ref {
 }
 
 // Why a name written as a token means nothing.
-names_token_miss :: proc(r: ^Resolver, tok: Token_Id) -> Rs_Miss {
-    _, ok, miss := names_find(r, rs_text(tok), tok)
+names_token_miss :: proc(r: ^Name_Table, tok: Token_Id) -> Name_Miss {
+    _, ok, miss := names_find(r, tc_text(tok), tok)
     if ok { return {} }
     return miss
 }
 
 // A module's own name where `at` is, inside it (`pkg.helper()` in pkg).
-names_own_module :: proc(r: ^Resolver, name: string, at: Token_Id) -> (Ref, bool) {
+names_own_module :: proc(r: ^Name_Table, name: string, at: Token_Id) -> (Ref, bool) {
     for s := names_record_at(r, at); s != nil; s = s.parent {
         if s.kind != .Module { continue }
-        if s.own == 0 || name != rs_text(s.own) { return {}, false }
+        if s.own == 0 || name != tc_text(s.own) { return {}, false }
         r.named[s.own] = s
         return {s.own, .Module}, true
     }
@@ -174,7 +174,7 @@ names_own_module :: proc(r: ^Resolver, name: string, at: Token_Id) -> (Ref, bool
 
 // `Self` where `at` is: the innermost fun or struct whose body it's in (in a
 // signature, the one around it).
-names_self :: proc(r: ^Resolver, at: Token_Id) -> (Ref, bool) {
+names_self :: proc(r: ^Name_Table, at: Token_Id) -> (Ref, bool) {
     for s := names_record_at(r, at); s != nil; s = s.parent {
         if (s.kind == .Fun || s.kind == .Struct) && s.decl != 0 && at >= s.body_lo {
             return {s.decl, .Variant if s.variant else .Type}, true
@@ -187,8 +187,8 @@ names_self :: proc(r: ^Resolver, at: Token_Id) -> (Ref, bool) {
 // a module's definitions; a struct's own (its body's); a fun's nested ones; a
 // union's or an error set's variants; a distinct type's or an alias's, its
 // base's.
-names_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
-    if sp := rs_space_of(r, ref); sp != nil { return sp.defs, true }
+names_members :: proc(r: ^Name_Table, ref: Ref) -> (map[string]Ref, bool) {
+    if sp := names_space_of(r, ref); sp != nil { return sp.defs, true }
     if ref.kind == .Module || ref.decl == 0 { return nil, false }
     if m, made := r.members[ref.decl]; made { return m, true }
     if _, ok := r.defs[ref.decl]; !ok { return nil, false }
@@ -197,9 +197,9 @@ names_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
     m := make(map[string]Ref)
     #partial switch t.tag[value] {
     case .Union_Def:
-        for vr in tree_list(t, t.b[value]) { m[rs_text(t.main[vr])] = {t.main[vr], .Variant} }
+        for vr in tree_list(t, t.b[value]) { m[tc_text(t.main[vr])] = {t.main[vr], .Variant} }
     case .Error_Def:
-        for tok in tree_token_list(t, t.a[value]) { m[rs_text(tok)] = {tok, .Variant} }
+        for tok in tree_token_list(t, t.a[value]) { m[tc_text(tok)] = {tok, .Variant} }
     case .Distinct_Def, .Alias_Def:
         base := Tree_Id(t.a[value])
         if t.tag[base] != .Type_Name { return nil, false }
@@ -216,19 +216,19 @@ names_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
 // A field reference's type written as a value (`for f in Binds.Combos`) or a
 // type (`Event_State.Mouse`): what owns the field, the field's type, where in
 // the name's parts it starts.
-names_field_type :: proc(r: ^Resolver, n: Tree_Id) -> (Rs_Field_Type, bool) {
+names_field_type :: proc(r: ^Name_Table, n: Tree_Id) -> (Name_Field_Type, bool) {
     t := r.t
     #partial switch t.tag[n] {
     case .Field:
         q := Tree_Id(t.a[n])
-        field := rs_text(Token_Id(t.b[n]))
+        field := tc_text(Token_Id(t.b[n]))
         if t.tag[q] != .Ident && t.tag[q] != .Field { return {}, false }
         qref := names_base_ref(r, q)
-        if !rs_names_def(qref) { return {}, false }
+        if !names_reaches(qref) { return {}, false }
         m, ok := names_members(r, qref)
         if !ok { return {}, false }
         if _, found := m[field]; found { return {}, false }
-        if sp := rs_space_of(r, qref); sp != nil { if _, found := sp.variants[field]; found { return {}, false } }
+        if sp := names_space_of(r, qref); sp != nil { if _, found := sp.variants[field]; found { return {}, false } }
         if qref.kind != .Type { return {}, false }
         if elem, has := names_lookup(r, field, Token_Id(t.b[n])); has && elem.kind == .Type { return {qref, elem, 0}, true }
     case .Type_Name:
@@ -240,7 +240,7 @@ names_field_type :: proc(r: ^Resolver, n: Tree_Id) -> (Rs_Field_Type, bool) {
             if !has || owner.kind != .Type { continue }
             elem: Ref
             found := false
-            if tc_is_primitive_name(rs_text(parts[split])) && split == len(parts) - 1 {
+            if tc_is_primitive_name(tc_text(parts[split])) && split == len(parts) - 1 {
                 elem, found = {kind = .Builtin}, true
             } else {
                 elem, found = names_parts(r, parts[split:])
@@ -257,7 +257,7 @@ names_field_type :: proc(r: ^Resolver, n: Tree_Id) -> (Rs_Field_Type, bool) {
 // hide (before: what declares it); a constant, a fun, a type or a module of
 // its name in sight. A param or a named result: a fun, a type or a module it
 // would hide.
-names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
+names_clash :: proc(r: ^Name_Table, v: Name_Var, body: ^Scope) -> (c: Name_Clash) {
     name := v.name
     at := v.ref.decl
     if name == "_" { return }
@@ -315,7 +315,7 @@ names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
 // as a token, each declaration's clash — the tables the checker and the tools
 // read. (A declaration's own name the walk gave already.) mara lsp's
 // completion: the names in sight where its placeholder is.
-names_fill :: proc(r: ^Resolver, lo, hi: Tree_Id) {
+names_fill :: proc(r: ^Name_Table, lo, hi: Tree_Id) {
     t := r.t
     // (A name that qualifies another: a module's own name may name it.)
     base := make(map[Tree_Id]bool, allocator = context.temp_allocator)
@@ -325,7 +325,7 @@ names_fill :: proc(r: ^Resolver, lo, hi: Tree_Id) {
         case .Method_Call: base[method_view(t, n).receiver] = true
         }
     }
-    token :: proc(r: ^Resolver, tok: Token_Id, plain: bool) {
+    token :: proc(r: ^Name_Table, tok: Token_Id, plain: bool) {
         if tok == 0 { return }
         if ref := names_token_ref(r, tok); ref.kind != .None {
             r.token_refs[tok] = ref
@@ -334,7 +334,7 @@ names_fill :: proc(r: ^Resolver, lo, hi: Tree_Id) {
         }
     }
     for nid in lo ..= hi {
-        if resolve_completing && !r.captured && t.main[nid] != 0 && strings.contains(rs_text(t.main[nid]), COMPLETE_HERE) { names_capture(r, t.main[nid]) }
+        if names_completing && !r.captured && t.main[nid] != 0 && strings.contains(tc_text(t.main[nid]), COMPLETE_HERE) { names_capture(r, t.main[nid]) }
         #partial switch t.tag[nid] {
         case .Ident, .Call, .Method_Call, .Field, .Type_Name, .Type_Keyword, .Type_Dollar, .Type_Of, .Type_Generic:
             if r.refs[nid].kind != .None { continue }
@@ -369,7 +369,7 @@ names_fill :: proc(r: ^Resolver, lo, hi: Tree_Id) {
 }
 
 // What each variable recorded since the last time runs into.
-names_fill_clashes :: proc(r: ^Resolver) {
+names_fill_clashes :: proc(r: ^Name_Table) {
     for o in r.new_vars {
         v := o.sc.vars[o.at]
         if !v.clashes { continue }
@@ -382,7 +382,7 @@ names_fill_clashes :: proc(r: ^Resolver) {
 
 // mara lsp's completion: the names in sight at `at` — each name's nearest,
 // then what the scopes out from there use.
-names_capture :: proc(r: ^Resolver, at: Token_Id) {
+names_capture :: proc(r: ^Name_Table, at: Token_Id) {
     r.captured = true
     here := names_record_at(r, at)
     if here == nil { return }
@@ -394,20 +394,20 @@ names_capture :: proc(r: ^Resolver, at: Token_Id) {
         for x in vars {
             if x.name in seen { continue }
             seen[x.name] = true
-            append(&r.in_sight, Rs_Seen{x.name, x.ref})
+            append(&r.in_sight, Names_In_Sight{x.name, x.ref})
         }
     }
     for s := here; s != nil; s = s.parent {
-        for name, ref in s.declared { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
-        for name, ref in s.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
-        for name, ref in s.params { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+        for name, ref in s.declared { if name not_in seen { seen[name] = true; append(&r.in_sight, Names_In_Sight{name, ref}) } }
+        for name, ref in s.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Names_In_Sight{name, ref}) } }
+        for name, ref in s.params { if name not_in seen { seen[name] = true; append(&r.in_sight, Names_In_Sight{name, ref}) } }
         if s.kind == .Module {
-            for b in ([]string{"std", "void"}) { if b not_in seen { seen[b] = true; append(&r.in_sight, Rs_Seen{b, {kind = .Builtin}}) } }
+            for b in ([]string{"std", "void"}) { if b not_in seen { seen[b] = true; append(&r.in_sight, Names_In_Sight{b, {kind = .Builtin}}) } }
         }
     }
     for s := here; s != nil; s = s.parent {
         for u in s.uses {
-            for name, ref in u.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+            for name, ref in u.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Names_In_Sight{name, ref}) } }
         }
     }
 }

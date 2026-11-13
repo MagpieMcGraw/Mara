@@ -40,7 +40,7 @@ ck_core :: proc(k: ^TC, n: Tree_Id) -> Ck_Kind {
     case .Paren:
         return ck_core(k, Tree_Id(tr.a[n]))
     case .Ident:
-        ref := k.rs.refs[n]
+        ref := k.names.refs[n]
         #partial switch ref.kind {
         case .Local, .Param, .Result:
         case: return .None
@@ -79,7 +79,7 @@ ck_expr :: proc(k: ^TC, n: Tree_Id) -> Type {
     case .Ident:
         // (A local's, a param's, a result's: bound — no variant a core hint
         // has; the hint taken.)
-        ref := k.rs.refs[n]
+        ref := k.names.refs[n]
         t, _ = tc_bound(k, ref.decl)
         tc_set_ref(k, n, ref)
         k.hint = nil

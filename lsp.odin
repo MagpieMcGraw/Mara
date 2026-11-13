@@ -396,9 +396,9 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
     if os.change_directory(dir) != nil { return "null" }
     args := s.args
     args.pkg_name = module
-    resolve_completing = true   // (the resolver records what's in sight at the placeholder)
+    names_completing = true   // (the name table records what's in sight at the placeholder)
     serve_check(&s.check, args, serve_stamp(s.args.compiler_dir), &files)
-    resolve_completing = false
+    names_completing = false
     lsp_keep(s, &s.dir, dir)
     lsp_keep(s, &s.module, module)
     s.checked = false   // (not the editor's text: the next request checks again)

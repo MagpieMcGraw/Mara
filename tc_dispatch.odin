@@ -54,7 +54,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
     if by_types {
         all := make([dynamic]TC_Member, context.temp_allocator)
         append(&all, ..members)
-        tc_add_members(&all, tc_dispatch_members(k, resolve_dispatches_in(k.rs, tc_type_homes(arg_types[:]), name)))
+        tc_add_members(&all, tc_dispatch_members(k, names_dispatches_in(k.names, tc_type_homes(arg_types[:]), name)))
         members = all[:]
         // (None in sight and none by its arguments' types: no such function.)
         if len(members) == 0 {
@@ -232,12 +232,12 @@ tc_overload_instance :: proc(k: ^TC, name: string, tmpl: TC_Template, lt, rt: Ty
 // type's `==` where a library's generic compares two), each once.
 tc_overload_members :: proc(k: ^TC, op: Token_Kind, at: Token_Id, operands: []Type) -> []TC_Member {
     out := make([dynamic]TC_Member, context.temp_allocator)
-    for group in resolve_overloads(k.rs, at, op) {
-        tc_add_members(&out, tc_dispatch_members(k, resolve_overload_groups(k.rs, at, group)))
+    for group in names_overloads(k.names, at, op) {
+        tc_add_members(&out, tc_dispatch_members(k, names_overload_groups(k.names, at, group)))
     }
     homes := tc_type_homes(operands)
-    for group in resolve_overloads_in(k.rs, homes, op) {
-        tc_add_members(&out, tc_dispatch_members(k, resolve_dispatches_in(k.rs, homes, tc_text(group))))
+    for group in names_overloads_in(k.names, homes, op) {
+        tc_add_members(&out, tc_dispatch_members(k, names_dispatches_in(k.names, homes, tc_text(group))))
     }
     return out[:]
 }

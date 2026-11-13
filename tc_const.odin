@@ -78,7 +78,7 @@ tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope) {
     for kc in sc.consts {
         tc_check_const(k, kc)
         tc_scope_bind(k, sc.ts, kc.mangled, kc.t, {k.t.main[kc.def], .Const})
-        if _, in_block := resolve_block(k.rs, kc.def); !in_block { tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const}) }   // (a block's: no member)
+        if _, in_block := names_block(k.names, kc.def); !in_block { tc_scope_bind(k, sc.ts, kc.name, kc.t, {k.t.main[kc.def], .Const}) }   // (a block's: no member)
     }
 }
 

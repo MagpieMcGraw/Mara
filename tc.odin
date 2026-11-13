@@ -84,11 +84,11 @@ TC :: struct {
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_stmt:    Tree_Id,           // its `#allocator` statement
 
-    // Names (design/name_resolution.md): what each refers to, the resolver's,
+    // Names (design/name_resolution.md): what each refers to, the name table's,
     // found before the check; and what each declaration means now — a
     // definition's type, a variable's in the body being checked, a template's
     // in the instance being checked — by the token that declares it.
-    rs:            ^Resolver,
+    names:            ^Name_Table,
     in_defer:      bool,                // a defer's block being checked (its body's)
     allocator_at:  Tree_Id,             // the main module's `#allocator` (tc_allocator: a second is an error)
     main_allocators: [dynamic]Tree_Id,  // the `#allocator`s at the main module's top and among main's own statements (tc_scan_allocator): there, one is the program's
@@ -163,9 +163,9 @@ tc_ref_type :: proc(k: ^TC, ref: Ref, name: string) -> (Type, bool) {
 // A definition's owner — the fun or struct whose body has it — registered,
 // its own owner first. (False: it has none, or none registered: a module's.)
 tc_owner_registered :: proc(k: ^TC, decl: Token_Id) -> bool {
-    owner := k.rs.owners[decl] or_else 0
+    owner := k.names.owners[decl] or_else 0
     if owner == 0 { return false }
-    def := k.rs.defs[owner] or_else 0
+    def := k.names.defs[owner] or_else 0
     if def == 0 { return false }
     node := Tree_Id(k.t.b[def])
     i, ok := k.scope_at[node]
@@ -212,22 +212,22 @@ tc_dispatch_members :: proc(k: ^TC, groups: []Token_Id) -> []TC_Member {
     t := k.t
     out := make([dynamic]TC_Member, context.temp_allocator)
     for g in groups {
-        def := k.rs.defs[g] or_else 0
+        def := k.names.defs[g] or_else 0
         if def == 0 { continue }
-        for tok in tree_token_list(t, t.a[t.b[def]]) { append(&out, TC_Member{tc_text(tok), k.rs.token_refs[tok] or_else {}}) }
+        for tok in tree_token_list(t, t.a[t.b[def]]) { append(&out, TC_Member{tc_text(tok), k.names.token_refs[tok] or_else {}}) }
     }
     return out[:]
 }
 
 // The constant a name refers to (nil: none).
 tc_const_named :: proc(k: ^TC, n: Tree_Id) -> ^TC_Const {
-    ref := k.rs.refs[n]
+    ref := k.names.refs[n]
     if ref.kind != .Const { return nil }
     return k.const_at[ref.decl] or_else nil
 }
 
 // Whether a ref names a definition of a module's or a type's — what a
-// qualified name's members are the resolver's for.
+// qualified name's members are the name table's for.
 tc_names_def :: proc(ref: Ref) -> bool {
     #partial switch ref.kind {
     case .Module, .Type, .Fun: return true
@@ -276,10 +276,10 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
         if ref.decl != 0 && name != "_" { tc_variant_named(k, name, ref) }
     }
     // (A param, a named result, named as a fun, a type or a module in sight:
-    // refused, as a variable is — tc_declarable's — the resolver's clash.)
+    // refused, as a variable is — tc_declarable's — the name table's clash.)
     #partial switch ref.kind {
     case .Param, .Result:
-        if c, has := k.rs.clashes[ref.decl]; has && c.hides.kind != .None && name != "_" {
+        if c, has := k.names.clashes[ref.decl]; has && c.hides.kind != .None && name != "_" {
             word := "fun" if c.hides.kind == .Fun else "type" if c.hides.kind == .Type else "module"
             at := c.hides.decl
             tc_error(k, Span{at = ref.decl, tok = ref.decl, end = ref.decl + 1}, TYPE_SIGNATURE_HIDES_DEFINITION,
@@ -467,7 +467,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         slice.sort(names[:])
         for name in names { k.module_nodes[name] = tree_module_scope(t, modules[name]) }
     }
-    k.rs = resolve_program(k)
+    k.names = names_new(k)
     k.bound = make([]u32, len(build_tokens))
     k.lists = make([]List_Flags, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
@@ -491,7 +491,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
-    resolve_module_begin(k.rs, main_package)
+    names_module_begin(k.names, main_package)
     tc_scan_allocator(k)
     // (A DLL with an entry `#expose` marks: its host passes the context.)
     if shared {
@@ -559,8 +559,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         middle_free(&mid)
     }
     annot_check(k.annot, t, &checked.code, c.errors)
-    resolve_check(k)
-    checked.rs, checked.bound, checked.binds = k.rs, k.bound, k.binds[:]
+    checked.names, checked.bound, checked.binds = k.names, k.bound, k.binds[:]
     checked.errors = c.errors
     return checked
 }
@@ -576,7 +575,7 @@ tc_check_module_body :: proc(k: ^TC) -> []int {
     m := k.module_scopes[k.pkg]
     sc := new_clone(TC_Scope{ts = m, def = node, node = node})
     m.node = node
-    tc_bound_set(k, resolve_module_own(k.rs, k.pkg), m)   // (its own name, where its code qualifies with it: it)
+    tc_bound_set(k, names_module_own(k.names, k.pkg), m)   // (its own name, where its code qualifies with it: it)
     k.scope_of[m] = len(k.scopes)
     append(&k.scopes, sc)
     for f in k.modules[k.pkg] {
@@ -612,14 +611,14 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
     tc_scope_body(k, k.scopes[i])
 }
 
-// `A :: B`, a name by itself naming a type (the resolver's: rs_alias_kinds):
+// `A :: B`, a name by itself naming a type (the name table's: rs_alias_kinds):
 // a type of its own, as `A :: [16]utf8` is.
 tc_name_alias :: proc(k: ^TC, s: Tree_Id) -> bool {
     t := k.t
     value := Tree_Id(t.b[s])
     if value == 0 || t.a[s] != 0 { return false }
     if t.tag[value] != .Ident && t.tag[value] != .Field { return false }
-    return k.rs.refs[value].kind == .Type
+    return k.names.refs[value].kind == .Type
 }
 
 // `T :: U`, `T :: alias U`: its name (its base once every name is known:
@@ -676,7 +675,7 @@ tc_validate :: proc(k: ^TC, s: Tree_Id) {
         }
     case .Overload:
         name := tc_text(Token_Id(t.b[s]))
-        if len(resolve_overload_groups(k.rs, Token_Id(t.b[s]), Token_Id(t.b[s]))) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
+        if len(names_overload_groups(k.names, Token_Id(t.b[s]), Token_Id(t.b[s]))) == 0 { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
     }
 }
 
@@ -1116,10 +1115,10 @@ Checked_Program :: struct {
     err_made:       ^Type_Scope,
     err_passed:     ^Type_Scope,
 
-    // Its names (design/name_resolution.md): the resolver's, and what each
+    // Its names (design/name_resolution.md): the name table's, and what each
     // declaration meant once the check was done (checked_binding) — mara
     // lsp's completion's.
-    rs:             ^Resolver,
+    names:             ^Name_Table,
     bound:          []u32,
     binds:          []Type,
 

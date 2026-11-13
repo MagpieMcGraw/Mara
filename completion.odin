@@ -11,7 +11,7 @@ import "core:strings"
 // union's or an enum's variants, a slice's len and cap. Else a name: the
 // variants of the type its place takes, when that's an enum or a union
 // (`return Eli|`, the fun giving a Kind: the checker's, complete_hint); what
-// the resolver had in sight at the placeholder (resolve_completing) — the
+// the name table had in sight at the placeholder (names_completing) — the
 // variables declared before it, the params, what the scopes out to the
 // module define and use — and the keywords.
 // ---------------------------------------------------------------------------
@@ -60,8 +60,8 @@ completions_at :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a:
     // A name: the variants of the type its place takes, first; then what's
     // in sight where it's written.
     if a != nil && a.complete_hint != nil { completion_variants(&c, a.complete_hint) }
-    if checked != nil && checked.rs != nil {
-        for seen in checked.rs.in_sight { completion_named(&c, checked, seen.name, seen.ref) }
+    if checked != nil && checked.names != nil {
+        for seen in checked.names.in_sight { completion_named(&c, checked, seen.name, seen.ref) }
     }
     for kw in COMPLETION_KEYWORDS { completion_add(&c, kw, .Keyword, "") }
     return c.out[:]
@@ -119,9 +119,9 @@ completion_members :: proc(c: ^Completions, checked: ^Checked_Program, typ: Type
     #partial switch v in t {
     case ^Type_Scope:
         if v.is_module {
-            // (A module's names: its definitions, the resolver's.)
-            if checked != nil && checked.rs != nil {
-                for name, ref in resolve_module_defs(checked.rs, v.name) { completion_named(c, checked, name, ref) }
+            // (A module's names: its definitions, the name table's.)
+            if checked != nil && checked.names != nil {
+                for name, ref in names_module_defs(checked.names, v.name) { completion_named(c, checked, name, ref) }
             }
             break
         }

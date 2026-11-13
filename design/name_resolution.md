@@ -1,3 +1,7 @@
+> Superseded 2026-11-13: there is no resolver pass. The checker records each module's names as it
+> reaches it (names_record.odin) and asks them of a positional name table (names.odin,
+> names_forms.odin). This doc is the October plan, kept for its history.
+
 # Name resolution
 
 Decided with the user (2026-10-13): names are resolved by a pass of their own over the tree,

@@ -1747,7 +1747,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
     if _, is_void := arg.(Type_Void); is_void { return }
 
     // (The constraint: what `~T`'s name refers to where it's written — the
-    // resolver's. None: a typo, or a module not used there.)
+    // name table's. None: a typo, or a module not used there.)
     if ct == nil {
         check_error(c, span,
             TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD,

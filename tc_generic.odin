@@ -6,7 +6,7 @@ import "core:fmt"
 // names a type it is given (`$T`), a struct's param is a shape (`~T`), or a
 // struct's param is used in its fields' types (`[n]T`). A template is
 // checked only as its instances; its names are resolved once (the
-// resolver's), its type params known by the tokens that declare them
+// name table's), its type params known by the tokens that declare them
 // (TC_Bindings: what an instance binds each to).
 
 TC_Template :: struct {
@@ -55,7 +55,7 @@ tc_template_takes_self :: proc(k: ^TC, tmpl: TC_Template, st: ^Type_Scope) -> bo
     if len(v.params) == 0 { return false }
     pt := params_view(t, v.params[0]).type_
     if pt != 0 && t.tag[pt] == .Type_Pointer { pt = Tree_Id(t.a[pt]) }
-    return pt != 0 && k.rs.refs[pt].decl == st.decl
+    return pt != 0 && k.names.refs[pt].decl == st.decl
 }
 
 tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
@@ -110,15 +110,15 @@ tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 // Whether a type as written uses a declaration (decl: the token that
 // declares it) — names it as a type, or as an array's size: what the
-// resolver says those names refer to.
+// name table says those names refer to.
 tc_type_uses :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
     if n == 0 { return false }
     t := k.t
     #partial switch t.tag[n] {
     case .Type_Name:
-        return len(tree_token_list(t, t.a[n])) == 1 && k.rs.refs[n].decl == decl
+        return len(tree_token_list(t, t.a[n])) == 1 && k.names.refs[n].decl == decl
     case .Ident:
-        return k.rs.refs[n].decl == decl
+        return k.names.refs[n].decl == decl
     case .Type_Pointer, .Type_Paren, .Type_Slice:
         inner := Tree_Id(t.a[n]) if t.tag[n] != .Type_Slice else Tree_Id(t.b[n])
         return tc_type_uses(k, inner, decl)
@@ -137,14 +137,14 @@ tc_type_uses :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
 
 // Whether an array's size is written as a bare name of the declaration.
 tc_size_names :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
-    return n != 0 && k.t.tag[n] == .Ident && k.rs.refs[n].decl == decl
+    return n != 0 && k.t.tag[n] == .Ident && k.names.refs[n].decl == decl
 }
 
 // A fun template's type params, in order — those it declares, then each
-// `$T` its params and results introduce, first use first: the resolver's,
+// `$T` its params and results introduce, first use first: the name table's,
 // by the tokens that declare them.
 tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> []Token_Id {
-    return k.rs.type_params_of[node][:] if node in k.rs.type_params_of else nil
+    return k.names.type_params_of[node][:] if node in k.names.type_params_of else nil
 }
 
 // The type param a type as written names (`$T`, `T`): the token that
@@ -153,10 +153,10 @@ tc_type_param_named :: proc(k: ^TC, n: Tree_Id) -> Token_Id {
     t := k.t
     #partial switch t.tag[n] {
     case .Type_Dollar:
-        if ref := k.rs.refs[n]; ref.kind != .None { return ref.decl }
+        if ref := k.names.refs[n]; ref.kind != .None { return ref.decl }
         return Token_Id(t.a[n])
     case .Type_Name:
-        if len(tree_token_list(t, t.a[n])) == 1 { return k.rs.refs[n].decl }
+        if len(tree_token_list(t, t.a[n])) == 1 { return k.names.refs[n].decl }
     }
     return 0
 }
@@ -535,7 +535,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
         // (A value: a number, a constant, an operation of them.)
         at := a
         if t.tag[a] == .Type_Name {
-            kc := k.const_at[k.rs.refs[a].decl] if k.rs.refs[a].kind == .Const else nil
+            kc := k.const_at[k.names.refs[a].decl] if k.names.refs[a].kind == .Const else nil
             if kc == nil {
                 tc_unsupported(k, a, "a generic's size known at run time")
                 return Type_Error{}
@@ -574,7 +574,7 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
     // (A shape's argument has what its constraint has: checked once.)
     for gp, i in gps {
         if gp.shape == 0 { continue }
-        shape, _ := tc_ref_type(k, k.rs.token_refs[gp.shape] or_else {}, tc_text(gp.shape))
+        shape, _ := tc_ref_type(k, k.names.token_refs[gp.shape] or_else {}, tc_text(gp.shape))
         check_shape_constraint(k.c, tc_text(gp.decl), tc_text(gp.shape), shape.(^Type_Scope) or_else nil, targs[i], span)
     }
     subst := make(TC_Bindings)

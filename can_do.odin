@@ -137,11 +137,11 @@ can_do_struct_name :: proc(sd: ^Type_Scope) -> string {
 // A line for each module in sight at `at` with funs whose first param takes
 // ty: the module, then the funs (a named use's as `m.f`).
 can_do_funs :: proc(checked: ^Checked_Program, ty: Type, at: Token_Id) -> []string {
-    rs := checked.rs
+    rs := checked.names
     if rs == nil || int(at) >= len(build_tokens) { return nil }
-    operators := resolve_overload_names(rs)
+    operators := names_overload_names(rs)
     out := make([dynamic]string, context.temp_allocator)
-    for m in resolve_modules_in_sight(rs, at) {
+    for m in names_modules_in_sight(rs, at) {
         names := make([dynamic]string, context.temp_allocator)
         grouped := make(map[string]bool, allocator = context.temp_allocator)
         for group, decls in m.dispatches {
@@ -188,7 +188,7 @@ can_do_funs :: proc(checked: ^Checked_Program, ty: Type, at: Token_Id) -> []stri
 @(private="file")
 can_do_takes :: proc(checked: ^Checked_Program, defs: map[string]Ref, ref: Ref, name: string, ty: Type) -> bool {
     t := &build_tree
-    def, has_def := checked.rs.defs[ref.decl]
+    def, has_def := checked.names.defs[ref.decl]
     if !has_def { return false }
     value := Tree_Id(t.b[def])
     if value == 0 || t.tag[value] != .Fun_Def { return false }
@@ -269,7 +269,7 @@ can_do_shape :: proc(checked: ^Checked_Program, defs: map[string]Ref, tn: Tree_I
         sd, is_scope := base.(^Type_Scope)
         if !is_scope || sd.node == 0 { return false }
         ref, has := defs[tc_text(t.main[tn])]
-        def, has_def := checked.rs.defs[ref.decl]
+        def, has_def := checked.names.defs[ref.decl]
         return has && has_def && Tree_Id(t.b[def]) == sd.node
     }
     return false

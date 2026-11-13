@@ -154,7 +154,7 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
     // (A definition's own name refers to nothing — it's what's declared
     // there: itself, then. A param's, the same.)
     for n in hits {
-        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = rs_def_kind(t, Tree_Id(t.b[n]))}, n, true }
+        if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = names_def_kind(t, Tree_Id(t.b[n]))}, n, true }
     }
     if g := hit_param_group(t, at); g != 0 { return Ref{decl = Token_Id(at), kind = .Param}, g, true }
     return {}, 0, false
@@ -267,7 +267,7 @@ hit_name_row :: proc(sb: ^strings.Builder, t: ^Tree, a: ^Annotations, r: Ref, n:
 }
 
 // What a name written at a token refers to, a type's as written too: hit_ref's nodes
-// aren't types (hit_listed), which the resolver has names for.
+// aren't types (hit_listed), which the name table has names for.
 @(private="file")
 hit_name_ref :: proc(checked: ^Checked_Program, src: ^Source_File, want: string, line: int, tok: Token_Id) -> (r: Ref, n: Tree_Id, found: bool) {
     t := &build_tree
@@ -277,8 +277,8 @@ hit_name_ref :: proc(checked: ^Checked_Program, src: ^Source_File, want: string,
         if found { return }
     }
     n = tree_node_at(t, tok)
-    if n != 0 && int(n) < len(checked.rs.refs) {
-        r = checked.rs.refs[n]
+    if n != 0 && int(n) < len(checked.names.refs) {
+        r = checked.names.refs[n]
         if r.kind != .None && r.decl != 0 && token_text(build_tokens[r.decl]) == name { return r, n, true }
     }
     return {}, 0, false

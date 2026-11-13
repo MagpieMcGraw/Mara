@@ -5,7 +5,7 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 // Scopes: what the checker keeps of a fun, a struct, a module — its record
 // (its members, by name: what a value of it reaches by type). What a name
-// refers to is the resolver's (resolve.odin, design/name_resolution.md).
+// refers to is the name table's (names_record.odin, design/name_resolution.md).
 // ---------------------------------------------------------------------------
 
 raw_type_key :: proc(t: Type) -> rawptr {

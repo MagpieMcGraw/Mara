@@ -32,7 +32,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     resolved, failed := false, false
     if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
-        qref := k.rs.refs[q]
+        qref := k.names.refs[q]
         qt, found := tc_ref_type(k, qref, qname)
         if found {
             tc_set_ref(k, q, qref)
@@ -46,10 +46,10 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
                 }
             }
             if qsd := as_scope_body(qt); !resolved && qsd != nil && tc_names_def(qref) {
-                // (Through a module or a type: its member, the resolver's.)
-                mref := k.rs.refs[n]
+                // (Through a module or a type: its member, the name table's.)
+                mref := k.names.refs[n]
                 mt, has := tc_ref_type(k, mref, name)
-                if mref.kind == .Fun && k.rs.dispatches[mref.decl] {
+                if mref.kind == .Fun && k.names.dispatches[mref.decl] {
                     qual_dispatch, resolved = tc_dispatch_members(k, {mref.decl}), true
                 } else if fn, is_fun := mt.(^Type_Scope); has && mref.kind == .Fun && is_fun {
                     qual, resolved = fn, true
@@ -84,13 +84,13 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
             }
         }
     }
-    if !resolved && addressed == 0 && tr.tag[tc_unparen(k, recv)] == .Field && tc_names_def(k.rs.refs[tc_unparen(k, recv)]) {
-        // (`Outer.Inner.f()`, `m.T.f()`: its member, the resolver's. `m.E.from_text(s)`:
+    if !resolved && addressed == 0 && tr.tag[tc_unparen(k, recv)] == .Field && tc_names_def(k.names.refs[tc_unparen(k, recv)]) {
+        // (`Outer.Inner.f()`, `m.T.f()`: its member, the name table's. `m.E.from_text(s)`:
         // the enum's variant a text names.)
-        mref := k.rs.refs[n]
+        mref := k.names.refs[n]
         q := tc_unparen(k, recv)
-        if name == "from_text" && k.rs.refs[q].kind == .Type {
-            if qt, is_type := tc_ref_type(k, k.rs.refs[q], tc_text(Token_Id(tr.b[q]))); is_type {
+        if name == "from_text" && k.names.refs[q].kind == .Type {
+            if qt, is_type := tc_ref_type(k, k.names.refs[q], tc_text(Token_Id(tr.b[q]))); is_type {
                 if ft := tc_from_text_fun(qt); ft != nil {
                     qual, resolved = ft, true
                     k.annot.call_names[tc_sid(k, n)] = ft.name
@@ -283,7 +283,7 @@ tc_from_text_call :: proc(k: ^TC, n: Tree_Id) -> ^Type_Scope {
     mv := method_view(tr, n)
     if tc_text(mv.name) != "from_text" { return nil }
     q := tc_unparen(k, mv.receiver)
-    ref := k.rs.refs[q]
+    ref := k.names.refs[q]
     if ref.kind != .Type { return nil }
     name: string
     #partial switch tr.tag[q] {

@@ -247,13 +247,13 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
             return et
         }
     }
-    // (What it refers to — the resolver's — and what that means now: a
+    // (What it refers to — the name table's — and what that means now: a
     // constant not checked yet is checked here, by its use.)
-    ref := k.rs.refs[n]
+    ref := k.names.refs[n]
     t, ok := tc_ref_type(k, ref, name)
     kc := k.const_at[ref.decl] if ref.kind == .Const else nil
     // (Two things in sight of this name: ambiguous, said so.)
-    if ref.kind == .None && tc_ambiguous(k, k.rs.misses[n] or_else {}, span, name) { return Type_Error{} }
+    if ref.kind == .None && tc_ambiguous(k, k.names.misses[n] or_else {}, span, name) { return Type_Error{} }
     if ok || kc != nil { tc_set_ref(k, n, ref) }
     // (A generic's size param, `[$N]T`, as a value: the size it was bound
     // to, a constant — untyped, the width its use takes.)
@@ -291,7 +291,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
         if _, is_template := tc_template(k, ref); ref.kind == .Type && !is_template {
             tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name)
         } else {
-            tc_unresolved(k, k.rs.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)
+            tc_unresolved(k, k.names.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)
         }
         return Type_Error{}
     }
@@ -351,7 +351,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         // (A param that is a pointer, its address taken: the pointer itself
         // meant — `files + name` with `files: ^[]Path`. Said so, and nothing
         // more of it: an append on `^^[]Path` would only say that again.)
-        if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.rs.refs[p].kind == .Param {
+        if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.names.refs[p].kind == .Param {
             if _, is_ptr := distinct_base(ot).(^Type_Ptr); is_ptr {
                 name := tc_name(k, p)
                 tc_error(k, span, TYPE_ADDRESS_OF_POINTER_PARAMETER, name, type_name(ot), name, name)
@@ -362,7 +362,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         // it would let be written can't be.)
         if pname, immutable := tc_write_root_param(k, operand); immutable {
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
-        } else if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.rs.refs[p].kind == .Param {
+        } else if p := tc_unparen(k, operand); tr.tag[p] == .Ident && k.names.refs[p].kind == .Param {
             // (A param held as its argument has no storage to point at.)
             tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_PARAMETER, tc_name(k, p), tc_name(k, p))
         }
@@ -521,7 +521,7 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
     if in_range == nil && (op == .Equal_Equal || op == .Not_Equal) {
         for side, i in sides {
             if s := tc_unparen(k, side); tr.tag[s] == .Dot_Ident && tc_sid(k, s) not_in k.annot.dot_bases { shorthand = i }
-            if s := tc_unparen(k, side); tr.tag[s] == .Ident && k.rs.refs[s].kind == .None { shorthand = i }
+            if s := tc_unparen(k, side); tr.tag[s] == .Ident && k.names.refs[s].kind == .None { shorthand = i }
         }
     }
     order := [2]int{1, 0} if shorthand == 0 else [2]int{0, 1}
@@ -783,8 +783,8 @@ tc_one_value :: proc(k: ^TC, n: Tree_Id, count: int) {
 // What a call's name refers to: a call's own; a method call's, its method
 // not found on the receiver — `x.f(a)`, the fun `f(x, a)` — its name's.
 tc_callee_ref :: proc(k: ^TC, n: Tree_Id) -> Ref {
-    if k.t.tag[n] == .Method_Call { return k.rs.token_refs[method_view(k.t, n).name] or_else {} }
-    return k.rs.refs[n]
+    if k.t.tag[n] == .Method_Call { return k.names.token_refs[method_view(k.t, n).name] or_else {} }
+    return k.names.refs[n]
 }
 
 // A call of `name` on `args` — or, resolved by its qualifier (a method, a
@@ -801,16 +801,16 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             return t
         }
         // (Two things in sight of this name, not both groups: ambiguous.)
-        miss := k.rs.misses[n] or_else {}
-        if tr.tag[n] == .Method_Call { miss = k.rs.token_misses[method_view(tr, n).name] or_else {} }
+        miss := k.names.misses[n] or_else {}
+        if tr.tag[n] == .Method_Call { miss = k.names.token_misses[method_view(tr, n).name] or_else {} }
         if tc_ambiguous(k, miss, span, name) {
             for a in args { tc_check(k, a) }
             return Type_Error{}
         }
-        groups := resolve_dispatches(k.rs, tr.main[n], name)
+        groups := names_dispatches(k.names, tr.main[n], name)
         // (A body's group of this name joins those in sight, as a module's do.)
         callee := tc_callee_ref(k, n)
-        if callee.kind == .Fun && k.rs.dispatches[callee.decl] && !slice.contains(groups, callee.decl) {
+        if callee.kind == .Fun && k.names.dispatches[callee.decl] && !slice.contains(groups, callee.decl) {
             joined := make([dynamic]Token_Id, context.temp_allocator)
             append(&joined, callee.decl)
             append(&joined, ..groups)
@@ -823,7 +823,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         }
         // (No group of its name in sight and nothing it names: the groups of
         // its name in the modules its arguments' types are defined in.)
-        if len(groups) == 0 && callee.kind == .None && name in k.rs.dispatch_names {
+        if len(groups) == 0 && callee.kind == .None && name in k.names.dispatch_names {
             return tc_dispatch_call(k, n, name, nil, args, by_types = true)
         }
         if tmpl, is_template := tc_template(k, tc_callee_ref(k, n)); is_template && tr.tag[tmpl.node] != .Union_Def {
@@ -1189,7 +1189,7 @@ tc_is_value :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span, printed := false) -
     ts, is_scope := t.(^Type_Scope)
     // (A module's name — the name, whatever a use calls it. Called, it is
     // made: an empty struct's value.)
-    if (k.t.tag[m] == .Ident || k.t.tag[m] == .Field) && k.rs.refs[m].kind == .Module {
+    if (k.t.tag[m] == .Ident || k.t.tag[m] == .Field) && k.names.refs[m].kind == .Module {
         tc_error(k, span, TYPE_MODULE_NOT_VALUE, name)
         return false
     }

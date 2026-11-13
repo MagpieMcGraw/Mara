@@ -155,7 +155,7 @@ ask_type_named :: proc(t: Type, name: string) -> bool {
 // names an enum: `[Kind]T`), `[N!]T`, `[N I]T` (by I), `[]T`, `^T`; a size
 // written as a number compared, any other only by `N`; an element by its
 // text.
-ask_shape_written :: proc(sh: ^Ask_Shape, rs: ^Resolver, n: Tree_Id) -> bool {
+ask_shape_written :: proc(sh: ^Ask_Shape, rs: ^Name_Table, n: Tree_Id) -> bool {
     t := &build_tree
     if n == 0 { return false }
     #partial switch sh.kind {
@@ -198,7 +198,7 @@ ask_written_size :: proc(sh: ^Ask_Shape, size: Tree_Id) -> bool {
 // Whether a size is a name that names an enum (`[Kind]T`) — a type's name,
 // not a generic's size param (`$N`, written in a size: `[$N]T`).
 @(private="file")
-ask_size_names_enum :: proc(rs: ^Resolver, size: Tree_Id) -> bool {
+ask_size_names_enum :: proc(rs: ^Name_Table, size: Tree_Id) -> bool {
     if rs == nil || size == 0 || build_tree.tag[size] != .Ident || int(size) >= len(rs.refs) { return false }
     ref := rs.refs[size]
     if ref.kind != .Type || ref.decl == 0 { return false }
@@ -275,7 +275,7 @@ ask_shape_query :: proc(checked: ^Checked_Program, query: string, modules: map[s
         }
         span := Span{at = t.first[n], tok = t.first[n], end = t.end[n]}
         if span.at == 0 || !in_scope(span, build_files[build_tokens[span.at].file].module, modules, file) { continue }
-        if !ask_shape_written(sh, checked.rs, n) { continue }
+        if !ask_shape_written(sh, checked.names, n) { continue }
         append(&written, Ask_Shape_Hit{span = span, what = ask_node_text(n), note = ask_line_of(span.at)})
     }
     declared: [dynamic]Ask_Shape_Hit

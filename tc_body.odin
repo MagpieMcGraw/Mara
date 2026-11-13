@@ -393,7 +393,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
 
 // Whether `x := [a, b, …]` (decl: x; value: the literal) is a list: its fun
 // sets x's len or appends to it — `x.len = n`, `x.len -= 1`, `&x ++ v` —
-// which only a list does. (By the resolver's refs: uses not checked yet.)
+// which only a list does. (By the name table's refs: uses not checked yet.)
 tc_literal_grows :: proc(k: ^TC, decl: Token_Id, value: Tree_Id) -> bool {
     tr := k.t
     if tr.tag[tc_unparen(k, value)] != .Array || k.body == nil { return false }
@@ -401,7 +401,7 @@ tc_literal_grows :: proc(k: ^TC, decl: Token_Id, value: Tree_Id) -> bool {
     if !ok { return false }
     names_x :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
         n := tc_unparen(k, n)
-        return k.t.tag[n] == .Ident && k.rs.refs[n].decl == decl
+        return k.t.tag[n] == .Ident && k.names.refs[n].decl == decl
     }
     len_of_x :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
         n := tc_unparen(k, n)
@@ -451,12 +451,12 @@ tc_decl_ref :: proc(k: ^TC, target: Tree_Id) -> Ref {
 
 // Whether a name can be declared here (tok: the token that declares it):
 // not in this scope already, and no constant's, fun's, type's or module's
-// in sight (it would hide that one) — the resolver's. (Shadowing
+// in sight (it would hide that one) — the name table's. (Shadowing
 // an enclosing local is reported, and declares.) A param's name is taken
 // too: params and what the body declares are one name space, so a field or
 // a local named as a param would be ambiguous.
 tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
-    c := k.rs.clashes[ref.decl] or_else {}
+    c := k.names.clashes[ref.decl] or_else {}
     if c.taken {
         if c.param && k.body != nil {
             tc_error(k, span, TYPE_DECLARATION_NAMES_PARAM, name, scope_display_name(k.body), "variable")
@@ -480,9 +480,9 @@ tc_declarable :: proc(k: ^TC, ref: Ref, name: string, span: Span) -> bool {
     return true
 }
 
-// A name the resolver found nothing for, said so: an enclosing scope's local,
+// A name the name table found nothing for, said so: an enclosing scope's local,
 // that is the rule it broke; else msg.
-tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: string) {
+tc_unresolved :: proc(k: ^TC, miss: Name_Miss, span: Span, name: string, msg: string) {
     if miss.hidden != "" {
         tc_error(k, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, miss.hidden)
         return
@@ -497,9 +497,9 @@ tc_unresolved :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string, msg: stri
     tc_error(k, span, msg, name)
 }
 
-// A name two things in sight have (the resolver's miss): it means neither,
+// A name two things in sight have (the name table's miss): it means neither,
 // said so — each one's scope named. Whether it is one.
-tc_ambiguous :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string) -> bool {
+tc_ambiguous :: proc(k: ^TC, miss: Name_Miss, span: Span, name: string) -> bool {
     // (Twice in one scope: its files', say.)
     if len(miss.owners) == 1 && miss.first.kind != .None {
         tc_error(k, span, TYPE_NAME_DEFINED_TWICE, name, miss.owners[0])
@@ -522,7 +522,7 @@ tc_ambiguous :: proc(k: ^TC, miss: Rs_Miss, span: Span, name: string) -> bool {
 tc_ambiguous_in :: proc(k: ^TC, n: Tree_Id, span: Span) -> bool {
     t := k.t
     #partial switch t.tag[n] {
-    case .Ident:  return k.rs.refs[n].kind == .None && tc_ambiguous(k, k.rs.misses[n] or_else {}, span, tc_name(k, n))
+    case .Ident:  return k.names.refs[n].kind == .None && tc_ambiguous(k, k.names.misses[n] or_else {}, span, tc_name(k, n))
     case .Paren, .Unary: return tc_ambiguous_in(k, Tree_Id(t.a[n]), span)
     case .Binary: return tc_ambiguous_in(k, Tree_Id(t.a[n]), span) || tc_ambiguous_in(k, Tree_Id(t.b[n]), span)
     }
@@ -532,7 +532,7 @@ tc_ambiguous_in :: proc(k: ^TC, n: Tree_Id, span: Span) -> bool {
 // A name a use keeps behind its module's name (`s :: use mara.string`, for
 // `trimmed`), said so. Whether it is one.
 tc_behind_use :: proc(k: ^TC, span: Span, name: string) -> bool {
-    alias, module := resolve_named_use_of(k.rs, span.at, name) or_return
+    alias, module := names_named_use_of(k.names, span.at, name) or_return
     tc_error(k, span, TYPE_NAME_BEHIND_USE, name, alias, module, alias, name)
     return true
 }
@@ -551,9 +551,9 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
 
 
 // A name already declared where a declaration (tok) would declare it, below
-// the module — the resolver's: what it means.
+// the module — the name table's: what it means.
 tc_declared_before :: proc(k: ^TC, ref: Ref) -> (Type, bool) {
-    c := k.rs.clashes[ref.decl] or_else {}
+    c := k.names.clashes[ref.decl] or_else {}
     if c.before == 0 { return nil, false }
     return tc_bound(k, c.before)
 }
@@ -650,7 +650,7 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
 // param the fun can't write. Its type and what it refers to; ok false when
 // it can't be written (reported).
 tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (existing: Type, ref: Ref, ok: bool) {
-    ref = k.rs.refs[target]
+    ref = k.names.refs[target]
     found: bool
     existing, found = tc_ref_type(k, ref, name)
     if found {
@@ -663,9 +663,9 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (exi
         return nil, {}, false
     }
     if !found {
-        tc_unresolved(k, k.rs.misses[target] or_else {}, span, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
+        tc_unresolved(k, k.names.misses[target] or_else {}, span, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         tc_bind(k, name, Type_Error{}, {})
-        tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the resolver declared it as: its uses aren't reported again)
+        tc_bound_set(k, k.t.main[target], Type_Error{})   // (what the name table declared it as: its uses aren't reported again)
         return nil, {}, false
     }
     // (No param can be written: one passed by address is the caller's value,
@@ -986,12 +986,12 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
 TYPE_LOOP_MOST :: 4096
 
 // A loop's collection that is a field reference's type — `S.bool`, as the
-// parser reads it; `Binds.Combos`, its field's type a name (the resolver's:
+// parser reads it; `Binds.Combos`, its field's type a name (the name table's:
 // a type in sight, no member of Binds) — and that type.
 tc_looped_field_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> (Type, bool) {
     t := k.t
     if t.tag[n] == .Type_Field { return tc_type(k, n, span), true }
-    ft, named := k.rs.field_types[n]
+    ft, named := k.names.field_types[n]
     if !named || t.tag[n] != .Field { return nil, false }
     owner, _ := tc_ref_type(k, ft.owner, tc_written(k, Tree_Id(t.a[n])))
     elem, _ := tc_ref_type(k, ft.elem, tc_text(Token_Id(t.b[n])))
@@ -1003,7 +1003,7 @@ tc_looped_field_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> (Type, bool) {
 loops_over_type :: proc(k: ^TC, n: Tree_Id) -> bool {
     n := tc_unparen(k, n)
     if k.t.tag[n] == .Type_Field { return true }
-    if _, named := k.rs.field_types[n]; named && k.t.tag[n] == .Field { return true }
+    if _, named := k.names.field_types[n]; named && k.t.tag[n] == .Field { return true }
     return (k.t.tag[n] == .Ident || k.t.tag[n] == .Field) && tc_ref(k, n).kind == .Type
 }
 
@@ -1663,7 +1663,7 @@ TC_Binding :: struct {
 tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
     t := k.t
     if ann == 0 || t.tag[ann] != .Type_Generic { return nil }
-    tmpl, is_template := tc_template(k, k.rs.refs[ann])
+    tmpl, is_template := tc_template(k, k.names.refs[ann])
     if !is_template || t.tag[tmpl.node] != .Struct_Def { return nil }
     gps, _ := tc_struct_generics(k, tmpl.node)
     out := make([dynamic]TC_Binding, context.temp_allocator)
@@ -1674,7 +1674,7 @@ tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
         for s in scope_view(t, tmpl.node).body {
             if t.tag[s] != .Decl { continue }
             v := decl_view(t, s)
-            if v.type_ == 0 || t.tag[v.type_] != .Type_Name || k.rs.refs[v.type_].decl != gps[i].decl { continue }
+            if v.type_ == 0 || t.tag[v.type_] != .Type_Name || k.names.refs[v.type_].decl != gps[i].decl { continue }
             for tg in v.targets { append(&out, TC_Binding{tc_name(k, tg), call}) }
         }
     }

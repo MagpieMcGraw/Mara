@@ -37,13 +37,13 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok = tc_unparen(k, base) }
     bt := tc_check(k, base)
     // (A name into a scope — a module, a struct, a fun: its definition, the
-    // resolver's. A module has nothing else.)
-    if tr.tag[n] == .Field && resolve_names_scope(k.rs, k.rs.refs[tc_unparen(k, base)]) {
+    // name table's. A module has nothing else.)
+    if tr.tag[n] == .Field && names_is_scope(k.names, k.names.refs[tc_unparen(k, base)]) {
         if t, found := tc_scope_member(k, n, field); found { return t }
     }
     // (Through a module's name, and it has no such name: it has nothing
     // else — a module declares nothing.)
-    if sd := as_scope_body(bt); sd != nil && k.rs.refs[tc_unparen(k, base)].kind == .Module {
+    if sd := as_scope_body(bt); sd != nil && k.names.refs[tc_unparen(k, base)].kind == .Module {
         tc_error(k, span, TYPE_MODULE_SYMBOL, scope_display_name(sd), field)
         return Type_Error{}
     }
@@ -278,7 +278,7 @@ tc_write_root_param :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
             if _, is_ptr := distinct_base(tc_node_type(k, base)).(^Type_Ptr); is_ptr { return "", false }
             cur = base
         case .Ident:
-            if ref := k.rs.refs[cur]; ref.kind == .Param {
+            if ref := k.names.refs[cur]; ref.kind == .Param {
                 if pt, ok := tc_bound(k, ref.decl); ok && is_immutable_param_type(pt) { return tc_name(k, cur), true }
             }
             return "", false
@@ -326,7 +326,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         t = hint
     case tr.tag[ty] == .Ident:
-        tyref := k.rs.refs[ty]
+        tyref := k.names.refs[ty]
         found, ok := tc_ref_type(k, tyref, name)
         if !ok {
             // (A union's variant: the union expected's, or the one union with it.)
@@ -388,7 +388,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         case variant != "":
             tc_set_ref(k, ty, {variant_decl(t, variant), .Variant})
         case tr.tag[ty] == .Ident:
-            tc_set_ref(k, ty, k.rs.refs[ty])
+            tc_set_ref(k, ty, k.names.refs[ty])
         case:
             vs, is_variant := t.(^Type_Scope)
             tc_set_ref(k, ty, {type_decl(t), .Variant if is_variant && vs.is_union_variant else .Type})
@@ -760,10 +760,10 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, field: str
 }
 
 // `m.X`, `P.X`: a name into a scope — a module, a struct, a fun — as the
-// resolver found it: its constant, an enum's variant it holds, or its member
+// name table found it: its constant, an enum's variant it holds, or its member
 // (a type, a fun — the base of a further access). False: it has no such name.
 tc_scope_member :: proc(k: ^TC, n: Tree_Id, field: string) -> (Type, bool) {
-    ref := k.rs.refs[n]
+    ref := k.names.refs[n]
     if ref.kind == .None { return nil, false }
     t, found := tc_ref_type(k, ref, field)
     // (Its constant, not checked yet: checked here, by its use.)
@@ -807,7 +807,7 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
             inner = Tree_Id(tr.a[cur])
         case .Ident:
             name := tc_name(k, cur)
-            return name, k.rs.refs[cur].kind == .Const
+            return name, k.names.refs[cur].kind == .Const
         case:
             return "", false
         }
@@ -825,14 +825,14 @@ tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
     ty := Tree_Id(tr.a[e])
     if ty == 0 || tr.tag[ty] != .Ident { return false }
     name := tc_name(k, ty)
-    vt, found := tc_ref_type(k, k.rs.refs[ty], name)
+    vt, found := tc_ref_type(k, k.names.refs[ty], name)
     if !found { return false }
     sd := resolve_to_struct_type(k.c, vt)
     if sd == nil { return false }
     tc_set_type(k, e, vt)
     k.annot.overrides[tc_sid(k, e)] = true
     tc_set_type(k, ty, vt)   // (the variable it writes into, named)
-    tc_set_ref(k, ty, k.rs.refs[ty])
+    tc_set_ref(k, ty, k.names.refs[ty])
     // (Into storage that can't be written, as a field's write: tc_field_assign.)
     span := tree_span(tr, e)
     if pname, immutable := tc_write_root_param(k, ty); immutable { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname) }
@@ -847,7 +847,7 @@ tc_override :: proc(k: ^TC, e: Tree_Id) -> bool {
 tc_unknown_literal :: proc(k: ^TC, n: Tree_Id, name: string, entries: []Tree_Id) -> Type {
     span := tree_span(k.t, n)
     ty := Tree_Id(k.t.a[n])
-    if _, bound := tc_ref_type(k, k.rs.refs[ty], name); !bound && !tc_ambiguous(k, k.rs.misses[ty] or_else {}, span, name) && !tc_behind_use(k, span, name) {
+    if _, bound := tc_ref_type(k, k.names.refs[ty], name); !bound && !tc_ambiguous(k, k.names.misses[ty] or_else {}, span, name) && !tc_behind_use(k, span, name) {
         tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
     }
     for e in entries { tc_check(k, Tree_Id(k.t.a[e]) if k.t.tag[e] == .Named_Entry else e) }

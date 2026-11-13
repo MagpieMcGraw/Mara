@@ -8,7 +8,7 @@ import "core:slice"
 // checker binds as it goes: each in sight from where it's declared to its
 // block's end, in its fun's, struct's or file's body alone.
 //
-// The records are made by the resolver's walk over the statements; what each
+// The records are made by the name table's walk over the statements; what each
 // name written means is filled in from them once it's done (names_fill).
 // ---------------------------------------------------------------------------
 
@@ -18,10 +18,10 @@ Name_Var :: struct {
     name:     string,
     ref:      Ref,
     from, to: Token_Id,
-    level:    int,             // the level it's declared at (Rs_Level.id), and its kind
-    level_kind: Rs_Scope_Kind,
+    level:    int,             // the level it's declared at (Record_Level.id), and its kind
+    level_kind: Record_Kind,
     clashes:  bool,            // what it runs into is said where it's declared (names_clash): a `:=`'s, a loop's, a param's, a result's
-    slot:     i32,             // its name's number (Resolver.slots): what's compared
+    slot:     i32,             // its name's number (Name_Table.slots): what's compared
 }
 
 // A variable bound in a block not closed yet: its body's record, its place.
@@ -31,7 +31,7 @@ Names_Open :: struct {
 }
 
 // The innermost record whose text holds `at` (nil: none).
-names_record_at :: proc(r: ^Resolver, at: Token_Id) -> ^Scope {
+names_record_at :: proc(r: ^Name_Table, at: Token_Id) -> ^Scope {
     // (The records made since the last ask, each in its file's index.)
     if r.indexed < len(r.records) {
         dirty := make([dynamic]^Names_File, context.temp_allocator)
@@ -121,8 +121,8 @@ names_seen_owner :: proc(x: Names_Seen) -> string {
     return x.use.name if x.use != nil else names_owner(x.sc)
 }
 
-// A name's number (Resolver.slots), made the first time it's asked.
-names_slot :: proc(r: ^Resolver, name: string) -> i32 {
+// A name's number (Name_Table.slots), made the first time it's asked.
+names_slot :: proc(r: ^Name_Table, name: string) -> i32 {
     if slot, ok := r.slots[name]; ok { return slot }
     slot := r.slot_count
     r.slot_count += 1
@@ -154,7 +154,7 @@ names_outer :: proc(body: ^Scope, slot: i32, at: Token_Id) -> (string, ^Name_Var
 // What a scope defines of a name and what its uses bring (`level`: how many
 // scopes nearer bring some): into defs and used. The level after it.
 @(private="file")
-names_gather :: proc(r: ^Resolver, s: ^Scope, name: string, defs, used: ^[dynamic]Names_Seen, level: int) -> int {
+names_gather :: proc(r: ^Name_Table, s: ^Scope, name: string, defs, used: ^[dynamic]Names_Seen, level: int) -> int {
     block := s.kind == .Block
     if x, has := s.declared[name]; has { append(defs, Names_Seen{ref = x, sc = s, at = s.text_lo, block = block}) }
     if x, has := s.defs[name]; has {
@@ -194,7 +194,7 @@ Names_Memo :: struct {
 }
 
 @(private="file")
-names_memo :: proc(r: ^Resolver, sc: ^Scope, name: string, slot: i32) -> Names_Memo {
+names_memo :: proc(r: ^Name_Table, sc: ^Scope, name: string, slot: i32) -> Names_Memo {
     key := Names_Key{sc, slot}
     if slot >= 0 { if m, ok := r.sight_memo[key]; ok { return m } }
     defs := make([dynamic]Names_Seen, 0, 2, r.allocator)
@@ -212,7 +212,7 @@ names_memo :: proc(r: ^Resolver, sc: ^Scope, name: string, slot: i32) -> Names_M
 // sight already is itself from there on (that it hides it is said where it's
 // declared). Nothing: why — a local of a fun around, past its boundary; the
 // scopes that each have it.
-names_find :: proc(r: ^Resolver, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Rs_Miss) {
+names_find :: proc(r: ^Name_Table, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Name_Miss) {
     here := names_record_at(r, at)
     if here == nil { return }
     return names_find_in(r, here, name, at)
@@ -220,7 +220,7 @@ names_find :: proc(r: ^Resolver, name: string, at: Token_Id) -> (ref: Ref, ok: b
 
 // ... asked from a scope's record: `at` is in its text (the walk's: its
 // current one).
-names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Rs_Miss) {
+names_find_in :: proc(r: ^Name_Table, here: ^Scope, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Name_Miss) {
     if here == nil { return }
     body := names_body_of(here)
     slot := names_slot(r, name)
@@ -236,8 +236,8 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
         for s := here; s != nil && s != body; s = s.parent {
             if s.kind == .Block && s.text_lo > v.from { level = names_gather(r, s, name, defs, used, level) }
         }
-        for x in defs { if !rs_shares(r, v.ref, x.ref) { return {}, false, names_conflict_all(r, here, body, name, slot, at) } }
-        for x in used { if !rs_shares(r, v.ref, x.ref) { return {}, false, names_conflict_all(r, here, body, name, slot, at) } }
+        for x in defs { if !names_shares(r, v.ref, x.ref) { return {}, false, names_conflict_all(r, here, body, name, slot, at) } }
+        for x in used { if !names_shares(r, v.ref, x.ref) { return {}, false, names_conflict_all(r, here, body, name, slot, at) } }
         return v.ref, true, {}
     }
     level := 0
@@ -258,15 +258,15 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
     }
     // (A conflict is met where the later of the two came in sight: a local of
     // a fun around, past its boundary, is said only if it came after.)
-    past :: proc(r: ^Resolver, body: ^Scope, name: string, slot: i32, at, met: Token_Id) -> Rs_Miss {
+    past :: proc(r: ^Name_Table, body: ^Scope, name: string, slot: i32, at, met: Token_Id) -> Name_Miss {
         miss := names_conflict(r, body, slot, at, false)
         if hidden, outer := names_outer(body, slot, at); outer != nil && outer.from > met { miss.hidden = hidden }
         return miss
     }
     if len(defs) > 0 {
         first := defs[0]
-        for x in defs[1:] { if !rs_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
-        for x in used { if !rs_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
+        for x in defs[1:] { if !names_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
+        for x in used { if !names_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
         return first.ref, true, {}
     }
     if len(used) == 0 {
@@ -274,7 +274,7 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
         return
     }
     first := used[0]
-    for x in used { if x.level > 0 && !rs_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
+    for x in used { if x.level > 0 && !names_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
     // (The nearest scope's uses: one thing of the name, else none — dispatch
     // groups the checker's to choose among.)
     groups := true
@@ -282,7 +282,7 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
     for x, i in used {
         if x.level > 0 { break }
         one := false
-        for d in used[:i] { one = one || rs_same(r, d.ref, x.ref) }
+        for d in used[:i] { one = one || names_same(r, d.ref, x.ref) }
         if one { continue }
         unlike += 1
         groups = groups && x.ref.kind == .Fun && r.dispatches[x.ref.decl]
@@ -294,7 +294,7 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
         for x, i in used {
             if x.level > 0 { break }
             one := false
-            for d in used[:i] { one = one || rs_same(r, d.ref, x.ref) }
+            for d in used[:i] { one = one || names_same(r, d.ref, x.ref) }
             if one { continue }
             if miss.first.kind == .None { miss.first = x.ref }
             if !slice.contains(owners[:], x.use.name) { append(&owners, x.use.name) }
@@ -307,7 +307,7 @@ names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) ->
 // A variable's conflict: everything of the name in sight, gathered whole
 // first (names_find stopped at the variable's body).
 @(private="file")
-names_conflict_all :: proc(r: ^Resolver, here, body: ^Scope, name: string, slot: i32, at: Token_Id) -> Rs_Miss {
+names_conflict_all :: proc(r: ^Name_Table, here, body: ^Scope, name: string, slot: i32, at: Token_Id) -> Name_Miss {
     defs := &r.seen_defs
     used := &r.seen_used
     clear(defs)
@@ -320,9 +320,9 @@ names_conflict_all :: proc(r: ^Resolver, here, body: ^Scope, name: string, slot:
 // Two things of a name in sight: what each is, whose — nearest first, each once
 // (from the scratch names_find left: what's defined and brought).
 @(private="file")
-names_conflict :: proc(r: ^Resolver, body: ^Scope, slot: i32, at: Token_Id, with_vars: bool) -> (miss: Rs_Miss) {
+names_conflict :: proc(r: ^Name_Table, body: ^Scope, slot: i32, at: Token_Id, with_vars: bool) -> (miss: Name_Miss) {
     owners := make([dynamic]string)
-    add :: proc(miss: ^Rs_Miss, owners: ^[dynamic]string, owner: string, ref: Ref) {
+    add :: proc(miss: ^Name_Miss, owners: ^[dynamic]string, owner: string, ref: Ref) {
         if miss.first.kind == .None { miss.first = ref }
         if owner != "" && !slice.contains(owners[:], owner) { append(owners, owner) }
     }
@@ -341,7 +341,7 @@ names_conflict :: proc(r: ^Resolver, body: ^Scope, slot: i32, at: Token_Id, with
 }
 
 // What `name` means where `at` is (names_find, without why not).
-names_lookup :: proc(r: ^Resolver, name: string, at: Token_Id) -> (Ref, bool) {
+names_lookup :: proc(r: ^Name_Table, name: string, at: Token_Id) -> (Ref, bool) {
     ref, ok, _ := names_find(r, name, at)
     return ref, ok
 }

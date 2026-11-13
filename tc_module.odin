@@ -4,22 +4,22 @@ import "core:slice"
 import "core:strings"
 
 // Modules in the checker: a module is checked once every module it uses is
-// — `use m` in any scope of it, the resolver's list (resolve_module_uses) —
+// — `use m` in any scope of it, the name table's list (names_module_uses) —
 // and each use binds the name that declares it (its alias, else its path's
-// last part). What it makes visible where is the resolver's.
+// last part). What it makes visible where is the name table's.
 
 // A module's uses, each checked and its name bound: before the module is.
 tc_check_uses :: proc(k: ^TC, name: string) {
-    for u in resolve_module_uses(k.rs, name) { tc_use(k, u.imp, u.alias) }
+    for u in names_module_uses(k.names, name) { tc_use(k, u.imp, u.alias) }
 }
 
 // A module's names, recorded in full once the modules it uses are checked
-// (resolve_module_ready); each `all` it declares, said: a keyword.
+// (names_module_ready); each `all` it declares, said: a keyword.
 tc_module_names_ready :: proc(k: ^TC, name: string) {
-    resolve_module_ready(k.rs, name)
-    slice.sort(k.rs.all_new[:])
-    for tok in k.rs.all_new { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
-    clear(&k.rs.all_new)
+    names_module_ready(k.names, name)
+    slice.sort(k.names.all_new[:])
+    for tok in k.names.all_new { tc_error(k, Span{at = tok, tok = tok, end = tok + 1}, TYPE_ALL_KEYWORD) }
+    clear(&k.names.all_new)
 }
 
 tc_use :: proc(k: ^TC, imp: Tree_Id, alias := Token_Id(0)) -> ^Type_Scope {
@@ -64,7 +64,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     m.kind = .Struct
     m.is_module = true
     k.module_scopes[name] = m
-    resolve_module_begin(k.rs, name)
+    names_module_begin(k.names, name)
     tc_check_uses(k, name)
     tc_module_names_ready(k, name)
     saved_pkg, saved_hint := k.pkg, k.hint

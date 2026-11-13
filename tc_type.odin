@@ -30,7 +30,7 @@ tc_type_ref :: proc(k: ^TC, n: Tree_Id, ty: Type) -> Ref {
         if len(parts) == 1 {
             name := tc_text(parts[0])
             if _, is_primitive := tc_primitive_named(name); is_primitive { return {kind = .Builtin} }
-            if ref := k.rs.refs[n]; ref.kind == .Type && k.rs.type_params[ref.decl] && k.salt != 0 { return ref }
+            if ref := k.names.refs[n]; ref.kind == .Type && k.names.type_params[ref.decl] && k.salt != 0 { return ref }
         }
     }
     if decl := type_decl(ty); decl != 0 {
@@ -53,7 +53,7 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         if len(parts) == 0 { return Type_Error{} }
         if len(parts) > 1 {
             if qt := tc_qualified_type(k, n, parts); qt != nil { return qt }
-            if ft, is_field := k.rs.field_types[n]; is_field {
+            if ft, is_field := k.names.field_types[n]; is_field {
                 owner, _ := tc_ref_type(k, ft.owner, tc_dotted(parts[:ft.split]))
                 elem: Type
                 if ft.elem.kind == .Builtin {
@@ -68,16 +68,16 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
         }
         return tc_type_named(k, tc_text(parts[0]), span, n)
     case .Type_Dollar:
-        if bound, is_param := tc_ref_type(k, k.rs.refs[n], ""); is_param && bound != nil { return bound }
+        if bound, is_param := tc_ref_type(k, k.names.refs[n], ""); is_param && bound != nil { return bound }
         tc_unsupported(k, n, "a type param outside its instance")
         return Type_Error{}
     case .Ident, .Field:
         // (A name by itself, `A :: B`'s B: the type it names — annotated so,
         // `m.B`'s m its module.)
         name := tc_name(k, n) if t.tag[n] == .Ident else ""
-        tc_set_ref(k, n, k.rs.refs[n])
-        if base := Tree_Id(t.a[n]); t.tag[n] == .Field && t.tag[base] == .Ident { tc_set_ref(k, base, k.rs.refs[base]) }
-        if ty, ok := tc_ref_type(k, k.rs.refs[n], name); ok && ty != nil { return ty }
+        tc_set_ref(k, n, k.names.refs[n])
+        if base := Tree_Id(t.a[n]); t.tag[n] == .Field && t.tag[base] == .Ident { tc_set_ref(k, base, k.names.refs[base]) }
+        if ty, ok := tc_ref_type(k, k.names.refs[n], name); ok && ty != nil { return ty }
         tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_written(k, n))
         return Type_Error{}
     case .Type_Fun:
@@ -202,8 +202,8 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
 tc_enum_slots :: proc(k: ^TC, n: Tree_Id) -> (Type, int) {
     t := k.t
     // (Its name, bare or through its module: `Action`, `game.Action`.)
-    if n == 0 || (t.tag[n] != .Ident && t.tag[n] != .Field) || k.rs.refs[n].kind != .Type { return nil, 0 }
-    ty, ok := tc_ref_type(k, k.rs.refs[n], tc_name(k, n) if t.tag[n] == .Ident else tc_text(Token_Id(t.b[n])))
+    if n == 0 || (t.tag[n] != .Ident && t.tag[n] != .Field) || k.names.refs[n].kind != .Type { return nil, 0 }
+    ty, ok := tc_ref_type(k, k.names.refs[n], tc_name(k, n) if t.tag[n] == .Ident else tc_text(Token_Id(t.b[n])))
     if !ok || ty == nil { return nil, 0 }
     hi := -1
     #partial switch e in distinct_base(ty) {
@@ -234,8 +234,8 @@ tc_enum_len :: proc(k: ^TC, base: Tree_Id, field: string) -> (int, bool) {
 tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) {
     t := k.t
     // (A generic's size param, `$N` or `N`, in an instance: what it's bound to.)
-    if n != 0 && (t.tag[n] == .Type_Dollar || t.tag[n] == .Ident && k.rs.refs[n].kind == .Type) {
-        if ty, ok := tc_ref_type(k, k.rs.refs[n], ""); ok {
+    if n != 0 && (t.tag[n] == .Type_Dollar || t.tag[n] == .Ident && k.names.refs[n].kind == .Type) {
+        if ty, ok := tc_ref_type(k, k.names.refs[n], ""); ok {
             if ci, is_int := ty.(Type_Const_Int); is_int { return ci.value, true }
         }
     }
@@ -243,8 +243,8 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) 
         // (A constant, known: its value.)
         name := tc_name(k, n)
         kc := tc_const_named(k, n)
-        if kc == nil && k.rs.refs[n].kind == .None {
-            tc_unresolved(k, k.rs.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)   // (nothing in sight by that name)
+        if kc == nil && k.names.refs[n].kind == .None {
+            tc_unresolved(k, k.names.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)   // (nothing in sight by that name)
             return 0, false
         }
         if kc == nil {
@@ -332,7 +332,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
     case .Field:
         // (A constant named through its module, `render.GRASS_PER_CELL`: its
         // value, as its bare name's.)
-        if ref := k.rs.refs[n]; ref.kind == .Const {
+        if ref := k.names.refs[n]; ref.kind == .Const {
             kc := k.const_at[ref.decl] or_else nil
             if !names || kc == nil || kc.visiting { return 0, false }
             kc.visiting = true
@@ -345,7 +345,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
         if !names || (field != "cap" && field != "len") { return 0, false }
         if slots, has := tc_enum_len(k, base, field); has { return i64(slots), true }
         if t.tag[base] != .Ident { return 0, false }
-        bt, ok := tc_ref_type(k, k.rs.refs[base], tc_name(k, base))
+        bt, ok := tc_ref_type(k, k.names.refs[base], tc_name(k, base))
         if !ok { return 0, false }
         #partial switch a in distinct_base(bt) {
         case ^Type_Partial_Array: if field == "cap" && a.size > 0 { return i64(a.size), true }
@@ -353,7 +353,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, names := true) -> (i64, bool) {
         }
         return 0, false
     case .Ident:
-        kc := k.const_at[k.rs.refs[n].decl] if k.rs.refs[n].kind == .Const else nil
+        kc := k.const_at[k.names.refs[n].decl] if k.names.refs[n].kind == .Const else nil
         if !names || kc == nil || kc.visiting { return 0, false }
         kc.visiting = true
         defer kc.visiting = false
@@ -392,7 +392,7 @@ tc_comptime_float :: proc(k: ^TC, n: Tree_Id) -> (f64, bool) {
         case .Slash: return l / r, true
         }
     case .Ident:
-        kc := k.const_at[k.rs.refs[n].decl] if k.rs.refs[n].kind == .Const else nil
+        kc := k.const_at[k.names.refs[n].decl] if k.names.refs[n].kind == .Const else nil
         if kc == nil || kc.visiting { return 0, false }
         kc.visiting = true
         defer kc.visiting = false
@@ -416,7 +416,7 @@ float_fits_int :: proc(x: f64, bits: int, unsigned: bool) -> bool {
 // variable's type); nil when it names none. (n: its node — a type's name, a
 // literal's `Outer.Inner{…}`.)
 tc_qualified_type :: proc(k: ^TC, n: Tree_Id, parts: []Token_Id) -> Type {
-    if t, ok := tc_ref_type(k, k.rs.refs[n], tc_dotted(parts)); ok { return t }
+    if t, ok := tc_ref_type(k, k.names.refs[n], tc_dotted(parts)); ok { return t }
     // (No method either: no type — not a Type holding a nil ^Type_Scope, which
     // isn't nil, and whose declaration the caller then reads.)
     if fn := tc_held_method(k, parts); fn != nil { return fn }
@@ -426,7 +426,7 @@ tc_qualified_type :: proc(k: ^TC, n: Tree_Id, parts: []Token_Id) -> Type {
 // `v.method`, named as a type: the method of v's struct (nil: none).
 tc_held_method :: proc(k: ^TC, parts: []Token_Id) -> ^Type_Scope {
     if len(parts) != 2 { return nil }
-    ref := k.rs.token_refs[parts[0]] or_else {}
+    ref := k.names.token_refs[parts[0]] or_else {}
     if !tc_is_variable(ref) { return nil }
     vt, ok := tc_ref_type(k, ref, tc_text(parts[0]))
     if !ok { return nil }
@@ -451,7 +451,7 @@ tc_dotted :: proc(parts: []Token_Id) -> string {
 tc_fun_type_of :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     parts := tree_token_list(k.t, k.t.a[n])
     name := tc_dotted(parts)
-    vt, ok := tc_ref_type(k, k.rs.refs[n], name)
+    vt, ok := tc_ref_type(k, k.names.refs[n], name)
     if ok {
         if ft, is_scope := vt.(^Type_Scope); is_scope && ft.kind == .Fun { return ft }
         if len(parts) == 1 {
@@ -470,7 +470,7 @@ tc_fun_type_of :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
 // a size.)
 tc_generic_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     t := k.t
-    if tmpl, is_template := tc_template(k, k.rs.refs[n]); is_template {
+    if tmpl, is_template := tc_template(k, k.names.refs[n]); is_template {
         if t.tag[tmpl.node] == .Union_Def { return tc_union_instance(k, n, tmpl, span) }
         return tc_struct_instance(k, n, tmpl, span)
     }
@@ -486,7 +486,7 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     t := k.t
     name := tc_name(k, n)
     one := len(tree_list(t, t.a[n])) == 1
-    found, ok := tc_ref_type(k, k.rs.refs[n], name)
+    found, ok := tc_ref_type(k, k.names.refs[n], name)
     if one {
         if dt, is_distinct := found.(^Type_Distinct); ok && is_distinct && is_slice_type(dt.base_type) {
             tc_error(k, tree_span(t, n), TYPE_SLICE_ALIAS_CAPACITY)
@@ -503,7 +503,7 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
             return Type_Error{}
         }
     }
-    if !tc_ambiguous(k, k.rs.misses[n] or_else {}, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
+    if !tc_ambiguous(k, k.names.misses[n] or_else {}, span, name) { tc_error(k, span, TYPE_UNKNOWN_TYPE, name) }
     return Type_Error{}
 }
 
@@ -516,10 +516,10 @@ tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
 // struct or fun it's written in.
 tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
     if _, is_primitive := tc_primitive_named(name); is_primitive { return tc_primitive(k, name, span) }
-    ref := k.rs.refs[n]
+    ref := k.names.refs[n]
     if t, ok := tc_ref_type(k, ref, name); ok { return t }
     // (Two modules' type, said so.)
-    if owners := (k.rs.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {
+    if owners := (k.names.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {
         tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator), name)
         return Type_Error{}
     }

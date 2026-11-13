@@ -811,7 +811,7 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
 // then a type — an array literal's is followed by nothing on its line), a
 // primitive's name ending the line (`Fixed :: i32`; `i32(x)` is a
 // conversion). A name by itself, `A :: B`, is a type's other name when B is
-// a type — what the resolver settles (rs_alias_kinds) — else a constant.
+// a type — what the name table settles (rs_alias_kinds) — else a constant.
 tp_type_ahead :: proc(p: ^Tree_Parser) -> bool {
     #partial switch tp_kind(p) {
     case .Caret, .Fn:

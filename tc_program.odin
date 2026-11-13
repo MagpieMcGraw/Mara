@@ -55,12 +55,12 @@ tc_allocator_arena :: proc(k: ^TC, arena: Tree_Id) -> (name: string, args: []Tre
     // the table, its definitions and uses recorded.)
     names_module :: proc(k: ^TC, n: Tree_Id) -> bool {
         if k.t.tag[n] != .Ident { return false }
-        ref := k.rs.refs[n]
+        ref := k.names.refs[n]
         if ref.kind == .None {
-            walking := k.rs.walking
-            k.rs.walking = true   // (nothing kept: its aliases aren't settled yet)
-            ref = names_ref(k.rs, n, base = true)
-            k.rs.walking = walking
+            walking := k.names.walking
+            k.names.walking = true   // (nothing kept: its aliases aren't settled yet)
+            ref = names_ref(k.names, n, base = true)
+            k.names.walking = walking
         }
         return ref.kind == .Module
     }
@@ -103,7 +103,7 @@ tc_allocator :: proc(k: ^TC, s: Tree_Id) {
         return
     }
     // (By itself, its module used under a name: it's that name's to reach.)
-    if bare := t.tag[arena] == .Call || t.tag[arena] == .Ident; bare && k.rs.refs[arena].kind == .None && tc_behind_use(k, span, name) { return }
+    if bare := t.tag[arena] == .Call || t.tag[arena] == .Ident; bare && k.names.refs[arena].kind == .None && tc_behind_use(k, span, name) { return }
     for a in args { tc_check(k, a) }
     if called && len(args) == 0 || !called && !k.shared { tc_error(k, span, TYPE_ALLOCATOR_NEEDS_SIZE, name, name) }
 }

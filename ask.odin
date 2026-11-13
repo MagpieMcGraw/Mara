@@ -507,7 +507,7 @@ ask_fuzzy :: proc(checked: ^Checked_Program, target: string, scope_file: string,
         }
     }
     // (Dispatch groups and fields can be asked for by name too.)
-    for tok in checked.rs.dispatches {
+    for tok in checked.names.dispatches {
         t := build_tokens[tok]
         f := build_files[t.file]
         if scope_module != "" && f.module != scope_module { continue }
@@ -531,8 +531,8 @@ ask_fuzzy :: proc(checked: ^Checked_Program, target: string, scope_file: string,
     }
     // (So can constants.)
     t := &build_tree
-    for tok, def in checked.rs.defs {
-        if rs_def_kind(t, Tree_Id(t.b[def])) != .Const { continue }
+    for tok, def in checked.names.defs {
+        if names_def_kind(t, Tree_Id(t.b[def])) != .Const { continue }
         tk := build_tokens[tok]
         f := build_files[tk.file]
         if scope_module != "" && f.module != scope_module { continue }
@@ -1467,8 +1467,8 @@ ask_find_values :: proc(checked: ^Checked_Program, name, scope_file, scope_modul
         append(out, Ask_Value{word, tok})
     }
     t := &build_tree
-    for tok, def in checked.rs.defs {
-        if token_text(build_tokens[tok]) == name && rs_def_kind(t, Tree_Id(t.b[def])) == .Const { add(&out, "const", tok, scope_file, scope_module) }
+    for tok, def in checked.names.defs {
+        if token_text(build_tokens[tok]) == name && names_def_kind(t, Tree_Id(t.b[def])) == .Const { add(&out, "const", tok, scope_file, scope_module) }
     }
     slice.sort_by(out[:], proc(a, b: Ask_Value) -> bool { return a.decl < b.decl })
     return out
@@ -1942,7 +1942,7 @@ render_calls_of :: proc(b: ^strings.Builder, checked: ^Checked_Program, roots: [
 @(private="file")
 ask_find_dispatches :: proc(checked: ^Checked_Program, name, scope_file, scope_module: string) -> [dynamic]Token_Id {
     out: [dynamic]Token_Id
-    for tok in checked.rs.dispatches {
+    for tok in checked.names.dispatches {
         t := build_tokens[tok]
         if token_text(t) != name { continue }
         f := build_files[t.file]
@@ -1960,7 +1960,7 @@ ask_find_dispatches :: proc(checked: ^Checked_Program, name, scope_file, scope_m
 ask_dispatch_members :: proc(checked: ^Checked_Program, groups: []Token_Id) -> [dynamic]Token_Id {
     out: [dynamic]Token_Id
     visited := make(map[Token_Id]bool, allocator = context.temp_allocator)
-    add :: proc(r: ^Resolver, group: Token_Id, out: ^[dynamic]Token_Id, visited: ^map[Token_Id]bool) {
+    add :: proc(r: ^Name_Table, group: Token_Id, out: ^[dynamic]Token_Id, visited: ^map[Token_Id]bool) {
         if visited[group] { return }
         visited[group] = true
         def := r.defs[group] or_else 0
@@ -1975,7 +1975,7 @@ ask_dispatch_members :: proc(checked: ^Checked_Program, groups: []Token_Id) -> [
             }
         }
     }
-    for g in groups { add(checked.rs, g, &out, &visited) }
+    for g in groups { add(checked.names, g, &out, &visited) }
     return out
 }
 
@@ -2395,8 +2395,8 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string, kind := ""
 
     // Its constants: what its body-level definitions are that aren't funs or types.
     consts := make([dynamic]Token_Id, context.temp_allocator)
-    for d in resolve_defs(checked.rs, 0, canonical) {
-        if build_tree.tag[d.node] == .Define && rs_def_kind(&build_tree, Tree_Id(build_tree.b[d.node])) == .Const { append(&consts, build_tree.main[d.node]) }
+    for d in names_defs(checked.names, 0, canonical) {
+        if build_tree.tag[d.node] == .Define && names_def_kind(&build_tree, Tree_Id(build_tree.b[d.node])) == .Const { append(&consts, build_tree.main[d.node]) }
     }
     slice.sort(consts[:])
 

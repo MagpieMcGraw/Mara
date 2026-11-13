@@ -175,7 +175,7 @@ tc_make_union :: proc(k: ^TC, pkg, name: string, span: Span, h: TC_Union_Header,
     tag_et.source_name = strings.concatenate({shown, "_Tag"})
     tag_et.name = make_flat_name(owner.name, strings.concatenate({name, "_Tag"}))
     tag_et.owner = owner
-    tag_et.scope = resolve_scope(k.rs, owner.decl, owner.name)
+    tag_et.scope = names_scope(k.names, owner.decl, owner.name)
     tag_et.home_package, tag_et.tag_type, tag_et.span, tag_et.is_synthetic = pkg, h.tag_type, span, true
     for v in variants { tag_et.variants[v.name], tag_et.variant_decls[v.name] = v.tag, v.span.at }
     tag_et.zero_name = tc_zero_name(variants)
@@ -326,8 +326,8 @@ tc_another_instances :: proc(k: ^TC, owner: ^Type_Scope) -> bool {
 // The scope a definition is written in: its block's (an if's, a loop's),
 // else its owner's.
 tc_def_scope :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> ^Scope {
-    if bd, in_block := resolve_block(k.rs, def); in_block { return bd.scope }
-    return resolve_scope(k.rs, owner.decl, owner.name)
+    if bd, in_block := names_block(k.names, def); in_block { return bd.scope }
+    return names_scope(k.names, owner.decl, owner.name)
 }
 
 // Whether an enum is in sight where its variant is named by itself: in the
@@ -335,8 +335,8 @@ tc_def_scope :: proc(k: ^TC, def: Tree_Id, owner: ^Type_Scope) -> ^Scope {
 // and where that scope is used (a block is no one's to use). By the text,
 // whichever instance of a generic is being checked.
 tc_sees_enum :: proc(k: ^TC, et: ^Type_Enum, span: Span) -> bool {
-    if resolve_sees(k.rs, span.at, et.scope) { return true }
-    for a in et.aliased { if resolve_sees(k.rs, span.at, a) { return true } }
+    if names_sees(k.names, span.at, et.scope) { return true }
+    for a in et.aliased { if names_sees(k.names, span.at, a) { return true } }
     return false
 }
 

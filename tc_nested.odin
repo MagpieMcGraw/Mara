@@ -9,7 +9,7 @@ import "core:fmt"
 // its struct's names; no body sees another's locals), and a fun or struct
 // checked as its own body.
 
-// What a scope defines is the resolver's list (resolve_defs): its own
+// What a scope defines is the name table's list (names_defs): its own
 // statements' definitions and its blocks' — an if's, a loop's, a match arm's, a
 // defer's; a module's, its files'. A block's is its body's definition like
 // any other, checked with it; in sight in its block alone, and no member of
@@ -19,7 +19,7 @@ import "core:fmt"
 // its number (`Input__2`) — two blocks' of one name are two.
 tc_def_name :: proc(k: ^TC, def: Tree_Id) -> string {
     name := tc_name(k, def)
-    if bd, in_block := resolve_block(k.rs, def); in_block { return fmt.aprintf("%s__%d", name, bd.block) }
+    if bd, in_block := names_block(k.names, def); in_block { return fmt.aprintf("%s__%d", name, bd.block) }
     return name
 }
 
@@ -35,7 +35,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     distincts := make([dynamic]Tree_Id, context.temp_allocator)
     unions := make([dynamic]Tree_Id, context.temp_allocator)
     dispatches := make([dynamic]Tree_Id, context.temp_allocator)
-    for def in resolve_defs(k.rs, owner.decl, owner.name) {
+    for def in names_defs(k.names, owner.decl, owner.name) {
         s := def.node
         if t.tag[s] == .Foreign {
             append(&sc.foreigns, s)
@@ -57,7 +57,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
                 append(&distincts, s)
                 continue
             case .Dispatch_Def:
-                append(&dispatches, s)   // (the resolver's, as a module's: its members checked once declared)
+                append(&dispatches, s)   // (the name table's, as a module's: its members checked once declared)
                 continue
             case .Import:
                 continue   // (`name :: use m`: checked before its module — tc_check_uses)
